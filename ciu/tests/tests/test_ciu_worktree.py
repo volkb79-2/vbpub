@@ -781,14 +781,32 @@ class TestAdoptRefusals:
 
 
 class TestWorktreeSubprocessEnvironment:
+    # CIU-85: PUBLIC_FQDN added — one of the six `[ciu.instance.generated]`
+    # identity facts since CIU-47, previously absent from both this list AND
+    # the production `_CIU_IDENTITY_ENV_KEYS` it mirrors.
     _IDENTITY_KEYS = (
         "REPO_ROOT",
         "PHYSICAL_REPO_ROOT",
         "DOCKER_NETWORK_INTERNAL",
         "INSTANCE_ID",
         "REPO_NAME",
+        "PUBLIC_FQDN",
         "CIU_SERVICES_PROFILE",
     )
+
+    def test_identity_env_keys_match_the_canonical_fact_table_plus_profile(self):
+        """CIU-85: `_CIU_IDENTITY_ENV_KEYS` is DERIVED from
+        `GENERATED_FACT_ENV_KEYS.values()` (the canonical fact->env-name
+        table) plus the one hand-added non-fact member, `CIU_SERVICES_PROFILE`
+        — not a second, independently hand-maintained literal. Pinned here so
+        a future fact added to the canonical table joins this tuple BY
+        CONSTRUCTION, the exact property this fix exists to establish."""
+        from ciu.workspace_env import GENERATED_FACT_ENV_KEYS
+
+        assert set(worktree._CIU_IDENTITY_ENV_KEYS) == set(
+            GENERATED_FACT_ENV_KEYS.values()
+        ) | {"CIU_SERVICES_PROFILE"}
+        assert "PUBLIC_FQDN" in worktree._CIU_IDENTITY_ENV_KEYS
 
     def test_generate_env_strips_primary_instance_identity(self, tmp_path, monkeypatch):
         for key in self._IDENTITY_KEYS:
@@ -818,6 +836,79 @@ class TestWorktreeSubprocessEnvironment:
         monkeypatch.setattr(worktree.subprocess, "run", fake_run)
         assert worktree._generate_env_in(tmp_path, identity_only=True) == 0
         assert seen["argv"][-1] == "--identity-only"
+
+    def test_clean_strips_the_callers_service_profile_selection(
+        self, tmp_path, monkeypatch, write_instance_facts
+    ):
+        """CIU-85: `_clean_in` did not strip `_CIU_IDENTITY_ENV_KEYS` before
+        overlaying the target's identity facts, unlike its two siblings
+        (`_sanitized_target_env`, `_resolve_budget_candidates`). Neutralized
+        for the five overlay-fact keys (`identity` always overwrites them
+        once the empty-table refusal above has already fired), but
+        `CIU_SERVICES_PROFILE` is NOT an overlay fact — it is never in
+        `identity` — so it used to leak straight through from the CALLER's
+        ambient environment into the child `ciu clean`. This is the
+        controlled-wrong-implementation proof: reverting the strip (`env =
+        dict(os.environ); env.update(identity)`) makes this assertion fail
+        with `env["CIU_SERVICES_PROFILE"] == "primary-profile"`.
+        """
+        write_instance_facts(tmp_path, repo_root="/target", instance_id="target-id")
+        monkeypatch.setenv("CIU_SERVICES_PROFILE", "primary-profile")
+        seen: dict[str, object] = {}
+
+        def fake_run(argv, **kwargs):
+            seen.update(argv=argv, **kwargs)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        monkeypatch.setattr(worktree.subprocess, "run", fake_run)
+        assert worktree._clean_in(tmp_path, yes=True) == 0
+        env = seen["env"]
+        assert "CIU_SERVICES_PROFILE" not in env
+
+    def test_clean_strips_a_stale_ambient_public_fqdn_not_carried_by_target(
+        self, tmp_path, monkeypatch
+    ):
+        """CIU-85's `PUBLIC_FQDN` half, made genuinely discriminating.
+
+        An earlier version of this test used `write_instance_facts(...,
+        public_fqdn="")`, which — per that fixture's own contract — backfills
+        EVERY `GENERATED_FACTS_KEYS` member, so `identity` always carried an
+        explicit `PUBLIC_FQDN` key (`""`) regardless of whether `_clean_in`'s
+        strip ran at all: `env.update(identity)` alone was already enough to
+        overwrite the ambient value. A fresh adversarial review (2026-08-31)
+        hand-reverted just the strip and reproduced that the test still
+        passed — a real gap, not a nitpick: this test added no discriminating
+        power over the overlay-fact path already proven by
+        `test_clean_uses_target_worktree_env_not_primary` and friends.
+
+        Fixed by monkeypatching `read_instance_identity_env` directly to
+        return a target identity dict that OMITS `PUBLIC_FQDN` entirely —
+        simulating an overlay record that predates CIU-47 (or is otherwise
+        missing the key), which `identity_env_from_facts` faithfully drops
+        rather than backfilling. Now the STRIP is the only thing standing
+        between the ambient `PUBLIC_FQDN` and the leak: reverting `_clean_in`
+        back to `env = dict(os.environ)` makes this assertion fail with
+        `env["PUBLIC_FQDN"] == "primary.example.com"` — manually reverted and
+        confirmed.
+        """
+        from ciu import workspace_env
+
+        monkeypatch.setattr(
+            workspace_env,
+            "read_instance_identity_env",
+            lambda _root: {"REPO_ROOT": "/target", "INSTANCE_ID": "target-id"},
+        )
+        monkeypatch.setenv("PUBLIC_FQDN", "primary.example.com")
+        seen: dict[str, object] = {}
+
+        def fake_run(argv, **kwargs):
+            seen.update(argv=argv, **kwargs)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        monkeypatch.setattr(worktree.subprocess, "run", fake_run)
+        assert worktree._clean_in(tmp_path, yes=True) == 0
+        env = seen["env"]
+        assert "PUBLIC_FQDN" not in env
 
     def test_clean_uses_target_worktree_env_not_primary(
         self, tmp_path, monkeypatch, write_instance_facts

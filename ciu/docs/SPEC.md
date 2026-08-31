@@ -2139,8 +2139,17 @@ and, since CIU-65, a NOTE carries the same three keys, so a WARN-severity
 `--live` run additionally carries a top-level `live` key
 (`{status, unsatisfied}`) — deliberately not a stage, because it is the one
 failure class that maps to exit 1. Under `--json` the action emits no prose
-of its own; the orchestrator's own `[INFO]` lines still precede the document
-on stdout, exactly as for `ciu graph --format json`.
+of its own, and — since CIU-84 — the orchestrator's OWN top-level `info()`
+calls ahead of dispatch (active-profile / action-dispatch prose) route to
+stderr instead of stdout too, so the JSON document really is the only thing
+on stdout, matching this section's opening promise and `_emit_check_report`'s
+own docstring; `ciu check --json | jq` no longer sees a leading `[INFO]`
+line. `ciu graph --format json` (S13.5) shares the same orchestrator-level
+fix. `--live`'s own probe layer (`provisioning.probe_ref`) had a second,
+independent leak of the identical shape — two deprecation `[WARN]` notices
+printed unconditionally to stdout — also closed by CIU-84, unconditionally
+to stderr (not gated on `--json`, since a deprecation notice belongs on
+stderr regardless of output mode).
 
 ### S13.4c — `ciu up`'s automatic static preflight (CIU-64, normative)
 
@@ -2182,6 +2191,11 @@ to eliminate elsewhere.
   requirement that nobody provides is drawn dashed to an `UNPROVIDED` sentinel so
   gaps are visually obvious. Diagnostics go to the logger (stderr); only the
   graph itself goes to stdout so it can be piped directly into documentation.
+  The orchestrator-level half of this promise (the `_run`-level `[INFO]` lines
+  ahead of dispatch) is enforced since CIU-84, the same fix as S13.4a's.
+  `action_graph`'s OWN `info()`/`error()` calls (the empty-graph note, the
+  two shape/provisioning-validation error paths) are NOT yet gated on
+  `--format json` — a real, narrower remaining gap, filed as CIU-86.
 
 ### S13.4b — `[registry.*]` schema validation (`ciu check` stage 7)
 
@@ -3815,7 +3829,9 @@ Both build the child environment from the target's OWN exact
 sourced through a shell; `ciu.env` until CIU-75): the
 ambient process environment MINUS every CIU root/identity/network/profile key
 (`REPO_ROOT`, `PHYSICAL_REPO_ROOT`, `DOCKER_NETWORK_INTERNAL`, `INSTANCE_ID`,
-`REPO_NAME`, `CIU_SERVICES_PROFILE`), then overlaid with the target's own
+`REPO_NAME`, `PUBLIC_FQDN`, `CIU_SERVICES_PROFILE` — the first six DERIVED
+from the canonical fact->env-name table, `CIU_SERVICES_PROFILE` the one
+hand-added non-fact member, CIU-85), then overlaid with the target's own
 facts under their legacy shell names (S3.1c clause 7). The target must carry
 `REPO_ROOT`, `PHYSICAL_REPO_ROOT`,
 `INSTANCE_ID`, `DOCKER_NETWORK_INTERNAL`, and `REPO_NAME`, and each must match
@@ -4508,15 +4524,24 @@ by imported Assay source and never by a nyxloom evidence-judgment command.
 generates a minimal CIU-enabled repository layout: a validated
 `ciu.global.defaults.toml.j2` (project identity, network from
 `$DOCKER_NETWORK_INTERNAL`, health timings), gitignore entries (`ciu.env`,
-`ciu.global.toml`, `**/.ciu/`, `**/ciu.compose.yml`), and optional stack
-skeletons under `applications/<name>/` (defaults + compose template with one
-GEN_LOCAL secret). Templates ship INSIDE the wheel (`ciu/templates/`) so a
-plain `pip install ciu` carries them. Validation-first: the global template
-AND every stack's own `ciu.defaults.toml.j2` are rendered through the real
-Jinja step and TOML-parsed BEFORE anything is written; an existing target
-file is never overwritten — the run refuses naming every existing target. It
-does NOT run `ciu env generate` (side effects stay with the operator); the
-printed next steps say to.
+`ciu.global.toml`, `**/.ciu/`, `**/ciu.compose.yml`, `ciu.worktree-instance.json`,
+`ciu.global.worktree.toml.j2`, `**/ciu.toml` — CIU-61 reconciled this list
+against the repo root's own `.gitignored.ciu` sample-rules file, which had
+drifted from it; a test now keeps the two from drifting again), and optional
+stack skeletons under `applications/<name>/` (defaults + compose template
+with one GEN_LOCAL secret). Templates ship INSIDE the wheel
+(`ciu/templates/`) so a plain `pip install ciu` carries them. Validation-first:
+the global template AND every stack's own `ciu.defaults.toml.j2` are rendered
+through the real Jinja step and TOML-parsed BEFORE anything is written; an
+existing target file is never overwritten — the run refuses naming every
+existing target. It does NOT run `ciu env generate` (side effects stay with
+the operator); the printed next steps say to.
+
+  **Deliberately NOT gitignored** (S3.1a/CIU-8): `ciu.global.toml.j2` and a
+  scaffolded stack's own `ciu.toml.j2`, once an operator adds either, are
+  committed, hand-authored sparse override templates — `ciu init` never
+  writes gitignore rules that would silently drop them from a consumer's
+  own repo.
 
   **The preflight render uses `StrictUndefined` (CIU-81), matching the real
   S3.2 render path exactly** (`config_model.render_jinja2_text`, since

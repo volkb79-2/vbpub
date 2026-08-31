@@ -99,6 +99,48 @@ def test_gitignore_additions_applied_once(workdir, monkeypatch):
     assert (workdir / ".gitignore").read_text(encoding="utf-8") == first
 
 
+def test_gitignore_entries_match_gitignored_ciu_sample():
+    """CIU-61: `_GITIGNORE_ENTRIES` (what `ciu init` writes into a fresh
+    consumer's `.gitignore`) and the repo root's `.gitignored.ciu` (CIU's
+    own published sample-rules file, S1.8/S3.1b) are two hand-maintained
+    copies of one list that had already drifted once — CIU-61's entire
+    finding — before either side had a mechanism to catch it. This parses
+    the real (non-comment, non-blank) patterns out of `.gitignored.ciu` and
+    asserts the two sets are IDENTICAL, so a future edit to either file
+    without updating the other fails this test instead of drifting again
+    silently.
+
+    Not a substring/subset check — `==` on the two sets — so this also
+    catches the OTHER direction: a pattern added to `_GITIGNORE_ENTRIES`
+    that `.gitignored.ciu` does not (yet) know about.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    sample_text = (repo_root / ".gitignored.ciu").read_text(encoding="utf-8")
+    sample_patterns = {
+        line.strip() for line in sample_text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    scaffold_patterns = {entry for entry, _why in scaffold._GITIGNORE_ENTRIES}
+    assert scaffold_patterns == sample_patterns
+
+
+def test_gitignore_entries_omit_the_committed_override_templates():
+    """CIU-61 judgment call, pinned: `ciu.global.toml.j2` and `**/ciu.toml.j2`
+    are committed, hand-authored SPARSE OVERRIDE templates (SPEC S3.1a,
+    CIU-8) — CIU never auto-creates either one, so `ciu init` must never
+    gitignore them for a consumer (that would silently drop operator-
+    authored config the same way `.gitignored.ciu` itself wrongly did until
+    this same commit corrected it). This is the one place the two lists are
+    NOT supposed to agree with a naive `.gitignore`-style reading of
+    `.gitignored.ciu`'s old, buggy shape — pinned so a future "helpful"
+    re-add of either pattern is caught here, not discovered as a consumer's
+    silently-dropped commit.
+    """
+    scaffold_patterns = {entry for entry, _why in scaffold._GITIGNORE_ENTRIES}
+    assert "ciu.global.toml.j2" not in scaffold_patterns
+    assert "**/ciu.toml.j2" not in scaffold_patterns
+
+
 def test_cli_end_to_end(workdir, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["ciu", "init", "--project-name", "solo"])
     from ciu.cli import main
@@ -284,7 +326,16 @@ def test_gitignore_fully_satisfied_appends_nothing(tmp_path, monkeypatch, capfd)
         "# per-stack machine dirs: rendered ciu.toml, secrets, overlays\n"
         "**/.ciu/\n"
         "# CIU's rendered compose output for .j2 templates (S8.1)\n"
-        "**/ciu.compose.yml\n", encoding="utf-8")
+        "**/ciu.compose.yml\n"
+        "# managed worktree identity/lifecycle record (S16)\n"
+        "ciu.worktree-instance.json\n"
+        "# per-checkout sparse global override (S3.1b) — the SOLE "
+        "instance-identity source since CIU-75/7.7.0; committing it leaks "
+        "host-specific facts\n"
+        "ciu.global.worktree.toml.j2\n"
+        "# rendered per-stack config — track the ciu.toml.j2 source, not "
+        "its output\n"
+        "**/ciu.toml\n", encoding="utf-8")
     before = (tmp_path / ".gitignore").read_text(encoding="utf-8")
     assert scaffold.init_main(["--project-name", "d", "--stacks", "api"]) == 0
     assert (tmp_path / ".gitignore").read_text(encoding="utf-8") == before

@@ -1077,9 +1077,16 @@ Two behaviours to script against deliberately:
   `pip install 'ciu[registry]'` — with a validated table declared and the
   extra missing, `ciu check` fails loudly naming it rather than skipping.
 
-Under `--json` the check itself prints only the document, but the
-orchestrator's own `[INFO]` lines still precede it on stdout (as with
-`ciu graph --format json`); read the JSON object at the end of stdout.
+Under `--json` the check itself prints only the document, and — since
+CIU-84 — so does everything ahead of it in the orchestrator: `ciu check
+--json`'s stdout is now the JSON document and nothing else (verified with
+`json.loads` on the full captured stdout, not a substring check), so a plain
+`ciu check --json | jq` works without skipping any leading `[INFO]` lines.
+The same fix applies to `ciu graph --format json`'s orchestrator-level
+prose; `action_graph`'s own internal notes/errors are a narrower, still-open
+gap (CIU-86) — `ciu graph --format json` piped straight into `jq` can still
+see a stray line on its error/empty-graph paths, though not on the common
+"the graph rendered cleanly" path.
 
 ## 15. Adopt a shipped hook template instead of hand-writing one (`ciu init --hooks`, S19.1)
 

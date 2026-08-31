@@ -50,6 +50,14 @@ from . import config_model
 from . import procutil
 from .config_constants import GLOBAL_CONFIG_WORKTREE_OVERRIDES
 from .paths import to_physical_path
+# CIU-85: the identity half of `_CIU_IDENTITY_ENV_KEYS` (below) is DERIVED
+# from this, the same canonical fact->env-name table `workspace_env.py`'s
+# own `LEGACY_IDENTITY_ENV_KEYS` derives from, rather than hand-maintained
+# as a second, independently-drifting list. `workspace_env.py` never
+# imports `worktree.py` (verified — no cycle), so this is a safe top-level
+# import, unlike the rest of this module's `workspace_env` uses, which stay
+# local/deferred by established convention.
+from .workspace_env import GENERATED_FACT_ENV_KEYS
 
 DEFAULT_WORKTREE_DIR = ".worktrees"
 WORKTREE_INSTANCE_RECORD = "ciu.worktree-instance.json"
@@ -383,19 +391,20 @@ def _utc_stamp(instant: datetime) -> str:
 def _host_identity() -> str:
     """This machine's name for a lease HOLDER string.
 
-    Deliberately not a new identity mechanism: this is the exact expression
-    ``workspace_env.py`` already uses twice (``_detect_host_mdt_tmp``,
-    ``_connect_devcontainer_to_network``) and records into ``ciu.env`` as
-    ``DEVCONTAINER_NAME`` — the devcontainer name when there is one, the
-    container/host ``HOSTNAME`` otherwise. Unlike the INSTANCE_ID half of the
-    holder string, this one is deliberately AMBIENT: it names the machine
-    holding the lease right now, not the workspace being leased.
+    Deliberately not a new identity mechanism: this calls
+    ``workspace_env.detect_devcontainer_name()`` (CIU-59 — factored from
+    four independently-duplicated call sites, this one included), the
+    devcontainer name when there is one, the container/host ``HOSTNAME``
+    otherwise, and records into ``ciu.env`` as ``DEVCONTAINER_NAME``. Unlike
+    the INSTANCE_ID half of the holder string, this one is deliberately
+    AMBIENT: it names the machine holding the lease right now, not the
+    workspace being leased. The trailing ``or "unknown-host"`` fallback is
+    this call site's OWN addition, not shared by the other three — a lease
+    holder string must never be empty.
     """
-    return (
-        os.environ.get("DEVCONTAINER_NAME")
-        or os.environ.get("HOSTNAME", "")
-        or "unknown-host"
-    )
+    from .workspace_env import detect_devcontainer_name
+
+    return detect_devcontainer_name() or "unknown-host"
 
 
 def lease_holder(instance_id: str) -> str:
@@ -1205,14 +1214,21 @@ def _generate_env_in(worktree: Path, *, identity_only: bool = False) -> int:
     inherited value is usually caught — but the honest input here is *no* value:
     the whole point of generating is to DERIVE this checkout's identity, and an
     inherited one is another repo's answer to the same question.
+
+    CIU-85: strips the same ``_CIU_IDENTITY_ENV_KEYS`` its siblings do, via
+    that shared tuple, rather than its own separately hand-maintained
+    literal — the pre-fix copy here predated `PUBLIC_FQDN` joining the
+    identity tuple (CIU-47) and had silently fallen one key behind; an
+    ambient ``PUBLIC_FQDN`` leaking through here would have been silently
+    *adopted* as this checkout's own by `_detect_public_fqdn`'s "no
+    independently-derived value: the pre-set value stands" rule — the exact
+    cross-checkout leak CIU-47 fixed elsewhere.
     """
     import os
     import sys
 
     env = {
-        k: v for k, v in os.environ.items()
-        if k not in ("REPO_ROOT", "PHYSICAL_REPO_ROOT", "DOCKER_NETWORK_INTERNAL",
-                     "INSTANCE_ID", "REPO_NAME", "CIU_SERVICES_PROFILE")
+        k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS
     }
     argv = [sys.executable, "-m", "ciu.cli", "env", "generate"]
     if identity_only:
@@ -1264,7 +1280,16 @@ def _clean_in(worktree: Path, *, yes: bool) -> int:
             "under the PRIMARY checkout's environment would target the wrong "
             "stack."
         )
-    env = dict(os.environ)
+    # CIU-85: strip THIS process's own identity keys before overlaying the
+    # target's, matching the two siblings that already do
+    # (`_sanitized_target_env`, `_resolve_budget_candidates`). Harmless in
+    # practice today — `identity` always carries all six overlay-fact keys
+    # once `not identity` above has refused an empty table, so every key in
+    # `_CIU_IDENTITY_ENV_KEYS` bar one is overwritten regardless — but
+    # `CIU_SERVICES_PROFILE` is NOT an overlay fact and was therefore never
+    # in `identity`, so without the strip the CALLER's service-profile
+    # selection leaked into the child `ciu clean`, unlike its two siblings.
+    env = {k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS}
     env.update(identity)
 
     argv = [sys.executable, "-m", "ciu.cli", "clean"] + (["-y"] if yes else [])
@@ -2905,12 +2930,18 @@ def reap_groups(
 # Ambient environment keys that describe SOME CIU instance (root, identity,
 # network, profile). They are stripped from the child environment so a
 # sibling checkout's values can never contaminate the selected instance.
-_CIU_IDENTITY_ENV_KEYS = (
-    "REPO_ROOT",
-    "PHYSICAL_REPO_ROOT",
-    "DOCKER_NETWORK_INTERNAL",
-    "INSTANCE_ID",
-    "REPO_NAME",
+#
+# CIU-85: the identity half is DERIVED from `GENERATED_FACT_ENV_KEYS` (the
+# canonical fact->env-name table, `workspace_env.py`) instead of a second,
+# hand-maintained literal — the same "two lists that must agree" shape
+# CIU-75 already removed elsewhere by deriving `LEGACY_IDENTITY_ENV_KEYS`
+# from the identical table. This is also how `PUBLIC_FQDN` — one of the six
+# identity facts since CIU-47, but absent from the OLD hand-written five-plus-
+# one list here — joins BY CONSTRUCTION rather than needing to be remembered.
+# `CIU_SERVICES_PROFILE` is not a `[ciu.instance.generated]` fact (it is a CLI
+# selection, not a workspace identity value) and stays the one hand-added
+# member on top.
+_CIU_IDENTITY_ENV_KEYS = tuple(GENERATED_FACT_ENV_KEYS.values()) + (
     "CIU_SERVICES_PROFILE",
 )
 

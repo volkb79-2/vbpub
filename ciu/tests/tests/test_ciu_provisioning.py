@@ -1255,10 +1255,13 @@ def test_probe_stack_healthy_oneshot_fallback_warns_deprecated(monkeypatch, caps
     )
     # Behavior is UNCHANGED (O2's negative: this must not become an abort).
     assert result.satisfied is True
-    out = capsys.readouterr().out
-    assert "[WARN]" in out
-    assert "stack:db-init:healthy" in out
-    assert "stack:db-init:completed" in out
+    # CIU-84: STDERR, not stdout -- `ciu check --json` may reach this probe
+    # under `--live`, and S13.4a requires stdout carry only the JSON document.
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "[WARN]" in captured.err
+    assert "stack:db-init:healthy" in captured.err
+    assert "stack:db-init:completed" in captured.err
 
 
 def test_probe_stack_healthy_running_no_healthcheck_does_not_warn(monkeypatch, capsys):
@@ -1626,10 +1629,13 @@ def test_probe_stack_healthy_warns_when_target_declares_one_shot(monkeypatch, ca
     }
     result = probe_ref("stack:infra/db-init:healthy", config=config, repo_root=Path("/tmp"))
     assert result.satisfied is True
-    out = capsys.readouterr().out
-    assert "[WARN]" in out
-    assert "one_shot" in out
-    assert "stack:infra/db-init:completed" in out
+    # CIU-84: STDERR, not stdout -- same S13.4a reason as the sibling test
+    # above.
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "[WARN]" in captured.err
+    assert "one_shot" in captured.err
+    assert "stack:infra/db-init:completed" in captured.err
 
 
 def test_probe_stack_healthy_warns_via_bare_selector_matching_one_shot_stack(monkeypatch, capsys):
@@ -1652,7 +1658,10 @@ def test_probe_stack_healthy_warns_via_bare_selector_matching_one_shot_stack(mon
     }
     result = probe_ref("stack:db-init:healthy", config=config, repo_root=Path("/tmp"))
     assert result.satisfied is True
-    assert "[WARN]" in capsys.readouterr().out
+    # CIU-84: STDERR, not stdout.
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "[WARN]" in captured.err
 
 
 def test_probe_stack_healthy_no_warning_when_target_not_one_shot(monkeypatch, capsys):
@@ -1675,7 +1684,9 @@ def test_probe_stack_healthy_no_warning_when_target_not_one_shot(monkeypatch, ca
     }
     result = probe_ref("stack:infra/db-init:healthy", config=config, repo_root=Path("/tmp"))
     assert result.satisfied is True
-    assert "[WARN]" not in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "[WARN]" not in captured.out
+    assert "[WARN]" not in captured.err
 
 
 def test_probe_stack_completed_never_emits_one_shot_cross_reference_warning(monkeypatch, capsys):
@@ -1700,7 +1711,9 @@ def test_probe_stack_completed_never_emits_one_shot_cross_reference_warning(monk
     }
     result = probe_ref("stack:infra/db-init:completed", config=config, repo_root=Path("/tmp"))
     assert result.satisfied is True
-    assert "[WARN]" not in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "[WARN]" not in captured.out
+    assert "[WARN]" not in captured.err
 
 
 def test_probe_stack_healthy_one_shot_malformed_does_not_raise(monkeypatch, capsys):
@@ -1726,7 +1739,9 @@ def test_probe_stack_healthy_one_shot_malformed_does_not_raise(monkeypatch, caps
     }
     result = probe_ref("stack:infra/db-init:healthy", config=config, repo_root=Path("/tmp"))
     assert result.satisfied is True
-    assert "[WARN]" not in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "[WARN]" not in captured.out
+    assert "[WARN]" not in captured.err
 
 
 # ---------------------------------------------------------------------------
