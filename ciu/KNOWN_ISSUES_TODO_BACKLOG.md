@@ -11,7 +11,7 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-08-31 — **CIU-79 FILED (ciu-P38 CIU-74 review).** `scaffold.py`'s two `ciu init` Jinja
+Last updated: 2026-08-31 — **CIU-81 FILED (ciu-P38 CIU-74 review).** `scaffold.py`'s two `ciu init` Jinja
 render paths (`_render_jinja` and `build_files`'s validation preflight) were
 never touched by CIU-74 and still render with the library-default lenient
 `Undefined` — the preflight's whole job is catching template defects before

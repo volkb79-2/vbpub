@@ -98,7 +98,7 @@ def _render_jinja(text: str, variables: dict) -> str:
     reference raises); this helper and the validation preflight in
     ``build_files`` below both still use the library-default lenient
     ``Undefined`` (an undefined reference renders empty), unchanged since
-    before CIU-74. See CIU-79 for the tracked follow-up on whether/how to
+    before CIU-74. See CIU-81 for the tracked follow-up on whether/how to
     close that gap.
     """
     from jinja2 import Environment
@@ -273,7 +273,7 @@ def build_files(plan: dict, root: Path) -> list[tuple[Path, str]]:
                 stamp + _hook_template_source(filename),
             ))
     # ---- validation-first: render + parse everything before writing -------
-    # CIU-74 CAVEAT (see CIU-79, not fixed here): this preflight renders with
+    # CIU-74 CAVEAT (see CIU-81, not fixed here): this preflight renders with
     # the library-default lenient Undefined, not the StrictUndefined the real
     # S3.2 render path (config_model.render_jinja2_text) uses since CIU-74 --
     # a scaffold template's leaf typo can pass this validation and only fail

@@ -5,7 +5,7 @@
 | Package | `ciu-P38-strict-undefined` |
 | Branch | `fix/ciu-P38-strict-undefined` |
 | Worktree | `/workspaces/vbpub/.worktrees/ciu-P38-strict-undefined/ciu` |
-| Backlog | CIU-74 fixed and closed; CIU-78 found, then superseded by main's own fix (`aa6cf1fd`) once rebased; CIU-79 filed (scaffold.py StrictUndefined adoption decision, NOT fixed -- out of scope by design) |
+| Backlog | CIU-74 fixed and closed; CIU-78 found, then superseded by main's own fix (`aa6cf1fd`) once rebased; CIU-81 filed (scaffold.py StrictUndefined adoption decision, NOT fixed -- out of scope by design) |
 | Base | rebased onto `main` @ `384993b6` (`git rebase main`, one commit skipped, one conflict resolved -- see §8) |
 | Final commit | `00f57308` |
 | Gate (final, post-rebase) | `./run-gate.py ciu --worktree <worktree-root>` -- **PASS, exit 0** (R0 PASS, R1 PASS at 100.0%) -- see §4 |
@@ -240,7 +240,7 @@ current `main`).
 ## 7. Scope discipline
 
 Nothing outside the task's named scope was touched: the CIU-78 backlog filing
-(later superseded by the rebase, §8) and CIU-79 backlog filing (§8) are both
+(later superseded by the rebase, §8) and CIU-81 backlog filing (§8) are both
 the sanctioned "find something out of scope -> record it, don't fix it" path
 (task's own "If blocked" clause + the estate's `backlog` skill); the base
 history changes (sync merge, then rebase) were necessary to run the gate
@@ -296,14 +296,56 @@ init` validation preflight's own inline `Environment` construction inside
 in place, at the point a future reader would otherwise trust a green `ciu
 init` too far. Zero behavior change (confirmed: scaffold/init-tagged test
 subset 43 passed, full suite 3269 passed / 100% coverage, both unchanged).
-Commit: `4aa47250`. Filed the decision ask as its own new entry, **CIU-79**
-(next free ID, verified against the post-rebase `main` state which already
-carries CIU-74 through CIU-78) -- citing both line ranges, the
-false-certification risk, and the explicit need to render-and-check ciu's
-own shipped scaffold templates before `StrictUndefined` can be adopted
+Commit: `4aa47250`. Filed the decision ask as its own new entry (filed as
+CIU-79, the free ID at the time against the post-rebase `main` state which
+then carried CIU-74 through CIU-78; renamed to CIU-80 after a collision with
+ciu-P37's own independent CIU-79 filing, then to **CIU-81** after a second
+collision with ciu-P41's own independent CIU-80 filing that landed on `main`
+mid-flight -- both renames are their own separate commits, S8 below) --
+citing both line ranges, the false-certification risk, and the explicit need
+to render-and-check ciu's own shipped scaffold templates before
+`StrictUndefined` can be adopted
 there safely; not attempted blind, per the review's own instruction.
 Commit: `00f57308`.
 
 **Final state after all four:** `./run-gate.py ciu` **PASS, exit 0** (§4);
 `git merge-base --is-ancestor main HEAD` confirms `main` is a true ancestor
 of the final commit.
+
+## 9. Review round 2 -- second renumber (CIU-80 -> CIU-81), then rebase
+
+The fresh adversarial reviewer confirmed all four round-1 blockers fully
+closed (independently re-ran the `render_configfiles` deletion probe,
+confirmed it now catches two failures; confirmed the CIU-78-skip left zero
+trace; confirmed the gate artifact: PASS, R0 PASS, R1 100% at 6/6 lines).
+One new, not-this-package's-fault blocker: **CIU-80 collided a second time**
+-- this time with `ciu-P41`, which merged to `main` (`cafacce6`,
+`27ab3574`: "file CIU-80 for the stricter variant") while this package's
+fix round was in flight. The CIU-79 -> CIU-80 rename (§8, commit `a70871af`)
+was correct and collision-free at the moment it was made; `main` simply
+acquired its own independent CIU-80 afterward.
+
+Renumbered CIU-80 -> **CIU-81** across the same four files the first rename
+touched: `KNOWN_ISSUES_TODO_BACKLOG.md` (header paragraph + table row),
+`src/ciu/scaffold.py:101` and `:276` (the two comments the coordinator named
+explicitly), and this package's own LOG/REPORT. Confirmed `main` carries no
+existing CIU-81 (`git show main:ciu/KNOWN_ISSUES_TODO_BACKLOG.md | grep -c
+CIU-81` = 0); confirmed no test anywhere under `tests/` asserts on the
+literal string `CIU-80` or `CIU-81`; confirmed the backlog row's pipe count
+is unchanged; ran the scaffold/init-tagged test subset (43 passed) as a
+comment-only-change smoke check. Full gate re-run not required for the
+renumber itself, per the coordinator's own instruction.
+
+**Caution for whoever reads LOG.md next:** an early, over-broad `sed`
+pass on this second renumber also rewrote the FIRST rename's own historical
+narrative (which correctly says CIU-79 -> CIU-80, describing what commit
+`a70871af` actually did) to incorrectly say CIU-79 -> CIU-81. Caught before
+committing and hand-corrected -- LOG.md's two rename sections now each
+describe their own actual commit accurately. Lesson for future backlog-ID
+renumbers on this file: a blind `sed -i 's/\bOLD\b/NEW\b/g'` is only safe on
+documents that describe CURRENT state; it corrupts documents (like this
+package's own LOG) that narrate PAST renames by their old numbers on
+purpose.
+
+Rebase onto current `main` and its own resulting REPORT update follow in
+§10 below.

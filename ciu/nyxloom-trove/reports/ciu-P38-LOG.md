@@ -200,7 +200,7 @@ adds exactly one new test), 100% line+branch on `--cov=ciu --cov-branch`.
 ## Commit `4aa47250` -- fix(ciu): CIU-74 review blocker 4 -- scaffold.py's Jinja render docstring was false
 
 Minimum required fix only, per the review's own framing (decision on
-adopting `StrictUndefined` there is deferred to CIU-79, not attempted
+adopting `StrictUndefined` there is deferred to CIU-81, not attempted
 blind here). Corrected `_render_jinja`'s docstring (`scaffold.py:91-107`),
 which claimed "the SAME engine production uses (S3.2 step 1)" -- true before
 CIU-74, false after. Added a matching comment at the OTHER site, the `ciu
@@ -212,11 +212,20 @@ behavior change -- confirmed by running the scaffold/init-tagged subset
 (`-k "scaffold or init"`, 43 passed) and the full suite (3269 passed, 100%
 coverage) unchanged.
 
-## Commit `00f57308` -- backlog(ciu): file CIU-79 -- scaffold.py's two Jinja render paths still lenient
+## Commit `00f57308` -- backlog(ciu): file CIU-81 -- scaffold.py's two Jinja render paths still lenient
+
+(Filed at this commit as CIU-79; renamed to CIU-80 by a later commit
+(collision with ciu-P37), then to CIU-81 by a second later commit
+(collision with ciu-P41) -- see both rename entries below. This
+commit's own immutable message text, visible via `git log`, still says
+"file CIU-79"; this LOG entry and REPORT.md are kept current at the
+latest correct number since they are not immutable.)
 
 Filed per the review's explicit instruction (own new entry, not attempted
 in-package): next free ID verified against the post-rebase `main` state
-(`CIU-74`..`CIU-78` all already present; `CIU-79` free). Cites both line
+(`CIU-74`..`CIU-78` all already present; `CIU-79` free at filing time --
+see the rename entries below for the two subsequent collisions/renames).
+Cites both line
 ranges (`scaffold.py:91-107`, `scaffold.py:275-310`), the false-certification
 risk, and the explicit need to render-and-check ciu's own shipped scaffold
 templates before adopting `StrictUndefined` there -- verbatim per the
@@ -230,3 +239,32 @@ R1 (assay's changed-lines coverage judgment) PASS at 100.0%. See REPORT §4
 for the verbatim verdict. All three previously-failing pre-existing tests
 (the two `dont_write_bytecode` tests, CIU-78; the lease-clock flake, CIU-76)
 are green now that the branch is rebased past main's own fixes for both.
+
+---
+
+## Rename commit `a70871af` -- CIU-79 -> CIU-80 (backlog-ID collision, ciu-P37)
+
+The coordinator flagged that ciu-P37 (a separate unmerged branch, also forked
+around the CIU-78 point) independently filed a DIFFERENT defect as CIU-79 (a
+`ciu dev`/`_build_dev_image` `context`-resolution bug) and its reviewer had
+already endorsed that filing -- so P37 keeps CIU-79, and this package's own
+CIU-79 (the scaffold.py StrictUndefined-adoption entry) renamed to CIU-80.
+
+`grep -rn "CIU-79" ciu/` before the rename found exactly 4 files, all this
+package's own additions: `KNOWN_ISSUES_TODO_BACKLOG.md` (the header paragraph
+and the table row), `src/ciu/scaffold.py` (two comments), and this package's
+own LOG/REPORT. Renamed all four with `sed -i 's/\bCIU-79\b/CIU-80/g'`
+per-file. Confirmed after: `grep -rn "CIU-79" ciu/` returned nothing;
+`grep -rn "CIU-80" ciu/tests/` (and `CIU-79`) both returned nothing, so no
+test asserted on either literal string. Confirmed `main` carried no existing
+CIU-80 at that time -- no fresh collision introduced then. The backlog table
+row's pipe count (5, matching every other row) was unchanged by the rename,
+confirming the table structure wasn't disturbed.
+
+**Superseded by the second rename below** -- CIU-80 collided again, this time
+with ciu-P41's own independent CIU-80 filing that landed on `main` while this
+package's fix round was in flight.
+
+No behavior change; no code outside comments/docs touched. Full gate re-run
+was not required per the coordinator's own instruction (rename only) --
+skipped.
