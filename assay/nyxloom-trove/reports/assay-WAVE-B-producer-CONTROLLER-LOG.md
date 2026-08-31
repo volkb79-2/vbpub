@@ -243,3 +243,20 @@ and the loop keeps moving. Full memory: `autonomous-loop-report-vs-pause`.
   a real regression-test quality signal. **Resuming the ORIGINAL reviewer
   now for fix-verification** (round 2 — same session, `SendMessage`, per
   the dispatch skill's fix-verification role rule), not a fresh reviewer.
+
+- **2026-08-31 (fix-verification round 2 — interim, gate pending)** —
+  Reviewer re-ran every probe itself (not diff-reading): BLOCKER 1 closed
+  and mutation-tested more thoroughly than claimed (all 3 defense layers
+  individually necessary, only defeating all 3 reopens the escape; the
+  real B041(b) use case — tracked `cwd` + untracked `link_paths` target —
+  still works); A-384's design call endorsed independently; MUST-FIX 2-6
+  all confirmed via the reviewer's own probes, not trust. **Two small
+  non-blocking carry-overs found**: MUST-FIX 6 only half-done (a SECOND
+  stale B037 reference at `adapters/javascript.py:525-532`, 380 lines from
+  the one already fixed — the file now self-contradicts); REPORT §15
+  makes a checkable diff-scope claim that was true when written but
+  invalidated by the very next commit (`c1176bd0`'s B052 filing touches
+  `4-backlog.md`, which §15 claims nothing outside `nyxloom-trove/reports/`
+  touches). Reviewer explicit: "Neither blocks merge on my reading."
+  Waiting on the reviewer's own gate run (in progress, phase 6+, 47 nodes)
+  before the formal verdict.
