@@ -106,3 +106,70 @@ separately and only its presence as a top-level key is being accepted here.
    `tests/tests/test_ciu_worktree_lease.py`.
 2. (this LOG file, plus the REPORT) — committed separately, hash recorded in
    REPORT.
+
+---
+
+## Addendum — CIU-76 folded into this package (coordinator directive, 2026-08-31)
+
+The coordinator confirmed and filed two findings surfaced by this package's
+CIU-69 gate run as `CIU-76` (`apply_lease` has no `now:` override) and
+`CIU-77` (vendored self-test judge 3 majors behind), and separately fixed the
+pin bug this package's REPORT flagged (`run-gate.toml`
+`pins.assay.version` 2.2.0 -> 2.3.0, `b8102bc2`). New instruction: fold
+CIU-76 into this package rather than leaving it for a fresh agent, since the
+lease code was already loaded.
+
+### Rebase onto current main first
+
+Branch predated both `b8102bc2` (pin fix) and `858766d1` (CIU-76/77 filing).
+Rebased with `git rebase -i main`, dropping the branch's own now-moot
+temporary pin-patch-and-revert pair (`3e3ecb08`/`0239812b`) via a
+`GIT_SEQUENCE_EDITOR` sed script that removed their `pick` lines — git itself
+reported the patch as "skipped previously applied" (patch-id-equivalent to
+`b8102bc2`, already upstream), confirming it was genuinely redundant, not
+silently dropping real content. New hashes after rebase: `e68ee748` (the
+CIU-69 fix+test), `3c842406` (LOG), `a0947dc2` (REPORT). Confirmed
+`git diff main..HEAD -- run-gate.toml` is empty and the local test suite
+(222 tests, the two lease/worktree modules) still green post-rebase.
+
+### CIU-76 fix
+
+Read the full filed entry (`KNOWN_ISSUES_TODO_BACKLOG.md` CIU-76 row) and
+`apply_lease`/`acquire_lease`/`make_lease_perpetual` in
+`src/ciu/worktree.py`. Added `now: datetime | None = None` to
+`apply_lease`'s signature, threaded through to both the
+`acquire_lease(...)` and `make_lease_perpetual(...)` calls (the `--release`
+branch is untouched — releasing is not time-based).
+
+Grepped every `apply_lease(` call site under `tests/` (18 total: 14 in
+`test_ciu_worktree_lease.py`, 4 in `test_ciu_worktree_reap.py`) for the same
+latent fragility. Only one — `test_re_expiring_after_an_extend_becomes_lease_expired_again`
+— actually mixes a real-time `apply_lease` call with a frozen-`NOW`
+checkpoint (`test_ciu_worktree_reap.py`'s local `survey()` helper defaults
+`now=NOW`, so several other calls in that class ALSO check against the
+frozen fixture, but their math stays safely one-directional relative to it
+regardless of the real calendar date — verified by hand for each: see
+REPORT for the per-test reasoning). Fixed only that one test, threading
+`now=NOW` through its `apply_lease(...)` call.
+
+Verified determinism two ways: (1) the 4-test class passes as a normal run;
+(2) re-ran the single fixed test with `worktree._utc_now` monkeypatched to
+raise `AssertionError` if called at all — it still passed, proving neither
+the fixed `apply_lease` call nor anything else in that test's path consults
+the real clock once `now=` is supplied everywhere it matters.
+
+Checked `docs/SPEC.md` S16.9 for an `apply_lease` signature/determinism
+contract to update: none exists — S16.9's prose describes the `ciu worktree
+lease` CLI verb's OBSERVABLE behavior (real wall-clock time by default,
+unchanged), not the internal Python function's signature. No SPEC.md change.
+
+Full local suite (`PYTHONPATH=src python3 -m pytest tests -q --dist loadfile
+-n auto`, no `PYTHONDONTWRITEBYTECODE` override): **3262 passed**, zero
+failures — including the previously-fragile lease-reap test, now
+deterministic.
+
+### Commit
+
+`d69d7c3db5398856fb677faf6fa2bb31af26057b` — `fix(ciu): apply_lease gains
+now: override, fixes clock-coincidence test (CIU-76)` —
+`src/ciu/worktree.py` + `tests/tests/test_ciu_worktree_reap.py`.
