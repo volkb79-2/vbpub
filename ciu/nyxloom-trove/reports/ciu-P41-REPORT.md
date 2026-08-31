@@ -489,3 +489,102 @@ arc covered.
   returns a flat `list[str]`. That is still correct and blocking under
   CIU-65, so nothing is broken; demonstrating a WARN there would force a
   `template_revision` bump and was out of the brief's file list.
+
+---
+
+# Post-review closeout (2026-08-31)
+
+Verdict on the five-commit package: **ACCEPT-conditional**. All three flagged
+design departures and the CIU-66 BLOCKED call were independently verified and
+endorsed. Three blockers, all addressed below.
+
+## The "gate is RED on arrival" section above is now HISTORY, not a caveat
+
+It described the state at base `858766d1`. The rebase onto `384993b6` brings
+in fixes for **all three** of those failures:
+
+- the two `dont_write_bytecode` failures I reported as *unfiled* were in fact
+  filed and fixed as **CIU-78** in `aa6cf1fd`, which landed after my branch
+  point. My recommendation to file them was correct but already actioned; my
+  claim that they were unfiled was stale, not wrong-at-the-time.
+- the lease failure is **CIU-76**, fixed in the ciu-P36 merge `384993b6`.
+
+So the post-rebase verdict is read as a plain PASS, not as "the same three
+failures". The numbers in the per-item gate sections above remain exactly as
+run and are left untouched as the record of what those commits were gated at.
+
+## Blocker 1 — rebase onto current main
+
+`git rebase main` (`858766d1` → `384993b6`, 14 commits): **clean, no
+conflicts**. My `worktree.py` hunks are disjoint from ciu-P36's, and I touch
+neither of the two tests `aa6cf1fd` rewrote. New hashes are tabulated in the
+LOG.
+
+## Blocker 2 — `engine.py`'s S3.12 identity read (commit `50e63cf8`)
+
+Accepted without reservation: it is the same defect shape I fixed at
+`deploy.py`'s `_workspace_identity`, in the function that is that one's
+real-run twin. `except (WorkspaceEnvError, OSError)` →
+`(OSError, UnicodeDecodeError, WorkspaceEnvError)`.
+
+**On the reviewer's `None`-vs-unreadable point.** The reviewer is right that
+telling a hook "no identity" when the truth is "identity unreadable" is the
+same absence-for-emptiness confusion I fixed at
+`_workspace_identity_network`. I deliberately kept the `{}` degradation here
+anyway, and the reason is that this site is not that site:
+
+- `_workspace_identity_network`'s two conditions had DIFFERENT correct
+  answers, and conflating them let `ciu clean` under-clean silently. Raising
+  was the only way to stop that.
+- This site's contract is symmetry with `deploy._workspace_identity`, which
+  documents `{}` and which the `ciu check` preflight uses to build the SAME
+  two `HookContext` fields. If the real run raised where the preflight
+  degrades, a hook's `validate_config` would see an identity its own `run()`
+  never will — the exact divergence S3.12/CIU-44 exists to prevent, and a
+  worse failure than the one being avoided.
+
+Making BOTH raise is a coherent alternative and a bigger change (it turns an
+unreadable `ciu.env` into a hard `ciu up`/`ciu check` refusal); I did not
+take it unilaterally. Flagging it as the open question if the controller
+wants the stricter posture.
+
+**Overclaim corrected.** `a52086a2`'s subject says "every ciu.env reader now
+catches all three read failures". False when written: seven narrow sites, not
+six. No interactive rebase is available here, so the bad message is left
+buried (AGENTS.md: land a correct new commit rather than repair a buried
+one) and the accurate statement is in `50e63cf8`'s message, CHANGES.md, the
+LOG and here.
+
+**Controlled wrong implementation, run by hand**: restoring the pre-fix
+clause fails the non-UTF-8 case and passes the malformed-entry case — exactly
+the gap profile CIU-62 attributes to `(OSError, WorkspaceEnvError)`.
+
+## Blocker 3 — the backlog (commit `1cfea1a3`)
+
+All six rows marked, following `aa6cf1fd`/`4b471e63`'s convention (the
+RESOLUTION column changes; the description column is left intact), plus the
+top-of-file "Last updated" narrative.
+
+- **CIU-62, CIU-64, CIU-65, CIU-67, CIU-68 → `FIXED — ciu-P41: …`**, each
+  carrying what landed, the tests, and the controlled wrong implementation.
+- **CIU-67 and CIU-68's rows name their DEPARTURES from their own filed
+  proposals** (`start_period + retries × interval` rather than bare
+  `start_period`; retryability extended to `:completed`/still-running), with
+  the reasoning, so neither looks like drift later.
+- **CIU-65's row records the `should_exit_on` decoupling as an explicit
+  "DECISION, do not 'fix' this back in"** with its reasoning — the entry's
+  own original proposal says the opposite, so without this a future agent
+  would wire it back in as a missing piece.
+- **CIU-66 → `OPEN — BLOCKED (ciu-P41)`**, carrying the blast radius that
+  previously lived only in this report: the one-hit `container_name` write
+  grep, the five call sites that break, **the four hand-assembled sites the
+  reviewer found** (`dev.py:299`, `engine.py:1516`,
+  `deploy_pkg/health.py:265`, `deploy.py:3124`/`:3878`) which would silently
+  DIVERGE rather than fail loudly, and the `render_ciu_context` gap. It names
+  the concrete next step: **expose a per-stack identity fact in
+  `render_ciu_context` as its own small additive package** — prerequisite for
+  both CIU-66 and CIU-51's `qname()`. Not built here, per the coordinator.
+
+## Post-review gate — commit `<FINAL_HASH>`
+
+<!-- FINAL_GATE -->

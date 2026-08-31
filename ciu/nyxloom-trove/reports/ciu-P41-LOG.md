@@ -139,3 +139,95 @@ tests in one new file).
 
 Gate after this commit: `ebe45c39`, **3 failed / 3319 passed**, coverage
 100.00% — the same three baseline failures. Verbatim in REPORT.
+
+---
+
+# Review closeout (ACCEPT-conditional → three blockers)
+
+The package was reviewed at the five commits above and returned
+**ACCEPT-conditional**. All three flagged design departures
+(`start_period + retries × interval`; extending retryability to
+`:completed`; NOT wiring severity through `should_exit_on`) were
+independently verified and endorsed, as was CIU-66's BLOCKED call — with the
+reviewer finding the blast radius WIDER than I reported: four more sites
+hand-assemble the `{project}-{env_tag}-{service}` shape without calling
+`container_name()` at all, and so would silently DIVERGE rather than break
+loudly (`dev.py:299`, `engine.py:1516`, `deploy_pkg/health.py:265`,
+`deploy.py:3124`/`:3878`).
+
+## Blocker 1 — stale base (rebase)
+
+The branch was 14 commits behind main, missing `aa6cf1fd` (CIU-78 — the fix
+for the two `dont_write_bytecode` failures I had reported as unfiled) and
+`384993b6` (ciu-P36 merge, carrying CIU-76's fix — the third).
+
+`git rebase main` onto `384993b6`: **clean, no conflicts**, as the reviewer
+predicted. All five commits replayed; every hash changed:
+
+| item | old | new |
+|---|---|---|
+| 4 — CIU-62 | `39d092c3` | `a52086a2` |
+| 3 — CIU-66 blocked record | `2ee94f32` | `5c113ac3` |
+| 2 — CIU-64 + CIU-65 | `e2e18f92` | `78c48772` |
+| 1 — CIU-67 + CIU-68 | `ebe45c39` | `19936edd` |
+| LOG + REPORT | `81a3d3b0` | `967733e4` |
+
+**All three of the pre-existing failures I documented are fixed by the
+rebase**, so the arrival-state analysis at the top of this LOG is now
+history, not a live caveat — the post-rebase gate is expected GREEN, and is
+read as such rather than as "same three failures".
+
+## Commit 6 — `50e63cf8` — item 4, CIU-62 — blocker 2
+
+`fix(ciu): CIU-62 -- engine.py's S3.12 identity read was a missed site;
+correct the earlier commit's "every ciu.env reader" claim`
+
+`engine.py`'s `except (WorkspaceEnvError, OSError)` around the S3.12
+hook-identity read is the REAL-RUN twin of `deploy.py`'s
+`_workspace_identity` — same two `HookContext` fields, same file, same exact
+path — and carried the byte-for-byte identical gap. It is NOT in CIU-62's
+own six-site list, and I recorded it in the REPORT as "noted, not changed"
+instead of fixing it, which was the wrong call. Widened to
+`(OSError, UnicodeDecodeError, WorkspaceEnvError)`.
+
+`a52086a2`'s subject claims "every ciu.env reader now catches all three read
+failures". That was false when written — there were seven narrow sites, not
+six. No interactive rebase is available in this environment, so the bad
+message is left buried per AGENTS.md and corrected in `50e63cf8`'s own
+message, CHANGES.md, this LOG and the REPORT.
+
+`engine.py:1338` is untouched: `except WorkspaceEnvError: raise` re-raises
+and swallows nothing — not this class of defect (reviewer independently
+confirmed).
+
+Tests: two parametrized cases through the full engine with a REAL
+unparseable `ciu.env`, plus a hook probe recording what `ctx` was actually
+told, so the oracle is "no traceback escaped AND the hook saw `None|None`".
+**Controlled wrong implementation verified by hand**: with the pre-fix clause
+restored (`git checkout HEAD -- src/ciu/engine.py`), the non-UTF-8 case FAILS
+and the malformed-entry case PASSES — precisely the gap profile CIU-62
+attributes to that clause shape.
+
+## Commit 7 — backlog — blocker 3
+
+`backlog(ciu): mark CIU-62/64/65/67/68 FIXED, CIU-66 OPEN — BLOCKED -- ciu-P41`
+
+All six rows had still read OPEN. Marked per `aa6cf1fd`/`4b471e63`'s
+convention (the RESOLUTION column is what changes; the description column is
+left alone), plus the top-of-file "Last updated" narrative.
+
+CIU-66's row is the substantive one: rewritten to `OPEN — BLOCKED
+(ciu-P41)` carrying the blast-radius analysis that previously lived only in
+the REPORT — the single `container_name` write-site grep result, the five
+call sites that would break, the four hand-assembled sites the REVIEWER
+found that would silently diverge, and the `render_ciu_context` gap — and
+naming the concrete next step: exposing a per-stack identity fact in
+`render_ciu_context` as its own small additive package, prerequisite for
+both CIU-66 and CIU-51's `qname()`. A finding that lives only in a report is
+a finding nobody acts on.
+
+CIU-65's row records the `should_exit_on` decoupling as an explicit
+**DECISION, do not "fix" this back in**, with the reasoning, since the
+entry's own original proposal says the opposite.
+
+Gate after this commit: see the REPORT's "Post-review gate" section.
