@@ -683,6 +683,31 @@ def _detect_physical_repo_root(repo_root: Path) -> Path:
     return repo_root.resolve()
 
 
+def detect_devcontainer_name() -> str:
+    """The devcontainer name when set, else this host's ``HOSTNAME``, else ``""``.
+
+    CIU-59: factored out of four independently-duplicated call sites — three
+    pre-existing here (:func:`_detect_host_mdt_tmp`,
+    :func:`_connect_devcontainer_to_network`, and the ``ciu env print``
+    report row built by :func:`generate_ciu_env`) plus a fourth added by
+    ciu-P26 in ``worktree.py``'s ``_host_identity`` (S16.9 lease holder).
+
+    ``generate_ciu_env``'s pre-factor expression was a *differently shaped*
+    nested form — ``os.environ.get("DEVCONTAINER_NAME", os.environ.get(
+    "HOSTNAME", ""))`` — which is NOT semantically identical to the ``or``
+    form the other three sites used: a ``DEVCONTAINER_NAME`` explicitly set
+    to the empty string is falsy under ``or`` (falls through to
+    ``HOSTNAME``) but is a *present* key under the nested ``.get(...,
+    default)`` form, so it would have returned ``""`` verbatim instead of
+    falling through. This helper standardizes on the ``or`` semantics the
+    majority of call sites already used: an explicitly-empty
+    ``DEVCONTAINER_NAME`` is an operator/environment misconfiguration, not a
+    real name, and treating it the same as an absent one (falling through to
+    ``HOSTNAME``) is the more useful behavior everywhere this is read.
+    """
+    return os.environ.get("DEVCONTAINER_NAME") or os.environ.get("HOSTNAME", "")
+
+
 def _detect_host_mdt_tmp() -> str:
     """Host path of the persisted /tmp bind mount (mdt devcontainer convention).
 
@@ -694,7 +719,7 @@ def _detect_host_mdt_tmp() -> str:
     explicit = os.environ.get("HOST_MDT_TMP")
     if explicit:
         return explicit
-    container = os.environ.get("DEVCONTAINER_NAME") or os.environ.get("HOSTNAME", "")
+    container = detect_devcontainer_name()
     if container:
         try:
             result = subprocess.run(
@@ -831,7 +856,7 @@ def _connect_devcontainer_to_network(network_name: str) -> None:
     if env_type != "devcontainer":
         return
 
-    container_name = os.environ.get("DEVCONTAINER_NAME") or os.environ.get("HOSTNAME", "")
+    container_name = detect_devcontainer_name()
     if not container_name:
         _log_warn("Devcontainer name not detected; skipping network attach.")
         return
@@ -1442,7 +1467,7 @@ def generate_ciu_env(
             ("CONTAINER_GID", container_gid, "GID used for container user mapping"),
             ("DOCKER_UID", docker_uid, "UID for Docker socket access (defaults to USER_UID)"),
             ("DOCKER_GID", docker_gid, "Docker group GID for host volume permissions"),
-            ("DEVCONTAINER_NAME", os.environ.get("DEVCONTAINER_NAME", os.environ.get("HOSTNAME", "")), "Detected devcontainer name (if applicable)"),
+            ("DEVCONTAINER_NAME", detect_devcontainer_name(), "Detected devcontainer name (if applicable)"),
         ],
     ))
     lines.append("")

@@ -58,6 +58,50 @@ def test_host_tmp_inspect_with_blank_mount_source_returns_empty(
     assert workspace_env._detect_host_mdt_tmp() == ""
 
 
+# --- CIU-59: detect_devcontainer_name() -- the factored helper -----------
+
+
+def test_detect_devcontainer_name_prefers_the_devcontainer_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEVCONTAINER_NAME", "ciu-cockpit")
+    monkeypatch.setenv("HOSTNAME", "ignored")
+    assert workspace_env.detect_devcontainer_name() == "ciu-cockpit"
+
+
+def test_detect_devcontainer_name_falls_back_to_hostname_when_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DEVCONTAINER_NAME", raising=False)
+    monkeypatch.setenv("HOSTNAME", "runner-7")
+    assert workspace_env.detect_devcontainer_name() == "runner-7"
+
+
+def test_detect_devcontainer_name_treats_an_explicit_empty_value_as_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The semantic fix this factoring makes: before CIU-59, the third call
+    site (`generate_ciu_env`'s `ciu env print` report row) used a nested
+    ``os.environ.get("DEVCONTAINER_NAME", os.environ.get("HOSTNAME", ""))``
+    that returned the PRESENT-but-empty ``DEVCONTAINER_NAME`` verbatim,
+    diverging from the other three (`or`-based) call sites, which fall
+    through to ``HOSTNAME`` for a falsy value regardless of whether the key
+    is present or absent. The shared helper standardizes on the `or` shape:
+    an explicitly-empty ``DEVCONTAINER_NAME`` now falls through everywhere.
+    """
+    monkeypatch.setenv("DEVCONTAINER_NAME", "")
+    monkeypatch.setenv("HOSTNAME", "runner-7")
+    assert workspace_env.detect_devcontainer_name() == "runner-7"
+
+
+def test_detect_devcontainer_name_empty_when_neither_is_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DEVCONTAINER_NAME", raising=False)
+    monkeypatch.delenv("HOSTNAME", raising=False)
+    assert workspace_env.detect_devcontainer_name() == ""
+
+
 def test_network_creation_failure_preserves_daemon_diagnostic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

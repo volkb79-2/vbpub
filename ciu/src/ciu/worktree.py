@@ -383,19 +383,20 @@ def _utc_stamp(instant: datetime) -> str:
 def _host_identity() -> str:
     """This machine's name for a lease HOLDER string.
 
-    Deliberately not a new identity mechanism: this is the exact expression
-    ``workspace_env.py`` already uses twice (``_detect_host_mdt_tmp``,
-    ``_connect_devcontainer_to_network``) and records into ``ciu.env`` as
-    ``DEVCONTAINER_NAME`` — the devcontainer name when there is one, the
-    container/host ``HOSTNAME`` otherwise. Unlike the INSTANCE_ID half of the
-    holder string, this one is deliberately AMBIENT: it names the machine
-    holding the lease right now, not the workspace being leased.
+    Deliberately not a new identity mechanism: this calls
+    ``workspace_env.detect_devcontainer_name()`` (CIU-59 — factored from
+    four independently-duplicated call sites, this one included), the
+    devcontainer name when there is one, the container/host ``HOSTNAME``
+    otherwise, and records into ``ciu.env`` as ``DEVCONTAINER_NAME``. Unlike
+    the INSTANCE_ID half of the holder string, this one is deliberately
+    AMBIENT: it names the machine holding the lease right now, not the
+    workspace being leased. The trailing ``or "unknown-host"`` fallback is
+    this call site's OWN addition, not shared by the other three — a lease
+    holder string must never be empty.
     """
-    return (
-        os.environ.get("DEVCONTAINER_NAME")
-        or os.environ.get("HOSTNAME", "")
-        or "unknown-host"
-    )
+    from .workspace_env import detect_devcontainer_name
+
+    return detect_devcontainer_name() or "unknown-host"
 
 
 def lease_holder(instance_id: str) -> str:
