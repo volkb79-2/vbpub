@@ -16,6 +16,15 @@ oracle design, controlled-wrong-implementation notes) is in
 `ciu-P43-LOG.md`, one section per commit — this file states outcomes and
 the real gate evidence.
 
+**Correction (post-review, round 1): item 1 (CIU-79) IS a breaking change.**
+An earlier version of this REPORT claimed the whole bundle stays
+non-breaking; that is true for items 2-4 only. CIU-79 correctly applies
+CIU-71's repo-root-relative rule to `ciu dev`, but that is a genuine
+behavior change for any existing `[<root>.dev].build` profile whose
+Dockerfile lives in the stack directory (the only shape that ever worked
+under the pre-fix, stack-dir-relative resolution) — see item 1's section
+below and `docs/CONSUMERS.md` #18's new migration blockquote.
+
 ---
 
 ## Item 1 — CIU-79: `ciu dev`'s `_build_dev_image` context-resolution defect
@@ -41,13 +50,31 @@ were updated to the corrected repo-root-relative one.
 SPEC S5a.1/S8.1a, CONSUMERS.md #18, and README's DooD bullet document that
 `ciu dev` now shares S8.1a's repo-root-relative convention.
 
+**This item is a BREAKING change, not additive — flagged in review round 1
+and corrected here.** The pre-fix code never resolved `build.context` to an
+absolute path at all; it passed the literal string through and relied on
+`cwd=stack_dir` for docker's own resolution, which only ever worked for a
+Dockerfile living IN the stack directory. Reviewer live-verified: a
+stack-local Dockerfile with `build = { context = "." }` and no explicit
+`dockerfile` built fine (`rc=0`) before this fix and fails (`rc=1`, `failed
+to read dockerfile: open Dockerfile: no such file or directory`) after it
+— exactly the correct, intended behavior (matching CIU-71's rule for `ciu
+up`), but undocumented as a break in the original version of this REPORT.
+`docs/CONSUMERS.md` #18 now carries a migration blockquote naming the
+break and the concrete repair (`dockerfile = "<stack-path>/Dockerfile"`).
+Blast radius inside vbpub itself is nil — no doc example or fixture in
+this monorepo declares `[<root>.dev].build` — so this was a documentation
+gap, not live damage.
+
 ---
 
 ## Item 2 — CIU-80: `HookContext.identity_unreadable`
 
 **Controller's ruling followed exactly**: shape (b), additive
-(`identity_unreadable: bool = False`), never a break — CIU-75 is this
-wave's one deliberately-breaking release, this bundle stays non-breaking.
+(`identity_unreadable: bool = False`), never a break for THIS item — CIU-75
+is this wave's one deliberately-breaking release; items 2-4 of this bundle
+stay non-breaking (item 1, CIU-79, is a genuine breaking change — see its
+own section above).
 
 Both S3.12 identity readers (`deploy._workspace_identity`, the `ciu check`
 preflight's HookContext; `engine.main_execution`'s STEP-12 real-run read)

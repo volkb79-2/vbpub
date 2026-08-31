@@ -40,6 +40,17 @@ buggy stack-dir-relative argv shape were updated to the corrected
 repo-root-relative one — this IS the point of the fix, not a test being
 weakened.
 
+**Round-1 review found two real defects here, both fixed in a later
+commit (see "Review round 1 fixes" below):** (1) this REPORT/LOG's
+original framing of the whole bundle as non-breaking was wrong — CIU-79
+IS a breaking change for any `[<root>.dev].build` profile whose
+Dockerfile lives in the stack dir (the only shape that ever worked
+pre-fix), left undocumented; (2) the new test's fixture wrote the
+Dockerfile at the STACK dir while asserting the resolved `-f` pointed at
+the REPO ROOT — a path the fixture never created — so it only passed
+because the fake `build_run_fn` never touches the filesystem; a real
+`docker build` on that exact argv is the reviewer's live `rc=1` repro.
+
 Docs: SPEC S5a.1 (+ its S8.1a cross-reference), CONSUMERS.md #18, README's
 DooD bullet now document `ciu dev` sharing S8.1a's repo-root-relative
 `build.context`/`dockerfile` convention.
@@ -55,7 +66,10 @@ Local suite after this commit (dev-focused files only, then full suite):
 unmanaged from unparseable ciu.env`
 
 Per the controller's explicit ruling in the handoff (shape (b), additive
-— CIU-75 is this wave's one deliberately-breaking release, not this):
+for THIS item — CIU-75 is this wave's one deliberately-breaking release,
+and items 2-4 of this bundle stay non-breaking; item 1/CIU-79 is a
+separate, genuine breaking change, see Commit 1 above and "Review round 1
+fixes" below):
 `HookContext` (`hooks_runner.py`) gains `identity_unreadable: bool =
 False`. Both S3.12 identity readers —
 `deploy._workspace_identity` (the `ciu check` preflight's HookContext) and
@@ -260,3 +274,79 @@ rev-parse HEAD`, read from `.assay/verdict-ciu.json` in a separate step
 from the terminal log), R0 PASS, R1 PASS at 100% changed-line coverage,
 `schema_version: 8` (the new verdict schema), `judge_provenance` recording
 the exact sha256 I vendored.
+
+---
+
+## Commit 5 — review round 1 fixes (CIU-79 blockers only)
+
+An independent fresh adversarial reviewer verified items 2-4 (CIU-80,
+CIU-81, CIU-77) as fully correct — including a forensic byte-level
+verification of the CIU-77 judge bump (sha256/tag/CHANGES.md/schema all
+confirmed) and an independent paired-probe re-test of CIU-80's
+`identity_unreadable` flag across 5 `ciu.env` states. Two real blockers on
+item 1 (CIU-79), both documentation/test-only — no `src/ciu/dev.py`
+change needed, since the fix itself was already correct; only its
+documentation and one test's fixture were wrong.
+
+**Blocker 1 — CIU-79 IS a breaking change; the REPORT's claim that the
+whole bundle stays non-breaking was false for item 1.** Reviewer proved it
+live: a stack-local Dockerfile with `build = { context = "." }` and no
+explicit `dockerfile` key built fine (`rc=0`) before the fix and fails
+(`rc=1`, `failed to read dockerfile: open Dockerfile: no such file or
+directory`) after it — the fix correctly applies CIU-71's repo-root-relative
+rule, exactly as intended, but nothing documented that this breaks every
+existing `ciu dev` profile whose Dockerfile lives in the stack dir (the
+only shape that ever worked under the old, buggy resolution). Fixed:
+`ciu-P43-REPORT.md` and this LOG both corrected to scope the non-breaking
+claim to items 2-4 and name item 1 as breaking explicitly;
+`docs/CONSUMERS.md` #18 gained a migration blockquote for `ciu dev`
+mirroring the existing compose-side one — naming the break, the concrete
+repair (`dockerfile = "<stack-path>/Dockerfile"`), and confirming (grepped)
+that no doc example or fixture in this monorepo declares
+`[<root>.dev].build`, so the blast radius inside vbpub itself is nil.
+
+**Blocker 2 — the CIU-79 test encoded the BROKEN path and could not
+actually see the fix work.**
+`test_ciu_workspace_dev_remaining_boundaries.py`'s
+`test_build_context_resolves_against_repo_root_not_stack_dir` wrote the
+fixture's Dockerfile at `repo/apps/builder/Dockerfile` (the stack dir)
+while asserting the resolved `-f` argument pointed at `repo/Dockerfile`
+(the repo root) — a file the fixture never created. It only passed because
+`build_run_fn` is a fake stub that unconditionally returns 0 without
+touching the filesystem; a REAL `docker build` on that exact argv is the
+reviewer's `rc=1` repro above. Exactly the "a check is only as strong as
+what it actually compares" trap (AGENTS.md). Fixed: moved the fixture's
+Dockerfile to `repo/Dockerfile`, matching where the CORRECTED argv
+actually names it. Manually re-verified the controlled-wrong-implementation
+claim by reverting `_build_dev_image` to the pre-fix code and re-running:
+the test now fails at `context_arg == repo_resolved` (confirmed by pytest's
+own traceback line number), not at the trailing `copy_target.is_file()`
+check the docstring previously (and wrongly) named — docstring corrected
+to say so. Added a NEW sibling test,
+`test_ciu79_is_a_deliberate_break_for_stack_local_dockerfiles`, that
+deliberately pins the breaking change itself: a stack-local Dockerfile +
+`context = "."`, asserting the resolved `-f` no longer points into the
+stack dir AND that the resolved path is not even a real file (proving a
+real `docker build` on that argv would fail the same way the reviewer's
+live repro did) — with a comment naming CIU-79 as the deliberate semantic
+break. Also removed the reviewer's third, smaller note (the trailing
+`copy_target.is_file()` check "adds no independent power since it's
+already entailed by" the `dockerfile_arg` equality check) by leaving it in
+place as an independent, still-meaningful oracle: it is the only assertion
+that actually opens and reads the resolved COPY-source file rather than
+merely comparing path strings, so it stays.
+
+Verified: reverting the fix now makes 4 tests fail (the two pre-existing
+tests, the corrected proof test, and the new breaking-change-pin test),
+confirming genuine, non-overlapping coverage of the fix from every angle
+this bundle's item 1 needed. Restored the real fix immediately after;
+`git diff --stat src/ciu/dev.py` against the pre-revert state shows zero
+diff, confirming the revert-and-restore round-trip touched nothing
+permanently.
+
+`tests/tests/test_ciu_workspace_dev_remaining_boundaries.py::TestDevProfileAndExecutionBoundaries`
+now has 13 tests (was 12), all green; `src/ciu/dev.py` coverage confirmed
+100% line+branch, unchanged (no source edit in this commit).
+
+Real gate re-run against this commit's HEAD — verdict pasted verbatim in
+`ciu-P43-REPORT.md`'s addendum section below.

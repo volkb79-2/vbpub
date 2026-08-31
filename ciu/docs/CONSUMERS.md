@@ -1049,6 +1049,24 @@ stack dir — so a stack that dual-ships both a production `build` block and
 a `[<root>.dev].build` block can write `context`/`dockerfile` identically in
 both places.
 
+> **This is a BREAKING change for `ciu dev`, not purely additive** (unlike
+> the rest of this bundle): every `[<root>.dev].build` written before
+> CIU-79 assumed `context`/`dockerfile` resolved against the STACK DIR (the
+> bug this fix closes), so a profile whose Dockerfile lives in the stack
+> directory — the common shape, since that was the only one that ever
+> worked — now fails to find it. An UNSET or bare `dockerfile: Dockerfile`
+> (or an explicit `context = "."` with no `dockerfile` override) now looks
+> for `<repo root>/Dockerfile`, not `<stack dir>/Dockerfile` — almost never
+> what a stack author wants, same as the compose-side migration note below.
+> **If you have an existing `[<root>.dev].build` block**, either move the
+> Dockerfile to the repo root, or point `dockerfile` at its real,
+> repo-root-relative location: `dockerfile = "<stack-path>/Dockerfile"`
+> (e.g. `dockerfile = "apps/api/Dockerfile"` for a stack at `apps/api/`) —
+> both keys move together, exactly as the compose-side rule above states.
+> There is no dstdns/vbpub consumer stack affected today (no shipped
+> `.j2`/fixture declares `[<root>.dev].build`), but a downstream consumer's
+> own repo may have one.
+
 Concretely, if a stack directory `infra/mock-targets/` declares:
 
 ```toml
