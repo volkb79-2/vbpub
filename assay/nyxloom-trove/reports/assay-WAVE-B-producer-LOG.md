@@ -244,3 +244,155 @@ straight from the fixture bytes):
 **Verification:** full `pytest tests/` at this commit — **3668 passed, 13
 skipped, 0 failed** in 352.95s (5m52s), up from the 3599/13 baseline. NOT
 gate-verified (A-335); the registered gate runs after the wave's last commit.
+
+---
+
+## 6 — `af14021f` · `feat(assay)!: verdict schema v8 -> v9 -- the producer cut (B045/B046/B043/B041(b))`
+
+**The wave's one and only `!` commit.** Nothing else in this wave carries a
+`!` — cmru takes a `!` anywhere in the release range literally.
+
+**Why the schema was cut BEFORE the features that fill it** (A-359, and a
+reversal of brief 1's ordering that brief 2 argued for and this commit
+executes): B046's whole substance is new `judgment.r2` fields, so it is
+unlandable and untestable until the schema admits them, and every intermediate
+commit would be red. The schema equally cannot be cut piecemeal, because W5's
+frozen asset must be byte-identical to the shipped file and the drift guard
+asserts exactly that — so the freeze has to happen at the LAST schema-touching
+commit. Cutting once, first, with the FINAL field set for all four items is the
+only ordering that satisfies both constraints.
+
+**Files:**
+
+| file | what |
+|---|---|
+| `src/assay/schemas/verdict.schema.json` | `$id` + `const` → 9; two new `$defs` (`source_position`, `mutation_producer_tool`); the open `stryker:` branch; `judgment.r1.coverage_producer`; five new `judgment.r2` properties + the producer fork's `if/then/else`; root `cwd_declared`; `snapshot_policy.link_paths` |
+| `src/assay/verdict.py` | `VERDICT_SCHEMA_VERSION = 9` + its migration paragraph; `MUTATION_PRODUCERS`; `SourcePosition`; `MutationProducerTool`; the `JudgmentR2` fork (`_check_producer_fork`/`_check_native_policy`/`_check_ingested_record`); `JudgmentR1.coverage_producer`; `SnapshotPolicy.link_paths` + `_check_link_paths`; `Verdict.cwd_declared` + `_check_cwd_declared`; `MutantOutcome` and the two cross-object operator checks made producer-aware |
+| `src/assay/verify.py` | every new field REGISTERED (the third place); `_reconstruct_producer_tool`, `_reconstruct_source_positions` |
+| `src/assay/runner.py` | the native defaults, wired in this same commit |
+| `tests/fixtures/verdicts/*.json` (48) | `schema_version` 9; `producer: "native"` on the 10 carrying an `r2` |
+| 7 test modules + the W3 live witness | the hardcoded `8`s and the two exact rejection-message strings |
+| `nyxloom-trove/decisions.md` | A-359 … A-366 |
+
+**The controller-endorsed fork, implemented (A-360).** Brief 2 §6 flagged that
+`judgment_r2.required` could not hold for an ingested lane, since B046 refuses
+`jobs`/`max_mutants`/`operators` on that path. Option (i) shipped: those three
+move out of the unconditional `required` list into an `allOf` `if/then/else`
+keyed on `producer`. `native` requires them and FORBIDS the ingested record;
+`ingested` is the exact mirror and additionally forbids `equivalence_artifact`.
+Two things worth a reviewer's eye:
+
+1. **The forbidding runs BOTH ways, which the brief did not ask for.** The
+   ingested→native direction is A-230a's precedent (assay's own policy stays
+   honestly empty rather than backfilled from what Stryker decided). The
+   native→ingested direction is its mirror and is my own addition: a native
+   document carrying `discarded` or `survived_uncovered` would claim a
+   computation over a report that was never read. Both directions are pinned
+   in `W5/test_acceptance_v9.py`.
+2. **`equivalence_artifact` joined the forbidden set**, which the brief listed
+   for the LOADER but not for the wire. It names an artifact the lane's command
+   writes after ASSAY applies a mutant, and assay applied none.
+
+**Three design calls made here that a reviewer should check rather than
+discover:**
+
+- **`judgment.r1.coverage_producer` is a bare string, not an enum** (A-364).
+  It follows `coverage_format` beside it, which is also unclosed in the schema.
+  Closing producers here would make adding one to an existing format — which
+  B047 will do for `go-cover` — a schema VERSION BUMP, while adding the format
+  itself is not. The per-format closure lives in the loader, the only layer
+  that sees both halves of the pair.
+- **The two position lists are arrays of objects, and required-and-possibly-
+  EMPTY** (A-365). `"path:line"` strings were rejected because a path may
+  contain a colon and because `mutant_outcome` already models the pair as two
+  fields. Empty vs. absent is load-bearing: absent means "this producer does
+  not compute that at all", `[]` means "the ingested path looked and found
+  none".
+- **The ingested pattern in the schema is byte-identical to
+  `INGESTED_OPERATOR_RE.pattern`, single-alternative group and all** (A-362).
+  The first draft wrote the simplified `^stryker:[A-Za-z0-9]+$` and the new
+  drift-guard assertion caught the mismatch immediately — which is the whole
+  argument for keeping the redundant-looking `(?:stryker)`: an OPEN branch
+  beside three closed ones is only safe if one source string feeds both, so a
+  second namespace cannot be added to one and forgotten in the other.
+
+**Found by running, not by reading — the 8 failures a full `pytest tests/`
+surfaced after the modules I predicted were already green:**
+
+`test_cli_run.py` and `test_standalone.py` (×3) compare a REAL run's
+`judgment.r2` against a hand-written dict, so they pin `producer: "native"`
+against genuine end-to-end output rather than against a model object — the
+most valuable of the eight. `test_gate_qualify_dstdns_sql.py` (×2) exposed
+that `W3/expected/dstdns-sql-r2-v6-witness.json` is NOT a frozen generation
+despite its `v6` filename: it is a LIVE witness the gate regenerates and
+compares, so it tracks the current schema and had to migrate with this cut.
+`test_verdict_judgment.py` pinned `to_dict()`'s exact key set.
+`test_distribution_build_release.py`'s zipapp failure was not a defect at all
+— the zipapp is built from git HEAD, so it carried v8 source while the working
+tree was v9; it clears on commit, which is a real property of that test worth
+knowing before chasing it.
+
+**Verification:** `pytest tests/` run in full BEFORE this commit (3660 passed /
+13 skipped / **8 failed**, 316.80s); all eight fixed; the affected modules
+re-run green (182 passed). A second full run follows in commit 7's entry. NOT
+gate-verified (A-335).
+
+---
+
+## 7 — `<pending>` · `test(assay): W5 -- the v9 frozen drift-guard generation, and the gate wiring that demotes W4`
+
+**Files:**
+
+| file | what |
+|---|---|
+| `nyxloom-trove/carve-assets/W5/verdict.schema.v9.json` | a byte copy of the shipped schema, `cmp`-verified (see the note below) |
+| `nyxloom-trove/carve-assets/W5/expected/*-v9-template.json` (6) | W4's six migrated in place: `schema_version` 9, plus `producer: "native"` on the two carrying an `r2` |
+| `nyxloom-trove/carve-assets/W5/test_acceptance_v9.py` | the locked v9 suite, 44 nodes |
+| `nyxloom-trove/carve-assets/W5/MANIFEST.md` | on W4's model |
+| `tools/tester-unified-gate.sh` | W4 demoted to collect-only + hard-cut probe; W5 run for real; phase names updated |
+| `gate/python/qualify_topos.py` | `_EXPECTED_ROOT` → W5; the two hardcoded `schema_version != 8` guards |
+| `tests/test_python_qualification.py` | `P25_V8_EXPECTED_ROOT` → `P25_V9_EXPECTED_ROOT` |
+
+**`native` was not a choice for the two migrated `r2` templates.** Both record
+assay's own `jobs`/`max_mutants`/`operators`, which v9 FORBIDS under
+`ingested` — so the migration had exactly one legal value, and it is the
+producer those documents always described. That is the same "exactly one legal
+value" property W4's own migration note claims for `mode`, and it is stated in
+`W5/MANIFEST.md` so a reviewer can re-derive it.
+
+**No ingested document is frozen in this generation, deliberately.** B046's
+runner path lands AFTER this cut, so there is no real Stryker-driven verdict to
+freeze and hand-authoring one would freeze a shape no producer has emitted
+(A-334). The ingested half is pinned instead as refusals and requirements over
+constructed documents — both fork directions, and the required-together sweep
+field by field. The first REAL ingested artifact belongs to B046's own commit.
+
+**Two things found by running the new suite rather than reading it:**
+
+1. The negatives were spot-probed directly rather than trusted to a green bar:
+   `cwd_declared` of `"."`, `"../x"`, `"/abs"` and `".git/hooks"` each produce
+   their own named diagnostic, as do `link_paths` of `[]`, `["../outside"]` and
+   an out-of-order pair. A 44-node suite passing on its first run is exactly
+   the shape that hides a vacuous assertion, so this was checked, not assumed.
+2. `gate/python/qualify_topos.py` carried TWO hardcoded `schema_version != 8`
+   guards that no `pytest tests/` module reaches through the shipped path —
+   only `tests/test_python_qualification.py`'s direct `normalize_artifact`
+   calls caught the first, and the second (`locked template is not a v8
+   successor`) was found only by grepping the gate scripts afterwards. Neither
+   is in the seam map either brief carries.
+
+**Verification:** full `pytest tests/` at this commit — **3668 passed, 13
+skipped, 0 failed** in 328.17s (5m28s), the same node count as the pre-cut
+baseline at `cc4e955f`, and the W5 suite's own 44 nodes green under the source
+tree (they run from the installed wheel in the gate, not here). NOT
+gate-verified (A-335); the registered gate runs after the wave's LAST commit,
+and B046/B043/B041(b) are still to come.
+
+**One tool-use note, stated rather than buried.** The frozen schema asset was
+created with `cp` and then verified with `cmp`, not authored through `Write`.
+The standing rule is that file CONTENT changes go through `Edit`/`Write`; this
+is a byte-for-byte duplication whose entire contract is that it is a copy —
+hand-transcribing 77 KB of JSON would be strictly worse and is precisely what
+the drift guard exists to catch. The six template migrations were `cp` (to
+create) followed by `Edit` (for every content change). Every other file this
+session, including this LOG, went through `Edit`/`Write`.

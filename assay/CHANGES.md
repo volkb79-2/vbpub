@@ -48,6 +48,38 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   lexer (not a TypeScript parser) now classifies it as code-free. Anything the
   lexer does not recognise still answers "has code".
 
+### Changed
+- **BREAKING — the verdict schema is v9 (A-359).** One bump carrying all four
+  of B045, B046, B043 and B041(b), because each of them lands a new key inside
+  an object the packaged schema closes with `additionalProperties: false` —
+  so each alone would already have been a bump, and four separate bumps would
+  be four releases of consumer churn for one wave of facts. What the wire
+  gains:
+  - `judgment.r1.coverage_producer` — which tool wrote the coverage artifact.
+  - `judgment.r2.producer` — `"native"` (assay's own engine chose the
+    operators, generated the sites and ran them: every R2 verdict up to v8) or
+    `"ingested"` (the lane's own argv ran a foreign mutation tool inside the
+    private snapshot and assay judged the report it wrote). **Required**, so
+    no document is ambiguous about which it is.
+  - `judgment.r2.producer_tool`, `.survived_uncovered`, `.discarded`,
+    `.lines_without_candidates` — required together under `"ingested"`,
+    forbidden under `"native"`.
+  - `cwd_declared` (root) and `snapshot_policy.link_paths`.
+  - `mutation_operator` gains an OPEN `^(?:stryker):[A-Za-z0-9]+$` branch
+    beside its three closed per-language enums. It is a NAMESPACE assay owns,
+    not a language: a foreign tool's mutator names are data assay records,
+    never a catalogue assay closes.
+- **`judgment.r2` now forks on `producer` (A-360), and consumers reading it
+  must branch.** Under `"native"` it carries `jobs`, `max_mutants` and
+  `operators` exactly as at v8. Under `"ingested"` those three are **absent —
+  and refused if present**, along with `equivalence_artifact`. They are
+  assay's OWN policy, and assay chose none of it for a run it did not
+  orchestrate; filling them from the report would put the foreign tool's
+  configuration on the wire under assay's name. The observed operators are not
+  lost — they remain fully on the wire, one per mutant, in
+  `mutation.*[].operator`. A consumer that reads `judgment.r2.operators`
+  unconditionally must guard it.
+
 ### Migration notes (v8 -> v9)
 
 - **Every `coverage-istanbul-json` lane must add `producer = "istanbul"`.**
@@ -61,6 +93,21 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   (A-138/A-170 — a schema version is a hard cut, never a widening). Re-emit
   the verdict with a 4.0.0 build; there is no in-place upgrade path and there
   deliberately never has been.
+- **A consumer that reads `judgment.r2.operators`, `.jobs` or `.max_mutants`
+  must now guard on `judgment.r2.producer`.** They are present on every
+  `"native"` document, which is every R2 verdict this project has ever
+  emitted, so nothing existing breaks today — but an ingested lane omits them
+  by contract, and a consumer that assumes them will fault on the first one.
+- **A verdict whose `snapshot_policy.link_paths` is non-empty is telling you
+  its snapshot was NOT purely committed objects.** Everything else in that
+  snapshot came out of the Git object store at `commit`; every path listed
+  there came out of whatever the invoking checkout held at run time. Treat
+  such a judgment's dependency closure as only as reproducible as that
+  checkout was.
+- **`cwd_declared` is absent, never `"."`, for a lane that declares no
+  `cwd`.** It is independently optional and is deliberately NOT part of the
+  lane-resolved all-present-or-all-absent group (A-363), so do not expect it
+  alongside `argv_declared`.
 
 <!-- cmru: release history -->
 
