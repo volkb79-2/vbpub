@@ -210,3 +210,34 @@ principles don't already resolve.
   self-caught, documented in REPORT §7. Gate now running on the new tip
   `428f69e2`; implementer holding all writes until it returns, same
   discipline as checkpoint 1.
+
+- **2026-08-31 (checkpoint 2 — external compaction, fresh successor)** —
+  Gate PASS on `428f69e2` confirmed independently by the controller
+  (`GATE_EXIT=0`, `ASSAY_REGISTERED_GATE_COMPLETE=1`, the log's own tail
+  read directly from `gate2.log`, not taken on the implementer's word
+  alone); working tree clean; the sole later commit (`335636b4`) is
+  docs-only, so the green claim isn't stretched across an unverified code
+  change. 5 commits total on `feature/assay-wave-c-go`
+  (`271af037`..`335636b4`). 2 of 7 wave items landed
+  (item 2/oracle, item 1's core-model half); F008-A3/A4/A5 correctly
+  still `absent` — the implementer explicitly declined to tick any
+  acceptance box since nothing calls the oracle yet, naming this exact
+  discipline as avoiding "the check whose stated subject was not what
+  was checked" defect its own carve-assets README already records once.
+
+  BRIEF-2.md read in full — a clean, cumulative-delta handoff: both prior
+  decision asks recorded as `A-394`/`A-395` citing `8fd9dd68` (no
+  re-derivation needed), the packaging retraction as `A-396`/`B054`
+  (already logged in this file's prior entry), and an ordered 6-step next
+  chunk (the `requires_statement_attribution` + `statement_blocks` hook
+  → the `evaluate` refusal → the other three adapters' two new members +
+  their FakeAdapter/test copies → exposing the single `evaluate.py:
+  625-676` key-resolution join per A-385/A-367 rather than duplicating it
+  → runner wiring at `runner.py:969-1030` → `external_tools` then
+  registration → item 7). This is the checkpoint boundary the E-008
+  clause exists for: per the dispatch skill's own rule ("controller
+  externally compacts by dispatching a FRESH successor... never a
+  resume/fork for this step"), dispatching a NEW fresh Opus agent seeded
+  with BRIEF-1+BRIEF-2, not resuming this one — the implementer already
+  ended its own turn at the designed handoff boundary, this is not a
+  mid-task continuation.
