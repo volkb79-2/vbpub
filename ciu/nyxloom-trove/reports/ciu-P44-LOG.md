@@ -402,8 +402,10 @@ house bar. The three items that carry a dedicated `## CIU-NN —` section
 (CIU-61, CIU-84, CIU-85 — CIU-59 does not; it was always table-row-only,
 matching CIU-77/79/80/81's own precedent) gained a `FIXED (ciu-P44)`
 heading annotation, mirroring CIU-75's own precedent for a filed item with
-a dedicated section that later got fixed. New row + dedicated section filed
-for CIU-86. "Last updated" header paragraph rewritten to lead with this
+a dedicated section that later got fixed. A new table row filed for CIU-86
+(row-only, no dedicated "## CIU-86 --" section -- matching CIU-59's own
+row-only precedent, not the CIU-61/84/85 shape). "Last updated" header
+paragraph rewritten to lead with this
 package, the prior paragraph demoted to "Previously, 2026-08-31 —".
 
 Landed as its own commit, not split per item, for a mechanical reason: `git
