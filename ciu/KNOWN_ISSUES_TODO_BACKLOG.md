@@ -11,7 +11,27 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-08-31 — **CIU-59, CIU-61, CIU-84, CIU-85 FIXED (ciu-P44,
+Last updated: 2026-08-31 — **CIU-54 FIXED (ciu-P45).** The 8 `cli.py` call
+sites CIU-53's own follow-up named (`render`/`up`/`down`/`health --host`,
+`up --layout`, `layouts`, `host-secrets`, `ssh`) resolved `repo_root` via a
+bare `REPO_ROOT`-or-cwd fallback with no `--define-root` consideration at
+all — a third, informal resolution strategy alongside `dev.resolve_repo_root`
+(CIU-53) and `deploy.resolve_repo_root`. Design pass picked candidate (a):
+route all 8 through `deploy.resolve_repo_root` (the SAME resolver each
+verb's own local/profile branch already uses), not `dev.resolve_repo_root`'s
+walk-up, because these verbs' remote-push/listing usage shape is a
+`deploy.py` sibling, not a `dev`/`worktree` local-repo-identity question —
+and because walk-up would have made e.g. plain `ciu up` resolve one way and
+`ciu up --host x` resolve a DIFFERENT way. A new `_extract_define_root()`
+consumes the flag before any per-site parser (or `_parse_layout_argv`'s
+forbidden-flag guard) sees it, with `allow_abbrev=False` so ciu-P29's pinned
+`--d`/`--r` abbreviation tests are unaffected. **Breaking**: no cwd
+fallback — ambient `REPO_ROOT` or `--define-root` is now REQUIRED on these 8
+verbs; nil blast radius inside this monorepo, `docs/CONSUMERS.md` #19 and
+`docs/SPEC.md` S1.1a carry the detail. Full scope landed, all 8 sites, one
+mechanism.
+
+Previously, 2026-08-31 — **CIU-59, CIU-61, CIU-84, CIU-85 FIXED (ciu-P44,
 a four-item bundle); CIU-86 FILED.** CIU-59: `workspace_env.
 detect_devcontainer_name()` factors the four-times-duplicated devcontainer/
 hostname fallback, correcting one real semantic drift found while verifying
@@ -433,7 +453,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-49 | App-config `topology.services.*.internal_host`-style Jinja defaults render the bare service name instead of the already-computed qualified `{project}-{instance_id}-{service}` form, forcing consumers to hand-maintain per-worktree overrides (dstdns's `dstdns-mstest` template) | High | PARTIAL (ciu's own product surface) / dstdns's operator pain FIXED — ciu-P30 shipped CONFIG.md's `[topology.services.<name>]` section a SHOULD-level qualified-form prescription + CONSUMERS.md worked example; ciu ships no `internal_host` default of its own to change (S4.16/S7.4 is entirely consumer-declared), so dstdns fixed its own defaults template directly (dstdns@41898e90, 2026-08-25, re-verified 2026-08-26) (see detail) |
 | CIU-52 | Implement S12's reserved `shared_infra.services[*].aliases` — after joining a reference instance's network, the joining instance has no CIU-declared name to call the reference's shared service by | High | FIXED — ciu-P31 shipped SPEC S16.1a: a new OPTIONAL alias-keyed `[ciu.instance.shared_infra.ref_services.<alias>]` table + `--shared-infra-ref-services ALIAS[,ALIAS=REF_SERVICE]`, deriving the reference's qualified container name from the REFERENCE's OWN rendered config (read-only, environ-isolated), authenticating it against live Docker before writing this instance's `[topology.services.<alias>]` block, and re-verifying before any join-time connect. Shipped shape deliberately differs from the filing: `services` (the JOINER's own containers) and `ref_projects` (the REFERENCE's projects) are NOT paired, so `services[*].aliases` could only ever have addressed the joiner's own copy of a service — the S12 reservation is withdrawn (see detail) |
 | CIU-53 | `dev.resolve_repo_root` (consumed by `ciu dev`/`ciu worktree *`) checked ambient `REPO_ROOT` before `--define-root` — the REVERSE of SPEC S1.1's own documented order, i.e. the code violated its own documented contract; live-reproduced: standing inside a real ciu-managed repo with no `--define-root`, a sibling checkout's ambient `REPO_ROOT` silently won over deriving from cwd (CIU-41 masked-default hazard, one level up, for the resolver that picks WHICH repo destructive verbs operate on) | High | FIXED — ciu-P32: `--define-root` now always wins outright (no consistency check); otherwise CIU derives by walking up from cwd, and a successful derivation that disagrees with a pre-set `REPO_ROOT` REFUSES (`[S1.1]`-tagged, naming both paths + three remedies) instead of silently preferring either value — this resolver feeds destructive verbs (`worktree rm`, `branches -y`, `clean`), so a masked default is worse than a hard stop, unlike `env generate`'s warn-and-proceed identity tuple (a fresh file is about to be written anyway). Walk-up-finds-nothing still falls back to ambient `REPO_ROOT`, unchanged. All ~8 `cli.py` call sites verified to propagate the refusal as a clean `[ERROR] ...` + non-zero exit. SPEC.md/CONFIG.md/CIU.md/DESIGN-GUIDE.md corrected; `--help` names the hazard (see detail) |
-| CIU-54 | 8 `cli.py` call sites (the `--host` remote branches of `render`/`up`/`down`/`health`, `up --layout`, `layouts`, `host-secrets`, `ssh`) resolve `repo_root` via a bare `os.environ.get("REPO_ROOT", Path.cwd())`, with NO `--define-root` consideration and NO walk-up at all — a separate, larger resolution strategy from `dev.resolve_repo_root`, closer to `deploy.py`'s own resolver, not closed by CIU-53 | Medium | OPEN — filed by ciu-P32 as a named follow-up, explicitly not touched (real scope creep into deploy.py-adjacent territory; too large for that package) — see detail |
+| CIU-54 | 8 `cli.py` call sites (the `--host` remote branches of `render`/`up`/`down`/`health`, `up --layout`, `layouts`, `host-secrets`, `ssh`) resolve `repo_root` via a bare `os.environ.get("REPO_ROOT", Path.cwd())`, with NO `--define-root` consideration and NO walk-up at all — a separate, larger resolution strategy from `dev.resolve_repo_root`, closer to `deploy.py`'s own resolver, not closed by CIU-53 | Medium | FIXED — ciu-P45: all 8 sites now route through a new `_resolve_repo_root_deploy()`/`deploy.resolve_repo_root` (candidate (a); none of the 8 accepted `--define-root` at all, confirming the design pass's own precondition), the SAME resolver each verb's own local/profile branch already uses, via a new `_extract_define_root()` that consumes the flag before any per-site parser or `_parse_layout_argv`'s forbidden-flag guard sees it (`allow_abbrev=False`, so ciu-P29's pinned `--d`/`--r` abbreviation tests are unaffected). **Breaking**: no cwd fallback — ambient `REPO_ROOT` or `--define-root` is now REQUIRED; nil blast radius inside this monorepo (no shipped script relies on the old cwd fallback), `docs/CONSUMERS.md` #19 carries the migration note, `docs/SPEC.md` S1.1a documents the two-resolver split. Full scope landed, no subset deferral — see detail |
 | CIU-55 | No per-lane gate invocation timing is measured or persisted anywhere — a controller deciding whether to run full R1+R2 rigor before merging, or defer R2 and merge provisionally, has no data and must guess | Medium | RETRIAGED 2026-08-31 -> run-gate RG-27 (`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md`); this entry kept as a pointer, see detail |
 | CIU-56 | The 100% gate's coverage of `src/ciu/hook_templates/post_compose_db.py` is SCHEDULING LUCK, not measurement: a hook module loaded the way CIU actually loads hooks (`hooks_runner._load_hook_module`, `spec_from_file_location` under a synthetic non-`ciu` module name) is not measured by `--cov=ciu` at all unless the SAME file was also imported normally in that worker process. Under `-n auto --dist load`, xdist splits `test_ciu_scaffold_hooks.py` across workers, so the shipped template's `run()` body is sometimes measured and sometimes not — the gate flips to 99.85% on any change to the suite's test COUNT, with zero source changes | High | FIXED — `run-ciu-tests.py` now runs `-n auto --dist loadfile`, keeping every test file's functions on one worker; verified 100.00% coverage across 5 consecutive runs with zero flips. The module-level-import half of the proposed fix was not additionally applied — `--dist loadfile` alone closed it (see detail) |
 | CIU-57 | `tests/conftest.py`'s autouse ambient-env-scrub fixture (ciu-P13) never included `CIU_KSM`, despite CHANGES.md's own history recording multiple prior one-off `CIU_KSM=off` pins scattered across individual test fixtures to work around exactly this class of leak — local patches on individual flakes, never a fix of the shared fixture's actual coverage | Medium | FIXED — `CIU_KSM` added to `_AMBIENT_ENV_VARS`. Live-caught while investigating CIU-56: `test_absolute_governance_ksm_path_is_preserved_in_overlay` (`test_ciu_composefile_branch109.py`) intermittently failed `KeyError: 'volumes'` under `--dist loadfile` because `governance.resolve_ksm_optin` reads `CIU_KSM` fresh on every call and the test never pins it; a contaminated/leftover value silently changes which branch `composefile.generate_overlay` takes. No raw (non-monkeypatch) `os.environ["CIU_KSM"]` assignment or ambient shell value was found as the exact source — the fix closes the class regardless of the precise vector, matching the existing pattern for the other 6 scrubbed vars (see detail) |
@@ -1941,16 +1961,86 @@ verbs too. Needs a design pass naming which of these 8 verbs actually accept
 a `--define-root` flag today (several currently do not) before either is a
 safe change.
 
+### Disposition — FIXED 2026-08-31 (ciu-P45)
+
+Re-derived the 8 sites myself (line numbers had drifted, count held at 8):
+`render --host`, `layouts`, `up --layout`, `up --host`, `down --host`,
+`health --host`, `host-secrets`, `ssh`. Verified the design pass's own
+precondition first — read every one of these 8 sites' local argparse wiring
+directly: **none of them registered `--define-root`/`--root-folder` at
+all**, confirming the entry's own hint. Chose **candidate (a)**: all 8 now
+call a new `_resolve_repo_root_deploy()` wrapper around
+`deploy.resolve_repo_root` (the sibling of `_resolve_repo_root_cli`, which
+wraps `dev.resolve_repo_root`), because each of these 8 sites' verb ALREADY
+routes its own local/profile branch through `deploy.main` →
+`deploy.resolve_repo_root` (e.g. plain `ciu up` with no modifier) — routing
+the `--host`/`--layout`/listing branches through the SAME function keeps a
+verb's resolution identical across all of its own branches, rather than
+leaving a third, bespoke strategy in place or adopting
+`dev.resolve_repo_root`'s walk-up (which would have made e.g. `ciu up`
+resolve one way and `ciu up --host x` resolve a DIFFERENT way — a worse
+inconsistency than the one being fixed). Walk-up fits `dev`/`worktree`'s
+local-repo-identity question, not these verbs' remote-push/listing shape —
+confirmed against the code, not just asserted.
+
+**Mechanism.** A new `_extract_define_root(rest)` pulls
+`--define-root`/`--root-folder` out of `rest` FIRST, at every one of the 8
+sites, before any other local parsing — consumed there, never left to leak
+into a remote argv (`render`/`up`/`down`/`health --host`'s `ssh_exec`/
+`_push_host` calls, `ssh`'s `cmd_argv`) or reach `_parse_layout_argv`'s
+forbidden-flag guard. It runs with `allow_abbrev=False` deliberately: it
+precedes each site's own flag vocabulary, so it cannot verify an
+abbreviation is unambiguous the way a single shared parser can, and
+`up --layout`'s own pinned abbreviation tests (ciu-P29,
+`test_up_layout_refuses_every_abbreviated_forbidden_flag_*_form`) require
+bare `--d`/`--r` to still resolve to `--dir`/`--rollback` in
+`_parse_layout_argv`'s guard — exactly the prefixes `--define-root`/
+`--root-folder` would otherwise have claimed first. `_resolve_repo_root_deploy`
+then mirrors `_resolve_repo_root_cli`'s exit contract: any `ValueError`
+(`deploy.WorkspaceEnvError` included) becomes `[ERROR] ...` + `SystemExit(2)`,
+never a raw traceback.
+
+**Breaking.** `deploy.resolve_repo_root` requires ambient `REPO_ROOT` (or an
+explicit `--define-root`) — no cwd fallback. A caller of one of these 8
+verbs that previously relied on the cwd fallback (never having sourced
+`ciu.env`) now gets a clean refusal instead of a silent cwd guess. On
+`render`/`up`/`down`/`health`, `--define-root` was ALREADY documented
+verb-wide in `--help`, so this also closes a real doc/behavior mismatch on
+the `--host` branch specifically, not just an internal-consistency nicety.
+Investigated blast radius directly (not asserted): no shipped `.sh`/CI
+script under this repo invokes any of these 8 verbs without first sourcing
+`ciu.env`; `docs/CONSUMERS.md` #19 carries the full migration note and
+`docs/SPEC.md` S1.1a documents the two-resolver split. `fix(ciu)!:` commit
+marker used.
+
+**Full scope landed** — no subset deferral; all 8 sites fixed in one
+package, same mechanism throughout.
+
 ### Oracles
 
-Not yet written — this entry exists to make the gap findable, not to commit
-to an implementation. A future package should re-derive the current exact
-call sites (`grep -n 'os.environ.get("REPO_ROOT", Path.cwd())' src/ciu/cli.py`)
-rather than trusting this list to stay current.
+- Every one of the 8 sites accepts `--define-root`/`--root-folder` and
+  resolves against it (verified per-site, including the two `up --layout`/
+  `up --host` sites and `layouts`/`host-secrets`, which previously took no
+  local flags at all).
+- `--define-root` is consumed LOCALLY and never appears in the one remote
+  argv string forwarded to a `--host`/`ssh` target (verified for `render`/
+  `up`/`down`/`health --host`, `up --layout`, and `ssh`'s `-- cmd` boundary
+  specifically — a `--define-root` literal appearing AFTER `--` is remote
+  command text, never a local flag).
+- `--define-root` disagreeing with a set ambient `REPO_ROOT` REFUSES with a
+  `[S1.1]`-tagged message naming both paths (verified on `ssh` and
+  `up --layout`), matching `deploy.resolve_repo_root`'s existing contract.
+- No ambient `REPO_ROOT` and no `--define-root` REFUSES with `[ERROR]
+  REPO_ROOT not set...` rather than silently using cwd (verified on `ssh`
+  and `host-secrets`).
+- `up --layout`'s forbidden-flag guard still catches every abbreviation
+  length of its own 6 flags, including bare `--d`/`--r`, unaffected by the
+  new flag (ciu-P29's pinned suite, re-run green, unmodified).
+- Real gate green at 100% line+branch coverage (see `ciu-P45-REPORT.md`).
 
-**SPEC ownership:** S1.1 (repo-root resolution) — extending, not
-contradicting, CIU-53's corrected precedence to these sites' actual proposed
-contract, once designed.
+**SPEC ownership:** S1.1a (new sub-clause, `docs/SPEC.md`) — extends S1.1's
+walk-up resolver with the deploy-routed resolver's own order, and names
+which verbs use which.
 
 ## CIU-55 — No per-lane gate invocation timing is measured, so provisional-merge
 rigor tradeoffs are guesses, not decisions
