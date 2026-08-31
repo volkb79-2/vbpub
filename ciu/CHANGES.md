@@ -21,6 +21,52 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.8.0] - UNRELEASED
+
+> **This release is BREAKING, and ships as a MINOR on purpose** — same
+> deliberate override CIU-75/CIU-79 already established in 7.7.0: the estate's
+> normal convention is that a breaking change waits for the next major, but
+> CIU-54's cutover is self-contained and does not need any v8 schema-revision
+> changes to ship safely on its own.
+
+### Adoption / Migration Notes
+
+**Action needed only if you invoke one of 8 specific `ciu` verbs
+(`render --host`, `up --host`, `up --layout`, `down --host`, `health --host`,
+`layouts`, `host-secrets`, `ssh`) from a shell that never sourced `ciu.env`
+and never passes `--define-root`.** These 8 sites used to fall back to the
+current working directory silently; they now REFUSE
+(`[ERROR] REPO_ROOT not set. Run 'ciu env generate' and source ciu.env.`)
+the same way every other `ciu` verb already does. Fix: `source ciu.env` (or
+`eval "$(ciu env print)"`) first, or pass `--define-root`/`--root-folder`
+explicitly — all 8 verbs now accept it, several for the first time. No
+shipped script or CI job anywhere in this monorepo relied on the old
+fallback (verified by grep, not assumed); this is a nil-blast-radius change
+here, aimed at closing a gap for downstream consumers' own shell scripts.
+
+**Safe to ignore if:** you always `source ciu.env` (or run these verbs
+through `ciu env print`-primed environments) before invoking `ciu`, which is
+already this project's documented convention.
+
+### Fixed
+
+- fix(ciu)!: **CIU-54 — the 8 `cli.py` remote/listing call sites that
+  resolved `repo_root` via a bare `REPO_ROOT`-or-cwd fallback now route
+  through `deploy.resolve_repo_root`**, the same resolver each of these
+  verbs' own local (non-`--host`) branch already uses (ciu-P45). CIU-54 was
+  filed explicitly undesigned, naming two candidate resolvers without
+  picking one; this package did the design pass first: neither of the 8
+  sites' own argparse wiring accepted `--define-root` before this fix, and
+  `render`/`up`/`down`/`health`'s own `--help` text already documented
+  `--define-root` as verb-wide — the `--host` branch was contradicting its
+  own verb's documented contract, not merely internally inconsistent. The
+  walk-up alternative (`dev.resolve_repo_root`) was rejected because it
+  would have made e.g. `ciu up` and `ciu up --host x` resolve `repo_root` by
+  two DIFFERENT strategies — a new inconsistency, not a fix.
+  **Breaking**: no ambient `REPO_ROOT` and no `--define-root` now refuses
+  instead of silently using cwd (see Adoption Notes above). `docs/SPEC.md`
+  gained S1.1a; `docs/CONSUMERS.md` gained #19 with the full migration note.
+
 ## [7.7.1] - 2026-08-31
 <!-- cmru: generated -->
 <!-- cmru: source-end=01f09c18a531218b0a52f5cda3dcad6008b9d4ae -->
@@ -37,8 +83,6 @@ restatement of the technical detail below it.
 - docs(ciu): ciu-P44 -- REPORT addendum, real gate re-run at true final HEAD (1a763a26)
 - docs(ciu): ciu-P44 -- LOG/REPORT for the CIU-59/61/84/85 bundle (18f2a952)
 - docs(ciu): backlog -- CIU-59/61/84/85 FIXED (ciu-P44), CIU-86 filed (a4415311)
-
-## [7.7.1] - UNRELEASED
 
 ### Adoption / Migration Notes
 
