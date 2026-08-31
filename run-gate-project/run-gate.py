@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 30  # rev 30 (round-2 review fixes folded in: `history` honors --worktree on the READ side and refuses an override that names no git work tree, so a query can never answer with the invoking checkout's data under another tree's name; flushing a record is at-most-once, so a Ctrl-C inside the telemetry write surfaces as the KeyboardInterrupt instead of a second-flush traceback; `--json` is refused by name outside `history` instead of accepted and ignored; `history` as a lane name is a flagged LOAD-TIME breaking change): RG-27 lane invocation history — a per-(judged worktree × project) `.run-gate/history.json` store holding, per lane, a `latest` slot (ANY outcome, dirty/aborted/mid-rebase included) and a bounded per-commit trend series ([history] keep, default 10); completed fails join history WITH their outcome and the stats are split passes/completed, aborted+dirty+mid-rebase runs never do; new `history [LANE] [--json]` query verb; concurrency answered by SCOPE first (two worktrees address two files) then a sibling-lockfile + atomic-rename write; the store must be git-ignored or the write is refused with the remedy rather than dirtying the tree (R-36); rev 29: P02 review round — the RG-25 `command -v` fitness probe is BATCHED per environment over the union of every lane's tools (was one container per lane, which made R-30's own cost claim quantitatively false), and the three places still claiming `--dry-run`/`doctor` start nothing now say what they actually start; rev 28: RG-26 `--base REF` reaches a delegating assay lane as `--request-base` (assay B019 usable from the gate at last) — delegation DERIVED from `assay lanes --json`, no new run-gate.toml key; conjunction lanes propagate it through a `{base}` token; a non-delegating lane refuses it by name (R-35). Also RG-28: an assay lane on the built-in host environment no longer raises KeyError('argv') (R-19); rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 31  # rev 31: RG-30 -- `doctor` and `--check-env` both passed `None` to `resolve_repo_and_worktree` instead of the caller's `--worktree`, so `doctor --worktree B` silently reported the INVOKING tree's answers under B's name (including the R-30a host-lane git-view WARN); the same read-scope hazard `history` (RG-27 B1, rev 30) already closed for that verb, now closed for the last remaining instance. `doctor`'s per-tree checks (git identity, R-30a, mountinfo) and the shared assay-toolchain probe's `cd` target (`assay_toolchain_findings`) both follow `--worktree` now, resolved+validated via a new shared `resolve_worktree_scope()`; a bad override becomes a `[FAIL] git` record inside doctor's own existing try/except rather than a false `[OK]` on the R-30a check. `--check-env`'s env-drift scan follows it too and refuses upfront (no per-check ledger to degrade into). Both verbs disclose the selected tree in their output (R-37). rev 30 (round-2 review fixes folded in: `history` honors --worktree on the READ side and refuses an override that names no git work tree, so a query can never answer with the invoking checkout's data under another tree's name; flushing a record is at-most-once, so a Ctrl-C inside the telemetry write surfaces as the KeyboardInterrupt instead of a second-flush traceback; `--json` is refused by name outside `history` instead of accepted and ignored; `history` as a lane name is a flagged LOAD-TIME breaking change): RG-27 lane invocation history — a per-(judged worktree × project) `.run-gate/history.json` store holding, per lane, a `latest` slot (ANY outcome, dirty/aborted/mid-rebase included) and a bounded per-commit trend series ([history] keep, default 10); completed fails join history WITH their outcome and the stats are split passes/completed, aborted+dirty+mid-rebase runs never do; new `history [LANE] [--json]` query verb; concurrency answered by SCOPE first (two worktrees address two files) then a sibling-lockfile + atomic-rename write; the store must be git-ignored or the write is refused with the remedy rather than dirtying the tree (R-36); rev 29: P02 review round — the RG-25 `command -v` fitness probe is BATCHED per environment over the union of every lane's tools (was one container per lane, which made R-30's own cost claim quantitatively false), and the three places still claiming `--dry-run`/`doctor` start nothing now say what they actually start; rev 28: RG-26 `--base REF` reaches a delegating assay lane as `--request-base` (assay B019 usable from the gate at last) — delegation DERIVED from `assay lanes --json`, no new run-gate.toml key; conjunction lanes propagate it through a `{base}` token; a non-delegating lane refuses it by name (R-35). Also RG-28: an assay lane on the built-in host environment no longer raises KeyError('argv') (R-19); rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import ast
@@ -478,6 +478,45 @@ def effective_project_dir(project_dir: Path, toplevel: Path,
                  f"{toplevel} — cannot relocate it into the judged worktree "
                  f"{worktree}")
     return worktree / rel
+
+
+def resolve_worktree_scope(project_dir: Path, worktree_override: str | None,
+                           what: str) -> tuple[Path, Path, Path, str | None]:
+    """RG-30: the read-only-verb counterpart of the run path's own
+    `resolve_repo_and_worktree` + `effective_project_dir` pair, shared by
+    every REPORT-ONLY verb that takes `--worktree` (`doctor`, `--check-env`;
+    `history`'s own read-side fix, RG-27 B1, predates this helper and stays
+    inline). Returns (repo, worktree, effective project dir, disclosure
+    scope) — the effective project dir is what a probe/scan must read
+    INSTEAD of `project_dir` so its answer actually describes the selected
+    tree, and the disclosure scope is `worktree` as a string when an
+    override was given (None otherwise) for the caller to name in its own
+    output (R-05: an answer that can differ by tree must say which tree it
+    describes, never leave it to be inferred).
+
+    A run-path lane resolves the identical override string through
+    `resolve_repo_and_worktree` with no upfront validation because it has a
+    natural downstream failure to die against (`check_clean_tree` runs `git
+    status` IN the tree). A report-only verb starts no such check — asking
+    it to report on a `--worktree` that names nothing would otherwise let it
+    silently manufacture an answer about a tree that does not exist (worse:
+    `doctor`'s RG-21 check reads "no gitdir file here" as "plain checkout,
+    nothing to warn about", so an unvalidated override would print a FALSE
+    OK rather than staying silent). Refuses loud, upfront, before any check
+    reads the world — same shape as `history`'s own B1 fix.
+    """
+    if not worktree_override:
+        repo, worktree, _ = resolve_repo_and_worktree(project_dir, None)
+        return repo, worktree, project_dir, None
+    if not Path(worktree_override).is_dir():
+        fail(f"--worktree {worktree_override!r}: not a directory — `{what}` "
+             f"reports THAT tree's state, so it must name a real worktree")
+    git_out("rev-parse", "--show-toplevel",
+            cwd=Path(worktree_override))  # refuses with git's own line
+    repo, worktree, toplevel = resolve_repo_and_worktree(project_dir,
+                                                          worktree_override)
+    eff_proj = effective_project_dir(project_dir, toplevel, worktree)
+    return repo, worktree, eff_proj, str(worktree)
 
 
 def resolve_slice(env: dict, env_source: str) -> tuple[str, str]:
@@ -1370,7 +1409,8 @@ def scan_env_references(text: str) -> list[tuple[str, int, str]]:
 
 
 def cmd_check_env(lanes: dict, project_dir: Path, cfg: dict, central: dict,
-                  cfg_path: Path, central_path: Path | None) -> int:
+                  cfg_path: Path, central_path: Path | None,
+                  worktree_override: str | None = None) -> int:
     """RG-17 drift sweep (ADVISORY): scan the project's Python sources for
     environment reads and flag names covered by neither forward_env nor
     required_env. Heuristic by nature (a .get with a default may be
@@ -1379,7 +1419,23 @@ def cmd_check_env(lanes: dict, project_dir: Path, cfg: dict, central: dict,
 
     RG-23: the scan is AST-based (`scan_env_references`) so it also sees
     reads wrapped in a project's own helper — the shape that hid dstdns's
-    `RUN_LIVE_TESTS` from the previous line regex."""
+    `RUN_LIVE_TESTS` from the previous line regex.
+
+    RG-30: `--worktree` redirects BOTH halves of this report at THAT tree —
+    the env-drift scan reads ITS Python sources and the toolchain-fitness
+    half (`assay_toolchain_findings`) probes ITS environment, never the
+    invoking checkout's — and the report names the tree (R-05). Resolved and
+    validated upfront (`resolve_worktree_scope`, same refuse-loud shape as
+    `history`'s own `--worktree` fix, RG-27 B1): unlike `doctor`, this verb
+    has no per-check OK/FAIL ledger for a bad override to land in gracefully,
+    so it refuses outright rather than let a nonexistent tree yield an empty
+    (and misleadingly clean) scan under that tree's name."""
+    _, _, scan_dir, worktree_scope = resolve_worktree_scope(
+        project_dir, worktree_override, "--check-env")
+    if worktree_scope:
+        print(f"run-gate: check-env: --worktree {worktree_scope} — this "
+              f"report describes THAT tree, not the invoking checkout",
+              flush=True)
     covered = {CGROUP_ENV_VAR}
     for name, lane in lanes.items():
         covered.update(lane.get("required_env", []))
@@ -1391,12 +1447,12 @@ def cmd_check_env(lanes: dict, project_dir: Path, cfg: dict, central: dict,
         if env:
             covered.update(env.get("forward_env", []))
     findings = []
-    for path in sorted(project_dir.rglob("*.py")):
+    for path in sorted(scan_dir.rglob("*.py")):
         try:
             text = path.read_text()
         except OSError:
             continue
-        rel = path.relative_to(project_dir)
+        rel = path.relative_to(scan_dir)
         try:
             refs = scan_env_references(text)
         except SyntaxError as exc:
@@ -1431,7 +1487,8 @@ def cmd_check_env(lanes: dict, project_dir: Path, cfg: dict, central: dict,
     # existing severity for a broken contract.
     broken = 0
     for status, topic, detail in assay_toolchain_findings(
-            lanes, project_dir, cfg, central, cfg_path, central_path):
+            lanes, project_dir, cfg, central, cfg_path, central_path,
+            worktree_override):
         print(f"run-gate: check-env: [{status}] {topic}: {detail}", flush=True)
         broken += status == "FAIL"
     return 2 if broken else 0
@@ -1748,7 +1805,8 @@ def probe_missing_tools(docker: str, tools: list[str], env: dict,
 
 def assay_toolchain_findings(lanes: dict, project_dir: Path, cfg: dict,
                              central: dict, cfg_path: Path,
-                             central_path: Path | None
+                             central_path: Path | None,
+                             worktree_override: str | None = None
                              ) -> list[tuple[str, str, str]]:
     """RG-25: one (status, topic, detail) per `kind = "assay"` lane.
 
@@ -1757,6 +1815,14 @@ def assay_toolchain_findings(lanes: dict, project_dir: Path, cfg: dict,
     environment, or an `assay_lane` the judge does not declare. Everything
     that means "I could not determine this" is SKIP with the reason, which is
     also why an assay older than B044 can never turn a healthy project red.
+
+    RG-30: `worktree_override` (`doctor`/`--check-env`'s already-validated
+    `--worktree`, threaded through by their callers) resolves `repo`/
+    `worktree` for THAT tree — not the invoking checkout's — and relocates
+    the probe's `cd` target the same way RG-15 relocates a lane's own run:
+    a probe that mounted tree B's repo but `cd`ed into tree A's absolute
+    path would not be a probe of B, it would be a probe of nothing (or,
+    coincidentally, of the wrong directory).
     """
     plan: list[dict] = []
     assay_lanes = {n: l for n, l in sorted(lanes.items()) if l["kind"] == "assay"}
@@ -1786,12 +1852,15 @@ def assay_toolchain_findings(lanes: dict, project_dir: Path, cfg: dict,
                     "SKIP", topic,
                     "docker not on PATH — the environment cannot be probed")})
                 continue
-            repo, worktree, _ = resolve_repo_and_worktree(project_dir, None)
+            repo, worktree, toplevel = resolve_repo_and_worktree(
+                project_dir, worktree_override)
+            probe_dir = (effective_project_dir(project_dir, toplevel, worktree)
+                        if worktree_override else project_dir)
             key = (env_name, tuple(lane["assay_command"]))
             if key not in inventories:
                 inventories[key] = assay_inventory(
                     docker, lane, env, env_name, repo, worktree, env_source,
-                    project_dir)
+                    probe_dir)
             doc, why = inventories[key]
             if doc is None:
                 plan.append({"finding": ("SKIP", topic, why)})
@@ -1994,7 +2063,8 @@ def linked_worktree_gitdir(worktree: Path) -> Path | None:
 
 
 def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
-               cfg_path: Path, central_path: Path | None) -> int:
+               cfg_path: Path, central_path: Path | None,
+               worktree_override: str | None = None) -> int:
     """RG-9: recompose the implemented preflights into one first-contact
     command, run BEFORE a newcomer's first lane does.
 
@@ -2006,12 +2076,32 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
     assay_command) plus one batched tool probe per environment, all read-only
     and short-lived. Nothing is judged and nothing in the tree is written.
     Say so out loud rather than letting "doctor runs nothing" quietly become
-    false."""
+    false.
+
+    RG-30: `--worktree` redirects doctor's per-tree checks (git identity,
+    the RG-21 host-lane git view, mountinfo, and the assay-lane toolchain
+    probe) at THAT tree instead of the invoking checkout — the read-scope
+    hazard `history`'s own `--worktree` fix (RG-27 B1) closed for that verb,
+    closed here for the last remaining instance. The report NAMES the tree
+    (R-05) instead of leaving the substitution to be inferred. Check 3
+    resolves it (`resolve_worktree_scope`, which validates a given override
+    is a real git worktree before anything reads it) INSIDE its own existing
+    try/except: a bad `--worktree` becomes a `[FAIL] git` record, same as
+    every other broken-host case doctor already survives, rather than a
+    silent [OK] on the RG-21 check that follows it — the exact false
+    certification a garbage path pointed at `linked_worktree_gitdir()` would
+    otherwise produce (no gitdir file at a path that doesn't exist reads as
+    "plain checkout, nothing to warn about")."""
     results: list[tuple[str, str, str]] = []
 
     def record(status: str, topic: str, detail: str) -> None:
         results.append((status, topic, detail))
         print(f"run-gate: doctor: [{status}] {topic}: {detail}", flush=True)
+
+    if worktree_override:
+        print(f"run-gate: doctor: --worktree {worktree_override} — this "
+              f"report describes THAT tree, not the invoking checkout",
+              flush=True)
 
     # 1. docker present
     docker = shutil.which("docker")
@@ -2065,8 +2155,11 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
 
     # 3. physical-path derivability + git health
     try:
-        repo, worktree, _ = resolve_repo_and_worktree(project_dir, None)
-        record("OK", "git", f"worktree {worktree}")
+        repo, worktree, _, worktree_scope = resolve_worktree_scope(
+            project_dir, worktree_override, "doctor")
+        record("OK", "git", f"worktree {worktree}"
+               + (f"  (named by --worktree {worktree_scope!r})"
+                  if worktree_scope else ""))
         # RG-21: a LINKED worktree's `.git` is a FILE naming an absolute
         # gitdir under the MAIN checkout. run-gate's own container lanes are
         # unaffected — R-23 dual-mounts the REPO root, so that gitdir is
@@ -2135,7 +2228,8 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
     # needs from its environment, then check the environment for it. Runs at
     # most one short read-only probe per environment; nothing is judged.
     for status, topic, detail in assay_toolchain_findings(
-            lanes, project_dir, cfg, central, cfg_path, central_path):
+            lanes, project_dir, cfg, central, cfg_path, central_path,
+            worktree_override):
         record(status, topic, detail)
 
     ok_n = sum(1 for s, *_ in results if s == "OK")
@@ -2586,13 +2680,16 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "       run-gate.py validate-pointers CONSUMER.toml [--root DIR]",
         "         (RG-2: certify every run-gate pointer in a consumer document —",
         "          trove gates, release steps — against the SSOT lanes they name)",
-        "       run-gate.py doctor   (RG-9 preflight: docker, slices, mountinfo, git,",
-        "          images, the linked-worktree host-lane git view (RG-21), and each",
-        "          assay lane's toolchain fitness asked of the judge itself (RG-25).",
-        "          Judges nothing and writes nothing, but DOES start short read-only",
-        "          probe containers for that last check — fitness can only be",
-        "          observed, not read: one inventory probe per environment+judge,",
-        "          plus one batched `command -v` probe per environment)",
+        "       run-gate.py doctor [--worktree PATH]   (RG-9 preflight: docker,",
+        "          slices, mountinfo, git, images, the linked-worktree host-lane",
+        "          git view (RG-21), and each assay lane's toolchain fitness asked",
+        "          of the judge itself (RG-25). Judges nothing and writes nothing,",
+        "          but DOES start short read-only probe containers for that last",
+        "          check — fitness can only be observed, not read: one inventory",
+        "          probe per environment+judge, plus one batched `command -v`",
+        "          probe per environment. --worktree redirects every per-tree",
+        "          check at THAT tree instead of the invoking checkout, and the",
+        "          report names it (RG-30))",
         "       run-gate.py history [LANE] [--worktree PATH] [--json]",
         "         (RG-27: what each lane most recently did — ANY outcome, dirty or",
         "          aborted runs included — and its bounded per-commit duration",
@@ -2655,7 +2752,10 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    lane's required_env (heuristic — warns, never refuses),",
         "                    PLUS the assay-lane toolchain fitness check, whose",
         "                    FAIL exits 2 (that half is the judge's own finding,",
-        "                    not a heuristic)",
+        "                    not a heuristic). --worktree redirects BOTH halves at",
+        "                    THAT tree, named in the report (RG-30); a --worktree",
+        "                    that names no real git worktree refuses outright",
+        "                    rather than scan/probe nothing under its name",
         "  --json            `history` ONLY: the same data as one JSON document",
         "                    (latest + bounded history + median/min/max, split",
         "                    passes vs all completed runs). Every other verb",
@@ -2782,9 +2882,13 @@ def main(argv: list[str] | None = None) -> int:
         lanes = merge_lanes(cfg.get("lanes", {}), central, project_dir,
                             cfg_path, central_path)
         if args.lane == "doctor":
-            # RG-9 preflight — reads the world, runs nothing.
+            # RG-9 preflight — reads the world, runs nothing. RG-30:
+            # --worktree threads through so every per-tree check (git
+            # identity, RG-21, mountinfo, the assay toolchain probe) answers
+            # about the SELECTED tree, not this invocation's own checkout.
             return cmd_doctor(lanes, project_dir, cfg, central,
-                              cfg_path, central_path)
+                              cfg_path, central_path,
+                              worktree_override=args.worktree)
         if args.lane == "history":
             # RG-27 query verb — reads the store, runs nothing, decides
             # nothing. Rigor/defer POLICY belongs to the controller reading
@@ -2825,8 +2929,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.list:
             return cmd_list(lanes)
         if args.check_env:
+            # RG-30: --worktree redirects both the env-drift scan and the
+            # toolchain-fitness probe at the SELECTED tree.
             return cmd_check_env(lanes, project_dir, cfg, central,
-                                 cfg_path, central_path)
+                                 cfg_path, central_path,
+                                 worktree_override=args.worktree)
         if args.lane not in lanes:
             fail(f"unknown lane {args.lane!r} — known lanes: "
                  f"{', '.join(sorted(lanes)) or '(none)'} (config: {cfg_path}"

@@ -28,6 +28,11 @@ Rev 8: RG-27 lane invocation history — new `R-36` (the two-slot store, its
 per-instance scoping, the history-eligibility conjunction and the `history`
 query verb), with `R-01` (verb), `R-06` (`[history]` top-level table) and
 `R-08` (reserved lane name) amended to match.
+Rev 9: RG-30 — `doctor` and `--check-env` honor `--worktree` (`R-30`/`R-34`
+amended): both passed `None` to `resolve_repo_and_worktree` instead of the
+caller's override, so `doctor --worktree B` silently reported the INVOKING
+tree's answers under B's name — the same read-scope hazard `R-36i` (RG-27
+B1) closed for `history`, closed here for the last remaining instance.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -449,6 +454,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   survive a broken host: a
   preflight that tracebacks on exactly the machine that needs it defeats
   its purpose (git/docker absent → FAIL lines, never a traceback).
+  Read-scope under `--worktree` (RG-30) is `R-37`.
 
 - `R-34` **Assay-lane toolchain fitness (RG-25).** For every `kind = "assay"`
   lane whose environment resolves, `doctor` and `--check-env` ask the JUDGE
@@ -456,6 +462,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   (assay ≥ 3.2.0, B044) executed INSIDE that environment — and then check the
   environment for it. run-gate never parses `assay.toml`; the `assay_lane`
   name stays a string it passes through, exactly as before.
+  The probe's own read-scope under `--worktree` (RG-30) is `R-37`.
   - **One probe path.** `build_env_probe_argv()` is the ONLY place that
     knows how to reach an environment for a short read-only command; it
     reuses `resolve_container_name()` (exec) and
@@ -739,6 +746,44 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     lane, starts no container, and exits 0 whenever the QUERY succeeded —
     an empty store is an answer, not a failure. `history` joins `doctor` and
     `validate-pointers` as a reserved lane name (R-08).
+
+- `R-37` **`doctor`/`--check-env` read scope under `--worktree` (RG-30).**
+  `doctor` and `--check-env` both passed `None` to `resolve_repo_and_worktree`
+  instead of the caller's `--worktree`, so `doctor --worktree B` silently
+  reported the INVOKING tree's answers under B's name — including `R-30a`'s
+  worktree-specific host-lane git-view WARN, exactly the kind of per-tree
+  answer that legitimately differs between trees. `R-36i` (RG-27) closed the
+  identical hazard for `history`; this closes the last remaining instance
+  estate-wide, with the same disclosure discipline.
+  - **`R-37a` `doctor`'s per-tree checks follow `--worktree`.** Git identity,
+    the `R-30a` host-lane git view, and mountinfo all describe a TREE —
+    without `--worktree` that is the invoking checkout, WITH it that is the
+    named tree, resolved and validated by `resolve_worktree_scope()` (a bad
+    override is not a real git worktree, refused by name) INSIDE the same
+    try/except the "git" check already wraps every failure in: a garbage
+    `--worktree` becomes a `[FAIL] git` record — same as every other
+    broken-host case doctor already survives — rather than reaching the
+    `R-30a` check at all, whose "no gitdir file here" reads as "plain
+    checkout, nothing to warn about" and would otherwise print a FALSE
+    `[OK]` for a tree that does not exist. A disclosure line names the
+    selected tree up front, and the "git" record itself repeats it (`R-05`).
+  - **`R-37b` The toolchain probe's `cd` target follows it too.** Both the
+    `repo`/`worktree` a probe mounts AND the `cd` target it runs inside
+    (`assay_toolchain_findings()`) follow the SAME override — mounting the
+    selected tree's repo while `cd`ing into the invoking checkout's absolute
+    project path would not probe the selected tree, it would run against a
+    directory the probe container never mounted (or, coincidentally, the
+    wrong one). Shared by `doctor` (check 5) and `--check-env`'s toolchain
+    half — one relocation, two callers.
+  - **`R-37c` `--check-env`'s env-drift scan follows it too, and refuses
+    upfront rather than degrading.** The advisory Python-source scan reads
+    the SELECTED tree's sources (`resolve_worktree_scope()`), not the
+    invoking checkout's. Unlike `doctor`, `--check-env` has no per-check
+    ledger for a bad override to land in gracefully, so resolution happens
+    upfront and a bad `--worktree` refuses the whole command (exit 2 not a
+    directory, exit 3 not a git work tree, carrying git's own line) rather
+    than silently scanning nothing under a nonexistent tree's name — the
+    same refuse-loud shape `R-36i` uses for `history`'s read side.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 

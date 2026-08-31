@@ -166,6 +166,32 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   resolution scope (`judged worktree:` / `repo:`) and the file used, and a
   missing-config refusal names both candidate paths. SPEC `R-14a`;
   CONSUMERS "Python app estate with its own runner".
+- **RG-30 — `doctor`/`--check-env` honor `--worktree` (rev 31).** Both
+  verbs passed `None` to `resolve_repo_and_worktree` instead of the
+  caller's `--worktree`, so `doctor --worktree B` silently reported the
+  INVOKING tree's answers under B's name — including the `R-30a`
+  worktree-specific host-lane git-view WARN, exactly the kind of per-tree
+  answer that legitimately differs between trees. `history`'s own
+  `--worktree` fix (RG-27 B1) closed the identical read-scope hazard for
+  that verb; this closes the last remaining instance estate-wide, with the
+  same disclosure discipline (the report NAMES the tree it describes). New
+  shared `resolve_worktree_scope()` resolves and validates the override
+  (a bad one is refused by name — never silently answers for a
+  nonexistent tree). `doctor`'s per-tree checks (git identity, `R-30a`,
+  mountinfo) resolve it inside the SAME try/except the "git" check already
+  wraps every failure in, so a bad override becomes a `[FAIL] git` record
+  — never a false `[OK]` on the RG-21 check that follows it. The shared
+  assay-toolchain probe (`assay_toolchain_findings`, used by both `doctor`
+  check 5 and `--check-env`) relocates BOTH the `repo`/`worktree` it mounts
+  AND the `cd` target it runs inside — mounting the selected tree while
+  `cd`ing into the invoking checkout's path would not probe the selected
+  tree, it would run against a directory the probe container never
+  mounted. `--check-env`'s own env-drift scan follows the override for its
+  Python-source scan too, and — having no per-check ledger to degrade
+  into — refuses upfront on a bad `--worktree` rather than scanning
+  nothing under the wrong tree's name. SPEC `R-37` (`R-37a`/`R-37b`/
+  `R-37c`); README "Effective tree"; CONSUMERS "`--worktree` redirects the
+  whole report, not just the run".
 
 <!-- Post-release housekeeping (assay CHANGES.md precedent): this block is
      CLEARED immediately after a release. cmru generates the dated entry

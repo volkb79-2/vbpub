@@ -267,6 +267,16 @@ unreachable environment, an inventory schema this run-gate does not read, a
 turns a healthy project red**. `doctor` exits 2 only on FAIL; `--check-env`
 exits 2 on a toolchain FAIL while its env-drift half stays advisory.
 
+**`--worktree` redirects the whole report, not just the run (RG-30).**
+`./run-gate.py doctor --worktree B` and `./run-gate.py --check-env
+--worktree B` probe B's environment, scan B's Python sources, and read B's
+git identity — never the invoking checkout's under B's name. `doctor` names
+the selected tree up front and repeats it on the `[OK] git` line; a
+`--worktree` that names no real git worktree fails the `git` check loudly
+(never a silent `[OK]`) while the rest of the report still runs. `--check-env`
+has no per-check ledger for a bad override to land in gracefully, so it
+refuses outright instead of scanning nothing under the wrong tree's name.
+
 Which tools get checked: `external_tools` and `argv0` as the inventory
 reports them, plus the toolchain implied by `language` (`javascript` →
 `node`, `npm`; `go` → `go`). That last mapping lives in run-gate only
