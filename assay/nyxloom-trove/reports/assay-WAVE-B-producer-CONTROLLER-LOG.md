@@ -75,3 +75,24 @@ and the loop keeps moving. Full memory: `autonomous-loop-report-vs-pause`.
   heredoc, self-corrected) — reinforced again, explicitly, in generation
   3's dispatch. Dispatching generation 3, fresh, seeded with
   `assay-WAVE-B-producer-BRIEF-2.md`.
+
+- **2026-08-31 (checkpoint 3 — MAJOR milestone)** — Generation 3 landed the
+  schema cut: `af14021f` (`feat(assay)!:`, the wave's ONE AND ONLY `!` commit
+  — `VERDICT_SCHEMA_VERSION = 9`, full v9 field set for all four items
+  registered in schema+dataclass+verify.py, native defaults wired, 48
+  fixtures + 7 test modules migrated) and `1577fa45` (W5 frozen drift-guard
+  generation, `cmp`-verified byte-identical, gate wiring, W4 demoted).
+  B045 now fully complete. Full `pytest tests/` green at tip (3668/13/0,
+  328.17s, same node count as pre-cut). The controller-endorsed fork
+  (checkpoint 2) landed as A-360 with two extensions the endorsement didn't
+  explicitly cover (native->ingested forbidding mirrored both directions;
+  `equivalence_artifact` joined the wire's forbidden set) — both follow
+  directly from the endorsed reasoning, **not re-litigated, just flagged for
+  the reviewer** per the implementer's own brief 3 §6. **No blocking decision
+  asks.** Housekeeping win: the Edit/apply_patch-only rule held cleanly this
+  entire session after two prior slips (the only Bash-driven file ops were
+  two byte-identical `cp` duplications the implementer explicitly justified
+  as the one thing Write can't do honestly). Remaining scope: B046 (raw
+  verify.py currently checks NOTHING about an ingested payload — this is
+  B046's gap to close, not a new problem), B043, B041(b), REPORT, gate.
+  Dispatching generation 4, fresh, seeded with all three briefs.
