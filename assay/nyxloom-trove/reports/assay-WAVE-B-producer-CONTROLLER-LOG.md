@@ -338,3 +338,23 @@ and the loop keeps moving. Full memory: `autonomous-loop-report-vs-pause`.
   → real release → deploy → notify, all complete. Proceeding to dispatch
   Wave C (Go support) next, per the goal's ordering rule (gated on B's
   real release, not merely its merge).
+
+- **2026-08-31 (Wave C pre-dispatch research)** — before writing the Wave
+  C dispatch prompt, found `4-backlog.md`'s **B047 ("Go wave preparation")**
+  frames this wave as **"the P27 re-carve"** — not a fresh package, but a
+  resumption of a long-standing, partially-blocked carve with its own
+  `STATE.md` history (references to a `carve-assets/P27/BLOCKED-grammar.md`
+  and a resequencing note "P27 is still NOT dispatchable"). Since I could
+  not tell from a shallow read whether that blocker is still live or was
+  resolved by a later decision, and B047 itself is dated 2026-08-30 (i.e.
+  written well after the STATE.md fragments I saw) and treats P27 as a
+  normal upcoming carve with no mention of a blocker — a genuine currency
+  question, not a design fork — dispatched a research-only fork (no code,
+  no decisions) to establish: whether P27 is actually blocked today, the
+  roadmap+backlog's agreed current sequencing, what already exists in
+  `adapters/`/`coverage_parsers/` (Wave A's B039 work already names
+  `go_cover` as an existing consumer, suggesting partial Go support may
+  already be in the tree), and the load-bearing A-numbered decisions
+  (A-217/A-234/A-235/A-239/A-253/A-163/A-O17/A-O19) so the dispatch prompt
+  cites real, current ground truth rather than my own guess. Waiting on
+  its findings before writing the implementer's brief.
