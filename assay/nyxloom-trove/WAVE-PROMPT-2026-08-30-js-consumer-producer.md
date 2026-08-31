@@ -25,6 +25,16 @@ merged-but-unreleased — the whole reason for this order is that Go's carve
 consumes `producer`/`helpers[]` as SHIPPED, stable fields, not as
 in-flight ones on an unreleased major.
 
+**Wave B shipped as assay-v4.0.0** (2026-08-31) — reviewed 1 round to
+ACCEPT-conditional (one real blocker: a `cwd`+`link_paths` collision over
+the same path silently ran the lane in the real working tree, not the
+snapshot) plus a trivial fix-verification round, both resolved; merged
+`--no-ff` to main (`5692ad37`), released (gate 793.2s, tagged
+`assay-v4.0.0`), deployed, `CHANGES.md` cleared, dstdns notified
+(`landed: B045, B043, B041(b), B046/B037`). B050/B051/B052 filed, not
+built, correctly deferred. Full detail: `reports/assay-WAVE-B-producer-*`
+(LOG/REPORT/CONTROLLER-LOG). **Wave C dispatch follows below.**
+
 ## Sequencing, and why
 
 | wave | version | verdict schema | contents | why this order |
@@ -266,3 +276,143 @@ Same skeleton; substitute:
   re-derives `pct` for ingested R2 from the payload.
 - **Release-notify to dstdns:** the `producer = "istanbul"` action, the R2
   lane shape, `cwd`, `link_paths`.
+
+## Wave C — dispatched 2026-08-31, post-4.0.0
+
+**Pre-dispatch currency check (controller, 2026-08-31):** `STATE.md`'s older
+language ("P27 is still NOT dispatchable") describes the *pre-A-217* state
+and is stale for the ruling itself, but not wrong about sequencing — A-217
+(2026-08-11) ruled A-O19 and simultaneously required P27 to be **re-carved**
+around the oracle rather than dispatched as originally scoped; this wave
+*is* that re-carve. `3-roadmap.md` (current as of 2026-08-24) lists M6 as
+next after M4 (ship, done) and M5 (SQL/P34, done) — clear to proceed.
+`2-product-definition.md`'s F008 has 5 acceptance criteria; F008-A1/A2 are
+already `proven`/shipped (registration, fail-closed `has_executable_code`).
+**M6 delivers only the three `absent` ones (F008-A3/A4/A5)** — this is the
+current, authoritative scope, replacing the older `STATE.md` P27→P32
+sequence's broader "P30 real Go R2 / P31 real Go R3" language, which no
+later roadmap or backlog entry re-authorizes. Go R2/R3 stay out of scope;
+`generate_mutants` stays unconditionally `UNSUPPORTED` for Go.
+
+Same skeleton as Wave A/B; substitute:
+
+- **Worktree/branch:** `.worktrees/assay-wave-c-go`,
+  `feature/assay-wave-c-go`, from `main` AFTER 4.0.0 (done).
+- **Scope, in order** (each: implement → tests → docs → LOG entry →
+  commit):
+  1. **A-239's accepted shape, carved concretely.** `go_cover.py` emits
+     block extents as an explicit representation (`blocks` field or sibling
+     type on `FileCoverage`/`CoverageProfile` in `coverage_parsers/model.py`
+     — YOU design the exact shape, per A-084: the package proving the need
+     owns the extension). Statement positions arrive through a **NEW**
+     protocol hook on `LanguageAdapter` — never by overloading
+     `statement_spans` (A-097/A-101 freeze its "called only for
+     unattributed lines" contract; A-239 explicitly rejected correcting at
+     the adapter/evaluate boundary as information-theoretically
+     insufficient — read A-239's full reasoning column before choosing a
+     shape). The intersection (block extents + statement positions →
+     statement-granular line sets) lives in the core as a pure,
+     language-free function (P07's span precedent), **built Go-specific,
+     not shared infrastructure** (A-239: no third consumer to amortize
+     against — TypeScript's likely format is already statement-precise,
+     SQL has no coverage tool).
+  2. **The oracle itself — B047 item 1.** Ship `assay/helpers/go/stmtpos/`
+     (stdlib-only Go source) inside the wheel, invoke via `go run <path>`;
+     `GOFLAGS=-mod=mod GOPROXY=off` proven in your own probe (no module
+     download); `helpers[].identity` records `go version …`. Adapt
+     `cmd/cover`'s own instrumenter algorithm (`golang/go`
+     `src/cmd/cover/cover.go`, BSD-3-Clause, `Visit`/`addCounters`/
+     `statementBoundary` — A-217's own implementation note: "adapt, do not
+     invent"), never `golang.org/x/tools/cover`'s `Profile.Boundaries()`
+     (interpolates byte offsets between block positions, does no AST work).
+     Check the oracle against **every** frozen witness in
+     `carve-assets/P27/witness/` — read `carve-assets/P27/README.md` first,
+     it is carver-owned, **do not edit those files**:
+     - `collision-col{A,B}.go` + `coverage-collision.out` — the
+       impossibility proof itself; a correct oracle must derive `{4,6}` for
+       A and `{4,5}` for B from SOURCE, given the byte-identical profile.
+     - `seg.go` — the discriminator that kills rules fitted only to the
+       original four witnesses.
+     - `lit.go` — the laundering caveat: an uncovered func-literal body
+       promoted by its covered enclosing block; the over-approximation
+       relation fails for the MISSING set here, not just the executed set.
+     - `shapes.go` — the half-open proof (shared boundary positions).
+     - `edge.go` — the end-column-1 case, and the proof it discriminates
+       nothing (A-218) — do not build a rule that depends on it.
+     `pinned-environment.json` names every image/toolchain input; probe via
+     the tar-pipe pattern `carve-assets/P27/README.md` documents (this
+     devcontainer's `/tmp` is not Docker-visible at the same path — no bind
+     mount), `tester-unified-go:local`, `--network=none`.
+  3. **F008-A4 — regenerate the committed Go coverage fixtures**
+     (`tests/fixtures/go/hello/hello.out`,
+     `tests/fixtures/canary/go/greet/greet_control.out`), sequenced AFTER
+     items 1–2 land (A-234's own warning: swapping in a real profile before
+     the oracle exists would just replace a wrong profile with a real one
+     still read as statement truth — the identical conflation A-O19 exists
+     to remove). Real bytes are already captured at
+     `carve-assets/P27/witness/coverage-hello-fixture-REAL.out`; the
+     correct EXPECTED assertions depend on your new oracle, not on that
+     file alone.
+  4. **B047 item 2 — `external_tools = ("go",)`** on the Go adapter. A-253
+     already assigns the `MISSING_EXTERNAL_TOOL` preflight mechanism to
+     P34, built and tested — you only add the declaration, nothing new to
+     build.
+  5. **B047 item 3 — `judge.coverage.producer` for `go-cover`.** Closed
+     vocabulary `go-test` (`go test -coverprofile`) | `covdata` (`go tool
+     covdata textfmt` over `GOCOVERDIR` binary data from `go build -cover`
+     binaries — the integration-test path, an S3 lane). Uses B045's
+     already-shipped producer-key mechanism; document both names and what
+     each measures.
+  6. **B047 item 5 — gate envelope.** Confirm `LaneResult` copies
+     `helpers[]` verbatim for a Go lane (likely already true structurally
+     from the Python/JS waves); this is a verification + documentation
+     item unless you find a real gap, in which case fix it and say so.
+  7. **F008-A5 — qualify against srdm's own Go covergate on the same
+     commits** (`shared-ramdisk-depot-manager/tools/covergate`), so union
+     fidelity is mechanical, not a review question. Known caveat: memory
+     records covergate silently skipped one package (P14) in a past run —
+     if your qualification disagrees with covergate, check whether
+     covergate itself is the one with the gap before assuming assay is
+     wrong; name whichever side you conclude is right, with evidence.
+- **NOT IN SCOPE — STOP AND WRITE A DECISION ASK IN THE REPORT INSTEAD:**
+  Go R2 (`generate_mutants` stays `UNSUPPORTED` — no roadmap/backlog entry
+  authorizes building it this wave) or R3; anything for `javascript`/`sql`;
+  a verdict wire-schema field. Item 1's `blocks` field lives in
+  `coverage_parsers/model.py` (an internal representation `verify.py`/the
+  wire schema never sees) — **expected to need NO schema bump**, same v9,
+  same drift-guard (`carve-assets/W5/`); if your own design genuinely
+  cannot avoid a wire field, stop and write the decision ask rather than
+  cutting v10 yourself.
+- **Rules, in addition to Wave A/B's (A-334/A-335/DESIGN-GUIDE §5,
+  decisions.md append-only, commit/CHANGES.md/backlog hygiene):** A-042/
+  A-043 (no Go toolchain in this devcontainer, ever — `tester-unified-go`
+  only); A-087 does NOT transfer as precedent for a hand-guessed oracle
+  (read A-217's own paragraph on why `has_executable_code`'s
+  fail-closed permissiveness does not excuse a wrong statement position).
+- **Commits:** no `!` expected (no wire-schema change) — plain
+  `feat(assay):`/`fix(assay):`, cmru computes a MINOR bump. Do not force a
+  `!` to match Wave B's pattern; that pattern was the schema bump, and this
+  wave is designed not to need one.
+- **CHANGES.md:** Added/Fixed bullets; no "Migration notes" section unless
+  a decision ask forces a schema change after all.
+- **Decisions:** append A-rows for the concrete `blocks` representation and
+  the new protocol hook's exact signature (A-239 explicitly defers both to
+  this re-carve); mark F008-A3/A4/A5 `proven`/status-updated in
+  `2-product-definition.md` with evidence, matching F008-A1/A2's existing
+  style.
+- **Reviewer emphasis:** re-run the oracle against all six witness
+  directories yourself, not just the ones the implementer cites; confirm
+  `collision-col{A,B}` really do get resolved to different statement sets
+  from source (not from the identical profile bytes); confirm `lit.go`'s
+  missing-set failure is actually fixed, not just the executed-set;
+  confirm `GOPROXY=off` really holds (no accidental network/module fetch)
+  in the helper probe; confirm nothing touched `verdict.py`/`verify.py`/
+  the schema/the drift-guard without a logged decision ask; the srdm
+  covergate qualification's real PASS/FAIL agreement on real commits
+  (A-208 — not vacuous agreement); run the registered gate yourself on the
+  tip.
+- **Release-notify to dstdns:** low urgency unless dstdns has a Go lane
+  today (check `.assay-inbox` history / dstdns's own `assay.toml` before
+  assuming) — if it does, the accuracy fix (statement-granular Go R1) is
+  the one-line summary; otherwise a brief FYI is enough, no action-required
+  framing.
