@@ -1818,6 +1818,58 @@ CHECK_STAGES: tuple[str, ...] = (
 )
 
 
+#: The closed severity vocabulary a ``validate_config`` finding may declare
+#: (S9.5, CIU-65). Deliberately a SUBSET of :mod:`warn_policy`'s
+#: ``EXIT_ON_VALUES``: ``NEVER`` is a *threshold* ("abort at nothing"), not a
+#: property a finding can have, so a hook declaring it is refused rather than
+#: silently reinterpreted.
+HOOK_FINDING_SEVERITIES = ("WARN", "ERROR")
+
+
+def classify_hook_finding(item: object) -> tuple[str, str]:
+    """One ``validate_config`` finding → ``(severity, message)`` — S9.5, CIU-65.
+
+    Two accepted shapes, and the split is what gives a hook author a finding
+    that is worth knowing without also being must-block:
+
+    * a bare **message string** → ``("ERROR", message)``. This is the shape
+      every hook returned before CIU-65 and its meaning is UNCHANGED: an
+      ERROR blocks, exactly as today. Backward compatibility is the point,
+      so nothing an existing hook returns changes weight.
+    * a **2-element ``tuple`` or ``list``** ``(severity, message)`` whose
+      severity is ``WARN`` or ``ERROR``. Lists are accepted alongside tuples
+      because a hook that assembles findings from JSON or a comprehension
+      naturally produces lists, and refusing those would be a trap with no
+      safety value.
+
+    Severity matching is **case- and whitespace-insensitive**
+    (``str(value).strip().upper()``), the same normalization
+    :func:`warn_policy._validate_exit_on` already applies to this exact
+    vocabulary elsewhere in this codebase.
+
+    An unrecognized severity RAISES rather than defaulting. Defaulting it to
+    ERROR would be merely noisy, but defaulting it to WARN — or accepting
+    anything truthy as WARN — would let a hook author's typo (``"warning"``,
+    ``"Error!"``) silently downgrade a blocking finding to an advisory note:
+    a masked default, invisible in every run that does not happen to hit it.
+    Any other object still falls through to ``("ERROR", str(item))``, which
+    is precisely what the pre-CIU-65 loop did to it, so an odd return value
+    keeps failing closed instead of becoming newly acceptable.
+    """
+    if isinstance(item, (tuple, list)) and len(item) == 2:
+        raw_severity, raw_message = item
+        severity = str(raw_severity).strip().upper()
+        if severity not in HOOK_FINDING_SEVERITIES:
+            raise ValueError(
+                f"validate_config declared severity {raw_severity!r}; S9.5 "
+                f"accepts {' or '.join(HOOK_FINDING_SEVERITIES)} "
+                "(case-insensitive) — the finding is refused rather than "
+                "guessed at"
+            )
+        return severity, str(raw_message)
+    return "ERROR", str(item)
+
+
 class _CheckReport:
     """Ordered per-stage accumulator for ``ciu check`` (S13.4a).
 
@@ -1855,11 +1907,26 @@ class _CheckReport:
             finding["hook"] = hook
         entry["findings"].append(finding)
 
-    def note(self, stage: str, message: str, *, stack: str | None = None) -> None:
-        """Record a non-failing observation against *stage*."""
+    def note(
+        self,
+        stage: str,
+        message: str,
+        *,
+        stack: str | None = None,
+        hook: str | None = None,
+    ) -> None:
+        """Record a non-failing observation against *stage*.
+
+        *hook* mirrors :meth:`fail`'s own key (CIU-65): a WARN-severity
+        ``validate_config`` finding must name the hook that raised it just as
+        an ERROR-severity one does, or the two tiers would carry different
+        provenance for the same kind of finding.
+        """
         note: dict[str, str] = {"message": message}
         if stack is not None:
             note["stack"] = stack
+        if hook is not None:
+            note["hook"] = hook
         self._stages[stage]["notes"].append(note)
 
     @property
@@ -2253,13 +2320,25 @@ def _check_hooks_for_stack(
                 report.fail(
                     "hooks-preflight",
                     f"validate_config returned {type(result).__name__}; S9.5 requires "
-                    "a list of error strings (empty = OK)",
+                    "a list of findings, each either a message string (ERROR) or a "
+                    "(severity, message) pair whose severity is WARN or ERROR "
+                    "(empty = OK)",
                     stack=rel,
                     hook=str(raw),
                 )
                 continue
             for item in result:
-                report.fail("hooks-preflight", str(item), stack=rel, hook=str(raw))
+                try:
+                    severity, message = classify_hook_finding(item)
+                except ValueError as exc:
+                    report.fail("hooks-preflight", str(exc), stack=rel, hook=str(raw))
+                    continue
+                if severity == "WARN":
+                    report.note(
+                        "hooks-preflight", f"[WARN] {message}", stack=rel, hook=str(raw)
+                    )
+                else:
+                    report.fail("hooks-preflight", message, stack=rel, hook=str(raw))
 
 
 def _check_stack_config(
@@ -2520,7 +2599,8 @@ def _emit_check_report(
         info(f"  [{mark}] {entry['stage']}: {entry['status']}")
         for note in entry["notes"]:
             where = f"{note['stack']}: " if "stack" in note else ""
-            info(f"        note: {where}{note['message']}")
+            hook = f"[{note['hook']}] " if "hook" in note else ""
+            info(f"        note: {where}{hook}{note['message']}")
         for finding in entry["findings"]:
             where = f"{finding['stack']}: " if "stack" in finding else ""
             hook = f"[{finding['hook']}] " if "hook" in finding else ""
@@ -2770,6 +2850,55 @@ def action_check(
     if not json_output:
         success("check passed")
     return 0
+
+
+def check_preflight(
+    repo_root: Path,
+    profile: profiles_pkg.Profile,
+    selection: list[dict],
+    rendered: dict[str, dict],
+    *,
+    skip_check: bool = False,
+) -> None:
+    """Run ``ciu check``'s static checks before ``ciu up`` starts anything (CIU-64).
+
+    ``ciu check`` is documented as genuinely side-effect-free — no hostdir is
+    created, no secret materialized, no hook ``run()`` executed, Docker never
+    contacted — which is exactly what makes it safe to run unconditionally as
+    a preflight. Before CIU-64 it ran ONLY on the explicit ``ciu check`` verb,
+    so an operator who deployed straight from ``ciu up`` got no benefit from
+    either the graph lint or any hook's ``validate_config``: the "relies on
+    someone remembering" shape this tool's own validation machinery exists to
+    eliminate everywhere else.
+
+    Only ERROR-severity findings refuse. WARN-severity findings (S9.5,
+    CIU-65) are printed by :func:`_emit_check_report` as ``note: [WARN] …``
+    lines and deliberately do NOT block — a two-tier vocabulary whose lower
+    tier still blocks is a one-tier vocabulary.
+
+    Modelled on the ``[S7.x]`` provisioning-graph refusal this sits beside:
+    raises ``ValueError``, which :func:`engine._exit_code_for` maps to exit 2
+    (S10.3 configuration/validation). ``--skip-check`` is the break-glass
+    escape, mirroring ``--no-preflight``'s existing precedent for the live
+    per-stack requires probe — and it ANNOUNCES itself, because a silently
+    skipped gate is a gate that is not there.
+    """
+    if skip_check:
+        warn(
+            "--skip-check: skipping the `ciu check` static preflight (S13.4a, "
+            "break-glass) — a configuration error it would have refused now "
+            "surfaces mid-deploy, after stacks have already started"
+        )
+        return
+    info("Preflight: running `ciu check`'s static validation (S13.4a, CIU-64)")
+    rc = action_check(repo_root, profile, selection, rendered, live=False, json_output=False)
+    if rc != 0:
+        raise ValueError(
+            "[S13.4a] `ciu check` found ERROR-severity finding(s) — refusing to "
+            "deploy before anything starts. The findings are printed above. Fix "
+            "them, or re-run with --skip-check to deploy anyway (break-glass). "
+            "WARN-severity findings never reach this refusal."
+        )
 
 
 def action_graph(
@@ -3837,6 +3966,10 @@ Examples:
                          help="Preflight: treat any missing-tool warning as a hard failure (exit 1)")
     control.add_argument("--no-preflight", dest="no_preflight", action="store_true",
                          help="Skip provisioning + governance-slice preflight checks (break-glass)")
+    control.add_argument("--skip-check", dest="skip_check", action="store_true",
+                         help="Skip the `ciu check` static preflight that `ciu up` "
+                              "runs by default before STEP 1 (S13.4a/CIU-64) "
+                              "(break-glass)")
     control.add_argument("--ignore-mismatch", "--force", dest="ignore_mismatch",
                          action="store_true",
                          help="S17.2 (`ciu provenance`): run even when a "
@@ -3967,6 +4100,14 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             repo_root, profile, selection,
             ciu_context=profiles_pkg.render_ciu_context(profile, selection),
         )
+        # CIU-64: the broadest static gate runs FIRST, so an operator with a
+        # config defect gets the whole `ciu check` report in one pass rather
+        # than being stopped by whichever narrower preflight below happens to
+        # fire first.
+        check_preflight(
+            repo_root, profile, selection, rendered,
+            skip_check=getattr(args, 'skip_check', False),
+        )
         vault_preflight(repo_root, profile, selection, rendered)
         producer_preflight(profile, selection, rendered)
         provisioning_preflight(
@@ -3995,6 +4136,13 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         rendered = render_selected_stacks(
             repo_root, profile, selection,
             ciu_context=profiles_pkg.render_ciu_context(profile, selection),
+        )
+        # CIU-64: --dry-run gets the same static gate. It is side-effect-free
+        # either way, and a dry run exists precisely to find this class of
+        # defect before a real one.
+        check_preflight(
+            repo_root, profile, selection, rendered,
+            skip_check=getattr(args, 'skip_check', False),
         )
         vault_preflight(repo_root, profile, selection, rendered)
         producer_preflight(profile, selection, rendered)

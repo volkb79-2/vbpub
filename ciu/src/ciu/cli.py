@@ -250,6 +250,11 @@ ciu up --host NAME --thin [--bootstrap | --rollback] [selection...] # docker-opt
   --phases N,M       restrict to the given phase numbers
   --dry-run          render and validate, but do not call Docker
   --no-preflight     skip host/provisioning preflight checks (break-glass)
+  --skip-check       skip the `ciu check` static preflight (break-glass).
+                     `ciu up` runs it BY DEFAULT before STEP 1 (S13.4c) —
+                     side-effect-free, and it refuses on any ERROR-severity
+                     finding, including a hook's validate_config (S9.5).
+                     WARN-severity findings are printed, never blocking
   --define-root PATH override repo root (alias: --root-folder)
   -y, --yes          assume yes to prompts
   --ignore-errors    continue past a failing stack

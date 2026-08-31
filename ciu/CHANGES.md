@@ -54,6 +54,16 @@ restatement of the technical detail below it.
 - **Docs only, no behavior change:** a new CONSUMERS.md migration note
   (hand-rolled `internal_host` override → `--shared-infra-ref-services`) and
   a consolidated "Optional extras" install table in README.md.
+- **New default-on behavior — read this if you run `ciu up`:** CIU-64 makes
+  `ciu up` run `ciu check`'s static pipeline itself, before STEP 1, and
+  REFUSE (exit 2) on any ERROR-severity finding — including one from a
+  stack's own `validate_config` hook. Nothing opts in. A config that
+  `ciu check` already passes deploys exactly as before; a config that
+  `ciu check` would have failed now stops before anything starts instead of
+  failing mid-deploy. `--skip-check` is the break-glass escape.
+- **Additive for hook authors:** CIU-65 lets a `validate_config` finding be
+  a `("WARN", "…")` pair instead of a bare error string. Existing hooks are
+  untouched — a bare string still means ERROR and still blocks.
 - **Action needed if your checkout has a corrupt `ciu.env`:** CIU-62 makes
   `ciu clean` FAIL on a present-but-unreadable `ciu.env` instead of treating
   it as "no identity network" and under-cleaning silently. An absent
@@ -161,6 +171,61 @@ restatement of the technical detail below it.
   excluded (it is for CIU's own contributors, not consumers). Purely
   additive: the existing per-feature mentions in `docs/CONFIG.md` and
   `docs/CONSUMERS.md` are unchanged. Docs-only; no behavior changes.
+
+- feat(ciu): **CIU-65 — a `validate_config` finding can now carry a
+  severity** (SPEC S9.5, ciu-P41). `validate_config(config, ctx)` returned a
+  bare `list[str]` in which every finding was implicitly the same weight, so
+  there was no way for one to be "worth knowing" without also being "must
+  block" — while `_CheckReport` had carried the two-tier `.fail`/`.note`
+  vocabulary this needs the whole time, and the consumption loop simply never
+  reached for `.note`. A finding may now be a 2-element `tuple` OR `list`
+  `(severity, message)` whose severity is `WARN` or `ERROR`, matched
+  case- and whitespace-insensitively — the same `str(v).strip().upper()`
+  normalization S10.7's `ciu.exit_on` already applies to this vocabulary.
+  `ERROR` fails the stage exactly as before; `WARN` becomes a stage NOTE
+  (printed as `note: [WARN] …`, present in the `--json` envelope's `notes`
+  array with the same `stack`/`hook` keys a finding carries) and changes no
+  exit code.
+
+  **Backward compatible by construction:** a bare message string is `ERROR`,
+  unchanged, so no existing hook changes weight. The finding vocabulary is
+  deliberately the SUBSET `{WARN, ERROR}` of S10.7's
+  `WARN`/`ERROR`/`NEVER` — `NEVER` is a threshold, not a property a finding
+  can have. An unrecognized severity is REFUSED as its own ERROR finding
+  naming the accepted values rather than defaulted: reading a typo'd
+  `"warning"` AS a warn would silently downgrade a blocking finding, and the
+  run that did so would look identical to a healthy one. Routing is
+  deliberately NOT wired through `ciu.exit_on`/`$CIU_EXIT_ON` — a hook's
+  static findings must not change the machine-readable `--json` verdict
+  according to ambient shell state.
+
+### Changed
+- feat(ciu)!: **CIU-64 — `ciu up` now runs `ciu check` itself, by default**
+  (SPEC S13.4c, ciu-P41). Before this, both the provisioning-graph lint and
+  every hook's `validate_config` ran ONLY on the explicit `ciu check` verb.
+  An operator who deployed straight from `ciu up` — the invocation this
+  project's own docs prescribe — got the benefit of neither: precisely the
+  "relies on someone remembering" shape CIU's own validation machinery exists
+  to eliminate everywhere else. `ciu up` now runs S13.4a's **static**
+  pipeline (never `--live`) before STEP 1 and refuses on any ERROR-severity
+  finding with exit 2, the same way it already refuses on an `[S7.x]`
+  provisioning-graph failure.
+
+  It is safe to run unconditionally because S13.4a is side-effect-free by
+  construction — no hostdir, no secret, no compose/overlay write, no hook
+  `run()`, no Docker contact — and it reuses the SAME rendered selection the
+  deploy preflights already computed, so there is one render, not two. It
+  runs FIRST among the preflights (one complete report beats being stopped by
+  whichever narrower check fires first) and under `--dry-run` too.
+
+  **This is a new default-on refusal.** A configuration `ciu check` already
+  passes deploys exactly as before. A configuration `ciu check` would have
+  failed now stops before anything starts, where it previously failed
+  mid-deploy or not at all. WARN-severity findings (CIU-65) never refuse —
+  they print as `note: [WARN] …` and the deploy proceeds. `--skip-check` is
+  the break-glass escape, mirroring `--no-preflight`'s precedent, and it
+  ANNOUNCES itself with a `[WARN]` line naming what was skipped: a silently
+  skipped gate is a gate that is not there.
 
 ### Fixed
 - fix(ciu): **CIU-62 — a `ciu.env` that cannot be read is now handled the

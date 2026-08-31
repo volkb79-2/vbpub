@@ -1440,13 +1440,45 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   config/state; the v1 `VAULT_TOKEN`-export hook is superseded by the
   S4.16 built-in token source order).
 - **S9.5** **Optional preflight entry point** — a hook module (or `Hook`
-  class) MAY define `validate_config(config, ctx) -> list[str]` beside its
-  `run`. CIU calls it **only** during `ciu check` (S13.4a) and **never**
-  during `ciu up`; `run()` is never called by `ciu check`. Contract:
-  - **Return type is `list[str]`** — one error string per finding, empty
-    list = valid. It is NOT a boolean: a `True`/`False` return is a contract
-    violation and is reported as such, never read as a verdict. A `None`
-    return is tolerated as "no findings"; any other type is a violation.
+  class) MAY define `validate_config(config, ctx) -> list` beside its `run`.
+  CIU calls it during `ciu check` (S13.4a) **and, since CIU-64, during
+  `ciu up`'s own automatic static preflight (S13.4c)** — the same
+  side-effect-free call in both cases. `run()` is never called by either.
+  Contract:
+  - **Return type is a `list` of findings**, empty list = valid. A `None`
+    return is tolerated as "no findings"; a `str`/`bytes` return, or any
+    non-list/tuple type, is a contract violation and is reported as such.
+    It is NOT a boolean: a `True`/`False` return is a violation, never read
+    as a verdict.
+  - **Each finding carries a severity (CIU-65).** Two shapes are accepted:
+    - a bare **message string** — severity `ERROR`. This is the pre-CIU-65
+      shape and its meaning is UNCHANGED, so no existing hook changes
+      weight;
+    - a **2-element `tuple` or `list`** `(severity, message)` whose severity
+      is `WARN` or `ERROR`, matched case- and whitespace-insensitively
+      (`str(value).strip().upper()`) — the same normalization S10.7's
+      `ciu.exit_on` already applies to this vocabulary. Lists are accepted
+      alongside tuples so a hook assembling findings from JSON or a
+      comprehension is not trapped.
+
+    The finding vocabulary is exactly `WARN` and `ERROR` — deliberately a
+    SUBSET of S10.7's `WARN`/`ERROR`/`NEVER`, because `NEVER` is a
+    *threshold* ("abort at nothing"), not a property a finding can have. Any
+    other severity value is REFUSED as its own ERROR finding naming the
+    accepted vocabulary; it is never guessed at. Defaulting an unrecognized
+    severity to `WARN` would let a hook author's typo (`"warning"`,
+    `"Error!"`) silently downgrade a blocking finding to an advisory note.
+  - **What each severity does.** `ERROR` findings mark the
+    `hooks-preflight` stage failed: `ciu check` exits 2, and `ciu up`'s
+    S13.4c preflight refuses before anything starts. `WARN` findings are
+    recorded as stage NOTES: they appear in the prose report as
+    `note: [WARN] …` and in the `--json` envelope's `notes` array (carrying
+    the same `stack`/`hook` keys a finding does), and they change NO exit
+    code and block NO deploy. A `WARN` that still blocked would make the two
+    tiers one tier. This routing is deliberately NOT wired through S10.7's
+    `ciu.exit_on`/`$CIU_EXIT_ON`: a hook's static findings must not change
+    the machine-readable `--json` verdict according to ambient shell state,
+    which is the coupling S9.3/CIU-41 removed from hooks in the first place.
   - It receives the **same merged, guarded config** (S4.21 — secrets appear
     as `SecretGuard` objects, so a preflight can confirm a secret is
     *declared* by name without ever seeing a value) and a `HookContext` with
@@ -1876,12 +1908,48 @@ stage has already failed, the live probe is not attempted at all.
 `--json` writes ONE versioned object: `schema_version`, `operation`
 (`"config-check"`), `status` (`"pass"`/`"fail"`), `profile`, and `stages` — a
 **list** in pipeline order, each entry `{stage, status, findings, notes}`,
-where a finding carries `message` plus `stack`/`hook` when scoped to one. A
+where a finding carries `message` plus `stack`/`hook` when scoped to one —
+and, since CIU-65, a NOTE carries the same three keys, so a WARN-severity
+`validate_config` finding names its hook exactly as an ERROR one does. A
 `--live` run additionally carries a top-level `live` key
 (`{status, unsatisfied}`) — deliberately not a stage, because it is the one
 failure class that maps to exit 1. Under `--json` the action emits no prose
 of its own; the orchestrator's own `[INFO]` lines still precede the document
 on stdout, exactly as for `ciu graph --format json`.
+
+### S13.4c — `ciu up`'s automatic static preflight (CIU-64, normative)
+
+`ciu up` runs S13.4a's **static** pipeline (never `--live`) before STEP 1 —
+before any hostdir is created, any secret materialized, or any container
+started — and **refuses on any ERROR-severity finding**, exiting `2`
+(S10.3 configuration/validation), the same way it already refuses on an
+`[S7.x]` provisioning-graph failure. This is on by DEFAULT: no flag opts in.
+
+Why it is safe to run unconditionally: S13.4a is side-effect-free by
+construction (no hostdir, no secret, no compose/overlay write, no hook
+`run()`, no Docker contact), which is the property that makes it a preflight
+rather than a second deploy. It reuses the SAME rendered selection the deploy
+preflights already computed — one render, not two.
+
+- It runs FIRST among `ciu up`'s preflights, so an operator with a
+  configuration defect gets the whole S13.4a report in one pass instead of
+  being stopped by whichever narrower preflight fires first.
+- It runs under `--dry-run` too: a dry run exists precisely to find this
+  class of defect, and the check is side-effect-free either way.
+- **WARN-severity findings (S9.5) never refuse.** They are printed as
+  `note: [WARN] …` and the deploy proceeds. Surfacing them visibly is
+  required; swallowing them is not an option, and neither is blocking on
+  them.
+- `--skip-check` is the break-glass escape, mirroring `--no-preflight`'s
+  precedent for the live per-stack requires probe. It ANNOUNCES itself with
+  a `[WARN]` line naming what was skipped — a silently skipped gate is a
+  gate that is not there.
+
+Rationale: before CIU-64, both the graph lint and every hook's
+`validate_config` ran ONLY on the explicit `ciu check` verb, so an operator
+deploying straight from `ciu up` got neither — the "relies on someone
+remembering" shape CIU's own `--check-env`/`validate_config` machinery exists
+to eliminate elsewhere.
 
 - **S13.5** `ciu graph [--format mermaid|dot|json] [--profile NAME] [--phases N,M]`
   — renders the requires/provides dependency graph to STDOUT (no deploy). Edges
@@ -4207,8 +4275,9 @@ effects stay with the operator); the printed next steps say to.
   template's own author on every behavioral change to its `run`/
   `validate_config` bodies — comment/docstring-only edits do not need a
   bump), a `run(config, ctx) -> dict` (S9.1/S9.4), and an OPTIONAL
-  `validate_config(config, ctx) -> list[str]` (S9.5) — the identical
-  contracts, not a template-specific variant.
+  `validate_config(config, ctx) -> list` (S9.5, findings as message strings
+  or `(severity, message)` pairs) — the identical contracts, not a
+  template-specific variant.
   `--hooks NAME1,NAME2` (composable with `init`'s other flags) copies each
   named template's file, byte-for-byte, into **every** stack scaffolded by
   that same `ciu init` invocation, at `<stack_dir>/hooks/<name>.py` (a

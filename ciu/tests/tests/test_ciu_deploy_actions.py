@@ -2018,6 +2018,180 @@ def test_check_stage9_aggregates_validate_config_findings(tmp_path, capsys):
     assert {f["hook"] for f in findings} == {"h.py"}
 
 
+# --- CIU-65: validate_config findings carry a severity ---------------------
+#
+# Oracle: a hook author can report something worth knowing WITHOUT also
+# making it must-block. ERROR keeps today's meaning exactly (a bare string is
+# an ERROR, unchanged), WARN routes to a stage NOTE, and an unrecognized
+# severity is refused rather than guessed at in EITHER direction.
+
+
+def _severity_stack(tmp_path, body: str) -> dict:
+    _write(tmp_path / "infra/app/h.py", f"""\
+        def run(config, ctx):
+            raise AssertionError("run() must not execute")
+
+        def validate_config(config, ctx):
+{body}
+    """)
+    return {"infra/app": _hook_stack(tmp_path, "infra/app", {"post_compose": ["h.py"]})}
+
+
+def test_check_stage9_bare_string_finding_is_still_an_error(tmp_path, capsys):
+    """CIU-65 backward compatibility, pinned: the pre-CIU-65 shape must not
+    change weight. A hook that says nothing about severity still BLOCKS."""
+    rendered = _severity_stack(tmp_path, '            return ["old style finding"]')
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    stage = _stage(doc, "hooks-preflight")
+    assert stage["status"] == "fail"
+    assert [f["message"] for f in stage["findings"]] == ["old style finding"]
+    assert stage["notes"] == []
+
+
+def test_check_stage9_warn_severity_does_not_fail_the_stage(tmp_path, capsys):
+    """CIU-65's whole point: a WARN is recorded, visible, and blocks nothing."""
+    rendered = _severity_stack(
+        tmp_path, '            return [("WARN", "readonly role is absent")]'
+    )
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0
+    stage = _stage(doc, "hooks-preflight")
+    assert stage["status"] == "pass"
+    assert stage["findings"] == []
+    assert [n["message"] for n in stage["notes"]] == ["[WARN] readonly role is absent"]
+    # A WARN names its hook exactly as an ERROR does, or the two tiers would
+    # carry different provenance for the same kind of finding.
+    assert stage["notes"][0]["hook"] == "h.py"
+    assert stage["notes"][0]["stack"] == "infra/app"
+
+
+def test_check_stage9_error_severity_pair_fails_like_a_bare_string(tmp_path, capsys):
+    rendered = _severity_stack(
+        tmp_path, '            return [("ERROR", "registry.database is missing")]'
+    )
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    stage = _stage(doc, "hooks-preflight")
+    assert [f["message"] for f in stage["findings"]] == ["registry.database is missing"]
+    assert stage["notes"] == []
+
+
+def test_check_stage9_severity_is_case_and_whitespace_insensitive(tmp_path, capsys):
+    """The documented normalization — `str(v).strip().upper()`, the same one
+    S10.7's ciu.exit_on already applies to this exact vocabulary."""
+    rendered = _severity_stack(tmp_path, """\
+            return [
+                ("warn", "lowercase warn"),
+                (" Error ", "padded mixed-case error"),
+            ]""")
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    stage = _stage(doc, "hooks-preflight")
+    assert [f["message"] for f in stage["findings"]] == ["padded mixed-case error"]
+    assert [n["message"] for n in stage["notes"]] == ["[WARN] lowercase warn"]
+
+
+def test_check_stage9_a_two_element_list_is_a_severity_pair_too(tmp_path, capsys):
+    """Documented on purpose: a hook assembling findings from JSON or a
+    comprehension produces lists, and refusing those would be a trap with no
+    safety value."""
+    rendered = _severity_stack(
+        tmp_path, '            return [["WARN", "from a list, not a tuple"]]'
+    )
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0
+    assert [n["message"] for n in _stage(doc, "hooks-preflight")["notes"]] == [
+        "[WARN] from a list, not a tuple"
+    ]
+
+
+def test_check_stage9_unknown_severity_is_refused_not_guessed(tmp_path, capsys):
+    """The masked-default guard. `"warning"` is a plausible typo for WARN;
+    silently reading it AS a warn would downgrade a blocking finding, and the
+    run that does so looks identical to a healthy one. It fails loudly and
+    names the vocabulary instead."""
+    rendered = _severity_stack(
+        tmp_path, '            return [("warning", "typo\'d severity")]'
+    )
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    stage = _stage(doc, "hooks-preflight")
+    assert stage["status"] == "fail"
+    message = stage["findings"][0]["message"]
+    assert "'warning'" in message
+    assert "WARN or ERROR" in message
+    assert stage["notes"] == []
+
+
+def test_check_stage9_never_is_not_a_finding_severity(tmp_path, capsys):
+    """NEVER is in S10.7's exit_on vocabulary but is a THRESHOLD, not a
+    property a finding can have — so the finding vocabulary is deliberately
+    the SUBSET, and NEVER is refused like any other unknown value."""
+    rendered = _severity_stack(
+        tmp_path, '            return [("NEVER", "not a finding severity")]'
+    )
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    assert "'NEVER'" in _stage(doc, "hooks-preflight")["findings"][0]["message"]
+
+
+def test_check_stage9_wrong_length_sequence_stays_a_fail_closed_error(tmp_path, capsys):
+    """A 3-tuple is not a severity pair. It falls through to the pre-CIU-65
+    treatment — str(item) as an ERROR — so an odd return keeps failing closed
+    rather than becoming newly acceptable."""
+    rendered = _severity_stack(
+        tmp_path, '            return [("WARN", "a", "b")]'
+    )
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    stage = _stage(doc, "hooks-preflight")
+    assert stage["notes"] == []
+    assert "'WARN'" in stage["findings"][0]["message"]
+
+
+def test_check_stage9_non_list_return_names_both_accepted_shapes(tmp_path, capsys):
+    """The contract-violation message has to describe what IS accepted now,
+    not the pre-CIU-65 'list of error strings'."""
+    rendered = _severity_stack(tmp_path, "            return True")
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    message = _stage(doc, "hooks-preflight")["findings"][0]["message"]
+    assert "validate_config returned bool" in message
+    assert "(severity, message)" in message
+    assert "WARN or ERROR" in message
+
+
+def test_classify_hook_finding_unit_contract():
+    """The classifier's own table, independent of the check pipeline."""
+    assert deploy.classify_hook_finding("bare") == ("ERROR", "bare")
+    assert deploy.classify_hook_finding(("WARN", "w")) == ("WARN", "w")
+    assert deploy.classify_hook_finding(["error", "e"]) == ("ERROR", "e")
+    # Non-string members are stringified, not rejected.
+    assert deploy.classify_hook_finding(("WARN", 7)) == ("WARN", "7")
+    assert deploy.classify_hook_finding(17) == ("ERROR", "17")
+    with pytest.raises(ValueError, match="WARN or ERROR"):
+        deploy.classify_hook_finding(("nope", "m"))
+
+
 def test_check_stage9_skips_hooks_without_validate_config(tmp_path, capsys):
     _write(tmp_path / "infra/app/h.py", "def run(config, ctx):\n    return {}\n")
     rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_secrets": ["h.py"]})}

@@ -632,10 +632,36 @@ Exit codes are S13.4's: `0` clean, `2` any static configuration error
 (including every stage below), `1` **only** a `--live` probe failure. A static
 failure short-circuits before any live probing happens.
 
+### You no longer have to remember to run it (`ciu up`'s own preflight, S13.4c)
+
+Since CIU-64, **`ciu up` runs this same static pipeline itself, by default**,
+before STEP 1 — before any hostdir, secret or container exists — and refuses
+on any ERROR-severity finding with exit `2`, exactly as it already refuses on
+an `[S7.x]` provisioning-graph failure. Nothing opts in.
+
+```console
+$ ciu up --profile core
+[INFO] Preflight: running `ciu check`'s static validation (S13.4a, CIU-64)
+...
+[INFO]   [x] hooks-preflight: fail
+[ERROR]         infra/db-core: [post_compose_db.py] registry.database is missing
+[ERROR] [S13.4a] `ciu check` found ERROR-severity finding(s) — refusing to deploy
+        before anything starts. ...
+
+$ ciu up --profile core --skip-check      # break-glass, and it says so
+[WARN] --skip-check: skipping the `ciu check` static preflight (S13.4a,
+       break-glass) — a configuration error it would have refused now surfaces
+       mid-deploy, after stacks have already started
+```
+
+You still run `ciu check` explicitly when you want the `--json` envelope, the
+`--live` probes, or a validation pass with no deploy attached.
+
 ### Teach a hook to validate its own config (`validate_config`, S9.5)
 
 Any hook may add an OPTIONAL second entry point beside its `run`. CIU calls it
-during `ciu check` and **never** during `ciu up`:
+during `ciu check` **and** during `ciu up`'s automatic preflight above — the
+same side-effect-free call; your `run()` is never invoked by either:
 
 ```python
 # infra/db-core/post_compose_db.py
@@ -645,35 +671,63 @@ def run(config: dict, ctx) -> dict:
     ...
 
 
-def validate_config(config: dict, ctx) -> list[str]:
-    """Optional preflight. Return one error string per finding; [] = OK.
+def validate_config(config: dict, ctx) -> list:
+    """Optional preflight. Return one finding per problem; [] = OK.
 
     Receives the SAME merged, guarded config and HookContext that run() gets,
     so it validates exactly what run() will consume — before any container
     exists.
     """
-    errors: list[str] = []
+    findings: list = []
     registry = config.get("registry", {})
     if "database" not in registry:
-        errors.append("registry.database is missing")
+        # A bare string is an ERROR: it blocks `ciu check` (exit 2) and
+        # refuses `ciu up`. This is the pre-CIU-65 shape and still means
+        # exactly what it always did.
+        findings.append("registry.database is missing")
     users = registry.get("postgresql", {}).get("users", {})
     for user in ("controller", "workerdb"):
         if user not in users:
-            errors.append(f"registry.postgresql.users.{user} is missing")
+            findings.append(f"registry.postgresql.users.{user} is missing")
+
+    # A (severity, message) pair lets a finding be worth knowing WITHOUT
+    # being must-block. WARN is printed as a note and blocks nothing.
+    if "readonly" not in users:
+        findings.append(
+            ("WARN", "registry.postgresql.users.readonly is absent — the "
+                     "reporting sidecar will fall back to the owner role")
+        )
 
     # Secrets appear as SecretGuard objects (S4.21): you can confirm one is
     # DECLARED by name, and you must never stringify it.
     if "admin_password" not in config.get("db_core", {}).get("secrets", {}):
-        errors.append("db_core.secrets.admin_password is not declared")
+        findings.append("db_core.secrets.admin_password is not declared")
 
-    return errors
+    return findings
 ```
 
 Rules worth knowing before you write one:
 
-- **Return `list[str]`, never a bool.** `[]` means valid. A `True`/`False`
-  return is reported as a contract violation, not read as a verdict. `None` is
-  tolerated as "no findings".
+- **Return a `list` of findings, never a bool.** `[]` means valid. A
+  `True`/`False` return is reported as a contract violation, not read as a
+  verdict. `None` is tolerated as "no findings".
+- **Each finding is a message string, or a `(severity, message)` pair**
+  (a 2-element tuple *or* list — both work). The severity vocabulary is
+  exactly **`WARN`** and **`ERROR`**, matched case- and
+  whitespace-insensitively, so `"warn"` and `" Error "` are both fine. A bare
+  string means `ERROR`. Anything else — `"warning"`, `"info"`, `"NEVER"` — is
+  REFUSED as its own ERROR finding naming the two accepted values, rather
+  than guessed at: a typo must never quietly downgrade a blocking finding.
+  (`NEVER` is excluded on purpose. It is an `ciu.exit_on` *threshold*, not
+  something a finding can be.)
+- **`ERROR` blocks, `WARN` does not.** An ERROR fails the `hooks-preflight`
+  stage: `ciu check` exits 2 and `ciu up`'s preflight refuses. A WARN is
+  recorded as a stage NOTE — it prints as `note: [WARN] …`, appears in the
+  `--json` envelope's `notes` array with the same `stack`/`hook` keys a
+  finding carries, and changes no exit code and blocks no deploy.
+  `ciu.exit_on` / `$CIU_EXIT_ON` deliberately do NOT affect this routing:
+  your machine-readable check verdict must not change with ambient shell
+  state.
 - **`ctx.secret_file(name)` raises `KeyError` for every name.** `ciu check`
   materializes nothing, so there is no store file to point at. Validate that a
   secret is *declared* (as above); if your check genuinely needs to read a
