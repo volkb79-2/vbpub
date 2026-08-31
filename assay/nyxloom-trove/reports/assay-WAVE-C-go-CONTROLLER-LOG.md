@@ -337,3 +337,22 @@ principles don't already resolve.
   exactly the "routine BLOCKED item on one scope sub-step" class the
   goal's REPORT-AND-CONTINUE clause always covered — resolving it
   directly, no pause.
+
+  **Re-run gate PASS on `91b05186`** — confirmed directly from the log:
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0`, all 11 phases
+  including `self-hosted-lane-passed`, `topos-qualified`, the full
+  `cmru-b006a-qualified` receipt (all four claims R0-R3 PASS), and
+  `independent-self-hosting-passed`. This closes out the last in-flight
+  work for this session — **checkpoint reached, gate-green, tree clean,
+  nothing hanging.** Per the operator's instruction, stopping here: no
+  generation 4 dispatch, no review dispatch this session. A detailed
+  summary and next-steps handoff was delivered to the operator in chat.
+  The 7-item Wave C task list stands at: items 1/2/4 (registration, the
+  oracle, the producer vocabulary) done; items 3 (fixture regen), 6
+  (helpers[] gate envelope) and 7 (srdm covergate qualification) open,
+  with generation 3's BRIEF-4 already carrying the concrete unblocking
+  path (the measured `go` shim host-path translation) and the covergate
+  question already answered analytically (assay is the correct side per
+  A-217, only the run itself is owed). Resume by dispatching a fresh
+  generation 4 seeded with BRIEF-1 through BRIEF-4, same worktree/branch,
+  tip `91b05186`.
