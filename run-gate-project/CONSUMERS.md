@@ -123,6 +123,36 @@ outside the devcontainer namespace — where no second view is derivable — the
 lane refuses rather than silently mounting once; declare the alias with
 `$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'` (host side must equal the repo root).
 
+> **BREAKING CHANGE — migrate if you use `mode = "exec"` (RG-23).** Early
+> revisions hardcoded `MOCK_MODE` and `RUN_LIVE_TESTS` into the exec-mode
+> forwarding loop; they were replaced by declarative `forward_env` with no
+> migration pass. If your lane relies on either name, **it is not reaching
+> your container today** — and the symptom is a false GREEN, not an error: a
+> suite that skips its live tests when the flag is absent exits 0 having run
+> none of them. Migrate both halves:
+>
+> ```toml
+> [environments.test-runner]
+> image = "yourproj/test-runner:latest"
+> mode = "exec"
+> forward_env = ["RUN_LIVE_TESTS", "MOCK_MODE"]   # was implicit; now required
+>
+> [lanes.release]
+> kind = "command"
+> environment = "test-runner"
+> argv = ["bash", "-c", "cd {worktree} && pytest -m 'integration or e2e' -q"]
+> required_env = ["RUN_LIVE_TESTS"]   # absence now REFUSES instead of skipping
+> ```
+>
+> `forward_env` alone restores the old behaviour; adding `required_env` is
+> what turns the silent-skip class into a loud refusal, and is why the
+> implicit names are not coming back — a value with an authoritative source
+> (your config) must not be shadowed by a literal inside the tool. Audit
+> your own configs with `./run-gate.py --check-env` (limits below) and
+> `grep -n forward_env run-gate.toml`. Estate audit at rev 25: no vbpub
+> project declares `mode = "exec"` or `forward_env` at all, so the confirmed
+> blast radius is dstdns, which is tracked in its own repo.
+
 Container lanes forward only the implicit cgroup infrastructure variable plus
 the environment's explicit `forward_env = ["SCHEMA_GATE_DSN"]` allowlist. A
 declared but unset value remains absent rather than becoming a default; the
@@ -134,6 +164,34 @@ prints which forwarding keys were present at start — names only, never
 values (the docker-argv print redacts them too). Run
 `./run-gate.py --check-env` for an advisory sweep of env references in the
 project's Python sources that no lane forwards or requires.
+
+**What `--check-env` can and cannot see (RG-23).** It parses each `*.py` and
+reports `os.environ["X"]`, `os.environ.get/setdefault/pop("X", …)`,
+`getenv("X")`, `"X" in os.environ`, **and** a literal handed to your own
+env-reader helper — a function that reads the environment through one of its
+parameters, which is how the flag that motivated this hid from the previous
+line-based sweep:
+
+```python
+def _env_flag_enabled(name):        # the read is here …
+    return os.getenv(name, "").lower() in ("1", "true")
+
+RUN_LIVE = _env_flag_enabled("RUN_LIVE_TESTS")    # … the NAME is here
+```
+
+```
+run-gate: env-drift: $RUN_LIVE_TESTS referenced in conftest.py:6
+  (helper _env_flag_enabled()) is neither forwarded nor declared
+  required_env — add it to the environment's forward_env or the lane's
+  required_env
+```
+
+It CANNOT see a name assembled at runtime (`os.getenv(prefix + suffix)`), a
+name read from a non-Python source, or an indirection it does not model. A
+file that does not parse is reported by name and falls back to the old line
+regex, so a parse failure is never silently reported as "nothing found".
+**A clean sweep is evidence, not a certificate** — it stays advisory (always
+exit 0 for drift); `required_env` is the mechanism that actually refuses.
 
 ### `kind = "assay"` — projects that adopt assay (the quality partnership)
 
@@ -176,11 +234,119 @@ out of a package cache the ENVIRONMENT provides: for an `exec` environment,
 bake the cache into the runner image at build from the same lockfile, or add
 a volume to the runner's own stack; for an ephemeral environment,
 `RUN_GATE_EXTRA_MOUNTS=/var/cache/<project>/npm=/opt/npm-cache`. Python
-(venv) and Go (`GOMODCACHE`) closures are out-of-tree and need nothing. Once
-RG-25 lands, `doctor`/`--check-env` report a lane whose language needs a
-toolchain the environment lacks; until then the first sign is the lane's own
-`NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` — or, without `--no-install`, an
-unpinned `npx` fetch inside the gate container.
+(venv) and Go (`GOMODCACHE`) closures are out-of-tree and need nothing.
+
+**Preflight the toolchain instead of discovering it mid-run (RG-25).**
+`./run-gate.py doctor` and `./run-gate.py --check-env` now ask the JUDGE what
+each `kind = "assay"` lane needs — `<assay_command> lanes --json --file
+assay.toml` (assay ≥ 3.2.0) run INSIDE the lane's own environment — and then
+check that environment for it. run-gate still never parses `assay.toml`:
+
+```
+run-gate: doctor: [OK]   lane 'ui-unit' toolchain: node, npm
+run-gate: doctor: [FAIL] lane 'ui-unit' toolchain: needs npm in environment
+  'test-runner' (project /repo/run-gate.toml) — assay would reach
+  MISSING_EXTERNAL_TOOL/NO_MEASUREMENT mid-run instead
+run-gate: doctor: [FAIL] lane 'ui-unit' toolchain: assay lane 'ui_unit' is not
+  declared in assay.toml (declared: py_unit, sql_schema) — this lane can only
+  ERROR at run time
+run-gate: doctor: [SKIP] lane 'ui-unit' toolchain: `assay lanes --json` did not
+  run in environment 'test-runner' (exit 2: unrecognized arguments: --json) —
+  an assay older than 3.2.0 has no inventory (B044). The pin declares the
+  version this lane needs; run-gate does not impose a floor it never declared
+```
+
+Read the statuses precisely: **`[FAIL]` only ever states a fact the judge
+established** (a tool it named is absent; a lane it does not declare).
+Everything meaning *"I could not determine this"* — an older judge, an
+unreachable environment, an inventory schema this run-gate does not read, a
+`host` environment, no docker — is `[SKIP]` with the reason, and **never
+turns a healthy project red**. `doctor` exits 2 only on FAIL; `--check-env`
+exits 2 on a toolchain FAIL while its env-drift half stays advisory.
+
+Which tools get checked: `external_tools` and `argv0` as the inventory
+reports them, plus the toolchain implied by `language` (`javascript` →
+`node`, `npm`; `go` → `go`). That last mapping lives in run-gate only
+because assay 3.2.0 reports `external_tools: []` for every shipped adapter
+and documents the language fact in prose instead; a language run-gate has no
+fact for is reported with an explicit caveat on the line rather than being
+treated as "nothing needed".
+
+> **`doctor` and `--check-env` START CONTAINERS for this check.** Fitness
+> cannot be read, only observed, so the inventory question and the
+> `command -v` checks execute inside the lane's own environment. They are
+> short-lived and read-only (`assay lanes` runs nothing; `command -v` is a
+> shell builtin), they judge nothing and write nothing into your tree, and
+> ephemeral ones carry `--cgroup-parent` like every container run-gate
+> starts. The cost is bounded: **one inventory probe per (environment,
+> `assay_command`) plus one batched `command -v` probe per environment** —
+> not per lane. A project with no `kind = "assay"` lane starts nothing at
+> all, and neither verb ever starts your judged lane. If you run `doctor` in
+> a context where starting a container is unacceptable, that is the check to
+> know about.
+
+### Lanes that take their comparison base from the gate (RG-26)
+
+assay ≥ 3.0.0 lets a changed-line lane omit `judge.base` and declare
+`judge.base_source = "request"` instead — the PR-scoped shape, where the
+orchestrator owns which branch point is being judged. Pass it with `--base`:
+
+```toml
+# assay.toml — the judgment half owns the fact
+[lanes.p129_enumeration_cursor.judge]
+mode = "changed_lines"
+base_source = "request"        # the gate supplies the base; assay never guesses
+```
+
+```toml
+# run-gate.toml — the orchestration half restates NOTHING
+[lanes.cursor]
+kind = "assay"
+environment = "tester-unified"
+assay_lane = "p129_enumeration_cursor"
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-3.2.0.pyz"]
+```
+
+```bash
+./run-gate.py cursor --base "$(git merge-base HEAD origin/main)"
+# run-gate: comparison base 4c6eb2b6… (from --base) → --request-base
+```
+
+```bash
+./run-gate.py cursor          # no --base: the judged tree's own upstream
+# run-gate: comparison base 4c6eb2b6… (from merge-base HEAD @{upstream}) → --request-base
+```
+
+There is **no `run-gate.toml` key** for this — run-gate DERIVES it by asking
+the judge (`assay lanes --json`), so the fact has exactly one spelling. What
+that costs you: an assay lane invocation now issues one short read-only
+inventory probe in its environment before the judged run.
+
+Refusals, all exit 2 and all naming the lane:
+
+| situation | what happens |
+|---|---|
+| delegating lane, no `--base`, tree has no upstream | `lane 'cursor' delegates its comparison base; pass --base REF (worktree has no upstream)` — a guessed base is not a base |
+| `--base` on a lane whose `base_source` is not `"request"` | refused, naming the value assay declared (assay would refuse it anyway; this refuses earlier and clearer) |
+| `--base` on a command lane with no `{base}` token | refused — the ref could only be silently dropped |
+| `--base` with a judge too old to answer (`assay lanes --json` missing) | refused, naming assay **3.2.0** (B044) as the version that carries the inventory |
+| no `--base`, judge too old | **nothing changes** — the old judge keeps working exactly as before |
+
+**Conjunction lanes propagate it** the same way they propagate `--worktree`
+(RG-1): a token in the lane's own argv.
+
+```toml
+[lanes.gate]
+kind = "command"
+environment = "host"
+argv = ["bash", "-c",
+        "./run-gate.py --worktree {worktree} --base {base} cursor && \
+         ./run-gate.py --worktree {worktree} unit"]
+```
+
+A lane carrying `{base}` resolves its ref by the same rules above, so
+`./run-gate.py gate` on a tree with no upstream refuses instead of
+substituting an empty string.
 
 ### Worked example — run-gate × assay, end to end
 
@@ -341,6 +507,56 @@ enforces this pairing for every trove that points at run-gate lanes (assay's
 assert-it pattern, replicated estate-wide); when you add a gate, it joins
 the sweep automatically by naming the lane in its argv.
 
+### Host lanes that delegate to a host-path-mounting harness (RG-21)
+
+If a `kind = "command"`, `environment = "host"` lane shells out to your own
+script that bind-mounts the repo into a container by HOST path
+(srdm's `tools/gate.sh`: `repo_root` = the git toplevel, one
+`-v "$host_repo_root:$repo_root"`), that lane is **main-checkout-only today
+when the judged tree is a linked worktree.** run-gate is not the defect —
+`{worktree}` forwarding and exit-status passthrough are correct — but a
+linked worktree's `.git` is a FILE naming an absolute gitdir under the MAIN
+checkout, which your single mount does not include, so every in-container git
+plumbing call dies:
+
+```
+covergate: git rev-list --parents -n 1 HEAD failed: exit status 128:
+fatal: not a git repository: /workspaces/vbpub/.git/worktrees/run-gate-rg-sweep
+```
+
+`./run-gate.py doctor` names the condition BEFORE the lane fails mid-run:
+
+```
+run-gate: doctor: [WARN] host-lane git view (RG-21): /repo/.worktrees/w1 is a
+  LINKED worktree; its gitdir is /repo/.git/worktrees/w1, OUTSIDE the tree.
+  run-gate's own container lanes are fine (they dual-mount the repo root), but
+  a host lane delegating to a harness that bind-mounts only the judged tree by
+  host path will fail with 'not a git repository: …'. Mount the common gitdir
+  into that container too, or pass it as GIT_DIR, or run the lane from the
+  main checkout
+```
+
+Fix it in YOUR harness, one of three ways — run-gate cannot do it for you,
+because it does not own that `docker run`:
+
+```bash
+# 1. mount the common gitdir at the path the gitfile records (preferred):
+common=$(git -C "$repo_root" rev-parse --git-common-dir)
+docker run -v "$host_repo_root:$repo_root" -v "$common:$common" …
+
+# 2. or hand the container an explicit GIT_DIR (still needs the mount above):
+docker run … -e GIT_DIR="$common" …
+
+# 3. or run this lane from the main checkout only, and say so in its
+#    `description` so the next person does not rediscover it at 2am.
+```
+
+Note that `run-gate`'s OWN container/exec lanes never hit this: `R-23`
+dual-mounts the REPO root, so the gitdir is inside the mount by construction.
+Related: an auto-derived host path for a worktree (e.g. `SRDM_HOST_REPO_ROOT`)
+cannot be inferred from `docker inspect`, which maps only the devcontainer's
+own `/workspaces/<repo>` — export it explicitly.
+
 ## Per-project-type recipes
 
 **Python service repo with assay (ciu, cmru, assay itself):** the
@@ -359,6 +575,30 @@ authority resolved the container name — declared `container_name` → your
 project's own deployment authority; ciu-derived → the ciu lifecycle naming
 the config file (never a vbpub-specific remedy for another project's tree).
 The old `testing-exec.sh` shim is retired — run-gate execs directly.
+
+**Multi-instance worktrees (RG-24): the container name follows the JUDGED
+TREE.** If your worktrees get their own isolated stacks (`ciu worktree
+adopt` — each with its own rendered `ciu.global.toml`, its own network and
+its own `test-runner`), run-gate derives the container name from
+`<worktree>/ciu.global.toml` when that file exists, and only falls back to
+`<repo>/ciu.global.toml` when it does not. This is the ONE place run-gate
+prefers the worktree over the repo (elsewhere `repo` — the checkout owning
+the shared `.git`, i.e. your main checkout — is the right authority). Do NOT
+work around a wrong container by pinning `container_name` in the tracked
+`run-gate.toml`: that literal is correct for exactly one running instance and
+wrong for the next worktree created. Verify which config decided it — the
+pre-execution disclosure names the scope:
+
+```
+$ ./run-gate.py test-runner --worktree /repo/.worktrees/p147b
+run-gate: rev 24 | lane test-runner | env project /repo/run-gate.toml |
+  container p147b-8a6bc3-test-runner (ciu.global.toml
+  deploy.project_name+environment_tag (judged worktree:
+  /repo/.worktrees/p147b/ciu.global.toml)) | slice … (…)
+```
+
+A `repo:` scope on a worktree you *did* adopt means its `ciu.global.toml` was
+never rendered there — run `ciu render` in the worktree, don't declare a name.
 Set `$RUN_GATE_EXTRA_MOUNTS=/var/run/docker.sock=/var/run/docker.sock` when a
 lane needs Docker-in-Docker. Keep `assay.toml` lanes for the whole-target
 coverage work as they land (B1-style).

@@ -74,9 +74,11 @@ visible at the project root, carrying ALL of the mechanics. Every consumer
 (nyxloomd, cmru, Buildkite, a CLI agent, a human) runs the same file:
 
 ```
-./run-gate.py <lane>        # run one gate lane
-./run-gate.py --list        # machine-readable lane inventory (for CI fan-out)
-./run-gate.py --help        # usage(), incl. the tool revision
+./run-gate.py <lane>          # run one gate lane
+./run-gate.py <lane> --base REF   # comparison base for a lane that delegates it
+./run-gate.py doctor          # preflight: docker, slices, git, images, assay toolchains
+./run-gate.py --list          # machine-readable lane inventory (for CI fan-out)
+./run-gate.py --help          # usage(), incl. the tool revision
 ```
 
 A defect fixed in the tool is fixed for every consumer at once, and the
@@ -123,6 +125,24 @@ No duplicate lane registry: `run-gate.toml` = where/how it runs,
 `assay.toml` = what counts as passing. Projects that cannot adopt assay
 declare `kind = "command"` lanes and get everything except assay's judgment.
 
+The split is kept honest by DERIVING assay facts instead of restating them.
+run-gate asks the judge (`assay lanes --json`, assay ≥ 3.2.0) two questions
+before it runs a lane: **what toolchain does this lane need from its
+environment** (RG-25 — reported by `doctor`/`--check-env` instead of
+surfacing as a mid-run `MISSING_EXTERNAL_TOOL`) and **does this lane take its
+comparison base from the gate** (RG-26 — `judge.base_source = "request"`,
+supplied with `./run-gate.py <lane> --base REF`). Neither becomes a
+`run-gate.toml` key: a second spelling of a fact `assay.toml` already owns is
+the drift this design exists to remove.
+
+Asking has a price, stated rather than hidden: those questions are answered
+INSIDE the lane's environment, so `doctor`, `--check-env`, and any assay-lane
+invocation (`--dry-run` included) start short read-only probe containers —
+one inventory probe per environment+judge, plus one batched `command -v`
+probe per environment for the fitness check. They judge nothing, write
+nothing, and never start your judged lane; a project with no
+`kind = "assay"` lane starts none of them.
+
 ### Environment mechanics the tool must own (the hard-won list)
 
 These are the exact behaviors whose absence caused measured failures; they are
@@ -147,6 +167,14 @@ the tool's reason to exist and MUST be implemented + tested:
   directory (`cd <dir> && sha256sum -c <pin>`), fail-closed; a declared
   `version` is a claim the artifact must satisfy — the lane probes
   `<assay_command> --version` and refuses mismatches (no provenance theater).
+- **Env forwarding is declared, never implicit (RG-23):** a container/exec
+  lane forwards `$CGROUP_PARENT_DEV_BACKGROUND` (the tool's own
+  infrastructure) plus exactly the environment's `forward_env` list. The
+  early hardcoded `MOCK_MODE`/`RUN_LIVE_TESTS` pair is GONE — consumers
+  relying on it must migrate (CONSUMERS.md "BREAKING CHANGE"), because its
+  absence produces a false GREEN, not an error. `--check-env` sweeps the
+  project's Python for env reads no lane forwards or requires, including
+  reads wrapped in the project's own helper functions.
 - **Clean tree:** refuse a dirty judged tree by default (assay lanes get this
   from assay; command lanes get it from the tool) — a gate over uncommitted
   state is not evidence.

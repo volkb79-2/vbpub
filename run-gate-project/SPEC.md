@@ -62,7 +62,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   (`CGROUP_PARENT_DEV_BACKGROUND`, `RUN_GATE_EXTRA_MOUNTS`,
   `RUN_GATE_MOUNT_ALIAS`) plus `--check-env` (R-24 drift sweep) (RG-7);
   unknown lane exits non-zero naming the
-  known lanes and the config path.
+  known lanes and the config path. `--check-env` also runs the assay-lane
+  toolchain fitness check (`R-34`): its env-drift half stays advisory (exit
+  0), a toolchain FAIL exits 2.
 - `R-02` `--worktree PATH` overrides the judged worktree (daemon substitutes
   its attempt path textually before invoking).
 - `R-03` `--allow-dirty` bypasses the clean-tree pre-check (assay lanes still
@@ -168,10 +170,26 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   externally-managed container via `docker exec`. run-gate refuses to start
   the container itself — that belongs to the project's deployment authority
   (e.g. CIU). The container name is resolved from a declared `container_name`
-  on the environment, or derived from the repo's `ciu.global.toml` [deploy]
+  on the environment, or derived from a `ciu.global.toml` [deploy]
   table (`project_name + environment_tag`, falling back to
-  `network_name stripped of "-network"`). Missing config → hard error naming
-  what to fix. If the resolved container is not running → hard error whose
+  `network_name stripped of "-network"`). **Which `ciu.global.toml` (RG-24):
+  the JUDGED WORKTREE's own is preferred; the repo's is the fallback.** This
+  one resolution path is deliberately worktree-scoped, unlike every other
+  `repo`-relative resolution in the tool: `repo` (R-13) is the checkout
+  owning the shared `.git` — the MAIN checkout for any linked worktree —
+  which is the right authority for object-store questions and the WRONG one
+  for a LIVE DEPLOYED container. A multi-instance worktree (dstdns "Mode-B":
+  `ciu worktree adopt` gives a worktree its own stack, its own rendered
+  `ciu.global.toml`, its own network and its own runner) would otherwise have
+  its lane exec'd into the main landscape's runner — a partial, believable
+  failure, because the inner `cd <effective project dir>` still reaches the
+  right FILES and only the container's baked network/env are wrong. The
+  precedence is ADDITIVE: a worktree that is not itself an adopted instance
+  (no own `ciu.global.toml`) keeps repo-relative resolution unchanged.
+  The resolution SOURCE printed with the container name (R-05) names the
+  scope — `judged worktree:` or `repo:` — followed by the file used.
+  Missing config → hard error naming BOTH candidate paths when they differ.
+  If the resolved container is not running → hard error whose
   START REMEDY names the authority the name was resolved FROM (RG-6):
   declared `container_name` → the project's OWN deployment authority;
   ciu.global.toml-derived → the ciu lifecycle (`ciu render` if stale, then
@@ -214,8 +232,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   every lane prints a final `lane '<name>' exit <code>` line. Disclosure is
   unconditional — a FAILED lane names its evidence paths too.
 - `R-19` **Host lanes** exec the substituted argv directly with cwd = the
-  effective project dir (R-21; no docker, no safe.directory — that trap is
-  container-specific); exit passthrough identical.
+  effective project dir — or, for a `kind = "assay"` lane on the built-in
+  `host` environment, the same assay inner the container runners build
+  (RG-28: the validator accepts that combination, and the runner used to
+  raise `KeyError('argv')` on it — a traceback for a legal config, which
+  `R-04` calls a defect) (R-21). A command host lane uses no docker and no
+  safe.directory — that trap is container-specific; an assay host lane
+  inherits the shared inner, whose `GIT_CONFIG_GLOBAL` isolation (`R-19a`)
+  keeps that write out of the operator's own git config. Exit passthrough
+  identical either way.
 
 - `R-19a` **safe.directory scope:** both ephemeral and exec inner commands set
   `GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig` before running `git config
@@ -262,10 +287,40 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   forwarding keys were present and which were declared-but-absent — NAMES
   ONLY, never values; the printed docker argv masks forwarded
   `-e KEY=...` payloads for the same reason. `--check-env` runs an ADVISORY
-  drift sweep over the project's Python sources (`os.environ[...]`,
-  `os.environ.get(...)`, `getenv(...)` literals) flagging names covered by
+  drift sweep over the project's Python sources flagging names covered by
   neither `forward_env` nor `required_env`; it warns and exits 0 — the
   enforcement mechanisms are `required_env` + preflight.
+
+- `R-24a` **Forwarding is DECLARED, never implicit (RG-23).** The ONLY
+  variable an exec- or container-mode lane forwards without a declaration is
+  `CGROUP_PARENT_DEV_BACKGROUND` (infrastructure the tool itself owns).
+  Everything else must be named in the environment's `forward_env`.
+  **Breaking change, and the migration it requires:** revisions before this
+  one hardcoded `MOCK_MODE` and `RUN_LIVE_TESTS` into the exec-mode
+  forwarding loop. That allowlist was replaced by `forward_env` with no
+  migration pass, so any consumer that relied on either name silently stopped
+  receiving it — and the failure is a false GREEN, not an error: a suite that
+  skips its live tests on the flag's absence exits 0 having executed none of
+  them. Every exec-mode consumer relying on those two names MUST add them to
+  its environment's `forward_env`, and SHOULD add them to the lane's
+  `required_env` so absence refuses loudly (R-24) instead of skipping
+  quietly. No implicit name is coming back: a value that has an
+  authoritative source (the consumer's own config) must not be shadowed by a
+  literal in the tool.
+
+- `R-24b` **What the drift sweep can and cannot see (RG-23).** The sweep is
+  AST-based: `os.environ["X"]`, `os.environ.get/setdefault/pop("X", …)`,
+  `getenv("X")`, `"X" in os.environ`, and — the shape that motivated this —
+  a literal passed to the project's OWN env-reader helper (a function that
+  reads the environment through one of its parameters, e.g.
+  `_env_flag_enabled("RUN_LIVE_TESTS")` whose body does
+  `os.getenv(name, "")`). Bound-method parameter offsets are accounted for.
+  It CANNOT see a name assembled at runtime (`os.getenv(prefix + suffix)`),
+  a name read in a non-Python source, or one reached through an
+  indirection the pass does not model — so a clean sweep is evidence, never
+  a certificate, and `--check-env` stays advisory. A source file that does
+  not parse is reported as such and falls back to the old line regex: "could
+  not read it" is never rendered as "there is nothing there".
 
 - `R-25` **Override-reachability guard (RG-1):** a container command lane
   (ephemeral or exec) invoked with `--worktree` whose argv contains NO
@@ -306,17 +361,27 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   dispatched artifact is certified by a test, not assumed (a renamed lane
   goes RED at test time, never at daemon dispatch time).
 
-- `R-28` **Dry run (RG-8):** `--dry-run` rehearses the gate WITHOUT
-  executing: every preflight runs exactly as live (config validation,
+- `R-28` **Dry run (RG-8):** `--dry-run` rehearses the gate WITHOUT running
+  the JUDGED lane: every preflight runs exactly as live (config validation,
   required-env, worktree resolution + charset guard, override-reachability,
-  clean-tree — so `--allow-dirty` composes), then the fully assembled plan
-  is printed and exit is 0. Container lanes print the identical docker argv
+  comparison-base resolution per `R-35`, clean-tree — so `--allow-dirty`
+  composes), then the fully assembled plan is printed and exit is 0.
+  Container lanes print the identical docker argv
   a live run would (same assembly code path; only the container NAME differs
   by pid/epoch) and start nothing; exec lanes rehearse name resolution AND
   the runner-running preflight (a stopped runner reports its real refusal),
   print the identical redacted docker-exec argv a live run would, but exec
   nothing; host lanes print the argv and cwd and run nothing. No
-  evidence-path disclosure on a dry run — nothing ran, no artifact landed.
+  evidence-path disclosure on a dry run — no JUDGED lane ran, no artifact
+  landed.
+  **What a dry run DOES execute (amended for `R-35`):** an assay lane's
+  read-only `assay lanes --json` inventory probe is itself a preflight — it
+  is what resolves the comparison base that the printed plan must show — so
+  it runs, in a short container of its own, exactly as it does live. "Nothing
+  runs" was true of `R-28` before `R-35` and is not true now; the promise
+  `--dry-run` makes is that **no judged lane starts**, which is the promise
+  a caller actually relies on. `doctor`'s probes (`R-34`) are the same class
+  of read-only preflight.
 
 - `R-29` **Resource-aware admission (RG-20):** gates are admitted by RAM
   headroom and shared-infra collision, not serialized globally. Lane key
@@ -359,10 +424,118 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `$RUN_GATE_MOUNT_ALIAS`); git worktree resolution and `/tmp`
   writability for `GIT_CONFIG_GLOBAL`; referenced images present locally
   (advisory — a missing image may legitimately pull). One `[OK]`/`[WARN]`/
-  `[FAIL]` line per check plus a summary; exit 2 iff any FAIL. Doctor runs
-  nothing, changes nothing, and must itself survive a broken host: a
+  `[FAIL]`/`[SKIP]` line per check plus a summary counting all four; exit 2
+  iff any FAIL. Doctor judges nothing and writes nothing, but since `R-34`
+  it **does start containers**: short-lived read-only probes, bounded at ONE
+  inventory probe per (environment, `assay_command`) plus ONE batched
+  `command -v` probe per environment — never one per lane, and none at all
+  for a project with no `kind = "assay"` lane. That count is a claim, so a
+  test owns it (`test_probe_cost_is_one_inventory_plus_one_tool_probe_per_
+  environment`): a cost stated in the spec and not measured is a cost that
+  drifts. The probes are also why the summary now reports SKIPs — "could not
+  determine" must be visible, not absorbed into silence. Doctor must itself
+  survive a broken host: a
   preflight that tracebacks on exactly the machine that needs it defeats
   its purpose (git/docker absent → FAIL lines, never a traceback).
+
+- `R-34` **Assay-lane toolchain fitness (RG-25).** For every `kind = "assay"`
+  lane whose environment resolves, `doctor` and `--check-env` ask the JUDGE
+  what the lane needs — `<assay_command> lanes --json --file assay.toml`
+  (assay ≥ 3.2.0, B044) executed INSIDE that environment — and then check the
+  environment for it. run-gate never parses `assay.toml`; the `assay_lane`
+  name stays a string it passes through, exactly as before.
+  - **One probe path.** `build_env_probe_argv()` is the ONLY place that
+    knows how to reach an environment for a short read-only command; it
+    reuses `resolve_container_name()` (exec) and
+    `physical_path()`/`dual_mount_flags()` (ephemeral). A probe is attached
+    and captured rather than detached like a lane run (`R-17`), which is safe
+    here and only here because a probe's result is a preflight line, never a
+    verdict. Ephemeral probes carry `--cgroup-parent` like any container this
+    tool starts; where no slice is derivable the probe SKIPs rather than
+    running unconfined.
+  - **Probe count.** The inventory is asked once per (environment,
+    `assay_command`) — two lanes sharing an environment AND a pinned judge
+    ask once; different judges ask separately, since caching across them
+    would answer with the wrong one. The `command -v` check is asked once per
+    ENVIRONMENT, over the UNION of every lane's tools: what is on a `PATH` is
+    a property of the environment, not of the lane asking. Each lane is still
+    judged against ITS OWN tool list, so batching never smears one lane's
+    missing tool onto another.
+  - **Tools checked** = `external_tools` ∪ `argv0` (READ from the inventory)
+    ∪ the `language` toolchain. The language table exists only because
+    assay's own docs state that fact in prose and not in the inventory
+    (`external_tools` is `()` for every shipped adapter in 3.2.0), and an
+    unmapped language attaches a CAVEAT to the line rather than being
+    silently treated as "nothing needed".
+  - **Statuses.** `[FAIL]` ONLY for a fact the inventory established: a named
+    tool absent from the environment (naming lane, tool AND environment), or
+    an `assay_lane` the judge does not declare (naming what it does declare).
+    `[OK]` lists the tools verified. Everything meaning "I could not
+    determine this" is `[SKIP]` with the reason — judge unreachable, an assay
+    with no `--json`, non-JSON output, `inventory_schema != 1` (with the
+    value), a `host` environment, docker absent, an unresolvable slice.
+    **An older judge can never turn a healthy project red:** the pin declares
+    the version the lane needs, and run-gate does not impose a floor it never
+    declared.
+  - **Exit codes.** `doctor` counts SKIPs in its summary and still exits 2
+    only on FAIL. `--check-env`'s env-drift half stays advisory (exit 0 — it
+    is a heuristic); a toolchain FAIL exits **2**, because the judge itself
+    established it.
+
+- `R-35` **Comparison-base passthrough, `--base REF` (RG-26).** assay 3.0.0
+  shipped `judge.base_source = "request"` (B019): a changed-line lane that
+  omits `judge.base` and takes its comparison base from the gate, refusing by
+  design when invoked without `--request-base`. run-gate had no way to supply
+  one, so the judge feature was unusable from every consumer.
+  - **Derived, never restated.** Whether a lane delegates is READ from
+    `assay lanes --json` through `R-34`'s probe. There is **no new
+    `run-gate.toml` key**: `assay.toml` owns the fact, and a second spelling
+    of an owned fact is the drift machine this tool exists to remove. The
+    probe therefore runs for every `kind = "assay"` lane invocation, not only
+    when `--base` is given — it is short, read-only (`assay lanes` executes
+    nothing) and shares `R-34`'s single builder.
+  - **Resolution.** For a delegating lane the ref is `--base` when given,
+    else the judged worktree's `git merge-base HEAD @{upstream}`. No
+    upstream → exit 2, `lane 'x' delegates its comparison base; pass --base
+    REF (worktree has no upstream)`. There is no fallback to `HEAD` or to a
+    default branch name: a changed-line judgment whose base was guessed is
+    not a changed-line judgment.
+  - **Refusals (all exit 2, all naming the lane).** A lane that does NOT
+    delegate, invoked with `--base`: an assay lane whose inventory reports a
+    different `base_source` (naming the value assay declared), or a command
+    lane whose argv carries no `{base}` token (the ref could only be silently
+    dropped — `R-25`'s hazard class). A judge whose inventory cannot be read
+    AND `--base` given: exit 2 naming assay **3.2.0** (B044) as the version
+    that first carries the inventory. The same judge WITHOUT `--base`:
+    behaviour unchanged, nothing appended.
+  - **Conjunction propagation** follows `R-25`'s rule — a conjunction lane
+    declares it the way it declares `--worktree`, with a `{base}` token in
+    its own argv, substituted into every sub-invocation. A `{base}`-carrying
+    lane resolves its ref by the same policy above, so it refuses rather than
+    substituting an empty string.
+  - **Disclosure (`R-05`).** Before execution, live AND dry:
+    `run-gate: comparison base <REF> (from --base | merge-base HEAD
+    @{upstream}) → --request-base` (or `→ {base} in the lane argv`); the
+    printed docker argv carries the appended flag.
+
+- `R-30a` **Linked-worktree host-lane warning (RG-21).** When the project
+  declares at least one `environment = "host"` lane AND the judged tree is a
+  LINKED worktree whose gitdir lies outside it (`.git` is a FILE naming an
+  absolute path under the main checkout), `doctor` emits ONE `[WARN]` naming
+  the worktree, the gitdir, the exact symptom (`not a git repository:
+  <gitdir>`) and three remedies (mount the common gitdir into the harness's
+  container, pass it as `GIT_DIR`, or run the lane from the main checkout).
+  It is a warning, never a refusal, and it does not change doctor's exit
+  code: run-gate itself is not defective here — `{worktree}` forwarding and
+  exit-status passthrough are correct. The defect is one layer DOWN, in a
+  harness that bind-mounts only its own `$repo_root` (= the judged tree) by
+  host path, where the gitdir then falls outside the mount and every
+  in-container git plumbing call fails. run-gate's OWN container lanes are
+  unaffected, because `R-23` dual-mounts the REPO root; the check is
+  therefore scoped to host lanes, the only kind that can reach such a
+  harness — a warning that fires where it cannot bite gets switched off, and
+  then it protects nothing. With a host lane declared and a plain checkout,
+  the same check records `[OK]`, so a reader can tell it ran.
 
 - `R-31` **Wheel as second artifact (RG-14):** the script stays PRIMARY —
   fresh clone, zero installs, `./run-gate.py --list` unchanged is the design

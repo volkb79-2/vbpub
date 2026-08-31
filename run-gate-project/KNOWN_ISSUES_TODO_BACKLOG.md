@@ -38,12 +38,14 @@ SPEC §9.
 | RG-18 | no pg_dump/PostgreSQL version-mismatch guard for schema lanes | Minor | OPEN — dstdns-side scope (schema-gate.sh), not run-gate.py; see body |
 | RG-19 | schema-lane credential propagation must be verified by the gate, not by test failure | Major | FIXED 2026-08-24 |
 | RG-20 | replace global gate flock with resource-aware admission | Enhancement | FIXED 2026-08-24 |
-| RG-21 | linked-worktree checkouts break host-path-mapped lanes (srdm covergate evidence) | Minor | OPEN 2026-08-24 |
+| RG-21 | linked-worktree checkouts break host-path-mapped lanes (srdm covergate evidence) | Minor | FIXED 2026-08-31 (rev 26) — directions 2+3 (doctor warning + docs); direction 1 is harness-side, not run-gate's to build |
 | RG-22 | `git config --global safe.directory "*"` fails when global config already has safe.directory entries | Minor | FIXED 2026-08-24 |
-| RG-23 | exec-mode's hardcoded env-forward allowlist was dropped with no consumer migration; unmigrated consumers silently stop forwarding `RUN_LIVE_TESTS`/`MOCK_MODE` | Major | OPEN 2026-08-25 |
-| RG-24 | `resolve_container_name()` derives an exec-mode container's name from the shared-`.git`-owning repo's `ciu.global.toml`, never the judged worktree's own — a multi-instance (Mode-B) worktree's live lane silently targets the WRONG deployed container | Major | OPEN 2026-08-30 |
-| RG-25 | `doctor`/`--check-env` cannot see that an assay lane's language needs a toolchain (node, go helper) in its environment — consume `assay lanes --json` (assay B044) for a per-lane fitness check; backport of ciu CIU-72 (b) | Enhancement | OPEN 2026-08-30 |
-| RG-26 | no `--base REF` passthrough to `assay run --request-base` — assay B019 (≥ 3.0.0) unusable from the gate; delegating lanes DERIVED from `assay lanes --json`, no new lane key; backport of ciu CIU-72 (c), absorbs v8 proposal N12 | Major | OPEN 2026-08-30 |
+| RG-23 | exec-mode's hardcoded env-forward allowlist was dropped with no consumer migration; unmigrated consumers silently stop forwarding `RUN_LIVE_TESTS`/`MOCK_MODE` | Major | FIXED 2026-08-31 (rev 25) — run-gate half; dstdns half open in its own repo |
+| RG-24 | `resolve_container_name()` derives an exec-mode container's name from the shared-`.git`-owning repo's `ciu.global.toml`, never the judged worktree's own — a multi-instance (Mode-B) worktree's live lane silently targets the WRONG deployed container | Major | FIXED 2026-08-31 (rev 24) |
+| RG-25 | `doctor`/`--check-env` cannot see that an assay lane's language needs a toolchain (node, go helper) in its environment — consume `assay lanes --json` (assay B044) for a per-lane fitness check; backport of ciu CIU-72 (b) | Enhancement | FIXED 2026-08-31 (rev 27) |
+| RG-26 | no `--base REF` passthrough to `assay run --request-base` — assay B019 (≥ 3.0.0) unusable from the gate; delegating lanes DERIVED from `assay lanes --json`, no new lane key; backport of ciu CIU-72 (c), absorbs v8 proposal N12 | Major | FIXED 2026-08-31 (rev 28) |
+| RG-28 | `run_host_lane` raised `KeyError('argv')` for a `kind = "assay"` lane on the built-in `host` environment — a config the validator ACCEPTS, so a traceback for a legal declaration (R-04) | Minor | FIXED 2026-08-31 (rev 28) |
+| RG-29 | `cmru/run-gate.toml [lanes.assay]` pins a sidecar (`tools/assay/assay-2.2.0.pyz.sha256`) that no longer exists — cmru vendored 2.3.0 — which makes run-gate-project's OWN gate lane red via `validate-pointers` | Major | OPEN 2026-08-31 — cmru-side config, not run-gate.py |
 | RG-27 | run-gate has no persisted per-lane-per-commit invocation history and no query verb — a controller deciding sync-vs-async/defer rigor has no data; retriaged from ciu CIU-55 (2026-08-25) to run-gate, which is the layer with direct invocation visibility in the current (pre-v8) architecture | Enhancement | OPEN 2026-08-31 |
 
 ---
@@ -925,6 +927,46 @@ lane passes — `.git` is a directory inside the mount.
   gitdir error above).
 - `doctor` names the condition before the lane fails mid-run.
 
+**FIXED 2026-08-31 (rev 26) — directions 2 and 3. Direction 1 is deliberately
+NOT taken here.**
+
+Direction 1 (mount the common gitdir / hand over `GIT_DIR`) is the real fix
+and it is HARNESS-side: the `docker run` that mounts only `$repo_root`
+belongs to `shared-ramdisk-depot-manager/tools/gate.sh`, not to run-gate,
+which owns neither that argv nor srdm's repo. Building it here would mean
+run-gate reaching into a consumer's own container construction — the exact
+inversion the one-parser design (D-110) exists to prevent. What run-gate CAN
+own is telling the operator before the lane dies mid-run, and telling every
+future harness author how to fix their own mount.
+
+- **Direction 2 (`doctor` warning), `R-30a`:** `linked_worktree_gitdir()`
+  returns the absolute gitdir when `<worktree>/.git` is a FILE whose target
+  lies OUTSIDE the tree, and `None` for both benign shapes (plain checkout;
+  gitfile pointing inside the tree — that one travels with any mount, so
+  reporting it would be a false alarm). `doctor` emits ONE `[WARN]` naming
+  the worktree, the gitdir, the exact symptom (`not a git repository:
+  <gitdir>`) and three remedies. It never moves doctor's exit code:
+  run-gate is not defective here, and a warning that overstated itself into
+  a refusal would block a lane that works fine on the main checkout.
+  **Scoped to projects declaring an `environment = "host"` lane** — the only
+  kind that can reach such a harness, since run-gate's own container/exec
+  lanes dual-mount the REPO root (`R-23`) and cannot hit this. With a host
+  lane and a plain checkout the check records `[OK]`, so a reader can tell
+  it ran rather than inferring health from silence.
+- **Direction 3 (document):** CONSUMERS "Host lanes that delegate to a
+  host-path-mounting harness (RG-21)" — the real srdm error verbatim, the
+  doctor line, and THREE pasteable harness-side fixes (mount
+  `--git-common-dir`, export `GIT_DIR`, or declare the lane main-checkout-
+  only in its `description`), plus the `SRDM_HOST_REPO_ROOT` note that a
+  worktree's host path cannot be auto-derived from `docker inspect`.
+
+Tests: `TestLinkedWorktreeHostLaneWarning` ×7 — the gitdir helper in all four
+shapes (plain checkout, real `git worktree add`, gitfile pointing inside the
+tree, gitfile with no `gitdir:` line) and doctor in all three states (linked
+worktree + host lane → WARN naming the symptom and the remedies; plain
+checkout + host lane → OK; linked worktree, container lane only → the check
+does not appear at all).
+
 
 ## RG-22 — `git config --global safe.directory "*"` fails when global config already has safe.directory entries
 
@@ -1115,6 +1157,51 @@ after: present once `forward_env` is corrected, refused loudly by
 - [ ] dstdns's own fix (see above) tracked and confirmed landed — cross-repo
       pointer, not owned here.
 
+**FIXED 2026-08-31 (rev 25) — the run-gate half. The dstdns half stays OPEN
+in its own repo (cross-repo pointer, deliberately not owned here).**
+
+1. *Breaking change documented, with the migration.* SPEC `R-24a` (forwarding
+   is DECLARED, never implicit — `CGROUP_PARENT_DEV_BACKGROUND` is the sole
+   exception, being infrastructure the tool itself owns), CONSUMERS "BREAKING
+   CHANGE — migrate if you use `mode = "exec"`" (a pasteable two-half
+   migration: `forward_env` restores the old behaviour, `required_env` is
+   what converts the silent-skip into a loud refusal), README env-forwarding
+   bullet. The implicit names deliberately do NOT return: reinstating them
+   would re-create the shadowing default the declarative key removed. The
+   entry's own preferred shape — document + consider extending `--check-env`
+   — is what shipped; the allowlist was NOT restored.
+
+2. *Decision on `--check-env` (the entry's open question): EXTENDED, not
+   documented away.* A sweep whose comparison is narrower than its message
+   issues a false certification, which is worse than no check (AGENTS "a
+   check is only as strong as what it actually compares") — and this one had
+   already certified a clean bill of health over the exact variable whose
+   absence made the lane green. `scan_env_references()` replaces the line
+   regex with an AST pass that sees `os.environ[...]`,
+   `.get/.setdefault/.pop`, `getenv`, `"X" in os.environ`, and a literal
+   handed to the project's own env-reader helper (a function reading the
+   environment through one of its parameters — dstdns's
+   `_env_flag_enabled("RUN_LIVE_TESTS")` shape), with bound-method parameter
+   offsets accounted for so a method never reports a name taken from the
+   wrong argument position. It remains ADVISORY (exit 0) and `R-24b`
+   documents what it still cannot see (runtime-assembled names, non-Python
+   sources) so a clean sweep reads as evidence, not a certificate. An
+   unparseable file is named and falls back to the old regex — "could not
+   read it" is never rendered as "there is nothing there".
+
+3. *Estate audit performed.* At rev 25 NO vbpub project declares
+   `mode = "exec"`, none declares `forward_env`, and none references
+   `MOCK_MODE`/`RUN_LIVE_TESTS` in any `run-gate.toml` — the estate-side
+   blast radius is empty and the confirmed impact is dstdns alone. The audit
+   is kept as a TEST (`TestEstateExecForwardEnvAudit`) rather than a note, so
+   a future estate exec-mode adopter that reacquires the assumption fails
+   here instead of shipping a false green.
+
+Tests: `TestEnvReferenceScan` ×9 (every read shape, the helper oracle, the
+async/bound-method offset, the positional-only position, lookalike dict reads
+NOT reported, too-few-arguments call sites, `SyntaxError` propagation, and
+both end-to-end `--check-env` paths) + `TestEstateExecForwardEnvAudit`.
+
 ## RG-24 — `resolve_container_name()` reads `ciu.global.toml` from the shared-`.git`-owning repo, never from the judged worktree, so a multi-instance (Mode-B) worktree's exec-mode lane silently targets the WRONG deployed container
 
 **Filed:** 2026-08-30, dstdns-P147b (`dstdns@1171d8d3`,
@@ -1232,6 +1319,27 @@ worktree-scoped live lane.
       conflate with the (correct, unchanged) repo-relative resolution used
       elsewhere.
 
+**FIXED 2026-08-31 (rev 24).** `resolve_container_name()` takes the judged
+`worktree` (already threaded through `run_exec_lane`) and resolves
+`<worktree>/ciu.global.toml` → `<repo>/ciu.global.toml` in that order;
+a declared `container_name` remains the top of the precedence chain
+(unchanged). Additive, exactly as the entry asks: a worktree without its own
+config keeps repo-relative resolution byte-for-byte. Two visibility changes
+came with it, because the defect's real cost was that "which config decided
+this" was never printed: the resolution source now carries a SCOPE label
+(`judged worktree:` / `repo:` + the path), and it is now part of the
+pre-execution `container …` disclosure line (R-05), not only of the
+not-running refusal. A missing-config refusal names BOTH candidate paths when
+they differ — naming one would send an operator to `ciu render` the wrong
+tree. The disclosed workaround (`docker exec` by hand into the correct
+instance) is NOT reproduced anywhere in the tool; it was evidence-gathering,
+not a design. Tests: `TestWorktreeScopedContainerName` ×5 — the regression
+oracle runs with BOTH containers present and running in `docker ps`, since a
+test where only the right one exists would pass against the buggy code by
+`not running` refusal rather than by correct resolution. SPEC `R-14a`;
+CONSUMERS "Python app estate with its own runner" (worked disclosure line +
+an explicit "do not pin `container_name` as a workaround" warning).
+
 ## RG-25 — `doctor`/`--check-env` cannot see that an assay lane's LANGUAGE needs a toolchain in its environment; consume `assay lanes --json` (assay B044) for a per-lane fitness check
 
 **Filed:** 2026-08-30, from the assay 3.1.0 design review
@@ -1294,6 +1402,57 @@ container (assay B041). The fact is knowable statically; assay B044
       `kind = "assay"` section names the check beside the closure note
       added 2026-08-30.
 
+**FIXED 2026-08-31 (rev 27), SPEC `R-34` (+ `R-01`, `R-30` amendments).**
+`assay_toolchain_findings()` emits one `(status, topic, detail)` per assay
+lane; `cmd_doctor` feeds them to its existing `record()` and `cmd_check_env`
+prints them and exits 2 on a FAIL. `build_env_probe_argv()` is the single
+in-environment probe builder (reusing `resolve_container_name()` for exec and
+`physical_path()`/`dual_mount_flags()` for ephemeral); a test asserts by
+source inspection that the only functions constructing a `docker run`/`docker
+exec` argv are `run_container_lane`, `run_exec_lane` and
+`build_env_probe_argv`. Ephemeral probes carry `--cgroup-parent` like any
+container this tool starts, and SKIP rather than run unconfined where no
+slice is derivable.
+
+**Deviation from the entry's letter, and why (flagged for controller
+review).** The entry says to `command -v` "each of its `external_tools` and
+its `argv0`". Implemented as `external_tools` ∪ `argv0` ∪ a `language`
+toolchain table, because assay 3.2.0's own `docs/CONSUMERS.md` states that
+`external_tools` is `()` for EVERY shipped adapter today and that "a gate
+consumer should not build a `MISSING_EXTERNAL_TOOL` preflight around this
+field expecting it to name node/npm for a javascript lane — that check today
+has to come from `language` itself". Following the letter alone would have
+shipped a check that reports a clean bill of health for a JavaScript lane in
+an environment with no Node — precisely the gap this entry was filed for, and
+precisely the false-certification class AGENTS forbids. The entry's OWN
+example output (`[OK] lane 'ui-unit' toolchain: node, npm`) is only reachable
+via `language`, so the two readings agree on the outcome. The table is kept
+minimal (`javascript`, `go` — the two assay documents), and an unmapped
+language attaches an explicit caveat to the line rather than being silently
+read as "nothing needed".
+
+Deliberately NOT implemented (not in the entry's contract; noted for a future
+entry): `rigor` vs `rigor_reachable` — the inventory also exposes rigor levels
+a lane declares that THIS assay build cannot reach for its language, which is
+a second preflightable mid-run refusal. It belongs in its own entry rather
+than smuggled in here.
+
+Tests: `TestAssayToolchainFitness` ×18, driven through a docker shim that
+actually EXECUTES the probe script on the host (a shim echoing canned output
+would pin construction, not acceptance — the substitute-interpreter failure
+this whole project exists to kill). Covered: missing `external_tools` → FAIL
+naming lane/tool/environment; present → OK listing them; `language =
+"javascript"` against a constructed Node-less PATH → FAIL naming both, then
+node-only → FAIL naming only npm, then both → OK (the devcontainer has real
+node/npm in `/usr/bin` beside `bash`, so the absent case had to be built);
+lane absent from the inventory → FAIL naming what IS declared; judge without
+`--json` → SKIP; non-JSON → SKIP; `inventory_schema = 2` → SKIP with the
+value; `command -v` transport failure → SKIP, never a clean bill; `host`
+environment → SKIP; docker absent → SKIP; no slice derivable → SKIP; exec
+environment probes via `docker exec` and starts no container; `--check-env`
+exit 2/0; a command-lane project emits no toolchain line at all; and the
+one-probe-builder source assertion.
+
 ## RG-26 — no `--base REF` passthrough to `assay run --request-base`: B019 (assay ≥ 3.0.0) is unusable from the gate; derive the delegating lanes from `assay lanes --json`, not a new lane key
 
 **Filed:** 2026-08-30, from the assay 3.1.0 design review (§4 D3) — the
@@ -1351,6 +1510,57 @@ run-gate has no `--base` flag, so no consumer can adopt B019 until v8's
       existing one);
 - [ ] N12's row in `ciu/docs/CIU-V8-TESTING-GATE-PROPOSAL.md` §4.11 points
       here (done 2026-08-30).
+
+**FIXED 2026-08-31 (rev 28), SPEC `R-35`.** `--base REF` is accepted on every
+lane invocation; `plan_comparison_base()` decides what (if anything) the lane
+gets, and every refusal is exit 2 naming the lane.
+
+- **Delegation is DERIVED, not declared.** `assay_inventory_entry()` reuses
+  RG-25's probe; a lane reporting `base_source == "request"` gets
+  `--request-base <REF>` appended to its assay argv. No `run-gate.toml` key
+  was added, so v7 gets the one-spelling property the v8 proposal's S16.5
+  restatement has to work for.
+- **Cost, disclosed rather than hidden:** because delegation must be known
+  even when `--base` is absent (a delegating lane invoked bare needs the
+  merge-base default), the inventory probe runs for EVERY `kind = "assay"`
+  lane invocation. It is short, read-only (`assay lanes` executes nothing)
+  and uses `R-34`'s single builder. SPEC `R-35` and CONSUMERS both state it.
+- **Default ref** is the judged worktree's `git merge-base HEAD @{upstream}`,
+  via `derive_upstream_base()` — deliberately not `git_out()`, because a
+  missing upstream is an ordinary state to report, not infrastructure to
+  abort on. No upstream → the entry's exact refusal. There is no fallback to
+  `HEAD` or a default branch name.
+- **Conjunction propagation** uses `R-25`'s mechanism rather than inventing a
+  second one: a `{base}` token in the conjunction lane's own argv,
+  substituted into every sub-invocation, resolved by the same policy (so a
+  `{base}` lane on an upstream-less tree refuses instead of substituting an
+  empty string). A command lane WITHOUT the token, given `--base`, refuses —
+  the two rules would otherwise contradict each other for a conjunction,
+  which is a command lane that does not itself delegate.
+- **Older judge:** with `--base`, exit 2 naming assay `3.2.0` (B044) as the
+  version carrying the inventory; without `--base`, behaviour is byte-for-byte
+  unchanged.
+
+Tests: `TestComparisonBasePassthrough` ×14 — delegating + `--base`;
+delegating with a real upstream (asserting the actual merge-base SHA reaches
+the argv); delegating without an upstream → the exact refusal; non-delegating
++ `--base` → exit 2 naming the declared `base_source`, with NO judged run
+started; non-delegating without `--base` → unchanged; old judge both ways;
+lane absent from the inventory + `--base`; conjunction propagation (asserted
+at fd level, since the sub-shell's stdout is not a Python write);
+conjunction without upstream; command lane without the token; a `host`-
+environment assay lane probing locally with no docker at all; `--dry-run`
+disclosing the ref while starting no judged container; and the substitution
+leaving `{base}` alone when no base was resolved.
+
+The test-suite helpers `lane_runs()`/`lane_execs()` were added because an
+assay lane now issues a probe before the judged run — `docker_runs(log)[0]`
+is no longer necessarily the lane, and four existing tests were silently
+asserting against the probe instead (one of them, `test_exec_assay_lane_
+judges_selected_worktree`, still PASSED against the probe because both
+scripts `cd` to the same tree; it now asserts `--verdict-json` to pin the
+judged exec specifically).
+
 
 ---
 
@@ -1437,3 +1647,83 @@ history question flagged above).
 **SPEC ownership:** new surface — no existing `SPEC.md` section owns
 invocation-timing telemetry. Cross-reference: ciu CIU-55 (superseded pointer,
 `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`).
+
+## RG-28 — `run_host_lane` raised `KeyError('argv')` for `kind = "assay"` on the built-in `host` environment
+
+**Filed and FIXED 2026-08-31 (rev 28)**, found while implementing RG-26.
+
+`_validate_lane` accepts `kind = "assay"` with `environment = "host"` — no
+rule forbids it, and the assay/host combination is a reasonable shape for a
+project whose judge runs on the machine (run-gate-project's own selftest lane
+is a host lane; an assay-judged sibling would look exactly like this).
+`run_host_lane` nonetheless did `substitute_worktree(lane["argv"], …)`
+unconditionally, so such a lane died with a `KeyError('argv')` traceback —
+`R-04` names a traceback for a config/usage error a defect outright. It now
+builds the same assay inner the two container runners build
+(`build_assay_inner`), whose `GIT_CONFIG_GLOBAL` isolation (`R-19a`) keeps
+the `safe.directory` write out of the operator's own git config. SPEC `R-19`
+amended. Covered by `TestComparisonBasePassthrough::
+test_host_assay_lane_probes_locally_without_docker`, which drives a host
+assay lane end to end with docker never invoked.
+
+## RG-29 — `cmru/run-gate.toml` pins a vanished assay sidecar, which turns run-gate-project's OWN gate red
+
+**Filed:** 2026-08-31, from the run-gate-P02 bundle (RG-21/23/24/25/26). Not
+fixed here: the defect is in `cmru/run-gate.toml`, outside this project's
+scope, and the package's own scope statement forbids touching it.
+
+### The bug
+
+`run-gate-project`'s gate lane (`./run-gate.py selftest`) includes
+`TestPointerLinkageEstate::test_cmru_release_step_names_a_real_lane`, which
+runs `validate-pointers ../cmru/cmru.toml`. That fails:
+
+```
+run-gate: DEFECT steps.run-tests.commands[0].argv[argv]: loading
+../cmru/run-gate.toml: lane '[lanes.assay]': pin 'assay' sidecar
+tools/assay/assay-2.2.0.pyz.sha256 does not exist in this project (../cmru)
+— vendor it or shadow the lane
+run-gate: validate-pointers FAILED: 1 defect(s) across 0 invocation(s)
+```
+
+`cmru/tools/assay/` contains `assay-2.3.0.pyz` + `assay-2.3.0.pyz.sha256`;
+`cmru/run-gate.toml` still declares the **2.2.0** sidecar. Confirmed
+pre-existing on `main` at `858766d1` (identical failure from the primary
+checkout and from a fresh worktree, and `git ls-tree` shows only the 2.3.0
+pair tracked).
+
+**Why it matters beyond cmru:** because the selftest lane's argv is
+`pytest … && coverage_gate`, a red pytest SHORT-CIRCUITS the diff-coverage
+floor — so while this is broken, run-gate's own gate cannot report a coverage
+verdict at all, and any consumer reading `./run-gate.py selftest`'s exit
+status sees red for a reason unrelated to run-gate.
+
+### Fix (cmru-side)
+
+**FOUR things move together, not one.** `cmru/run-gate.toml` names the
+vanished artifact in four places, and bumping only the pin leaves the lane
+broken in a different way — it would then verify a 2.3.0 sha256 and
+immediately try to execute an `assay-2.2.0.pyz` that is not there:
+
+1. `[lanes.assay.pins.assay] sha256` → `tools/assay/assay-2.3.0.pyz.sha256`;
+2. `[lanes.assay.pins.assay] version` → `2.3.0` (it is VERIFIED in-lane
+   against `<assay_command> --version`, RG-4/`R-08`, so a stale value fails
+   the lane loudly rather than silently);
+3. `[lanes.assay] assay_command` (`cmru/run-gate.toml:21`) → the literal
+   filename `tools/assay/assay-2.3.0.pyz`;
+4. `[lanes.mutation] argv` (`cmru/run-gate.toml:55`) → its
+   `--assay-zipapp tools/assay/assay-2.2.0.pyz` carries a fourth copy of the
+   same filename, inside a free-form shell string that `validate-pointers`
+   deliberately never stats (`R-22`: argv strings are shell text, not
+   declared paths), so nothing will tell you about this one.
+
+Alternatively vendor the 2.2.0 pair back. Then re-run
+`run-gate-project/run-gate.py selftest`.
+
+### Acceptance
+
+- [ ] `./run-gate.py validate-pointers ../cmru/cmru.toml` exits 0;
+- [ ] `grep -n 'assay-2\.2\.0' cmru/run-gate.toml` returns nothing — pin AND
+      `assay_command` both moved;
+- [ ] `run-gate-project`'s `selftest` lane is green end to end, including
+      the diff-coverage step that currently never executes.

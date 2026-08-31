@@ -9,7 +9,113 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
-_Nothing yet._
+### Changed
+- **Adversarial-review round on the P02 bundle (rev 29).** The `command -v`
+  fitness probe is now BATCHED per environment over the union of every lane's
+  tools — it was one container per lane, so SPEC `R-30`'s "at most one probe
+  container per assay environment" was quantitatively false (measured: 4
+  containers for 3 lanes on one environment). A test now owns that count.
+  And the three places still promising that `--dry-run` starts nothing —
+  SPEC `R-28`, `usage()`, the argparse help — now say what it does start: an
+  assay lane's read-only inventory probe, which is what resolves the base the
+  printed plan must show. `--dry-run`'s real promise is that **no judged lane
+  starts**. Same correction applied to `doctor` in CONSUMERS, README and
+  `cmd_doctor`'s own docstring, which still called itself "pure
+  recomposition".
+
+### Added
+- **RG-26 — `--base REF` passthrough to `assay run --request-base`
+  (rev 28).** assay 3.0.0's `judge.base_source = "request"` (B019) had been
+  unusable from every consumer: such a lane refuses without
+  `--request-base`, and run-gate had no flag to supply one. `run-gate <lane>
+  --base REF` now reaches a delegating assay lane as `--request-base REF`;
+  omitted, the ref is the judged worktree's `git merge-base HEAD
+  @{upstream}`, and a tree with no upstream refuses (exit 2) rather than
+  guessing. Delegation is DERIVED from `assay lanes --json` (RG-25's shared
+  probe) — **no new `run-gate.toml` key**, so the fact keeps exactly one
+  spelling; the cost is one short read-only inventory probe per assay lane
+  invocation. Conjunction lanes propagate it through a `{base}` token in
+  their own argv, mirroring RG-1's `{worktree}` rule. Every non-delegating
+  case refuses by name: an assay lane with a different `base_source`, a
+  command lane with no `{base}` token, or a judge too old to answer while
+  `--base` is given (naming assay 3.2.0/B044). Without `--base` an older
+  judge behaves exactly as before. `--dry-run` and the R-05 disclosure show
+  the resolved ref and the appended flag. SPEC `R-35`; CONSUMERS "Lanes that
+  take their comparison base from the gate"; absorbs the ciu v8 proposal's
+  §4.11 N12.
+- **RG-28 — an assay lane on the built-in `host` environment no longer
+  raises `KeyError('argv')` (rev 28).** Found while implementing RG-26: the
+  validator accepts `kind = "assay"` with `environment = "host"`, but
+  `run_host_lane` indexed `lane["argv"]` unconditionally — a traceback for a
+  legal config, which `R-04` calls a defect. It now builds the same assay
+  inner the two container runners do. SPEC `R-19`.
+- **RG-25 — assay-lane toolchain fitness in `doctor`/`--check-env`
+  (rev 27).** For every `kind = "assay"` lane, run-gate asks the JUDGE what
+  the lane needs (`<assay_command> lanes --json --file assay.toml`, assay
+  ≥ 3.2.0 / B044) INSIDE the lane's environment and checks that environment
+  for it — it still never parses `assay.toml`. `build_env_probe_argv()` is
+  the single in-environment probe builder, reusing `resolve_container_name()`
+  and `physical_path()`/`dual_mount_flags()`, so no second `docker
+  run`/`docker exec` argv shape exists. Tools checked = `external_tools` ∪
+  `argv0` (read from the inventory) ∪ the `language` toolchain (`javascript`
+  → node, npm; `go` → go — a table that exists only because assay 3.2.0
+  reports `external_tools: []` for every shipped adapter and states the
+  language fact in prose; an unmapped language is reported with a caveat,
+  never as "nothing needed"). `[FAIL]` names lane, tool and environment, or
+  an `assay_lane` the judge does not declare; every "could not determine" is
+  `[SKIP]` with its reason, so an assay older than B044 can never turn a
+  healthy project red. `doctor` counts SKIPs in its summary; `--check-env`
+  exits 2 on a toolchain FAIL while its env-drift half stays advisory.
+  **`doctor` and `--check-env` now START CONTAINERS** for this check —
+  fitness can only be observed, not read. They are short-lived and read-only,
+  judge nothing, write nothing, and are bounded at one inventory probe per
+  (environment, `assay_command`) plus **one batched `command -v` probe per
+  environment** (not per lane); a project with no assay lane starts none.
+  SPEC `R-34`, `R-01`, `R-30`; CONSUMERS `kind = "assay"` section; README.
+- **RG-21 — `doctor` names the linked-worktree host-lane git view (rev 26).**
+  A linked worktree's `.git` is a FILE pointing at an absolute gitdir under
+  the main checkout. A host lane that delegates to a harness bind-mounting
+  only the judged tree by host path (srdm's covergate) therefore fails with
+  `not a git repository: <gitdir>` mid-run. run-gate is not the defect —
+  `{worktree}` forwarding and exit-status passthrough are correct, and its own
+  container lanes dual-mount the repo root (`R-23`) — so this is a `[WARN]`
+  naming the worktree, the gitdir, the exact symptom and three remedies, not a
+  refusal, and it does not move doctor's exit code. Scoped to projects that
+  declare a host lane (the only kind that can reach such a harness); with a
+  host lane and a plain checkout the same check records `[OK]` so a reader can
+  tell it ran. SPEC `R-30a`; CONSUMERS "Host lanes that delegate to a
+  host-path-mounting harness" (three pasteable harness-side fixes).
+
+### Fixed
+- **RG-23 — env forwarding: breaking change documented + the drift sweep
+  widened (rev 25).** The exec-mode forwarding loop's hardcoded
+  `MOCK_MODE`/`RUN_LIVE_TESTS` pair was replaced by declarative `forward_env`
+  with no migration pass and no note; consumers relying on either name
+  silently stopped receiving it, and the symptom is a false GREEN (a suite
+  that skips its live tests on the flag's absence exits 0 having run none).
+  The change is now stated as breaking with its migration in SPEC `R-24a`,
+  CONSUMERS ("BREAKING CHANGE — migrate if you use `mode = "exec"`") and the
+  README. The implicit names do NOT return. `--check-env` is now AST-based
+  (`R-24b`): it additionally sees a literal handed to the project's own
+  env-reader helper — `_env_flag_enabled("RUN_LIVE_TESTS")` whose body does
+  `os.getenv(name, "")`, exactly the shape the old line regex could not see —
+  plus `setdefault`/`pop`/`"X" in os.environ`, with bound-method parameter
+  offsets accounted for. It stays advisory (exit 0). An unparseable file is
+  reported by name and falls back to the line regex rather than being counted
+  as clean. Estate audit: no vbpub project declares `mode = "exec"` or
+  `forward_env`, so the confirmed blast radius is dstdns alone (its own
+  repo's fix). A regression test keeps that audit from silently regressing.
+- **RG-24 — exec-mode container resolution is worktree-scoped (rev 24).**
+  `resolve_container_name()` now prefers the JUDGED worktree's own
+  `ciu.global.toml` over the shared-`.git`-owning repo's, falling back to the
+  repo's unchanged when the worktree has none. A multi-instance ("Mode-B")
+  worktree with its own rendered config, network and runner used to have its
+  lane exec'd into the MAIN checkout's container — a partial, believable
+  failure (the inner `cd` still found the right files; only the container's
+  baked network/env were wrong). The pre-execution disclosure now names the
+  resolution scope (`judged worktree:` / `repo:`) and the file used, and a
+  missing-config refusal names both candidate paths. SPEC `R-14a`;
+  CONSUMERS "Python app estate with its own runner".
 
 <!-- Post-release housekeeping (assay CHANGES.md precedent): this block is
      CLEARED immediately after a release. cmru generates the dated entry
