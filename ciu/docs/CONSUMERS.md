@@ -940,3 +940,88 @@ This is specifically the case of naming a REFERENCE instance's service
 after joining its network (S16.1a). Qualifying a stack's OWN
 `internal_host`/`hostname:` default — no shared-infra join involved — is
 the separate case covered in §5e above.
+
+## 18. Write a stack's `build.context` (and `dockerfile`) as repo-root-relative (S8.1a, CIU-71)
+
+Every compose invocation CIU makes passes `--project-directory <repo root>`
+(S8.1a), so a relative `build.context` in a stack's compose template
+resolves against the **repo root**. This is NOT the convention CIU's other
+relative paths follow — hostdirs, `ASK_FILE` secret sources, and configfile
+schema/template paths all resolve **stack-dir-relative** (see the note
+below) — `build.context` is the deliberate exception, because a Dockerfile
+`COPY` of a repo-shared asset needs the repo root, the same way a
+consumer-repo build would. It does NOT resolve against the compose file's
+own directory, which is `docker compose`'s default when no
+`--project-directory` is given.
+
+**`dockerfile:` moves with `context:`.** Compose resolves a `build.dockerfile`
+path relative to `build.context`, not relative to `--project-directory`
+directly (the same rule `ciu dev`'s own `_build_dev_image` already applies —
+`src/ciu/dev.py`'s `Path(context) / dockerfile`). Once `context` becomes
+repo-root-relative, an UNSET or bare `dockerfile: Dockerfile` now looks for
+`<repo root>/Dockerfile`, not `<stack dir>/Dockerfile` — almost never what a
+stack author wants. **Both keys need to move together.**
+
+Concretely, if a stack directory `infra/mock-targets/` declares:
+
+```toml
+# infra/mock-targets/ciu.defaults.toml.j2
+[mock_targets.image]
+build_context = "."
+dockerfile = "infra/mock-targets/Dockerfile"
+```
+
+and its Dockerfile `COPY`s a path relative to the **repo root**:
+
+```dockerfile
+# infra/mock-targets/Dockerfile
+COPY tests/fixtures/mock_data /data/mock_data
+```
+
+then `tests/fixtures/mock_data` MUST live at the repo root
+(`<repo>/tests/fixtures/mock_data`), not inside `infra/mock-targets/`. This
+is the natural, repo-root-relative way to write it — matching how
+`build.context` now resolves — and it is what `ciu up` actually runs
+against. Live-verified (see `nyxloom-trove/reports/ciu-P37-REPORT.md`): the
+`dockerfile:` line above is not optional — omitting it and leaving the
+compose default (`Dockerfile`, resolved against the now-repo-root context)
+fails `failed to read dockerfile: open Dockerfile: no such file or
+directory`.
+
+**`.env` also relocates.** Compose loads a bare `.env` file from the
+**project directory** (S8.1a) ONLY — it does not also check the compose
+file's own directory as a fallback. So a stack-local `.env` beside
+`ciu.compose.yml` stops being read at all once `--project-directory` points
+at the repo root: it is dropped unconditionally, whether or not a
+repo-root `.env` exists (live-verified: with a stack-local `.env` only and
+no repo-root `.env`, the variable it set came back unset post-fix, not
+"shadowed" by anything). CIU itself never depends on this (it always passes
+the compose process environment explicitly, S8.2, and never relies on
+compose's own bare-`.env` loading), so this only matters for a stack with
+its OWN stack-local `.env` a maintainer authored outside CIU's secret/config
+mechanisms — check for one before upgrading.
+
+> **If you are migrating a stack that carried a workaround for the pre-CIU-71
+> bug** (a stack-relative `build_context`, e.g. `"../.."`, in an untracked
+> `ciu.toml.j2` override, to compensate for compose resolving `.` against the
+> compose file's own directory): remove the override and go back to the
+> plain repo-root-relative form (`"."` or a repo-root-relative subpath) for
+> BOTH `build_context` AND `dockerfile` — a stack that only moved
+> `build_context` back and left `dockerfile` stack-relative (or unset,
+> defaulting to `Dockerfile`) breaks the same way the live repro did, just
+> one field over. Also check for a stack-local `.env`: if one exists beside
+> the compose file, move its values into CIU's own config/secret mechanisms
+> or into a repo-root `.env` — it will no longer be read from its old
+> location at all.
+
+This applies to BOTH the native `up` path and the `--shipped` passthrough
+(S8.6) — a maintainer's own pre-shipped `docker-compose.yml` gets the same
+`--project-directory` treatment as a CIU-rendered `ciu.compose.yml`.
+
+**Note on CIU's OTHER relative paths (S8.1a):** `build.context`/`dockerfile`
+are the ONE thing CIU deliberately makes repo-root-relative via
+`--project-directory`. Everything else CIU resolves relative to a path
+(hostdir `vol-*` directories, `ASK_FILE` secret sources, configfile
+schema/template paths) resolves **stack-dir-relative**, not repo-root-
+relative — the two conventions genuinely differ within the same stack. See
+S8.1a for the full accounting and why.

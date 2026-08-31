@@ -385,6 +385,17 @@ class TestResetServiceValidation:
         with pytest.raises(ValueError, match="deploy.labels.prefix"):
             _reset(config, tmp_path, assume_yes=True)
 
+    def test_requires_repo_root_even_when_naming_pair_present(self, tmp_path):
+        """CIU-71: --project-directory needs repo_root REGARDLESS of whether
+        deploy.project_name/environment_tag resolve compose_project on their
+        own -- a stack's relative paths (build.context included) must
+        resolve against the repo root every time down runs, not only on the
+        config-less identity-project path CIU-46 already guards."""
+        config = _base_config()
+        config["deploy"]["environment_tag"] = "98535c"
+        with pytest.raises(ValueError, match="CIU-71.*repo_root is required"):
+            reset_service(config, tmp_path, assume_yes=True)
+
 
 class TestResetServiceIdentityNaming:
     def test_tags_absent_without_repo_root_refuses(self, tmp_path):

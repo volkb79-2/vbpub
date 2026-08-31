@@ -130,7 +130,8 @@ def test_compose_runner_returns_nonzero_status_and_streamed_output(tmp_path, mon
     monkeypatch.setattr(engine.subprocess, "Popen", lambda *args, **kwargs: FailedProcess())
 
     result = engine.execute_docker_compose_with_logs(
-            ["-f", "ciu.compose.yml"], cwd=tmp_path, project="test-project"
+            ["-f", "ciu.compose.yml"], cwd=tmp_path, project="test-project",
+            repo_root=tmp_path,
         )
 
     assert result == {
@@ -148,7 +149,8 @@ def test_compose_runner_missing_docker_is_structured_failure(tmp_path, monkeypat
     monkeypatch.setattr(engine.subprocess, "Popen", _missing)
 
     result = engine.execute_docker_compose_with_logs(
-            ["-f", "ciu.compose.yml"], cwd=tmp_path, project="test-project"
+            ["-f", "ciu.compose.yml"], cwd=tmp_path, project="test-project",
+            repo_root=tmp_path,
         )
 
     assert result["status"] == "error"
@@ -187,7 +189,8 @@ def test_keyboard_interrupt_terminates_then_kills_unresponsive_compose(tmp_path,
     monkeypatch.setattr(engine.subprocess, "Popen", lambda *args, **kwargs: InterruptedProcess())
 
     result = engine.execute_docker_compose_with_logs(
-            ["-f", "ciu.compose.yml"], cwd=tmp_path, project="test-project"
+            ["-f", "ciu.compose.yml"], cwd=tmp_path, project="test-project",
+            repo_root=tmp_path,
         )
 
     assert result["status"] == "interrupted"

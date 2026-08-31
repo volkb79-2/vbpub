@@ -76,6 +76,7 @@ def test_shipped_execution_names_identity_project_without_deploy_tags(
     assert calls == [{
         "file_args": ["-f", "vendor.yml"], "cwd": stack.resolve(),
         "env": {"X": "1"}, "project": "dstdns-abc123-vendor-stack",
+        "repo_root": tmp_path.resolve(),
     }]
     assert guards == [(stack.resolve(), "dstdns-abc123-vendor-stack")]
     assert (

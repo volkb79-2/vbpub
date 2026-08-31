@@ -700,13 +700,21 @@ def reset_service(
     """Reset one stack to a fresh state (S6.4); raises RuntimeError on hard failure.
 
     Steps:
-      1. ``docker compose down -v`` (with the overlay ``-f`` when it exists).
+      1. ``docker compose down -v`` (with the overlay ``-f`` when it exists),
+         scoped by ``-p`` AND ``--project-directory`` (CIU-71) so a relative
+         path in an overlay resolves the same way ``up`` resolved it.
       2. Remove ``<stack>/vol-*`` directories — resolved against the STACK DIR,
          never the process cwd (B14 / S6.4).
       3. Remove rendered ``ciu.compose.yml`` + ``ciu.toml`` + ``.ciu/rendered/``
          + the overlay.
       4. Orphan cleanup via the anchored label filter
          ``<prefix>.component=<service>`` (docker ps label equality, S6.4).
+
+    *repo_root* is optional at the type level (kept for the ValueError below
+    to name it explicitly) but effectively REQUIRED at runtime: every real
+    caller (``main_execution``'s reset step, ``deploy.py``'s reset path)
+    already resolves and passes it, and step 1's ``--project-directory``
+    raises loudly rather than silently omitting the flag when it is absent.
 
     Secret store files are KEPT unless *remove_secrets* (S4.25), in which case
     materialize.reset_secrets semantics apply (rm the stack/project store files).
@@ -751,7 +759,22 @@ def reset_service(
                 "compose project; set both tags or pass repo_root."
             )
         compose_project = identity_compose_project_name(Path(repo_root), stack_dir)
-    down_cmd = ["docker", "compose", "-p", compose_project, "-f", CIU_COMPOSE_OUTPUT]
+    # CIU-71: --project-directory is required unconditionally, independent of
+    # which branch above resolved compose_project — down's relative paths
+    # (e.g. a build.context restated by an overlay) must resolve against the
+    # same repo root `up` used, not this compose file's own directory.
+    if repo_root is None:
+        raise ValueError(
+            "[CIU-71] repo_root is required to invoke docker compose with "
+            "--project-directory (a stack's relative paths, build.context "
+            "included, must resolve against the repo root, not this compose "
+            "file's own directory); pass repo_root."
+        )
+    down_cmd = [
+        "docker", "compose", "-p", compose_project,
+        "--project-directory", str(Path(repo_root).resolve()),
+        "-f", CIU_COMPOSE_OUTPUT,
+    ]
     if overlay_path.exists():
         down_cmd += ["-f", f"{MACHINE_DIR}/{OVERLAY_NAME}"]
     # S16.9: the same file set `up` composed with, so `down` addresses exactly
@@ -1051,9 +1074,10 @@ def guard_legacy_compose_project(stack_dir: Path, expected_project: str) -> None
 
 def execute_docker_compose_with_logs(
     file_args: list[str], *, cwd: Path, env: Optional[dict] = None,
-    project: str,
+    project: str, repo_root: Path,
 ) -> dict:
-    """Run ``docker compose -p <project> <file_args> up -d`` with live streaming.
+    """Run ``docker compose -p <project> --project-directory <repo_root>
+    <file_args> up -d`` with live streaming.
 
     *project* (S8.7) is REQUIRED and passed as ``-p`` so compose
     reconciliation is always instance-scoped and always enumerable by clean
@@ -1061,11 +1085,26 @@ def execute_docker_compose_with_logs(
     the withdrawn optional-None form let docker derive the cwd basename,
     which collided across checkouts and escaped every teardown pass.
 
+    *repo_root* (CIU-71) is REQUIRED and passed as ``--project-directory`` so
+    a stack's ``build.context``/``dockerfile`` resolve against the REPO
+    ROOT — a deliberate EXCEPTION to how CIU resolves its other relative
+    paths (hostdirs, ``ASK_FILE`` secret sources, configfile schema/template
+    paths all resolve stack-dir-relative, never repo-root-relative), made
+    because a Dockerfile ``COPY`` of a repo-shared asset needs the repo
+    root, not the compose file's own directory (docker compose's default
+    absent this flag). Without it, a stack whose Dockerfile ``COPY``s a
+    repo-root-relative path fails at build time with a path-not-found error
+    the operator has no reason to associate with CIU's invocation.
+
     Returns ``{'status': 'success'|'error'|'interrupted', 'message', 'stdout'}``.
     """
     result = {"status": "success", "message": "", "stdout": ""}
     print("[INFO] Executing docker compose up...", flush=True)
-    cmd = ["docker", "compose", "-p", project, *file_args, "up", "-d"]
+    cmd = [
+        "docker", "compose", "-p", project,
+        "--project-directory", str(Path(repo_root).resolve()),
+        *file_args, "up", "-d",
+    ]
 
     proc = None
     try:
@@ -1742,7 +1781,8 @@ def main_execution(
                     working_dir.relative_to(repo_root),
                 ):
                     docker_result = execute_docker_compose_with_logs(
-                        file_args, cwd=working_dir, env=compose_env, project=project
+                        file_args, cwd=working_dir, env=compose_env, project=project,
+                        repo_root=repo_root,
                     )
             except worktree.WorktreeError as exc:
                 raise ComposeError(str(exc)) from exc
@@ -1901,7 +1941,7 @@ def run_shipped(
         )
         if dry_run:
             print("[SHIPPED 3/4] --dry-run: skipping docker compose up", flush=True)
-            print(f"[SHIPPED 4/4] would run: docker compose -f {compose_file} up -d", flush=True)
+            print(f"[SHIPPED 4/4] would run: docker compose --project-directory {repo_root} -f {compose_file} up -d", flush=True)
             return result
 
         print(f"[SHIPPED 3/4] Starting shipped stack (docker compose -f {compose_file} up -d)...", flush=True)
@@ -1947,7 +1987,7 @@ def run_shipped(
             ):
                 docker_result = execute_docker_compose_with_logs(
                     ["-f", compose_file], cwd=working_dir, env=compose_env,
-                    project=shipped_project,
+                    project=shipped_project, repo_root=repo_root,
                 )
         except worktree.WorktreeError as exc:
             raise ComposeError(str(exc)) from exc
