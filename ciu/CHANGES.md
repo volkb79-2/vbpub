@@ -54,6 +54,30 @@ restatement of the technical detail below it.
 - **Docs only, no behavior change:** a new CONSUMERS.md migration note
   (hand-rolled `internal_host` override → `--shared-infra-ref-services`) and
   a consolidated "Optional extras" install table in README.md.
+- **Action needed if you set `[deploy.health].timeout` as a GATE budget:**
+  CIU-67 stops reading that key as the S7.7 gate's overall wait budget — it
+  is the per-probe Docker HEALTHCHECK duration and only that. Declare
+  `[deploy.health].gate_timeout` for the gate, or (better) let it derive per
+  container from each service's own healthcheck. If you added
+  `health_timeout` overrides to work around the old behavior, they still win
+  and can now be removed.
+- **Read this if your stacks use `stack:*:healthy|completed` requirements:**
+  CIU-68 makes the health gate turn itself on for those runs, and makes a
+  dependency reported `starting` be waited for rather than failed.
+- **New default-on behavior — read this if you run `ciu up`:** CIU-64 makes
+  `ciu up` run `ciu check`'s static pipeline itself, before STEP 1, and
+  REFUSE (exit 2) on any ERROR-severity finding — including one from a
+  stack's own `validate_config` hook. Nothing opts in. A config that
+  `ciu check` already passes deploys exactly as before; a config that
+  `ciu check` would have failed now stops before anything starts instead of
+  failing mid-deploy. `--skip-check` is the break-glass escape.
+- **Additive for hook authors:** CIU-65 lets a `validate_config` finding be
+  a `("WARN", "…")` pair instead of a bare error string. Existing hooks are
+  untouched — a bare string still means ERROR and still blocks.
+- **Action needed if your checkout has a corrupt `ciu.env`:** CIU-62 makes
+  `ciu clean` FAIL on a present-but-unreadable `ciu.env` instead of treating
+  it as "no identity network" and under-cleaning silently. An absent
+  `ciu.env` is unchanged and still green. Repair with `ciu env generate`.
 
 ### Added
 - feat(ciu): **CIU-60 — identity facts reach TEMPLATES through a real file,
@@ -157,6 +181,168 @@ restatement of the technical detail below it.
   excluded (it is for CIU's own contributors, not consumers). Purely
   additive: the existing per-feature mentions in `docs/CONFIG.md` and
   `docs/CONSUMERS.md` are unchanged. Docs-only; no behavior changes.
+
+- feat(ciu): **CIU-67 — `[deploy.health].gate_timeout`, a distinct key for
+  the S7.7 gate's overall wait budget** (SPEC S7.7, ciu-P41).
+  `[deploy.health].timeout` was read for two semantically incompatible jobs:
+  the Docker `HEALTHCHECK` field (how long ONE probe attempt may run —
+  correctly a few seconds) and the inter-phase gate's overall budget for a
+  container to reach `healthy` at all (which needs to be on the order of that
+  container's grace period). The field's own
+  interval/timeout/retries/start_period shape IS Docker's HEALTHCHECK syntax,
+  so nothing hinted it was dual-purposed. A container's gate budget now
+  resolves: the phase entry's `health_timeout` (unchanged escape hatch), then
+  `gate_timeout`, then a value DERIVED from that container's own rendered
+  healthcheck as `start_period + retries × interval`, with Docker's
+  documented defaults for omitted fields.
+
+  Live-reproduced: `timeout = "5s"` — a correct, deliberate per-probe value —
+  gave a container whose own healthcheck declared `start_period = 240s` a
+  five-second gate budget, failing it on every single fresh deploy while it
+  was converging normally.
+- feat(ciu): **CIU-65 — a `validate_config` finding can now carry a
+  severity** (SPEC S9.5, ciu-P41). `validate_config(config, ctx)` returned a
+  bare `list[str]` in which every finding was implicitly the same weight, so
+  there was no way for one to be "worth knowing" without also being "must
+  block" — while `_CheckReport` had carried the two-tier `.fail`/`.note`
+  vocabulary this needs the whole time, and the consumption loop simply never
+  reached for `.note`. A finding may now be a 2-element `tuple` OR `list`
+  `(severity, message)` whose severity is `WARN` or `ERROR`, matched
+  case- and whitespace-insensitively — the same `str(v).strip().upper()`
+  normalization S10.7's `ciu.exit_on` already applies to this vocabulary.
+  `ERROR` fails the stage exactly as before; `WARN` becomes a stage NOTE
+  (printed as `note: [WARN] …`, present in the `--json` envelope's `notes`
+  array with the same `stack`/`hook` keys a finding carries) and changes no
+  exit code.
+
+  **Backward compatible by construction:** a bare message string is `ERROR`,
+  unchanged, so no existing hook changes weight. The finding vocabulary is
+  deliberately the SUBSET `{WARN, ERROR}` of S10.7's
+  `WARN`/`ERROR`/`NEVER` — `NEVER` is a threshold, not a property a finding
+  can have. An unrecognized severity is REFUSED as its own ERROR finding
+  naming the accepted values rather than defaulted: reading a typo'd
+  `"warning"` AS a warn would silently downgrade a blocking finding, and the
+  run that did so would look identical to a healthy one. Routing is
+  deliberately NOT wired through `ciu.exit_on`/`$CIU_EXIT_ON` — a hook's
+  static findings must not change the machine-readable `--json` verdict
+  according to ambient shell state.
+
+### Changed
+- fix(ciu)!: **CIU-68 — the S7.7 health gate now runs when it is needed, and
+  a dependency reported `starting` is waited for, not failed** (SPEC S7.7,
+  ciu-P41). Two compounding halves of one live failure: a genuinely fresh
+  `ciu clean && ciu up` failed at phase_2 because `stack:infra/vault:healthy`
+  reported `starting`; vault reported healthy moments later, unobserved.
+
+  (a) The inter-phase gate — the ONLY mechanism that makes a
+  `stack:*:healthy|completed` requirement reliable across a phase boundary —
+  was not part of `ciu up`'s default action sequence: `health_after_phase`
+  required BOTH `--deploy` and `--healthcheck`, and neither flag appeared in
+  `ciu up --help`, so an operator could not discover it from the tool. The
+  gate is now SELF-SELECTING: it turns itself on whenever any stack in the
+  selection declares such a requirement, announcing the ref responsible. A
+  run with no such ref is unchanged and pays nothing. Both flags are also now
+  listed in `ciu up --help`, discoverability being independently broken.
+
+  (b) The per-phase live provisioning probe called `probe_ref` exactly once
+  per requirement with zero retry, so a dependency reported `starting` (not
+  yet converged, but on track) was treated identically to one that will never
+  satisfy. `ProbeResult` gained a `retryable` flag, set ONLY where the
+  condition genuinely resolves on its own — `stack:*:healthy` reporting
+  `starting`, and `stack:*:completed` whose container is still running — and
+  those are now polled to `gate_timeout` (or the 90s default) at the gate's
+  own 5s cadence. Everything else still fails PROMPTLY: an absent container,
+  an `unhealthy` one, a non-zero exit, an unavailable daemon and an
+  unparseable state will not resolve on their own, and polling them would
+  only make real misconfigurations slow.
+
+  **Action needed if** you deploy stacks with `stack:*:healthy|completed`
+  requirements: those runs now gate on health after each phase where they
+  previously did not, so a phase that starts an unhealthy container fails
+  there instead of at the next phase's preflight. That is the intended fix.
+  If a run gates where you do not want it to, remove the requirement or set
+  `health = false` on the phase entry.
+- feat(ciu)!: **CIU-64 — `ciu up` now runs `ciu check` itself, by default**
+  (SPEC S13.4c, ciu-P41). Before this, both the provisioning-graph lint and
+  every hook's `validate_config` ran ONLY on the explicit `ciu check` verb.
+  An operator who deployed straight from `ciu up` — the invocation this
+  project's own docs prescribe — got the benefit of neither: precisely the
+  "relies on someone remembering" shape CIU's own validation machinery exists
+  to eliminate everywhere else. `ciu up` now runs S13.4a's **static**
+  pipeline (never `--live`) before STEP 1 and refuses on any ERROR-severity
+  finding with exit 2, the same way it already refuses on an `[S7.x]`
+  provisioning-graph failure.
+
+  It is safe to run unconditionally because S13.4a is side-effect-free by
+  construction — no hostdir, no secret, no compose/overlay write, no hook
+  `run()`, no Docker contact — and it reuses the SAME rendered selection the
+  deploy preflights already computed, so there is one render, not two. It
+  runs FIRST among the preflights (one complete report beats being stopped by
+  whichever narrower check fires first) and under `--dry-run` too.
+
+  **This is a new default-on refusal.** A configuration `ciu check` already
+  passes deploys exactly as before. A configuration `ciu check` would have
+  failed now stops before anything starts, where it previously failed
+  mid-deploy or not at all. WARN-severity findings (CIU-65) never refuse —
+  they print as `note: [WARN] …` and the deploy proceeds. `--skip-check` is
+  the break-glass escape, mirroring `--no-preflight`'s precedent, and it
+  ANNOUNCES itself with a `[WARN]` line naming what was skipped: a silently
+  skipped gate is a gate that is not there.
+
+### Fixed
+- fix(ciu): **CIU-62 — a `ciu.env` that cannot be read is now handled the
+  same way at every site that reads one** (ciu-P41). `parse_workspace_env`
+  can fail three unrelated ways — `OSError` (the read), `UnicodeDecodeError`
+  (a non-UTF-8 byte) and `WorkspaceEnvError` (a malformed entry). The last
+  two are SIBLING `ValueError` subclasses, so naming either one alone catches
+  neither the other nor `OSError`. Seven narrow sites now name all three
+  types: `worktree.py`'s shared-infra add preflight and post-up join (S16.1),
+  its `_clean_in` target-identity read (S16), its S16.3 budget-candidate
+  survey, `deploy.py`'s `_workspace_identity` (the `ciu check` hook context,
+  which already DOCUMENTED "absent or unreadable yields `{}`" but crashed on
+  a non-UTF-8 byte) and `engine.py`'s S3.12 identity read — that last one is
+  the REAL-RUN twin of `_workspace_identity`, building the same two
+  `HookContext` fields, and it carried the identical gap, so a non-UTF-8
+  `ciu.env` crashed `ciu up` at STEP 12 where `ciu check` degraded cleanly.
+  Both now degrade the same way: a preflight that sees an identity its own
+  real run would not is exactly the divergence S3.12/CIU-44 exists to
+  prevent. The three bare-`except OSError` sites failed on the COMMON
+  malformed-entry case, not just the exotic byte.
+
+  `worktree.py`'s two `(OSError, ValueError)` sites are already correct and
+  are left alone, as is `engine.py`'s `except WorkspaceEnvError: raise` at
+  STEP 1 — it re-raises and swallows nothing, so it is not this class of
+  defect.
+
+  The two HookContext identity readers keep degrading to `{}` (that symmetry
+  is what stops `ciu check`'s preflight from seeing an identity the real run
+  will not) but **no longer do it silently**: both now emit a
+  `[WARN] [S3.12] could not read workspace identity from <path>` naming the
+  file and the `ciu env generate` repair, so a hook reading
+  `ctx.instance_id is None` is no longer unable to tell "genuinely unmanaged
+  workspace" from "corrupt `ciu.env`, swallowed". The `ciu check` side writes
+  that line to **stderr**, not stdout, because `ciu check --json` puts only
+  its JSON document on stdout (S13.4a) — the same split `ciu graph
+  --format json` already uses. An ABSENT `ciu.env` stays silent: it is a
+  legitimate state, and warning on every unprovisioned workspace is a warning
+  nobody reads. The stricter variant (both sites refuse, or `HookContext`
+  gains a third "unreadable" state) is filed as **CIU-80**.
+- fix(ciu)!: **CIU-62 — `ciu clean` no longer reads an unreadable `ciu.env`
+  as "this workspace has no identity network"** (S6.4a clause 1, ciu-P41).
+  The one site where widening the clause was a semantics decision rather than
+  a token fix. An ABSENT `ciu.env` still means there is genuinely no
+  workspace identity network (a checkout where `ciu env generate` was never
+  run) and stays green, unchanged. A `ciu.env` that is PRESENT but unreadable
+  now leaves the name INDETERMINATE: `clean` prints
+  `workspace identity network unresolvable (S6.4a): …` and exits non-zero,
+  the same treatment its sibling volume, network and container enumerations
+  already give indeterminacy. Previously a malformed `ciu.env` was swallowed
+  to `""`, which dropped the network from the removal pass AND from the
+  post-clean survivor check in one move — so an instance clean could announce
+  the S6.4a zero-objects invariant as satisfied over its own surviving
+  network. **Action needed only if** you run `ciu clean` in a checkout whose
+  `ciu.env` is corrupt: that clean now fails instead of quietly under-cleaning.
+  Re-run `ciu env generate` to repair the record.
 
 ## [7.4.0] - 2026-08-25
 <!-- cmru: generated -->

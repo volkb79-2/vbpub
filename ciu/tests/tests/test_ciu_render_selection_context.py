@@ -348,4 +348,85 @@ def test_engine_identity_read_survives_unreadable_ciu_env(
     assert result["status"] == "success"
 
 
+def _identity_probe_stack(repo_root: Path, marker: Path) -> Path:
+    """A stack whose pre_secrets hook writes the ctx identity it was given.
+
+    The strong oracle for the arcs below: it proves not only that no traceback
+    escaped, but WHAT the hook was told — the documented `{}` degradation, the
+    same answer `deploy._workspace_identity` gives the `ciu check` preflight.
+    """
+    stack = _add_stack(repo_root)
+    (stack / "identity_probe.py").write_text(
+        "def run(config, ctx):\n"
+        f"    open({str(marker)!r}, 'w').write(\n"
+        "        f'{ctx.instance_id!r}|{ctx.network!r}'\n"
+        "    )\n"
+        "    return {}\n",
+        encoding="utf-8",
+    )
+    defaults = stack / "ciu.defaults.toml.j2"
+    defaults.write_text(
+        defaults.read_text(encoding="utf-8").replace(
+            "[app_config.hooks]",
+            '[app_config.hooks]\npre_secrets = ["identity_probe.py"]\n',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    return stack
+
+
+@pytest.mark.parametrize(
+    "kind, payload",
+    [
+        # UnicodeDecodeError — a ValueError subclass, and a SIBLING of
+        # WorkspaceEnvError rather than a subclass of it.
+        ("non-UTF-8 byte", b'export INSTANCE_ID="\xff\xfe"\n'),
+        # WorkspaceEnvError — the OTHER ValueError subclass.
+        ("malformed entry", b'this is not = valid "shell\n'),
+    ],
+)
+def test_engine_identity_read_survives_an_unparseable_ciu_env(
+    tmp_path, monkeypatch, capsys, kind, payload
+):
+    """CIU-62 — the real-run twin of `deploy._workspace_identity`.
+
+    `except (WorkspaceEnvError, OSError)` here caught neither a non-UTF-8 byte
+    nor... well, it caught the malformed entry, but not the byte: a non-UTF-8
+    `ciu.env` escaped this handler and crashed `ciu up` at the S3.12 identity
+    read with a raw traceback, where the sibling `ciu check` path degraded
+    cleanly. Both are now handled, and both degrade the SAME way — a preflight
+    that saw an identity its own real run would not is exactly the divergence
+    S3.12/CIU-44 exists to prevent.
+    """
+    monkeypatch.setenv("CIU_SECRET_LICENSE", "demo")
+    repo_root = _build_repo(tmp_path, monkeypatch)
+    marker = tmp_path / f"identity-{kind.split()[0]}.txt"
+    stack = _identity_probe_stack(repo_root, marker)
+
+    # Skip ONLY step 1's bootstrap (it legitimately needs a valid record and
+    # already ran in _build_repo); the ENGINE's own S3.12 read is the arc
+    # under test, and it reads the file below by exact path.
+    monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **_kw: None)
+    (repo_root / "ciu.env").write_bytes(payload)
+
+    result = engine.main_execution(
+        stack, dry_run=True, yes=True, ciu_context=dict(_CTX)
+    )
+
+    assert result["status"] == "success", f"a {kind} must not abort the run"
+    assert marker.read_text(encoding="utf-8") == "None|None", (
+        "the hook must be told the documented 'no identity', never a "
+        "half-parsed or fabricated one"
+    )
+    # CIU-62 review ruling: the degradation stays, the SILENCE does not.
+    # Without this the estate's own default test — "if this default is wrong,
+    # does anything fail loudly?" — answers no, and a hook seeing
+    # instance_id=None cannot distinguish "unmanaged" from "corrupt, swallowed".
+    out = capsys.readouterr().out
+    assert "[WARN] [S3.12] could not read workspace identity" in out
+    assert "ciu.env" in out
+    assert "ciu env generate" in out, "the warning must name the repair"
+
+
 from ciu.hooks_runner import HookContext  # noqa: E402

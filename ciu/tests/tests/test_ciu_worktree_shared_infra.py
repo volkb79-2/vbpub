@@ -441,6 +441,47 @@ class TestAddSharedInfra:
         finally:
             env_file.chmod(0o644)  # let tmp_path cleanup remove it
 
+    def test_ref_ciu_env_malformed_entry_fails(
+        self, tmp_repo, ref_worktree, track_git_add_calls, monkeypatch
+    ):
+        """CIU-62 — the reference's ciu.env EXISTS and is readable, but one
+        entry is malformed: `WorkspaceEnvError`, a `ValueError` subclass that
+        the pre-fix `except OSError` did not catch. Refusing here is the
+        whole point of this preflight (O1: no git-add, no docker call)."""
+        ref_path, _ref_network = ref_worktree
+        (ref_path / "ciu.env").write_text('this is not = valid "shell\n', encoding="utf-8")
+        fake = ScriptedDocker()
+        monkeypatch.setattr(worktree.procutil, "docker", fake)
+        with pytest.raises(worktree.WorktreeError, match=r"\[S16\.1\] could not read"):
+            worktree.add(
+                tmp_repo, "child", base="main", profile="core",
+                shared_infra="primary-ref",
+                shared_infra_services="api",
+                shared_infra_ref_projects="idp-dev-idp",
+            )
+        assert track_git_add_calls == []
+        assert fake.calls == []
+
+    def test_ref_ciu_env_non_utf8_fails(
+        self, tmp_repo, ref_worktree, track_git_add_calls, monkeypatch
+    ):
+        """CIU-62 — a non-UTF-8 byte raises `UnicodeDecodeError`, a SIBLING
+        of `WorkspaceEnvError` under `ValueError`. Neither name alone covers
+        it, and `OSError` covers neither."""
+        ref_path, _ref_network = ref_worktree
+        (ref_path / "ciu.env").write_bytes(b'export DOCKER_NETWORK_INTERNAL="\xff\xfe"\n')
+        fake = ScriptedDocker()
+        monkeypatch.setattr(worktree.procutil, "docker", fake)
+        with pytest.raises(worktree.WorktreeError, match=r"\[S16\.1\] could not read"):
+            worktree.add(
+                tmp_repo, "child", base="main", profile="core",
+                shared_infra="primary-ref",
+                shared_infra_services="api",
+                shared_infra_ref_projects="idp-dev-idp",
+            )
+        assert track_git_add_calls == []
+        assert fake.calls == []
+
     def test_network_inspect_filenotfound_fails(self, tmp_repo, ref_worktree, track_git_add_calls, monkeypatch):
         _ref_path, ref_network = ref_worktree
         fake = ScriptedDocker()
@@ -878,6 +919,39 @@ class TestConnectSharedInfraAfterUp:
             assert fake.calls == []
         finally:
             env_file.chmod(0o644)
+
+    def test_ref_ciu_env_malformed_entry_at_post_up_fails(
+        self, tmp_repo, ref_worktree, monkeypatch
+    ):
+        """CIU-62 — post-up revalidation half. A malformed entry
+        (`WorkspaceEnvError`) escaped the pre-fix `except OSError` here, so
+        the join's own "has the reference's network changed?" guard could be
+        skipped by a traceback rather than answered."""
+        ref_path, ref_network = ref_worktree
+        (ref_path / "ciu.env").write_text('this is not = valid "shell\n', encoding="utf-8")
+        intent = worktree.SharedInfraIntent(
+            ref_path=ref_path, network=ref_network,
+            services=("api",), ref_projects=("idp-dev-idp",),
+        )
+        fake = ScriptedDocker()
+        monkeypatch.setattr(worktree.procutil, "docker", fake)
+        with pytest.raises(worktree.WorktreeError, match=r"\[S16\.1\] could not read"):
+            worktree.connect_shared_infra_after_up(tmp_repo, COMPOSE_PROJECT, intent)
+        assert fake.calls == []
+
+    def test_ref_ciu_env_non_utf8_at_post_up_fails(self, tmp_repo, ref_worktree, monkeypatch):
+        """CIU-62 — and the non-UTF-8 byte (`UnicodeDecodeError`)."""
+        ref_path, ref_network = ref_worktree
+        (ref_path / "ciu.env").write_bytes(b'export DOCKER_NETWORK_INTERNAL="\xff\xfe"\n')
+        intent = worktree.SharedInfraIntent(
+            ref_path=ref_path, network=ref_network,
+            services=("api",), ref_projects=("idp-dev-idp",),
+        )
+        fake = ScriptedDocker()
+        monkeypatch.setattr(worktree.procutil, "docker", fake)
+        with pytest.raises(worktree.WorktreeError, match=r"\[S16\.1\] could not read"):
+            worktree.connect_shared_infra_after_up(tmp_repo, COMPOSE_PROJECT, intent)
+        assert fake.calls == []
 
     def test_membership_inspect_nonzero_raises(self, tmp_repo, ref_worktree, monkeypatch):
         ref_path, ref_network = ref_worktree

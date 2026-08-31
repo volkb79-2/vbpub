@@ -503,21 +503,69 @@ def test_concurrent_teardown_between_exists_and_inspect_is_skipped(monkeypatch, 
     assert fake.networks == {"proj-abc123-network": []} or len(fake.networks) <= 1
 
 
-def test_identity_env_parse_failure_reads_as_no_network(monkeypatch, tmp_path, capsys):
-    """An UNPARSEABLE ciu.env names no removable network — and says nothing."""
-    (tmp_path / "ciu.env").write_text("this line is not an assignment\n", encoding="utf-8")
+def _clean_with_identity_env(monkeypatch, tmp_path, sel=None):
+    """Shared arrangement for the three CIU-62 identity-env arcs below."""
     (tmp_path / "ciu.worktree-instance.json").write_text("{}\n", encoding="utf-8")
     (tmp_path / "apps" / "vault").mkdir(parents=True)
-    repo_root = tmp_path
+    sel = sel or [{"path": "apps/vault"}]
     fake = FakeDocker(networks={})
     monkeypatch.setattr(deploy.procutil, "docker", fake)
-    sel = [{"path": "apps/vault"}]
     monkeypatch.setattr(deploy, "render_selected_stacks",
                         lambda *a, **k: {e["path"]: {} for e in sel})
     monkeypatch.setattr(deploy.engine, "reset_service", lambda *a, **k: None)
     monkeypatch.setattr(deploy, "_matching_containers", lambda *a, **k: [])
+    return deploy.action_clean(tmp_path, _profile(), sel, ignore_errors=True)
 
-    assert deploy.action_clean(repo_root, _profile(), sel, ignore_errors=True) == 0
+
+def test_identity_env_parse_failure_is_indeterminate_not_no_network(
+    monkeypatch, tmp_path, capsys
+):
+    """CIU-62 — REVERSED contract (this test previously asserted the opposite).
+
+    An UNPARSEABLE ciu.env used to read as "there is no identity network",
+    which is the estate's absence-for-emptiness anti-pattern with a live
+    consequence: the instance's own network is then neither removed nor
+    enumerated as a survivor, so `ciu clean` announces the S6.4a zero-objects
+    invariant as satisfied over a network it never even resolved. An
+    unresolvable identity network is now reported and fails the clean, the
+    same treatment its sibling volume/network/container enumerations already
+    give indeterminacy.
+    """
+    (tmp_path / "ciu.env").write_text("this line is not an assignment\n", encoding="utf-8")
+
+    rc = _clean_with_identity_env(monkeypatch, tmp_path)
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "workspace identity network unresolvable (S6.4a)" in out
+    assert "ciu.env" in out
+
+
+def test_identity_env_non_utf8_is_indeterminate_too(monkeypatch, tmp_path, capsys):
+    """CIU-62 — the byte-level half. `UnicodeDecodeError` is a `ValueError`
+    subclass and a SIBLING of `WorkspaceEnvError`; the pre-fix
+    `except WorkspaceEnvError` caught neither it nor `OSError`, so a
+    non-UTF-8 ciu.env escaped `action_clean` as a raw traceback rather than
+    either of its two defined outcomes."""
+    (tmp_path / "ciu.env").write_bytes(b'export DOCKER_NETWORK_INTERNAL="\xff\xfe"\n')
+
+    rc = _clean_with_identity_env(monkeypatch, tmp_path)
+
+    assert rc == 1
+    assert "workspace identity network unresolvable (S6.4a)" in capsys.readouterr().out
+
+
+def test_identity_env_absent_still_reads_as_no_network(monkeypatch, tmp_path, capsys):
+    """CIU-62's legitimate state, constructed: a checkout where `ciu env
+    generate` was never run genuinely HAS no identity network. That arc must
+    stay green — a refusal whose condition also matches an ordinary state is
+    a superset refusal, and gets switched off."""
+    assert not (tmp_path / "ciu.env").exists()
+
+    rc = _clean_with_identity_env(monkeypatch, tmp_path)
+
+    assert rc == 0
+    assert "workspace identity network unresolvable" not in capsys.readouterr().out
 
 
 def test_stack_projects_skip_missing_dirs():

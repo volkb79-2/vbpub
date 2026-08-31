@@ -592,6 +592,18 @@ class TestResolveBudgetCandidates:
         with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\]"):
             worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
 
+    def test_env_non_utf8_raises(self, tmp_git_repo):
+        """CIU-62 — the gap `(OSError, WorkspaceEnvError)` still left open at
+        this site. A non-UTF-8 byte raises `UnicodeDecodeError`, a SIBLING of
+        `WorkspaceEnvError` under `ValueError`, not a subclass of it; the
+        S16.3 capacity count must refuse an instance it cannot read rather
+        than crash mid-survey (and never silently undercount)."""
+        _write_ciu_env(tmp_git_repo, network="net-primary")
+        linked = _add_linked_worktree(tmp_git_repo, "linked")
+        (linked / "ciu.env").write_bytes(b'export DOCKER_NETWORK_INTERNAL="\xff\xfe"\n')
+        with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\] could not read/parse"):
+            worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
+
     def test_duplicate_network_across_candidates_raises(self, tmp_git_repo):
         _write_ciu_env(tmp_git_repo, network="same-net")
         linked = _add_linked_worktree(tmp_git_repo, "linked")

@@ -44,6 +44,7 @@ import json
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
@@ -638,6 +639,83 @@ def provisioning_graph(rendered: dict[str, dict]) -> dict[str, dict]:
     return graph
 
 
+#: Seconds between polls of a retryable provisioning requirement (CIU-68).
+#: Matches :func:`run_container_health_gate`'s own poll cadence, so the two
+#: mechanisms that wait on the same convergence do not disagree about how
+#: often to look.
+_REQUIREMENT_POLL_INTERVAL_S = 5.0
+
+
+def resolve_requirement_poll_budget_s(config: dict) -> float:
+    """The bounded-poll budget for a retryable requirement (CIU-68(b)).
+
+    ``[deploy.health].gate_timeout`` when the operator declared one (CIU-67's
+    key: it is the same question — how long may a container legitimately take
+    to converge), else :data:`DEFAULT_GATE_BUDGET_S`.
+
+    Why this one does NOT derive per container the way S7.7's gate does: the
+    gate reads each target's own rendered compose model, which it has in
+    hand. This preflight probes a container belonging to a stack in an
+    EARLIER phase, whose compose model this phase's render does not carry —
+    so the per-container derivation genuinely is not available here, and
+    `gate_timeout` is the operator's lever. Both fall back to the same
+    Docker-derived default, so one number governs both waits.
+
+    ``[deploy.health].timeout`` is deliberately not consulted: it is one
+    probe attempt's duration (CIU-67).
+    """
+    declared = resolve_gate_timeout_s(config)
+    return DEFAULT_GATE_BUDGET_S if declared is None else declared
+
+
+#: A `stack:<selector>:healthy` / `:completed` requirement — the ONLY ref kind
+#: whose truth depends on a container having converged across a phase
+#: boundary, and therefore the one the S7.7 inter-phase gate exists to make
+#: reliable (CIU-68).
+_STACK_HEALTH_REF_RE = re.compile(r"^stack:.+:(healthy|completed)$")
+
+
+def selection_stack_health_requirement(
+    selection: list[dict], rendered: Optional[dict[str, dict]]
+) -> Optional[str]:
+    """The first `stack:*:healthy|completed` requirement in *selection*, or None.
+
+    CIU-68(a). The S7.7 inter-phase health gate is the ONLY mechanism that
+    makes such a requirement reliable across a phase boundary, yet it was not
+    part of `ciu up`'s default action sequence: `health_after_phase` was
+    ``"deploy" in actions and "healthcheck" in actions``, so a bare `ciu up`
+    — the invocation this project's own docs prescribe — never gated, and
+    neither flag appeared in `ciu up --help` for an operator to discover.
+
+    Declaring one of these refs is therefore read as declaring the need for
+    the gate: SELF-SELECTING, so a run with no such refs pays nothing. This
+    is a derivation from what the selection already says, not a new default
+    imposed on everybody.
+
+    Shape errors are not this function's to report: a stack whose root table
+    cannot be resolved is skipped here and refused moments later, loudly, by
+    :func:`provisioning_preflight`'s own ``validate_stack_shape`` call on the
+    same config.
+    """
+    if not rendered:
+        return None
+    for entry in selection:
+        stack_cfg = rendered.get(entry.get("path", ""))
+        if not isinstance(stack_cfg, dict):
+            continue
+        try:
+            root_key = config_model.validate_stack_shape(stack_cfg)
+        except ValueError:
+            continue
+        requires = (stack_cfg.get(root_key) or {}).get("requires") or []
+        if not isinstance(requires, list):
+            continue
+        for ref in requires:
+            if isinstance(ref, str) and _STACK_HEALTH_REF_RE.match(ref):
+                return ref
+    return None
+
+
 def provisioning_preflight(
     repo_root: Path,
     profile: profiles_pkg.Profile,
@@ -706,15 +784,52 @@ def provisioning_preflight(
         # `selection` — see `provisioning_graph`.
         probe_graph = provisioning_graph(rendered)
         all_failed: list[str] = []
+        # CIU-68(b): one bounded poll budget for the whole probe pass, taken
+        # once so every retryable requirement in this phase shares one wall
+        # clock rather than each getting a fresh full budget in sequence.
+        budget_s = resolve_requirement_poll_budget_s(config)
+        deadline = time.monotonic() + budget_s
         for entry in selection:
             rel = entry["path"]
             if rel not in stacks:
                 continue
             requires = stacks[rel].get("requires", [])
             for ref in requires:
+                # CIU-70 + CIU-68(b), merged deliberately: the `stacks=`
+                # resolution graph and the bounded retry are orthogonal and
+                # BOTH are required. Taking either side of this conflict
+                # wholesale silently reverts the other — CIU-70's absence
+                # fails every `pg:`/`minio:` ref closed with "no
+                # requires/provides graph given"; CIU-68(b)'s absence brings
+                # back the one-shot probe that failed a fresh `ciu up` on a
+                # dependency reported `starting`. So the graph is threaded
+                # through BOTH probe calls below, the initial one and the
+                # in-loop re-probe.
                 result = provisioning_pkg.probe_ref(
                     ref, config, repo_root, stacks=probe_graph
                 )
+                # A one-shot probe treated "reported `starting`, on track"
+                # exactly like "will never satisfy" — the live failure mode
+                # CIU-68 was filed for. Only a RETRYABLE non-satisfaction
+                # polls; everything else still fails immediately.
+                announced = False
+                while (
+                    not result.satisfied
+                    and result.retryable
+                    and time.monotonic() < deadline
+                ):
+                    if not announced:
+                        info(
+                            f"[S7.7] waiting up to {budget_s:g}s for '{ref}' "
+                            f"(stack '{rel}'): {result.reason}"
+                        )
+                        announced = True
+                    time.sleep(_REQUIREMENT_POLL_INTERVAL_S)
+                    result = provisioning_pkg.probe_ref(
+                        ref, config, repo_root, stacks=probe_graph
+                    )
+                if announced and result.satisfied:
+                    info(f"[S7.7] '{ref}' satisfied while waiting")
                 if not result.satisfied:
                     all_failed.append(f"  stack '{rel}' requires '{ref}': {result.reason}")
 
@@ -1300,12 +1415,100 @@ def run_container_health_gate(
     )
 
 
+#: Docker's own documented HEALTHCHECK defaults, used when a compose service
+#: declares a healthcheck but omits these fields. They are READ facts about
+#: what the daemon will do, not invented numbers (CIU-67).
+DOCKER_HEALTHCHECK_DEFAULT_INTERVAL_S = 30.0
+DOCKER_HEALTHCHECK_DEFAULT_RETRIES = 3
+DOCKER_HEALTHCHECK_DEFAULT_START_PERIOD_S = 0.0
+
+#: The S7.7 gate budget for a container whose healthcheck declares no timings
+#: at all — Docker's own defaults, folded through the same derivation below
+#: (0s grace + 3 retries × 30s = 90s). Also the fallback budget for CIU-68's
+#: provisioning-requirement poll, which probes a container in ANOTHER stack
+#: whose compose model this phase's render does not carry.
+DEFAULT_GATE_BUDGET_S = (
+    DOCKER_HEALTHCHECK_DEFAULT_START_PERIOD_S
+    + DOCKER_HEALTHCHECK_DEFAULT_RETRIES * DOCKER_HEALTHCHECK_DEFAULT_INTERVAL_S
+)
+
+
+def derive_gate_budget_s(definition: dict) -> float:
+    """One compose service definition → its own S7.7 gate budget, in seconds.
+
+    CIU-67. ``[deploy.health].timeout`` was being read for two semantically
+    incompatible jobs with no distinct key: (1) the Docker ``HEALTHCHECK``
+    field — how long ONE probe attempt may run, correctly a few seconds; and
+    (2) the S7.7 inter-phase gate's OVERALL budget for a container to reach
+    ``healthy`` at all, which needs to be on the order of that container's
+    grace period. A consumer authoring ``timeout = "5s"`` with only meaning
+    (1) in mind — and the field's own interval/timeout/retries/start_period
+    shape IS Docker's HEALTHCHECK syntax, so nothing hints otherwise —
+    silently set meaning (2) to five seconds.
+
+    The budget is DERIVED, not defaulted: ``start_period + retries ×
+    interval`` off the container's own declared healthcheck. That is Docker's
+    own worst case for a container still legitimately converging — the full
+    grace period during which failures do not count, plus the consecutive
+    retries it takes for a post-grace probe sequence to become conclusive.
+    Fields the healthcheck omits fall back to Docker's documented defaults
+    (the daemon's behaviour, a read fact).
+
+    A service declaring NO healthcheck at all gets
+    :data:`DEFAULT_GATE_BUDGET_S`, which it never actually waits on: such a
+    container classifies as ``no-healthcheck``, a READY status that resolves
+    on the gate's very first poll.
+    """
+    healthcheck = definition.get("healthcheck")
+    if not isinstance(healthcheck, dict):
+        return DEFAULT_GATE_BUDGET_S
+    raw_start_period = healthcheck.get("start_period")
+    start_period = (
+        DOCKER_HEALTHCHECK_DEFAULT_START_PERIOD_S if raw_start_period is None
+        else _seconds(raw_start_period, default=DOCKER_HEALTHCHECK_DEFAULT_START_PERIOD_S)
+    )
+    raw_interval = healthcheck.get("interval")
+    interval = (
+        DOCKER_HEALTHCHECK_DEFAULT_INTERVAL_S if raw_interval is None
+        else _seconds(raw_interval, default=DOCKER_HEALTHCHECK_DEFAULT_INTERVAL_S)
+    )
+    raw_retries = healthcheck.get("retries")
+    try:
+        retries = int(raw_retries) if raw_retries is not None else DOCKER_HEALTHCHECK_DEFAULT_RETRIES
+    except (TypeError, ValueError):
+        warn(
+            f"could not parse healthcheck retries {raw_retries!r}; using "
+            f"{DOCKER_HEALTHCHECK_DEFAULT_RETRIES}"
+        )
+        retries = DOCKER_HEALTHCHECK_DEFAULT_RETRIES
+    if retries < 1:
+        retries = DOCKER_HEALTHCHECK_DEFAULT_RETRIES
+    return start_period + retries * interval
+
+
+def resolve_gate_timeout_s(config: dict) -> Optional[float]:
+    """``[deploy.health].gate_timeout`` in seconds, or ``None`` when undeclared.
+
+    CIU-67's distinct key for the S7.7 gate's overall wait budget. ``None``
+    means "derive per container" (:func:`derive_gate_budget_s`) rather than
+    "use zero" — an absent key is not a value.
+
+    ``[deploy.health].timeout`` is deliberately NOT consulted here: that key
+    is the per-probe Docker HEALTHCHECK duration and reusing it as a gate
+    budget is the defect CIU-67 exists to close.
+    """
+    raw = config.get("deploy", {}).get("health", {}).get("gate_timeout")
+    if raw is None:
+        return None
+    return _seconds(raw, default=DEFAULT_GATE_BUDGET_S)
+
+
 def resolve_selection_health_containers(
     repo_root: Path,
     profile: profiles_pkg.Profile,
     selection: list[dict],
     *,
-    default_timeout_s: float,
+    default_timeout_s: Optional[float],
 ) -> dict[str, float]:
     """Resolve exact health-gate targets from selected stacks' Compose models.
 
@@ -1319,12 +1522,21 @@ def resolve_selection_health_containers(
     missing identities fail closed with an authoring error instead of polling
     a fabricated container name until timeout.
 
-    Returns a ``{container_name: timeout_s}`` mapping (CIU-QOL-8): each phase
-    entry's containers get its own resolved timeout — either its declared
-    ``health_timeout`` override (parsed via the existing ``_seconds()``
-    duration parser) or *default_timeout_s* when no override is declared. A
-    selection where no entry declares an override yields the same
-    *default_timeout_s* for every container, matching pre-package behavior.
+    Returns a ``{container_name: timeout_s}`` mapping (CIU-QOL-8). Each
+    container's budget resolves most-specific-first (CIU-67):
+
+    1. the phase entry's own ``health_timeout`` override (the per-service
+       escape hatch, unchanged — parsed via the existing ``_seconds()``);
+    2. *default_timeout_s* — ``[deploy.health].gate_timeout`` when the
+       operator declared one, applying to every container in the selection;
+    3. otherwise DERIVED per container from its own compose healthcheck by
+       :func:`derive_gate_budget_s`.
+
+    *default_timeout_s* of ``None`` selects step 3. Before CIU-67 this
+    parameter was ``[deploy.health].timeout`` — the per-PROBE Docker
+    HEALTHCHECK duration — which meant a correct 5s probe timeout silently
+    became a 5s overall gate budget for a container whose own declared grace
+    period was four minutes.
     """
     import yaml
 
@@ -1339,8 +1551,8 @@ def resolve_selection_health_containers(
         if not phases_pkg.service_health_enabled(service_cfg):
             continue
         raw_override = phases_pkg.service_health_timeout(service_cfg)
-        entry_timeout_s = (
-            _seconds(raw_override, default=default_timeout_s)
+        entry_timeout_s: Optional[float] = (
+            _seconds(raw_override, default=default_timeout_s or DEFAULT_GATE_BUDGET_S)
             if raw_override is not None
             else default_timeout_s
         )
@@ -1405,7 +1617,13 @@ def resolve_selection_health_containers(
             cname = cname.strip()
             if cname not in seen:
                 seen.add(cname)
-                resolved[cname] = entry_timeout_s
+                # CIU-67: with no explicit override at either level, the
+                # budget comes from THIS container's own declared healthcheck
+                # — a derivation, never `[deploy.health].timeout`.
+                resolved[cname] = (
+                    entry_timeout_s if entry_timeout_s is not None
+                    else derive_gate_budget_s(definition)
+                )
 
         if active_count == 0:
             raise ValueError(
@@ -1496,8 +1714,9 @@ def action_deploy(
     # S3.12 / CIU-44: one selection-facts snapshot for every render/hook of
     # this deploy — the FULL selected set, not per-stack slices.
     ciu_ctx = profiles_pkg.render_ciu_context(profile, selection)
-    health_cfg = profile.config.get("deploy", {}).get("health", {})
-    default_timeout_s = _seconds(health_cfg.get("timeout", "30s"))
+    # CIU-67: the GATE's budget, not `[deploy.health].timeout` (that key is
+    # one probe attempt's duration). None here means "derive per container".
+    default_timeout_s = resolve_gate_timeout_s(profile.config)
 
     deployed: list[str] = []
     failed: list[str] = []
@@ -1703,11 +1922,9 @@ def action_healthcheck(
     if not selection:
         warn("No services selected to check")
         return 0
-    health_cfg = profile.config.get("deploy", {}).get("health", {})
-    default_timeout_s = _seconds(health_cfg.get("timeout", "30s"))
     container_timeouts = resolve_selection_health_containers(
         repo_root, profile, selection,
-        default_timeout_s=default_timeout_s,
+        default_timeout_s=resolve_gate_timeout_s(profile.config),  # CIU-67
     )
     if not container_timeouts:
         info("No health-enabled containers selected; health gate passes")
@@ -1818,6 +2035,58 @@ CHECK_STAGES: tuple[str, ...] = (
 )
 
 
+#: The closed severity vocabulary a ``validate_config`` finding may declare
+#: (S9.5, CIU-65). Deliberately a SUBSET of :mod:`warn_policy`'s
+#: ``EXIT_ON_VALUES``: ``NEVER`` is a *threshold* ("abort at nothing"), not a
+#: property a finding can have, so a hook declaring it is refused rather than
+#: silently reinterpreted.
+HOOK_FINDING_SEVERITIES = ("WARN", "ERROR")
+
+
+def classify_hook_finding(item: object) -> tuple[str, str]:
+    """One ``validate_config`` finding → ``(severity, message)`` — S9.5, CIU-65.
+
+    Two accepted shapes, and the split is what gives a hook author a finding
+    that is worth knowing without also being must-block:
+
+    * a bare **message string** → ``("ERROR", message)``. This is the shape
+      every hook returned before CIU-65 and its meaning is UNCHANGED: an
+      ERROR blocks, exactly as today. Backward compatibility is the point,
+      so nothing an existing hook returns changes weight.
+    * a **2-element ``tuple`` or ``list``** ``(severity, message)`` whose
+      severity is ``WARN`` or ``ERROR``. Lists are accepted alongside tuples
+      because a hook that assembles findings from JSON or a comprehension
+      naturally produces lists, and refusing those would be a trap with no
+      safety value.
+
+    Severity matching is **case- and whitespace-insensitive**
+    (``str(value).strip().upper()``), the same normalization
+    :func:`warn_policy._validate_exit_on` already applies to this exact
+    vocabulary elsewhere in this codebase.
+
+    An unrecognized severity RAISES rather than defaulting. Defaulting it to
+    ERROR would be merely noisy, but defaulting it to WARN — or accepting
+    anything truthy as WARN — would let a hook author's typo (``"warning"``,
+    ``"Error!"``) silently downgrade a blocking finding to an advisory note:
+    a masked default, invisible in every run that does not happen to hit it.
+    Any other object still falls through to ``("ERROR", str(item))``, which
+    is precisely what the pre-CIU-65 loop did to it, so an odd return value
+    keeps failing closed instead of becoming newly acceptable.
+    """
+    if isinstance(item, (tuple, list)) and len(item) == 2:
+        raw_severity, raw_message = item
+        severity = str(raw_severity).strip().upper()
+        if severity not in HOOK_FINDING_SEVERITIES:
+            raise ValueError(
+                f"validate_config declared severity {raw_severity!r}; S9.5 "
+                f"accepts {' or '.join(HOOK_FINDING_SEVERITIES)} "
+                "(case-insensitive) — the finding is refused rather than "
+                "guessed at"
+            )
+        return severity, str(raw_message)
+    return "ERROR", str(item)
+
+
 class _CheckReport:
     """Ordered per-stage accumulator for ``ciu check`` (S13.4a).
 
@@ -1855,11 +2124,26 @@ class _CheckReport:
             finding["hook"] = hook
         entry["findings"].append(finding)
 
-    def note(self, stage: str, message: str, *, stack: str | None = None) -> None:
-        """Record a non-failing observation against *stage*."""
+    def note(
+        self,
+        stage: str,
+        message: str,
+        *,
+        stack: str | None = None,
+        hook: str | None = None,
+    ) -> None:
+        """Record a non-failing observation against *stage*.
+
+        *hook* mirrors :meth:`fail`'s own key (CIU-65): a WARN-severity
+        ``validate_config`` finding must name the hook that raised it just as
+        an ERROR-severity one does, or the two tiers would carry different
+        provenance for the same kind of finding.
+        """
         note: dict[str, str] = {"message": message}
         if stack is not None:
             note["stack"] = stack
+        if hook is not None:
+            note["hook"] = hook
         self._stages[stage]["notes"].append(note)
 
     @property
@@ -1925,13 +2209,45 @@ def _workspace_identity(repo_root: Path) -> dict:
     state). An absent or unreadable ``ciu.env`` yields ``{}`` — the context
     fields then stay ``None``, exactly as during a real run outside a
     provisioned workspace.
+
+    "Unreadable" here is all three ways the read can fail (CIU-62): an
+    ``OSError``, a non-UTF-8 byte (``UnicodeDecodeError``) and a malformed
+    entry (``WorkspaceEnvError``). The last two are sibling ``ValueError``
+    subclasses, so neither name covers the other; before CIU-62 a non-UTF-8
+    ``ciu.env`` escaped this handler and crashed ``ciu check`` with a raw
+    traceback instead of degrading to the documented ``{}``.
     """
     env_path = repo_root / "ciu.env"
     if not env_path.is_file():
         return {}
     try:
         return parse_workspace_env(env_path)
-    except (WorkspaceEnvError, OSError):
+    except (OSError, UnicodeDecodeError, WorkspaceEnvError) as exc:
+        # CIU-62 review ruling: the `{}` degradation stays (symmetry with
+        # engine.py's real-run twin is the point), but it must not be
+        # SILENT. Without this line the estate's own default test — "if this
+        # default is wrong, does anything fail loudly?" — answered no: a hook
+        # seeing `ctx.instance_id is None` could not tell "genuinely
+        # unmanaged workspace" from "corrupt ciu.env, swallowed". The warning
+        # names the file so the operator can repair it; the contract itself
+        # is unchanged. CIU-80 tracks the stricter variant.
+        #
+        # STDERR, not `warn()` — deliberate, and the reason is a contract, not
+        # a style preference. `warn()` prints to STDOUT, and under
+        # `ciu check --json` (S13.4a) the versioned JSON document is the only
+        # thing this path may put on stdout; a `[WARN]` line ahead of it would
+        # break every machine consumer's parse. Same rule `ciu graph
+        # --format json` already follows: "diagnostics go to the logger
+        # (stderr); only the graph itself goes to stdout". engine.py's twin
+        # warning stays on stdout because that path has no machine-readable
+        # stdout channel to protect and stdout `[WARN]` is its own idiom.
+        print(
+            f"[WARN] [S3.12] could not read workspace identity from "
+            f"{env_path}: {exc}. Hook context identity (instance_id, network) "
+            "will be None for this check — repair with `ciu env generate`",
+            file=sys.stderr,
+            flush=True,
+        )
         return {}
 
 
@@ -2246,13 +2562,25 @@ def _check_hooks_for_stack(
                 report.fail(
                     "hooks-preflight",
                     f"validate_config returned {type(result).__name__}; S9.5 requires "
-                    "a list of error strings (empty = OK)",
+                    "a list of findings, each either a message string (ERROR) or a "
+                    "(severity, message) pair whose severity is WARN or ERROR "
+                    "(empty = OK)",
                     stack=rel,
                     hook=str(raw),
                 )
                 continue
             for item in result:
-                report.fail("hooks-preflight", str(item), stack=rel, hook=str(raw))
+                try:
+                    severity, message = classify_hook_finding(item)
+                except ValueError as exc:
+                    report.fail("hooks-preflight", str(exc), stack=rel, hook=str(raw))
+                    continue
+                if severity == "WARN":
+                    report.note(
+                        "hooks-preflight", f"[WARN] {message}", stack=rel, hook=str(raw)
+                    )
+                else:
+                    report.fail("hooks-preflight", message, stack=rel, hook=str(raw))
 
 
 def _check_stack_config(
@@ -2513,7 +2841,8 @@ def _emit_check_report(
         info(f"  [{mark}] {entry['stage']}: {entry['status']}")
         for note in entry["notes"]:
             where = f"{note['stack']}: " if "stack" in note else ""
-            info(f"        note: {where}{note['message']}")
+            hook = f"[{note['hook']}] " if "hook" in note else ""
+            info(f"        note: {where}{hook}{note['message']}")
         for finding in entry["findings"]:
             where = f"{finding['stack']}: " if "stack" in finding else ""
             hook = f"[{finding['hook']}] " if "hook" in finding else ""
@@ -2765,6 +3094,55 @@ def action_check(
     return 0
 
 
+def check_preflight(
+    repo_root: Path,
+    profile: profiles_pkg.Profile,
+    selection: list[dict],
+    rendered: dict[str, dict],
+    *,
+    skip_check: bool = False,
+) -> None:
+    """Run ``ciu check``'s static checks before ``ciu up`` starts anything (CIU-64).
+
+    ``ciu check`` is documented as genuinely side-effect-free — no hostdir is
+    created, no secret materialized, no hook ``run()`` executed, Docker never
+    contacted — which is exactly what makes it safe to run unconditionally as
+    a preflight. Before CIU-64 it ran ONLY on the explicit ``ciu check`` verb,
+    so an operator who deployed straight from ``ciu up`` got no benefit from
+    either the graph lint or any hook's ``validate_config``: the "relies on
+    someone remembering" shape this tool's own validation machinery exists to
+    eliminate everywhere else.
+
+    Only ERROR-severity findings refuse. WARN-severity findings (S9.5,
+    CIU-65) are printed by :func:`_emit_check_report` as ``note: [WARN] …``
+    lines and deliberately do NOT block — a two-tier vocabulary whose lower
+    tier still blocks is a one-tier vocabulary.
+
+    Modelled on the ``[S7.x]`` provisioning-graph refusal this sits beside:
+    raises ``ValueError``, which :func:`engine._exit_code_for` maps to exit 2
+    (S10.3 configuration/validation). ``--skip-check`` is the break-glass
+    escape, mirroring ``--no-preflight``'s existing precedent for the live
+    per-stack requires probe — and it ANNOUNCES itself, because a silently
+    skipped gate is a gate that is not there.
+    """
+    if skip_check:
+        warn(
+            "--skip-check: skipping the `ciu check` static preflight (S13.4a, "
+            "break-glass) — a configuration error it would have refused now "
+            "surfaces mid-deploy, after stacks have already started"
+        )
+        return
+    info("Preflight: running `ciu check`'s static validation (S13.4a, CIU-64)")
+    rc = action_check(repo_root, profile, selection, rendered, live=False, json_output=False)
+    if rc != 0:
+        raise ValueError(
+            "[S13.4a] `ciu check` found ERROR-severity finding(s) — refusing to "
+            "deploy before anything starts. The findings are printed above. Fix "
+            "them, or re-run with --skip-check to deploy anyway (break-glass). "
+            "WARN-severity findings never reach this refusal."
+        )
+
+
 def action_graph(
     repo_root: Path,
     profile: profiles_pkg.Profile,
@@ -2887,14 +3265,32 @@ def _workspace_identity_network(repo_root: Path) -> str:
     name — never the ambient process environment, which a shell that sourced
     a different checkout's ciu.env may carry (CIU-41). Empty when no
     ciu.env/record exists or it names no network.
+
+    CIU-62 — the semantics decision, not a token widening. Two conditions used
+    to collapse into the same ``""``: "this checkout has no generated record"
+    (legitimate: `ciu env generate` was never run here) and "the record exists
+    but CIU could not parse it". Only the first is genuinely *no network*; the
+    second is INDETERMINATE, and folding it into ``""`` is the estate's
+    absence-for-emptiness anti-pattern with a live consequence — an instance
+    clean would silently skip removing its own identity network and still
+    announce the S6.4a zero-objects invariant as satisfied, because a network
+    that was never resolved is never enumerated as a survivor either. So a
+    PRESENT but unreadable ciu.env raises: ``OSError`` (read), a non-UTF-8
+    byte (``UnicodeDecodeError``) and a malformed entry
+    (``WorkspaceEnvError``) all become one ``ValueError``, which
+    :func:`action_clean` reports and fails the clean on — the same treatment
+    its sibling volume/network/container enumerations already give
+    indeterminacy. An ABSENT ciu.env still returns ``""``, unchanged.
     """
     env_path = repo_root / "ciu.env"
     if not env_path.is_file():
         return ""
     try:
         values = parse_workspace_env(env_path)
-    except WorkspaceEnvError:
-        return ""
+    except (OSError, UnicodeDecodeError, WorkspaceEnvError) as exc:
+        raise ValueError(
+            f"could not read the workspace identity network from {env_path}: {exc}"
+        ) from exc
     return values.get("DOCKER_NETWORK_INTERNAL", "")
 
 
@@ -3400,7 +3796,18 @@ def action_clean(
     # identity network comes from THIS workspace's own ciu.env; the per-stack
     # ``<compose-project>_default`` networks come from the S8.7 project names.
     is_instance = _is_worktree_instance(repo_root)
-    identity_network = _workspace_identity_network(repo_root)
+    try:
+        identity_network = _workspace_identity_network(repo_root)
+    except ValueError as exc:
+        # CIU-62: a PRESENT but unparseable ciu.env leaves the identity
+        # network indeterminate. Never fold that into "there is no identity
+        # network" — that would skip its removal AND skip it from the S6.4a
+        # survivor check, reporting a complete clean over a surviving network.
+        # Same treatment as the sibling volume/network/container enumerations
+        # above: say so, fail the clean, keep going so the rest still runs.
+        error(f"workspace identity network unresolvable (S6.4a): {exc}")
+        rc = 1
+        identity_network = ""
     keep_networks: dict[str, str] = {}
     if identity_network and not is_instance:
         keep_networks[identity_network] = (
@@ -3801,6 +4208,10 @@ Examples:
                          help="Preflight: treat any missing-tool warning as a hard failure (exit 1)")
     control.add_argument("--no-preflight", dest="no_preflight", action="store_true",
                          help="Skip provisioning + governance-slice preflight checks (break-glass)")
+    control.add_argument("--skip-check", dest="skip_check", action="store_true",
+                         help="Skip the `ciu check` static preflight that `ciu up` "
+                              "runs by default before STEP 1 (S13.4a/CIU-64) "
+                              "(break-glass)")
     control.add_argument("--ignore-mismatch", "--force", dest="ignore_mismatch",
                          action="store_true",
                          help="S17.2 (`ciu provenance`): run even when a "
@@ -3913,10 +4324,6 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
     if not actions:
         actions = ["deploy"]
         info("No action specified; defaulting to --deploy")
-    # Health gate after a successful deploy phase when --healthcheck is also
-    # requested alongside --deploy.
-    health_after_phase = "deploy" in actions and "healthcheck" in actions
-
     rc = 0
     deploy_needs_preflight = any(a in ("deploy",) for a in actions)
 
@@ -3930,6 +4337,14 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         rendered = render_selected_stacks(
             repo_root, profile, selection,
             ciu_context=profiles_pkg.render_ciu_context(profile, selection),
+        )
+        # CIU-64: the broadest static gate runs FIRST, so an operator with a
+        # config defect gets the whole `ciu check` report in one pass rather
+        # than being stopped by whichever narrower preflight below happens to
+        # fire first.
+        check_preflight(
+            repo_root, profile, selection, rendered,
+            skip_check=getattr(args, 'skip_check', False),
         )
         vault_preflight(repo_root, profile, selection, rendered)
         producer_preflight(profile, selection, rendered)
@@ -3960,6 +4375,13 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             repo_root, profile, selection,
             ciu_context=profiles_pkg.render_ciu_context(profile, selection),
         )
+        # CIU-64: --dry-run gets the same static gate. It is side-effect-free
+        # either way, and a dry run exists precisely to find this class of
+        # defect before a real one.
+        check_preflight(
+            repo_root, profile, selection, rendered,
+            skip_check=getattr(args, 'skip_check', False),
+        )
         vault_preflight(repo_root, profile, selection, rendered)
         producer_preflight(profile, selection, rendered)
         provisioning_preflight(
@@ -3971,6 +4393,24 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             repo_root, profile, selection, rendered,
             no_preflight=getattr(args, 'no_preflight', False),
         )
+
+    # S7.7 inter-phase health gate. Explicitly requested by `--deploy
+    # --healthcheck`, and — CIU-68(a) — turned on by the selection itself
+    # whenever any stack declares a `stack:*:healthy|completed` requirement,
+    # because that gate is the only thing that makes such a requirement
+    # reliable across a phase boundary. Self-selecting: a run with no such
+    # ref pays nothing. Computed HERE, after `rendered` exists, since the
+    # answer is derived from the rendered selection.
+    health_after_phase = "deploy" in actions and "healthcheck" in actions
+    if "deploy" in actions and not health_after_phase:
+        gate_ref = selection_stack_health_requirement(selection, rendered)
+        if gate_ref is not None:
+            health_after_phase = True
+            info(
+                f"[S7.7] health gate enabled for this run: a selected stack "
+                f"requires '{gate_ref}', which only the inter-phase health "
+                "gate can make reliable (CIU-68)"
+            )
 
     for action in actions:
         info(f">>> action: {action}")

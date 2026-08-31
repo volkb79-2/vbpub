@@ -830,6 +830,23 @@ class TestWorktreeSubprocessEnvironment:
         with pytest.raises(worktree.WorktreeError, match="could not read.*denied"):
             worktree._clean_in(tmp_path, yes=False)
 
+    def test_clean_surfaces_a_malformed_target_env_entry(self, tmp_path):
+        """CIU-62 — the COMMON failure this site used to miss. `except
+        OSError` alone let `WorkspaceEnvError` (a `ValueError` subclass)
+        escape as a raw traceback, and this function exists precisely so a
+        clean never runs under a half-known identity."""
+        (tmp_path / "ciu.env").write_text('this is not = valid "shell\n', encoding="utf-8")
+        with pytest.raises(worktree.WorktreeError, match=r"\[S16\] could not read"):
+            worktree._clean_in(tmp_path, yes=False)
+
+    def test_clean_surfaces_a_non_utf8_target_env(self, tmp_path):
+        """CIU-62 — the byte-level half: `UnicodeDecodeError` is a SIBLING of
+        `WorkspaceEnvError` under `ValueError`, so naming either one alone
+        still leaves this open."""
+        (tmp_path / "ciu.env").write_bytes(b'export REPO_ROOT="\xff\xfe"\n')
+        with pytest.raises(worktree.WorktreeError, match=r"\[S16\] could not read"):
+            worktree._clean_in(tmp_path, yes=False)
+
 
 class TestBestEffortCleanupArcs:
     """The three arcs formerly hidden behind `pragma: no cover` (from

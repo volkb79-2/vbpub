@@ -28,6 +28,16 @@ class ProbeResult:
     ref: str         # original ref string
     satisfied: bool
     reason: str      # human message
+    #: CIU-68 — "not satisfied YET, but on track": a normal deployment
+    #: reaches the satisfied state from here without anyone doing anything.
+    #: Only the caller's bounded poll reads this; it defaults False so every
+    #: existing construction stays fail-promptly, which is correct for the
+    #: conditions that will never resolve on their own (container absent,
+    #: unhealthy, exited non-zero, docker unavailable, unparseable state).
+    #: Distinguishing the two is the whole point: a one-shot probe treated a
+    #: dependency reported `starting` identically to one that will never
+    #: satisfy.
+    retryable: bool = False
 
 
 # Regex patterns for each ref kind
@@ -747,7 +757,12 @@ def _probe_stack(ref, parsed, config, *, docker_exec_fn=None) -> ProbeResult:
         if not running and exit_code == 0:
             return ProbeResult(ref=ref, satisfied=True, reason=f"Stack '{parsed.selector}' completed (exited 0)")
         if running:
-            return ProbeResult(ref=ref, satisfied=False, reason=f"Stack '{parsed.selector}' is still running, not completed")
+            # CIU-68: a one-shot job that has not finished YET is on track,
+            # not broken — the identical mistake `:healthy`/`starting` made.
+            return ProbeResult(
+                ref=ref, satisfied=False, retryable=True,
+                reason=f"Stack '{parsed.selector}' is still running, not completed",
+            )
         return ProbeResult(ref=ref, satisfied=False, reason=f"Stack '{parsed.selector}' did not complete cleanly (exit code {exit_code})")
 
     health = state.get('Health', {}) or {}
@@ -780,6 +795,17 @@ def _probe_stack(ref, parsed, config, *, docker_exec_fn=None) -> ProbeResult:
             )
             return ProbeResult(ref=ref, satisfied=True, reason=f"Stack '{parsed.selector}' completed (one-shot, exited 0)")
         return ProbeResult(ref=ref, satisfied=False, reason=f"Stack '{parsed.selector}' is not running (exit code {exit_code})")
+    if status == 'starting':
+        # CIU-68: `starting` means the container is inside its own declared
+        # start_period — Docker's word for "converging normally", not a
+        # verdict. It is the one non-satisfied health status a bounded poll
+        # can legitimately wait out; `unhealthy` and every other status
+        # below still fail promptly.
+        return ProbeResult(
+            ref=ref, satisfied=False, retryable=True,
+            reason=f"Stack '{parsed.selector}' health status: starting "
+                   "(within its start_period, not yet converged)",
+        )
     return ProbeResult(ref=ref, satisfied=False, reason=f"Stack '{parsed.selector}' health status: {status}")
 
 
