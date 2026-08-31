@@ -11,7 +11,23 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-08-31 — **CIU-79, CIU-80, CIU-81, CIU-77 FIXED (ciu-P43, a
+Last updated: 2026-08-31 — **CIU-75 FIXED (ciu-P42); CIU-82 FILED.** The v8 F2
+identity cutover landed: `[ciu.instance.generated]` in
+`ciu.global.worktree.toml.j2` is now the SOLE instance-fact source CIU reads,
+and `ciu.env` is a legacy write-only export (still written, unchanged key set,
+never read back). BREAKING, ships as **ciu 7.7.0**; new normative SPEC section
+**S3.1c** owns identity-source precedence. Twelve call sites classified and
+migrated; `docs/CONSUMERS.md` §11b carries the consumer migration, including
+four affected shapes found by a real grep across dstdns. CIU-82 tracks the
+dstdns-side notification that must be filed in that repo's own backlog.
+
+It rebased onto ciu-P43 below and merged with CIU-80's
+`HookContext.identity_unreadable`: that flag is kept and re-pointed at the
+overlay, and CIU-75 additionally makes its absent-vs-unreadable boundary
+honest (P43's `is_file()` guard called a DIRECTORY where the record belongs
+"absent"). CIU-82 was numbered around P43's CIU-81, which is FIXED below.
+
+Previously, 2026-08-31 — **CIU-79, CIU-80, CIU-81, CIU-77 FIXED (ciu-P43, a
 four-item bundle).** CIU-79: `ciu dev`'s `_build_dev_image` resolves
 `build.context`/`dockerfile` against `repo_root` now, sharing CIU-71's
 repo-root-relative convention instead of the stack-dir-relative one it wrongly
@@ -2505,7 +2521,16 @@ closure lives", 2026-08-30). Only the demo/spec half of this entry is v8's.
 
 ---
 
-## CIU-75 — backport v8 F2 identity: the overlay becomes the sole instance-fact source, `ciu.env` demoted to a legacy write-only export (BREAKING, ships as ciu 7.7.0)
+## CIU-75 — FIXED (ciu-P42) — backport v8 F2 identity: the overlay becomes the sole instance-fact source, `ciu.env` demoted to a legacy write-only export (BREAKING, ships as ciu 7.7.0)
+
+**Status: FIXED 2026-08-31 by ciu-P42**, pending release as **ciu 7.7.0**.
+All four acceptance criteria met — see the checked boxes at the end of this
+entry. Implementation: SPEC **S3.1c** (new section, identity-source
+precedence), `workspace_env.read_generated_facts` / `has_generated_facts` /
+`identity_env_from_facts` / `read_instance_identity_env`, twelve migrated call
+sites, `tests/tests/test_ciu_identity_cutover_ciu75.py`, `docs/CONSUMERS.md`
+§11b, `CHANGES.md` `[7.7.0]`. Report:
+`nyxloom-trove/reports/ciu-P42-REPORT.md`.
 
 **Version note (2026-08-31, controller):** originally filed targeting
 `ciu 7.6.0`. The Checkpoint-1 backlog wave (CIU-62/63/64/65/67/68/69/70/71/74
@@ -2587,21 +2612,76 @@ CHANGES.md's entry is marked BREAKING, before this can be called done.
 
 ### Acceptance
 
-- [ ] all 12 sites individually classified (existence-check vs. fact-read)
-      and, for fact-reads, migrated to the overlay/rendered config;
-- [ ] `ciu env generate` still writes `ciu.env`, byte-identical key set, one
-      release of WARN pointing at `ciu env print`;
-- [ ] the delete-`ciu.env`-after-generate test above, green, covering every
-      verb touched;
-- [ ] CONSUMERS.md migration section + CHANGES.md BREAKING entry, released
-      as **ciu 7.7.0**;
-- [ ] a grep across `dstdns` (and any other reachable consumer) for
-      `ciu.env`-reading tooling, so this entry's "breaks silently" risk is
-      either ruled out or has a filed follow-up in the consumer's own repo.
+- [x] all 12 sites individually classified (existence-check vs. fact-read)
+      and, for fact-reads, migrated to the overlay/rendered config — 11
+      fact-reads migrated; 1 (`worktree._reap_uses_clean`) was a pure
+      existence check and was RE-POINTED at the overlay's generated table
+      rather than left alone, because post-cutover `ciu clean` derives its
+      identity network and identity project from that table, so the old check
+      would have certified a readiness that no longer holds. Per-site table
+      in the report;
+- [x] `ciu env generate` still writes `ciu.env`, byte-identical key set, one
+      release of WARN pointing at `ciu env print` — the WARN is emitted by
+      BOTH `ciu env generate` (stdout) and `ciu env` (stderr, so the verb's
+      `key=value` stdout stays parseable);
+- [x] the delete-`ciu.env`-after-generate test above, green, covering every
+      verb touched — `tests/tests/test_ciu_identity_cutover_ciu75.py`, which
+      runs the whole site sweep TWICE (deleted, and replaced by undecodable
+      bytes) plus a converse case proving the overlay is what carries the
+      answers;
+- [x] CONSUMERS.md migration section + CHANGES.md BREAKING entry — landed;
+      **release as ciu 7.7.0 still pending** (tag/release is the merge step's,
+      not this package's);
+- [x] a grep across `dstdns` (and any other reachable consumer) for
+      `ciu.env`-reading tooling — dstdns WAS reachable
+      (`/workspaces/dstdns`, HEAD `a1098ad8`). The risk is **confirmed, not
+      ruled out**: four consumer shapes found, all still working this release,
+      all named in `docs/CONSUMERS.md` §11b. The load-bearing one is
+      `dstdns/scripts/ciu/workspace_env.py`, a vendored stub that PARSES
+      `ciu.env` into a dict for `scripts/config_helper.py` inside the
+      test-runner container — a second implementation of a read CIU has now
+      moved. **Follow-up owed in dstdns's own backlog** (out of this
+      package's worktree scope): re-point that stub at the overlay's
+      `[ciu.instance.generated]` table before `ciu.env` stops being written.
+      See CIU-82 below for the ciu-side tracking of that notification.
 
-**SPEC ownership:** no current SPEC.md section owns identity-source
-precedence explicitly (S2.7 covers derivation, not source-of-truth); this
-entry is the backport of v8 proposal F2, not a current-SPEC defect.
+**SPEC ownership:** RESOLVED — `docs/SPEC.md` **S3.1c** ("Identity-source
+precedence", CIU-75) is the new normative section. S2.7 still covers
+derivation and S3.1b the write side; S3.1c owns which record CIU READS, the
+reader's three outcomes, the readiness signal, and the child/candidate
+environment rule.
+
+---
+
+## CIU-82 — notify dstdns: its vendored `ciu.env` parser must move to the overlay before `ciu.env` stops being written
+
+**Filed by:** ciu-P42 (CIU-75 implementation), 2026-08-31. (Numbered 82, not 81:
+CIU-81 was already taken by ciu-P38's scaffold.py `StrictUndefined` filing —
+the real-ID-collision hazard this backlog has hit before.)
+
+CIU-75's consumer sweep found `dstdns/scripts/ciu/workspace_env.py` — a
+vendored stub reimplementing `load_workspace_env`/`ensure_workspace_env` by
+PARSING `ciu.env`, used by `dstdns/scripts/config_helper.py` inside the
+test-runner container (which mounts only the dstdns repo and has no `ciu` on
+`PYTHONPATH`). It reads `DOCKER_NETWORK_INTERNAL`/`REPO_ROOT` from a file CIU
+no longer reads, so the two can now drift with nothing detecting it.
+`dstdns/tests/smoke/test-deployment-validation.py` reaches the network name
+through it.
+
+This is not ciu's code to change, and the estate rule is that a finding about
+a consumer is filed in the CONSUMER's backlog. This entry exists only so the
+notification is not lost between repos.
+
+- [ ] file the equivalent item in dstdns's backlog (re-point the stub at
+      `ciu.global.worktree.toml.j2`'s `[ciu.instance.generated]` table, which
+      is already present in every checkout and needs no `ciu` import — one
+      `tomllib.loads` of the file, or of the CIU-owned block);
+- [ ] once dstdns is re-pointed, the three lower-risk dstdns shapes named in
+      `ciu/docs/CONSUMERS.md` §11b (the two generate-then-`source` scripts,
+      the `grep -oP … ciu.env` handoff recipe, the `cat ciu.env` CI artifact)
+      can follow;
+- [ ] only after all consumers are off it may a later ciu release stop
+      WRITING `ciu.env` (S3.1c clause 2 keeps the write until then).
 
 ---
 

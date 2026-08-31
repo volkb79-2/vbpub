@@ -309,6 +309,63 @@ requirements are marked *(withdrawn)*.
   5. The file is created if absent, carrying the same header comment the
      managed-lifecycle writer uses.
 
+- **S3.1c Identity-source precedence (CIU-75, normative; BREAKING in 7.7.0).**
+  No earlier section owned this question: S2.7 says how each identity fact is
+  DERIVED, S3.1b says where the derived facts are WRITTEN, and until CIU-75
+  neither said which record CIU READS when the two disagree. They now cannot:
+
+  1. **`[ciu.instance.generated]` in `<ciu-root>/ciu.global.worktree.toml.j2`
+     is the SOLE source of instance identity that CIU itself reads.** Every
+     internal read of `repo_name`, `instance_id`, `network`,
+     `physical_repo_root`, `repo_root` or `public_fqdn` — for a compose
+     project name, an ownership label, a hook context, a shared-infra
+     reference, a worktree child environment, or a capacity survey — resolves
+     from this table, by exact path, for the checkout that fact is ABOUT.
+     Never from `ciu.env`, and never from ambient `os.environ` (CIU-41).
+  2. **`ciu.env` is a legacy, write-only export.** `ciu env generate` MUST
+     keep writing it, with an unchanged key set and format, from the same
+     in-memory values as the table (S3.1b). No CIU code path may read it back.
+     `ciu env` and `ciu env print` are the two exceptions, and are not reads
+     of identity: they exist to hand the file's contents to a SHELL, which is
+     the only remaining consumer of it.
+  3. **A migration WARN, for one release.** `ciu env generate` and `ciu env`
+     MUST each announce the demotion once per invocation, naming
+     `eval "$(ciu env print)"`. It is a warning, never a refusal, and changes
+     no exit code. `ciu env`'s notice goes to STDERR so its `key=value` stdout
+     stays parseable.
+  4. **Reader semantics — three outcomes, never two.** An ABSENT overlay, or
+     an overlay carrying no such table, yields "no facts": a legitimate state
+     (`ciu env generate` was never run here) that MUST stay silent. A PRESENT
+     record that cannot be read — an `OSError` (including a directory where
+     the file belongs), a non-UTF-8 byte, malformed TOML, or a non-string
+     value — is INDETERMINATE and MUST refuse or announce, never collapse into
+     "no facts" (the absence-for-emptiness anti-pattern; the live consequence
+     it caused is recorded at S6.4a). Each call site's existing refuse-or-
+     degrade contract is preserved exactly across the cutover.
+  5. **The read is scoped to CIU's own block.** It parses the region the
+     S3.1b writer owns — the table header through the last `key = value` line
+     before the next table — and not the whole file. The block is plain TOML
+     by construction even though the file is a Jinja template, so a reader
+     needs no render context; a full `render_global_chain` MUST NOT be
+     required, because several of these reads target a DIFFERENT checkout,
+     whose committed config chain may legitimately be absent or broken, and
+     because the block is merged last, making its own bytes the merged value.
+  6. **Readiness means the table, not the file.** Where CIU tests whether a
+     checkout can act as a CIU instance (e.g. S16.10's "can this checkout
+     still clean itself?"), the signal is the PRESENCE of
+     `[ciu.instance.generated]`. Presence, never readability: a
+     present-but-unreadable table answers "present", so the caller's own read
+     refuses loudly rather than the predicate demoting indeterminacy to "not
+     an instance".
+  7. **Child and candidate environments.** Where CIU builds an environment
+     that represents ANOTHER checkout — a `worktree up`/`exec`/`clean` child
+     process, or a candidate's config render (S16.3, S16.1a) — that
+     environment is the ambient process environment MINUS every CIU identity
+     key, PLUS that checkout's own facts under their legacy shell names.
+     Identity is therefore taken exclusively from the target checkout; every
+     other value is a fact about the MACHINE, identical across checkouts on
+     one host, and is read live rather than from a possibly-stale file.
+
 - **S3.2** Render pipeline per template: Jinja2 render (context = config
   merged so far + `env` = process environment) → `$VAR`/`${VAR}` expansion
   (missing/empty value = abort, naming the variable and source file) → TOML
@@ -1501,8 +1558,9 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   The context also carries the deployment-selection facts and workspace
   identity (S3.12 / CIU-44): `ctx.selected_profiles` / `ctx.deployed_stacks`
   (tuples; `None` outside a deployment render) and `ctx.instance_id` /
-  `ctx.network` (from this workspace's own `ciu.env` by exact path, or
-  `None`). Hooks read identity/selection from these fields — never from
+  `ctx.network` (from this workspace's own `[ciu.instance.generated]` overlay
+  table by exact path — S3.1c; not `ciu.env`, since CIU-75 — or `None`). Hooks read
+  identity/selection from these fields — never from
   ambient environment state (S9.4 forbids env mutation; ambient reads are the
   CIU-41 contamination vector).
 
@@ -1510,9 +1568,14 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   `None` is ambiguous on its own — it means either "this workspace is
   genuinely unmanaged, no `ciu env generate` has run here" or "the record
   exists and CIU could not parse it" (an `OSError`, a non-UTF-8 byte, or a
-  malformed entry — CIU-62). `ctx.identity_unreadable` disambiguates: `False`
+  malformed table — CIU-62). `ctx.identity_unreadable` disambiguates: `False`
   in the genuinely-absent case (the default, and also the value in bare/unit
-  construction), `True` only when `ciu.env` is PRESENT but unreadable. **Both
+  construction), `True` only when the record is PRESENT but unreadable.
+  S3.1c clause 4 draws that line, and CIU-75 moved it in this field's own
+  favour: CIU-80 gated it on `ciu.env`'s `is_file()`, which answered "absent"
+  for a DIRECTORY where the record belongs — leaving the flag `False` on a
+  path that plainly exists and cannot be read, which is exactly the
+  absence-for-emptiness confusion the field exists to end. **Both
   identity readers set it identically, as a pair** — `deploy._workspace_identity`
   (the `ciu check` preflight's HookContext, S13.4a) and
   `engine.main_execution`'s STEP-12 real-run read — so a `validate_config`

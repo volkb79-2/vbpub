@@ -60,13 +60,13 @@ touches a hand-written `docker-compose.yml`. An admin who has never heard of CIU
 can still `docker compose up` the committed file; the CIU path is additive.
 
 `ciu up --dir <stack> --shipped` runs the pre-shipped `docker-compose.yml` *through* CIU — loading
-`ciu.env`, ensuring/attaching the workspace network, and running the DooD
+the workspace identity, ensuring/attaching the workspace network, and running the DooD
 reachability preflight first — so even the "plain" path gains consistent
 machine-identity env interpolation and network wiring that bare `docker compose`
 lacks (see [docs/CIU.md](docs/CIU.md)). A shipped stack deployed without
 `deploy.project_name`/`environment_tag` runs under the **workspace-identity
-compose project** (`REPO_NAME-INSTANCE_ID-stack`, derived from this
-checkout's `ciu.env`) — unique per checkout, and the exact name `ciu clean`
+compose project** (`repo_name-instance_id-stack`, derived from this
+checkout's own generated identity facts) — unique per checkout, and the exact name `ciu clean`
 enumerates, so a config-less stack still tears down to zero objects (S8.7/S6.4a).
 
 ## Why CIU over a plain `docker-compose.yml`
@@ -116,15 +116,27 @@ my-stack/
 At the repo root: `ciu.global.defaults.toml.j2` (committed, the root marker),
 `ciu.global.toml.j2` (committed, OPTIONAL sparse override — not auto-created),
 `ciu.global.worktree.toml.j2` (gitignored sparse per-worktree override), the
-rendered `ciu.global.toml` (gitignored), `ciu.env` (gitignored generated machine
-identity), and, for managed linked checkouts, `ciu.worktree-instance.json`
-(gitignored durable identity/lifecycle state).
+rendered `ciu.global.toml` (gitignored), `ciu.env` (gitignored **legacy
+write-only** machine-identity export — see below), and, for managed linked
+checkouts, `ciu.worktree-instance.json` (gitignored durable
+identity/lifecycle state).
+
+**Where instance identity lives (7.7.0, BREAKING).** `ciu env generate` writes
+its six identity facts — `repo_name`, `instance_id`, `network`,
+`physical_repo_root`, `repo_root`, `public_fqdn` — into
+`ciu.global.worktree.toml.j2`'s `[ciu.instance.generated]` table, and that
+table is now the **only** record CIU itself reads them from. `ciu.env` is
+still written, with the identical key set, purely so a shell can `source` it;
+nothing inside CIU reads it back. If you have tooling that PARSES `ciu.env`
+(rather than sourcing it), see
+[docs/CONSUMERS.md §11b](docs/CONSUMERS.md) for the migration, and
+[docs/SPEC.md S3.1c](docs/SPEC.md) for why the source of truth moved.
 
 Automation surfaces are versioned and closed: `ciu worktree
 inspect|list|rm --json` (and the lifecycle verbs with `--json`) emit one
 `schema_version: 1` document with a closed `operation`/`status` vocabulary and
 freshly derived Git facts — never inferred from a name or stale record —
-`ciu worktree up` starts one selected instance under its own `ciu.env`,
+`ciu worktree up` starts one selected instance under its own identity,
 `ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...` runs exact argv
 (no shell) in that root or inside its declared already-running container
 target (S16.7). `ciu capabilities --json` lists the shipped machine
@@ -146,7 +158,8 @@ Full reference: [docs/CONFIG.md](docs/CONFIG.md#file-roles-and-layering-s31s33).
 
 ```bash
 pip install -e .                 # install (see docs/README.md for build/wheel)
-ciu env generate --define-root <repo>           # detect machine facts → ciu.env (S2.8)
+ciu env generate --define-root <repo>           # detect machine facts → identity table + ciu.env (S2.8)
+eval "$(ciu env print)"                          # export them into THIS shell (S3.1c)
 ciu up --dir <repo>/<stack>                      # render + run one stack
 ciu up --profile <host-profile>                  # orchestrate many
 ciu up --layout <name>                           # push a named host→bundles plan (S7.5c)
@@ -306,7 +319,7 @@ alternatives overlap with individual pillars:
 | Secret directives (`ASK_VAULT:`, `GEN_*`) | vals (`ref+vault://`), gomplate Vault, Vault Agent, SOPS | `vals` is the canonical inline-reference tool. |
 | Pre/post hooks | Compose lifecycle hooks, Kamal hooks, Ansible, Taskfile/Make | Standard. |
 | Multi-stack phased orchestration + health + registry auth | Kamal, Coolify, Dokploy, CapRover, Swarm, Nomad | Battle-tested incumbents. |
-| Workspace env autodetect (`ciu.env`) | direnv, Compose `env_file`, `.env` conventions | Standard. |
+| Workspace identity autodetect (`[ciu.instance.generated]`, exported as `ciu.env`) | direnv, Compose `env_file`, `.env` conventions | Standard. |
 | Define once, target compose + k8s + cloud | Score (CNCF, score-compose) | The standard portable-workload abstraction. |
 
 CIU's edge is the *combination*, tuned for the devcontainer/DooD workflow with
@@ -332,7 +345,7 @@ python3 -m pip show ciu
 # For dstdns test execution:
 
 cd /workspaces/dstdns
-source ciu.env
+eval "$(ciu env print)"     # or the legacy `source ciu.env` (deprecated, 7.7.0)
 
 printf '%s\n' "$REPO_ROOT" "$PHYSICAL_REPO_ROOT"
 ciu version

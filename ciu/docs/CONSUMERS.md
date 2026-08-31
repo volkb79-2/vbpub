@@ -421,15 +421,23 @@ own `[ciu]` table — existing switches like `auto_connect_network` stay visible
   silently ship an empty-selection default.
 - Hooks see the identical snapshot as `ctx.selected_profiles` /
   `ctx.deployed_stacks`, plus `ctx.instance_id` / `ctx.network` from this
-  workspace's own `ciu.env` — read identity from ctx, never from ambient env
+  workspace's own `[ciu.instance.generated]` overlay table — **not `ciu.env`,
+  since CIU-75** (§11b); read identity from ctx, never from ambient env
   (a sourced sibling checkout's `ciu.env` is the CIU-41 contamination path).
 - `ctx.instance_id` / `ctx.network` both `None` is ambiguous by itself —
   "genuinely unmanaged, no `ciu env generate` here" and "the record exists
   but CIU could not parse it" look identical. `ctx.identity_unreadable`
   (CIU-80) tells them apart: `False` in the genuinely-absent case, `True`
-  only when `ciu.env` is present but unreadable. A hook that needs to branch
+  only when the record is present but unreadable. A hook that needs to branch
   differently on "unknown" versus "absent" reads this field; one that
   doesn't care can ignore it (it defaults `False`).
+
+  CIU-75 changed **which record** that flag is about, and sharpened it: it is
+  now the overlay's generated table, and a path that exists and cannot be read
+  at all — a directory where the record belongs, an unreadable mode — counts
+  as unreadable. Under CIU-80 alone that case answered "absent" (`False`),
+  because the check was `ciu.env.is_file()`. **A hook that was branching on
+  `identity_unreadable` needs no change**; it just stops being lied to.
 
 ## 11. What `ciu clean` removes — and what it names (S6.4a, CIU-43)
 
@@ -531,6 +539,105 @@ myapp-abc123-network
 It prints; it cannot change your shell by itself (no subprocess can), which is
 why it is `print` and not `apply`/`source`. It generates nothing — if
 `ciu.env` is missing it says so and names `ciu env generate`.
+
+## 11b. Migrating off `ciu.env` as an identity source (CIU-75, ciu 7.7.0) — BREAKING
+
+**What changed.** As of **ciu 7.7.0**, `ciu.global.worktree.toml.j2`'s
+`[ciu.instance.generated]` table is the **only** place CIU itself reads your
+instance identity from. `ciu.env` is now a **legacy, write-only export**:
+`ciu env generate` still writes it, with the identical key set and format, and
+CIU never reads it back.
+
+**What does NOT break.** Sourcing still works, byte for byte, this release:
+
+```console
+$ ciu env generate            # writes ciu.env AND the overlay table
+$ source ciu.env              # still works
+$ eval "$(ciu env print)"     # the forward path — same values, quoted safely
+```
+
+You will see one new `[WARN]` per `ciu env generate` (stdout) and per `ciu env`
+(stderr). That is the one-release deprecation notice; it changes no exit code
+and refuses nothing. `ciu env`'s own `key=value` stdout is untouched, so
+anything piping it keeps parsing.
+
+**What DOES break — the pattern to look for.** Anything that treats `ciu.env`
+as an *input* rather than a *shell convenience*: parsing it, grepping a value
+out of it, or re-running `ciu env generate` and then reading the file back to
+learn what CIU decided. Those consumers now hold a copy that CIU does not
+consult, so nothing detects it going stale. Concretely:
+
+| pattern | replace with |
+|---|---|
+| `grep -oP '(?<=^INSTANCE_ID=).*' ciu.env` (or any grep/awk/sed of the file) | `eval "$(ciu env print)"; echo "$INSTANCE_ID"` — or read `[ciu.instance.generated].instance_id` from `ciu.global.worktree.toml.j2` with a TOML parser |
+| a **Python** helper that parses `ciu.env` into a dict (a vendored `load_workspace_env`, a `dotenv`-style loader) | parse the overlay's `[ciu.instance.generated]` table with `tomllib`, or shell out to `ciu env print` |
+| `ciu env generate` **then** read `ciu.env` back to discover the network / instance id | read the overlay table, which is what CIU itself now reads; the two are written from the same in-memory values by the same command |
+| a **template** using `{{ env.PHYSICAL_REPO_ROOT }}` | `{{ ciu.instance.generated.physical_repo_root }}` — see §11a; this has been the correct form since CIU-60 and is now the only one CIU agrees with |
+| `echo 'export CIU_SERVICES_PROFILE=…' >> ciu.env` | unaffected — that key is read from the process environment, not from the file; keep sourcing, or export it directly |
+
+**Reading the facts from a shell, without `ciu.env` at all:**
+
+```console
+$ python3 -c 'import tomllib,pathlib;print(tomllib.loads(pathlib.Path("ciu.global.worktree.toml.j2").read_text())["ciu"]["instance"]["generated"]["network"])'
+myapp-abc123-network
+```
+
+(The `[ciu.instance.generated]` block is plain TOML by construction — CIU
+writes it as quoted strings and owns exactly those bytes — even though the
+surrounding file is a Jinja template.)
+
+**Known-affected consumers, from a real grep (2026-08-31).** The primary
+consumer repo, `dstdns`, was swept for this pattern. Four shapes were found;
+all four keep working this release, and all four should be re-pointed before
+`ciu.env` stops being written:
+
+1. **`scripts/ciu/workspace_env.py`** — a vendored stub that parses `ciu.env`
+   into a dict (`load_workspace_env` / `ensure_workspace_env`) for
+   `scripts/config_helper.py` inside the test-runner container, which only
+   mounts the repo and has no `ciu` on `PYTHONPATH`. This is the most
+   load-bearing one: it is a **second implementation** of a read CIU has now
+   moved. It should parse the overlay's `[ciu.instance.generated]` table
+   instead — same file, already present in every checkout, no `ciu` import
+   needed. `tests/smoke/test-deployment-validation.py` reaches
+   `DOCKER_NETWORK_INTERNAL` through it.
+2. **`env-workspace-setup-generate.sh`** and
+   **`.devcontainer/finalize.post.d/10-dstdns-ciu.sh`** — both run
+   `ciu env generate`, then require and `source` `ciu.env`, erroring if it is
+   absent. Generate-then-read-back, but through `source`, so it is correct
+   today; `eval "$(ciu env print)"` is the forward form.
+3. **`nyxloom-trove/handoffs/dstdns-P147-vertical-corpus-e2e.md:473`** —
+   a documented recipe doing `grep -oP '(?<=^CIU_INSTANCE_ID=).*' ciu.env`.
+   This is the exact grep-the-file shape, and it is *already* wrong (the key
+   is `INSTANCE_ID`, not `CIU_INSTANCE_ID`); it should read the overlay.
+4. **`.github/workflows/ciu-env-cicd-test.yml`** — `cat ciu.env` and uploads
+   it as a CI artifact. Diagnostic only, but it no longer shows what CIU
+   reads; the overlay is the file worth capturing now.
+
+If you maintain another consumer, the sweep that finds these is:
+
+```console
+$ git grep -nE '(grep|awk|sed|cut|open|read_text|dotenv)[^\n]*ciu\.env'
+$ git grep -nE 'ciu env generate' -A3 | grep -n 'ciu\.env'
+```
+
+**Sanity check after migrating.** The cutover holds if this sequence still
+answers correctly with the legacy export gone:
+
+```console
+$ ciu env generate
+$ rm ciu.env
+$ ciu status --json | head -3        # still names your compose projects
+$ ciu clean -y                       # still finds and removes your network
+```
+
+If any of those now fail, the failure is CIU's, not yours — file it.
+
+**Finally: `.gitignore`.** `ciu.global.worktree.toml.j2` must be gitignored
+and must not be deleted casually. It has always been declared gitignored
+(S3.1b), but it is now the only record of your instance identity. A checkout
+that loses it cannot name its own compose project, network or ownership
+labels until `ciu env generate` puts it back. `ciu clean --vanilla` removes it
+deliberately (that is a full reset); plain `ciu clean` preserves it.
 
 ## 12. The implementation gate (Assay-backed, S18)
 

@@ -21,6 +21,168 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.7.0] - UNRELEASED
+
+> **This release is BREAKING, and ships as a MINOR on purpose.** The estate's
+> normal convention is that a breaking change waits for the next major; CIU-75
+> is an explicit, recorded override, because the cutover is self-contained and
+> does not need any of v8's other (much larger) schema-revision-8 changes to
+> ship safely on its own. It was filed against 7.6.0 and retargeted to 7.7.0
+> when the Checkpoint-1 backlog wave consumed that number first.
+
+### Adoption / Migration Notes
+
+**Action needed if you're shaped like this:** you have tooling that *reads*
+`ciu.env` back — parses it, greps it, or re-runs `ciu env generate` and then
+inspects the file to learn what CIU decided. See
+**`docs/CONSUMERS.md` → "Migrating off `ciu.env` as an identity source
+(CIU-75, ciu 7.7.0)"** for the worked replacements. Nothing breaks *this*
+release: `ciu env generate` still writes `ciu.env` with the identical key set,
+so `source ciu.env` and `eval "$(ciu env print)"` both keep working. What
+changed is that CIU itself no longer reads the file, so `ciu.env` and CIU's
+own view of your instance can now disagree — and only one of them is right.
+
+**Safe to ignore if:** you only ever `source ciu.env` (or `eval "$(ciu env
+print)"`) in a shell and let CIU do the rest. You will see one new `[WARN]`
+line per `ciu env generate` and per `ciu env`; that is the one-release notice,
+not an error, and it does not change any exit code.
+
+**One thing to check either way:** `ciu.global.worktree.toml.j2` must be in
+your `.gitignore`. It has been the durable local-config file since S3.1b and
+has carried the generated identity table since CIU-60 (7.5.0), but as of this
+release it is the ONLY record CIU reads your instance identity from — a
+checkout that loses it can no longer name its own compose project, network or
+ownership labels, and `ciu env generate` is what puts it back.
+
+### Changed
+
+- feat(ciu)!: **CIU-75 — `[ciu.instance.generated]` is the sole source of
+  instance identity CIU reads; `ciu.env` is demoted to a legacy, write-only
+  export** (SPEC S3.1c, ciu-P42). This is the backport of the v8 proposal's
+  **F2 fork** (`docs/CIU-V8-TESTING-GATE-PROPOSAL.md` §4.1.3 "Identity
+  source"), ahead of v8's other schema changes.
+
+  CIU-60 (7.5.0) began writing the identity facts into the gitignored overlay
+  `ciu.global.worktree.toml.j2` on every `ciu env generate`, so TEMPLATES
+  could read them through the ordinary merged-config chain. That write was
+  **additive**: `ciu.env` remained the thing CIU's own internals actually
+  read, at twelve call sites across `worktree.py`, `engine.py` and
+  `deploy.py`. Two records, one of them authoritative, and nothing that
+  noticed when they disagreed. This finishes the cutover.
+
+  - **Eleven sites that read FACTS now read the overlay table.**
+    `worktree.py`: the shared-infra add preflight and the post-up join
+    (the reference instance's `network`), `_clean_in` (which instance a reap's
+    `ciu clean` targets), `_sanitized_target_env` (`worktree up`/`exec`),
+    `_runtime_identity` (allocation and collision checks), and the S16.3
+    budget-candidate survey. `engine.py`: `identity_compose_project_name`
+    (which names the compose project for BOTH `up` and `clean`, so they
+    cannot drift), `workspace_ownership_labels` (S16.9), and the S3.12
+    `HookContext` identity on a real run. `deploy.py`: `_workspace_identity`
+    (the `ciu check` twin of that same HookContext) and
+    `_workspace_identity_network` (the identity network `clean` removes and
+    then certifies gone).
+  - **One site was a pure existence check, and it moved too, for a reason.**
+    `worktree.py`'s `_reap_uses_clean` asked "can this checkout still clean
+    itself?" by looking for `ciu.env`. Post-cutover `ciu clean` derives its
+    identity network and identity compose project from the overlay table, so a
+    checkout carrying only a legacy `ciu.env` can no longer clean itself:
+    keeping the old check would have made it certify a readiness that no
+    longer holds (AGENTS.md — "a check is only as strong as what it actually
+    compares"). It now asks for the generated table's PRESENCE, and
+    deliberately not its readability: a present-but-corrupt table still
+    answers "yes", so `_clean_in` refuses loudly rather than the predicate
+    quietly demoting indeterminacy into a bare `docker rm`.
+  - **`ciu env generate` still writes `ciu.env`, unchanged.** Same keys, same
+    order, same format, written from the same in-memory values as the overlay
+    table so the two cannot disagree at the moment of writing. It is a
+    write-only export from here on.
+  - **The read side is a text-level scan of the CIU-owned block**, mirroring
+    the writer's own ownership boundary rather than rendering the whole config
+    chain. The overlay is a Jinja template whose render needs the merged
+    config it is itself a layer of (and, since CIU-74, an undefined name is a
+    hard error); several of these sites read a checkout that is NOT this
+    process's repo root, whose committed chain may be absent or broken, and
+    the `ciu.env` read they replace had no such dependency. The block is
+    plain TOML by construction and is merged last, so its own bytes ARE the
+    merged value.
+  - **`OSError`, a non-UTF-8 byte and a malformed table** — CIU-62's three
+    unrelated failure types — are normalized into one `WorkspaceEnvError` at
+    the reader, so no call site has to re-derive that `UnicodeDecodeError` and
+    `WorkspaceEnvError` are sibling `ValueError` subclasses and that neither
+    covers `OSError`. Every site's refuse-or-degrade contract is unchanged.
+- feat(ciu): **CIU-75 x CIU-80 — `ctx.identity_unreadable` is now about the
+  overlay's generated table, and its absent-vs-unreadable line finally means
+  what it says** (ciu-P42 rebased onto ciu-P43). CIU-80 (shipping in this same
+  release) added the additive `HookContext.identity_unreadable` flag so a hook
+  could tell "genuinely unmanaged workspace" from "the record exists and CIU
+  could not parse it". It was gated on `ciu.env`'s `is_file()`, so a DIRECTORY
+  where the record belongs answered "absent" and left the flag `False` on a
+  path that plainly exists and cannot be read. The identity reader draws the
+  line now: `{}` with the flag `False` only for a genuinely absent overlay (or
+  one carrying no generated table), and the flag `True` for every
+  present-but-unreadable form. Both S3.12 readers still set it identically —
+  CIU-80's mandatory pairing — and its end-to-end pairing test is unchanged in
+  intent, only re-pointed at the overlay. **No hook needs to change.**
+- feat(ciu)!: **CIU-75 — a directory where the identity record belongs is now
+  INDETERMINATE, not "absent"** (ciu-P42). `ciu.env`'s reads were guarded by
+  `is_file()`, which folded a path that exists and cannot be read into "this
+  workspace was never provisioned" — the estate's absence-for-emptiness
+  anti-pattern. `deploy._workspace_identity` now warns and degrades (it never
+  raises, by contract), while the genuinely-absent case stays silent, because
+  a warning on every unprovisioned workspace is a warning nobody reads.
+- feat(ciu)!: **CIU-75 — the child/render environment at three sites is now
+  ambient-minus-identity plus the target's own facts** (ciu-P42).
+  `_clean_in`, `_sanitized_target_env` and `_resolve_budget_candidates`
+  previously overlaid (or, for the budget survey, substituted wholesale) every
+  key of the target checkout's `ciu.env`. The overlay carries identity facts
+  only, so those sites now strip every CIU identity key from the ambient
+  environment and put the target's own facts back. Identity still comes
+  exclusively from the target checkout — the property those functions exist to
+  hold — while machine facts (`USER_UID`, `DOCKER_GID`, `PYTHON_EXECUTABLE`,
+  `HOST_MDT_TMP`) are read live from this process instead of from a file that
+  may predate a rebuild. Practical effect: a candidate config template that
+  referenced a non-identity variable used to see that checkout's recorded
+  value and now sees this host's current one; on one machine they are the same
+  value.
+
+### Added
+
+- feat(ciu): **`workspace_env.read_generated_facts()` /
+  `has_generated_facts()` / `read_instance_identity_env()` /
+  `identity_env_from_facts()`** (SPEC S3.1c, ciu-P42) — the read side of
+  S3.1b, and the single translation table between the overlay's snake_case
+  fact names and the legacy SCREAMING_CASE shell names a child process still
+  speaks.
+
+### Deprecated
+
+- **`ciu.env` as an input.** One release of `[WARN]`, never a refusal, in the
+  shape this codebase already uses for a deprecated-but-working path:
+  `ciu env generate` announces the demotion on stdout, and `ciu env` (the
+  legacy read verb) announces it on **stderr**, so its `key=value` stdout
+  stays parseable by whatever is already piping it. Both name
+  `eval "$(ciu env print)"` as the forward path. A future release stops
+  writing the file.
+
+### Documentation
+
+- docs(ciu): `docs/CONSUMERS.md` gains a dedicated **"Migrating off `ciu.env`
+  as an identity source"** section — what breaks, what does not, the four
+  consumer patterns found by a real grep across the primary consumer repo,
+  and a paste-able replacement for each.
+- docs(ciu): `docs/SPEC.md` gains **S3.1c — identity-source precedence**, the
+  section no existing SPEC clause owned (S2.7 covered derivation, not
+  source-of-truth).
+
+### Testing
+
+- test(ciu): `tests/tests/test_ciu_identity_cutover_ciu75.py` — every
+  fact-reading site exercised twice after a real `ciu env generate`, once with
+  `ciu.env` DELETED and once with it replaced by undecodable bytes, plus the
+  converse case proving the overlay (and not nothing) is what carries the
+  answers.
+
 ## [7.6.0] - 2026-08-31
 <!-- cmru: generated -->
 <!-- cmru: source-end=71cc266385585e3e963a657f62e7dc922d8e756b -->
