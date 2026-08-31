@@ -1086,14 +1086,15 @@ def execute_docker_compose_with_logs(
     which collided across checkouts and escaped every teardown pass.
 
     *repo_root* (CIU-71) is REQUIRED and passed as ``--project-directory`` so
-    a stack's relative paths — a ``build.context`` chief among them — resolve
-    against the REPO ROOT, matching every other path CIU already resolves
-    repo-root-relative (bind mounts, hostdirs), instead of against the
-    compose file's own directory (docker compose's undocumented-to-authors
-    default). Without it, a stack whose Dockerfile ``COPY``s a repo-root-
-    relative path (the only shape that matches how the rest of CIU resolves
-    paths) fails at build time with a path-not-found error the operator has
-    no reason to associate with CIU's invocation.
+    a stack's ``build.context``/``dockerfile`` resolve against the REPO
+    ROOT — a deliberate EXCEPTION to how CIU resolves its other relative
+    paths (hostdirs, ``ASK_FILE`` secret sources, configfile schema/template
+    paths all resolve stack-dir-relative, never repo-root-relative), made
+    because a Dockerfile ``COPY`` of a repo-shared asset needs the repo
+    root, not the compose file's own directory (docker compose's default
+    absent this flag). Without it, a stack whose Dockerfile ``COPY``s a
+    repo-root-relative path fails at build time with a path-not-found error
+    the operator has no reason to associate with CIU's invocation.
 
     Returns ``{'status': 'success'|'error'|'interrupted', 'message', 'stdout'}``.
     """
@@ -1940,7 +1941,7 @@ def run_shipped(
         )
         if dry_run:
             print("[SHIPPED 3/4] --dry-run: skipping docker compose up", flush=True)
-            print(f"[SHIPPED 4/4] would run: docker compose -f {compose_file} up -d", flush=True)
+            print(f"[SHIPPED 4/4] would run: docker compose --project-directory {repo_root} -f {compose_file} up -d", flush=True)
             return result
 
         print(f"[SHIPPED 3/4] Starting shipped stack (docker compose -f {compose_file} up -d)...", flush=True)
