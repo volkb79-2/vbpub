@@ -260,3 +260,31 @@ and the loop keeps moving. Full memory: `autonomous-loop-report-vs-pause`.
   touches). Reviewer explicit: "Neither blocks merge on my reading."
   Waiting on the reviewer's own gate run (in progress, phase 6+, 47 nodes)
   before the formal verdict.
+
+- **2026-08-31 (fix-verification round 2 — ACCEPT)** — Formal verdict:
+  **ACCEPT, unambiguous.** Round 2 of 3; round 3 not needed. Gate
+  independently re-run green by the reviewer itself on `c1176bd0` (exit 0,
+  marker, all 11 phases). BLOCKER 1 mutation-tested by the reviewer across
+  all 3 independent defense layers (each alone sufficient; only defeating
+  all 3 reopens the escape) — AND confirmed the fix did NOT regress
+  B041(b)'s real legitimate use case (tracked `cwd` + untracked
+  `link_paths` target still works end-to-end with a live canary). A-384's
+  design call independently endorsed. All must-fixes re-verified via the
+  reviewer's own fresh probes (unprefixed raw-layer failures now fire with
+  distinct wording from the model layer; spelling-variant vocabulary
+  probes refused; major "2" refused; W5 ingested fixture independently
+  cross-checked against the real Stryker artifact). Two non-blocking
+  documentation carry-overs, explicitly NOT gates on the ACCEPT: (1)
+  `adapters/javascript.py:525-532` still has a second, now-contradictory
+  stale B037 reference (reviewer recommends landing this one-line fix
+  before release since it ships in the wheel, but leaves it to the
+  controller); (2) REPORT §15's diff-scope claim went stale one commit
+  later (the substance still holds, purely a citation staleness).
+  **Controller decision**: fix carry-over 1 (one line, zero behavioral
+  reach, reviewer-endorsed) via the fix-round implementer (not a fresh
+  agent, not a controller-direct edit — preserves the
+  controller-doesn't-write-code role split) with a final gate re-run for
+  discipline; leave carry-over 2 as-is (truly cosmetic, substance intact).
+  No further reviewer round needed for this trivial addendum — the ACCEPT
+  already stands unconditionally. Then: merge --no-ff, real `cmru
+  release`, deploy, dstdns notify.
