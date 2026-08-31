@@ -38,7 +38,7 @@ SPEC §9.
 | RG-18 | no pg_dump/PostgreSQL version-mismatch guard for schema lanes | Minor | OPEN — dstdns-side scope (schema-gate.sh), not run-gate.py; see body |
 | RG-19 | schema-lane credential propagation must be verified by the gate, not by test failure | Major | FIXED 2026-08-24 |
 | RG-20 | replace global gate flock with resource-aware admission | Enhancement | FIXED 2026-08-24 |
-| RG-21 | linked-worktree checkouts break host-path-mapped lanes (srdm covergate evidence) | Minor | OPEN 2026-08-24 |
+| RG-21 | linked-worktree checkouts break host-path-mapped lanes (srdm covergate evidence) | Minor | FIXED 2026-08-31 (rev 26) — directions 2+3 (doctor warning + docs); direction 1 is harness-side, not run-gate's to build |
 | RG-22 | `git config --global safe.directory "*"` fails when global config already has safe.directory entries | Minor | FIXED 2026-08-24 |
 | RG-23 | exec-mode's hardcoded env-forward allowlist was dropped with no consumer migration; unmigrated consumers silently stop forwarding `RUN_LIVE_TESTS`/`MOCK_MODE` | Major | FIXED 2026-08-31 (rev 25) — run-gate half; dstdns half open in its own repo |
 | RG-24 | `resolve_container_name()` derives an exec-mode container's name from the shared-`.git`-owning repo's `ciu.global.toml`, never the judged worktree's own — a multi-instance (Mode-B) worktree's live lane silently targets the WRONG deployed container | Major | FIXED 2026-08-31 (rev 24) |
@@ -924,6 +924,46 @@ lane passes — `.git` is a directory inside the mount.
 - From a linked worktree, srdm coverage passes (today it fails with the
   gitdir error above).
 - `doctor` names the condition before the lane fails mid-run.
+
+**FIXED 2026-08-31 (rev 26) — directions 2 and 3. Direction 1 is deliberately
+NOT taken here.**
+
+Direction 1 (mount the common gitdir / hand over `GIT_DIR`) is the real fix
+and it is HARNESS-side: the `docker run` that mounts only `$repo_root`
+belongs to `shared-ramdisk-depot-manager/tools/gate.sh`, not to run-gate,
+which owns neither that argv nor srdm's repo. Building it here would mean
+run-gate reaching into a consumer's own container construction — the exact
+inversion the one-parser design (D-110) exists to prevent. What run-gate CAN
+own is telling the operator before the lane dies mid-run, and telling every
+future harness author how to fix their own mount.
+
+- **Direction 2 (`doctor` warning), `R-30a`:** `linked_worktree_gitdir()`
+  returns the absolute gitdir when `<worktree>/.git` is a FILE whose target
+  lies OUTSIDE the tree, and `None` for both benign shapes (plain checkout;
+  gitfile pointing inside the tree — that one travels with any mount, so
+  reporting it would be a false alarm). `doctor` emits ONE `[WARN]` naming
+  the worktree, the gitdir, the exact symptom (`not a git repository:
+  <gitdir>`) and three remedies. It never moves doctor's exit code:
+  run-gate is not defective here, and a warning that overstated itself into
+  a refusal would block a lane that works fine on the main checkout.
+  **Scoped to projects declaring an `environment = "host"` lane** — the only
+  kind that can reach such a harness, since run-gate's own container/exec
+  lanes dual-mount the REPO root (`R-23`) and cannot hit this. With a host
+  lane and a plain checkout the check records `[OK]`, so a reader can tell
+  it ran rather than inferring health from silence.
+- **Direction 3 (document):** CONSUMERS "Host lanes that delegate to a
+  host-path-mounting harness (RG-21)" — the real srdm error verbatim, the
+  doctor line, and THREE pasteable harness-side fixes (mount
+  `--git-common-dir`, export `GIT_DIR`, or declare the lane main-checkout-
+  only in its `description`), plus the `SRDM_HOST_REPO_ROOT` note that a
+  worktree's host path cannot be auto-derived from `docker inspect`.
+
+Tests: `TestLinkedWorktreeHostLaneWarning` ×7 — the gitdir helper in all four
+shapes (plain checkout, real `git worktree add`, gitfile pointing inside the
+tree, gitfile with no `gitdir:` line) and doctor in all three states (linked
+worktree + host lane → WARN naming the symptom and the remedies; plain
+checkout + host lane → OK; linked worktree, container lane only → the check
+does not appear at all).
 
 
 ## RG-22 — `git config --global safe.directory "*"` fails when global config already has safe.directory entries

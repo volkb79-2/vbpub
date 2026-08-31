@@ -399,6 +399,56 @@ enforces this pairing for every trove that points at run-gate lanes (assay's
 assert-it pattern, replicated estate-wide); when you add a gate, it joins
 the sweep automatically by naming the lane in its argv.
 
+### Host lanes that delegate to a host-path-mounting harness (RG-21)
+
+If a `kind = "command"`, `environment = "host"` lane shells out to your own
+script that bind-mounts the repo into a container by HOST path
+(srdm's `tools/gate.sh`: `repo_root` = the git toplevel, one
+`-v "$host_repo_root:$repo_root"`), that lane is **main-checkout-only today
+when the judged tree is a linked worktree.** run-gate is not the defect —
+`{worktree}` forwarding and exit-status passthrough are correct — but a
+linked worktree's `.git` is a FILE naming an absolute gitdir under the MAIN
+checkout, which your single mount does not include, so every in-container git
+plumbing call dies:
+
+```
+covergate: git rev-list --parents -n 1 HEAD failed: exit status 128:
+fatal: not a git repository: /workspaces/vbpub/.git/worktrees/run-gate-rg-sweep
+```
+
+`./run-gate.py doctor` names the condition BEFORE the lane fails mid-run:
+
+```
+run-gate: doctor: [WARN] host-lane git view (RG-21): /repo/.worktrees/w1 is a
+  LINKED worktree; its gitdir is /repo/.git/worktrees/w1, OUTSIDE the tree.
+  run-gate's own container lanes are fine (they dual-mount the repo root), but
+  a host lane delegating to a harness that bind-mounts only the judged tree by
+  host path will fail with 'not a git repository: …'. Mount the common gitdir
+  into that container too, or pass it as GIT_DIR, or run the lane from the
+  main checkout
+```
+
+Fix it in YOUR harness, one of three ways — run-gate cannot do it for you,
+because it does not own that `docker run`:
+
+```bash
+# 1. mount the common gitdir at the path the gitfile records (preferred):
+common=$(git -C "$repo_root" rev-parse --git-common-dir)
+docker run -v "$host_repo_root:$repo_root" -v "$common:$common" …
+
+# 2. or hand the container an explicit GIT_DIR (still needs the mount above):
+docker run … -e GIT_DIR="$common" …
+
+# 3. or run this lane from the main checkout only, and say so in its
+#    `description` so the next person does not rediscover it at 2am.
+```
+
+Note that `run-gate`'s OWN container/exec lanes never hit this: `R-23`
+dual-mounts the REPO root, so the gitdir is inside the mount by construction.
+Related: an auto-derived host path for a worktree (e.g. `SRDM_HOST_REPO_ROOT`)
+cannot be inferred from `docker inspect`, which maps only the devcontainer's
+own `/workspaces/<repo>` — export it explicitly.
+
 ## Per-project-type recipes
 
 **Python service repo with assay (ciu, cmru, assay itself):** the

@@ -9,6 +9,21 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
+### Added
+- **RG-21 — `doctor` names the linked-worktree host-lane git view (rev 26).**
+  A linked worktree's `.git` is a FILE pointing at an absolute gitdir under
+  the main checkout. A host lane that delegates to a harness bind-mounting
+  only the judged tree by host path (srdm's covergate) therefore fails with
+  `not a git repository: <gitdir>` mid-run. run-gate is not the defect —
+  `{worktree}` forwarding and exit-status passthrough are correct, and its own
+  container lanes dual-mount the repo root (`R-23`) — so this is a `[WARN]`
+  naming the worktree, the gitdir, the exact symptom and three remedies, not a
+  refusal, and it does not move doctor's exit code. Scoped to projects that
+  declare a host lane (the only kind that can reach such a harness); with a
+  host lane and a plain checkout the same check records `[OK]` so a reader can
+  tell it ran. SPEC `R-30a`; CONSUMERS "Host lanes that delegate to a
+  host-path-mounting harness" (three pasteable harness-side fixes).
+
 ### Fixed
 - **RG-23 — env forwarding: breaking change documented + the drift sweep
   widened (rev 25).** The exec-mode forwarding loop's hardcoded

@@ -3485,6 +3485,92 @@ class TestDoctor:
 # RG-14 — wheel as SECOND artifact + version discipline (R-31)
 # ---------------------------------------------------------------------------
 
+class TestLinkedWorktreeHostLaneWarning:
+    """RG-21: run-gate forwards `{worktree}` correctly and its exit status
+    stays honest — the breakage is one layer DOWN, in a harness that
+    bind-mounts only its own `$repo_root` by host path. From a linked
+    worktree that subtree's `.git` is a FILE naming an absolute gitdir under
+    the MAIN checkout, outside the mount, and every in-container git plumbing
+    call dies (`not a git repository: …`; srdm's covergate, the evidence
+    case). run-gate's own container lanes are unaffected — R-23 dual-mounts
+    the REPO root — so the warning is scoped to projects declaring a HOST
+    lane, the only kind that can reach such a harness.
+    """
+
+    HOST_LANE = """\
+        schema_version = 1
+        [lanes.smoke]
+        kind = "command"
+        environment = "host"
+        argv = ["bash", "-c", "true"]
+        clean_tree = false
+    """
+
+    def test_plain_checkout_gitdir_is_none(self, tmp_path):
+        repo = make_repo(tmp_path)
+        assert run_gate.linked_worktree_gitdir(repo) is None
+
+    def test_linked_worktree_gitdir_is_the_absolute_target(self, tmp_path):
+        repo = make_repo(tmp_path)
+        wt = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
+        gitdir = run_gate.linked_worktree_gitdir(wt)
+        assert gitdir is not None
+        assert gitdir == (repo / ".git" / "worktrees" / "w1")
+        assert not gitdir.is_relative_to(wt)   # the whole point
+
+    def test_gitfile_pointing_inside_the_tree_is_benign(self, tmp_path):
+        """A gitdir INSIDE the judged tree travels with any mount of it —
+        reporting that as the alarming condition would be a false alarm."""
+        tree = tmp_path / "t"
+        (tree / "nested").mkdir(parents=True)
+        (tree / ".git").write_text("gitdir: nested\n")
+        assert run_gate.linked_worktree_gitdir(tree) is None
+
+    def test_gitfile_without_a_gitdir_line_is_none(self, tmp_path):
+        tree = tmp_path / "t"
+        tree.mkdir()
+        (tree / ".git").write_text("# not a gitfile\n")
+        assert run_gate.linked_worktree_gitdir(tree) is None
+
+    def test_doctor_warns_from_a_linked_worktree_with_a_host_lane(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        make_project(repo, self.HOST_LANE)
+        wt = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(wt / "proj")
+        assert run_gate.main(["doctor"]) == 0     # advisory, never a refusal
+        out = capsys.readouterr().out
+        assert "[WARN] host-lane git view (RG-21)" in out
+        assert str(repo / ".git" / "worktrees" / "w1") in out
+        assert "not a git repository" in out       # the exact symptom, named
+        assert "GIT_DIR" in out and "main checkout" in out   # both remedies
+
+    def test_doctor_ok_from_a_plain_checkout_with_a_host_lane(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self.HOST_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        assert run_gate.main(["doctor"]) == 0
+        out = capsys.readouterr().out
+        assert "[OK] host-lane git view (RG-21)" in out
+
+    def test_no_host_lane_no_check_at_all(self, tmp_path, monkeypatch, capsys):
+        """Scoped, not universal: a container-only project cannot hit this,
+        and a warning that fires where it cannot bite gets switched off."""
+        repo = make_repo(tmp_path)
+        make_project(repo, SIMPLE_LANE)          # container lane only
+        wt = tmp_path / "w1"
+        git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(wt / "proj")
+        assert run_gate.main(["doctor"]) == 0
+        assert "host-lane git view (RG-21)" not in capsys.readouterr().out
+
+
 def _has_module(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
 

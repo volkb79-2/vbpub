@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 25  # rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 26  # rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import ast
@@ -1078,6 +1078,35 @@ def _pointer_defects(text: str, file_path: Path, root: Path, where: str,
     return defects, checked
 
 
+def linked_worktree_gitdir(worktree: Path) -> Path | None:
+    """RG-21: the absolute gitdir a LINKED worktree's `.git` FILE points at,
+    when that gitdir lies OUTSIDE the worktree. None otherwise.
+
+    None covers both benign shapes deliberately — a plain checkout (`.git` is
+    a directory) and a gitfile whose target is inside the tree — because the
+    condition this feeds is a warning about git plumbing failing inside a
+    container that mounted only the judged tree, and neither of those two can
+    produce it. Folding "unreadable gitfile" into None is the one lossy case:
+    a `.git` we cannot read is a bigger problem that the git calls
+    surrounding this will report first, loudly.
+    """
+    gitfile = worktree / ".git"
+    if not gitfile.is_file():
+        return None
+    try:
+        text = gitfile.read_text()
+    except OSError:  # pragma: no cover - is_file() just succeeded
+        return None
+    for line in text.splitlines():
+        if not line.startswith("gitdir:"):
+            continue
+        gitdir = Path(line.split(":", 1)[1].strip())
+        if not gitdir.is_absolute():
+            gitdir = (worktree / gitdir).resolve()
+        return None if gitdir.is_relative_to(worktree) else gitdir
+    return None
+
+
 def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                cfg_path: Path, central_path: Path | None) -> int:
     """RG-9: recompose the implemented preflights into one first-contact
@@ -1143,6 +1172,33 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
     try:
         repo, worktree, _ = resolve_repo_and_worktree(project_dir, None)
         record("OK", "git", f"worktree {worktree}")
+        # RG-21: a LINKED worktree's `.git` is a FILE naming an absolute
+        # gitdir under the MAIN checkout. run-gate's own container lanes are
+        # unaffected — R-23 dual-mounts the REPO root, so that gitdir is
+        # inside the mount. The breakage is one layer down: a HOST lane whose
+        # argv delegates to a harness that bind-mounts only its own
+        # $repo_root (= the worktree) by host path, where every in-container
+        # git plumbing call then dies with `not a git repository: <gitdir>`
+        # (srdm's covergate, the evidence case). Only host lanes can reach
+        # that harness, so the check is scoped to projects that declare one —
+        # a warning that fires where it cannot bite gets switched off.
+        if "<host>" in env_cache:
+            gitdir = linked_worktree_gitdir(worktree)
+            if gitdir is None:
+                record("OK", "host-lane git view (RG-21)",
+                       f"{worktree} resolves git in-tree — a harness that "
+                       f"bind-mounts only the judged tree still sees a "
+                       f"complete .git")
+            else:
+                record("WARN", "host-lane git view (RG-21)",
+                       f"{worktree} is a LINKED worktree; its gitdir is "
+                       f"{gitdir}, OUTSIDE the tree. run-gate's own container "
+                       f"lanes are fine (they dual-mount the repo root), but a "
+                       f"host lane delegating to a harness that bind-mounts "
+                       f"only the judged tree by host path will fail with "
+                       f"'not a git repository: {gitdir}'. Mount the common "
+                       f"gitdir into that container too, or pass it as "
+                       f"GIT_DIR, or run the lane from the main checkout")
         try:
             phys = physical_path(repo)
             if phys != repo:

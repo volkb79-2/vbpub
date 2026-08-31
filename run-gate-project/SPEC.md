@@ -410,6 +410,25 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   preflight that tracebacks on exactly the machine that needs it defeats
   its purpose (git/docker absent → FAIL lines, never a traceback).
 
+- `R-30a` **Linked-worktree host-lane warning (RG-21).** When the project
+  declares at least one `environment = "host"` lane AND the judged tree is a
+  LINKED worktree whose gitdir lies outside it (`.git` is a FILE naming an
+  absolute path under the main checkout), `doctor` emits ONE `[WARN]` naming
+  the worktree, the gitdir, the exact symptom (`not a git repository:
+  <gitdir>`) and three remedies (mount the common gitdir into the harness's
+  container, pass it as `GIT_DIR`, or run the lane from the main checkout).
+  It is a warning, never a refusal, and it does not change doctor's exit
+  code: run-gate itself is not defective here — `{worktree}` forwarding and
+  exit-status passthrough are correct. The defect is one layer DOWN, in a
+  harness that bind-mounts only its own `$repo_root` (= the judged tree) by
+  host path, where the gitdir then falls outside the mount and every
+  in-container git plumbing call fails. run-gate's OWN container lanes are
+  unaffected, because `R-23` dual-mounts the REPO root; the check is
+  therefore scoped to host lanes, the only kind that can reach such a
+  harness — a warning that fires where it cannot bite gets switched off, and
+  then it protects nothing. With a host lane declared and a plain checkout,
+  the same check records `[OK]`, so a reader can tell it ran.
+
 - `R-31` **Wheel as second artifact (RG-14):** the script stays PRIMARY —
   fresh clone, zero installs, `./run-gate.py --list` unchanged is the design
   win and must never regress. A wheel wraps the SAME bytes for
