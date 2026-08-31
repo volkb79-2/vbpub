@@ -1516,6 +1516,7 @@ def apply_lease(
     extend: str | None = None,
     perpetual: bool = False,
     release: bool = False,
+    now: datetime | None = None,
 ) -> WorktreeInstanceRecord:
     """`ciu worktree lease LOGICAL (--extend D | --perpetual | --release)`.
 
@@ -1524,6 +1525,13 @@ def apply_lease(
     up. Extending or releasing a claim on a stopped instance is exactly as
     meaningful as on a running one — the lease describes ownership of the
     instance's resources, not their current run state.
+
+    *now* mirrors `acquire_lease`/`make_lease_perpetual`'s own optional
+    override (CIU-76): absent, both fall back to real wall-clock time as
+    always; a caller (a test freezing a fixture clock) can pin the instant
+    the acquire/renew/perpetual math runs against, rather than letting it
+    silently race the real clock. `--release` ignores it — releasing a lease
+    is not time-based.
     """
     repo_root = Path(repo_root).resolve()
     if sum((extend is not None, perpetual, release)) != 1:
@@ -1546,10 +1554,11 @@ def apply_lease(
         instance_id = record.instance_id or _runtime_identity(record.ciu_root)[0]
         holder = lease_holder(instance_id)
         updated = (
-            make_lease_perpetual(record, holder=holder)
+            make_lease_perpetual(record, holder=holder, now=now)
             if perpetual
             else acquire_lease(
-                record, ttl_hours=_lease_duration_hours(str(extend)), holder=holder
+                record, ttl_hours=_lease_duration_hours(str(extend)),
+                holder=holder, now=now,
             )
         )
     _write_instance_record(updated)
