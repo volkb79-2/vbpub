@@ -295,3 +295,154 @@ orchestrator to route:
    patch used only to obtain a genuine gate verdict; net zero diff against
    `main`.
 4. (this REPORT file) — committed separately, hash in the branch log.
+
+---
+
+## Addendum — CIU-76 folded in, gate re-run (2026-08-31)
+
+Per coordinator directive: CIU-76 (`apply_lease` has no `now:` override) was
+folded into this package rather than left for a fresh agent. The coordinator
+also fixed the stale `pins.assay.version` this package's original report
+flagged (`b8102bc2`, `2.2.0 -> 2.3.0`), unblocking `./run-gate.py ciu`
+directly — no more temporary-commit-and-revert workaround needed for this
+run.
+
+### Rebase
+
+Branch predated `b8102bc2` and `858766d1` (both confirmed present on
+`main` via `git log main`). Rebased with `git rebase -i main`, dropping this
+package's own now-redundant temporary pin-patch-and-revert pair (git itself
+reported it "skipped previously applied" — patch-id-equivalent to the
+now-upstream `b8102bc2`). `git diff main..HEAD -- run-gate.toml` confirmed
+empty post-rebase. New hashes for the CIU-69 half: `e68ee748` (fix+test),
+`3c842406` (LOG), `a0947dc2` (REPORT).
+
+### CIU-76 fix
+
+`apply_lease` (`src/ciu/worktree.py:1512`) gained `now: datetime | None =
+None`, threaded to its `acquire_lease(...)`/`make_lease_perpetual(...)`
+calls. Fixed
+`test_re_expiring_after_an_extend_becomes_lease_expired_again`
+(`tests/tests/test_ciu_worktree_reap.py`) to pass `now=NOW` — confirmed
+deterministic by monkeypatching `worktree._utc_now` to raise and re-running
+the test: it still passed, proving the real clock is never consulted once
+`now=` is threaded through.
+
+Grepped all 18 `apply_lease(` call sites under `tests/`. Per-test reasoning
+for the 17 NOT changed (all in `TestApplyLease`/`TestLeaseCli`/
+`TestTeardownClearsTheLease` in `test_ciu_worktree_lease.py`, plus 3 siblings
+in `TestLeaseLifecycleChangesTheNextSurvey`):
+
+| Call site | Why it's not the CIU-76 bug shape |
+|---|---|
+| `test_ciu_worktree_lease.py`'s 14 sites | None reference the file's own frozen `NOW`/`LATER` fixtures at all — every assertion is either mode/None checks (`.mode == "held"`, `.expires_at_utc is not None`) or a RELATIVE comparison between two real-time `apply_lease` calls in the same test (`second.lease.acquired_at_utc == first...`) — self-consistent real-time-vs-real-time, never mixed with a frozen anchor |
+| `test_extend_moves_it_back_to_owned` | `apply_lease(extend="48h")` (real time) vs `survey(repo)`, whose local helper DEFAULTS `now=NOW` (frozen, 2026-08-25). Condition for "owned" (`real_now + 48h > NOW`) held the day this was written and — because `NOW` is now permanently in the past relative to any future real clock — holds forever going forward; not fragile, just a coincidence that only strengthens with time, unlike CIU-76's actual bug |
+| `test_perpetual_moves_it_back_to_owned_forever` | `perpetual=True` has no expiry at all; category is unconditional on `now` |
+| `test_release_is_owned_never_lease_expired` | `release=True` sets `lease: None`; category is unconditional on `now` |
+
+Only `test_re_expiring_after_an_extend_becomes_lease_expired_again` mixed a
+real-time `apply_lease` extend against the frozen `NOW + 2 days` checkpoint
+in a way where the real clock's forward march broke the assertion (reproduced
+failing on `main` at `b8102bc2` before this fix) — the one actually fixed.
+
+`docs/SPEC.md` S16.9 checked: no `apply_lease` signature/determinism
+documentation exists to update — its prose is the `ciu worktree lease` CLI
+verb's user-observable contract (unchanged: real wall-clock by default), not
+the internal function signature.
+
+### Local full-suite evidence (before the re-run gate)
+
+```
+$ PYTHONPATH=src python3 -m pytest tests -q --dist loadfile -n auto
+...
+3262 passed, 8 warnings in 97.10s (0:01:37)
+```
+
+Zero failures locally (no `PYTHONDONTWRITEBYTECODE=1` override in this
+invocation — see below for why that env var matters for the gate's own
+result).
+
+### The re-run gate verdict (verbatim), combined CIU-69 + CIU-76 diff
+
+```
+$ python3 run-gate.py ciu --worktree /workspaces/vbpub/.worktrees/ciu-P36-worktree-table-keys
+...
+assay-2.3.0.pyz: OK
+ciu: FAIL/COMMAND_FAILED (exit 1)
+  commit: 5d0902d8a8490ff344968f401aeea14b8b72a287
+  argv: /opt/tester-venv/bin/python run-ciu-tests.py
+run-gate: lane 'ciu' failed with exit 1; full container logs preserved at /tmp/run-gate/run-gate-vbpub-ciu-3742777-1788136805.log
+run-gate: verdict artifact: /workspaces/vbpub/.worktrees/ciu-P36-worktree-table-keys/ciu/.assay/verdict-ciu.json
+run-gate: lane 'ciu' exit 1
+GATE_WRAPPER_EXIT=1
+```
+
+(`GATE_WRAPPER_EXIT=1` read from the wrapper's own `echo "...$?"` marker, a
+separate step from the gate's own stdout — not summarized from a pipe tail.)
+
+**Verdict artifact, the two claims:**
+
+```json
+{"reason_code": "COMMAND_FAILED", "rigor": "R0", "status": "FAIL", "verified_by_assay": true}
+{"rigor": "R1", "status": "PASS", "verified_by_assay": true}
+```
+
+`outcome: "FAIL"` — **still an honest FAIL, not summarized as green.** R1
+(coverage, whole-suite 100% line+branch AND Assay's changed-line floor)
+**PASSED**. `src/ciu/worktree.py`: `1702 0 696 0 100%`.
+
+**The pin blocker from the original report is gone.** The gate now runs to
+completion on the first try, no workaround needed. **The CIU-76 test is now
+green** (confirmed by the failure count dropping from 3 to 2 — the missing
+one is exactly `test_re_expiring_after_an_extend_becomes_lease_expired_again`):
+
+```
+FAILED tests/tests/test_ciu_deploy_actions.py::test_check_suppresses_bytecode_writes_while_importing_hooks
+FAILED tests/tests/test_ciu_deploy_actions.py::test_check_restores_the_bytecode_flag_after_a_failed_import
+2 failed, 3260 passed in 44.42s
+```
+
+### What's still failing, and why it's still out of scope
+
+The 2 remaining failures are the SAME pre-existing, unrelated defect already
+identified and reproduced on pristine `main` in the original (pre-CIU-76)
+report: both `test_ciu_deploy_actions.py` tests assert `sys.dont_write_bytecode
+is False` as their "restored to ambient" check, but `assay.toml`'s
+`[lanes.ciu]` declares `env = { PYTHONDONTWRITEBYTECODE = "1" }` for the
+gate's own container, which sets `sys.dont_write_bytecode = True` at
+interpreter startup — the assertion can never pass inside the gate's own
+declared environment as currently written. Neither test is in a file this
+package touches (`src/ciu/worktree.py`, `tests/tests/test_ciu_worktree_lease.py`,
+`tests/tests/test_ciu_worktree_reap.py`), and this was already flagged (not
+CIU-76 — the coordinator filed CIU-76/CIU-77 from this package's original
+report, and CIU-76 covered only the `apply_lease` gap; the bytecode-flag
+finding was not folded into CIU-76's text and was not separately filed as
+far as I can tell from `KNOWN_ISSUES_TODO_BACKLOG.md`). **Flagging again
+here for the coordinator's attention** — this is the one remaining item
+between this branch and a genuinely green gate, and it is unrelated to both
+CIU-69 and CIU-76.
+
+## Net effect on `main` (final)
+
+```
+$ git diff main..HEAD --stat
+(captured just before this addendum's own commit; the REPORT line count
+below therefore excludes this closing section itself)
+ ciu/nyxloom-trove/reports/ciu-P36-LOG.md    | 175 ++++++++++++++
+ ciu/nyxloom-trove/reports/ciu-P36-REPORT.md | 297 ++++++++++++++++++++++++++
+ ciu/src/ciu/worktree.py                     |  23 ++-
+ ciu/tests/tests/test_ciu_worktree_lease.py  |  32 ++-
+ ciu/tests/tests/test_ciu_worktree_reap.py   |   9 +-
+ 5 files changed, 529 insertions(+), 7 deletions(-)
+```
+
+`run-gate.toml` remains byte-identical to `main`.
+
+## Commits (full sequence, post-rebase)
+
+1. `e68ee748` — `fix(ciu): WORKTREE_TABLE_KEYS gains exec_targets (CIU-69)`
+2. `3c842406` — `docs(ciu): ciu-P36 LOG -- CIU-69 WORKTREE_TABLE_KEYS fix record`
+3. `a0947dc2` — `docs(ciu): ciu-P36 REPORT -- CIU-69 verbatim gate verdict + evidence`
+4. `d69d7c3d` — `fix(ciu): apply_lease gains now: override, fixes clock-coincidence test (CIU-76)`
+5. `5d0902d8` — `docs(ciu): ciu-P36 LOG addendum -- CIU-76 fold-in + rebase record`
+6. (this REPORT addendum) — committed separately, final hash in the branch log.
