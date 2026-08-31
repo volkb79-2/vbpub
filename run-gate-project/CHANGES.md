@@ -201,6 +201,19 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [23.2.1] - 2026-08-31
+<!-- cmru: generated -->
+<!-- cmru: source-end=fe09688572dc7d744ba81b6b471eb4908599ffa6 -->
+
+### Fixed
+- fix(run-gate): RG-30 -- doctor/--check-env honor --worktree (rev 31) (89ca96ba)
+
+### Changed
+- backlog(run-gate): file RG-31 -- assay_toolchain_findings bypasses RG-30's validated worktree resolution (da535655)
+
+### Documentation
+- docs(run-gate): RG-30 FIXED + run-gate-P04 LOG/REPORT (60512539)
+
 ## [23.2.0] - 2026-08-31
 <!-- cmru: generated -->
 <!-- cmru: source-end=7c47a70710eac58697641d9ee2444a1ea0db8af3 -->
