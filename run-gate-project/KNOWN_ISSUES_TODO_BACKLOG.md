@@ -45,7 +45,7 @@ SPEC §9.
 | RG-25 | `doctor`/`--check-env` cannot see that an assay lane's language needs a toolchain (node, go helper) in its environment — consume `assay lanes --json` (assay B044) for a per-lane fitness check; backport of ciu CIU-72 (b) | Enhancement | FIXED 2026-08-31 (rev 27) |
 | RG-26 | no `--base REF` passthrough to `assay run --request-base` — assay B019 (≥ 3.0.0) unusable from the gate; delegating lanes DERIVED from `assay lanes --json`, no new lane key; backport of ciu CIU-72 (c), absorbs v8 proposal N12 | Major | FIXED 2026-08-31 (rev 28) |
 | RG-28 | `run_host_lane` raised `KeyError('argv')` for a `kind = "assay"` lane on the built-in `host` environment — a config the validator ACCEPTS, so a traceback for a legal declaration (R-04) | Minor | FIXED 2026-08-31 (rev 28) |
-| RG-29 | `cmru/run-gate.toml [lanes.assay]` pins a sidecar (`tools/assay/assay-2.2.0.pyz.sha256`) that no longer exists — cmru vendored 2.3.0 — which makes run-gate-project's OWN gate lane red via `validate-pointers` | Major | OPEN 2026-08-31 — cmru-side config, not run-gate.py |
+| RG-29 | `cmru/run-gate.toml [lanes.assay]` pins a sidecar (`tools/assay/assay-2.2.0.pyz.sha256`) that no longer exists — cmru vendored 2.3.0 — which makes run-gate-project's OWN gate lane red via `validate-pointers` | Major | FIXED 2026-08-31 — cmru-side config (`cmru/run-gate.toml`), all four filename sites moved to 2.3.0 |
 | RG-27 | run-gate has no persisted per-lane-per-commit invocation history and no query verb — a controller deciding sync-vs-async/defer rigor has no data; retriaged from ciu CIU-55 (2026-08-25) to run-gate, which is the layer with direct invocation visibility in the current (pre-v8) architecture | Enhancement | OPEN 2026-08-31 |
 
 ---
@@ -1669,8 +1669,14 @@ assay lane end to end with docker never invoked.
 ## RG-29 — `cmru/run-gate.toml` pins a vanished assay sidecar, which turns run-gate-project's OWN gate red
 
 **Filed:** 2026-08-31, from the run-gate-P02 bundle (RG-21/23/24/25/26). Not
-fixed here: the defect is in `cmru/run-gate.toml`, outside this project's
-scope, and the package's own scope statement forbids touching it.
+fixed by that package: the defect is in `cmru/run-gate.toml`, outside that
+project's scope, and its own scope statement forbade touching it.
+
+**Fixed:** 2026-08-31, directly on `main` by the controller (same pattern as
+the earlier `ciu/run-gate.toml` assay-pin fix). All four sites named below
+moved from `2.2.0` to `2.3.0`; `sha256sum -c` verified against the vendored
+`cmru/tools/assay/assay-2.3.0.pyz` before committing;
+`./run-gate.py validate-pointers ../cmru/cmru.toml` confirmed `OK`.
 
 ### The bug
 
@@ -1722,8 +1728,8 @@ Alternatively vendor the 2.2.0 pair back. Then re-run
 
 ### Acceptance
 
-- [ ] `./run-gate.py validate-pointers ../cmru/cmru.toml` exits 0;
-- [ ] `grep -n 'assay-2\.2\.0' cmru/run-gate.toml` returns nothing — pin AND
+- [x] `./run-gate.py validate-pointers ../cmru/cmru.toml` exits 0;
+- [x] `grep -n 'assay-2\.2\.0' cmru/run-gate.toml` returns nothing — pin AND
       `assay_command` both moved;
-- [ ] `run-gate-project`'s `selftest` lane is green end to end, including
+- [x] `run-gate-project`'s `selftest` lane is green end to end, including
       the diff-coverage step that currently never executes.
