@@ -24,6 +24,56 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   recomposition".
 
 ### Added
+- **RG-27 — lane invocation history + the `history` query verb (rev 30).**
+  Lane cost was informal: an operator noticed a lane "took a while" and the
+  observation died with the terminal scrollback, so a provisional-merge /
+  defer-heavy-rigor policy could only ever be a guess (dstdns declined to
+  adopt one blind on 2026-08-25, D-204). run-gate is the layer that actually
+  starts each lane, so it now records what it already sees. Two slots per
+  lane, with deliberately different contracts: **`latest`** holds the most
+  recent invocation *whatever happened to it* (pass, fail, tool error,
+  Ctrl-C, dirty tree, mid-rebase) for diagnostics, and **`history`** is a
+  curated trend series keyed by (lane, commit), bounded to the last
+  `[history] keep` commits (default 10). A run joins history only if it
+  completed with its own exit status, on a clean tree, with no git operation
+  in flight, at a resolvable commit — every exclusion records its reason,
+  and "could not determine" excludes rather than assuming clean. A
+  **completed fail DOES join** (its duration is real cost) but is stored with
+  its outcome and reported as a SPLIT statistic, because a red lane
+  short-circuits; the headline statistic is the **median**, never the mean,
+  since one slow outlier reading as the lane's permanent cost is the exact
+  trap this entry named. Query it with `./run-gate.py history [LANE]
+  [--json]`. Storage is `<project>/.run-gate/history.json` **inside the
+  judged tree** — per (worktree × project), which is the concurrency answer:
+  parallel worktree gates address different files and never contend, while
+  two lanes of one project serialize on a sibling `.run-gate/history.lock`
+  (sibling because the store is replaced by rename) with a bounded wait —
+  telemetry must never hang a gate. The store MUST be git-ignored and that is
+  CHECKED, not documented: run-gate refuses to write an un-ignored store and
+  prints the remedy rather than dirtying the tree for the next lane's
+  clean-tree check. Recording is best-effort throughout — every failure is
+  one warning line and the lane's exit status is untouched. run-gate
+  measures; it decides no rigor/defer policy. SPEC `R-36` (+`R-01`/`R-06`/
+  `R-08` amendments); README "Environment mechanics"; CONSUMERS "What each
+  lane costs". Retriage of ciu **CIU-55** (superseded pointer there).
+
+  Round-2 review fixes folded in before merge: `history` honors `--worktree`
+  on the READ side too (it previously reported the invoking checkout's store
+  no matter which tree was asked about — silently), and refuses an override
+  that names no git work tree rather than answering "no data"; flushing a
+  record is now at-most-once, so a Ctrl-C landing inside the telemetry write
+  surfaces as the KeyboardInterrupt instead of a `KeyError` traceback from
+  the second flush; and `--json`, which was accepted and ignored everywhere
+  but `history`, is now refused by name elsewhere (`--list --json` used to
+  hand a TSV to a caller asking for JSON).
+
+  > **BREAKING (load-time): a lane named `history`.** `history` is a CLI verb
+  > now, so it joins `doctor`/`validate-pointers` as a RESERVED lane name and
+  > `[lanes.history]` is refused when the config loads. No project in this
+  > estate declares one (all ten `run-gate.toml` files checked); a
+  > copied-script consumer repo that does must rename the lane — it was
+  > already unreachable, since the verb would have won — before taking rev 30.
+  > Migration is one line, and it fails loudly at load, never silently.
 - **RG-26 — `--base REF` passthrough to `assay run --request-base`
   (rev 28).** assay 3.0.0's `judge.base_source = "request"` (B019) had been
   unusable from every consumer: such a lane refuses without
