@@ -147,7 +147,10 @@ def lint_graph(
     """Lint the provides/requires graph across all stacks.
 
     Returns a list of error messages for:
-    - refs that nobody provides (but some stack requires)
+    - refs that nobody provides (but some stack requires) -- except a
+      `stack:<path>:healthy|completed` ref, which is satisfied by the
+      referenced stack resolving via `_resolve_declared_stack_path`, not by
+      any `provides` declaration (CIU-63)
     - dependency cycles in the stack graph (via stack:X:healthy refs)
     """
     errors: list[str] = []
@@ -161,10 +164,26 @@ def lint_graph(
     # Check that every required ref is provided
     for stack_path, stack_info in stacks.items():
         for ref in stack_info.get("requires", []):
-            if ref not in all_provided:
-                errors.append(
-                    f"[ERROR] Stack '{stack_path}' requires '{ref}' but nobody provides it"
-                )
+            if ref in all_provided:
+                continue
+            # A `stack:<path>:healthy|completed` ref is never satisfied by a
+            # `provides` declaration -- the live probe (`_probe_stack`) never
+            # reads one, it resolves the referenced stack's own existence
+            # instead (docker-inspect on that stack's container). This static
+            # pass must recognize the ref the same way the cycle-detection
+            # pass below already does: match `_STACK_RE` and resolve the
+            # selector through `_resolve_declared_stack_path` against the
+            # known set of declared stack paths. A resolvable stack:* ref is
+            # therefore satisfied here WITHOUT requiring any stack to
+            # redundantly self-declare `provides = ["stack:X:..."]` (CIU-63)
+            # -- every other ref kind keeps today's exact provides-union
+            # check, unchanged.
+            m = _STACK_RE.match(ref)
+            if m and _resolve_declared_stack_path(m.group(1), stacks.keys()) is not None:
+                continue
+            errors.append(
+                f"[ERROR] Stack '{stack_path}' requires '{ref}' but nobody provides it"
+            )
 
     # Build stack-level dependency graph from stack:X:healthy|completed refs.
     # stack A depends on stack B if A requires stack:B:healthy|completed.

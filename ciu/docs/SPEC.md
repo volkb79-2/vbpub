@@ -1860,6 +1860,13 @@ for this package. `one_shot` itself is declaration + shape validation only
 in this package (`deploy_pkg.phases.service_one_shot`); it does not change
 the deploy loop's post-up wait behavior (see CONFIG.md for the key's shape).
 
+**No `provides` self-declaration needed (CIU-63, ciu-P39).** Unlike every
+other ref kind in the table above, a `stack:<name>:healthy`/`:completed` ref
+is never satisfied by a `provides` declaration — it is resolved purely by
+the referenced stack existing (see S13.3's static-lint note below for the
+exact resolution rule). A consumer authoring one of these refs does not need
+the referenced stack to also `provides = ["stack:X:..."]`.
+
 ### S13.3 — Preflight model (lint-vs-probe split)
 
 Two independent checks run at different times:
@@ -1869,6 +1876,23 @@ Two independent checks run at different times:
    is provided by some stack in the selection; no dependency cycle among
    `stack:<name>:healthy`/`:completed` references. This is a pure config
    check — no Docker or Vault I/O. Exit 2 on failure.
+
+   **`stack:<name>:healthy`/`:completed` refs need no `provides`
+   declaration (CIU-63, ciu-P39).** Every other ref kind is satisfied only
+   when some stack's `provides` array literally contains the string. A
+   `stack:*` ref is different: it is resolved by the LIVE probe
+   (`_probe_stack`, `docker inspect` against the referenced stack's own
+   container), which never reads any `provides` declaration — so the static
+   lint must not demand one either. `lint_graph` recognizes a `stack:*` ref
+   via `_STACK_RE` and treats it as satisfied when its selector resolves to
+   a real declared stack path via `_resolve_declared_stack_path` (the same
+   resolution the cycle-detection pass below already performs), with no
+   dependency on that stack's own `provides` array. A selector that does not
+   resolve to any declared stack still errors "but nobody provides it",
+   unchanged. Before this fix, a stack referencing `stack:X:healthy` had to
+   make X redundantly self-declare `provides = ["stack:X:healthy"]` purely
+   to satisfy this static string-matcher — a declaration nothing ever read
+   back.
 
    **Cycle detection resolves bare selectors to full stack paths (O5,
    ciu-P23).** `lint_graph`'s dependency graph is keyed by full repo-relative
