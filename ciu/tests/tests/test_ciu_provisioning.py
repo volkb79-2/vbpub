@@ -209,6 +209,103 @@ def test_lint_graph_passes_when_stacks_have_no_requires_provides():
 
 
 # ---------------------------------------------------------------------------
+# lint_graph — CIU-63: `stack:<path>:healthy|completed` refs are satisfied
+# by the referenced stack resolving via `_resolve_declared_stack_path`, not
+# by any `provides` declaration -- `_probe_stack` (the live probe) never
+# reads one, and the cycle-detection pass below already resolves refs this
+# same way, so the "every required ref is provided" pass must not demand a
+# redundant self-declaration for this ref kind alone.
+# ---------------------------------------------------------------------------
+
+
+def test_lint_graph_stack_ref_satisfied_without_self_declared_provides():
+    # infra/vault is a REAL declared stack but deliberately does NOT
+    # self-declare provides = ["stack:infra/vault:healthy"] -- before the
+    # CIU-63 fix this required entry would have errored "but nobody provides
+    # it" even though _probe_stack would satisfy it live at deploy time.
+    stacks = {
+        "infra/vault": {
+            "requires": [],
+            "provides": [],
+        },
+        "apps/backend": {
+            "requires": ["stack:infra/vault:healthy"],
+            "provides": [],
+        },
+    }
+    errors = lint_graph(stacks)
+    assert errors == []
+
+
+def test_lint_graph_stack_ref_completed_satisfied_without_self_declared_provides():
+    # Same contract, :completed terminal (one-shot stacks, V8-PREP-5).
+    stacks = {
+        "infra/db-init": {
+            "requires": [],
+            "provides": [],
+        },
+        "apps/backend": {
+            "requires": ["stack:infra/db-init:completed"],
+            "provides": [],
+        },
+    }
+    errors = lint_graph(stacks)
+    assert errors == []
+
+
+def test_lint_graph_stack_ref_bare_selector_satisfied_without_self_declared_provides():
+    # The selector may also be a bare basename resolving to a full declared
+    # path (same resolution rule the cycle-detection pass already uses) --
+    # still satisfied with no self-declared provides.
+    stacks = {
+        "infra/vault": {
+            "requires": [],
+            "provides": [],
+        },
+        "apps/backend": {
+            "requires": ["stack:vault:healthy"],
+            "provides": [],
+        },
+    }
+    errors = lint_graph(stacks)
+    assert errors == []
+
+
+def test_lint_graph_stack_ref_to_bogus_stack_still_errors():
+    # Negative control (CIU-63): a stack:<path>:healthy ref that does NOT
+    # resolve to any real declared stack must still error, unchanged.
+    stacks = {
+        "apps/backend": {
+            "requires": ["stack:infra/does-not-exist:healthy"],
+            "provides": [],
+        },
+    }
+    errors = lint_graph(stacks)
+    assert len(errors) == 1
+    assert "stack:infra/does-not-exist:healthy" in errors[0]
+    assert "nobody provides it" in errors[0]
+
+
+def test_lint_graph_stack_ref_other_kinds_still_require_provides():
+    # Regression bar: every OTHER ref kind keeps today's exact
+    # provides-union check -- a real declared stack existing must NOT
+    # satisfy a non-stack ref that nobody provides.
+    stacks = {
+        "infra/pg": {
+            "requires": [],
+            "provides": [],
+        },
+    }
+    errors = lint_graph({**stacks, "apps/backend": {
+        "requires": ["pg:db/mydb"],
+        "provides": [],
+    }})
+    assert len(errors) == 1
+    assert "pg:db/mydb" in errors[0]
+    assert "nobody provides it" in errors[0]
+
+
+# ---------------------------------------------------------------------------
 # lint_graph — cycle detection
 # ---------------------------------------------------------------------------
 
@@ -350,6 +447,28 @@ def test_lint_graph_ambiguous_bare_selector_stays_unresolved_no_false_cycle():
     errors = lint_graph(stacks)
     cycle_errors = [e for e in errors if "cycle" in e.lower()]
     assert cycle_errors == []
+
+
+def test_lint_graph_ambiguous_bare_selector_with_no_provides_still_errors():
+    # CIU-63 review gap: the sibling test above short-circuits through the
+    # `ref in all_provided` fast path (infra/db-init self-declares
+    # provides=["stack:db-init:healthy"]), so it never actually reaches this
+    # fix's own resolver call. Here NEITHER stack provides anything at all --
+    # the ambiguous basename must still resolve to None (ciu-P39's fix must
+    # not guess at an ambiguous match any more than the pre-existing
+    # cycle-detection pass does), so the require is still unsatisfied.
+    stacks = {
+        "infra/db-init": {"requires": [], "provides": []},
+        "apps/db-init": {"requires": [], "provides": []},
+        "apps/consumer": {
+            "requires": ["stack:db-init:healthy"],
+            "provides": [],
+        },
+    }
+    errors = lint_graph(stacks)
+    assert len(errors) == 1
+    assert "stack:db-init:healthy" in errors[0]
+    assert "nobody provides it" in errors[0]
 
 
 def test_lint_graph_full_path_selector_still_works_unchanged():
