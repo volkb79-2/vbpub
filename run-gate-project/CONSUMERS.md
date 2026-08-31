@@ -272,6 +272,69 @@ and documents the language fact in prose instead; a language run-gate has no
 fact for is reported with an explicit caveat on the line rather than being
 treated as "nothing needed".
 
+### Lanes that take their comparison base from the gate (RG-26)
+
+assay ≥ 3.0.0 lets a changed-line lane omit `judge.base` and declare
+`judge.base_source = "request"` instead — the PR-scoped shape, where the
+orchestrator owns which branch point is being judged. Pass it with `--base`:
+
+```toml
+# assay.toml — the judgment half owns the fact
+[lanes.p129_enumeration_cursor.judge]
+mode = "changed_lines"
+base_source = "request"        # the gate supplies the base; assay never guesses
+```
+
+```toml
+# run-gate.toml — the orchestration half restates NOTHING
+[lanes.cursor]
+kind = "assay"
+environment = "tester-unified"
+assay_lane = "p129_enumeration_cursor"
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-3.2.0.pyz"]
+```
+
+```bash
+./run-gate.py cursor --base "$(git merge-base HEAD origin/main)"
+# run-gate: comparison base 4c6eb2b6… (from --base) → --request-base
+```
+
+```bash
+./run-gate.py cursor          # no --base: the judged tree's own upstream
+# run-gate: comparison base 4c6eb2b6… (from merge-base HEAD @{upstream}) → --request-base
+```
+
+There is **no `run-gate.toml` key** for this — run-gate DERIVES it by asking
+the judge (`assay lanes --json`), so the fact has exactly one spelling. What
+that costs you: an assay lane invocation now issues one short read-only
+inventory probe in its environment before the judged run.
+
+Refusals, all exit 2 and all naming the lane:
+
+| situation | what happens |
+|---|---|
+| delegating lane, no `--base`, tree has no upstream | `lane 'cursor' delegates its comparison base; pass --base REF (worktree has no upstream)` — a guessed base is not a base |
+| `--base` on a lane whose `base_source` is not `"request"` | refused, naming the value assay declared (assay would refuse it anyway; this refuses earlier and clearer) |
+| `--base` on a command lane with no `{base}` token | refused — the ref could only be silently dropped |
+| `--base` with a judge too old to answer (`assay lanes --json` missing) | refused, naming assay **3.2.0** (B044) as the version that carries the inventory |
+| no `--base`, judge too old | **nothing changes** — the old judge keeps working exactly as before |
+
+**Conjunction lanes propagate it** the same way they propagate `--worktree`
+(RG-1): a token in the lane's own argv.
+
+```toml
+[lanes.gate]
+kind = "command"
+environment = "host"
+argv = ["bash", "-c",
+        "./run-gate.py --worktree {worktree} --base {base} cursor && \
+         ./run-gate.py --worktree {worktree} unit"]
+```
+
+A lane carrying `{base}` resolves its ref by the same rules above, so
+`./run-gate.py gate` on a tree with no upstream refuses instead of
+substituting an empty string.
+
 ### Worked example — run-gate × assay, end to end
 
 The halves are documented separately (this file owns orchestration;

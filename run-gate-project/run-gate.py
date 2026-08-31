@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 27  # rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 28  # rev 28: RG-26 `--base REF` reaches a delegating assay lane as `--request-base` (assay B019 usable from the gate at last) — delegation DERIVED from `assay lanes --json`, no new run-gate.toml key; conjunction lanes propagate it through a `{base}` token; a non-delegating lane refuses it by name (R-35). Also RG-28: an assay lane on the built-in host environment no longer raises KeyError('argv') (R-19); rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import ast
@@ -619,8 +619,14 @@ def check_clean_tree(worktree: Path) -> None:
 # command assembly + run
 # ---------------------------------------------------------------------------
 
-def substitute_worktree(argv: list[str], worktree: Path) -> list[str]:
-    return [a.replace("{worktree}", str(worktree)) for a in argv]
+def substitute_worktree(argv: list[str], worktree: Path,
+                        base: str | None = None) -> list[str]:
+    """`{worktree}` in every element (R-02), and — RG-26 — `{base}` when a
+    comparison base was resolved. `{base}` is left untouched when there is
+    none, which cannot happen on the run path: `plan_comparison_base()`
+    refuses a `{base}`-carrying lane it could not resolve a base for."""
+    out = [a.replace("{worktree}", str(worktree)) for a in argv]
+    return [a.replace("{base}", base) for a in out] if base else out
 
 
 def redact_forwarded_values(argv: list[str], keys: list[str]) -> list[str]:
@@ -1129,6 +1135,10 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
     THIS tool starts is placed on the host, never left at Docker's unconfined
     default next to production work (AGENTS "Host cgroup placement").
     """
+    if not env:
+        # The built-in 'host' environment IS this machine: there is no
+        # container to enter, and the same script answers the same question.
+        return ["bash", "-c", script]
     if env.get("mode") == "exec":
         name, _src, _remedy = resolve_container_name(env_name, env, repo,
                                                      worktree, env_source)
@@ -1139,9 +1149,10 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
 
 
 def _probe_slice(env: dict, env_source: str) -> str:
-    """Exec probes need no slice (docker exec can neither place nor cap);
-    ephemeral probes resolve it through the SAME policy as a lane (R-10)."""
-    if env.get("mode") == "exec":
+    """Host and exec probes need no slice (this machine's placement is not
+    ours to set; docker exec can neither place nor cap). Ephemeral probes
+    resolve it through the SAME policy as a lane (R-10)."""
+    if not env or env.get("mode") == "exec":
         return ""
     return resolve_slice(env, env_source)[0]
 
@@ -1301,6 +1312,111 @@ def assay_toolchain_findings(lanes: dict, project_dir: Path, cfg: dict,
         except GateError as exc:
             findings.append(("SKIP", topic, str(exc)))
     return findings
+
+
+BASE_TOKEN = "{base}"
+ASSAY_INVENTORY_FLOOR = "3.2.0"  # the assay that first ships `lanes --json` (B044)
+
+
+def derive_upstream_base(worktree: Path) -> str | None:
+    """`git merge-base HEAD @{upstream}` in the judged tree, or None when the
+    tree has no upstream. Deliberately NOT `git_out` — a missing upstream is
+    an ordinary state this function must report, not an infrastructure
+    failure it should abort on."""
+    proc = subprocess.run(["git", "merge-base", "HEAD", "@{upstream}"],
+                          cwd=str(worktree), capture_output=True, text=True)
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def resolve_comparison_base(lane_name: str, base_flag: str | None,
+                            worktree: Path) -> tuple[str, str]:
+    """(ref, where it came from) for a lane that NEEDS a base. `--base` wins;
+    otherwise the judged tree's own merge-base with its upstream. No
+    fallback to HEAD or to a default branch name: a changed-line judgment
+    whose base was guessed is not a changed-line judgment (assay's own rule,
+    B019/A-328), so absence refuses."""
+    if base_flag:
+        return base_flag, "--base"
+    ref = derive_upstream_base(worktree)
+    if ref is None:
+        fail(f"lane {lane_name!r} delegates its comparison base; pass "
+             f"--base REF (worktree has no upstream)")
+    return ref, "merge-base HEAD @{upstream}"
+
+
+def assay_inventory_entry(lane: dict, env: dict, env_name: str, repo: Path,
+                          worktree: Path, env_source: str, project_dir: Path
+                          ) -> tuple[dict | None, str | None]:
+    """One lane's entry from `assay lanes --json`, or (None, why not)."""
+    docker = shutil.which("docker")
+    if env and not docker:
+        return None, "docker is not on PATH, so the environment cannot be asked"
+    doc, why = assay_inventory(docker, lane, env, env_name, repo, worktree,
+                               env_source, project_dir)
+    if doc is None:
+        return None, why
+    entry = next((e for e in doc.get("lanes", [])
+                  if e.get("name") == lane["assay_lane"]), None)
+    if entry is None:
+        return None, (f"assay lane {lane['assay_lane']!r} is not declared in "
+                      f"assay.toml")
+    return entry, None
+
+
+def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
+                         env: dict, env_name: str, repo: Path, worktree: Path,
+                         env_source: str, project_dir: Path
+                         ) -> tuple[str | None, str]:
+    """RG-26: (ref to hand this lane, where it came from) or (None, "").
+
+    assay 3.0.0 shipped `judge.base_source = "request"` (B019): a
+    changed-line lane that omits `judge.base` and takes the comparison base
+    from the gate. Such a lane invoked WITHOUT `--request-base` refuses by
+    design, so the feature was unusable from run-gate at all.
+
+    The delegation fact is **DERIVED** from `assay lanes --json` (RG-25's
+    shared probe), never restated as a `run-gate.toml` key: `assay.toml`
+    already owns it, and a second spelling of an owned fact is the drift
+    machine this project exists to avoid.
+
+    A conjunction (command) lane declares propagation the way RG-1 made it
+    declare `--worktree`: a `{base}` token in its argv, substituted into
+    every sub-invocation. Every refusal below is exit 2 and names the lane.
+    """
+    if lane["kind"] == "command":
+        if any(BASE_TOKEN in element for element in lane["argv"]):
+            return resolve_comparison_base(lane_name, base_flag, worktree)
+        if base_flag:
+            fail(f"--base {base_flag!r} was given but lane {lane_name!r} does "
+                 f"not delegate a comparison base: it is a command lane whose "
+                 f"argv carries no {BASE_TOKEN} token, so the ref could only "
+                 f"be silently dropped. Write '--base {BASE_TOKEN}' into a "
+                 f"conjunction lane's sub-invocations, or drop the flag")
+        return None, ""
+    entry, why = assay_inventory_entry(lane, env, env_name, repo, worktree,
+                                       env_source, project_dir)
+    if entry is None:
+        if base_flag:
+            fail(f"--base {base_flag!r} was given but run-gate cannot tell "
+                 f"whether lane {lane_name!r} delegates its comparison base: "
+                 f"{why}. The lane inventory arrived in assay "
+                 f"{ASSAY_INVENTORY_FLOOR} (B044) — upgrade the pinned judge, "
+                 f"or drop --base")
+        # Without --base nothing changes: an older judge keeps working exactly
+        # as it did, and assay refuses at run time if the lane needed one.
+        return None, ""
+    if entry.get("base_source") != "request":
+        if base_flag:
+            fail(f"--base {base_flag!r} was given but assay lane "
+                 f"{lane['assay_lane']!r} (run-gate lane {lane_name!r}) does "
+                 f"not delegate its comparison base: it declares base_source "
+                 f"{entry.get('base_source')!r}, so assay would refuse "
+                 f"--request-base. Set judge.base_source = \"request\" in "
+                 f"assay.toml, or drop --base")
+        return None, ""
+    return resolve_comparison_base(lane_name, base_flag, worktree)
 
 
 def linked_worktree_gitdir(worktree: Path) -> Path | None:
@@ -1545,7 +1661,8 @@ def check_worktree_charset(worktree: Path) -> None:
          f"metacharacters are refused — relocate or rename the tree")
 
 
-def build_assay_inner(lane: dict, project_dir: Path) -> str:
+def build_assay_inner(lane: dict, project_dir: Path,
+                      request_base: str | None = None) -> str:
     verdict = f".assay/verdict-{lane['assay_lane']}.json"
     parts = ["set -euo pipefail",
              "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig",
@@ -1582,17 +1699,24 @@ def build_assay_inner(lane: dict, project_dir: Path) -> str:
                 f"{declared}, artifact reports: $reported — fix pins.{pin_name}.version "
                 f"or republish the artifact\" >&2; exit 2; fi; }}")
     parts.append("mkdir -p .assay")
-    parts.append(shlex.join([*lane["assay_command"], "run", lane["assay_lane"],
-                             "--file", "assay.toml", "--verdict-json", verdict]))
+    run_argv = [*lane["assay_command"], "run", lane["assay_lane"],
+                "--file", "assay.toml", "--verdict-json", verdict]
+    if request_base:
+        # RG-26: only ever appended for a lane the INVENTORY says delegates
+        # its base (base_source == "request"); assay refuses it on any other.
+        run_argv += ["--request-base", request_base]
+    parts.append(shlex.join(run_argv))
     return " && ".join(parts)
 
 
-def build_command_inner(lane: dict, worktree: Path) -> str:
+def build_command_inner(lane: dict, worktree: Path,
+                        base: str | None = None) -> str:
     return " && ".join(["set -euo pipefail",
                         "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig",
                         shlex.join(["git", "config", "--global", "--replace-all",
                                     "safe.directory", "*"]),
-                        shlex.join(substitute_worktree(lane["argv"], worktree))])
+                        shlex.join(substitute_worktree(lane["argv"], worktree,
+                                                       base))])
 
 
 def dual_mount_flags(repo: Path, phys: Path) -> list[str]:
@@ -1627,7 +1751,8 @@ def dual_mount_flags(repo: Path, phys: Path) -> list[str]:
 def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                        worktree: Path, env: dict, env_source: str,
                        slice_name: str, slice_src: str,
-                       dry_run: bool = False) -> int:
+                       dry_run: bool = False,
+                       request_base: str | None = None) -> int:
     # project_dir arrives already relocated into the judged worktree (RG-15):
     # pin verification, assay config, and artifacts all resolve there.
     docker = shutil.which("docker")
@@ -1650,8 +1775,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             fail(f"invalid ${EXTRA_MOUNT_ENV_VAR} entry {mount_spec!r}: empty path")
         mounts += ["-v", f"{source}:{target}"]
     verify_slice_loaded(slice_name)
-    inner = build_assay_inner(lane, project_dir) if lane["kind"] == "assay" \
-        else build_command_inner(lane, worktree)
+    inner = build_assay_inner(lane, project_dir, request_base) \
+        if lane["kind"] == "assay" \
+        else build_command_inner(lane, worktree, request_base)
     name = f"run-gate-{repo.name}-{lane_name}-{os.getpid()}-{int(time.time())}"
     argv = [docker, "run", "-d", "--name", name,
             "--cgroup-parent", slice_name,
@@ -1800,7 +1926,8 @@ def resolve_container_name(env_name: str, env: dict, repo: Path,
 def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                   worktree: Path, env: dict, env_source: str, env_name: str,
                   slice_name: str | None, slice_src: str,
-                  dry_run: bool = False) -> int:
+                  dry_run: bool = False,
+                  request_base: str | None = None) -> int:
     """Exec into a PERSISTENT runner (started externally by CIU).
 
     project_dir arrives already relocated into the judged worktree (RG-15).
@@ -1822,8 +1949,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     if name not in names:
         fail(f"persistent runner '{name}' ({name_src}) is not running — "
              f"{start_remedy}")
-    inner = build_assay_inner(lane, project_dir) if lane["kind"] == "assay" \
-        else build_command_inner(lane, worktree)
+    inner = build_assay_inner(lane, project_dir, request_base) \
+        if lane["kind"] == "assay" \
+        else build_command_inner(lane, worktree, request_base)
     argv = [docker, "exec", "--workdir", str(repo)]
     # Infrastructure variables are implicit; project data inputs must be
     # declared on the environment so every consumer gets the same contract.
@@ -1858,10 +1986,18 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
 
 
 def run_host_lane(lane: dict, lane_name: str, project_dir: Path, worktree: Path,
-                  dry_run: bool = False) -> int:
+                  dry_run: bool = False,
+                  request_base: str | None = None) -> int:
     # cwd is the project dir RELOCATED into the judged worktree (RG-15) — a
     # host lane must not quietly operate on the invocation checkout either.
-    argv = substitute_worktree(lane["argv"], worktree)
+    # RG-28 (found while implementing RG-26): `kind = "assay"` with
+    # `environment = "host"` is a config the validator ACCEPTS, and this
+    # runner used to index lane["argv"] unconditionally — a KeyError
+    # traceback for a legal config, which R-04 calls a defect. The assay
+    # inner is built exactly as it is for the two container runners.
+    argv = (["bash", "-c", build_assay_inner(lane, project_dir, request_base)]
+            if lane["kind"] == "assay"
+            else substitute_worktree(lane["argv"], worktree, request_base))
     print(f"run-gate: rev {__revision__} | lane {lane_name} | env built-in 'host'",
           flush=True)
     if lane.get("budget"):
@@ -1891,7 +2027,7 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
     lines = [
         f"{PROG} rev {__revision__} — the per-project gate entrypoint",
         "",
-        "usage: run-gate.py <lane> [--worktree PATH] [--allow-dirty]",
+        "usage: run-gate.py <lane> [--worktree PATH] [--allow-dirty] [--base REF]",
         "       run-gate.py --list   (machine-readable: name<TAB>kind<TAB>environment)",
         "       run-gate.py validate-pointers CONSUMER.toml [--root DIR]",
         "         (RG-2: certify every run-gate pointer in a consumer document —",
@@ -1935,6 +2071,13 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "  --allow-dirty     bypass THIS tool's clean-tree refusal; assay lanes",
         "                    still enforce assay's own clean-tree rule afterwards",
         "                    (two independent layers — the flag lifts only this one)",
+        "  --base REF        comparison base for a lane that DELEGATES it —",
+        "                    an assay lane whose inventory reports base_source",
+        "                    = \"request\" (appended as --request-base), or a",
+        "                    conjunction lane carrying a {base} token. Omitted:",
+        "                    the judged tree's merge-base with its upstream; no",
+        "                    upstream refuses (a guessed base is not a base). A",
+        "                    lane that does NOT delegate refuses --base by name",
         "  --dry-run         print the full execution plan (docker argv, mounts,",
         "                    slice, inner command) and exit 0 — every preflight",
         "                    is rehearsed, nothing runs",
@@ -1992,6 +2135,10 @@ def main(argv: list[str] | None = None) -> int:
                         "root {worktree} stands for (default: git toplevel of "
                         "the pointer file)")
     parser.add_argument("--worktree")
+    parser.add_argument("--base", help="RG-26: the comparison base for a lane "
+                        "that delegates it (assay judge.base_source = "
+                        "\"request\"), and for conjunction lanes carrying a "
+                        "{base} token")
     parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument("--dry-run", action="store_true",
                         help="print the full execution plan and exit 0 — "
@@ -2072,6 +2219,19 @@ def main(argv: list[str] | None = None) -> int:
                  f"{{worktree}} token, so sub-steps re-derive their own tree — "
                  f"declare '--worktree {{worktree}}' inside the lane argv "
                  f"(CONSUMERS 'Gate-conjunction lanes') or drop the flag")
+        # RG-26: resolve the comparison base BEFORE any admission or lock —
+        # a refusal here is a configuration error, and making a caller wait
+        # on a shared-infra lock to receive one is the fast-fail mistake
+        # RG-20's review already corrected once.
+        request_base, base_src = plan_comparison_base(
+            lane, args.lane, args.base, env, lane_environment_name(lane),
+            repo, worktree, env_source, eff_proj)
+        if request_base:
+            # R-05: mechanics are visible before execution, live AND dry.
+            target = ("--request-base" if lane["kind"] == "assay"
+                      else f"{BASE_TOKEN} in the lane argv")
+            print(f"run-gate: comparison base {request_base} (from {base_src}) "
+                  f"→ {target}", flush=True)
         if lane.get("clean_tree", True) and not args.allow_dirty:
             check_clean_tree(worktree)
         # RG-20 resource-aware admission: slice-memory accounting FIRST
@@ -2115,17 +2275,20 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if not env:  # built-in 'host'
                 code = run_host_lane(lane, args.lane, eff_proj, worktree,
-                                     dry_run=args.dry_run)
+                                     dry_run=args.dry_run,
+                                     request_base=request_base)
             elif env.get("mode") == "exec":
                 code = run_exec_lane(lane, args.lane, eff_proj, repo, worktree,
                                      env, env_source, lane_environment_name(lane),
                                      slice_name, slice_src,
-                                     dry_run=args.dry_run)
+                                     dry_run=args.dry_run,
+                                     request_base=request_base)
             else:
                 code = run_container_lane(lane, args.lane, eff_proj, repo,
                                           worktree, env, env_source,
                                           slice_name, slice_src,
-                                          dry_run=args.dry_run)
+                                          dry_run=args.dry_run,
+                                          request_base=request_base)
             print(f"run-gate: lane {args.lane!r} exit {code}", flush=True)
             return code
         finally:

@@ -74,9 +74,11 @@ visible at the project root, carrying ALL of the mechanics. Every consumer
 (nyxloomd, cmru, Buildkite, a CLI agent, a human) runs the same file:
 
 ```
-./run-gate.py <lane>        # run one gate lane
-./run-gate.py --list        # machine-readable lane inventory (for CI fan-out)
-./run-gate.py --help        # usage(), incl. the tool revision
+./run-gate.py <lane>          # run one gate lane
+./run-gate.py <lane> --base REF   # comparison base for a lane that delegates it
+./run-gate.py doctor          # preflight: docker, slices, git, images, assay toolchains
+./run-gate.py --list          # machine-readable lane inventory (for CI fan-out)
+./run-gate.py --help          # usage(), incl. the tool revision
 ```
 
 A defect fixed in the tool is fixed for every consumer at once, and the
@@ -122,6 +124,16 @@ environment = "tester-unified"
 No duplicate lane registry: `run-gate.toml` = where/how it runs,
 `assay.toml` = what counts as passing. Projects that cannot adopt assay
 declare `kind = "command"` lanes and get everything except assay's judgment.
+
+The split is kept honest by DERIVING assay facts instead of restating them.
+run-gate asks the judge (`assay lanes --json`, assay ≥ 3.2.0) two questions
+before it runs a lane: **what toolchain does this lane need from its
+environment** (RG-25 — reported by `doctor`/`--check-env` instead of
+surfacing as a mid-run `MISSING_EXTERNAL_TOOL`) and **does this lane take its
+comparison base from the gate** (RG-26 — `judge.base_source = "request"`,
+supplied with `./run-gate.py <lane> --base REF`). Neither becomes a
+`run-gate.toml` key: a second spelling of a fact `assay.toml` already owns is
+the drift this design exists to remove.
 
 ### Environment mechanics the tool must own (the hard-won list)
 

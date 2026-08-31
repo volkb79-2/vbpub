@@ -134,10 +134,21 @@ def fake_docker_executing(tmp_path, monkeypatch) -> Path:
         printf '%s\\037' "$@" >> "{log}"
         printf '\\n' >> "{log}"
         case "$1" in
-          run|exec)
+          run)
+            # `-d` is the JUDGED lane (detached, R-15) — recorded, not run.
+            # Anything else is an RG-25/RG-26 probe (`--rm`): really execute.
+            case "$2" in
+              -d) echo "fake-container-id" ;;
+              *) for last; do :; done; exec bash -c "$last" ;;
+            esac
+            ;;
+          exec)
             for last; do :; done
             exec bash -c "$last"
             ;;
+          logs) echo "FAKE-LOGS-LINE" ;;
+          wait) printf '0\\n' ;;
+          rm) : ;;
           ps) printf 'probe-runner\\n' ;;
         esac
         exit 0
@@ -170,6 +181,19 @@ def docker_execs(log: Path) -> list[list[str]]:
         if parts and parts[0] == "exec":
             out.append([p for p in parts if p != ""])
     return out
+
+
+def lane_runs(log: Path) -> list[list[str]]:
+    """Only the JUDGED container runs. Since RG-26 an assay lane also issues a
+    read-only `assay lanes --json` probe (`docker run --rm`), so index 0 of
+    docker_runs() is no longer necessarily the lane — the detached form is
+    what identifies it (R-15)."""
+    return [call for call in docker_runs(log) if "-d" in call]
+
+
+def lane_execs(log: Path) -> list[list[str]]:
+    """Only the JUDGED `docker exec`s — never the RG-26 inventory probe."""
+    return [call for call in docker_execs(log) if "lanes --json" not in call[-1]]
 
 
 def shim_dir_of(monkeypatch) -> Path:
@@ -693,7 +717,7 @@ class TestArgvConstruction:
                             lambda p, **k: Path("/phys/host/root"))
         proc = run_tool(proj, "ciu")
         assert proc.returncode == 0, proc.stderr
-        inner = docker_runs(log)[0][-1]
+        inner = lane_runs(log)[0][-1]
         # pin verified FROM the pin's own directory, bare filename (P07 trap)
         assert f"(cd {proj}/tools/assay && sha256sum -c assay-2.1.0.pyz.sha256)" \
             in inner
@@ -896,7 +920,7 @@ class TestEffectiveTreeExecution:
                             lambda p, **k: Path("/phys/host/root"))
         proc = run_tool(proj, "ciu", "--worktree", str(wt))
         assert proc.returncode == 0, proc.stderr
-        inner = docker_runs(log)[0][-1]
+        inner = lane_runs(log)[0][-1]
         # cd target AND pin verification relocated INTO the selected tree…
         assert f"cd {wt}/proj" in inner
         assert f"(cd {wt}/proj/tools/assay && " \
@@ -932,8 +956,9 @@ class TestEffectiveTreeExecution:
         shim.write_text(body)
         proc = run_tool(proj, "a", "--worktree", str(wt))
         assert proc.returncode == 0, proc.stderr
-        inner = docker_execs(log)[0][-1]
+        inner = lane_execs(log)[0][-1]
         assert f"cd {wt}/proj" in inner
+        assert "--verdict-json" in inner        # the JUDGED exec, not the probe
         assert str(proj) not in inner
 
     def test_host_lane_cwd_is_the_effective_project_dir(self, tmp_path):
@@ -1673,7 +1698,7 @@ class TestExecInnerWiring:
         proc = run_tool(proj, "a", "--worktree", str(repo))
         assert proc.returncode == 0, proc.stderr
         calls = log.read_text().splitlines()
-        exec_calls = docker_execs(log)
+        exec_calls = lane_execs(log)   # never the RG-26 inventory probe
         inner = exec_calls[0][-1]
         assert "--file assay.toml" in inner
         assert "GIT_CONFIG_GLOBAL" in inner
@@ -2980,7 +3005,10 @@ class TestDryRun:
         log = fake_docker(tmp_path, monkeypatch)
         proc = run_tool(proj, "suite", "--dry-run")
         assert proc.returncode == 0, proc.stderr
-        assert docker_runs(log) == []
+        # No JUDGED container. The RG-26 base-delegation probe DOES run (it is
+        # a preflight, and --dry-run rehearses every preflight; `assay lanes`
+        # runs nothing), so the assertion is about the detached lane form.
+        assert lane_runs(log) == []
         assert "verdict artifact:" not in proc.stdout  # nothing ran, none landed
         assert "--file assay.toml" in _docker_argv_line(proc.stdout)
 
@@ -3925,6 +3953,232 @@ class TestAssayToolchainFitness:
             body = src.split(f"\ndef {consumer}(")[1].split("\ndef ")[0]
             assert "build_env_probe_argv" in body
             assert '[docker, "' not in body
+
+
+class TestComparisonBasePassthrough:
+    """RG-26: assay 3.0.0 shipped `judge.base_source = "request"` (B019) — a
+    changed-line lane that omits `judge.base` and takes its comparison base
+    from the gate. Such a lane invoked WITHOUT `--request-base` refuses by
+    design, and run-gate had no `--base`, so a shipped judge feature was
+    unusable from every consumer. The delegation fact is DERIVED from
+    `assay lanes --json`, never restated as a run-gate.toml key.
+    """
+
+    def _project(self, tmp_path, monkeypatch, cfg=ASSAY_LANE_CFG):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, cfg)
+        (proj / "assay.toml").write_text("# judged by the fake judge\n")
+        commit_all(repo, "assay config")
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        monkeypatch.chdir(proj)
+        return repo, proj
+
+    @staticmethod
+    def _judge(monkeypatch, base_source):
+        install_fake_assay(monkeypatch, _fake_judge(
+            _inventory(base_source=base_source)))
+
+    def test_delegating_lane_with_base_carries_request_base(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit", "--base", "deadbeef"]) == 0
+        inner = lane_runs(log)[0][-1]
+        assert "--request-base deadbeef" in inner
+        out = capsys.readouterr().out
+        assert "comparison base deadbeef (from --base) → --request-base" in out
+
+    def test_delegating_lane_without_base_uses_the_upstream_merge_base(
+            self, tmp_path, monkeypatch, capsys):
+        repo, _proj = self._project(tmp_path, monkeypatch)
+        # give the judged tree a real upstream to derive from
+        git(repo, "branch", "-f", "origin-main", "HEAD")
+        git(repo, "branch", "--set-upstream-to=origin-main", "main")
+        expected = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                  capture_output=True, text=True).stdout.strip()
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit"]) == 0
+        inner = lane_runs(log)[0][-1]
+        assert f"--request-base {expected}" in inner
+        assert "merge-base HEAD @{upstream}" in capsys.readouterr().out
+
+    def test_delegating_lane_without_base_and_without_upstream_refuses(
+            self, tmp_path, monkeypatch, capsys):
+        """A guessed base is not a base — assay never falls back to HEAD, and
+        neither does the gate."""
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit"]) == 2
+        err = capsys.readouterr().err
+        assert "lane 'ui-unit' delegates its comparison base" in err
+        assert "pass --base REF (worktree has no upstream)" in err
+
+    def test_non_delegating_assay_lane_with_base_refuses(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "declared")
+        assert run_gate.main(["ui-unit", "--base", "deadbeef"]) == 2
+        err = capsys.readouterr().err
+        assert "does not delegate its comparison base" in err
+        assert "base_source 'declared'" in err
+        assert lane_runs(log) == []            # refused BEFORE the judged run
+
+    def test_non_delegating_assay_lane_without_base_is_unchanged(
+            self, tmp_path, monkeypatch):
+        self._project(tmp_path, monkeypatch)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, None)
+        assert run_gate.main(["ui-unit"]) == 0
+        assert "--request-base" not in lane_runs(log)[0][-1]
+
+    def test_judge_without_json_and_no_base_behaves_exactly_as_before(
+            self, tmp_path, monkeypatch):
+        self._project(tmp_path, monkeypatch)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, "#!/bin/sh\n"
+                           'echo "unrecognized arguments: --json" >&2\nexit 2\n')
+        assert run_gate.main(["ui-unit"]) == 0
+        assert "--request-base" not in lane_runs(log)[0][-1]
+
+    def test_judge_without_json_and_base_given_refuses_naming_the_floor(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, "#!/bin/sh\n"
+                           'echo "unrecognized arguments: --json" >&2\nexit 2\n')
+        assert run_gate.main(["ui-unit", "--base", "deadbeef"]) == 2
+        err = capsys.readouterr().err
+        assert "cannot tell whether lane 'ui-unit' delegates" in err
+        assert "assay 3.2.0 (B044)" in err
+        assert lane_runs(log) == []
+
+    def test_lane_absent_from_inventory_with_base_refuses(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(_inventory(name="other")))
+        assert run_gate.main(["ui-unit", "--base", "deadbeef"]) == 2
+        assert "is not declared in assay.toml" in capsys.readouterr().err
+
+    def test_conjunction_lane_propagates_base_to_every_sub_invocation(
+            self, tmp_path, monkeypatch, capfd):
+        """RG-1's rule: an override given to the gate reaches every sub-lane.
+        A conjunction declares it the same way it declares `--worktree` — a
+        token in its own argv."""
+        cfg = """\
+            schema_version = 1
+            [lanes.gate]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c",
+                    "echo ./run-gate.py --base {base} a && echo ./run-gate.py --base {base} b"]
+            clean_tree = false
+        """
+        self._project(tmp_path, monkeypatch, cfg)
+        assert run_gate.main(["gate", "--base", "deadbeef"]) == 0
+        out = capfd.readouterr().out   # fd-level: the sub-shell's own stdout
+        assert out.count("./run-gate.py --base deadbeef") == 2
+        # the token itself never survives into a sub-invocation
+        assert "./run-gate.py --base {base}" not in out
+        assert "comparison base deadbeef (from --base) → {base} in the lane argv" in out
+
+    def test_conjunction_lane_without_base_and_without_upstream_refuses(
+            self, tmp_path, monkeypatch, capsys):
+        cfg = """\
+            schema_version = 1
+            [lanes.gate]
+            kind = "command"
+            environment = "host"
+            argv = ["bash", "-c", "echo ./run-gate.py --base {base} a"]
+            clean_tree = false
+        """
+        self._project(tmp_path, monkeypatch, cfg)
+        assert run_gate.main(["gate"]) == 2
+        assert "delegates its comparison base" in capsys.readouterr().err
+
+    def test_command_lane_without_the_token_refuses_base(
+            self, tmp_path, monkeypatch, capsys):
+        """The ref could only be silently dropped — RG-1's own hazard class."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, SIMPLE_LANE)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        assert run_gate.main(["suite", "--base", "deadbeef"]) == 2
+        err = capsys.readouterr().err
+        assert "lane 'suite' does not delegate a comparison base" in err
+        assert "{base}" in err
+
+    def test_host_assay_lane_probes_locally_without_docker(
+            self, tmp_path, monkeypatch, capsys):
+        """A `host` environment IS this machine: the same probe script, no
+        container to enter."""
+        cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
+                                     'environment = "host"', 1)
+        self._project(tmp_path, monkeypatch, cfg)
+        log = fake_docker(tmp_path, monkeypatch)   # records, never executes
+        self._judge(monkeypatch, "request")
+        install_fake_assay(monkeypatch, "#!/bin/sh\nexit 0\n", name="fake-shell")
+        assert run_gate.main(["ui-unit", "--base", "deadbeef"]) == 0
+        assert docker_runs(log) == [] and docker_execs(log) == []
+        assert "comparison base deadbeef" in capsys.readouterr().out
+
+    def test_dry_run_discloses_the_resolved_ref_and_starts_no_lane(
+            self, tmp_path, monkeypatch, capsys):
+        self._project(tmp_path, monkeypatch)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit", "--base", "deadbeef",
+                              "--dry-run"]) == 0
+        out = capsys.readouterr().out
+        assert "comparison base deadbeef (from --base) → --request-base" in out
+        assert "--request-base deadbeef" in _docker_argv_line(out)
+        assert lane_runs(log) == []            # the probe ran; the lane did not
+
+    def test_exec_environment_lane_carries_request_base(
+            self, tmp_path, monkeypatch, capsys):
+        cfg = ASSAY_LANE_CFG.replace(
+            'image = "tester-unified:local"',
+            'image = "tester-unified:local"\n    mode = "exec"\n'
+            '    container_name = "probe-runner"')
+        self._project(tmp_path, monkeypatch, cfg)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        self._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit", "--base", "deadbeef"]) == 0
+        inner = lane_execs(log)[0][-1]
+        assert "--request-base deadbeef" in inner
+        assert "--verdict-json" in inner        # the judged exec, not the probe
+
+    def test_docker_absent_with_base_refuses_instead_of_guessing(
+            self, tmp_path, monkeypatch, capsys):
+        """Indeterminacy plus --base is a refusal, not an assumption: without
+        the inventory run-gate does not know whether the lane delegates, and
+        appending --request-base to a lane that does not would make assay
+        refuse for a reason the operator never caused."""
+        self._project(tmp_path, monkeypatch)
+        # git must stay reachable — an empty PATH would fail earlier, in tree
+        # resolution, and prove nothing about this branch.
+        nodocker = tmp_path / "no-docker-bin"
+        nodocker.mkdir()
+        for tool in ("git", "bash", "sh"):
+            (nodocker / tool).symlink_to(shutil.which(tool))
+        monkeypatch.setenv("PATH", str(nodocker))
+        assert run_gate.main(["ui-unit", "--base", "deadbeef"]) == 2
+        err = capsys.readouterr().err
+        assert "cannot tell whether lane 'ui-unit' delegates" in err
+        assert "docker is not on PATH" in err
+
+    def test_substitute_worktree_leaves_base_token_when_none_resolved(self):
+        """Defence in depth: the run path never reaches here with an
+        unresolved token (plan_comparison_base refuses first), so the
+        substitution must not invent an empty string either."""
+        assert run_gate.substitute_worktree(["{worktree}/x", "--base", "{base}"],
+                                            Path("/w")) == \
+            ["/w/x", "--base", "{base}"]
 
 
 def _has_module(name: str) -> bool:

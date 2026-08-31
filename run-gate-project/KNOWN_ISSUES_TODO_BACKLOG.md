@@ -43,7 +43,9 @@ SPEC §9.
 | RG-23 | exec-mode's hardcoded env-forward allowlist was dropped with no consumer migration; unmigrated consumers silently stop forwarding `RUN_LIVE_TESTS`/`MOCK_MODE` | Major | FIXED 2026-08-31 (rev 25) — run-gate half; dstdns half open in its own repo |
 | RG-24 | `resolve_container_name()` derives an exec-mode container's name from the shared-`.git`-owning repo's `ciu.global.toml`, never the judged worktree's own — a multi-instance (Mode-B) worktree's live lane silently targets the WRONG deployed container | Major | FIXED 2026-08-31 (rev 24) |
 | RG-25 | `doctor`/`--check-env` cannot see that an assay lane's language needs a toolchain (node, go helper) in its environment — consume `assay lanes --json` (assay B044) for a per-lane fitness check; backport of ciu CIU-72 (b) | Enhancement | FIXED 2026-08-31 (rev 27) |
-| RG-26 | no `--base REF` passthrough to `assay run --request-base` — assay B019 (≥ 3.0.0) unusable from the gate; delegating lanes DERIVED from `assay lanes --json`, no new lane key; backport of ciu CIU-72 (c), absorbs v8 proposal N12 | Major | OPEN 2026-08-30 |
+| RG-26 | no `--base REF` passthrough to `assay run --request-base` — assay B019 (≥ 3.0.0) unusable from the gate; delegating lanes DERIVED from `assay lanes --json`, no new lane key; backport of ciu CIU-72 (c), absorbs v8 proposal N12 | Major | FIXED 2026-08-31 (rev 28) |
+| RG-28 | `run_host_lane` raised `KeyError('argv')` for a `kind = "assay"` lane on the built-in `host` environment — a config the validator ACCEPTS, so a traceback for a legal declaration (R-04) | Minor | FIXED 2026-08-31 (rev 28) |
+| RG-29 | `cmru/run-gate.toml [lanes.assay]` pins a sidecar (`tools/assay/assay-2.2.0.pyz.sha256`) that no longer exists — cmru vendored 2.3.0 — which makes run-gate-project's OWN gate lane red via `validate-pointers` | Major | OPEN 2026-08-31 — cmru-side config, not run-gate.py |
 | RG-27 | run-gate has no persisted per-lane-per-commit invocation history and no query verb — a controller deciding sync-vs-async/defer rigor has no data; retriaged from ciu CIU-55 (2026-08-25) to run-gate, which is the layer with direct invocation visibility in the current (pre-v8) architecture | Enhancement | OPEN 2026-08-31 |
 
 ---
@@ -1509,6 +1511,57 @@ run-gate has no `--base` flag, so no consumer can adopt B019 until v8's
 - [ ] N12's row in `ciu/docs/CIU-V8-TESTING-GATE-PROPOSAL.md` §4.11 points
       here (done 2026-08-30).
 
+**FIXED 2026-08-31 (rev 28), SPEC `R-35`.** `--base REF` is accepted on every
+lane invocation; `plan_comparison_base()` decides what (if anything) the lane
+gets, and every refusal is exit 2 naming the lane.
+
+- **Delegation is DERIVED, not declared.** `assay_inventory_entry()` reuses
+  RG-25's probe; a lane reporting `base_source == "request"` gets
+  `--request-base <REF>` appended to its assay argv. No `run-gate.toml` key
+  was added, so v7 gets the one-spelling property the v8 proposal's S16.5
+  restatement has to work for.
+- **Cost, disclosed rather than hidden:** because delegation must be known
+  even when `--base` is absent (a delegating lane invoked bare needs the
+  merge-base default), the inventory probe runs for EVERY `kind = "assay"`
+  lane invocation. It is short, read-only (`assay lanes` executes nothing)
+  and uses `R-34`'s single builder. SPEC `R-35` and CONSUMERS both state it.
+- **Default ref** is the judged worktree's `git merge-base HEAD @{upstream}`,
+  via `derive_upstream_base()` — deliberately not `git_out()`, because a
+  missing upstream is an ordinary state to report, not infrastructure to
+  abort on. No upstream → the entry's exact refusal. There is no fallback to
+  `HEAD` or a default branch name.
+- **Conjunction propagation** uses `R-25`'s mechanism rather than inventing a
+  second one: a `{base}` token in the conjunction lane's own argv,
+  substituted into every sub-invocation, resolved by the same policy (so a
+  `{base}` lane on an upstream-less tree refuses instead of substituting an
+  empty string). A command lane WITHOUT the token, given `--base`, refuses —
+  the two rules would otherwise contradict each other for a conjunction,
+  which is a command lane that does not itself delegate.
+- **Older judge:** with `--base`, exit 2 naming assay `3.2.0` (B044) as the
+  version carrying the inventory; without `--base`, behaviour is byte-for-byte
+  unchanged.
+
+Tests: `TestComparisonBasePassthrough` ×14 — delegating + `--base`;
+delegating with a real upstream (asserting the actual merge-base SHA reaches
+the argv); delegating without an upstream → the exact refusal; non-delegating
++ `--base` → exit 2 naming the declared `base_source`, with NO judged run
+started; non-delegating without `--base` → unchanged; old judge both ways;
+lane absent from the inventory + `--base`; conjunction propagation (asserted
+at fd level, since the sub-shell's stdout is not a Python write);
+conjunction without upstream; command lane without the token; a `host`-
+environment assay lane probing locally with no docker at all; `--dry-run`
+disclosing the ref while starting no judged container; and the substitution
+leaving `{base}` alone when no base was resolved.
+
+The test-suite helpers `lane_runs()`/`lane_execs()` were added because an
+assay lane now issues a probe before the judged run — `docker_runs(log)[0]`
+is no longer necessarily the lane, and four existing tests were silently
+asserting against the probe instead (one of them, `test_exec_assay_lane_
+judges_selected_worktree`, still PASSED against the probe because both
+scripts `cd` to the same tree; it now asserts `--verdict-json` to pin the
+judged exec specifically).
+
+
 ---
 
 ## RG-27 — persisted per-lane-per-commit invocation history (bounded window) + a query verb, machine- and human-readable
@@ -1594,3 +1647,65 @@ history question flagged above).
 **SPEC ownership:** new surface — no existing `SPEC.md` section owns
 invocation-timing telemetry. Cross-reference: ciu CIU-55 (superseded pointer,
 `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`).
+
+## RG-28 — `run_host_lane` raised `KeyError('argv')` for `kind = "assay"` on the built-in `host` environment
+
+**Filed and FIXED 2026-08-31 (rev 28)**, found while implementing RG-26.
+
+`_validate_lane` accepts `kind = "assay"` with `environment = "host"` — no
+rule forbids it, and the assay/host combination is a reasonable shape for a
+project whose judge runs on the machine (run-gate-project's own selftest lane
+is a host lane; an assay-judged sibling would look exactly like this).
+`run_host_lane` nonetheless did `substitute_worktree(lane["argv"], …)`
+unconditionally, so such a lane died with a `KeyError('argv')` traceback —
+`R-04` names a traceback for a config/usage error a defect outright. It now
+builds the same assay inner the two container runners build
+(`build_assay_inner`), whose `GIT_CONFIG_GLOBAL` isolation (`R-19a`) keeps
+the `safe.directory` write out of the operator's own git config. SPEC `R-19`
+amended. Covered by `TestComparisonBasePassthrough::
+test_host_assay_lane_probes_locally_without_docker`, which drives a host
+assay lane end to end with docker never invoked.
+
+## RG-29 — `cmru/run-gate.toml` pins a vanished assay sidecar, which turns run-gate-project's OWN gate red
+
+**Filed:** 2026-08-31, from the run-gate-P02 bundle (RG-21/23/24/25/26). Not
+fixed here: the defect is in `cmru/run-gate.toml`, outside this project's
+scope, and the package's own scope statement forbids touching it.
+
+### The bug
+
+`run-gate-project`'s gate lane (`./run-gate.py selftest`) includes
+`TestPointerLinkageEstate::test_cmru_release_step_names_a_real_lane`, which
+runs `validate-pointers ../cmru/cmru.toml`. That fails:
+
+```
+run-gate: DEFECT steps.run-tests.commands[0].argv[argv]: loading
+../cmru/run-gate.toml: lane '[lanes.assay]': pin 'assay' sidecar
+tools/assay/assay-2.2.0.pyz.sha256 does not exist in this project (../cmru)
+— vendor it or shadow the lane
+run-gate: validate-pointers FAILED: 1 defect(s) across 0 invocation(s)
+```
+
+`cmru/tools/assay/` contains `assay-2.3.0.pyz` + `assay-2.3.0.pyz.sha256`;
+`cmru/run-gate.toml` still declares the **2.2.0** sidecar. Confirmed
+pre-existing on `main` at `858766d1` (identical failure from the primary
+checkout and from a fresh worktree, and `git ls-tree` shows only the 2.3.0
+pair tracked).
+
+**Why it matters beyond cmru:** because the selftest lane's argv is
+`pytest … && coverage_gate`, a red pytest SHORT-CIRCUITS the diff-coverage
+floor — so while this is broken, run-gate's own gate cannot report a coverage
+verdict at all, and any consumer reading `./run-gate.py selftest`'s exit
+status sees red for a reason unrelated to run-gate.
+
+### Fix (cmru-side)
+
+Bump `cmru/run-gate.toml`'s `[lanes.assay]` pin (`sha256` path and
+`version`) to the vendored 2.3.0 artifact, or vendor 2.2.0 back. Then
+re-run `run-gate-project/run-gate.py selftest`.
+
+### Acceptance
+
+- [ ] `./run-gate.py validate-pointers ../cmru/cmru.toml` exits 0;
+- [ ] `run-gate-project`'s `selftest` lane is green end to end, including
+      the diff-coverage step that currently never executes.

@@ -232,8 +232,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   every lane prints a final `lane '<name>' exit <code>` line. Disclosure is
   unconditional — a FAILED lane names its evidence paths too.
 - `R-19` **Host lanes** exec the substituted argv directly with cwd = the
-  effective project dir (R-21; no docker, no safe.directory — that trap is
-  container-specific); exit passthrough identical.
+  effective project dir — or, for a `kind = "assay"` lane on the built-in
+  `host` environment, the same assay inner the container runners build
+  (RG-28: the validator accepts that combination, and the runner used to
+  raise `KeyError('argv')` on it — a traceback for a legal config, which
+  `R-04` calls a defect) (R-21). A command host lane uses no docker and no
+  safe.directory — that trap is container-specific; an assay host lane
+  inherits the shared inner, whose `GIT_CONFIG_GLOBAL` isolation (`R-19a`)
+  keeps that write out of the operator's own git config. Exit passthrough
+  identical either way.
 
 - `R-19a` **safe.directory scope:** both ephemeral and exec inner commands set
   `GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig` before running `git config
@@ -451,6 +458,42 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     only on FAIL. `--check-env`'s env-drift half stays advisory (exit 0 — it
     is a heuristic); a toolchain FAIL exits **2**, because the judge itself
     established it.
+
+- `R-35` **Comparison-base passthrough, `--base REF` (RG-26).** assay 3.0.0
+  shipped `judge.base_source = "request"` (B019): a changed-line lane that
+  omits `judge.base` and takes its comparison base from the gate, refusing by
+  design when invoked without `--request-base`. run-gate had no way to supply
+  one, so the judge feature was unusable from every consumer.
+  - **Derived, never restated.** Whether a lane delegates is READ from
+    `assay lanes --json` through `R-34`'s probe. There is **no new
+    `run-gate.toml` key**: `assay.toml` owns the fact, and a second spelling
+    of an owned fact is the drift machine this tool exists to remove. The
+    probe therefore runs for every `kind = "assay"` lane invocation, not only
+    when `--base` is given — it is short, read-only (`assay lanes` executes
+    nothing) and shares `R-34`'s single builder.
+  - **Resolution.** For a delegating lane the ref is `--base` when given,
+    else the judged worktree's `git merge-base HEAD @{upstream}`. No
+    upstream → exit 2, `lane 'x' delegates its comparison base; pass --base
+    REF (worktree has no upstream)`. There is no fallback to `HEAD` or to a
+    default branch name: a changed-line judgment whose base was guessed is
+    not a changed-line judgment.
+  - **Refusals (all exit 2, all naming the lane).** A lane that does NOT
+    delegate, invoked with `--base`: an assay lane whose inventory reports a
+    different `base_source` (naming the value assay declared), or a command
+    lane whose argv carries no `{base}` token (the ref could only be silently
+    dropped — `R-25`'s hazard class). A judge whose inventory cannot be read
+    AND `--base` given: exit 2 naming assay **3.2.0** (B044) as the version
+    that first carries the inventory. The same judge WITHOUT `--base`:
+    behaviour unchanged, nothing appended.
+  - **Conjunction propagation** follows `R-25`'s rule — a conjunction lane
+    declares it the way it declares `--worktree`, with a `{base}` token in
+    its own argv, substituted into every sub-invocation. A `{base}`-carrying
+    lane resolves its ref by the same policy above, so it refuses rather than
+    substituting an empty string.
+  - **Disclosure (`R-05`).** Before execution, live AND dry:
+    `run-gate: comparison base <REF> (from --base | merge-base HEAD
+    @{upstream}) → --request-base` (or `→ {base} in the lane argv`); the
+    printed docker argv carries the appended flag.
 
 - `R-30a` **Linked-worktree host-lane warning (RG-21).** When the project
   declares at least one `environment = "host"` lane AND the judged tree is a

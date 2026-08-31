@@ -10,6 +10,31 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
 ### Added
+- **RG-26 — `--base REF` passthrough to `assay run --request-base`
+  (rev 28).** assay 3.0.0's `judge.base_source = "request"` (B019) had been
+  unusable from every consumer: such a lane refuses without
+  `--request-base`, and run-gate had no flag to supply one. `run-gate <lane>
+  --base REF` now reaches a delegating assay lane as `--request-base REF`;
+  omitted, the ref is the judged worktree's `git merge-base HEAD
+  @{upstream}`, and a tree with no upstream refuses (exit 2) rather than
+  guessing. Delegation is DERIVED from `assay lanes --json` (RG-25's shared
+  probe) — **no new `run-gate.toml` key**, so the fact keeps exactly one
+  spelling; the cost is one short read-only inventory probe per assay lane
+  invocation. Conjunction lanes propagate it through a `{base}` token in
+  their own argv, mirroring RG-1's `{worktree}` rule. Every non-delegating
+  case refuses by name: an assay lane with a different `base_source`, a
+  command lane with no `{base}` token, or a judge too old to answer while
+  `--base` is given (naming assay 3.2.0/B044). Without `--base` an older
+  judge behaves exactly as before. `--dry-run` and the R-05 disclosure show
+  the resolved ref and the appended flag. SPEC `R-35`; CONSUMERS "Lanes that
+  take their comparison base from the gate"; absorbs the ciu v8 proposal's
+  §4.11 N12.
+- **RG-28 — an assay lane on the built-in `host` environment no longer
+  raises `KeyError('argv')` (rev 28).** Found while implementing RG-26: the
+  validator accepts `kind = "assay"` with `environment = "host"`, but
+  `run_host_lane` indexed `lane["argv"]` unconditionally — a traceback for a
+  legal config, which `R-04` calls a defect. It now builds the same assay
+  inner the two container runners do. SPEC `R-19`.
 - **RG-25 — assay-lane toolchain fitness in `doctor`/`--check-env`
   (rev 27).** For every `kind = "assay"` lane, run-gate asks the JUDGE what
   the lane needs (`<assay_command> lanes --json --file assay.toml`, assay
