@@ -37,6 +37,7 @@ from assay import runner
 from assay.adapters.javascript import JavaScriptAdapter
 from assay.config import JudgeConfig, MutationConfig
 from assay.errors import Outcome, ReasonCode
+from assay.mutation_parsers.mutation_report_json import SUPPORTED_REPORT_SCHEMA_MAJORS
 
 REAL_REPORT = (
     Path(__file__).resolve().parent
@@ -406,6 +407,40 @@ def test_an_unknown_schema_major_is_refused(git_repo: GitRepo, tmp_path: Path):
     document["schemaVersion"] = "99.0"
     claim = _refused(git_repo, tmp_path, document)
     assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_schema_major_2_is_refused_as_UNPROVEN(git_repo: GitRepo, tmp_path: Path):
+    """Fix round 1. ``SUPPORTED_REPORT_SCHEMA_MAJORS`` shipped as ``{"1", "2"}``
+    while the one committed real artifact carries ``schemaVersion: "1.0"`` --
+    so major 2 was admitted on the strength of no witness at all, in a constant
+    whose own docstring says it is "pinned to the major the committed real
+    fixture carries".
+
+    Major 2 is refused the way ``jest-v8`` is refused one format over: as
+    UNPROVEN rather than proven-defective. Nothing here asserts that major 2 is
+    incompatible -- assay has no artifact in which to look. It asserts that a
+    shape assay has never seen is not read as if the shape had held, which is
+    the only thing a version field can honestly buy. The pin opens when a real
+    major-2 report is committed beside the major-1 one and the parser is
+    measured against it.
+    """
+    assert SUPPORTED_REPORT_SCHEMA_MAJORS == frozenset({"1"})
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    document["schemaVersion"] = "2.0"
+    claim = _refused(git_repo, tmp_path, document)
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_the_committed_real_fixture_is_the_witness_for_the_pinned_major(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """The other half of the pin, and what makes the test above a rule rather
+    than a preference: every admitted major has a real artifact behind it."""
+    assert _report_document()["schemaVersion"].split(".")[0] == "1"
+    assert {
+        version.split(".")[0] for version in [_report_document()["schemaVersion"]]
+    } == SUPPORTED_REPORT_SCHEMA_MAJORS
 
 
 def test_a_file_key_outside_the_declared_source_roots_is_refused(

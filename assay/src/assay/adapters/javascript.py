@@ -145,11 +145,17 @@ for the same reason: an unexported, never-referenced declaration is what
 
 **``generate_mutation_sites`` is unconditionally ``"UNSUPPORTED"`` (A-183's
 own marker, Go's precedent).** Whether JS/TS mutation should be native or
-should ingest an external producer's evidence (Stryker) is a real
-architectural ruling, deliberately left open as **B037**; until it is made
-there is no engine here, and an absent capability renders payload-free
+should ingest an external producer's evidence was **B037**, and the ruling is
+now MADE: JavaScript R2 is INGESTED, and **B046** implements it -- the lane's
+own argv runs Stryker inside the private snapshot and assay judges the report
+it wrote. So this method staying ``"UNSUPPORTED"`` is not an open question
+waiting on one; it is what makes this the ingested path, and
+``test_the_registry_does_not_open_the_NATIVE_r2_path`` holds the line. An
+absent NATIVE capability still renders payload-free
 ``INCONCLUSIVE``/``MUTATION_UNSUPPORTED`` rather than a green mutation claim
-or a ``NO_MUTANTS`` that would assert an analysis ran. ``external_tools = ()``
+or a ``NO_MUTANTS`` that would assert an analysis ran, for any lane that does
+not declare ``judge.mutation.format`` -- presence of that key, and nothing
+else, selects ingestion. ``external_tools = ()``
 for the same reason it is empty for Go: this module never shells out, never
 imports ``subprocess``, and does no work a toolchain could be required for.
 """

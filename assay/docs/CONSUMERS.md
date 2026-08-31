@@ -1209,7 +1209,11 @@ entry. `projectRoot` itself must be present: the upstream schema makes it
 optional, assay requires it, because it is the only field saying where the
 report's relative keys are anchored. A mutant with no `replacement`, an
 unknown status, or a `schemaVersion` major assay has never seen each refuse
-with their own message. And a command that writes no report at all is
+with their own message. **Assay reads `mutation-testing-report-schema` major
+1** — the major the committed real artifact carries. A later major is refused
+as unproven rather than as broken: assay has no report in that shape to have
+been measured against, and reading one as if the shape had held is the
+assumption the version field exists to prevent. And a command that writes no report at all is
 `NO_MEASUREMENT`, never a pass.
 
 ## Browser coverage of a UI as an R1 lane

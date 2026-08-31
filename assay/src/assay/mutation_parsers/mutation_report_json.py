@@ -62,7 +62,18 @@ __all__ = ["MAX_INGESTED_MUTANTS", "SUPPORTED_REPORT_SCHEMA_MAJORS", "parse", "s
 #: major the committed real fixture carries (B046's own non-repudiation item
 #: (iv)); a report announcing a major this build has never seen is refused
 #: rather than read as if the shape had not changed.
-SUPPORTED_REPORT_SCHEMA_MAJORS: frozenset[str] = frozenset({"1", "2"})
+#:
+#: **Major 1 only, and the docstring above is the reason.** This shipped as
+#: `{"1", "2"}` while the one committed real artifact carries
+#: `schemaVersion: "1.0"` -- so major 2 was admitted on the strength of nothing
+#: at all, which is precisely the state the pin exists to prevent. Major 2 is
+#: refused as UNPROVEN, not as proven-defective, exactly as `jest-v8` is one
+#: format over: assay has no artifact in which to see what changed, and reading
+#: an unseen major as if the shape had held is the assumption a version field
+#: exists to stop anyone making. It opens when a real report carrying it is
+#: committed here and the parser is measured against it -- a one-line edit
+#: beside a fixture, never a guess.
+SUPPORTED_REPORT_SCHEMA_MAJORS: frozenset[str] = frozenset({"1"})
 
 #: A fixed ceiling on how many mutants one report may carry, in the shape
 #: `MAX_MAX_MUTANTS` already has one tier over: a bound, never an ambient
