@@ -281,3 +281,15 @@ will actually meet, spelled as real output.
 was reported to me as "exit code 0" while the log's own `PYTEST_EXIT=1` and
 pytest printed `13 failed, 3808 passed`. Caught only because the marker was
 appended and read in a separate step. Recorded in REPORT §7.
+
+**Gate: PASS on `c85c703a`** (run 4) — 11 phases,
+`ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0`, read from the log in a
+separate step from the wrapper. The wheel it installed was
+`assay-4.0.1.dev20+gc85c703a`, so the artifact names the commit judged rather
+than my say-so. `self-hosted-lane-passed` is the load-bearing phase here: it
+drives assay's own R1 lane through the new runner seam on a `python` adapter
+declaring `requires_statement_attribution = False`, which is the control that
+the seam costs every other language nothing. Full transcript in REPORT §14.
+
+Devcontainer `pytest tests/`: **3846 passed, 13 skipped**, `PYTEST_EXIT=0`
+from the job's own marker.

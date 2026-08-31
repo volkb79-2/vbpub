@@ -121,8 +121,15 @@ Backlog: B055 (this generation). **Next free: B056.**
 
 ## 7. Gate
 
-See REPORT §14. The verdict for this generation's commit is read from the log
-in a separate step, as always — and the wrapper-vs-job trap fired a **third**
+**PASS on `c85c703a`**, the commit this brief accompanies — 11 phases,
+`ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0`, and the installed wheel
+(`assay-4.0.1.dev20+gc85c703a`) names the judged commit itself. Full
+transcript in REPORT §14; devcontainer `pytest tests/` is 3846 passed / 13
+skipped, `PYTEST_EXIT=0`. **The tip you inherit is gate-green, and the only
+commit after run 4 is docs-only** (this section, the LOG's gate line and
+REPORT §14) — no source, test or packaging file changes after `c85c703a`.
+
+The verdict is read from the log in a separate step, as always — and the wrapper-vs-job trap fired a **third**
 time this generation (REPORT §13: "exit code 0" over `PYTEST_EXIT=1` and 13
 red tests). Read `GATE_EXIT` and `ASSAY_REGISTERED_GATE_COMPLETE=1` yourself,
 separately, every time. It is not superstition; it has now caught three real

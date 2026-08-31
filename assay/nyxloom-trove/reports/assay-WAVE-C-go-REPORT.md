@@ -389,3 +389,56 @@ in §7, and caught the same way — the marker was appended by the job and read
 in a separate step. Had the wrapper been believed, this report would have
 recorded a green suite on a commit with thirteen red tests, and the thirteen
 would have been the ones proving the wave's own guard works.
+
+## 14. Gate — run 4, PASS on commit `c85c703a`
+
+Command, from `/workspaces/vbpub`:
+
+```sh
+bash assay/tools/tester-unified-gate.sh /workspaces/vbpub/.worktrees/assay-wave-c-go
+```
+
+**Which commit it judged, from the gate's own output rather than my assertion:**
+the `wheel-installed` phase built and installed
+`assay-4.0.1.dev20+gc85c703a-py3-none-any.whl` — `setuptools_scm` derives that
+suffix from the commit under judgment, so the artifact names `c85c703a`
+itself.
+
+Verdict read in a SEPARATE step from the wrapper (LESSONS L4, and see §13 —
+the wrapper for this very run reported "exit code 0", which would have been
+right this time and was wrong twice before, which is exactly why it is not
+what gets read):
+
+```text
+ASSAY_GATE_PHASE=wheel-installed
+ASSAY_GATE_PHASE=attestation-hardened
+ASSAY_GATE_PHASE=verdict-v5-accepted
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified
+ASSAY_GATE_PHASE=verdict-v9-successors-verified
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+GATE_EXIT=0
+```
+
+All 11 phases, completion marker present, exit 0, no `FAILED`/`ERROR` lines.
+
+**The phase that matters most for this change is `self-hosted-lane-passed`.**
+It runs assay's own R1 lane over assay's own diff through the installed wheel
+— so the new `_attribute_statements_for_lane` seam, the exposed
+`resolve_coverage_keys` join and A-392's guard all executed on a real lane
+against a real repository, on a `python` adapter declaring
+`requires_statement_attribution = False`. That is the control this wave most
+needed: the seam must cost every other language exactly nothing, and a
+mistake there (a guard reading the flag alone, a join that drifted) would have
+refused or mis-keyed assay's own lane rather than showing up in a unit test.
+
+Separately, `pytest tests/` in the devcontainer: **3846 passed, 13 skipped**,
+`PYTEST_EXIT=0` — read from the job's own appended marker, up from `3808
+passed, 13 failed` before the thirteen Go tests of §11 were repaired.
+`pytest` green is not gate green (A-335); both are recorded because they
+answer different questions.
