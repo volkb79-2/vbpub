@@ -2492,7 +2492,15 @@ closure lives", 2026-08-30). Only the demo/spec half of this entry is v8's.
 
 ---
 
-## CIU-75 — backport v8 F2 identity: the overlay becomes the sole instance-fact source, `ciu.env` demoted to a legacy write-only export (BREAKING, ships as ciu 7.6.0)
+## CIU-75 — backport v8 F2 identity: the overlay becomes the sole instance-fact source, `ciu.env` demoted to a legacy write-only export (BREAKING, ships as ciu 7.7.0)
+
+**Version note (2026-08-31, controller):** originally filed targeting
+`ciu 7.6.0`. The Checkpoint-1 backlog wave (CIU-62/63/64/65/67/68/69/70/71/74
++ CIU-76 test-determinism fix) released first and consumed `ciu-v7.6.0` as
+its own natural minor bump. This entry now targets **ciu 7.7.0** instead —
+still an explicit override of the estate's normal "breaking waits for the
+next major" convention (the number moved by one, the deliberate-override
+reasoning below is unchanged).
 
 **Filed by:** operator directive, 2026-08-31. The v8 proposal's F2 fork
 (`docs/CIU-V8-TESTING-GATE-PROPOSAL.md` §4.3.1 table, §4.1.3 "Identity
@@ -2505,7 +2513,8 @@ doc's own V8-2 gap note, `ciu.env` **remains the thing ciu internals
 actually read** — the overlay write was additive, not a cutover. The
 operator's instruction: backport the cutover half of F2 now, ahead of v8's
 other schema-revision-8 changes (file renames, `[testing]` absorption, etc.
-— those stay v8-only), released as **ciu 7.6.0** — an explicit override of
+— those stay v8-only), released as **ciu 7.7.0** (see the version note
+above) — an explicit override of
 the estate's usual "breaking changes wait for the next major" convention,
 because this specific change is self-contained and does not require v8's
 other, much larger schema changes to ship safely on its own.
@@ -2572,7 +2581,7 @@ CHANGES.md's entry is marked BREAKING, before this can be called done.
 - [ ] the delete-`ciu.env`-after-generate test above, green, covering every
       verb touched;
 - [ ] CONSUMERS.md migration section + CHANGES.md BREAKING entry, released
-      as **ciu 7.6.0**;
+      as **ciu 7.7.0**;
 - [ ] a grep across `dstdns` (and any other reachable consumer) for
       `ciu.env`-reading tooling, so this entry's "breaks silently" risk is
       either ruled out or has a filed follow-up in the consumer's own repo.
