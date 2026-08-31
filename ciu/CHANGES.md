@@ -28,7 +28,12 @@ restatement of the technical detail below it.
 > is an explicit, recorded override, because the cutover is self-contained and
 > does not need any of v8's other (much larger) schema-revision-8 changes to
 > ship safely on its own. It was filed against 7.6.0 and retargeted to 7.7.0
-> when the Checkpoint-1 backlog wave consumed that number first.
+> when the Checkpoint-1 backlog wave consumed that number first. **CIU-79
+> (below) is a second, independent breaking change in this same release** —
+> `ciu dev`'s build-context resolution, corrected to match the convention
+> CIU-71 already established for `ciu up`; its blast radius inside this
+> monorepo is nil (no shipped fixture/template uses the affected shape) and
+> `docs/CONSUMERS.md` #18 carries the one-line migration.
 
 ### Adoption / Migration Notes
 
@@ -76,6 +81,15 @@ has carried the generated identity table since CIU-60 (7.5.0), but as of this
 release it is the ONLY record CIU reads your instance identity from — a
 checkout that loses it can no longer name its own compose project, network or
 ownership labels, and `ciu env generate` is what puts it back.
+
+**Action needed if you have a `[<root>.dev].build` profile (`ciu dev`) whose
+`Dockerfile` lives in the stack directory.** CIU-79 fixed `ciu dev` to resolve
+`build.context`/`dockerfile` against the repo root, matching the convention
+`ciu up` has followed since CIU-71 — a profile relying on the old (buggy)
+stack-dir-relative resolution now fails until `dockerfile` is repointed
+repo-root-relative. See `docs/CONSUMERS.md` #18 for the one-line fix. No
+shipped fixture or template in this monorepo declares `dev.build.context`, so
+this is a no-op for CIU's own repo.
 
 ### Changed
 
@@ -217,15 +231,86 @@ ownership labels, and `ciu env generate` is what puts it back.
   referenced a non-identity variable used to see that checkout's recorded
   value and now sees this host's current one; on one machine they are the same
   value.
+- fix(ciu)!: **CIU-79 — `ciu dev`'s `_build_dev_image` resolves
+  `build.context`/`dockerfile` against the repo root, not the stack directory**
+  (ciu-P43). Same defect class CIU-71 fixed for `docker compose` under
+  `ciu up`, in `ciu dev`'s plain `docker build` invocation: `context` resolved
+  relative to `stack_dir`, and `dockerfile` resolved relative to THAT context,
+  so a Dockerfile `COPY`ing a repo-root-relative path failed the same way
+  CIU-71's live repro hit, uncorrected. `run_dev` (the only caller) already
+  had `repo_root` in scope; `_build_dev_image` now resolves `context` to
+  `(Path(repo_root) / context).resolve()` before joining `dockerfile` onto it.
+  `docs/SPEC.md` S5a.1/S8.1a and `docs/CONSUMERS.md` #18 now document that
+  `ciu dev`'s build fields share S8.1a's repo-root-relative convention.
+  **Breaking**: an existing profile whose Dockerfile lives in the stack dir
+  now fails until repointed; nil blast radius inside this monorepo.
 
 ### Added
 
+- feat(ciu): **CIU-80 — `HookContext` gains `identity_unreadable: bool =
+  False`**, distinguishing "genuinely unmanaged workspace" from "the identity
+  record exists and CIU could not parse it" (ciu-P43, additive shape (b) per
+  controller ruling — kept non-breaking since CIU-75, this checkpoint's other
+  package, is the one deliberately-breaking release). Both S3.12 identity
+  readers — `deploy._workspace_identity` (the `ciu check` preflight) and
+  `engine.main_execution`'s STEP-12 real-run read — set the flag identically,
+  as the backlog entry's mandatory-pair discipline required, and were
+  independently re-verified by a direct 5-state probe (absent / empty / valid
+  / malformed / non-UTF-8) confirming absent is never conflated with
+  unreadable. Rebased onto by CIU-75 (ciu-P42) in the same release: the field
+  now reads the `[ciu.instance.generated]` overlay table rather than
+  `ciu.env`, but its absent-vs-unreadable contract is unchanged — no hook
+  needs to change. A hook that branches on identity (per-instance state,
+  network choice) can now tell the two cases apart instead of silently taking
+  the unmanaged branch against a corrupt-but-present record.
 - feat(ciu): **`workspace_env.read_generated_facts()` /
   `has_generated_facts()` / `read_instance_identity_env()` /
   `identity_env_from_facts()`** (SPEC S3.1c, ciu-P42) — the read side of
   S3.1b, and the single translation table between the overlay's snake_case
   fact names and the legacy SCREAMING_CASE shell names a child process still
   speaks.
+
+### Fixed
+
+- fix(ciu): **CIU-81 — `ciu init`'s scaffold preflight now certifies templates
+  under the SAME Jinja semantics that consume them** (ciu-P43). `scaffold.py`
+  had two Jinja render paths CIU-74 never touched — `_render_jinja` and
+  `build_files`'s inline validation-first preflight — still rendering with the
+  library-default lenient `Undefined`, unlike `config_model.render_jinja2_text`
+  (the real S3.2 render) which has used `StrictUndefined` since CIU-74. A
+  scaffold template with a mistyped leaf variable could pass `ciu init` clean
+  and only fail at the consumer's first real `ciu up` — a false certification.
+  Verified first that no shipped template needs the lenient default (the two
+  TOML templates carry zero Jinja syntax by render time; the one template with
+  real Jinja refs, `stack.compose.yml.j2`, is written verbatim and is never
+  Jinja-rendered by `scaffold.py` itself), then adopted `StrictUndefined` at
+  both sites, plus a `try/except TemplateError` at each converting a genuine
+  undefined-reference defect into a clean `SystemExit` naming the template and
+  the error, instead of a raw traceback. Non-breaking: no shipped scaffold
+  template relied on lenient-Undefined behavior. `docs/SPEC.md` S19 updated.
+- fix(ciu): **CIU-77 — ciu's own vendored gate judge bumped
+  `assay-2.3.0.pyz` → `assay-3.2.0.pyz`** (three majors, ciu-P43). Verified
+  against 3.2.0's real CLI/config contract BEFORE bumping: `assay lanes --json`
+  against ciu's unmodified `assay.toml` round-tripped clean under a real
+  installed 3.2.0 (`schema_version = 2` unchanged since before 2.3.0, zero
+  body changes needed); `assay run --help` confirmed byte-identical CLI
+  surface to what the gate's shell harness already constructs; the three risk
+  areas the original filing named were each confirmed inapplicable to ciu's
+  lane specifically — the v8-cut mutation-operator spellings are R2/mutation
+  only and ciu's lane declares only `rigor = ["R0","R1"]`, judge provenance
+  and request-supplied base are both opt-in flags the gate harness never
+  passes for ciu's lane (`base_source: "declared"` confirmed), and the verdict
+  schema bump (v7→v8) doesn't touch `run-gate.py`'s shell harness, which never
+  parses verdict JSON itself. The vendored `.pyz` was rebuilt from the exact
+  `assay-v3.2.0` tagged commit via assay's own release build tooling, not
+  hand-copied, and sha256-verified end to end. The three orphaned older
+  vendored zipapps (`2.1.0`, `2.2.0`, the just-superseded `2.3.0`) — the
+  actual drift-recurrence mechanism the filing flagged — were confirmed
+  referenced nowhere else and deleted. `run-gate.toml`, `assay.toml`'s
+  comment, `README.md`, `docs/CONSUMERS.md` #12 and
+  `nyxloom-trove/nyxloom.toml` all repointed. No new refresh tooling was
+  built; the verified manual SOP is recorded in the backlog entry and
+  ciu-P43's LOG for the next bump to follow.
 
 ### Deprecated
 
@@ -262,6 +347,10 @@ ownership labels, and `ciu env generate` is what puts it back.
   `CONSUMERS.md`, `FEATURES.md`, `ARCHITECTURE.md`, `CIU.md`, `CIU-DEPLOY.md`
   and `README.md`. Each correction keeps a "before CIU-75" marker so the
   history stays legible.
+- docs(ciu): `docs/CONSUMERS.md` #18 gains the `ciu dev` build-context
+  migration note (CIU-79); `docs/SPEC.md` S5a.1/S8.1a note it now shares
+  `ciu up`'s repo-root-relative convention; `README.md`'s DooD bullet updated
+  to match (ciu-P43).
 
 ### Testing
 
@@ -270,6 +359,17 @@ ownership labels, and `ciu env generate` is what puts it back.
   `ciu.env` DELETED and once with it replaced by undecodable bytes, plus the
   converse case proving the overlay (and not nothing) is what carries the
   answers.
+- test(ciu): `test_build_context_resolves_against_repo_root_not_stack_dir`
+  (CIU-79) — a real `docker build` against the corrected argv, plus the two
+  pre-existing stack-dir-relative fixtures updated to the new convention.
+  `test_identity_unreadable_agrees_between_check_preflight_and_real_run`
+  (CIU-80) — one malformed `ciu.env` fixture driven through both S3.12
+  readers, asserting agreement. `test_render_jinja_strict_undefined_raises_on_typo`
+  + the two `build_files` preflight tests (CIU-81) — an injected
+  undefined-reference template asserting a clean `SystemExit`, not a raw
+  traceback, at both scaffold render sites (ciu-P43, reviewed across 2 rounds;
+  round 2 independently re-ran a real docker build against the corrected argv
+  and both wrong-implementation reverts).
 
 ## [7.6.0] - 2026-08-31
 <!-- cmru: generated -->
