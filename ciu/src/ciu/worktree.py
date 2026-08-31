@@ -4005,8 +4005,14 @@ _BUDGET_LOCK_NAME = "ciu-worktree-budget.lock"
 # The CLOSED key vocabulary of `[ciu.worktree]`. An unknown key here has
 # always been a hard refusal rather than a silent ignore, and stays one:
 # a misspelled capacity or lease policy that quietly does nothing is exactly
-# the "defaults are hazards" shape this estate refuses.
-WORKTREE_TABLE_KEYS = frozenset({"max_concurrent_instances", "lease_ttl_hours"})
+# the "defaults are hazards" shape this estate refuses. `exec_targets`
+# (S16.7's per-alias grammar, validated separately by
+# `resolve_exec_targets_config`/`parse_exec_targets`) is a member of this
+# same table too (CIU-69) — its own contents are NOT re-validated here, only
+# its presence as a top-level key is accepted rather than refused.
+WORKTREE_TABLE_KEYS = frozenset(
+    {"max_concurrent_instances", "lease_ttl_hours", "exec_targets"}
+)
 
 
 def _validate_worktree_table(raw: Any) -> None:
