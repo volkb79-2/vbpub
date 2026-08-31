@@ -386,13 +386,30 @@ def scan_override_for_secrets(template_text: str, source: str) -> None:
 def render_jinja2_text(template_text: str, context: dict) -> str:
     """Render a Jinja2 template string with *context* and return the result.
 
+    CIU-74: uses ``StrictUndefined`` (via a one-off ``Environment``, not the
+    library-default ``Template()`` constructor) so a mistyped or missing leaf
+    key raises ``jinja2.UndefinedError`` instead of silently rendering as the
+    empty string. ``keep_trailing_newline=True`` preserves a template's own
+    trailing newline (the ``Environment``/``Template`` default silently
+    strips exactly one) since a rendered TOML/compose/configfile file having
+    one fewer trailing newline than its template authored is itself a small
+    silent-corruption class this fix closes at the same time.
+
+    Every call site that exposes a ``ciu`` table to the template (S3.12) is
+    responsible for keeping ``ciu.instances`` ALWAYS present (defaulting to
+    ``{}``) in the context it builds — see ``_make_render_context`` here and
+    ``render_compose``/``render_configfiles`` in ``composefile.py`` — so the
+    S7.5b-sanctioned ``'x' in ciu.instances`` idiom keeps working under
+    ``StrictUndefined`` even when nothing fans out.
+
     Raises jinja2.TemplateError on render failures (the caller should wrap
     with the source filename for diagnostics).
     """
-    from jinja2 import Template, TemplateError
+    from jinja2 import Environment, StrictUndefined, TemplateError
 
     try:
-        return Template(template_text).render(**context)
+        env = Environment(undefined=StrictUndefined, keep_trailing_newline=True)
+        return env.from_string(template_text).render(**context)
     except TemplateError as exc:
         raise TemplateError(f"Jinja2 render error: {exc}") from exc
 
@@ -446,11 +463,22 @@ def _make_render_context(
     reserved keys are simply absent, so a template referencing them fails
     loudly (Jinja UndefinedError) rather than silently seeing an empty
     selection.
+
+    CIU-74 / S7.5b: ``ciu.instances`` is the one reserved fact that is the
+    OPPOSITE of ``selected_profiles``/``deployed_stacks`` above — S7.5b
+    sanctions ``'svc' in ciu.instances`` as the fan-out membership test, and
+    that idiom must keep working even when nothing fans out. So whenever a
+    ``ciu`` table is exposed at all (``ciu_context is not None``), it always
+    carries an ``instances`` key, defaulting to ``{}`` when no service
+    resolved a fan-out count > 1 — a defined-but-empty fact, never an
+    undefined name, so the membership test stays legal under
+    ``StrictUndefined`` instead of raising.
     """
     context = {**config, "env": dict(os.environ if environ is None else environ)}
     if ciu_context is not None:
         merged_ciu = dict(context.get("ciu") or {})
         merged_ciu.update(ciu_context)
+        merged_ciu.setdefault("instances", {})
         context["ciu"] = merged_ciu
     return context
 

@@ -312,7 +312,18 @@ requirements are marked *(withdrawn)*.
 - **S3.2** Render pipeline per template: Jinja2 render (context = config
   merged so far + `env` = process environment) → `$VAR`/`${VAR}` expansion
   (missing/empty value = abort, naming the variable and source file) → TOML
-  parse (syntax error = abort with file and position).
+  parse (syntax error = abort with file and position). The Jinja2 environment
+  uses `StrictUndefined` (CIU-74; `render_jinja2_text`, the one render
+  function all three call sites — compose templates, configfile templates,
+  and TOML-layer templates — share): a reference to an undefined name,
+  attribute, or item at ANY depth (not just a nested table) raises
+  `jinja2.UndefinedError` naming the missing reference, instead of the
+  library-default `Undefined` silently rendering it as the empty string. A
+  leaf typo like `{{ deploy.environment_tg }}` now fails the render instead
+  of producing a syntactically valid but wrong output (e.g. a compose
+  project or container name silently missing a path segment). The
+  environment also sets `keep_trailing_newline=True` (a template's own
+  trailing newline is preserved, not silently dropped).
 - **S3.3** Merge chain: global defaults → global overrides → (for nested
   roots between repo root and the stack, nearest-last) → stack defaults →
   stack overrides. Deep merge is key-level; tables merge recursively; scalars
@@ -1030,11 +1041,19 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
     this mapping when EITHER its service-level value, or (absent that) the
     largest of its own configfiles' declared values, resolves to N > 1 — a
     service resolving to N ≤ 1, or declaring nothing at all anywhere, is
-    simply ABSENT (never present with a value of 1). `ciu.instances` itself
-    is likewise absent from context entirely when NO service anywhere
-    resolves above 1 (S3.12's existing fail-loud pattern: a template
-    referencing `ciu.instances` with nothing declared gets a Jinja
-    `UndefinedError`, not a silently empty mapping). A compose template
+    simply ABSENT (never present with a value of 1). Unlike
+    `ciu.selected_profiles`/`ciu.deployed_stacks` above, `ciu.instances`
+    itself (the mapping) is ALWAYS PRESENT in the context of every
+    deployment render — an empty mapping `{}` when NO service anywhere
+    resolves above 1, never an absent name (CIU-74). This is deliberately
+    the opposite of S3.12's fail-loud-on-absence pattern: `ciu.instances` is
+    a defined-but-empty *fact* ("nothing fans out"), not an undefined name,
+    precisely so the sanctioned `'api' in ciu.instances` membership idiom
+    below stays legal under `render_jinja2_text`'s `StrictUndefined` (S3.2)
+    even when nothing anywhere declares an `instances` count — the render
+    contexts built in `config_model._make_render_context` and
+    `composefile.render_compose`/`render_configfiles` all default this key
+    to `{}` rather than omitting it. A compose template
     checking `'api' in ciu.instances` is the sanctioned way to ask "does
     this service fan out at all"; `{% for i in range(1, ciu.instances.api +
     1) %}` naming `api-{{ i }}` is the sanctioned loop (matching S7.5b's own

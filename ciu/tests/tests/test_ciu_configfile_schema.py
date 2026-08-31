@@ -75,7 +75,10 @@ class TestConfigfileSchemaValidation:
         )
         mounts = render_configfiles(stack, "app", config, lambda n: "v")
         assert len(mounts) == 1
-        assert mounts[0].rendered_path.read_text() == 'log = "myapp"\nport = 8080'
+        # CIU-74: render_jinja2_text now sets keep_trailing_newline=True, so
+        # the template's own trailing newline survives instead of being
+        # silently stripped.
+        assert mounts[0].rendered_path.read_text() == 'log = "myapp"\nport = 8080\n'
 
     def test_violation_fails_naming_key_path_and_removes_file(self, tmp_path: Path) -> None:
         """An extra key with additionalProperties:false fails with the key

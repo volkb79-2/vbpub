@@ -282,6 +282,11 @@ def render_compose(
         # `instances` — V8-PREP-6) are reserved.
         merged_ciu = dict(context.get("ciu") or {})
         merged_ciu.update(ciu_context)
+        # CIU-74 / S7.5b: `ciu.instances` must always be a defined mapping
+        # (empty when nothing fans out) so the sanctioned `'svc' in
+        # ciu.instances` idiom stays legal under render_jinja2_text's
+        # StrictUndefined instead of raising on an undefined name.
+        merged_ciu.setdefault("instances", {})
         context["ciu"] = merged_ciu
     try:
         rendered = render_jinja2_text(raw, context)
@@ -969,6 +974,9 @@ def render_configfiles(
                 if ciu_context is not None:
                     merged_ciu = dict(context.get("ciu") or {})
                     merged_ciu.update(ciu_context)
+                    # CIU-74 / S7.5b: keep `ciu.instances` always-defined
+                    # (see the identical note in render_compose above).
+                    merged_ciu.setdefault("instances", {})
                     context["ciu"] = merged_ciu
                 rendered_text = render_jinja2_text(raw, context)
 
