@@ -914,7 +914,9 @@ artifact", not "is this a producer somewhere".
 | `coverage-istanbul-json` | `istanbul` — the babel-plugin-istanbul family: `nyc`/`istanbul`, Jest with its default `babel` provider, `@vitest/coverage-istanbul`, `vite-plugin-istanbul`. They share one instrumenter, so they are one producer for every purpose assay has. | **yes** |
 | | `vitest-v8`, `jest-v8`, `c8` — spellable, and **refused at load by name** (see below) | |
 | `coverage-py-json` | `coverage.py` — the only producer | no |
-| `lcov`, `cobertura`, `go-cover` | *no vocabulary is open yet* — declaring `producer` on one of these is refused | n/a |
+| `go-cover` | `go-test` — `go test -coverprofile=<file>`, the unit-test path | no |
+| | `covdata` — `go tool covdata textfmt -i=<GOCOVERDIR> -o=<file>`, over the counter data a `go build -cover` binary writes while running. The **integration** path: evidence about a real process, not a test binary. | |
+| `lcov`, `cobertura` | *no vocabulary is open yet* — declaring `producer` on one of these is refused | n/a |
 
 **Why it is REQUIRED for `coverage-istanbul-json` and optional elsewhere.** If
 an implied `istanbul` were wrong — the lane really runs
@@ -923,11 +925,16 @@ over lines that never executed. A default is legitimate only when it is
 correct in the absence of information, and here it is not. `coverage-py-json`
 has exactly one producer, so an omission cannot silently pick the wrong one.
 
-**`go-cover`'s two names are deliberately not shipped yet.** They belong to
-the Go wave that can measure the difference between `go test -coverprofile`
-and `go tool covdata textfmt`. Shipping a closed vocabulary nothing in this
-build can produce, check or explain would be exactly the speculative naming
-this project refuses.
+**`go-cover`'s two names shipped with the Go wave, and are OPTIONAL.** They
+were deliberately withheld until a build could actually run a Go lane —
+shipping a closed vocabulary nothing can produce, check or explain is exactly
+the speculative naming this project refuses. The key is optional rather than
+required because `go-test` and `covdata` **agree**: both emit `cmd/cover`'s
+own text format, from the same instrumenter, so no reading of the artifact
+depends on which one wrote it. Declare it anyway when you have the choice —
+it records how the evidence was obtained, and `covdata` evidence can cover
+code that no unit test executes, which is a materially different claim even
+when the bytes are interchangeable.
 
 #### The three producers assay refuses, and how to fix each
 
@@ -1839,11 +1846,16 @@ for the submitted commit. None of that is implemented or implied by the wheel/zi
 
 ## Go lanes: what exists today, and what a Go lane will require
 
-**Today `judge.language = "go"` is still refused** `ERROR`/`BAD_LANE_CONFIG`.
-The Go adapter is not in the built-in registry yet, deliberately: registration
-is sequenced *after* the statement-attribution chain (below) so a Go lane can
-never be runnable while the parser would still report block extents as
-statement truth. There is nothing to paste here yet that would run.
+**`judge.language = "go"` now resolves, at R1 only** (decision A-394).
+Registration was deliberately sequenced *after* the statement-attribution
+chain below, so a Go lane could never be runnable while the parser would
+still report block extents as statement truth. **R2 and R3 are still refused**
+`ERROR`/`BAD_LANE_CONFIG`: `generate_mutation_sites` is unconditionally
+`UNSUPPORTED`, so there is no mutation producer for a Go lane to reach.
+
+Read point 1 before you plan around this. The single most common way a Go
+lane fails is not a missing test — it is a judging environment with no Go
+toolchain, and assay will tell you so in those words rather than guessing.
 
 What is worth knowing before you plan a Go lane, because two of these will
 surprise an adopter who assumes Go behaves like Python:

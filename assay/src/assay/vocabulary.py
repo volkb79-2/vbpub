@@ -178,14 +178,20 @@ MUTATION_OPERATORS: tuple[str, ...] = tuple(
 #: property to a format name, and the identical document from nyc, Jest-babel
 #: and `@vitest/coverage-istanbul` would then need three names for one shape.
 #:
-#: A format absent from this table -- `lcov`, `cobertura`, `go-cover` -- has
-#: NO open producer vocabulary, and declaring `producer` on such a lane is
-#: refused rather than accepted-and-ignored. That is DESIGN-GUIDE §5's "no
+#: A format absent from this table -- `lcov`, `cobertura` -- has NO open
+#: producer vocabulary, and declaring `producer` on such a lane is refused
+#: rather than accepted-and-ignored. That is DESIGN-GUIDE §5's "no
 #: speculative names" applied literally: a vocabulary opens when a consumer
-#: needs it and can say what each name MEANS, not in advance. `go-cover`'s
-#: two names (`go-test`, `covdata`) are B047's to open, with the Go wave that
-#: can measure the difference between them; naming them here would ship a
-#: closed vocabulary nothing in this build can produce, check or explain.
+#: needs it and can say what each name MEANS, not in advance.
+#:
+#: **`go-cover` was in that list until Wave C, and A-398 is why it left.**
+#: A-354 closed it deliberately and flagged itself as "the B045 call most
+#: open to challenge": B045's contract text listed `go-test`/`covdata`, but
+#: shipping them in a build with no Go lane would have been a vocabulary
+#: nothing could produce, check or explain. The Go wave is the condition
+#: A-354 named for reopening it, and it has now been met -- `go` is
+#: registered (A-394), so a lane declaring one of these names is a lane this
+#: build actually runs.
 COVERAGE_PRODUCERS_BY_FORMAT: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         # The babel-plugin-istanbul family (nyc/istanbul, Jest's default
@@ -203,6 +209,32 @@ COVERAGE_PRODUCERS_BY_FORMAT: Mapping[str, tuple[str, ...]] = MappingProxyType(
         # value must still be the right one, so the name is closed here
         # rather than accepted free-form.
         "coverage-py-json": ("coverage.py",),
+        # (B047 item 3 / A-398) Two producers of ONE format, and the fact
+        # that they do not disagree is why `go-cover` is NOT added to
+        # `COVERAGE_PRODUCER_REQUIRED_FORMATS` below:
+        #
+        #   `go-test`  -- `go test -coverprofile=<f>`, the unit-test path.
+        #   `covdata`  -- `go tool covdata textfmt -i=<GOCOVERDIR> -o=<f>`
+        #                 over the binary counter data a `go build -cover`
+        #                 binary writes at run time. This is the INTEGRATION
+        #                 path: it measures a real process doing real work
+        #                 (an S3 lane), not a test binary.
+        #
+        # Both emit `cmd/cover`'s own textfmt -- the same `mode:` header and
+        # the same `file:startLine.startCol,endLine.endCol numStmts count`
+        # records, produced by the same instrumenter. `covdata textfmt`
+        # converts a counter format into that text; it does not define a
+        # second one. So assay's parser is producer-independent here, and
+        # (unlike `coverage-istanbul-json`, where `vitest-v8` and `istanbul`
+        # genuinely disagree about whether a line ran) there is no reading
+        # of the artifact that depends on which name is declared.
+        #
+        # The names are still CLOSED rather than free-form, and still worth
+        # having, because they record HOW the evidence was obtained -- which
+        # is a real provenance difference a reviewer cares about even when
+        # the bytes are interchangeable: `covdata` evidence can cover code no
+        # unit test executes.
+        "go-cover": ("go-test", "covdata"),
     }
 )
 

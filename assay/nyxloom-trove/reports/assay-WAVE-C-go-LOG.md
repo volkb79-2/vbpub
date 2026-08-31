@@ -293,3 +293,122 @@ the seam costs every other language nothing. Full transcript in REPORT §14.
 
 Devcontainer `pytest tests/`: **3846 passed, 13 skipped**, `PYTEST_EXIT=0`
 from the job's own marker.
+
+---
+
+# Generation 3 (fresh session, seeded from BRIEF-1 + BRIEF-2 + BRIEF-3 + the DA-3 ruling)
+
+Inherited tip `4a326ddc`, gate-green at `c85c703a` with only a docs commit
+after it — verified myself (`git log`, clean tree) rather than taken from
+BRIEF-3's word. `tester-unified-go:local` confirmed already present
+(`docker images`), so nothing was rebuilt.
+
+**Item 1 / A-394 — `GoAdapter` registered at `{"R1"}`. DONE.** One
+`RegistryEntry` in `cli._built_in_registry`, plus the fallout BRIEF-3
+predicted and one piece it did not.
+
+The predicted fallout: `cli.py`'s own registry docstring explains why each
+language sits at which rigor level and asserted in so many words that Go "has
+no producer path wired in at any rigor level yet (P22)" — now false. It is
+REWRITTEN rather than deleted, because the load-bearing half of A-394 is the
+SEQUENCING, and a later reader who saw only the finished entry could not
+recover why registration had to come last. README's "still no" paragraph
+(which generation 2 wrote deliberately expecting revision) and
+CONSUMERS.md's Go section both now say R1 resolves, with the toolchain
+requirement stated before anything else an adopter might plan around.
+
+**The unpredicted piece, and it is the one worth reading (A-399).**
+Registration silently VOIDED a regression test's subject.
+`test_run_refuses_an_unregistered_language_with_a_resolvable_infrastructure_fact`
+(B012/B013 round-3 finding N-6) used `language = "go"` purely as a cheap way
+to reach `cli.py`'s adapter-refusal `refuse_lane` call — the exact site where
+the infrastructure facts were once not forwarded. With `go` registered, that
+lane resolves an adapter and takes `runner.py`'s `MISSING_EXTERNAL_TOOL`
+preflight instead: a DIFFERENT call site. The test would have kept passing
+while no longer executing the defect's own site, and nothing would have said
+so. That is worse than a red test, and it is the A-387/A-395 "editing the
+sentence that was telling the truth" shape one step subtler — no assertion
+had to be weakened for it to happen. Repaired by changing the LANGUAGE to
+`sql` (registered at R2 only, A-242, so it supplies exactly the
+config-valid/registry-refused state `go` used to) and leaving every assertion
+alone.
+
+The other affected test genuinely INVERTS, and is renamed to say so:
+`ERROR`/`BAD_LANE_CONFIG` → `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL`, exit 2
+→ exit 3. The two assertions that did NOT change carry the weight:
+`not marker.exists()` (the preflight precedes the lane's command, so a
+machine without Go never runs a suite it cannot judge) and schema validity
+(a NEW refusal path inherits P17/A-139's obligation to emit a complete
+auditable artifact). A second test was added as the anti-vacuity control,
+asking the registry directly — the inverted test alone would also pass if
+`go` were still unregistered and something unrelated produced exit 3 — and it
+pins R2/R3 as refused, so the frozenset cannot widen silently.
+
+**Item 4 / B047 item 3 / A-398 — the `go-cover` producer vocabulary. DONE.**
+A-354 did not close this question, it named its own reopening condition (a
+build that can run a Go lane), and A-394 met it. `("go-test", "covdata")` is
+open; the refusal machinery A-354 built is untouched and still tested against
+`lcov`/`cobertura`, which is what proves opening one format did not open the
+door for all of them.
+
+The half worth arguing is that the key stays **OPTIONAL**. The test for
+REQUIRED is not "more than one producer", it is "do the producers DISAGREE
+about what the artifact MEANS". `coverage-istanbul-json` is required because
+`vitest-v8` and `istanbul` disagree about whether a line ran (A-346).
+`go-test` and `covdata` do not: `go tool covdata textfmt` CONVERTS counter
+data into `cmd/cover`'s own text format — same header, same records, same
+instrumenter — so assay's parser is producer-independent and no reading turns
+on the declared name. Requiring a key that changes no answer is ceremony, and
+ceremony shaped like a safety property is its own dishonesty. The names still
+earn their place as PROVENANCE: `covdata` evidence comes from a
+`go build -cover` binary doing real work and can cover code no unit test
+executes.
+
+**A load-bearing environment fact this generation measured** (it changes what
+is buildable for items 2 and 5, and BRIEF-1's committed probe comment
+understates it): this devcontainer's `/tmp` IS reachable by the Docker daemon
+— `docker inspect` on this container's own mount table gives
+`/tmp <= /home/vb/mdt--mounted-folders/tmp` and
+`/workspaces/vbpub <= /home/vb/volkb79-2/vbpub`. BRIEF-1's probe script says
+`/tmp` "is not visible to the Docker daemon at the same path", which is true
+as written and was the right reason to tar-pipe — but the obstacle is a path
+TRANSLATION, not an absence, and srdm's own `tools/gate.sh:48-61` already
+derives exactly this mapping the same way for its bind mounts. That makes a
+transparent `go` shim feasible (the pattern `tester-unified-go/Dockerfile`
+itself blesses: "`tools/go` (a wrapper around this image) is how a cockpit
+gets Go ergonomics without a cockpit Go"), which is what items 2 and 5 need
+and what BRIEF-4 hands on in detail.
+
+**Registration's fallout was wider than BRIEF-3 predicted, and one piece was
+a real design correction (A-400).** The full suite found three more red tests
+beyond the predicted set. One is the literal registry-capability declaration
+(`test_the_built_in_registry_names_exactly_the_languages_this_build_reaches`)
+going red exactly as designed — that is the test working. The other two are
+the docs gate's mutation-operator checks, and they matter: that gate derived
+its required operator set as *every registered language's* operators, with a
+comment promising it would "expand BY ITSELF" the day a Go adapter was
+registered. It did expand by itself, in the WRONG direction — A-394 registers
+`go` at R1 only, so the gate began demanding documentation for three `go:*`
+operators no lane in this build can reach, which is exactly the outcome
+A-287's ruling exists to prevent. The mechanism written to honour a ruling
+produced that ruling's stated failure, because it assumed a Go registration
+would come with a mutation path. Corrected by scoping the derivation to
+languages registered **at R2** (the level at which a mutation operator is
+reachable at all). It changes no set today, which is the point: it restores
+the intended behaviour and stays correct for a later package that gives Go a
+real R2. What caught it was the companion test's non-empty vacuity guard,
+written against a hypothetical and fired on a real event two waves later.
+
+**The wrapper-vs-job exit-code trap fired a FOURTH time**, and this instance
+is the most persuasive one yet: the harness's own structured completion
+notification said "exit code 0" while the log's appended marker said
+`PYTEST_EXIT=1` with `3 failed, 3845 passed`. Trusting it would have shipped
+the A-400 defect with a passing suite cited as evidence it was fine. Recorded
+in REPORT §21.
+
+**Items 2 (F008-A5), 3 (F008-A4) and 6's remainder were NOT started**, and no
+acceptance box is ticked — see REPORT §18 for the reason on each. §17 records
+what was established about covergate from its own source (its expansion rule
+is byte-for-byte the one assay just removed, so the two disagree by
+construction and assay is the correct side), and §19 records the measured
+environment fact that makes the remaining items buildable.

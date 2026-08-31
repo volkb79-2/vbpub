@@ -5217,3 +5217,99 @@ Go toolchain exists — which the registered gate image does not provide.
 - [ ] whichever survives, a test that goes RED if the shipped adapter's
       `requires_statement_attribution` is ever flipped to `False` — so the
       double can never quietly become the product.
+
+---
+
+## B056 — srdm's `covergate` classifies a cover block's whole extent as executable, so its own coverage floor measures more lines than Go has statements
+
+**Filed 2026-08-31, Wave C, while reading `covergate` for F008-A5's
+qualification.** Not an assay defect and not a blocker for this wave — assay's
+side is fixed. Filed because the qualification is about to compare the two,
+and because the finding has a consequence for srdm's own gate that srdm
+cannot see from inside itself.
+
+### What was found
+
+`shared-ramdisk-depot-manager/tools/covergate/profile.go`'s
+`ParseCoverProfile` expands every profile record across its whole line range:
+
+```go
+for l := start; l <= end; l++ {
+    if count > 0 { fc.Executed[l] = true; delete(fc.Missing, l); continue }
+    if !fc.Executed[l] { fc.Missing[l] = true }
+}
+```
+
+and `FileCoverage.Executable(line)` is `Executed[line] || Missing[line]`. So a
+line is "code" iff it falls inside some block's extent. Function signature
+lines, `case` labels, closing braces and statement-continuation lines are all
+inside a block extent and are all counted. The doc comment states the premise
+outright: "a block spans a range of lines and every line in that range is
+executable."
+
+**This is byte-for-byte the rule assay removed in this wave**, and A-217's
+impossibility proof applies to it unchanged: `carve-assets/P27/witness/
+collision-colA.go` and `collision-colB.go` are gofmt-clean, compile under the
+pinned toolchain, emit **byte-identical** cover profiles, and have statements
+beginning on different lines (`{4,6}` vs `{4,5}`). Any rule that is a
+function of the profile alone must answer both identically; the two correct
+answers differ; so covergate is wrong on at least one of them. A-217 already
+recorded this in passing ("covergate shares the inclusive convention") — what
+is new here is that it is now confirmed in covergate's shipped source rather
+than inferred, and that the consequence for srdm's own gate is spelled out.
+
+### Why it matters to srdm specifically
+
+`tools/gate.sh` runs `covergate -fail-under ${SRDM_COVERAGE_FLOOR:-75}` over
+`-source internal`. The denominator is changed lines the profile "deems
+executable", which over-counts. The direction is not uniformly lenient, which
+is the part worth care:
+
+* A change that adds a **tested** function inflates both numerator and
+  denominator (its signature and braces land in an executed block), which
+  drifts the ratio TOWARD 100% and makes the floor easier to clear than it
+  reads.
+* A change that adds an **untested** function inflates the denominator only,
+  which makes the floor HARDER to clear than it reads — and the lines it
+  names as uncovered include braces and signatures a developer cannot write
+  a test for, so the remedy the output implies does not exist.
+
+Two mitigations exist and neither closes it: `HasExecutableCode`
+(`hascode.go`) excludes a file declaring no function bodies, but that is
+per-FILE and cannot demote a signature line inside a file that does have
+functions; and `Evaluate` considers only ADDED lines, which bounds how often
+the difference is reachable without changing its direction.
+
+### The second, separate hazard the same reading surfaced
+
+`Evaluate`'s `fc == nil` branch splits a changed source file absent from the
+profile into `NoCode` (excluded from the ratio) and `Unmeasured` (counted
+uncovered), distinguished only by `HasExecutableCode`. Project memory records
+covergate "silently skipping a package (P14)" in a past run; this is where
+such a skip lands. `Unmeasured` is surfaced in the report but is a listing,
+not a refusal, so a package lost by a `-coverpkg` or build-tag problem is
+reported in the same breath as a package that genuinely lacks tests. **Any
+assay-vs-covergate disagreement must be classified as extent-expansion or as
+file-absence before either side is called wrong** — they are different
+questions and averaging them would produce a conclusion about neither.
+
+### What is NOT claimed
+
+No covergate run was performed. This is a reading of covergate's committed
+source, which is legitimate evidence about its ALGORITHM but is not a
+measurement of its OUTPUT on any particular commit. F008-A5's qualification is
+what produces that, and it is still owed.
+
+### Acceptance
+
+- [ ] F008-A5's qualification run, with the disagreement classified per the
+      split above rather than reported as a single number;
+- [ ] the finding relayed to srdm against its own backlog (cross-repo
+      convention: a finding about a TOOL is filed in that tool's backlog, not
+      worked around locally), with the two directions of drift named — a
+      "coverage floor" that is easier to clear on tested code and harder on
+      untested code is not the policy `-fail-under 75` reads as;
+- [ ] a decision on whether assay should ever CONSUME a covergate verdict
+      (today it does not, and this finding is a reason to keep it that way
+      unless the two are bound at statement granularity, which A-208 always
+      intended and A-217 explains is the only binding that is not circular).

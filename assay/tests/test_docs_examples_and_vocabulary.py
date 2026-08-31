@@ -421,16 +421,43 @@ def test_every_reason_code_is_documented():
 #: three `go:*` operators for which no adapter is registered and no
 #: producer exists in THIS build -- documenting an operator a consumer
 #: cannot actually run is worse than the gap it closes. So the required set
-#: is scoped to the operators of every language `cli._built_in_registry()`
-#: actually registers (today: python and sql), derived through
-#: `vocabulary.MUTATION_OPERATORS_BY_LANGUAGE` rather than hand-copied --
-#: the day a later package registers a Go adapter, this set (and the docs
-#: gate below) expands BY ITSELF.
-_REGISTERED_LANGUAGES: frozenset[str] = frozenset(_built_in_registry().entries)
+#: is scoped to the operators of every language this build registers **at
+#: R2**, derived through `vocabulary.MUTATION_OPERATORS_BY_LANGUAGE` rather
+#: than hand-copied (today: python and sql).
+#:
+#: **The `at R2` qualifier was added in Wave C (A-394), and it is a
+#: correction rather than a refinement.** This comment used to promise that
+#: "the day a later package registers a Go adapter, this set expands BY
+#: ITSELF" -- and the derivation was `frozenset(_built_in_registry().entries)`,
+#: every registered language regardless of level. That promise assumed a Go
+#: registration would arrive WITH a mutation path. It did not: A-394
+#: registers `go` at `{"R1"}` only, `GoAdapter.generate_mutation_sites` is
+#: unconditionally `UNSUPPORTED`, and R2/R3 stay unregistered. So the
+#: automatic expansion fired and demanded documentation for three `go:*`
+#: operators that no lane in this build can reach -- which is precisely the
+#: outcome the controller's own ruling above rejects ("documenting an
+#: operator a consumer cannot actually run is worse than the gap it
+#: closes"). The set expanded by itself, in the wrong direction, for a
+#: reason the original derivation could not express.
+#:
+#: R2 is the right axis because it is the level at which a mutation operator
+#: is reachable AT ALL: `judge.mutation.operators` belongs to an R2 lane, so
+#: a language registered only at R1 has no path along which any of its
+#: operators could be typed by a consumer. Note this changes NO set today --
+#: R2-registered is `{python, sql, javascript}`, javascript has no operator
+#: entry, so required stays python's 4 + sql's 7 and excluded stays go's 3.
+#: That it is a no-op on today's values is the point: it restores the
+#: behaviour the ruling intended, and it will now also be correct for the
+#: later package that gives Go a real R2.
+_R2_REGISTERED_LANGUAGES: frozenset[str] = frozenset(
+    name
+    for name, entry in _built_in_registry().entries.items()
+    if "R2" in entry.rigor
+)
 
 REQUIRED_MUTATION_OPERATORS: frozenset[str] = frozenset(
     operator
-    for language in _REGISTERED_LANGUAGES
+    for language in _R2_REGISTERED_LANGUAGES
     for operator in MUTATION_OPERATORS_BY_LANGUAGE.get(language, ())
 )
 
@@ -449,16 +476,26 @@ def test_the_undocumented_mutation_operators_are_exactly_the_unregistered_langua
     """(A-287) The companion test the ruling itself requires: the operators
     this check deliberately does NOT demand documentation for
     (`MUTATION_OPERATORS` minus the required set) must be EXACTLY the
-    operators of the languages `_built_in_registry()` does not register
+    operators of the languages this build does not register **at R2**
     (today: go's three) -- never a looser "some operators are excluded"
     claim, and never vacuously empty (which would mean this build's registry
     already covers the whole closed catalogue and the scoping bought
-    nothing)."""
-    unregistered_languages = frozenset(MUTATION_OPERATORS_BY_LANGUAGE) - _REGISTERED_LANGUAGES
+    nothing).
+
+    Wave C (A-394) is why this reads "at R2" rather than "at all": `go` is
+    now registered at R1, so the unqualified reading would have made
+    `unregistered_languages` EMPTY and tripped the vacuity guard below --
+    correctly, because the required set had by then silently grown to demand
+    documentation for three unreachable `go:*` operators. See the comment on
+    `_R2_REGISTERED_LANGUAGES`. The vacuity guard did its job: it is the
+    reason that expansion was caught rather than shipped."""
+    unregistered_languages = (
+        frozenset(MUTATION_OPERATORS_BY_LANGUAGE) - _R2_REGISTERED_LANGUAGES
+    )
     assert unregistered_languages, (
-        "expected at least one unregistered language (go) for this test to "
-        "exercise anything -- a fully-registered build would make this "
-        "assertion vacuous"
+        "expected at least one language with mutation operators that this "
+        "build does not register at R2 (today: go) -- a build registering "
+        "every such language at R2 would make this assertion vacuous"
     )
     excluded = frozenset(MUTATION_OPERATORS) - REQUIRED_MUTATION_OPERATORS
     expected_excluded = frozenset(

@@ -132,11 +132,12 @@ where to run it.**
 ### What assay is not (yet)
 
 The verdict schema reserves a `go:*` operator vocabulary and
-`external_tools`/`helpers` machinery for a Go adapter. **None of that is a
-working Go adapter today** — `judge.language = "go"` is refused
-`ERROR`/`BAD_LANE_CONFIG` at every rigor level; the schema surface exists so
-a later package does not need a compatibility bump to fill it in. Go support
-in particular is blocked on a real, proven design problem: `go test
+`external_tools`/`helpers` machinery for a Go adapter. **`judge.language =
+"go"` now resolves at R1 — see the Go section below for what that does and
+does not get you.** R2 and R3 are still refused
+`ERROR`/`BAD_LANE_CONFIG`; the schema surface exists so a later package does
+not need a compatibility bump to fill them in. Go support was blocked, for
+several packages, on a real and proven design problem: `go test
 -coverprofile` cannot express which physical line a statement starts on —
 only a block's byte extent plus a bare statement *count* — and two different
 gofmt-clean source files can produce byte-identical coverage profiles while
@@ -147,8 +148,7 @@ documented before any Go code shipped. See decisions A-172, A-217, A-218 in
 finding and the ruling (build a real statement-position oracle, not a
 line-range heuristic).
 
-**What has landed against that ruling** (still not a usable Go lane — read
-the next paragraph before planning around it): the oracle itself ships in the
+**What has landed against that ruling**: the oracle itself ships in the
 wheel (`assay/helpers/go/stmtpos/`, adapted from `cmd/cover`'s own
 instrumenter and proven against every frozen witness, including the
 byte-identical-profile pair); the Go parser keeps each record's whole block
@@ -159,16 +159,29 @@ than judging block extents as statement truth. The Go adapter accordingly
 declares `external_tools = ("go",)`.
 
 If you see `go:` anywhere in the schema or vocabulary and are wondering
-whether you can use it today: **still no.** `judge.language = "go"` remains
-refused, because the Go adapter is not in the built-in registry yet — the
-last step, deliberately sequenced after the guard chain above, so that a Go
-lane can never be runnable while the parser would still report block extents
-as statement truth. Declaring a rigor level a lane can't actually back up is
-exactly the failure this project exists to prevent, so don't be the first
-exception. Note that when it does land, a Go lane will need a real Go
-toolchain on PATH: the statement-position oracle is a Go program, and an
-environment without one gets `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` rather
-than a guess. Why the oracle is a subprocess rather than a Python rule:
+whether you can use it today: **at R1, yes — and read the toolchain sentence
+before planning around it.** The Go adapter is now in the built-in registry
+at `{"R1"}` (decision A-394), which was deliberately the *last* step of the
+work above rather than the first: registering it any earlier would have made
+a Go lane runnable while the parser still reported block extents as statement
+truth, which is the wrong verdict the impossibility proof exists to prevent,
+reachable by a consumer who did nothing wrong.
+
+**A Go lane requires a real Go toolchain on PATH.** The statement-position
+oracle is a Go program — A-217 rules that a Python re-implementation of
+`cmd/cover`'s segmentation is not an acceptable substitute — so on a machine
+without `go`, an R1 Go lane is refused `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL`
+*before the lane's command runs*, rather than guessing or running a suite it
+could not judge. That refusal is what makes the registration safe everywhere
+rather than only where a toolchain happens to exist: a Go lane is either
+judged against real statement positions or cleanly refused, and there is no
+third state in which it is quietly wrong.
+
+**R2 and R3 remain unregistered for Go.** `generate_mutation_sites` is
+unconditionally `UNSUPPORTED`, and declaring a rigor level a lane can't
+actually back up is exactly the failure this project exists to prevent.
+
+Why the oracle is a subprocess rather than a Python rule:
 [DESIGN-GUIDE §11, "Go statement positions"](docs/DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
 **`sql:*` is different — see below.**
 

@@ -442,3 +442,220 @@ Separately, `pytest tests/` in the devcontainer: **3846 passed, 13 skipped**,
 passed, 13 failed` before the thirteen Go tests of §11 were repaired.
 `pytest` green is not gate green (A-335); both are recorded because they
 answer different questions.
+
+---
+
+# Generation 3 (fresh session, seeded from BRIEF-1 + BRIEF-2 + BRIEF-3 + the DA-3 ruling)
+
+## 15. Scope items — state after generation 3
+
+| # | item | state |
+|---|---|---|
+| 1 | A-239's shape carved concretely | **DONE** (gen 2) |
+| 2 | the oracle itself (B047 item 1) | **DONE** (gen 1/2) |
+| 3 | fixture regeneration (F008-A4) | **not started** |
+| 4 | `external_tools = ("go",)` (B047 item 2) | **DONE** (gen 2) |
+| 5 | `judge.coverage.producer` for `go-cover` (B047 item 3) | **DONE** — A-398 |
+| 6 | gate envelope `helpers[]` (B047 item 5) | **PARTIAL**, unchanged from gen 2 |
+| 7 | srdm covergate qualification (F008-A5) | **not started** — but its central question is now ANSWERED from source; see §17 |
+| — | **registration (A-394)** | **DONE** — this generation's first task |
+
+**No acceptance box is ticked, and F008-A3/A4/A5 stay `absent`.** This is a
+deliberate refusal, not an oversight, and §18 gives the reason for each.
+
+## 16. What generation 3 built
+
+| piece | where | what proves it |
+|---|---|---|
+| `go` registered at `{"R1"}` | `cli._built_in_registry` | `test_cli_run.py::test_a_go_r1_lane_now_resolves_and_is_refused_for_the_TOOLCHAIN_not_the_registry` (the inverted test) + `::test_go_is_registered_at_r1_only_so_the_refusal_above_is_about_the_toolchain` (the registry-direct control, pinning R2/R3 refused) |
+| the N-6 regression test's subject, preserved | `test_cli_run.py`, language `go` → `sql` | A-399; the test still reaches `cli.py`'s adapter-refusal call site, which registration had silently taken away from it |
+| the `go-cover` producer vocabulary | `vocabulary.COVERAGE_PRODUCERS_BY_FORMAT` | `test_config_coverage_producer.py` — both names parametrized, an unknown name (`gcov`) still refused, and the OPTIONAL-ness pinned against `COVERAGE_PRODUCER_REQUIRED_FORMATS` |
+
+Docs landed with the work, not after it: `cli.py`'s registry docstring
+(rewritten, not deleted — the sequencing argument is the part a later reader
+cannot recover from the finished entry), README's Go section, CONSUMERS.md's
+Go section and its producer table, CHANGES.md `[Unreleased]`.
+
+## 17. F008-A5 — covergate's algorithm, read from its own source
+
+This is **not** the qualification F008-A5 asks for and is not offered as one.
+It is the reconnaissance that qualification needs, and it answers the
+question BRIEF-3 §5 item 2 flagged as the risk ("if the two disagree, work
+out which side is right before concluding assay is") **before** a run, so
+that the run is interpreted rather than improvised.
+
+**Read from `shared-ramdisk-depot-manager/tools/covergate/profile.go`,
+`ParseCoverProfile`:**
+
+```go
+for l := start; l <= end; l++ {
+    if count > 0 { fc.Executed[l] = true; delete(fc.Missing, l); continue }
+    if !fc.Executed[l] { fc.Missing[l] = true }
+}
+```
+
+**That is the naive expansion — byte for byte the rule assay just removed.**
+`FileCoverage.Executable(line)` is `Executed[line] || Missing[line]`, i.e.
+"this line falls inside some block's extent", so covergate counts function
+signatures, `case` labels, closing braces and statement-continuation lines as
+executable code. Its own doc comment states the premise explicitly: "a block
+spans a range of lines and every line in that range is executable."
+
+**So assay and covergate WILL disagree, and assay is the correct side.** The
+proof is already frozen and does not depend on this reading: A-217's
+`collision-colA`/`collision-colB` pair are two gofmt-clean files that emit
+byte-identical profiles while their statements begin on different lines
+(`{4,6}` vs `{4,5}`). A rule that is a function of the profile alone must
+give both the same answer; the two correct answers differ; therefore every
+profile-only rule is wrong on at least one. covergate is a profile-only rule.
+This is not a defect report against covergate — A-217 anticipated it in
+writing ("covergate shares the inclusive convention") and it is why binding
+the two at block granularity would have satisfied A-208 "in form while
+defeating it in substance".
+
+**covergate has two real mitigations, and neither closes the gap:**
+`HasExecutableCode` (`hascode.go`) parses the file and excludes one that
+declares no function bodies — but that is per-FILE, not per-line, so it
+cannot demote a signature line inside a file that does have functions. And
+`Evaluate` counts only ADDED lines, which bounds how often the difference is
+reachable without changing its direction.
+
+**The caveat project memory records is REAL and this reading locates its
+mechanism.** Memory notes covergate "silently skipped one package (P14)" in a
+past run. `Evaluate`'s `fc == nil` branch is where that lives: a changed
+source file absent from the profile is either `NoCode` (excluded from the
+ratio entirely) or `Unmeasured` (counted uncovered). Absent-because-no-test
+and absent-because-`-coverpkg`-missed-it are distinguished ONLY by
+`HasExecutableCode`, and `gate.sh` passes `-coverpkg=./...` precisely to stop
+packages vanishing. A package that vanished anyway lands in `Unmeasured`,
+which is surfaced but is a listing, not a refusal. **Consequence for whoever
+runs the qualification: a covergate/assay disagreement must first be
+classified as extent-expansion (expected, assay right) or file-absence
+(covergate's `Unmeasured`/`NoCode` split, a different question entirely)
+before either side is called wrong.** Do not average them.
+
+**Why the qualification was not RUN here.** Running it needs a real Go lane
+through the real `assay` CLI, and this devcontainer has no Go toolchain and
+must not acquire one (A-042/A-043). §19 records the mechanism that makes it
+buildable and what remains to prove.
+
+## 18. What generation 3 did NOT do, and why
+
+**No acceptance box ticked.** F008-A3 ("a Go R1 line claim is
+statement-granular") is now true of the code at every seam and is registry-
+reachable for the first time, but its evidence would be a real Go lane
+producing a real statement-granular claim end to end — which is item 7's
+qualification, not yet run. F008-A4 and F008-A5 are untouched and unrun
+respectively. Ticking A3 on the strength of unit tests plus a registry entry
+would be the A-067-class defect this report already records twice, and the
+temptation is greater now precisely because the chain LOOKS finished.
+
+**The `helpers[]` remainder (item 6) was not started.** DA-3 is resolved and
+the pattern is clear, but the wiring (`run_lane` → `Verdict.helpers`) plus a
+qualification test is a larger piece than the remaining budget, and it must
+not be half-landed: `Verdict._check_helpers` requires a
+correspondingly-judged claim per role, so a partial wiring is a schema-valid
+document that lies about what ran.
+
+**Neither B055 shortcut was touched.** Its own entry says the honest fix for
+the first IS F008-A4, and F008-A4 needs the toolchain path of §19. Flipping
+`as_pre_oracle_attributed` off without regenerating the fixtures would turn a
+documented placeholder into thirteen red tests with nothing gained.
+
+## 19. The environment fact that unblocks items 2, 3 and 6 — measured
+
+BRIEF-1's committed probe script states that this devcontainer's `/tmp` "is
+not visible to the Docker daemon at the same path", which is why every Go
+probe so far has used a tar-pipe. **True as written, and the reason it gives
+is a path TRANSLATION rather than an absence.** Measured this session from
+this container's own mount table:
+
+```text
+$ docker inspect "$(cat /etc/hostname)" --format '{{range .Mounts}}{{.Destination}} <= {{.Source}}{{"\n"}}{{end}}'
+/workspaces/vbpub <= /home/vb/volkb79-2/vbpub
+/tmp              <= /home/vb/mdt--mounted-folders/tmp
+```
+
+So a bind mount CAN be constructed for either tree by translating the source
+side, which is exactly what srdm's own `tools/gate.sh:48-61` already does
+(`docker inspect` on `/etc/hostname`, same derivation, and it explicitly
+refuses rather than hardcoding an operator's home directory).
+
+That makes a transparent `go` shim buildable — the pattern
+`tester-unified-go/Dockerfile` blesses in its own header ("`tools/go` (a
+wrapper around this image) is how a cockpit gets Go ergonomics without a
+cockpit Go"). A shim is **not** the test double A-334 forbids: the real
+`go1.25` toolchain compiles and runs the real code inside
+`tester-unified-go:local`; only the invocation is forwarded. A mocked
+`go version` would be the forbidden thing, and this is its opposite.
+
+Two facts make it reach assay's own machinery, and both were checked:
+`runner.default_scratch_root` is `tempfile.TemporaryDirectory`, so `TMPDIR`
+places the lane's snapshot wherever a caller wants it — including under a
+bind-mountable tree; and a lane's `env_passthrough = ["PATH"]` carries the
+shim into the lane command's own environment, while `shutil.which("go")` in
+A-253's preflight finds it and stops refusing.
+
+**What is NOT yet proven, and must be before anything is claimed from it:**
+that `go test -coverprofile` inside the shim writes its artifact where
+assay's `safeio.reserve_output` reservation expects (B049's failure mode is
+exactly a tool writing somewhere the reservation does not hold), and that the
+uid inside `tester-unified-go:local` (1003) can write into the snapshot. Both
+are one probe each. Nothing in this report depends on either.
+
+## 20. Registration's fallout was WIDER than BRIEF-3 predicted — three more tests, and one was a genuine design correction
+
+BRIEF-3 §5 predicted fallout in `cli.py`'s docstring, in "any test asserting
+`judge.language = "go"` is refused", and in README. All three were real. The
+full suite then found three more, and they are not clerical:
+
+**1. `test_adapters_javascript_registration.py::test_the_built_in_registry_
+names_exactly_the_languages_this_build_reaches`** — a literal dict of every
+language and its rigor set, whose docstring says "adding or dropping a
+language cannot happen silently -- the registry IS this build's capability
+declaration". It went red exactly as designed. Updated with `"go": ["R1"]`.
+This is the test working, not fallout to be tidied.
+
+**2 and 3. `test_docs_examples_and_vocabulary.py`'s two mutation-operator
+documentation tests — and this one is a real correction (A-400).** The docs
+gate derived its required operator set as *every registered language's*
+operators, with a comment promising "the day a later package registers a Go
+adapter, this set (and the docs gate below) expands BY ITSELF."
+
+**It did expand by itself, and in the wrong direction.** A-394 registers `go`
+at `{"R1"}` only, with `generate_mutation_sites` unconditionally
+`UNSUPPORTED` and R2/R3 unregistered — so the automatic expansion demanded
+documentation for three `go:*` operators no lane in this build can reach.
+That is precisely the outcome A-287's own ruling rejects: "documenting an
+operator a consumer cannot actually run is worse than the gap it closes." The
+mechanism written to honour the ruling produced the ruling's stated failure,
+because it assumed a Go registration would arrive WITH a mutation path.
+
+Corrected by scoping the derivation to languages registered **at R2** — the
+level at which a mutation operator is reachable at all, since
+`judge.mutation.operators` belongs to an R2 lane. **It changes no set today**
+(R2-registered is `{python, sql, javascript}`, javascript has no operator
+entry, so required stays python's 4 + sql's 7 and excluded stays go's 3), and
+that is the point: it restores the behaviour the ruling intended and will
+also be right for the later package that gives Go a real R2.
+
+**What caught it deserves its own sentence.** The companion test asserts its
+excluded set is NON-EMPTY — "a fully-registered build would make this
+assertion vacuous". That vacuity guard, written against a hypothetical, fired
+on a real event two waves later and is the only reason the wrong expansion
+was seen instead of shipped. It is the argument for writing such guards.
+
+## 21. FOURTH live instance of the "read the status from the job" trap
+
+The background full-suite run was reported to me by the harness as
+**"completed (exit code 0)"** while the log's own appended marker said
+`PYTEST_EXIT=1` and pytest printed `3 failed, 3845 passed, 13 skipped`. The
+three were §20's tests.
+
+Same shape as §7's two and §13's third; **fourth in this wave**, and the
+first one where the false green arrived as a structured completion
+notification rather than as command output, which is if anything easier to
+believe. Had the wrapper been trusted, this report would have recorded a
+green suite on a commit whose registry change had silently made a docs gate
+demand documentation for unreachable operators — the A-400 defect, shipped,
+with a passing suite cited as evidence it was fine.

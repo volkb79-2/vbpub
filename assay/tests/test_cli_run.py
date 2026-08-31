@@ -892,15 +892,41 @@ def test_run_refuses_sql_at_r1_the_language_is_registered_r2_only(
     assert "sql" in err
 
 
-def test_run_refuses_an_unregistered_language_at_r1_with_a_real_artifact(
+def test_a_go_r1_lane_now_resolves_and_is_refused_for_the_TOOLCHAIN_not_the_registry(
     git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator
 ):
-    """Go ships (``adapters/go.py``) but has no producer path wired to any
-    rigor level yet (P22) -- the CLI's own built-in registry never
-    advertises it, so this is refused BEFORE the lane's command runs, the
-    same as an entirely unknown language string would be. A-139: HEAD is
-    known at that point, so the refusal is an artifact, not an exception
-    that leaves a consumer holding only an exit code."""
+    """**This test INVERTED in Wave C (A-394), and the inversion is the
+    point.** It used to assert ``ERROR``/``BAD_LANE_CONFIG`` -- "go is not in
+    the built-in registry, so this lane is refused for being unsupported".
+    ``go`` IS registered now, at ``{"R1"}``, so that refusal is gone. What is
+    NOT gone is a refusal: the lane is still refused, and the change is
+    entirely in WHY.
+
+    ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` (exit 3, not 2) is A-253's
+    preflight over ``GoAdapter.external_tools == ("go",)``, and it is the
+    property that makes A-394's registration safe in an environment with no
+    Go toolchain -- this devcontainer, and the registered gate's own
+    ``tester-unified`` image, are both such environments. The distinction the
+    two reason codes draw is real and worth keeping sharp:
+    ``BAD_LANE_CONFIG`` says *assay cannot judge this language*, which is a
+    statement about the build and is answered by shipping an adapter;
+    ``MISSING_EXTERNAL_TOOL`` says *assay judges this language and this
+    machine is not equipped to run it*, which is a statement about the
+    environment and is answered by installing Go. Collapsing the second into
+    the first would tell a consumer to wait for a release that already
+    shipped.
+
+    The two assertions that did NOT change carry most of the weight.
+    ``not marker.exists()`` -- the preflight runs BEFORE the lane's command,
+    so a machine without Go never executes a suite it cannot judge, and does
+    not burn a CI slot to discover it. And the artifact is still complete and
+    schema-valid: A-139/P17's rule is that a refusal is an auditable
+    document, never a bare exit code, and a NEW refusal path inherits that
+    obligation rather than being excused from it.
+
+    R2 and R3 stay unregistered for Go and stay refused
+    ``BAD_LANE_CONFIG`` -- the sibling tests in this module are the controls
+    proving this inversion is scoped to R1 and did not quietly widen."""
     marker = tmp_path / "the-command-ran"
     lane = set_key(_r1_lane_writing_a_marker(marker), "language", '"go"')
     path = _write_and_commit_lane(git_repo, lane)
@@ -909,19 +935,43 @@ def test_run_refuses_an_unregistered_language_at_r1_with_a_real_artifact(
 
     code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
 
-    assert code == 2
+    assert code == 3
+    # The refusal precedes the command: nothing ran.
     assert not marker.exists()
     document = json.loads(out)
     assert why_invalid(validator, document) == []
-    assert document["outcome"] == "ERROR"
-    assert document["reason_code"] == "BAD_LANE_CONFIG"
-    assert [(c["rigor"], c["status"]) for c in document["claims"]] == [
-        ("R0", "ERROR"),
-        ("R1", "ERROR"),
-    ]
+    assert document["outcome"] == "NO_MEASUREMENT"
+    assert document["reason_code"] == "MISSING_EXTERNAL_TOOL"
     # P16's iff-invariant: no coverage claim rendered, so no policy recorded.
     assert document.get("judgment") is None
-    assert "go" in err
+
+
+def test_go_is_registered_at_r1_only_so_the_refusal_above_is_about_the_toolchain(
+    tmp_path: Path,
+):
+    """The anti-vacuity control for the test above, and it is not
+    redundant with it: that test would ALSO pass if ``go`` were still
+    unregistered and something else happened to produce exit 3. This one
+    asks the registry directly.
+
+    It pins both halves of A-394 -- ``R1`` resolves an adapter, ``R2``/``R3``
+    do not -- so a future widening of the frozenset (which the Wave C prompt's
+    NOT-IN-SCOPE list forbids, because ``generate_mutation_sites`` is
+    unconditionally ``UNSUPPORTED``) cannot land silently."""
+    from assay.adapters.go import GoAdapter
+    from assay.registry import get_adapter
+
+    built_in = _built_in_registry()
+
+    assert isinstance(get_adapter(built_in, "go", "R1"), GoAdapter)
+    for refused in ("R2", "R3"):
+        with pytest.raises(AssayError) as caught:
+            get_adapter(built_in, "go", refused)
+        # The message must say "registered, but not at this level" rather
+        # than "unknown language": those are different remedies, and the
+        # second would now be a lie.
+        assert caught.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+        assert "['R1']" in str(caught.value)
 
 
 def test_run_refuses_an_unregistered_language_with_a_resolvable_infrastructure_fact(
@@ -937,9 +987,22 @@ def test_run_refuses_an_unregistered_language_with_a_resolvable_infrastructure_f
     only thing that can go wrong is the missing forward) and raised
     uncaught -- no verdict artifact, despite `--verdict-json` being
     reserved. Same defect class as N-3, at the two call sites in `cli.py`
-    the round-3 fix (which only touched `runner.py`) never reached."""
+    the round-3 fix (which only touched `runner.py`) never reached.
+
+    **Wave C (A-394) changed this test's LANGUAGE, and the reason is that
+    keeping it would have silently voided the test.** It declared
+    `language = "go"` purely as a convenient way to reach cli.py's
+    adapter-refusal branch. Registering `go` at R1 makes that lane resolve an
+    adapter, so it now takes a DIFFERENT refusal -- `runner.py`'s
+    `MISSING_EXTERNAL_TOOL` preflight -- and this regression test would have
+    kept passing while no longer exercising the call site the N-6 defect
+    lived at. `sql` is registered at R2 ONLY (A-242), so an R1 `sql` lane is
+    config-valid and registry-refused, which is exactly the state `go` used
+    to supply. The subject is the infrastructure-fact forward on a
+    `refuse_lane` call, not which language happens to be unregistered
+    this release."""
     marker = tmp_path / "the-command-ran"
-    lane = set_key(_r1_lane_writing_a_marker(marker), "language", '"go"')
+    lane = set_key(_r1_lane_writing_a_marker(marker), "language", '"sql"')
     lane += '\n[lanes.package.infrastructure]\nimg = "derived:deploy.image"\n'
     path = _write_and_commit_lane(git_repo, lane)
     for name in ("src", "scripts"):
@@ -956,7 +1019,7 @@ def test_run_refuses_an_unregistered_language_with_a_resolvable_infrastructure_f
     assert why_invalid(validator, document) == []
     assert document["outcome"] == "ERROR"
     assert document["reason_code"] == "BAD_LANE_CONFIG"
-    assert "go" in err
+    assert "sql" in err
 
 
 # --- this build evaluates R0, Python R1, Python R2 and Python R3 (P19) -------
