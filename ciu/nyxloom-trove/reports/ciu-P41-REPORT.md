@@ -647,3 +647,74 @@ Still open for the controller, none of them blocking this merge:
   RAISE rather than degrade to `{}`** on an unreadable `ciu.env` — a coherent
   stricter posture, deliberately not taken unilaterally (reasoning under
   blocker 2 above).
+
+---
+
+# Review round 2 (2026-08-31)
+
+Round-1 blockers verified closed. Round 2: one merge hazard, one ruling.
+
+## Blocker — the rebase onto CIU-70 (`e936dd70`)
+
+The `deploy.py` probe-loop conflict is the real one, and the warning about it
+was well founded: **either side taken wholesale silently reverts the other**,
+and both reverts are invisible to the other change's tests. Resolved exactly
+as directed — my bounded-retry structure, with `stacks=probe_graph` on BOTH
+`probe_ref` calls, initial and in-loop.
+
+The two other `deploy.py` hunks were flagged as benign adjacent insertions,
+and they are — but with a wrinkle worth recording: P40's `provisioning_graph`
+and my `selection_stack_health_requirement` share a
+`try: validate_stack_shape(stack_cfg) / except ValueError: continue` tail,
+which git chose as the common context. A "keep both blocks" resolution done
+by eye welds the head of one function onto the body of the other and still
+parses. Both were reconstructed in full and checked individually.
+
+**The merged loop was code no gate run had ever executed** — and it broke
+four of my own tests on the first local run, because the bounded-poll
+fixture's `probe_ref` stub did not accept CIU-70's `stacks=` kwarg. That is
+the concrete vindication of insisting on a fresh verdict rather than reusing
+the round-1 one.
+
+I turned it into an oracle rather than just repairing the stub:
+`test_the_resolution_graph_reaches_every_reprobe_not_just_the_first` asserts
+every probe — initial AND each re-probe — receives the same CIU-70 graph.
+This is the one assertion that catches the plausible-but-wrong resolution
+(graph on the first call, dropped on the retry), which passes every CIU-70
+test because none of them retry, passes every call-counting CIU-68 test, and
+fails only live on the retry path — the exact path the original `starting`
+failure lived on. Controlled wrong implementation run by hand: it yields
+`[graph, None, None]` and reds that test alone.
+
+## Ruling — warn on the HookContext identity degradation
+
+Implemented as ruled: the `{}` degradation stays at both sites (that symmetry
+is what stops a preflight from seeing an identity the real run will not), and
+both now warn, naming the unreadable file and the `ciu env generate` repair.
+
+**One correction the ruling could not have anticipated, and it matters.**
+Written as `warn(...)` — the literal 2-line change — it immediately reddened
+three existing tests with `JSONDecodeError`. `deploy.warn()` prints to
+**stdout**, and `ciu check --json` puts only its versioned JSON document
+there (S13.4a). A `[WARN]` line ahead of it corrupts every machine consumer's
+parse: a real regression, not a test artifact. The deploy-side warning
+therefore goes to **stderr**, matching the split `ciu graph --format json`
+already documents; `engine.py`'s twin stays on stdout, its own idiom, with no
+machine-readable stdout channel to protect. Both code comments state the
+asymmetry and its reason so it does not read as an inconsistency later.
+
+An ABSENT `ciu.env` stays silent — it is a legitimate state, and a warning on
+every unprovisioned workspace is a warning nobody reads. Pinned as its own
+parametrized case, alongside the load-bearing assertion that **stdout stays
+empty**, which is what will catch a future revert to `warn()`.
+
+**CIU-80 filed** for the stricter variant, with both candidate shapes ((a)
+both sites raise; (b) `HookContext` gains a third `identity_unreadable`
+state), the tradeoff of each, and — stated as MANDATORY — that the two sites
+must change as a PAIR, because fixing one alone reintroduces exactly the
+preflight-vs-real-run divergence CIU-62 avoided. Cross-referenced from
+CIU-62's own row and from CHANGES.md.
+
+## Round-2 gate — commit `<R2_HASH>` — **<R2_VERDICT>**
+
+<!-- R2_GATE -->

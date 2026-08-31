@@ -236,3 +236,83 @@ false, zero files missing coverage). Verbatim, plus the verdict-artifact
 detail, in the REPORT's "Post-review gate" section. `64cfbe61` is the last
 commit touching code or the backlog; only a docs-only LOG/REPORT commit
 follows it.
+
+---
+
+# Review round 2 — rebase onto CIU-70, and the degradation-warning ruling
+
+Round-1 blockers all verified closed. Round 2 raised one merge hazard and one
+product ruling.
+
+## The rebase onto `e936dd70` — one dangerous conflict, two benign
+
+Main advanced past my base by 12 commits, adding ciu-P40's **CIU-70** merge.
+`git rebase main` conflicted in two files.
+
+**`deploy.py`, hunk 3 — the dangerous one.** CIU-70 and CIU-68(b) both edit
+the SAME statement in the per-phase probe loop, and the two sides are
+orthogonal changes to it:
+
+- main/P40: `probe_ref(ref, config, repo_root, stacks=probe_graph)` — the
+  graph a probe resolves its target container from;
+- mine/P41: the bounded retry wrapping that call.
+
+Taking either side wholesale silently reverts the other — CIU-70's absence
+fails every `pg:`/`minio:` ref closed with "no requires/provides graph
+given"; CIU-68(b)'s absence restores the one-shot probe that failed a fresh
+`ciu up` on a `starting` dependency. Resolved as directed: **my loop
+structure, with `stacks=probe_graph` threaded through BOTH probe calls** —
+the initial one and the in-loop re-probe — with an in-code comment saying why
+neither side may be dropped.
+
+**`deploy.py`, hunks 1–2 — benign adjacent insertions.** P40's
+`provisioning_graph` and my `_REQUIREMENT_POLL_INTERVAL_S` /
+`resolve_requirement_poll_budget_s` / `_STACK_HEALTH_REF_RE` /
+`selection_stack_health_requirement` were inserted at the same point and
+happen to share a `try: validate_stack_shape(stack_cfg) / except ValueError:
+continue` tail, which git used as the common context — so the naive
+resolution silently welds half of one function onto the other. Both blocks
+reconstructed in full and verified: `provisioning_graph` returns `graph`,
+`selection_stack_health_requirement` returns the ref or `None`, and
+`deploy.py` parses.
+
+**`KNOWN_ISSUES_TODO_BACKLOG.md` — routine.** Both narrative headers kept,
+mine promoted to "Last updated" and P37's demoted to "Previously" (the file's
+own pattern). All rows from both sides verified present with the right
+status, including P40's own `CIU-70 | FIXED — ciu-P40`. Unescaped-pipe count
+per touched row still 4, so no cell broke the table.
+
+**The merged loop is code no gate run had ever executed**, exactly as
+flagged. It also broke four of my own tests immediately: the bounded-poll
+fixture's `probe_ref` stub did not accept CIU-70's `stacks=` kwarg. Fixed,
+and turned into an asset — see the new test below.
+
+## Commit 9 — `27ab3574` — the degradation-warning ruling + CIU-80
+
+Both HookContext identity sites now WARN on the `{}` degradation, keeping the
+degradation itself (the preflight/real-run symmetry is the point).
+
+**One thing the ruling could not have anticipated, and it is the interesting
+part:** writing this with `deploy.warn()` immediately reddened three existing
+tests with `JSONDecodeError`. `warn()` prints to **stdout**, and under
+`ciu check --json` the versioned JSON document is the only thing that path
+may put on stdout (S13.4a) — the warning would have corrupted every machine
+consumer's parse. Routed to **stderr** instead, matching the split
+`ciu graph --format json` already documents. `engine.py`'s twin stays on
+stdout: its own idiom, and no machine-readable stdout channel to protect.
+The asymmetry and its reason are stated in both code comments.
+
+An ABSENT `ciu.env` stays silent — a legitimate state, and a warning on every
+unprovisioned workspace is a warning nobody reads.
+
+New test `test_the_resolution_graph_reaches_every_reprobe_not_just_the_first`
+pins the merge itself: threading `stacks` through the first probe and
+dropping it on the re-probe passes every CIU-70 test (none retry) and every
+call-counting CIU-68 test, and fails only live, on the retry path. Controlled
+wrong implementation verified by hand — it yields `[graph, None, None]` and
+reds that one test.
+
+CIU-80 filed for the stricter variant, recording that the two sites must
+change as a PAIR.
+
+Gate after this commit: see the REPORT's "Round-2 gate" section.
