@@ -94,7 +94,16 @@ from typing import (
     TextIO,
 )
 
-from . import coverage, diff, git, isolation, measurability, mutation, safeio
+from . import (
+    coverage,
+    diff,
+    git,
+    isolation,
+    measurability,
+    mutation,
+    mutation_parsers,
+    safeio,
+)
 from .adapters.base import LanguageAdapter
 from .config import (
     MAX_INFRASTRUCTURE_VALUE_BYTES,
@@ -1680,6 +1689,15 @@ class SnapshotUnitResult:
     profile_error: AssayError | None
     baseline_equivalence: bytes | None = None
     equivalence_error: AssayError | None = None
+    #: (B046) The raw bytes of an INGESTED mutation report, read through the
+    #: same single-owner reservation the coverage artifact uses, or ``None``
+    #: when the lane declared no ``judge.mutation.format``. Raw rather than
+    #: parsed: parsing needs the lane's scope, which this layer does not have,
+    #: and the reservation lives here, which the ingesting layer does not.
+    mutation_report_bytes: bytes | None = None
+    #: (B046) ``NO_MEASUREMENT``/``EMPTY_COVERAGE`` when the command wrote no
+    #: report at all, or whatever the reservation's own consume raised.
+    mutation_report_error: AssayError | None = None
 
 
 def _execute_snapshot_unit(
@@ -1696,6 +1714,7 @@ def _execute_snapshot_unit(
     create_missing_parents: bool = False,
     equivalence_artifact: str | None = None,
     kill_signal_artifact: str | None = None,
+    mutation_artifact: str | None = None,
 ) -> SnapshotUnitResult:
     """Run *plan* once inside *snapshot* -- the ONE engine the lane's own
     baseline, :mod:`assay.canary`'s control/transform halves, and (with its
@@ -1819,10 +1838,47 @@ def _execute_snapshot_unit(
             )
         equivalence_reservation.arm()
 
+    # (B046) The INGESTED mutation report, reserved exactly as the coverage
+    # artifact is and for the identical reason: the reservation is what makes
+    # "the lane's own command wrote this, in this snapshot, during this run"
+    # true by construction rather than by hope. Without it a report committed
+    # into the repository, or left behind by an earlier run, would satisfy the
+    # declared path and be judged as evidence -- which is the stale-artifact
+    # hole `safeio.reserve_output` exists to close for coverage (P20/A-174).
+    mutation_reservation: safeio.OutputReservation | None = None
+    if mutation_artifact is not None:
+        mutation_reservation = safeio.reserve_output(
+            snapshot.project_root,
+            mutation_artifact,
+            limit=mutation_parsers.MAX_MUTATION_REPORT_BYTES,
+            create_missing_parents=create_missing_parents,
+        )
+        if _coverage_artifact_is_tracked(
+            snapshot.root, snapshot.project_root, mutation_artifact,
+            remaining=deadline.remaining,
+        ):
+            mutation_reservation.close()
+            if equivalence_reservation is not None:
+                equivalence_reservation.close()
+            if reservation is not None:
+                reservation.close()
+            raise AssayError(
+                f"the declared judge.mutation.artifact {mutation_artifact!r} "
+                f"is tracked by git inside the prepared snapshot -- "
+                f"measurement output must not be committed, and a COMMITTED "
+                f"mutation report is one assay would read as evidence of a "
+                f"run that never happened",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        mutation_reservation.arm()
+
     if kill_signal_artifact is not None and _coverage_artifact_is_tracked(
         snapshot.root, snapshot.project_root, kill_signal_artifact,
         remaining=deadline.remaining,
     ):
+        if mutation_reservation is not None:
+            mutation_reservation.close()
         if equivalence_reservation is not None:
             equivalence_reservation.close()
         if reservation is not None:
@@ -1889,6 +1945,34 @@ def _execute_snapshot_unit(
     if equivalence_reservation is not None:
         equivalence_reservation.close()
 
+    # (B046) Consumed exactly like the coverage profile above, and with the
+    # same three-way split: `None` bytes are "the command wrote no report at
+    # all" -- NO_MEASUREMENT, not a broken artifact -- while an unreadable one
+    # is a genuine ERROR. The parse itself is deferred to the ingesting layer,
+    # which is the only place that knows the lane's scope; what happens here
+    # is the READ, because the reservation lives here.
+    mutation_report_bytes: bytes | None = None
+    mutation_report_error: AssayError | None = None
+    if post_reason is None and mutation_reservation is not None:
+        try:
+            mutation_report_bytes = mutation_reservation.consume()
+        except AssayError as exc:
+            mutation_report_error = exc
+        else:
+            if mutation_report_bytes is None:
+                mutation_report_error = AssayError(
+                    f"the lane declared judge.mutation.artifact "
+                    f"{mutation_artifact!r} but its own command did not write "
+                    f"it. An ingested R2 lane's whole evidence IS that report: "
+                    f"there is nothing here to judge, and a lane that reports "
+                    f"PASS on a mutation run that produced no report would be "
+                    f"the silent green this project exists to remove.",
+                    outcome=Outcome.NO_MEASUREMENT,
+                    reason_code=ReasonCode.EMPTY_COVERAGE,
+                )
+    if mutation_reservation is not None:
+        mutation_reservation.close()
+
     return SnapshotUnitResult(
         result=result,
         post_reason=post_reason,
@@ -1896,6 +1980,8 @@ def _execute_snapshot_unit(
         profile_error=profile_error,
         baseline_equivalence=baseline_equivalence,
         equivalence_error=equivalence_error,
+        mutation_report_bytes=mutation_report_bytes,
+        mutation_report_error=mutation_report_error,
     )
 
 
@@ -2234,6 +2320,13 @@ def _run_prepared_lane(
     kill_signal_artifact = (
         lane.judge.mutation.kill_signal_artifact if r2_declared else None
     )
+    # (B046) The INGESTED-lane discriminator, threaded exactly like the two
+    # above. `judge.mutation.format`'s PRESENCE selects the ingested path --
+    # never the lane's language, never the artifact's content (A-007) -- and
+    # the loader has already guaranteed that `format` and `artifact` are
+    # both present or both absent.
+    r2_ingested = r2_declared and lane.judge.mutation.is_ingested
+    mutation_artifact = lane.judge.mutation.artifact if r2_ingested else None
     # B031/A-320. This used to be an UNCONDITIONAL
     # `Path(".assay") / f"{lane.name}.progress.jsonl"` for every R2 lane --
     # a CWD-relative path in the CONSUMER's live worktree, built by
@@ -2264,6 +2357,7 @@ def _run_prepared_lane(
             create_missing_parents=True,
             equivalence_artifact=equivalence_artifact,
             kill_signal_artifact=kill_signal_artifact,
+            mutation_artifact=mutation_artifact,
         )
         result = unit.result
         r0_claim = build_r0_claim(result)
@@ -2293,6 +2387,13 @@ def _run_prepared_lane(
         added: diff.AddedLines | None = None
         targets: tuple[mutation.MutationTarget, ...] | None = None
         r2_early_claim: Claim | None = None
+        # (B046) Filled inside this `with` block on an ingested lane, read
+        # after it. Declared here beside `r2_early_claim` for its reason: both
+        # carry a decision made while the snapshot was alive out to the claim
+        # assembly that happens once it is gone.
+        ingested_r2: "mutation.IngestedMutationResult | None" = None
+        ingested_r2_error: AssayError | None = None
+        relocated_lane_r2: Lane | None = None
         if unit.equivalence_error is not None:
             # A-279: the baseline declared `equivalence_artifact` and its
             # own command did not write it -- ERROR/EXEC_FAILED, before any
@@ -2437,7 +2538,23 @@ def _run_prepared_lane(
                         verified_by_assay=True,
                         reason_code=exc.reason_code,
                     )
-            if whole_file_r2:
+            if r2_ingested:
+                # (B046) The ingested path needs the lane's relocated source
+                # roots -- to prove every file the report names is one the
+                # lane declared -- and, under `changed_lines`, the diff
+                # computed just above. It needs NO `targets`: candidate
+                # DISCOVERY is what the foreign tool already did, and running
+                # assay's own site generation here would be assay computing a
+                # candidate list it then throws away (and, for `javascript`,
+                # would reach `generate_mutation_sites`, which is
+                # `UNSUPPORTED` by design -- that is what makes this the
+                # ingested path).
+                relocated_lane_r2 = _relocate_source_roots(
+                    lane,
+                    project_root=project_root,
+                    scratch_project_root=baseline_snapshot.project_root,
+                )
+            elif whole_file_r2:
                 relocated_lane_r2 = _relocate_source_roots(
                     lane,
                     project_root=project_root,
@@ -2498,6 +2615,38 @@ def _run_prepared_lane(
                         verified_by_assay=True,
                         reason_code=exc.reason_code,
                     )
+
+            # (B046) The ingested read happens HERE, inside the `with`, and
+            # not beside the native `run_mutation` call below -- because
+            # `baseline_snapshot` is torn down the moment this block ends, and
+            # ingestion is entirely about that snapshot: the report's
+            # `projectRoot` is compared against the directory the command ran
+            # in, and every file key is resolved against the snapshot's repo
+            # top. Doing it below would compare against paths that no longer
+            # exist.
+            #
+            # Note what is NOT here: no executor, no per-mutant snapshot, no
+            # deadline arithmetic. The lane's own argv already ran the
+            # mutation tool ONCE, inside this snapshot, as part of the R0
+            # command -- so R2 costs nothing beyond reading a file the run has
+            # already produced, and the commit binding is the snapshot's,
+            # exactly as it is for coverage (A-161).
+            if r2_ingested and r2_early_claim is None:
+                ingested_r2_error = unit.mutation_report_error
+                if ingested_r2_error is None:
+                    assert unit.mutation_report_bytes is not None
+                    assert relocated_lane_r2 is not None
+                    try:
+                        ingested_r2 = _ingest_r2_report(
+                            unit.mutation_report_bytes,
+                            lane=lane,
+                            relocated_lane=relocated_lane_r2,
+                            snapshot=baseline_snapshot,
+                            added=added,
+                            project_prefix=project_prefix,
+                        )
+                    except AssayError as exc:
+                        ingested_r2_error = exc
     # `baseline_snapshot` is closed from here on -- R2/R3 use `prepared`
     # directly, each materialising its own independent snapshot.
 
@@ -2520,6 +2669,31 @@ def _run_prepared_lane(
             claims += (mutation.build_mutation_claim(result, None),)
         elif r2_early_claim is not None:
             claims += (r2_early_claim,)
+        elif r2_ingested:
+            # (B046) The read already happened inside the snapshot's own
+            # `with` block above; this is only the JUDGMENT.
+            if ingested_r2_error is not None:
+                claims += (
+                    Claim(
+                        rigor="R2",
+                        source="computed",
+                        status=ingested_r2_error.outcome,
+                        verified_by_assay=True,
+                        reason_code=ingested_r2_error.reason_code,
+                    ),
+                )
+            else:
+                assert ingested_r2 is not None
+                # (A-379) No `fail_under` fork: an ingested R2 claim is judged
+                # by the SAME `judge_mutation` a native one is, so an
+                # independent consumer can still re-derive its status from the
+                # payload's buckets alone -- which is what `verify.py`'s own
+                # `_check_r2_rederivation` does, using this same function.
+                r2_claim = mutation.build_mutation_claim(result, ingested_r2.mutation)
+                claims += (r2_claim,)
+                if r2_claim.mutation is not None:
+                    judgment_r2 = _build_ingested_judgment_r2(lane, ingested_r2)
+            ended = iso_utc(clock())
         else:
             assert targets is not None
             try:
@@ -2727,6 +2901,104 @@ def _build_judgment_resolved(
         source_roots=lane.judge.source_roots,
         base=resolved_base if compares_a_base else None,
         base_resolution=base_resolution if compares_a_base else None,
+    )
+
+
+def _ingest_r2_report(
+    raw: bytes,
+    *,
+    lane: Lane,
+    relocated_lane: Lane,
+    snapshot: "isolation.Snapshot",
+    added: diff.AddedLines | None,
+    project_prefix: PurePosixPath,
+) -> "mutation.IngestedMutationResult":
+    """(B046) Decode, parse and INGEST the report the lane's own command
+    wrote, entirely against *snapshot*.
+
+    Three layers, three refusals, deliberately not collapsed: undecodable
+    bytes are ``ERROR``/``UNREADABLE_ARTIFACT`` here; a document that does not
+    match its declared format's signature is ``ERROR``/``FORMAT_MISMATCH``
+    from the registry (A-007); a well-formed document assay cannot judge is
+    ``ERROR``/``UNREADABLE_ARTIFACT`` from the parser or the ingester, always
+    naming the member at fault. This is
+    :func:`assay.coverage.parse_coverage_artifact`'s own three-way split one
+    rigor tier up, and it is the same split for the same reason.
+    """
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise AssayError(
+            f"mutation report is not valid UTF-8: {exc}",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        ) from exc
+    assert lane.judge is not None and lane.judge.mutation is not None
+    assert lane.judge.mutation.format is not None
+    report = mutation_parsers.load_mutation_report(
+        text, declared_format=lane.judge.mutation.format
+    )
+    # (B043) The directory the command actually ran in -- the snapshot's
+    # project root joined with the lane's declared `cwd`. This is what the
+    # report's own `projectRoot` must equal and what its relative file keys
+    # are anchored at.
+    run_cwd = (
+        snapshot.project_root
+        if lane.cwd is None
+        else snapshot.project_root / lane.cwd
+    )
+    assert relocated_lane.judge is not None
+    # `judge.targets` is PROJECT-relative (A-145) and every wire path is
+    # repo-top-relative, so the declared targets are re-spelled here rather
+    # than compared across two grammars.
+    declared_targets = (
+        tuple(
+            (project_prefix / target).as_posix()
+            for target in (lane.judge.targets or ())
+        )
+        if lane.judge.mode == "whole_target"
+        else None
+    )
+    return mutation.ingest_mutation_report(
+        report,
+        run_cwd=run_cwd,
+        repo_top=snapshot.root,
+        source_root_paths=relocated_lane.judge.source_root_paths,
+        mode=lane.judge.mode or "changed_lines",
+        added=added,
+        targets=declared_targets,
+    )
+
+
+def _build_ingested_judgment_r2(
+    lane: Lane, ingested: "mutation.IngestedMutationResult"
+) -> JudgmentR2:
+    """(B046) The ``judgment.r2`` of an INGESTED lane.
+
+    Every field assay's own policy would have filled is ABSENT, and that is
+    the whole point (A-360): assay chose no operators, no concurrency and no
+    ceiling for a run it did not orchestrate, so an honestly empty policy
+    field is left empty rather than backfilled from the report. What IS
+    recorded is what assay genuinely knows -- who produced the evidence, and
+    the four facts assay derived FROM it.
+
+    ``kill_attribution`` is ``"unattributed"`` and cannot be anything else
+    here: a killed mutant in an ingested report proves that the foreign tool's
+    own test command failed, not that it failed for the reason the mutant
+    created, and assay declared no kill-signal mechanism for a run it did not
+    perform. That is the honest, visible weakness the field exists to state
+    (A-220/V5-4).
+    """
+    assert lane.judge is not None and lane.judge.mutation is not None
+    return JudgmentR2(
+        producer="ingested",
+        producer_tool=ingested.producer_tool,
+        survived_uncovered=ingested.survived_uncovered,
+        discarded=ingested.discarded,
+        lines_without_candidates=ingested.lines_without_candidates,
+        kill_attribution="unattributed",
+        mode=lane.judge.mode or "changed_lines",
+        targets=lane.judge.targets if lane.judge.mode == "whole_target" else None,
     )
 
 

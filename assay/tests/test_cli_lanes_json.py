@@ -218,7 +218,12 @@ def test_a_javascript_r1_lane_that_delegates_its_base(project: Project):
             "rigor": ["R0", "R1"],
             "enforcement": "gate",
             "language": "javascript",
-            "rigor_reachable": ["R1"],
+            # B046: `javascript` is REACHABLE at R2 since schema v9 -- through
+            # the INGESTED path only. `rigor_reachable` reports what the
+            # registry admits, not what this particular lane declares (the
+            # lane above declares R0/R1), so a gate tool can tell "this build
+            # could run R2 here" from "this lane asked for it".
+            "rigor_reachable": ["R1", "R2"],
             "coverage": {
                 "format": "coverage-istanbul-json",
                 "artifact": ".assay/coverage-final.json",

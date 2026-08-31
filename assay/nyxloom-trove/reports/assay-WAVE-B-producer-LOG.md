@@ -537,3 +537,127 @@ corrected for. Caught immediately, reverted with `git checkout` (the file's
 committed state already carried A-367–A-369 from commit 9, so nothing was
 lost), and re-applied through `Edit`. Every other file change this session
 went through `Edit`/`Write`.
+
+## 11 — `feat(assay): B046 -- R2 by evidence ingestion, and javascript at R2`
+
+**Scope item (B), the last of the three.** Resolves B037.
+
+**What landed.** A new `src/assay/mutation_parsers/` package (protocol,
+`model.py`, `mutation_report_json.py`, and the format registry); the ingested
+fork in `config._load_mutation`/`_load_ingested_mutation`;
+`mutation.ingest_mutation_report` (scope intersection, bucket map, the four
+ingested facts); the runner's reservation + ingested branch +
+`_build_ingested_judgment_r2`; `verify.py`'s new
+`_check_ingested_r2_agrees_with_its_payload` and the producer fork in the raw
+operator-language check; `cli.py` registering `javascript` at `{"R1","R2"}`
+with its 340-374 docstring rewritten; CONSUMERS' new ingested-R2 section and
+DESIGN-GUIDE §11's ingested paragraphs.
+
+### Four things worth not rediscovering
+
+**1. `fail_under` was implemented, then REMOVED, and the removal is the
+finding (A-379/A-380, filed as B050).** A `fail_under` parameter on
+`judge_mutation` was written and working before I noticed it breaks the one
+property `JudgmentR2`'s own docstring promises: *"an independent consumer can
+already re-derive the R2 claim's status from `Mutation`'s own bucket fields
+alone"*. `judgment.r1` carries `fail_under`; `judgment.r2` does not, and v9 is
+frozen. So a lane judging at 90 would emit PASS beside recorded survivors with
+nothing in the document explaining it — and `verify._check_r2_rederivation`,
+which reuses `judge_mutation`, would correctly call that verdict inconsistent.
+The key still ships (required, validated, in the worked lane) and is honoured
+at exactly `100.0`; anything else is refused naming the missing wire field and
+B050. Accepting-and-ignoring was rejected as inert config that cannot fail
+loudly when wrong; dropping the key was rejected because it leaves B046's own
+acceptance unmet and the documented lane unloadable.
+
+**2. `Ignored` has no home on the v9 wire, so it REFUSES (A-377).** B046's
+status map says "`Ignored` -> `excluded` (counted, never laundered as a
+kill)", and there is no field to count it in. Both alternatives are false
+statements rather than merely lossy: dropping it silently is exactly how a
+gate gets made green from inside the mutation tool's own config
+(`mutator.excludedMutations`, `// Stryker disable`), and folding it into
+`discarded` would report a suppressed mutant as one that failed to COMPILE,
+which that field's own shipped schema description forbids in as many words. So
+an in-scope `Ignored` mutant refuses, naming the mutant and giving two fixes.
+Out-of-scope ones are filtered by scope first, like every other status.
+
+**3. `survived_uncovered` lists PLACES, not mutants (A-381) — found by the
+first run over the real artifact, not by reading.** The model refuses
+duplicate positions, and the real report has ten `NoCoverage` mutants on
+`src/format.ts` line 34 alone (69 mutants over 31 distinct positions). The
+model is right: repeating a line once per mutant would turn a list of places
+into a disguised count of mutants, which is what the field exists INSTEAD of.
+
+**4. The raw verifier really was checking nothing, exactly as brief 3 said.**
+Confirmed rather than assumed: every pre-existing raw R2 check is guarded on
+`judgment.r2.operators`, absent by contract on an ingested document, so they
+SKIP. `_check_ingested_r2_agrees_with_its_payload` adds four re-derivations,
+and the raw operator-language check now forks on `producer` in BOTH directions
+(a native operator on an ingested document is refused exactly as an ingested
+one on a native document is) rather than merely skipping.
+
+### Order note
+
+B043 landed BEFORE this item, inverting brief 3 §5's order, because the
+dependency is real: an ingested report's `projectRoot` is the directory the
+tool ran in and its `files` keys are relative to that, so resolving them to
+repo-relative wire paths is impossible without the lane's declared `cwd`.
+Every test in `test_runner_ingested_r2.py` declares `cwd = "app"`, so the
+coupling is exercised throughout rather than in one special case.
+
+### Verification, this commit
+
+- `tests/test_runner_ingested_r2.py` — 19 nodes driven by the **REAL**
+  committed StrykerJS 10.0.0 artifact (109 mutants, 6 files). The happy path
+  asserts the exact counts assay's own scope computation arrives at (21
+  killed, 88 survived = 19 Survived + 69 NoCoverage, total 109), the ingested
+  producer/tool, the four absent policy fields, the nine observed
+  `stryker:*` operators, repo-relative wire paths carrying the lane `cwd`,
+  and — the one that matters most — that the resulting verdict **verifies
+  clean against the shipped v9 schema and every raw and model check**. Each
+  refusal node mutates ONE field of that same real document rather than
+  hand-building a synthetic one: a foreign `projectRoot` (literally the real
+  report, unmodified, presented to a lane that ran elsewhere), `Pending`, an
+  unknown status, `Ignored`, an unknown schema major, a file key outside the
+  source roots, a mutant with no `replacement`, no `framework`, no
+  `projectRoot`, and a command that writes no report at all.
+- `tests/test_verify_ingested_r2.py` — 11 nodes, following brief 3 §8's own
+  advice that a suite passing first time is suspicious. Every new raw checker
+  is probed with a MUTATED real verdict and asserted to produce its OWN named
+  diagnostic, never merely a non-empty failure list. The base document is
+  asserted clean first (without that, every negative could be passing because
+  the document was already broken), and one node deliberately flips
+  `producer` to `native` to prove the other branch fires on the same input —
+  a guard against the whole fork being dead code.
+- `tests/test_config_ingested_mutation.py` — 20 nodes: the accepted shape, the
+  round-trip oracle, the format vocabulary coming from the registry itself,
+  every native-policy and orchestration-key refusal (asserting the message
+  says WHY, not merely that the key is not allowed), the ingested keys' own
+  grammar, the `fail_under` refusal naming B050, and the two mixing refusals.
+- The docs guard: the new worked ingested lane in CONSUMERS.md is a **live,
+  loadable example** verified by `test_docs_examples_and_vocabulary.py`, not a
+  skipped fragment.
+
+### Four pre-existing tests migrated, and one added rather than merely fixed
+
+The first full-suite run after this work went RED in exactly four nodes, all
+of them encoding the contract B046 deliberately changes — `javascript` is no
+longer R1-only. That is the drift guard working, not breakage:
+
+- `test_adapters_javascript_registration.py`'s
+  `refuses_javascript_above_r1[R2]` is gone (R2 is now registered) and `[R3]`
+  became a standalone `refuses_javascript_at_r3`; the must-succeed control now
+  parametrizes over R1 and R2; the literal capability declaration reads
+  `["R1", "R2"]`.
+- `test_cli_lanes_json.py`'s JS lane now reports `rigor_reachable: ["R1",
+  "R2"]` — reachable is what the REGISTRY admits, not what the lane declares.
+
+**Weakening a negative test is exactly where a guarantee gets lost quietly, so
+a replacement negative was added rather than the old one merely relaxed**:
+`test_the_registry_does_not_open_the_NATIVE_r2_path` asserts the three facts
+that still make a native JavaScript R2 lane impossible —
+`MUTATION_OPERATORS_BY_LANGUAGE` has no `javascript` entry,
+`generate_mutation_sites` still returns `"UNSUPPORTED"`, and a lane file
+declaring native R2 operators is refused by the loader naming the language.
+Without it, "R2 is registered, through the ingested path only" would have
+become a claim in a docstring with nothing testing it.

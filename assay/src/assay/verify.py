@@ -113,6 +113,7 @@ from .verdict import (
     SnapshotPolicy,
     SourcePosition,
     Verdict,
+    is_ingested_operator,
     operator_language,
     rollup,
 )
@@ -609,13 +610,29 @@ def _check_resolved_language_owns_every_operator(
     if not isinstance(language, str):
         return
     r2 = judgment.get("r2")
+    # (B046, schema v9) The PRODUCER decides which of two exact rules applies,
+    # and this is the RAW half of the fork the model states independently in
+    # `Verdict._check_operator_language_agrees`. Before v9 there was one rule;
+    # applying it unchanged would refuse every ingested mutant, because
+    # `operator_language("stryker:X")` answers `"stryker"` -- a NAMESPACE assay
+    # owns, never a language, and no language is named `stryker`.
+    #
+    # The ingested branch is not merely "skip the check": it is the exact
+    # mirror. A native document naming an INGESTED operator is refused just as
+    # firmly as an ingested one naming a native operator, so neither producer
+    # can borrow the other's vocabulary.
+    ingested = isinstance(r2, dict) and r2.get("producer") == "ingested"
     declared = r2.get("operators") if isinstance(r2, dict) else None
     if isinstance(declared, list):
+        # `operators` is FORBIDDEN on an ingested document (A-360) and the
+        # schema already refuses it there, so this branch is native-only in
+        # practice; the guard keeps that true rather than assuming it.
         foreign = sorted(
             {
                 operator
                 for operator in declared
                 if isinstance(operator, str)
+                and not is_ingested_operator(operator)
                 and operator_language(operator) != language
             }
         )
@@ -632,12 +649,34 @@ def _check_resolved_language_owns_every_operator(
         (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R2"),
         None,
     )
+    operators = [
+        entry["operator"]
+        for _, entry in _mutant_entries(_mutation_of(r2_claim))
+        if isinstance(entry.get("operator"), str)
+    ]
+    if ingested:
+        native = sorted(
+            {
+                operator
+                for operator in operators
+                if not is_ingested_operator(operator)
+            }
+        )
+        if native:
+            failures.append(
+                f"the R2 mutation payload records mutants produced by "
+                f"{native} while judgment.r2.producer is 'ingested'; an "
+                f"ingested run reports the foreign tool's own namespaced "
+                f"mutator names, and assay's native catalogue names a "
+                f"catalogue that run never used"
+            )
+        return
     applied = sorted(
         {
-            entry["operator"]
-            for _, entry in _mutant_entries(_mutation_of(r2_claim))
-            if isinstance(entry.get("operator"), str)
-            and operator_language(entry["operator"]) != language
+            operator
+            for operator in operators
+            if is_ingested_operator(operator)
+            or operator_language(operator) != language
         }
     )
     if applied:
@@ -645,6 +684,157 @@ def _check_resolved_language_owns_every_operator(
             f"the R2 mutation payload records mutants produced by {applied} "
             f"while judgment.resolved.language is {language!r}; a run cannot "
             f"apply a catalogue belonging to another language"
+        )
+
+
+def _check_ingested_r2_agrees_with_its_payload(
+    document: dict, failures: list[str]
+) -> None:
+    """(B046) Re-derive an INGESTED ``judgment.r2``'s three derived facts from
+    the R2 mutation payload, at the RAW layer.
+
+    **This closes a real hole rather than adding belt-and-braces.** Before
+    B046 the raw layer said NOTHING about an ingested document: every existing
+    R2 check in this module is guarded by an ``isinstance`` test on
+    ``judgment.r2.operators`` or by the resolved-language rule, and on an
+    ingested document ``operators`` is absent by contract (A-360) -- so those
+    checks SKIP rather than pass. A skipped check and a satisfied one look
+    identical from a green bar, and an ingested document was reaching the
+    reconstruction stage having been checked by nothing at all.
+
+    Four independent re-derivations, each from the payload alone:
+
+    1. every ``survived_uncovered`` position is a position the ``survived``
+       bucket actually records. An entry that is not describes a mutant the
+       document does not contain -- which is how a report could claim to have
+       surfaced untested lines it never had;
+    2. no ``lines_without_candidates`` position is a line a recorded mutant
+       starts on. The field means "the tool produced NO mutant here", and a
+       line with a mutant on it contradicts that in the same document;
+    3. ``survived_uncovered`` is a SUBSET of ``survived``, never of the whole
+       payload: a ``NoCoverage`` mutant maps to ``survived`` and to nothing
+       else, so an entry matching a killed mutant's position would be
+       laundering a kill into the worst-survivor list;
+    4. ``discarded`` is a count of mutants deliberately NOT in the payload, so
+       it must not be contradicted by the arithmetic ``Mutation`` already
+       enforces -- checked here as "present and non-negative", the only part
+       of it a document can be wrong about on its own.
+
+    The MUTATION SCORE itself (``killed / (killed + survived)``) is re-derived
+    by :func:`_check_r2_rederivation` through
+    :func:`assay.mutation.judge_mutation`, which an ingested claim goes
+    through unchanged (A-379) -- so the status of an ingested R2 claim is
+    checkable from its buckets with no external policy input, exactly as a
+    native one's is. That is why this function does not re-derive it a second
+    time: one owner, not two that could disagree.
+    """
+    judgment = document.get("judgment")
+    if not isinstance(judgment, dict):
+        return
+    r2 = judgment.get("r2")
+    if not isinstance(r2, dict) or r2.get("producer") != "ingested":
+        return
+
+    claims = document.get("claims")
+    r2_claim = (
+        next(
+            (
+                item
+                for item in claims
+                if isinstance(item, dict) and item.get("rigor") == "R2"
+            ),
+            None,
+        )
+        if isinstance(claims, list)
+        else None
+    )
+    payload = _mutation_of(r2_claim)
+    if payload is None:
+        failures.append(
+            "judgment.r2 records producer 'ingested' but the R2 claim carries "
+            "no mutation payload; the ingested facts beside it describe a "
+            "payload that is not in this document"
+        )
+        return
+
+    survived: set[tuple[str, int]] = set()
+    every: set[tuple[str, int]] = set()
+    for bucket, entry in _mutant_entries(payload):
+        path = entry.get("path")
+        lineno = entry.get("lineno")
+        if not isinstance(path, str) or not isinstance(lineno, int):
+            continue
+        every.add((path, lineno))
+        if bucket == "survived":
+            survived.add((path, lineno))
+
+    for label, expected, message in (
+        (
+            "survived_uncovered",
+            survived,
+            "is not a position the payload's own 'survived' bucket records; a "
+            "NoCoverage mutant maps to 'survived' and to nothing else, so this "
+            "entry describes a mutant this document does not contain",
+        ),
+    ):
+        positions = r2.get(label)
+        if not isinstance(positions, list):
+            failures.append(
+                f"judgment.r2.{label} is required on an ingested judgment "
+                f"(possibly empty) and is absent or not an array"
+            )
+            continue
+        for position in positions:
+            if not isinstance(position, dict):
+                continue
+            pair = (position.get("path"), position.get("lineno"))
+            if not isinstance(pair[0], str) or not isinstance(pair[1], int):
+                continue
+            if pair not in expected:
+                failures.append(
+                    f"judgment.r2.{label} names {pair[0]}:{pair[1]}, which "
+                    f"{message}"
+                )
+
+    without = r2.get("lines_without_candidates")
+    if not isinstance(without, list):
+        failures.append(
+            "judgment.r2.lines_without_candidates is required on an ingested "
+            "judgment (possibly empty) and is absent or not an array"
+        )
+    else:
+        for position in without:
+            if not isinstance(position, dict):
+                continue
+            pair = (position.get("path"), position.get("lineno"))
+            if not isinstance(pair[0], str) or not isinstance(pair[1], int):
+                continue
+            if pair in every:
+                failures.append(
+                    f"judgment.r2.lines_without_candidates names "
+                    f"{pair[0]}:{pair[1]}, but the R2 payload records a mutant "
+                    f"starting on that exact line; a line cannot both have no "
+                    f"candidate and carry one"
+                )
+
+    discarded = r2.get("discarded")
+    if isinstance(discarded, bool) or not isinstance(discarded, int):
+        failures.append(
+            f"judgment.r2.discarded is required on an ingested judgment and "
+            f"must be an integer, got {discarded!r}"
+        )
+    elif discarded < 0:
+        failures.append(
+            f"judgment.r2.discarded is {discarded}; a count of invalid mutants "
+            f"cannot be negative"
+        )
+
+    tool = r2.get("producer_tool")
+    if not isinstance(tool, dict):
+        failures.append(
+            "judgment.r2 records producer 'ingested' with no producer_tool; a "
+            "verdict resting on a foreign tool's word must name the tool "
+            "(A-230a/A-361 -- declared by artifact, and said so)"
         )
 
 
@@ -1820,6 +2010,7 @@ def verify_document(document: Any) -> list[str]:
     _check_judgment_matches_claims(document, failures)
     _check_snapshot_policy(document, failures)
     _check_mutation_payload_shapes(document, failures)
+    _check_ingested_r2_agrees_with_its_payload(document, failures)
     _check_a_judged_status_carries_its_own_payload(document, failures)
     _check_helpers_have_a_judged_claim(document, failures)
 

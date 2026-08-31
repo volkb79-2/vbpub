@@ -564,14 +564,16 @@ declared artifacts:
 Commit that `.gitignore` in the same change that adds the lane, exactly as
 for a coverage artifact above.
 
-## JavaScript/TypeScript lanes (R1 only)
+## JavaScript/TypeScript lanes (R1, and R2 by ingestion)
 
-`judge.language = "javascript"` is a changed-line coverage lane over
+`judge.language = "javascript"` is a changed-line lane over
 `.js`/`.jsx`/`.ts`/`.tsx` — one language name for all four. It resolves at
-**R1 only**: R2 waits on a real architectural ruling (B037: a native JS/TS
-mutation engine, or ingesting Stryker's evidence), and R3 is unwired, so a
-lane declaring either is refused `ERROR`/`BAD_LANE_CONFIG` before anything
-runs.
+**R1** (coverage) and, since schema v9, at **R2 by evidence ingestion** — your
+own argv runs StrykerJS inside the snapshot and assay judges the report
+([below](#r2-for-javascript-by-ingesting-strykers-report-b046)). Assay still
+ships no JS/TS mutation engine, so a *native* R2 lane is still refused. **R3
+is unwired**, and a lane declaring it is refused `ERROR`/`BAD_LANE_CONFIG`
+before anything runs.
 
 ### Make your test runner emit `coverage-final.json`
 
@@ -1074,6 +1076,123 @@ changed line inside one of these files is judged like ordinary source
 (the adapter's `is_test_path` does not exempt it) against a record that can
 never show anything but uncovered — fail-closed, and visible in the verdict,
 never a silent pass.
+
+### R2 for JavaScript, by ingesting Stryker's report (B046)
+
+Assay ships no JavaScript mutation engine and does not pretend to. What it
+does instead is the thing it has always done for coverage: **your lane's own
+argv runs the mutation tool inside the private snapshot, and assay judges the
+report it wrote.** Assay never invokes Stryker, and never accepts a report it
+did not watch being produced — the report is bound to the resolved commit by
+the snapshot itself, and the declared artifact is held through the same
+single-owner reservation the coverage artifact uses, so a committed or stale
+report cannot satisfy the path.
+
+```toml
+schema_version = 2
+
+[lanes.ui_mutation]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+cwd = "applications/webapp-ui-react"
+argv = ["bash", "-c",
+  "npm ci --offline --no-audit --no-fund && npx --no-install stryker run --reporters json"]
+env = { npm_config_cache = "/opt/npm-cache", CI = "1" }
+env_passthrough = ["PATH", "HOME"]
+budget = "45m"
+allow_argv_append = false
+
+[lanes.ui_mutation.isolation]
+snapshot_selection = "repository"
+
+[lanes.ui_mutation.judge]
+language = "javascript"
+source_roots = ["applications/webapp-ui-react/src"]
+base_source = "request"
+
+[lanes.ui_mutation.judge.mutation]
+format = "mutation-report-json"
+artifact = "applications/webapp-ui-react/reports/mutation/mutation.json"
+fail_under = 100.0
+```
+
+**Set `thresholds.break: null` in your Stryker config.** This is a mandate,
+not a preference. Stryker exits non-zero when the score is under ITS OWN
+thresholds, and assay reads a non-zero exit as R0's `COMMAND_FAILED` — so a
+break threshold makes Stryker's judgment pre-empt assay's, and the lane fails
+at R0 before assay ever reads the report. With `break: null` the exit status
+carries only crash information and assay judges the score.
+
+**What assay declares, and what it deliberately does not.** `judge.mutation`
+on an ingested lane takes exactly three keys: `format`, `artifact`,
+`fail_under`. `jobs`, `max_mutants`, `operators` and `equivalence_artifact`
+are **refused at load** with a message saying why: they are assay's own
+execution policy, and assay decided none of it — Stryker's config chose the
+mutators, the concurrency and the ceiling. Declaring them in two places is the
+P1 hazard; recording them in the verdict under assay's name would be worse.
+`budget_per_candidate`, `shard_index` and `shard_count` are refused for a
+related reason: they bound or partition an execution assay performs, and here
+assay executes no mutant at all.
+
+**`fail_under` must be `100.0` in this release.** A lower floor means some
+survivors are acceptable, and verdict schema v9 has no `judgment.r2` field
+that records WHICH floor was applied — so the verdict would report PASS beside
+recorded survivors with nothing in it to explain that, and `assay verify`
+(which re-derives the R2 status from the payload's own buckets) would
+correctly call the document inconsistent. A lower value is refused with that
+explanation rather than accepted and quietly ignored. Tracked as **B050**.
+
+**The status map**, each direction chosen for the visible-failure side:
+
+| Stryker status | assay | why |
+|---|---|---|
+| `Killed` | `killed` | — |
+| `Survived` | `survived` | — |
+| `NoCoverage` | `survived`, **and** listed in `judgment.r2.survived_uncovered` | a mutant no test exercised is not killed — and it is the worst kind of survivor, so it is listed by position rather than buried in a count |
+| `Timeout` | `budget_exceeded` | Stryker's per-mutant timeout IS the per-candidate budget. Never `killed`: a mutant that hung is not one the suite caught |
+| `CompileError`, `RuntimeError` | counted in `judgment.r2.discarded` | an invalid mutant assay's native engine never emits. Excluded from the score's denominator, and counted — a report that could not compile most of its mutants measured far less than its score implies |
+| `Ignored` | **refuses the lane** | see below |
+| `Pending` | **refuses the report** | pending means the run did not finish; incomplete evidence is not weaker evidence |
+
+**An `Ignored` mutant in scope refuses the lane.** Stryker marks a mutant
+`Ignored` when your own config suppressed it (`mutator.excludedMutations`, or
+a `// Stryker disable` comment). The v9 verdict has no field that can state
+that fact, and both alternatives lie: silently dropping it is how a gate gets
+made green from inside the mutation tool's own config, and folding it into
+`discarded` would report a deliberately suppressed mutant as one that failed
+to *compile*. So assay refuses, naming the mutant. Remove the suppression, or
+move the line out of the lane's declared scope.
+
+**What the verdict records.** `judgment.r2.producer = "ingested"`;
+`producer_tool` = `{name, version, report_schema_version}` copied verbatim
+from the report and **declared by artifact, not verified** — it is not a
+`helpers[]` entry, because `helpers[]` records tools assay itself invoked;
+`survived_uncovered` (untested lines, by position, deduplicated — it lists
+places, not mutants); `discarded`; `lines_without_candidates` (in-scope
+non-blank lines the tool produced no mutant for at all).
+`kill_attribution` is `"unattributed"` and cannot be anything else: a killed
+mutant here proves the foreign tool's test command failed, not that it failed
+for the reason the mutant created. Every mutant carries its operator as
+`stryker:<MutatorName>` — a namespace assay owns, so a foreign mutator name
+can never collide with a native operator.
+
+**Scope is assay's, not the tool's.** Stryker mutated whatever its config told
+it to; which mutants COUNT is decided by your lane's `mode` — under
+`changed_lines` a mutant counts iff its start line is an added line of the
+resolved diff, under `whole_target` iff its file is a declared target. Assay
+does not read Stryker's own score.
+
+**Refusals worth knowing before you hit them.** The report's `projectRoot`
+must equal the directory your command ran in (the snapshot's project root
+joined with `cwd`) — a report produced anywhere else is an artifact from
+elsewhere. Every `files` key must resolve under a declared `source_roots`
+entry. `projectRoot` itself must be present: the upstream schema makes it
+optional, assay requires it, because it is the only field saying where the
+report's relative keys are anchored. A mutant with no `replacement`, an
+unknown status, or a `schemaVersion` major assay has never seen each refuse
+with their own message. And a command that writes no report at all is
+`NO_MEASUREMENT`, never a pass.
 
 ## Browser coverage of a UI as an R1 lane
 

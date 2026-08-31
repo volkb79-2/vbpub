@@ -95,6 +95,68 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   lane — with a message naming the slash and the fix. Write the rule without
   the slash; it then covers both the real directory and the link.
 
+- **B046 — R2 by evidence INGESTION, and `javascript` resolves at R2.**
+  `[lanes.<n>.judge.mutation] format = "mutation-report-json"` declares that
+  the lane's OWN argv runs a foreign mutation tool inside the private snapshot
+  and assay judges the `mutation-testing-report-schema` document it wrote —
+  StrykerJS, Stryker.NET and Stryker4s all emit it. This resolves **B037**,
+  and it introduces no new trust boundary: it is exactly what R1 has always
+  done for coverage, one rigor tier up. Assay never invokes the tool and never
+  accepts a report it did not watch being produced — the snapshot binds the
+  report to the resolved commit (A-161), and the declared artifact is held
+  through the same single-owner reservation coverage uses, so a committed or
+  stale report cannot satisfy the path (a git-TRACKED report refuses the lane).
+  A new `assay/mutation_parsers/` package, keyed by FORMAT and never by tool,
+  is the general shape for any future R2 producer assay has no engine for.
+- **`cli.py` registers `javascript` at `{"R1", "R2"}` — through the ingested
+  path only.** `generate_mutation_sites` is still unconditionally
+  `"UNSUPPORTED"`, and that is what MAKES this the ingested path rather than
+  an omission. A *native* JavaScript R2 lane is still not constructible: it
+  would have to declare non-empty `operators`, and there is no `javascript`
+  operator catalogue. The runner selects native vs ingested by
+  `judge.mutation.format`'s presence and by nothing else — never by language,
+  never by sniffing the artifact. R3 for `javascript` is still unwired.
+- **An ingested lane declares three keys and is refused the rest.** `format`,
+  `artifact`, `fail_under`. `jobs`, `max_mutants`, `operators` and
+  `equivalence_artifact` are **refused at load** — assay's own policy, none of
+  which assay chose here — with a message saying so; that refusal is a SECOND
+  layer beside the verdict model's, deliberately, because a `ValueError` out
+  of a dataclass is not a diagnostic for someone editing `assay.toml`.
+  `budget_per_candidate`/`shard_index`/`shard_count` are refused too: they
+  bound or partition an execution assay performs, and here assay performs none.
+- **Set `thresholds.break: null` in your Stryker config.** Stryker exits
+  non-zero under its own thresholds and assay reads a non-zero exit as R0's
+  `COMMAND_FAILED`, so a break threshold makes Stryker's judgment pre-empt
+  assay's and the lane fails before the report is ever read.
+- **`judge.mutation.fail_under` must be `100.0` in this release** (A-380). A
+  lower floor means some survivors are acceptable, and v9 has no `judgment.r2`
+  field recording WHICH floor applied — so the verdict would report PASS beside
+  recorded survivors with nothing explaining it, and `assay verify`, which
+  re-derives the R2 status from the payload's own buckets, would correctly call
+  that document inconsistent. Refused with that explanation rather than
+  accepted and ignored. Tracked as **B050**.
+- **`verify.py` now checks an ingested payload at the RAW layer, which it
+  previously did not check at all.** Every pre-existing raw R2 check is guarded
+  on `judgment.r2.operators`, which is absent by contract on an ingested
+  document — so those checks SKIPPED rather than passed, and a skipped check is
+  indistinguishable from a satisfied one. Four re-derivations were added:
+  every `survived_uncovered` position is one the `survived` bucket really
+  records; no `lines_without_candidates` position carries a mutant; `discarded`
+  is present and non-negative; `producer_tool` is present. The
+  resolved-language check now forks on `producer` in BOTH directions — a native
+  operator on an ingested document is refused exactly as an ingested one on a
+  native document is.
+- **Status map**: `Killed`→`killed`; `Survived`→`survived`;
+  `NoCoverage`→`survived` **and** listed by position in `survived_uncovered`
+  (deduplicated — it lists untested LINES, not mutants);
+  `Timeout`→`budget_exceeded`, never `killed` (A-383);
+  `CompileError`/`RuntimeError`→counted in `discarded`, excluded from the
+  score's denominator; `Pending` anywhere refuses the report; **an in-scope
+  `Ignored` mutant refuses the lane** (A-377) — v9 has no field that can say
+  "the tool was told to skip this", dropping it is how a gate gets made green
+  from inside the mutation tool's own config, and folding it into `discarded`
+  would call a suppressed mutant one that failed to compile.
+
 ### Changed
 - **BREAKING — the verdict schema is v9 (A-359).** One bump carrying all four
   of B045, B046, B043 and B041(b), because each of them lands a new key inside

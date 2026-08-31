@@ -185,28 +185,97 @@ def test_all_four_adapters_coexist_in_one_registry_each_independently_addressabl
 # --- R1-only: at R2/R3 this build's own registry refuses --------------------
 
 
-@pytest.mark.parametrize("rigor", ["R2", "R3"])
-def test_the_built_in_registry_refuses_javascript_above_r1(rigor: str):
+def test_the_built_in_registry_refuses_javascript_at_r3(rigor: str = "R3"):
     """Driven through ``cli._built_in_registry()`` itself, not a hand-built
     one: this is THIS BUILD's capability declaration, and the refusal is the
     same ``ERROR``/``BAD_LANE_CONFIG`` an entirely unregistered language gets
-    (A-139). R2 waits on B037's ruling; R3 is an unwired fast-follow."""
+    (A-139).
+
+    **B046 removed R2 from this refusal, deliberately.** R2 is now registered
+    -- through the INGESTED path only: the lane's own argv runs StrykerJS in
+    the private snapshot and assay judges the report, so
+    ``generate_mutation_sites`` is still unconditionally ``"UNSUPPORTED"`` and
+    a NATIVE javascript R2 lane is still not constructible (it would have to
+    declare non-empty ``operators``, and no ``javascript`` operator catalogue
+    exists). See ``test_the_registry_does_not_open_the_NATIVE_r2_path`` below,
+    which is what keeps that guarantee tested rather than assumed.
+
+    R3 stays refused: the two canary injection methods are real
+    implementations, but a producer path is a separate claim from a method
+    existing (DESIGN-GUIDE §7), and no real canary PAIR has ever run.
+    """
     with pytest.raises(AssayError) as excinfo:
         get_adapter(_built_in_registry(), "javascript", rigor)
 
     assert excinfo.value.outcome is Outcome.ERROR
     assert excinfo.value.reason_code is ReasonCode.BAD_LANE_CONFIG
     assert "javascript" in str(excinfo.value)
-    assert "['R1']" in str(excinfo.value)
+    assert "['R1', 'R2']" in str(excinfo.value)
 
 
-def test_the_built_in_registry_resolves_javascript_at_r1_the_must_succeed_control():
-    """The paired must-succeed control: the identical registry, at the ONE
-    level it declares, resolves cleanly rather than refusing everything."""
-    adapter = get_adapter(_built_in_registry(), "javascript", "R1")
+@pytest.mark.parametrize("rigor", ["R1", "R2"])
+def test_the_built_in_registry_resolves_javascript_at_r1_and_r2(rigor: str):
+    """The paired must-succeed control: the identical registry, at the levels
+    it declares, resolves cleanly rather than refusing everything."""
+    adapter = get_adapter(_built_in_registry(), "javascript", rigor)
 
     assert isinstance(adapter, JavaScriptAdapter)
     assert adapter.name == "javascript"
+
+
+def test_the_registry_does_not_open_the_NATIVE_r2_path(project):
+    """B046's load-bearing negative: registering ``javascript`` at R2 admits
+    the INGESTED path and nothing else.
+
+    Two independent things still refuse a native javascript R2 lane, and
+    neither is this registry. First, the config loader: a native R2 lane must
+    declare non-empty ``judge.mutation.operators``, and
+    ``MUTATION_OPERATORS_BY_LANGUAGE`` has no ``javascript`` entry, so every
+    operator such a lane could spell is FOREIGN to it. Second, the adapter
+    itself: ``generate_mutation_sites`` is unconditionally ``"UNSUPPORTED"``,
+    which ``run_mutation`` renders as
+    ``INCONCLUSIVE``/``MUTATION_UNSUPPORTED`` -- a stated absence of
+    capability, never a PASS.
+    """
+    from assay.config import load_lane_file
+    from assay.errors import LaneConfigError
+    from assay.vocabulary import MUTATION_OPERATORS_BY_LANGUAGE
+
+    assert "javascript" not in MUTATION_OPERATORS_BY_LANGUAGE
+    assert JavaScriptAdapter().generate_mutation_sites(
+        "export const x = 1\n", {1}, operators=(), limit=10
+    ) == "UNSUPPORTED"
+
+    project.dir("src")
+    native_js_r2 = """\
+schema_version = 2
+
+[lanes.ui]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["npx", "stryker", "run"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "10m"
+allow_argv_append = false
+
+[lanes.ui.isolation]
+snapshot_selection = "repository"
+
+[lanes.ui.judge]
+language = "javascript"
+source_roots = ["src"]
+base = "main"
+
+[lanes.ui.judge.mutation]
+jobs = 1
+max_mutants = 10
+operators = ["python:compare-swap"]
+"""
+    with pytest.raises(LaneConfigError) as excinfo:
+        load_lane_file(project.write(native_js_r2))
+    assert "javascript" in str(excinfo.value)
 
 
 def test_the_built_in_registry_still_refuses_an_unregistered_language():
@@ -230,5 +299,6 @@ def test_the_built_in_registry_names_exactly_the_languages_this_build_reaches():
     assert {name: sorted(entry.rigor) for name, entry in entries.items()} == {
         "python": ["R1", "R2", "R3"],
         "sql": ["R2"],
-        "javascript": ["R1"],
+        # B046: javascript gained R2, through the INGESTED path only.
+        "javascript": ["R1", "R2"],
     }

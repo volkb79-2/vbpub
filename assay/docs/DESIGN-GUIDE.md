@@ -1395,6 +1395,45 @@ database is a separate producer whose structured result may be consumed as
 Tier-2 adjudicated evidence; it is not a `LanguageAdapter` shortcut around the
 source/snapshot contract.
 
+**Ingested R2 (B046, schema v9): the same sentence with the producer
+substituted.** For a language Assay ships no mutation engine for, R2 may be
+computed over a report a foreign mutation tool wrote — and this is not a new
+trust boundary, it is the one R1 has always had. R1 ingests foreign evidence
+by construction: the lane's argv runs a coverage tool inside the private
+snapshot, the tool writes an artifact at a declared path, and Assay reads it
+through a FORMAT-keyed registry and computes the judgment. Ingested R2 is that
+paragraph with "mutation" substituted. Assay never invokes the tool itself and
+never accepts a report it did not watch being produced: the lane's own argv
+runs it inside the snapshot, so the report is bound to the resolved commit
+exactly as `coverage-final.json` is (A-161), and the declared artifact is held
+through the same single-owner reservation, so a committed or stale report
+cannot satisfy the path.
+
+**Scope stays Assay's computation, never the tool's.** The foreign tool
+mutated whatever its own configuration told it to; which of those mutants
+COUNTS is decided by Assay's own rule — under `changed_lines` a mutant counts
+iff its start line is an added line of the resolved diff, under
+`whole_target` iff its file is a declared target. Reading the tool's own score
+would be judging by a scope the lane never declared.
+
+**The tier statement, which is the whole reason this is expressible at all.**
+A verdict distinguishes Tier-1-computed-natively from
+Tier-1-computed-over-ingested-evidence, and it does so in the document rather
+than in a consumer's assumptions: `judgment.r2.producer` is required and is
+either `native` or `ingested`, and it FORKS the object. Under `ingested`,
+`jobs`, `max_mutants`, `operators` and `equivalence_artifact` are **forbidden**
+— they are Assay's own policy, and Assay chose none of it for a run it did not
+orchestrate. Filling them from the report would put the foreign tool's
+configuration on the wire under Assay's name, the same declared-versus-verified
+conflation A-230a keeps `helpers[]` clean of. The producer's own identity is
+recorded in `judgment.r2.producer_tool`, copied verbatim from the report and
+documented as **declared by artifact, not verified** — it is not a `helpers[]`
+entry, because `helpers[]` records tools Assay itself invoked. The operators
+the tool actually applied are not lost by any of this: they are on the wire,
+one per mutant, namespaced under a prefix Assay owns (`stryker:<mutatorName>`,
+admitted by an open pattern branch beside the three closed per-language enums)
+so a foreign name can never be confused for a native one.
+
 Consequently, R2 judges the selected mutation catalogue over the changed
 tracked source in scope. It never silently upgrades itself into a whole-project
 or whole-deployed-schema audit. Language-specific operator catalogues and an
