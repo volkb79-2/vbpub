@@ -190,3 +190,33 @@ and the loop keeps moving. Full memory: `autonomous-loop-report-vs-pause`.
   per the reviewer, acknowledge in the REPORT, do not chase a fix. Next
   free decisions.md row: A-384. Dispatching a fresh fix-round implementer
   now, seeded with the complete verdict text.
+
+- **2026-08-31 (fix round 1 — 6/8 committed, mid-gate)** — BLOCKER 1
+  (`52b1f86b`: manifest lookup replaces the symlink-following `is_dir()`,
+  symlink `cwd` refused, load-time pair refusal, 5th `cwd` join routed
+  through `resolve_run_cwd`, reproduction test verified to fail against the
+  OLD check), MUST-FIX 2/3 + the bundled W5 ingested-R2 fixture
+  (`4780c4ba`: real raw ORDER checks built rather than prose walked back,
+  closed `_R2_PRODUCERS` vocabulary, W5 regenerated with a real generated
+  ingested verdict, gate phase 6 now 47 passed vs 44), MUST-FIX 4/6
+  (`9848d5ca`: major-2 dropped, B037 docstring corrected) all committed.
+  Correct judgment call, endorsed: dropped the `!` from the blocker commit
+  so the wave keeps exactly one breaking-change marker (`af14021f` alone).
+  MUST-FIX 5 (report's honest gate transcript) is PENDING — needs the
+  currently-running gate's real output, correctly not faked.
+  **Self-caught bookkeeping gap, my own miss**: the reviewer's round-1
+  addendum separately recommended filing a NEW backlog item for "no
+  `assay verify` re-read of the ingested report's per-file `source` against
+  the snapshot's committed bytes" as **B051** — I endorsed that
+  recommendation in chat and the prior log entry, but then wrote a
+  DIFFERENT finding (the unwitnessed `judgment.r2.discarded`, from the
+  verdict's own Notes §1) into the fix-round dispatch and mislabeled it
+  "B052" without checking whether B051 was already taken. **It was not** —
+  the fix-round implementer correctly noticed `4-backlog.md` had no B051
+  yet and filed the discarded-count item there instead of leaving a
+  phantom gap, which was the right call. **Net effect: the reviewer's
+  ORIGINAL B051 recommendation (ingested source-byte verification) is
+  still unfiled.** Will instruct the fix-round agent to file it as B052
+  (the next real free number) once it resumes with the gate result — not
+  urgent enough to interrupt its wait, which it explicitly said not to
+  poll (using its own monitor).
