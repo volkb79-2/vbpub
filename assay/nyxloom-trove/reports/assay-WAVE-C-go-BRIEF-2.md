@@ -63,9 +63,10 @@ three options are laid out in the entry.
 
 ## 4. Gate
 
-**PASS on `4408622b`** — all 11 phases, `ASSAY_REGISTERED_GATE_COMPLETE=1`,
-`GATE_EXIT=0`. Full transcript in REPORT §6. A re-run on the new tip (this
-brief's commit) is recorded there too; **do not start the wiring on a tip whose
+**PASS on `4408622b`, and PASS again on `428f69e2`** (the tip this brief
+commits) — 11 phases, `ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0` both
+times. Full transcripts in REPORT §6. The tip you inherit is gate-green; the
+only commit after run 3 is docs-only. **Do not start the wiring on a tip whose
 gate you have not read.**
 
 Two live wrapper-vs-job exit-code incidents are recorded in REPORT §7 — the

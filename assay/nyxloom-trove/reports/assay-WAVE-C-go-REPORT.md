@@ -233,10 +233,31 @@ GATE_EXIT=0
 
 All 11 phases, completion marker present, exit 0.
 
-**A later commit lands after this run** (the packaging declaration, its test,
-A-394..A-396 and B054), so the gate is re-run on the new tip and that verdict
-is appended below. Nothing in this report claims green on a commit the gate did
-not judge.
+### Run 3 — PASS, on commit `428f69e2` (the current tip)
+
+Re-run after the packaging declaration, its test, A-394..A-396 and B054 landed,
+because run 2's verdict belongs to `4408622b` and to nothing after it.
+
+```text
+ASSAY_GATE_PHASE=wheel-installed
+... (11 phases, identical sequence to run 2) ...
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+GATE_EXIT=0
+```
+
+11 phases, completion marker present, exit 0, no `FAILED`/`ERROR` lines. This
+run matters more than run 2 for the packaging change specifically: the gate's
+own `wheel-installed` phase builds a real wheel and installs it into a clean
+run-venv, so `tests/test_go_helper_is_packaged.py` executed against a genuine
+install rather than the source tree — which is the shape A-335 was recorded
+for.
+
+**The only commit after this run is docs-only** (this section, the LOG entry
+and BRIEF-2's gate line). No source, test or packaging file changes after
+`428f69e2`. Nothing in this report claims green on a commit the gate did not
+judge.
 
 ---
 

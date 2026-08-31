@@ -142,7 +142,7 @@ being reported to me as "exit code 0" — REPORT §7.
 
 ---
 
-## `<pending>` — feat(assay): declare the Go helper as package data, and correct my own blocker claim
+## `428f69e2` — feat(assay): declare the Go helper as package data, and correct my own blocker claim
 
 **Files**
 
@@ -183,3 +183,15 @@ resolution, and the `go run .` one-directory layout. Its first draft matched
 the word "requirements" inside the `go.mod`'s own comment, so the check now
 parses directives instead of substring-matching; the comment says so, because a
 test that reads comments as directives is testing the documentation.
+
+**Gate: PASS on this commit** (run 3) — 11 phases,
+`ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0`, no failures. The
+`wheel-installed` phase builds and installs a real wheel, so the new packaging
+test ran against a genuine install, not the source tree.
+
+---
+
+## `<pending>` — docs(assay): Wave C checkpoint 2 — gate verdict for 428f69e2
+
+Docs only: REPORT §6 run 3, BRIEF-2's gate line, this entry. No source, test or
+packaging file changes, so the gate-green claim for `428f69e2` stands.
