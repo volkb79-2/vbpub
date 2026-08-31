@@ -1404,3 +1404,52 @@ are the ONE thing CIU deliberately makes repo-root-relative via
 schema/template paths) resolves **stack-dir-relative**, not repo-root-
 relative — the two conventions genuinely differ within the same stack. See
 S8.1a for the full accounting and why.
+
+## 19. `--define-root` now works (and is required, absent it, alongside ambient `REPO_ROOT`) on `ciu`'s remote/listing verbs (S1.1, CIU-54)
+
+**Affected verbs:** the `--host` branches of `render`/`up`/`down`/`health`,
+`up --layout`, `layouts`, `host-secrets`, `ssh`.
+
+Before ciu-P45, these 8 call sites resolved `repo_root` with a bare
+`Path(os.environ.get("REPO_ROOT", Path.cwd()))` — a THIRD, informal
+resolution strategy alongside `dev.resolve_repo_root` (walk-up, `dev`/
+`worktree`) and `deploy.resolve_repo_root` (explicit-or-ambient, every other
+`up`/`down`/`health`/`render`/`check`/`graph`/`clean`/`profiles` branch).
+`--define-root` was silently ignored on all 8: passing it did nothing
+locally, and on the `--host`/`ssh` branches an unconsumed `--define-root`
+even leaked into the ONE remote command string forwarded to the target
+host's own `ciu` — a local path re-parsed in a foreign context. On four of
+these verbs (`render`/`up`/`down`/`health`) this was worse than merely
+undocumented: `--define-root` was ALREADY listed in `ciu <verb> --help`'s
+general options as if it applied verb-wide, so the `--host` branch silently
+broke its own documented contract.
+
+**The fix routes all 8 sites through `deploy.resolve_repo_root`** — the SAME
+resolver each of these verbs' own local/profile-based branch already uses
+(plain `ciu up` routes into `deploy.main`, which calls
+`deploy.resolve_repo_root`), rather than `dev.resolve_repo_root`'s
+walk-up-from-cwd. This was a deliberate choice, not the only one considered:
+walk-up fits `dev`/`worktree`'s "which repo am I standing in" question, not
+these verbs' remote-push/listing shape, and adopting it here would have made
+e.g. plain `ciu up` resolve one way and `ciu up --host x` resolve a
+DIFFERENT way depending on which branch ran — a worse inconsistency than the
+one being fixed. See `docs/SPEC.md` S1.1a.
+
+> **This is a BREAKING change.** `deploy.resolve_repo_root` requires ambient
+> `REPO_ROOT` to be set (or `--define-root` given explicitly) — **there is NO
+> cwd fallback**. Previously, running one of these 8 verbs from inside a repo
+> whose `ciu.env` had never been sourced (no ambient `REPO_ROOT`) silently
+> worked, using the current directory. It now refuses: `[ERROR] REPO_ROOT not
+> set. Run 'ciu env generate' and source ciu.env.` **If you have a script or
+> habit that runs `ciu ssh`, `ciu layouts`, `ciu host-secrets`, or `ciu
+> up`/`down`/`health`/`render --host`/`--layout` without first running `ciu
+> env generate` and `eval "$(ciu env print)"` (or equivalently `source
+> ciu.env`)**, either source it first or pass `--define-root <path>`
+> explicitly. Separately, an operator who WAS already passing `--define-root`
+> on one of these 8 verbs while ambient `REPO_ROOT` disagreed will now see a
+> `[S1.1]`-tagged refusal instead of the flag being silently ignored — the
+> intended CIU-54 fix, not a regression: it now does what the flag's own name
+> says. There is no dstdns/vbpub consumer script or CI job affected today (no
+> shipped `.sh`/CI invokes any of these 8 verbs without first sourcing
+> `ciu.env`), but an interactive operator's own shell habit, or a downstream
+> consumer's own script, may be.

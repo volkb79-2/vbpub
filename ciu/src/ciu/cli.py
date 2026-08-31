@@ -234,10 +234,12 @@ ciu profiles
   List available host profiles. Takes no options.
 """,
     "layouts": """\
-ciu layouts
+ciu layouts [--define-root PATH]
   List declared deploy layouts ([deploy.layouts.<name>]) with their
-  environment and ordered host list (S7.5c). Takes no options; shows what is
-  DECLARED — `ciu up --layout` is the validating consumer.
+  environment and ordered host list (S7.5c). Shows what is DECLARED —
+  `ciu up --layout` is the validating consumer.
+
+  --define-root PATH override repo root (alias: --root-folder)
 """,
     "up": """\
 ciu up [--profile NAME | --dir PATH | --layout NAME] [selection/options]
@@ -410,7 +412,7 @@ ciu secrets reset [-d PATH] [--name N] [-y] [--define-root PATH]
   -y, --yes      assume yes to prompts
 """,
     "host-secrets": """\
-ciu host-secrets <host> [--materialize | --list | --path NAME] [-y]
+ciu host-secrets <host> [--materialize | --list | --path NAME] [-y] [--define-root PATH]
   Host-scoped local secrets (S14.3a / CIU-35): ASK_EXTERNAL / GEN_LOCAL
   entries declared under [deploy.hosts.<host>.secrets], materialized under
   the project store's hosts/<host>/ namespace — resolvable BEFORE any Vault
@@ -422,6 +424,7 @@ ciu host-secrets <host> [--materialize | --list | --path NAME] [-y]
   --list          print entry names + store-file existence (never values)
   --path NAME     print the store file path for one declared entry
   -y, --yes       with --materialize, skip interactive prompts (S4.13)
+  --define-root PATH override repo root (alias: --root-folder)
 """,
     "check": """\
 ciu check [--profile NAME] [--live] [--json] [--phases N,M] [--define-root PATH]
@@ -449,13 +452,16 @@ ciu graph [--format mermaid|dot|json] [--profile NAME] [--phases N,M]
   --define-root PATH override repo root (alias: --root-folder)
 """,
     "ssh": """\
-ciu ssh <host> [--admin] [-- <cmd...>]
+ciu ssh <host> [--admin] [--define-root PATH] [-- <cmd...>]
   Open an interactive shell or run a command on a remote host.
   Host config is read from .ciu.hosts.toml or ~/.ciu/hosts.toml.
 
-  <host>         name of the host in the hosts inventory
-  --admin        use the admin key/user (higher-privilege access)
-  -- <cmd...>    command to run (default: interactive shell)
+  <host>              name of the host in the hosts inventory
+  --admin             use the admin key/user (higher-privilege access)
+  --define-root PATH  override repo root (alias: --root-folder); must
+                      precede `--` — anything after `--` is the remote
+                      command and is never parsed as a CIU flag
+  -- <cmd...>         command to run (default: interactive shell)
 """,
 }
 
@@ -486,6 +492,91 @@ def _resolve_repo_root_cli(define_root: Path | str | None, start_dir: Path) -> P
 
     try:
         return resolve_repo_root(define_root, start_dir)
+    except ValueError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        raise SystemExit(2)
+
+
+def _extract_define_root(rest: list[str]) -> tuple[Path | None, list[str]]:
+    """Pull ``--define-root``/``--root-folder`` out of *rest* first, before any
+    other local parsing on one of CIU-54's 8 fixed sites (S1.1): the
+    ``--host`` branches of ``render``/``up``/``down``/``health``, ``up
+    --layout``, ``layouts``, ``host-secrets``, ``ssh``.
+
+    Consumed here, NOT left in the returned remainder. Every one of these 8
+    sites either forwards its remainder verbatim into a REMOTE argv
+    (``render``/``up``/``down``/``health --host``'s ``ssh_exec``/
+    ``_push_host`` calls, ``ssh``'s ``cmd_argv``) or hands it to a stricter
+    downstream parser (``_parse_layout_argv``'s forbidden-flag guard, whose
+    registered flags deliberately keep distinct second characters so no
+    abbreviation is ambiguous — see its own docstring, and ``_flag_given``'s,
+    on exactly this hazard). A LOCAL ``--define-root`` value names a path on
+    THIS machine; forwarding it would be nonsensical on the remote side (a
+    foreign local path re-parsed by a remote ``ciu``) and, on the layout
+    side, ``--define-root``/``--dir`` share second character 'd' — the
+    layout guard's own docstring already flags ``--d`` as "genuinely
+    ambiguous against ``--define-root PATH``". Extracting it first, with its
+    own single-purpose parser, sidesteps both: nothing survives to leak
+    remotely, and ``_parse_layout_argv`` never has to reason about an 8th
+    registered flag.
+
+    ``allow_abbrev=False`` is deliberate, not the argparse default: this
+    parser runs BEFORE each site's own flag vocabulary is known to it, so it
+    cannot verify an abbreviation is unambiguous the way a single shared
+    parser can (the way ``dev``/``worktree``/``env``/``secrets``/``check``/
+    ``graph``/plain ``up`` register ``--define-root`` directly in their OWN
+    one parser). Concretely, on ``up --layout``: ``test_up_layout_refuses_
+    every_abbreviated_forbidden_flag_*_form`` (ciu-P29) pins EVERY
+    abbreviation length of ``--dir``/``--rollback``, down to bare ``--d``/
+    ``--r``, as caught by ``_parse_layout_argv``'s forbidden-flag guard —
+    exactly the prefixes ``--define-root``/``--root-folder`` would otherwise
+    claim first. Requiring the full flag name (the ``--flag=value`` form is
+    unaffected by ``allow_abbrev`` and still works) means a short abbreviation
+    always falls through to the site's own parser unclaimed, so no existing
+    abbreviation contract anywhere in this module can regress.
+    """
+    import argparse as _ap
+
+    p = _ap.ArgumentParser(add_help=False, allow_abbrev=False)
+    p.add_argument("--define-root", "--root-folder", dest="define_root",
+                   type=Path, default=None, metavar="PATH")
+    opts, remaining = p.parse_known_args(rest)
+    return opts.define_root, remaining
+
+
+def _resolve_repo_root_deploy(define_root: Path | str | None) -> Path:
+    """Resolve repo_root for a REMOTE/push-deploy or listing CLI branch (S1.1,
+    CIU-54), or exit cleanly on refusal — the sibling of
+    ``_resolve_repo_root_cli`` above, routed through ``deploy.py``'s resolver
+    instead of ``dev.py``'s.
+
+    These 8 sites are usage siblings of `deploy.py`'s own local/profile-based
+    branches of the SAME verbs: plain ``ciu up`` (no ``--host``/``--layout``/
+    ``--dir``) already routes into ``deploy.main``, which resolves repo_root
+    via ``deploy.resolve_repo_root`` — explicit ``--define-root`` always wins
+    outright, with a disagreement-refusal against a conflicting ambient
+    ``$REPO_ROOT``; without it, ambient ``$REPO_ROOT`` is REQUIRED (no cwd
+    fallback — ``deploy.WorkspaceEnvError`` otherwise). Routing these 8 sites
+    through the SAME function keeps a verb's resolution IDENTICAL across its
+    ``--host``/``--layout`` branch and its local branch, rather than a third,
+    bespoke strategy (the bug CIU-54 fixes) or ``dev.resolve_repo_root``'s
+    walk-up-from-cwd, which would make e.g. plain ``ciu up`` resolve one way
+    and ``ciu up --host x`` resolve a DIFFERENT way depending on which
+    branch happened to run — a worse inconsistency than the one being fixed.
+    Walk-up also suits `dev`/`worktree`'s local-repo-identity question, not
+    these sites' remote-push/listing usage shape (CIU-54's own reasoning,
+    verified against the code before adopting it).
+
+    Mirrors ``_resolve_repo_root_cli``'s exit contract: a ``[S1.1]``-tagged /
+    "REPO_ROOT not set" ``ValueError`` (``deploy.WorkspaceEnvError`` is a
+    ``ValueError`` subclass) becomes ``[ERROR] ...`` + ``SystemExit(2)``,
+    never a raw traceback (O3). Imported late, matching every other call
+    site in this module.
+    """
+    from .deploy import resolve_repo_root
+
+    try:
+        return resolve_repo_root(define_root)
     except ValueError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         raise SystemExit(2)
@@ -1676,10 +1767,11 @@ def main() -> None:
     elif verb == "render":
         if _flag_given(rest, "--host"):
             import argparse as _ap
+            define_root, rest = _extract_define_root(rest)
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
             opts, remaining = p.parse_known_args(rest)
-            repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+            repo_root = _resolve_repo_root_deploy(define_root)
             config = _load_remote_config(repo_root)
             from .hosts import get_host
             from .transport_ssh import ssh_exec
@@ -1700,7 +1792,8 @@ def main() -> None:
     elif verb == "layouts":
         # S7.5c — pure listing of DECLARED layouts (no validation, no
         # inventory requirement); `ciu up --layout` is the validating consumer.
-        repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+        define_root, rest = _extract_define_root(rest)
+        repo_root = _resolve_repo_root_deploy(define_root)
         config = _load_remote_config(repo_root)
         from .deploy_pkg.layouts import list_layouts
         rows = list_layouts(config)
@@ -1728,6 +1821,14 @@ def main() -> None:
             # remotely and silently overrode every host's bundles. The check
             # is now argparse's own resolution rather than a hand-rolled
             # string match — see _parse_layout_argv.
+            #
+            # ciu-P45 (CIU-54): --define-root is extracted BEFORE
+            # _parse_layout_argv sees `rest` at all, rather than registered
+            # on that parser directly — --define-root and --dir share second
+            # character 'd' (see _extract_define_root's own docstring), and
+            # _parse_layout_argv's forbidden-flag set is deliberately kept to
+            # distinct second characters.
+            define_root, rest = _extract_define_root(rest)
             layout_name, remaining, forbidden = _parse_layout_argv(rest)
             if forbidden:
                 print(
@@ -1741,7 +1842,7 @@ def main() -> None:
                     file=sys.stderr,
                 )
                 raise SystemExit(2)
-            repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+            repo_root = _resolve_repo_root_deploy(define_root)
             config = _load_remote_config(repo_root)
             from .deploy_pkg.layouts import resolve_layout
             from .hosts import get_host, load_hosts
@@ -1789,13 +1890,14 @@ def main() -> None:
         elif _flag_given(rest, "--host"):
             # Remote push-deploy path
             import argparse as _ap
+            define_root, rest = _extract_define_root(rest)
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
             p.add_argument("--thin", action="store_true", default=False)
             p.add_argument("--bootstrap", action="store_true", default=False)
             p.add_argument("--rollback", action="store_true", default=False)
             opts, remaining = p.parse_known_args(rest)
-            repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+            repo_root = _resolve_repo_root_deploy(define_root)
             config = _load_remote_config(repo_root)
             from .hosts import get_host
             host_cfg = get_host(repo_root, opts.host)
@@ -1854,10 +1956,11 @@ def main() -> None:
     elif verb == "down":
         if _flag_given(rest, "--host"):
             import argparse as _ap
+            define_root, rest = _extract_define_root(rest)
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
             opts, remaining = p.parse_known_args(rest)
-            repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+            repo_root = _resolve_repo_root_deploy(define_root)
             config = _load_remote_config(repo_root)
             from .hosts import get_host
             from .transport_ssh import ssh_exec
@@ -1883,11 +1986,12 @@ def main() -> None:
         # half-closed. Same predicate, no other change to this branch.
         if _flag_given(rest, "--host"):
             import argparse as _ap
+            define_root, rest = _extract_define_root(rest)
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
             p.add_argument("--thin", action="store_true", default=False)
             opts, remaining = p.parse_known_args(rest)
-            repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+            repo_root = _resolve_repo_root_deploy(define_root)
             config = _load_remote_config(repo_root)
             from .hosts import get_host
             host_cfg = get_host(repo_root, opts.host)
@@ -1996,6 +2100,7 @@ def main() -> None:
         # are NEVER printed and materialization never happens implicitly inside
         # transport verbs.
         import argparse as _ap
+        define_root, rest = _extract_define_root(rest)
         p = _ap.ArgumentParser(add_help=False)
         p.add_argument("host", nargs="?", default=None)
         p.add_argument("--materialize", action="store_true", default=False)
@@ -2017,7 +2122,7 @@ def main() -> None:
                 file=sys.stderr,
             )
             raise SystemExit(2)
-        repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+        repo_root = _resolve_repo_root_deploy(define_root)
         from .hosts import get_host_secrets
         try:
             specs = get_host_secrets(repo_root, opts.host)
@@ -2087,12 +2192,16 @@ def main() -> None:
         else:
             ssh_rest = rest
             cmd_argv = []
+        # --define-root is extracted from ssh_rest only (S1.1, CIU-54) —
+        # never from cmd_argv, which is the literal remote command and must
+        # pass through untouched even if it happens to contain that spelling.
+        define_root, ssh_rest = _extract_define_root(ssh_rest)
         opts = p.parse_args(ssh_rest)
         if not opts.host:
             print("ciu ssh: missing <host>. Run 'ciu ssh --help'.", file=sys.stderr)
             raise SystemExit(2)
-        # Resolve repo root from env
-        repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+        # Resolve repo root (S1.1, CIU-54)
+        repo_root = _resolve_repo_root_deploy(define_root)
         config = _load_remote_config(repo_root)
         host_cfg = get_host(repo_root, opts.host, admin=opts.admin)
         interactive = len(cmd_argv) == 0
