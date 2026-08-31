@@ -181,7 +181,20 @@ SNAPSHOT_SELECTIONS: frozenset[str] = frozenset(
     {"repository", "repository-minus-unsafe-symlinks"}
 )
 
-_ISOLATION_FIELDS: tuple[str, ...] = ("snapshot_selection", "unsafe_symlink_omissions")
+_ISOLATION_FIELDS: tuple[str, ...] = (
+    "snapshot_selection",
+    "unsafe_symlink_omissions",
+    # (B041(b), schema v9) paths symlinked IN from the invoking checkout.
+    "link_paths",
+)
+
+#: (B041(b)) The bound on a declared `link_paths` list, deliberately equal to
+#: `MAX_UNSAFE_SYMLINK_OMISSIONS` and deliberately declared separately. The
+#: two lists mean OPPOSITE things -- one names what the snapshot left out,
+#: the other what was linked in -- and a shared constant would make one bound
+#: change silently move the other (A-366's own transcription reasoning, one
+#: constant over).
+MAX_LINK_PATHS = 64
 
 #: (§3.2) "contains 1 through 64 strings. Empty omission mode is refused; use
 #: `\"repository\"` instead." A cap, never derived from a measured repository
@@ -641,9 +654,27 @@ class IsolationConfig:
 
     snapshot_selection: str
     unsafe_symlink_omissions: tuple[str, ...]
+    #: (B041(b), schema v9) Repo-top-relative directories symlinked from the
+    #: INVOKING CHECKOUT into every snapshot this lane creates, immediately
+    #: after ``read-tree`` and before any command runs. Empty -- the only
+    #: value that existed before v9 -- means the snapshot is purely committed
+    #: objects.
+    #:
+    #: Defaulted, unlike this class's other two fields, and for a reason that
+    #: does not apply to them: ``unsafe_symlink_omissions`` has two meanings
+    #: for "empty" (``repository`` mode's *derived* empty and an omission
+    #: mode's *refused* empty), which is why it may not default. ``link_paths``
+    #: has exactly one -- nothing was linked -- so a default cannot collapse
+    #: two states here.
+    #:
+    #: **Independent of ``snapshot_selection``** (A-366): linking content IN
+    #: is orthogonal to the unsafe-symlink omission policy, and a lane may
+    #: declare this under either selection.
+    link_paths: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         where = "IsolationConfig"
+        self._check_link_paths(where)
         if (
             not isinstance(self.snapshot_selection, str)
             or self.snapshot_selection not in SNAPSHOT_SELECTIONS
@@ -686,10 +717,52 @@ class IsolationConfig:
                     f"not silently sort a declared list"
                 )
 
+    def _check_link_paths(self, where: str) -> None:
+        """(B041(b) rule 1, the SPELLING half) -- the grammar, the bound and
+        the strict ascending order.
+
+        EXISTENCE is deliberately not checked here, and that is the one place
+        this key departs from `cwd` beside it. B041(b)'s own contract makes an
+        absent link path ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` -- "a
+        declared prerequisite the environment did not provide" -- not
+        ``BAD_LANE_CONFIG``, because the whole point of the key is that the
+        directory is built by the ENVIRONMENT (an image-baked ``npm ci``, a
+        mounted cache) rather than committed. The same lane file is correct on
+        a machine that has run the install and incorrect on one that has not,
+        so the lane file is not what is wrong, and refusing it at load would
+        misname the fault. :mod:`assay.isolation` checks existence at
+        materialisation, where the environment is actually in view.
+        """
+        if not isinstance(self.link_paths, tuple):
+            raise LaneConfigError(
+                f"{where}: 'link_paths' must be a tuple, got {self.link_paths!r}"
+            )
+        if len(self.link_paths) > MAX_LINK_PATHS:
+            raise LaneConfigError(
+                f"{where}: 'link_paths' declares {len(self.link_paths)} "
+                f"entries, exceeding the ceiling of {MAX_LINK_PATHS}"
+            )
+        encoded: list[bytes] = []
+        for index, item in enumerate(self.link_paths):
+            validated = _validate_omission_path(
+                item, where=where, field=f"link_paths[{index}]"
+            )
+            encoded.append(validated.encode("utf-8"))
+        for previous, current in zip(encoded, encoded[1:]):
+            if not previous < current:
+                raise LaneConfigError(
+                    f"{where}: 'link_paths' must be strictly ascending by the "
+                    f"UTF-8 bytes of the canonical spelling, got "
+                    f"{list(self.link_paths)}; the loader does not silently "
+                    f"sort a declared list"
+                )
+
     def as_declared(self) -> dict[str, Any]:
         declared: dict[str, Any] = {"snapshot_selection": self.snapshot_selection}
         if self.unsafe_symlink_omissions:
             declared["unsafe_symlink_omissions"] = list(self.unsafe_symlink_omissions)
+        if self.link_paths:
+            declared["link_paths"] = list(self.link_paths)
         return declared
 
 
@@ -1255,6 +1328,22 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
             f"{where}: 'isolation.snapshot_selection' must be one of "
             f"{sorted(SNAPSHOT_SELECTIONS)}, got {selection!r}"
         )
+    # (B041(b)/A-366) Read BEFORE the selection fork and passed to both
+    # branches: `link_paths` is independent of `snapshot_selection`, and
+    # reading it inside one branch is how a key silently becomes legal under
+    # only one selection.
+    link_paths: tuple[str, ...] = ()
+    if "link_paths" in value:
+        link_paths = tuple(
+            _as_str_list(value["link_paths"], where, "isolation.link_paths")
+        )
+        if not link_paths:
+            raise LaneConfigError(
+                f"{where}: 'isolation.link_paths' is declared but empty; omit "
+                f"the key instead -- an empty list and an absent one would "
+                f"otherwise be two spellings of the same fact, and the verdict "
+                f"records this by ABSENCE (A-051)"
+            )
     has_omissions = "unsafe_symlink_omissions" in value
     if selection == "repository":
         if has_omissions:
@@ -1262,7 +1351,11 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
                 f"{where}: 'isolation.unsafe_symlink_omissions' is forbidden "
                 f"under snapshot_selection = 'repository'"
             )
-        return IsolationConfig(snapshot_selection=selection, unsafe_symlink_omissions=())
+        return IsolationConfig(
+            snapshot_selection=selection,
+            unsafe_symlink_omissions=(),
+            link_paths=link_paths,
+        )
     if not has_omissions:
         raise LaneConfigError(
             f"{where}: missing required field "
@@ -1272,7 +1365,11 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
     omissions = _as_str_list(
         value["unsafe_symlink_omissions"], where, "isolation.unsafe_symlink_omissions"
     )
-    return IsolationConfig(snapshot_selection=selection, unsafe_symlink_omissions=tuple(omissions))
+    return IsolationConfig(
+        snapshot_selection=selection,
+        unsafe_symlink_omissions=tuple(omissions),
+        link_paths=link_paths,
+    )
 
 
 def _load_targets(value: Any, where: str) -> tuple[str, ...]:

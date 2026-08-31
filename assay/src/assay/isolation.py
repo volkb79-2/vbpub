@@ -639,7 +639,113 @@ class SnapshotRepository:
         )
         (git_dir / "HEAD").write_text(f"{commit}\n", encoding="ascii")
         self._verify(root, git_dir, commit, run)
+        self._plant_link_paths(root, run)
         return commit
+
+    def _plant_link_paths(self, root: Path, run: Callable[..., bytes]) -> None:
+        """(B041(b) rules 1-4) Materialise the declared ``link_paths`` as
+        symlinks from the INVOKING CHECKOUT into *root*.
+
+        Called from :meth:`_build`, which every snapshot this repository ever
+        yields goes through -- the lane's baseline, every R2 mutant's own
+        replacement snapshot, and both R3 canary halves -- so rule 3's "for
+        every snapshot the lane creates" is structural rather than a list of
+        call sites to keep in sync.
+
+        **Placed AFTER :meth:`_verify`, deliberately.** ``_verify``'s proof is
+        that the materialised tree is EXACTLY the commit's own content --
+        clean status, index tree equal to HEAD's tree, the declared omission
+        set and nothing else. A link planted before it would make that proof
+        false about a tree it is supposed to be true about. Planting after
+        keeps the committed-objects-only guarantee stated over exactly the
+        committed objects, and the links are still in place before any
+        consumer command runs, which is what rule 3 actually requires.
+
+        Four refusals, each naming a different fact:
+
+        1. the target is not a directory in the invoking checkout ->
+           ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL``. NOT a lane-config
+           error: the lane file is right and the ENVIRONMENT did not provide
+           what it declared (an image-baked ``npm ci`` that did not run), so
+           this is the same class of fact as a missing external tool;
+        2. the path is TRACKED at the resolved commit ->
+           ``ERROR``/``BAD_LANE_CONFIG``. Linking a tracked path would
+           silently replace committed content with working-tree content,
+           which is the exact substitution A-161 exists to prevent;
+        3. the path's parent does not exist in the snapshot ->
+           ``ERROR``/``BAD_LANE_CONFIG``, as (2). Never ``mkdir -p``: a
+           generated parent directory is content the commit does not have,
+           and creating it would put assay in the business of inventing tree
+           structure;
+        4. after planting, the snapshot's own ``git status`` is not clean ->
+           ``ERROR``/``BAD_LANE_CONFIG`` naming the path and the fix. This one
+           is not in B041(b)'s rule list and is here because without it the
+           feature self-refuses later with a MISNAMED terminal: the runner's
+           post-command check (:func:`assay.git.dirty_paths`) reports every
+           untracked path, deliberately consulting only committed
+           ``.gitignore`` files (A-177/A-290), so a link the repository does
+           not ignore surfaces as ``DIRTY_TREE`` after the lane's command --
+           blaming the command for something the lane declared. In practice
+           the realistic target (``node_modules``) is already gitignored and
+           this never fires; when it does, it says so.
+        """
+        declared = self._spec.snapshot_policy.link_paths
+        if not declared:
+            return
+        tracked = self._manifest.by_path()
+        tracked_dirs = set(self._manifest.directories)
+        for raw in declared:
+            path = PurePosixPath(raw)
+            source = self._spec.repo_top / raw
+            if path in tracked or path in tracked_dirs:
+                raise _bad_lane_config(
+                    f"isolation.link_paths names {raw!r}, which is TRACKED at "
+                    f"{self._spec.commit}; linking a tracked path would "
+                    f"replace committed content with whatever the invoking "
+                    f"checkout happens to hold, which is the substitution a "
+                    f"committed-object snapshot exists to prevent"
+                )
+            parent = path.parent
+            if str(parent) != "." and not (root / parent).is_dir():
+                raise _bad_lane_config(
+                    f"isolation.link_paths names {raw!r}, whose parent "
+                    f"directory {parent!s} does not exist at "
+                    f"{self._spec.commit}; assay does not create it -- a "
+                    f"generated parent is tree structure the commit does not "
+                    f"have. Commit the parent, or link a path under one that "
+                    f"is already tracked"
+                )
+            if not source.is_dir() or source.is_symlink():
+                raise AssayError(
+                    f"isolation.link_paths names {raw!r}, which is not a "
+                    f"directory in the invoking checkout at "
+                    f"{self._spec.repo_top}. This is a declared prerequisite "
+                    f"the environment did not provide -- the directory is "
+                    f"built by the environment (an offline `npm ci`, a mounted "
+                    f"cache), not by the commit -- so the lane file is not "
+                    f"what is wrong here.",
+                    outcome=Outcome.NO_MEASUREMENT,
+                    reason_code=ReasonCode.MISSING_EXTERNAL_TOOL,
+                )
+            os.symlink(source, root / raw, target_is_directory=True)
+        status = run("status", "--porcelain=v1", "-z")
+        if status:
+            raise _bad_lane_config(
+                f"isolation.link_paths made the private snapshot at {root} "
+                f"unclean: {status[:200]!r}. Every linked path must be ignored "
+                f"by the repository's OWN committed .gitignore. Assay's "
+                f"post-command dirt check consults committed ignore policy and "
+                f"nothing else (A-177/A-290), so an un-ignored link would "
+                f"otherwise surface as DIRTY_TREE after the lane's command -- "
+                f"blaming the command for something the lane declared. "
+                f"**A TRAILING SLASH DOES NOT WORK HERE** (measured, B041(b)): "
+                f"a directory-only pattern such as `node_modules/` does not "
+                f"match what assay plants, because what assay plants is a "
+                f"SYMLINK and git does not treat a symlink as a directory. "
+                f"Write the rule without the trailing slash "
+                f"(`app/node_modules`), which ignores both the real directory "
+                f"in your checkout and the link in the snapshot."
+            )
 
     def _enforce_child_closure(
         self, git_dir: Path, commit: str, deadline: "_git._P22Deadline"

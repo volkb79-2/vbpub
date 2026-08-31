@@ -472,3 +472,68 @@ The docs guard went RED first on the two new illustrative fragments in the
 `cwd` section (it loads every unmarked ```toml block through the real loader);
 both now carry a `assay-doc-example:skip` marker naming why they are
 fragments, which is the convention, not a workaround.
+
+## 10 — `feat(assay): B041(b) -- link_paths, with the teardown canary`
+
+**Scope item (D).** The wire half landed with the schema cut; this is rules
+1–6, plus one rule the contract does not have.
+
+**What landed.** `IsolationConfig.link_paths` + grammar/bound/order checks in
+the model (defaulted, and read before the selection fork — A-374);
+`SnapshotRepository._plant_link_paths`, called from `_build` AFTER `_verify`
+(A-370); `_verdict_snapshot_policy` emits `link_paths or None`; `assay lanes
+--json` emits the real list; a full CONSUMERS.md section replacing the
+"not implemented in this release" preview.
+
+**Two findings worth not rediscovering.**
+
+1. **The link must be ignored by a COMMITTED `.gitignore`, and that needed a
+   FIFTH refusal B041(b)'s rule list does not have (A-371).** `git.dirty_paths`
+   deliberately unions `status` with
+   `ls-files --others --exclude-per-directory=.gitignore` so that
+   `.git/info/exclude` cannot hide anything (A-177/A-290). An un-ignored link
+   therefore surfaces as `DIRTY_TREE` **after the lane's command** — assay
+   blaming the command for something the lane's own isolation table declared.
+   Writing the path into the snapshot's `info/exclude` was considered and
+   rejected: the `ls-files` half defeats it by design, and hiding a declared
+   link from the dirt check is the wrong shape of fix for a fact the verdict
+   exists to state out loud. So: refuse at materialisation, by name.
+2. **A trailing slash breaks it, and this was MEASURED, not reasoned about
+   (A-372).** The realistic rule is `node_modules/`. Git treats a
+   trailing-slash pattern as directory-only and does not count a SYMLINK as a
+   directory, so the rule every JS project already has leaves the link
+   untracked. Measured with a real git in a scratch repo: under
+   `app/node_modules/` both `git status --porcelain` and
+   `git ls-files --others --exclude-per-directory=.gitignore` report
+   `app/node_modules`; under `app/node_modules` both report nothing. B041(b)'s
+   own contract text does not anticipate this — it says only "the link is not
+   a tracked path so the diff never sees it". It is now a named refusal, its
+   own test, and its own paragraph in CONSUMERS.md.
+
+**Rule 6, done the way the box asks (A-373).** Not "stdlib `rmtree` unlinks
+symlinks". A real symlink to a real directory outside the snapshot, a canary
+file inside that directory, and the canary's BYTES asserted after teardown —
+on the success path, on `_materialize`'s exception path (the best-effort
+`rmtree(root, ignore_errors=True)`, which is the teardown a consumer reaches
+when something has ALREADY gone wrong), and against `_remove_owned_tree`
+directly on a hand-built tree carrying a nested link.
+
+**Verification, this commit.** `tests/test_isolation_link_paths.py` — 32
+nodes: rule 3 through both `materialize` and `materialize_replacement` (an R2
+mutant's own entry point), the snapshot's cleanliness checked with a REAL git
+run independent of assay's `_verify`, all five refusals with their own
+terminals, the three rule-6 canaries, the loader/model grammar matrix, and two
+end-to-end runner nodes proving the verdict records `link_paths` (and omits
+the key when nothing was declared) with the lane's own command asserting the
+link read through. Regression: `test_isolation`,
+`test_isolation_unsafe_symlink_omissions`, `test_config_snapshot_selection`,
+`test_runner_snapshot_selection`, `test_cli_lanes_json`,
+`test_mutation_isolation` — 169 passed; docs guard 36 passed.
+
+**One tool-use slip, self-corrected and stated rather than buried.** The five
+`decisions.md` rows for this item were first appended with a Python
+`write_text` script — the exact class of slip generations 1 and 2 were
+corrected for. Caught immediately, reverted with `git checkout` (the file's
+committed state already carried A-367–A-369 from commit 9, so nothing was
+lost), and re-applied through `Edit`. Every other file change this session
+went through `Edit`/`Write`.

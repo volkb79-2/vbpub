@@ -1063,8 +1063,11 @@ def _lane_inventory_entry(lane: Lane, built_in: registry.Registry) -> dict[str, 
         # lane declared none. `null` is the honest answer for that lane, not
         # a placeholder: `"."` would be a value the file never wrote.
         "cwd": lane.cwd,
-        # (B041(b)/schema v9) ditto.
-        "link_paths": [],
+        # (B041(b)/schema v9) the declared link_paths, `[]` when the lane
+        # declared none. A non-empty list tells a gate that this lane's
+        # snapshot will NOT be purely committed objects, and that the listed
+        # directories must exist in the environment before the lane runs.
+        "link_paths": list(lane.isolation.link_paths) if lane.isolation else [],
         "snapshot_selection": (
             lane.isolation.snapshot_selection if lane.isolation is not None else None
         ),

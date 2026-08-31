@@ -70,6 +70,31 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   working directory because it probes the invoking environment rather than
   running the lane.
 
+- **B041(b) — `[lanes.<n>.isolation] link_paths`.** Named directories from the
+  INVOKING CHECKOUT are symlinked into every snapshot the lane creates
+  (baseline, every R2 mutant's replacement snapshot, both R3 canary halves),
+  immediately after `read-tree` and before any command runs — so a JavaScript
+  lane can reuse an already-materialised `node_modules` instead of
+  reinstalling it into each snapshot, which R3 otherwise pays for three times.
+  The honest default is still the offline install (pattern (a)): a linked path
+  is **not** bound to the recorded commit, and the verdict says so, recording
+  `snapshot_policy.link_paths` sorted (omitted, never empty). `assay lanes
+  --json` exposes the same list.
+  Refusals, each naming its own fact: bad spelling, unsorted, duplicate,
+  over 64 entries or declared-but-empty at load; an absent directory as
+  `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` (the lane file is right and the
+  environment did not provide what it declared); a TRACKED path or a missing
+  parent as `ERROR`/`BAD_LANE_CONFIG` (assay never `mkdir -p`s into a
+  snapshot). **Teardown removes the link and never its target** — proven by a
+  canary file inside a real target directory, on both the success and the
+  exception teardown path.
+- **A `node_modules/` gitignore rule with a TRAILING SLASH does not cover a
+  linked path** (A-372, measured). Git treats a trailing-slash pattern as
+  directory-only and does not count a symlink as a directory, so the rule
+  every JS project already has leaves the link untracked and assay refuses the
+  lane — with a message naming the slash and the fix. Write the rule without
+  the slash; it then covers both the real directory and the link.
+
 ### Changed
 - **BREAKING — the verdict schema is v9 (A-359).** One bump carrying all four
   of B045, B046, B043 and B041(b), because each of them lands a new key inside

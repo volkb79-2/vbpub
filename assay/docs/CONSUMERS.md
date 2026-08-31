@@ -751,18 +751,69 @@ runner drops beside it — in the same change that adds the lane:
 applications/webapp-ui-react/.assay/
 ```
 
-#### (b) The declared speed path — `isolation.link_paths` (Wave B, schema v9)
+#### (b) Linking a dependency closure into the snapshot: `link_paths` (B041(b))
 
-Rebuilding the closure inside every snapshot is correct but not free: a
-`link_paths` declaration (`[lanes.<n>.isolation] link_paths = [...]`) will
-let a lane symlink an already-materialised `node_modules` directly into its
-snapshot instead of reinstalling it, recorded in the verdict's
-`snapshot_policy.link_paths` so a reviewer can always tell a lane ran
-against a purely-committed snapshot from one that borrowed part of the
-checkout. This is **not implemented in this release** — it rides the same
-schema-v9 cut as B045's declared coverage producer (B041 acceptance item;
-tracked in `4-backlog.md` B041). Pattern (a) above is the one every consumer
-adopts today.
+Rebuilding the closure inside every snapshot is correct but not free, and R3
+triples the cost. `link_paths` is the declared alternative: named directories
+from the **invoking checkout** are symlinked into every snapshot the lane
+creates, immediately after `read-tree` and before any command runs.
+
+<!-- assay-doc-example:skip reason="the isolation sub-table of the worked lane above, quoted on its own to show the key; the whole loadable lane is in pattern (a)" -->
+```toml
+[lanes.ui_unit.isolation]
+snapshot_selection = "repository"
+link_paths = ["applications/webapp-ui-react/node_modules"]
+```
+
+**The trade-off, stated plainly.** Pattern (a) is still the honest default.
+A snapshot is normally built from committed objects alone, so what it holds
+is bound to the recorded commit; a linked path is not — it is whatever the
+checkout happened to hold when the lane ran. That is exactly why the verdict
+records `snapshot_policy.link_paths` (sorted, and omitted entirely when the
+lane declared none): a reviewer reading a verdict with a non-empty
+`link_paths` knows the judgment's dependency closure is only as reproducible
+as that checkout was.
+
+**The rules, each with its own refusal.**
+
+| rule | refusal when broken |
+|---|---|
+| repo-top-relative, forward-slash, no `..`, no leading `/`, no `.git` component; strictly ascending, unique, at most 64 entries; declared-but-empty is refused (omit the key instead) | `ERROR`/`BAD_LANE_CONFIG` at **load** |
+| the directory must exist in the invoking checkout | `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` at run time, naming the path |
+| the path must **not** be tracked at the resolved commit | `ERROR`/`BAD_LANE_CONFIG` — linking a tracked path would replace committed content with working-tree content |
+| the path's parent must exist in the snapshot | `ERROR`/`BAD_LANE_CONFIG` — assay never `mkdir -p`s into a snapshot |
+| the path must be ignored by a **committed** `.gitignore` | `ERROR`/`BAD_LANE_CONFIG` — see the trailing-slash trap below |
+
+An absent directory is `MISSING_EXTERNAL_TOOL` rather than `BAD_LANE_CONFIG`
+on purpose: the same lane file is correct on a machine whose image ran the
+offline install and incorrect on one that did not, so the lane file is not
+what is wrong — a declared prerequisite the environment did not provide is.
+
+**The trailing-slash trap — read this one.** Your existing rule is almost
+certainly `node_modules/`, with a trailing slash, because that is what every
+JS project's `.gitignore` carries. **It will not work here.** Git treats a
+trailing-slash pattern as directory-only, and what assay plants is a
+*symlink*, which git does not count as a directory — so the link shows up as
+untracked content and assay refuses the lane. Drop the slash:
+
+```text
+applications/webapp-ui-react/node_modules
+```
+
+That single rule ignores both the real directory in your checkout and the
+link in the snapshot. Assay refuses at materialisation, with a message naming
+the slash and this fix, rather than letting the lane's own command be blamed
+for a `DIRTY_TREE` afterwards.
+
+**Teardown never touches your files.** Snapshot teardown removes the *link*,
+never what it points at — proven by a test that plants a real symlink to a
+real directory, puts a canary file inside it, tears the snapshot down on both
+the success and the failure path, and asserts the canary's bytes are intact.
+
+`excluded_dir_names` already excludes `node_modules` from judging, the link is
+not a tracked path so the diff never sees it, and istanbul keys under it are
+inert — so linking a closure changes what is *available* to the command, never
+what is measured.
 
 ### Four things that behave differently from a Python lane
 

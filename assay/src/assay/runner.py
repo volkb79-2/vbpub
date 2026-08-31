@@ -1554,6 +1554,11 @@ def _verdict_snapshot_policy(lane: Lane) -> SnapshotPolicy | None:
             if policy.snapshot_selection == "repository-minus-unsafe-symlinks"
             else None
         ),
+        # (B041(b)) Omitted, never empty (A-051). A verdict carrying a
+        # non-empty `link_paths` is stating that its snapshot was NOT purely
+        # committed objects; a verdict carrying `[]` would be saying the same
+        # thing as one carrying nothing, twice.
+        link_paths=policy.link_paths or None,
     )
 
 
