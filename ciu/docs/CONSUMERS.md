@@ -898,10 +898,24 @@ count instead of a value you'd otherwise have to keep in sync by hand. A
 template that only needs to know WHETHER a service fans out (not by how
 much) checks membership: `{% if 'api' in ciu.instances %}`. A service with
 no declared `instances` anywhere (service-level or configfile-level) is
-simply absent from the mapping — never present with a value of `1` — and
-referencing `ciu.instances` at all when NOTHING anywhere declares one raises
-a Jinja `UndefinedError`, the same fail-loud pattern as
-`ciu.selected_profiles`/`ciu.deployed_stacks` (§10 above).
+simply absent from the mapping — never present with a value of `1`.
+
+Unlike `ciu.selected_profiles`/`ciu.deployed_stacks` (§10 above), which fail
+loudly with a Jinja `UndefinedError` when referenced outside a deployment
+render, `ciu.instances` itself is **always present** in every deployment
+render's context — an empty mapping `{}` when nothing anywhere declares a
+fan-out count, never an absent name (CIU-74). This is deliberate: `'api' in
+ciu.instances` is the sanctioned way to ask "does this service fan out at
+all", and that idiom must keep working with no `instances` declared anywhere
+— an absent name would make the membership test itself raise under CIU's
+`StrictUndefined` render environment (see the note below).
+
+> **CIU-74 (StrictUndefined):** every Jinja render in CIU raises
+> `jinja2.UndefinedError` on a reference to an undefined name, attribute, or
+> item at any depth — a mistyped leaf like `{{ deploy.environment_tg }}`
+> (missing the `_tag`) now fails the render instead of silently producing
+> `dstdns--postgres`. `ciu.instances` being always-defined-but-possibly-empty
+> is what keeps the membership idiom above legal under that same strictness.
 
 > **The configfile's `instances = 3` above is required, not decoration.** A
 > configfile that OMITS `instances` while its service declares one > 1

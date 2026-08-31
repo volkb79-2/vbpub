@@ -112,6 +112,31 @@ def test_render_compose_exposes_selection(tmp_path):
     assert 'profiles: "core,apps"' in rendered
 
 
+def test_render_compose_ciu_instances_membership_check_with_no_fanout(tmp_path):
+    """CIU-74 / S7.5b: the sanctioned ``'api' in ciu.instances`` fan-out
+    membership test must keep working when *nothing* declares an
+    ``instances`` count — ``_CTX`` here carries no ``instances`` key at all,
+    exactly the "no fan-out anywhere" case the backlog entry is about.
+    Proves the always-present-empty-``{}``-mapping fix, not merely the
+    StrictUndefined switch: StrictUndefined ALONE (with no context-assembly
+    fix) would make this same membership test raise ``UndefinedError``
+    instead of evaluating to False.
+    """
+    template = tmp_path / "ciu.compose.yml.j2"
+    template.write_text(
+        "services:\n"
+        "  app:\n"
+        "    image: busybox\n"
+        "    labels:\n"
+        "      fans_out: \"{{ 'api' in ciu.instances }}\"\n",
+        encoding="utf-8",
+    )
+
+    rendered = composefile.render_compose(template, {}, ciu_context=dict(_CTX))
+
+    assert 'fans_out: "False"' in rendered
+
+
 def test_global_chain_exposes_selection_to_defaults(tmp_path):
     (tmp_path / GLOBAL_DEFAULTS).write_text(
         'flag = {{ "true" if \'infra/core\' in ciu.deployed_stacks else "false" }}\n',
@@ -124,6 +149,26 @@ def test_global_chain_exposes_selection_to_defaults(tmp_path):
 
     # `flag = true` renders unquoted → tomllib parses it as a TOML boolean.
     assert merged["flag"] is True
+
+
+def test_global_chain_ciu_instances_membership_check_with_no_fanout(tmp_path):
+    """CIU-74 / S7.5b, TOML-layer side: the same always-present-empty-``{}``
+    fix applies to ``config_model._make_render_context`` (used by
+    ``render_global_chain``/``render_stack`` for TOML templates), not just
+    ``composefile.render_compose`` — a global/stack TOML template checking
+    ``'x' in ciu.instances`` with no fan-out declared anywhere must render,
+    not raise.
+    """
+    (tmp_path / GLOBAL_DEFAULTS).write_text(
+        "fans_out = {{ \"true\" if 'api' in ciu.instances else \"false\" }}\n",
+        encoding="utf-8",
+    )
+
+    merged = config_model.render_global_chain(
+        tmp_path, tmp_path, ciu_context=dict(_CTX)
+    )
+
+    assert merged["fans_out"] is False
 
 
 # ---------------------------------------------------------------------------

@@ -89,7 +89,18 @@ def _slug(value: str) -> str:
 
 
 def _render_jinja(text: str, variables: dict) -> str:
-    """Render a template with the SAME engine production uses (S3.2 step 1)."""
+    """Render a template with Jinja2, ``keep_trailing_newline=True`` matching
+    S3.2 step 1's newline handling.
+
+    CIU-74 CAVEAT (do not restore the old docstring's parity claim): this is
+    NOT the same engine production uses. ``config_model.render_jinja2_text``
+    -- the real S3.2 step 1 -- renders with ``StrictUndefined`` (an undefined
+    reference raises); this helper and the validation preflight in
+    ``build_files`` below both still use the library-default lenient
+    ``Undefined`` (an undefined reference renders empty), unchanged since
+    before CIU-74. See CIU-81 for the tracked follow-up on whether/how to
+    close that gap.
+    """
     from jinja2 import Environment
 
     env = Environment(keep_trailing_newline=True)
@@ -262,6 +273,12 @@ def build_files(plan: dict, root: Path) -> list[tuple[Path, str]]:
                 stamp + _hook_template_source(filename),
             ))
     # ---- validation-first: render + parse everything before writing -------
+    # CIU-74 CAVEAT (see CIU-81, not fixed here): this preflight renders with
+    # the library-default lenient Undefined, not the StrictUndefined the real
+    # S3.2 render path (config_model.render_jinja2_text) uses since CIU-74 --
+    # a scaffold template's leaf typo can pass this validation and only fail
+    # at the first real `ciu up`. Do not read a green `ciu init` here as proof
+    # a template has no undefined references.
     from jinja2 import Environment
 
     jenv = Environment(keep_trailing_newline=True)

@@ -75,7 +75,31 @@ class TestConfigfileSchemaValidation:
         )
         mounts = render_configfiles(stack, "app", config, lambda n: "v")
         assert len(mounts) == 1
-        assert mounts[0].rendered_path.read_text() == 'log = "myapp"\nport = 8080'
+        # CIU-74: render_jinja2_text now sets keep_trailing_newline=True, so
+        # the template's own trailing newline survives instead of being
+        # silently stripped.
+        assert mounts[0].rendered_path.read_text() == 'log = "myapp"\nport = 8080\n'
+
+    def test_render_configfiles_ciu_instances_membership_check_with_no_fanout(
+        self, tmp_path: Path
+    ) -> None:
+        """CIU-74 / S7.5b review blocker: render_configfiles' OWN ciu_context
+        merge (composefile.py, inside the per-instance render loop) must default
+        `instances` to `{}` too, independently of render_compose's and
+        _make_render_context's identical fix -- proven necessary by a deletion
+        probe (removing just that one `merged_ciu.setdefault("instances", {})`
+        line left the full suite green; nothing else exercises this exact merge
+        site). A configfile template checking `'api' in ciu.instances` with a
+        ciu_context that carries no `instances` key must render `False`, not
+        raise, under render_jinja2_text's StrictUndefined.
+        """
+        config, stack = self._setup(
+            tmp_path, "fans_out = {{ 'api' in ciu.instances }}\n"
+        )
+        ciu_context = {"selected_profiles": ["core"], "deployed_stacks": ["app"]}
+        mounts = render_configfiles(stack, "app", config, lambda n: "v", ciu_context)
+        assert len(mounts) == 1
+        assert mounts[0].rendered_path.read_text() == "fans_out = False\n"
 
     def test_violation_fails_naming_key_path_and_removes_file(self, tmp_path: Path) -> None:
         """An extra key with additionalProperties:false fails with the key
