@@ -175,6 +175,27 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [23.2.0] - 2026-08-31
+<!-- cmru: generated -->
+<!-- cmru: source-end=7c47a70710eac58697641d9ee2444a1ea0db8af3 -->
+
+### Added
+- feat(run-gate): RG-27 -- lane invocation history + the `history` query verb (rev 30) (1687b60d)
+
+### Fixed
+- fix(run-gate): RG-27 round-2 review -- B1 history read scope, B2 at-most-once flush, S1/S2 (0e6d0ea4)
+- fix(run-gate): RG-27 -- record inline in main(), and cover the wiring in-process (afcdb39f)
+
+### Changed
+- backlog(run-gate): file RG-30 -- doctor/--check-env ignore --worktree, same pattern RG-27 just closed for history (5df35ce4)
+
+### Documentation
+- docs(run-gate): RG-27 -- P03 LOG/REPORT carry the real round-2 gate verdict (56d98572)
+- docs(run-gate): RG-27 FIXED + run-gate-P03 LOG/REPORT (dbaccfe1)
+
+### Testing
+- test(run-gate): RG-27 -- in-process cover for the B1/S1 main() dispatch branches (dc3b1490)
+
 ## [23.1.0] - 2026-08-31
 <!-- cmru: generated -->
 <!-- cmru: source-end=1f47601c1b69a3503c4d94caca3ca90c373f8e0b -->
