@@ -22,7 +22,7 @@ docs_dir = "docs"
 
 # CIU's implementation gate is intentionally not the interactive cockpit.  It
 # runs inside tester-unified and is judged by the RELEASED Assay CLI — a
-# hash-pinned, vendored zipapp (tools/assay/assay-2.3.0.pyz + .sha256),
+# hash-pinned, vendored zipapp (tools/assay/assay-3.2.0.pyz + .sha256),
 # verified by sha256sum before use and invoked explicitly; Assay source is
 # never imported and no nyxloom evidence-judgment command remains.
 #
