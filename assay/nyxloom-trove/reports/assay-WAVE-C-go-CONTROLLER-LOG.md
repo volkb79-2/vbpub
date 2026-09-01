@@ -356,3 +356,169 @@ principles don't already resolve.
   A-217, only the run itself is owed). Resume by dispatching a fresh
   generation 4 seeded with BRIEF-1 through BRIEF-4, same worktree/branch,
   tip `91b05186`.
+
+- **2026-09-01 (operator assessment, then "proceed at your discretion")** —
+  New session. The operator asked for the summary's next steps to be
+  verified against `1-north-star.md` and CIU v8 (`ciu/docs/SPEC-V8.md`,
+  `CIU-V8-TESTING-GATE-PROPOSAL.md`), for a disposition of the open
+  backlog, and whether major assay work remains; then, after a second
+  round of questions about the two tester images and the zipapp,
+  authorized the controller to proceed. The full assessment was delivered
+  in chat; the parts that bind generation 4 are recorded here so the
+  implementer cites a commit, not a conversation.
+
+  **Verified before ruling:** worktree tip `91b05186`, gate PASS per
+  BRIEF-4 §7 and the previous entry; decisions at A-400, backlog at B056;
+  items 1/2/4 done, 3/6/7 open — matches the code. BRIEF-4 §5's order
+  (helpers wiring → fixture regen → srdm run → boxes) stands. What changes
+  is the environment the remaining items run in, and F008-A5's wording.
+
+  **DA-4 — F008-A5 is reworded before generation 4 ticks anything.**
+  `2-product-definition.md` F008-A5 reads "Qualified against srdm's own Go
+  covergate on the same commits, so union fidelity is mechanical rather
+  than a review question." B056 (REPORT §17) shows covergate applies the
+  exact `for l := start; l <= end` expansion assay removed in this wave,
+  and A-217's frozen `collision-colA/colB` pair proves any profile-only
+  rule is wrong on at least one of two inputs — so the two tools disagree
+  BY CONSTRUCTION and "union fidelity" between them is unattainable, not
+  merely unproven. A criterion that cannot be satisfied honestly must not
+  stay on the books to be ticked dishonestly. **Ruling:** generation 4
+  records **A-401** and replaces the text with: *"Qualified end to end on
+  srdm's own tree: a real statement-granular Go R1 verdict produced by the
+  shipped CLI inside `tester-unified-go` at a real srdm commit range, and
+  every line on which srdm's `covergate` disagrees at the same commits
+  classified as extent-expansion (assay correct, A-217/B056) or
+  file-absence (covergate's `NoCode`/`Unmeasured` split), with the
+  independent hand manifest as the neutral third party where one
+  exists."* The acceptance evidence is the qualification transcript plus
+  the classified table, not a parity number.
+
+  **DA-5 — environment ruling: BRIEF-4 §3's `go` shim is RETIRED before
+  it was built.** Measured by the controller, 2026-09-01:
+  ```text
+  $ docker run --rm --network=none tester-unified-go:local sh -c \
+      'command -v python3; grep PRETTY_NAME /etc/os-release; go version; id -u'
+  /usr/bin/python3
+  PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
+  go version go1.25.14 linux/amd64
+  1003
+  $ docker run --rm --network=none tester-unified-go:local python3 -c '...'
+  3.13.5  no-pip  venv  no-ensurepip
+  ```
+  `assay/pyproject.toml` declares `requires-python = ">=3.11"`. So the
+  shipped zipapp runs inside the Go gate image TODAY, with no image
+  change: the interpreter is inherited from `golang:1.25`'s trixie base
+  (the Dockerfile itself installs nothing — I had told the operator the
+  opposite conclusion from reading the Dockerfile without running the
+  image; corrected here, A-334's lesson one more time). There is no pip
+  and no ensurepip, so the zipapp is the ONLY install path — which is
+  B003's own stated reason to exist, now with its first non-Python
+  consumer shape. **Ruling:** the remaining items run as the consumer
+  would: assay INSIDE `tester-unified-go:local`, beside the real `go`,
+  judging a bind-mounted tree. Build the in-repo zipapp at the judged
+  commit with the release's own builder (`gate/distribution/
+  build_release.py`), mount the worktree the way
+  `tools/tester-unified-gate.sh:588-602` already mounts it into
+  `tester-unified` (host root via `docker inspect "$HOSTNAME"`, the same
+  derivation srdm's `tools/gate.sh:48-61` uses), run `python3 <pyz> run
+  <lane> --file ... --verdict-json ...` inside the container, and read the
+  verdict on the cockpit. The DA-3 qualification test
+  (`tests/qualification/test_go_*_real.py`, env-var gated, modelled on
+  `test_javascript_real_vitest.py`) drives exactly that and asserts on the
+  verdict document. BRIEF-4 §3's two unproven seams (reservation survival
+  across a shim mount; uid 1003 writing into a shim-mounted snapshot) are
+  moot — the snapshot is a container-local `TemporaryDirectory`; the one
+  seam left is uid 1003 reading the mounted tree and writing the verdict
+  path, which the gate script solves the same way for `tester-unified`.
+  Record as **A-402** with the measured facts. Two consequences: (a)
+  A-O04's stated blocker ("whether Python enters srdm's toolchain/
+  container") is void by inheritance — adoption stays srdm's call, and the
+  controller has filed the fact in srdm's own backlog (below); (b)
+  `tester-unified-go/Dockerfile` has no `apt-get` layer at all, so do NOT
+  add one for a package that is already present — add a header paragraph
+  recording the inherited interpreter and citing A-402, and make the
+  qualification test assert `python3 --version` inside the image so a
+  base-image change goes RED instead of silently removing the judge's
+  interpreter (assert the outcome, not the mechanism: A-396's shape).
+
+  **DA-6 — "the same commits" for F008-A5.** srdm is a subdirectory of
+  this monorepo (`git -C shared-ramdisk-depot-manager rev-parse
+  --show-toplevel` → `/workspaces/vbpub`), and its own backlog's first
+  entry records the exact differential that memory calls "covergate
+  silently skipped P14": `tools/gate.sh coverage` reports 254/258 at both
+  `10b174a5` (before P10+P14) and `83c2ff79` (after P14's merge), while
+  P14's ~1,500 new lines under `internal/power/*`, `internal/opctl/
+  update.go`, `internal/publish/sizing.go` contribute to neither side.
+  **Preferred run:** a monorepo lane — `cwd = "shared-ramdisk-depot-
+  manager"` (B043), `source_roots = ["shared-ramdisk-depot-manager/
+  internal"]`, argv = srdm's own `gate.sh:105` line (`go test ./...
+  -count=1 -coverpkg=./... -covermode=atomic -coverprofile=...` —
+  `-coverpkg=./...` is load-bearing per B056), `format = "go-cover"`,
+  `producer = "go-test"`, base `10b174a5`, HEAD `83c2ff79`; then covergate
+  on the same profile at the same commits inside the same container
+  (`go run ./tools/covergate -profile ... -base 10b174a5 -source internal
+  -fail-under 75`, exit 0/1/2/3). srdm's tree stays clean: the lane file
+  lives outside it (or under a gitignored path) and this wave commits
+  NOTHING into `shared-ramdisk-depot-manager/`. Fallback only if the range
+  proves too costly inside the budget: a throwaway repository built from
+  `carve-assets/P27/fixture/commit{1,2}` with `manifest/
+  calc-statements.json` as the third party (BRIEF-4 §4). Either way,
+  classify every difference per BRIEF-4 §4(b) BEFORE naming a side; a
+  file-absence difference is the P14 mechanism, not the extent one.
+
+  **DA-7 — cross-repo items are the controller's, not generation 4's.**
+  Done this session, committed on `main`: (1) srdm's `nyxloom-trove/
+  backlog.md` — a note on its P14 entry locating the mechanism (REPORT
+  §17: `Evaluate`'s `fc == nil` branch, `NoCode` vs `Unmeasured` split by
+  `HasExecutableCode`), a new entry for B056's over-approximation, and a
+  note on its "Revisit `tools/covergate`" entry that the Go adapter now
+  exists and the interpreter is already in its gate image; (2) the dstdns
+  JavaScript-lane adoption brief owed since the 3.1.0 review (§7 of
+  `assay-3.1-js-adapter-design-review-2026-08-30.md`), written as
+  `reports/assay-dstdns-js-lane-adoption-brief-2026-09-01.md` and dropped
+  into dstdns's gitignored `.assay-inbox/` beside the unacted 4.0.0
+  `release.json` (dstdns pins 3.1.0, has NO `javascript` lane, and its
+  controller deferred 3.2.0 until P152/P154/P161 close).
+
+  **Corrections to the controller's own chat assessment, for the record:**
+  (1) the Python-in-the-Go-image conclusion above; (2) I listed run-gate
+  RG-25/RG-26 as open — both shipped in run-gate 23.1.0 on 2026-08-31
+  (`run-gate-project/CHANGES.md` lines 71-72: `doctor/--check-env`
+  toolchain fitness via `assay lanes --json`, and `--base REF` →
+  `--request-base`), and 23.2.2 (RG-31, 2026-09-01) fixed the toolchain
+  check's `--worktree` routing. B019 is therefore already usable from the
+  current gate, which the dstdns brief now says.
+
+  **The operator's image question, answered: no consolidation.**
+  `tester-unified:local` is 8.94 GB (the Python 3.14 closure of four
+  projects, built on the mdt devcontainer image); `tester-unified-go:local`
+  is 1.01 GB (`golang:1.25` + a gate user + `go build std`). One image
+  would make every Go pin bump rebuild and re-risk the Python projects'
+  gate and every closure change rebuild srdm's, which is A-043's reasoning
+  unchanged, and srdm's privileged e2e stage would inherit 8 GB it never
+  reads. The judge needs an INTERPRETER, not a toolchain — stdlib-only
+  (A-005) is the bet that makes "install into an arbitrary image" free —
+  and the interpreter is already there. "assay without Python" is not a
+  thing the zipapp provides: a `.pyz` removes pip/venv/package-manager,
+  not the interpreter; the only Python-free shapes are a frozen binary
+  (a second, platform-bound distribution channel next to the hash-bound
+  wheel — B009's "second channel is a second thing to drift") or a
+  rewrite, which is the srdm fork the north star exists to end. Inside
+  vbpub the gate installs the IN-REPO code at the judged commit (a wheel
+  built from the hash-checked five-wheel closure into a separate
+  `run-venv`, `tester-unified-gate.sh:8-17`); consumers install the
+  RELEASED artifact by sha256. Generation 4's in-image run uses the
+  in-repo zipapp for the same reason: the judged commit judges itself.
+
+  **Generation 4 dispatched:** fresh Opus session (never a fork), same
+  worktree/branch, tip `91b05186`, seeded with BRIEF-1..4 plus this entry.
+  Task order (supersedes BRIEF-4 §5 step 1; steps 2-5 keep their order):
+  (0) record A-401/A-402, edit F008-A5's text; (1) the in-image harness —
+  build the pyz, mount, prove `python3 --version` and `python3 <pyz>
+  --version` inside `tester-unified-go:local`, then one real R1 lane —
+  this REPLACES "prove the shim"; (2) `helpers[]` wiring + the DA-3
+  qualification test driven through that harness; (3) F008-A4 fixture
+  regeneration inside the image; (4) F008-A5 per DA-6; (5) the acceptance
+  boxes, each citing real evidence. Next free ids: **A-401**, **B057**.
+  Checkpoint clause unchanged (BRIEF-5 at the next coherent boundary).
+  Review, merge and release follow on completion, same terms as Wave B.
