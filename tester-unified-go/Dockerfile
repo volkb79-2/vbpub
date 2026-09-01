@@ -32,6 +32,28 @@
 # Run placement is NOT this file's business: every container must be placed on
 # the host tier by its caller (srdm's tools/cgroup-parent.sh verifies the slice
 # is real rather than trusting the name -- a typo'd slice fails OPEN).
+#
+# THIS IMAGE ALREADY CARRIES A PYTHON INTERPRETER, INHERITED, AND NOTHING BELOW
+# INSTALLS IT (assay decision A-402, 2026-09-01). `golang:1.25`'s Debian trixie
+# base provides /usr/bin/python3 3.13.5, with no pip and no ensurepip. That is
+# recorded here because it is load-bearing for a second consumer and is
+# invisible from this file's own contents: assay is stdlib-only by design, its
+# floor is `requires-python = ">=3.11"`, and its shipped ZIPAPP therefore runs
+# in this image as-is -- which is the only install path there is, pip being
+# absent. A Go project can judge its own coverage beside its own toolchain
+# without this image growing a Python closure.
+#
+#   $ docker run --rm --network=none tester-unified-go:local python3 --version
+#   Python 3.13.5
+#
+# Deliberately NOT an `apt-get install python3` layer: adding one for a package
+# already present would be ceremony that reads as a safety property, and it
+# would also make the image's Python a DIFFERENT interpreter from the one a
+# consumer inherits. The check that keeps this honest lives where it can fail:
+# assay's `tests/qualification/test_go_r1_real.py` asserts `python3 --version`
+# is at or above 3.11 INSIDE this image, so a base-image change that drops or
+# downgrades the interpreter goes red instead of silently disarming every Go
+# qualification (the outcome asserted, not the mechanism -- assay A-396).
 
 # The Go version is the version that ships. Pin it here and nowhere else, so a
 # regenerated coverage profile or a rebuilt binary is reproducible; GOTOOLCHAIN
