@@ -288,7 +288,7 @@ features:
     text: The committed Go coverage fixtures are real toolchain output. Currently they are hand-authored and wrong in BOTH coordinates (A-234); real bytes are captured at carve-assets/P27/witness/coverage-hello-fixture-REAL.out, and regeneration is deliberately sequenced behind A-217's oracle so a real profile is not read as statement truth.
     status: absent
   - id: F008-A5
-    text: Qualified against srdm's own Go covergate on the same commits, so union fidelity is mechanical rather than a review question.
+    text: Qualified end to end on srdm's own tree - a real statement-granular Go R1 verdict produced by the shipped CLI inside tester-unified-go at a real srdm commit range, and every line on which srdm's covergate disagrees at the same commits classified as extent-expansion (assay correct, A-217/B056) or file-absence (covergate's NoCode/Unmeasured split), with the independent hand manifest as the neutral third party where one exists. Reworded by A-401 - the previous "union fidelity" wording was unattainable by construction.
     status: absent
   status: building
   milestone: M6
