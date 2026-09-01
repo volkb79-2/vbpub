@@ -4484,6 +4484,26 @@ discover them. Each item names what is already ruled and what is not.
 - [x] item 4 landed (may ride the v9 wave or the Go wave — whichever is
       first) — landed in Wave A instead, ahead of both: see B039's own
       acceptance boxes.
+- [x] item 1 landed, option (a) as recommended — `assay/helpers/go/stmtpos/`
+      ships inside the wheel AND the zipapp; `GOPROXY=off`/`GOFLAGS=-mod=mod`
+      are forced on every invocation. One correction to the item's own text:
+      "invoke `go run <path>`" is not enough on its own, because the zipapp
+      has no path to give it — the source is staged out of the archive to a
+      real directory first (A-403).
+- [x] item 2 landed (Wave C generation 2) — `external_tools = ("go",)`.
+- [x] item 3 landed (Wave C generation 3, A-398) — `go-test` | `covdata`,
+      both documented, the key optional for this format.
+- [x] item 5 landed (Wave C generation 4) — and it was MORE than the
+      documentation item filed here. `Verdict.helpers` had no producer at
+      all: P33 validated the array and nothing populated it. A Go R1 lane now
+      emits a real entry, `assemble_verdict` refuses a helper with no
+      correspondingly-judged claim, `_replace_highest_higher_rigor_claim_with_git_failed`
+      drops one whose claim it voids, and the correspondence rule has one
+      definition (`verdict.supported_helper_roles`) read by both sides.
+      Proven end to end against the real toolchain by
+      `tests/qualification/test_go_r1_real.py` (A-395: never a mock).
+- [ ] item 6 (fixture regeneration, F008-A4) — still owed; blocked with
+      F008-A5 behind **B057**.
 
 ---
 
@@ -5214,9 +5234,17 @@ Go toolchain exists — which the registered gate image does not provide.
       (F008-A4);
 - [ ] a decision recorded on the canary shortcut, and `_PreOracleGoAdapter`
       either removed or reduced to the half that genuinely needs it;
-- [ ] whichever survives, a test that goes RED if the shipped adapter's
+- [x] whichever survives, a test that goes RED if the shipped adapter's
       `requires_statement_attribution` is ever flipped to `False` — so the
-      double can never quietly become the product.
+      double can never quietly become the product. **Landed 2026-09-01
+      (Wave C generation 4):**
+      `test_adapters_go_registration.py::test_the_adapter_the_REGISTRY_hands_a_lane_is_the_undowngraded_one`
+      asserts it of the object a real lane RESOLVES, not merely of
+      `GoAdapter()`, and uses `type(...) is GoAdapter` rather than
+      `isinstance` — deliberately, because `_PreOracleGoAdapter` is a
+      subclass and would satisfy `isinstance` while carrying the flipped
+      declaration. The other two boxes stay open and both still depend on
+      F008-A4, which is now blocked behind **B057**.
 
 ---
 

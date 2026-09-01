@@ -181,6 +181,21 @@ third state in which it is quietly wrong.
 unconditionally `UNSUPPORTED`, and declaring a rigor level a lane can't
 actually back up is exactly the failure this project exists to prevent.
 
+**Getting assay into a Go gate image costs nothing extra**, and this is what
+stdlib-only (A-005) buys: a `golang:1.25`-based image already carries
+`/usr/bin/python3` 3.13.5, above assay's `>=3.11` floor. It has no pip, so
+the shipped **zipapp** is the install path — copy the `.pyz` in, check its
+`.sha256`, run it with the interpreter that is there. The Go oracle rides
+inside that archive and is staged out to a real directory when it runs, so
+there is nothing to unpack.
+
+**One gap to know before you plan a Go lane: `assay run` cannot yet be told
+your module path**, so it refuses on any real module and the message names
+the wrong cause. Backlog **B057** has the measured transcript and the
+library-level workaround; [CONSUMERS.md's Go
+section](docs/CONSUMERS.md#go-lanes-what-exists-today-and-what-a-go-lane-will-require)
+point 6 has the code.
+
 Why the oracle is a subprocess rather than a Python rule:
 [DESIGN-GUIDE §11, "Go statement positions"](docs/DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
 **`sql:*` is different — see below.**

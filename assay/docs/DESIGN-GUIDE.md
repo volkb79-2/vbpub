@@ -1461,6 +1461,41 @@ column-granular wire field. Asserted as unfixed by a test, so a future change
 that does fix it goes red rather than quietly contradicting this paragraph
 (A-393, backlog B053).
 
+**The oracle is STAGED out of the artifact, and that is a consequence of how
+assay is installed rather than a convenience (A-403).** `go run .` takes a
+working DIRECTORY, so the first design resolved the helper's location from
+`__file__` and reasoned that "a wheel install always materialises package data
+as real files". True — and the shipped **zipapp** is not a wheel install. Its
+package data are zip members, `is_file()` answers False, and the adapter
+refused with "assay's Go statement-position oracle is missing from the
+installation" for an oracle the archive contained all along. That is the
+install path that matters most: a Go gate image built on `golang:1.25` has an
+interpreter but no pip and no ensurepip, so the zipapp is the ONLY way assay
+gets in (A-402), which makes the shape that could not run the oracle the shape
+every Go consumer runs. The files are now read through `importlib.resources`
+— the same call `verdict.schema_text` already used for the shipped JSON Schema
+— and written into a `TemporaryDirectory` for the duration of the call, on ONE
+path for every installation shape. The single path is the load-bearing half:
+a branch taken only inside a zipapp would never be exercised by the registered
+gate, which installs a wheel, so the consumer's own path would be proven by
+nothing but an opt-in qualification run.
+
+**Which toolchain judged a verdict is recorded, and the ROLE is the runner's
+to name (B047 item 5, A-397).** A Go lane's verdict carries a `helpers[]`
+entry — `role: "statement-positions"`, `tool: "go"`, the resolved path, and an
+`identity` the toolchain reported about ITSELF from inside the program it
+compiled. The adapter layer returns a `HelperInvocation` carrying no role at
+all: `statement_blocks` is the only protocol method that produces one, so
+which of `HELPER_ROLES` it belongs to is a fact of the CALL SITE. An adapter
+that could name its own role could claim `mutation-sites` from a coverage
+hook, and the schema's correspondence rule would then demand an R2 payload for
+work that produced an R1 one — a refusal naming the wrong thing. That
+correspondence rule (`verdict.supported_helper_roles`) has exactly one
+definition, read both by `Verdict`'s own validation and by the runner, for the
+reason A-385/A-367 give about coverage keys: two copies can disagree, and the
+disagreement's shape here is a verdict the producer built and the schema then
+refuses with an uncaught `ValueError`.
+
 ### Mutation is source-oriented
 
 An Assay mutation adapter describes a change to **tracked source bytes**; it

@@ -1900,11 +1900,28 @@ profile from the tree you are judging — never to relax the check, which
 exists because attributing anyway would publish a verdict about lines that are
 not the lines that ran.
 
-**3. A verdict from a Go lane will carry `helpers[]`.** It records which
-toolchain actually derived those positions (`role: "statement-positions"`,
-`identity: "go version go1.25.14"`), because "which Go compiled this" is part
-of what the verdict means. Lanes for every other language keep an absent
-`helpers[]` — no helper ran, so nothing is claimed.
+**3. A verdict from a Go lane carries `helpers[]`.** It records which
+toolchain actually derived those positions, because "which Go compiled this"
+is part of what the verdict means:
+
+```json
+"helpers": [
+  {
+    "role": "statement-positions",
+    "tool": "go",
+    "resolved_path": "/usr/local/go/bin/go",
+    "identity": "go version go1.25.14"
+  }
+]
+```
+
+`identity` is what the toolchain reported about ITSELF, from inside the
+program it compiled and ran — not a version string assay looked up. Lanes for
+every other language OMIT the key entirely: no helper ran, so nothing is
+claimed, and `helpers: []` is refused rather than written. A Go lane whose R1
+claim carries no coverage payload (an error, a refusal) also omits it — an
+entry exists because it produced a claim, so one standing beside no claim
+would describe work that judged nothing.
 
 **4. One known limit, stated so you do not discover it in a review.** An
 uncovered statement sharing a physical LINE with a covered one is still
@@ -1912,3 +1929,68 @@ reported as executed — `f := func() int { return 7 }` is two counted
 statements that both genuinely begin on that line, and the line did run. This
 is line granularity's own limit, which coverage.py shares; it is not fixed by
 the oracle and is not claimed to be.
+
+**5. Installing assay into a Go gate image needs no Python packaging work.**
+The judge needs an *interpreter*, not a toolchain — assay is stdlib-only by
+design (A-005) — and a `golang:1.25`-based image already has one:
+`/usr/bin/python3` 3.13.5 on Debian trixie, against assay's own
+`requires-python = ">=3.11"`. Measured, not assumed:
+
+```console
+$ docker run --rm --network=none <your-go-gate-image> python3 --version
+Python 3.13.5
+```
+
+There is no pip and no ensurepip in that image, so the **zipapp is the
+install path**: copy `assay-<version>.pyz` in, check it against its shipped
+`.sha256` sidecar, and run it with the interpreter that is already there.
+
+```console
+$ sha256sum -c assay-<version>.pyz.sha256
+$ python3 assay-<version>.pyz run unit --file assay.toml --verdict-json verdict.json
+```
+
+The verdict records which archive judged it —
+`judge_provenance.artifact = "zipapp"` plus the archive's own sha256 — so a
+consumer can bind a verdict to the artifact that produced it without trusting
+a version string. The Go oracle ships INSIDE that archive and is staged out
+to a temporary directory when it runs (`go run .` needs a real directory and
+a zip member is not one), so nothing has to be unpacked or installed
+alongside it.
+
+**6. A known gap you will hit on any real module: `assay run` cannot yet be
+told your module path.** A Go cover profile keys records by import path
+(`example.com/svc/internal/store/x.go`) while `git diff` names the same file
+`internal/store/x.go`. `GoAdapter.module_path` strips the difference — and no
+lane key and no CLI flag sets it today, so `assay run` on a real module
+refuses:
+
+```text
+status: ERROR
+reason_code: UNREADABLE_ARTIFACT
+```
+
+with a message about the profile and the tree not being the same revision,
+which in this case names the wrong cause. Until that is closed (backlog
+**B057**, decision ask DA-8), a Go consumer drives the library entry point
+with an adapter they build:
+
+```python
+from assay import git, runner
+from assay.adapters.go import GoAdapter
+from assay.config import load_lane_file
+
+lane_file = load_lane_file(root / "assay.toml")
+verdict = runner.run_lane(
+    lane_file.lanes["unit"],
+    commit=git.head_rev(root),
+    repo=root,
+    project_root=root,
+    adapter=GoAdapter(module_path="example.com/svc"),
+    assay_version="…",
+)
+```
+
+This is stated here rather than left to be discovered because the refusal it
+produces reads like a staleness problem and would send you looking at your
+commits.

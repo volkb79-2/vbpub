@@ -124,6 +124,7 @@ from .verdict import (
     Coverage,
     Evidence,
     EvidenceDeclaration,
+    Helper,
     JudgeProvenance,
     Judgment,
     JudgmentR1,
@@ -134,6 +135,7 @@ from .verdict import (
     Verdict,
     iso_utc,
     rollup,
+    supported_helper_roles,
 )
 
 __all__ = [
@@ -958,6 +960,40 @@ def _attribute_statements_for_lane(
     return attribute_statements(profile, blocks_by_key)
 
 
+def _record_statement_position_helper(
+    sink: list[Helper],
+) -> Callable[[HelperInvocation], None]:
+    """The one place an adapter-layer :class:`HelperInvocation` becomes a
+    wire-layer :class:`~assay.verdict.Helper` (B047 item 5, A-397).
+
+    **The ROLE is supplied here, not by the adapter.** `HelperInvocation`
+    deliberately carries no role: it records what ran, and it is returned by
+    exactly one protocol method, so which of `HELPER_ROLES` it belongs to is
+    a fact of the CALL SITE rather than of the adapter's answer. Letting an
+    adapter name its own role would let it claim `mutation-sites` from a
+    coverage hook, and `Verdict._check_helpers` would then demand an R2
+    payload for work that produced an R1 one -- a refusal naming the wrong
+    thing. This is the same layering A-397 (c) records for the type split.
+
+    A list sink rather than a single slot because the callback's own contract
+    is "called once per invocation"; if that ever becomes twice, the
+    duplicate is visible in `helpers` (and `_check_helpers` still passes)
+    instead of being silently overwritten by whichever call came last.
+    """
+
+    def record(invocation: HelperInvocation) -> None:
+        sink.append(
+            Helper(
+                role="statement-positions",
+                tool=invocation.tool,
+                resolved_path=invocation.resolved_path,
+                identity=invocation.identity,
+            )
+        )
+
+    return record
+
+
 def evaluate_r1(
     lane: Lane,
     *,
@@ -1243,6 +1279,7 @@ def assemble_verdict(
     judgment: Judgment | None = None,
     ended: str | None = None,
     env_effective_incomplete: bool = False,
+    helpers: tuple[Helper, ...] = (),
 ) -> Verdict:
     """Final verdict assembly (A-094): separable from :func:`execute_command`.
 
@@ -1351,6 +1388,31 @@ def assemble_verdict(
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
+    # (B047 item 5) The same guard shape as the two above, for the same
+    # reason: `Verdict._check_helpers` raises a bare `ValueError` on a
+    # helper with no correspondingly-judged claim, and no caller catches
+    # one. Refusing here is LOUD and names the wiring defect. It is
+    # deliberately a refusal rather than a filter -- the one legitimate way
+    # to hold a helper whose claim has been voided is
+    # `_replace_highest_higher_rigor_claim_with_git_failed`, which drops the
+    # entry itself, at the site that took the payload away.
+    unsupported = sorted(
+        {
+            helper.role
+            for helper in helpers
+            if helper.role not in supported_helper_roles(claims)
+        }
+    )
+    if unsupported:
+        raise AssayError(
+            f"lane {lane.name!r} recorded helper role(s) {unsupported} but "
+            f"rendered no claim carrying the payload each requires -- a "
+            f"helpers[] entry exists because it produced a claim payload, so "
+            f"this pairing describes work that judged nothing. Refusing "
+            f"before constructing an incomplete verdict.",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
     statuses = [claim.status for claim in claims]
     statuses.extend(item.status for item in evidence)
     outcome = rollup(statuses)
@@ -1386,6 +1448,12 @@ def assemble_verdict(
         judgment=judgment,
         claims=claims,
         evidence=evidence,
+        # (B047 item 5, A-230a) OMISSION is the empty case: a run that
+        # invoked no helper has no `helpers` key at all, never `helpers: []`.
+        # Every non-Go lane in this build lands here, which is what keeps
+        # `test_cli_run.py`'s `"helpers" not in document` control true
+        # (A-395) while the Go lane's parallel test asserts the opposite.
+        helpers=helpers or None,
         snapshot_policy=_verdict_snapshot_policy(lane),
         # (B043) Straight from the loaded lane, at the SINGLE verdict
         # construction site every producer path funnels through -- normal
@@ -2351,6 +2419,12 @@ class _PreparedOutcome:
     claims: tuple[Claim, ...]
     judgment: Judgment | None
     ended: str
+    #: (B047 item 5) every external helper an adapter actually invoked while
+    #: producing *claims*. Carried here rather than turned into
+    #: :class:`~assay.verdict.Helper` entries at the point of invocation for
+    #: the same reason ``judgment`` is: a cleanup-only failure can still void
+    #: the claim a helper produced, and the record has to be voidable with it.
+    helpers: tuple[Helper, ...] = ()
 
 
 def resolve_base_declaration(lane: Lane, request_base: str | None) -> str | None:
@@ -2545,6 +2619,10 @@ def _run_prepared_lane(
             )
 
         claims: tuple[Claim, ...] = (r0_claim,)
+        # (B047 item 5) Filled by `evaluate_r1`'s `on_helper_invoked` channel
+        # below, read after the snapshot is gone -- same shape and same reason
+        # as `r2_early_claim`/`ingested_r2` above.
+        helpers_seen: list[Helper] = []
         judgment_r1: JudgmentR1 | None = None
         added: diff.AddedLines | None = None
         targets: tuple[mutation.MutationTarget, ...] | None = None
@@ -2599,6 +2677,9 @@ def _run_prepared_lane(
                     on_base_resolved=resolved_base_holder.append,
                     on_added_resolved=added_holder.append,
                     remaining=deadline.remaining,
+                    on_helper_invoked=_record_statement_position_helper(
+                        helpers_seen
+                    ),
                 )
                 claims += (r1_claim,)
                 # wave-1 §6/A-264: R1 records its policy whenever R1 was
@@ -3030,7 +3111,13 @@ def _run_prepared_lane(
             r3=judgment_r3,
         )
 
-    return _PreparedOutcome(result=result, claims=claims, judgment=judgment, ended=ended)
+    return _PreparedOutcome(
+        result=result,
+        claims=claims,
+        judgment=judgment,
+        ended=ended,
+        helpers=tuple(helpers_seen),
+    )
 
 
 def _build_judgment_resolved(
@@ -3231,6 +3318,27 @@ def _replace_highest_higher_rigor_claim_with_git_failed(
     with the payload-free ``ERROR``/``GIT_FAILED`` pair and remove its
     matching judgment tier; every lower completed claim (including R0)
     remains exactly as it was.
+
+    **(B047 item 5) The helper record is voided with the claim, explicitly.**
+    ``helpers[].role`` is bound to a judged payload by
+    :meth:`~assay.verdict.Verdict._check_helpers`: a
+    ``statement-positions`` entry requires an R1 claim carrying coverage,
+    and this function is the one place that can take that payload away after
+    the helper really ran. Dropping the entry here is the same move the
+    judgment tier already gets one line down, for the same reason -- the
+    alternative, keeping it, produces a verdict that records a helper
+    alongside no claim it could have produced, which the schema refuses with
+    a ``ValueError`` no caller catches. It is deliberately NOT filtered
+    inside :func:`assemble_verdict`: a silent filter there would also
+    swallow a genuine wiring defect, whereas this drop is a decision about
+    one known state, taken where that state is created.
+
+    Which roles survive is asked of
+    :func:`~assay.verdict.supported_helper_roles`, the SAME function
+    ``_check_helpers`` validates with, rather than re-derived from a second
+    copy of the table here -- a copy would let the two disagree, and the
+    disagreement's shape is a verdict this function built and the schema
+    then refuses with an uncaught ``ValueError``.
     """
     target = next(level for level in ("R3", "R2", "R1") if level in lane.rigor)
     new_claims = tuple(
@@ -3254,8 +3362,15 @@ def _replace_highest_higher_rigor_claim_with_git_failed(
         }
         remaining[target.lower()] = None
         new_judgment = None if not any(remaining.values()) else replace(new_judgment, **remaining)
+    supported = supported_helper_roles(new_claims)
     return _PreparedOutcome(
-        result=outcome.result, claims=new_claims, judgment=new_judgment, ended=outcome.ended
+        result=outcome.result,
+        claims=new_claims,
+        judgment=new_judgment,
+        ended=outcome.ended,
+        helpers=tuple(
+            helper for helper in outcome.helpers if helper.role in supported
+        ),
     )
 
 
@@ -3475,6 +3590,7 @@ def _run_higher_rigor_lane(
         declared_evidence=declared_evidence,
         judgment=outcome.judgment,
         ended=outcome.ended,
+        helpers=outcome.helpers,
     )
 
 

@@ -295,6 +295,20 @@ HELPER_ROLES: tuple[str, ...] = (
     "executable-code",
 )
 
+#: (P33/V5-5, A-223c/A-227) what a verdict must ALSO carry for each helper
+#: role to be recordable, phrased for the refusal message. `executable-code`
+#: takes either because executability gates both changed-line classification
+#: and mutation-site discovery.
+HELPER_ROLE_REQUIREMENT: Mapping[str, str] = MappingProxyType(
+    {
+        "statement-positions": "an R1 claim carrying a coverage payload",
+        "mutation-sites": "an R2 claim carrying a mutation payload",
+        "executable-code": (
+            "an R1 claim carrying coverage or an R2 claim carrying mutation"
+        ),
+    }
+)
+
 #: Where the shipped schema lives inside the installed package. Declared as
 #: package data in `pyproject.toml`; without that it exists in the source tree
 #: and vanishes on install, silently breaking A-029 for every consumer while
@@ -387,6 +401,39 @@ def schema_text() -> str:
 def load_schema() -> dict[str, Any]:
     """The shipped JSON Schema, parsed."""
     return json.loads(schema_text())
+
+
+def supported_helper_roles(claims: Iterable["Claim"]) -> frozenset[str]:
+    """Which :data:`HELPER_ROLES` *claims* can support a ``helpers`` entry
+    for (P33/V5-5, A-223c/A-227).
+
+    Public, and the SINGLE definition of the correspondence rule.
+    :meth:`Verdict._check_helpers` validates with it, and
+    :mod:`assay.runner` reads it when a cleanup-only failure voids the very
+    claim a helper produced and its entry has to be voided with it (B047 item
+    5). A second copy of the table in the producer would let the two
+    disagree, and the disagreement's shape is a verdict the producer built
+    and this class then refuses with a bare ``ValueError`` no caller catches
+    -- the same one-join-not-two argument A-385/A-367 make for coverage keys.
+    """
+    materialised = tuple(claims)
+    r1_judged = any(
+        claim.rigor == "R1" and claim.coverage is not None for claim in materialised
+    )
+    r2_judged = any(
+        claim.rigor == "R2" and claim.mutation is not None for claim in materialised
+    )
+    return frozenset(
+        {
+            role
+            for role, satisfied in (
+                ("statement-positions", r1_judged),
+                ("mutation-sites", r2_judged),
+                ("executable-code", r1_judged or r2_judged),
+            )
+            if satisfied
+        }
+    )
 
 
 def iso_utc(moment: datetime) -> str:
@@ -3189,26 +3236,13 @@ class Verdict:
                 "OMITS the field entirely (A-230a) rather than recording a "
                 "known-empty list nothing witnessed"
             )
-        r1_judged = any(
-            claim.rigor == "R1" and claim.coverage is not None for claim in self.claims
-        )
-        r2_judged = any(
-            claim.rigor == "R2" and claim.mutation is not None for claim in self.claims
-        )
-        requirement = {
-            "statement-positions": (r1_judged, "an R1 claim carrying a coverage payload"),
-            "mutation-sites": (r2_judged, "an R2 claim carrying a mutation payload"),
-            "executable-code": (
-                r1_judged or r2_judged,
-                "an R1 claim carrying coverage or an R2 claim carrying mutation",
-            ),
-        }
+        supported = supported_helper_roles(self.claims)
         for helper in self.helpers:
-            satisfied, what = requirement[helper.role]
-            if not satisfied:
+            if helper.role not in supported:
                 raise ValueError(
                     f"helpers records a {helper.role!r} helper ({helper.tool!r}) "
-                    f"but this verdict does not carry {what} -- a helper is "
+                    f"but this verdict does not carry "
+                    f"{HELPER_ROLE_REQUIREMENT[helper.role]} -- a helper is "
                     f"recorded because it produced a claim payload, so an entry "
                     f"with no such payload describes work that judged nothing"
                 )

@@ -15,6 +15,7 @@ from conftest import as_pre_oracle_attributed
 
 from assay.adapters.go import GoAdapter
 from assay.adapters.python import PythonAdapter
+from assay.cli import _built_in_registry
 from assay.coverage_parsers.model import CoverageProfile, FileCoverage
 from assay.diff import AddedLines
 from assay.errors import Outcome
@@ -54,6 +55,36 @@ def test_the_go_adapter_declares_the_expected_protocol_surface():
     assert adapter.source_globs == ("*.go",)
     assert adapter.excluded_dir_names == frozenset()
     assert adapter.requires_span_attribution is False
+    assert adapter.requires_statement_attribution is True
+    assert adapter.external_tools == ("go",)
+
+
+def test_the_adapter_the_REGISTRY_hands_a_lane_is_the_undowngraded_one():
+    """B055's third acceptance box: a test that goes RED if the shipped
+    declaration is ever flipped, so **the double can never quietly become the
+    product**.
+
+    The test above asserts it of ``GoAdapter()``. This asserts it of the
+    object a real lane actually resolves, which is the one that matters and
+    is not the same claim: ``tests/test_canary_go_pipeline.py``'s
+    ``_PreOracleGoAdapter`` is a SUBCLASS of this very class with
+    ``requires_statement_attribution`` flipped to ``False`` (B055 shortcut 2,
+    filed rather than fixed). A subclass registered by accident, or a
+    downgraded instance constructed in ``cli._built_in_registry``, would
+    satisfy every ``isinstance`` check in the suite while removing A-392's
+    guard from every Go lane this build runs -- and a removed guard is
+    invisible, because an uncorrected profile parses cleanly and yields a
+    plausible percentage.
+
+    ``type(...) is GoAdapter`` rather than ``isinstance`` is therefore the
+    point of the second assertion, not pedantry."""
+    registry = _built_in_registry()
+    adapter = get_adapter(registry, "go", "R1")
+
+    assert type(adapter) is GoAdapter, (
+        f"the built-in registry hands a Go lane a {type(adapter).__name__}, "
+        "not the shipped adapter itself"
+    )
     assert adapter.requires_statement_attribution is True
     assert adapter.external_tools == ("go",)
 
