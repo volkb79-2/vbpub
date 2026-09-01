@@ -948,3 +948,224 @@ improvised (BLOCKED protocol). Whichever is chosen, B057's second half —
 the misattributed "not the same revision" message — should be ruled on at the
 same time, because the right message depends on which layer owns the
 prefix.
+
+## 28. Item 6 — `helpers[]` has a producer, and three parts of it were decisions
+
+BRIEF-3 called item 6 PARTIAL: `HelperInvocation` was delivered exactly once
+per lane through `evaluate_r1`'s `on_helper_invoked` channel and nothing
+carried it onward. It is now whole, and B047's own filing ("confirm the
+LaneResult copies `helpers[]` verbatim; nothing on assay's side beyond
+documenting") understated it — `Verdict.helpers` had no producer AT ALL since
+P33, whose own docstring says so.
+
+| piece | where | what proves it |
+|---|---|---|
+| the sink and the channel | `runner._run_prepared_lane`, `_PreparedOutcome.helpers` | the qualification run's real `helpers[]` (§29) |
+| `HelperInvocation` → `Helper`, with the ROLE named by the runner | `runner._record_statement_position_helper` | `test_runner_helpers_envelope.py::test_the_runner_supplies_the_ROLE_and_the_adapter_never_does`, which also asserts `HelperInvocation` HAS no role — the assertion would be satisfiable by copying one if it did |
+| omission when no helper ran (A-230a) | `assemble_verdict` | `::test_a_lane_that_invoked_no_helper_OMITS_the_field`, and `test_cli_run.py:406`'s untouched control (A-395) |
+| the LOUD refusal | `assemble_verdict` | `::test_a_helper_with_no_correspondingly_judged_claim_is_refused_LOUDLY` |
+| voiding a helper with the claim it produced | `_replace_highest_higher_rigor_claim_with_git_failed` | `::test_voiding_r1_after_a_cleanup_failure_voids_its_helper_with_it`, which also asserts the resulting verdict CONSTRUCTS — that is the state that would otherwise raise |
+| ONE correspondence rule | `verdict.supported_helper_roles` | `::test_supported_helper_roles_names_only_what_a_claim_set_can_support` + a vacuity guard that every declared role is reachable by some claim set |
+
+**Three of those are decisions rather than plumbing, and each had a rejected
+alternative.**
+
+**(a) The role is the RUNNER's to name.** `HelperInvocation` deliberately
+carries none. `statement_blocks` is the only protocol method returning one, so
+which of `HELPER_ROLES` an invocation belongs to is a fact of the call site. An
+adapter free to name its own role could claim `mutation-sites` from a coverage
+hook, and `_check_helpers` would then demand an R2 payload for work that
+produced an R1 one — a refusal naming the wrong thing. This is the same
+layering A-397(c) records for the type split.
+
+**(b) A helper with no correspondingly-judged claim is REFUSED, not
+filtered.** `_check_helpers` raises a bare `ValueError` that no caller catches,
+so `assemble_verdict` gets the same `AssayError` guard shape its two siblings
+already have. A silent filter was considered and rejected: it would also
+swallow a genuine wiring defect, which is AGENTS.md's masked default one axis
+over. The one legitimate way to hold a helper whose claim was voided is a
+cleanup-only failure, and that path drops the entry itself, at the site that
+took the payload away — the same move the judgment tier already gets one line
+down.
+
+**(c) The correspondence rule has ONE definition.**
+`verdict.supported_helper_roles`, read by `_check_helpers` and by the runner.
+The rejected alternative was a second copy of the three-role table in the
+producer; the argument against it is A-385/A-367's, and the failure shape is
+specific: a producer whose table disagreed with the schema's would build a
+verdict the schema then refuses uncatchably. `verify.py`'s own copy is left
+alone deliberately — it reads raw JSON rather than `Claim` objects and is the
+independent transcription this project keeps on purpose (the gate's pin table
+has the same shape).
+
+## 29. The qualification transcript — a real Go R1 verdict, in the image
+
+`tests/qualification/test_go_r1_real.py`, three tests, `ASSAY_GO_QUALIFICATION=1`:
+
+```text
+$ ASSAY_GO_QUALIFICATION=1 python3 -m pytest tests/qualification/test_go_r1_real.py -q
+...                                                                      [100%]
+3 passed, 1 warning in 16.87s
+PYTEST_EXIT=0
+```
+
+It builds the shipped zipapp with `build_release.py` (HEAD's committed OID,
+offline), materialises a two-commit Go fixture INSIDE the container so git's
+files are owned by uid 1003, and runs a real
+`go test ./... -count=1 -coverpkg=./... -covermode=atomic -coverprofile=…`
+under `--network=none` and `--cgroup-parent`. The verdict it produced, run
+again by hand against the same harness so the document can be pasted rather
+than described:
+
+```json
+{
+  "assay_version": "qualification",
+  "commit": "b7d3bb56c0dbce5135e2fa81bea89774cb2ad98a",
+  "enforcement": "gate",
+  "helpers": [
+    {
+      "identity": "go version go1.25.14",
+      "resolved_path": "/usr/local/go/bin/go",
+      "role": "statement-positions",
+      "tool": "go"
+    }
+  ],
+  "judge_provenance": {
+    "artifact": "zipapp",
+    "digest": "6f3e33bbcb6855b3cc74e8433f6c84a51adfde4b68404c321746e794d2bc664b",
+    "digest_algorithm": "sha256",
+    "name": "assay",
+    "version": "4.0.1.dev28+g77d9d6b9"
+  },
+  "lane": "unit",
+  "outcome": "PASS",
+  "schema_version": 9,
+  "scope": "S1"
+}
+```
+
+and its R1 claim:
+
+```json
+{
+  "coverage": {
+    "considered": 1, "covered": 1, "executable": 1, "pct": 100.0,
+    "missing_lines": {}, "files_missing_coverage": [],
+    "branch_capability": "unavailable", "exclusion_capability": "unavailable"
+  },
+  "rigor": "R1", "source": "computed", "status": "PASS",
+  "verified_by_assay": true
+}
+```
+
+**`executable: 1` is F008-A3's whole substance, measured end to end.** The head
+commit adds four lines for `Multiply` — a comment, the signature, `return a *
+b`, and the closing brace — and exactly one of them begins a counted statement.
+The rule this wave removed would have reported 3, because the signature and the
+brace are both inside the block's own extent (`10.29,12.2`). The paired FAIL
+test asserts the same property from the other side: `Guard`'s `return -1` is
+the ONLY line in `missing_lines`, and the assertion is written against the
+source text (`[source[line - 1].strip() for line in lines] == ["return -1"]`)
+rather than against a line number, so it names what was reported rather than
+merely counting it.
+
+**One correction found by running it.** The first version of the driver
+reproduced `cmd_run`'s sequence except for its first step, so the verdict
+carried no `judge_provenance` and the assertion that a consumer artifact names
+its own archive had nothing to read. Fixed in `9714361c`; the fix is what makes
+the `artifact: "zipapp"` line above real.
+
+**Why it drives the LIBRARY entry point.** B057/DA-8. `assay run` on any real
+Go module refuses today, measured (§26), so the only path a Go consumer has is
+`runner.run_lane` with an adapter they built. The module's docstring says this
+in full and says what to do when DA-8 lands: the assertions are about the
+verdict document, not about which entry point produced it, so they should
+survive the move to `python3 <pyz> run …` unchanged.
+
+**The image assertion is not decoration.** `test_the_go_gate_image_still_carries_the_interpreter_the_judge_needs`
+asserts `python3 --version` is `>= 3.11` inside `tester-unified-go:local`, plus
+`go version` and uid 1003. Without it, a base-image change that dropped the
+inherited interpreter would make this module skip for a reason that reads like
+"not enabled" — a disarmed qualification that looks identical to an unrequested
+one. A-402's Dockerfile paragraph and this test are the same fact recorded in
+the two places that can act on it.
+
+## 30. Gate — run 7, PASS on commit `9714361c`
+
+Command, from `/workspaces/vbpub`:
+
+```sh
+bash assay/tools/tester-unified-gate.sh /workspaces/vbpub/.worktrees/assay-wave-c-go
+```
+
+**Which commit it judged, from the gate's own output rather than my
+assertion:** the `wheel-installed` phase built and installed
+`assay-4.0.1.dev29+g9714361c-py3-none-any.whl`, so the artifact names the
+commit under judgment.
+
+Verdict read from the log in a SEPARATE step:
+
+```text
+ASSAY_GATE_PHASE=wheel-installed
+ASSAY_GATE_PHASE=attestation-hardened
+ASSAY_GATE_PHASE=verdict-v5-accepted
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified
+ASSAY_GATE_PHASE=verdict-v9-successors-verified
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+GATE_EXIT=0
+```
+
+All 11 phases, completion marker present, exit 0, and a separate grep for
+`FAILED`/`ERROR`/`DIRTY`/`failed` returned nothing. The devcontainer full suite
+on the same tree is `3860 passed, 16 skipped`, `PYTEST_EXIT=0` — the three
+skips added by this generation are the Go qualification module, which is
+correct: no Go exists here or in `tester-unified`.
+
+`verdict-v9-successors-verified` is the phase that matters most for this
+change. `helpers[]` now has a producer for the first time, so the drift guard
+and the v9 successor set are being asked about a field that was previously
+only ever absent. It passed, and no schema was cut: `helpers` has been in v9's
+shape since P33 and this wave populated it, which is exactly the "no wire
+field" constraint the wave prompt set.
+
+**The trap did not fire this time, and that is worth one sentence rather than
+none.** Both background jobs (the full suite, the gate) reported completion
+notifications that AGREED with their own appended markers. Six instances in
+three generations and two agreeing ones do not make the rule optional; they
+make it cheap. The markers were read separately anyway, in their own step, and
+that is the only reason this paragraph can say which was true.
+
+## 31. What generation 4 did NOT do, and why
+
+**F008-A4 (fixture regeneration) was not started, and cannot be.** Its honest
+form regenerates `tests/fixtures/go/hello/hello.out` and the canary control
+from real toolchain output and re-derives every expectation from the oracle.
+That needs a Go lane whose keys resolve, which is B057. Regenerating the
+profile bytes alone would replace a wrong profile with a real one still read
+against expectations derived from the wrong one — A-234's own warning, and the
+conflation A-O19 exists to remove.
+
+**F008-A5 was not started, for the same reason**, and §26 records the specific
+way DA-6's prescribed srdm lane fails: `srdm/internal/...` keys resolving to
+`shared-ramdisk-depot-manager/srdm/internal/...`, under no source root. The
+reconnaissance §17 recorded is unchanged and still correct; what is owed is
+still the run.
+
+**No acceptance box is ticked, and F008-A3/A4/A5 stay `absent`.** A3 is the
+tempting one: §29 is a real, end-to-end, statement-granular Go R1 verdict
+produced by the shipped artifact against the real toolchain, which is exactly
+the evidence A3 asks for — except that it was produced through the library
+entry point because the CLI one refuses. Ticking A3 while `assay run` cannot
+judge a Go module would record a capability this build does not have at the
+boundary a consumer uses. It is one ruling away, and the evidence is already
+written down; that is a better state than a tick that has to be argued with.
+
+**B055's other two boxes were not touched.** Its own text says the first IS
+F008-A4, and the second needs a decision this generation had no standing to
+make. The third is done (§28's registry test).

@@ -495,3 +495,90 @@ Note for whoever reads the test in isolation: it can only pass on a COMMITTED
 tree, because `build_release.py` builds from HEAD's OID by design. It went
 red once before this commit for exactly that reason, and that is the builder
 working, not the test being flaky.
+
+## `854d20c3` — docs(assay): file B057 and decision ask DA-8
+
+The blocker, recorded before anything was built on top of it. A Go cover
+profile is keyed by IMPORT PATH; `git diff` is keyed by repo-relative path;
+`GoAdapter.module_path` bridges them and nothing can set it through the CLI.
+Measured in-image with the shipped zipapp, including the control run with
+`module_path` supplied, which is what proves the defect is only the missing
+declaration.
+
+Filed rather than fixed because the fix is a real three-way fork: a declared
+lane key (A-328's precedent — an optional `judge` key with a default, no lane
+schema bump), derivation from the repository's own `go.mod` (§4.2a's
+DERIVE-then-READ preference and A-007's own reasoning both point here, and the
+seam does not exist), or a per-lane adapter registry (largest blast radius —
+generation 3 already recorded that `_built_in_registry` is read by more things
+than a grep for the adapter name shows). The project's stated preference and
+its most recent precedent select DIFFERENTLY, which is what makes it a fork
+rather than a gap in my reading.
+
+## `77d9d6b9` — feat(assay): helpers[] gets its first producer (B047 item 5)
+
+Item 6 completed, and it was larger than its filing. `Verdict.helpers` had
+been validated and never populated since P33. Three parts were decisions, each
+with a rejected alternative, and REPORT §28 carries them: the ROLE is the
+runner's to name (an adapter that could name its own could claim
+`mutation-sites` from a coverage hook); a helper with no correspondingly-judged
+claim is REFUSED rather than filtered (a filter would swallow a wiring defect
+too); and the correspondence rule gets ONE definition,
+`verdict.supported_helper_roles`, read by the schema's own validation and by
+the producer.
+
+Landed whole, per BRIEF-4's own caution: `_check_helpers` requires a
+correspondingly-judged claim per role, so a half-wired `helpers[]` is a
+schema-valid document that lies.
+
+`test_cli_run.py:406`'s `"helpers" not in document` is untouched (A-395) and
+is now doing real work as the control: every non-Go lane still omits the key.
+
+Also closes B055's third acceptance box — cheap, unticked, and worth the four
+lines: the adapter the REGISTRY hands a lane is asserted to be the
+undowngraded one, with `type(...) is GoAdapter` rather than `isinstance`,
+deliberately, because `_PreOracleGoAdapter` is a subclass carrying the flipped
+declaration and would satisfy `isinstance` while removing A-392's guard from
+every Go lane.
+
+Docs landed with the work: README (the zipapp install path and the B057 gap),
+CONSUMERS.md (the real `helpers[]` shape, how to install into a Go gate image,
+and the module-path workaround in code), DESIGN-GUIDE §11 (why the oracle is
+staged, and why the role belongs to the call site), CHANGES.md.
+
+## `9714361c` — test(assay): the Go qualification driver resolves judge provenance
+
+Found by running it, not by reading it: the driver reproduced `cmd_run`'s
+sequence except for its FIRST step, so the verdict carried no
+`judge_provenance` and the assertion that a consumer artifact names its own
+archive had nothing to read. Small, and worth its own commit because it is
+what makes `artifact: "zipapp"` a measured line in REPORT §29 rather than a
+claim.
+
+**Gate: run 7 PASS on `9714361c`** — 11 phases,
+`ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0`, wheel
+`assay-4.0.1.dev29+g9714361c` naming the judged commit, and a separate grep
+for `FAILED`/`ERROR`/`DIRTY` returning nothing. Devcontainer full suite on the
+same tree: `3860 passed, 16 skipped`, `PYTEST_EXIT=0`. Both verdicts read from
+the logs in their own step. Full transcript in REPORT §30.
+
+The Go qualification, run separately because neither gate image can host it:
+`3 passed`, `PYTEST_EXIT=0`, against the real `go1.25.14` toolchain inside
+`tester-unified-go:local`. REPORT §29 has the verdict document.
+
+## `21708344` — docs(tester-unified-go): record the inherited Python interpreter (A-402)
+
+DA-5's other half, closed rather than handed on. The image already carries
+`/usr/bin/python3` 3.13.5 from `golang:1.25`'s trixie base and nothing in the
+Dockerfile installs or mentions it — so reading the file is how you conclude
+there is none, which is precisely the conclusion the controller reached before
+running the image. Comment-only, and verified with a real `docker build` of
+the edited file (exit 0) rather than assumed to be inert.
+
+No `apt-get` layer, deliberately: installing a package already present is
+ceremony that reads as a safety property, and it would make the image's Python
+a DIFFERENT interpreter from the one a consumer inherits. The check that keeps
+the comment honest lives where it can fail — the qualification module asserts
+`python3 --version >= 3.11` inside the image, so a base-image change that
+drops the judge's interpreter goes red instead of turning every Go
+qualification into a skip that reads like "not enabled".
