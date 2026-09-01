@@ -485,6 +485,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-84 | `ciu check --json` writes `[INFO]` to stdout before the JSON document, breaking a naive `\| jq` — S13.4a and `_emit_check_report`'s docstring both say the document is the only thing the action writes, and `action_check` honors that, but `_run` reaches it past `deploy.py:4322`'s unconditional `info(f"Active service profile(s): …")` | Medium | FIXED — ciu-P44. Full sweep of the reachable call graph from `_run`'s check-action branch, as the row asked, not a one-line patch: (1) `_run` itself had FOUR unconditional `info()` calls reachable ahead of dispatch/during it (`Active service profile(s)`, `No action specified; defaulting to --deploy`, the S7.7 health-gate note, `>>> action: {action}`) — all four now route through a new local `_run_info` closure that prints to stderr instead whenever `--json`/`--format json` is set, rather than tracking exactly which action combination would reach the document (the simpler "no `_run`-level prose on stdout under a json-shaped flag, full stop" invariant is also the more robust one). (2) A SECOND class, in a different module, found by tracing `action_check`'s own `--live` branch into `provisioning.probe_ref`/`_probe_stack`: two unconditional `[WARN]` deprecation notices (the `one_shot`/`:completed` migration warnings, V8-PREP-5) printed straight to stdout with no `json_output` awareness at all — `probe_ref`/`_probe_stack` don't take that parameter, so both were moved to stderr UNCONDITIONALLY (matching CIU-75/CIU-62's own "STDERR, not a style preference" idiom) rather than threading a new parameter through a probe layer that has no other json-mode concept. (3) `action_check` itself, `_check_stack_config`, `_check_hooks_for_stack`, `render_selected_stacks`, and everything else in between were re-verified clean (either no raw stdout write, or already gated through `say`/`complain`) — `bootstrap_workspace_env`'s own deprecation-notice path (CIU-75) was independently confirmed to already route to stderr unconditionally, not touched. (4) While correcting SPEC S13.4a's own text (which had documented the pre-fix leak as INTENDED — "the orchestrator's own `[INFO]` lines still precede the document on stdout, exactly as for `ciu graph --format json`"), found that same sentence named a second, real sibling leak: `ciu graph --format json` shares the identical `_run`-level defect (S13.5's own "only the graph itself goes to stdout" claim was equally false for the same reason). `_run_info`'s gate now also covers `graph_format == "json"`. A THIRD, narrower gap surfaced by the same check — `action_graph`'s OWN internal `info()`/`error()` calls (not `_run`-level) are still ungated — is a separate surface (different function, needs its own parameter threading) and is filed as **CIU-86** rather than folded in here. Test: `test_check_json_stdout_is_exactly_one_json_document` (`test_ciu_deploy_direct79.py`) drives `deploy._run(["--check", "--json"])` end to end with the REAL `action_check` (not mocked) against an empty selection and asserts `json.loads()` on the ENTIRE captured stdout succeeds — the row's own required oracle, not a substring check — plus `test_run_info_routes_to_stderr_under_json_output` (the narrower `_run_info` unit proof) and five existing `test_ciu_provisioning.py` tests updated from asserting `[WARN]` in stdout to asserting it in stderr (and absent from stdout) for the `_probe_stack` fix. SPEC S13.4a's stale "[INFO] lines still precede the document" sentence corrected; S13.5 cross-referenced |
 | CIU-85 | `worktree._clean_in` (`:1267`) builds its child environment as `dict(os.environ)` + the target's identity, without the `_CIU_IDENTITY_ENV_KEYS` strip its two siblings (`_sanitized_target_env:2962`, `_resolve_budget_candidates:4406`) perform — so the caller's `CIU_SERVICES_PROFILE`, which is in that tuple but is NOT an overlay fact and therefore not in the overwrite, leaks into the child `ciu clean`. Separately, `PUBLIC_FQDN` is missing from `_CIU_IDENTITY_ENV_KEYS` despite being one of the six identity facts since CIU-47 | Low | FIXED — ciu-P44. `_CIU_IDENTITY_ENV_KEYS` now derives its identity half from `GENERATED_FACT_ENV_KEYS.values()` (`workspace_env.py`'s canonical fact->env-name table), adding `PUBLIC_FQDN` by construction, plus the one hand-added non-fact member `CIU_SERVICES_PROFILE` — replacing the old six-item hand-written literal that had drifted. `_clean_in` now builds `{k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS}` before overlaying `identity`, matching `_sanitized_target_env`/`_resolve_budget_candidates`. A THIRD sibling builder found during the fix, `_generate_env_in` (`:1221`, strips before running `ciu env generate`), carried its own separately hand-written six-key literal (identical to the pre-fix `_CIU_IDENTITY_ENV_KEYS`, so also missing `PUBLIC_FQDN`) — not named in this row originally, but the same class of drift and the same one-line fix, so folded in rather than left half-done: it now references `_CIU_IDENTITY_ENV_KEYS` too. Tests: `test_identity_env_keys_match_the_canonical_fact_table_plus_profile` pins the derivation; `test_clean_strips_the_callers_service_profile_selection` is the controlled-wrong-implementation proof for the `CIU_SERVICES_PROFILE` leak (reverting the strip makes it fail); `test_clean_strips_a_stale_ambient_public_fqdn_not_carried_by_target` proves an FQDN-less target no longer inherits the caller's stale `PUBLIC_FQDN` (all three in `tests/tests/test_ciu_worktree.py`, `TestWorktreeSubprocessEnvironment`); `test_generate_env_strips_primary_instance_identity`'s existing `_IDENTITY_KEYS` fixture gained `PUBLIC_FQDN`, extending its existing loop assertion for free. SPEC S16.6 updated to name the same seven keys (six derived + one hand-added) instead of the old hand-listed six |
 | CIU-86 | `action_graph`'s own `info()`/`error()` calls (`deploy.py`'s `"No stacks with requires/provides — nothing to graph"` note and the two `validate_stack_shape`/`validate_stack_provisioning` error paths) write unconditionally to stdout via `deploy.py`'s plain `print(..., flush=True)` helpers, with no gate on `fmt == "json"` — so `ciu graph --format json`'s own docstring claim ("diagnostics go to the logger (stderr); only the graph itself goes to stdout", matching SPEC S13.5) is false on any of those three paths, though the common "the graph rendered cleanly" case is unaffected since `print(provisioning_pkg.render_graph(...))` is the only stdout write on that path | Low | OPEN — found by ciu-P44 while sweeping CIU-84's stdout-purity class one layer up: SPEC S13.4a's own (now-corrected) text named `ciu graph --format json` as sharing the `_run`-level leak CIU-84 fixed ("exactly as for `ciu graph --format json`"), which led to checking S13.5's own claim against `action_graph`'s actual body. The `_run`-level half of this (the orchestrator's `>>> action: graph`/`Active service profile(s)` lines) IS fixed by CIU-84's `_run_info` gate, now also keyed on `graph_format == "json"` — this row is only the remaining, `action_graph`-internal half, which needs `fmt`/a `json_output`-shaped parameter threaded into `action_graph`'s own `info`/`error` calls (or their two call sites switched to a local gated closure, mirroring `action_check`'s own `say`/`complain`) plus tests pinning stderr for the two error paths and the empty-graph note |
+| CIU-87 | ciu's own integration test suite (`ciu/tests/tests/test_ciu_test_repo.py` + 7 sibling test files) drives real, non-mocked `ciu env generate`/`ciu up` calls against `tmp_path`-based fixture repos, which triggers `_connect_devcontainer_to_network()` (S1.9) and joins the calling devcontainer onto each freshly created network — but no `conftest.py` in `ciu/` ever disconnects/removes it afterward, so every real run of that suite on a long-lived devcontainer host leaks one Docker network permanently. `ciu clean`'s own teardown (`deploy.py`) refuses to remove a network while a container remains joined, so a later manual `ciu clean` against the vanished `tmp_path` can't reach the leak either | Medium | OPEN — filed by dstdns 2026-09-01, see detail below |
 The approved milestone decisions and serial package order are in
 [`nyxloom-trove/decisions.md`](nyxloom-trove/decisions.md) and
 [`nyxloom-trove/roadmap.md`](nyxloom-trove/roadmap.md).
@@ -3049,6 +3050,108 @@ Two related asymmetries in the same tuple:
 
 ---
 
+
+## CIU-87 — integration test suite leaks a Docker network + devcontainer network-membership per real run
+
+**Filed by:** dstdns, 2026-09-01, during a tooling-adoption/hygiene pass (see
+`dstdns/docs/plan-tooling-adoption-and-hygiene-2026-09-01.md` §4). Found while
+diagnosing why dstdns package P152 was blocked all of the prior session on
+host Docker network address-pool exhaustion. Source-confirmed via a fork
+investigation before filing (not assumed from the live evidence alone).
+
+### Observed mechanism and reproduction
+
+21 networks named `test-repo-<6hex>-network` had accumulated on the shared
+devcontainer host, all created within a ~45-minute window on 2026-08-31
+(`02:16`–`03:01`). `docker network inspect` on every one of them showed
+exactly one attached container: `dstdns-devcontainer-vb` — the devcontainer
+itself, not any ciu-managed workload container. `docker network ls` showed 33
+total networks at the time, which is what exhausted the address pool P152's
+Mode-B bring-up needs.
+
+Root cause: `ciu/tests/tests/test_ciu_test_repo.py` and 7 sibling test files
+use a literal `test-repo` fixture-repo name (`TEST_REPO = REPO_ROOT /
+"test-repo"`, `workspace_env.py`-adjacent test fixtures) or `tmp_path /
+"test-repo"` per-test roots, and drive REAL (non-mocked-Docker) `ciu env
+generate`/`ciu up` invocations against them as part of exercising ciu's own
+provisioning code paths. Network naming is
+`instance_id = sha256(physical_root)[:6]` (`workspace_env.py:758`) —
+deterministic per path, so 21 distinct hashes correspond to 21 distinct
+`tmp_path` invocations across one test-suite run.
+
+Every real `ciu env generate` under `ENV_TYPE=devcontainer` calls
+`_connect_devcontainer_to_network()` (`workspace_env.py:850-895`, invoked
+from `workspace_env.py:1006`) — a deliberate S1.9 feature so the devcontainer
+can resolve a freshly-provisioned stack's container names by DNS. Nothing
+gates this on "real work" vs. "test suite exercising this code for real";
+running the suite from inside a devcontainer triggers the identical
+production side effect the feature exists for in production use.
+
+No teardown exists for this in the test suite. Grepping every `conftest.py`
+under `ciu/` found zero network-cleanup fixtures. The only
+disconnect/remove code lives in product paths: `deploy.py:3621` (part of
+`ciu clean`'s own teardown) and `worktree.py:2680`, whose own operator-hint
+string reads `"docker network rm {network}  # only if no container is still
+joined"` — i.e. `ciu clean` deliberately REFUSES to remove a network while a
+container (here, the never-disconnected devcontainer) remains joined. Since
+these tests never call `ciu clean`/`ciu worktree reap` afterward, and
+pytest's `tmp_path` teardown only deletes the temporary directory (not
+Docker state), both the network and the devcontainer's membership in it leak
+permanently — and even a LATER manual `ciu clean` invocation against the
+now-vanished `tmp_path` can't reach them, because the safety guard blocks
+removal while still joined and nothing else ever disconnects it.
+
+Cleanup for the 21 already-leaked networks was safe and has been applied at
+dstdns (not a fix, a local no-op-from-the-workload's-perspective cleanup):
+`docker network disconnect -f <net> dstdns-devcontainer-vb && docker network
+rm <net>` for each — all 21 had zero ciu-managed workload containers
+attached, only the devcontainer itself.
+
+### Why ciu owns it
+
+The leak is entirely inside ciu's own test suite and its own product
+teardown logic (`_connect_devcontainer_to_network`, `ciu clean`'s
+still-joined refusal) — a consumer repo has no visibility into, or ability
+to fix, what ciu's tests do to the host Docker daemon they run against. Any
+consumer whose devcontainer ever runs ciu's real (non-mocked) test suite —
+directly, or via a `test-runner`/CI container sharing the same Docker
+socket — accumulates one leaked network per invocation, monotonically, with
+no operator-visible signal until something else (like P152's fresh Mode-B
+bring-up) hits the exhausted address pool.
+
+### Proposed contract
+
+Either of two independent fixes closes this (a combination is stronger):
+
+1. **Test-suite teardown.** A `conftest.py`-level fixture (session- or
+   module-scoped, matching how `test-repo`/`tmp_path` fixtures are already
+   scoped) that disconnects the devcontainer from and removes every network
+   created during that test run — mirroring what `ciu clean`/`ciu worktree
+   reap` do for a real workspace, but driven by the test's own knowledge of
+   which `instance_id`/network it just created rather than requiring a live
+   workspace to reap.
+2. **`ENV_TYPE` test-mode gate.** `_connect_devcontainer_to_network()` skips
+   the real `docker network connect` side effect when the test suite marks
+   itself as exercising this code path for verification rather than for a
+   real provisioning run — analogous to how other parts of ciu already
+   distinguish mocked-Docker unit coverage from real-Docker integration
+   coverage.
+
+### Behavioral oracles
+
+- Run the real (non-mocked) suite twice in a row inside one devcontainer;
+  `docker network ls | grep -c '^test-repo-'` must return to its pre-run
+  count after each run, not accumulate.
+- `docker network inspect` on any network the suite creates must show the
+  devcontainer disconnected (zero attached containers, or the network
+  itself absent) once the suite process exits, success or failure.
+- Controlled wrong implementation: reverting the teardown fixture (or
+  removing the `ENV_TYPE` gate) must make the first oracle fail again within
+  one run.
+
+**SPEC ownership:** S1.9 (devcontainer network join) and S16 (worktree
+lifecycle/reap) — this is the test-suite-side gap in the discipline S16.10
+(`ciu worktree reap`) already establishes for real workspaces.
 ## Compact resolved index
 
 Detailed history for closed work lives in the normative SPEC, release notes,
