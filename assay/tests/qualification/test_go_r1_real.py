@@ -293,13 +293,18 @@ from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
 
-from assay import git, runner
+from assay import git, provenance, runner
 from assay.adapters.go import GoAdapter
 from assay.config import load_lane_file
 
 root = Path("/work/fixture")
 lane_file = load_lane_file(root / "assay.toml")
 lane = lane_file.lanes["unit"]
+# `cmd_run`'s own first step (cli.py), reproduced rather than skipped: a
+# verdict that cannot name the artifact that produced it is exactly the
+# un-auditable refusal this project's provenance work exists to remove.
+judge_provenance, unidentified = provenance.identify_judge()
+assert judge_provenance is not None, unidentified
 verdict = runner.run_lane(
     lane,
     commit=git.head_rev(root),
@@ -307,6 +312,7 @@ verdict = runner.run_lane(
     project_root=root,
     adapter=GoAdapter(module_path="example.invalid/harness"),
     assay_version="qualification",
+    judge_provenance=judge_provenance,
 )
 Path("/work/verdict.json").write_text(
     json.dumps(verdict.to_dict(), indent=2, sort_keys=True), encoding="utf-8"
