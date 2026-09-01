@@ -9,30 +9,16 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
-### Fixed
-- **RG-31 — the toolchain-fitness probe's `--worktree` resolution is now
-  VALIDATED, not textual (rev 32).** `assay_toolchain_findings()` (shared by
-  `doctor` check 5 and `--check-env`) still resolved its override through
-  the run-path's lenient `resolve_repo_and_worktree` — no upfront
-  validation, since the run path has a natural downstream failure to die
-  against. A report-only probe has no such failure: a bad `--worktree`
-  silently built a `probe_dir` nothing mounted, and the resulting `[SKIP]`
-  blamed "an assay older than 3.2.0" instead of the real cause, which
-  `doctor` check 3 already names correctly two checks earlier in the same
-  report. Now routed through RG-30's `resolve_worktree_scope()` — the same
-  validated resolver check 3 and `--check-env`'s drift scan already use — so
-  a bad override raises the identical `GateError`, caught by the existing
-  per-lane SKIP handler with the real cause instead of a guess. SPEC `R-37b`
-  already said the probe's `cd` target "follows the SAME override"; this
-  closes the gap between that text and what the code actually did.
-
 <!-- Post-release housekeeping (assay CHANGES.md precedent): this block is
      CLEARED immediately after a release. cmru generates the dated entry
      below from the commit range but does NOT clear this hand-written block
      itself — leaving content here would republish shipped work as
      "unreleased" on the next cycle. Recurred on run-gate-project as of
      2026-09-01 (rev 24/25/27/28/29/30 content had survived three releases,
-     23.1.0/23.2.0/23.2.1, all already generated below); cleared then. -->
+     23.1.0/23.2.0/23.2.1; then again the SAME cycle, since cutting
+     23.2.2 to ship RG-31's own fix — confirming this really is a manual
+     per-release step, not something cmru will ever do for you); cleared
+     both times. -->
 
 <!-- cmru: release history -->
 
