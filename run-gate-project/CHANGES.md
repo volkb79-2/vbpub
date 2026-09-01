@@ -9,195 +9,30 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
-### Changed
-- **Adversarial-review round on the P02 bundle (rev 29).** The `command -v`
-  fitness probe is now BATCHED per environment over the union of every lane's
-  tools — it was one container per lane, so SPEC `R-30`'s "at most one probe
-  container per assay environment" was quantitatively false (measured: 4
-  containers for 3 lanes on one environment). A test now owns that count.
-  And the three places still promising that `--dry-run` starts nothing —
-  SPEC `R-28`, `usage()`, the argparse help — now say what it does start: an
-  assay lane's read-only inventory probe, which is what resolves the base the
-  printed plan must show. `--dry-run`'s real promise is that **no judged lane
-  starts**. Same correction applied to `doctor` in CONSUMERS, README and
-  `cmd_doctor`'s own docstring, which still called itself "pure
-  recomposition".
-
-### Added
-- **RG-27 — lane invocation history + the `history` query verb (rev 30).**
-  Lane cost was informal: an operator noticed a lane "took a while" and the
-  observation died with the terminal scrollback, so a provisional-merge /
-  defer-heavy-rigor policy could only ever be a guess (dstdns declined to
-  adopt one blind on 2026-08-25, D-204). run-gate is the layer that actually
-  starts each lane, so it now records what it already sees. Two slots per
-  lane, with deliberately different contracts: **`latest`** holds the most
-  recent invocation *whatever happened to it* (pass, fail, tool error,
-  Ctrl-C, dirty tree, mid-rebase) for diagnostics, and **`history`** is a
-  curated trend series keyed by (lane, commit), bounded to the last
-  `[history] keep` commits (default 10). A run joins history only if it
-  completed with its own exit status, on a clean tree, with no git operation
-  in flight, at a resolvable commit — every exclusion records its reason,
-  and "could not determine" excludes rather than assuming clean. A
-  **completed fail DOES join** (its duration is real cost) but is stored with
-  its outcome and reported as a SPLIT statistic, because a red lane
-  short-circuits; the headline statistic is the **median**, never the mean,
-  since one slow outlier reading as the lane's permanent cost is the exact
-  trap this entry named. Query it with `./run-gate.py history [LANE]
-  [--json]`. Storage is `<project>/.run-gate/history.json` **inside the
-  judged tree** — per (worktree × project), which is the concurrency answer:
-  parallel worktree gates address different files and never contend, while
-  two lanes of one project serialize on a sibling `.run-gate/history.lock`
-  (sibling because the store is replaced by rename) with a bounded wait —
-  telemetry must never hang a gate. The store MUST be git-ignored and that is
-  CHECKED, not documented: run-gate refuses to write an un-ignored store and
-  prints the remedy rather than dirtying the tree for the next lane's
-  clean-tree check. Recording is best-effort throughout — every failure is
-  one warning line and the lane's exit status is untouched. run-gate
-  measures; it decides no rigor/defer policy. SPEC `R-36` (+`R-01`/`R-06`/
-  `R-08` amendments); README "Environment mechanics"; CONSUMERS "What each
-  lane costs". Retriage of ciu **CIU-55** (superseded pointer there).
-
-  Round-2 review fixes folded in before merge: `history` honors `--worktree`
-  on the READ side too (it previously reported the invoking checkout's store
-  no matter which tree was asked about — silently), and refuses an override
-  that names no git work tree rather than answering "no data"; flushing a
-  record is now at-most-once, so a Ctrl-C landing inside the telemetry write
-  surfaces as the KeyboardInterrupt instead of a `KeyError` traceback from
-  the second flush; and `--json`, which was accepted and ignored everywhere
-  but `history`, is now refused by name elsewhere (`--list --json` used to
-  hand a TSV to a caller asking for JSON).
-
-  > **BREAKING (load-time): a lane named `history`.** `history` is a CLI verb
-  > now, so it joins `doctor`/`validate-pointers` as a RESERVED lane name and
-  > `[lanes.history]` is refused when the config loads. No project in this
-  > estate declares one (all ten `run-gate.toml` files checked); a
-  > copied-script consumer repo that does must rename the lane — it was
-  > already unreachable, since the verb would have won — before taking rev 30.
-  > Migration is one line, and it fails loudly at load, never silently.
-- **RG-26 — `--base REF` passthrough to `assay run --request-base`
-  (rev 28).** assay 3.0.0's `judge.base_source = "request"` (B019) had been
-  unusable from every consumer: such a lane refuses without
-  `--request-base`, and run-gate had no flag to supply one. `run-gate <lane>
-  --base REF` now reaches a delegating assay lane as `--request-base REF`;
-  omitted, the ref is the judged worktree's `git merge-base HEAD
-  @{upstream}`, and a tree with no upstream refuses (exit 2) rather than
-  guessing. Delegation is DERIVED from `assay lanes --json` (RG-25's shared
-  probe) — **no new `run-gate.toml` key**, so the fact keeps exactly one
-  spelling; the cost is one short read-only inventory probe per assay lane
-  invocation. Conjunction lanes propagate it through a `{base}` token in
-  their own argv, mirroring RG-1's `{worktree}` rule. Every non-delegating
-  case refuses by name: an assay lane with a different `base_source`, a
-  command lane with no `{base}` token, or a judge too old to answer while
-  `--base` is given (naming assay 3.2.0/B044). Without `--base` an older
-  judge behaves exactly as before. `--dry-run` and the R-05 disclosure show
-  the resolved ref and the appended flag. SPEC `R-35`; CONSUMERS "Lanes that
-  take their comparison base from the gate"; absorbs the ciu v8 proposal's
-  §4.11 N12.
-- **RG-28 — an assay lane on the built-in `host` environment no longer
-  raises `KeyError('argv')` (rev 28).** Found while implementing RG-26: the
-  validator accepts `kind = "assay"` with `environment = "host"`, but
-  `run_host_lane` indexed `lane["argv"]` unconditionally — a traceback for a
-  legal config, which `R-04` calls a defect. It now builds the same assay
-  inner the two container runners do. SPEC `R-19`.
-- **RG-25 — assay-lane toolchain fitness in `doctor`/`--check-env`
-  (rev 27).** For every `kind = "assay"` lane, run-gate asks the JUDGE what
-  the lane needs (`<assay_command> lanes --json --file assay.toml`, assay
-  ≥ 3.2.0 / B044) INSIDE the lane's environment and checks that environment
-  for it — it still never parses `assay.toml`. `build_env_probe_argv()` is
-  the single in-environment probe builder, reusing `resolve_container_name()`
-  and `physical_path()`/`dual_mount_flags()`, so no second `docker
-  run`/`docker exec` argv shape exists. Tools checked = `external_tools` ∪
-  `argv0` (read from the inventory) ∪ the `language` toolchain (`javascript`
-  → node, npm; `go` → go — a table that exists only because assay 3.2.0
-  reports `external_tools: []` for every shipped adapter and states the
-  language fact in prose; an unmapped language is reported with a caveat,
-  never as "nothing needed"). `[FAIL]` names lane, tool and environment, or
-  an `assay_lane` the judge does not declare; every "could not determine" is
-  `[SKIP]` with its reason, so an assay older than B044 can never turn a
-  healthy project red. `doctor` counts SKIPs in its summary; `--check-env`
-  exits 2 on a toolchain FAIL while its env-drift half stays advisory.
-  **`doctor` and `--check-env` now START CONTAINERS** for this check —
-  fitness can only be observed, not read. They are short-lived and read-only,
-  judge nothing, write nothing, and are bounded at one inventory probe per
-  (environment, `assay_command`) plus **one batched `command -v` probe per
-  environment** (not per lane); a project with no assay lane starts none.
-  SPEC `R-34`, `R-01`, `R-30`; CONSUMERS `kind = "assay"` section; README.
-- **RG-21 — `doctor` names the linked-worktree host-lane git view (rev 26).**
-  A linked worktree's `.git` is a FILE pointing at an absolute gitdir under
-  the main checkout. A host lane that delegates to a harness bind-mounting
-  only the judged tree by host path (srdm's covergate) therefore fails with
-  `not a git repository: <gitdir>` mid-run. run-gate is not the defect —
-  `{worktree}` forwarding and exit-status passthrough are correct, and its own
-  container lanes dual-mount the repo root (`R-23`) — so this is a `[WARN]`
-  naming the worktree, the gitdir, the exact symptom and three remedies, not a
-  refusal, and it does not move doctor's exit code. Scoped to projects that
-  declare a host lane (the only kind that can reach such a harness); with a
-  host lane and a plain checkout the same check records `[OK]` so a reader can
-  tell it ran. SPEC `R-30a`; CONSUMERS "Host lanes that delegate to a
-  host-path-mounting harness" (three pasteable harness-side fixes).
-
 ### Fixed
-- **RG-23 — env forwarding: breaking change documented + the drift sweep
-  widened (rev 25).** The exec-mode forwarding loop's hardcoded
-  `MOCK_MODE`/`RUN_LIVE_TESTS` pair was replaced by declarative `forward_env`
-  with no migration pass and no note; consumers relying on either name
-  silently stopped receiving it, and the symptom is a false GREEN (a suite
-  that skips its live tests on the flag's absence exits 0 having run none).
-  The change is now stated as breaking with its migration in SPEC `R-24a`,
-  CONSUMERS ("BREAKING CHANGE — migrate if you use `mode = "exec"`") and the
-  README. The implicit names do NOT return. `--check-env` is now AST-based
-  (`R-24b`): it additionally sees a literal handed to the project's own
-  env-reader helper — `_env_flag_enabled("RUN_LIVE_TESTS")` whose body does
-  `os.getenv(name, "")`, exactly the shape the old line regex could not see —
-  plus `setdefault`/`pop`/`"X" in os.environ`, with bound-method parameter
-  offsets accounted for. It stays advisory (exit 0). An unparseable file is
-  reported by name and falls back to the line regex rather than being counted
-  as clean. Estate audit: no vbpub project declares `mode = "exec"` or
-  `forward_env`, so the confirmed blast radius is dstdns alone (its own
-  repo's fix). A regression test keeps that audit from silently regressing.
-- **RG-24 — exec-mode container resolution is worktree-scoped (rev 24).**
-  `resolve_container_name()` now prefers the JUDGED worktree's own
-  `ciu.global.toml` over the shared-`.git`-owning repo's, falling back to the
-  repo's unchanged when the worktree has none. A multi-instance ("Mode-B")
-  worktree with its own rendered config, network and runner used to have its
-  lane exec'd into the MAIN checkout's container — a partial, believable
-  failure (the inner `cd` still found the right files; only the container's
-  baked network/env were wrong). The pre-execution disclosure now names the
-  resolution scope (`judged worktree:` / `repo:`) and the file used, and a
-  missing-config refusal names both candidate paths. SPEC `R-14a`;
-  CONSUMERS "Python app estate with its own runner".
-- **RG-30 — `doctor`/`--check-env` honor `--worktree` (rev 31).** Both
-  verbs passed `None` to `resolve_repo_and_worktree` instead of the
-  caller's `--worktree`, so `doctor --worktree B` silently reported the
-  INVOKING tree's answers under B's name — including the `R-30a`
-  worktree-specific host-lane git-view WARN, exactly the kind of per-tree
-  answer that legitimately differs between trees. `history`'s own
-  `--worktree` fix (RG-27 B1) closed the identical read-scope hazard for
-  that verb; this closes the last remaining instance estate-wide, with the
-  same disclosure discipline (the report NAMES the tree it describes). New
-  shared `resolve_worktree_scope()` resolves and validates the override
-  (a bad one is refused by name — never silently answers for a
-  nonexistent tree). `doctor`'s per-tree checks (git identity, `R-30a`,
-  mountinfo) resolve it inside the SAME try/except the "git" check already
-  wraps every failure in, so a bad override becomes a `[FAIL] git` record
-  — never a false `[OK]` on the RG-21 check that follows it. The shared
-  assay-toolchain probe (`assay_toolchain_findings`, used by both `doctor`
-  check 5 and `--check-env`) relocates BOTH the `repo`/`worktree` it mounts
-  AND the `cd` target it runs inside — mounting the selected tree while
-  `cd`ing into the invoking checkout's path would not probe the selected
-  tree, it would run against a directory the probe container never
-  mounted. `--check-env`'s own env-drift scan follows the override for its
-  Python-source scan too, and — having no per-check ledger to degrade
-  into — refuses upfront on a bad `--worktree` rather than scanning
-  nothing under the wrong tree's name. SPEC `R-37` (`R-37a`/`R-37b`/
-  `R-37c`); README "Effective tree"; CONSUMERS "`--worktree` redirects the
-  whole report, not just the run".
+- **RG-31 — the toolchain-fitness probe's `--worktree` resolution is now
+  VALIDATED, not textual (rev 32).** `assay_toolchain_findings()` (shared by
+  `doctor` check 5 and `--check-env`) still resolved its override through
+  the run-path's lenient `resolve_repo_and_worktree` — no upfront
+  validation, since the run path has a natural downstream failure to die
+  against. A report-only probe has no such failure: a bad `--worktree`
+  silently built a `probe_dir` nothing mounted, and the resulting `[SKIP]`
+  blamed "an assay older than 3.2.0" instead of the real cause, which
+  `doctor` check 3 already names correctly two checks earlier in the same
+  report. Now routed through RG-30's `resolve_worktree_scope()` — the same
+  validated resolver check 3 and `--check-env`'s drift scan already use — so
+  a bad override raises the identical `GateError`, caught by the existing
+  per-lane SKIP handler with the real cause instead of a guess. SPEC `R-37b`
+  already said the probe's `cd` target "follows the SAME override"; this
+  closes the gap between that text and what the code actually did.
 
 <!-- Post-release housekeeping (assay CHANGES.md precedent): this block is
      CLEARED immediately after a release. cmru generates the dated entry
      below from the commit range but does NOT clear this hand-written block
      itself — leaving content here would republish shipped work as
-     "unreleased" on the next cycle. -->
+     "unreleased" on the next cycle. Recurred on run-gate-project as of
+     2026-09-01 (rev 24/25/27/28/29/30 content had survived three releases,
+     23.1.0/23.2.0/23.2.1, all already generated below); cleared then. -->
 
 <!-- cmru: release history -->
 
