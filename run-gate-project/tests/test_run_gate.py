@@ -4095,6 +4095,30 @@ class TestAssayToolchainFitness:
         assert str(wt / "proj") in inventory_call[-1]
         assert str(proj) not in inventory_call[-1]
 
+    def test_bad_worktree_skip_names_the_real_problem_not_assay_version(
+            self, tmp_path, monkeypatch, capsys):
+        """RG-31: this probe's OWN worktree resolution used the run-path's
+        lenient `resolve_repo_and_worktree` (no upfront validation), so a
+        bad `--worktree` silently built a `probe_dir` nothing mounted and
+        the resulting SKIP blamed "assay older than 3.2.0" instead of the
+        real cause — which check 3 ([FAIL] git) already names correctly two
+        checks earlier in the SAME report. Now routed through the identical
+        validated `resolve_worktree_scope()` check 3 uses, so both checks
+        raise and report the SAME cause."""
+        self._project(tmp_path, monkeypatch)
+        fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(
+            _inventory(external_tools=["sh"], argv0="bash")))
+        code = run_gate.main(["doctor", "--worktree", str(tmp_path / "nope")])
+        out = capsys.readouterr().out
+        assert code == 2
+        assert "[FAIL] git" in out and "not a directory" in out  # check 3
+        assert "[SKIP] lane 'ui-unit' toolchain" in out
+        toolchain_line = out.split("[SKIP] lane 'ui-unit' toolchain")[1]
+        assert "not a directory" in toolchain_line   # the real cause, repeated
+        assert "older than 3.2.0" not in out          # not the misleading guess
+        assert "Traceback" not in out
+
 
 class TestDoctorAndCheckEnvWorktreeReadScope:
     """RG-30: `doctor` and `--check-env` both passed `None` to
