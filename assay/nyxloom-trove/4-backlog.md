@@ -5313,3 +5313,113 @@ what produces that, and it is still owed.
       (today it does not, and this finding is a reason to keep it that way
       unless the two are bound at statement granularity, which A-208 always
       intended and A-217 explains is the only binding that is not circular).
+
+## B057 — `go` is registered at R1, but no Go lane reachable through the shipped CLI can resolve its own coverage keys
+
+**Filed 2026-09-01, Wave C generation 4, MEASURED end to end inside
+`tester-unified-go:local` (A-334) rather than reasoned about.** This is a
+BLOCKER for F008-A3/A5 and it carries an open decision ask (REPORT §"Decision
+asks", DA-8): the fix is a product/design fork with three defensible shapes,
+so it is filed rather than improvised.
+
+### What was found
+
+A Go cover profile keys every record by the package's **import path**:
+
+```text
+mode: atomic
+example.invalid/harness/internal/calc/calc.go:5.24,7.2 1 1
+example.invalid/harness/internal/calc/calc.go:10.29,12.2 1 1
+```
+
+while `git diff` names the same file `internal/calc/calc.go`. Stripping that
+module-path prefix is exactly what `GoAdapter.module_path` exists for
+(`adapters/go.py`, mirroring `covergate/main.go`'s own `stripModulePrefix`) —
+and **nothing can set it through the CLI.** `cli._built_in_registry`
+constructs `GoAdapter()`, whose `module_path` defaults to `""`, meaning "no
+strip"; `_KNOWN_JUDGE_FIELDS` (`config.py:243`) has no key for it and
+`assay run` has no flag for it. The only callers that set it anywhere in the
+tree are unit tests and `tests/test_standalone.py:1745`, a consumer building
+its OWN registry through the library API.
+
+Measured, in-image, on the real toolchain, with the shipped zipapp
+(`assay-4.0.1.dev26+g8d7f8740`, `judge_provenance.artifact = "zipapp"`):
+
+```text
+$ python3 <pyz> run unit --file /work/fixture/assay.toml --verdict-json /work/verdict.json
+unit: ERROR/UNREADABLE_ARTIFACT (exit 2)
+  commit: b7d3bb56c0dbce5135e2fa81bea89774cb2ad98a
+  argv: go test ./... -count=1 -coverpkg=./... -covermode=atomic -coverprofile=.assay/cover.out
+ASSAY_EXIT=2
+```
+
+and the mechanism, probed directly through the same zipapp in the same image:
+
+```text
+adapter.module_path = ''
+raw keys            = ['example.invalid/harness/internal/calc/calc.go']
+resolved            = {'example.invalid/harness/internal/calc/calc.go': 'example.invalid/harness/internal/calc/calc.go'}
+  exists(example.invalid/harness/internal/calc/calc.go) = False
+REFUSAL outcome     = ERROR
+REFUSAL reason_code = UNREADABLE_ARTIFACT
+REFUSAL message     = the coverage artifact carries block extents for
+  'example.invalid/harness/internal/calc/calc.go', but that file does not
+  exist at /work/fixture/example.invalid/harness/internal/calc/calc.go --
+  the profile and the working tree are not the same revision, so its blocks
+  cannot be resolved to statement positions
+
+with module_path set= {'example.invalid/harness/internal/calc/calc.go': 'internal/calc/calc.go'}
+helper identity     = go version go1.25.14
+helper tool/path    = go /usr/local/go/bin/go
+  internal/calc/calc.go: extent 5.24,7.2 numStmts=1 stmt_lines=[6]
+  internal/calc/calc.go: extent 10.29,12.2 numStmts=1 stmt_lines=[11]
+```
+
+The second half is the control, and it matters twice over: it shows the
+defect is ONLY the missing declaration — with `module_path` supplied,
+everything downstream works, the real `go1.25.14` oracle runs, and the
+statement lines come back as `{6}` and `{11}`, the two `return` lines, rather
+than the naive `{5,6,7}`/`{10,11,12}` that would include both signatures and
+both closing braces.
+
+### Why no fixture layout avoids it
+
+A package's import path is `<module path>/<dir relative to module root>`, and
+its profile key is that plus the file's basename. For the key to equal the
+repo-relative path, the module path would have to be empty, which `go.mod`
+does not permit. So this is not a property of an awkward fixture: **every**
+real Go module hits it. srdm hits it too — DA-6's prescribed lane
+(`cwd = "shared-ramdisk-depot-manager"`, `source_roots =
+["shared-ramdisk-depot-manager/internal"]`) would resolve srdm's own
+`srdm/internal/...` keys to
+`shared-ramdisk-depot-manager/srdm/internal/...`, which is under no source
+root and matches no file.
+
+### The second defect, which is separable and smaller
+
+The refusal names the **wrong cause**. "the profile and the working tree are
+not the same revision" is a staleness finding; the actual condition is an
+unstripped module prefix, and a consumer following that message would go
+looking at their commits. `derive_statement_blocks`' own input validation
+cannot tell the two apart today because by the time it runs, the key has
+already been through a no-op `normalize_coverage_key`.
+
+### What is NOT claimed
+
+That any particular fix is right. Three shapes are defensible and they are
+laid out in REPORT §"Decision asks" (DA-8): a declared lane key, derivation
+from the repository's own `go.mod`, or a registry that builds adapters per
+lane. §4.2a's DERIVE-then-READ preference and A-007's own precedent point at
+derivation; the architectural seam for it does not exist, and inventing one
+would be a protocol change on top of A-397's.
+
+### Acceptance
+
+- [ ] DA-8 ruled, and the ruling recorded as a decision row;
+- [ ] a Go R1 lane run through `assay run` (the shipped CLI, not a
+      library-built registry) on a real Go module, producing a
+      statement-granular PASS and a paired FAIL that names the uncovered
+      line;
+- [ ] the misattributed refusal message either fixed or explicitly kept,
+      with the reason recorded;
+- [ ] F008-A5's srdm run, which cannot start until this is closed.

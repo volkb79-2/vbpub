@@ -439,3 +439,59 @@ harness's own structured completion notification: the second full-suite run
 AGENTS.md's rule was written from, reproduced exactly, on the gate. Nothing
 about run 5 looked risky; the suite inside it was green. That is the argument
 for the rule being unconditional rather than reserved for suspicious commands.
+
+---
+
+# Generation 4 (fresh session, seeded from BRIEF-1..4 plus the controller's DA-4..DA-7 entry, `vbpub@237b9585`)
+
+Inherited tip `4cff97bc`, a docs-only commit on gate-green `91b05186` —
+verified myself (`git log --oneline -3`, `git status --short` clean) rather
+than taken from BRIEF-4's word.
+
+## `2f0cd223` — docs(assay): reword F008-A5, and record the in-image harness ruling (A-401, A-402)
+
+Task 0. The controller's DA-4 and DA-5 landed as decision rows before any
+work stood on them, and F008-A5's `text` in `2-product-definition.md` was
+replaced with A-401's wording. Both rulings cite `vbpub@237b9585` rather than
+a conversation.
+
+Before recording A-402 I re-ran its measurement myself — `docker run --rm
+--network=none tester-unified-go:local ...` — because A-334 applies to a
+controller's measurement exactly as it applies to mine, and because the entry
+being recorded is itself a correction of a conclusion reached by reading a
+Dockerfile without running the image. It reproduced: `/usr/bin/python3`,
+Python 3.13.5, `go version go1.25.14 linux/amd64`, uid 1003 / user `gate`,
+Debian trixie.
+
+## `8d7f8740` — fix(assay): reach the Go oracle from the shipped zipapp (A-403)
+
+**Building the harness found a live shipping defect on the first run.** The
+zipapp built at `2f0cd223` ran fine inside `tester-unified-go:local` (`assay
+4.0.1.dev25+g2f0cd223`, as uid 1003, over a read-only bind mount, with
+`--network=none`), and then every Go lane refused with "assay's Go
+statement-position oracle is missing from the installation" — for an oracle
+the archive contained the whole time.
+
+`go run .` takes a working DIRECTORY. Inside a `.pyz` the helper's files are
+zip members, so `HELPER_DIR` resolved to
+`…/assay-…pyz/assay/helpers/go/stmtpos` and `is_file()` answered False. The
+module's own comment had reasoned to that design from two TRUE premises ("go
+run needs a real directory"; "a wheel install materialises package data as
+real files") and one wrong conclusion, because a zipapp is not a wheel
+install — and with no pip and no ensurepip in the Go image (A-402), the
+zipapp is the ONLY install path there, so the shape that could not run the
+oracle is the shape every Go consumer runs.
+
+Fixed by reading both files through `importlib.resources` — the pattern
+`verdict.schema_text` already used one module over — and staging them into a
+temporary directory. Deliberately ONE path rather than a zipapp branch: a
+branch taken only inside a zipapp would never be exercised by the registered
+gate, which installs a wheel. The regression guard runs against the REAL
+built artifact the distribution suite already produces, needs no Go
+toolchain, and carries a vacuity guard asserting the zipapp's `HELPER_DIR`
+really is not a real file.
+
+Note for whoever reads the test in isolation: it can only pass on a COMMITTED
+tree, because `build_release.py` builds from HEAD's OID by design. It went
+red once before this commit for exactly that reason, and that is the builder
+working, not the test being flaky.

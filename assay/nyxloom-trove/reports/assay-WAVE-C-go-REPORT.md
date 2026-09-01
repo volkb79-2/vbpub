@@ -753,3 +753,198 @@ generations and two different delivery channels (command output and the
 harness's own notification), which is the argument for treating the rule as
 unconditional rather than as a precaution for risky-looking commands. Nothing
 about gate run 5 looked risky; the suite inside it was green.
+
+---
+
+# Generation 4 (fresh session, seeded from BRIEF-1..4 plus the controller's DA-4..DA-7 entry, `vbpub@237b9585`)
+
+## 24. Scope state after generation 4
+
+| # | item | state |
+|---|---|---|
+| 0 | A-401 (F008-A5 reworded) + A-402 (in-image harness) recorded | **DONE**, `2f0cd223` |
+| 1 | the in-image harness (build the pyz, mount, run a real R1 Go lane) | **DONE as a harness; the lane run BLOCKED at R1** — §25, §26 |
+| — | **A-403 — the zipapp could not reach the Go oracle at all** | **FOUND and FIXED**, `8d7f8740` — §25 |
+| — | **B057 / DA-8 — no Go lane reachable through the shipped CLI can resolve its own coverage keys** | **FOUND, MEASURED, NOT FIXED** — a product/design fork, §26 and §"Decision asks" |
+| 2 | `helpers[]` wiring + the DA-3 qualification test | see §28 |
+| 3 | F008-A4 fixture regeneration | not started |
+| 4 | F008-A5 per DA-6 | **cannot start** — blocked behind DA-8, §26 |
+| 5 | the acceptance boxes | **none ticked** — §29 |
+
+## 25. The harness works, and building it found a real shipping defect (A-403)
+
+**The environment facts, re-verified rather than taken from DA-5's word**
+(A-334 applies to a controller's measurement as much as to my own):
+
+```text
+$ docker run --rm --network=none tester-unified-go:local sh -c \
+    'command -v python3; go version; id -u; id -un; grep PRETTY_NAME /etc/os-release'
+/usr/bin/python3
+go version go1.25.14 linux/amd64
+1003
+gate
+PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
+$ docker run --rm --network=none tester-unified-go:local python3 --version
+Python 3.13.5
+$ docker images --format '{{.Repository}}:{{.Tag}}  {{.Size}}' | grep tester
+tester-unified-go:local  1.01GB
+tester-unified:local  8.94GB
+```
+
+**The harness itself**, exactly as DA-5 prescribes and as
+`tools/tester-unified-gate.sh:588-602` already does it for `tester-unified`:
+
+```text
+$ python3 assay/gate/distribution/build_release.py \
+      --repo /workspaces/vbpub/.worktrees/assay-wave-c-go --outdir <outdir>
+ASSAY_RELEASE_PHASE=clone / closure / wheel / zipapp / sidecars / manifest
+ASSAY_RELEASE_COMPLETE=4.0.1.dev26+g8d7f8740
+BUILD_EXIT=0
+
+$ HOST_ROOT="$(docker inspect "$HOSTNAME" --format \
+    '{{range .Mounts}}{{if eq .Destination "/workspaces/vbpub"}}{{println .Source}}{{end}}{{end}}')"
+/home/vb/volkb79-2/vbpub
+
+$ docker run --rm --network=none --cgroup-parent="$CGROUP_PARENT_DEV_BACKGROUND" \
+      --mount "type=bind,src=$HOST_ROOT,dst=/workspaces/vbpub,readonly" \
+      tester-unified-go:local sh -c 'id -un; id -u; python3 --version; go version; python3 <pyz> --version'
+gate
+1003
+Python 3.13.5
+go version go1.25.14 linux/amd64
+assay 4.0.1.dev25+g2f0cd223
+```
+
+So DA-5's one remaining seam — uid 1003 reading the mounted tree and writing
+the verdict path — holds: uid 1003 read the zipapp out of a read-only bind
+mount of the repository, and later wrote `/work/verdict.json` into a
+read-write mount of a scratch tree. The fixture repository is created INSIDE
+the container so git's own files are owned by the uid that will read them; no
+`safe.directory` override was needed and none was used.
+
+**Then the first real run refused, and the cause was assay's own artifact.**
+Inside the zipapp, `go_stmtpos.HELPER_DIR` resolves to
+`…/assay-4.0.1.dev25+g2f0cd223.pyz/assay/helpers/go/stmtpos`, and `is_file()`
+on its `stmtpos.go` is `False` — a zipapp keeps package data as zip members,
+not as files. `derive_statement_blocks` therefore refused with "assay's Go
+statement-position oracle is missing from the installation", naming assay's
+own installation as incomplete, while `zipfile.namelist()` on the same
+artifact shows `assay/helpers/go/stmtpos/stmtpos.go` and `go.mod` both
+present.
+
+That is not an edge case. A-402 makes the zipapp the ONLY install path into
+`tester-unified-go` (no pip, no ensurepip), so the shape that could not run
+the oracle is the shape every Go consumer runs. Fixed as **A-403**: the two
+files are read through `importlib.resources` — the pattern
+`verdict.schema_text` already used one module over — and staged into a
+temporary directory for the duration of the call, on ONE path for every
+installation shape rather than as a zipapp branch, because a branch taken
+only inside a zipapp would never be exercised by the registered gate (which
+installs a wheel). The regression guard is
+`test_distribution_build_release.py::test_the_zipapp_can_stage_the_go_oracle_into_a_real_directory`,
+which runs against the REAL artifact that module already builds, needs no Go
+toolchain, and asserts as a vacuity guard that the zipapp's `HELPER_DIR`
+really is not a real file — so a packaging change that materialises it makes
+the test say so instead of passing quietly.
+
+**Worth naming: the module's own comment had reasoned its way to the wrong
+place from two true premises** — "`go run .` needs a real directory (a
+`Traversable` need not be one)" and "a wheel install always materialises
+package data as real files". Both true. The conclusion (therefore use
+`__file__`, not `importlib.resources`) is wrong because a zipapp is not a
+wheel install, and nothing in the test suite ran the zipapp against the Go
+path. One `docker run` found it.
+
+## 26. The blocker: a Go lane through the shipped CLI cannot resolve its own coverage keys (B057 / DA-8)
+
+With A-403 fixed, the second run got further and refused for a different
+reason. This one is not fixable without a product call.
+
+A Go cover profile keys records by IMPORT PATH. Measured, real
+`go1.25.14`, real `go test ./... -coverpkg=./... -covermode=atomic`, in the
+image:
+
+```text
+mode: atomic
+example.invalid/harness/internal/calc/calc.go:5.24,7.2 1 1
+example.invalid/harness/internal/calc/calc.go:10.29,12.2 1 1
+```
+
+`git diff` names that file `internal/calc/calc.go`. `GoAdapter.module_path`
+exists precisely to strip the difference — and `cli._built_in_registry`
+constructs `GoAdapter()` with `module_path = ""` ("nothing to strip"),
+`_KNOWN_JUDGE_FIELDS` (`config.py:243`) has no key for it, and `assay run`
+has no flag. The full transcript, the control run with `module_path`
+supplied, and the proof that no fixture layout can dodge it are in **B057**.
+
+The two consequences worth carrying forward:
+
+* **F008-A5 cannot start.** DA-6's prescribed srdm lane would resolve srdm's
+  `srdm/internal/...` keys to `shared-ramdisk-depot-manager/srdm/internal/...`
+  — under no source root, matching no file. The run would produce an
+  `ERROR`, not a comparison.
+* **The refusal names the wrong cause.** A consumer gets "the profile and the
+  working tree are not the same revision", which sends them to look at their
+  commits. That half is separable and smaller, and is listed in B057's
+  acceptance.
+
+The control half of the same probe is the useful positive result, and it is
+the first real end-to-end evidence for F008-A3's substance: with
+`module_path` supplied, the shipped oracle ran the real toolchain inside the
+image and returned
+
+```text
+helper identity     = go version go1.25.14
+helper tool/path    = go /usr/local/go/bin/go
+  internal/calc/calc.go: extent 5.24,7.2 numStmts=1 stmt_lines=[6]
+  internal/calc/calc.go: extent 10.29,12.2 numStmts=1 stmt_lines=[11]
+```
+
+— statement lines `{6}` and `{11}`, the two `return` lines, where the rule
+this wave removed would have claimed `{5,6,7}` and `{10,11,12}`, i.e. both
+function signatures and both closing braces.
+
+## 27. Decision asks (open)
+
+### DA-8 — how does a Go lane learn its module path?
+
+**Blocks:** F008-A3's end-to-end evidence, F008-A5 entirely, item 2's
+qualification test in its `assay run` form, and item 3's fixture regeneration
+in any form that goes through a lane. **Evidence:** B057, measured in-image.
+
+The fact is unambiguous (a Go profile is keyed by import path; `git diff` is
+keyed by repo-relative path; something must supply the module path). Three
+shapes are defensible and they differ in more than taste:
+
+1. **A declared lane key** — `judge.module_path` (or
+   `judge.coverage.key_prefix`), optional, defaulting to `""`. Precedent is
+   strong and recent: A-328 added `judge.base_source` as an optional key with
+   a closed vocabulary and a default, and no lane-schema bump accompanied it,
+   so this is an ordinary additive field rather than a schema cut. Cost: the
+   declaration can drift from `go.mod`, and a drifted one fails as the
+   staleness message above, which points at the wrong thing.
+2. **Derived from the repository's own `go.mod`.** DESIGN-GUIDE §4.2a prefers
+   DERIVE over READ, and A-007's own reasoning selects between them by asking
+   whose fact it is: the coverage FORMAT is a fact of the lane's argv, so it
+   is declared; the module path is a fact of `go.mod`, so by that same rule it
+   should be derived, with a declaration (if any) kept only as the
+   refuse-on-mismatch cross-check A-007 built for the format. Cost: the seam
+   does not exist. `normalize_coverage_key(key)` is pure and adapters are
+   registry singletons, so derivation means either a new protocol member that
+   receives `repo_top` (a second protocol extension on top of A-397's) or the
+   core learning a Go-specific field, which the flat protocol exists to
+   prevent.
+3. **A registry that builds adapters per lane** rather than holding
+   instances. Most general, largest blast radius: `_built_in_registry` is
+   read by `assay lanes --json`'s inventory (A-349), by the docs gate's
+   derivation (A-400), and by every language resolution, and generation 3
+   already recorded that a registry change is read by more things than a grep
+   for the adapter name will show (REPORT §20).
+
+I have not picked one. Option 2 is what the project's own stated preference
+selects, and option 1 is what its most recent precedent selects; that is a
+real fork, not a gap in my reading, so it is written here rather than
+improvised (BLOCKED protocol). Whichever is chosen, B057's second half —
+the misattributed "not the same revision" message — should be ruled on at the
+same time, because the right message depends on which layer owns the
+prefix.
