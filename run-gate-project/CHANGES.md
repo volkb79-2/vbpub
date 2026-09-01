@@ -36,6 +36,13 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [23.2.2] - 2026-09-01
+<!-- cmru: generated -->
+<!-- cmru: source-end=fad40555fb0f8125315f3811a8dcd95bea6db9c3 -->
+
+### Fixed
+- fix(run-gate): RG-31 -- assay_toolchain_findings routes --worktree through resolve_worktree_scope (rev 32) (0efd062e)
+
 ## [23.2.1] - 2026-08-31
 <!-- cmru: generated -->
 <!-- cmru: source-end=fe09688572dc7d744ba81b6b471eb4908599ffa6 -->
