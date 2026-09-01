@@ -522,3 +522,128 @@ principles don't already resolve.
   boxes, each citing real evidence. Next free ids: **A-401**, **B057**.
   Checkpoint clause unchanged (BRIEF-5 at the next coherent boundary).
   Review, merge and release follow on completion, same terms as Wave B.
+
+- **2026-09-01 (generation 4 returned — checkpoint 5, gate PASS on
+  `9714361c`, one blocker filed as DA-8; ruled here)** — Generation 4 cut
+  at a green gate after ~53 minutes and 240 tool calls: tip `524dd16c`,
+  tree clean, BRIEF-5 committed. **Gate verified by the controller from
+  the run-7 log directly** (`gate-run7.log`: wheel
+  `assay-4.0.1.dev29+g9714361c` installed, phases through
+  `self-hosted-lane-passed` / `cmru-b006a-qualified` /
+  `independent-self-hosting-passed`, `ASSAY_REGISTERED_GATE_COMPLETE=1`,
+  `GATE_EXIT=0`, zero hits for `FAILED|DIRTY_TREE|Traceback`), and the two
+  commits after it confirmed docs-only by `git diff --stat 9714361c..HEAD`
+  (BRIEF-5, LOG, REPORT, and the `tester-unified-go/Dockerfile` header
+  comment). Landed: A-401/A-402 recorded and F008-A5 reworded per DA-4
+  (`2f0cd223`); **A-403, a real shipping defect found by building the
+  harness rather than reading** (`8d7f8740`: the zipapp could not reach
+  the Go oracle because `go run .` needs a real directory and a `.pyz`
+  keeps package data as zip members — every Go consumer's only install
+  shape was the broken one; now staged through `importlib.resources` on
+  one path for every install shape, with a regression test against the
+  real built artifact); `helpers[]`'s first producer (`77d9d6b9`, three
+  sub-decisions with rejected alternatives in REPORT §28, `test_cli_run.
+  py:406` untouched); the DA-3 qualification test `tests/qualification/
+  test_go_r1_real.py` (real zipapp, real `go test`, real oracle, in-image:
+  a PASS with `helpers[{role: statement-positions, identity: "go version
+  go1.25.14"}]`, `judge_provenance.artifact: "zipapp"`, `executable: 1`
+  where the removed rule said 3, and a paired FAIL naming `return -1`),
+  which also asserts `python3 --version` inside the image; DA-5's
+  Dockerfile header (`21708344`); B055's third box. No acceptance box
+  ticked — correct, for the reason B057 states.
+
+  **B057 / DA-8 — the blocker, measured in-image:** a Go cover profile
+  keys records by IMPORT PATH (`<module path>/<dir>/<file>`), `git diff`
+  by repo-relative path; `GoAdapter.module_path` bridges them and nothing
+  sets it through the CLI (`_built_in_registry` builds `GoAdapter()` with
+  `""`, `_KNOWN_JUDGE_FIELDS` has no key, `assay run` has no flag). So
+  every real Go module — srdm included, whose `srdm/internal/...` keys
+  would resolve under no source root — refuses `ERROR`/
+  `UNREADABLE_ARTIFACT` with a message that blames staleness. The control
+  half (with `module_path` supplied, the oracle returns `{6}`/`{11}` where
+  naive expansion says `{5,6,7}`/`{10,11,12}`) proves the defect is only
+  the missing value. Generation 4 laid out three shapes (REPORT §27) and
+  correctly did not pick: a declared `judge.module_path` (A-328's
+  precedent), derivation from `go.mod` (§4.2a's preference), or a
+  per-lane registry. Note for the record that shape 1 is not cheaper than
+  it looks: the field lives on a registry SINGLETON, so even a declared
+  key needs a per-lane path into the adapter — the seam cost is shared by
+  shapes 1 and 2, and only the SOURCE of the value differs.
+
+  **Ruling (DA-8): derive from the snapshot's own `go.mod`. No declared
+  key. The registry stays as it is.** This is doctrine applied, not a new
+  product call: `docs/DESIGN-GUIDE.md` §5 already lists covergate's own
+  `-source internal -module srdm` as defaults anti-pattern #1 — "a literal
+  standing in for a fact that lives authoritatively in the project's
+  layout … A library cannot ship any of them; it must read them." A
+  declared `judge.module_path` is that flag under a new name. A-007's
+  selection rule asks whose fact it is: the coverage FORMAT is the lane's
+  (its argv chose it), so it is declared and cross-checked; the module
+  path is `go.mod`'s, so it is derived. A-328 is not a counter-precedent:
+  `base_source` delegates a fact that is genuinely the CALLER's (which
+  base to compare against), and A-328's own reasoning — refuse precedence
+  between two sources of one fact, because whichever loses is config
+  nothing reads — argues AGAINST a declared key beside derivation; a
+  restatement-that-must-agree would catch nothing, since `go test` read
+  the same `go.mod`. Shape 3 is rejected on generation 3's own
+  measurement (REPORT §20): `_built_in_registry` is read by the inventory
+  (A-349), the docs gate (A-400) and every language resolution.
+
+  **The seam, shape ruled, details the implementer's (A-084, as A-239 →
+  A-397):** ONE new, narrow, language-free protocol member on
+  `LanguageAdapter`, called by the core at the lane boundary where it
+  already holds `repo_top` and `project_root` (`runner.
+  _attribute_statements_for_lane` / the `resolve_coverage_keys` call
+  site), returning the adapter to use for THIS lane: `GoAdapter` returns a
+  copy with `module_path` derived; every other adapter and every
+  `FakeAdapter` (BRIEF-1 §3 item 4 lists the sites) returns `self`. Name,
+  exact signature and the rejected alternatives go in the decision row
+  (**A-404**), citing this entry. Constraints that are part of the ruling:
+  (a) derive from the nearest `go.mod` at or above `project_root` within
+  `repo_top`, read from the SNAPSHOT (commit-bound), parsing only the
+  `module` directive — its grammar per the Go reference (unquoted and
+  quoted forms, comments), cited; no general `go.mod` parser; (b) no
+  `go.mod` at or above `project_root` → a named refusal from the EXISTING
+  closed vocabulary (a Go judge declared over a directory that is not a
+  Go module is a lane/tree mismatch; the implementer picks the honest
+  existing code and records why — a new reason code is an enum widening,
+  which is a schema cut and out of scope; if no existing code fits, that
+  is a decision ask, never a v10); (c) a profile key not under the derived
+  module path at a `module_path + "/"` boundary → refuse with a message
+  naming the key, the derived module path and the `go.mod` it came from —
+  this REPLACES B057's misattributed "not the same revision" message
+  (B057's second half is FIX, not keep); (d) nested modules never appear
+  in `go test ./...`'s own output and a `cwd` above several modules
+  (`go.work`) surfaces as (c) — document "one Go module per lane; `cwd`
+  is the module root" in CONSUMERS.md, no workspace support this wave;
+  (e) `_built_in_registry`, `assay lanes --json` and the docs-gate
+  derivation stay untouched.
+
+  **Proof required before any box is ticked:** the B057 control run as a
+  real `python3 <pyz> run …` PASS inside the image (BRIEF-5 §4: the
+  qualification's assertions move to the CLI entry point unchanged — if
+  any assertion has to change, that is a finding); a planted `go.mod`
+  whose `module` directive disagrees with the profile's keys → refusal
+  (c) naming both; a Go lane whose `cwd` has no `go.mod` → refusal (b); a
+  unit test for the directive parser (quoted form, comment line); and a
+  statement of which existing assertion catches a mutant that skips
+  derivation (`module_path` left `""`).
+
+  **Also ruled:** BRIEF-5 §3's unfiled builder property
+  (`build_release.py` leaves `zipapp-staging/` beside `--outdir` and never
+  removes it; with `--outdir assay/dist` that is an untracked directory
+  the self-hosted lane refuses as `DIRTY_TREE`) IS filed, as **B058**, one
+  paragraph — an unfiled hazard that can turn the project's own gate red
+  is what the backlog is for. Generation 4's judgment call was reasonable;
+  the disagreement is on cost, not substance.
+
+  **Generation 5 dispatched:** fresh Opus session (never a fork), same
+  worktree/branch, tip `524dd16c` (gate-verified tip `9714361c` + two
+  docs-only commits), seeded with BRIEF-1..5 plus this entry. Task order:
+  (1) DA-8 per the ruling above → gate; (2) F008-A4 fixture regeneration
+  through the in-image harness (B055's first box); (3) F008-A5 per DA-6,
+  classification first; (4) F008-A3's tick with the CLI-form transcript;
+  (5) the other boxes, each citing something run; (6) file B058. Next
+  free ids: **A-404**, **B058**. Checkpoint clause unchanged (BRIEF-6).
+  On completion: fresh adversarial reviewer, 3-round cap, then merge →
+  `cmru release` (MINOR) → deploy → dstdns notify, same terms as Wave B.
