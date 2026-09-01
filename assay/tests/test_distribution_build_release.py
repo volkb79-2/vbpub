@@ -540,6 +540,69 @@ def test_the_zipapps_own_sha256_is_what_identify_judge_records(built):
     ).hexdigest(), "the recorded digest is not the .pyz's own sha256"
 
 
+#: A-403's regression guard, run against the REAL zipapp this module already
+#: builds. Every assertion below is about assay's own code reading its own
+#: artifact; no Go toolchain is involved and none is needed (A-042/A-043).
+_ORACLE_STAGING_PROBE = """\
+import json, pathlib
+from assay.adapters import go_stmtpos as go
+
+helper_dir = pathlib.Path(str(go.HELPER_DIR))
+result = {
+    "helper_dir": str(helper_dir),
+    "helper_dir_holds_a_real_file": (helper_dir / "stmtpos.go").is_file(),
+}
+with go._staged_helper(None) as staged:
+    result["staged"] = str(staged)
+    result["names"] = sorted(p.name for p in staged.iterdir())
+    result["source"] = (staged / "stmtpos.go").read_text(encoding="utf-8")
+    result["gomod"] = (staged / "go.mod").read_text(encoding="utf-8")
+    result["staged_is_a_real_directory"] = staged.is_dir()
+print(json.dumps(result))
+"""
+
+
+def test_the_zipapp_can_stage_the_go_oracle_into_a_real_directory(built):
+    """A-403, the defect this test was written from: `go run .` takes a
+    working DIRECTORY, and inside a zipapp the helper's files are zip members,
+    so `HELPER_DIR` names a path that does not exist. The adapter refused with
+    "assay's Go statement-position oracle is missing from the installation"
+    for an oracle that was in the artifact the whole time -- and the zipapp is
+    the ONLY install path into `tester-unified-go` (A-402: an inherited
+    interpreter, no pip, no ensurepip), so that refusal was every Go
+    consumer's experience.
+
+    Asserted against the real built artifact rather than a synthetic zip,
+    because the thing under test is whether the SHIPPED file can be read out
+    of the SHIPPED archive."""
+    artifacts = built["first"]
+    out = subprocess.run(
+        [sys.executable, "-c", _ORACLE_STAGING_PROBE],
+        env={"PYTHONPATH": str(artifacts.zipapp), "PATH": "/usr/bin:/bin"},
+        capture_output=True, text=True, timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout)
+
+    # Vacuity guard, and the precondition the defect needs: inside the zipapp
+    # `HELPER_DIR` really is NOT a directory on disk. If a future packaging
+    # change ever materialises it, this test stops proving anything about the
+    # staging path and must be re-pointed rather than left green.
+    assert str(artifacts.zipapp) in result["helper_dir"], result
+    assert result["helper_dir_holds_a_real_file"] is False, (
+        "the zipapp's HELPER_DIR resolved to a real file, so this test no "
+        f"longer exercises the staging path it exists for: {result}"
+    )
+
+    assert result["staged_is_a_real_directory"] is True, result
+    assert str(artifacts.zipapp) not in result["staged"], result
+    assert result["names"] == ["go.mod", "stmtpos.go"], result
+
+    source_dir = PROJECT_ROOT / "src" / "assay" / "helpers" / "go" / "stmtpos"
+    assert result["source"] == (source_dir / "stmtpos.go").read_text(encoding="utf-8")
+    assert result["gomod"] == (source_dir / "go.mod").read_text(encoding="utf-8")
+
+
 def test_the_zipapps_recorded_digest_matches_its_shipped_sidecar(built):
     """The build writes an `<artifact>.sha256` sidecar for consumers to check,
     and the verdict now records a digest for the same purpose. If those two

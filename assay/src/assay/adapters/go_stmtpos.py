@@ -49,21 +49,45 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
+from contextlib import contextmanager
+from importlib.resources import files as resource_files
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Iterator, Mapping, Sequence
 
 from ..errors import AssayError, Outcome, ReasonCode
 from ..statement_attribution import StatementBlock
 from .base import HelperInvocation, Remaining, StatementBlockReport
 
-__all__ = ["HELPER_DIR", "OUTPUT_SCHEMA", "derive_statement_blocks"]
+__all__ = [
+    "HELPER_DIR",
+    "HELPER_RESOURCES",
+    "HELPER_RESOURCE_DIR",
+    "OUTPUT_SCHEMA",
+    "derive_statement_blocks",
+]
 
-#: The directory the oracle's `.go` source and its `go.mod` live in, inside
-#: the installed package. Resolved from this module's own location rather than
-#: through `importlib.resources`, because `go run .` needs a real directory to
-#: use as its working directory (a `Traversable` need not be one), and a wheel
-#: install always materialises package data as real files.
+#: Where the oracle's `.go` source and its `go.mod` live inside the installed
+#: package, spelled as a filesystem path. It IS a real directory under a source
+#: tree and under a wheel install; it is NOT one inside the shipped zipapp,
+#: where those same files are members of a zip archive and every `is_file()`
+#: on this path answers False. So this names a location; it does not promise
+#: one exists. :func:`_staged_helper` is what turns either case into the real
+#: directory `go run .` requires — see its docstring and A-403.
 HELPER_DIR = Path(__file__).resolve().parent.parent / "helpers" / "go" / "stmtpos"
+
+#: The oracle's files as :mod:`importlib.resources` anchors them. `helpers/` is
+#: a data directory, not a package, so the anchor is the top-level `assay`
+#: package and the remainder is spelled relative to it — the same shape
+#: :func:`assay.verdict.schema_text` already uses for the shipped JSON Schema,
+#: and the same spelling `tests/test_go_helper_is_packaged.py` asserts against
+#: a real venv install.
+HELPER_RESOURCE_DIR = "helpers/go/stmtpos"
+
+#: Every file `go run .` needs in its working directory. Both are required:
+#: `go run` refuses sources spread across directories, and without the
+#: `go.mod` the helper is not a module at all.
+HELPER_RESOURCES = ("stmtpos.go", "go.mod")
 
 #: The `stmtpos` output-document version this module was written against,
 #: pinned so a future change to the helper's shape cannot be read as the shape
@@ -80,11 +104,70 @@ _FORCED_ENV = {
     "GOFLAGS": "-mod=mod",
 }
 
+#: The one message every "assay cannot supply its own oracle" refusal carries.
+#: A consumer whose `go run .` fails must be told it is assay's installation
+#: that is incomplete, not their repository — see A-403 for the failure this
+#: message was actually delivering before the zipapp path was fixed.
+_MISSING_HELPER = (
+    "assay's Go statement-position oracle is missing from the installation: "
+    "expected {path}. Without it a Go coverage profile's block extents cannot "
+    "be resolved to statement positions at all"
+)
+
 #: Floor on the subprocess timeout. `remaining` can legitimately report a
 #: small number near the end of a lane; a timeout of zero would refuse before
 #: the process could start, reporting a helper failure where the real cause is
 #: the lane deadline. The lane deadline still terminates the lane itself.
 _MIN_TIMEOUT_SECONDS = 5.0
+
+
+@contextmanager
+def _staged_helper(helper_dir: Path | None) -> Iterator[Path]:
+    """Yield a REAL directory holding the oracle's sources, for `go run .`.
+
+    A-403. `go run .` takes a working directory, and under the shipped zipapp
+    there is none: the helper's files are members of a zip archive, so
+    :data:`HELPER_DIR` names a path that does not exist and the refusal a
+    consumer got was "assay's Go statement-position oracle is missing from the
+    installation" — for an oracle that was present in the artifact all along.
+    That is the ONLY install path into `tester-unified-go` (A-402: the image
+    inherits an interpreter but has no pip and no ensurepip), so it is the
+    shape every Go consumer actually runs.
+
+    The files are therefore read through :mod:`importlib.resources`, which
+    answers identically from a source tree, a wheel and a zip archive, and
+    written into a temporary directory for the duration of the call. This is
+    ONE path, not a zipapp special case, deliberately: a branch taken only
+    inside a zipapp would never be exercised by the registered gate (which
+    installs a wheel), leaving the consumer's own path proven by nothing but
+    the qualification run.
+
+    *helper_dir*, when given, is used as-is and nothing is staged — it exists
+    for the test that points at a deliberately broken installation, and
+    staging a caller's own directory would defeat that test's whole subject.
+    """
+    if helper_dir is not None:
+        if not (helper_dir / "stmtpos.go").is_file():
+            raise _refuse(_MISSING_HELPER.format(path=helper_dir / "stmtpos.go"))
+        yield helper_dir
+        return
+
+    anchor = resource_files("assay")
+    payload: dict[str, bytes] = {}
+    for name in HELPER_RESOURCES:
+        resource = anchor.joinpath(f"{HELPER_RESOURCE_DIR}/{name}")
+        try:
+            payload[name] = resource.read_bytes()
+        except (FileNotFoundError, OSError, KeyError) as exc:
+            raise _refuse(
+                _MISSING_HELPER.format(path=resource) + f" ({exc})"
+            ) from exc
+
+    with tempfile.TemporaryDirectory(prefix="assay-stmtpos-") as raw:
+        staged = Path(raw)
+        for name, data in payload.items():
+            (staged / name).write_bytes(data)
+        yield staged
 
 
 def derive_statement_blocks(
@@ -99,20 +182,29 @@ def derive_statement_blocks(
 
     *helper_dir* overrides where the shipped helper is looked for. It exists
     for a test that needs to point at a deliberately broken helper; production
-    callers pass nothing and get :data:`HELPER_DIR`.
+    callers pass nothing and get the staged copy :func:`_staged_helper` writes
+    from the package's own resources.
 
     Raises :class:`~assay.errors.AssayError` on every failure path — see the
     module docstring on why none of them may return a partial answer.
     """
-    source_dir = HELPER_DIR if helper_dir is None else helper_dir
-    if not (source_dir / "stmtpos.go").is_file():
-        raise _refuse(
-            f"assay's Go statement-position oracle is missing from the "
-            f"installation: expected {source_dir / 'stmtpos.go'}. Without it "
-            f"a Go coverage profile's block extents cannot be resolved to "
-            f"statement positions at all"
-        )
+    # The helper is staged FIRST, before either the inputs or the toolchain
+    # are looked at: "assay's own installation cannot supply its oracle" is
+    # true independently of both, and reporting it as a stale profile or a
+    # missing `go` would name a cause that belongs to the caller's machine.
+    with _staged_helper(helper_dir) as source_dir:
+        return _derive(repo_top, rel_paths, remaining, source_dir)
 
+
+def _derive(
+    repo_top: Path,
+    rel_paths: Sequence[str],
+    remaining: Remaining | None,
+    source_dir: Path,
+) -> StatementBlockReport:
+    """The body of :func:`derive_statement_blocks`, with the oracle's sources
+    already materialised at *source_dir*. Split out only so the staging
+    context manager does not indent every refusal below it."""
     # Inputs are validated BEFORE the environment is probed, deliberately: a
     # profile naming a file the tree does not have is wrong wherever it is
     # judged, and reporting that as "no Go toolchain" would fold a real
