@@ -67,3 +67,23 @@ controller's entries from the implementer's return onward; wave records
     line; CHANGES `[Unreleased]` unchanged except a one-line pointer to
     RG-40 under RG-36's entry; one selftest run; one commit; return. The
     reviewer (fresh, never a fork, 3-round cap) is dispatched on that tip.
+
+- **2026-09-02 (follow-up package landed at `73e6b061`; reviewer round 1
+  dispatched)** — Verified: six commits since main, tree clean, selftest on
+  the committed tip `488 passed, 2 skipped` / `diff-coverage OK: 269/269`
+  / `lane 'selftest' exit 0` (`selftest-rw910.log`, read separately).
+  RG-40 filed with an index row and a measured scope (5 container command
+  lanes vs 3 container assay lanes across vbpub's `run-gate.toml` files,
+  read with `tomllib`), acceptance criteria including "output still reaches
+  the operator unbuffered and in order", NOT implemented. RW-10's claim was
+  verified empirically before being written: a host conjunction lane whose
+  container sub-lane carries a mismatched inflight record exits 2 through
+  the `&&` chain, the sub-lane's refusal names the sub-lane, its container
+  and `--fresh`, and the transcript sits in the CONSUMERS paragraph itself;
+  SPEC gained `R-39d`; CHANGES `[Unreleased]` gained one pointer line under
+  RG-36. Reviewer round 1 dispatched (fresh Opus, never a fork) on
+  `73e6b061`: blind diff pass first, RW-1..RW-12 as the yardstick, the
+  red-first reproduction, one selftest on the committed tip, one live
+  re-attach probe under the host rule (Wave D generation 9 holds the gate
+  container at the moment; the prompt says wait, never two), report
+  committed as the only file it touches.
