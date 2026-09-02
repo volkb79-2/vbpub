@@ -90,6 +90,19 @@ class StatementBlock:
     property of the source, so this class never checks the two against each
     other; :func:`attribute_statements` compares ``num_stmts`` against the
     profile's own count, which is the comparison that means something.
+
+    **Lines are 1-based; columns are ``>= 0`` (A-405)**, exactly as
+    :class:`~assay.coverage_parsers.model.CoverageBlock`'s are and for the
+    same reason: the oracle derives its positions with ``go/token``, so a
+    source carrying a ``//line file:line`` directive with no column yields
+    ``Column == 0`` here too — the case ``cmd/cover``'s own comment names
+    (go1.25.14 ``/usr/local/go/src/cmd/cover/cover.go:1055-1060``, issues
+    #27530 and #30746) and its ``dedup`` helper exists to handle. This class
+    used to assert "a 1-based source position is never below 1" about all
+    four coordinates; run over Go's own ``TestLineDup`` corpus the oracle
+    produces six zero-column blocks, so the assertion would have refused the
+    oracle's OWN output. The two classes must agree on this bound or the
+    extent join could never match a remapped block against itself.
     """
 
     start_line: int
@@ -100,12 +113,21 @@ class StatementBlock:
     stmt_lines: tuple[int, ...]
 
     def __post_init__(self) -> None:
-        for name in ("start_line", "start_col", "end_line", "end_col"):
+        for name in ("start_line", "end_line"):
             value = getattr(self, name)
             if value < 1:
                 raise ValueError(
-                    f"StatementBlock.{name} is {value}; a 1-based source "
-                    f"position is never below 1"
+                    f"StatementBlock.{name} is {value}; a 1-based source line "
+                    f"is never below 1, and a `//line` directive's own line "
+                    f"number must be positive too"
+                )
+        for name in ("start_col", "end_col"):
+            value = getattr(self, name)
+            if value < 0:
+                raise ValueError(
+                    f"StatementBlock.{name} is {value}; a column is 0 when the "
+                    f"position came from a `//line` directive carrying no "
+                    f"column, and >= 1 otherwise -- never negative"
                 )
         if self.num_stmts < 0:
             raise ValueError(
@@ -148,21 +170,59 @@ def attribute_statements(
     is passed through untouched — this function is not a no-op guard against
     being called on the wrong profile, it simply has nothing to correct there.
 
+    A file whose
+    :attr:`~assay.coverage_parsers.model.FileCoverage.line_directive_remapped`
+    is ``True`` is emptied rather than attributed (A-405): its positions name
+    another file's coordinates, so no source-side oracle can match them, and
+    the refusal that mismatch would raise belongs to the whole artifact rather
+    than to the one generated file that caused it. Emptying is safe ONLY
+    because :mod:`assay.evaluate` refuses when such a file is in the judged
+    set; without that companion check this would be a silent 0/0.
+
     Refuses ``ERROR``/``UNREADABLE_ARTIFACT`` when:
 
     * a block-bearing file has no entry in *blocks_by_key* at all;
     * the two sides' extent SETS differ in either direction;
-    * a matched pair disagrees about ``num_stmts``.
+    * a matched pair disagrees about ``num_stmts``;
+    * two records for ONE extent disagree about ``num_stmts`` — the rule
+      ``x/tools/cover``'s own merge loop states as ``inconsistent NumStmt``,
+      transcribed with the fold it belongs to rather than half of it.
 
-    All three mean the profile and the source are not the same revision, and
-    there is no safe direction to guess in: attributing anyway would publish a
-    verdict about lines that are not the lines that ran. This is AGENTS.md's
-    DERIVE / READ / **FAIL** ordering at its third branch.
+    The first three mean the profile and the source are not the same revision;
+    the fourth means the records did not all come from one instrumentation.
+    In none of them is there a safe direction to guess in: attributing anyway
+    would publish a verdict about lines that are not the lines that ran. This
+    is AGENTS.md's DERIVE / READ / **FAIL** ordering at its third branch.
     """
     corrected: dict[str, FileCoverage] = {}
     for path, file_cov in profile.files.items():
         if file_cov.blocks is None:
             corrected[path] = file_cov
+            continue
+
+        if file_cov.line_directive_remapped:
+            # A-405. This file's positions were remapped by a `//line`
+            # directive, so its line numbers name some OTHER file's
+            # coordinates -- Go's own `TestLineDup` witness reports lines
+            # 100-105 for a 24-line source. There is nothing to attribute:
+            # the oracle derives PHYSICAL positions from the real file, so
+            # asking it about this one produces an extent set that cannot
+            # match, and the mismatch refusal would take down the entire
+            # artifact for a profile that is exactly what `go test` wrote.
+            #
+            # The records contribute NOTHING instead: empty line sets, the
+            # blocks kept so `line_directive_remapped` stays derivable one
+            # layer up. That is not a silent 0/0 -- `assay.evaluate` refuses,
+            # naming this file and `//line`, if any of its lines is in the
+            # judged set. Outside the judged set the file is simply not
+            # under review, which is the north star's own rule.
+            corrected[path] = FileCoverage(
+                executed=frozenset(),
+                missing=frozenset(),
+                excluded=file_cov.excluded,
+                branches=file_cov.branches,
+                blocks=file_cov.blocks,
+            )
             continue
 
         oracle_blocks = blocks_by_key.get(path)
@@ -188,9 +248,51 @@ def attribute_statements(
         # same rule `go_cover.parse` already applies to these records'
         # expansions one layer down, so the corrected line sets can no longer
         # DOWNGRADE what the uncorrected ones already called executed.
+        #
+        # THE RULE IS GO'S OWN, NOT ASSAY'S CONVENTION, and it is transcribed
+        # here rather than inferred. `x/tools`' profile reader — vendored
+        # into the toolchain at go1.25.14
+        # `/usr/local/go/src/cmd/vendor/golang.org/x/tools/cover/profile.go`,
+        # `ParseProfilesFromReader` (:54), its "Merge samples from the same
+        # location" loop (:91) — matches records on all four coordinates
+        # (:96-99) and then merges:
+        #
+        #     if mode == "set" { p.Blocks[j-1].Count |= b.Count }   // :104
+        #     else             { p.Blocks[j-1].Count += b.Count }   // :106
+        #
+        # `|=` for `set`, `+=` for `count`/`atomic`. Both agree with
+        # executed-wins on the only question read here (`count > 0`), so the
+        # fold IS the profile format's own semantics. This citation replaces
+        # an appeal to assay-internal precedent, which is not what this wave's
+        # own standard asks for (adversarial review round 1, should-fix 4).
+        #
+        # THAT LOOP'S OTHER RULE IS TRANSCRIBED TOO (should-fix 6). Before it
+        # merges, it REFUSES a disagreement about statement cardinality:
+        #
+        #     if b.NumStmt != last.NumStmt {
+        #         return nil, fmt.Errorf("inconsistent NumStmt: changed from
+        #                                 %d to %d", last.NumStmt, b.NumStmt)
+        #     }                                                      // :100-102
+        #
+        # assay used to fold silently and then check only the SURVIVING
+        # record's `num_stmts` against the oracle, so `[count=1 numStmts=1]`
+        # plus `[count=0 numStmts=7]` for one extent was accepted whenever the
+        # honest record won the fold. Transcribing half of a cited rule is the
+        # pattern this wave keeps catching in its own work; the check is below,
+        # inside the fold, so it sees every record rather than the survivor.
         parsed_extents: dict[tuple[int, int, int, int], CoverageBlock] = {}
         for block in file_cov.blocks:
             seen = parsed_extents.get(block.extent)
+            if seen is not None and seen.num_stmts != block.num_stmts:
+                raise _mismatch(
+                    f"{path!r}: block {_spell(block.extent)} is recorded twice "
+                    f"with different statement counts ({seen.num_stmts} then "
+                    f"{block.num_stmts}). Go's own profile reader refuses this "
+                    f"outright (`inconsistent NumStmt: changed from %d to %d`, "
+                    f"x/tools/cover/profile.go), because one block cannot "
+                    f"contain two different numbers of statements; the records "
+                    f"did not all come from one instrumentation of this file"
+                )
             if seen is None or (seen.count == 0 and block.count > 0):
                 parsed_extents[block.extent] = block
         oracle_extents = {block.extent: block for block in oracle_blocks}

@@ -1452,6 +1452,31 @@ reporting `NO_MEASUREMENT` over a complete artifact — "absence for emptiness",
 a false certification rather than a missing one; and relying on the runner's
 call order is not a check at all.
 
+**A guard with a way around it is not a guard (A-406).** The paragraph above
+was true and the guard was still bypassable, because the runner had one branch
+that set `statement_attributed = True` without any oracle: "this profile
+carries no block extents at all, so it is already statement truth, vacuously".
+That reads as harmless until you notice `judge.language` and
+`judge.coverage.format` are independent by design. A Go lane may declare
+`format = "lcov"`, and lcov CONVERTED from a Go coverprofile carries exactly
+the naive block expansion this whole section exists to refuse — signatures,
+closing braces and `case` labels as executable lines — and arrives with no
+blocks, so the vacuous branch marked it attributed and the guard passed it.
+No oracle ran and no `helpers` entry was written; nothing said so.
+
+The branch is deleted. A language judged from block extents is now refused at
+CONFIG LOAD if its declared format carries none — `ERROR`/`BAD_LANE_CONFIG`,
+naming the language, the format and `go-cover` with its producers — so the
+lane never runs; and the runner keeps a second, independent refusal for a
+library caller that hand-builds a `Lane`. The case the deleted branch sounded
+like it was protecting, an EMPTY profile, was never its case at all: that
+terminates one step earlier at `check_empty_coverage`, `NO_MEASUREMENT`/
+`EMPTY_COVERAGE`, and is now pinned by a test that also asserts no `helpers`
+entry and not a PASS. The general lesson is the one this project keeps
+relearning: a branch whose comment explains why it is safe deserves the same
+scrutiny as one that has no comment, because the explanation is where the
+unexamined assumption lives.
+
 **What it does NOT fix, recorded rather than glossed.** An uncovered statement
 sharing a physical LINE with a covered one is still promoted to `executed` —
 `lit.go`'s `f := func() int { return 7 }` carries two counted statements that
@@ -1460,6 +1485,47 @@ granularity's own limit, which coverage.py shares; removing it needs a
 column-granular wire field. Asserted as unfixed by a test, so a future change
 that does fix it goes red rather than quietly contradicting this paragraph
 (A-393, backlog B055).
+
+**A guessed fact about `cmd/cover` that `cmd/cover` disproved, and what the
+correction cost (A-405).** The parser and both block types asserted that "a
+1-based source position is never below 1" about all four coordinates of a
+cover record. That is true of the LINE and false of the COLUMN. `go/token`
+gives a position remapped by a `//line file:line` directive that names no
+column `Column == 0` by design, and `cmd/cover` says so itself, in the comment
+that introduces the `dedup` helper (go1.25.14, `cover.go:1055-1060`):
+"positions can repeat when there is a line directive that does not specify
+column information … See issues #27530 and #30746. Tests are
+TestHtmlUnformatted and TestLineDup." So the toolchain both documents the case
+and names the corpus that exercises it — and assay refused that corpus's real
+profile with "column number 0 in '100.0' is not positive". This is the exact
+class of defect §5's *cite a source for every convention* exists to prevent,
+found in the wave built to remove it, by an adversarial reviewer who ran the
+toolchain instead of reading the code.
+
+The invariant is now stated truly, with the citation, at all three sites. The
+interesting half is what to DO with such a file, because relaxing the bound
+alone would have been worse than the refusal it replaced. A `//line`-remapped
+file's records name the DIRECTIVE's line numbers: Go's own `TestLineDup`
+fixture is 24 lines long and its profile reports lines 100 to 105. `git diff`
+names physical lines. So a permissive parser plus an unchanged evaluator gives
+a file that measures 0 executable of 0 changed and disappears into a clean
+percentage — the laundering gate this section's own guard exists to close, and
+the north star's "0/0 is never 100%".
+
+The disposition is the north star's other rule, applied literally: *pre-existing
+code outside the diff is invisible to the verdict by construction, because it
+is not what is under review.* A remapped file is flagged per FILE (any record
+with a zero column flags it; within such a file physical and virtual positions
+are indistinguishable, so the conservative direction is the only honest one).
+If the lane does not judge it — no changed line inside `source_roots`, not a
+declared target — it is IGNORED: its records contribute nothing and the lane
+proceeds, which is what stops one goyacc-generated file from taking down R1
+for a whole project. If the lane DOES judge it, the lane refuses
+`ERROR`/`BAD_LANE_CONFIG`, naming `//line` as the cause, the file, and the
+remedy. `BAD_LANE_CONFIG` rather than `UNREADABLE_ARTIFACT` because nothing is
+wrong with the artifact — it is byte-for-byte what `go test` wrote — and
+blaming it would send a consumer to re-run tests over a lane-configuration
+fault, the same misdirection `go_modfile._refuse` was written to avoid.
 
 **The oracle is STAGED out of the artifact, and that is a consequence of how
 assay is installed rather than a convenience (A-403).** `go run .` takes a

@@ -238,3 +238,126 @@ same standing as `stmtpos-witness-oracle.json` has for the frozen witnesses.
 The subprocess path is proven separately and end to end by
 `tests/qualification/test_go_r1_real.py` inside `tester-unified-go:local`
 (F008-A3).
+
+---
+
+# A-405 — the `//line` witness (`linedup`)
+
+Added in the round-1 fix round. Two things needed a real-toolchain witness and
+this one artifact is both: the `dedup` replication REPORT §5 item 4 had left
+**unproven**, and BLOCKER 1's claim that a real `go test -coverprofile`
+carries `Column == 0`.
+
+## The fixture is GO'S OWN, and that is the point
+
+`cmd/cover` names the corpus that exercises this case, in its own comment
+(go1.25.14, `/usr/local/go/src/cmd/cover/cover.go:1055-1060`):
+
+> It is possible for positions to repeat when there is a line directive that
+> does not specify column information and the input has not been passed
+> through gofmt. See issues #27530 and #30746. Tests are TestHtmlUnformatted
+> and TestLineDup.
+
+So the witness is `cover_test.go`'s `lineDupContents` / `lineDupTestContents`
+(go1.25.14, lines 475-498 and 501-509), transcribed **verbatim** into
+`probe-linedup.sh` — tabs, and the leading blank line the backquoted Go
+constant begins with. That leading newline is not cosmetic: `cover_test.go`
+writes the constant whole (`os.WriteFile(lineDupGo, []byte(lineDupContents),
+0444)`), so keeping it is what makes this the same file Go's own test builds.
+It is also why the extents here are one line lower than the round-1 review's
+transcript, which stripped it: `6.21,7.25` where the review shows `5.21,6.25`.
+Same file, one line of offset; ours is the byte-exact one.
+
+The source lives in ONE place — inside the script — rather than as a committed
+`.go` file beside it. A block extent is a line/column pair, so two copies of a
+witness source is two things that can drift into producing different extents,
+and the script is what a reviewer re-runs anyway.
+
+## The command
+
+```sh
+ASSAY=<worktree>/assay bash nyxloom-trove/carve-assets/P27-recarve/probe-linedup.sh
+```
+
+In-image (`tester-unified-go:local`), `--network=none`,
+`--cgroup-parent="$CGROUP_PARENT_DEV_BACKGROUND"`, `GOPROXY=off GOWORK=off
+GOTOOLCHAIN=local GOFLAGS=-mod=mod`, tar-piped. Prints the profile, then the
+oracle JSON, then `go version`. Toolchain: **go1.25.14**, the same one every
+other artifact here was produced under.
+
+## Files here
+
+| file | what it is |
+|---|---|
+| `probe-linedup.sh` | the exact, re-runnable command, carrying the fixture source verbatim |
+| `linedup.out` | that command's `=== PROFILE ===` section, byte-for-byte |
+| `linedup-oracle.json` | its `=== ORACLE ===` section, pretty-printed with the `../linedup/` path prefix stripped — the same normalisation the two documents above record |
+
+sha256:
+
+```text
+1082d56abb622e15335c0eab59c39297a447f151c85f4fe06fec0a30a5ba4497  probe-linedup.sh
+96d5e2844c36d24a96042be473d6df73ed1805315f3596a704eebf936d0c857d  linedup.out
+903de9d4cdde795176a49510d120021c1e62c67f5a1f0c8321399ab19618bf82  linedup-oracle.json
+9139f745cc58b81f86a779e16ffb4f7f5330a86bea4ad8c576bb519a34019f2b  ../../../src/assay/helpers/go/stmtpos/stmtpos.go
+```
+
+## What the toolchain emitted
+
+```text
+mode: count
+linedup/linedup.go:6.21,7.25 1 1
+linedup/linedup.go:7.25,100.0 1 100
+linedup/linedup.go:100.0,100.0 1 100
+linedup/linedup.go:100.0,102.0 1 50
+linedup/linedup.go:100.0,102.1 3 25
+linedup/linedup.go:103.0,103.0 1 100
+linedup/linedup.go:103.0,103.1 1 100
+linedup/linedup.go:103.0,105.0 2 34
+linedup/linedup.go:103.0,105.1 4 20
+```
+
+Eight of the nine records carry a zero column. Only `6.21,7.25` — the `for`
+header, above the first `//line` directive — keeps real ones.
+
+## The `dedup` replication, PROVEN
+
+`dedup` (`cover.go:1073-1090`) bumps a repeated position's END COLUMN until the
+pair is unique:
+
+```go
+for seenPos2[key] {
+    key.p2.Column++
+}
+```
+
+That is the `100.0,100.0` → `100.0,102.0` → `100.0,102.1` ladder above, and the
+`103.0,...` one beside it. The oracle reproduces **all nine extents and all
+nine `num_stmts`, as sets**:
+
+| extent | profile `numStmts` | oracle `num_stmts` | oracle `stmt_lines` |
+|---|---|---|---|
+| `6.21,7.25` | 1 | 1 | `[7]` |
+| `7.25,100.0` | 1 | 1 | `[100]` |
+| `100.0,100.0` | 1 | 1 | `[100]` |
+| `100.0,102.0` | 1 | 1 | `[101]` |
+| `100.0,102.1` | 3 | 3 | `[101]` |
+| `103.0,103.0` | 1 | 1 | `[103]` |
+| `103.0,103.1` | 1 | 1 | `[103]` |
+| `103.0,105.0` | 2 | 2 | `[104]` |
+| `103.0,105.1` | 4 | 4 | `[104]` |
+
+REPORT §5 item 4 said "I have **not** constructed a witness that triggers
+[`dedup`] … the case is unproven." It is proven here. Every frozen P27 witness
+and every F008-A4 fixture has unique positions, which is exactly why the
+transcription went unexercised for the whole wave — the same lesson B061
+carries one field over: a corpus built from clean single-package probes cannot
+exercise the shapes the real world produces.
+
+## What this witness does NOT claim
+
+That assay can judge such a file. It cannot, and A-405 says so: `linedup.go`
+is 24 lines long and its records name lines 100-105, so a `git diff` naming
+physical lines intersects them by accident or not at all. The disposition is
+per file — ignored outside the judged set, refused inside it — and the tests
+are `tests/test_go_line_directive_witness.py`.

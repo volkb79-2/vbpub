@@ -381,9 +381,18 @@ def _read_block(raw: object, rel_path: str) -> StatementBlock:
             ),
         )
     except ValueError as exc:
-        # StatementBlock's own construction-time invariants (1-based
-        # positions, sorted duplicate-free statement lines). A document that
-        # violates them is not a block assay may guess at.
+        # StatementBlock's own construction-time invariants (1-based LINES,
+        # non-negative columns, sorted duplicate-free statement lines). A
+        # document that violates them is not a block assay may guess at.
+        #
+        # (A-405) The column bound is `>= 0` and not `>= 1`, which matters
+        # HERE and not only in the parser: the oracle derives its positions
+        # with `go/token`, so a source carrying a `//line file:line` directive
+        # with no column makes the oracle emit `start_col`/`end_col` of 0 for
+        # its own blocks. Run over Go's own `TestLineDup` corpus it emits six
+        # such blocks (`carve-assets/P27-recarve/linedup-oracle.json`). Under
+        # the old bound this refusal would have fired on the helper's own
+        # correct output and blamed the helper for it.
         raise _refuse(f"{rel_path!r}: {exc}") from exc
 
 

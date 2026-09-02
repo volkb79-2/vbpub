@@ -175,7 +175,7 @@ that project's own diff-coverage gate on the byte-identical profile: 418
 executable changed lines against its 684, agreeing on all 24 statements that
 are genuinely uncovered, with every one of the 266 extra lines it counts shown
 to begin no statement. The worked lane is
-[CONSUMERS.md point 7](docs/CONSUMERS.md); the qualification also found a real
+[CONSUMERS.md point 8](docs/CONSUMERS.md); the qualification also found a real
 defect in assay itself (B061), which is what a qualification is for.
 
 **A Go lane requires a real Go toolchain on PATH.** The statement-position
@@ -187,6 +187,19 @@ could not judge. That refusal is what makes the registration safe everywhere
 rather than only where a toolchain happens to exist: a Go lane is either
 judged against real statement positions or cleanly refused, and there is no
 third state in which it is quietly wrong.
+
+**Generated Go sources carrying `//line` directives are not judged, and that
+is a per-FILE rule.** A `//line file:line` directive makes the toolchain
+report positions as if they came from another file, and `go test
+-coverprofile` records those remapped numbers — Go's own `TestLineDup`
+fixture is 24 lines long and its profile names lines 100-105. `git diff`
+names physical lines, so the two cannot be joined by anyone. Assay reads such
+a profile without complaint and simply IGNORES a remapped file that has no
+changed line in the judged set; a remapped file that IS judged refuses
+`ERROR`/`BAD_LANE_CONFIG`, naming the file and the remedy (keep generated
+sources out of `judge.source_roots`). What it will not do is measure the
+virtual line numbers, match nothing, and report a clean percentage over
+nothing measured. See [CONSUMERS.md point 5](docs/CONSUMERS.md).
 
 **R2 and R3 remain unregistered for Go.** `generate_mutation_sites` is
 unconditionally `UNSUPPORTED`, and declaring a rigor level a lane can't

@@ -178,6 +178,17 @@ Neither is blocking the work that remains; both need answering before item 7.
    it needs two blocks with identical extents. If you can build one, do; the
    extent join would report a mismatch rather than mis-attribute, so the
    failure direction is safe, but the case is unproven.
+
+   > **STRUCK, generation 7 (A-405).** The round-1 reviewer built the witness
+   > — Go's own `cmd/cover/cover_test.go::lineDupContents`, the corpus
+   > `cover.go:1055-1060` names — and I reproduced it in-image and committed
+   > it (`carve-assets/P27-recarve/{probe-linedup.sh,linedup.out,
+   > linedup-oracle.json}`). The oracle reproduces all nine extents and all
+   > nine `num_stmts`, both `dedup` ladders included: **the replication is
+   > PROVEN.** The sentence after it was also wrong in a way I could not have
+   > known: the failure direction was not "a mismatch", it was a total
+   > artifact refusal one layer earlier, on a profile with nothing wrong with
+   > it. That is BLOCKER 1, and §45 is the whole story.
 5. **`test_the_naive_expansion_cannot_tell_the_collision_pair_apart`** is the
    anti-vacuity control for the headline claim. Delete it mentally and check
    the remaining tests would still fail if the oracle regressed to the naive
@@ -1957,3 +1968,161 @@ own.
 **The only commit after run 10 is docs-only** — BRIEF-7, this section and the
 LOG's gate paragraph. No source, test, packaging, vocabulary, fixture or
 decision-file change.
+
+---
+
+## 44. Generation 7 — the fix round after adversarial review round 1
+
+The review is committed verbatim at
+`nyxloom-trove/reports/assay-WAVE-C-go-REVIEW-round1.md` (`210812f6`), so the
+fix-verification round reads it from the tree rather than from a session-local
+scratchpad. The controller's rulings are the 2026-09-02 entry of
+`assay-WAVE-C-go-CONTROLLER-LOG.md`, `vbpub@5b6f77cc`, which binds this
+generation: DA-R2 shape (ii), DA-R1 refuse-not-vacuous, and all seven
+should-fixes applied with none deferred.
+
+Two decision rows: **A-405** (the `//line` rule) and **A-406** (no vacuous
+attribution). Next free is **A-407**. No backlog entry was filed: everything
+found this generation was fixed in it, and B062 is still free.
+
+## 45. BLOCKER 1 — what changed, and the witness's provenance
+
+### The probe, run by me
+
+```console
+$ ASSAY=/workspaces/vbpub/.worktrees/assay-wave-c-go/assay \
+    bash nyxloom-trove/carve-assets/P27-recarve/probe-linedup.sh
+=== PROFILE ===
+mode: count
+linedup/linedup.go:6.21,7.25 1 1
+linedup/linedup.go:7.25,100.0 1 100
+linedup/linedup.go:100.0,100.0 1 100
+linedup/linedup.go:100.0,102.0 1 50
+linedup/linedup.go:100.0,102.1 3 25
+linedup/linedup.go:103.0,103.0 1 100
+linedup/linedup.go:103.0,103.1 1 100
+linedup/linedup.go:103.0,105.0 2 34
+linedup/linedup.go:103.0,105.1 4 20
+=== ORACLE ===
+{"schema":1,"go_version":"go1.25.14","files":[{"path":"../linedup/linedup.go", …}]}
+=== GO VERSION ===
+go version go1.25.14 linux/amd64
+```
+
+In-image (`tester-unified-go:local`), `--network=none`,
+`--cgroup-parent=dev-background.slice`, tar-piped, `GOPROXY=off GOWORK=off
+GOTOOLCHAIN=local GOFLAGS=-mod=mod`. The fixture is `cover_test.go`'s
+`lineDupContents` transcribed verbatim into the script — including the leading
+blank line the backquoted constant begins with, which `cover_test.go` writes
+whole. That is why these extents sit one line below the review's transcript
+(`6.21,7.25` vs `5.21,6.25`); same file, and this is the byte-exact copy.
+
+Eight of the nine records carry a zero column. The oracle reproduces all nine
+extents and all nine `num_stmts` as sets, including the two `dedup` ladders
+(`100.0,100.0` → `100.0,102.0` → `100.0,102.1` and the `103.0,…` one). **REPORT
+§5 item 4's "unproven" is struck**: the `seenPos2`/`dedup` replication is
+proven by a real toolchain witness, and the reason it went unexercised for the
+whole wave is the same reason B061 did — every frozen P27 witness and every
+F008-A4 fixture has unique positions and one record per block.
+
+### The citations, read inside the image rather than recalled
+
+| claim | file:line in go1.25.14 | text |
+|---|---|---|
+| a `//line` position without a column repeats | `cmd/cover/cover.go:1055-1060` | "It is possible for positions to repeat when there is a line directive that does not specify column information … See issues #27530 and #30746. Tests are TestHtmlUnformatted and TestLineDup." |
+| what `dedup` does about it | `cmd/cover/cover.go:1073-1090` | `for seenPos2[key] { key.p2.Column++ }` |
+| the merge rule the B061 fold transcribes | `cmd/vendor/golang.org/x/tools/cover/profile.go:104,:106` | `Count |= b.Count` (set) / `Count += b.Count` |
+| the merge rule it did NOT transcribe | same file `:100-102` | `inconsistent NumStmt: changed from %d to %d` |
+
+The review cited `cover.go:1053-1058` for the first row; in this image's
+go1.25.14 the comment is at `1055-1060`. Recorded rather than silently
+adjusted.
+
+### The shape of the fix
+
+Parser accepts (`col >= 0`, negative still refused, lines still `>= 1`);
+`FileCoverage.line_directive_remapped` derives the flag from `blocks`;
+`attribute_statements` skips and empties a flagged file rather than sending it
+to an oracle whose physical extents cannot match; `evaluate_coverage` and
+`evaluate_targets` refuse `ERROR`/`BAD_LANE_CONFIG` when such a file is in the
+judged set and ignore it otherwise. Reason-code choice, alternatives and
+rejections: A-405.
+
+## 46. A-406 — the seam chosen for the load-time check, and the one rejected
+
+`STATEMENT_ATTRIBUTABLE_FORMATS_BY_LANGUAGE` in `assay.vocabulary`, consulted
+by `_load_coverage` after format-registry membership and before the producer.
+
+The alternative — an adapter attribute — was rejected for a structural reason,
+not a stylistic one: `assay.config` must not import `assay.adapters`, which is
+`registry.py`'s own mechanical guarantee behind O2 ("there is no
+`adapters/python.py` import anywhere in this module, so an unrecognised
+`language` string cannot silently resolve to Python"). Consulting an adapter at
+load time forces that import, or forces the check somewhere an adapter is
+already resolved — which is run time, where DA-R1 explicitly does not want it,
+because the fault is a property of the FILE and is knowable before any
+artifact exists.
+
+The cost is stated rather than hidden: the mapping and
+`LanguageAdapter.requires_statement_attribution` are two statements of one
+fact. `test_config_statement_attribution_format.py::
+test_the_vocabulary_fact_agrees_with_every_registered_adapter` derives the
+requiring languages from `cli._built_in_registry` and asserts set equality,
+plus a vacuity guard that fails if no registered adapter requires attribution
+— the derivation shape A-400 had to repair when it was written the other way
+round.
+
+## 47. The in-image transcript for should-fix 2
+
+`go list -m` on each variant, one container, `--network=none`:
+
+```text
+--- trailing-slash-root : go.mod = [module /]
+go: malformed module path "/": trailing slash
+--- trailing-slash : go.mod = [module example.invalid/x/]
+go: malformed module path "example.invalid/x/": trailing slash
+--- quote-in-ident : go.mod = [module ex"ample]
+go: errors parsing go.mod:
+go.mod:1: invalid quoted string: unquoted string cannot contain quote
+--- backquote-in-ident : go.mod = [module ex`ample]
+go: errors parsing go.mod:
+go.mod:1: invalid quoted string: unquoted string cannot contain quote
+--- control : go.mod = [module example.invalid/x]
+example.invalid/x
+```
+
+Note the second line differs from the review's table, which shows `malformed
+module path: trailing slash` without the path: the real message quotes the
+path. Assay's refusal now quotes it too, because a consumer with several
+modules needs to know which one.
+
+The backquote-mid-token row is a case the review did not probe and the code did
+not cover: `_unquote`'s existing backquote refusal only fires on a token that
+STARTS with one, so ``module ex`ample`` reached the ident path. Both quote
+characters are now refused and both are asserted.
+
+## 48. What generation 7 did NOT do
+
+* **Main's B054** (an istanbul record for a never-executed file outside the
+  judged set). DA-R2's principle covers it and the controller's ruling says so
+  explicitly — and assigns it to the post-Wave-C patch wave, not here. Not
+  touched.
+* **Go R2/R3**, `javascript`/`sql` beyond what A-406's load-time check
+  structurally requires (which is nothing: no other language is in the
+  mapping, and a parametrized test asserts three of them stay unconstrained).
+* **No verdict wire-schema field and no new reason code.** Both refusals A-405
+  and A-406 add come from the existing closed vocabulary. `git diff main...` on
+  `src/assay/verify.py`, `src/assay/schemas/` and `carve-assets/W5/` is still
+  empty.
+* **A-404 was not redesigned.** Should-fix 2 changes three refusal messages
+  inside `go_modfile`; the derivation, its protocol member and its precedence
+  rules are untouched.
+* **The srdm F008-A5 rebuild was not repeated.** The reviewer's own note says
+  it need not be unless `statement_attribution.py` or `go_cover.py` changes
+  SHAPE. Both changed, so this is a judgement call and it is recorded as one:
+  neither change alters the join for a profile with no zero columns and no
+  contradictory `numStmts`, which srdm's is (68 761 records, all joined
+  exactly, `num_stmts` agreeing everywhere — REPORT §41's own classifier
+  asserted that per file). The new refusals are reachable only by inputs srdm's
+  profile does not contain. If the fix-verification round disagrees, the
+  harness is DA-9's and the recipe is in BRIEF-7 §2.

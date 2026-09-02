@@ -1930,7 +1930,49 @@ statements that both genuinely begin on that line, and the line did run. This
 is line granularity's own limit, which coverage.py shares; it is not fixed by
 the oracle and is not claimed to be.
 
-**5. Installing assay into a Go gate image needs no Python packaging work.**
+**5. A second known limit: assay does not judge Go sources carrying `//line`
+directives — generated code.** Keep them out of `judge.source_roots`.
+
+A `//line file:line` directive tells the compiler to report positions as if
+they came from somewhere else, which is how `goyacc`, `peg`, `ragel` and
+similar generators point diagnostics at their own input rather than at the
+generated `.go`. `go test -coverprofile` records those remapped positions, so
+such a file's coverage records name the *directive's* line numbers, not the
+file's — Go's own `TestLineDup` fixture is 24 lines long and its profile
+reports lines 100 to 105. `git diff` names physical lines. The two cannot be
+joined, by anyone: this is not a check assay could relax.
+
+So the rule is per FILE, and it costs you nothing unless you actually judge
+one:
+
+* a `//line`-bearing file with **no changed line in the judged set** is
+  IGNORED. Its records contribute nothing and the lane proceeds normally.
+  One generated file does not take your lane down.
+* a `//line`-bearing file **inside** the judged set refuses:
+
+```text
+status: ERROR
+reason_code: BAD_LANE_CONFIG
+'internal/parser/y.go' carries coverage records whose positions were remapped
+by a `//line` directive ... so its recorded line numbers are the directive's
+and not this file's. This lane judges it: 3 changed line(s) in it are inside
+judge.source_roots, and assay will not judge a file whose measured lines
+cannot be matched to the lines a diff names -- that would report a clean
+percentage over nothing measured. Generated sources belong outside the lane's
+judge.source_roots (or its judge.targets)
+```
+
+The remedy is the same thing you would do for any generated file: keep it out
+of `source_roots` (or out of `judge.targets`). What assay will not do is the
+quiet alternative — measure the file's virtual line numbers, match nothing,
+and report `0 executable of 0 changed` as a clean result. `0/0` is never
+`100%`.
+
+The witness for all of this is Go's own: `cmd/cover/cover_test.go`'s
+`lineDupContents`, run through the real toolchain and committed with its
+recipe at `nyxloom-trove/carve-assets/P27-recarve/`.
+
+**6. Installing assay into a Go gate image needs no Python packaging work.**
 The judge needs an *interpreter*, not a toolchain — assay is stdlib-only by
 design (A-005) — and a `golang:1.25`-based image already has one:
 `/usr/bin/python3` 3.13.5 on Debian trixie, against assay's own
@@ -1958,7 +2000,7 @@ to a temporary directory when it runs (`go run .` needs a real directory and
 a zip member is not one), so nothing has to be unpacked or installed
 alongside it.
 
-**6. One Go module per lane, and the lane's project root is that module's
+**7. One Go module per lane, and the lane's project root is that module's
 root.** A Go cover profile keys records by import path
 (`example.com/svc/internal/store/x.go`) while `git diff` names the same file
 `internal/store/x.go`. Assay bridges the two by **reading your module path
@@ -1997,7 +2039,7 @@ yourself and calling `runner.run_lane` — is no longer needed for this, and a
 `module_path` you construct by hand that disagrees with your `go.mod` is now
 refused rather than given precedence.
 
-**7. A worked Go lane, and it is one that really ran.** This is the lane
+**8. A worked Go lane, and it is one that really ran.** This is the lane
 F008-A5's qualification used against `shared-ramdisk-depot-manager` (srdm) at a
 real commit range, unedited except for the base ref. Note what it does NOT
 contain: no `cwd`, no module path, and `source_roots` spelled relative to the

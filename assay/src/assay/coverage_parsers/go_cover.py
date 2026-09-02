@@ -200,19 +200,77 @@ def _parse_block(line: str) -> tuple[str, CoverageBlock]:
         raise _malformed(f"bad count {count_field!r}") from exc
     if count < 0:
         raise _malformed(f"negative count {count}")
-    return path, CoverageBlock(
-        start_line=start_line,
-        start_col=start_col,
-        end_line=end_line,
-        end_col=end_col,
-        num_stmts=int(num_stmts_field),
-        count=count,
-    )
+    try:
+        block = CoverageBlock(
+            start_line=start_line,
+            start_col=start_col,
+            end_line=end_line,
+            end_col=end_col,
+            num_stmts=int(num_stmts_field),
+            count=count,
+        )
+    except ValueError as exc:
+        # `CoverageBlock.__post_init__` enforces invariants this function
+        # does NOT check for itself -- most reachably "ends before it
+        # starts" once columns are compared, which the `end_line <
+        # start_line` guard above cannot see: `m/x.go:5.10,5.2 1 1` is one
+        # line, so that guard passes and the dataclass refuses.
+        #
+        # Without this wrapper that `ValueError` escapes `parse` unchanged.
+        # `runner._run_prepared_lane` catches `AssayError` and `cli.main`
+        # catches `AssayError`, so a bare `ValueError` is an uncaught
+        # traceback: NO verdict document is written and the coverage
+        # reservation the runner opened is never closed -- the artifact-level
+        # failure mode this project exists to make impossible, produced by
+        # eleven bytes of a coverage profile. Found by adversarial review
+        # round 1 (should-fix 5); `main` accepted the same bytes.
+        #
+        # Re-raised through `_malformed` rather than caught wider: the cause
+        # really is an unreadable record, the message the dataclass composed
+        # already names both positions, and no other outcome would be honest.
+        raise _malformed(f"{exc} in record for {path!r}") from exc
+    return path, block
 
 
 def _parse_pos(spec: str) -> tuple[int, int]:
     """``<line>.<col>`` as a pair. The column used to be parsed and thrown
-    away; A-239 needs it, so it is now validated the same way the line is."""
+    away; A-239 needs it, so it is now validated too — but NOT the same way
+    the line is, and that asymmetry is the whole point (A-405).
+
+    **Lines are 1-based; columns are ``>= 0``, and a ZERO column is real
+    output, not corruption.** ``cmd/cover`` writes
+    :class:`go/token.Position` values straight into the record, and a
+    position produced by a ``//line file:line`` directive that specifies no
+    column carries ``Column == 0`` by design. ``cmd/cover`` says so in its
+    own words, at go1.25.14
+    ``/usr/local/go/src/cmd/cover/cover.go:1055-1060``:
+
+        It is possible for positions to repeat when there is a line
+        directive that does not specify column information and the input has
+        not been passed through gofmt. See issues #27530 and #30746. Tests
+        are TestHtmlUnformatted and TestLineDup.
+
+    — which is the reason its ``dedup`` helper (``cover.go:1073-1090``)
+    exists at all. The witness is Go's own ``TestLineDup`` corpus, run
+    through the real toolchain and committed at
+    ``nyxloom-trove/carve-assets/P27-recarve/linedup.out``: nine records, six
+    of them carrying a zero column.
+
+    This parser used to refuse those bytes with "column number 0 ... is not
+    positive" — a guessed fact about ``cmd/cover``'s output that
+    ``cmd/cover`` disproves, and the exact class of defect the P27 re-carve
+    exists to remove (A-334: measure the external system; A-217: adapt, do
+    not invent). The records are ACCEPTED now, and the FILE they belong to
+    is flagged instead — see
+    :attr:`assay.coverage_parsers.model.FileCoverage.line_directive_remapped`
+    for what the flag means and A-405 for what evaluation does with it.
+
+    A NEGATIVE column stays refused: nothing in ``go/token`` produces one,
+    so it is corruption rather than a remapped position. Lines stay ``>= 1``
+    for the same reason — a ``//line`` directive's own line number must be
+    positive (Go spec, "Line directives"), so line 0 is not a state the
+    toolchain can reach either.
+    """
     if "." not in spec:
         raise _malformed(f"bad position {spec!r}")
     line_str, _, col_str = spec.partition(".")
@@ -226,8 +284,12 @@ def _parse_pos(spec: str) -> tuple[int, int]:
         col = int(col_str)
     except ValueError as exc:
         raise _malformed(f"bad column number in {spec!r}") from exc
-    if col <= 0:
-        raise _malformed(f"column number {col} in {spec!r} is not positive")
+    if col < 0:
+        raise _malformed(
+            f"column number {col} in {spec!r} is negative; a `//line`-remapped "
+            f"position is 0 and is accepted, but nothing in go/token emits a "
+            f"column below that"
+        )
     return line, col
 
 

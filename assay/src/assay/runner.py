@@ -892,7 +892,14 @@ def _attribute_statements_for_lane(
     oracle. A profile mixing block-based and line-based files cannot occur
     from one parser today, but the filter is a property of the DATA rather
     than of which parser produced it, which is what keeps this function
-    language-free.
+    language-free. Files whose positions a ``//line`` directive remapped are
+    filtered out too, for a different reason and with a different consequence
+    (A-405) -- see the comment at the filter.
+
+    A profile with NO block-bearing file at all is REFUSED, not passed
+    through (A-406/DA-R1); the branch that used to mark it attributed
+    vacuously is gone, and the comment at that site records what it got
+    wrong.
 
     Raises :class:`~assay.errors.AssayError` on every failure -- the missing
     file, the helper's own refusals, and
@@ -911,15 +918,69 @@ def _attribute_statements_for_lane(
         if file_cov.blocks is not None
     ]
     if not block_bearing:
-        # Nothing carries extents, so there is nothing to correct -- but the
-        # adapter still REQUIRES attribution, and `evaluate` would refuse a
-        # profile flagged False. Marking it attributed here is the honest
-        # answer: every record in it is already statement truth, vacuously.
-        return CoverageProfile(
-            files=profile.files, statement_attributed=True
+        # (A-406, DA-R1) THIS USED TO PASS VACUOUSLY -- it returned
+        # `statement_attributed=True` with the comment "every record in it is
+        # already statement truth, vacuously". That is retracted. For an
+        # adapter that REQUIRES statement attribution there is no such
+        # profile, and the branch was reachable with a wrong answer at the end
+        # of it: `judge.language` and `judge.coverage.format` are independent
+        # by design (`config.py`), so a Go lane could declare `format =
+        # "lcov"`, and lcov CONVERTED from a Go coverprofile carries exactly
+        # the naive block expansion A-392 exists to refuse -- signatures,
+        # closing braces and `case` labels counted as executable code. The
+        # profile would arrive with no blocks, be marked attributed here with
+        # no oracle and no `helpers` entry, and A-392's guard would wave it
+        # through. Found by adversarial review round 1 (should-fix 3), ruled
+        # by DA-R1.
+        #
+        # The two honest readings of "no block-bearing files", and where each
+        # one now terminates:
+        #
+        #   * the EMPTY profile -- already refused upstream, before this
+        #     function is reached, by `coverage.check_empty_coverage` in
+        #     `evaluate_r1`'s own guard sequence: NO_MEASUREMENT /
+        #     EMPTY_COVERAGE, payload-free, no helper, never a PASS.
+        #   * a NON-empty profile in a format that carries no extents -- a
+        #     contradiction, and refused here. `config` refuses this lane at
+        #     LOAD time (A-406's first half), so reaching this point means the
+        #     load-time check was bypassed (a library caller, a hand-built
+        #     Lane); the refusal is kept as the second of two independent
+        #     guards rather than deleted as unreachable.
+        raise AssayError(
+            f"the {adapter.name!r} adapter requires statement attribution, "
+            f"but the coverage profile it was handed carries no block extents "
+            f"in any of its {len(profile.files)} file(s). A format that "
+            f"reports block extents is the only kind this adapter can be "
+            f"judged from -- line sets alone are an over-approximation of a "
+            f"block-based language's executable code, and marking them "
+            f"attributed would certify the very expansion A-392 refuses. "
+            f"Check judge.coverage.format against the language",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
 
-    rel_paths = [repo_path_by_raw_key[raw_key] for raw_key in block_bearing]
+    # (A-405) A `//line`-remapped file is NOT sent to the oracle. The oracle
+    # derives PHYSICAL positions from the real source file, while the
+    # profile's records carry the directive's virtual ones, so the extent
+    # sets cannot match and `attribute_statements`' mismatch refusal would
+    # take down the WHOLE artifact over one generated file. It skips such a
+    # file too (emptying its line sets), and `evaluate` refuses only if the
+    # lane actually judges it.
+    to_attribute = [
+        raw_key
+        for raw_key in block_bearing
+        if not profile.files[raw_key].line_directive_remapped
+    ]
+    if not to_attribute:
+        # Every block-bearing file in this profile is `//line`-remapped.
+        # There is no path to ask the oracle about, so the helper never runs
+        # and no `helpers` entry is recorded -- which is honest: no toolchain
+        # derived any statement position for this lane. `attribute_statements`
+        # still runs, because emptying those files' line sets is what stops
+        # them being judged on virtual line numbers.
+        return attribute_statements(profile, {})
+
+    rel_paths = [repo_path_by_raw_key[raw_key] for raw_key in to_attribute]
     report = adapter.statement_blocks(repo_top, rel_paths, remaining=remaining)
     if report is None:
         raise AssayError(
@@ -940,7 +1001,7 @@ def _attribute_statements_for_lane(
     # asked in repo-relative paths -- so the mapping is walked back here, on
     # the one dict that produced both.
     blocks_by_key: dict[str, tuple] = {}
-    for raw_key in block_bearing:
+    for raw_key in to_attribute:
         repo_path = repo_path_by_raw_key[raw_key]
         blocks = report.blocks_by_path.get(repo_path)
         if blocks is None:

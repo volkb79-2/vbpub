@@ -203,6 +203,22 @@ class CoverageBlock:
 
     ``count`` is the record's own execution count, kept per block rather than
     folded into a line classification, for the same reason.
+
+    **Lines are 1-based; columns are ``>= 0`` (A-405).** A zero column is not
+    a malformed record — it is what :class:`go/token.Position` carries for a
+    position remapped by a ``//line file:line`` directive that specifies no
+    column, and it is why ``cmd/cover`` has a ``dedup`` helper at all. Its
+    own comment, go1.25.14 ``/usr/local/go/src/cmd/cover/cover.go:1055-1060``:
+    "It is possible for positions to repeat when there is a line directive
+    that does not specify column information and the input has not been
+    passed through gofmt. See issues #27530 and #30746. Tests are
+    TestHtmlUnformatted and TestLineDup." This class used to assert "a 1-based
+    source position is never below 1" about all four coordinates, which is
+    true of the LINE and false of the COLUMN, and the real toolchain's own
+    ``TestLineDup`` corpus (committed at
+    ``nyxloom-trove/carve-assets/P27-recarve/linedup.out``) disproved it.
+    Negative stays refused in both coordinates: nothing in ``go/token``
+    emits one.
     """
 
     start_line: int
@@ -213,12 +229,21 @@ class CoverageBlock:
     count: int
 
     def __post_init__(self) -> None:
-        for name in ("start_line", "start_col", "end_line", "end_col"):
+        for name in ("start_line", "end_line"):
             value = getattr(self, name)
             if value < 1:
                 raise ValueError(
-                    f"CoverageBlock.{name} is {value}; a 1-based source "
-                    f"position is never below 1"
+                    f"CoverageBlock.{name} is {value}; a 1-based source line "
+                    f"is never below 1, and a `//line` directive's own line "
+                    f"number must be positive too"
+                )
+        for name in ("start_col", "end_col"):
+            value = getattr(self, name)
+            if value < 0:
+                raise ValueError(
+                    f"CoverageBlock.{name} is {value}; a column is 0 when the "
+                    f"position came from a `//line` directive carrying no "
+                    f"column, and >= 1 otherwise -- never negative"
                 )
         if self.num_stmts < 0:
             raise ValueError(
@@ -243,6 +268,17 @@ class CoverageBlock:
         shared boundary position cannot fuse two records.
         """
         return (self.start_line, self.start_col, self.end_line, self.end_col)
+
+    @property
+    def has_remapped_position(self) -> bool:
+        """This record carries a position a ``//line`` directive remapped
+        (A-405): either coordinate's column is 0.
+
+        DERIVED, never stored. A stored flag would be a second fact about
+        the same four numbers, and the two could disagree; there is nothing
+        here a parser could set wrongly.
+        """
+        return self.start_col == 0 or self.end_col == 0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -378,6 +414,48 @@ class FileCoverage:
         with ``executed``/``missing`` because it is computed from them.
         """
         return self.executed | self.missing
+
+    @property
+    def line_directive_remapped(self) -> bool:
+        """This file's coverage records describe positions a ``//line``
+        directive remapped, so its line numbers are VIRTUAL (A-405).
+
+        **Per FILE, not per record, and deliberately conservative.** One
+        record with a zero column flags the whole file. Within a file that
+        carries a ``//line`` directive there is no way to tell a physical
+        position from a virtual one: the directive applies from where it
+        appears to the next one or to end of file, and the profile records
+        the remapped result with no marker saying which happened. Go's own
+        ``TestLineDup`` corpus is the witness — its profile
+        (``carve-assets/P27-recarve/linedup.out``) mixes ``6.21,7.25``
+        (physical, columns present) with ``100.0,102.1`` (virtual, columns
+        zeroed) in one file, and ``linedup.go`` is 24 lines long. Trusting
+        the records that LOOK physical would mean trusting a guess about
+        where the directive's scope began.
+
+        **DERIVED from ``blocks``, never stored.** A stored flag could
+        disagree with the records it describes, and every layer that rebuilds
+        a :class:`FileCoverage` (``attribute_statements``,
+        ``_normalized_profile_files``) would have to remember to carry it —
+        the "check that cannot fail" shape
+        :attr:`CoverageProfile.statement_attributed`'s own docstring argues
+        against. ``blocks`` is carried through every one of those rebuilds
+        already, so this property is carried by construction. ``False`` for
+        every line-based format, which has no ``blocks`` at all.
+
+        What CONSUMES it: :func:`assay.statement_attribution.
+        attribute_statements` skips such a file rather than sending it to a
+        source-side oracle that would derive PHYSICAL positions and refuse
+        the whole artifact for the resulting extent mismatch; and
+        :mod:`assay.evaluate` refuses — naming the file, the ``//line``
+        cause and the remedy — if such a file is in the judged set, while
+        ignoring it entirely if it is not. The asymmetry is the north star's
+        own rule: code outside the diff is invisible to the verdict by
+        construction, and 0/0 is never 100%.
+        """
+        if self.blocks is None:
+            return False
+        return any(block.has_remapped_position for block in self.blocks)
 
 
 @dataclass(frozen=True, kw_only=True)

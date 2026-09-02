@@ -333,14 +333,32 @@ def test_an_adapter_requiring_no_attribution_never_reaches_the_oracle(
     assert claim.coverage.executable == 5
 
 
-def test_a_profile_with_no_block_bearing_files_is_attributed_vacuously(
+def test_a_profile_with_no_block_bearing_files_is_REFUSED_not_attributed_vacuously(
     git_repo: GitRepo,
 ):
-    """`blocks is None` means "this format has no block concept at all"
-    (A-390), which is a different fact from "block-based with zero blocks".
-    Such a profile is already statement truth, so the oracle is not run --
-    but the profile must still clear A-392's guard, or an adapter would be
-    unable to judge a file its own format cannot describe in blocks."""
+    """**This test INVERTED at A-406, and the retraction is the point.**
+
+    It used to be named `..._is_attributed_vacuously` and to assert a PASS,
+    with the docstring "such a profile is already statement truth, so the
+    oracle is not run". That sentence is RETRACTED. It is true for a
+    genuinely line-based format judged by an adapter that does not require
+    statement attribution -- and this function is never called for such an
+    adapter, so the sentence was never about a case this branch could see.
+
+    For an adapter that DOES require attribution there is no honest profile
+    without block extents, and the reachable case was a wrong answer:
+    `judge.language` and `judge.coverage.format` are independent, so a Go
+    lane could declare `format = "lcov"`, and lcov converted from a Go
+    coverprofile carries the naive block expansion A-392 exists to refuse. It
+    arrived here with no blocks, was marked `statement_attributed=True` with
+    no oracle and no `helpers` entry, and A-392's guard passed it. Found by
+    adversarial review round 1 (should-fix 3), ruled by DA-R1.
+
+    `assay.config` refuses such a lane at LOAD (A-406's first half,
+    `test_config_statement_attribution_format.py`), so through the CLI this
+    state is unreachable. The refusal is kept as the second of two
+    independent guards because a library caller can hand-build a `Lane` --
+    which is precisely what this test does."""
     _seed(git_repo)
     adapter = _OracleAdapter()
     line_based = CoverageProfile(
@@ -367,5 +385,86 @@ def test_a_profile_with_no_block_bearing_files_is_attributed_vacuously(
     )
 
     assert adapter.calls == []
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert claim.coverage is None
+
+
+def test_an_adapter_that_does_not_require_attribution_never_reaches_this_seam(
+    git_repo: GitRepo,
+):
+    """The control for the inversion above, and the case the retracted
+    sentence was actually about.
+
+    A line-based format judged by a line-based adapter is statement truth
+    already, and it does not need a branch inside the attribution seam to say
+    so -- `runner.evaluate_r1` gates the whole call on
+    `adapter.requires_statement_attribution`, so such a lane never enters the
+    function at all. Keeping a vacuous-pass branch for it would have been
+    dead code that happened to also swallow the Go case."""
+    _seed(git_repo)
+    adapter = _OracleAdapter(requires_statement_attribution=False)
+    line_based = CoverageProfile(
+        files=MappingProxyType(
+            {
+                "pkg/mod.blk": FileCoverage(
+                    executed=frozenset({4, 6}),
+                    missing=frozenset(),
+                    excluded=None,
+                    branches=None,
+                    blocks=None,
+                )
+            }
+        )
+    )
+
+    claim = runner.evaluate_r1(
+        _whole_target_lane(git_repo),
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        base=None,
+        adapter=adapter,
+        profile=line_based,
+    )
+
+    assert adapter.calls == []
     assert claim.status is Outcome.PASS
     assert claim.coverage.executable == 2
+
+
+def test_an_empty_profile_terminates_before_the_seam_with_no_helper_and_no_pass(
+    git_repo: GitRepo,
+):
+    """DA-R1's other reading of "no block-bearing files", proven rather than
+    asserted: the EMPTY profile.
+
+    It never reaches the attribution seam, because
+    `coverage.check_empty_coverage` sits ahead of it in `evaluate_r1`'s own
+    guard sequence. The terminal is `NO_MEASUREMENT`/`EMPTY_COVERAGE`, which
+    is what makes deleting the vacuous branch safe: the case that branch was
+    plausibly protecting already had a correct, payload-free terminal one
+    step earlier.
+
+    The three assertions are the whole ruling. Not a PASS -- a vacuous 100%
+    over nothing is the failure this project exists to remove. No `helpers`
+    entry -- no toolchain derived anything, so recording one would describe
+    work that never happened. And the oracle was never called."""
+    _seed(git_repo)
+    adapter = _OracleAdapter()
+    helpers: list = []
+
+    claim = runner.evaluate_r1(
+        _whole_target_lane(git_repo),
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        base=None,
+        adapter=adapter,
+        profile=CoverageProfile(files=MappingProxyType({})),
+        on_helper_invoked=runner._record_statement_position_helper(helpers),
+    )
+
+    assert claim.status is Outcome.NO_MEASUREMENT
+    assert claim.reason_code is ReasonCode.EMPTY_COVERAGE
+    assert claim.status is not Outcome.PASS
+    assert helpers == []
+    assert adapter.calls == []

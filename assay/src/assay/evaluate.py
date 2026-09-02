@@ -77,7 +77,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, NoReturn, Sequence
 
 from .adapters.base import LanguageAdapter, StatementSpan
 from .coverage import derive_branch_capability, derive_exclusion_capability
@@ -138,6 +138,57 @@ def _check_statement_attribution(
         f"never joined onto this profile.",
         outcome=Outcome.ERROR,
         reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+    )
+
+
+def _refuse_line_directive_remapped(path: str, *, judged_as: str) -> NoReturn:
+    """Refuse a file whose coverage records were remapped by a ``//line``
+    directive AND that is in this lane's judged set (A-405).
+
+    **Why refusing is the only honest answer here.** ``go/token`` gives a
+    position produced by a ``//line file:line`` directive with no column a
+    zero column, and — the part that matters — the LINE NUMBER it carries is
+    the directive's, not the file's. Go's own ``TestLineDup`` witness
+    (``carve-assets/P27-recarve/linedup.out``) reports lines 100 to 105 for a
+    24-line source. ``git diff`` names PHYSICAL lines, so a changed line in
+    such a file intersects the profile's virtual line numbers by accident or
+    not at all: the file would measure 0 executable of 0 changed and the lane
+    would report a clean ``100%`` over a file nothing measured. That is
+    DESIGN-GUIDE §5's laundering gate and the north star's "0/0 is never
+    100%", reached through an artifact that is exactly what ``go test``
+    wrote.
+
+    **Why ``ERROR``/``BAD_LANE_CONFIG`` and not ``UNREADABLE_ARTIFACT``.**
+    Nothing is wrong with the artifact — it is byte-for-byte what the real
+    toolchain emits for this source, and assay parses all of it. What is
+    wrong is that the LANE asked assay to judge a generated file it
+    structurally cannot judge, and the remedy is in the lane file: a
+    generated source belongs outside ``judge.source_roots`` (or outside
+    ``judge.targets``), where assay already ignores it. Blaming the artifact
+    for a lane-config fault is precisely the misdirection
+    :func:`assay.adapters.go_modfile._refuse`'s own docstring exists to
+    prevent, and the reviewer that found this case named that same
+    docstring. No new reason code is minted: ``ReasonCode`` is a closed
+    vocabulary on the wire, and this wave cuts no schema.
+
+    Not raised for a remapped file OUTSIDE the judged set — that file is not
+    under review, its records contribute nothing, and taking a lane down for
+    it would leave every Go project carrying one generated file unable to use
+    R1 at all.
+    """
+    raise AssayError(
+        f"{path!r} carries coverage records whose positions were remapped by "
+        f"a `//line` directive (the profile reports a zero column, which "
+        f"`go/token` produces for a `//line file:line` position that names no "
+        f"column), so its recorded line numbers are the directive's and not "
+        f"this file's. {judged_as}, and assay will not judge a file whose "
+        f"measured lines cannot be matched to the lines a diff names -- that "
+        f"would report a clean percentage over nothing measured. Generated "
+        f"sources belong outside the lane's judge.source_roots (or its "
+        f"judge.targets); assay already ignores a `//line`-remapped file that "
+        f"is not in the judged set.",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.BAD_LANE_CONFIG,
     )
 
 
@@ -435,6 +486,21 @@ def evaluate_coverage(
             files_missing.append(path)
             total_changed_exec += len(lines)
             continue
+
+        if file_cov.line_directive_remapped:
+            # A-405. Reached only for a file that cleared `_is_considered`
+            # above -- source-root boundary, excluded dirs, source globs and
+            # `is_test_path` -- AND has changed lines in this diff. A
+            # `//line`-remapped file the lane does not judge never gets here,
+            # which is the whole point of putting the check inside the loop
+            # rather than over the profile.
+            _refuse_line_directive_remapped(
+                path,
+                judged_as=(
+                    f"This lane judges it: {len(lines)} changed line(s) in it "
+                    f"are inside judge.source_roots"
+                ),
+            )
 
         excluded = file_cov.excluded if file_cov.excluded is not None else frozenset()
         changed_excluded = lines & excluded
@@ -1002,6 +1068,20 @@ def evaluate_targets(
         )
         repo_path = (project_prefix / rel_to_project).as_posix()
         file_cov = cov_by_repo_path.get(repo_path)
+        if file_cov is not None and file_cov.line_directive_remapped:
+            # A-405, whole-target mode's own half of the same rule. Checked
+            # BEFORE the `TARGET_NOT_MEASURED` guard below, which such a file
+            # would otherwise trip (its line sets are emptied by
+            # `attribute_statements`): "this target has zero executable
+            # lines" is true but names the wrong cause, and the remedy it
+            # implies -- write tests -- is not the remedy.
+            _refuse_line_directive_remapped(
+                repo_path,
+                judged_as=(
+                    f"This lane judges it: it is declared in judge.targets as "
+                    f"{raw_target!r}"
+                ),
+            )
         target_executable = (
             file_cov.executed | file_cov.missing
             if file_cov is not None

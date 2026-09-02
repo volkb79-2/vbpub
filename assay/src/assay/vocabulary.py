@@ -50,6 +50,7 @@ from typing import Mapping
 __all__ = [
     "COVERAGE_PRODUCERS_BY_FORMAT",
     "COVERAGE_PRODUCER_REQUIRED_FORMATS",
+    "STATEMENT_ATTRIBUTABLE_FORMATS_BY_LANGUAGE",
     "ARC_BEARING_COVERAGE_PRODUCERS",
     "REFUSED_COVERAGE_PRODUCERS",
     "INGESTED_OPERATOR_NAMESPACES",
@@ -245,6 +246,40 @@ COVERAGE_PRODUCERS_BY_FORMAT: Mapping[str, tuple[str, ...]] = MappingProxyType(
 #: than a policy. Every other format's key is optional.
 COVERAGE_PRODUCER_REQUIRED_FORMATS: frozenset[str] = frozenset(
     {"coverage-istanbul-json"}
+)
+
+#: (A-406, DA-R1) Languages whose adapter declares
+#: ``requires_statement_attribution``, mapped to the coverage formats that
+#: CARRY the block extents such an adapter is judged from. A language absent
+#: from this mapping places no constraint on ``judge.coverage.format``;
+#: `assay.config` refuses at LOAD time when a language present here declares
+#: a format that is not in its set.
+#:
+#: **Why the fact lives here and not on the adapter.** The check has to run at
+#: config load, and :mod:`assay.config` must not import :mod:`assay.adapters`
+#: -- "there is no ``adapters/python.py`` import anywhere in this module" is
+#: :mod:`assay.registry`'s own mechanical guarantee behind O2, and dragging
+#: the registry into the lane-file loader to answer one question would trade
+#: that guarantee for a convenience. :mod:`assay.vocabulary` is where
+#: language-scoped and format-scoped facts already live
+#: (``MUTATION_OPERATORS_BY_LANGUAGE`` one field over is the same shape), and
+#: `config` already imports it. The cost is that this mapping and
+#: :attr:`assay.adapters.base.LanguageAdapter.requires_statement_attribution`
+#: are two statements of one fact, so they are checked against each other by
+#: a test that derives the languages from the built-in registry rather than
+#: naming them: ``tests/test_config_statement_attribution_format.py``.
+#:
+#: **Why it exists at all.** ``judge.language`` and ``judge.coverage.format``
+#: are independent by design, so a Go lane could declare ``format = "lcov"``.
+#: lcov CONVERTED from a Go coverprofile (the `gcov2lcov` family) carries the
+#: naive block expansion -- signatures, closing braces and ``case`` labels as
+#: executable lines -- which is exactly the over-approximation A-392 exists to
+#: refuse, and it arrives carrying no block extents at all, so nothing
+#: downstream could tell it from statement truth. Found by adversarial review
+#: round 1 as a reachable hole in the vacuous-attribution branch; DA-R1 ruled
+#: that the lane is refused at load, before anything runs.
+STATEMENT_ATTRIBUTABLE_FORMATS_BY_LANGUAGE: Mapping[str, frozenset[str]] = (
+    MappingProxyType({"go": frozenset({"go-cover"})})
 )
 
 #: (B045/B038(a)) The producers whose `branchMap` really is a set of ARCS --

@@ -448,3 +448,99 @@ def test_the_correction_can_never_downgrade_a_line_the_parser_called_executed():
     assert not (corrected.missing & raw.executed), (
         "the correction downgraded a line the parser called executed"
     )
+
+
+def test_repeated_records_disagreeing_about_num_stmts_are_refused():
+    """Adversarial review round 1, should-fix 6 -- the other half of the rule
+    the fold above transcribes.
+
+    `x/tools/cover`'s own merge loop
+    (`/usr/local/go/src/cmd/vendor/golang.org/x/tools/cover/profile.go`,
+    `ParseProfilesFromReader`) matches records on all four coordinates and
+    then does two things, in this order:
+
+        if b.NumStmt != last.NumStmt {
+            return nil, fmt.Errorf("inconsistent NumStmt: changed from %d to
+                                    %d", last.NumStmt, b.NumStmt)   // :100-102
+        }
+        if mode == "set" { p.Blocks[j-1].Count |= b.Count }          // :104
+        else             { p.Blocks[j-1].Count += b.Count }          // :106
+
+    B061 transcribed the second and not the first, so assay folded silently
+    and then checked only the SURVIVING record's `num_stmts` against the
+    oracle -- which means `[count=1 numStmts=1]` plus `[count=0 numStmts=7]`
+    was ACCEPTED whenever the honest record happened to win the fold. That is
+    the reviewer's own probe, and it is the case below.
+
+    Corrupt input only: no real toolchain emits it, which is exactly why it
+    must refuse rather than be reasoned about. One block cannot contain two
+    different numbers of statements, so the records did not all come from one
+    instrumentation of this file."""
+    block = StatementBlock(
+        start_line=59, start_col=22, end_line=65, end_col=3,
+        num_stmts=1, stmt_lines=(60,),
+    )
+    profile = CoverageProfile(
+        files={
+            "wings.go": FileCoverage(
+                executed=frozenset({60}),
+                missing=frozenset(),
+                excluded=None,
+                blocks=(
+                    CoverageBlock(
+                        start_line=59, start_col=22, end_line=65, end_col=3,
+                        num_stmts=1, count=1,
+                    ),
+                    CoverageBlock(
+                        start_line=59, start_col=22, end_line=65, end_col=3,
+                        num_stmts=7, count=0,
+                    ),
+                ),
+            )
+        }
+    )
+
+    with pytest.raises(AssayError) as excinfo:
+        attribute_statements(profile, {"wings.go": (block,)})
+
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    message = str(excinfo.value)
+    assert "inconsistent NumStmt" in message
+    assert "59.22,65.3" in message
+    assert "1" in message and "7" in message
+
+
+def test_the_num_stmts_check_sees_every_record_not_only_the_survivor():
+    """The order-independence control for the test above, and it is not
+    redundant with it.
+
+    A check placed AFTER the fold would only ever compare the winner against
+    the oracle, so the disagreement would be invisible whenever the honest
+    record won -- which is the more common shape, since executed-wins prefers
+    the binary that actually ran the block. Reversing the record order here
+    puts the corrupt record first and the honest one second; both orders must
+    refuse, and they do because the check lives INSIDE the fold."""
+    block = StatementBlock(
+        start_line=59, start_col=22, end_line=65, end_col=3,
+        num_stmts=1, stmt_lines=(60,),
+    )
+    for counts in (((1, 1), (7, 0)), ((7, 0), (1, 1)), ((1, 0), (7, 0))):
+        profile = CoverageProfile(
+            files={
+                "wings.go": FileCoverage(
+                    executed=frozenset({60}),
+                    missing=frozenset(),
+                    excluded=None,
+                    blocks=tuple(
+                        CoverageBlock(
+                            start_line=59, start_col=22, end_line=65, end_col=3,
+                            num_stmts=num_stmts, count=count,
+                        )
+                        for num_stmts, count in counts
+                    ),
+                )
+            }
+        )
+        with pytest.raises(AssayError):
+            attribute_statements(profile, {"wings.go": (block,)})

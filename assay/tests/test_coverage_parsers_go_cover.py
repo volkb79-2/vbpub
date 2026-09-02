@@ -302,3 +302,51 @@ def test_the_shipped_bound_is_the_one_shared_documented_value():
 
     assert go_cover.MAX_CLASSIFIED_LINES is shared_ceiling
     assert go_cover.MAX_CLASSIFIED_LINES == 2_000_000
+
+
+def test_a_backwards_single_line_block_is_an_AssayError_not_a_bare_ValueError():
+    """Adversarial review round 1, should-fix 5 -- and it is a real
+    consumer-facing crash, not a tidiness point.
+
+    ``m/x.go:5.10,5.2 1 1`` ends before it starts, but only in the COLUMN:
+    ``_parse_block``'s own ``end_line < start_line`` guard sees one line and
+    passes, so the refusal came from ``CoverageBlock.__post_init__`` as a bare
+    ``ValueError``. Nothing on the path catches that -- ``runner.
+    _run_prepared_lane`` catches ``AssayError`` and ``cli.main`` catches
+    ``AssayError`` -- so it surfaced as an uncaught traceback: NO verdict
+    document written, and the coverage reservation the runner opened never
+    closed. ``main`` accepted the same bytes.
+
+    The message must still name both positions, because "5.10 then 5.2" is
+    the only thing that tells a consumer which record to look at."""
+    with pytest.raises(AssayError) as excinfo:
+        load_coverage_profile("mode: set\nm/x.go:5.10,5.2 1 1\n", declared_format="go-cover")
+
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    message = str(excinfo.value)
+    assert "5.10" in message and "5.2" in message
+    assert "m/x.go" in message
+
+
+def test_a_line_directive_column_of_zero_is_accepted_and_flags_the_file():
+    """A-405, at the parser's own boundary. The full witness -- Go's own
+    ``TestLineDup`` corpus, run through the real toolchain -- is
+    ``tests/test_go_line_directive_witness.py``; this is the unit-level
+    statement of the same rule, beside the artifact grammar it belongs to.
+
+    The contrast with the record above is the point: a zero column is REAL
+    toolchain output and is accepted, a NEGATIVE one is corruption and is
+    refused. The bound moved by exactly one value."""
+    profile = load_coverage_profile(
+        "mode: count\nm/x.go:6.21,7.25 1 1\nm/x.go:100.0,102.1 3 25\n",
+        declared_format="go-cover",
+    )
+
+    file_cov = profile.files["m/x.go"]
+    assert file_cov.line_directive_remapped is True
+    assert file_cov.blocks is not None
+    assert {block.extent for block in file_cov.blocks} == {
+        (6, 21, 7, 25),
+        (100, 0, 102, 1),
+    }

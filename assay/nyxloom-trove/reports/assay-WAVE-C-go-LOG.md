@@ -900,3 +900,138 @@ because the stale sentence was a claim about what a registry can advertise. It
 goes red if Go is unregistered, if the declaration reverts to `()`, or if the
 entry is dropped: each of those would make the deleted sentence true again and
 the rewritten paragraph the stale one.
+
+### `<this commit>` — `fix(assay): BLOCKER 1 / A-405 -- //line-remapped Go files`
+
+DA-R2, shape (ii), per the controller's 2026-09-02 entry (`vbpub@5b6f77cc`).
+
+**The witness first, because everything else follows from it.**
+`carve-assets/P27-recarve/probe-linedup.sh` builds `cmd/cover/cover_test.go`'s
+own `lineDupContents` — the corpus `cover.go:1055-1060` names for exactly this
+case — inside `tester-unified-go:local`, `--network=none`, and runs both the
+real `go test -covermode=count -coverprofile` and assay's oracle over it. Nine
+records, eight of them carrying a zero column; the oracle reproduces all nine
+extents and all nine `num_stmts`. Profile, oracle document, recipe and sha256
+committed; PROVENANCE.md gains an A-405 section. That discharges REPORT §5
+item 4's own open question: the `dedup` replication is PROVEN.
+
+One difference from the reviewer's transcript, stated rather than reconciled
+away: my extents are one line lower (`6.21,7.25` where the review shows
+`5.21,6.25`) because `lineDupContents` is a backquoted constant beginning with
+a newline and `cover_test.go` writes it whole. Keeping that leading blank line
+is what makes this the same file Go's own test builds.
+
+**The three invariant sites** now say what is true — lines `>= 1`, columns
+`>= 0`, a zero column meaning a `//line`-remapped position — each citing
+`go/token`'s behaviour and `cover.go:1055-1060` verbatim. A NEGATIVE column
+stays refused, with its own message, because nothing in `go/token` emits one.
+`go_stmtpos._read_block` needed no code change (it delegates to
+`StatementBlock`) but did need its comment corrected: under the old bound that
+refusal would have fired on the ORACLE's own correct output and blamed the
+helper for it.
+
+**The flag is `FileCoverage.line_directive_remapped`, DERIVED from `blocks`,**
+not stored: a stored flag is a second fact about the same four numbers, and
+every layer that rebuilds a `FileCoverage` would have to remember to carry it.
+`blocks` is already carried through every rebuild. Per FILE, conservatively —
+`linedup.out` mixes a physical extent with seven virtual ones in one file and
+nothing in the artifact says where the directive's scope began.
+
+**Two consumers, and they are asymmetric on purpose.**
+`attribute_statements` skips a flagged file and EMPTIES its line sets rather
+than sending it to an oracle that derives physical positions (the extent
+mismatch would refuse the whole artifact — the blast radius BLOCKER 1 (b)
+called wrong). `evaluate_coverage`/`evaluate_targets` then refuse
+`ERROR`/`BAD_LANE_CONFIG` if such a file is in the judged set, and ignore it
+entirely if it is not. Emptying is safe ONLY because that second check exists;
+without it this would be the silent 0/0 shape (i) was rejected for.
+
+`BAD_LANE_CONFIG` and not `UNREADABLE_ARTIFACT`: the artifact is exactly what
+`go test` wrote, and the fault is that the lane asked assay to judge a
+generated file. `go_modfile._refuse`'s own docstring is the precedent, and the
+reviewer named it. No new reason code, no wire field, no schema change.
+
+Ten tests in `tests/test_go_line_directive_witness.py` (all three outcomes,
+the parser on the real bytes, the oracle's own zero columns, the negative-column
+control, the `dedup` ladder) plus two at the parser's own boundary. Docs:
+CONSUMERS point 5 (new, and 6-8 renumbered, README's cross-reference with
+them), README's Go section, DESIGN-GUIDE §"Go statement positions".
+
+### `<this commit>` — `fix(assay): DA-R1 / A-406 -- no vacuous statement attribution`
+
+Two guards where there was a hole.
+
+At CONFIG LOAD, a language listed in the new
+`vocabulary.STATEMENT_ATTRIBUTABLE_FORMATS_BY_LANGUAGE` may only declare a
+format in its set. The fact lives in `vocabulary` rather than on the adapter
+because `assay.config` must not import `assay.adapters` — `registry.py`'s own
+O2 guarantee — and the check has to run at load to be worth having. The cost
+is two statements of one fact, so `test_config_statement_attribution_format.py`
+derives the requiring languages from `cli._built_in_registry` and asserts set
+equality, with a vacuity guard.
+
+At RUN TIME, `_attribute_statements_for_lane`'s vacuous branch is DELETED and
+its "such a profile is already statement truth" retracted at the site. The
+sentence was true of a case this function never sees (a line-based adapter,
+which `evaluate_r1` never routes here) and false of the case it did see. The
+replacement is a refusal, kept as a second independent guard for library
+callers who hand-build a `Lane`.
+
+`test_a_profile_with_no_block_bearing_files_is_attributed_vacuously` is
+rewritten and renamed to assert the refusal, with two new siblings: the
+line-based adapter that never reaches the seam, and the EMPTY profile
+terminating at `check_empty_coverage` with no `helpers` entry and no PASS —
+which is the case the deleted branch sounded like it was protecting and was
+not.
+
+One existing test moved fixture rather than assertions:
+`test_a_go_r1_lane_now_resolves_and_is_refused_for_the_TOOLCHAIN_not_the_registry`
+inherited `R1_LANE`'s `coverage-py-json`, which a Go lane may no longer
+declare. Left alone it would still have gone green — refusing one layer
+earlier, for the wrong reason, never reaching the preflight it exists to
+exercise. That is A-399's decoy shape, so the fixture moved to `go-cover`.
+
+### `<this commit>` — `fix(assay): should-fixes 1, 2, 4, 5, 6`
+
+**5** (`go_cover`): the `CoverageBlock(...)` construction is wrapped and
+re-raised through `_malformed`. `m/x.go:5.10,5.2 1 1` ends before it starts in
+the COLUMN, which `_parse_block`'s `end_line < start_line` guard cannot see, so
+the dataclass's `ValueError` escaped `parse` — past `_run_prepared_lane`'s and
+`cli.main`'s `except AssayError` both — as an uncaught traceback: no verdict
+document, and the coverage reservation never released. Tested at the parser
+and through `run_lane`, where the assertions are the SHAPE (a complete verdict,
+both claims, payload-free) rather than only the reason code.
+
+**4 + 6** (`statement_attribution`): the B061 fold now cites
+`/usr/local/go/src/cmd/vendor/golang.org/x/tools/cover/profile.go`'s
+`ParseProfilesFromReader` (`:54`, merge loop `:91`, `Count |= b.Count` at
+`:104` for `set`, `+=` at `:106` otherwise) — read inside the image, line
+numbers pinned — AND transcribes that loop's other rule, the
+`inconsistent NumStmt` refusal at `:100-102`. The check sits INSIDE the fold
+so it sees every record rather than the survivor; a check placed after would
+be invisible whenever the honest record won, which is the common shape. The
+reviewer's probe (`[count=1 numStmts=1]` + `[count=0 numStmts=7]`) is the
+test, with a three-order control.
+
+**2** (`go_modfile`): three divergences from the real parser, each message
+measured in-image with `go list -m` on exactly that `go.mod`. A trailing slash
+is now REFUSED (`malformed module path "example.invalid/x/": trailing slash`)
+rather than `rstrip`ped — and `module /` with it, which previously ran the
+emptiness guard BEFORE the strip, escaped as an empty module path, and
+surfaced from `normalize_coverage_key` as `ERROR`/`UNREADABLE_ARTIFACT`:
+blaming the artifact for a lane fault. An unquoted argument containing `"` or
+a backquote is refused (`invalid quoted string: unquoted string cannot contain
+quote`), the rule the module docstring already claimed. An anti-vacuity
+control asserts the ordinary path still parses.
+
+**1** (`test_cli_run.py`, `cli.py`): the R3 decoy is re-pointed at `rust` — a
+language this build ships no adapter for at all, with an assertion that says
+so — restoring a CLI-level test of the unknown-language branch, which had none
+after A-394. The R2 one keeps `go` and is renamed
+`test_run_refuses_go_at_r2_the_language_is_registered_r1_only`, saying in its
+name that it is the registered-at-another-rigor control. The two SQL
+docstrings that pointed at "Go's own total non-registration" are corrected.
+`cli.py`'s claim that both refusals are asserted as controls is corrected the
+same way, and while there: its module docstring's third copy of the registry
+list still said "JavaScript at R1 only", stale since B046. Fixed, and the
+correction says why every restatement of that list keeps rotting.

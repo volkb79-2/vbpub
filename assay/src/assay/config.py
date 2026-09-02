@@ -78,6 +78,7 @@ from .vocabulary import (
     MUTATION_OPERATORS,
     MUTATION_OPERATORS_BY_LANGUAGE,
     REFUSED_COVERAGE_PRODUCERS,
+    STATEMENT_ATTRIBUTABLE_FORMATS_BY_LANGUAGE,
     WITHDRAWN_MUTATION_OPERATORS,
     operator_language,
 )
@@ -1818,7 +1819,7 @@ def _load_judge(
 
     coverage = None
     if "coverage" in table:
-        coverage = _load_coverage(table["coverage"], where, project_root)
+        coverage = _load_coverage(table["coverage"], where, language, project_root)
 
     mutation = None
     if "mutation" in table:
@@ -2023,7 +2024,9 @@ def _validate_artifact_path(value: Any, where: str, project_root: Path, field: s
     return artifact
 
 
-def _load_coverage(value: Any, where: str, project_root: Path) -> CoverageConfig:
+def _load_coverage(
+    value: Any, where: str, language: str | None, project_root: Path
+) -> CoverageConfig:
     if not isinstance(value, dict):
         raise LaneConfigError(
             f"{where}: 'judge.coverage' must be a table, got {_type_name(value)}"
@@ -2054,6 +2057,45 @@ def _load_coverage(value: Any, where: str, project_root: Path) -> CoverageConfig
             f"{where}: 'judge.coverage.format' {fmt!r} is not a format the "
             f"parser registry knows; declared formats: "
             f"{sorted(FORMAT_REGISTRY)}"
+        )
+    # (A-406, DA-R1) A language whose adapter is judged from block extents may
+    # only declare a format that CARRIES them. Checked AFTER format-registry
+    # membership so an unknown format is still reported as unknown -- naming
+    # the language would misdirect a plain typo -- and BEFORE the producer,
+    # because a producer name is only meaningful once the format is one this
+    # lane may use at all.
+    #
+    # WHY AT LOAD, and not where the profile is parsed. `judge.language` and
+    # `judge.coverage.format` are independent by design, so a Go lane
+    # declaring `format = "lcov"` is a file assay used to ACCEPT: the profile
+    # then arrived with no block extents, `runner` marked it
+    # statement-attributed vacuously, and A-392's guard -- the whole point of
+    # which is to make skipping the oracle impossible -- waved it through with
+    # no oracle and no `helpers` entry. lcov converted from a Go coverprofile
+    # carries exactly the naive block expansion A-392 exists to refuse, so the
+    # verdict would have been wrong in the direction that looks right.
+    # Refusing here means the lane never runs at all, which is the earliest
+    # and cheapest place the fault is knowable: it is a property of the file,
+    # not of any artifact.
+    attributable = STATEMENT_ATTRIBUTABLE_FORMATS_BY_LANGUAGE.get(language or "")
+    if attributable is not None and fmt not in attributable:
+        readable = ", ".join(
+            f"{name!r} (producers: {', '.join(COVERAGE_PRODUCERS_BY_FORMAT[name])})"
+            if name in COVERAGE_PRODUCERS_BY_FORMAT
+            else repr(name)
+            for name in sorted(attributable)
+        )
+        raise LaneConfigError(
+            f"{where}: judge.language = {language!r} is judged from the block "
+            f"extents its coverage records carry -- its executable lines are "
+            f"derived from the source by a statement-position oracle, never "
+            f"read off the artifact -- but 'judge.coverage.format' is "
+            f"{fmt!r}, which carries no block extents. A format like {fmt!r} "
+            f"produced from a {language} coverage profile by a converter "
+            f"reports each block's whole extent as executable lines, counting "
+            f"function signatures, closing braces and `case` labels as code, "
+            f"and assay would have no way to tell that from statement truth. "
+            f"Declare instead: {readable}"
         )
     producer = _load_coverage_producer(value, where, fmt)
     return CoverageConfig(format=fmt, artifact=artifact, producer=producer)
