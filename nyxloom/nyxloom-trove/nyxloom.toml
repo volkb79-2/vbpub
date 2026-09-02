@@ -84,7 +84,11 @@ architecture = "docs/ARCHITECTURE.md"
 # 2026-09-02 (nyxloom-P48): judgment moved off `nyxloom.coverage_gate`.
 argv = ["bash", "-c", "cd {worktree}/nyxloom && ./run-gate.py --worktree {worktree} tester-unified"]
 phase = "implementation"
-asserts = ["tests-pass", "changed-line-coverage", "canary-verified", "assay-verdict"]
+# "assay-verdict" is NOT listed: it isn't a supported value in the asserts
+# schema enum yet (src/nyxloom/schemas/nyxloom-config.schema.json) -- adding
+# it there is a separate future schema change, not this package. Omitted
+# deliberately, not forgotten.
+asserts = ["tests-pass", "changed-line-coverage", "canary-verified"]
 timeout_seconds = 1800
 environment = "tester-unified"
 
