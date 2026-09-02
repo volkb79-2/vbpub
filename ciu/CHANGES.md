@@ -21,6 +21,44 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.11.0] - UNRELEASED
+
+**Note to the releaser:** this section is a hand-authored draft (ciu-P49,
+CIU-89 + CIU-90) — fold CMRU's auto-generated commit-subject digest into
+this SAME section at release time (do not leave a separate never-renamed
+`[Unreleased]` header, per this file's own process note above), rename to
+the real version + date, and fill in the commit hashes below once they
+exist post-merge.
+
+### Added
+- feat(ciu): CIU-89 -- `provides_container` override table lets a stack
+  declare, per `provides` ref, the literal compose service key a `pg:`/
+  `minio:` probe should target instead of the providing stack's declared-
+  path basename guess (`src/ciu/provisioning.py::_resolve_probe_container`,
+  `src/ciu/config_model.py::validate_stack_provisioning`, new `[S13.2]`
+  validation). Purely additive: a stack that declares no
+  `provides_container` (the overwhelming majority) is byte-identical
+  before and after. Fixes the multi-service-stack case CIU-70's own
+  basename-guess strategy could not express (a stack directory whose
+  basename is not itself one of its own compose service keys).
+- feat(ciu): CIU-90 -- new opt-in `governance.cpus` key injects a CPU
+  quota (Docker/compose's `cpus`, e.g. `"1.5"`) for a governed stack,
+  following the exact same author-precedence rule (S15.3) the four
+  existing governance keys already have (`src/ciu/governance.py`, new
+  `[S15.21]` validation in `resolve_config`). **Default stays unset/
+  uncapped (`""`)** -- deliberately not a nonzero default, so no
+  currently-uncapped governed service gets silently throttled on
+  upgrade; a stack that wants a quota opts in explicitly.
+
+### Documentation
+- `docs/SPEC.md` S13.2 gained a `provides_container` subsection; new
+  S15.21 section for `governance.cpus`.
+- `docs/CONFIG.md` gained a `provides_container` worked example under
+  requires/provides, and a `governance.cpus` paragraph + worked example
+  under `[<root>.governance]`.
+- `KNOWN_ISSUES_TODO_BACKLOG.md` CIU-89/CIU-90 rows updated OPEN -> FIXED
+  with the shipped mechanism and file:line citations.
+
 ## [7.10.1] - 2026-09-02
 <!-- cmru: generated -->
 <!-- cmru: source-end=eceeaa939650b67952721b64d08ca8b52f3ce316 -->

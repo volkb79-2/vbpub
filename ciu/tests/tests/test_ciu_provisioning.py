@@ -801,6 +801,219 @@ def test_validate_stack_provisioning_collects_all_violations():
 
 
 # ---------------------------------------------------------------------------
+# validate_stack_provisioning — provides_container (CIU-89, S13.2)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_stack_provisioning_passes_valid_provides_container():
+    config = {
+        "mystack": {
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/bar": "postgres"},
+        }
+    }
+    validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_absent_provides_container_is_a_no_op():
+    config = {"mystack": {"provides": ["pg:db/bar"]}}
+    validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_rejects_provides_container_not_a_table():
+    import pytest
+    config = {
+        "mystack": {
+            "provides": ["pg:db/bar"],
+            "provides_container": ["pg:db/bar", "postgres"],
+        }
+    }
+    with pytest.raises(ValueError, match=r"\[S13\.2\].*provides_container.*must be a table"):
+        validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_rejects_provides_container_key_not_in_provides():
+    """CIU-89's own loud-refusal precedent: an override for a ref the stack
+    doesn't even declare in `provides` is a config error, not silently
+    accepted or silently ignored."""
+    import pytest
+    config = {
+        "mystack": {
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/other": "postgres"},
+        }
+    }
+    with pytest.raises(
+        ValueError, match=r"\[S13\.2\].*provides_container.*'pg:db/other'.*not in"
+    ):
+        validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_rejects_provides_container_empty_value():
+    import pytest
+    config = {
+        "mystack": {
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/bar": ""},
+        }
+    }
+    with pytest.raises(ValueError, match=r"\[S13\.2\].*provides_container.*non-empty string"):
+        validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_rejects_provides_container_non_string_value():
+    import pytest
+    config = {
+        "mystack": {
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/bar": 5},
+        }
+    }
+    with pytest.raises(ValueError, match=r"\[S13\.2\].*provides_container.*non-empty string"):
+        validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_provides_container_absent_key_still_reports_other_violations():
+    """`provides_container` violations are collected alongside requires/
+    provides violations in the SAME raise -- 'list ALL violations, never
+    partial' (same pattern the existing collects-all-violations test pins)."""
+    import pytest
+    config = {
+        "mystack": {
+            "requires": ["bad-ref"],
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/nope": "x"},
+        }
+    }
+    with pytest.raises(ValueError) as exc_info:
+        validate_stack_provisioning(config, source="test")
+    msg = str(exc_info.value)
+    assert "bad-ref" in msg
+    assert "pg:db/nope" in msg
+
+
+def test_validate_stack_provisioning_provides_containing_a_nested_list_raises_valueerror_not_typeerror():
+    """Adversarial-review blocker fix: `provides = [["pg:db/app"]]` is a list
+    entry that is ITSELF a list -- `isinstance(x, list)` is true but the
+    entry is unhashable, so building a `set()` of "the list entries" without
+    filtering to strings first raised an uncaught `TypeError` that escaped
+    every `except ValueError` handler in the call chain (engine.py's
+    exit-code mapping only catches ValueError -> 2). On `main`, and after
+    this fix, the SAME malformed config produces a clean ValueError -- this
+    pins that the crash is gone AND that the pre-existing, already-correct
+    'provides[0] must be a string' message survives intact."""
+    import pytest
+    config = {
+        "mystack": {
+            "provides": [["pg:db/app"]],
+            "provides_container": {"pg:db/app": "postgres"},
+        }
+    }
+    with pytest.raises(ValueError) as exc_info:
+        validate_stack_provisioning(config, source="test")
+    msg = str(exc_info.value)
+    assert "'provides[0]' must be a string, got list" in msg
+
+
+def test_validate_stack_provisioning_provides_containing_a_nested_list_maps_to_exit_2_via_engine():
+    """The full CLI-facing consequence of the blocker: `engine._exit_code_for`
+    only maps `ValueError` -> 2; an uncaught `TypeError` would fall through
+    to a different (wrong) exit code. Drives the SAME malformed config
+    through the real mapping function, not just the raise type."""
+    from ciu import engine
+
+    config = {
+        "mystack": {
+            "provides": [["pg:db/app"]],
+            "provides_container": {"pg:db/app": "postgres"},
+        }
+    }
+    try:
+        validate_stack_provisioning(config, source="test")
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert engine._exit_code_for(exc) == 2
+
+
+# ---------------------------------------------------------------------------
+# validate_stack_provisioning — provides_container kind restriction
+# (adversarial ciu-P49 review, "strongly recommended" #1): the ONLY consumer
+# of provides_container, _resolve_probe_container, is reached exclusively
+# from _probe_pg/_probe_minio -- a vault:/consul:/stack: key would sit there
+# looking live while nothing ever consults it.
+# ---------------------------------------------------------------------------
+
+
+def test_validate_stack_provisioning_accepts_minio_kind_override():
+    config = {
+        "mystack": {
+            "provides": ["minio:user/worker"],
+            "provides_container": {"minio:user/worker": "minio"},
+        }
+    }
+    validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_rejects_vault_kind_override():
+    import pytest
+    config = {
+        "mystack": {
+            "provides": ["vault:secret/db/pass"],
+            "provides_container": {"vault:secret/db/pass": "vault"},
+        }
+    }
+    with pytest.raises(
+        ValueError, match=r"\[S13\.2\].*provides_container.*'vault:secret/db/pass'.*kind 'vault'"
+    ):
+        validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_rejects_consul_kind_override():
+    import pytest
+    config = {
+        "mystack": {
+            "provides": ["consul:token/myapp"],
+            "provides_container": {"consul:token/myapp": "consul"},
+        }
+    }
+    with pytest.raises(ValueError, match=r"\[S13\.2\].*kind 'consul'"):
+        validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_rejects_stack_kind_override():
+    import pytest
+    config = {
+        "mystack": {
+            "provides": ["stack:db-init:healthy"],
+            "provides_container": {"stack:db-init:healthy": "db-init"},
+        }
+    }
+    with pytest.raises(ValueError, match=r"\[S13\.2\].*kind 'stack'"):
+        validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_provides_container_key_that_is_itself_a_malformed_ref_does_not_double_report_or_crash():
+    """A provides_container key equal to a malformed `provides` entry (itself
+    already reported by the requires/provides loop) must not ALSO explode
+    trying to run the new kind-restriction check through parse_ref -- the
+    malformed-ref violation is reported once, by the pre-existing loop."""
+    config = {
+        "mystack": {
+            "provides": ["bad-ref"],
+            "provides_container": {"bad-ref": "x"},
+        }
+    }
+    import pytest
+    with pytest.raises(ValueError) as exc_info:
+        validate_stack_provisioning(config, source="test")
+    msg = str(exc_info.value)
+    assert "Malformed provisioning ref 'bad-ref'" in msg
+    # Not double-reported as a provides_container-key-not-in-provides finding
+    # (it IS in provides -- this exercises the kind-check's own guard).
+    assert msg.count("bad-ref") == msg.count("Malformed provisioning ref 'bad-ref'")
+
+
+# ---------------------------------------------------------------------------
 # deploy.provisioning_preflight — with stubs
 # ---------------------------------------------------------------------------
 
@@ -1017,6 +1230,45 @@ def test_action_check_live_mode_uses_probe(monkeypatch):
     rc = deploy.action_check(Path("/tmp"), profile, selection, rendered, live=True)
     assert rc == 0
     assert "pg:db/mydb" in probed_refs
+
+
+def test_action_check_live_mode_threads_provides_container_to_probe_ref(monkeypatch):
+    """CIU-89: `ciu check --live` resolves probes off action_check's OWN
+    `stacks` dict (deploy.py, not provisioning_graph()) — a separate feed
+    path from `ciu up`'s per-phase probing, so it needs the override threaded
+    through independently or `--live` alone would still guess wrong."""
+    from ciu import deploy, provisioning as prov_mod
+    from ciu.deploy_pkg.profiles import Profile
+
+    config = {"deploy": {"project_name": "p", "environment_tag": "t"}}
+    profile = Profile(name=None, phase_keys=None, config=config)
+    selection = [
+        {"path": "infra/foo-core", "service": {"path": "infra/foo-core", "enabled": True}},
+        {"path": "apps/backend", "service": {"path": "apps/backend", "enabled": True}},
+    ]
+    rendered = {
+        "infra/foo-core": {
+            "foo_core": {
+                "provides": ["pg:db/bar"],
+                "provides_container": {"pg:db/bar": "postgres"},
+            }
+        },
+        "apps/backend": {
+            "backend": {"requires": ["pg:db/bar"], "provides": []},
+        },
+    }
+
+    captured_stacks = {}
+
+    def fake_probe_ref(ref, config, repo_root, **kwargs):
+        captured_stacks.update(kwargs.get("stacks") or {})
+        return ProbeResult(ref=ref, satisfied=True, reason="ok")
+
+    monkeypatch.setattr(prov_mod, "probe_ref", fake_probe_ref)
+
+    rc = deploy.action_check(Path("/tmp"), profile, selection, rendered, live=True)
+    assert rc == 0
+    assert captured_stacks["infra/foo-core"]["provides_container"] == {"pg:db/bar": "postgres"}
 
 
 def test_action_check_live_mode_fails_on_unsatisfied(monkeypatch):
@@ -1568,6 +1820,138 @@ def test_stack_container_name_no_config_no_match_falls_back_to_selector():
     # container_name; the KeyError/ValueError fallback returns the selector
     # unchanged -- same fallback contract _probe_stack always had.
     assert provisioning._stack_container_name({}, "db-init") == "db-init"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_probe_container / provides_container override (CIU-89)
+#
+# Fixture shape mirrors the real dstdns bug: a stack directory
+# ("infra/foo-core") whose OWN basename ("foo-core") is not a compose service
+# key it declares -- the multi-service stack case _stack_container_name's
+# basename guess cannot express.
+# ---------------------------------------------------------------------------
+
+_CIU89_CONFIG = {
+    "deploy": {
+        "project_name": "p",
+        "environment_tag": "t",
+        "phases": {"phase_1": {"services": [{"path": "infra/foo-core"}]}},
+    }
+}
+
+
+def test_resolve_probe_container_without_override_uses_basename_guess():
+    """Regression guard, pinned exactly as the backlog entry's own
+    'controlled wrong implementation' describes it: without
+    provides_container, resolution is unchanged and WRONG for a stack whose
+    directory basename isn't its own service key."""
+    stacks = {"infra/foo-core": {"requires": [], "provides": ["pg:db/bar"]}}
+    cname, unresolved = provisioning._resolve_probe_container("pg:db/bar", _CIU89_CONFIG, stacks)
+    assert unresolved is None
+    assert cname == "p-t-foo-core"  # container_name(config, "foo-core") -- WRONG
+
+
+def test_resolve_probe_container_with_override_uses_declared_service_key():
+    stacks = {
+        "infra/foo-core": {
+            "requires": [],
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/bar": "postgres"},
+        }
+    }
+    cname, unresolved = provisioning._resolve_probe_container("pg:db/bar", _CIU89_CONFIG, stacks)
+    assert unresolved is None
+    assert cname == "p-t-postgres"  # container_name(config, "postgres") -- CORRECT
+
+
+def test_resolve_probe_container_override_falls_back_to_literal_on_unresolvable_config():
+    """A `provides_container` override, when `container_name()` itself raises
+    (no `deploy.project_name`/`environment_tag` in *config*), falls back to
+    the bare override string -- the same `except (ValueError, KeyError)`
+    fallback contract `_stack_container_name` already has for the
+    basename-guess path (see
+    `test_stack_container_name_no_config_no_match_falls_back_to_selector`)."""
+    stacks = {
+        "infra/foo-core": {
+            "requires": [],
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/bar": "postgres"},
+        }
+    }
+    cname, unresolved = provisioning._resolve_probe_container("pg:db/bar", {}, stacks)
+    assert unresolved is None
+    assert cname == "postgres"
+
+
+def test_resolve_probe_container_override_absent_for_this_ref_falls_through():
+    """A provides_container table that overrides a DIFFERENT ref of the same
+    stack leaves this ref on the basename guess, unaffected."""
+    stacks = {
+        "infra/foo-core": {
+            "requires": [],
+            "provides": ["pg:db/bar", "pg:role/controller"],
+            "provides_container": {"pg:role/controller": "postgres"},
+        }
+    }
+    cname, unresolved = provisioning._resolve_probe_container("pg:db/bar", _CIU89_CONFIG, stacks)
+    assert unresolved is None
+    assert cname == "p-t-foo-core"
+
+
+def test_resolve_probe_container_slash_free_selector_byte_identical():
+    """A single-`/`-free stack path (existing convention) is unaffected by
+    this package either way -- no override declared."""
+    stacks = {"redis-core": {"requires": [], "provides": ["pg:db/bar"]}}
+    cname, unresolved = provisioning._resolve_probe_container("pg:db/bar", _CIU89_CONFIG, stacks)
+    assert unresolved is None
+    assert cname == "p-t-redis-core"
+
+
+def test_probe_ref_pg_honors_provides_container_override_end_to_end():
+    """End-to-end through probe_ref/_probe_pg: the override actually changes
+    which container docker_exec_fn is invoked against, not just what
+    _resolve_probe_container alone returns."""
+    captured = {}
+
+    def docker_exec_fn(container, cmd):
+        captured["container"] = container
+        return (0, "1\n")
+
+    stacks = {
+        "infra/foo-core": {
+            "requires": [],
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/bar": "postgres"},
+        }
+    }
+    result = probe_ref(
+        "pg:db/bar",
+        config=_CIU89_CONFIG,
+        repo_root=Path("/tmp"),
+        docker_exec_fn=docker_exec_fn,
+        stacks=stacks,
+    )
+    assert result.satisfied is True
+    assert captured["container"] == "p-t-postgres"
+
+
+def test_probe_ref_pg_without_override_still_uses_basename_guess_end_to_end():
+    captured = {}
+
+    def docker_exec_fn(container, cmd):
+        captured["container"] = container
+        return (0, "1\n")
+
+    stacks = {"infra/foo-core": {"requires": [], "provides": ["pg:db/bar"]}}
+    result = probe_ref(
+        "pg:db/bar",
+        config=_CIU89_CONFIG,
+        repo_root=Path("/tmp"),
+        docker_exec_fn=docker_exec_fn,
+        stacks=stacks,
+    )
+    assert result.satisfied is True
+    assert captured["container"] == "p-t-foo-core"
 
 
 def test_one_shot_stack_service_no_deploy_table():

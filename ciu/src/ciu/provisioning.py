@@ -424,6 +424,19 @@ def _resolve_probe_container(
     probe* and are accepted — two declared stack paths sharing a final segment
     collapse onto one container name, which is CIU-66's separate defect and
     is unchanged (neither made better nor worse) by this resolution.
+
+    **CIU-89 — ``provides_container`` override.** The basename-guess above
+    (a providing stack's declared path final segment) is a DEFAULT, not a
+    guarantee: it is false by construction for a multi-service stack whose
+    directory basename is not itself one of its own compose service keys
+    (e.g. a stack dir ``infra/db-core`` that runs Postgres in a service keyed
+    ``postgres``). When the providing stack declares a sibling
+    ``provides_container = { "<ref>" = "<service-key>" }`` table (S13.2) and
+    *ref* is one of its keys, that literal compose service key is passed
+    straight to :func:`ciu.deploy.container_name` INSTEAD of the basename
+    guess — `_stack_container_name`'s own path-resolution logic is not
+    consulted at all for that ref. A ref with no override entry falls
+    through to today's byte-identical basename-guess behavior.
     """
     if stacks is None:
         return None, (
@@ -435,7 +448,21 @@ def _resolve_probe_container(
         return None, f"no stack provides '{ref}' — cannot resolve a container to probe"
     names: list[str] = []
     for stack_path in providers:
-        cname = _stack_container_name(config, stack_path)
+        stack_info = stacks.get(stack_path) or {}
+        override = (stack_info.get("provides_container") or {}).get(ref)
+        if override:
+            # CIU-89: an explicit override skips the basename guess entirely
+            # — passed straight to container_name(), with the same
+            # unresolvable-project/env-tag fallback _stack_container_name
+            # itself uses (so a probe run against a partial/test config
+            # degrades identically either way).
+            from ciu.deploy import container_name as _container_name
+            try:
+                cname = _container_name(config, override)
+            except (ValueError, KeyError):
+                cname = override
+        else:
+            cname = _stack_container_name(config, stack_path)
         if cname not in names:
             names.append(cname)
     if len(names) > 1:

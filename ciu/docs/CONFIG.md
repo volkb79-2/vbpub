@@ -728,6 +728,33 @@ Both lists are **optional**. A stack that declares neither is unaffected.
 CIU runs a static lint (graph completeness, cycle detection) once up-front,
 and live-probes each phase's requirements just before that phase deploys.
 
+**`provides_container` — when the basename guess is wrong (CIU-89).** A
+`pg:`/`minio:` probe execs into the container of the stack that `provides`
+the ref, resolved by default from the providing stack's own declared
+directory basename (e.g. `db_core` → container `...-db_core`). That guess is
+wrong for a multi-service stack whose directory basename isn't itself one of
+its own compose service keys — e.g. a stack dir `infra/db-core` that runs
+Postgres in a service keyed `postgres`, alongside sibling services like
+`pgadmin`/`minio`. Declare an optional sibling table, keyed by the exact
+`provides` ref string, to override just that one ref:
+
+```toml
+[db_core]
+provides = ["pg:db/dstdns", "pg:role/controller"]
+provides_container = { "pg:db/dstdns" = "postgres" }   # literal compose service key
+```
+
+A ref present in `provides` but absent from `provides_container` is
+unaffected — falls through to the basename guess unchanged. Every
+`provides_container` key MUST already be one of this same stack's own
+`provides` entries (an override for an undeclared ref refuses at validation,
+SPEC [S13.2](SPEC.md#s132--typed-reference-grammar), not silently ignored),
+every value must be a non-empty string, and **every key must itself be a
+`pg:` or `minio:` ref** — a `vault:`/`consul:`/`stack:` key also refuses,
+because the probe container resolver that reads `provides_container` is
+never reached for those kinds; the override would sit there looking live
+while nothing ever consulted it.
+
 **Reference grammar** — valid forms:
 
 | Form | Example |
@@ -792,6 +819,7 @@ opt-in:
 [app.governance]
 enabled = true
 cgroup_parent = "dev-background.slice"
+cpus = "2"              # CPU quota -- OPT-IN, default "" (uncapped); see below
 ksm_optin = "builtin"  # CIU builds/caches its shipped universal shim
 exempt_services = ["vault"]
 
@@ -812,6 +840,17 @@ the rest of governance; `wrapper` is for a measured static-binary case and
 re-states the verified image entrypoint. See [SPEC S15.11](SPEC.md#s1511--ksm-opt-in-injection-ksm_optin),
 [S15.19](SPEC.md#s1519--per-service-memory-policy-governancememory_profile),
 and [S15.20](SPEC.md#s1520--the-exec-wrapper-ksm--wrapper) for the constraints.
+
+`cpus` (default `""` = unset/uncapped, CIU-90) declares a CPU quota — a
+fractional CPU count, e.g. `"1.5"` — injected as compose's own `cpus` key for
+every non-exempt service that hasn't set one itself (S15.3 author
+precedence). **Unlike `mem_limit`/`mem_reservation`, there is no nonzero
+default**: leaving it unset means the service stays exactly as uncapped as
+it was before this key existed — an already-governed stack that wants a
+quota (memory/IO capped, CPU previously unbounded) must opt in explicitly.
+`""` or a positive number are the only valid values — `0`, a negative value,
+or a non-numeric string all refuse at render time. See
+[SPEC S15.21](SPEC.md#s1521--cpu-quota-cpus-ciu-90-ciu-p49).
 
 ### `[<root>.hooks]` — hook points [S9.1]
 
