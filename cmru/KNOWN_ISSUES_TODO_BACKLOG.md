@@ -869,3 +869,89 @@ a subsequent `cmru release --project <name>` either (a) proceeds to actually bui
 against the SAME tag (fix a), or (b) refuses/re-prepares rather than silently reporting
 "Unchanged, skipping" (fix b) — never the latter with no operator-visible signal that nothing
 was ever actually published for that tag.
+
+### KI-23 — a hand-authored pre-release CHANGES.md draft (`## [X.Y.Z] - UNRELEASED`) is silently duplicated, never folded, by `generate_release_changelog`
+
+**Status:** open (filed 2026-09-02, from `vbpub`'s own `ciu` project — 6 recurrences found and hand-fixed this session; no consumer repo involved, this is CMRU misbehaving against its own estate sibling).
+
+**Mechanism.** `generate_release_changelog` (`src/cmru/changelog.py:215-284`) inserts its
+freshly-generated `## [<heading>] - <date>` section immediately after the
+`<!-- cmru: release history -->` marker (line 273-281), pushing whatever
+content was already there — including a hand-authored pre-release draft
+section for the SAME upcoming version — further down in the file, unmerged.
+The function DOES have a collision guard for this (lines 250-261): if
+`heading` (the bare version string, e.g. `"7.11.0"`) is already present in
+`existing_versions`, it locates that section and refuses (`RuntimeError`,
+"already has a hand-authored section") unless the section already carries
+`_GENERATED_MARKER`. But `existing_versions` is populated by `_HEADING_RE`
+(line 30):
+
+```python
+_HEADING_RE = re.compile(r"^## \[([^\]]+)\] - \d{4}-\d{2}-\d{2}$", re.MULTILINE)
+```
+
+— which requires an actual `YYYY-MM-DD` date after the bracket. This
+estate's own documented convention (`ciu/CHANGES.md`'s process note,
+established 2026-08-25, "every package's own detailed prose must be folded
+into the SAME version section... not left under a separate `## [Unreleased]`
+header") is for an implementer to draft that section as `## [<version>] -
+UNRELEASED`, to be renamed + folded at release time. `_HEADING_RE` never
+matches that heading shape at all (`UNRELEASED` is not a date), so the
+collision guard never fires, `generate_release_changelog` proceeds
+obliviously, and the two sections — CMRU's terse auto-generated digest and
+the implementer's rich hand-authored prose (including the release's own
+"Adoption / Migration Notes", which the process note requires) — end up as
+two adjacent, un-merged `## [<version>]` headers, one dated, one not,
+forever, unless a human notices and manually folds them.
+
+**This is not a one-off.** Verified directly in `ciu/CHANGES.md`'s own git
+history: it recurred on **six consecutive releases** across two different
+work sessions weeks apart — `[Unreleased]` (ciu 7.5.0, 2026-08-26), then
+`[7.8.0]`, `[7.9.0]`, `[7.10.0]`, `[7.10.1]`, and `[7.11.0]` (2026-08-31
+through 2026-09-02) — despite `ciu/CHANGES.md`'s own process note
+explicitly documenting the required manual fold-in step since the very
+first recurrence. A "standing operational rule" written into a controller's
+own memory after the first two instances (ciu 7.7.0/7.7.1, per
+`vbpub/nyxloom-trove` release notes) did not stop it recurring four more
+times — the rule requires a human/agent to actively remember and check at
+release time, and across enough independent sessions, someone always
+forgets. All six were found and hand-folded in this session
+(`vbpub@dcf9c818`, `ciu` repo).
+
+**Why CMRU, not the consumer project.** `ciu/CHANGES.md`'s own file
+enforces the "fold before release" convention in prose only, because the
+folding step happens inside CMRU's own release transaction, on CMRU's own
+generated output, using CMRU's own collision-detection code — the consumer
+project has no hook into that step at all. A prose reminder in a file CMRU
+itself writes into is not a mechanism; the tool that owns the insertion
+point is the only place a real fix can live.
+
+**Proposed fix.** Either:
+(a) **Minimal, matches existing precedent**: extend the collision-check
+regex (or add a second one) to also match `## [<heading>] - UNRELEASED`
+(and arguably any non-`_GENERATED_MARKER` section under that exact bracket
+heading, regardless of suffix) and raise the SAME "already has a
+hand-authored section, CMRU refuses to overwrite it" error `generate_release_changelog`
+already raises for the dated-collision case — forcing the releaser to fold
+manually before the release can proceed, rather than silently duplicating.
+(b) **More complete, matches the estate's actual desired behavior**:
+when such a section is found, splice the generated digest directly into it
+(insert right after its own header, ahead of the hand-authored prose) and
+rewrite the header from `- UNRELEASED` to the real `- <date>`, instead of
+creating a sibling section — this is exactly the manual step every
+releaser has had to perform six times now.
+
+**Oracles.** A project's `CHANGES.md` containing a `## [<next-version>] -
+UNRELEASED` section (with real body content, no `_GENERATED_MARKER`) before
+`cmru release` runs: today, `generate_release_changelog` returns `True`
+having inserted a NEW `## [<next-version>] - <date>` section, leaving the
+`UNRELEASED` section body untouched immediately below it, split into two
+un-merged headers under one version number. Fix (a) must instead raise the
+existing `RuntimeError` (same message class as the dated-collision case),
+refusing the release until the human/agent folds the sections themselves —
+verify by asserting the exception and that the file is byte-unchanged after
+the raise. Fix (b) must instead produce a single `## [<next-version>] -
+<date>` section containing BOTH the generated digest and the hand-authored
+prose, and zero remaining `- UNRELEASED` headers anywhere in the file —
+verify with a real project fixture carrying such a section, asserting the
+post-release file has exactly one header for that version.
