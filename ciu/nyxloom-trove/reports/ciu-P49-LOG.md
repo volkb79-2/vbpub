@@ -164,7 +164,7 @@ verdict read in a separate step each time, never off a piped tail:
 2. `69c573a0` — `test(ciu): ciu-P49 -- cover _resolve_probe_container's
    unresolvable-config fallback for a provides_container override` — the
    R1 coverage-gap fix the first gate run caught.
-3. `<this commit>` — `backlog(ciu): file CIU-91 -- test-suite flake found
+3. `880a6efb` — `backlog(ciu): file CIU-91 -- test-suite flake found
    during ciu-P49's own gate run`.
-4. `<this commit>` — `docs(ciu): ciu-P49 -- LOG/REPORT for CIU-89 +
-   CIU-90`.
+4. `efcd7260` (this commit) — `docs(ciu): ciu-P49 -- LOG/REPORT for
+   CIU-89 + CIU-90`.

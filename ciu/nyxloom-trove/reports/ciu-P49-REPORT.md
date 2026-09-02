@@ -372,10 +372,10 @@ were touched by this filing.
 2. `69c573a0` — `test(ciu): ciu-P49 -- cover _resolve_probe_container's
    unresolvable-config fallback for a provides_container override` — the
    R1 coverage-gap fix (§1).
-3. `<this commit>` — `backlog(ciu): file CIU-91 -- test-suite flake found
+3. `880a6efb` — `backlog(ciu): file CIU-91 -- test-suite flake found
    during ciu-P49's own gate run` — the CIU-91 filing (§4).
-4. `<this commit>` — `docs(ciu): ciu-P49 -- LOG/REPORT for CIU-89 +
-   CIU-90` — this LOG/REPORT pair.
+4. `efcd7260` (superseded by this commit) — `docs(ciu): ciu-P49 --
+   LOG/REPORT for CIU-89 + CIU-90` — this LOG/REPORT pair.
 
 ## 7. Closing discipline
 
