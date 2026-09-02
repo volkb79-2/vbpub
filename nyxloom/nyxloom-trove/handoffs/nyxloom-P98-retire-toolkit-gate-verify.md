@@ -24,11 +24,11 @@ scope:
     - "src/nyxloom/cli.py"                          # remove cmd_gate_verify + its argparse wiring + help text
     - "src/nyxloom/effects_gates.py"                # remove gate_canary import; verify_gate/_run_verify_probe/drain_verify methods; verify_running/verify_results state; the GATE_VERIFY_RECORDED effect registration entry
     - "src/nyxloom/daemon.py"                       # remove gate_canary from the effects_gates-adjacent import list; remove _days_since_gate_verify + its call site feeding ReconcileInput
-    - "src/nyxloom/reconcile.py"                    # remove VerifyGate Action class; remove module-contract item 16 (scheduling condition + docstring paragraph); remove days_since_gate_verify from ReconcileInput; see Work item 3 for the item-17 cross-reference and the renumbering decision
+    - "src/nyxloom/reconcile.py"                    # remove VerifyGate Action class; remove module-contract item 16 (scheduling condition + docstring paragraph); KEEP ReconcileInput.days_since_gate_verify declared (see Scope/forbid -- tests/legacy_planner.py's frozen snapshot reads it unconditionally); see Work item 3 for the item-17 cross-reference and the renumbering decision
     - "src/nyxloom/planning.py"                     # remove the RuleSpec(name="gate-verify", rule=rules_attention.gate_verify, emits=frozenset({"VerifyGate"}), channel=Channel.GATE_VERIFY) entry from rule_table() (~line 1218-1224) -- required, or rule_table()/plan_project raises AttributeError the moment rules_attention.gate_verify is deleted
     - "src/nyxloom/rules_attention.py"              # remove the gate-verify-cadence-overdue attention rule (the gate_verify function planning.py calls)
     - "src/nyxloom/types.py"                        # remove EventType.GATE_VERIFY_RECORDED
-    - "src/nyxloom/config.py"                       # remove Policy.gate_verify_interval_days field + its comment (config.py:173) -- NOT a GateDef field, Policy is the correct class, see Scope/forbid; separately ADD "assay-verdict" to the asserts-enum docstring comment on GateDef.asserts (config.py:64-65, NL-4)
+    - "src/nyxloom/config.py"                       # KEEP Policy.gate_verify_interval_days declared (see Scope/forbid -- tests/legacy_planner.py's frozen snapshot reads it unconditionally via the same Policy instance fed to the live planner); ADD "assay-verdict" to the asserts-enum docstring comment on GateDef.asserts (config.py:64-65, NL-4); remove the stale cli.cmd_gate_verify sentence from that same docstring (config.py:66-70)
     - "src/nyxloom/onboarding_gate.py"              # TWO separate mentions to fix (Work item 5): the missing-gate guidance text (~line 45-56) AND _has_gate_recommendation's own text (~line 60-69)
     - "src/nyxloom/gate_scaffold.py"                # drop the `python -m nyxloom.coverage_gate` line from the scaffolded argv; asserts=["tests-pass"] (drop changed-line-coverage, no longer measured); point the ADJUST_MARKER comment at run-gate/assay adoption instead
     - "src/nyxloom/schemas/nyxloom-config.schema.json"  # NL-4: add "assay-verdict" to the asserts enum array (properties.gates.additionalProperties.properties.asserts.items.enum, lines 127-130)
@@ -39,14 +39,13 @@ scope:
     - "nyxloom-trove/handoffs/nyxloom-P90-extract-testing-library.md"    # move to nyxloom-trove/archive/, prepend a superseded note
     - "nyxloom-trove/archive/nyxloom-P90-extract-testing-library.md"     # the move destination
     - "tests/test_cli.py"                           # remove/adjust references to cmd_gate_verify / `gate verify`
-    - "tests/test_daemon.py"                        # remove references to VerifyGate/_run_verify_probe/GATE_VERIFY_RECORDED/gate_canary/gate_verify_interval_days/days_since_gate_verify; KEEP the six test_mutation_gate_* functions (~lines 6136-6390) unchanged -- they test effects_merge.py's generic phase='mutation' re-run wiring, which this package does NOT touch or delete
+    - "tests/test_daemon.py"                        # remove tests asserting VerifyGate/_run_verify_probe/GATE_VERIFY_RECORDED/gate_canary behavior (the fields themselves stay valid, see Scope/forbid -- only remove tests that assert the deleted scheduling/probe behavior); KEEP the six test_mutation_gate_* functions (~lines 6136-6390) unchanged -- they test effects_merge.py's generic phase='mutation' re-run wiring, which this package does NOT touch or delete
     - "tests/test_effects.py"                       # remove references to VerifyGate/GATE_VERIFY_RECORDED/drain_verify
     - "tests/test_invariants.py"                    # remove references to VerifyGate/GATE_VERIFY_RECORDED
-    - "tests/test_planning.py"                      # remove references to VerifyGate/gate_verify_interval_days/days_since_gate_verify AND the gate-verify RuleSpec/rule_table assertions tied to planning.py's removed entry
+    - "tests/test_planning.py"                      # remove tests asserting VerifyGate scheduling behavior AND the gate-verify RuleSpec/rule_table assertions tied to planning.py's removed entry (the two fields themselves stay valid, see Scope/forbid)
     - "tests/effect_differential.py"                # remove references to VerifyGate/GATE_VERIFY_RECORDED/drain_verify
-    - "tests/legacy_planner.py"                     # remove references to gate_verify_interval_days/days_since_gate_verify if present
-    - "tests/test_gap_audit.py"                     # _inp helper (~line 82) sets days_since_gate_verify=100.0 in the ReconcileInput kwargs it builds -- drop that kwarg
-    - "tests/corpus_profiles.py"                    # the "gate-verify-due" profile tuple (~lines 192-194, tagged "contract item 16") sets gate_verify_interval_days/days_since_gate_verify -- delete this profile entry entirely (the cadence it exercises no longer exists)
+    - "tests/corpus_profiles.py"                    # the "gate-verify-due" profile tuple (~lines 192-194, tagged "contract item 16") sets gate_verify_interval_days/days_since_gate_verify -- delete this profile entry entirely (the cadence it exercises no longer exists; both fields stay valid ReconcileInput/Policy kwargs regardless, see Scope/forbid, so this is a scenario-relevance deletion, not a compile-fix)
+    - "tests/test_gap_audit.py"                     # verify-only, no edit expected: its `_inp` helper (~line 82) sets days_since_gate_verify=100.0 as one of many unrelated ReconcileInput kwargs -- valid and unaffected since the field stays declared (see Scope/forbid); listed because O2 requires confirming it still collects and passes
     - "tests/planner_corpus.py"                     # consumes corpus_profiles.PROFILES generically -- verify it still runs green after the profile entry above is removed; no edit expected unless it special-cases that profile by name
     - "tests/test_planner_differential.py"          # same as planner_corpus.py -- consumes PROFILES generically, verify-only unless it special-cases "gate-verify-due" by name
     - "tests/test_snapshot_faults.py"                # module-level IRREVERSIBLE tuple includes EventType.GATE_VERIFY_RECORDED (~line 174) -- drop that member from the tuple, or it's an AttributeError at collection time
@@ -55,6 +54,7 @@ scope:
   forbid:
     - "src/nyxloom/gate_runner.py"       # generic gate-argv executor; stays, becomes the ONLY gate-execution path
     - "src/nyxloom/effects_merge.py"     # the ("mutation", getattr(cfg.policy, "mutation_gate", False), effects_gates.select_mutation_gate) wiring is GENERIC (picks a project-DECLARED phase='mutation' GateDef, never imports the deleted module) -- confirmed by reverse-dependency sweep and independently re-verified by adversarial review; do not touch
+    - "tests/legacy_planner.py"          # ABSOLUTE: a mechanically self-verifying byte-identical copy of reconcile.py at commit 052857ae (its own header: "DO NOT EDIT THIS MODULE TO MAKE A TEST PASS"). tests/test_planner_differential.py::test_legacy_baseline_is_the_committed_branch_point asserts this file, after undoing its two declared import-only edits, is byte-identical to `git show 052857ae:...reconcile.py`. It reads Policy.gate_verify_interval_days and ReconcileInput.days_since_gate_verify UNCONDITIONALLY off the same production dataclass instances fed to the live planner -- this is WHY those two fields stay declared in config.py/reconcile.py (both touched for OTHER reasons -- see their scope.touch entries and the Scope/forbid section below) instead of being deleted. Editing this file to accommodate anything is itself the defect the byte-identity check exists to catch.
     - "nyxloom-trove/nyxloom.toml"        # its own [gates.tester-unified] argv already runs run-gate.py (P48); it declares no phase='mutation' gate today, so nothing here references a deleted module -- no edit needed
 oracles:
   - id: O1
@@ -75,11 +75,14 @@ oracles:
       coverage_gate`/`import mutation_gate`/`import gate_canary` left in any touched file
       reintroduces a deleted module at collection time and fails the run) passes green
       on HEAD, AND collection includes tests/test_planning.py, tests/test_gap_audit.py,
-      tests/test_daemon.py, tests/test_remote_mutation_audit_tools.py, and
-      tests/test_snapshot_faults.py by name (not merely "the suite as a whole" -- a
-      selection filter that skips any of these does not satisfy this oracle).
+      tests/test_daemon.py, tests/test_remote_mutation_audit_tools.py,
+      tests/test_snapshot_faults.py, and tests/test_planner_differential.py by name (not
+      merely "the suite as a whole" -- a selection filter that skips any of these does not
+      satisfy this oracle). The last one specifically must include
+      test_legacy_baseline_is_the_committed_branch_point and the full PROFILES/corpus
+      parametrization, not a subset.
     negative: >-
-      A gate run that never actually collects/executes the five named test files does not
+      A gate run that never actually collects/executes the six named test files does not
       satisfy this oracle even if it exits 0.
     gate: tester-unified
   - id: O3
@@ -150,21 +153,26 @@ oracles:
       fields`/introspection (not string grep, so relocation-under-a-new-name does not fool
       it): `reconcile.VerifyGate` does not exist as an attribute of the `reconcile` module;
       `effects_gates.GateEffector` has no `verify_gate`, `_run_verify_probe`, or `drain_verify`
-      attribute; `types.EventType` has no `GATE_VERIFY_RECORDED` member;
-      `[f.name for f in dataclasses.fields(config.Policy)]` does not contain
-      `gate_verify_interval_days`; `[f.name for f in dataclasses.fields(reconcile.
-      ReconcileInput)]` does not contain `days_since_gate_verify` (this field lives
-      on `ReconcileInput`, not `Policy` — verified reconcile.py:920); and no entry in
-      `planning.rule_table()`'s returned specs has `channel` equal to a gate-verify-cadence
-      channel or a `rule` attribute equal to `rules_attention.gate_verify` (removed in the
-      same change, so this reduces to: `rules_attention` module has no `gate_verify`
-      attribute, and importing/calling `planning.rule_table()` does not raise). This script's
-      full source and its PASS output are appended to nyxloom-trove/reports/nyxloom-P98-REPORT.md.
+      attribute; `types.EventType` has no `GATE_VERIFY_RECORDED` member; `rules_attention`
+      module has no `gate_verify` attribute; no entry in `planning.rule_table()`'s returned
+      specs has a `rule` attribute equal to `rules_attention.gate_verify` (moot once that
+      attribute is gone, but checked directly: calling `planning.rule_table()` does not
+      raise, and none of its specs reference a gate-verify-cadence channel); AND, the
+      OPPOSITE checks for the two fields tests/legacy_planner.py depends on (see
+      Scope/forbid): `[f.name for f in dataclasses.fields(config.Policy)]` STILL contains
+      `gate_verify_interval_days`, and `[f.name for f in dataclasses.fields(reconcile.
+      ReconcileInput)]` STILL contains `days_since_gate_verify` — deleting either is a
+      regression against tests/legacy_planner.py's frozen byte-identity check, not a more
+      thorough retirement. This script's full source and its PASS output are appended to
+      nyxloom-trove/reports/nyxloom-P98-REPORT.md.
     negative: >-
-      Leaving any of the above symbols in place but unreachable from their normal call path
+      Leaving any of the removed symbols in place but unreachable from their normal call path
       (e.g. `verify_gate` renamed to `_verify_gate_unused` and never called) fails this oracle
       -- the check is symbol *existence*, deliberately independent of whether anything still
-      calls it.
+      calls it. Symmetrically, deleting `Policy.gate_verify_interval_days` or
+      `ReconcileInput.days_since_gate_verify` also fails this oracle, even though every other
+      check passes -- they are the one deliberate exception, kept for
+      tests/legacy_planner.py, not a missed cleanup.
     gate: tester-unified
   - id: O9
     observable: >-
@@ -273,6 +281,27 @@ a contract item.
     `tests/planner_corpus.py`, `tests/test_planner_differential.py`.
 12. `nyxloom-trove/handoffs/nyxloom-P90-extract-testing-library.md` — read
     in full before archiving it; its own body is what makes it superseded.
+13. `tests/legacy_planner.py` lines 1-16 (its header) and
+    `tests/test_planner_differential.py`'s
+    `test_legacy_baseline_is_the_committed_branch_point` — read this BEFORE
+    touching `Policy.gate_verify_interval_days` or `ReconcileInput.
+    days_since_gate_verify`. `legacy_planner.py` is a mechanically
+    self-verified byte-identical copy of `reconcile.py` at commit
+    `052857ae`, read via `git show` specifically so no hand-edit can
+    silently weaken it, and it reads both fields unconditionally off the
+    SAME production `Policy`/`ReconcileInput` instances the live planner
+    consumes. This is why Work item 3 keeps both fields declared rather
+    than deleting them — a finding a prior dispatch attempt on this same
+    package surfaced (correctly reporting BLOCKED rather than improvising)
+    that neither adversarial review round caught, because the file was
+    already correctly named in `scope.touch` for an unrelated reason and
+    no review checked the file's own editability constraints, only its
+    presence. Separately verified: the real historical corpus
+    (`tests/fixtures/planner_corpus_v1.json`) contains zero entries
+    referencing either field, so no `KNOWN_DIVERGENCES` entry in
+    `test_planner_differential.py` is needed — the only scenario that ever
+    exercised this cadence is the synthetic `"gate-verify-due"` profile
+    Work item 4 deletes outright.
 
 ## Work
 
@@ -302,11 +331,20 @@ a contract item.
    effect-registration entry wiring `emits={EventType.
    GATE_VERIFY_RECORDED, ...}` / `drain=effector.drain_verify`. In
    `daemon.py`: remove `gate_canary` from the import list, and
-   `_days_since_gate_verify` + its call site feeding `ReconcileInput`. In
-   `reconcile.py`: delete the `VerifyGate` `Action` dataclass and module-
-   contract item 16's scheduling condition and docstring paragraph, and
-   `days_since_gate_verify` from `ReconcileInput`. **Decision (do not
-   deviate): leave a numbering gap where item 16 was** — do not renumber
+   `_days_since_gate_verify` + its call site feeding `ReconcileInput` (the
+   daemon simply stops computing/passing a value; the field itself stays
+   declared on `ReconcileInput` — see below). In `reconcile.py`: delete the
+   `VerifyGate` `Action` dataclass and module-contract item 16's scheduling
+   condition and docstring paragraph. **Keep `ReconcileInput.
+   days_since_gate_verify` declared, unedited** — do not delete this field
+   (Context item 13: `tests/legacy_planner.py`'s frozen, byte-verified
+   snapshot reads it unconditionally off the same production
+   `ReconcileInput` instance the live planner consumes; deleting it breaks
+   that file's mechanical self-check, which is itself forbidden to edit).
+   Once item 16's scheduling condition is gone, the field is simply never
+   read by the live planner again — that is the actual retirement; the
+   field's bare existence is not. **Decision (do not deviate): leave a
+   numbering gap where item 16 was** — do not renumber
    item 17 to 16. Item 17's own docstring cross-references item 16 by
    field name ("UNLIKE `test_health_interval_days` and
    `gate_verify_interval_days`..."); edit that sentence to drop the
@@ -320,26 +358,43 @@ a contract item.
    "gate-verify", ...)` entry from `rule_table()` — this is required, not
    optional; leaving it after deleting `rules_attention.gate_verify`
    raises `AttributeError` the first time `rule_table()` runs. In
-   `types.py`: delete `EventType.GATE_VERIFY_RECORDED`. In `config.py`:
-   delete `Policy.gate_verify_interval_days` and its comment — this field
-   lives on `class Policy` (lines 112-265), **not** `GateDef` (lines
-   56-71); do not touch `Policy.mutation_gate`, a different field on the
-   same class (forbidden, see Scope/forbid).
+   `types.py`: delete `EventType.GATE_VERIFY_RECORDED`. **Keep `config.py`'s
+   `Policy.gate_verify_interval_days` declared, unedited, for the same
+   `tests/legacy_planner.py` reason** — this field lives on `class Policy`
+   (lines 112-265), **not** `GateDef` (lines 56-71); do not touch `Policy.
+   mutation_gate` either, a different field on the same class, kept for the
+   unrelated reason in Scope/forbid. While in `daemon.py` and
+   `effects_gates.py`, fix the two module/class docstrings this deletion
+   makes wrong: `daemon.py:75` currently says "families (VerifyGate,
+   RunPostMergeGate)" — drop the now-singular "families" framing and the
+   `VerifyGate` mention; `effects_gates.py`'s module and `GateEffector`
+   docstrings (~lines 1-49, 121) similarly describe "both gate families" —
+   reword to reflect that only the post-merge family remains. Neither is
+   oracle-checked; do them anyway, they are direct, low-cost fallout of
+   this same change.
 4. **Update every test file that references the removed GA1/GA4 surface**
    (`test_cli.py`, `test_daemon.py`, `test_effects.py`, `test_invariants.py`,
-   `test_planning.py`, `effect_differential.py`, `legacy_planner.py`,
-   `test_gap_audit.py`, `corpus_profiles.py`, `test_snapshot_faults.py`):
-   remove every test/fixture referencing `VerifyGate`, `GATE_VERIFY_RECORDED`,
-   `drain_verify`, `_run_verify_probe`, `cmd_gate_verify`, `gate_canary`,
-   `coverage_gate`, `gate_verify_interval_days`, or `days_since_gate_verify`
-   — including `test_gap_audit.py`'s `_inp` helper (drop the
-   `days_since_gate_verify=100.0` kwarg it builds), `corpus_profiles.py`'s
-   `"gate-verify-due"` profile tuple (delete the entry outright; the cadence
-   it exercises no longer exists), and `test_snapshot_faults.py`'s
-   module-level `IRREVERSIBLE` tuple (drop the `EventType.
-   GATE_VERIFY_RECORDED` member — this is a collection-time constant, so a
-   stray reference here fails before any test body even runs). Verify
-   `planner_corpus.py` and
+   `test_planning.py`, `effect_differential.py`,
+   `corpus_profiles.py`, `test_snapshot_faults.py`; **NOT**
+   `legacy_planner.py`, forbidden — see Scope/forbid; `test_gap_audit.py`
+   needs no edit, see its scope.touch entry):
+   remove every test/fixture asserting the removed GA4 *behavior*
+   (`VerifyGate` being emitted/consumed, the daemon cadence firing,
+   `GATE_VERIFY_RECORDED` being recorded) or referencing `drain_verify`,
+   `_run_verify_probe`, `cmd_gate_verify`, `gate_canary`, or `coverage_gate`
+   — including `corpus_profiles.py`'s `"gate-verify-due"` profile tuple
+   (delete the entry outright; the cadence it exercises no longer exists —
+   this is a scenario-relevance deletion, not a fix for a construction
+   error, since both `gate_verify_interval_days` and `days_since_gate_verify`
+   remain valid kwargs) and `test_snapshot_faults.py`'s module-level
+   `IRREVERSIBLE` tuple (drop the `EventType.GATE_VERIFY_RECORDED` member —
+   this is a collection-time constant, so a stray reference here fails
+   before any test body even runs). **Do not** remove a bare
+   `gate_verify_interval_days=`/`days_since_gate_verify=` kwarg from any
+   fixture just because the name matches — both are still real, valid
+   fields; only remove them where the surrounding test is actually
+   asserting the now-deleted scheduling behavior (as `corpus_profiles.py`'s
+   `"gate-verify-due"` entry does). Verify `planner_corpus.py` and
    `test_planner_differential.py` still pass after that deletion — they
    consume `corpus_profiles.PROFILES` generically and should need no edit
    unless either special-cases `"gate-verify-due"` by name, in which case
@@ -440,7 +495,13 @@ a contract item.
    `nyxloom-trove/reports/ASSAY-NYXLOOM-REORIENTATION-2026-08-17.md`'s
    "Deletion inventory and Assay transfer check" section, and explicitly
    naming that this reverses the 2026-07-27 operator directive that
-   enabled `mutation_gate` in `nyxloom-trove/nyxloom.toml`.
+   enabled `mutation_gate` in `nyxloom-trove/nyxloom.toml`. Also record,
+   as part of the same entry, that `Policy.gate_verify_interval_days` and
+   `ReconcileInput.days_since_gate_verify` are deliberately NOT deleted —
+   they stay declared, permanently unread by any live code path, because
+   `tests/legacy_planner.py`'s frozen byte-identical differential-testing
+   baseline reads them unconditionally off the same production dataclasses
+   and cannot itself be edited (Context item 13).
 9. **Close the superseded P90 handoff.** Move
    `nyxloom-trove/handoffs/nyxloom-P90-extract-testing-library.md` to
    `nyxloom-trove/archive/nyxloom-P90-extract-testing-library.md`,
@@ -471,9 +532,30 @@ Out of scope — do not touch, even though the names look related:
   read, which is the kept opt-in toggle, not a module reference.
 - **`src/nyxloom/config.py`'s `Policy.mutation_gate: bool` field** (the
   F017 opt-in toggle consumed by the wiring above; **note it lives on
-  `Policy`, not `GateDef`** — the first carve draft misattributed this
-  three times) — stays. Only `Policy.gate_verify_interval_days` is
-  removed from this file (Work item 3).
+  `Policy`, not `GateDef`** — an early carve draft misattributed this
+  three times) — stays, for a reason unrelated to the one below.
+- **`src/nyxloom/config.py`'s `Policy.gate_verify_interval_days` field
+  and `src/nyxloom/reconcile.py`'s `ReconcileInput.days_since_gate_verify`
+  field** — **both stay declared, unedited, in files this package
+  otherwise touches.** This is not the same case as `Policy.mutation_gate`
+  above (that one is still genuinely used by kept orchestration); these
+  two become permanently dead — nothing in the live path reads either one
+  once Work item 3's scheduling removal lands. They are kept anyway
+  because **`tests/legacy_planner.py`** (below) reads them unconditionally
+  off the same production `Policy`/`ReconcileInput` instances the live
+  planner consumes, and that file's own byte-identity self-check forbids
+  editing it to cope. Deleting either field passes every oracle except
+  O8's explicit (and deliberately inverted) presence check for exactly
+  this pair — see O8.
+- **`tests/legacy_planner.py`** — a mechanically self-verified,
+  byte-identical copy of `reconcile.py` at commit `052857ae` (its own
+  header: "DO NOT EDIT THIS MODULE TO MAKE A TEST PASS").
+  `tests/test_planner_differential.py::
+  test_legacy_baseline_is_the_committed_branch_point` asserts this file,
+  after undoing its two declared import-only edits, is byte-identical to
+  `git show 052857ae:...reconcile.py`. This is the file that makes the two
+  fields above un-deletable; do not edit it for any reason this package
+  raises.
 - **`tests/test_daemon.py`'s six `test_mutation_gate_*` functions**
   (~lines 6136-6390) — these exercise the kept `effects_merge.py` wiring
   via a bare `argv=['true']`/`argv=['false']` `GateDef`, not the deleted
