@@ -16,19 +16,35 @@ every adapter that invokes no helper, and it is the control that makes the
 positive assertion mean anything. The pair below -- omission for a lane with
 no helper, presence for one with -- is the same pair at the
 ``assemble_verdict`` seam.
+
+**A-407's regression test lives at the bottom of this module**, driven
+through the real :func:`assay.runner.run_lane` rather than through
+``assemble_verdict``: the defect it pins is that a helper recorded before a
+judge refusal outlived the claim, so the wiring guard fired and the consumer
+was told about ``helpers[]`` instead of about the artifact -- with no verdict
+document written at all. It needs no toolchain (a synthetic
+``requires_statement_attribution`` adapter over a ``go-cover``-shaped
+profile), so the REGISTERED gate exercises it; the same two shapes are
+proven through the shipped zipapp against real Go in
+``tests/qualification/test_go_r1_real.py``.
 """
 
 from __future__ import annotations
 
+import io
+import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from conftest import fixed_clock, make_lane
+from conftest import GitRepo, fixed_clock, make_lane, make_r1_judge
 
 from assay import runner
-from assay.adapters.base import HelperInvocation
+from assay.adapters.base import HelperInvocation, StatementBlockReport
 from assay.errors import AssayError, Outcome, ReasonCode
+from assay.output import reserve_verdict_output
+from assay.statement_attribution import StatementBlock
 from assay.verdict import (
     HELPER_ROLES,
     Claim,
@@ -275,3 +291,172 @@ def test_voiding_r1_after_a_cleanup_failure_voids_its_helper_with_it(
     )
     assert verdict.helpers is None
     assert "helpers" not in verdict.to_dict()
+
+
+# --- A-407: the OTHER way a helper outlives its claim -------------------------
+
+#: One `go-cover`-shaped block over lines 3-7. The oracle below reports the
+#: same block ending on line 9 instead, which is `attribute_statements`'
+#: "the profile and the source are not the same revision" case (A-391) --
+#: the shape a STALE profile really has.
+_PROFILE_TEXT = "mode: count\npkg/mod.zzz:3.22,7.2 2 1\n"
+
+
+@dataclass(frozen=True, kw_only=True)
+class _StaleOracleAdapter:
+    """A ``requires_statement_attribution`` adapter whose oracle answers
+    honestly about a source the profile does not match.
+
+    Synthetic and deliberately not Go: the defect under test is in
+    :mod:`assay.runner`'s claim assembly, not in any language. What matters
+    is only the ORDER -- ``statement_blocks`` returns (so the helper is
+    recorded) and the join then refuses -- which is every judge refusal that
+    happens downstream of the oracle.
+    """
+
+    name: str = "zzz"
+    source_globs: tuple[str, ...] = ("*.zzz",)
+    excluded_dir_names: frozenset[str] = frozenset()
+    requires_span_attribution: bool = False
+    requires_statement_attribution: bool = True
+    external_tools: tuple[str, ...] = ()
+
+    def for_project(self, *, repo_top: Path, project_root: Path) -> "_StaleOracleAdapter":
+        return self
+
+    def is_test_path(self, rel_path: str) -> bool:
+        return False
+
+    def has_executable_code(self, rel_path: str, text: str) -> bool:
+        return True
+
+    def normalize_coverage_key(self, key: str) -> str:
+        return key
+
+    def statement_spans(self, text: str):
+        return None
+
+    def statement_blocks(self, repo_top, rel_paths, *, remaining=None):
+        return StatementBlockReport(
+            blocks_by_path={
+                path: (
+                    StatementBlock(
+                        start_line=3,
+                        start_col=22,
+                        end_line=9,
+                        end_col=2,
+                        num_stmts=2,
+                        stmt_lines=(4, 6),
+                    ),
+                )
+                for path in rel_paths
+            },
+            helper=HelperInvocation(
+                tool="blocky-oracle",
+                resolved_path="/usr/bin/blocky",
+                identity="blocky version 1.2.3",
+            ),
+        )
+
+
+def _stale_profile_lane(git_repo: GitRepo) -> tuple[object, str]:
+    """A real two-commit repository whose lane command really writes the
+    profile above, and the head commit to judge it at."""
+    git_repo.write(".gitignore", "cov.out\n")
+    git_repo.write("pkg/mod.zzz", "".join(f"line {n}\n" for n in range(1, 11)))
+    base_rev = git_repo.commit_all("seed the source the oracle reads")
+    git_repo.write(
+        "pkg/mod.zzz", "".join(f"line {n}\n" for n in range(1, 11)) + "line 11\n"
+    )
+    head_rev = git_repo.commit_all("change it, so R1 has something to judge")
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=make_r1_judge(
+            source_root_paths=(git_repo.path / "pkg",),
+            coverage_format="go-cover",
+            coverage_artifact="cov.out",
+            base=base_rev,
+        ),
+        argv=("/bin/sh", "-c", f"cat > cov.out <<'EOF'\n{_PROFILE_TEXT}EOF"),
+    )
+    return lane, head_rev
+
+
+def test_a_judge_that_refuses_after_the_oracle_ran_reports_ITS_reason_not_the_wiring(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """**BLOCKER R2-1 / A-407.** The helper is recorded the instant
+    ``statement_blocks`` returns (``_attribute_statements_for_lane``), and
+    the join then refuses -- so before A-407 the R1 claim was correctly
+    payload-free, the helper entry outlived it, and ``assemble_verdict``'s
+    B047-item-5 wiring guard raised past ``run_lane``. The consumer got
+    ``ERROR/BAD_LANE_CONFIG: lane 'package' recorded helper role(s)
+    ['statement-positions'] …`` -- a message about assay's own ``helpers[]``
+    array -- instead of ``UNREADABLE_ARTIFACT``, and no verdict document at
+    all, because ``run_lane`` never returned to the line that writes one.
+
+    Three assertions, and each fails on its own before the fix: the verdict
+    exists (``run_lane`` returned), it carries the JUDGE's reason code, and
+    it omits ``helpers`` because the payload that entry described was taken
+    away.
+
+    Measured in-image against real Go on the same day, both shapes, through
+    the shipped zipapp: ``tests/qualification/test_go_r1_real.py``'s
+    ``test_a_stale_go_profile_refuses_through_the_cli_and_writes_a_verdict``
+    and its ``//line`` sibling. This one needs no toolchain, which is why it
+    is here: the registered gate runs it."""
+    lane, head_rev = _stale_profile_lane(git_repo)
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=_StaleOracleAdapter(),
+        assay_version="0.1.0",
+    )
+
+    assert verdict.outcome is Outcome.ERROR
+    assert verdict.reason_code is ReasonCode.UNREADABLE_ARTIFACT, (
+        "the consumer must be told the profile and the source disagree, not "
+        "that assay recorded a helpers[] entry it could not place"
+    )
+    r1 = next(claim for claim in verdict.claims if claim.rigor == "R1")
+    assert r1.status is Outcome.ERROR
+    assert r1.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert r1.coverage is None, "an ERROR claim is payload-free (A-136)"
+    assert verdict.helpers is None
+    assert "helpers" not in verdict.to_dict()
+    # R0's own claim is untouched: the command really ran and really wrote
+    # the artifact. Without this the test would pass on a run that never
+    # reached the oracle at all, which is the vacuity it has to exclude.
+    r0 = next(claim for claim in verdict.claims if claim.rigor == "R0")
+    assert r0.status is Outcome.PASS
+
+
+def test_that_refusal_really_reaches_a_verdict_ARTIFACT(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """The half a returned object cannot prove. ``run_lane`` raising is
+    exactly what stopped ``--verdict-json`` being written, so this repeats
+    the CLI's own two-step -- reserve, then
+    :func:`~assay.runner.write_verdict` -- and reads the document back off
+    the filesystem. A consumer's whole record of this run is that file."""
+    lane, head_rev = _stale_profile_lane(git_repo)
+    target = tmp_path / "verdict.json"
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=_StaleOracleAdapter(),
+        assay_version="0.1.0",
+    )
+    with reserve_verdict_output(str(target), stdout=io.StringIO()) as destination:
+        runner.write_verdict(verdict, destination)
+
+    document = json.loads(target.read_text(encoding="utf-8"))
+    assert document["outcome"] == "ERROR"
+    assert document["reason_code"] == "UNREADABLE_ARTIFACT"
+    assert "helpers" not in document

@@ -615,3 +615,366 @@ def test_a_go_lane_whose_project_root_is_in_no_module_refuses(
     assert r1["status"] == "ERROR"
     assert r1["reason_code"] == "BAD_LANE_CONFIG"
     assert "coverage" not in r1
+
+
+# --- A-407: a judge that refuses AFTER the oracle ran -------------------------
+#
+# Both shapes below were MASKED before A-407: the statement-position helper is
+# recorded the instant `statement_blocks` returns, the judge then refuses and
+# renders a payload-free R1 claim, and `assemble_verdict`'s B047-item-5 wiring
+# guard raised past `run_lane`. Through the CLI the operator saw
+# `ERROR/BAD_LANE_CONFIG: lane 'unit' recorded helper role(s)
+# ['statement-positions'] …` -- a sentence about assay's own `helpers[]` array
+# -- for a stale profile and for A-405's `//line` refusal alike, and NO verdict
+# document was written, because `run_lane` never returned.
+#
+# They are here, in-image and through the shipped zipapp, because the masking
+# was only ever visible end to end: every unit test in the suite stops at
+# `evaluate_r1`, which renders the correct claim. The toolchain-free half of
+# the same proof is `tests/test_runner_helpers_envelope.py`'s two A-407 tests,
+# which the REGISTERED gate runs.
+
+#: `lineDupContents` -- Go's own canonical duplicate-position corpus, from
+#: `/usr/local/go/src/cmd/cover/cover_test.go` (go1.25.14), transcribed exactly
+#: as `nyxloom-trove/carve-assets/P27-recarve/probe-linedup.sh` transcribes it:
+#: tabs, leading blank line, and both `//line ld.go:100` directives. THE ONE
+#: DEVIATION is the package clause (`gen`, not `linedup`), because this file
+#: lives at `internal/gen/gen.go` in the fixture module and Go requires the
+#: package to match. The directives are what make `go test -coverprofile`
+#: report `Column == 0`, which is the whole subject of A-405.
+_LINEDUP_GEN_GO = """
+package gen
+
+var G int
+
+func LineDup(c int) {
+\tfor i := 0; i < c; i++ {
+//line ld.go:100
+\t\tif i % 2 == 0 {
+\t\t\tG++
+\t\t}
+\t\tif i % 3 == 0 {
+\t\t\tG++; G++
+\t\t}
+//line ld.go:100
+\t\tif i % 4 == 0 {
+\t\t\tG++; G++; G++
+\t\t}
+\t\tif i % 5 == 0 {
+\t\t\tG++; G++; G++; G++
+\t\t}
+\t}
+}
+"""
+
+_LINEDUP_GEN_TEST_GO = """\
+package gen
+
+import "testing"
+
+func TestLineDup(t *testing.T) { LineDup(100) }
+"""
+
+#: TWO packages: an ordinary one and the generated one. Both matter. The
+#: ordinary `internal/calc` is what makes the oracle run at all -- it is the
+#: only file the runner sends to `statement_blocks`, because a `//line`-flagged
+#: file is deliberately skipped -- and running the oracle is what records the
+#: helper whose orphaning was the defect. A fixture with only the generated
+#: file is the reviewer's scenario D, which was already correct precisely
+#: because the oracle never ran.
+_SETUP_LINEDUP = r"""
+set -eu
+export GOPROXY=off GOWORK=off GOTOOLCHAIN=local GOFLAGS=-mod=mod
+export HOME=/tmp/gohome; mkdir -p "$HOME"
+REPO="$1"
+rm -rf "$REPO"
+mkdir -p "$REPO/internal/calc" "$REPO/internal/gen"
+cd "$REPO"
+git init -q -b main .
+git config user.email harness@example.invalid
+git config user.name harness
+printf 'module example.invalid/harness\n\ngo 1.25\n' > go.mod
+printf '.assay/\n' > .gitignore
+cp /work/base.go internal/calc/calc.go
+cp /work/base_test.go internal/calc/calc_test.go
+cp /work/gen.go internal/gen/gen.go
+cp /work/gen_test.go internal/gen/gen_test.go
+git add -A
+git commit -q -m base
+git rev-parse HEAD > /work/base-sha
+# The head commit changes the GENERATED file, so it has judged lines inside
+# judge.source_roots -- A-405's refusing half rather than its ignoring half.
+printf '\nfunc Extra(n int) int {\n\treturn n + 1\n}\n' >> internal/gen/gen.go
+git add -A
+git commit -q -m head
+git rev-parse HEAD > /work/head-sha
+# The anti-vacuity witness, under the LANE's own covermode: proof from the
+# toolchain that this fixture really is the zero-column case, rather than a
+# `//line` directive the test assumes has an effect. assay judges its own
+# freshly-written profile inside the snapshot; this copy exists only to be
+# asserted on.
+go test ./... -count=1 -coverpkg=./... -covermode=atomic -coverprofile=/work/witness.out >/dev/null
+"""
+
+#: The head tree's REAL profile is produced here, by the real toolchain, and
+#: the harness then shifts it -- `go test` cannot be asked to emit a stale
+#: artifact, and hand-writing one would be exactly the invented-fixture
+#: practice F008-A4 removed from this suite.
+_SETUP_STALE = r"""
+set -eu
+export GOPROXY=off GOWORK=off GOTOOLCHAIN=local GOFLAGS=-mod=mod
+export HOME=/tmp/gohome; mkdir -p "$HOME"
+REPO="$1"
+rm -rf "$REPO"
+mkdir -p "$REPO/internal/calc"
+cd "$REPO"
+git init -q -b main .
+git config user.email harness@example.invalid
+git config user.name harness
+printf 'module example.invalid/harness\n\ngo 1.25\n' > go.mod
+printf '.assay/\n' > .gitignore
+cp /work/base.go internal/calc/calc.go
+cp /work/base_test.go internal/calc/calc_test.go
+git add -A
+git commit -q -m base
+git rev-parse HEAD > /work/base-sha
+cp /work/head.go internal/calc/calc.go
+cp /work/head_test.go internal/calc/calc_test.go
+git add -A
+git commit -q -m head
+git rev-parse HEAD > /work/head-sha
+go test ./... -count=1 -coverpkg=./... -covermode=count -coverprofile=/work/real.out >/dev/null
+"""
+
+#: A lane whose command DELIVERS an artifact rather than producing one, which
+#: is how a stale profile reaches the judge in real life (a cached artifact, a
+#: re-used CI upload). R0 still passes: the command succeeds.
+_DELIVERED_LANE = """\
+schema_version = 2
+
+[lanes.stale]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["sh", "-c", "mkdir -p .assay && cp /work/stale.out .assay/cover.out"]
+env = {{ GOPROXY = "off", GOFLAGS = "-mod=mod", GOTOOLCHAIN = "local" }}
+env_passthrough = ["PATH", "HOME", "GOCACHE", "GOMODCACHE"]
+budget = "10m"
+allow_argv_append = false
+
+[lanes.stale.isolation]
+snapshot_selection = "repository"
+
+[lanes.stale.judge]
+language = "go"
+source_roots = ["internal"]
+fail_under = 100.0
+allow_excluded = false
+base = "{base}"
+
+[lanes.stale.judge.coverage]
+format = "go-cover"
+artifact = ".assay/cover.out"
+producer = "go-test"
+"""
+
+
+def _shift_profile_by_one_line(text: str) -> str:
+    """*text* with every record's start and end LINE moved down by one, its
+    columns and counts untouched -- what an edit between the run and the
+    judgment does to a profile, and the smallest change that makes the
+    toolchain's own output disagree with the source it names."""
+    shifted = ["mode: count"]
+    for line in text.splitlines()[1:]:
+        if not line.strip():
+            continue
+        position, num_stmts, count = line.split()
+        path, _, extent = position.rpartition(":")
+        start, end = extent.split(",")
+        start_line, start_col = start.split(".")
+        end_line, end_col = end.split(".")
+        shifted.append(
+            f"{path}:{int(start_line) + 1}.{start_col},"
+            f"{int(end_line) + 1}.{end_col} {num_stmts} {count}"
+        )
+    return "\n".join(shifted) + "\n"
+
+
+def _zipapp_name(work: Path) -> str:
+    (built,) = (work / "dist").glob("assay-*.pyz")
+    return built.name
+
+
+def _stage(tmp_path: Path, zipapp: Path, files: dict[str, str]) -> Path:
+    """A `/work` tree carrying the zipapp and *files*, writable by the
+    container's own uid -- the identical preparation `_run_scenario` does."""
+    work = tmp_path / "work"
+    (work / "dist").mkdir(parents=True)
+    shutil.copy(zipapp, work / "dist" / zipapp.name)
+    for name, text in files.items():
+        (work / name).write_text(text, encoding="utf-8")
+    for path in (work, *work.rglob("*")):
+        path.chmod(0o777 if path.is_dir() else 0o666)
+    (work / "dist" / zipapp.name).chmod(0o777)
+    return work
+
+
+def _commit_lane_and_run(work: Path, mounts, *, lane_text: str, lane: str) -> dict:
+    """Write the lane file into the fixture, commit it, run `assay run` from
+    the shipped zipapp, and return the verdict document.
+
+    The verdict path is REMOVED first and its existence asserted after: "no
+    verdict document at all" is half of what A-407 fixes, and a stale file
+    from an earlier scenario would hide exactly that.
+    """
+    (work / "fixture" / "assay.toml").write_text(lane_text, encoding="utf-8")
+    commit = _docker_run(
+        mounts=mounts, workdir="/work/fixture",
+        argv=["sh", "-c", "git add -A && git commit -q -m lane && git status --porcelain"],
+    )
+    assert commit.returncode == 0, commit.stdout + commit.stderr
+    assert commit.stdout.strip() == "", f"the fixture tree is dirty: {commit.stdout!r}"
+
+    verdict_path = work / "verdict.json"
+    verdict_path.unlink(missing_ok=True)
+    driven = _docker_run(
+        mounts=mounts, workdir="/work/fixture",
+        argv=[
+            "python3", f"/work/dist/{_zipapp_name(work)}", "run", lane,
+            "--file", "/work/fixture/assay.toml",
+            "--verdict-json", "/work/verdict.json",
+        ],
+    )
+    assert driven.returncode == 2, (
+        f"exit {driven.returncode}, expected 2\n{driven.stdout}\n{driven.stderr}"
+    )
+    assert "recorded helper role(s)" not in driven.stderr, (
+        "A-407: the consumer is being told about assay's helpers[] wiring "
+        f"instead of about the artifact:\n{driven.stderr}"
+    )
+    assert verdict_path.is_file(), (
+        "A-407: no verdict document was written at all -- `run_lane` raised "
+        f"past the line that writes one:\n{driven.stdout}\n{driven.stderr}"
+    )
+    return json.loads(verdict_path.read_text(encoding="utf-8"))
+
+
+def test_a_line_directive_file_with_judged_lines_refuses_and_writes_a_verdict(
+    tmp_path: Path, zipapp: Path
+):
+    """**A-405's ruled refusal, reaching a consumer for the first time.**
+
+    The reviewer's scenario B: a real Go module with an ordinary package and
+    a `//line`-carrying generated one, and a head commit that touches the
+    generated file. The oracle runs (on the ordinary file), so the helper is
+    recorded; `evaluate_coverage` then refuses the generated file, which
+    voids the R1 payload. Before A-407 that combination reported the
+    `helpers[]` wiring and wrote nothing -- so the refusal DA-R2 ruled, and
+    which CONSUMERS.md documents, was unreachable through `assay run` in the
+    only shape a real Go project has (a generated file never travels alone).
+
+    R0 is asserted PASS deliberately: `go test` really ran and really wrote
+    the profile, so this is a judgment about the artifact and not a test
+    failure wearing its clothes."""
+    work = _stage(
+        tmp_path, zipapp,
+        {
+            "base.go": _BASE_GO,
+            "base_test.go": _BASE_TEST,
+            "gen.go": _LINEDUP_GEN_GO,
+            "gen_test.go": _LINEDUP_GEN_TEST_GO,
+            "setup.sh": _SETUP_LINEDUP,
+        },
+    )
+    mounts = [(_host_path_for(work), "/work", False)]
+    setup = _docker_run(
+        mounts=mounts, workdir="/work",
+        argv=["sh", "/work/setup.sh", "/work/fixture"],
+    )
+    assert setup.returncode == 0, setup.stdout + setup.stderr
+    base = (work / "base-sha").read_text(encoding="utf-8").strip()
+
+    # The toolchain's own answer about this fixture, before any assay code
+    # reads it: `//line` really does produce zero columns here.
+    witness = (work / "witness.out").read_text(encoding="utf-8")
+    gen_records = [
+        line for line in witness.splitlines()[1:] if "internal/gen/gen.go" in line
+    ]
+    assert gen_records, witness
+    assert any(".0," in line or ".0 " in line for line in gen_records), (
+        "no record for the generated file carries a zero column, so this "
+        f"fixture is not the A-405 case at all:\n{witness}"
+    )
+
+    verdict = _commit_lane_and_run(
+        work, mounts, lane_text=_LANE.format(base=base), lane="unit"
+    )
+
+    assert verdict["outcome"] == "ERROR", json.dumps(verdict, indent=2)
+    r0 = next(claim for claim in verdict["claims"] if claim["rigor"] == "R0")
+    assert r0["status"] == "PASS", "the lane's own command must have SUCCEEDED"
+    r1 = next(claim for claim in verdict["claims"] if claim["rigor"] == "R1")
+    assert r1["status"] == "ERROR"
+    assert r1["reason_code"] == "BAD_LANE_CONFIG"
+    assert "coverage" not in r1, "an ERROR claim is payload-free (A-136)"
+    assert "helpers" not in verdict, (
+        "the oracle's entry describes a payload the judge took away, so it "
+        "is dropped where the payload went (A-407)"
+    )
+
+
+def test_a_stale_go_profile_refuses_through_the_cli_and_writes_a_verdict(
+    tmp_path: Path, zipapp: Path
+):
+    """**The flagship refusal CONSUMERS.md has documented since generation 5,
+    reaching a consumer for the first time.**
+
+    The reviewer's scenario E, and the cheapest shape of the defect: no
+    `//line` file anywhere, nothing to do with A-405. A real profile for the
+    head tree, shifted down one line, is delivered to the judge; the oracle
+    reads the real source, the extents disagree, and `attribute_statements`
+    refuses `UNREADABLE_ARTIFACT` -- one layer BELOW the helper record.
+
+    That this reproduces with no generated file in sight is why A-407 is a
+    wave defect rather than a consequence of A-405: the reviewer measured the
+    identical masking on the pre-round-1 build `875382d2`."""
+    work = _stage(
+        tmp_path, zipapp,
+        {
+            "base.go": _BASE_GO,
+            "base_test.go": _BASE_TEST,
+            "head.go": _HEAD_PASS_GO,
+            "head_test.go": _HEAD_PASS_TEST,
+            "setup.sh": _SETUP_STALE,
+        },
+    )
+    mounts = [(_host_path_for(work), "/work", False)]
+    setup = _docker_run(
+        mounts=mounts, workdir="/work",
+        argv=["sh", "/work/setup.sh", "/work/fixture"],
+    )
+    assert setup.returncode == 0, setup.stdout + setup.stderr
+    base = (work / "base-sha").read_text(encoding="utf-8").strip()
+
+    real = (work / "real.out").read_text(encoding="utf-8")
+    assert ".0," not in real, (
+        "this fixture must carry NO zero column, or it would be scenario B "
+        f"in disguise:\n{real}"
+    )
+    stale = _shift_profile_by_one_line(real)
+    assert stale != real and stale.count("\n") == real.count("\n")
+    (work / "stale.out").write_text(stale, encoding="utf-8")
+    (work / "stale.out").chmod(0o666)
+
+    verdict = _commit_lane_and_run(
+        work, mounts, lane_text=_DELIVERED_LANE.format(base=base), lane="stale"
+    )
+
+    assert verdict["outcome"] == "ERROR", json.dumps(verdict, indent=2)
+    r0 = next(claim for claim in verdict["claims"] if claim["rigor"] == "R0")
+    assert r0["status"] == "PASS", "delivering the artifact succeeded"
+    r1 = next(claim for claim in verdict["claims"] if claim["rigor"] == "R1")
+    assert r1["status"] == "ERROR"
+    assert r1["reason_code"] == "UNREADABLE_ARTIFACT"
+    assert "coverage" not in r1
+    assert "helpers" not in verdict

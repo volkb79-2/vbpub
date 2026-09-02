@@ -1062,3 +1062,82 @@ artifact production from a container's output, not editing.
 
 This section and REPORT §49 are the only content in this commit; it was written
 after run 11 returned, not during it.
+
+## Generation 8 — the fix round after adversarial review round 2
+
+### `71a59967` — `docs(assay): Wave C review round 2 -- reviewer's report, verbatim`
+
+The round-2 file committed unchanged before any repair, sha256
+`22d9185219162caae456141f29f43a15e2c77890badc70a55438211b58b2184e`, byte-identical
+to the reviewer's scratch original. Verdict NOT ACCEPT: one blocker (R2-1),
+three should-fixes, one decision ask (DA-R3, already ruled by the controller).
+
+### `<this commit>` — `fix(assay): A-407 -- drop an orphaned helper where the payload went`
+
+**BLOCKER R2-1, recorded as A-407.** The controller's ruling is the
+reviewer's §3.4 prescription applied exactly, and the entry citing
+`vbpub@12e028c7` (the controller-log commit that carries it).
+
+**What was wrong.** `_attribute_statements_for_lane` fires
+`on_helper_invoked` the instant `adapter.statement_blocks` returns
+(`runner.py:997`) — before the join, before evaluation. Every judge refusal
+downstream of that is caught by `evaluate_r1` and rendered as a payload-free
+R1 claim, which is the R1 seam working as designed; but the helper entry then
+had no claim to support it, so `assemble_verdict`'s B047-item-5 guard raised
+past `run_lane` and the consumer got a sentence about assay's `helpers[]`
+array with **no verdict document written at all**.
+
+**Reproduced in my own hands before touching the code**, with the reviewer's
+own five-lane battery (`scratchpad/g8/ldlane/work`, its `setup.sh`/`laneA..E`
+copied verbatim), against a zipapp built from `71a59967` — real `go test`,
+real oracle, `tester-unified-go:local`, `--network=none`,
+`--cgroup-parent=dev-background.slice`. Transcript: `scratchpad/g8/ldlane-BEFORE.log`,
+reproduced in REPORT §50. A/D correct; B, C and E all masked, all three with
+no verdict file.
+
+**The change is 13 lines** in `_run_prepared_lane`, immediately after
+`claims += (r1_claim,)`: when `r1_claim.coverage is None`, keep only the
+helpers whose role is in `supported_helper_roles((r1_claim,))`. One definition
+of the correspondence rule, no second table — the same function
+`Verdict._check_helpers` validates with and the same move
+`_replace_highest_higher_rigor_claim_with_git_failed` already makes.
+`assemble_verdict`'s guard is untouched.
+
+**Two comments that this makes false were corrected in the same edit**, since
+"the one legitimate way to hold a helper whose claim has been voided" is now
+two: `assemble_verdict`'s own `:1476-1483` block, and
+`_replace_highest_higher_rigor_claim_with_git_failed`'s docstring ("this
+function is the one place that can take that payload away"). Leaving them
+would be the drift this wave has caught three times already.
+
+**Tests, both proven RED without the fix, not merely written.**
+
+* `test_runner_helpers_envelope.py` gains two, driven through the real
+  `run_lane` with a synthetic `requires_statement_attribution` adapter whose
+  oracle reports a block ending two lines past the profile's (A-391's
+  "not the same revision" case). No toolchain, so **the registered gate runs
+  them**. The first asserts the verdict carries the judge's own
+  `UNREADABLE_ARTIFACT` and omits `helpers`, with R0 asserted PASS as the
+  vacuity guard; the second repeats the CLI's own reserve-then-`write_verdict`
+  two-step and reads the document back off the filesystem, because "no verdict
+  artifact" is half of what A-407 fixes and a returned object cannot prove it.
+  At `71a59967` both fail with the masked message verbatim
+  (`scratchpad/g8/prewt`).
+* `tests/qualification/test_go_r1_real.py` gains the reviewer's scenarios B
+  and E, in-image through the shipped zipapp. B is a real two-package Go
+  module whose generated file carries Go's own `lineDupContents` `//line`
+  directives, with a head commit that touches it — A-405's ruled refusal,
+  reaching a consumer for the first time. E is a real profile for the head
+  tree shifted down one line, with no `//line` file anywhere, which is why
+  the defect is a wave defect and not a consequence of A-405. Both assert the
+  masked sentence is ABSENT from stderr and that the verdict file exists.
+  At `71a59967` both fail, naming that sentence
+  (`scratchpad/g8/prewt2`, `2 failed, 5 passed`); with the fix,
+  `7 passed`.
+
+Devcontainer full suite on this tree: **3941 passed, 20 skipped** (from
+3939/18 — the reviewer's own measurement, which generation 7's "11 skipped"
+did not reproduce; the delta is my two new qualification tests, which skip
+without `ASSAY_GO_QUALIFICATION=1`). Measured with the devcontainer venv
+(Python 3.14.6) from the worktree's `assay/`, which is where the 18 was
+measured too.

@@ -1477,10 +1477,15 @@ def assemble_verdict(
     # reason: `Verdict._check_helpers` raises a bare `ValueError` on a
     # helper with no correspondingly-judged claim, and no caller catches
     # one. Refusing here is LOUD and names the wiring defect. It is
-    # deliberately a refusal rather than a filter -- the one legitimate way
-    # to hold a helper whose claim has been voided is
-    # `_replace_highest_higher_rigor_claim_with_git_failed`, which drops the
-    # entry itself, at the site that took the payload away.
+    # deliberately a refusal rather than a filter, and reaching it is a BUG
+    # in this module rather than anything a consumer did: the two legitimate
+    # ways to end up holding a helper whose claim has been voided both drop
+    # the entry themselves, at the site that took the payload away --
+    # `_replace_highest_higher_rigor_claim_with_git_failed` for the
+    # cleanup-only failure, and `_run_prepared_lane`'s own R1 claim site for
+    # a judge that refused after the oracle ran (A-407). A filter HERE would
+    # cover both of them and swallow a genuine wiring defect with them,
+    # which is the one thing this guard exists to catch.
     unsupported = sorted(
         {
             helper.role
@@ -2767,6 +2772,41 @@ def _run_prepared_lane(
                     ),
                 )
                 claims += (r1_claim,)
+                if r1_claim.coverage is None:
+                    # (A-407) The judge refused AFTER the oracle ran, so the
+                    # payload the helper produced went with it. `evaluate_r1`
+                    # catches its own `AssayError` and renders a payload-free
+                    # claim, which is the whole point of the R1 seam -- the
+                    # refusal is REPORTED, not raised past the verdict. But
+                    # `helpers_seen` was appended to the instant
+                    # `statement_blocks` returned, one layer down in
+                    # `_attribute_statements_for_lane`, so the entry outlives
+                    # the claim that justified it and `assemble_verdict`'s
+                    # B047-item-5 guard then refuses the whole run: the
+                    # consumer is told about assay's `helpers[]` WIRING
+                    # instead of about the stale profile or the `//line` file
+                    # that is actually wrong, and `run_lane` never returns, so
+                    # `--verdict-json` is never written.
+                    #
+                    # The entry is dropped HERE, at the site that took the
+                    # payload away -- exactly the move
+                    # `_replace_highest_higher_rigor_claim_with_git_failed`
+                    # already makes for the cleanup-failure path -- so
+                    # `assemble_verdict`'s guard stays a true assertion about
+                    # wiring rather than becoming the message a consumer gets
+                    # instead of the real refusal. Filtering inside that guard
+                    # was the rejected alternative: it would swallow a genuine
+                    # wiring defect too, which is the one thing the guard
+                    # exists to catch.
+                    #
+                    # `supported_helper_roles` is the SINGLE definition of the
+                    # correspondence rule (`verdict.py`, read by
+                    # `Verdict._check_helpers` as well), so this adds no
+                    # second copy of the table that could disagree with it.
+                    kept = supported_helper_roles((r1_claim,))
+                    helpers_seen[:] = [
+                        helper for helper in helpers_seen if helper.role in kept
+                    ]
                 # wave-1 §6/A-264: R1 records its policy whenever R1 was
                 # ATTEMPTED -- one case wider than "rendered a coverage
                 # payload", mirroring A-183's identical R2 widening for
@@ -3408,8 +3448,12 @@ def _replace_highest_higher_rigor_claim_with_git_failed(
     ``helpers[].role`` is bound to a judged payload by
     :meth:`~assay.verdict.Verdict._check_helpers`: a
     ``statement-positions`` entry requires an R1 claim carrying coverage,
-    and this function is the one place that can take that payload away after
-    the helper really ran. Dropping the entry here is the same move the
+    and this function is one of the two places that can take that payload
+    away after the helper really ran (the other is
+    :func:`_run_prepared_lane`'s R1 claim site, where a judge that refused
+    after the oracle ran renders a payload-free claim -- A-407, which
+    applies this same rule there rather than generalising either site).
+    Dropping the entry here is the same move the
     judgment tier already gets one line down, for the same reason -- the
     alternative, keeping it, produces a verdict that records a helper
     alongside no claim it could have produced, which the schema refuses with
