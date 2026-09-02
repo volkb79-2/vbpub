@@ -123,3 +123,118 @@ oracle derives exactly that set. It was not fitted to the manifest: the
 manifest is not an input to `stmtpos.go`, which never reads it. This is the
 statement-granularity comparison A-208 always intended, and the one A-217 says
 "rescues P28".
+
+---
+
+# F008-A4 — the committed Go coverage FIXTURES, regenerated (2026-09-02, Wave C generation 6)
+
+A second, later probe in the same directory and under the same rules. The
+subject is different: the section above proves the ORACLE against carver-frozen
+witnesses; this one replaces assay's own committed test FIXTURES with real
+toolchain output and derives the statement positions that make them readable.
+
+## Why both artifacts, not just the bytes
+
+A-234 recorded that `tests/fixtures/go/hello/hello.out` and
+`tests/fixtures/canary/go/greet/greet_control.out` were hand-authored and wrong
+in both coordinates. A-234's own warning is why regenerating the bytes ALONE
+would have been worse than leaving them: a real profile whose block extents are
+then read as statement truth is the exact conflation A-O19/A-217 exist to
+remove, and it would have been harder to spot afterwards because the bytes
+would now be genuine. So the run emits two artifacts — the profiles and
+`fixture-oracle.json` — and the tests join them with
+`assay.statement_attribution.attribute_statements` rather than reading either
+alone.
+
+## Environment
+
+Identical to the section above except for the date: image
+`tester-unified-go:local`, id
+`sha256:64ba4941040ba736c9eea23aca89fdcba0cc155025cb1d438c5c259636163a6f`,
+`go version go1.25.14 linux/amd64`, `--network=none`,
+`--cgroup-parent=dev-background.slice`, `GOPROXY=off GOWORK=off
+GOTOOLCHAIN=local GOFLAGS=-mod=mod`, `tar` pipe, no Go in the devcontainer and
+none acquired (A-042/A-043).
+
+## The command
+
+```sh
+ASSAY=/workspaces/vbpub/.worktrees/assay-wave-c-go/assay \
+    bash nyxloom-trove/carve-assets/P27-recarve/regenerate-fixtures.sh
+```
+
+Run at worktree commit `86b4efae` with the fixture sources in their final,
+committed form — the profiles are position-bound, so the source bytes were
+settled BEFORE the run, not after.
+
+## Files
+
+| file | what it is |
+|---|---|
+| `regenerate-fixtures.sh` | the exact, re-runnable command |
+| `fixture-oracle.json` | that command's `=== fixture-oracle.json ===` section, byte-for-byte, pretty-printed, with the `../oracle-src/` path prefix stripped — the same normalisation the witness document above records |
+
+sha256 of everything the run consumed or produced:
+
+```text
+9139f745cc58b81f86a779e16ffb4f7f5330a86bea4ad8c576bb519a34019f2b  ../../../src/assay/helpers/go/stmtpos/stmtpos.go
+48256ee26df1c2572bdaa9468bd7ae9e7f8999ca7db5ada3a29a80c13be91674  ../../../src/assay/helpers/go/stmtpos/go.mod
+9ae18b8641f343d34ff5acf8e33b70a40bdb241d4e2d3b23d4829e952826ebf7  regenerate-fixtures.sh
+718f0b11526fc64a2242fc71953c58f9f54f9e3a38f560b0fbdd3fe031050491  fixture-oracle.json
+1d1c39a77f93568d747fea68a80885e89e1090d745910e8bbca0d11e0fc34ae3  ../../../tests/fixtures/go/hello/hello.go
+5ac0949d8869375baa0d70fef9cfab88c13fd7bb414493918837c749210d09e1  ../../../tests/fixtures/go/hello/doc.go
+e9b8b9bce19faef6bb8bd9bb412a52c10b2c09df3073facaa731475bb83e327f  ../../../tests/fixtures/go/hello/hello.out
+8a0d51aab9d4b4f68db8e483291a416d3896a9eb9600dc2b4191d46e69186039  ../../../tests/fixtures/canary/go/greet/greet.go
+2aef9487c1918baffc6c8142a48d8848b0df43316852b40ee43ba9a20e53889f  ../../../tests/fixtures/canary/go/greet/greet_control.out
+1c2e3f0b54d2f81ce3bb3874a4d06024af18a7876e1822f26dd48a438f81d32c  ../../../tests/fixtures/canary/go/greet/greet_transformed.out
+```
+
+## The raw run output
+
+```text
+=== go-version ===
+go version go1.25.14 linux/amd64
+=== hello.out ===
+mode: set
+hello/hello.go:32.32,34.2 1 1
+hello/hello.go:38.35,40.2 1 0
+=== greet_control.out ===
+mode: set
+greet/greet.go:30.32,32.2 1 1
+=== greet_transformed.out ===
+mode: set
+greet/greet.go:30.32,32.2 1 1
+greet/greet.go:35.43,38.2 2 0
+=== fixture-oracle.json ===
+{"schema":1,"go_version":"go1.25.14","files":[{"path":"../oracle-src/doc.go","blocks":[]},{"path":"../oracle-src/greet.go","blocks":[{"start_line":30,"start_col":32,"end_line":32,"end_col":2,"num_stmts":1,"stmt_lines":[31]}]},{"path":"../oracle-src/greet_transformed.go","blocks":[{"start_line":30,"start_col":32,"end_line":32,"end_col":2,"num_stmts":1,"stmt_lines":[31]},{"start_line":35,"start_col":43,"end_line":38,"end_col":2,"num_stmts":2,"stmt_lines":[36,37]}]},{"path":"../oracle-src/hello.go","blocks":[{"start_line":32,"start_col":32,"end_line":34,"end_col":2,"num_stmts":1,"stmt_lines":[33]},{"start_line":38,"start_col":35,"end_line":40,"end_col":2,"num_stmts":1,"stmt_lines":[39]}]}]}
+```
+
+## What each re-derived line set proves
+
+| fixture | real block extent | naive expansion (the OLD expectation's rule) | oracle statement truth | what the difference is |
+|---|---|---|---|---|
+| `hello.go` Greet | `32.32,34.2` count 1 | executed `{32,33,34}` | executed **`{33}`** | the signature line and the closing brace are inside the block and are not statements |
+| `hello.go` Farewell | `38.35,40.2` count 0 | missing `{38,39,40}` | missing **`{39}`** | same, on the uncovered side — the two lines a developer could not make executable |
+| `doc.go` | *no record at all* | — | **no blocks** (`"blocks": []`) | the comment-only file's exclusion is now proven from the oracle too, not only from its absence from the profile |
+| `greet.go` Greet | `30.32,32.2` count 1 | executed `{30,31,32}` | executed **`{31}`** | the canary control's single statement |
+| transformed `greet.go` canary func | `35.43,38.2` count **2** | missing `{35,36,37,38}` | missing **`{36,37}`** | the appended never-called function's two body statements, without its signature or brace — and `num_stmts` 2 is the profile's own arithmetic agreeing with the oracle's list length |
+
+**The old committed bytes were wrong in a way the naive rule hid.** The old
+`hello.out` said `29.34,30.42` — a block that ENDS at the return statement's
+own last column, so the naive expansion `{29,30}` happened to contain the one
+real statement and looked plausible. The real block is `32.32,34.2`, and the
+naive expansion of THAT is `{32,33,34}`: three lines where one is executable.
+That is the concrete shape of "regenerating the bytes alone would have been
+worse than nothing" — the same test would have gone from asserting 2 wrong
+lines to asserting 3 wrong lines, with real bytes underneath.
+
+## What is NOT claimed
+
+That these fixtures exercise the oracle SUBPROCESS. They do not, and cannot:
+the registered gate runs in `tester-unified:local`, which has no Go
+(DESIGN-GUIDE §10). What the join proves is that assay's own correction, run
+over real profile bytes and real oracle output, yields statement truth — the
+same standing as `stmtpos-witness-oracle.json` has for the frozen witnesses.
+The subprocess path is proven separately and end to end by
+`tests/qualification/test_go_r1_real.py` inside `tester-unified-go:local`
+(F008-A3).

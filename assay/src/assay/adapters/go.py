@@ -8,6 +8,13 @@
     span-attribution statement in this file. A-235 additionally records that
     ``statement_spans`` currently has no seam through which that oracle would ever
     be invoked, because this parser leaves no unattributed line.
+
+    A-234's own tracked item — the hand-authored coverage fixtures — is
+    DISCHARGED (F008-A4): ``tests/fixtures/go/**`` is real toolchain output
+    joined against a real oracle document. The seam A-235 said was missing is
+    built too: it is :meth:`GoAdapter.statement_blocks` (A-397), a NEW hook,
+    never an overload of ``statement_spans``, which still returns ``None``
+    unconditionally and still has no caller for this adapter.
 The Go :class:`~assay.adapters.base.LanguageAdapter` -- the SECOND real
 adapter (P08), proving the boundary P05 built is genuinely additive: adding
 Go requires ZERO changes to the frozen protocol (``adapters/base.py``), the

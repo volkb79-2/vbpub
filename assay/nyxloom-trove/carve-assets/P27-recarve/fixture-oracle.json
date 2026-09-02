@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "go_version": "go1.25.14",
+  "files": [
+    {
+      "path": "doc.go",
+      "blocks": []
+    },
+    {
+      "path": "greet.go",
+      "blocks": [
+        {
+          "start_line": 30,
+          "start_col": 32,
+          "end_line": 32,
+          "end_col": 2,
+          "num_stmts": 1,
+          "stmt_lines": [
+            31
+          ]
+        }
+      ]
+    },
+    {
+      "path": "greet_transformed.go",
+      "blocks": [
+        {
+          "start_line": 30,
+          "start_col": 32,
+          "end_line": 32,
+          "end_col": 2,
+          "num_stmts": 1,
+          "stmt_lines": [
+            31
+          ]
+        },
+        {
+          "start_line": 35,
+          "start_col": 43,
+          "end_line": 38,
+          "end_col": 2,
+          "num_stmts": 2,
+          "stmt_lines": [
+            36,
+            37
+          ]
+        }
+      ]
+    },
+    {
+      "path": "hello.go",
+      "blocks": [
+        {
+          "start_line": 32,
+          "start_col": 32,
+          "end_line": 34,
+          "end_col": 2,
+          "num_stmts": 1,
+          "stmt_lines": [
+            33
+          ]
+        },
+        {
+          "start_line": 38,
+          "start_col": 35,
+          "end_line": 40,
+          "end_col": 2,
+          "num_stmts": 1,
+          "stmt_lines": [
+            39
+          ]
+        }
+      ]
+    }
+  ]
+}

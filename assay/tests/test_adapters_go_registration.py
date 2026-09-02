@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import MappingProxyType
 
-from conftest import as_pre_oracle_attributed
+from conftest import as_statement_attributed
 
 from assay.adapters.go import GoAdapter
 from assay.adapters.python import PythonAdapter
@@ -66,15 +66,19 @@ def test_the_adapter_the_REGISTRY_hands_a_lane_is_the_undowngraded_one():
 
     The test above asserts it of ``GoAdapter()``. This asserts it of the
     object a real lane actually resolves, which is the one that matters and
-    is not the same claim: ``tests/test_canary_go_pipeline.py``'s
-    ``_PreOracleGoAdapter`` is a SUBCLASS of this very class with
-    ``requires_statement_attribution`` flipped to ``False`` (B057 shortcut 2,
-    filed rather than fixed). A subclass registered by accident, or a
-    downgraded instance constructed in ``cli._built_in_registry``, would
-    satisfy every ``isinstance`` check in the suite while removing A-392's
-    guard from every Go lane this build runs -- and a removed guard is
-    invisible, because an uncorrected profile parses cleanly and yields a
-    plausible percentage.
+    is not the same claim. When this was written the suite carried a real
+    example of the hazard: ``tests/test_canary_go_pipeline.py``'s
+    ``_PreOracleGoAdapter``, a SUBCLASS of this very class with
+    ``requires_statement_attribution`` flipped to ``False``. F008-A4 retired
+    that double -- the regenerated fixtures are joined against a real oracle
+    document, so the shipped adapter judges them undowngraded -- and this
+    test is kept precisely BECAUSE the double is gone: nothing else would
+    notice a downgraded instance reappearing. A subclass registered by
+    accident, or a downgraded instance constructed in
+    ``cli._built_in_registry``, would satisfy every ``isinstance`` check in
+    the suite while removing A-392's guard from every Go lane this build runs
+    -- and a removed guard is invisible, because an uncorrected profile
+    parses cleanly and yields a plausible percentage.
 
     ``type(...) is GoAdapter`` rather than ``isinstance`` is therefore the
     point of the second assertion, not pedantry."""
@@ -126,7 +130,7 @@ def test_a_registry_built_go_adapter_evaluates_coverage_identically_to_a_direct_
         added=added,
         # (A-392) Hand-built, already statement-granular line sets; the flag
         # is what lets a `requires_statement_attribution` adapter judge them.
-        profile=as_pre_oracle_attributed(profile),
+        profile=as_statement_attributed(profile),
         adapter=adapter,
         repo_top=Path("/repo"),
         project_root=Path("/repo"),

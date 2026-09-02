@@ -290,8 +290,13 @@ features:
     - tests/qualification/test_go_r1_real.py::test_a_real_go_lane_passes_and_records_the_toolchain_that_judged_it
     - tests/qualification/test_go_r1_real.py::test_a_real_go_lane_fails_and_names_the_uncovered_statement_line
   - id: F008-A4
-    text: The committed Go coverage fixtures are real toolchain output. Currently they are hand-authored and wrong in BOTH coordinates (A-234); real bytes are captured at carve-assets/P27/witness/coverage-hello-fixture-REAL.out, and regeneration is deliberately sequenced behind A-217's oracle so a real profile is not read as statement truth.
-    status: absent
+    text: The committed Go coverage fixtures are real toolchain output, AND every line set asserted from them is re-derived from the source-side oracle rather than from the block expansion. Both halves landed in one change (A-234's own warning - real bytes read as statement truth would be a wrong profile replaced by a real one still misread). One run of carve-assets/P27-recarve/regenerate-fixtures.sh inside tester-unified-go against go1.25.14 produced tests/fixtures/go/hello/hello.out, tests/fixtures/canary/go/greet/greet_control.out, tests/fixtures/canary/go/greet/greet_transformed.out and carve-assets/P27-recarve/fixture-oracle.json from the same committed source bytes; the tests join profile and oracle with assay.statement_attribution.attribute_statements, which refuses on any extent disagreement, so the fixtures cannot drift from their sources silently. hello.go's Greet now reports 1 executable line where the block extent 32.32,34.2 would claim 3. Provenance, the raw run output and the per-fixture derivation table are in carve-assets/P27-recarve/PROVENANCE.md; the toolchain ran once, in the image, and no test here invokes it (A-042/A-087).
+    status: proven
+    evidence:
+    - tests/test_adapters_go_union_fidelity.py::test_the_hello_world_fixture_produces_the_exact_expected_mapping
+    - tests/test_adapters_go_union_fidelity.py::test_the_naive_block_expansion_of_this_very_fixture_reports_three_times_the_lines
+    - tests/test_adapters_go_union_fidelity.py::test_the_committed_profile_and_the_committed_oracle_describe_the_same_bytes
+    - tests/test_canary_go_pipeline.py::test_the_canary_fixtures_are_statement_granular_not_the_block_expansion
   - id: F008-A5
     text: Qualified end to end on srdm's own tree - a real statement-granular Go R1 verdict produced by the shipped CLI inside tester-unified-go at a real srdm commit range, and every line on which srdm's covergate disagrees at the same commits classified as extent-expansion (assay correct, A-217/B058) or file-absence (covergate's NoCode/Unmeasured split), with the independent hand manifest as the neutral third party where one exists. Reworded by A-401 - the previous "union fidelity" wording was unattainable by construction.
     status: absent
@@ -495,22 +500,30 @@ numbers are identity, not sequence (A-153/A-167/A-219) — read
 
 ## The one feature that is deliberately honest rather than flattering
 
-**F008 (the Go adapter) is `building`, not `shipped`**, and three of its five
-criteria are `absent` on purpose:
+**F008 (the Go adapter) is `building`, not `shipped`**, and exactly one of its
+five criteria is `absent` — down from three, and the two that closed are worth
+reading as a pair because the second could not have landed without the first:
 
 - The registration, protocol surface and fail-closed `has_executable_code` are
   real and tested (F008-A1, F008-A2).
-- But a Go R1 *line* claim is not statement-granular today. A cover block
+- A Go R1 *line* claim **is** statement-granular now (F008-A3). A cover block
   carries a positional extent plus a statement *count*, never the statements'
-  own positions, so the shipped parser over-approximates. A-217 ruled that
-  statement positions must come from a source-side oracle; A-239 records the
-  accepted seam. Designed, not carved.
-- And the committed Go coverage fixtures are hand-authored and wrong in both
-  coordinates (A-234). The real bytes are captured as evidence. They are
-  deliberately *not* regenerated yet, because swapping a wrong profile for a
-  real one while the parser still over-approximates would replace a wrong
-  profile with a real profile whose block extents are then read as statement
-  truth — the exact conflation the oracle exists to remove.
+  own positions, so the parser over-approximated; A-217 ruled the positions
+  must come from a source-side oracle and A-239 recorded the seam. The P27
+  re-carve carved it: `assay/helpers/go/stmtpos/` is a real Go program, the
+  correction is `assay.statement_attribution`, and A-392 makes
+  `evaluate_coverage` refuse an uncorrected Go profile outright rather than
+  publish an over-approximation.
+- The committed Go coverage fixtures **are** real toolchain output now
+  (F008-A4), and — the half that mattered more — every line set asserted from
+  them is re-derived from the oracle in the same change. A-234's warning was
+  that regenerating the bytes alone would swap a wrong profile for a real
+  profile whose extents are still read as statement truth. That was not
+  hypothetical: the real `hello.out` block `32.32,34.2` expands naively to
+  three lines where Go has one statement, so bytes-only would have made the
+  fixture assert *more* wrong lines than the hand-authored version did.
+- What remains `absent` is **F008-A5**: qualification on a real consumer's own
+  tree (srdm), against its own `covergate`, at a real commit range.
 
 Recording that as `shipped` would be the hollow-proven claim the spine schema
 exists to make impossible.

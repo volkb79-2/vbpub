@@ -5196,6 +5196,13 @@ option 1 would move the sibling toward.
 shipped code — the shipped `GoAdapter` declares `True` — but a real, tracked
 gap between what those tests exercise and what a consumer runs.
 
+**RESOLVED 2026-09-02 (Wave C generation 6), all three boxes.** F008-A4's
+fixture regeneration removed both shortcuts rather than documenting either:
+no Go test in the suite now judges a downgraded adapter or an uncorrected
+profile. The narrative below is kept as filed — it is the reasoning that
+selected the fix, and its "why it is filed rather than fixed here" paragraph
+is exactly what F008-A4 went on to do.
+
 ### What happened
 
 `GoAdapter.requires_statement_attribution = True` makes
@@ -5240,11 +5247,41 @@ Go toolchain exists — which the registered gate image does not provide.
 
 ### Acceptance
 
-- [ ] `test_adapters_go_union_fidelity.py`'s expectations re-derived from the
+- [x] `test_adapters_go_union_fidelity.py`'s expectations re-derived from the
       real oracle, and `as_pre_oracle_attributed` dropped from that file
-      (F008-A4);
-- [ ] a decision recorded on the canary shortcut, and `_PreOracleGoAdapter`
-      either removed or reduced to the half that genuinely needs it;
+      (F008-A4). **Landed 2026-09-02 (Wave C generation 6).**
+      `tests/fixtures/go/hello/hello.out` is now real `go test -coverprofile`
+      output for the committed source bytes (`32.32,34.2 1 1` /
+      `38.35,40.2 1 0`), and the module joins it against
+      `carve-assets/P27-recarve/fixture-oracle.json` — the real oracle's
+      output over the same bytes — with the production
+      `attribute_statements`. The asserted sets went from `{29,30}`/`{36,37}`
+      to `{33}`/`{39}`: 2 executable lines, not 4. A named control test
+      asserts the naive expansion of the SAME real profile is
+      `{32,33,34}`/`{38,39,40}`, which is the concrete form of A-234's
+      warning — regenerating the bytes alone would have made the module
+      assert three wrong lines instead of two. Provenance, the raw run and
+      the per-fixture derivation table: `P27-recarve/PROVENANCE.md`.
+      `as_pre_oracle_attributed` is gone; the remaining hand-built-line-set
+      callers use `conftest.as_statement_attributed`, which now REFUSES a
+      multi-line block extent instead of trusting the caller.
+- [x] a decision recorded on the canary shortcut, and `_PreOracleGoAdapter`
+      either removed or reduced to the half that genuinely needs it.
+      **REMOVED 2026-09-02, same change — the shortcut fell out rather than
+      needing the decision this entry anticipated.** The controller's DA-9
+      (`vbpub@53eba55b`) said to close this box only if F008-A4's
+      regeneration made it fall out, and it did: `greet_control.out` and
+      `greet_transformed.out` are now real toolchain output, and
+      `test_canary_go_pipeline.py` corrects each with the real oracle
+      document before `run_go_canary` sees it. A genuinely
+      statement-attributed profile satisfies A-392's guard, so the SHIPPED
+      `GoAdapter` — `requires_statement_attribution=True`, no override of
+      any declaration — judges these fixtures directly. Neither option this
+      entry laid out was needed: no canned oracle threaded through
+      `run_go_canary` (which still reads its own artifacts), no file split.
+      The canary is now proven cause-sensitive at statement granularity
+      (`{36,37}` missing, not `{35,36,37,38}`), which is precisely what the
+      double could not prove.
 - [x] whichever survives, a test that goes RED if the shipped adapter's
       `requires_statement_attribution` is ever flipped to `False` — so the
       double can never quietly become the product. **Landed 2026-09-01

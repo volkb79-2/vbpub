@@ -27,6 +27,7 @@ import json
 from pathlib import Path
 
 import pytest
+from conftest import load_go_statement_oracle
 
 from assay.coverage_parsers import go_cover
 from assay.coverage_parsers.model import CoverageBlock, CoverageProfile, FileCoverage
@@ -39,26 +40,12 @@ _ORACLE_JSON = _CARVE / "P27-recarve" / "stmtpos-witness-oracle.json"
 
 
 def _oracle_blocks() -> dict[str, tuple[StatementBlock, ...]]:
-    """The committed oracle document, keyed by source basename."""
-    document = json.loads(_ORACLE_JSON.read_text())
-    assert document["schema"] == 1, (
-        "the committed oracle artifact declares a schema this test was not "
-        "written against"
-    )
-    out: dict[str, tuple[StatementBlock, ...]] = {}
-    for entry in document["files"]:
-        out[Path(entry["path"]).name] = tuple(
-            StatementBlock(
-                start_line=b["start_line"],
-                start_col=b["start_col"],
-                end_line=b["end_line"],
-                end_col=b["end_col"],
-                num_stmts=b["num_stmts"],
-                stmt_lines=tuple(b["stmt_lines"]),
-            )
-            for b in entry["blocks"]
-        )
-    return out
+    """The committed oracle document, keyed by source basename.
+
+    The reader itself lives in ``conftest`` (F008-A4): a second committed
+    oracle document now exists for assay's own regenerated fixtures, and three
+    copies of one JSON reader is exactly where a parser drifts."""
+    return load_go_statement_oracle(_ORACLE_JSON)
 
 
 def _attribute(profile_name: str, source_name: str) -> FileCoverage:

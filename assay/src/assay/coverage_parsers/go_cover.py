@@ -8,6 +8,15 @@ statement continuations. A-218 closed the inclusive-versus-half-open question as
 inert; A-217 ruled option 2. This file has an explicit scope status for the
 re-carve per A-217(b). Do not re-derive the correction from this docstring.
 
+**A-234's own tracked item is now DISCHARGED (F008-A4).** The committed Go
+fixtures are real toolchain output, and every expectation read from them is
+re-derived from the oracle rather than from this module's expansion — so no
+test in the suite reads a block extent here as statement truth. The banner
+above stays because the PROSE below is still pre-oracle prose: this parser's
+line sets remain an over-approximation by design, and
+:func:`assay.statement_attribution.attribute_statements` is what corrects
+them. That separation is the point (A-239), not an omission.
+
 **B039/B047 item 4.** This module's own block-range expansion below (``for
 file_line in range(start, end + 1)``) had no bound at all until this wave: a
 single ~60-byte block line reading ``pkg/x.go:1.1,999999999.1 1 1`` sits far
