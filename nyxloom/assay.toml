@@ -1,0 +1,61 @@
+# nyxloom's own implementation gate claim (NL-1 -- Assay-backed judgment,
+# replacing the retired `nyxloom.coverage_gate` self-judgment).
+#
+# The lane command is nyxloom's existing pytest invocation (pytest-cov, NOT
+# `coverage run` -- coverage run traces only the parent, measuring ~nothing
+# of xdist workers, which would false-FAIL under `-n auto`). R1 makes Assay
+# JUDGE that coverage: the changed-line floor on base..HEAD (the role the
+# retired `nyxloom.coverage_gate` used to play) and a verifiable verdict
+# artifact. tester-unified supplies the environment; the pinned zipapp
+# (tools/assay/assay-4.0.0.pyz, sha256-verified) is the Assay CLI boundary --
+# Assay source is never imported, and `python -m nyxloom.coverage_gate` no
+# longer runs from the gate (the module itself stays: `mutation_gate.py`
+# still imports its helpers, and it remains the toolkit nyxloom OFFERS other
+# projects per STANDARD.md -- unrelated call sites, out of this package).
+#
+# require_branch = false: nyxloom's suite does not measure branch coverage
+# today (no --cov-branch, no [tool.coverage] config) -- this migration swaps
+# the JUDGE for the existing line-only floor (D-064-L2); it does not raise
+# the bar. Declaring require_branch=true here would hard-fail every run on
+# an unmeasured property. Widening to branch coverage is a separate decision.
+#
+# snapshot_selection = "repository-minus-unsafe-symlinks": this assay.toml
+# lives in the same vbpub monorepo as ciu/assay.toml, whose repository-wide
+# snapshot includes topos's three absolute-symlink security fixtures --
+# declared verbatim below, byte-identical to ciu/assay.toml's declaration
+# (same repo, same fixtures, same reason).
+schema_version = 2
+
+[lanes.tester-unified]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-n", "auto", "-q", "--cov=src/nyxloom", "--cov-report=json:coverage.json"]
+env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
+# PATH: xdist worker spawn (subprocess). HOME: config/cache dirs some tests
+# touch. TERM/LANG: parity with ciu's lane. No CGROUP_PARENT_DEV_BACKGROUND
+# passthrough -- nyxloom's suite (unlike ciu's cgroup-governance tests) never
+# reads it.
+env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
+budget = "30m"
+allow_argv_append = false
+
+[lanes.tester-unified.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.tester-unified.judge]
+language = "python"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+require_branch = false
+base = "origin/main"
+
+[lanes.tester-unified.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
