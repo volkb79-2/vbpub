@@ -722,8 +722,7 @@
         "type": "TASK_BLOCKED",
         "wave_id": null
       }
-    ],
-    "verify-gate-dispatch": []
+    ]
   },
   "version": 1
 }

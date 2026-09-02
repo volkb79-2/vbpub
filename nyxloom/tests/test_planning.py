@@ -407,12 +407,17 @@ class TestThisRepo:
     def test_every_rule_names_a_real_contract_item(self, table):
         """The module contract is the frozen interface. Item 8 (actions never
         embed prose) is a constraint on every action rather than a decision,
-        so it is the one numbered item no rule implements."""
+        so it is the one numbered item no rule implements. Item 16 (GATE
+        VERIFY CADENCE) is the other deliberate exception: nyxloom-P98
+        (2026-09-02) retired it end to end -- its rule, its Action, and its
+        planner entry are gone, not moved -- leaving a numbering gap rather
+        than renumbering item 17 down (see reconcile.py's own module
+        contract and nyxloom-trove/decisions.md)."""
         covered = {item for spec in table for item in spec.contract_items}
         assert covered <= set(range(1, 18))
-        assert covered == set(range(1, 18)) - {8}, (
+        assert covered == set(range(1, 18)) - {8, 16}, (
             f"contract items with no owning rule: "
-            f"{sorted(set(range(1, 18)) - {8} - covered)}")
+            f"{sorted(set(range(1, 18)) - {8, 16} - covered)}")
 
     def test_rule_names_and_ordering_are_unambiguous(self, table):
         names = [spec.name for spec in table]
