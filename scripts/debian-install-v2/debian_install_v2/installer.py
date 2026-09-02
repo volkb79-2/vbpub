@@ -19,6 +19,8 @@ from .templates import (
     APT_CUSTOM,
     APT_PRIORITIES,
     APT_SOURCES,
+    CGROUP2_FLAGS_SCRIPT,
+    CGROUP2_FLAGS_SERVICE,
     STAGE2_SERVICE,
     THP_SERVICE,
     ZSWAP_SERVICE,
@@ -249,18 +251,68 @@ MaxFileSec=1month
         ])
         self.actions.write_file("/etc/apt/sources.list.d/docker.sources", docker_sources)
         self._packages(["containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin"], "docker")
-        daemon = json.dumps({
-            "features": {"buildkit": True},
-            "live-restore": True,
-            "log-driver": "local",
-            "log-opts": {"max-file": "3", "max-size": "10m"},
-            "metrics-addr": "127.0.0.1:9323",
-            "storage-driver": "overlay2",
-            "userland-proxy": False,
-        }, indent=2) + "\n"
-        self.actions.write_file("/etc/docker/daemon.json", daemon, 0o644)
+        # Merge, not overwrite (D-F1: daemon.json ownership split with mdt
+        # host-setup, which separately owns only "cgroup-parent" and merges
+        # the same way — each tool's own keys land correctly regardless of
+        # run order, and neither clobbers a hand-added key or the other
+        # tool's keys). live-restore/log-driver/log-opts are NOT this
+        # method's keys — see _configure_docker_daemon(), called right after
+        # this in _stage1().
+        existing = self._read_json_for_merge("/etc/docker/daemon.json")
+        existing["features"] = {"buildkit": True}
+        existing["metrics-addr"] = "127.0.0.1:9323"
+        existing["storage-driver"] = "overlay2"
+        existing["userland-proxy"] = False
+        self.actions.write_file("/etc/docker/daemon.json", json.dumps(existing, indent=2) + "\n", 0o644)
         self._run(["/usr/bin/systemctl", "enable", "--now", "docker"], "enable Docker", dangerous=True)
         self.state.mark_step("docker_install", "success", apt_arch)
+
+    def _read_json_for_merge(self, path: str) -> dict:
+        # Dry-run never touches the real filesystem for a read either — same
+        # convention as _health_gate_swap_devices()'s zswap-compressor read
+        # (installer.py, "zstd" if self.actions.dry_run else Path(...).read_text()).
+        if self.actions.dry_run:
+            return {}
+        p = Path(path)
+        if not p.is_file():
+            return {}
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"refusing to merge into an unparseable {path}: {exc}") from exc
+
+    def _configure_docker_daemon(self) -> None:
+        # Owns live-restore/log-driver/log-opts only — see the ownership
+        # split rationale in _install_docker()'s comment above. mdt
+        # host-setup/install.sh owns "cgroup-parent" the same, disjoint way.
+        existing = self._read_json_for_merge("/etc/docker/daemon.json")
+        existing["live-restore"] = self.config.docker_live_restore
+        existing["log-driver"] = self.config.docker_log_driver
+        existing.setdefault("log-opts", {})
+        existing["log-opts"]["max-size"] = self.config.docker_log_max_size
+        existing["log-opts"]["max-file"] = self.config.docker_log_max_file
+        self.actions.write_file("/etc/docker/daemon.json", json.dumps(existing, indent=2) + "\n", 0o644)
+        self.state.mark_step("docker_daemon_config", "success", self.config.docker_log_driver)
+
+    def _configure_cgroup2_flags(self) -> None:
+        # Default ON, no config flag — memory_recursiveprot missing silently
+        # defeats every slice's MemoryLow/MemoryMin with no other symptom
+        # (systemctl show keeps reporting the value you set). Applied
+        # immediately (enable --now), unlike zswap/thp's enable-only: those
+        # write to sysfs knobs ordered before swap.target/sysinit.target
+        # hasn't been reached yet in this stage1/stage2 split; a cgroup2
+        # remount has no such ordering requirement and is safe to apply the
+        # moment it's written (idempotent — a no-op if already correct).
+        self.actions.write_file(
+            "/usr/local/sbin/vbpub-cgroup2-flags.sh", CGROUP2_FLAGS_SCRIPT, 0o755
+        )
+        self.actions.write_file("/etc/systemd/system/cgroup2-flags.service", CGROUP2_FLAGS_SERVICE)
+        self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
+        self._run(
+            ["/usr/bin/systemctl", "enable", "--now", "cgroup2-flags.service"],
+            "enable cgroup2 mount-flags unit", dangerous=True,
+        )
+        self.state.mark_step("cgroup2_flags", "success", "memory_recursiveprot+nsdelegate")
 
     def _configure_zswap(self) -> None:
         self.actions.write_file(
@@ -648,12 +700,14 @@ MaxFileSec=1month
             self._configure_journald()
         if self.config.run_docker_install:
             self._install_docker()
+            self._configure_docker_daemon()
         self._install_stage2()
         self._reboot()
 
     def _stage2(self) -> None:
         self._packages(["e2fsprogs", "util-linux"], "stage2")
         self._configure_zswap()
+        self._configure_cgroup2_flags()
         self._apply_known_swap_shape()
         self._activate_swap_partitions()
         self._health_gate_swap_devices()

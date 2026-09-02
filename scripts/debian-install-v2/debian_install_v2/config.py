@@ -51,12 +51,17 @@ class Config:
     zswap_compressor: Literal["zstd", "lz4", "lzo-rle"] = "zstd"
     zswap_zpool: Literal["z3fold", "zbud", "zsmalloc"] = "z3fold"
     zswap_pool_percent: int = 25
+    docker_live_restore: bool = True
+    docker_log_driver: str = "json-file"
+    docker_log_max_size: str = "50m"
+    docker_log_max_file: str = "3"
     telegram_bot_token: str = field(default="", repr=False)
     telegram_chat_id: str = field(default="", repr=False)
     credential_mode: Literal["root-storage", "systemd"] = "root-storage"
 
 
 _SIZE_RE = re.compile(r"^[0-9]+$")
+_DOCKER_LOG_MAX_SIZE_RE = re.compile(r"^[0-9]+[bkmg]?$", re.IGNORECASE)
 def _reject_obsolete(data: dict[str, Any]) -> None:
     obsolete = sorted(set(data) & OBSOLETE_VARIABLES)
     if obsolete:
@@ -87,6 +92,7 @@ def _validate(config: Config) -> None:
         string_names = [
             "log_dir", "state_dir", "stage2_output",
             "telegram_bot_token", "telegram_chat_id",
+            "docker_log_driver", "docker_log_max_size", "docker_log_max_file",
         ]
     for name in string_names:
         if not isinstance(getattr(config, name), str):
@@ -95,6 +101,12 @@ def _validate(config: Config) -> None:
         raise ConfigError("zswap_compressor must be zstd, lz4, or lzo-rle")
     if config.zswap_zpool not in {"z3fold", "zbud", "zsmalloc"}:
         raise ConfigError("zswap_zpool must be z3fold, zbud, or zsmalloc")
+    if not config.docker_log_driver:
+        raise ConfigError("docker_log_driver must not be empty")
+    if not _DOCKER_LOG_MAX_SIZE_RE.fullmatch(config.docker_log_max_size):
+        raise ConfigError("docker_log_max_size must be a number optionally suffixed b/k/m/g (e.g. '50m')")
+    if not config.docker_log_max_file.isdigit() or int(config.docker_log_max_file) < 1:
+        raise ConfigError("docker_log_max_file must be a positive integer string (e.g. '3')")
     if not config.fresh_install:
         raise ConfigError("v2 install is restricted to fresh_install=true in this release")
     for name in ("log_dir", "state_dir", "stage2_output"):

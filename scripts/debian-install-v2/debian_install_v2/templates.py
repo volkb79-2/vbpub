@@ -128,6 +128,73 @@ WantedBy=sysinit.target
 """
 
 
+# Ported from modern-debian-tools-python-debug/host-setup/scripts/
+# mdt-apply-dev-caps.sh's cgroup2-mount-flags section (the *already-fixed*
+# copy, CGROUP2_FLAGS=fix default) rather than reproduced inline in a unit's
+# ExecStart= (which would need every '$' doubled to '$$' for systemd's own
+# specifier expansion — a real script file avoids that entirely and stays
+# byte-for-byte diffable against the source it was ported from).
+#
+# Unlike host-setup's version, this has no periodic timer behind it — a
+# fresh install only gets one shot at boot, so this errs toward being
+# unconditionally safe to re-run (idempotent: a no-op once both options are
+# already present) rather than toward matching host-setup's sweep cadence.
+CGROUP2_FLAGS_SCRIPT = """\
+#!/bin/sh
+# Restores memory_recursiveprot (+nsdelegate) on /sys/fs/cgroup if a later
+# remount stripped it — systemd mounts cgroup2 with these by default at boot
+# (>= 248), but a runtime remount from the init cgroup namespace can silently
+# drop them, and without memory_recursiveprot every slice's MemoryLow/
+# MemoryMin becomes a no-op while `systemctl show` keeps reporting the value
+# you set. Also restores memory_hugetlb_accounting on kernel >= 6.6 (a
+# systemd >= 260 mount default we can take at the raw kernel-mount-option
+# level without waiting for systemd to reach that version) — kernel-gated
+# because offering an unsupported mount option fails the WHOLE remount, not
+# just that one option.
+set -eu
+
+CG=/sys/fs/cgroup
+KVER=$(uname -r | grep -oE '^[0-9]+\\.[0-9]+')
+KMAJOR=${KVER%%.*}
+KMINOR=${KVER##*.}
+HUGETLB_OPT=""
+if [ -n "$KMAJOR" ] && [ -n "$KMINOR" ] \\
+   && { [ "$KMAJOR" -gt 6 ] || { [ "$KMAJOR" -eq 6 ] && [ "$KMINOR" -ge 6 ]; }; }; then
+  HUGETLB_OPT=",memory_hugetlb_accounting"
+fi
+
+CG_OPTS=$(findmnt -no OPTIONS "$CG" 2>/dev/null || true)
+MISSING=0
+if [ -n "$CG_OPTS" ]; then
+  case "$CG_OPTS" in *memory_recursiveprot*) : ;; *) MISSING=1 ;; esac
+  if [ -n "$HUGETLB_OPT" ]; then
+    case "$CG_OPTS" in *memory_hugetlb_accounting*) : ;; *) MISSING=1 ;; esac
+  fi
+fi
+if [ "$MISSING" = 1 ]; then
+  mount -o "remount,nsdelegate,memory_recursiveprot$HUGETLB_OPT" "$CG"
+  echo "cgroup2: restored nsdelegate,memory_recursiveprot$HUGETLB_OPT (was: $CG_OPTS)"
+fi
+"""
+
+
+CGROUP2_FLAGS_SERVICE = """\
+[Unit]
+Description=Restore cgroup2 memory_recursiveprot (+nsdelegate, +memory_hugetlb_accounting)
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/vbpub-cgroup2-flags.sh
+
+[Install]
+WantedBy=sysinit.target
+"""
+
+
 STAGE2_SERVICE = """\
 [Unit]
 Description=vbpub debian install stage2

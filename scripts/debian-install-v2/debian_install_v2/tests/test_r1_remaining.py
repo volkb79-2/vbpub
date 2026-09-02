@@ -11,7 +11,7 @@ import pytest
 
 from debian_install_v2.actions import HostActions
 from debian_install_v2.bootstrap import main
-from debian_install_v2.config import Config, ConfigError
+from debian_install_v2.config import Config, ConfigError, load_config
 from debian_install_v2.installer import Installer, SWAP_TYPE_GUID
 from debian_install_v2.state import StateError, StateStore
 from debian_install_v2.tests.test_fake_integration import FakeHostActions
@@ -421,3 +421,125 @@ def test_health_gate_compressor_and_log(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "read_text", fake_read_match)
     with pytest.raises(RuntimeError, match="stage2 log does not exist"):
         installer._health_gate_swap_devices()
+
+
+def test_config_docker_daemon_defaults():
+    config = Config(telegram_bot_token="", telegram_chat_id="")
+    assert config.docker_live_restore is True
+    assert config.docker_log_driver == "json-file"
+    assert config.docker_log_max_size == "50m"
+    assert config.docker_log_max_file == "3"
+
+
+def test_config_docker_log_driver_empty_rejected():
+    with pytest.raises(ConfigError, match="docker_log_driver"):
+        load_config(raw_json=json.dumps({"docker_log_driver": ""}))
+
+
+@pytest.mark.parametrize("bad", ["", "abc", "50x", "-5m"])
+def test_config_docker_log_max_size_invalid_rejected(bad):
+    with pytest.raises(ConfigError, match="docker_log_max_size"):
+        load_config(raw_json=json.dumps({"docker_log_max_size": bad}))
+
+
+@pytest.mark.parametrize("bad", ["", "0", "-1", "abc"])
+def test_config_docker_log_max_file_invalid_rejected(bad):
+    with pytest.raises(ConfigError, match="docker_log_max_file"):
+        load_config(raw_json=json.dumps({"docker_log_max_file": bad}))
+
+
+def test_configure_docker_daemon_dry_run_merges_against_empty_base(tmp_path):
+    installer = make_installer(
+        tmp_path, docker_live_restore=False, docker_log_driver="local",
+        docker_log_max_size="10m", docker_log_max_file="7",
+    )
+    installer._configure_docker_daemon()
+    written = json.loads(installer.actions.dry_run_writes["/etc/docker/daemon.json"])
+    assert written == {
+        "live-restore": False,
+        "log-driver": "local",
+        "log-opts": {"max-size": "10m", "max-file": "7"},
+    }
+
+
+def _patch_daemon_json_exists(monkeypatch, content: dict) -> None:
+    real_is_file = Path.is_file
+    real_read_text = Path.read_text
+
+    def fake_is_file(self, *a, **kw):
+        return str(self) == "/etc/docker/daemon.json" or real_is_file(self, *a, **kw)
+
+    def fake_read_text(self, *a, **kw):
+        if str(self) == "/etc/docker/daemon.json":
+            return json.dumps(content)
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "is_file", fake_is_file)
+    monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+
+def test_configure_docker_daemon_merges_existing_unrelated_key(tmp_path, monkeypatch):
+    installer = make_installer(tmp_path, dry_run=False)
+    _patch_daemon_json_exists(monkeypatch, {"dns": ["1.1.1.1"]})
+    installer._configure_docker_daemon()
+    written = json.loads(installer.actions.files["/etc/docker/daemon.json"])
+    assert written["dns"] == ["1.1.1.1"]
+    assert written["live-restore"] is True
+    assert written["log-driver"] == "json-file"
+    assert written["log-opts"] == {"max-size": "50m", "max-file": "3"}
+
+
+def test_install_docker_merges_existing_key_and_omits_daemon_config_owned_keys(tmp_path, monkeypatch):
+    installer = make_installer(tmp_path, dry_run=False)
+    _patch_daemon_json_exists(monkeypatch, {"dns": ["1.1.1.1"]})
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def read(self):
+            return b"FAKE-KEY"
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: FakeResponse())
+    installer.actions.mkdir = lambda path: None
+    installer.actions.outputs[("/usr/bin/apt-get", "update", "-qq")] = ""
+    installer.actions.outputs[("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "gnupg")] = ""
+    installer.actions.outputs[("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "containerd.io", "docker-buildx-plugin", "docker-ce", "docker-ce-cli", "docker-compose-plugin")] = ""
+    installer.actions.outputs[("/usr/bin/systemctl", "enable", "--now", "docker")] = ""
+    installer._install_docker()
+    written = json.loads(installer.actions.files["/etc/docker/daemon.json"])
+    assert written["dns"] == ["1.1.1.1"]
+    assert written["features"] == {"buildkit": True}
+    assert written["metrics-addr"] == "127.0.0.1:9323"
+    assert written["storage-driver"] == "overlay2"
+    assert written["userland-proxy"] is False
+    assert "live-restore" not in written
+    assert "log-driver" not in written
+    assert "log-opts" not in written
+
+
+def test_read_json_for_merge_rejects_unparseable_existing_file(tmp_path, monkeypatch):
+    installer = make_installer(tmp_path, dry_run=False)
+    real_is_file = Path.is_file
+    real_read_text = Path.read_text
+    monkeypatch.setattr(
+        Path, "is_file",
+        lambda self, *a, **kw: str(self) == "/etc/docker/daemon.json" or real_is_file(self, *a, **kw),
+    )
+    monkeypatch.setattr(
+        Path, "read_text",
+        lambda self, *a, **kw: "{not json" if str(self) == "/etc/docker/daemon.json" else real_read_text(self, *a, **kw),
+    )
+    with pytest.raises(RuntimeError, match="unparseable"):
+        installer._configure_docker_daemon()
+
+
+def test_configure_cgroup2_flags_dry_run(tmp_path):
+    installer = make_installer(tmp_path)
+    installer._configure_cgroup2_flags()
+    script = installer.actions.dry_run_writes["/usr/local/sbin/vbpub-cgroup2-flags.sh"]
+    assert "memory_recursiveprot" in script
+    assert "memory_hugetlb_accounting" in script
+    unit = installer.actions.dry_run_writes["/etc/systemd/system/cgroup2-flags.service"]
+    assert "ExecStart=/usr/local/sbin/vbpub-cgroup2-flags.sh" in unit
+    assert "WantedBy=sysinit.target" in unit
