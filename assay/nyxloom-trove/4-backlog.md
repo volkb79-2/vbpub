@@ -5050,6 +5050,15 @@ were landed adjacently for exactly this reason (DA-R23).
 — what "derived" would even mean here is a real product question, not an
 implementation shortcut.**
 
+**Status: RESOLVED BY RULING 2026-09-02 (Wave D, DA-D4 as completed by DA-R26
+→ A-437).** The product question this entry refused to answer locally was
+answered by the controller: `discarded` means **listed**, the ingest-side
+derivation of that already ships, and the verify-side re-derivation DA-D4
+asked for **is not constructible** — so the field is **declared, not
+verified**, and says so in four places. The `9999` reproduction below is
+**still accepted, deliberately**; the residual is [B070](#b070). See the
+Resolution section at the end of this entry.
+
 > **Numbering note.** The controller's fix-round brief asked for this to be
 > filed as **B052**, citing "the same file-don't-build pattern as
 > B049/B050/B051". There is no B051: `main` carries entries through B049 and
@@ -5159,20 +5168,94 @@ PURPOSE reads as the second.
    deliberately uncompilable mutant is easy to produce with Stryker) so the
    field finally has a witness.
 
+### Resolution — RESOLVED BY RULING 2026-09-02, Wave D (DA-D4 as completed by DA-R26 → A-437)
+
+**The ruling is that the second half of DA-D4 is not constructible, and that
+this is a property of the field rather than a gap in the verifier.** The
+"listed vs encountered" question this entry asked is answered **listed** — and
+the ingest half of that answer already shipped with B046
+(`mutation.ingest_mutation_report` counts `_INGESTED_DISCARDED_STATUSES`,
+`mutation.py:1845`, `:1968`). What does not follow, and what DA-D4 assumed,
+is a verify-side re-derivation: under "listed" semantics a discarded mutant is
+*outside the document*. It is in no bucket (`mutation.py:1967-1969`
+`continue`s past the assignment), in neither `candidate_count` nor `total`
+(both are `attempted`, `mutation.py:1992-1997`, and
+`Mutation._check_arithmetic`, `verdict.py:1684-1703`, forbids them to differ
+outside the limit sentinel — so `candidate_count - total` is not merely absent
+but illegal), and its LINE is not in `lines_without_candidates`
+(`mutated_lines.add(...)` precedes the discard `continue`,
+`mutation.py:1966-1968`, correctly: the tool *did* produce a candidate there).
+A truthful document with 900 discarded mutants is byte-indistinguishable from
+a truthful one with 0.
+
+**The `9999` reproduction was re-run on the current tip and is NOT refused —
+deliberately, by ruling (DA-R26).** On the frozen real ingested document
+(`carve-assets/W6/expected/ingested-r2-v10-template.json`, 109 mutants, 21
+killed / 88 survived, `candidate_count == total == 109`),
+`judgment.r2.discarded = 9999` gives `verify_document(...) == []`, against a
+clean control of `[]` and a `-1` negative control that still produces its two
+named failures. The reason it stays accepted: every upper bound that catches
+it (`discarded <= total`, `discarded <= candidate_count`) equally refuses a
+**truthful** report that could not compile most of its own mutants — the exact
+report this field exists to make visible, and the exact failure this entry was
+filed to avoid. This entry's own "why this is not fixable in Wave B" section
+said so; DA-R26 makes it the ruling.
+
+**`discarded` is a COUNT beside the payload, never enters `Mutation`'s
+buckets, so the denominator is unaffected by construction** (DA-R23, the
+sentence B050's row carries too). That is what makes declared-not-verified
+proportionate: an inflated value understates how much was measured and can
+never manufacture a green.
+
+**The residual is filed as [B070](#b070), a v11 candidate** — list the
+discarded mutants, or carry an ingested-only in-scope count, so `discarded`
+becomes a difference `verify` can take. Adding that quantity before 5.0.0
+shipped would have been free; after it, it is a schema bump.
+
 ### Acceptance
 
-- [ ] the "listed vs encountered" ruling recorded as an A-row, naming which
-      alternative was rejected and why;
-- [ ] under **listed**: `discarded` re-derived from the payload in `verify.py`
-      beside the other three re-derivations, with a test that mutates it on a
-      REAL document and asserts a NAMED failure (the `9999` reproduction above
-      is the test to write);
-- [ ] under **encountered**: the declared-not-verified statement in the schema
-      description, DESIGN-GUIDE §11 and CONSUMERS, and a test asserting the
-      schema description says so — the same three-place discipline
-      `producer_tool` already carries;
-- [ ] a committed real report with a non-zero `discarded`, and a frozen
-      W-generation document carrying it, so the field has a witness at all.
+**RESOLVED 2026-09-02 by A-437 (Wave D, schema v10), route 1 of the three the
+wave REPORT laid out. Routes 2 (list the mutants / add the count now) and 3
+(an unsound upper bound) were both rejected by DA-R26 — 3 on the merits, 2 as
+a v11 item (`B070`).**
+
+- [x] the "listed vs encountered" ruling recorded as an A-row, naming which
+      alternative was rejected and why — **DA-D4 (listed) as completed by
+      DA-R26, recorded as A-437**, which names route 3, route-2-in-this-wave,
+      the `candidate_count - total` derivation and the hand-edited-fixture
+      witness as the rejected alternatives;
+- [x] under **listed**: ~~`discarded` re-derived from the payload in
+      `verify.py`~~ — **ruled not constructible (DA-R26)**, with the three
+      file:line seams above as the evidence. The `9999` document is asserted
+      **accepted**, with the reason written into the test, by
+      `tests/test_verify_ingested_r2.py::test_an_inflated_discarded_count_is_ACCEPTED_deliberately`
+      over the same real-artifact document the module's other negatives
+      mutate;
+- [x] the declared-not-verified statement in the schema description
+      (`src/assay/schemas/verdict.schema.json`
+      `$defs.judgment_r2.properties.discarded`, and its byte-identical W6 copy
+      `carve-assets/W6/verdict.schema.v10.json` — description bytes only, no
+      wire change, no second `!` commit, W6 MANIFEST row amended to record
+      it), DESIGN-GUIDE §11 beside `producer_tool`'s own "declared by
+      artifact, not verified" sentence, CONSUMERS' "what the verdict records"
+      paragraph in the ingested-lane section, and — the fourth place, which
+      this entry did not think to ask for — `verify.py`'s own docstring, now
+      carrying an explicit "what this function does NOT check" section plus a
+      comment at the check site. The machine check is
+      `test_the_schema_says_discarded_is_declared_not_verified`, the same
+      three-place discipline `producer_tool` carries;
+- [x] *(added by DA-R23's shared sentence)*
+      `test_an_inflated_discarded_count_cannot_move_the_R2_status` — the
+      structural half (`discarded` is not in the payload at all;
+      `total == candidate_count ==` the bucket sum) and the behavioural half
+      (the raw verifier's `judge_mutation` re-derivation still agrees);
+- [x] ~~a committed real report with a non-zero `discarded`, and a frozen
+      W-generation document carrying it~~ — **DA-D4's in-image Stryker witness
+      clause is WAIVED for a declared-not-verified field (DA-R26)**: the
+      derivation's evidence is B046's existing ingest tests over the committed
+      StrykerJS artifact, and no in-image run is needed to prove that a count
+      is *not* verified. A hand-authored fixture was not the alternative
+      (A-334). If B070 ever lands, the witness comes back with it.
 
 ---
 
@@ -6555,3 +6638,120 @@ a stale generation is stale).
       (`test_the_scanner_ignores_the_lane_schema_version_and_prose`);
 - [x] a scanner whose pattern rots to zero matches FAILS rather than passes
       (both real-tree tests assert `found` is non-empty first).
+
+---
+
+## B070 — `judgment.r2.discarded` has no counterpart on the wire to be a difference OF, so it can only ever be declared: list the discarded mutants, or carry an ingested-only in-scope count
+
+**Filed 2026-09-02** by Wave D generation 10, on the controller's **DA-R26**,
+as the explicit residual of [B051](#b051). **v11 CANDIDATE — FILE, DO NOT
+BUILD in this wave.** It is a wire change, and Wave D's hard invariant is
+exactly ONE `feat(assay)!:` commit, which already exists (`b2fd09f3`).
+
+**The cost sentence, recorded because it is the whole reason this entry
+exists:** adding this quantity **before 5.0.0 shipped would have been free** —
+it would have ridden the v10 cut that was already breaking the wire — and
+**after 5.0.0 it is a v11 schema bump**, with its own hard cut, its own
+`W<n>` generation, and its own migration notes for every consumer. The
+window closed while B051 was being ruled on; that is not a mistake anyone
+made, it is what a design question surfacing mid-cut costs.
+
+### The problem
+
+B051 asked whether `discarded` could be re-derived from the document, and
+DA-D4 ruled the field means **listed** (the mutants the report itself
+enumerates with `CompileError`/`RuntimeError`), which
+`mutation.ingest_mutation_report` already implements at ingest
+(`mutation.py:1845`, `:1968`). DA-R26 then ruled that the verify side
+**cannot** re-derive it, and that the field is therefore declared, not
+verified (A-437).
+
+The reason is a missing quantity, not a missing check. Under "listed"
+semantics a discarded mutant is outside the document it would have to be
+derived from:
+
+* it is in **no `Mutation` bucket** — `ingest_mutation_report` `continue`s past
+  the bucket assignment (`mutation.py:1967-1969`);
+* it is in **neither `candidate_count` nor `total`** — both are set to
+  `attempted`, the bucket sum (`mutation.py:1992-1997`), and
+  `Mutation._check_arithmetic` (`verdict.py:1684-1703`) FORBIDS
+  `candidate_count != total` outside the limit sentinel, so
+  `discarded == candidate_count - total` is not merely absent but illegal;
+* its **line is not in `lines_without_candidates`** — `mutated_lines.add(...)`
+  precedes the discard `continue` (`mutation.py:1966-1968`), correctly, since
+  the tool did produce a candidate on that line.
+
+So a truthful ingested document with 5 bucketed and 900 discarded mutants is
+**byte-indistinguishable** from a truthful one with 5 bucketed and 0
+discarded, and `judgment.r2.discarded = 9999` on the frozen 109-mutant
+document verifies clean (re-run 2026-09-02, A-437). Every upper bound that
+catches that (`discarded <= total`, `<= candidate_count`) equally refuses the
+honest high-discard report the field exists to surface, which is why DA-R26
+rejected one.
+
+### Why it is worth fixing at v11 rather than living with
+
+`discarded` is the ONLY fact an ingested `judgment.r2` carries that the raw
+layer says nothing independent about. `survived_uncovered` must name positions
+the `survived` bucket records; `lines_without_candidates` must not name a line
+a recorded mutant starts on; `survived_uncovered` must be a subset of
+`survived`; the score is re-derived through `judge_mutation` (A-379) and, since
+B050, against the floor the document itself states. Declared-not-verified is
+the honest description of the exception — it is not a satisfying resting place
+for it. Note what is NOT at stake: `discarded` is a count beside the payload
+and never enters the buckets, so the denominator is unaffected by construction
+(DA-R23) and no value of this field can manufacture a green. This is a
+**credibility** gap, which is why it is a v11 candidate and not a defect.
+
+### The two shapes, and the trade between them
+
+Both are wire changes; a v11 cut would pick one, not both.
+
+1. **List the discarded mutants.** A `judgment.r2.discarded` that is an array
+   of positions (or a bucket beside `survived`) puts the field on
+   `survived_uncovered`'s footing: consistency-auditable against the payload,
+   with the same ascending/unique ordering rule and the same subset checks.
+   Larger, and it forces decisions DA-D4 never made — the record shape, what
+   `candidate_count`/`total` mean once a fifth disposition exists (the
+   `_check_arithmetic` rule above is written for four), whether the operator
+   namespace applies, and a W-generation template carrying a non-empty one.
+2. **Carry an ingested-only in-scope count** — the number of in-scope mutants
+   the report LISTED, before bucketing. Then
+   `discarded == listed_in_scope - total` is a difference `verify` can take,
+   with no new record shape and no arithmetic-rule change. Smaller, and it
+   verifies exactly the half DA-D4 named — but it says nothing about mutants
+   the tool dropped before reporting, which is the half B051's own entry called
+   "the thing the field is actually for".
+
+**Neither closes the un-listed half**, and a v11 design must say so out loud
+rather than let a green bar imply otherwise: a tool that silently drops 900
+candidates emits a document indistinguishable from one that generated 109.
+That half is not recoverable from any artifact assay receives, and the honest
+disposition for it stays the A-230a "declared by artifact" tier this entry's
+predecessor landed.
+
+### Acceptance
+
+- [ ] a v11 A-row picks shape 1 or shape 2 and states what the rejected one
+      would have bought, including whether the un-listed half is being left
+      declared;
+- [ ] the chosen quantity is on the wire in all three places (schema,
+      dataclass, `verify.py` — the 2.4.0 lesson), forked on `producer` the way
+      every other ingested-only field is;
+- [ ] `verify._check_ingested_r2_agrees_with_its_payload` gains a FOURTH real
+      re-derivation, and its "what this function does NOT check" section shrinks
+      to the un-listed half only;
+- [ ] the `9999` reproduction, which A-437 records as deliberately accepted,
+      becomes a NAMED refusal — and a truthful high-discard document is
+      committed alongside it as the control that proves the new bound does not
+      refuse the honest report (this control is the point; without it the bound
+      is route 3, which DA-R26 rejected);
+- [ ] a real report carrying a non-zero `discarded` (a deliberately
+      uncompilable mutant is easy to produce with Stryker), committed as a
+      fixture and frozen in the v11 `W<n>` generation — DA-D4's original
+      witness clause, waived for a declared field by DA-R26 and owed again the
+      moment the field is verified;
+- [ ] CONSUMERS' declared-not-verified paragraph and DESIGN-GUIDE §11's
+      matching paragraph are rewritten, not merely deleted: consumers who read
+      A-437's statement need to be told what replaced it, in the v11 migration
+      notes.

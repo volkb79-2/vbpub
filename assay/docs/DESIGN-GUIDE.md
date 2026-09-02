@@ -1914,7 +1914,32 @@ configuration on the wire under Assay's name, the same declared-versus-verified
 conflation A-230a keeps `helpers[]` clean of. The producer's own identity is
 recorded in `judgment.r2.producer_tool`, copied verbatim from the report and
 documented as **declared by artifact, not verified** — it is not a `helpers[]`
-entry, because `helpers[]` records tools Assay itself invoked. The operators
+entry, because `helpers[]` records tools Assay itself invoked.
+
+**`judgment.r2.discarded` stands beside `producer_tool` in exactly that tier,
+and this is a ruling rather than an omission** (B051, DA-D4 as completed by
+DA-R26). Assay *derives* the count at ingest — it lists the report's own
+`CompileError`/`RuntimeError` mutants, DA-D4's `listed` semantics, never
+`encountered` — and `assay verify` then asserts only that the wire value is an
+integer and non-negative. No re-derivation is available to it, because under
+those same semantics a discarded mutant is outside the document it would have
+to be derived from: it is in no mutation bucket, it is in neither
+`candidate_count` nor `total` (which `Mutation`'s arithmetic requires to be
+equal outside the limit sentinel), and its line is absent from
+`lines_without_candidates` because the tool *did* produce a candidate there.
+A truthful document with 900 discarded mutants is byte-indistinguishable from
+a truthful one with 0, so every upper bound that would refuse an inflated
+count would equally refuse the honest high-discard report the field exists to
+surface. Saying "checked" about the half that is easy, while the half that
+matters stays unchecked, is worse than saying nothing — so the document says
+nothing, out loud, in three places. The field carries no judgment weight while
+it is unverified: it is a COUNT beside the payload, never enters the mutation
+buckets, so the score's denominator is unaffected by construction. **B070** is
+the v11 candidate that would put the missing quantity on the wire and turn
+this into a difference the raw layer can take; it would have been free before
+5.0.0 shipped and is a schema bump after.
+
+The operators
 the tool actually applied are not lost by any of this: they are on the wire,
 one per mutant, namespaced under a prefix Assay owns (`stryker:<mutatorName>`,
 admitted by an open pattern branch beside the three closed per-language enums)

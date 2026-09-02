@@ -2452,3 +2452,101 @@ initiative would break DA-R23's ordering silently.
   schema byte-for-byte.
 * **No second `!` commit.** The branch still carries exactly one, `b2fd09f3`.
 * **No `git push`, no merge, no release.** No path outside `assay/**`.
+
+---
+
+## Generation 10 — B051 resolved by ruling (DA-R26), B070 filed
+
+**Seeded by BRIEF-9, with DA-R25..DA-R27 answering generation 9's three
+asks.** The order DA-R27 fixed is B051 → B052 → B053 `detail` → B004 → B007 →
+CONSUMERS migration notes.
+
+### B051 — `judgment.r2.discarded` (A-437), commit `<see LOG entry 32>`
+
+**What DA-R26 ruled, and what that made this item.** Generation 9's decision
+ask 2 argued that DA-D4's verify-side re-derivation is not constructible;
+DA-R26 confirmed the argument, ruled route 1 (declared-not-verified, said
+everywhere the field is described), rejected route 3 (an unsound upper bound)
+on the merits and route 2 (list the mutants) for this wave, waived DA-D4's
+in-image Stryker witness clause for a declared field, and required the
+residual to be filed as B070. So B051 became a documentation + verifier-
+docstring + tests + backlog commit — which is also why DA-R23's adjacency
+survived it (DA-R27): it lands directly on top of B050 with no wire change in
+between.
+
+**The `9999` reproduction, re-run on this tip and recorded as NOT refused.**
+Over `nyxloom-trove/carve-assets/W6/expected/ingested-r2-v10-template.json`
+with the acceptance suite's `SUBS` applied:
+
+| document | `verify_document(...)` |
+|---|---|
+| unmodified (`discarded = 0`) | `[]` — the control |
+| `discarded = 9999` | `[]` — **accepted** |
+| `discarded = 10000` (the schema maximum) | `[]` — **accepted** |
+| `discarded = -1` | `['judgment.r2.discarded is -1; a count of invalid mutants cannot be negative', 'schema: judgment.r2.discarded must be in 0..10,000, got -1']` |
+
+The document is a real ingested run: `candidate_count == total == 109`, 21
+killed, 88 survived, 0 `budget_exceeded`, 0 `equivalent`. `9999` is therefore
+~92× the entire payload and is still accepted, deliberately, by DA-R26 — a
+discarded mutant is outside the document under DA-D4's "listed" semantics, and
+every bound that catches this refuses a truthful high-discard report.
+
+**Acceptance, with file:line evidence.**
+
+| B051 box | disposition | evidence |
+|---|---|---|
+| the listed-vs-encountered ruling as an A-row | **[x]** | DA-D4 (listed) as completed by DA-R26 → **A-437**, naming route 3, route-2-in-this-wave, the `candidate_count - total` derivation and the hand-edited fixture as rejected |
+| under listed: re-derive in `verify.py` | **[x] ruled not constructible** | `mutation.py:1967-1969` (no bucket), `mutation.py:1992-1997` + `verdict.py:1684-1703` (`candidate_count == total` enforced), `mutation.py:1966-1968` (line not in `lines_without_candidates`) |
+| declared-not-verified in schema + DESIGN-GUIDE §11 + CONSUMERS, with a test | **[x]** | `src/assay/schemas/verdict.schema.json` `$defs.judgment_r2.properties.discarded.description`; `docs/DESIGN-GUIDE.md` §11, the paragraph directly after `producer_tool`'s "declared by artifact, not verified"; `docs/CONSUMERS.md`'s ingested-lane "what the verdict records"; and the fourth place, `verify._check_ingested_r2_agrees_with_its_payload`'s new "what this function does NOT check" section plus the comment at the check site. Machine check: `tests/test_verify_ingested_r2.py::test_the_schema_says_discarded_is_declared_not_verified` |
+| DA-R23's shared sentence (added box) | **[x]** | `tests/test_verify_ingested_r2.py::test_an_inflated_discarded_count_cannot_move_the_R2_status` — `"discarded" not in payload`, `total == candidate_count ==` the bucket sum, and `verify_document` still `[]` at 9999 |
+| a real report with non-zero `discarded` | **[x] WAIVED by DA-R26** | the derivation's evidence is B046's existing ingest tests over the committed StrykerJS artifact; A-334 is satisfied because nothing here is a test double standing in for an external system, and the hand-authored alternative was never on the table |
+
+**Why the W6 copy is not a second `!`.** `git diff` over
+`src/assay/schemas/verdict.schema.json` and
+`nyxloom-trove/carve-assets/W6/verdict.schema.v10.json` is one changed line
+each, both the same `description` string. No `type`, `enum`, `required`,
+`minimum`, `maximum`, fork branch or `$id` moved. The copy was re-taken with
+`cp` and verified with `cmp`, in the same commit, which is what
+`test_shipped_schema_is_byte_identical_to_the_locked_v10_asset` demands. The
+W6 MANIFEST records no hash for the copy (it records `cmp`-verified
+provenance), so the row was amended to state the one post-cut change rather
+than a hash being corrected.
+
+**B070, and the sentence DA-R26 required.** Filed as a v11 candidate with the
+two shapes it could take — list the discarded mutants (puts the field on
+`survived_uncovered`'s consistency-auditable footing, but forces a record
+shape, a `candidate_count`/`total` arithmetic rule DA-D4 never made, and a
+W-generation template), or carry an ingested-only in-scope count (smaller;
+`discarded == listed_in_scope - total` becomes a difference `verify` can take)
+— and with the explicit statement that **neither closes the un-listed half**:
+a tool that drops 900 candidates before reporting emits a document
+indistinguishable from one that generated 109, and that half stays A-230a
+declared. Its acceptance list requires the `9999` case to become a NAMED
+refusal *and* a truthful high-discard control to be committed beside it,
+because without that control the new bound is route 3 all over again. The cost
+sentence is recorded at the top of the entry: **free before 5.0.0 shipped, a
+v11 schema bump after.**
+
+**What a reviewer should push on here.** (1) That the three "outside the
+document" seams are quoted correctly — re-read `mutation.py:1966-1997` and
+`verdict.py:1684-1703` and confirm the `continue` really does precede the
+bucket assignment and follow `mutated_lines.add`. (2) That
+`test_an_inflated_discarded_count_is_ACCEPTED_deliberately` cannot pass
+vacuously: it asserts the baseline is `0` and that `9999 > payload["total"]`
+before asserting acceptance. (3) That the two schema files are still
+byte-identical (`cmp`), and that the diff really is description-only. (4) That
+nothing under `gate/python/` reads `discarded` — the grep returns zero.
+
+### What I did NOT do, in this item, and why
+
+* **No upper bound on `discarded`.** Route 3, rejected by DA-R26; it catches
+  the `9999` case by refusing the honest report, which is the failure B051 was
+  filed to avoid.
+* **No new wire field.** Route 2 is B070/v11; the branch's one `!` commit
+  already exists.
+* **No edit to `mutation.ingest_mutation_report`.** The ingest half of DA-D4
+  already ships (B046) and is correct as ruled; touching it would have been a
+  change with no defect behind it.
+* **No hand-authored fixture with a non-zero `discarded`** (A-334), and no
+  attempt to drive `tester-unified:local` interactively to produce one — the
+  witness clause is waived, not worked around.

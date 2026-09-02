@@ -46,7 +46,7 @@ not mistake it for a frozen generation.)*
 
 | file | what it is |
 |---|---|
-| `verdict.schema.v10.json` | a byte copy of `src/assay/schemas/verdict.schema.json` at the v10 cut, verified with `cmp`, not trusted from a paste |
+| `verdict.schema.v10.json` | a byte copy of `src/assay/schemas/verdict.schema.json` at the v10 cut, verified with `cmp`, not trusted from a paste. **Amended once after the cut, description bytes only** (B051/DA-R26, A-437): `$defs.judgment_r2.properties.discarded`'s `description` gained the declared-not-verified statement. No `type`, `enum`, `required`, bound or fork moved, so this is not a wire change and did not take a second `!` commit; the copy was re-taken with `cp` and re-checked with `cmp` in that same commit, as `test_shipped_schema_is_byte_identical_to_the_locked_v10_asset` requires |
 | `test_acceptance_v10.py` | the locked v10 acceptance suite (79 nodes), run from the installed wheel by the registered gate |
 | `expected/*-v10-template.json` | **nine** committed v10 documents: W5's seven migrated in place, plus two NEW shapes this cut introduces |
 

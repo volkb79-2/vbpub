@@ -255,6 +255,27 @@ and `coverage.missing_branch_lines` are still read by those names.
   finder ships every tracked file under the package directory. The file
   asserts the OUTCOME, and the declaration is kept for the git-metadata-absent
   build. (B056, A-412)
+- **`judgment.r2.discarded` is documented as DECLARED, NOT VERIFIED**, in the
+  words `judgment.r2.producer_tool` already uses (A-230a), in four places: the
+  field's own schema `description`, `docs/DESIGN-GUIDE.md` §11 beside
+  `producer_tool`'s tier sentence, `docs/CONSUMERS.md`'s ingested-lane "what
+  the verdict records" paragraph, and
+  `verify._check_ingested_r2_agrees_with_its_payload`'s docstring, which now
+  carries an explicit "what this function does NOT check" section. Assay
+  DERIVES the count at ingest from the statuses the report itself lists; the
+  raw verifier then asserts only integer-and-non-negative, and no
+  re-derivation is available to it, because a discarded mutant is by those
+  same semantics outside the document — in no mutation bucket, in neither
+  `candidate_count` nor `total`, and its line not in
+  `lines_without_candidates`. A truthful high-discard report is therefore
+  byte-indistinguishable from a truthful zero-discard one, and every upper
+  bound that would refuse an inflated count would equally refuse the honest
+  report the field exists to surface. **No wire change and no behaviour
+  change**: this field is a count beside the payload, never enters the
+  mutation buckets, so the score's denominator is unaffected by construction
+  and no value of it can move a status. `B070` is filed as the v11 candidate
+  that would put the missing quantity on the wire. (B051/DA-D4 as completed by
+  DA-R26, A-437)
 
 ### Added
 

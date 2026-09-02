@@ -1416,3 +1416,80 @@ seconds of launch. Load stayed 5.1–7.4.
   allocation: `git show main:assay/nyxloom-trove/4-backlog.md | grep -o '^## B[0-9]*'
   | tail -1` → **B068**; `main`'s decision high-water mark is still **A-407**.
   Re-check before allocating anything further; main wins on ids at merge.
+
+### 32. `docs(assay): judgment.r2.discarded is DECLARED, NOT VERIFIED -- B051 resolved by ruling, B070 filed (A-437)`
+
+- **DA-R26's route 1, landed exactly as ruled, in four places rather than the
+  three DA-R26 named.** The fourth is `verify.py`'s own docstring — DA-R26
+  asked for "`verify.py`'s own statement of what it does NOT check", and
+  `_check_ingested_r2_agrees_with_its_payload` had no such section at all; it
+  now carries one, plus a five-line comment at the check site so a reader who
+  arrives at `discarded = r2.get("discarded")` does not have to scroll up to
+  learn why the check stops there.
+- **The `9999` reproduction was re-run on this tip and is NOT refused, by
+  ruling.** Over `carve-assets/W6/expected/ingested-r2-v10-template.json` with
+  the acceptance suite's own `@STARTED@`/`@ENDED@` substitutions: baseline
+  `discarded` is `0`; `candidate_count == total == 109`; 21 killed / 88
+  survived; the clean document gives `verify_document(...) == []`; with
+  `discarded = 9999` it gives `verify_document(...) == []` — **accepted**; the
+  same at `10000` (the schema's own maximum) is likewise accepted; and the
+  `-1` negative control still produces its two named failures (`a count of
+  invalid mutants cannot be negative` plus the schema's `0..10,000` range).
+  The reason is in A-437 and in the backlog row: a discarded mutant is outside
+  the document by DA-D4's "listed" semantics, and every bound that catches
+  9999 refuses a truthful high-discard report.
+- **Schema + W6 copy, description bytes only.** The `description` of
+  `$defs.judgment_r2.properties.discarded` gained the declared-not-verified
+  statement; `nyxloom-trove/carve-assets/W6/verdict.schema.v10.json` was
+  re-taken with `cp` and re-checked with `cmp` in the same commit, as
+  `test_shipped_schema_is_byte_identical_to_the_locked_v10_asset` requires.
+  **No `type`, `enum`, `required`, bound, fork or `$id` moved** — `git diff`
+  on both files is a one-line change to a single `description` string — so
+  this is NOT a wire change and did NOT take a second `!` commit. The branch
+  still carries exactly one, `b2fd09f3`.
+- **W6 MANIFEST**: DA-R26 said to update the MANIFEST line "if it records the
+  copy's hash". It does not — it records the copy's *provenance* ("a byte copy
+  … verified with `cmp`, not trusted from a paste"), which this commit made
+  incomplete rather than wrong. That row now records the one post-cut
+  amendment, what moved (description bytes), what did not, and why it needed
+  no second `!`.
+- **Three new tests, all over the REAL StrykerJS-artifact document** the
+  `ingested_document` fixture in `tests/test_verify_ingested_r2.py` produces
+  through an actual `runner.run_lane`:
+  `test_an_inflated_discarded_count_is_ACCEPTED_deliberately` (the only
+  assertion in that module that a mutated document is accepted — it asserts
+  the inflation is beyond the whole payload first, so it cannot pass
+  vacuously, and its docstring says a future change that starts refusing this
+  owes B070's field first);
+  `test_an_inflated_discarded_count_cannot_move_the_R2_status` (DA-R23's
+  sentence as an assertion: `discarded` is not in the payload at all,
+  `total == candidate_count ==` the bucket sum, and the raw verifier's
+  `judge_mutation` re-derivation still agrees at 9999); and
+  `test_the_schema_says_discarded_is_declared_not_verified` (the three-place
+  discipline as a machine check, asserting `producer_tool`'s own wording is
+  still there to be matched).
+- **Gate grepped BEFORE the run, per BRIEF-8 §3**: `grep -rn discarded
+  gate/python/` returns **zero** hits, so no gate harness is on this change's
+  blast radius; the only `description` hits under `gate/python/` are a
+  `qualify_dstdns_sql.py` dataclass field. The B069 tripwire
+  (`tests/test_gate_harness_version_pins.py`) was run locally and is green —
+  nothing here moves `VERDICT_SCHEMA_VERSION` or the newest `W<n>`.
+- Local, serial, targeted: `nice -n 19 ionice -c 3 python -m pytest
+  tests/test_verify_ingested_r2.py` → **26 passed** (23 before the three new
+  tests), then `tests/test_gate_harness_version_pins.py
+  nyxloom-trove/carve-assets/W6/test_acceptance_v10.py
+  tests/test_verdict_conformance.py` → **258 passed**.
+- **B051 → RESOLVED BY RULING**, with a Resolution section, a status line at
+  the top of the entry, and every acceptance box dispositioned: two ticked as
+  landed, one struck through as ruled-not-constructible with the three
+  file:line seams, one struck through as the waived witness clause, and one
+  added for DA-R23's shared sentence. **B070 filed** as the v11 candidate,
+  carrying the "free before 5.0.0, a schema bump after" sentence DA-R26
+  required, both candidate shapes (list the mutants / an ingested-only
+  in-scope count) with the trade between them, and the note that neither
+  closes the un-listed half.
+- Ids re-checked against `main` immediately before allocating: `git show
+  main:assay/nyxloom-trove/4-backlog.md | grep -o '^## B[0-9]*' | tail -1` →
+  **B068**, so **B070** was free and is now taken; `main`'s decisions high-water
+  mark is still **A-407**, the branch's was **A-436**, so **A-437** was free
+  and is now taken. Next free: **A-438** / **B071**, re-check before use.

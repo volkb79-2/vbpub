@@ -878,6 +878,31 @@ def _check_ingested_r2_agrees_with_its_payload(
        enforces -- checked here as "present and non-negative", the only part
        of it a document can be wrong about on its own.
 
+    **What this function does NOT check, stated so a green bar cannot be
+    misread (B051/DA-D4/DA-R26).** ``discarded`` is **DECLARED, NOT
+    VERIFIED**, in ``producer_tool``'s own words (A-230a). Item 4 above is
+    the whole of it: a range check, not a re-derivation, and no fourth
+    re-derivation exists to be written. Under DA-D4's ``listed`` semantics
+    -- which :func:`assay.mutation.ingest_mutation_report` implements at
+    ingest -- a discarded mutant is by construction outside this document:
+    ``ingest_mutation_report`` ``continue``s past the bucket assignment, so
+    it is in no bucket; ``candidate_count`` and ``total`` are both the bucket
+    sum and :meth:`assay.verdict.Mutation._check_arithmetic` forbids them to
+    differ outside the limit sentinel, so ``discarded`` is not their
+    difference either; and its LINE is absent from
+    ``lines_without_candidates`` because the tool did produce a candidate
+    there. A truthful document with 900 discarded mutants is therefore
+    byte-indistinguishable from a truthful one with 0, and every upper bound
+    that would catch an inflated count (``discarded <= total``, ``<=
+    candidate_count``) would also refuse the honest high-discard report the
+    field exists to surface -- the failure B051 was filed to avoid. A count
+    set to ``9999`` on a real 109-mutant ingested document verifies clean,
+    deliberately and by ruling. The field carries no judgment weight while it
+    stays unverified: it is a COUNT beside the payload, never enters the
+    ``Mutation`` buckets, so the score's denominator is unaffected by
+    construction. **B070** is the v11 candidate that would put the missing
+    quantity on the wire and make this a difference this function could take.
+
     The MUTATION SCORE itself (``killed / (killed + survived)``) is re-derived
     by :func:`_check_r2_rederivation` through
     :func:`assay.mutation.judge_mutation`, which an ingested claim goes
@@ -983,6 +1008,11 @@ def _check_ingested_r2_agrees_with_its_payload(
                     f"candidate and carry one"
                 )
 
+    # DECLARED, NOT VERIFIED (B051/DA-D4/DA-R26). This is the whole of the
+    # check and the docstring says why no more is constructible: a discarded
+    # mutant is outside the document, so an upper bound here would refuse the
+    # honest high-discard report rather than the inflated one. B070 is the
+    # v11 candidate that would supply the missing quantity.
     discarded = r2.get("discarded")
     if isinstance(discarded, bool) or not isinstance(discarded, int):
         failures.append(

@@ -1323,6 +1323,25 @@ from the report and **declared by artifact, not verified** — it is not a
 `survived_uncovered` (untested lines, by position, deduplicated — it lists
 places, not mutants); `discarded`; `lines_without_candidates` (in-scope
 non-blank lines the tool produced no mutant for at all).
+
+**`discarded` is declared, not verified — read it as the tool's word, not as
+assay's finding.** Assay derives the number at ingest, by counting the
+`CompileError`/`RuntimeError` mutants the report itself *lists*; `assay
+verify` then checks that the wire value is an integer and is not negative,
+and nothing else. That is the whole check, and it is deliberate (**B051**,
+schema v10 — see the migration notes). A discarded mutant is, by that same
+"listed" definition, absent from the document: it is in no mutation bucket,
+it is in neither `candidate_count` nor `total`, and its line is not in
+`lines_without_candidates` — so a truthful report that discarded 900 mutants
+looks byte-for-byte like a truthful one that discarded none, and any upper
+bound assay could impose would refuse the honest high-discard report rather
+than an inflated one. Concretely: this field set to `9999` on a 109-mutant
+ingested document passes `assay verify` clean. **What it cannot do is move a
+status.** `discarded` is a count beside the payload and never enters the
+mutation buckets, so the score's denominator is unaffected by construction —
+an inflated value understates how much was measured, it can never manufacture
+a green. If you consume this number, treat it the way you treat
+`producer_tool`: evidence about the foreign tool, on the foreign tool's word.
 `kill_attribution` is `"unattributed"` and cannot be anything else: a killed
 mutant here proves the foreign tool's test command failed, not that it failed
 for the reason the mutant created. Every mutant carries its operator as
