@@ -342,3 +342,109 @@ def test_executed_wins_across_blocks_regardless_of_their_order():
         result = attribute_statements(profile, {"f.go": oracle})
         assert set(result.files["f.go"].executed) == {9}
         assert set(result.files["f.go"].missing) == set()
+
+
+# --------------------------------------------------------------------------
+# B061 -- one extent, MANY records. Found by the srdm qualification (F008-A5).
+# --------------------------------------------------------------------------
+
+
+def test_repeated_records_for_one_block_fold_executed_wins_not_last_wins():
+    """`go test -coverpkg=./...` instruments every package into EVERY test
+    binary and concatenates each binary's own profile section, so one block
+    gets one record per binary and only the binary that ran it carries a
+    non-zero count. srdm's real profile carries **20 records per block**.
+
+    The join used to key a dict by extent, so whichever record came LAST
+    decided the block. Nineteen zeros and a one, with the one not last, made a
+    genuinely covered block report as missing -- and it did, at scale: 255
+    lines uncovered where the same profile's own line-level expansion (which
+    already folds executed-wins) said 45.
+
+    Both orders are asserted, because a fix that only handled "the non-zero
+    record comes first" would pass one of them."""
+    block = StatementBlock(
+        start_line=59, start_col=22, end_line=65, end_col=3,
+        num_stmts=1, stmt_lines=(60,),
+    )
+
+    def records(counts):
+        return tuple(
+            CoverageBlock(
+                start_line=59, start_col=22, end_line=65, end_col=3,
+                num_stmts=1, count=count,
+            )
+            for count in counts
+        )
+
+    # The exact shape srdm's profile has for `internal/power/wings.go:59`:
+    # one hit among nineteen misses, in the position it really occupies.
+    for counts in ([0, 0, 1, 0, 0, 0], [1, 0, 0, 0], [0, 0, 0, 1]):
+        profile = CoverageProfile(
+            files={
+                "wings.go": FileCoverage(
+                    executed=frozenset({60}),
+                    missing=frozenset(),
+                    excluded=None,
+                    blocks=records(counts),
+                )
+            }
+        )
+        result = attribute_statements(profile, {"wings.go": (block,)})
+        assert set(result.files["wings.go"].executed) == {60}, counts
+        assert set(result.files["wings.go"].missing) == set(), counts
+
+    # ...and an extent every one of whose records is zero is still missing:
+    # the fold must not launder an uncovered block into an executed one.
+    profile = CoverageProfile(
+        files={
+            "wings.go": FileCoverage(
+                executed=frozenset(),
+                missing=frozenset({60}),
+                excluded=None,
+                blocks=records([0, 0, 0]),
+            )
+        }
+    )
+    result = attribute_statements(profile, {"wings.go": (block,)})
+    assert set(result.files["wings.go"].missing) == {60}
+    assert set(result.files["wings.go"].executed) == set()
+
+
+def test_the_correction_can_never_downgrade_a_line_the_parser_called_executed():
+    """The invariant B061 violated, stated as the property rather than as one
+    example: for a block-bearing file, every corrected executed line must be
+    one the uncorrected expansion already called executed. The correction's
+    whole job is to REMOVE lines the expansion over-claimed; producing a
+    `missing` line that the raw profile called executed means information was
+    lost, not refined.
+
+    Asserted here against the real srdm-shaped repetition, and holding for the
+    frozen witnesses too -- which is why this was invisible until a profile
+    with repeated records existed: every P27 witness has exactly one record
+    per block."""
+    profile = go_cover.parse(
+        "mode: atomic\n"
+        "m/wings.go:59.22,65.3 1 0\n"
+        "m/wings.go:59.22,65.3 1 1\n"
+        "m/wings.go:59.22,65.3 1 0\n",
+        producer=None,
+    )
+    raw = profile.files["m/wings.go"]
+    assert 60 in raw.executed, "the parser's own line-level fold is executed-wins"
+
+    corrected = attribute_statements(
+        profile,
+        {
+            "m/wings.go": (
+                StatementBlock(
+                    start_line=59, start_col=22, end_line=65, end_col=3,
+                    num_stmts=1, stmt_lines=(60,),
+                ),
+            )
+        },
+    ).files["m/wings.go"]
+    assert corrected.executed <= raw.executed
+    assert not (corrected.missing & raw.executed), (
+        "the correction downgraded a line the parser called executed"
+    )

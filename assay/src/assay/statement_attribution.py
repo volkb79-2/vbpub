@@ -75,7 +75,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from .errors import AssayError, Outcome, ReasonCode
-from .coverage_parsers.model import CoverageProfile, FileCoverage
+from .coverage_parsers.model import CoverageBlock, CoverageProfile, FileCoverage
 
 __all__ = ["StatementBlock", "attribute_statements"]
 
@@ -173,7 +173,26 @@ def attribute_statements(
                 f"cannot be read as statement truth without them"
             )
 
-        parsed_extents = {block.extent: block for block in file_cov.blocks}
+        # ONE EXTENT CAN APPEAR MANY TIMES IN ONE PROFILE, and folding those
+        # records is not optional. `go test -coverpkg=./...` instruments every
+        # package into EVERY test binary, and `go test` concatenates each
+        # binary's own section into one file — so a block gets one record per
+        # binary, and only the binary that actually ran it carries a non-zero
+        # count. srdm's real profile (B061, F008-A5) carries **20 records per
+        # block**, typically `0` nineteen times and `1` once.
+        #
+        # `{block.extent: block}` would keep whichever record came LAST, so a
+        # genuinely covered block would be judged missing whenever its
+        # non-zero record was not final — which is what happened: 255 lines
+        # reported uncovered where 45 were. The fold is executed-wins, the
+        # same rule `go_cover.parse` already applies to these records'
+        # expansions one layer down, so the corrected line sets can no longer
+        # DOWNGRADE what the uncorrected ones already called executed.
+        parsed_extents: dict[tuple[int, int, int, int], CoverageBlock] = {}
+        for block in file_cov.blocks:
+            seen = parsed_extents.get(block.extent)
+            if seen is None or (seen.count == 0 and block.count > 0):
+                parsed_extents[block.extent] = block
         oracle_extents = {block.extent: block for block in oracle_blocks}
 
         only_profile = sorted(set(parsed_extents) - set(oracle_extents))
@@ -201,8 +220,10 @@ def attribute_statements(
                 )
             # Executed-wins on overlap, the rule `go_cover` already keeps one
             # layer down: once any block marks a line executed, a never-taken
-            # block covering that same line must not downgrade it. Applied
-            # AFTER the loop so block order cannot matter.
+            # block covering that same line must not downgrade it. Subtracted
+            # AFTER the loop, so the order of DISTINCT blocks cannot matter;
+            # the order of repeated records for ONE block is handled by the
+            # fold above, which is a different problem and was a real defect.
             (executed if parsed.count > 0 else missing).update(
                 oracle.stmt_lines
             )

@@ -5549,3 +5549,92 @@ consumer who never reads this entry.
       the worktree;
 - [ ] a test that would go RED if a future edit reintroduced one, asserting
       the OUTCOME (the tree is clean after a build) rather than the mechanism.
+
+---
+
+## B061 — the statement-position join kept only the LAST record for a repeated block, so `-coverpkg=./...` profiles reported covered code as uncovered
+
+**Filed 2026-09-02, Wave C generation 6, FOUND by F008-A5's srdm qualification
+— which is what that criterion exists for.** Fixed in the same change; this
+entry is the record, not a request.
+
+### What was found
+
+`go test -coverpkg=./...` instruments every package into **every** test binary,
+and `go test` concatenates each binary's own profile section into one file. So
+one block gets one record per test binary, and only the binary that actually
+executed it carries a non-zero count. srdm's real profile is 68 761 lines and
+carries **20 records for every block**:
+
+```text
+srdm/internal/power/wings.go:59.22,65.3 1 0
+srdm/internal/power/wings.go:59.22,65.3 1 0
+srdm/internal/power/wings.go:59.22,65.3 1 1      <- the binary that ran it
+srdm/internal/power/wings.go:59.22,65.3 1 0
+... (sixteen more zeros)
+```
+
+`coverage_parsers/go_cover.py::parse` folds these correctly at LINE
+granularity — its `hits` map is explicitly executed-wins across every record in
+the whole profile — and keeps every record, unmerged, in `FileCoverage.blocks`
+(A-239, deliberately: the merge is what discards the column data the
+correction needs).
+
+`statement_attribution.attribute_statements` then did
+
+```python
+parsed_extents = {block.extent: block for block in file_cov.blocks}
+```
+
+which keeps whichever record came **last**, and read `parsed.count` off it. For
+`wings.go:59.22,65.3` the last record is `0`, so a block the toolchain reports
+as executed was attributed to `missing`. The function's own comment claimed
+"applied AFTER the loop so block order cannot matter" — true of distinct
+blocks, false of repeated records for one block, and that is exactly the case
+it never saw.
+
+### Why it was invisible until now
+
+**Every frozen P27 witness has exactly one record per block.** They are
+single-file, single-package probes; nothing in the corpus, in the regenerated
+F008-A4 fixtures, or in the two-package qualification fixture produces a
+repeated extent. The first profile in this project's history with repeated
+records is srdm's, and it exposed the defect on the first run.
+
+### The measurement
+
+Same checkout, same commit range, and — for the control — the byte-identical
+profile file:
+
+| | changed executable lines | covered | verdict |
+|---|---|---|---|
+| covergate | 684 | 639 (93.4%) | PASS at its own 75% floor |
+| assay, defective | 418 | 163 (39.0%) | FAIL/`UNCOVERED_LINES`, 255 lines named |
+| assay, fixed | 418 | see REPORT | — |
+
+The 255-vs-45 gap was not extent-expansion and not file-absence; it was this.
+Classifying before naming a side is what caught it: the extent-expansion
+hypothesis predicts assay's denominator is SMALLER (it is) and its covered
+RATIO similar (it was not), and that second half is the discrepancy that did
+not fit.
+
+### The fix
+
+Fold repeated records for one extent executed-wins **before** anything reads a
+count — the same rule the parser already applies one layer down, so the
+correction can no longer downgrade a line the uncorrected profile called
+executed. That invariant is now asserted directly, in addition to the
+srdm-shaped repetition being asserted in three orders (a fix handling only
+"the non-zero record comes first" passes one of them).
+
+### Acceptance
+
+- [x] repeated records for one extent fold executed-wins, in any order
+      (`test_statement_attribution_go_witnesses.py::test_repeated_records_for_one_block_fold_executed_wins_not_last_wins`);
+- [x] the correction can never downgrade a line the parser called executed,
+      asserted as the property
+      (`…::test_the_correction_can_never_downgrade_a_line_the_parser_called_executed`);
+- [x] an extent all of whose records are zero stays missing — the fold must
+      not launder an uncovered block (same test, final stanza);
+- [x] re-run F008-A5's qualification on the fixed build and record the
+      classified table against covergate (REPORT).
