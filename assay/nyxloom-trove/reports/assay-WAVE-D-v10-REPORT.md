@@ -1758,3 +1758,133 @@ PASS (exit 0)` at `commit: e3ae8ada1c4b00364aa9c3e8e320ea7ee9a40e45`.
   A-row, and the LOG names which seam belongs to which.
 - **A whole-suite host run.** The registered gate runs it, once, per the host
   throttle. The targeted runs are listed in the LOG.
+
+---
+
+# Generation 6 — A-425, A-426 (SF-6), A-429, the phase-2 design rows, B064
+
+**Gate-verified commit: `bfb55e3f` (GREEN).** Phase 2's CUT was not started.
+
+## What landed, item by item
+
+| commit | item | ruling | A-row |
+|---|---|---|---|
+| `ba2f1133` | the `LANE_TIMEOUT` commit-label read is bounded | DA-R13 | A-425 |
+| `b69a9248` | the last silent terminal in `runner.py` announces | DA-R15 (R-1 round 2's one condition) | A-426 |
+| `f254b702` | the gate's own `assay run` carries `--resume --progress`; **design rows** for B050 and B053's `detail`; **B064 filed** | operator directive 2026-09-02 (run-gate SPEC R-38); DA-D6; DA-D2 (c) | A-429; A-427, A-428 |
+| `bfb55e3f` | the gate's `assay` stubs read `--verdict-json` from argv | — (A-429 follow-up) | — |
+
+## A-425 — the evidence
+
+- The unbounded call DA-R13 ruled on is gone: `git.head_rev(...,
+  remaining=grace.remaining)`, the grace being a `runner.LaneDeadline`
+  constructed directly because `LaneDeadline.start` rejects a non-positive
+  budget (`runner.py:198-206`) and the grace-expired test needs `0.0`.
+- **The bound is observable, which is the whole point.** Same code path, one
+  number changed: at the default grace the identical lane writes its verdict
+  carrying the real `HEAD`; at `0.0` it writes nothing and says why.
+- **Measured red**, in a detached scratch worktree carrying the exact
+  pre-A-425 shape (the `remaining=` argument deleted, everything else
+  identical): 2 failed / 14 passed, the failure message being
+  "a verdict was written without a commit label that could be read".
+- No test double: `label_grace_seconds` is a keyword-only parameter with the
+  constant as its default, and git, the repository, the lane and the budget
+  are all real (A-334).
+
+## A-426 — the evidence, and the measurement DA-R15 asked for
+
+- **Not reachable from `assay run`.** The only `RuntimeError` that reaches
+  `_run_higher_rigor_lane`'s handler comes from
+  `isolation.prepare_snapshot`'s exit guard (`isolation.py:1800`), which
+  fires when a materialization is still open at context exit — i.e. when
+  assay's own code leaked one. No lane, argv, tool or repository state can
+  cause it. So `CHANGES.md`'s "every refusal reachable through `assay run`,
+  with no exceptions" (A-414) was already true, and stays true; SF-6 closes a
+  site that is *beyond* that claim rather than a counter-example to it.
+- Covered at the seam in the two halves DA-R15 named: the real leak
+  (`test_isolation.py`, real repository, no double, pinning the sentence) and
+  the handler (`test_refusal_announcement.py`, the same exception class
+  carrying that pinned sentence, in through `scratch_root_factory` — assay's
+  own cleanup seam, the one A-193/A-194's rule is about).
+- The `raise` side is untouched and has its own control test: no line is
+  printed and the `RuntimeError` propagates. B053's contract is one line per
+  REFUSAL, not one per exception.
+- Red-proved against the pre-fix `runner.py`: 1 failed / 21 passed.
+
+## A-429 — and what the gate caught
+
+The change is three tokens in the gate script, and it went **RED** on the
+registered gate: 4 failed / 3997 passed. Three `assay` stubs in
+`test_distribution_gate.py` wrote their verdict to `"$5"` — the positional
+slot the path occupied until the two new flags moved it to `$7`. Worth
+recording for the reviewer, because it is the case for gating a three-token
+change: a source-reading assertion would have stayed green while the stubs
+silently wrote nothing.
+
+Fixed at the cause (`bfb55e3f`): a shared preamble scans the argv for
+`--verdict-json` and takes the token after it, which is the real CLI's own
+contract. The fixture docstring's positional note had already had to move once
+before; it cannot now.
+
+## Phase 2 — where it actually stands
+
+**Designed (A-rows written, no code):** B050's `judgment.r2.fail_under`
+(A-427) and B053's `claim.detail` (A-428).
+
+**NOT designed, and therefore blocking the cut:** B004's
+`PROVENANCE_UNVERIFIED` + the §5.4 narrowing (DA-D7 + DA-R12), B007's
+`targets`/`aggregation`/per-attempt payload (DA-D8), F015's claim shape
+(DA-D9). The wave prompt's rule — *"Never write the `!` commit before every
+wire change exists as an A-row"* — is why no cut was attempted, and why the
+branch is still releasable on v9.
+
+## Decision asks
+
+1. **F015's claim kind is a real product call and I did not make it (DA-D9).**
+   A claim is keyed by `rigor`, the enum is exactly `R0..R3`, the ladder is
+   ORDERED in shipped code (`_replace_highest_higher_rigor_claim_with_git_failed`
+   picks "the highest declared higher-rigor claim"), and `RIGOR_LEVELS`
+   (`config.py:145`) canonicalises a lane's declaration against that order.
+   Adding `R4` therefore does not merely add a claim kind — it makes
+   fail-before/pass-after *the highest tier*, and hence the claim replaced on
+   a cleanup failure, ahead of R3. That may well be right (F015 asserts a
+   strictly more specific property than R3's canary), but it is a ruling, not
+   an implementation detail. The alternative shapes are: a non-ordered claim
+   kind, which the `claims`-keyed-by-rigor model does not currently admit; or
+   riding R3 with a second `judgment` block, which would put two different
+   mechanisms under one claim. **Please rule before generation 7 designs it.**
+2. **B007's target-list bound must be MEASURED before it is chosen** (DA-D8),
+   and one materialisation is ~2 isolated snapshots per attempt. Generation 6
+   did not run that measurement (no worktree writes were possible during the
+   three gate runs, and the measurement wants its own quiet host window). It
+   is generation 7's first phase-2 act, and it needs a gate-free window under
+   the host rule — flagging it so it is scheduled, not squeezed.
+3. **B064's B007 coupling is recorded in B064 but not yet in B007's A-row**,
+   because B007's A-row does not exist yet. The controller's instruction
+   ("note that coupling in B007's A-row, one sentence") is carried forward in
+   BRIEF-6 §3 as a required element of that row.
+
+## What a reviewer should push on (generation 6's own work)
+
+- A-425: that `0.0` really exercises the BOUND and not merely an early
+  return — delete the `remaining=` argument and confirm the two grace-expired
+  tests are the only ones that fail (they were, 2F/14P).
+- A-425: that the grace-expired path really writes nothing, including no
+  partial file at the reserved path.
+- A-426: that the announcement is on ONE side of the fork, by deleting the
+  `if outcome_holder:` guard and checking the control test goes red.
+- A-429: that the argv-log test would catch a flag being dropped from the
+  script (it reads the stub's received argv, not the script's text).
+- The two design rows: whether A-428's head-kept truncation and the
+  character-bound/byte-bound split are stated precisely enough to implement
+  without a second ruling.
+
+## What I did NOT do, and why
+
+- **The v10 cut.** Three of the five wire changes are undesigned; cutting
+  before them is the one thing the wave prompt forbids outright.
+- **B050/B051/B052/B053-`detail`/B004/B007 implementation.** All ride the cut.
+- **F015's design.** Blocked on decision ask 1 — improvising a rigor-ladder
+  change is exactly the product call the prompt says to hand back.
+- **A whole-suite host run.** Three registered-gate runs covered it; the
+  targeted host runs are in the LOG.

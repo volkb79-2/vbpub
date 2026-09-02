@@ -918,3 +918,133 @@ its 3-CPU cap, 194 MiB. No second gate, no xdist, no host whole-suite run.
   gate). Phase 2 was not started: the controller resumes R-1 round 2 on the
   FIX-TIP word, and BRIEF-5 hands phase 2 to generation 6 with BRIEF-4 §5's
   seam table intact and DA-R12 already ruled.
+
+---
+
+## Generation 6 (2026-09-02) — A-425, A-426/SF-6, A-429, phase-2 design rows A-427/A-428, B064
+
+### 19. `ba2f1133 fix(assay): bound the LANE_TIMEOUT commit-label read by a documented grace (DA-R13, A-425)`
+
+- `cli.LABEL_GRACE_SECONDS = 2.0` with the reason in its own docstring;
+  `runner.LaneDeadline` constructed directly (its `start` classmethod rejects
+  a non-positive budget) and passed as `remaining=grace.remaining` to the one
+  `git.head_rev` A-420 left unbounded (`cli.py`, the `LANE_TIMEOUT` handler).
+- Grace expiry → **no verdict**, one emitted line naming the commit label and
+  the grace, outcome/reason code (hence exit code) still the original
+  timeout's. Any OTHER Git fault re-raises the original timeout unchanged.
+- Keyword-only `label_grace_seconds` threaded `_cmd_run` → `_run_reserved`,
+  defaulting to the constant; the grace-expired tests pass `0.0` **through
+  the parameter**, never a stub — git, repository, lane and budget all real.
+- Tests in `tests/test_lane_timeout_writes_a_verdict.py`: the existing
+  `0.001s` probe (both dispatch paths) now also asserts the REAL `HEAD`; a
+  default-grace control; the `0.0` path on both dispatch paths (no artifact,
+  one line, the line names the label and the grace); one test pinning the
+  constant's value, default and keyword-only kind.
+- **Red-proof** (detached scratch worktree, the `remaining=` argument deleted
+  and nothing else — the exact A-420 shape): **2 failed / 14 passed**,
+  "a verdict was written without a commit label that could be read". Green
+  after: 16 passed; `test_cli_run` + `test_refusal_announcement` +
+  `test_lane_timeout_writes_a_verdict` together, 74 passed.
+
+### 20. `b69a9248 fix(assay): the last silent terminal in runner.py announces (DA-R15/SF-6, A-426)`
+
+- R-1 round 2's single ACCEPT-condition. `_run_higher_rigor_lane`'s
+  `except RuntimeError` announces through `announce_refusal` on the
+  `if outcome_holder:` side ONLY; the `raise` side is untouched, with a
+  control test asserting nothing is announced and the error propagates.
+- **Reachability MEASURED:** the only raiser is
+  `isolation.prepare_snapshot`'s leak guard (`isolation.py:1800`), which
+  fires only when assay's OWN code leaves a materialization open — so the
+  site is NOT reachable from `assay run`, and A-414's "no exceptions" claim
+  was already true and stays true. Covered at the seam in two real halves per
+  DA-R15: a real leak in a real repository pinning the exception and its
+  sentence (`tests/test_isolation.py`), and the handler driven with that same
+  pinned sentence through `scratch_root_factory` — assay's own cleanup seam.
+- A trap worth keeping: an unreferenced generator-based context manager is
+  closed the instant `__enter__` returns, which silently un-leaks the leak.
+  The isolation test binds it and says why.
+- **Red-proof** against the pre-fix `runner.py` (detached scratch worktree):
+  **1 failed / 21 passed**. Green after: 106 passed across both modules.
+- Also lands R-1's round-2 report verbatim (416 lines) at
+  `reports/assay-WAVE-D-v10-REVIEW-R1-round2.md`, per the controller.
+
+**GATE 1 — GREEN on `b69a9248`.** Log
+`scratchpad/gate-gen6.log`: `COMPLETE_MARKERS=1`, `GATE_EXIT=0`, `BAD=0`
+(zero `FAILED|DIRTY_TREE|Traceback`), wheel
+`assay-4.1.1.dev23+gb69a9248-py3-none-any.whl` (size 532340, sha256
+`e61227ecb00b6d108c39b8bb271ae2b0a6c84ad99b17528c03f451a74dfbf125`),
+`tester-unified: PASS (exit 0)` at
+`commit: b69a92485e285c0a7a38e49add6aa8fd63261926`, twelve phases ending
+`ASSAY_GATE_PHASE=pyflakes-clean`; both v9 schema phases passed
+(`verdict-v6-v7-v8-hard-cut-verified` over 18 frozen templates,
+`verdict-v9-successors-verified`, 47 passed). Host load 5.1–6.5 throughout,
+container capped at 3 CPUs immediately after launch.
+
+### 21. `f254b702 feat(assay): the gate's own assay run carries --resume --progress (A-429); design rows A-427/A-428; file B064`
+
+- **A-429** (operator directive 2026-09-02, estate policy; run-gate SPEC
+  R-38 / RG-33, run-gate rev 33): `tools/tester-unified-gate.sh`'s
+  `assay run tester-unified` gains `--resume --progress
+  "$scratch/progress-tester-unified.jsonl"`. Both are no-ops on this R0 lane
+  by assay's own contract; the point is a uniform invocation shape. The
+  progress path stays in `$scratch` — never the worktree, where an untracked
+  file is a self-inflicted `DIRTY_TREE`. One test in
+  `test_distribution_gate.py`'s read-the-script shape; one CONSUMERS
+  paragraph stating the same rule for consumer gates.
+- **A-427 / A-428 — DESIGN ONLY, no wire change.** B050/DA-D6's
+  `judgment.r2.fail_under` and B053/DA-D2 (c)'s `claim.detail`, each
+  specified field-by-field with the three places, the presence rules, the
+  rejected alternatives, and (for `detail`) the byte-vs-character bound split
+  and the head-kept truncation with its reason.
+- **B064 filed, not implemented** (progress/resume beyond R2), with the
+  measured answer per tier and the B007 coupling that B007's own A-row must
+  state in one sentence. `main` re-checked before allocating: `b36c6925`,
+  last id `## B061`, so B064 was free on both sides.
+
+**GATE 2 — RED on `f254b702`, and correctly so.** `scratchpad/gate-gen6b.log`:
+`GATE_EXIT=1`, **4 failed / 3997 passed / 20 skipped in 557.61s**. All four
+were `test_distribution_gate.py` self-hosted-lane tests whose `assay` stubs
+write their verdict to `"$5"` — the positional slot the path occupied until
+A-429's two flags moved it to `$7`. The stubs wrote nothing; the assertions
+failed on a missing `verdict.json`. **This is the gate doing its job on a
+change to the gate script itself.**
+
+### 22. `bfb55e3f test(assay): the gate's assay stubs read --verdict-json from argv, not $5 (A-429 follow-up)`
+
+- Fixed at the cause, not by renumbering: a shared `_VERDICT_PATH_FROM_ARGV`
+  preamble scans the argv for `--verdict-json` and takes the token after it —
+  the real CLI's own contract — in all three stubs. The fixture docstring's
+  "the artifact path the stub writes to is `$5`" note had already had to move
+  once (when `--require-judge-provenance` landed) and would have moved again;
+  now it cannot.
+- The argv-log assertion additionally pins `--resume`/`--progress`/the path on
+  the invocation the stub RECEIVED — a stronger statement than the
+  source-reading test beside it.
+- `pytest tests/test_distribution_gate.py`: **22 passed**.
+
+**GATE 3 — GREEN on `bfb55e3f`.** Log `scratchpad/gate-gen6c.log`:
+`COMPLETE_MARKERS=1`, `GATE_EXIT=0`, `BAD=0`, wheel
+`assay-4.1.1.dev25+gbfb55e3f-py3-none-any.whl` (size 532337, sha256
+`262e9c4b0ecaae5cc822d45c10cf982d781bad07a4e892554fbde58304ebe7a0`),
+`tester-unified: PASS (exit 0)` at
+`commit: bfb55e3f3b267050fff47d670f48e35a08a19d87`, twelve phases ending
+`pyflakes-clean`, both v9 schema phases green (18 frozen hard-cut templates;
+47 successor templates). **GATE-VERIFIED COMMIT: `bfb55e3f`.**
+
+Host discipline through generation 6: never `pytest -n`; every host run
+`nice -n 19 ionice -c 3` and targeted; one gate container at a time — gate 3's
+launch waited on a foreign `run-gate-vbpub-assay-*` container that was already
+running and was NOT touched; every container of ours capped to 3 CPUs within
+seconds of launch. Load stayed 5.1–7.4.
+
+### 23. `docs(assay): Wave D generation 6 checkpoint — A-425/A-426/A-429 gate-green on bfb55e3f, BRIEF-6`
+
+- Records only: this LOG's generation-6 entries, the REPORT's generation-6
+  sections, and `reports/assay-WAVE-D-v10-BRIEF-6.md` (new).
+- A docs-only successor to the gate-verified tip, as every generation of this
+  wave has done. **The gate-verified commit stays `bfb55e3f`.**
+- **Checkpoint taken here, at the E-008 boundary the clause names** (green
+  gate). The v10 cut was NOT started: no commit on the branch carries `!`, and
+  nothing under `verdict.py`, `verify.py`, `src/assay/schemas/` or the
+  drift-guard carve-assets has been modified. The branch remains releasable
+  on v9.
