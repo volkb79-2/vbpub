@@ -42,8 +42,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 - **environment** — a named container/host execution fact set: `image`
   (required), `cgroup_slice` (optional), `mode` (optional, `"ephemeral"`
   or `"exec"`, default `"ephemeral"`), `forward_env` (optional list of
-  environment-variable names). `host` is a built-in name (never definable)
-  meaning "no container".
+  environment-variable names). `host` and `bare-host` are both built-in
+  names (never definable), and swapped roles at rev 24: `host` (the
+  default) resolves to a synthetic environment — `image` is
+  `DEFAULT_HOST_IMAGE` unless `$RUN_GATE_HOST_IMAGE` overrides it, no
+  `cgroup_slice` declared (resolves from `$CGROUP_PARENT_DEV_BACKGROUND`,
+  same as any named environment with no declared slice) — and runs through
+  the normal container lane. `bare-host` means "no container": the literal
+  pre-rev-24 `host` behavior, for the rare lane that must observe the real
+  host rather than a container's view of it (mountinfo-sensitive tests are
+  the known case — see run-gate-project's own `run-gate.toml`).
 - **judged worktree** — the git toplevel containing the project dir, unless
   `--worktree` overrides (the daemon case).
 - **repo root** — the checkout owning the shared `.git` (for a linked
@@ -95,7 +103,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 - `R-07` `[environments.<name>]`: `image` (non-empty string, required),
   `cgroup_slice` (optional non-empty string), `forward_env` (optional,
   unique list of valid environment-variable names; values are forwarded to
-  container lanes only when set). Redefining `host` → error.
+  container lanes only when set). Redefining `host` or `bare-host` → error.
 - `R-08` `[lanes.<name>]` keys: `kind` (`"command"`|`"assay"`), `environment`
   (non-empty string), `argv` (command kind: non-empty string list),
   `assay_lane` + `assay_command` (assay kind: both required; `assay_command`
@@ -213,9 +221,20 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `{worktree}`-substituted, deduplicated against the verdict convention);
   every lane prints a final `lane '<name>' exit <code>` line. Disclosure is
   unconditional — a FAILED lane names its evidence paths too.
-- `R-19` **Host lanes** exec the substituted argv directly with cwd = the
-  effective project dir (R-21; no docker, no safe.directory — that trap is
-  container-specific); exit passthrough identical.
+- `R-19` **`bare-host` lanes** exec the substituted argv directly with cwd =
+  the effective project dir (R-21; no docker, no safe.directory — that trap
+  is container-specific); exit passthrough identical. `host` lanes (the
+  default, since rev 24) are container lanes in every respect — see R-38.
+- `R-38` **`host` is a container default, not a synonym for bare execution**
+  (rev 24): a lane declaring `environment = "host"` (or omitting it, where
+  `host` is the schema default) resolves to `image = DEFAULT_HOST_IMAGE`
+  (or `$RUN_GATE_HOST_IMAGE` if set), no `cgroup_slice` (resolves from
+  `$CGROUP_PARENT_DEV_BACKGROUND`, R-19's exec-mode "no fallbacks" rule
+  applies identically), and runs through the exact same code path as any
+  named `[environments.*]` entry — dual-mount, `--cgroup-parent`, budget,
+  evidence-on-failure. A lane that genuinely needs the literal host (not a
+  container's view of it) must declare `environment = "bare-host"`
+  explicitly.
 
 - `R-19a` **safe.directory scope:** both ephemeral and exec inner commands set
   `GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig` before running `git config
@@ -422,10 +441,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   after that resolves normally. The release gate IS the project's own
   dogfooded lane (`cmru.toml [steps.run-tests]` runs `./run-gate.py
   selftest` — SSOT, D-110/D-111: one parser, no duplicated pytest
-  invocation), run in HOST mode deliberately (not tester-unified: this
-  suite is self-referential — it exercises `physical_path()`'s real
+  invocation), run in `bare-host` mode deliberately (R-38; not `host`'s
+  now-default container, and not tester-unified either: this suite is
+  self-referential — it exercises `physical_path()`'s real
   `/proc/self/mountinfo` lookup against its own pytest fixtures, which
-  breaks under an extra container layer) which chains `pytest` with
+  breaks under any container layer) which chains `pytest` with
   `tools/coverage_gate.py` (vendored from `topos/tools/`, the estate's
   thinnest copy — MIGRATION PENDING per its header, do not fork further;
   its own `--source` default is scoped to `run-gate.py` alone, not the

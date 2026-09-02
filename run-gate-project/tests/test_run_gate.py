@@ -903,7 +903,7 @@ class TestEffectiveTreeExecution:
 
             [lanes.where]
             kind = "command"
-            environment = "host"
+            environment = "bare-host"
             argv = ["bash", "-c", "pwd"]
             clean_tree = false
         """)
@@ -1851,14 +1851,14 @@ class TestRequiredEnv:
         assert "tester-unified" in proc.stderr
 
     def test_host_lane_enforces_preflight_without_allowlist(self, tmp_path, monkeypatch):
-        # host lanes have no forwarding boundary: presence check only.
+        # bare-host lanes have no forwarding boundary: presence check only.
         repo = make_repo(tmp_path)
         cfg = """\
             schema_version = 1
 
             [lanes.suite]
             kind = "command"
-            environment = "host"
+            environment = "bare-host"
             argv = ["bash", "-c", "echo ran"]
             required_env = ["HOST_ONLY_VAR"]
             """
@@ -1940,7 +1940,7 @@ class TestConjunctionOverrideGuard:
 
         [lanes.gate]
         kind = "command"
-        environment = "host"
+        environment = "bare-host"
         # RG-1 fixed shape: every sub-invocation carries the override.
         argv = ["bash", "-c", "./run-gate.py --worktree {worktree} suite"]
         clean_tree = false
@@ -1981,13 +1981,13 @@ class TestConjunctionOverrideGuard:
         assert proc.returncode == 0, proc.stderr
 
     def test_host_lane_without_token_still_accepts_override(self, tmp_path, monkeypatch):
-        # host lanes relocate via cwd (R-19/R-21), so no token is needed.
+        # bare-host lanes relocate via cwd (R-19/R-21), so no token is needed.
         repo = make_repo(tmp_path)
         proj = make_project(repo, """\
             schema_version = 1
             [lanes.suite]
             kind = "command"
-            environment = "host"
+            environment = "bare-host"
             argv = ["bash", "-c", "pwd"]
             clean_tree = false
             """)
@@ -2614,7 +2614,7 @@ class TestDryRun:
             schema_version = 1
             [lanes.smoke]
             kind = "command"
-            environment = "host"
+            environment = "bare-host"
             argv = ["bash", "-c", "exit 5"]
             clean_tree = false
         """
@@ -3065,7 +3065,28 @@ class TestDoctor:
         assert proc.returncode == 2
         assert "[FAIL] docker" in proc.stdout
 
-    def test_host_only_project_skips_slice_checks(self, tmp_path, monkeypatch):
+    def test_bare_host_only_project_skips_slice_checks(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [lanes.smoke]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["bash", "-c", "true"]
+            clean_tree = false
+        """
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.delenv(CGROUP_VAR, raising=False)  # bare-host needs no slice
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 0, proc.stdout
+        assert "slice for env" not in proc.stdout
+
+    def test_host_project_needs_slice_check_since_it_is_a_container_now(
+            self, tmp_path, monkeypatch):
+        # rev 24: 'host' routes through run_container_lane() like any named
+        # environment (R-38) — it needs a real slice, exactly the opposite
+        # of test_bare_host_only_project_skips_slice_checks above.
         repo = make_repo(tmp_path)
         cfg = """\
             schema_version = 1
@@ -3077,10 +3098,13 @@ class TestDoctor:
         """
         proj = make_project(repo, cfg)
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.delenv(CGROUP_VAR, raising=False)  # host needs no slice
+        monkeypatch.setenv(CGROUP_VAR, "dev-background.slice")
         proc = run_tool(proj, "doctor")
-        assert proc.returncode == 0, proc.stdout
-        assert "slice for env" not in proc.stdout
+        assert "slice for env host" in proc.stdout
+        monkeypatch.delenv(CGROUP_VAR, raising=False)
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 2
+        assert "no cgroup slice for the gate" in proc.stdout
 
     def test_mountinfo_bare_host_view_warns(self, tmp_path, monkeypatch):
         """phys == repo (no alias derivable): container lanes would need the

@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 23  # rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 24  # rev 24: RG-38 'host'/'bare-host' role swap — 'host' now routes through run_container_lane() (DEFAULT_HOST_IMAGE / $RUN_GATE_HOST_IMAGE, --cgroup-parent from $CGROUP_PARENT_DEV_BACKGROUND, same as any named environment); 'bare-host' is the literal old 'host' behavior (run_bare_host_lane, renamed from run_host_lane) for the rare lane that must observe the real host — see run-gate-project's own selftest lane, the one known case; rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import fcntl
@@ -30,7 +30,17 @@ PROG = "run-gate"
 CONFIG_NAME = "run-gate.toml"
 SCHEMA_VERSION = 1
 CGROUP_ENV_VAR = "CGROUP_PARENT_DEV_BACKGROUND"
+# `host` (default) and `bare-host` (opt-out) swapped roles at rev 24 — `host`
+# now routes through the same container machinery every named environment
+# uses (dual-mount, --cgroup-parent from $CGROUP_PARENT_DEV_BACKGROUND,
+# pointed at DEFAULT_HOST_IMAGE unless $RUN_GATE_HOST_IMAGE overrides it);
+# `bare-host` is literally the OLD `host` behavior verbatim (no container at
+# all) for the rare lane that genuinely needs to observe the real host (see
+# run-gate-project/run-gate.toml's own selftest lane for the one known case).
 HOST_ENV = "host"
+BARE_HOST_ENV = "bare-host"
+HOST_IMAGE_ENV_VAR = "RUN_GATE_HOST_IMAGE"
+DEFAULT_HOST_IMAGE = "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest"
 EXTRA_MOUNT_ENV_VAR = "RUN_GATE_EXTRA_MOUNTS"
 MOUNT_ALIAS_ENV_VAR = "RUN_GATE_MOUNT_ALIAS"
 EVIDENCE_DIR_ENV_VAR = "RUN_GATE_EVIDENCE_DIR"
@@ -90,8 +100,8 @@ def _check_keys(table: dict, allowed: set, where: str) -> None:
 
 
 def _validate_environment(name: str, table: dict, where: str) -> None:
-    if name == HOST_ENV:
-        fail(f"{where}: '{HOST_ENV}' is a built-in environment and cannot be redefined")
+    if name in (HOST_ENV, BARE_HOST_ENV):
+        fail(f"{where}: '{name}' is a built-in environment and cannot be redefined")
     _check_keys(table, {"image", "cgroup_slice", "mode", "container_name",
                         "forward_env"},
                 f"{where} [environments.{name}]")
@@ -304,10 +314,26 @@ def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
 def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict,
                         project_path: Path, central_path: Path | None
                         ) -> tuple[dict, str]:
-    """Returns (env_table_or_empty_for_host, human source description)."""
+    """Returns (env_table_or_empty_for_bare_host, human source description).
+
+    'host' (default) resolves to a synthetic environment pointed at
+    DEFAULT_HOST_IMAGE (or $RUN_GATE_HOST_IMAGE) — no cgroup_slice declared,
+    same as [environments.tester-unified]: resolves from
+    $CGROUP_PARENT_DEV_BACKGROUND via resolve_slice()'s existing "no
+    fallbacks" rule. 'bare-host' resolves to {} — the literal old 'host'
+    behavior (run_bare_host_lane, no container at all)."""
     name = lane["environment"]
+    if name == BARE_HOST_ENV:
+        return {}, "built-in 'bare-host'"
     if name == HOST_ENV:
-        return {}, "built-in 'host'"
+        image = os.environ.get(HOST_IMAGE_ENV_VAR) or DEFAULT_HOST_IMAGE
+        source = (f"${HOST_IMAGE_ENV_VAR}" if os.environ.get(HOST_IMAGE_ENV_VAR)
+                  else f"built-in 'host' default ({DEFAULT_HOST_IMAGE})")
+        # Match the invoking process's real uid:gid, not the image's baked-in
+        # default user — see run_container_lane()'s --user comment for why:
+        # this devcontainer's actual uid can (and does, here) diverge from
+        # the image's own default, which a bare `docker run` never corrects.
+        return {"image": image, "user": f"{os.getuid()}:{os.getgid()}"}, source
     if name in project.get("environments", {}):
         return dict(project["environments"][name]), f"[environments.{name}] in {project_path}"
     if central_path is not None and name in central.get("environments", {}):
@@ -989,8 +1015,8 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
             record("FAIL", f"lane {name!r} environment", str(exc))
             continue
         env_name = lane_environment_name(lanes[name])
-        if env_name == HOST_ENV or not env:
-            env_cache.setdefault("<host>", (env, "built-in 'host'"))
+        if env_name == BARE_HOST_ENV or not env:
+            env_cache.setdefault("<bare-host>", (env, "built-in 'bare-host'"))
             continue
         if env_name in env_cache:
             continue
@@ -1250,6 +1276,17 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             "--cgroup-parent", slice_name,
             "-e", f"{CGROUP_ENV_VAR}={slice_name}",
             *mounts]
+    if env.get("user"):
+        # Additive, optional (default unset — every OTHER environment,
+        # tester-unified included, is unaffected): the 'host' default's own
+        # synthetic env sets this to the invoking process's real uid:gid
+        # (resolve_environment) — the sibling container's baked-in image
+        # user (e.g. vscode:1000) can otherwise mismatch THIS devcontainer's
+        # actual uid (e.g. vscode:1003, remapped by devcontainers CLI
+        # tooling a bare `docker run` never sees), leaving every file the
+        # container writes into a bind-mounted, already-host-owned path
+        # (__pycache__, coverage.json, ...) a permission-denied write.
+        argv += ["--user", env["user"]]
     for key in env.get("forward_env", []):
         value = os.environ.get(key)
         if value:  # empty string counts as ABSENT — matches log_forwarded_env
@@ -1420,12 +1457,12 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     return code
 
 
-def run_host_lane(lane: dict, lane_name: str, project_dir: Path, worktree: Path,
+def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, worktree: Path,
                   dry_run: bool = False) -> int:
     # cwd is the project dir RELOCATED into the judged worktree (RG-15) — a
     # host lane must not quietly operate on the invocation checkout either.
     argv = substitute_worktree(lane["argv"], worktree)
-    print(f"run-gate: rev {__revision__} | lane {lane_name} | env built-in 'host'",
+    print(f"run-gate: rev {__revision__} | lane {lane_name} | env built-in 'bare-host'",
           flush=True)
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (advisory)", flush=True)
@@ -1676,8 +1713,10 @@ def main(argv: list[str] | None = None) -> int:
                                          slice_src)
         locks = acquire_shared_locks(lane, args.lane, args.dry_run)
         try:
-            if not env:  # built-in 'host'
-                code = run_host_lane(lane, args.lane, eff_proj, worktree,
+            if not env:  # built-in 'bare-host' — 'host' now resolves to a
+                         # non-empty synthetic env and falls through to
+                         # run_container_lane() below like any named env.
+                code = run_bare_host_lane(lane, args.lane, eff_proj, worktree,
                                      dry_run=args.dry_run)
             elif env.get("mode") == "exec":
                 code = run_exec_lane(lane, args.lane, eff_proj, repo, worktree,
