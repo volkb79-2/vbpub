@@ -356,12 +356,55 @@ def test_the_sha256_sidecar_is_in_sha256sum_c_format(tmp_path: Path):
 def built(tmp_path_factory) -> dict:
     """One real release build of the current HEAD, plus a second into a
     DIFFERENT directory so reproducibility is a real claim rather than
-    same-path luck."""
-    first = tmp_path_factory.mktemp("release-a")
-    second = tmp_path_factory.mktemp("release-b")
+    same-path luck.
+
+    **(B060/A-411) Each `--outdir` is a `dist/` INSIDE an otherwise-empty
+    directory of its own**, and that enclosing directory is returned. It is
+    the shape the acceptance criterion names (`--outdir <repo>/assay/dist`),
+    and it makes "the builder wrote nothing beside its outdir" a checkable
+    outcome — see
+    :func:`test_a_build_writes_nothing_outside_its_own_outdir`. Building
+    straight into `mktemp()` could not express that: the pytest tmp root has
+    other things in it.
+    """
+    first_root = tmp_path_factory.mktemp("release-a")
+    second_root = tmp_path_factory.mktemp("release-b")
+    first = first_root / "dist"
+    second = second_root / "dist"
     artifacts = build_release.build(REPO_ROOT, first)
     again = build_release.build(REPO_ROOT, second)
-    return {"first": artifacts, "second": again}
+    return {
+        "first": artifacts,
+        "second": again,
+        "first_root": first_root,
+        "second_root": second_root,
+    }
+
+
+def test_a_build_writes_nothing_outside_its_own_outdir(built):
+    """B060/A-411, asserted as an OUTCOME rather than as "the staging path is
+    a TemporaryDirectory".
+
+    `build_zipapp` used to install into `outdir.parent / "zipapp-staging"`
+    and never remove it, so the obvious in-repository invocation
+    (`--outdir assay/dist`) left `assay/zipapp-staging/` behind. That path is
+    not gitignored, so the next run of the self-hosted gate lane saw an
+    untracked directory in the tree it was judging and refused
+    `NO_MEASUREMENT`/`DIRTY_TREE` — correctly, for a cause with nothing to do
+    with the change under judgment.
+
+    This is the check that goes red if a future edit reintroduces one: the
+    enclosing directory contains the outdir and NOTHING else, on both builds.
+    It says nothing about HOW the staging tree is kept out of the way, so it
+    survives any of the three shapes B060 lists.
+    """
+    for key, root in (("first", "first_root"), ("second", "second_root")):
+        enclosing = built[root]
+        assert [entry.name for entry in sorted(enclosing.iterdir())] == ["dist"], (
+            f"{key} build left something beside its outdir: "
+            f"{sorted(p.name for p in enclosing.iterdir())}"
+        )
+        assert built[key].wheel.parent == enclosing / "dist"
 
 
 def test_the_real_build_produces_a_wheel_a_zipapp_and_both_sidecars(built):

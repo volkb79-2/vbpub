@@ -347,35 +347,53 @@ sys.exit(main(sys.argv[1:]))
 
 
 def build_zipapp(build_venv: Path, wheel: Path, version: str, outdir: Path) -> Path:
-    """A reproducible zipapp, installed FROM *wheel* rather than from source."""
-    staging = outdir.parent / "zipapp-staging"
-    if staging.exists():
-        shutil.rmtree(staging)
-    _run([
-        str(build_venv / "bin" / "python"), "-m", "pip", "install", "--quiet",
-        "--no-index", "--no-deps", "--target", str(staging), str(wheel),
-    ])
-    dist_infos = list(staging.glob("assay-*.dist-info"))
-    if len(dist_infos) != 1:
-        raise ReleaseBuildError(
-            f"expected exactly one assay .dist-info in the zipapp staging tree, "
-            f"found {len(dist_infos)} -- without it importlib.metadata cannot "
-            f"resolve a version and the zipapp would report 0+unknown"
-        )
-    # `bin/` is a shebang shim pointing at the BUILDING interpreter, and
-    # `__pycache__` is builder-specific bytecode: both would make the archive
-    # depend on where it was built.
-    for junk in (staging / "bin", *staging.rglob("__pycache__")):
-        if junk.is_dir():
-            shutil.rmtree(junk)
-    _strip_installation_metadata(dist_infos[0])
-    (staging / "__main__.py").write_text(ZIPAPP_MAIN, encoding="utf-8")
-    _normalise_mtimes(staging)
+    """A reproducible zipapp, installed FROM *wheel* rather than from source.
 
-    target = outdir / f"assay-{version}.pyz"
-    zipapp.create_archive(
-        staging, target=target, interpreter="/usr/bin/env python3", main=None
-    )
+    **(B060/A-411) The staging tree lives in a `TemporaryDirectory`, never
+    beside *outdir*.** It used to be `outdir.parent / "zipapp-staging"` and
+    was never removed, so the obvious in-repository invocation
+    (`--outdir assay/dist`) left `assay/zipapp-staging/` behind — an
+    untracked directory that the self-hosted gate lane then correctly refuses
+    as `NO_MEASUREMENT`/`DIRTY_TREE`, for a cause with nothing to do with the
+    change under judgment. The workaround was to direct `--outdir` outside
+    the worktree, which is invisible to anyone who has not read B060.
+
+    A `TemporaryDirectory` was chosen over the two other defensible shapes
+    (remove it in a `finally`; put it inside *outdir*) because it is the only
+    one that also cleans up after a build that RAISES, and after a consumer
+    who never reads the entry. Nothing about the archive depends on the
+    staging path: `zipapp.create_archive` writes member names relative to the
+    source root, and `_normalise_mtimes` plus `_strip_installation_metadata`
+    already remove every other builder-specific fact — proved by the
+    byte-identical-rebuild assertion in the distribution test.
+    """
+    with tempfile.TemporaryDirectory(prefix="assay-zipapp-staging-") as tmp:
+        staging = Path(tmp)
+        _run([
+            str(build_venv / "bin" / "python"), "-m", "pip", "install", "--quiet",
+            "--no-index", "--no-deps", "--target", str(staging), str(wheel),
+        ])
+        dist_infos = list(staging.glob("assay-*.dist-info"))
+        if len(dist_infos) != 1:
+            raise ReleaseBuildError(
+                f"expected exactly one assay .dist-info in the zipapp staging tree, "
+                f"found {len(dist_infos)} -- without it importlib.metadata cannot "
+                f"resolve a version and the zipapp would report 0+unknown"
+            )
+        # `bin/` is a shebang shim pointing at the BUILDING interpreter, and
+        # `__pycache__` is builder-specific bytecode: both would make the archive
+        # depend on where it was built.
+        for junk in (staging / "bin", *staging.rglob("__pycache__")):
+            if junk.is_dir():
+                shutil.rmtree(junk)
+        _strip_installation_metadata(dist_infos[0])
+        (staging / "__main__.py").write_text(ZIPAPP_MAIN, encoding="utf-8")
+        _normalise_mtimes(staging)
+
+        target = outdir / f"assay-{version}.pyz"
+        zipapp.create_archive(
+            staging, target=target, interpreter="/usr/bin/env python3", main=None
+        )
     target.chmod(0o755)
     return target
 

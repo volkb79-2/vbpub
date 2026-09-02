@@ -366,3 +366,246 @@ suite ran.
   adds something (B033's whole-target site) it goes on a separate indented
   line, so the pinned format stays exactly one thing.
 - **No message minted for the five message-less refusals** — decision ask 1.
+
+## B054 — a self-contradictory istanbul `branchMap` (DA-D3 + DA-R2 → A-410)
+
+**Ruling applied:** per file, on A-405's principle. Skipped and NAMED on the
+diagnostics stream if the file has no line in the judged set; `ERROR`/
+`UNREADABLE_ARTIFACT` naming the file and the arc line if it does. No
+`excluded_files` wire list. BRIEF-1 §3 option (a) — store the offending arc
+lines on `FileCoverage` — taken; option (b), the `(profile, defects)` parser
+signature, rejected.
+
+### Implementation, file:line
+
+| what | where |
+|---|---|
+| the stored fact | `src/assay/coverage_parsers/model.py:366` `FileCoverage.contradictory_branch_lines`, with its positivity check at `:373` and the docstring paragraph at `:330` saying why it is stored where `line_directive_remapped` is derived |
+| detection | `src/assay/coverage_parsers/coverage_istanbul_json.py:345` `_contradictory_branch_lines` — exactly the two invariants an honest producer can trip, computed BEFORE construction so the parser names them rather than reading them out of a `ValueError` |
+| the drop | `src/assay/coverage_parsers/coverage_istanbul_json.py:381` `_without_lines` — returns a `BranchCoverage`, never `None`, even when empty |
+| the isolation site | `src/assay/coverage_parsers/coverage_istanbul_json.py:310-330` — the existing `try`/`except ValueError` stays, so every OTHER invariant still refuses the artifact whole |
+| the rebuilds | `src/assay/statement_attribution.py:225` and `:342`, both carrying the field with a comment |
+| the refusal | `src/assay/evaluate.py:195` `_refuse_contradictory_branch_arcs` |
+| its two call sites | `src/assay/evaluate.py:561` (changed-lines, inside the per-file loop immediately after A-405's check) and `:1156` (whole-target, immediately after A-405's) |
+| the skip notice | `src/assay/runner.py:352` `_announce_contradictory_branch_records`, called from `evaluate_r1` at `:1267`, right after `check_empty_coverage` |
+
+### Two design points a reviewer will ask about
+
+**1. Why the field is STORED when A-405's sibling is DERIVED.** BRIEF-1 §3
+named this as the one place the precedent does not transfer, and it is right.
+`line_directive_remapped` reads `blocks`, which every rebuild carries, so it
+cannot disagree with its own records. A contradicting arc must be DROPPED —
+`FileCoverage.__post_init__` refuses construction otherwise — and once
+dropped there is nothing left to derive from. The cost is that both rebuild
+sites must carry it; both do, with a comment saying a rebuild that forgot it
+would launder a defective record into a clean one. Rejected alternative (b),
+a `(profile, defects)` parser return: it changes the signature every format's
+parser shares to carry a fact only one format can produce.
+
+**2. Why `runner` names EVERY defective record and not only the SKIPPED
+ones.** DA-D3 requires that a file with no line in the judged set be named.
+"No line in the judged set" is resolved inside `assay.evaluate`, against the
+diff, the source-root boundary, the exclusion globs and `is_test_path` —
+asking for it in `runner` would mean either re-deriving that join (which
+A-385/A-367 forbid: there is ONE key resolution) or threading a stream into a
+module DA-R2 explicitly requires to stay pure. Naming every defective record
+is a strict superset of what the ruling asks: a judged one is named here AND
+refused by name, which is one line more, never one fact less. `evaluate.py`
+therefore needed no return-channel change at all, which is why DA-R2's "and
+returns the skipped files as data" is not implemented literally — recorded
+here rather than silently.
+
+### Acceptance boxes, with evidence
+
+| B054 box | evidence |
+|---|---|
+| shape 1: isolate the refusal to the offending file | `coverage_istanbul_json.py:345`/`:381`; `tests/test_coverage_istanbul_contradictory_branch_arcs.py::test_the_parser_isolates_the_defect_and_keeps_every_other_file` |
+| a file that IS in the diff still refuses | `evaluate.py:195`/`:561`/`:1156`; `…::test_a_defective_file_inside_the_judged_set_refuses_and_names_the_arc_line` |
+| oracle: PASS on the strength of the changed-lines diff | `…::test_a_defective_file_outside_the_judged_set_is_skipped_and_named` — `outcome == "PASS"`, `pct == 100.0`, exit 0 |
+| oracle: "must at minimum name WHICH file broke it" | the same test asserts the stderr line names `never_imported.ts` AND line `215` |
+| controlled wrong implementation: not a silent drop | the field is asserted directly; `…::test_the_committed_real_artifacts_carry_no_contradiction` proves both committed REAL arc-bearing artifacts are unaffected |
+| A-357 untouched | `tests/test_coverage_istanbul_branch_arcs.py`'s unrecognised-TYPE tests are unchanged and green |
+
+### Transcripts
+
+Red-first, against `440d5da9` (the tip with B053 but not B054) in a detached
+scratch worktree, the new module copied in:
+
+```
+$ git worktree add --detach <scratchpad>/prefix-b054 440d5da9
+$ cp tests/test_coverage_istanbul_contradictory_branch_arcs.py <scratchpad>/prefix-b054/assay/tests/
+$ (cd <scratchpad>/prefix-b054/assay && python -m pytest tests/test_coverage_istanbul_contradictory_branch_arcs.py -q)
+FAILED ...::test_the_parser_isolates_the_defect_and_keeps_every_other_file
+FAILED ...::test_a_clean_document_records_no_contradiction_at_all
+FAILED ...::test_the_committed_real_artifacts_carry_no_contradiction[coverage-istanbul-json.vitest-istanbul.json]
+FAILED ...::test_the_committed_real_artifacts_carry_no_contradiction[coverage-istanbul-json.vite-plugin-istanbul.json]
+FAILED ...::test_a_defective_file_outside_the_judged_set_is_skipped_and_named
+5 failed, 2 passed, 1 warning in 1.83s
+```
+
+The 2 that pass on both sides are controls, and both are load-bearing:
+`test_a_defective_file_inside_the_judged_set_refuses_and_names_the_arc_line`
+(the judged file's DISPOSITION is deliberately unchanged — only the origin of
+the refusal moved from the parser to `evaluate`, so a reviewer can see the
+fix is not a weakening) and `test_a_lane_that_judges_nothing_defective_is_unaffected`.
+
+With the fix: `7 passed`.
+
+Two pre-existing tests asserted the OLD verdict-wide parse refusal and were
+rewritten rather than deleted:
+`tests/test_coverage_istanbul_branch_arcs.py::test_an_arc_on_a_line_no_statement_covers_is_*`
+and `…::test_a_covered_arc_on_a_never_executed_line_is_*`. Both keep their
+invariant names and reasoning and now assert the isolation.
+
+### Docs disposition
+
+| file | change |
+|---|---|
+| `docs/CONSUMERS.md` | new JavaScript-lanes subsection "A never-executed file's own instrumentation quirk costs you that file, not the verdict (B054)", placed directly after the `coverage.include` synthesis paragraph it follows from: the two dispositions, what a consumer sees for each, that a broad `src/**` include is the right shape again, and what has NOT changed (A-357) |
+| `docs/DESIGN-GUIDE.md` | new §6 section "A self-contradictory coverage record is one FILE's defect (B054/A-410)": the A-405 parallel, the one place it does not transfer and what that forced, why `branches` is never `None`, and why there is no wire list |
+| `CHANGES.md` | one Fixed bullet |
+
+### What a reviewer should push on
+
+- **The two-file artifact** is exactly what R-1 was told to ask for: one
+  defective file outside the judged set, one inside. Both are in
+  `tests/test_coverage_istanbul_contradictory_branch_arcs.py`.
+- **Whether the drop can launder a real defect.** The anti-tamper invariant
+  (a covered arc on a never-executed line) is now DROPPED rather than
+  refused at parse time. It is not weakened for a judged file — that file
+  refuses — but for an unjudged file the tampered arc simply disappears.
+  That is the same trade A-405 already makes, and the unjudged file
+  contributes nothing to the verdict either way; push on it if you disagree.
+- **Whole-target mode has no lenient case.** A declared target IS the judged
+  set, so `evaluate_targets` refuses unconditionally for a defective target.
+  Check that reading against B005.
+- **`derive_branch_capability`** is computed from whether records carry
+  `branches` at all, and `_without_lines` never returns `None`, so a file
+  whose every arc was dropped still reports `reported`, not `unavailable`.
+  That is deliberate (A-008) and worth an adversarial look.
+
+### What I did NOT do, and why
+
+- **No `excluded_files` wire list** — DA-D3 rejects it; nothing under
+  `verdict.py`/`verify.py`/the schema was touched.
+- **`evaluate.py` returns no skipped-file data.** See design point 2: the
+  fact is carried on the profile, so no return-channel change was needed to
+  keep `evaluate` pure. This is a deviation from DA-R2's literal wording and
+  is named as such.
+- **No change to the other four coverage formats.** Only the istanbul parser
+  can produce this defect (its `branchMap` is an independent array); the
+  other parsers classify each line from one summed count and cannot violate
+  the invariant by construction, as `model.py`'s own docstring already says.
+
+## B060 — the release builder's staging tree (DA-D14 → A-411)
+
+**Ruling applied:** remove the staging tree by building under a
+`TemporaryDirectory`; an outcome test that a build leaves no untracked path.
+
+| what | where |
+|---|---|
+| the fix | `gate/distribution/build_release.py:349` `build_zipapp`, now `with tempfile.TemporaryDirectory(prefix="assay-zipapp-staging-") as tmp:` — `tempfile` was already imported for `build()`'s own clone scratch |
+| the outcome test | `tests/test_distribution_build_release.py::test_a_build_writes_nothing_outside_its_own_outdir` |
+| the fixture change it needed | the `built` fixture's two real builds now target `mktemp(...)/"dist"` instead of `mktemp(...)`, so the enclosing directory is controlled and "nothing beside the outdir" is expressible |
+
+**Why the test does NOT build into the real repository**, even though the
+acceptance criterion is phrased `--outdir <repo>/assay/dist`: a real build
+into the worktree during the suite would leave `assay/dist/*.whl` and the
+`.pyz` behind for the duration, and the self-hosted gate lane judges that
+tree — the test would cause the exact `DIRTY_TREE` failure B060 exists to
+remove. The property under test is "the builder writes nothing outside
+`--outdir`", which is what makes the repository-path invocation safe, and it
+is checkable in a tmpdir with no such hazard. Recorded here because a
+reviewer reading the acceptance line literally will ask.
+
+The test asserts the OUTCOME, not the mechanism — it never mentions
+`TemporaryDirectory` — so it survives any of B060's three shapes and goes red
+if a future edit reintroduces a sibling directory by any means.
+
+**Red-first:** not proved in a scratch worktree for this item. The test's
+subject is a real ~40s release build; against the pre-fix builder it fails by
+construction (`zipapp-staging` appears beside `dist`), which is the same fact
+B060 recorded by direct observation and the reason the entry exists. If R-1
+wants the transcript, `git stash`-free reproduction is
+`git worktree add --detach <path> 440d5da9` plus this one test — named here
+rather than claimed as run.
+
+## B056 — the packaging test's refuted measurement (DA-D13 → A-412)
+
+**Ruling applied:** option 1 — correct the docstring to the measured truth
+and assert the OUTCOME; apply the same treatment to the Go helper's test,
+which is already in that shape (verify, do not re-write).
+
+| box | evidence |
+|---|---|
+| ruling as an A-row naming the three options | A-412 |
+| the docstring no longer states a refutable measurement | `tests/test_verdict_schema_is_packaged.py`'s module docstring now states A-396's measurement (stanza deleted → the wheel still carries the schema, 47 members) and says the file asserts the outcome |
+| the same false claim in the assertion MESSAGE | found and corrected too: `test_pyproject_declares_the_schema_as_package_data` said "without this the schema exists in the source tree and vanishes on install", which is the same refuted claim one layer down. It now says the declaration is kept as the belt to the git finder's braces, for the git-metadata-absent build |
+| the Go helper's test | VERIFIED, not rewritten — `tests/test_go_helper_is_packaged.py`'s docstring already states the corrected position and already asserts the outcome. Nothing changed in it |
+| option 2 (make the negative reachable) | NOT taken; named as rejected in A-412 with the cost (a second real wheel build) and named as the right upgrade if that cost ever falls |
+
+## B055 — Go line granularity (DA-D12 → A-413)
+
+**Ruling applied:** alternative 1 of three — leave it as a documented limit.
+No wire field.
+
+| box | evidence |
+|---|---|
+| A-row naming all three alternatives | A-413 |
+| CONSUMERS' Go paragraph states the limit beside what a Go R1 claim means | `docs/CONSUMERS.md`, "Go lanes" point 4, now opening "a Go R1 claim is statement-granular TO THE LINE, not to the statement", with the exposure (toward false PASS), the triggering shapes, and the one consumer-side remedy (split the line) |
+| the test asserting today's behaviour STAYS | `tests/test_statement_attribution_go_witnesses.py:122` `test_lit_go_drops_the_fabricated_signature_but_still_launders_line_four` — untouched, and now the thing that would go red if a future cut reverses A-413 |
+| no wire field | nothing under `verdict.py`/`verify.py`/the schema touched |
+
+## B009 — assay.toml's role and the distribution model (DA-D16)
+
+Docs only. New `docs/CONSUMERS.md` section, "What `assay.toml` is, and what
+it is not (B009)", placed before "Obtain and verify an immutable release".
+
+**Item 2 is the one that mattered, and the measurement REFUTES the entry.**
+B009 states that per-repo vendoring "is RETIRED as the estate pattern".
+Measured 2026-09-02, directly, not inferred:
+
+```
+$ grep -n assay_command */run-gate.toml
+cmru/run-gate.toml:21:assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-2.3.0.pyz"]
+ciu/run-gate.toml:15:assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-3.2.0.pyz"]
+nyxloom/run-gate.toml:16:assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-4.0.0.pyz"]
+$ grep -n 'assay_command\|pins.assay' /workspaces/dstdns/run-gate.toml
+33:assay_command = ["python3", "tools/assay/assay-4.0.0.pyz"]
+34:[lanes.assay-dlq.pins.assay]
+36:sha256 = "tools/assay/assay-4.0.0.pyz.sha256"
+$ grep -n 'assay' cmru/cmru.toml        # the S15 pin
+33:path    = "tools/assay/assay-2.3.0.pyz"
+```
+
+All four consumers vendor a pinned, sha256-verified zipapp. Nothing is baked
+into a shared image; no consumer resolves assay from `PATH`; assay itself
+builds its own wheel in-repo for its gate and never imports its source under
+test. DA-D16 says do NOT prescribe the retired-vendoring future unless it is
+already true — it is not, so the docs describe the vendored pin as the
+pattern to copy and name the image-bake direction as a backlog item that is
+not the shipped state.
+
+Item 1 is stated in substance (adapter + judgment-policy file, not an
+estate-wide lane registry, a project that cannot adopt assay declares its
+gates in its own script, "assay-judged before release" is per-project release
+policy). Item 3 is one closing paragraph, as instructed.
+
+**Correction found while writing this.** CONSUMERS' Go section said a
+judge-phase refusal's text "reaches only a caller that invokes the evaluation
+layer itself" and named B053 as this wave's-not-to-fix. B053 (a)+(b) shipped
+in this generation's commit 4, so that paragraph was false the moment it
+landed; it now points at the new "When a lane refuses, read the one stderr
+line" section.
+
+### What a reviewer should push on (these four items)
+
+- **B060:** that the archive really is unaffected by the staging path — the
+  byte-identical-rebuild assertion (`test_two_builds_of_one_commit_are_byte_identical`)
+  is the evidence, and it now runs over builds in two DIFFERENTLY-nested
+  directories, which is strictly stronger than before.
+- **B056:** whether correcting a message is enough. The entry's own option 2
+  is the stronger fix and was declined on cost; A-412 records that, and R-1
+  may reasonably rule the other way.
+- **B009:** re-run the greps. The whole value of that section is that it is
+  measured, so a reviewer should measure it again rather than read it.

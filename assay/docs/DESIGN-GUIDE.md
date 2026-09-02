@@ -615,6 +615,44 @@ the whole of what happened.
 The per-claim `detail` field (DA-D2 (c)) is a separate, later decision: it
 puts this text ON the wire, which is a schema change and belongs to a cut.
 
+### A self-contradictory coverage record is one FILE's defect (B054/A-410)
+
+A-405 established the rule for a Go file whose `//line` directive makes its
+recorded positions virtual: refuse it if the lane judges it, ignore it if the
+lane does not, because code outside the judged set is invisible to the
+verdict by construction. B054 is the same rule reached from JavaScript.
+
+`@vitest/coverage-istanbul` statically instruments every file a
+`coverage.include` glob matches, including files no test imports, and for an
+ordinary braceless single-statement `if` it can write a `branchMap` arc on a
+line the same record's `statementMap`/`s` never classifies. Refusing the
+whole artifact for that made ONE never-executed file cost every other file's
+correct data — the exact inverse of what `changed_lines` mode promises a
+consumer adopting coverage incrementally.
+
+**Where the fix could NOT follow A-405, and what that forced.**
+`line_directive_remapped` is a DERIVED property: it reads `blocks`, which
+every rebuild carries, so a stored flag could never disagree with its
+records. A contradicting arc has no such anchor — the arc must be dropped
+(`FileCoverage` refuses construction otherwise) and once dropped there is
+nothing left to derive from. So `contradictory_branch_lines` is STORED, and
+the two rebuild sites in `statement_attribution` carry it explicitly, with a
+comment saying why a rebuild that forgot it would launder a defective record
+into a clean one. The rejected alternative was a `(profile, defects)` parser
+return: it changes the signature every format's parser shares in order to
+carry a fact only one format can produce.
+
+**`branches` stays a `BranchCoverage`, never `None`, even when every arc was
+dropped.** `None` means "this FORMAT cannot express arcs at all" (A-008).
+Saying that about an istanbul artifact would be false, and would silently
+change the profile's branch capability.
+
+**No wire field.** The not-judged set is invisible by construction, so an
+`excluded_files` list on the verdict would put a fact on the wire that no
+consumer asks for and that the north star says is not part of the judgment.
+The file stays nameable in three places instead: the diagnostics line, the
+refusal message when it IS judged, and the field itself.
+
 ### Mutation resume and sharding (B012)
 
 Mutation state lives outside each ephemeral replacement snapshot. One bounded

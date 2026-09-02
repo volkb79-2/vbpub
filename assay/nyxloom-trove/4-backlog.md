@@ -1132,6 +1132,38 @@ ciu-P07 vendored the pyz per the cmru precedent:
    owning judgment, `gates.toml` owns orchestration. One parser, argv for
    every consumer.)
 
+### Resolution — SHIPPED as documentation, Wave D phase 1 (DA-D16). RESOLVED
+
+Docs only, per the ruling. `docs/CONSUMERS.md` gains "What `assay.toml` is,
+and what it is not (B009)" as its first section after the preamble.
+
+- [x] **Item 1, verbatim in substance.** The section states the adapter +
+      judgment-policy role, that it is NOT an estate-wide lane registry, that
+      a project which cannot adopt assay declares its gates in its own
+      project-root gate script and invokes assay from there, and that
+      "assay-judged before release" is per-project release policy.
+- [x] **Item 2, AS MEASURED 2026-09-02 — and the measurement REFUTES the
+      entry's own premise.** The entry says per-repo vendoring "is RETIRED as
+      the estate pattern"; it is not. Measured directly: `ciu` vendors
+      `tools/assay/assay-3.2.0.pyz`, `cmru` `assay-2.3.0.pyz`, `nyxloom`
+      `assay-4.0.0.pyz`, `dstdns` `assay-4.0.0.pyz` (with per-lane
+      `[lanes.*.pins.assay]` sha256 blocks), each invoked through
+      `run-gate.toml`'s `assay_command` as
+      `["/opt/tester-venv/bin/python", "tools/assay/assay-<v>.pyz"]`. Nothing
+      is baked into a shared image and no consumer resolves assay from
+      `PATH`; assay itself builds its own wheel in-repo for its gate. DA-D16
+      says explicitly: do NOT prescribe the retired-vendoring future unless
+      it is already true. It is not, so the docs describe the vendored-pin
+      pattern as the one to copy and name the image-bake direction as a
+      backlog item that is not shipped.
+- [x] **Item 3, a one-line forward pointer, no more** — the section's closing
+      "Forward note" naming long async lanes and B007's shape.
+
+**Status: RESOLVED 2026-09-02 (Wave D phase 1), as documentation.** Item 2's
+de-vendoring carves (ciu CIU-40, a cmru equivalent) are unaffected and remain
+those tools' own work; this entry no longer blocks on them, and the docs now
+say what is true rather than what was intended.
+
 ## B010 — `assay run` is unusable when the gate environment is not the invoking environment
 
 **Filed 2026-08-20 (dstdns P111 auth-config-cutover implementer, Mode-B wave).**
@@ -5304,6 +5336,58 @@ case).
   audit trail A-357 exists to preserve — any fix must keep the file
   nameable, not merely stop refusing.
 
+### Resolution — SHIPPED, Wave D phase 1 (DA-D3 + DA-R2 → A-410). RESOLVED
+
+Shape 1, isolated per file. Shape 2 (document-only) rejected; the
+`excluded_files` wire list rejected by DA-D3.
+
+- [x] **The refusal is isolated to the offending file.** The parser drops the
+  contradicting arcs and records their lines
+  (`src/assay/coverage_parsers/coverage_istanbul_json.py:345`
+  `_contradictory_branch_lines`, `:381` `_without_lines`, stored on
+  `FileCoverage.contradictory_branch_lines`,
+  `src/assay/coverage_parsers/model.py:366`). The whole-artifact
+  `UNREADABLE_ARTIFACT` at parse time is gone for these two invariants and
+  unchanged for every other one.
+- [x] **A file IN the judged set still refuses** — `assay.evaluate`'s
+  `_refuse_contradictory_branch_arcs`
+  (`src/assay/evaluate.py:195`), called from `changed_lines` mode
+  (`src/assay/evaluate.py:561`, inside the per-file loop, immediately after
+  A-405's own check) and from `whole_target` mode
+  (`src/assay/evaluate.py:1156`). `ERROR`/`UNREADABLE_ARTIFACT`, naming the
+  file and the arc line(s).
+- [x] **Oracle 1: PASS on the strength of the changed-lines diff.**
+  `tests/test_coverage_istanbul_contradictory_branch_arcs.py::test_a_defective_file_outside_the_judged_set_is_skipped_and_named`
+  — a two-file istanbul artifact, one defective file outside the judged set,
+  verdict `PASS` at `pct == 100.0`, and the defective file NAMED on stderr
+  with its arc line.
+- [x] **"must at minimum name WHICH file broke it".** Three places: the
+  diagnostics line (`runner._announce_contradictory_branch_records`,
+  `src/assay/runner.py:352`, called from `evaluate_r1` at `:1267`), the
+  refusal message when the file is judged,
+  and the stored field itself.
+- [x] **Oracle 2 (controlled wrong implementation): the fix does NOT silently
+  drop the file's data.** The field is asserted directly in the parser tests,
+  and `test_the_committed_real_artifacts_carry_no_contradiction` proves both
+  committed REAL arc-bearing artifacts record no contradiction at all, so
+  nothing about a correct artifact's parse changed.
+- [x] **Red-first.** The new module against the pre-B054 tip (`440d5da9`) in a
+  detached scratch worktree: **5 failed / 2 passed**. The 2 that pass on both
+  sides are controls — the judged-file refusal (whose disposition is
+  deliberately unchanged, only its ORIGIN moved from the parser to
+  `evaluate`) and the all-clean lane.
+- [x] **The two pre-existing parser tests that asserted the OLD verdict-wide
+  refusal** (`tests/test_coverage_istanbul_branch_arcs.py`) are rewritten to
+  assert the new disposition, keeping the invariant names and their
+  reasoning. A-357's unrecognised-TYPE refusal is untouched.
+
+**Workaround retired.** dstdns's narrowed `coverage.include` was a workaround
+for exactly this; the broad `src/**` shape CONSUMERS documents is correct
+again, and CONSUMERS now says what a consumer sees for a defective file
+inside vs. outside the judged set.
+
+**Status: RESOLVED 2026-09-02 (Wave D phase 1) — A-410.**
+
 ---
 
 ## B055 — an uncovered Go statement sharing a physical LINE with a covered one is still laundered into `executed`; the statement-position oracle does not fix it, and cannot at line granularity
@@ -5383,11 +5467,26 @@ Go R1 line claim is statement-granular **to the line**, not to the statement.
       the REAL committed `coverage-lit.out` asserting line 4 reports the
       uncovered statement — and a companion test proving an ordinary
       single-statement line does NOT, so the marker is not vacuous;
-- [ ] CONSUMERS' Go section states the limit either way, in the same
-      paragraph that describes what a Go R1 line claim means;
-- [ ] `test_lit_go_drops_the_fabricated_signature_but_still_launders_line_four`
-      updated (it asserts today's behaviour deliberately, so it MUST go red
-      when this is fixed).
+- [x] the ruling recorded as an A-row, naming the three alternatives —
+      **A-413**, alternative 1 (leave it as a documented limit), with the
+      per-line marker and full column granularity named as rejected and
+      costed as schema cuts;
+- [ ] not applicable: no wire field, because it was not ruled to fix;
+- [x] CONSUMERS' Go section states the limit, in the same paragraph that
+      describes what a Go R1 line claim means — point 4 of "Go lanes",
+      `docs/CONSUMERS.md`, now opening with "a Go R1 claim is
+      statement-granular TO THE LINE, not to the statement" and carrying the
+      exposure, the triggering shapes and the one consumer-side remedy;
+- [x] `test_lit_go_drops_the_fabricated_signature_but_still_launders_line_four`
+      (`tests/test_statement_attribution_go_witnesses.py:122`) **STAYS
+      UNCHANGED** — DA-D12 says so explicitly. It asserts today's behaviour
+      over the REAL committed `coverage-lit.out`, which is now the ruled
+      behaviour rather than an unfixed one; it is the thing that would go red
+      if a future cut ever reverses A-413.
+
+**Status: RESOLVED 2026-09-02 (Wave D phase 1) — A-413**, as a ruled and
+documented limit rather than as a code change. Reversible at a future schema
+cut: `attribute_statements` already holds the data a fix would need.
 
 ---
 
@@ -5446,14 +5545,27 @@ option 1 would move the sibling toward.
 
 ### Acceptance
 
-- [ ] the ruling recorded as an A-row naming the three options above;
-- [ ] `test_verdict_schema_is_packaged.py`'s docstring no longer states a
-      measurement that a re-run would refute;
-- [ ] if option 2: a build with the git file finder unavailable, asserting the
-      schema is ABSENT without the stanza and PRESENT with it — the two-sided
-      check the docstring currently claims;
-- [ ] whatever is decided, the same treatment applied to the Go helper's own
-      packaging test, so the two do not drift apart again.
+- [x] the ruling recorded as an A-row naming the three options above —
+      **A-412**, option 1, with options 2 and 3 named as rejected and why;
+- [x] `test_verdict_schema_is_packaged.py`'s docstring no longer states a
+      measurement that a re-run would refute — it now states A-396's
+      measurement (the stanza deleted, the wheel still carries the schema and
+      47 members) and says the file asserts the OUTCOME, not the mechanism.
+      `test_pyproject_declares_the_schema_as_package_data`'s failure message
+      carried the same refuted claim and is corrected in the same way;
+- [ ] option 2 NOT taken — a second real wheel build in a suite that already
+      pays for two, for a guarantee the artifact-side outcome test already
+      covers. Named as rejected in A-412, and named as the right upgrade if
+      the cost ever falls;
+- [x] the same treatment applied to the Go helper's own packaging test —
+      **verified, not rewritten**, exactly as DA-D13 instructs:
+      `tests/test_go_helper_is_packaged.py`'s docstring already states the
+      corrected position ("this test deliberately asserts the OUTCOME … rather
+      than the mechanism") and already names this entry as the sibling's
+      unfixed state. Nothing in it needed to change; the two files are now
+      consistent by construction.
+
+**Status: RESOLVED 2026-09-02 (Wave D phase 1) — A-412.**
 
 ---
 
@@ -5822,10 +5934,24 @@ consumer who never reads this entry.
 
 ### Acceptance
 
-- [ ] a build with `--outdir <repo>/assay/dist` leaves no untracked path in
-      the worktree;
-- [ ] a test that would go RED if a future edit reintroduced one, asserting
-      the OUTCOME (the tree is clean after a build) rather than the mechanism.
+- [x] a build with `--outdir <repo>/assay/dist` leaves no untracked path in
+      the worktree — the staging tree is now a
+      `tempfile.TemporaryDirectory` (`gate/distribution/build_release.py:349`
+      `build_zipapp`), so the builder writes nothing outside `--outdir` at
+      all, on success OR on a raise;
+- [x] a test that would go RED if a future edit reintroduced one, asserting
+      the OUTCOME rather than the mechanism —
+      `tests/test_distribution_build_release.py::test_a_build_writes_nothing_outside_its_own_outdir`.
+      The `built` fixture's two real builds now target a `dist/` inside an
+      otherwise-empty directory each (exactly the shape
+      `--outdir <repo>/assay/dist` has), and the test asserts that enclosing
+      directory contains `dist` and nothing else. It never builds into the
+      real repository — doing so during the suite would itself dirty the tree
+      the self-hosted gate lane judges, which is the very failure this entry
+      is about.
+
+**Status: RESOLVED 2026-09-02 (Wave D phase 1) — A-411.** Shape 1 of the
+three; the other two named as rejected in the A-row.
 
 ---
 

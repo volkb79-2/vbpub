@@ -158,3 +158,75 @@ notice is not a refusal), so the order was a convenience, not a constraint.
   message of its own". That silence is the defect B053 filed; the test now
   asserts the line and that it names `mynet` and the missing variable.
 - No `verdict.py` / `verify.py` / schema / drift-guard file touched; no `!`.
+
+### 5. `fix(assay): a self-contradictory istanbul branchMap is one file's defect, not the verdict's (B054, A-410)`
+
+- Item: **B054**, ruling **DA-D3** plus the controller's **DA-R2** accepting
+  BRIEF-1 §3 option (a) (store the offending arc lines on `FileCoverage`).
+- Changed: `src/assay/coverage_parsers/model.py` (the new
+  `FileCoverage.contradictory_branch_lines` field, its positivity check and
+  the docstring saying why it is stored where `line_directive_remapped` is
+  derived), `src/assay/coverage_parsers/coverage_istanbul_json.py`
+  (`_contradictory_branch_lines`, `_without_lines`, and the isolation at the
+  construction site), `src/assay/statement_attribution.py` (both rebuild
+  sites carry the field), `src/assay/evaluate.py`
+  (`_refuse_contradictory_branch_arcs` + its two call sites, beside A-405's),
+  `src/assay/runner.py` (`_announce_contradictory_branch_records`, called
+  from `evaluate_r1`), `tests/test_coverage_istanbul_contradictory_branch_arcs.py`
+  (new, 7 tests), `tests/test_coverage_istanbul_branch_arcs.py` (the two
+  tests that asserted the OLD verdict-wide refusal, rewritten to assert the
+  new disposition), `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `CHANGES.md`,
+  `nyxloom-trove/decisions.md` (A-410), `nyxloom-trove/4-backlog.md` (B054
+  resolution block, RESOLVED).
+- **Red-first**, against the pre-B054 tip `440d5da9` in a detached scratch
+  worktree with the new test file copied in: **5 failed, 2 passed**. The two
+  that pass on both sides are controls — the judged-file refusal (whose
+  disposition is deliberately UNCHANGED; only its origin moved from the
+  parser to `evaluate`) and the all-clean lane. With the fix: **7 passed**.
+- `evaluate.py` stays pure: it takes no stream and returns the refusal as an
+  `AssayError`. The skip notice is written by `runner`, from a fact carried
+  on the profile — so DA-R2's "evaluate.py stays pure" holds without a
+  return-channel change (see the REPORT for why naming EVERY defective record
+  rather than only the skipped ones is a superset, not an invention).
+- No `verdict.py` / `verify.py` / schema / drift-guard file touched; no `!`.
+
+### 6. `fix(assay): the release builder writes nothing outside --outdir; three rulings recorded as docs (B060, B056, B055, B009)`
+
+Four items in one commit because three of them are documentation and a
+ruling, and the fourth is a five-line builder change with its own outcome
+test; splitting them would produce three commits nobody can gate separately.
+
+- **B060 / DA-D14 / A-411.** `gate/distribution/build_release.py`'s
+  `build_zipapp` stages under a `tempfile.TemporaryDirectory` instead of
+  `outdir.parent / "zipapp-staging"`. Outcome test:
+  `tests/test_distribution_build_release.py::test_a_build_writes_nothing_outside_its_own_outdir`,
+  which required changing the `built` fixture so each real build targets a
+  `dist/` inside an otherwise-empty directory — the shape
+  `--outdir <repo>/assay/dist` has. The test never builds into the real
+  repository: doing that during the suite would itself dirty the tree the
+  self-hosted gate lane judges, which is the very failure B060 is about.
+- **B056 / DA-D13 / A-412.** Option 1. `tests/test_verdict_schema_is_packaged.py`'s
+  module docstring no longer states the measurement A-396 refuted, and
+  `test_pyproject_declares_the_schema_as_package_data`'s failure message —
+  which carried the same refuted claim — now says why the declaration is
+  kept. `tests/test_go_helper_is_packaged.py` was VERIFIED, not rewritten, as
+  DA-D13 instructs: its docstring already states the corrected position and
+  it already asserts the outcome.
+- **B055 / DA-D12 / A-413.** Ruling + docs only. CONSUMERS' Go point 4 now
+  opens with "a Go R1 claim is statement-granular TO THE LINE, not to the
+  statement".
+  `test_lit_go_drops_the_fabricated_signature_but_still_launders_line_four`
+  is untouched, as the ruling requires.
+- **B009 / DA-D16.** Docs only. New CONSUMERS section "What `assay.toml` is,
+  and what it is not". **Item 2's premise was measured and found FALSE**: the
+  entry says per-repo vendoring "is RETIRED as the estate pattern", and all
+  four consumers vendor a pinned `.pyz` today (ciu 3.2.0, cmru 2.3.0, nyxloom
+  4.0.0, dstdns 4.0.0, each through `run-gate.toml`'s `assay_command`).
+  DA-D16 says explicitly not to prescribe that future unless it is already
+  true, so the docs describe the vendored pin as the pattern to copy and name
+  the image-bake direction as unshipped.
+- Also corrected in CONSUMERS while passing: the Go section's paragraph
+  saying a judge-phase refusal's text "reaches only a caller that invokes the
+  evaluation layer itself" and naming B053 as unfixed. B053 shipped in commit
+  4 of this generation, so that paragraph was false as written.
+- No `verdict.py` / `verify.py` / schema / drift-guard file touched; no `!`.

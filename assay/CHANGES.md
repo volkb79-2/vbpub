@@ -29,6 +29,26 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   library caller passes its own `diagnostics=` stream to
   `runner.run_lane` and assay writes nothing to the process's stderr. No wire
   change — the document is exactly as closed as it was. (B053, A-409)
+- An istanbul coverage record whose `branchMap` contradicts its own
+  `statementMap`/`s` line classification is now a defect of THAT FILE, not of
+  the whole verdict. `@vitest/coverage-istanbul` statically instruments every
+  file a `coverage.include` glob matches, including files no test imports,
+  and for an ordinary braceless single-statement `if` it can emit an arc on a
+  line the same record does not classify as code at all. One such
+  never-executed file used to refuse the entire artifact — taking down every
+  other file's correct data and defeating exactly the incremental adoption
+  `changed_lines` mode exists for. The offending arcs are now dropped and
+  their lines recorded per file: a defective file with no line in the judged
+  set is skipped and NAMED on the diagnostics stream, and one inside the
+  judged set refuses `ERROR`/`UNREADABLE_ARTIFACT` naming the file and the
+  arc line. Unrecognised branch TYPES (A-357) still refuse the artifact, and
+  so does every other record defect. (B054, A-410)
+- `gate/distribution/build_release.py` no longer leaves a `zipapp-staging/`
+  directory beside `--outdir`. It stages under a `TemporaryDirectory`, so a
+  build writes nothing outside `--outdir` — on success or on a raise. The
+  in-repository invocation `--outdir assay/dist` used to leave an untracked
+  `assay/zipapp-staging/` behind, which the self-hosted gate lane then
+  correctly refused as `NO_MEASUREMENT`/`DIRTY_TREE`. (B060, A-411)
 
 ### Documentation
 - README and `docs/CONSUMERS.md` downgrade Vitest's `coverage.clean = false`
@@ -42,6 +62,26 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   carry no line); `docs/DESIGN-GUIDE.md` gains "Every refusal says WHY,
   exactly once, through one emitter" with the rejected CLI-boundary
   alternative. (B053, A-409)
+- `docs/CONSUMERS.md`'s JavaScript-lanes section gains "A never-executed
+  file's own instrumentation quirk costs you that file, not the verdict";
+  `docs/DESIGN-GUIDE.md` gains "A self-contradictory coverage record is one
+  FILE's defect", with the A-405 parallel and the one place it does not
+  transfer. (B054, A-410)
+- `docs/CONSUMERS.md`'s Go section states the line-granularity limit as a
+  RULING: "a Go R1 claim is statement-granular TO THE LINE, not to the
+  statement", with the exposure, the shapes that trigger it and the one
+  consumer-side remedy. No wire field; the test that asserts today's
+  behaviour stays. (B055, A-413)
+- `docs/CONSUMERS.md` gains "What `assay.toml` is, and what it is not": the
+  adapter + judgment-policy role (not an estate-wide lane registry), and the
+  distribution model **as measured** — every consumer today vendors a pinned,
+  sha256-verified `.pyz`; nothing is baked into a shared image. (B009)
+- `tests/test_verdict_schema_is_packaged.py`'s docstring no longer states a
+  measurement a re-run refutes: with `[tool.setuptools.package-data]` deleted
+  the wheel still carries the schema, because `setuptools_scm`'s git file
+  finder ships every tracked file under the package directory. The file
+  asserts the OUTCOME, and the declaration is kept for the git-metadata-absent
+  build. (B056, A-412)
 
 <!-- Post-release housekeeping, 2026-08-18: this block is CLEARED immediately
      after a release. cmru generates the dated entry below from the commit

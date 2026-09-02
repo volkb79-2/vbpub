@@ -5,6 +5,56 @@ the wheel or the matching zipapp from one immutable `assay-v*` GitHub Release. T
 the normal integration; the zipapp is the zero-install option for a gate image that already
 has Python.
 
+## What `assay.toml` is, and what it is not (B009)
+
+**`assay.toml` is an adapter and judgment-policy file for a project that has
+adopted assay** — its coverage floors, which rigor levels it declares, its
+isolation policy, and where its own entrypoints are. It belongs in the
+project it judges, beside that project's source.
+
+**It is not an estate-wide lane registry.** A project that cannot adopt assay
+— host or shell tooling, anything whose "tests" are not a command assay can
+judge inside a snapshot — declares its gates in its own project-root gate
+script and simply does not have an `assay.toml`. Assay is invoked FROM such
+scripts, at the points where it judges something, not made a precondition for
+having a gate at all. "This repository must be assay-judged before release"
+is a release policy, decided per project; it is not a reason to put an
+`assay.toml` everywhere.
+
+The division of labour with an orchestrator is the same one, one level up:
+**`assay.toml` owns judgment; the orchestrator's own config owns
+orchestration** — which lanes exist, what environment each runs in, what
+artifacts are collected. In this estate that orchestrator is `run-gate`, and
+its `run-gate.toml` references an assay-judged lane by name (`assay_lane`)
+rather than restating the judgment.
+
+### How consumers actually get the judge, as of 2026-09-02
+
+Stated as MEASURED rather than as intended, because the two have differed:
+
+| consumer | how it gets assay |
+|---|---|
+| `ciu` | vendored pinned zipapp, `tools/assay/assay-3.2.0.pyz` + `.sha256`, invoked through `run-gate.toml`'s `assay_command` |
+| `cmru` | vendored pinned zipapp, `tools/assay/assay-2.3.0.pyz` (also its `[orchestration]` release-order pin) |
+| `nyxloom` | vendored pinned zipapp, `tools/assay/assay-4.0.0.pyz` |
+| `dstdns` | vendored pinned zipapp, `tools/assay/assay-4.0.0.pyz`, with a `[lanes.*.pins.assay]` sha256 block per lane |
+| `assay` itself | builds its own wheel in-repo and installs it into a clean venv for the gate; it never imports its own source under test |
+
+So **every consumer today vendors a pinned, sha256-verified `.pyz`.** Nothing
+is baked into a shared image, and no consumer resolves assay from `PATH`. If
+you are adopting assay now, that is the pattern to copy: it is fresh-clone
+safe, needs no network at gate time, and the pin is what makes a verdict
+attributable to a judge you verified (see `judge_provenance` below).
+
+A later estate direction — bake the judge into the shared gate image and keep
+only a version pin per repository — is recorded in the backlog (B009 item 2)
+and is **not** the shipped state. Do not write a gate that assumes it.
+
+**Forward note.** Long asynchronous lanes (mutation campaigns, fuzzing) are
+planned as ordinary assay lanes with large budgets, triggered remotely and
+invoked through the same project gate script; see B007's multi-target canary
+for the bounded-long-judgment shape.
+
 ## Obtain and verify an immutable release
 
 Download one named release's wheel and `release-manifest.json`, then verify them before
@@ -1117,6 +1167,42 @@ changed line inside one of these files is judged like ordinary source
 never show anything but uncovered — fail-closed, and visible in the verdict,
 never a silent pass.
 
+### A never-executed file's own instrumentation quirk costs you that file, not the verdict (B054)
+
+The other consequence of that same synthesis: `@vitest/coverage-istanbul`
+statically instruments a file your `coverage.include` glob matches even when
+no test imports it, and for some constructs — an ordinary braceless
+single-statement `if` is the measured one — the record it writes names a
+branch arc on a line that record's own `statementMap`/`s` does not classify
+as code at all. The record contradicts itself.
+
+Through 4.1.0 assay refused the WHOLE artifact for that, `ERROR`/
+`UNREADABLE_ARTIFACT`, so one never-executed file with no relation to your
+diff cost every other file's correct coverage data — the opposite of what
+changed-line judging promises during an incremental rollout, and a real
+reason consumers narrowed `coverage.include` to their tested surface.
+
+That is fixed. The disposition is **per file**, and it depends on one thing
+only — whether this lane judges that file:
+
+- **Not judged** (no line of it in the diff, under `changed_lines`; not a
+  declared target, under `whole_target`): the contradicting arcs are dropped,
+  the file is **named on the diagnostics stream** — never skipped silently —
+  and the verdict proceeds on the strength of everything else. A fully
+  covered diff still PASSes.
+- **Judged**: the lane refuses `ERROR`/`UNREADABLE_ARTIFACT`, naming the file
+  AND the arc line. There is no honest number for a file whose own record
+  disagrees with itself, and reporting one over a set of arcs assay knows is
+  incomplete is exactly the laundering this tool exists to refuse. The remedy
+  is in the message: narrow the glob to the tested surface, or keep the file
+  out of `judge.source_roots`.
+
+So a broad `coverage.include: ['src/**']` — the shape every worked lane here
+uses — is the right shape again. What has NOT changed: an unrecognised branch
+`type` in `branchMap` still refuses the artifact whole (it means the declared
+`producer` does not describe the document you actually produced), and so does
+every other malformed record.
+
 ### R2 for JavaScript, by ingesting Stryker's report (B046)
 
 Assay ships no JavaScript mutation engine and does not pretend to. What it
@@ -1965,15 +2051,13 @@ profile (28.22,29.2); 0 only from the source (none)
 ```
 
 The extents in it are spelled the way your `.out` file spells them, so they
-can be grepped against the artifact directly — but **that text reaches only a
-caller that invokes the evaluation layer itself**
-(`assay.evaluate.evaluate_coverage`,
-`assay.statement_attribution.attribute_statements`). `assay run` folds a
-judge-phase refusal into the R1 claim, and a verdict carries no free-text
-cause by design, so a CLI consumer gets the reason code and nothing more.
-Surfacing it is tracked as **B053** ("an `ERROR`-outcome verdict's detailed
-message is constructed but never surfaced anywhere a consumer can read it");
-it is not this wave's to fix, and the refusal itself is unaffected.
+can be grepped against the artifact directly. **Since 4.2.0 you get that text
+from `assay run` too** — on stderr, as the one refusal line described under
+["When a lane refuses, read the one stderr
+line"](#when-a-lane-refuses-read-the-one-stderr-line--the-document-does-not-carry-the-sentence)
+(B053). The verdict document still carries no free-text cause by design, so
+the reason code is all a document-reading consumer gets; the sentence naming
+the disagreeing extents is on the diagnostics stream.
 
 The fix on your side is to regenerate the profile from the tree you are
 judging — never to relax the check, which exists because attributing anyway
@@ -2002,12 +2086,27 @@ claim carries no coverage payload (an error, a refusal) also omits it — an
 entry exists because it produced a claim, so one standing beside no claim
 would describe work that judged nothing.
 
-**4. One known limit, stated so you do not discover it in a review.** An
-uncovered statement sharing a physical LINE with a covered one is still
-reported as executed — `f := func() int { return 7 }` is two counted
-statements that both genuinely begin on that line, and the line did run. This
-is line granularity's own limit, which coverage.py shares; it is not fixed by
-the oracle and is not claimed to be.
+**4. One known limit, stated so you do not discover it in a review: a Go R1
+claim is statement-granular TO THE LINE, not to the statement.** An uncovered
+statement sharing a physical LINE with a covered one is still reported as
+executed — `f := func() int { return 7 }` is two counted statements that both
+genuinely begin on that line, and the line did run. This is line
+granularity's own limit, which coverage.py shares; it is not fixed by the
+source-side oracle and is not claimed to be. The oracle removes the
+*fabrications* (a `func` signature line, a closing brace, a `case` label
+reported as executable code); it cannot remove this one, because a verdict's
+wire schema speaks in line numbers and telling two statements on one line
+apart needs a column-granular claim.
+
+**This is a ruling, not an omission (B055/A-413).** Three alternatives were
+weighed — leave it as a documented limit, add a per-line "this line contains
+an uncovered statement" marker, or go to full column granularity — and the
+first was taken: the exposure is toward false PASS on an uncommon shape
+(a `func` literal inline in an assignment, a `switch` case body on the `case`
+line, `x := 1; y := 2`), coverage.py lanes have carried the identical limit
+since assay's first release, and the other two are schema cuts. If your Go
+code puts two statements on one line in code you care about gating, split the
+line — that is the only thing that changes the measurement.
 
 **5. A second known limit: assay does not judge Go sources carrying `//line`
 directives — generated code.** Keep them out of `judge.source_roots`.
