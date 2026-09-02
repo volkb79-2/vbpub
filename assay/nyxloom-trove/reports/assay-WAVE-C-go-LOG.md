@@ -1249,10 +1249,19 @@ tree: full suite **3943 passed, 20 skipped**; Go qualification in
 
 **Process note, volunteered for the reviewer.** Every change to a tracked file
 this generation was made with the Edit tool, per the operator's standing
-directive — no rewrite scripts over tracked files. Two mutation probes edited
-scratch worktree copies under `scratchpad/g8/` (also via Edit), never the
-worktree, and both were applied to a COMMITTED tree in that copy so that a
-zipapp built from it measures the mutation rather than a working-tree edit.
+directive — no rewrite scripts over tracked files. Every mutation probe edited
+a detached scratch worktree under `scratchpad/g8/` (also via Edit), never
+`assay-wave-c-go`. Round 1's invalid-probe rule — a mutation must be COMMITTED
+when the thing under test is a built artifact — was honoured where it applies
+(the before/after zipapps and the in-image red-proof of the two new
+qualification tests, `prewt` at `835fd0d9` and `prewt2` at `4c11ca30`) and is
+stated, rather than invoked, for the four `pytest`-only mutations where it does
+not: `pytest` imports `src/` from the working tree, so a working-tree edit is
+what it runs. REPORT §51 carries the distinction in full.
+
+Both scratch worktrees were restored to their committed state afterwards, so
+neither is left holding a mutation that could be mistaken for the branch's own
+code.
 
 This section and REPORT §54 are the only content in this commit; both were
 written after run 12 returned, not during it.

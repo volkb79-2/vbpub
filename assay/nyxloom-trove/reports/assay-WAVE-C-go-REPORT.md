@@ -2318,10 +2318,20 @@ argument list is only this instance of it.
 
 ## 51. The two surviving mutants, killed — SF-R2-1 and SF-R2-2
 
-Both mutations were applied as COMMITS in a detached scratch worktree
-(`scratchpad/g8/prewt`), never as working-tree edits, because
-`build_release.py` builds from HEAD's committed OID and because a working-tree
-mutation is the invalid-probe shape round 1 already recorded.
+Both were applied in a detached scratch worktree (`scratchpad/g8/prewt`),
+never in `assay-wave-c-go`, and both were exercised by `pytest` alone.
+
+**On the invalid-probe lesson, stated precisely rather than invoked.** Round
+1's rule is that a mutation must be COMMITTED whenever the thing under test is
+a built artifact, because `build_release.py` builds from HEAD's committed OID
+and would otherwise measure an unmutated tree. That applies to every probe in
+§50 and to the in-image red-proof of the two new qualification tests, and all
+of those were commits (`scratchpad/g8/prewt` at `835fd0d9`,
+`scratchpad/g8/prewt2` at `4c11ca30`). It does NOT apply to the four mutations
+below: `pytest` imports `src/` from the working tree, so a working-tree edit is
+exactly what it runs, and these were working-tree edits. Making them commits
+would have proved nothing extra; claiming they were would have been a false
+statement about method, which is why this paragraph exists.
 
 ### M-B2 — the whole-target A-405 branch
 
