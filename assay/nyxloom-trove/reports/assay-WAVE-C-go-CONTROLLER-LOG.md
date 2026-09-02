@@ -696,3 +696,102 @@ principles don't already resolve.
   `NO_MEASUREMENT` isolation or, failing a ruling, the documented
   `coverage.include` constraint). The srdm backlog's pointer to "B056" was
   corrected on main to name the entry by title and its post-merge id.
+
+- **2026-09-02 (generation 5 returned — DA-8 landed, F008-A3 proven, ids
+  renumbered; generation 6 dispatched for A4/A5)** — Generation 5 cut at
+  a green gate after ~64 minutes and 286 tool calls: tip `86b4efae`, tree
+  clean, BRIEF-6 committed. **Gate verified by the controller from the
+  run-9 log directly** (`gate-run9.log`: wheel
+  `assay-4.0.1.dev35+gdd1e2c46` installed, phases through
+  `self-hosted-lane-passed` / `cmru-b006a-qualified` /
+  `independent-self-hosting-passed`, `ASSAY_REGISTERED_GATE_COMPLETE=1`,
+  `GATE_EXIT=0`, zero hits for `FAILED|DIRTY_TREE|Traceback`); the sole
+  later commit confirmed docs-only by `git diff --stat dd1e2c46..HEAD`
+  (three trove report files). Landed: **A-404** — the seam is
+  `LanguageAdapter.for_project(*, repo_top, project_root) ->
+  LanguageAdapter`, keyword-only, called ONCE from `runner.evaluate_r1`
+  after `repo_top` resolves and before anything reads the profile, the
+  local name rebound so the key join, the statement oracle and both
+  evaluate modes see one object; every adapter but Go returns `self`
+  (`SqlAdapter` keeps its `_UNREACHABLE` raise — a documented deviation I
+  accept: the call site is only reached from R1 paths and SQL is R0/R2).
+  `adapters/go_modfile.py` parses only the `module` directive, with the
+  lexical rules read from go1.25.14's own vendored `modfile` inside the
+  image rather than the Modules Reference (which caught that a backquoted
+  module path is NOT valid `cmd/go` input). Refusals from the existing
+  vocabulary: no `go.mod` → `BAD_LANE_CONFIG`; a key outside the derived
+  module → `UNREADABLE_ARTIFACT` naming key, module path and `go.mod`,
+  replacing the misattributed staleness message. 42 new tests; suite 3902
+  passed / 18 skipped; the qualification now drives `python3 <pyz> run …`
+  in-image (5 passed, every inherited assertion unchanged — BRIEF-5 §4's
+  prediction held). **F008-A3 ticked `proven`** with four cited tests, two
+  needing no toolchain. The renumbering (`e7eb5241`) landed as its own
+  commit and was re-gated rather than assumed inert; the 21 remaining
+  `B053|B054` hits on the branch are the map and explicit citations of
+  MAIN's B053 (verified by the controller: backlog 2, BRIEF-6 3, LOG 9,
+  REPORT 5, the qualification test 2). Main's B053 fold-in handled as
+  told: the refusal-(c) proof split, the overclaiming test renamed
+  `…_refuses_through_the_cli`, message asserted at the library boundary.
+  Stale user-facing prose (CLI docstring, `run --help`, README still said
+  Go was refused) fixed in passing — a class worth carrying: tests read
+  the registry, not the help string. B060 filed. Next free ids: A-405,
+  B061. **Process note generation 5 volunteered, recorded for the
+  reviewer:** three bulk edits (the `for_project` member into the Python
+  and JavaScript adapters, the appended REPORT sections, and the
+  108-reference renumbering) were done with short Python rewrite scripts
+  rather than per-file edits, against the operator's standing
+  Edit/apply_patch directive; the renumbering warranted it (a partial
+  rename across 25 files is worse than none, end state verified with
+  `git grep`, reasoning in the commit and LOG), the other two did not.
+  Content reviewed and gate-green; the reviewer should read those three
+  diffs as diffs, not trust the method. Generation 6's prompt restates
+  the directive.
+
+  **DA-9 — BRIEF-6 §3's lane-shape correction is ACCEPTED; DA-6's
+  substance stands.** Generation 5 found, from the key join's own
+  arithmetic (`normalize_coverage_key` then `_to_repo_relative_key(…,
+  project_prefix)` with `project_prefix` = `project_root` relative to
+  `repo_top`), that for a Go lane the PROJECT ROOT must be the module root
+  — true before A-404, and what A-404 (d) already says. DA-6's `cwd =
+  "shared-ramdisk-depot-manager"` + `source_roots = ["shared-ramdisk-
+  depot-manager/internal"]` implied a project root at the repository top,
+  where there is no `go.mod` and where `srdm/internal/…` would resolve to
+  a nonexistent path. Corrected shape: the lane file inside
+  `shared-ramdisk-depot-manager/` so `project_root` is the module root,
+  `source_roots = ["internal"]`, **no `cwd`**, srdm's own `gate.sh:105`
+  argv verbatim, base `10b174a5`. Facts re-checked by the controller:
+  `10b174a5` = "Merge cgroup-profiler …", `83c2ff79` = "Merge P14: srdm
+  update — the ordered cluster update", ancestor relation holds, and
+  their srdm-subtree diff is 32 files / 3917 insertions including
+  `internal/power/*`, `internal/opctl/update.go` — i.e. the pair isolates
+  exactly P14, the package covergate's floor never saw; P10 merged later
+  (`3ac61813`). `go.mod` declares `module srdm`. **Harness ruling** for the
+  one thing DA-6 did not say: `assay run` judges HEAD and the shared
+  checkout's HEAD may not move, so generation 6 builds a synthetic
+  two-commit repository INSIDE the container — `git archive 10b174a5
+  shared-ramdisk-depot-manager` as commit 1, `git archive 83c2ff79 …` over
+  it as commit 2, from the bind-mounted host repo read-only — and judges
+  it with base = commit 1; the changed lines are then P14's own. covergate
+  runs in that same checkout on the same profile (`-base <commit 1>
+  -module srdm -source internal -fail-under 75`). Every difference is
+  classified extent-expansion vs file-absence BEFORE a side is named,
+  with `carve-assets/P27/fixture/manifest/calc-statements.json` as the
+  third party where one exists. Nothing is committed under
+  `shared-ramdisk-depot-manager/`.
+
+  **B057's remaining box** (the old B055's `_PreOracleGoAdapter` canary
+  shortcut): close it only if F008-A4's regeneration makes it fall out;
+  otherwise leave it as accepted-and-documented with the reason (the
+  registered gate's image has no Go), the B024/B026 precedent. Not a
+  blocker for the wave.
+
+  **Generation 6 dispatched:** fresh Opus session (never a fork), same
+  worktree/branch, tip `86b4efae` (gate-verified `dd1e2c46` + one
+  docs-only commit), seeded with BRIEF-1..6 plus this entry. Task order:
+  (1) F008-A4 through the in-image harness — regenerate the fixture bytes
+  from real toolchain output AND re-derive every asserted line set from
+  the oracle in the same change (A-234's warning), discharging B057's
+  first box; (2) F008-A5 per DA-6 as corrected by DA-9; (3) the A4/A5
+  boxes, each citing something run; (4) B057's last box per above. Then
+  return — on completion the fresh adversarial reviewer (3-round cap),
+  merge, `cmru release` (MINOR), deploy, dstdns notify.
