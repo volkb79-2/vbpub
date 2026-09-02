@@ -140,6 +140,62 @@ out of the render, which is the opposite of what that flag exists for.
    hygiene — the retired-overlay rule asks the filesystem, not your
    `.gitignore`, so the two concerns stay independent.
 
+## [7.10.1] - UNRELEASED
+
+> Version note for the releaser: this package (ciu-P48) was carved against
+> `main` at the ciu-v7.9.0/ciu-P46 revision, before ciu-P47's `[7.10.0]`
+> section merged. It is an ordinary, NON-breaking fix — no consumer-facing
+> behavior changes at all — so it takes the next PATCH above whatever P47
+> released as. Rename this header if that number moves.
+
+ciu-P48 — CIU-87: ciu's own test suite no longer leaks a Docker network, or a
+devcontainer network membership, into the host it runs on.
+
+### Fixed
+
+- **CIU-87 — the test suite leaked Docker networks into its host, one batch
+  per run.** ciu's suite drives real, non-mocked `ciu env generate`/`ciu up`
+  code paths, and it runs inside a devcontainer where `ENV_TYPE` genuinely IS
+  `"devcontainer"` — so S1.9's `_connect_devcontainer_to_network()` guard
+  could not tell a test run from a real provisioning run and did exactly what
+  it exists to do: created the workspace network and joined the cockpit to it.
+  `ciu clean` then (correctly, by design) refuses to remove a network a
+  container is still attached to, and the suite's `tmp_path` teardown only
+  removes directories, so both the network and the membership leaked
+  permanently. Measured on the shared host this was reported from: **+4
+  networks per suite run**, accumulating until `docker network create` began
+  failing outright with *"all predefined address pools have been fully
+  subnetted"* — which is how it first surfaced, as an unrelated workload's
+  bring-up failing for no visible reason.
+
+  Two independent mechanisms now close it:
+
+  1. **`CIU_TEST_SUITE=1`** (new): a test-suite-specific signal, checked in
+     `_ensure_network_exists()` and `_connect_devcontainer_to_network()`,
+     that suppresses the Docker side effect while leaving every identity
+     contract (the empty-`DOCKER_NETWORK_INTERNAL` refusal) and the S1.9
+     `ENV_TYPE` guard itself exactly as they were. The variable is set only by
+     ciu's own `tests/conftest.py`; no product path sets it, no consumer is
+     expected to, and it is matched against the exact string `"1"` so a stray
+     ambient value cannot silently disarm a real devcontainer's network join.
+  2. **A surgical teardown fixture** in `tests/conftest.py` that records the
+     networks a test really created/joined — each confirmed by a before/after
+     probe of the daemon, so neither a pre-existing network nor a pre-existing
+     membership can be registered — and releases exactly those (disconnect
+     first, then remove; the order the daemon requires), as a yield-fixture so
+     it runs on test failure too. It is deliberately not a `docker network ls
+     --filter name=…` sweep: the devcontainer is a shared host and a network
+     the test did not create belongs to someone else.
+
+  `CIU_TEST_SUITE` follows the existing ambient `CIU_*` toggle pattern
+  (`CIU_SKIP_DOOD_PREFLIGHT`, `CIU_ADOPT_LEGACY_PROJECT`,
+  `CIU_SSH_INSECURE_TOFU`) rather than introducing a new one; S2.8a
+  cross-references that family.
+
+  Not a consumer-facing change: nothing about how `ciu` provisions a real
+  workspace moves. The only behavior that changes is what ciu's own test
+  suite does to the Docker daemon it runs against.
+
 ## [7.9.0] - 2026-09-02
 <!-- cmru: generated -->
 <!-- cmru: source-end=83bcfa4e2e5d7c9b9e300cf618bcecf0e1314f01 -->

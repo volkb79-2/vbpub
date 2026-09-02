@@ -3101,7 +3101,7 @@ Two related asymmetries in the same tuple:
 ---
 
 
-## CIU-87 — integration test suite leaks a Docker network + devcontainer network-membership per real run
+## CIU-87 — FIXED (ciu-P48) — integration test suite leaks a Docker network + devcontainer network-membership per real run
 
 **Filed by:** dstdns, 2026-09-01, during a tooling-adoption/hygiene pass (see
 `dstdns/docs/plan-tooling-adoption-and-hygiene-2026-09-01.md` §4). Found while
@@ -3202,6 +3202,152 @@ Either of two independent fixes closes this (a combination is stronger):
 **SPEC ownership:** S1.9 (devcontainer network join) and S16 (worktree
 lifecycle/reap) — this is the test-suite-side gap in the discipline S16.10
 (`ciu worktree reap`) already establishes for real workspaces.
+
+### Resolution (ciu-P48, 2026-09-02) — both fixes built, measured on the real shared daemon
+
+**What shipped.** Both proposed fixes, as recommended, plus corrections to
+this entry's own accounting (below).
+
+1. **`CIU_TEST_SUITE=1`** (`workspace_env._test_suite_gate_active()`), checked
+   in `_ensure_network_exists()` and `_connect_devcontainer_to_network()`,
+   suppresses the daemon side effect. Deliberately a NEW signal, not a
+   relaxation of the existing `ENV_TYPE` check: that check is legitimate S1.9
+   behavior and is what makes the feature work in real devcontainer use, so it
+   is untouched and is still evaluated FIRST. The gate is matched against the
+   exact string `"1"`; a stray ambient value cannot disarm a real network
+   join. It is set only by `tests/conftest.py` — at module import (so
+   collection-time code and any `ciu` subprocess a test spawns inherit it) and
+   re-asserted per test through `monkeypatch` (so a test that changes it is
+   restored, failures included). Neither the empty-`DOCKER_NETWORK_INTERNAL`
+   refusal nor any other identity contract is suppressed: the gate stops the
+   side effect, never the validation.
+2. **A surgical teardown fixture** (`_track_real_docker_networks`, autouse,
+   yield-form so it runs on failure too). It wraps the two product functions
+   and registers a side effect ONLY when that call is what caused it, probing
+   the daemon before and after: a network must have come into EXISTENCE across
+   the call, and the cockpit's MEMBERSHIP must have appeared across it. It
+   then releases exactly those — `docker network disconnect -f` first, then
+   `docker network rm`, the order `deploy.py`/`worktree.py` already use and
+   the one the daemon requires. Explicitly NOT a `docker network ls --filter
+   name=…` sweep: this devcontainer is a shared host and a network the test
+   did not create is someone else's live work. Networks merely JOINED are
+   disconnected but never removed. The probing costs nothing while the gate of
+   (1) is active, since the product then cannot reach the daemon at all.
+
+   The membership half was NOT observation-gated in the first cut and was
+   caught by this package's adversarial review (B1): it recorded every name
+   the product was ASKED to connect, so a boundary test that fully mocked
+   `subprocess.run` and merely NAMED a network still had teardown issue a real
+   `docker network disconnect -f` against the live daemon — the reviewer
+   demonstrated it forcibly detaching the cockpit from a network created
+   outside the test. Fixed by giving `joined` the same before/after discipline
+   `created` always had, and pinned by three tests including an end-to-end one
+   driving the real fixture through a mocked seam.
+
+Nine boundary tests whose actual subject IS the gated code opt out through a
+named `real_network_side_effects` fixture, which lifts (1) for that test and
+leaves (2) armed — the opt-out this entry's proposed contract asked for.
+
+**On prior art.** `CIU_TEST_SUITE` is the THIRD member of an existing house
+pattern, not a new invention: `CIU_SKIP_DOOD_PREFLIGHT` (`engine.py`, S1.5)
+is documented in-source as "for tests", uses the same exact `== "1"` match,
+and is already listed in `docs/SPEC.md` alongside `CIU_ADOPT_LEGACY_PROJECT`
+and `CIU_SSH_INSECURE_TOFU`. S2.8a cross-references that family. A hookable
+seam also already existed — `tests/tests/test_spec_contracts.py`'s file-level
+autouse fixture no-opping `ensure_workspace_network` — but it is in-process
+only, so it would not have covered the `ciu`-subprocess paths this gate does;
+the env-var mechanism is still the right choice, just not for the "no
+precedent existed" reason ciu-P48 originally gave.
+
+**Corrections to this entry's own reproduction.** Instrumenting the real
+functions and running the whole suite (`PYTEST_CURRENT_TEST` attribution) gave
+the complete accounting, which differs from what was filed. *(Caveat on that
+trace: it was collected before the exhausted-pool condition below was
+discovered, so some of its `CREATE` lines record attempts that the daemon
+refused. Its ATTRIBUTION — which test made which call — is unaffected by
+that, and the two-file conclusion was independently reproduced three times by
+this package's adversarial reviewer via direct instrumentation on a healthy
+pool. The COUNTS in that trace should not be read as leak counts; the table
+below is the measured record.)*
+
+- The leak comes from **two test files, not eight**:
+  `tests/tests/test_ciu_test_repo.py` and
+  `tests/tests/test_ciu_identity_cutover_ciu75.py`. The "7 sibling files"
+  matching the `test-repo` fixture-name pattern mostly mock
+  `ensure_workspace_network` and never reach the daemon; the second leaking
+  prefix (`repo-*`) is `test_ciu_identity_cutover_ciu75.py`'s `tmp_path /
+  "repo"` roots, **not** `test_ciu_worktree.py`/`test_ciu_worktree_lease.py`,
+  which construct `repo-…-network` name STRINGS but create no networks.
+- The network name's prefix is just `physical_root.name.lower()`, so prefix
+  matching (`^test-repo-`, `^repo-`) is an unreliable way to find these. The
+  fix and its oracle are name-agnostic for that reason.
+- The suite also creates and correctly REMOVES several networks per run — the
+  ones where the cockpit never got joined. Only the joined ones leak, which is
+  precisely the mechanism this entry identified.
+
+**Behavioral oracles — actual numbers, real shared daemon, 2026-09-02.**
+All measured by full `docker network ls` NAME-SET diffs, not counts alone,
+because other agents work on this host concurrently. Every row below was
+re-measured in the review-fix pass, after a `docker network create`/`rm` probe
+confirmed the pool could still produce the effect.
+
+| Configuration | before → after | networks leaked |
+|---|---|---|
+| Both fixes OFF (control) | 18 → 22 | **+4** (`repo-48473e`, `repo-e3e94f`, `test-repo-1c9480`, `test-repo-adb5a9`) |
+| Gate OFF, teardown fixture ON (control) | 18 → 18 | 0 — the fixture really disconnected and removed all 4 |
+| Both fixes ON, run 1 | 18 → 18 | 0, identical name set |
+| Both fixes ON, run 2 (immediately after) | 18 → 18 | 0, identical name set |
+
+`^test-repo-`/`^repo-` count **0 → 0 → 0** across both fixed runs.
+Second oracle (`docker network inspect` shows the cockpit disconnected, or the
+network absent, once the suite exits): satisfied — under both fixes the suite
+creates no network at all, and the gate-OFF control demonstrates the
+disconnect-then-remove path working for real on the daemon.
+
+> **The `+4` figure was first reported as `+6`, and that was wrong.** The
+> original control run's before/after window overlapped a concurrent
+> co-tenant's own ciu suite run on this shared host, and two of that run's
+> networks — which share the same `repo-*` naming — were counted as this
+> suite's. A name-set diff does not protect against that when the co-tenant's
+> names come from the same generator. `+4` (2 `repo-*` + 2 `test-repo-*`) was
+> reproduced independently by this package's adversarial reviewer and again by
+> the implementer in the review-fix pass, and is what the instrumented
+> attribution predicts (4 creates, 2 of them joined, 2 correctly reaped by the
+> test's own `ciu clean`). **Measuring a leak rate on a shared daemon needs a
+> quiet window, not just a diff.**
+
+**Controlled wrong implementation.** Pinned executably, not asserted in prose:
+`tests/tests/test_ciu87_network_side_effect_gate.py` (28 tests, each naming in
+its docstring the wrong implementation it fails against). Measured, not
+predicted:
+
+| Mutation | Tests that fail | Host effect |
+|---|---|---|
+| Gate disarmed (conftest raises `"0"` instead of `"1"`) | 4 — `test_the_suite_declares_the_gate_for_every_test`, `test_gate_suppresses_network_create_and_cockpit_attach`, `test_gate_reaches_a_spawned_ciu_subprocess`, `test_conftest_raises_the_gate_at_import_not_only_per_test` | none — the fixture catches it (row 2) |
+| Import-time assignment deleted, autouse fixture kept | 1 — `test_conftest_raises_the_gate_at_import_not_only_per_test`, and only that one | none |
+| Gate disarmed AND teardown fixture disarmed (`autouse=False`) | a 5th — `test_the_teardown_net_is_armed_for_every_test` | **+4 networks — row 1** |
+| `joined` registered unconditionally (the B1 defect) | 3 — `test_tracker_registers_a_join_only_when_a_membership_really_appeared`, `test_tracker_ignores_a_membership_that_predates_the_call`, `test_a_mocked_seam_join_leaves_the_teardown_ledger_empty` | a real `disconnect -f` against a network no test created |
+
+**Host cleanup applied as part of this work.** The pool was found **fully
+exhausted** — `docker network create` failed with *"all predefined address
+pools have been fully subnetted"*, the exact P152-class blocker this entry was
+filed from, and it silently invalidated a first measurement attempt (nothing
+could leak because nothing could be created). 17 leaked networks (12
+`repo-*`, 5 `test-repo-*`), each verified to hold **zero** ciu-managed
+workload containers — only `dstdns-devcontainer-vb` itself — were disconnected
+and removed, the same no-op-from-any-workload's-perspective cleanup dstdns
+applied at filing time. That restored the pool and made the oracle measurable.
+
+A further 6 networks — 4 from the both-fixes-OFF control row and 2
+(`repo-4176ba`, `repo-d060db`) left behind by an earlier control run — were
+released the same way in the review-fix pass. The latter pair had been
+reported, wrongly, as "another session's concurrent leak, left untouched";
+their creation timestamps are 0.5 s apart, the signature of
+`test_ciu_identity_cutover_ciu75.py`'s own network pair, and both held only
+`dstdns-devcontainer-vb`. They were this package's own residue, and the claim
+that they were a co-tenant's has been withdrawn. `^(test-)?repo-` on this host
+is now **0**.
+
 ## Compact resolved index
 
 Detailed history for closed work lives in the normative SPEC, release notes,

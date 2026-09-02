@@ -42,6 +42,7 @@ class TestWorkspaceDockerBoundaries:
             '{{ range .Mounts }}{{ if eq .Destination "/tmp" }}{{ .Source }}{{ end }}{{ end }}',
         ]]
 
+    @pytest.mark.usefixtures("real_network_side_effects")  # CIU-87 gate opt-out
     def test_network_creation_failure_reports_network_and_daemon_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -63,6 +64,7 @@ class TestWorkspaceDockerBoundaries:
             ["docker", "network", "create", "failed-net"],
         ]
 
+    @pytest.mark.usefixtures("real_network_side_effects")  # CIU-87 gate opt-out
     def test_native_network_setup_never_attaches_cockpit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
