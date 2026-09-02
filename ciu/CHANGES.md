@@ -21,6 +21,27 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.9.0] - 2026-09-02
+<!-- cmru: generated -->
+<!-- cmru: source-end=83bcfa4e2e5d7c9b9e300cf618bcecf0e1314f01 -->
+
+### Added
+- feat(ciu)!: ciu-P46 -- persist:'secret', Vault bootstrap off [state], two static stages, ciu migration-check (8ece3eb5)
+
+### Fixed
+- fix(ciu): ciu-P46 -- drop the sidecar-writer pragma and cover its cleanup branch (bc23f15d)
+
+### Changed
+- merge(ciu): ciu-P46 -- persist:"secret", Vault-bootstrap off [state], F7/state-secret static stages, ciu migration-check (83bcfa4e)
+- backlog(ciu): ciu-P46 -- F4/F7 backported early; CIU-38 untouched (af334ee8)
+- backlog(ciu): file CIU-87 -- integration test suite leaks Docker network + devcontainer network-membership per real run (6f4ecbf7)
+
+### Documentation
+- docs(ciu): ciu-P46 -- carve handoff + adversarial review verdict (9b08a9fd)
+- docs(ciu): ciu-P46 -- LOG/REPORT addendum for the review fix pass (4d03e091)
+- docs(ciu): ciu-P46 review pass -- B1-B8 doc/consumer gaps + N1 gitignore-glob false positive (fee25e18)
+- docs(ciu): ciu-P46 -- LOG/REPORT for the persist:'secret' + migration-check package (d58b9dc5)
+
 ## [7.9.0] - UNRELEASED
 
 > **This release is BREAKING, and ships as a MINOR on purpose** — the same
