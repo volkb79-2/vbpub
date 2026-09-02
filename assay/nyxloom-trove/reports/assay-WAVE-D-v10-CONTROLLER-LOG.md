@@ -656,3 +656,67 @@ precedent for shape and discipline.
     for its live probe, so the prompt says WAIT on `docker ps`, never a
     second container. R-2 is dispatched on the phase-2 tip when generation
     9 (or its successor) reports the seven items gate-green.
+
+- **2026-09-02 (generation 9 returned at a green checkpoint — B069 + B050
+  landed, B051 BLOCKED; DA-R25..DA-R27; generation 10 dispatched)** —
+  Verified from `gate-gen9a.log` in a separate step: `GATE_EXIT=0` once,
+  one `ASSAY_REGISTERED_GATE_COMPLETE=1`, zero `FAILED|DIRTY_TREE|Traceback`,
+  wheel `assay-4.1.1.dev33+g962211cd-py3-none-any.whl`, the v10 successor
+  phase present. Three commits: `61b8d836` (B069 tripwire, A-435 — run over
+  the genuine pre-fix `qualify_topos.py` it names all three stale pins that
+  cost generation 8 two gate runs), `962211cd` (B050, A-436 — the witness is
+  the committed StrykerJS artifact through a real run: 21 killed / 88
+  survived = 19.27 %, floor 19.0, R2 PASS recording all 88 survivors,
+  `verify_document(...) == []`, and the same fixture at 100.0 still FAIL as
+  the control), `1b127356` (checkpoint, BRIEF-9). Still exactly one `!`
+  commit; tree clean; full local suite 4081 passed / 20 skipped once, serial.
+  Next ids **A-437 / B070**.
+  - **DA-R25 (ask 1 — A-223d's terminal under a met floor): CONFIRMED as
+    restored.** A-223d's stated rule is `killed + survived == 0` with a
+    non-empty `equivalent`; its code read `not killed` alone only because
+    `survived` was unreachable there before B050. A met floor with survivors
+    recorded must not be called `ALL_MUTANTS_EQUIVALENT` — that would name
+    a survivor and deny it in the same document. The guard now matches the
+    docstring; no shipped outcome changes (the regression suite is the
+    proof). A-436 records it; nothing further.
+  - **DA-R26 (ask 2 — B051's verify-side re-derivation is not
+    constructible): route 1, `discarded` is DECLARED-not-verified, said in
+    every place that describes it; the residual is filed, not built.** The
+    implementer is right and so was B051's own entry: a discarded mutant is,
+    by DA-D4's "listed" semantics, outside the document — absent from every
+    bucket, from `candidate_count` and from `lines_without_candidates` — so
+    a truthful high-discard report is byte-indistinguishable from a
+    truthful zero-discard one, and every bound that catches `9999` refuses
+    the honest report the field exists to surface. DA-D4 was under-specified
+    on the verify side; this ruling completes it. The field carries no
+    judgment weight (the score's denominator never included it, A-436), so
+    declared-not-verified is proportionate, and it has precedent on this
+    very wire: `claim.detail` (A-428) and Tier-3 attestations
+    (`verified_by_assay: false`). Land: the schema `description` of
+    `judgment.r2.discarded` (and the W6 copy `verdict.schema.v10.json`,
+    description bytes only — no wire change, no second `!`), DESIGN-GUIDE
+    §11 where `producer_tool` already says "declared", CONSUMERS' ingested-
+    lane section, and `verify.py`'s own statement of what it does NOT check;
+    B051 → RESOLVED by ruling with the `9999` reproduction re-run and
+    recorded as NOT refused, deliberately. **Rejected:** route 3 (an unsound
+    upper bound — the exact failure B051 was filed to avoid); route 2 for
+    THIS wave — a listed `discarded` bucket would put the field on
+    `survived`'s footing (consistency-auditable), but it is a payload design
+    DA-D4 never made (record shape, `candidate_count`/`total` invariants,
+    W6 templates) and the wave is low priority; file it as **B070** (v11
+    candidate: "list the discarded mutants, or carry an ingested-only
+    in-scope count, so `discarded` becomes a difference verify can take"),
+    with the sentence that adding it before 5.0.0 ships would have been
+    free and after it is a v11. **DA-D4's witness clause is waived for a
+    declared-not-verified field**: the ingest-side derivation's evidence is
+    B046's existing tests over the committed StrykerJS artifact; no
+    in-image Stryker run is required to prove that a count is not verified.
+  - **DA-R27 (ask 3 — DA-R23's adjacency): B051 lands NEXT, as route 1, then
+    B052.** The adjacency holds because B051 is now a docs + verify-docstring
+    + backlog commit that follows B050 directly. Order for generation 10:
+    B051 (route 1, one commit) → B052 → B053 `detail` → B004 → B007 →
+    CONSUMERS "Migration notes (v9 → v10)" (which now also states that
+    `discarded` is declared-not-verified).
+  - **Generation 10 dispatched** (fresh Opus, BRIEF-9 seed, DA-R25..R27 in
+    the prompt; host rule, ONE gate container — the run-gate wave's reviewer
+    is running a live probe on this host and may hold it).
