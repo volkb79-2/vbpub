@@ -1493,3 +1493,68 @@ seconds of launch. Load stayed 5.1–7.4.
   **B068**, so **B070** was free and is now taken; `main`'s decisions high-water
   mark is still **A-407**, the branch's was **A-436**, so **A-437** was free
   and is now taken. Next free: **A-438** / **B071**, re-check before use.
+
+### 33. `feat(assay): non-repudiation tier three -- an ingested report's source must be the commit's own bytes (B052, A-438)`
+
+- **DA-D5 built as written, at the seam it names.**
+  `mutation._check_report_source_matches_commit` runs inside
+  `ingest_mutation_report`, immediately after `_resolve_report_paths` and
+  BEFORE the bucketing loop, and reads through
+  `isolation.SnapshotRepository.read_regular_file`. `runner._ingest_r2_report`
+  gained `prepared` and `deadline` and passes them as `repository` and
+  `read_timeout`; both are REQUIRED keyword-only parameters with no default,
+  so the strongest of the three tiers is not the one a caller can forget.
+  There is exactly one caller in the tree (`grep -rn "ingest_mutation_report("`
+  → `runner.py` only).
+- **Tier order is a dependency, not a preference:** content depends on
+  anchoring, because the committed blob can only be read once the report's own
+  file key has been resolved to its repo-top-relative spelling. And it runs
+  before the bucketing loop because everything that loop computes — byte
+  spans, line numbers, `lines_without_candidates` — is derived from the very
+  text the check is about.
+- **The normalisation is a named constant with its reasoning attached**
+  (`_CONTENT_TIER_NORMALISATION`, `_normalise_source_for_compare`): line
+  endings folded to `\n`, one trailing newline ignored, everything else
+  byte-exact, compared in BYTES with the report's `source` re-encoded UTF-8.
+- **The repository, not the materialised checkout** — on the precedent
+  `_read_prepared_source_text` already set. A file read off the working tree
+  could have been rewritten by the lane's own command between then and now,
+  which is one of the three causes this check exists to name.
+- **One sub-decision DA-D5 did not spell out, recorded rather than assumed:** a
+  measured path the commit does not track is the SAME refusal, not the
+  `GIT_FAILED` `read_regular_file` raises. "The commit has no such content" is
+  cause 3 in its most literal form, and surfacing git's wording would report a
+  repository failure for a report defect. In A-438 (4) and in the REPORT.
+- **Seven new tests, all over the REAL committed StrykerJS artifact**, in
+  `tests/test_runner_ingested_r2.py` — the module went 23 → 30 passed:
+  `test_a_byte_identical_report_still_passes_the_content_tier` (the
+  non-vacuity control), `test_a_stale_report_source_is_refused_naming_the_file_and_the_causes`,
+  `test_a_REWRITTEN_source_is_refused_and_that_is_the_ruling`,
+  `test_CRLF_line_endings_are_not_a_content_mismatch`,
+  `test_one_trailing_newline_either_way_is_not_a_content_mismatch`,
+  `test_a_SECOND_trailing_newline_IS_a_content_mismatch` (the BOUND — the half
+  that makes the normalisation a contract), and
+  `test_a_measured_file_the_commit_does_not_track_is_the_same_refusal`. The
+  refusal text is read through a `diagnostics=` stream (B053/A-409), so the
+  assertions are about the sentence a consumer actually sees.
+- **One test had to be re-authored to stay about B052.** Inserting the stale
+  line at the TOP shifted every mutant below it and `_parse_mutant` refused
+  first ("location.start names line 8 column 52, which is past the end of that
+  line"). Appending instead leaves every recorded position valid against the
+  report's own text, so the content tier is the only thing that can refuse it.
+  The reason is in the test's docstring, not just here.
+- **The other 23 tests in that module now run through the new tier and are
+  unchanged**, which is the real non-vacuity proof: the honest lane, over the
+  real artifact, survives the check.
+- Gate grepped BEFORE the run: `grep -rn "ingest|mutation-report-json|stryker"
+  gate/ tools/` returns one hit, an unrelated SQL corpus comment. No gate
+  harness runs an ingested lane, so nothing under `gate/python/` is on this
+  change's blast radius.
+- Local, serial, targeted: `tests/test_runner_ingested_r2.py` → **30 passed**;
+  `tests/test_verify_ingested_r2.py tests/test_verdict_mutation_artifacts.py
+  tests/test_mutation_judge.py tests/test_config_ingested_mutation.py
+  tests/test_runner_run_lane_r2.py` → **100 passed**.
+- **No wire change**: no schema edit, no W6 edit, no dataclass field. Still
+  exactly one `!` commit on the branch.
+- Ids: **A-438** allocated (next free **A-439**); no new B-id. `main`
+  re-checked: backlog high-water **B068**, decisions high-water **A-407**.

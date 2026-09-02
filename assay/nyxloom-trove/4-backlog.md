@@ -5264,6 +5264,12 @@ a v11 item (`B070`).**
 **Filed 2026-08-31 during Wave B fix round 1, on the controller's request.
 FILE, DO NOT BUILD — the check is easy and what a MISMATCH MEANS is not.**
 
+**Status: RESOLVED 2026-09-02 (Wave D, DA-D5 → A-438).** The meaning was
+ruled and then built: a third non-repudiation tier, **content**, refusing on
+mismatch under a stated normalisation — line endings folded, one trailing
+newline ignored, everything else byte-exact. Cause (2), the rewritten source,
+is refused deliberately. See the Resolution section at the end of this entry.
+
 > **Numbering note.** B051 is the `discarded` finding. This entry was filed
 > second and takes the next free identifier. See B051's own numbering note for
 > why the fix-round brief's "B052" ended up applied to neither item in the
@@ -5361,22 +5367,72 @@ is the actual question.
    if the ruling is "record, do not refuse" — in which case it is a schema
    field and belongs to the next cut, exactly as B050 does.
 
+### Resolution — SHIPPED, Wave D (DA-D5 → A-438)
+
+A third non-repudiation tier, **content**, at ingest, inside the baseline
+snapshot's own `with` block. `mutation._check_report_source_matches_commit`
+reads each measured file's committed blob through
+`isolation.SnapshotRepository.read_regular_file` and compares it with the
+report's embedded `source` under a normalisation the module STATES
+(`_CONTENT_TIER_NORMALISATION`): line endings folded to `\n`, one trailing
+newline ignored, everything else byte-exact. A mismatch is
+`ERROR`/`UNREADABLE_ARTIFACT` naming the file and all three causes with the
+one remedy. **No wire field, no warning mode, no opt-out key** (DA-D5). The
+`repository`/`read_timeout` parameters are REQUIRED on
+`ingest_mutation_report` with no default, so the strongest tier is not the one
+a caller can forget.
+
+**Cause (2) — a tool that rewrites sources in flight — is REFUSED by design,
+and that is the ruling the entry said it could not make locally.** Evidence
+whose text is not the commit's is not evidence about the commit: the mutants
+were applied to the rewritten text and carry the rewritten text's line
+numbers. A formatter writing back would trip `DIRTY_TREE` on the next run
+anyway. Cause (4), line endings and the final newline, is folded away by the
+normalisation rather than refused — that was the case that would have refused
+correct lanes over a `.gitattributes` setting.
+
 ### Acceptance
 
-- [ ] the mismatch ruling recorded as an A-row, naming the rejected
-      alternatives (refuse-always / warn / record-on-the-wire) and why;
-- [ ] the committed bytes read from the snapshot at ingest time and compared
-      under a documented normalisation, with a test that mutates ONE file's
-      `source` in the REAL committed Stryker fixture and asserts a NAMED
-      failure — and a companion test proving a byte-identical report still
-      passes, so the check is not vacuous;
-- [ ] a test for the transpiled/rewritten-source case (2), asserting whatever
-      the ruling says should happen to it — this is the case that decides
-      whether the feature is safe to ship at all;
-- [ ] CONSUMERS' ingested-R2 refusal list gains the new refusal, in the same
-      "what assay checks about your report" paragraph as `projectRoot`;
-- [ ] if the ruling is "record, do not refuse": the wire field in schema,
-      dataclass and `verify.py` (three places), at the next schema cut.
+**RESOLVED 2026-09-02 by A-438 (Wave D, DA-D5).**
+
+- [x] the mismatch ruling recorded as an A-row, naming the rejected
+      alternatives (warn / opt-out key / record-on-the-wire) and why —
+      **A-438**;
+- [x] the committed bytes read from the snapshot at ingest time and compared
+      under a documented normalisation
+      (`src/assay/mutation.py` `_CONTENT_TIER_NORMALISATION`,
+      `_normalise_source_for_compare`, `_check_report_source_matches_commit`,
+      called from `ingest_mutation_report` immediately after
+      `_resolve_report_paths` and BEFORE the bucketing loop), with the
+      one-file mutation test over the REAL committed Stryker fixture asserting
+      a named failure
+      (`tests/test_runner_ingested_r2.py::test_a_stale_report_source_is_refused_naming_the_file_and_the_causes`)
+      and the non-vacuity companion
+      (`test_a_byte_identical_report_still_passes_the_content_tier`, plus the
+      other 23 tests in that module, every one of which now runs through the
+      new tier);
+- [x] a test for the transpiled/rewritten-source case (2)
+      (`test_a_REWRITTEN_source_is_refused_and_that_is_the_ruling` —
+      reindentation only, asserted to change no token, and still refused,
+      because a check that let it through would have to decide which rewrites
+      preserve meaning in a language assay did not run);
+- [x] the normalisation tested in BOTH directions, which is what makes it a
+      contract rather than a shrug:
+      `test_CRLF_line_endings_are_not_a_content_mismatch`,
+      `test_one_trailing_newline_either_way_is_not_a_content_mismatch`, and
+      the BOUND, `test_a_SECOND_trailing_newline_IS_a_content_mismatch`;
+- [x] the degenerate case:
+      `test_a_measured_file_the_commit_does_not_track_is_the_same_refusal` —
+      "the commit has no such content" is cause 3 in its most literal form, so
+      it is this refusal and not the `GIT_FAILED` git's own wording would
+      produce;
+- [x] CONSUMERS' ingested-R2 refusal list gains the new refusal, in the same
+      "Refusals worth knowing before you hit them" paragraph as `projectRoot`
+      (`docs/CONSUMERS.md`), and DESIGN-GUIDE §11 gains the three-tier
+      statement with the rejected alternatives;
+- [x] ~~if the ruling is "record, do not refuse": the wire field~~ — the
+      ruling is REFUSE, so there is no wire field and this cut carries none
+      for it.
 
 ## B053 — an `ERROR`-outcome verdict's detailed message is constructed but never surfaced anywhere a consumer can read it — not stdout, not stderr, not the verdict JSON
 

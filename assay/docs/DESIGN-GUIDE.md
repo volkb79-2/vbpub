@@ -1895,6 +1895,40 @@ exactly as `coverage-final.json` is (A-161), and the declared artifact is held
 through the same single-owner reservation, so a committed or stale report
 cannot satisfy the path.
 
+**Three non-repudiation tiers, and the third is the one that binds the
+evidence to the commit** (B046 for the first two, B052/DA-D5 for the third).
+*Identity*: the report's `projectRoot` must equal the directory the lane's
+command ran in. *Anchoring*: every `files` key must resolve under a declared
+source root, inside this snapshot. *Content*: for every measured file, the
+committed blob is read back through `SnapshotRepository.read_regular_file` —
+the same prepared commit the command ran against — and compared with the
+`source` the report embeds. The first two say the report is about this
+checkout; only the third says it is about this **commit's content**, which is
+the property Assay's own committed-object snapshot exists to make checkable
+and the only one that closes "an artifact from an earlier state of the same
+tree".
+
+It earns its place because Assay does not quote that text, it **computes from
+it**: every mutant's byte span comes from `_line_byte_offsets(source)` and
+`lines_without_candidates` walks it line by line, so a report about different
+text yields positions spelled with this commit's paths and wrong about this
+commit's files. The comparison's normalisation is STATED, because what a
+comparison folds away is what it has decided not to be evidence about: line
+endings folded to `\n`, one trailing newline ignored, everything else
+byte-exact. A mismatch is `ERROR`/`UNREADABLE_ARTIFACT` naming the file and
+the three causes (stale / rewritten-in-flight / foreign) with the one remedy.
+**Rejected:** a warning (a fact nobody reads — AGENTS §4.2a's inert-config
+rule one layer up); an opt-out key (the lane switching off the check that
+judges it); recording the mismatch on the wire (it would archive, under
+Assay's name, a document Assay has already decided not to trust — and there
+is no field for "the evidence text was not the commit's" precisely because
+there is no verdict in which that text is still evidence). **The
+rewritten-in-flight case is refused deliberately, not collaterally**: mutants
+applied to transpiled or reformatted text carry that text's line numbers, and
+a formatter writing back into the tree would trip `DIRTY_TREE` on the next run
+anyway, so this is consistent with what Assay already does one layer up rather
+than a new severity.
+
 **Scope stays Assay's computation, never the tool's.** The foreign tool
 mutated whatever its own configuration told it to; which of those mutants
 COUNTS is decided by Assay's own rule — under `changed_lines` a mutant counts

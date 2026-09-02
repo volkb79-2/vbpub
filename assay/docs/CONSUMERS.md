@@ -1369,6 +1369,34 @@ been measured against, and reading one as if the shape had held is the
 assumption the version field exists to prevent. And a command that writes no report at all is
 `NO_MEASUREMENT`, never a pass.
 
+**And, new in this release: the report's embedded `source` must be the text
+the judged commit actually carries.** For every measured file, assay reads the
+committed blob back out of the snapshot your command ran in and compares it
+with the `source` the report embeds; a mismatch is
+`ERROR`/`UNREADABLE_ARTIFACT`, naming the file. This is a real check rather
+than a formality, because assay does not merely quote that text — **every
+mutant's line and byte span, and every `lines_without_candidates` entry, is
+derived from it.** A report about different text produces positions that are
+spelled with your commit's paths and are wrong about your commit's files.
+
+The comparison folds **line endings to `\n`** and **ignores one trailing
+newline**; everything else is byte-exact. So a CRLF checkout is fine, and a
+missing or extra final newline is fine, and **a reformatted or transpiled
+source is not** — that last one is deliberate: if a formatter or a
+transpilation step rewrote the file before the mutation tool read it, the
+mutants were applied to the rewritten text and carry its line numbers, which
+are not your commit's. There is no warning mode and no opt-out key; a switch
+that turns this off from inside the lane file would be the lane disabling the
+check that is judging it. Three things cause a mismatch in practice, and the
+refusal names all three: the report is **stale** (the tool ran before your
+last edit), the tool **rewrote** the source before mutating it, or the report
+is **foreign** (it describes another checkout). The remedy is the same for
+all three — run the mutation tool inside the lane, against the committed tree,
+so the report assay reads is the one this commit produced. A measured file the
+commit does not track at all is the same refusal, for the same reason: "the
+commit has no such content" is the strongest content mismatch there is.
+(**B052**, this release — see the migration notes.)
+
 ## Browser coverage of a UI as an R1 lane
 
 Every JavaScript lane shape above judges UNIT-level Vitest coverage. A

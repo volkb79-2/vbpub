@@ -2550,3 +2550,73 @@ nothing under `gate/python/` reads `discarded` — the grep returns zero.
 * **No hand-authored fixture with a non-zero `discarded`** (A-334), and no
   attempt to drive `tester-unified:local` interactively to produce one — the
   witness clause is waived, not worked around.
+
+### B052 — the content tier (A-438)
+
+**The seam, measured before it was built.** `ingest_mutation_report` had two
+non-repudiation checks and they are both about *where*, not *what*:
+`_check_report_project_root` (identity) and `_resolve_report_paths`
+(anchoring). The committed bytes were already reachable —
+`isolation.SnapshotRepository.read_regular_file`, and `runner` already had a
+helper reading source that way (`_read_prepared_source_text`, whose docstring
+cites the handoff's own "read source only through
+`prepared.read_regular_file`") — and nothing on the ingest path called it.
+
+**Acceptance, with file:line evidence.**
+
+| B052 box | evidence |
+|---|---|
+| the ruling as an A-row with rejected alternatives | **A-438**, rejecting warn / opt-out key / record-on-the-wire / compare-against-the-checkout / normalise-all-whitespace |
+| committed bytes read at ingest, documented normalisation, one-file mutation of the REAL fixture → NAMED failure, plus a non-vacuous companion | `src/assay/mutation.py`: `_CONTENT_TIER_NORMALISATION`, `_normalise_source_for_compare`, `_check_report_source_matches_commit`, called from `ingest_mutation_report` after `_resolve_report_paths`; `src/assay/runner.py` `_ingest_r2_report` threads `prepared`/`deadline`. Tests: `test_a_stale_report_source_is_refused_naming_the_file_and_the_causes` and `test_a_byte_identical_report_still_passes_the_content_tier` |
+| the transpiled/rewritten case (2) | `test_a_REWRITTEN_source_is_refused_and_that_is_the_ruling` — reindentation only, `assert reindented.split() == original.split()` so it provably changes no token, and still refused |
+| CONSUMERS' refusal list | `docs/CONSUMERS.md`, the "Refusals worth knowing before you hit them" paragraph, immediately after the `projectRoot` sentences; `docs/DESIGN-GUIDE.md` §11 gains the three-tier statement |
+| a wire field if the ruling were "record" | not applicable — the ruling is REFUSE, so no schema edit, no W6 edit, and still exactly one `!` commit |
+
+**The normalisation, tested in both directions.** A normalisation asserted only
+in the passing direction is a shrug; the bound is what makes it a contract.
+
+| report `source` vs commit blob | result |
+|---|---|
+| byte-identical (the real fixture) | judged R2 claim |
+| every file converted to CRLF | judged R2 claim |
+| final newline stripped from every file | judged R2 claim |
+| **a SECOND trailing newline on one file** | **`ERROR`/`UNREADABLE_ARTIFACT`** |
+| one appended comment line | **`ERROR`/`UNREADABLE_ARTIFACT`**, naming the file and all three causes |
+| reindented (no token changed) | **`ERROR`/`UNREADABLE_ARTIFACT`**, naming `REWROTE` |
+| a measured file the commit does not track | **`ERROR`/`UNREADABLE_ARTIFACT`**, "does not carry as a regular tracked file" |
+
+**The one sub-decision DA-D5 did not settle, and how I disposed of it.** DA-D5
+says "read each measured path's committed bytes … and compare"; it does not say
+what happens when there ARE no committed bytes, and `read_regular_file` raises
+`GIT_FAILED` there. I folded it into the content refusal with its own clause,
+on the reading that "the commit has no such content" is the same terminal
+DA-D5 names applied to its degenerate case (B052's cause 3, a foreign report,
+in its most literal form), and that surfacing git's own wording would report a
+repository failure for a report defect. **It is recorded in A-438 (4) rather
+than left implicit, and a reviewer who disagrees is looking at one `except
+AssayError` block in `_check_report_source_matches_commit`.** I did not treat
+it as a decision ask because it does not change the terminal, the reason code
+or the tier — only which sentence a consumer reads.
+
+**What a reviewer should push on here.** (1) That the check really runs on the
+happy path and is not skipped — the 23 pre-existing tests in
+`test_runner_ingested_r2.py` all pass THROUGH it, and
+`test_a_byte_identical_report_still_passes_the_content_tier` says so
+explicitly. (2) That the stale test's appended line is genuinely necessary:
+re-run it with an INSERTED line and confirm `_parse_mutant` refuses first, so
+the original form would have been a parser test wearing B052's name. (3) That
+`_normalise_source_for_compare` strips exactly one trailing newline, not
+`rstrip`. (4) That nothing under `gate/python/` runs an ingested lane. (5)
+That the deadline threaded into `read_regular_file` is the lane's real one and
+not a fresh timeout.
+
+### What I did NOT do, in B052, and why
+
+* **No wire field for "the evidence text differed".** DA-D5 rejected it and
+  the branch's one-`!` invariant forbids it; there is also no verdict in which
+  that text is still evidence, which is why the field has no natural meaning.
+* **No opt-out key and no warning mode.** Both were rejected by DA-D5 and the
+  reasons are recorded in A-438 rather than only in the ruling.
+* **No change to `_read_prepared_source_text`.** It already reads the right
+  way; the new check follows its precedent rather than sharing its code, which
+  would have coupled the R3 source read to the R2 ingest path for no gain.

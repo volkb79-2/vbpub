@@ -76,6 +76,25 @@ signatures; and `outcome`, `status`, `coverage.pct`, `coverage.missing_lines`
 and `coverage.missing_branch_lines` are still read by those names.
 
 ### Fixed
+- **An ingested mutation report must now be about the judged commit's own
+  CONTENT, not merely about this checkout.** For every measured file, assay
+  reads the committed blob back through the snapshot the lane's command ran
+  in and compares it with the `source` the report embeds; a mismatch is
+  `ERROR`/`UNREADABLE_ARTIFACT` naming the file. This is a third
+  non-repudiation tier beside the two B046 shipped (`projectRoot` identity and
+  `files`-key anchoring), and it matters because assay does not quote that
+  text — **every mutant's line and byte span, and every
+  `lines_without_candidates` entry, is derived from it**, so a report about
+  different text produces positions spelled with your commit's paths and wrong
+  about your commit's files. The comparison folds line endings to `\n` and
+  ignores one trailing newline; everything else is byte-exact. **A CRLF
+  checkout is fine; a reformatted or transpiled source is not** — mutants
+  applied to rewritten text carry that text's line numbers. No warning mode
+  and no opt-out key. The refusal names all three causes (stale report, a tool
+  that rewrote the source before mutating, a foreign report) and the one
+  remedy: run the mutation tool inside the lane, against the committed tree. A
+  measured file the commit does not track at all is the same refusal.
+  (B052/DA-D5, A-438)
 - A coverage or mutation tool that deletes and recreates its own output
   directory (Vitest's default `coverage.clean = true`, or any `rm -rf out &&
   mkdir out` build step) no longer reads as `NO_MEASUREMENT`/`EMPTY_COVERAGE`

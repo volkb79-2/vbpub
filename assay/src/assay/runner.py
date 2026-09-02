@@ -3283,6 +3283,8 @@ def _run_prepared_lane(
                             relocated_lane=relocated_lane_r2,
                             plan=plan,
                             snapshot=baseline_snapshot,
+                            prepared=prepared,
+                            deadline=deadline,
                             added=added,
                             project_prefix=project_prefix,
                         )
@@ -3599,6 +3601,8 @@ def _ingest_r2_report(
     relocated_lane: Lane,
     plan: CommandPlan,
     snapshot: "isolation.Snapshot",
+    prepared: "isolation.SnapshotRepository",
+    deadline: LaneDeadline,
     added: diff.AddedLines | None,
     project_prefix: PurePosixPath,
 ) -> "mutation.IngestedMutationResult":
@@ -3613,6 +3617,18 @@ def _ingest_r2_report(
     naming the member at fault. This is
     :func:`assay.coverage.parse_coverage_artifact`'s own three-way split one
     rigor tier up, and it is the same split for the same reason.
+
+    *prepared* is the SnapshotRepository this very block materialised
+    *baseline_snapshot* from, threaded in for B052/DA-D5's content tier:
+    :func:`assay.mutation.ingest_mutation_report` reads each measured file's
+    committed blob back through
+    :meth:`~assay.isolation.SnapshotRepository.read_regular_file` and compares
+    it with the report's embedded ``source``. It is the repository and not the
+    snapshot's on-disk tree deliberately, and for the reason the handoff
+    already gave :func:`_read_prepared_source_text`: the committed OBJECT is
+    what the verdict is about, and a file read off the materialised checkout
+    could have been rewritten by the lane's own command between then and now
+    -- which is one of the three causes this check exists to name.
     """
     try:
         text = raw.decode("utf-8")
@@ -3656,6 +3672,8 @@ def _ingest_r2_report(
         mode=lane.judge.mode or "changed_lines",
         added=added,
         targets=declared_targets,
+        repository=prepared,
+        read_timeout=deadline.remaining(),
     )
 
 

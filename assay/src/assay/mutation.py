@@ -1881,6 +1881,8 @@ def ingest_mutation_report(
     mode: str,
     added: AddedLines | None,
     targets: Sequence[str] | None,
+    repository: SnapshotRepository,
+    read_timeout: float,
 ) -> IngestedMutationResult:
     """Turn a parsed foreign mutation report into assay's own R2 payload.
 
@@ -1905,6 +1907,19 @@ def ingest_mutation_report(
     Every path on the wire is REPO-TOP-relative, exactly as a natively
     generated :class:`MutantOutcome` already is -- one spelling, so an
     ingested and a native verdict can be read by the same consumer code.
+
+    *repository* and *read_timeout* carry B052/DA-D5's **content** tier, the
+    third and last non-repudiation question this function asks. Identity
+    (:func:`_check_report_project_root`) and anchoring
+    (:func:`_resolve_report_paths`) establish that the report is about this
+    checkout; content establishes that it is about this COMMIT, by reading
+    each measured file's blob back through
+    :meth:`~assay.isolation.SnapshotRepository.read_regular_file` and
+    comparing it with the report's own embedded ``source``. Both parameters
+    are REQUIRED and have no default, deliberately: a default would make the
+    strongest of the three tiers the one a caller can forget, and there is
+    exactly one caller (:func:`assay.runner._ingest_r2_report`), which already
+    holds the repository the lane's command ran against.
     """
     if report.producer.name and report.producer.version:
         producer_tool = MutationProducerTool(
@@ -1922,6 +1937,20 @@ def ingest_mutation_report(
     _check_report_project_root(report, run_cwd=run_cwd)
     wire_paths = _resolve_report_paths(
         report, run_cwd=run_cwd, repo_top=repo_top, source_root_paths=source_root_paths
+    )
+    # (B052/DA-D5) Tier three, CONTENT, in tier order and before a single
+    # mutant is bucketed. It runs third because it depends on the second: the
+    # committed blob can only be read once the report's own file key has been
+    # resolved to its repo-top-relative spelling. It runs BEFORE the bucketing
+    # loop because everything that loop computes -- byte spans, line numbers,
+    # `lines_without_candidates` -- is derived from the very text this check
+    # is about, so judging first and checking after would build a payload out
+    # of text assay is in the middle of deciding not to trust.
+    _check_report_source_matches_commit(
+        report,
+        wire_paths=wire_paths,
+        repository=repository,
+        timeout=read_timeout,
     )
     in_scope = _in_scope_predicate(mode=mode, added=added, targets=targets)
 
@@ -2099,6 +2128,151 @@ def _resolve_report_paths(
             ) from exc
         resolved[key] = relative.as_posix()
     return resolved
+
+
+#: (B052/DA-D5) The normalisation the content tier compares under, STATED
+#: rather than implied, because a comparison's normalisation is its contract:
+#: what it folds away is what it has decided not to be evidence about.
+#:
+#: Two folds, and only two:
+#:
+#: 1. **line endings are folded to ``\n``** -- CRLF and a lone CR alike. A
+#:    consumer whose `.gitattributes` checks files out CRLF gets a report whose
+#:    ``source`` is CRLF and a blob that is LF, and refusing that pair would
+#:    refuse a correct lane over a checkout setting (B052's cause 4). Assay's
+#:    own mutant positions are LINE numbers and byte spans WITHIN the report's
+#:    text, so a line-ending difference cannot move a mutant to a different
+#:    line or a different statement;
+#: 2. **one trailing newline is ignored** -- exactly one, at the very end.
+#:    Editors and tools disagree about the final newline, and a file that
+#:    differs from the commit only by having or lacking it differs in no line's
+#:    content.
+#:
+#: Everything else is BYTE-EXACT. Leading and interior whitespace, indentation,
+#: blank lines, trailing whitespace on a line, encoding of any non-ASCII
+#: character: all of it is compared, because all of it can change what a line
+#: says and what a byte span covers. In particular a formatter's rewrite is a
+#: MISMATCH by design (B052's cause 2, refused under DA-D5), and so is a
+#: second trailing newline.
+_CONTENT_TIER_NORMALISATION = (
+    "line endings folded to \\n, one trailing newline ignored, everything "
+    "else byte-exact"
+)
+
+
+def _normalise_source_for_compare(data: bytes) -> bytes:
+    """Apply :data:`_CONTENT_TIER_NORMALISATION` to *data*.
+
+    Operates on BYTES rather than ``str`` for the reason the whole module
+    does: the report's ``source`` is decoded UTF-8 text and the commit's blob
+    is raw bytes, and re-encoding the former is the only conversion that keeps
+    a non-ASCII character comparable to the bytes git actually stored.
+    """
+    folded = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    if folded.endswith(b"\n"):
+        folded = folded[:-1]
+    return folded
+
+
+def _check_report_source_matches_commit(
+    report: IngestedMutationReport,
+    *,
+    wire_paths: Mapping[str, str],
+    repository: SnapshotRepository,
+    timeout: float,
+) -> None:
+    """(B052/DA-D5) Non-repudiation tier THREE: **content**.
+
+    B046 established two tiers, and they answer weaker questions than this
+    one. ``_check_report_project_root`` establishes *identity* -- the report
+    is about the directory the lane's command ran in. ``_resolve_report_paths``
+    establishes *anchoring* -- every file it names resolves under a declared
+    source root, inside this snapshot. Neither establishes that the report is
+    about **this commit's content**, which is the property assay's own
+    committed-object snapshot exists to make checkable and the only one that
+    closes "an artifact from an earlier state of the same tree".
+
+    **Why it matters more here than anywhere else in the ingest path.** Assay
+    does not merely quote the report's ``source``; it COMPUTES from it. Every
+    mutant's byte span comes from ``_line_byte_offsets(source)``
+    (``mutation_parsers/mutation_report_json.py``), and
+    ``lines_without_candidates`` walks that same text line by line -- so a
+    report whose text is not the commit's produces positions that are correct
+    about a file assay never had and wrong about the one it judged. The
+    positions still LOOK like this commit's, because they are spelled with
+    this commit's paths.
+
+    So the committed blob is read back through
+    :meth:`assay.isolation.SnapshotRepository.read_regular_file` -- the same
+    prepared commit the lane's own command ran against -- and compared under
+    :data:`_CONTENT_TIER_NORMALISATION`.
+
+    **A mismatch is ``ERROR``/``UNREADABLE_ARTIFACT``, with no warning mode,
+    no opt-out key and no wire field** (DA-D5). Each of those was rejected for
+    its own reason: a warning is a fact nobody reads; an opt-out is the gate
+    being switched off from inside the lane file it is judging; and recording
+    it on the wire would archive a document assay has already decided not to
+    trust. The refusal names the file and the three causes B052 enumerated,
+    because a bare "content differs" leaves the consumer to guess which of
+    them they are in.
+
+    **Cause (2), a tool that rewrote the source in flight, is REFUSED by
+    design and this is the ruling rather than an oversight.** Evidence whose
+    text is not the commit's is not evidence about the commit: the mutants
+    were applied to transpiled or reformatted text, and the line numbers they
+    carry are that text's, not the committed file's. A formatter that writes
+    back into the working tree would trip ``DIRTY_TREE`` on the next run
+    anyway, so refusing here is consistent with what assay already does one
+    layer up rather than a new severity.
+
+    **A path the commit does not track at all is the same refusal**, not a
+    ``GIT_FAILED``: "the commit has no such content" is the strongest
+    possible content mismatch, and it is B052's cause 3 (a genuinely foreign
+    report) in its most literal form. Surfacing git's own "not a regular
+    tracked file" wording here would report a repository failure for a report
+    defect.
+    """
+    for key in sorted(report.sources):
+        wire_path = wire_paths[key]
+        try:
+            committed = repository.read_regular_file(
+                PurePosixPath(wire_path), timeout=timeout
+            )
+        except AssayError as exc:
+            raise AssayError(
+                f"mutation report measures {wire_path}, which the judged "
+                f"commit does not carry as a regular tracked file ({exc}). "
+                f"An ingested report is evidence about THIS commit's content; "
+                f"a file the commit does not have is an artifact from "
+                f"elsewhere. Run the mutation tool inside the lane, against "
+                f"the committed tree.",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            ) from exc
+        reported = report.sources[key].encode("utf-8")
+        if _normalise_source_for_compare(reported) == _normalise_source_for_compare(
+            committed
+        ):
+            continue
+        raise AssayError(
+            f"mutation report's embedded source for {wire_path} does not "
+            f"match the bytes the judged commit carries for that file "
+            f"(compared with {_CONTENT_TIER_NORMALISATION}; report "
+            f"{len(reported):,} bytes, commit {len(committed):,} bytes). "
+            f"Assay derives every mutant's line and byte span from the "
+            f"report's own text, so a report about different text produces "
+            f"positions that are wrong about the file it judged. Three "
+            f"causes: the report is STALE (the tool ran before the last "
+            f"edit); the tool REWROTE the source before mutating it "
+            f"(transpilation, or a formatter inside the test command) -- and "
+            f"a report about rewritten text is not evidence about the commit, "
+            f"so this is refused deliberately; or the report is FOREIGN (it "
+            f"describes another checkout). Remedy in all three: run the "
+            f"mutation tool inside the lane, against the committed tree, so "
+            f"the report assay reads is the one this commit produced.",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        )
 
 
 def _in_scope_predicate(

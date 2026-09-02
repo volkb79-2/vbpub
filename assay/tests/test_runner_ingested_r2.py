@@ -570,3 +570,205 @@ def test_a_command_that_writes_no_report_is_no_measurement_not_a_pass(
     assert claim.status is Outcome.NO_MEASUREMENT
     assert claim.reason_code is ReasonCode.EMPTY_COVERAGE
     assert verdict.outcome is not Outcome.PASS
+
+
+# --------------------------------------------------------------------------
+# B052 / DA-D5 — non-repudiation tier THREE: content
+#
+# Identity (`projectRoot`) says the report is about the directory the command
+# ran in. Anchoring (`files` keys) says every file it names resolves under a
+# declared source root. NEITHER says the report is about THIS COMMIT'S
+# CONTENT — and assay does not merely quote that content, it computes from
+# it: every mutant's byte span and every `lines_without_candidates` entry is
+# derived from the report's own `source` text.
+#
+# The harness these tests use is `_refused`'s: the repo is seeded from a
+# PRISTINE `_report_document()` and the STAGED report is the mutated one, so
+# the committed bytes are the real fixture's in every case and the only
+# difference is the text the report claims to have read.
+# --------------------------------------------------------------------------
+
+
+def _one_measured_key(document: dict) -> str:
+    """The first measured file, by the same sort order the ingester walks."""
+    return sorted(document["files"])[0]
+
+
+def _content_refusal_line(git_repo: GitRepo, tmp_path: Path, document: dict):
+    """Run the lane with a diagnostics stream (B053/A-409) so the refusal's
+    own sentence is readable, and return ``(claim, text)``."""
+    import io
+
+    document["projectRoot"] = PLACEHOLDER
+    staged = _stage_report(tmp_path, document)
+    _seed_repo(git_repo, _report_document())
+    base = git_repo.git("rev-parse", "HEAD~1").strip()
+    stream = io.StringIO()
+    verdict = runner.run_lane(
+        _lane(git_repo=git_repo, staged=staged, base=base),
+        commit=git_repo.head(),
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=JavaScriptAdapter(),
+        assay_version="0.1.0",
+        diagnostics=stream,
+    )
+    claim = next(item for item in verdict.claims if item.rigor == "R2")
+    return claim, stream.getvalue()
+
+
+def test_a_byte_identical_report_still_passes_the_content_tier(ingested):
+    """The control that makes every refusal below non-vacuous. This is the
+    REAL committed StrykerJS report against a commit carrying exactly the text
+    it embeds, and it produces a judged R2 claim — so the tier is a check the
+    honest lane survives, not a wall."""
+    verdict, _document = ingested
+    claim = next(item for item in verdict.claims if item.rigor == "R2")
+    assert claim.mutation is not None
+    assert claim.reason_code is not ReasonCode.UNREADABLE_ARTIFACT
+
+
+def test_a_stale_report_source_is_refused_naming_the_file_and_the_causes(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """B052's cause 1, and the acceptance criterion's own test: ONE measured
+    file's `source` differs from the commit's bytes, by one line, and the
+    refusal names that file and all three causes.
+
+    The extra line is APPENDED rather than inserted, deliberately: an
+    insertion shifts every mutant below it and the PARSER refuses first
+    ("location.start names line N column M, which is past the end of that
+    line"), which would make this a test of `_parse_mutant` wearing B052's
+    name. Appending leaves every recorded position valid against the report's
+    own text, so the content tier is the only thing that can refuse it."""
+    document = _report_document()
+    key = _one_measured_key(document)
+    original = document["files"][key]["source"]
+    document["files"][key]["source"] = (
+        original.rstrip("\n") + "\n// a line the commit does not carry\n"
+    )
+    assert document["files"][key]["source"] != original
+
+    claim, text = _content_refusal_line(git_repo, tmp_path, document)
+
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert claim.mutation is None
+    assert f"app/{key}" in text, text
+    assert "does not match the bytes the judged commit carries" in text, text
+    for cause in ("STALE", "REWROTE", "FOREIGN"):
+        assert cause in text, text
+    assert "run the mutation tool inside the lane" in text.lower(), text
+
+
+def test_a_REWRITTEN_source_is_refused_and_that_is_the_ruling(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """B052's cause 2 — a transpiler or a formatter inside the test command
+    rewriting the file before the tool mutated it. DA-D5 REFUSES it, and this
+    test is the record that the refusal is deliberate rather than collateral:
+    evidence whose text is not the commit's is not evidence about the commit,
+    because the mutants were applied to the rewritten text and carry the
+    rewritten text's line numbers.
+
+    The rewrite here is the most benign one imaginable — reindentation,
+    changing no token — and it is still refused. A check that let this through
+    would have to decide which rewrites preserve meaning, which is a judgment
+    about a language assay did not run."""
+    document = _report_document()
+    key = _one_measured_key(document)
+    original = document["files"][key]["source"]
+    reindented = "".join(
+        ("  " + line if line.strip() else line) for line in original.splitlines(True)
+    )
+    assert reindented != original
+    assert reindented.split() == original.split(), (
+        "the rewrite must change only whitespace, or this test is about "
+        "something else"
+    )
+    document["files"][key]["source"] = reindented
+
+    claim, text = _content_refusal_line(git_repo, tmp_path, document)
+
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert f"app/{key}" in text, text
+    assert "REWROTE" in text, text
+
+
+def test_CRLF_line_endings_are_not_a_content_mismatch(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """B052's cause 4, the one the normalisation exists for. A consumer whose
+    `.gitattributes` checks files out CRLF gets a CRLF `source` against an LF
+    blob, and refusing that pair would refuse a correct lane over a checkout
+    setting. Every measured file is converted, so this is not one file's
+    accident."""
+    document = _report_document()
+    for record in document["files"].values():
+        record["source"] = record["source"].replace("\n", "\r\n")
+
+    claim, text = _content_refusal_line(git_repo, tmp_path, document)
+
+    assert claim.reason_code is not ReasonCode.UNREADABLE_ARTIFACT, text
+    assert claim.mutation is not None, text
+
+
+def test_one_trailing_newline_either_way_is_not_a_content_mismatch(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """The second half of the stated normalisation, tested in BOTH directions
+    from the same fixture: a report whose text lost its final newline, and one
+    that gained a first."""
+    stripped = _report_document()
+    for record in stripped["files"].values():
+        record["source"] = record["source"].rstrip("\n")
+    claim, text = _content_refusal_line(git_repo, tmp_path, stripped)
+    assert claim.reason_code is not ReasonCode.UNREADABLE_ARTIFACT, text
+    assert claim.mutation is not None, text
+
+
+def test_a_SECOND_trailing_newline_IS_a_content_mismatch(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """The BOUND of the normalisation, which is the half that makes it a
+    contract rather than a shrug: exactly ONE trailing newline is ignored. A
+    file that gained a blank line at the end differs from the commit in a way
+    the tool's own line numbering can see, so it is a mismatch."""
+    document = _report_document()
+    key = _one_measured_key(document)
+    document["files"][key]["source"] = (
+        document["files"][key]["source"].rstrip("\n") + "\n\n"
+    )
+
+    claim, text = _content_refusal_line(git_repo, tmp_path, document)
+
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert f"app/{key}" in text, text
+
+
+def test_a_measured_file_the_commit_does_not_track_is_the_same_refusal(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """"The commit has no such content" is the strongest content mismatch
+    there is — B052's cause 3 in its most literal form — so it is this
+    refusal and not a `GIT_FAILED`, which would report a repository failure
+    for a report defect.
+
+    The added key is spelled to resolve under the lane's declared
+    `judge.source_roots`, so it passes tier two (anchoring) and is refused by
+    tier three alone."""
+    document = _report_document()
+    key = _one_measured_key(document)
+    document["files"]["src/never-committed.ts"] = {
+        "source": document["files"][key]["source"],
+        "mutants": [],
+    }
+
+    claim, text = _content_refusal_line(git_repo, tmp_path, document)
+
+    assert claim.status is Outcome.ERROR
+    assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert "app/src/never-committed.ts" in text, text
+    assert "does not carry as a regular tracked file" in text, text
