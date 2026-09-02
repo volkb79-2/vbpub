@@ -282,8 +282,13 @@ features:
     - tests/test_adapters_go_has_executable_code.py::test_a_line_comment_containing_func_and_braces_is_not_misclassified
     - tests/test_adapters_go_registration.py::test_the_go_adapters_statement_spans_returns_none_unconditionally
   - id: F008-A3
-    text: A Go R1 line claim is statement-granular - a cover block's positional extent is not read as statement truth. BLOCKED on A-217's source-side statement-position oracle; A-239 records the accepted seam, which is designed but not carved.
-    status: absent
+    text: A Go R1 line claim is statement-granular - a cover block's positional extent is not read as statement truth. Proven end to end through the SHIPPED CLI (python3 <pyz> run) inside tester-unified-go against the real go1.25.14 toolchain, not only at the library boundary - a head commit adding four lines for one function reports executable 1, where reading the block's extent as statement truth reported 3. The two qualification entries below are opt-in (ASSAY_GO_QUALIFICATION=1) because neither gate image can host them - tester-unified has no Go, and the Python suite does not run in tester-unified-go (DA-3, A-402); the transcript, with the verdict document, is REPORT section 35 (run 2026-09-02 against assay-4.0.1.dev32+g4b5e7707, 5 passed, PYTEST_EXIT=0). The first two entries carry the same claim with NO toolchain, from A-217's frozen collision witnesses, so this criterion is not proven only where the registered gate cannot re-run it.
+    status: proven
+    evidence:
+    - tests/test_statement_attribution_go_witnesses.py::test_the_collision_pair_resolves_to_different_lines_from_identical_bytes
+    - tests/test_statement_attribution_go_witnesses.py::test_the_naive_expansion_cannot_tell_the_collision_pair_apart
+    - tests/qualification/test_go_r1_real.py::test_a_real_go_lane_passes_and_records_the_toolchain_that_judged_it
+    - tests/qualification/test_go_r1_real.py::test_a_real_go_lane_fails_and_names_the_uncovered_statement_line
   - id: F008-A4
     text: The committed Go coverage fixtures are real toolchain output. Currently they are hand-authored and wrong in BOTH coordinates (A-234); real bytes are captured at carve-assets/P27/witness/coverage-hello-fixture-REAL.out, and regeneration is deliberately sequenced behind A-217's oracle so a real profile is not read as statement truth.
     status: absent

@@ -565,18 +565,27 @@ def _run_nested(tmp_path: Path, zipapp: Path, *, with_root_module: bool) -> dict
     return json.loads((work / "verdict.json").read_text(encoding="utf-8"))
 
 
-def test_a_profile_from_a_different_module_refuses_and_names_both(
+def test_a_profile_from_a_different_module_refuses_through_the_cli(
     tmp_path: Path, zipapp: Path
 ):
-    """A-404 (c), proven against a REAL profile the real toolchain emitted
-    rather than against a hand-written one.
+    """A-404 (c)'s REASON CODE, proven against a real profile the real
+    toolchain emitted rather than a hand-written one.
 
     The root `go.mod` says `module example.invalid/harness`; `go test` ran in
     `sub/`, whose `go.mod` says `example.invalid/sub`, so every key in the
-    profile carries the nested module's import path. The refusal must name
-    the key, the derived module path and the file it was derived from — the
-    three things B059's misattributed "the profile and the working tree are
-    not the same revision" left a consumer to guess at."""
+    profile carries the nested module's import path.
+
+    **Only the reason code is observable here, and that is a limitation of
+    the CLI rather than of the refusal.** Main's B053 records that an
+    ERROR-outcome verdict's detailed message is constructed but never
+    surfaced anywhere a consumer can read it — not on stderr, not in the
+    verdict document — so no in-image test can assert the message text
+    through `assay run`. The message itself (naming the key, the derived
+    module path and the `go.mod`) is asserted at the library boundary by
+    `test_adapters_go_for_project.py::
+    test_a_key_outside_the_derived_module_refuses_and_names_all_three_facts`,
+    which also asserts the absence of the word "revision". That split is
+    deliberate; B053 is not this wave's to fix."""
     verdict = _run_nested(tmp_path, zipapp, with_root_module=True)
 
     assert verdict["outcome"] == "ERROR", json.dumps(verdict, indent=2)

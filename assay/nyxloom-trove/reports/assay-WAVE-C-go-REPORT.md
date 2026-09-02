@@ -1183,14 +1183,22 @@ commits), tree clean, verified before anything was touched. The controller's
 harness; (3) F008-A5 per DA-6, classification first; (4) F008-A3's tick with
 the CLI-form transcript; (5) the other boxes; (6) file B060.
 
-| item | state at this section's writing |
+| item | state |
 |---|---|
-| 1. DA-8 | **DONE** — A-404, the protocol member, the derivation, both refusals, 42 new tests, docs, CLI help |
+| 1. DA-8 | **DONE** — A-404, the protocol member, the derivation, both refusals, 42 new tests, docs, CLI help. Gate run 8 PASS |
 | 6. B060 | **DONE** |
-| 4. F008-A3's tick | **DONE** — the qualification now drives `assay run` |
-| 2. F008-A4 | see §37 |
-| 3. F008-A5 | see §37 |
-| 5. the other boxes | see §37 |
+| 4. F008-A3's tick | **DONE** — the qualification drives `assay run`, and A3 is `proven` with four cited tests |
+| 2. F008-A4 | **NOT DONE** — unblocked, not started; §38 |
+| 3. F008-A5 | **NOT DONE** — unblocked, and §37 is a lane-shape correction it needs first |
+| 5. the other boxes | F008-A4/A5 stay `absent`; §38 |
+
+**One item arrived mid-flight and is done:** main's `a050a467` filed a
+different B053 and B054 while this branch was in flight, so every id this
+wave filed shifted up by two (B053→B055 … B058→B060) across 108 references
+in 25 tracked files, as its own commit `e7eb5241`. The LOG entry carries the
+map. Its one substantive consequence for this wave's own work is folded into
+§36: main's B053 is why refusal (c)'s MESSAGE cannot be asserted through the
+CLI, only its reason code.
 
 ## 33. DA-8 — what was built, and what proves each piece
 
@@ -1443,11 +1451,33 @@ several modules surfaces here rather than as a silent partial measurement.
  "status": "ERROR", "verified_by_assay": true}
 ```
 
-Payload-free, as an ERROR claim must be (A-136). The message names the key,
-the derived module path and `'go.mod'`; the test asserts the absence of the
-word "revision" as well as the presence of the three facts, because the
-message this replaces blamed staleness and that half of B059 is a FIX, not a
-keep.
+Payload-free, as an ERROR claim must be (A-136).
+
+**The message is not observable through the CLI, and that is main's B053, not
+a gap in this refusal.** `a050a467` records that an ERROR-outcome verdict's
+detailed message is constructed and then surfaced nowhere a consumer can read
+it — not on stderr, not in the verdict document. It is exactly what
+generation 4's own B059 transcript showed without naming: the CLI printed
+`unit: ERROR/UNREADABLE_ARTIFACT (exit 2)` plus commit and argv, and the
+message had to be recovered by probing the library. So the proof is split on
+purpose, and each half is asserted where it is actually visible:
+
+* **the reason code**, through `python3 <pyz> run …` in the image — this
+  test;
+* **the message**, at the library boundary —
+  `test_adapters_go_for_project.py::test_a_key_outside_the_derived_module_refuses_and_names_all_three_facts`,
+  which asserts the key, the derived module path and the `go.mod` are all
+  named, **and** that the word "revision" does not appear, because the
+  message this replaces blamed staleness and that half of B059 is a FIX, not
+  a keep.
+
+The in-image test is named `…_refuses_through_the_cli` rather than
+`…_and_names_both` for the same reason: a test whose name claims more than
+its assertions check is the failure this project keeps finding in other
+people's suites. **B053 is not fixed here** — the controller has paired it
+with B049 for a post-Wave-C patch wave — but a consumer hitting refusal (c)
+today gets a correct reason code and a message they cannot see, and that is
+worth knowing before the srdm run.
 
 **(b) — a project root in no Go module.** The identical tree with the root
 `go.mod` removed. The distinction that makes this test worth running is
@@ -1543,11 +1573,28 @@ which is A-234's own warning.
 **F008-A5 was not run**, for the same budget reason; §37 is the
 reconnaissance it needs and is worth more than a half-finished run.
 
-**No acceptance box in `2-product-definition.md` was ticked.** F008-A3's
-evidence is now what A3 actually asks for — a statement-granular Go R1
-verdict from the shipped artifact, through `assay run`, against the real
-toolchain (§35) — and the tick is a one-line edit. It was left for the
-generation that also ticks A4 and A5, so the three land together against one
-gate rather than one box being ticked against a gate that did not judge the
-other two. The backlog boxes that WERE discharged are ticked in `4-backlog.md`
-(B059's first three) and nothing else was touched.
+**F008-A3 IS ticked; F008-A4 and F008-A5 are not.** A3's evidence is now what
+it actually asks for — a statement-granular Go R1 verdict from the shipped
+artifact, through `assay run`, against the real toolchain (§35) — and its
+stale text ("BLOCKED on A-217's source-side statement-position oracle …
+designed but not carved") was false in three ways after this wave, which is
+worse than an untick'd box.
+
+I first wrote that the tick should wait so A3, A4 and A5 could "land together
+against one gate", then checked the premise instead of trusting it:
+`grep -rl 2-product-definition tests/ tools/ gate/` returns nothing, so **no
+gate judges that file at all** and the "one gate" argument was about a
+constraint that does not exist. The tick is a documentation act citing four
+tests, two of which run with no toolchain (A-217's frozen collision
+witnesses) so the criterion is not proven only where the registered gate
+cannot re-run it. Recorded because the reasoning I nearly shipped was wrong,
+not merely conservative.
+
+One thing was NOT invented on the way in: the note about the qualification
+entries being opt-in went into the existing `text` field rather than a new
+`evidence_note:` key. Sixty acceptance rows use exactly `text`/`status`/
+`evidence`, and a schema key with one user in a file nothing parses is a
+convention invented for a single sentence.
+
+The backlog boxes that WERE discharged are ticked in `4-backlog.md` (B059's
+first three) and nothing else was touched.

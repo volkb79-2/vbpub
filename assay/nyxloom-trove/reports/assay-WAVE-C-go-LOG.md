@@ -652,7 +652,7 @@ registered gate is below.
 a library driver. Every inherited assertion survived the move unchanged.
 REPORT §35 has the verdict document and §36 the two refusals.
 
-## `PENDING` — chore(assay): renumber Wave C backlog ids B053-B058 -> B055-B060
+## `e7eb5241` — chore(assay): renumber Wave C backlog ids B053-B058 -> B055-B060
 
 Main's `a050a467` (2026-09-02 00:27, from dstdns's first JavaScript lane
 adoption on assay 4.0.0) filed a different **B053** ("an ERROR-outcome
@@ -686,3 +686,39 @@ which is the one case where that is the safer choice: 108 partial renames
 would be worse than none. The end state is verified by `git grep -n -E
 '\bB05[34]\b'` hitting only this entry and that note, and the diff was read
 before committing.
+
+## `PENDING2` — docs(assay): fold in main's B053, tick F008-A3, and BRIEF-6
+
+Three things the renumbering surfaced or unblocked.
+
+**Main's B053 changes what refusal (c) can be proven to do, and where.** Its
+finding — an ERROR-outcome verdict's detailed message is constructed and then
+surfaced nowhere a consumer can read it — is exactly what generation 4's own
+B059 transcript showed without naming it: the CLI printed
+`unit: ERROR/UNREADABLE_ARTIFACT (exit 2)` and the message had to be
+recovered by probing the library. So the in-image test's name was overclaiming
+and is corrected: `test_a_profile_from_a_different_module_refuses_and_names_both`
+→ `..._refuses_through_the_cli`, because only the reason code is observable
+there. The MESSAGE half is asserted where it is visible, at the library
+boundary, by `test_a_key_outside_the_derived_module_refuses_and_names_all_three_facts`
+— which also asserts the absence of the word "revision". A test whose name
+claims more than its assertions check is the defect this project keeps
+finding in other people's suites. **B053 is not fixed here**; the controller
+paired it with B049 for a post-Wave-C patch wave.
+
+**F008-A3 is ticked `proven`**, with four cited tests, two of which need no
+toolchain (A-217's frozen collision witnesses). Its old text still said
+"BLOCKED on A-217's source-side statement-position oracle … designed but not
+carved", which was false in three ways. I had first decided to defer the tick
+so A3/A4/A5 would "land together against one gate", then checked the premise
+instead of trusting it — `grep -rl 2-product-definition tests/ tools/ gate/`
+returns nothing, so no gate judges that file and the argument was about a
+constraint that does not exist. The opt-in note went into the existing `text`
+field rather than a new `evidence_note:` key: sixty rows use exactly
+`text`/`status`/`evidence`, and a schema key with one user in a file nothing
+parses is a convention invented for one sentence.
+
+**BRIEF-6** is the generation-6 handoff. It was written into a scratchpad
+OUTSIDE the worktree while gate run 8 was executing and copied in afterwards
+— generation 3 lost a run to an untracked brief file, and the self-hosted
+lane is right to refuse `DIRTY_TREE`.
