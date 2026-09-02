@@ -443,3 +443,20 @@ free row; no new backlog entry filed at this commit.
   `CHANGES.md`, `nyxloom-trove/decisions.md` (A-416),
   `nyxloom-trove/4-backlog.md` (B029 RESOLVED BY MEASUREMENT).
 - No `verdict.py` / `verify.py` / schema / drift-guard file touched; no `!`.
+
+### 11. `backlog(assay): B024's gate wiring is blocked -- measured, nothing landed (DA-D15)`
+
+- Item: **B024**, ruling **DA-D15** — its escape hatch, taken.
+- Three checks, in order: the `tester-unified:local` image carries neither
+  `pyflakes` nor `ruff` (by either invocation); the offline wheelhouse holds
+  exactly five hash-pinned build wheels and no linter; the gate installs
+  `--no-index` from that wheelhouse and has no other ingress. The image's
+  `Dockerfile` is outside `assay/**` and this wave forbids touching it.
+- **Nothing landed.** No phase in `tools/tester-unified-gate.sh`, no line in
+  `gate/distribution/build-requirements.txt`, no wheel in
+  `gate/distribution/build-wheelhouse/`. The decision ask is in the REPORT
+  with three options and a recommendation the implementer does not take.
+- Changed: `nyxloom-trove/4-backlog.md` (B024 acceptance box annotated
+  BLOCKED + a dated measurement note with the transcript),
+  `nyxloom-trove/reports/assay-WAVE-D-v10-REPORT.md`, this LOG. No source,
+  no test, no CHANGES bullet — there is nothing for a consumer to read about.

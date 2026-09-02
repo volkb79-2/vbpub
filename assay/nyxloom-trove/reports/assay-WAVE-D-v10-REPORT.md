@@ -1024,3 +1024,88 @@ Neighbouring-suite check: `test_r3_canary_sees_infrastructure`,
   poorer infrastructure world reachable from a public function is a trap
   whether a lane takes it today or not. DA-R6 says so explicitly.
 - **I did not touch `run_isolated_canary`.** It was measured correct.
+
+## B024 — wiring pyflakes/ruff into the registered gate (DA-D15): MEASURED, NOTHING LANDED
+
+**Ruling applied — its escape hatch.** DA-D15: "inside the image if the tools
+are there, else inside `run-venv` from the offline wheelhouse if the closure
+already carries them; **if neither is possible without a network fetch, write
+the decision ask and land nothing** (A-198's hash-bound closure is not to be
+loosened for a linter)."
+
+### The three checks, in BRIEF-2 §5's order
+
+1. **The image.** `docker run --rm tester-unified:local sh -lc 'python -m
+   pyflakes --version; ruff --version; python -m ruff --version'` →
+   `No module named pyflakes` / `ruff: not found` / `No module named ruff`.
+   Neither tool, by either invocation.
+2. **The offline wheelhouse.** `gate/distribution/build-wheelhouse/` holds
+   five wheels — `packaging-26.3`, `setuptools-84.0.0`,
+   `setuptools_scm-10.0.5`, `vcs_versioning-2.2.4`, `wheel-0.47.0` — and
+   `gate/distribution/build-requirements.txt` pins exactly those five with
+   `--hash=sha256:`. No linter.
+3. **Whether there is any other ingress.** There is not:
+   `tools/tester-unified-gate.sh:53-56` and `:82` install
+   `--no-index --find-links "$distribution/build-wheelhouse"`, and `:126`
+   installs the built wheel `--no-index --no-deps`.
+
+**Therefore neither route is possible without a network fetch**, and the
+third possibility — adding the tool to the image — is a change to
+`tester-unified/Dockerfile`, which is **outside `assay/**`** and which this
+wave's implementer is explicitly forbidden to touch. B024's own 2026-08-25
+note already records why that is a cross-project change: the image's closure
+is derived from ciu/cmru/topos/nyxloom/cgroup-profiler's extras and every one
+of them gates through `tester-unified:local`.
+
+**Nothing was landed.** No phase in `tools/tester-unified-gate.sh`, no line in
+`build-requirements.txt`, no wheel in `build-wheelhouse/`. The backlog entry
+carries the transcript; the acceptance box stays unticked and is annotated
+BLOCKED.
+
+### Decision ask (B024 / DA-D15)
+
+> `pyflakes` and `ruff` are in neither the `tester-unified:local` image nor
+> the hash-bound offline wheelhouse, and the gate has no other ingress
+> (`--no-index` everywhere). Three ways forward, all of which need a ruling
+> the implementer is not allowed to take:
+>
+> **(a) Add `pyflakes` to the shared image.** `tester-unified/Dockerfile` is
+> outside `assay/**` and shared by five other products' gates; a rebuild
+> re-risks every one of them. This is what B024's own filing proposed, and it
+> is a controller/operator change, not an assay one. `pyflakes` has zero
+> dependencies, which matches assay's own purity bar (A-005) and makes the
+> image delta minimal.
+>
+> **(b) Add `pyflakes` to assay's own build wheelhouse.** One fetch, one
+> hash, one committed wheel, one line in `build-requirements.txt` — the same
+> shape A-198/P24 already established for the five build wheels, and no other
+> project is touched. The question is whether A-198's closure is *for* the
+> build only, in which case a linter does not belong in it, or *for whatever
+> the gate needs offline*, in which case it does. DA-D15's wording ("if the
+> closure already carries them") suggests the former; the mechanism does not
+> care.
+>
+> **(c) Run the linter outside the gate** — a pre-commit hook, or a cmru
+> step — accepting that it is then not part of the registered gate's verdict.
+> This is the option B024 exists to reject: nothing in the gate runs a linter
+> at all, which is how two `NameError`-on-every-call defects shipped.
+>
+> **Recommendation, offered not taken: (b).** It is confined to `assay/**`,
+> it costs one wheel, it keeps `--require-hashes` intact (the closure stays
+> hash-bound; it simply gains a member), and it makes the lint phase a real
+> part of the gate's verdict, which is the whole of B024's ask. (a) is
+> strictly larger blast radius for the same outcome; (c) does not answer the
+> filing.
+
+### What a reviewer should push on
+
+- **Verify the negative.** R-1's stated push is "plant an unused import and
+  expect the gate to go red". With nothing landed, the gate will NOT go red,
+  and that is the correct current state — but a reviewer should confirm the
+  three checks above rather than take them on trust, because "nothing landed"
+  is exactly the shape a skipped item also has.
+- **Is `ruff` reachable another way?** It is a single static binary with no
+  Python dependency; a vendored binary in the repo would be a different kind
+  of closure question (a committed executable rather than a hashed wheel).
+  That was not explored, because DA-D15 names the wheelhouse and the image
+  and nothing else.

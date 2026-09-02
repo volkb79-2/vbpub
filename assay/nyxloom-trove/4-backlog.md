@@ -2257,7 +2257,9 @@ undetected.
 
 - [ ] `tester-unified-gate.sh` runs a linter over `src/assay/` as a real
       phase, failing the gate on any finding not in an explicit, dated
-      baseline (if the ratchet approach is chosen);
+      baseline (if the ratchet approach is chosen); — **BLOCKED on a
+      decision, Wave D phase 1, DA-D15's own escape hatch taken. Measured
+      2026-09-02, nothing landed. See the note below.**
 - [x] the pre-existing findings above are either fixed or explicitly listed
       in that baseline with a reason each stays open — **fixed, all of
       them**: `python -m pyflakes` over the whole `src/assay/` tree
@@ -2299,6 +2301,47 @@ assay's own purity bar) to the image, add a phase to
 cheaply, before any of the wheel-isolation machinery), and confirm no other
 consuming project's gate regresses. The sweep above means that phase would
 pass clean on day one; nothing here blocks it from landing next.
+
+### Wave D phase 1, 2026-09-02: MEASURED, NOTHING LANDED (DA-D15's escape hatch)
+
+DA-D15 says: wire `pyflakes` and `ruff` (F-rules only) into the registered
+gate as a phase AFTER the suite, **inside the image if the tools are there,
+else inside `run-venv` from the offline wheelhouse if the closure already
+carries them; if neither is possible without a network fetch, write the
+decision ask and land nothing** — A-198's hash-bound closure is not to be
+loosened for a linter. All three checks were run, in that order:
+
+1. **The image does not carry either tool.**
+
+   ```
+   $ docker run --rm tester-unified:local sh -lc 'python -m pyflakes --version; ruff --version; python -m ruff --version'
+   /usr/local/bin/python: No module named pyflakes
+   sh: 1: ruff: not found
+   /usr/local/bin/python: No module named ruff
+   ```
+
+2. **The offline wheelhouse does not carry either tool.**
+   `gate/distribution/build-wheelhouse/` holds exactly five wheels —
+   `packaging`, `setuptools`, `setuptools_scm`, `vcs_versioning`, `wheel` —
+   and `gate/distribution/build-requirements.txt` pins those five with
+   `--hash=sha256:` and nothing else. Adding a sixth means fetching it from
+   the network to populate a closure whose whole point (A-198/P24) is that
+   it was fetched once, hashed, and committed.
+
+3. **The gate installs from that closure and nothing else.**
+   `tools/tester-unified-gate.sh:53-56` and `:82` install with
+   `--no-index --find-links "$distribution/build-wheelhouse"`, and `:126`
+   installs the built wheel with `--no-index --no-deps`. There is no other
+   ingress.
+
+The image's own `Dockerfile` lives at `tester-unified/Dockerfile`, **outside
+`assay/**`**, which this wave's implementer is explicitly forbidden to touch
+— and the 2026-08-25 note above already records why it is a cross-project
+change rather than a local one.
+
+**Decision ask, verbatim, in the Wave D REPORT.** Nothing was landed: no
+phase added to `tools/tester-unified-gate.sh`, no line added to
+`build-requirements.txt`, no wheel added to `build-wheelhouse/`.
 
 ---
 
