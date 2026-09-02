@@ -812,15 +812,31 @@ class TestVaultBackedFlows:
         run_engine(stack, monkeypatch)
         assert store.read_text() == "rotated-out-of-band"
 
-    def test_token_source_3_vault_stack_state(self, tmp_path, monkeypatch):
-        """S4.16 — token source #3: the vault stack's ciu.toml [state].root_token.
+    def test_token_source_3_vault_stack_bootstrap_store(self, tmp_path, monkeypatch):
+        """S4.16 — token source #3: the vault stack's hook-persisted store (S9.4a).
 
-        With no VAULT_TOKEN env and no token_file, a planted vault-stack
-        ciu.toml carrying ``[state].root_token`` at ``vault.stack_path`` must
+        With no VAULT_TOKEN env and no token_file, a planted
+        ``<vault stack>/.ciu/secrets/root_token`` at ``vault.stack_path`` must
         resolve. Tested directly against ``providers.resolve_vault_token``.
         """
         repo = build_repo(tmp_path, monkeypatch)
-        # Plant the vault stack's rendered ciu.toml with a [state].root_token.
+        store = repo / "infra" / "vault" / ".ciu" / "secrets"
+        store.mkdir(parents=True, exist_ok=True)
+        (store / "root_token").write_text("s.from-store", encoding="utf-8")
+
+        config = {"vault": {"stack_path": "infra/vault"}}
+        # No VAULT_TOKEN (autouse delenv'd it), no token_file → falls to source 3.
+        assert providers_pkg.resolve_vault_token(config, repo) == "s.from-store"
+
+    def test_token_source_3_ignores_legacy_state_root_token(self, tmp_path, monkeypatch):
+        """ciu-P46/F4 — the pre-cutover `[state].root_token` read path is GONE.
+
+        A hard cutover with no dual read: a checkout still carrying the legacy
+        plaintext copy resolves nothing here, so the operator gets S4.16's
+        explicit refusal plus `ciu check`'s `state-secrets` finding rather than
+        an indefinitely load-bearing unsafe copy.
+        """
+        repo = build_repo(tmp_path, monkeypatch)
         vault_dir = repo / "infra" / "vault"
         vault_dir.mkdir(parents=True, exist_ok=True)
         (vault_dir / "ciu.toml").write_text(
@@ -828,21 +844,15 @@ class TestVaultBackedFlows:
             "[state]\ninitialized = true\nroot_token = \"s.from-state\"\n",
             encoding="utf-8",
         )
-
         config = {"vault": {"stack_path": "infra/vault"}}
-        # No VAULT_TOKEN (autouse delenv'd it), no token_file → falls to source 3.
-        assert providers_pkg.resolve_vault_token(config, repo) == "s.from-state"
+        assert providers_pkg.resolve_vault_token(config, repo) is None
 
-    def test_token_env_precedes_state(self, tmp_path, monkeypatch):
-        """S4.16 — source #1 (VAULT_TOKEN env) wins over the vault stack [state]."""
+    def test_token_env_precedes_bootstrap_store(self, tmp_path, monkeypatch):
+        """S4.16 — source #1 (VAULT_TOKEN env) wins over the bootstrap store."""
         repo = build_repo(tmp_path, monkeypatch)
-        vault_dir = repo / "infra" / "vault"
-        vault_dir.mkdir(parents=True, exist_ok=True)
-        (vault_dir / "ciu.toml").write_text(
-            "[vault_core]\nstack_name = \"vault\"\n\n"
-            "[state]\nroot_token = \"s.from-state\"\n",
-            encoding="utf-8",
-        )
+        store = repo / "infra" / "vault" / ".ciu" / "secrets"
+        store.mkdir(parents=True, exist_ok=True)
+        (store / "root_token").write_text("s.from-store", encoding="utf-8")
         monkeypatch.setenv("VAULT_TOKEN", "s.from-env")
         config = {"vault": {"stack_path": "infra/vault"}}
         assert providers_pkg.resolve_vault_token(config, repo) == "s.from-env"

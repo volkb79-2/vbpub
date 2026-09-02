@@ -40,7 +40,7 @@ def test_pre_secret_hook_resolves_relative_ask_file_and_stack_store_paths(monkey
     monkeypatch.setattr(engine, "to_physical_path", lambda path, **_kwargs: path)
     monkeypatch.setattr(engine.secret_materialize, "stack_store", lambda workdir: workdir / ".ciu" / "secrets")
 
-    def check_secret_files(_hooks, point, _config, ctx, _stack_toml):
+    def check_secret_files(_hooks, point, _config, ctx, _stack_toml, **_kw):
         assert point == "pre_secrets"
         assert ctx.secret_file("certificate") == stack / "certs/tls.pem"
         assert ctx.secret_file("database") == stack / ".ciu" / "secrets" / "database"

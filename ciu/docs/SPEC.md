@@ -451,8 +451,29 @@ requirements are marked *(withdrawn)*.
   Re-rendering happens on **every run** (S8.3); `[state]` survives those.
   `--reset` deletes the rendered `ciu.toml` — and with it `[state]` — along
   with the stack's volumes (S6.4): state describes the data (e.g. Vault's
-  `initialized`/`root_token`), so destroying the data MUST destroy the
-  state. Secret store files follow the separate S4.25 rule.
+  `initialized` flag), so destroying the data MUST destroy the state. Secret
+  store files follow the separate S4.25 rule.
+- **S3.4a** A `[state]` table MUST NOT carry a **secret-shaped** key. A key is
+  secret-shaped when its last `_`-separated component is one of `password`,
+  `token`, `secret`, `api_key`, `credential`, `passphrase`, `private_key`,
+  `key` (S2.4.1's own list) AND its value is a literal string of 8 or more
+  characters that is neither a `{{ … }}`/`$VAR`/`${…}` reference nor a
+  `/`-bearing path (a Vault KV path, a `/run/secrets/` mount or a file path is
+  a POINTER to a secret, not the secret). Nested tables are walked, because
+  S9.4's `persist: "state"` accepts a dotted path.
+
+  `ciu check`'s `state-secrets` stage enforces this as an **ERROR**, naming
+  the stack and the KEY and never the value (S4.23). The rule is **always-on
+  and not migration-specific**: `[state]` is an ordinarily rendered,
+  ordinarily readable plaintext file sitting outside every S4
+  leak-prevention mechanism — no masking, no post-render leak scan, no 0440
+  mode — so a credential there is exposed regardless of which CIU wrote it.
+  The sanctioned channel for a secret a hook produces is S9.4a's
+  `persist: "secret"`; for one a directive can express, S4.1's secrets table.
+
+  Non-secret facts are unaffected and remain `[state]`'s purpose: booleans,
+  counters, timestamps, and any string too short, referenced, or path-shaped
+  to be a credential.
 
 ### Stack shape
 
@@ -688,9 +709,27 @@ requirements are marked *(withdrawn)*.
 - **S4.16** Vault address comes from `topology.services.vault` (internal
   host/port) unless overridden by an active profile's `topology_overrides`
   (S7.4). Vault token source order: `VAULT_TOKEN` env → file named by
-  `vault.token_file` config → the local vault stack's `ciu.toml [state]`
-  (current `vault_env_pre_hook` mechanism). No token + vault-backed
-  directives present = abort before any container is started.
+  `vault.token_file` config → the local vault stack's **secret store**: the
+  hook-persisted (S9.4a) file `root_token` under
+  `<vault.stack_path>/.ciu/secrets/`, `vault.stack_path` defaulting to
+  `infra/vault`. An ABSENT store file makes source #3 yield nothing (the
+  vault stack may simply not be bootstrapped here) — the same "falls through"
+  semantics an absent `token_file` has; a PRESENT-but-unreadable one is a
+  hard `[S4.16]` error naming the path, never a silent skip. No token +
+  vault-backed directives present = abort before any container is started.
+
+  Source #3 previously read `[state].root_token` out of the vault stack's
+  rendered `ciu.toml`. That read path is **removed, with no fallback**: it was
+  a plaintext copy outside every S4 leak-prevention mechanism (S3.4a), and a
+  dual read would have kept it worth writing forever. A checkout still
+  carrying the old copy is told so by `ciu check`'s `state-secrets` stage
+  (S3.4a), not by a silent second read here.
+
+- **S4.16a** A stack declaring any `ASK_VAULT`/`GEN_TO_VAULT` directive
+  REQUIRES `topology.services.vault.internal_host`/`internal_port` in the
+  merged config. This is enforced **statically**, at `ciu check` time
+  (S13.4d), not only at S4.16 materialization time — a stack that could only
+  fail mid-`ciu up` is a defect `ciu check` exists to catch.
 
 ### Consumption
 
@@ -1651,15 +1690,55 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   degradation (`instance_id`/`network` stay `None` either way) rather than
   raising — additive, not a break.
 - **S9.4** Return contract — structured form **only**:
-  `{ "<dotted.path>": { "value": ..., "apply_to_config": bool, "persist": "state" } }`.
+  `{ "<dotted.path>": { "value": ..., "apply_to_config": bool, "persist": "state" | "secret" } }`.
   `apply_to_config` mutates the in-memory merged config (visible to later
   hooks, configfiles, the compose template); `persist: "state"` additionally
-  writes the value under the stack's `[state]` (the only persistable
-  destination). v1's plain `{KEY: value}` env-update form is **withdrawn**:
+  writes the value under the stack's `[state]`; `persist: "secret"` writes it
+  into the stack's secret store (S9.4a). Those two are the ONLY persistable
+  destinations. v1's plain `{KEY: value}` env-update form is **withdrawn**:
   hooks MUST NOT mutate the process environment, and CIU applies no env
   updates from hook returns (hook→pipeline communication goes through
   config/state; the v1 `VAULT_TOKEN`-export hook is superseded by the
   S4.16 built-in token source order).
+- **S9.4a** `persist: "secret"` — a hook MAY persist a value into its stack's
+  secret store. This channel exists **only** for values that no directive
+  could express: the canonical case is a real Vault's `operator init` output
+  (root token, unseal key), which nothing can `ASK_VAULT` because Vault cannot
+  be authenticated to before it exists — the same pre-existence problem S14.3a
+  solved for host-scoped secrets. A value a directive CAN express MUST be
+  declared in the secrets table (S4.1) instead; a hook re-persisting an
+  already-materialized value is a second, unnecessary copy.
+
+  Normative rules:
+  - **Storage.** The value MUST be written to the per-stack store,
+    `<stack>/.ciu/secrets/<name>`, using the same machinery every directive
+    uses: raw bytes with no trailing newline, mode `0440` (S4.10), store dirs
+    `0700`, atomic temp-file + `os.replace` (S4.9), under the stack's S4.26
+    lock. There is no project-store variant: a value nothing could declare
+    belongs to the one stack whose hook minted it.
+  - **Naming.** `<name>` MUST be a flat S4.6-shaped name (`^[a-z][a-z0-9_]*$`)
+    — it IS the compose secret name and the `/run/secrets/<name>` basename.
+    A dotted path (S9.4's `persist: "state"` form) is a contract violation.
+  - **Value type.** The value MUST be a string. Any other type is a contract
+    violation, never coerced.
+  - **Uniqueness.** A name already declared via a directive in that stack's
+    secrets table is a contract violation (S4.6's uniqueness rule, spanning
+    both channels that can now produce a store file).
+  - **`apply_to_config` is FORBIDDEN with `persist: "secret"`.**
+    `apply_to_config` was designed for non-secret facts; injecting a raw
+    secret into the in-memory config would place it in front of every later
+    template and hook, bypassing S4.21's guard-object leak prevention
+    entirely. A later consumer reads the value the way every other secret
+    consumer does — `ctx.secret_file(name)`, or `secret('<name>')` in a
+    configfile template once a corresponding delivery exists.
+  - **Never logged.** The value MUST NOT appear in any log or error path
+    (S4.23). Every refusal above names the KEY only.
+  - **Discoverability.** A hook-persisted secret MUST appear in
+    `ciu secrets list` alongside directive-materialized ones, distinguishable
+    by its originating hook (kind `HOOK`, locator `hook:<script>`), and MUST
+    be removable by `ciu secrets reset` (with or without `--name`). CIU
+    records the provenance in `<stack>/.ciu/secrets/.hook-persisted.toml`,
+    which holds names and hook paths only — never a value.
 - **S9.5** **Optional preflight entry point** — a hook module (or `Hook`
   class) MAY define `validate_config(config, ctx) -> list` beside its `run`.
   CIU calls it during `ciu check` (S13.4a) **and, since CIU-64, during
@@ -2127,6 +2206,9 @@ Stages, in order, each reusing the same function the real pipeline
 | `leak-scan` | S4.22 scan of the rendered text. **Structurally vacuous at check time** — nothing was materialized, so there are no values to search for; the barrier that actually bites here is S4.21's guard in `compose-render` | 2 |
 | `consumption` | declared-vs-consumed secret cross-check (S4.20). An undeclared reference is a failure; a declared-but-unconsumed secret is a **warning**, matching the real pipeline's own Step-14 behaviour — and the check cannot see the S5 configfile consumption channel without rendering | 2 (undeclared) / warn (unconsumed) |
 | `service-registry` | (ciu-P22, not part of the V8 proposal's own stage numbering — appended last) `[service.*]` identity registry (S3.14) two-directional consistency lint against the selected profile/phase's actual deployment (S3.15). **Registry-declaration-gated**: skipped entirely when `[service.*]` is absent/empty | warn only, both directions |
+| `vault-presence` | (ciu-P46, not part of the V8 proposal's own stage numbering — appended last) any `ASK_VAULT`/`GEN_TO_VAULT` directive in the stack requires `topology.services.vault` to be declared (S4.16a/S13.4d). Pure config shape: no probe, no Vault contact. Silent for a stack whose `secrets` stage already failed — one root cause, one finding | 2 |
+| `state-secrets` | (ciu-P46, appended last) no secret-shaped key in the stack's `[state]` table (S3.4a). Nested tables walked; the finding names the stack and KEY, never the value | 2 |
+| `migration` | (ciu-P46, appended last) `ciu migration-check`'s rule registry (S13.7), run once at GLOBAL scope — the SAME registry the standalone verb walks, never a second implementation. Findings carry no `stack` key | WARN → note · ERROR → 2 |
 
 **Render fidelity.** Two pipeline steps `ciu check` does not run nevertheless
 supply values a compose template legitimately reads, so their *pure* halves
@@ -2143,9 +2225,12 @@ not belong in the exit-2 configuration taxonomy. A hostdir declaration whose
 shape is unusable is left untouched for the real pipeline's own Step-8 error
 to name — `ciu check` has no S6 stage.
 
-**Stage coverage:** `ciu check` implements the V8 proposal's stages 1-12.
-Stage 7 (`registry`) is scoped to what CIU actually reads — see S13.4b, which
-states plainly what it does and does **not** check.
+**Stage coverage:** `ciu check` implements the V8 proposal's stages 1-12,
+plus four stages appended after them that the proposal's own §2.7 table
+predates: `service-registry` (ciu-P22) and, from ciu-P46, `vault-presence`,
+`state-secrets` and `migration`. Stage 7 (`registry`) is scoped to what CIU
+actually reads — see S13.4b, which states plainly what it does and does
+**not** check.
 
 Every stage failure above is exit `2`. Exit `1` is reserved for `--live`'s
 live probe failures and is never produced by a static stage; when a static
@@ -2205,6 +2290,80 @@ Rationale: before CIU-64, both the graph lint and every hook's
 deploying straight from `ciu up` got neither — the "relies on someone
 remembering" shape CIU's own `--check-env`/`validate_config` machinery exists
 to eliminate elsewhere.
+
+### S13.4d — Vault-presence static stage (ciu-P46, normative)
+
+`ciu check`'s `vault-presence` stage MUST fail when any stack in the deploy
+set declares an `ASK_VAULT` or `GEN_TO_VAULT` directive while the merged
+config carries no `topology.services.vault.internal_host`/`internal_port`
+(S4.16a). Message shape:
+
+```
+[S13.4d] vault directive(s) present ('<name> (<DIRECTIVE>)', … in stack '<stack>')
+         but topology.services.vault is not declared (internal_host/internal_port)
+```
+
+Directive discovery reuses `secrets.directives.discover` and the address read
+reuses `providers.vault_addr_from_config` — the same functions S4.16 itself
+uses, never a reimplementation. The stage is **pure config shape**: no I/O, no
+live probe, no Vault contact, matching every other S13.4a stage's
+side-effect-free contract, and it therefore runs automatically before
+`ciu up` through S13.4c with no separate wiring.
+
+When a stack's `secrets` stage already failed (its directives could not be
+discovered), this stage stays silent for that stack: one root cause produces
+one finding, not a second complaint derived from untrustworthy input.
+
+### S13.7 — `ciu migration-check` (ciu-P46, normative)
+
+`ciu migration-check [--define-root PATH] [--json]` reports artifacts in the
+current checkout left behind by an OLDER CIU.
+
+**Why it exists.** CIU performs **hard cutovers**: when a file, key or table
+is renamed or removed, the old path is deleted from every normal code path —
+no fallback reads, no legacy-compat shims, anywhere. That keeps the render,
+secret-resolution and hook paths exactly as clean as if the legacy behaviour
+had never existed. `ciu migration-check` is the single, deliberately isolated
+place that knows CIU's own version history, so the price of that rule is a
+NAMED finding with a remediation rather than a silent break.
+
+Normative rules:
+
+- **No rule may compare an installed CIU version against anything.** Every
+  detector is purely pattern-based (does this file exist, does this key
+  exist, is this table shaped a certain way), so it answers correctly no
+  matter which historical CIU last touched the checkout.
+- **One registry, two entry points, no duplicated detection.** The rule
+  registry is walked by (1) this verb and (2) `ciu check`'s `migration`
+  stage (S13.4a), which is what gives it automatic coverage on every
+  `ciu up` through S13.4c.
+- **Exit codes differ between the two entry points, deliberately.** The
+  standalone verb exits **0 when there are no findings and non-zero when
+  there are any**, regardless of severity — it is a diagnostic meant to be
+  scripted, and every v1 rule is WARN-severity, so a severity-gated exit
+  would make it silently useless. The `ciu check` STAGE keeps `ciu check`'s
+  own aggregation (WARN → note, ERROR → stage failure/exit 2), because
+  `ciu up`'s automatic preflight must not start hard-blocking on advisories.
+- **Every finding carries `(rule, severity, message, remediation)`**, with
+  the same `WARN`/`ERROR` vocabulary S9.5's hook-preflight findings use.
+  `--json` emits one versioned envelope (`schema_version`, `operation`,
+  `status`, `repo_root`, `rules`, `findings`).
+- Root resolution follows CIU-54's convention for a verb with its own parser
+  (`--define-root`/`--root-folder`, else ambient `$REPO_ROOT`, refusing on
+  disagreement — S1.1a), so it answers identically to `ciu check` run in the
+  same checkout.
+
+**v1 rule set** (all WARN):
+
+| Rule | Fires when | Remediation |
+|---|---|---|
+| `retired-overlay-file` | a global-overlay filename CIU has RETIRED is still present at the ciu root. The detector filters its history list against the live filename constant, so a name that is still current produces nothing | move hand-authored overrides into the current overlay, delete the old file |
+| `stale-identity-facts` | `ciu.env` exists but `[ciu.instance.generated]` (S3.1c) is absent, incomplete, or unreadable — pre-CIU-75 identity state, which every identity read now silently degrades to "unmanaged" | `ciu env generate` |
+| `gitignore-gaps` | the checkout's `.gitignore` is missing entries from `ciu init`'s canonical set (CIU-61), using that mechanism's own comparison and comment normalization | add the named patterns |
+
+A secret-shaped `[state]` key is deliberately **not** a rule here: S3.4a's
+`state-secrets` stage already refuses it unconditionally, regardless of the
+artifact's age, so a migration rule for it would be pure duplication.
 
 - **S13.5** `ciu graph [--format mermaid|dot|json] [--profile NAME] [--phases N,M]`
   — renders the requires/provides dependency graph to STDOUT (no deploy). Edges
@@ -3336,18 +3495,72 @@ post_compose = ["./post_compose_vault.py"]
 
 [state]                            # written by post_compose_vault.py (S9.1)
 initialized = false
-root_token = ""
-unseal_key = ""
 ```
 
 Bootstrap rules exercised: the vault stack itself declares **no**
-`*_VAULT` directives (S7.6); after `post_compose_vault.py` persists
-`root_token` into `[state]` (via the S9.4 `persist: "state"` return), later
-stacks resolve their token through the S4.16 source order — the v1
-`vault_env_pre_hook` env juggling has no v2 equivalent and is deleted.
-Resetting this stack (`--reset`) destroys the Vault data volume **and**
-its `[state]` together (S3.4): the next run re-initializes Vault and
-post_compose writes fresh state.
+`*_VAULT` directives (S7.6). `[state]` carries the `initialized` BOOLEAN and
+nothing else — no `root_token`, no `unseal_key`: those are secret-shaped and
+S3.4a refuses them there outright. Later stacks resolve their token through
+the S4.16 source order; the v1 `vault_env_pre_hook` env juggling has no v2
+equivalent and is deleted. Resetting this stack (`--reset`) destroys the
+Vault data volume **and** its `[state]` together (S3.4): the next run
+re-initializes Vault and post_compose writes fresh state.
+
+Where the token itself lives depends on which of the two shapes this stack
+has, and the distinction is the whole point of S9.4a:
+
+- **DEV-mode / directive-backed** (CIU's own `test-repo` fixture): the root
+  token is declared `root_token = "GEN_LOCAL:demo/vault_root_token"` in
+  `[vault_core.secrets]` and fed to Vault as `VAULT_DEV_ROOT_TOKEN_ID`. It is
+  already materialized safely (0440, masked, leak-scanned) from the moment it
+  is generated, so the hook persists **nothing** — a second copy would only
+  be a second exposure. Later stacks reach it through S4.16 source #2
+  (`vault.token_file` pointed at that same store file). `persist: "secret"`
+  is not merely unnecessary here, it is REFUSED: the name is already declared
+  by a directive (S9.4a's uniqueness rule).
+- **Real Vault / hook-minted**: see B.2a.
+
+### B.2a — a hook MINTING a value no directive can express (S9.4a)
+
+A production Vault is initialized by the hook itself: `vault operator init`
+returns a root token and unseal keys that did not exist a moment earlier and
+that nothing could have declared in advance. This is the case
+`persist: "secret"` exists for, and the ONLY thing the stack config needs is
+the hook declaration — there is no secrets-table entry for these names,
+because there is no directive that could express them.
+
+```toml
+[vault_core.hooks]
+post_compose = ["./post_compose_vault.py"]
+
+[state]
+initialized = false                # a boolean fact — S3.4a-clean
+```
+
+```python
+# infra/vault/post_compose_vault.py  (production shape)
+def run(config, ctx):
+    result = vault_operator_init()          # the hook's own Vault HTTP call
+    return {
+        "initialized": {"value": True, "persist": "state",
+                        "apply_to_config": True},
+        # Minted here, first existing here. No directive could have named it.
+        "root_token":  {"value": result["root_token"],  "persist": "secret"},
+        "unseal_key":  {"value": result["unseal_keys"][0], "persist": "secret"},
+    }
+```
+
+Each `persist: "secret"` entry lands at `infra/vault/.ciu/secrets/<name>`,
+mode 0440, atomically, under the stack's S4.26 lock — the same file a
+directive would have produced. `root_token` there is exactly S4.16's source
+#3, so every later `ASK_VAULT`/`GEN_TO_VAULT` stack resolves its token with
+no env juggling and no plaintext `[state]` copy. `ciu secrets list` shows
+both names with kind `HOOK` and `hook:<script>` as the locator; `ciu secrets
+reset` removes them.
+
+Note what the return may NOT do: adding `"apply_to_config": True` to either
+secret entry is a contract violation (S9.4a), because it would put the raw
+value into the in-memory config that every later template and hook reads.
 
 ### B.3 — `applications/controller` (own app, mounted TOML config + DSN)
 

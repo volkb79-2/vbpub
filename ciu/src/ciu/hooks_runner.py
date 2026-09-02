@@ -318,6 +318,71 @@ def _persist_state(dotted: str, value: object, stack_toml_path: Path) -> None:
     os.replace(tmp, stack_toml_path)
 
 
+def _persist_secret(
+    path_key: str,
+    value: object,
+    ctx: HookContext,
+    declared: frozenset[str],
+    hook_path: Path,
+) -> None:
+    """Write *value* into the stack's secret store as ``<path_key>`` (S9.4a).
+
+    Every refusal below names the KEY and never the VALUE (S4.23): these
+    messages reach stderr and a hook's own traceback, and a secret that leaks
+    through its own rejection message is worse than one that was never
+    persisted at all.
+
+    Refusals, in the order a caller hits them:
+
+    * a **dotted** path — ``persist:'state'``'s dotted-path form (S9.4) has no
+      meaning here. A secret is a flat, S4.6-shaped name because that name IS
+      the compose secret and the ``/run/secrets/<name>`` basename.
+    * a name failing S4.6's ``SECRET_NAME_RE`` — the same grammar every
+      directive-declared name obeys, for the same reason.
+    * a **non-string** value — a secret store file holds bytes of a value; a
+      bool/int/dict has no secret meaning and silently ``str()``-ing it would
+      persist ``True`` or ``{'a': 1}`` as if it were a credential.
+    * a **collision** with a directive-declared name in this stack — S4.6's
+      uniqueness rule, applied across the two channels that can now produce a
+      name. Two writers for one store path is exactly the ambiguity S4.6
+      exists to prevent.
+    """
+    import re
+
+    from .secrets.directives import SECRET_NAME_RE
+    from .secrets.materialize import write_hook_secret
+
+    if "." in path_key:
+        raise ValueError(
+            f"[S9.4a] hook return entry {path_key!r} uses a dotted path with "
+            "persist:'secret'; a secret name is flat (it is the compose secret "
+            "name and the /run/secrets/<name> basename, S4.6)"
+        )
+    if not re.match(SECRET_NAME_RE, path_key):
+        raise ValueError(
+            f"[S9.4a] hook return entry {path_key!r} is not a valid secret "
+            "name; S4.6 requires ^[a-z][a-z0-9_]*$"
+        )
+    if not isinstance(value, str):
+        raise ValueError(
+            f"[S9.4a] hook return entry {path_key!r} declares persist:'secret' "
+            f"but its value is {type(value).__name__}, not a string; a secret "
+            "store file holds a string value"
+        )
+    if path_key in declared:
+        raise ValueError(
+            f"[S9.4a] secret name {path_key!r} is already declared via a "
+            "directive in this stack's secrets table (S4.6); a hook MUST NOT "
+            "also persist it — remove one of the two declarations"
+        )
+    write_hook_secret(
+        ctx.stack_dir,
+        path_key,
+        value,
+        source=f"hook:{hook_path}",
+    )
+
+
 # ---------------------------------------------------------------------------
 # S9.1/S9.2/S9.4 — run_hooks
 # ---------------------------------------------------------------------------
@@ -329,6 +394,8 @@ def run_hooks(
     config: dict,
     ctx: HookContext,
     stack_toml_path: Path,
+    *,
+    declared_secret_names: frozenset[str] | set[str] | None = None,
 ) -> None:
     """Validate and run all hooks for one hook point.
 
@@ -346,6 +413,10 @@ def run_hooks(
         Hook context (S9.3).
     stack_toml_path:
         Path to the stack's ``ciu.toml``; ``persist: 'state'`` writes here.
+    declared_secret_names:
+        Every secret name this stack declares via an S4.1 directive, used ONLY
+        by S9.4a's uniqueness rule. ``None``/empty means "nothing declared" —
+        a bare/unit construction, never a licence to skip the check.
 
     Behaviour
     ---------
@@ -356,6 +427,8 @@ def run_hooks(
       - ``dict`` → every value MUST be a dict with a ``'value'`` key.
         - ``apply_to_config: True`` → ``set_nested(config, path, value)``.
         - ``persist: 'state'`` → write under ``[state]`` in stack toml.
+        - ``persist: 'secret'`` → write into the per-stack secret store
+          (S9.4a); never into ``[state]``, never into the in-memory config.
         - Any other ``persist`` value → ``ValueError [S9.4]``.
         - Plain ``{KEY: scalar}`` (v1 form) → ``ValueError [S9.4]``.
     - Hooks MUST NOT mutate ``os.environ`` (snapshot/compare; S9.4).
@@ -364,6 +437,8 @@ def run_hooks(
       unchanged; any exception raised by the hook *body* is re-wrapped as
       ``HookExecutionError`` (engine maps it to exit 1).
     """
+    declared = frozenset(declared_secret_names or ())
+
     # --- Phase 1: resolve and validate all paths before running any hook ---
     resolved: list[tuple[str, Path, Callable]] = []
     for raw in hook_paths:
@@ -430,16 +505,36 @@ def run_hooks(
             apply = meta.get("apply_to_config", False)
             persist = meta.get("persist")
 
+            # S9.4a: `apply_to_config` + `persist:'secret'` is a contract
+            # violation, checked BEFORE the mutation so a refused return never
+            # half-applies. `apply_to_config` was designed for non-secret facts;
+            # injecting a raw secret value into the in-memory config would put
+            # it in front of every later template and hook, bypassing S4.21's
+            # guard-object leak prevention entirely. A consumer that genuinely
+            # needs the value reads it the way every other secret consumer
+            # does: `ctx.secret_file(name)`.
+            if persist == "secret" and apply:
+                raise ValueError(
+                    f"[S9.4a] hook return entry {path_key!r} combines "
+                    "apply_to_config with persist:'secret'; a secret value "
+                    "MUST NOT be injected into the in-memory config (S4.21). "
+                    "Read it back with ctx.secret_file() instead."
+                )
+
             # apply_to_config: mutate in-memory config (S9.4)
             if apply:
                 set_nested(config, path_key, value)
 
-            # persist must be 'state' or absent (S9.4 — no other values)
+            # persist must be 'state', 'secret', or absent (S9.4/S9.4a)
             if persist is not None:
-                if persist != "state":
+                if persist == "secret":
+                    _persist_secret(path_key, value, ctx, declared, _p)
+                elif persist == "state":
+                    _persist_state(path_key, value, stack_toml_path)
+                else:
                     raise ValueError(
                         f"[S9.4] hook returned persist={persist!r}; "
-                        "only 'state' is a valid persist destination. "
-                        "v1's persist:'toml' and persist:'env' are withdrawn."
+                        "only 'state' and 'secret' are valid persist "
+                        "destinations. v1's persist:'toml' and persist:'env' "
+                        "are withdrawn."
                     )
-                _persist_state(path_key, value, stack_toml_path)

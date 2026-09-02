@@ -229,7 +229,7 @@ def test_successful_native_compose_preserves_output_and_runs_post_hook(
     monkeypatch.setattr(
         engine.hooks_runner,
         "run_hooks",
-        lambda _hooks, point, *_args: observed.append(point),
+        lambda _hooks, point, *_args, **_kw: observed.append(point),
     )
 
     result = engine.main_execution(

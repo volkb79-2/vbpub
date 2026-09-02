@@ -217,7 +217,9 @@ directives, CIU checks before any phase runs that:
 
 1. The Vault stack is in an earlier phase of the same selection, **or**
 2. A Vault token resolves via the source order:
-   `VAULT_TOKEN` env → `vault.token_file` config → vault stack's `ciu.toml [state].root_token`
+   `VAULT_TOKEN` env → `vault.token_file` config → the vault stack's
+   hook-persisted `root_token` secret store file,
+   `<vault.stack_path>/.ciu/secrets/root_token` [S9.4a]
 
 No resolvable token + vault-backed directives present = abort before starting
 anything [S7.6].

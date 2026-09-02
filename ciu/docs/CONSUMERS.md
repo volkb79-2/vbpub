@@ -1453,3 +1453,89 @@ one being fixed. See `docs/SPEC.md` S1.1a.
 > shipped `.sh`/CI invokes any of these 8 verbs without first sourcing
 > `ciu.env`), but an interactive operator's own shell habit, or a downstream
 > consumer's own script, may be.
+
+---
+
+## 20. Move a hook's secret-shaped `[state]` value onto `persist: "secret"` (S9.4a / S3.4a, CIU-P46, ciu 7.9.0) — BREAKING
+
+**Action needed if your hook currently persists a secret-shaped value into
+`[state]`.** The archetype is a Vault bootstrap hook returning
+`{"root_token": {"value": …, "persist": "state"}}`, but the rule is general:
+any `[state]` key whose last `_`-separated component is `password`, `token`,
+`secret`, `api_key`, `credential`, `passphrase`, `private_key` or `key`,
+paired with a literal string of 8 or more characters that is not a
+`{{ … }}`/`$VAR` reference and contains no `/`.
+
+**Why.** `[state]` lives in the stack's rendered `ciu.toml`: an ordinarily
+rendered, ordinarily readable plaintext file that sits **outside every S4
+leak-prevention mechanism** — no masking, no post-render leak scan (S4.22),
+no 0440 mode (S4.10). A credential there is exposed to anything that can read
+the repo. This is F4 from `docs/CIU-V8-TESTING-GATE-PROPOSAL.md`, backported
+onto v7 ahead of the full v8 cutover.
+
+**What changed, concretely.**
+
+1. `ciu check` gained a `state-secrets` stage that REFUSES such a key
+   (`[S3.4a]`, exit 2), naming the stack and the key and never the value.
+   Because `ciu up` runs `ciu check`'s static pipeline automatically
+   (S13.4c, CIU-64), this reaches `ciu up` as well as the explicit verb.
+2. `persist: "secret"` (S9.4a) is the sanctioned channel. It writes into the
+   ordinary per-stack secret store — `<stack>/.ciu/secrets/<name>`, 0440,
+   atomic, under the stack's lock — using the exact machinery a directive
+   uses. It is for values **no directive could express**; Vault's own
+   `operator init` output is the canonical case.
+3. S4.16's Vault-token source #3 now reads
+   `<vault.stack_path>/.ciu/secrets/root_token` instead of the vault stack's
+   `[state].root_token`. **There is no fallback** — the old read path is
+   gone, deliberately: a dual read would keep the unsafe copy worth writing
+   indefinitely.
+
+**Migration, for a hook that mints the value (the normal case):**
+
+```python
+# before
+return {"root_token": {"value": token, "persist": "state"}}
+# after
+return {"root_token": {"value": token, "persist": "secret"}}
+```
+
+...and delete `root_token` from the stack's `[state]` table. Nothing else
+changes: the name is unchanged, so S4.16 source #3 keeps resolving, and
+`ciu secrets list` now shows the value's name with kind `HOOK` and locator
+`hook:<script>` (`ciu secrets reset` removes it).
+
+**Migration, for a hook that merely RE-persists an already-declared secret:**
+delete the return entry entirely. If `root_token` is declared in the stack's
+own secrets table (e.g. a dev-mode `GEN_LOCAL:demo/vault_root_token`), it is
+ALREADY materialized safely and `persist: "secret"` for that name is refused
+outright as an S4.6 uniqueness collision — one name, one writer. Point
+`[vault].token_file` (S4.16 source #2) at that store file instead. CIU's own
+`test-repo` fixture is exactly this shape and now does exactly this; see
+`test-repo/infra/vault/post_compose_vault.py` and
+`test-repo/ciu.global.defaults.toml.j2`.
+
+**Two rules `persist: "secret"` will refuse, worth knowing before you write
+the hook:** combining it with `apply_to_config` (that would inject the raw
+value into the in-memory config every later template and hook reads,
+bypassing S4.21's guard entirely — read it back with `ctx.secret_file(name)`
+instead), and a dotted path (a secret name is flat; it IS the compose secret
+name and the `/run/secrets/<name>` basename).
+
+**Also new in the same release, same area:**
+
+- `ciu check`'s `vault-presence` stage (`[S13.4d]`) refuses a stack declaring
+  `ASK_VAULT`/`GEN_TO_VAULT` with no `topology.services.vault` — previously a
+  runtime-only failure, mid-`ciu up`.
+- `ciu migration-check [--define-root PATH] [--json]` (S13.7) reports stale
+  pre-cutover artifacts in a checkout. CIU performs hard cutovers with no
+  legacy-compat shims anywhere in its normal code paths; this verb is the one
+  place that knows the version history, so a stale artifact is a named
+  finding with a remediation instead of a silent break. Run it after any CIU
+  upgrade. It exits non-zero on ANY finding; the same rules also run as
+  `ciu check`'s `migration` stage, where WARN findings only note.
+
+**Not affected: CIU-38.** Per-service Vault AppRole provisioning stays open
+and deferred, and needs none of this: AppRole credentials route through Vault
+itself (a hook mints them into Vault with its own `hvac`/HTTP calls; the
+consumer reads them back with an ordinary `ASK_VAULT` directive), which
+already works today with no new CIU mechanism.

@@ -82,7 +82,7 @@ enumerates, so a config-less stack still tears down to zero objects (S8.7/S6.4a)
    any CIU invocation for `HH:MM:SS [INFO]`/`[WARN]`/`[ERROR]` output. Severity is coloured
    on an interactive terminal only; redirected logs stay plain text.
 8. **App config as mounted files, with composite secrets.** Configfile mounts (S5) render a full app config — including DSNs that embed credentials via `secret()` (S5.4) — and mount it read-only, replacing sprawling `APP__*` env blocks.
-9. **Declarative bootstrap hooks + clean lifecycle.** Three structured hook points (S9) handle things like "unseal Vault, persist its root token to `[state]`, hand it to later stacks." `ciu up --dir <stack> --reset` tears down one stack's containers, volumes, and rendered outputs (S6.4); `ciu clean` does the same for a profile selection — and removes the identity-scoped networks too (S6.4a), keeping nothing silently: a main-workspace clean names its deliberate keep, an instance clean leaves zero objects behind or fails.
+9. **Declarative bootstrap hooks + clean lifecycle.** Three structured hook points (S9) handle things like "unseal Vault, persist its minted root token into the stack's secret store with `persist:'secret'` (S9.4a), hand it to later stacks" — non-secret facts go to `[state]`, credentials never do (S3.4a). `ciu up --dir <stack> --reset` tears down one stack's containers, volumes, and rendered outputs (S6.4); `ciu clean` does the same for a profile selection — and removes the identity-scoped networks too (S6.4a), keeping nothing silently: a main-workspace clean names its deliberate keep, an instance clean leaves zero objects behind or fails.
 
 ## When *not* to use `ciu`
 

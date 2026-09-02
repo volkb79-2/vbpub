@@ -593,23 +593,40 @@ class TestResolveVaultToken:
         monkeypatch.delenv("VAULT_TOKEN", raising=False)
         assert resolve_vault_token(config, repo_root) == "from-file"
 
-    def test_stack_state_used_when_only_source_s4_16(self, tmp_path, monkeypatch):
-        """S4.16 — falls back to the local vault stack [state].root_token."""
+    def test_hook_persisted_store_used_when_only_source_s4_16(self, tmp_path, monkeypatch):
+        """S4.16 source #3 — the vault stack's hook-persisted store file (S9.4a)."""
+        repo_root = tmp_path
+        store = repo_root / "infra" / "vault" / ".ciu" / "secrets"
+        store.mkdir(parents=True)
+        (store / "root_token").write_text("from-store")
+        config = {"vault": {}}
+
+        monkeypatch.delenv("VAULT_TOKEN", raising=False)
+        assert resolve_vault_token(config, repo_root) == "from-store"
+
+    def test_state_root_token_is_never_read_s4_16(self, tmp_path, monkeypatch):
+        """ciu-P46 hard cutover — [state].root_token is NOT a token source.
+
+        The pre-P46 read path is gone with no fallback: a vault stack whose
+        rendered ciu.toml still carries the legacy plaintext copy resolves
+        NOTHING, so the operator hits S4.16's explicit refusal (and `ciu
+        check`'s state-secrets stage) instead of silently keeping the unsafe
+        copy load-bearing.
+        """
         repo_root = tmp_path
         vault_stack = repo_root / "infra" / "vault"
         vault_stack.mkdir(parents=True)
         (vault_stack / "ciu.toml").write_text('[state]\nroot_token = "from-state"\n')
-        config = {"vault": {}}
 
         monkeypatch.delenv("VAULT_TOKEN", raising=False)
-        assert resolve_vault_token(config, repo_root) == "from-state"
+        assert resolve_vault_token({"vault": {}}, repo_root) is None
 
     def test_default_stack_path_infra_vault_s4_16(self, tmp_path, monkeypatch):
         """S4.16 — stack_path defaults to 'infra/vault'."""
         repo_root = tmp_path
-        vault_stack = repo_root / "infra" / "vault"
-        vault_stack.mkdir(parents=True)
-        (vault_stack / "ciu.toml").write_text('[state]\nroot_token = "defaulted"\n')
+        store = repo_root / "infra" / "vault" / ".ciu" / "secrets"
+        store.mkdir(parents=True)
+        (store / "root_token").write_text("defaulted")
 
         monkeypatch.delenv("VAULT_TOKEN", raising=False)
         assert resolve_vault_token({}, repo_root) == "defaulted"

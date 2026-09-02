@@ -19,6 +19,9 @@ project_store(repo_root) -> Path        : project store dir (S4.9, GEN_LOCAL)
   reset_secrets(stack_dir, repo_root, specs, names=None) -> list[Path]  (S4.25)
   host_secret_store(repo_root, host_name, name) -> Path     (S14.3a store path)
   materialize_host_secrets(repo_root, host_name, entries, ...)  (S14.3a)
+  hook_secret_store(stack_dir, name) -> Path                (S9.4a store path)
+  write_hook_secret(stack_dir, name, value, source=...)     (S9.4a)
+  read_hook_manifest(stack_dir) -> dict[name, source]       (S9.4a)
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ import os
 import secrets as _stdlib_secrets
 import sys
 import tempfile
+import tomllib
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -536,6 +540,181 @@ def reset_secrets(
             with contextlib.suppress(FileNotFoundError):
                 target.unlink()
                 deleted.append(target)
+    return deleted
+
+
+# ---------------------------------------------------------------------------
+# Hook-persisted secrets (S9.4a / ciu-P46)
+# ---------------------------------------------------------------------------
+
+#: Provenance sidecar for ``persist: 'secret'`` returns, inside the per-stack
+#: store dir (so it inherits the store's 0700 parent and is destroyed by the
+#: same `--reset` that destroys the store). NOT a secret itself: it maps
+#: ``name -> "hook:<script>"`` and never holds a value.
+HOOK_MANIFEST_NAME = ".hook-persisted.toml"
+
+#: The synthetic kind reported for a hook-persisted secret by
+#: :func:`list_secrets`. Deliberately NOT one of S4.2's six DIRECTIVES — there
+#: is no directive that could have expressed this value; that is the whole
+#: reason S9.4a exists.
+HOOK_SECRET_KIND = "HOOK"
+
+
+def hook_secret_store(stack_dir: Path, name: str) -> Path:
+    """Store path for one hook-persisted secret: ``<stack>/.ciu/secrets/<name>``.
+
+    Identical to the path :func:`_store_file` hands every non-GEN_LOCAL
+    directive (S4.9) — a hook-persisted secret is stack-scoped, and shares the
+    directive store byte-for-byte in shape, mode and locking. It is NOT given a
+    project-store variant: a value nothing could declare is, by construction,
+    the property of the one stack whose hook minted it.
+    """
+    return stack_store(stack_dir) / name
+
+
+def hook_secret_manifest(stack_dir: Path) -> Path:
+    """Path of the per-stack hook-persisted provenance sidecar (S9.4a)."""
+    return stack_store(stack_dir) / HOOK_MANIFEST_NAME
+
+
+def read_hook_manifest(stack_dir: Path) -> dict[str, str]:
+    """``{secret_name: "hook:<script>"}`` for this stack's hook-persisted secrets.
+
+    Absent file → ``{}``. A manifest that cannot be read or parsed also degrades
+    to ``{}`` rather than raising: it is provenance metadata for a LISTING, and
+    an unreadable sidecar must never be able to fail a deployment or hide the
+    store files themselves (they are still enumerated from disk by
+    :func:`list_secrets`, just without a source annotation).
+    """
+    path = hook_secret_manifest(stack_dir)
+    try:
+        with path.open("rb") as fh:
+            doc = tomllib.load(fh)
+    except FileNotFoundError:
+        return {}
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+    table = doc.get("secrets")
+    if not isinstance(table, dict):
+        return {}
+    return {str(k): str(v) for k, v in table.items()}
+
+
+def _write_hook_manifest(stack_dir: Path, table: Mapping[str, str]) -> None:
+    """Atomically rewrite the provenance sidecar, or remove it when empty."""
+    import tomli_w
+
+    path = hook_secret_manifest(stack_dir)
+    if not table:
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
+        return
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    _ensure_dir_mode(parent, path)
+    fd, tmp_name = tempfile.mkstemp(dir=str(parent), prefix=".tmp-hookman-")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            tomli_w.dump({"secrets": dict(sorted(table.items()))}, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, path)
+    except BaseException:
+        # Same cleanup contract as _write_store_file: a failed write must not
+        # leave a stray .tmp-hookman-* file behind in the secret store dir.
+        with contextlib.suppress(FileNotFoundError):
+            tmp_path.unlink()
+        raise
+
+
+def write_hook_secret(
+    stack_dir: Path,
+    name: str,
+    value: str,
+    *,
+    source: str,
+    env: Mapping[str, str] = os.environ,
+    chown_fn: Callable[[Path, int | None, int | None], None] | None = None,
+) -> Path:
+    """Persist one ``persist: 'secret'`` hook return into the store (S9.4a).
+
+    This is the EXISTING S4.9/S4.10/S4.26 machinery pointed at a name that has
+    no directive behind it — not a second secret writer. Same per-stack store
+    dir, same 0440 file mode, same 0700 store-dir tightening, same atomic
+    ``mkstemp`` + ``os.replace``, same project-scope-free ``flock``.
+
+    *source* is the provenance string recorded in the sidecar (``hook:<path>``);
+    it is metadata about WHERE the value came from and never the value itself.
+    Returns the store path. NEVER logs or returns the value (S4.23).
+    """
+    stack_dir = Path(stack_dir)
+    chown_fn = chown_fn if chown_fn is not None else _default_chown
+    spec = SecretSpec(name=name, kind=HOOK_SECRET_KIND, locator=None)
+    target = hook_secret_store(stack_dir, name)
+    lock_path = stack_dir / MACHINE_DIR / LOCK_NAME
+    with _flock(lock_path):
+        _write_store_file(target, value, spec, env=env, chown_fn=chown_fn)
+        manifest = read_hook_manifest(stack_dir)
+        manifest[name] = source
+        _write_hook_manifest(stack_dir, manifest)
+    return target
+
+
+def hook_secret_rows(stack_dir: Path, declared: Iterable[str]) -> list[dict]:
+    """``list_secrets``-shaped rows for this stack's hook-persisted secrets (S9.4a).
+
+    Sourced from the provenance sidecar, minus any name that is ALSO declared
+    by a directive — S9.4a forbids that collision at hook-return time, so a
+    surviving entry can only be a stale sidecar row from before a declaration
+    was added, and reporting it as hook-originated would be a lie.
+    """
+    stack_dir = Path(stack_dir)
+    declared = set(declared)
+    rows: list[dict] = []
+    for name, source in sorted(read_hook_manifest(stack_dir).items()):
+        if name in declared:
+            continue
+        store = hook_secret_store(stack_dir, name)
+        rows.append(
+            {
+                "name": name,
+                "kind": HOOK_SECRET_KIND,
+                "locator": source,
+                "store": str(store),
+                "exists": store.exists(),
+            }
+        )
+    return rows
+
+
+def reset_hook_secrets(
+    stack_dir: Path,
+    names: Iterable[str] | None = None,
+) -> list[Path]:
+    """Delete hook-persisted store files and their sidecar rows (S9.4a/S4.25).
+
+    The counterpart of :func:`reset_secrets` for names no directive declares —
+    without it, ``ciu secrets reset`` would leave exactly the values that have
+    no other way of being reached behind.
+    """
+    stack_dir = Path(stack_dir)
+    selected = set(names) if names is not None else None
+    manifest = read_hook_manifest(stack_dir)
+    deleted: list[Path] = []
+    remaining = dict(manifest)
+    for name in sorted(manifest):
+        if selected is not None and name not in selected:
+            continue
+        target = hook_secret_store(stack_dir, name)
+        if target.exists():
+            with contextlib.suppress(FileNotFoundError):
+                target.unlink()
+                deleted.append(target)
+        remaining.pop(name, None)
+    if remaining != manifest:
+        _write_hook_manifest(stack_dir, remaining)
     return deleted
 
 

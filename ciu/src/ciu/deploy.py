@@ -480,7 +480,8 @@ def vault_preflight(
         raise ValueError(
             "[S7.6] the selection declares *_VAULT secrets but the vault stack "
             "is not in an earlier phase and no Vault token resolved (VAULT_TOKEN "
-            "env, vault.token_file, or the vault stack's [state].root_token). "
+            "env, vault.token_file, or the vault stack's hook-persisted "
+            "'root_token' secret store file, S9.4a). "
             "Aborting before any phase runs."
         )
     info(f"[S7.6] Vault token + address ({addr}) resolved — OK")
@@ -2019,6 +2020,25 @@ CHECK_SCHEMA_VERSION = 1
 #: and the existing `registry`/`hooks-load` adjacency (pinned by
 #: test_ciu_provisioning.py's test_check_stage7_is_between_configfile_and_hooks_load)
 #: undisturbed.
+#:
+#: Stages 14-16 landed in ciu-P46, appended last for the SAME reason stage 13
+#: was — none of the three is part of the V8 proposal's own §2.7 stage table:
+#:
+#: * ``"vault-presence"`` (F7, S13.4d) — a stack declaring ASK_VAULT/
+#:   GEN_TO_VAULT with no `topology.services.vault` used to fail only at
+#:   RUNTIME (S4.16), after `ciu up` had already begun.
+#: * ``"state-secrets"`` (S3.4a) — a secret-shaped key in a `[state]` table.
+#:   An ordinary always-on rule, NOT a migration rule: it fires on any such key
+#:   regardless of how it got there, which is what keeps a future hook from
+#:   regressing back into `[state]` once ciu-P46 moved Vault's bootstrap token
+#:   out of it.
+#: * ``"migration"`` (S13.7) — the `ciu migration-check` rule registry's SECOND
+#:   entry point (:mod:`ciu.migration_check` is the first). Registering it as
+#:   an ordinary stage is what gives it automatic coverage on every `ciu up`
+#:   through S13.4c's existing preflight, with no new invocation machinery at
+#:   all. As a stage its findings feed `ciu check`'s OWN severity aggregation
+#:   (WARN → note, ERROR → fail); the standalone verb keeps its own
+#:   "any finding → non-zero" contract, and the two are deliberately different.
 CHECK_STAGES: tuple[str, ...] = (
     "render",
     "shape",
@@ -2033,6 +2053,9 @@ CHECK_STAGES: tuple[str, ...] = (
     "leak-scan",
     "consumption",
     "service-registry",
+    "vault-presence",
+    "state-secrets",
+    "migration",
 )
 
 
@@ -2668,6 +2691,45 @@ def _check_stack_config(
             stack=rel,
         )
 
+    # ---- stage 14: vault-presence (F7, S13.4d, ciu-P46) ----
+    # Pure config shape: no I/O, no live probe, no Vault contact — exactly the
+    # side-effect-free contract every other stage here carries. `specs` is the
+    # SAME discovery the real pipeline's Step 5 performs; when it failed above,
+    # this stage has nothing trustworthy to read and stays silent rather than
+    # inventing a second finding for one root cause.
+    if specs is not None:
+        vault_specs = [s for s in specs if s.kind in ("ASK_VAULT", "GEN_TO_VAULT")]
+        if vault_specs:
+            try:
+                vault_addr_from_config(merged)
+            except VaultError:
+                names = ", ".join(sorted(f"{s.name} ({s.kind})" for s in vault_specs))
+                report.fail(
+                    "vault-presence",
+                    f"[S13.4d] vault directive(s) present ({names} in stack "
+                    f"'{rel}') but topology.services.vault is not declared "
+                    "(internal_host/internal_port); these secrets could only "
+                    "fail at S4.16 runtime, after `ciu up` had started",
+                    stack=rel,
+                )
+
+    # ---- stage 15: state-secrets (S3.4a, ciu-P46) ----
+    # Read off `stack_cfg`, NOT `merged`: `[state]` is a per-stack, top-level
+    # table (S3.4) and the global config has none, so merging could only widen
+    # the scan to keys this stack does not own and report the same global
+    # finding once per selected stack.
+    for key_path in config_model.find_secret_shaped_keys(stack_cfg.get("state")):
+        report.fail(
+            "state-secrets",
+            f"[S3.4a] [state].{key_path} is secret-shaped, but `[state]` is an "
+            "ordinarily-rendered, ordinarily-readable plaintext table outside "
+            "every S4 leak-prevention mechanism (no masking, no post-render "
+            "leak scan, no 0440 mode). Persist it with persist:'secret' "
+            "(S9.4a) — or, when a directive can express it, declare it in the "
+            "stack's secrets table (S4.1)",
+            stack=rel,
+        )
+
     # ---- stage 5: governance shape/resolution (engine Step 15's own call) ----
     # Shape and layering only: no cgroup is created, no slice is probed, no
     # systemd is consulted (that is governance_slice_preflight's job, and it
@@ -2837,6 +2899,35 @@ def _check_stack_config(
             "`ciu check` (configfile consumption is not visible without rendering)",
             stack=rel,
         )
+
+
+def _check_migration(repo_root: Path, report: _CheckReport) -> None:
+    """Run :mod:`ciu.migration_check`'s rule registry as a ``ciu check`` stage.
+
+    GLOBAL scope, exactly once per run: every rule reads the ciu-root, not a
+    stack, so running it per stack would emit N identical copies of one finding.
+
+    The registry is walked, never reimplemented — that is the whole reason
+    ``ciu migration-check`` was built as a registry rather than as a verb with
+    its detection inlined. The ONLY thing this stage adds is the routing of a
+    finding's severity into ``ciu check``'s existing aggregation: WARN becomes
+    a note (advisory, cannot change the exit code), ERROR becomes a failure
+    (exit 2, like every other stage). The standalone verb's "any finding →
+    non-zero" rule is deliberately NOT reproduced here: as a stage, a WARN must
+    weigh what a WARN weighs everywhere else in this report, or `ciu up`'s
+    automatic preflight (S13.4c) would start hard-blocking on advisories.
+    """
+    from . import migration_check as migration_check_mod
+
+    for finding in migration_check_mod.run_migration_check(repo_root):
+        message = (
+            f"[{finding.severity}] {finding.rule}: {finding.message} — "
+            f"fix: {finding.remediation}"
+        )
+        if finding.severity == "ERROR":
+            report.fail("migration", message)
+        else:
+            report.note("migration", message)
 
 
 def _emit_check_report(
@@ -3019,6 +3110,9 @@ def action_check(
                     f"[WARN] stack {path!r} is deployed but has no "
                     "corresponding [service.*] registry entry",
                 )
+
+    # ---- stage 16: `ciu migration-check`'s registry, as a stage (S13.7) ----
+    _check_migration(repo_root, report)
 
     ciu_context = profiles_pkg.render_ciu_context(profile, selection)
     identity, identity_unreadable = _workspace_identity(repo_root)

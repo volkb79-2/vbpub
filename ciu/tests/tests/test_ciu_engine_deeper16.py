@@ -59,7 +59,7 @@ def test_pre_secret_hook_treats_malformed_inspect_as_not_found_and_stops_red(
 
     monkeypatch.setattr(engine._health, "wait_healthy", wait_once)
 
-    def reject_unready_hook(_hooks, point, _config, ctx, _stack_toml):
+    def reject_unready_hook(_hooks, point, _config, ctx, _stack_toml, **_kw):
         assert point == "pre_secrets"
         assert ctx.wait_healthy is not None
         assert ctx.wait_healthy("api", timeout_s=0, interval_s=0) is False

@@ -477,26 +477,42 @@ is available to `pre_*` hooks (containers do not exist yet).
 **Structured return** [S9.4]:
 
 ```python
-# test-repo/infra/vault/post_compose_vault.py
+# a production Vault bootstrap hook (SPEC §B.2a)
 def run(config: dict, ctx) -> dict:
-    token = ctx.secret_file("root_token").read_text().strip()
+    result = vault_operator_init()     # the hook's own Vault HTTP call
     return {
         "initialized": {
             "value": True,
             "apply_to_config": True,   # visible to later hooks/templates
-            "persist": "state",        # written to [state] in ciu.toml
+            "persist": "state",        # a BOOLEAN fact → [state] in ciu.toml
         },
         "root_token": {
-            "value": token,
-            "persist": "state",        # S4.16 token source #3
-        },
+            "value": result["root_token"],
+            "persist": "secret",       # → <stack>/.ciu/secrets/root_token, 0440
+        },                             #    and S4.16 token source #3
     }
 ```
 
-`persist: "state"` is the **only** persistence destination; it writes the value
-under `[state]` in `ciu.toml`. `apply_to_config` merges the value into the
-in-memory config so later hooks, configfile templates, and the compose template
-see it.
+There are exactly **two** persistence destinations, and the split matters:
+
+- `persist: "state"` writes under `[state]` in `ciu.toml` — an ordinarily
+  rendered, ordinarily readable plaintext table, so it is for **non-secret
+  facts only**. A secret-shaped key there is refused by `ciu check`'s
+  `state-secrets` stage [S3.4a].
+- `persist: "secret"` [S9.4a] writes into the stack's secret store with the
+  same machinery a directive uses (0440 file, 0700 store dir, atomic write,
+  under the stack's lock). It is for a credential a hook **mints** — one no
+  directive could have expressed in advance. `apply_to_config` alongside it is
+  a contract violation; read the value back with `ctx.secret_file(name)`.
+
+`apply_to_config` merges the value into the in-memory config so later hooks,
+configfile templates, and the compose template see it.
+
+> CIU's own `test-repo/infra/vault/post_compose_vault.py` is deliberately NOT
+> this shape: it runs Vault in DEV mode with a `GEN_LOCAL`-declared root token
+> that is already materialized by the ordinary S4 machinery, so it persists
+> only `initialized` and its token reaches later stacks through
+> `[vault].token_file` (S4.16 source #2).
 
 Hooks MUST NOT mutate `os.environ`; the v1 plain `{KEY: value}` env-update form
 is withdrawn [S9.4]. A listed hook file that does not exist aborts the run [S9.2].

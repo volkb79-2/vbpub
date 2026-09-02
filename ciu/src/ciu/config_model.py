@@ -339,6 +339,73 @@ _OVERRIDE_TEMPLATE_REF_RE: re.Pattern[str] = re.compile(
 )
 
 
+# S3.4a / S2.4.1 — the sensitive KEY-NAME test, applied to the LAST
+# `_`-separated component of a key. `api_key` and `private_key` are in S2.4.1's
+# own list and both end in `key`, so `key` alone covers them; they are kept
+# spelled out below only so the set reads as the spec text does.
+_SECRET_SHAPED_LAST_COMPONENTS: frozenset[str] = frozenset({
+    "password", "token", "secret", "credential", "passphrase", "key",
+})
+
+# The minimum literal length below which a sensitive-named key's value is not
+# treated as a credential ("none", "basic", "off"). Shared with S3.1a's
+# override scan so the two cannot drift apart.
+SECRET_SHAPED_MIN_LENGTH = 8
+
+
+def is_secret_shaped(key: str, value: object) -> bool:
+    """True when *key*/*value* look like a raw credential (S3.4a / S2.4.1).
+
+    The key test is S2.4.1's: the LAST ``_``-separated component of the key is
+    one of ``password``/``token``/``secret``/``api_key``/``credential``/
+    ``passphrase``/``private_key``/``key``. Anchoring on the last component
+    rather than a substring search is what keeps ``token_bucket_size`` and
+    ``keyboard_layout`` out of it while still catching ``vault_root_token``.
+
+    The value test is the SAME one :func:`scan_override_for_secrets` already
+    applies (they call this predicate's helpers, not a second copy): a literal
+    ``str`` of at least :data:`SECRET_SHAPED_MIN_LENGTH` characters that is
+    neither a ``{{ … }}``/``$VAR``/``${…}`` reference nor a ``/``-bearing path
+    (a Vault KV path, a ``/run/secrets/`` mount, a file path — all of them
+    POINTERS to a secret rather than the secret itself).
+
+    Non-string values are never secret-shaped: ``initialized = true`` and
+    ``retry_count = 3`` carry no credential no matter what they are called.
+    """
+    if key.rsplit("_", 1)[-1].lower() not in _SECRET_SHAPED_LAST_COMPONENTS:
+        return False
+    if not isinstance(value, str):
+        return False
+    if len(value) < SECRET_SHAPED_MIN_LENGTH:
+        return False
+    if _OVERRIDE_TEMPLATE_REF_RE.search(value):
+        return False
+    return "/" not in value
+
+
+def find_secret_shaped_keys(table: object, prefix: str = "") -> list[str]:
+    """Every dotted key path under *table* whose key/value is secret-shaped.
+
+    Walks nested tables because ``persist:'state'`` accepts a dotted path
+    (S9.4), so ``[state]`` genuinely can be more than one level deep — a scan
+    that only looked at the top level would be trivially side-steppable by
+    returning ``vault.root_token`` instead of ``root_token``.
+
+    Returns key PATHS only. A caller reporting one of these must never print
+    the value it found (S4.23) — that is the entire point of the finding.
+    """
+    if not isinstance(table, dict):
+        return []
+    found: list[str] = []
+    for key, value in table.items():
+        path = f"{prefix}{key}"
+        if isinstance(value, dict):
+            found.extend(find_secret_shaped_keys(value, prefix=f"{path}."))
+        elif is_secret_shaped(str(key), value):
+            found.append(path)
+    return found
+
+
 def scan_override_for_secrets(template_text: str, source: str) -> None:
     """S3.1a — refuse to render a global override that contains raw credentials.
 
@@ -368,7 +435,7 @@ def scan_override_for_secrets(template_text: str, source: str) -> None:
             continue  # safe: {{ env.VAR }} or $VAR reference
         if "/" in value:
             continue  # Vault path or file path reference, not a raw credential
-        if len(value) < 8:
+        if len(value) < SECRET_SHAPED_MIN_LENGTH:
             continue  # short literals (e.g., "none", "basic") are not secrets
         violations.append(
             f"line {lineno}: key '{key}' has a literal string value — "

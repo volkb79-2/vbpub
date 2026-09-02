@@ -48,7 +48,7 @@ def test_hook_secret_lookup_denies_unknown_name_before_secret_materialization(
     monkeypatch.setattr(engine, "_dood_preflight", lambda *_args: None)
     monkeypatch.setattr(engine, "to_physical_path", lambda path, **_kwargs: path)
 
-    def secret_check(_hooks, point, _config, ctx, _stack_toml):
+    def secret_check(_hooks, point, _config, ctx, _stack_toml, **_kw):
         assert point == "pre_secrets"
         assert ctx.secret_file("shared") == project_store(tmp_path) / "team/token"
         with pytest.raises(KeyError, match="missing"):

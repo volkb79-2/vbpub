@@ -467,7 +467,8 @@ strict consumers refuse unknown members.
 
 ```toml
 [vault]
-stack_path = "infra/vault"    # path to the vault stack (for [state] token lookup)
+stack_path = "infra/vault"    # path to the vault stack (for S4.16 source-#3 lookup)
+# token_file = ".ciu/secrets/demo/vault_root_token"   # S4.16 source #2 (optional)
 
 [vault.paths]
 redis_password = "demo/redis_password"   # KV2 path; referenced in directives
@@ -483,7 +484,8 @@ which is which, and about the narrower boundary underneath all three:
 
 | Declaration | Answers | Read by |
 |---|---|---|
-| `[vault].stack_path` | Where's the vault *stack*, for `[state]` token fallback? | Token resolution (S4.16) |
+| `[vault].stack_path` | Where's the vault *stack*, for the source-#3 token lookup? | Token resolution (S4.16) |
+| `[vault].token_file` | An explicit file holding the token (source #2) | Token resolution (S4.16) |
 | `[vault.paths]` | Which KV2 path does secret name X live at? | `GEN_TO_VAULT`/`ASK_VAULT` directive resolution |
 | `[topology.services.vault]` | What's the network *address* to actually connect to? | S4.16's address resolution |
 
@@ -494,10 +496,20 @@ that — no init, no unseal, no policy/mount/AppRole provisioning. Those are
 entirely a project-authored `post_compose_vault.py`-style hook (using
 `hvac` or the raw Vault HTTP API), invoked through CIU's generic
 `post_compose_*` hook mechanism — the same mechanism any stack's hook uses,
-not a Vault-specific code path. The hook happens to persist Vault's own
-bootstrap credentials (`root_token`/`unseal_key`) through the generic
-`[state]` primitive (S9.4), because it's a general "hook remembers a
-value" channel, not because `[state]` is Vault-aware.
+not a Vault-specific code path. The hook persists Vault's own bootstrap
+credentials (`root_token`/`unseal_key`) through the generic
+`persist: "secret"` primitive (S9.4a) — a general "hook remembers a secret"
+channel, not a Vault-aware one; S4.16's source #3 simply looks for the
+well-known name `root_token` in that stack's store.
+
+> **Changed in 7.9.0 (ciu-P46, BREAKING).** Those credentials used to be
+> persisted through `persist: "state"` into the stack's plaintext `[state]`
+> table, and source #3 read them back from there. That table sits outside
+> every S4 leak-prevention mechanism — no masking, no post-render leak scan,
+> no 0440 mode — so the copy was a real exposure. `[state]` now REFUSES a
+> secret-shaped key outright (S3.4a, enforced by `ciu check`), source #3
+> reads the secret store instead, and there is deliberately no fallback.
+> `[state]` keeps carrying the non-secret `initialized` boolean.
 
 So the boundary is: **CIU natively speaks KV2-over-a-known-address; every
 other fact about what makes that address "actually Vault" — that it needs
@@ -947,10 +959,21 @@ service declaring `env_required` are collected into ONE error naming every
 > `compose_process_env` today; the presence check is exercised the same
 > way until that wiring lands.
 
-### `[state]` — persisted hook state [S3.4, S9.4]
+### `[state]` — persisted hook state [S3.4, S3.4a, S9.4]
 
 Written by hooks via `persist: "state"`. Preserved across re-renders; destroyed
 with `--reset`. Not human-edited.
+
+**Non-secret facts only.** A secret-shaped key here is an ERROR (S3.4a):
+`ciu check`'s `state-secrets` stage refuses any key whose last
+`_`-separated component is `password`/`token`/`secret`/`api_key`/
+`credential`/`passphrase`/`private_key`/`key` paired with a literal string of
+8+ characters that is not a `{{ … }}`/`$VAR` reference or a `/`-bearing path.
+This file is ordinarily rendered and ordinarily readable — it is not masked,
+not leak-scanned, and not mode-0440. Use `persist: "secret"` (S9.4a) for a
+value a hook mints, or an S4.1 secrets-table directive for one a directive can
+express. Booleans, counters, timestamps and short/referenced/path-shaped
+strings are unaffected.
 
 ---
 

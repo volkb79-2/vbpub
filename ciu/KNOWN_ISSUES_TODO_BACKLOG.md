@@ -11,7 +11,36 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-08-31 — **CIU-54 FIXED (ciu-P45).** The 8 `cli.py` call
+Last updated: 2026-09-01 — **F4 and F7 BACKPORTED EARLY (ciu-P46), ahead of
+the v8 cutover.** `docs/CIU-V8-TESTING-GATE-PROPOSAL.md`'s secrets-audit table
+lines 880 (F4, "Vault bootstrap out of `[state]`") and 883 (F7,
+"Vault-presence static rule") are part of the v8 redesign of secrets and
+identity (§10 / `SPEC-V8.md` §S10, §S4.1), whose full schema cutover
+(V8-1..V8-20) is a large separate program that has not started. Both pieces
+are self-contained, already-decided in the design docs, and depend on no v8
+schema or registry work, so they were landed on today's v7 model now rather
+than held: F4's exposure (a Vault root token written in plaintext into the
+stack's ordinarily-rendered, ordinarily-readable `[state]` table, outside
+every S4 leak-prevention mechanism) is live in every consumer today, and F7's
+gap turns a static config defect into a mid-`ciu up` runtime failure.
+Landed as: `persist: "secret"` (S9.4a), S4.16 source #3 migrated onto the
+secret store with NO fallback, `ciu check`'s new `vault-presence` (S13.4d),
+`state-secrets` (S3.4a) and `migration` stages, and the `ciu migration-check`
+verb + rule registry (S13.7). The registry is deliberately extensible: the
+follow-up overlay-file split/rename (ciu-P47) adds one detector body and
+touches no plumbing.
+
+**CIU-38 is explicitly NOT affected and stays OPEN/deferred.** A mid-design
+framing suggested `persist: "secret"` would unblock per-service Vault AppRole
+provisioning; that was wrong and was corrected before ciu-P46 was dispatched.
+AppRole credentials route through **Vault itself** — a hook mints them into
+Vault with its own `hvac`/HTTP calls and the consumer reads them back with an
+ordinary `ASK_VAULT` directive — which works today with zero new CIU
+mechanism (see `docs/V8-REALIZATION-GRAPH.md`'s traced example).
+`persist: "secret"` exists solely for values that no directive **could**
+express, Vault's own root token/unseal key being the only current instance.
+
+Previously, 2026-08-31 — **CIU-54 FIXED (ciu-P45).** The 8 `cli.py` call
 sites CIU-53's own follow-up named (`render`/`up`/`down`/`health --host`,
 `up --layout`, `layouts`, `host-secrets`, `ssh`) resolved `repo_root` via a
 bare `REPO_ROOT`-or-cwd fallback with no `--define-root` consideration at
