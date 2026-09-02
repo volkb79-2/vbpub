@@ -3617,7 +3617,7 @@ class TestLinkedWorktreeHostLaneWarning:
         schema_version = 1
         [lanes.smoke]
         kind = "command"
-        environment = "host"
+        environment = "bare-host"
         argv = ["bash", "-c", "true"]
         clean_tree = false
     """
@@ -3909,7 +3909,7 @@ class TestAssayToolchainFitness:
 
     def test_host_environment_lane_skips(self, tmp_path, monkeypatch, capsys):
         cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
-                                     'environment = "host"', 1)
+                                     'environment = "bare-host"', 1)
         cfg = cfg.replace('[environments.tester-unified]\n    image = "tester-unified:local"\n',
                           "")
         self._project(tmp_path, monkeypatch, cfg)
@@ -3917,7 +3917,7 @@ class TestAssayToolchainFitness:
         code, out = self._doctor(capsys)
         assert code == 0, out
         assert "[SKIP] lane 'ui-unit' toolchain" in out
-        assert "built-in 'host'" in out
+        assert "built-in 'bare-host'" in out
 
     def test_docker_absent_skips_the_probe(self, tmp_path, monkeypatch, capsys):
         self._project(tmp_path, monkeypatch)
@@ -4413,7 +4413,7 @@ class TestComparisonBasePassthrough:
             schema_version = 1
             [lanes.gate]
             kind = "command"
-            environment = "host"
+            environment = "bare-host"
             argv = ["bash", "-c",
                     "echo ./run-gate.py --base {base} a && echo ./run-gate.py --base {base} b"]
             clean_tree = false
@@ -4454,10 +4454,10 @@ class TestComparisonBasePassthrough:
 
     def test_host_assay_lane_probes_locally_without_docker(
             self, tmp_path, monkeypatch, capsys):
-        """A `host` environment IS this machine: the same probe script, no
-        container to enter."""
+        """A `bare-host` environment IS this machine: the same probe script,
+        no container to enter."""
         cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
-                                     'environment = "host"', 1)
+                                     'environment = "bare-host"', 1)
         self._project(tmp_path, monkeypatch, cfg)
         log = fake_docker(tmp_path, monkeypatch)   # records, never executes
         self._judge(monkeypatch, "request")
@@ -4514,13 +4514,14 @@ class TestComparisonBasePassthrough:
     def test_host_assay_lane_actually_builds_the_assay_inner(
             self, tmp_path, monkeypatch, capfd):
         """RG-28's own oracle (S3). The sibling test above proves the base
-        reached a host assay lane; this one proves the lane BODY is the real
-        assay inner and not a stub — pin/cd/verdict all present, executed
-        with the effective project dir as cwd. Gutting run_host_lane's assay
-        branch back to `lane["argv"]` reddens this with KeyError; replacing
-        `build_assay_inner(...)` with `"true"` reddens every assertion."""
+        reached a bare-host assay lane; this one proves the lane BODY is the
+        real assay inner and not a stub — pin/cd/verdict all present, executed
+        with the effective project dir as cwd. Gutting run_bare_host_lane's
+        assay branch back to `lane["argv"]` reddens this with KeyError;
+        replacing `build_assay_inner(...)` with `"true"` reddens every
+        assertion."""
         cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
-                                     'environment = "host"', 1)
+                                     'environment = "bare-host"', 1)
         _repo, proj = self._project(tmp_path, monkeypatch, cfg)
         fake_docker(tmp_path, monkeypatch)
         # A judge that ECHOES its own argv, so the executed inner is visible.
@@ -5989,7 +5990,7 @@ class TestResumeAndProgressAlways:
         """RG-28's echo oracle: the judge prints the argv it was EXECUTED
         with, so this is the real handover, not the builder's string."""
         cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
-                                     'environment = "host"', 1)
+                                     'environment = "bare-host"', 1)
         TestComparisonBasePassthrough._project(self, tmp_path, monkeypatch, cfg)
         fake_docker(tmp_path, monkeypatch)
         install_fake_assay(monkeypatch, """\
