@@ -1558,3 +1558,39 @@ seconds of launch. Load stayed 5.1–7.4.
   exactly one `!` commit on the branch.
 - Ids: **A-438** allocated (next free **A-439**); no new B-id. `main`
   re-checked: backlog high-water **B068**, decisions high-water **A-407**.
+
+### 34. `docs(assay): Wave D generation 10 checkpoint -- B051 + B052 gate-green, BRIEF-10`
+
+- Records only. LOG entries 32-34, the REPORT's generation-10 section, and
+  `reports/assay-WAVE-D-v10-BRIEF-10.md` (new).
+- **GATE GREEN on `83c31f18`** (B052), read in a SEPARATE step from
+  `gate-gen10a.log`: `GATE_EXIT=0` (exactly one), one
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, **zero** `FAILED|DIRTY_TREE|Traceback`,
+  wheel **`assay-4.1.1.dev36+g83c31f18-py3-none-any.whl`** — the judged commit
+  — and all twelve phases: `wheel-installed`, `attestation-hardened`,
+  `verdict-v5-accepted`, `lane-schema-v2-successors-verified`,
+  `verdict-v6-v7-v8-v9-hard-cut-verified`,
+  **`verdict-v10-successors-verified`**,
+  `judge-provenance-bound-to-the-installed-wheel`, `self-hosted-lane-passed`,
+  `topos-qualified`, `cmru-b006a-qualified`,
+  `independent-self-hosting-passed`, `pyflakes-clean`. The container was
+  capped to 3 CPUs on the first poll iteration; no other gate container or
+  `tester-unified-gate.sh` process was running when it launched.
+- Full local suite, once, serial, at the checkpoint: **4091 passed, 20
+  skipped**, 407 s (generation 9's run was 4081/20 — the delta is this
+  generation's ten new tests).
+- **No gate on THIS commit, deliberately** (records only; the gate-verified
+  commit stays **`83c31f18`**), on the precedent generations 6-9 set for their
+  docs-only checkpoints.
+- **Checkpoint taken at the boundary the E-008 clause ranks HIGHEST: a green
+  registered gate**, and on the controller's mid-turn instruction not to start
+  another item. No half-done item is left behind: B051 and B052 are complete,
+  and B053 was never started.
+- **Four of the eight post-cut items are done; four remain** in DA-R27's
+  order: B053 `detail` producers → B004 `PROVENANCE_UNVERIFIED` producer →
+  B007 multi-target canary loop → CONSUMERS "Migration notes (v9 → v10)".
+  **Nothing is blocked**, and generation 10 raises no decision asks.
+- Ids: **A-437** and **A-438** allocated (next free **A-439**); **B070**
+  allocated (next free **B071**). `main` re-checked immediately before each
+  allocation: backlog high-water **B068**, decisions high-water **A-407**.
+  Main wins on ids at merge.

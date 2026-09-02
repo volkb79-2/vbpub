@@ -2620,3 +2620,49 @@ not a fresh timeout.
 * **No change to `_read_prepared_source_text`.** It already reads the right
   way; the new check follows its precedent rather than sharing its code, which
   would have coupled the R3 source read to the R2 ingest path for no gain.
+
+### Generation 10 — gate, and the state handed on
+
+**Gate log** `<scratchpad>/gate-gen10a.log`, judged commit **`83c31f18`**,
+read in a separate step:
+
+```
+GATE_EXIT=0                             (count: 1)
+ASSAY_REGISTERED_GATE_COMPLETE=1        (count: 1)
+FAILED|DIRTY_TREE|Traceback             (count: 0)
+assay-4.1.1.dev36+g83c31f18-py3-none-any.whl
+ASSAY_GATE_PHASE=wheel-installed
+ASSAY_GATE_PHASE=attestation-hardened
+ASSAY_GATE_PHASE=verdict-v5-accepted
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-v9-hard-cut-verified
+ASSAY_GATE_PHASE=verdict-v10-successors-verified
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_GATE_PHASE=pyflakes-clean
+```
+
+The wheel name carries `83c31f18`, so the green is this commit's and not an
+earlier one's. The full local suite ran once at the checkpoint, serial and
+niced: **4091 passed, 20 skipped**, 407 s.
+
+**Decision asks: none.** DA-R25..DA-R27 settled everything generation 9 left
+open, and neither item this generation landed produced a product call the
+rulings did not cover. The single sub-decision DA-D5 did not spell out — a
+measured path the commit does not track — is disposed of in A-438 (4) and
+argued in B052's section above, deliberately as a recorded reading rather than
+as an ask, because it changes no terminal, no reason code and no tier.
+
+**What is left, and what a reviewer should hold the next generation to.** Four
+items in DA-R27's order: B053's `detail` producers, B004's
+`PROVENANCE_UNVERIFIED` producer (whose landing MUST remove the pair from
+`tests/test_verdict_conformance.py:221-227`'s `EXCLUDED_ENTIRELY` — the set
+carries the written obligation at `:206-216` and the audit is meant to turn
+red the moment a producer exists and no fixture does), B007's multi-target
+canary loop (which is also the ONE authorised edit to W6: the hand-authored
+`multi-target-r3-v10-template.json` is replaced by real output and the
+MANIFEST corrected), and CONSUMERS' "Migration notes (v9 → v10)" LAST — now
+forward-referenced from three places, all of which dangle until it exists.
