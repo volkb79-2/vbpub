@@ -578,3 +578,17 @@ precedent for shape and discipline.
     the R4 claim's set membership before the cut lands), gate, then B050
     → B051 → B052 → B053 `detail` → B004 → B007 → migration notes. Next
     free ids **A-434** / **B065**.
+
+- **2026-09-02 (OPERATOR RULING — DA-R21: F015/R4's implementation leaves
+  this wave; 5.0.0 is not urgent)** — Operator: "R4/assay 5.0 is not needed
+  fast, better do everything else first." Consequences: phase 3 is struck
+  from Wave D — the R4 wire shape still ships in the v10 cut (a claim kind
+  without a producer, allowed by A-138), F015's mechanism moves to the
+  post-v10 plan's E-4 (`WAVE-PLAN-2026-09-02-after-v10.md` §4a); M7 stays
+  PLANNED in the roadmap, not `done`; the wave ends at phase 2 + R-2 +
+  merge + release 5.0.0, run at low priority behind the run-gate wave
+  (E-1, dispatched now on `feature/run-gate-wave-resumable`; host lanes
+  only, so the one-container rule is unaffected). Generation 8's work is
+  unchanged (the cut + B050..B007 + migration notes); its successor and R-2
+  get the ruling. Backlog ids on main moved to B068 (dstdns-filed); the
+  branch allocates from B069.

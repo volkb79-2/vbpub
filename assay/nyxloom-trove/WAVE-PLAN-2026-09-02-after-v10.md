@@ -191,6 +191,26 @@ the wild with no producer for a while.
 needs more than one round, move F015's implementation to E-4 and ship 5.0.0;
 otherwise keep phase 3 in Wave D as planned.**
 
+## 4a. Operator rulings (2026-09-02, later the same day)
+
+"Your design choices are all accepted. R4/assay 5.0 is not needed fast,
+better do everything else first. Can you kick off any run-gate things in
+parallel already?" Consequences:
+
+- **D1–D6 stand as recommended.** D7 is resolved: F015/R4's implementation
+  leaves Wave D (its wire shape still ships in the v10 cut, a claim kind with
+  no producer yet, which A-138's hard-cut rule allows); Wave D ends at phase
+  2 + R-2 + release, at low priority behind the run-gate work.
+- **E-1 dispatched immediately** as its own wave:
+  `run-gate-project/nyxloom-trove/WAVE-PROMPT-2026-09-02-resumable-gate.md`
+  (RG-35, RG-36 coarse, RG-32, RG-34 → run-gate 23.4.0). It shares nothing
+  with assay but the host.
+- **Order after E-1:** E-2 (assay 5.1.0: B064/B065/B066 — additive, can land
+  after 5.0.0 or, if 5.0.0 is still not merged, as 4.2.0 on main with the
+  wave branch rebased over it; the controller decides at E-1's close by
+  where Wave D stands) → E-3 (run-gate 23.5.0: RG-36 exact, RG-38) → E-4
+  (B067, F015/R4, canary resume).
+
 ## 5. What this plan does NOT decide
 
 The Wave D rulings (DA-D1..D16, DA-R1..R20) stand. Nothing in G1 changes the
