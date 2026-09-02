@@ -1213,22 +1213,4 @@ def rule_table() -> tuple[RuleSpec, ...]:
                 "project, so anything placed after it would starve; being last "
                 "is what makes every rarer trigger above it reachable."),
         ),
-
-        # === cadence outside the mutex ======================================
-        RuleSpec(
-            name="gate-verify", contract_items=(16,), concern="attention",
-            scope=RuleScope.PLAN, channel=Channel.GATE_VERIFY,
-            rule=rules_attention.gate_verify,
-            emits=frozenset({"VerifyGate"}),
-            claims=frozenset(),
-            rationale=(
-                "Claims NOTHING, and that is the design (contract item 16): a "
-                "gate verify runs a subprocess against disposable canary "
-                "commits -- no LLM frontier route, no carve budget, no agent "
-                "turn -- so it is not a carve sibling and must never contend "
-                "for the carve slot, or a busy carve queue would silently "
-                "suppress the probe that notices a gate has stopped "
-                "discriminating. Last only because its action is last in the "
-                "plan; nothing above it can affect it."),
-        ),
     )

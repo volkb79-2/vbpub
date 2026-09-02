@@ -1,32 +1,29 @@
-"""Gate effects: the verify cadence and post-merge validation (CR-05a).
+"""Gate effects: post-merge validation (CR-05a).
 
-WHY THESE TWO TOGETHER
-----------------------
-They are the daemon's only two BACKGROUND-work families, and they share one
-execution model that the amendment's section 3.3 names directly: the
-background-work registries belong to the effector that owns the work, not to
-the shell. Before this package ``_gate_verify_running``, ``_gate_verify_
-results``, ``_post_merge_gate_running`` and ``_post_merge_gate_results`` were
-four attributes on ``Daemon``, which is why every test of either family had to
-construct a daemon and reach into its private dicts.
+nyxloom-P98 (2026-09-02) retired this module's other background-work family,
+the GA4 gate-verify cadence (``GateEffector.verify_gate``/
+``_run_verify_probe``/``drain_verify``, the ``verify_running``/
+``verify_results`` state, and the ``reconcile.VerifyGate`` handler-spec
+registration) -- superseded by Assay's own R2/R3 mechanisms once a project
+declares assay/run-gate lanes (see ``nyxloom-trove/decisions.md``). Post-merge
+validation is now this module's only background-work family.
 
-THE EXECUTION MODEL (unchanged, and the reason the split is safe)
-----------------------------------------------------------------
-Both a gate verify (several real gate runs against disposable canary commits)
-and a post-merge gate (a full suite against the merged tree) take minutes. The
+THE EXECUTION MODEL
+--------------------
+A post-merge gate (a full suite against the merged tree) takes minutes. The
 daemon's tick loop iterates registered projects SEQUENTIALLY on one thread, so
-running either inline stalls every other project. Both therefore run as:
+running it inline stalls every other project. It therefore runs as:
 
 1. an IDEMPOTENT DISPATCHER on the reconcile thread. A live handle under this
    work's key means the work is already in flight, so it starts NO second
    copy -- which is exactly why the planner may harmlessly replan the same
-   trigger every pass until the drain moves the task or resets the cadence;
+   trigger every pass until the drain moves the task;
 2. a probe on a background thread that does ONLY external side effects --
    git, filesystem, the gate subprocess -- and NEVER appends an event, calls
    a transition, or touches ``states``. It ends by putting a small result
    dict on a queue;
 3. a DRAIN on the reconcile thread, called once per pass, which is the sole
-   place either family's events are ever appended.
+   place this family's events are ever appended.
 
 Rule 2 is not a style preference. Every mutation from a non-main thread would
 race the reconcile loop, and the projection the store writes is derived from
@@ -34,18 +31,15 @@ committed state inside a transaction (CR-04a) -- a second writer would not
 corrupt it, it would interleave with it, which is harder to see.
 
 On a daemon restart mid-work the in-memory handle is simply lost. VALIDATING
-re-emits ``RunPostMergeGate`` and the cadence re-emits ``VerifyGate`` on the
-next pass, so the work re-runs: idempotent, with no durable half-state to
-reconcile.
+re-emits ``RunPostMergeGate`` on the next pass, so the work re-runs:
+idempotent, with no durable half-state to reconcile.
 
-WHAT THE KEYS ARE, AND WHY THEY DIFFER
---------------------------------------
-Gate verify is keyed by PROJECT: it is a project-wide cadence probe, and two
-concurrent verifies of one project would race for the same canary worktrees.
+WHAT THE KEY IS
+---------------
 Post-merge is keyed by TASK: more than one task can be VALIDATING for the
-same project at once, and each gates its own merge commit. Those keys are the
-handler specs' declared idempotency keys, so the registry states the identity
-each family refuses to duplicate rather than leaving it implicit in a dict.
+same project at once, and each gates its own merge commit. That key is the
+handler spec's declared idempotency key, so the registry states the identity
+this family refuses to duplicate rather than leaving it implicit in a dict.
 """
 
 from __future__ import annotations
@@ -55,7 +49,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from . import effects, gate_canary, gate_runner, reconcile
+from . import effects, gate_runner, reconcile
 from .config import GateDef, ProjectConfig
 from .log import get_logger
 from .types import (
@@ -118,115 +112,14 @@ def gate_output_tail(stdout: object, stderr: object, limit: int = 4096) -> str:
 
 
 class GateEffector:
-    """Owns both gate families' background work and its bookkeeping."""
+    """Owns post-merge validation's background work and its bookkeeping."""
 
     def __init__(self, ports: effects.EffectPorts) -> None:
         self._ports = ports
-        #: The verify family's declared idempotency key (one per project) ->
-        #: its live (or last) handle. ``is_running`` on this is what makes the
-        #: dispatcher idempotent, and the key comes from the SPEC rather than
-        #: from a field this effector chose, so the identity the registry
-        #: declares and the one enforced here cannot drift apart.
-        self.verify_running: dict[str, Any] = {}
-        self.verify_results: queue.Queue = queue.Queue()
         #: The post-merge family's declared idempotency key (one per TASK,
         #: since several tasks can be VALIDATING at once) -> its handle.
         self.post_merge_running: dict[str, Any] = {}
         self.post_merge_results: queue.Queue = queue.Queue()
-
-    # -- gate-verify cadence -------------------------------------------
-
-    def verify_gate(self, ctx: effects.EffectContext,
-                    action: reconcile.VerifyGate) -> list[Event]:
-        """Start a gate-verify probe unless one is already running.
-
-        Appends no event: the probe takes minutes, and the only main-thread
-        seam that may record anything is :meth:`drain_verify`.
-        """
-        key = ctx.idempotency_key
-        if self._ports.background.is_running(self.verify_running.get(key)):
-            return []
-        self.verify_running[key] = self._ports.background.spawn(
-            f"gate-verify-{ctx.project}", self._run_verify_probe,
-            (ctx.project, ctx.cfg, key))
-        return []
-
-    def _run_verify_probe(self, project: str, cfg: ProjectConfig,
-                          key: str) -> None:
-        """The probe itself, on the background thread.
-
-        Confirms the project's verification gate PASSES known-good HEAD, then
-        tries a known-bad canary against it, deriving the same verdict
-        ``cli.cmd_gate_verify`` does: BROKEN if good HEAD fails; else
-        TRUSTWORTHY if a canary was killed, LAUNDERS if every canary
-        survived, INCONCLUSIVE if no canary rendered a real verdict.
-
-        Guarded end to end. A thread that died would look -- from the
-        daemon's side -- exactly like a verify that simply never finishes,
-        and the cadence would never reset.
-        """
-        verdict = "INCONCLUSIVE"
-        gate_id: str | None = None
-        try:
-            gate = gate_runner.select_verification_gate(cfg)
-            if gate is None:
-                verdict = "NO_GATE"
-            else:
-                gate_id = gate.gate_id
-                commit = self._ports.git.head_commit(str(cfg.root))
-                if not commit:
-                    verdict = "INCONCLUSIVE"
-                else:
-                    good = gate_runner.run_gate_at_commit(
-                        cfg, gate, commit, phase="verify-good")
-                    if good.exit_code != 0:
-                        verdict = "BROKEN"
-                    else:
-                        canary_result = gate_canary.verify_gate_rejects_canary(
-                            cfg, gate, commit)
-                        if canary_result.killed:
-                            verdict = "TRUSTWORTHY"
-                        elif canary_result.inconclusive:
-                            verdict = "INCONCLUSIVE"
-                        else:
-                            verdict = "LAUNDERS"
-        except Exception:  # census: advisory-degradation (CR-02b)
-            # A probe can only ever REDUCE trust in a gate. It cannot mark one
-            # trustworthy, so degrading an unexpected failure to INCONCLUSIVE
-            # withholds a verdict rather than granting one.
-            verdict = "INCONCLUSIVE"
-        # `key` travels with the result so the drain clears exactly the entry
-        # the dispatcher created, instead of deriving the same identity a
-        # second time and risking the two derivations diverging.
-        self.verify_results.put(
-            {"project": project, "verdict": verdict, "gate_id": gate_id,
-             "key": key})
-
-    def drain_verify(self, ctx: effects.EffectContext) -> list[Event]:
-        """Turn finished verify probes into events. Main thread, once a pass.
-
-        The queue is shared across every registered project (one effector,
-        one queue), so this drains the WHOLE queue and re-queues anything
-        belonging to another project -- harmless, since the tick loop visits
-        every project each pass and that project's own call picks it back up.
-        """
-        events: list[Event] = []
-        for result in self._take(self.verify_results, ctx.project):
-            verdict = result.get("verdict")
-            gate_id = result.get("gate_id")
-            events.append(ctx.append(
-                EventType.GATE_VERIFY_RECORDED,
-                {"project": ctx.project, "verdict": verdict, "gate_id": gate_id,
-                 "at": iso(self._ports.clock.now())},
-                task_id=None))
-            self.verify_running.pop(result.get("key"), None)
-            if verdict in ("LAUNDERS", "BROKEN"):
-                reason = f"gate-verify-{verdict.lower()}"
-                if not effects.needs_operator_recently_emitted(ctx.events(), reason):
-                    events.append(ctx.append(
-                        EventType.NEEDS_OPERATOR,
-                        {"reason": reason, "gate_id": gate_id}, task_id=None))
-        return events
 
     # -- post-merge validation -----------------------------------------
 
@@ -447,18 +340,6 @@ class GateEffector:
 
 def specs(effector: GateEffector) -> tuple[effects.HandlerSpec, ...]:
     return (
-        effects.HandlerSpec(
-            action_type=reconcile.VerifyGate,
-            kind="verify-gate",
-            handler=effector.verify_gate,
-            # The dispatcher emits nothing; the family's events are the
-            # drain's, which is why `emits` and `drain` belong to one spec.
-            emits=frozenset({EventType.GATE_VERIFY_RECORDED,
-                             EventType.NEEDS_OPERATOR}),
-            idempotency_key=lambda a: f"verify-gate:{a.project}",
-            starts_background_work=True,
-            drain=effector.drain_verify,
-        ),
         effects.HandlerSpec(
             action_type=reconcile.RunPostMergeGate,
             kind="post-merge-gate",

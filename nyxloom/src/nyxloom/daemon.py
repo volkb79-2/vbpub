@@ -71,9 +71,9 @@ INTERFACE CONTRACT (frozen):
   (`_build_registry`), and an action with no owner fails when the Daemon is
   CONSTRUCTED rather than on the first pass that plans it. The lifecycle
   families (CreateTask, Transition, Interrupt/Mark*/StallCheck, OpenWave,
-  SpecAttention, ProviderPause) live in `effects_lifecycle.py`; the two gate
-  families (VerifyGate, RunPostMergeGate) and both of their background-work
-  registries live in `effects_gates.py`. The rest are still branches of
+  SpecAttention, ProviderPause) live in `effects_lifecycle.py`; the gate
+  family (RunPostMergeGate) and its background-work registry live in
+  `effects_gates.py`. The rest are still branches of
   `_execute_legacy` here, registered as legacy handlers owned by CR-05b and
   counted by `effects.LEGACY_HANDLER_BUDGET`. The behaviour described below
   is unchanged either way, and `tests/test_effect_differential.py` holds the
@@ -377,7 +377,7 @@ from . import (
     effects_exit,
     effects_dispatch, effects_gates,
     effects_lifecycle, effects_merge, effects_review, frontmatter,
-    gate_canary, gate_runner, intake_chat, leases,
+    gate_runner, intake_chat, leases,
     lint, merge_digest, notify, paths, reconcile, render, results, snapshot, stages,
     storage, watchdog, wrapper,
 )
@@ -1560,7 +1560,6 @@ class Daemon:
             gate_diagnosis_attempts=gate_diagnosis_attempts,
             days_since_test_health_carve=self._days_since_test_health_carve(
                 project, events=events),
-            days_since_gate_verify=self._days_since_gate_verify(project, events=events),
             changed_lines_since_gap_audit=self._changed_lines_since_gap_audit(
                 project, cfg, builder=b, events=events),
             carver_session=carver_session_snap,
@@ -2400,38 +2399,6 @@ class Daemon:
                 status=snapshot.InputStatus.MALFORMED,
                 detail=f"{type(exc).__name__}: {exc}"))
             return None
-
-    def _days_since_gate_verify(self, project: str,
-                                 *, events: Sequence[Event] | None = None,
-                                 builder: snapshot.SnapshotBuilder | None = None,
-                                 ) -> float | None:
-        """GA4 2026-07-25 (module contract item 16): age in days of the most
-        recent GATE_VERIFY_RECORDED, feeding
-        ReconcileInput.days_since_gate_verify so the cadence is durable across
-        daemon restarts -- MIRRORS _days_since_test_health_carve above
-        exactly, including its fail-safe direction and the "scan the whole
-        log, not a recent window" rationale (a window that scrolled past the
-        last verify would report None = never = FIRE on every pass of a busy
-        project). Unlike the test-health marker (a structured key on a
-        TASK_CREATED payload), GATE_VERIFY_RECORDED is its own dedicated
-        project-wide event (task_id=None) -- so this scans for the event TYPE
-        itself, using the event's own timestamp.
-
-        CR-02a: same treatment as _days_since_test_health_carve above -- an
-        unreadable log fails the pass closed, and a marker timestamp that will
-        not subtract is a typed MALFORMED authoritative fault rather than a
-        silent "just verified" that would disable the cadence forever.
-        """
-        b = builder if builder is not None else snapshot.SnapshotBuilder()
-        latest = None
-        for ev in self._require_events(project, events):
-            if ev.type is EventType.GATE_VERIFY_RECORDED:
-                if latest is None or ev.timestamp > latest:
-                    latest = ev.timestamp
-        if latest is None:
-            return None
-        age = self._marker_age_days("gate_verify_marker", latest, b)
-        return 0.0 if age is None else age
 
     def _changed_lines_since_gap_audit(self, project: str, cfg: ProjectConfig,
                                         *, events: Sequence[Event] | None = None,
