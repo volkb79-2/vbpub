@@ -29,6 +29,7 @@ What this module proves, in the order the ruling states it:
 from __future__ import annotations
 
 import contextlib
+import inspect
 import io
 import json
 from pathlib import Path
@@ -38,7 +39,7 @@ import pytest
 from conftest import FakeAdapter, GitRepo, make_lane, make_r1_judge
 
 from assay import runner
-from assay.cli import main
+from assay.cli import LABEL_GRACE_SECONDS, _cmd_run, build_parser, main
 from assay.errors import AssayError, Outcome, ReasonCode
 
 ADAPTER = FakeAdapter()
@@ -338,6 +339,134 @@ def test_the_refusal_names_the_deadline_on_the_diagnostics_stream(
         if line.startswith("assay: BUDGET_EXCEEDED/LANE_TIMEOUT: ")
     ]
     assert len(lines) == 1, err
+
+
+# --- 2b (A-425/DA-R13): the recovered commit label is itself bounded --------
+
+
+def _run_to_reserved_path_with_grace(
+    git_repo: GitRepo,
+    lane_text: str,
+    destination: Path,
+    *,
+    label_grace_seconds: float,
+) -> tuple[int, str]:
+    """``_run_to_reserved_path``, with A-425's grace supplied as a PARAMETER.
+
+    ``main()`` has no such parameter and never will -- the grace is policy,
+    not an operator control -- so this helper enters at ``_cmd_run``, which
+    takes it, and then reproduces ``main()``'s own two-line boundary
+    (`cli.py:307-312`: announce through the one emitter, return the error's
+    exit code) so that what the test observes is exactly what a real
+    ``assay run`` observes. Nothing is stubbed: the lane, the repository,
+    the budget and the ``git rev-parse`` are all real (A-334).
+    """
+    path = git_repo.write("assay.toml", lane_text)
+    git_repo.commit_all("add assay.toml")
+    out, err = io.StringIO(), io.StringIO()
+    args = build_parser().parse_args(
+        ["run", "package", "--file", str(path), "--verdict-json", str(destination)]
+    )
+    try:
+        code = _cmd_run(
+            args, [], out, err, label_grace_seconds=label_grace_seconds
+        )
+    except AssayError as exc:
+        runner.announce_refusal(exc, diagnostics=err)
+        code = exc.exit_code
+    return code, err.getvalue()
+
+
+def test_the_default_grace_is_the_documented_policy_constant():
+    """DA-R13 named the constant and the reason; both are load-bearing.
+
+    A grace that any caller could set from the command line would be an
+    operator control over how long assay may hang after a budget expired,
+    which is the opposite of what the bound is for; a grace with no stated
+    reason would be DESIGN-GUIDE §5's invented default. So: one module-level
+    constant, defaulted into both functions, documented where it is defined.
+    """
+    from assay import cli
+
+    assert cli.LABEL_GRACE_SECONDS == 2.0
+    for function in (cli._cmd_run, cli._run_reserved):
+        parameter = inspect.signature(function).parameters["label_grace_seconds"]
+        assert parameter.default == cli.LABEL_GRACE_SECONDS, function
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY, function
+
+
+@pytest.mark.parametrize("rigor", [["R0"], ["R0", "R1"]])
+def test_a_grace_that_also_expires_writes_no_verdict_and_says_which_read_failed(
+    git_repo: GitRepo, tmp_path: Path, rigor: list[str]
+):
+    """A-425/DA-R13's second path, on BOTH dispatch paths.
+
+    The budget is already spent before ``run_lane`` (the ``0.001s`` probe),
+    so the handler runs; the grace is ``0.0``, so the label read it makes is
+    refused by ``LaneDeadline.remaining`` before ``git rev-parse`` is even
+    started. Three things must then hold, and each is a separate ruling:
+
+    * **no verdict is written** -- the label is the one field
+      :func:`runner.refuse_lane` cannot be given, and a fabricated commit is
+      the one thing this project must never emit;
+    * **the one line says the LABEL could not be read**, not merely that the
+      lane timed out: the operator's next move is Git, not ``budget``;
+    * **the exit code is unchanged** from the pre-A-425 build -- the outcome
+      and reason code are still the ORIGINAL timeout's, because the lane
+      really did run out of time and the failed label read does not rename
+      what happened to the lane.
+
+    ``0.0`` arrives through the function parameter, never a monkeypatch: the
+    thing under test is the bound, and a stubbed clock would test the stub.
+    """
+    base_rev = _seed(git_repo)
+    destination = tmp_path / "verdict.json"
+
+    code, err = _run_to_reserved_path_with_grace(
+        git_repo,
+        _lane_file(
+            rigor=rigor,
+            base=base_rev if "R1" in rigor else None,
+            budget=EXHAUSTED_BUDGET,
+        ),
+        destination,
+        label_grace_seconds=0.0,
+    )
+
+    assert code == Outcome.BUDGET_EXCEEDED.exit_code, err
+    assert not destination.exists(), (
+        "a verdict was written without a commit label that could be read"
+    )
+    assert err.count("assay: BUDGET_EXCEEDED/LANE_TIMEOUT: ") == 1, err
+    assert "commit label" in err, err
+    assert "0.0s grace" in err, err
+
+
+def test_the_grace_bounds_the_label_read_rather_than_leaving_it_unbounded(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """The control for the test above, and the whole point of A-425.
+
+    With the DEFAULT grace the identical lane writes its verdict carrying the
+    REAL ``HEAD`` -- so the ``0.0`` result above is the bound doing its job,
+    not the recovery path being broken. Both halves are the same code path
+    with one number changed, which is what makes the bound observable at all.
+    """
+    _seed(git_repo)
+    destination = tmp_path / "verdict.json"
+
+    code, err = _run_to_reserved_path_with_grace(
+        git_repo,
+        _lane_file(rigor=["R0"], budget=EXHAUSTED_BUDGET),
+        destination,
+        label_grace_seconds=LABEL_GRACE_SECONDS,
+    )
+
+    assert code == Outcome.BUDGET_EXCEEDED.exit_code, err
+    assert destination.exists(), err
+    document = json.loads(destination.read_text(encoding="utf-8"))
+    assert document["commit"] == git_repo.head(), document
+    assert "commit label" not in err, err
 
 
 # --- 3: the timeout is never masked as a cleanup failure --------------------

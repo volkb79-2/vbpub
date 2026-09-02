@@ -101,7 +101,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   4 with the reserved `--verdict-json` never created. One `LANE_TIMEOUT`-
   scoped handler in the CLI now covers both paths and every earlier seam;
   anything that is not a timeout still propagates rather than being
-  laundered into a verdict. (B028, A-420)
+  laundered into a verdict. (B028, A-420) The commit label that verdict is
+  written under is re-read from Git on that path, and the re-read is itself
+  **bounded by a two-second grace** (`assay.cli.LABEL_GRACE_SECONDS`) rather
+  than running unbounded after the lane's budget is gone — a repository on a
+  stalled mount would otherwise hang the refusal path itself. If the grace
+  also expires no verdict is written, and the one line says that the commit
+  label could not be read within it: the exit code is unchanged, and what
+  did not answer is Git, not the lane's `budget`. (B028, A-425)
 - A snapshot preparation or cleanup `OSError` now says what failed instead
   of refusing `ERROR`/`GIT_FAILED` with no sentence, and the
   `environment_command` preflight's refusal goes through the one emitter

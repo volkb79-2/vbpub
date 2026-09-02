@@ -96,6 +96,32 @@ from .verify import build_verify_parser, cmd_verify
 __all__ = ["build_parser", "main"]
 
 
+#: (B028/DA-R13, A-425) The bound on the ONE Git call assay makes *after* a
+#: lane's own budget has already expired: the commit label the
+#: ``LANE_TIMEOUT`` refusal verdict is written under
+#: (:func:`_run_reserved`).
+#:
+#: **Why a grace at all, rather than the spent deadline or no deadline.** The
+#: spent deadline cannot be reused -- it has, by construction, zero left, so
+#: passing it would mean no verdict is ever written for the very case
+#: ``--verdict-json`` was reserved for. No deadline at all is what A-420
+#: shipped, and DA-R13 ruled it out: an unbounded ``git rev-parse`` after the
+#: budget is gone contradicts the budget's single purpose -- assay never
+#: hangs -- because a repository on a stalled network mount would hang the
+#: refusal itself, the one code path whose whole job is to terminate.
+#:
+#: **Why two seconds.** This is a documented policy constant, not a
+#: measurement (DESIGN-GUIDE §5 forbids inventing the latter, not stating the
+#: former), and it is the same kind of decision as DA-D2's 2048-byte
+#: ``detail`` bound. On a healthy repository ``git rev-parse HEAD`` completes
+#: in milliseconds -- it reads one ref and exits -- so two seconds is three
+#: orders of magnitude of headroom for a label read: large enough that it can
+#: never be confused with "the lane's budget was too small", small enough
+#: that "git is unavailable" is answered promptly rather than waited out.
+#: Exceeding it is therefore evidence about Git, not about the lane.
+LABEL_GRACE_SECONDS = 2.0
+
+
 def _add_request_base_argument(subparser: argparse.ArgumentParser) -> None:
     """(B019/A-328) ``--request-base``, on both verbs that resolve one.
 
@@ -530,7 +556,12 @@ def _resolve_declared_adapters(lane: Lane) -> LanguageAdapter | None:
 
 
 def _cmd_run(
-    args: argparse.Namespace, appended: list[str], out: TextIO, err: TextIO
+    args: argparse.Namespace,
+    appended: list[str],
+    out: TextIO,
+    err: TextIO,
+    *,
+    label_grace_seconds: float = LABEL_GRACE_SECONDS,
 ) -> int:
     lane_file = _resolve_lane_file(args.file)
     lane: Lane = lane_file.lane(args.lane)
@@ -593,7 +624,16 @@ def _cmd_run(
     try:
         if (progress_arg := getattr(args, "progress", None)) is not None:
             validate_progress_destination(progress_arg)
-        return _run_reserved(args, lane, lane_file, appended, destination, out, err)
+        return _run_reserved(
+            args,
+            lane,
+            lane_file,
+            appended,
+            destination,
+            out,
+            err,
+            label_grace_seconds=label_grace_seconds,
+        )
     finally:
         if destination is not None:
             destination.close()
@@ -637,6 +677,8 @@ def _run_reserved(
     destination: "VerdictOutput | None",
     out: TextIO,
     err: TextIO,
+    *,
+    label_grace_seconds: float = LABEL_GRACE_SECONDS,
 ) -> int:
     # P26/A-212: one LaneDeadline, started here -- before HEAD is even
     # resolved -- reaches HEAD, attestation, adapter resolution, and the
@@ -697,19 +739,51 @@ def _run_reserved(
         # **The one fact that is not yet known here is the commit label** --
         # DA-R9's own contingency ("if `refuse_lane` needs a fact that is
         # unavailable before `git.repo_top`, the verdict carries what is
-        # known and the REPORT records exactly which field"). It is read
-        # here WITHOUT a deadline, deliberately and only for this refusal:
-        # a commit label is an IDENTITY, not a measurement, `budget` bounds
-        # the lane's work rather than the artifact's production (the
-        # `write_verdict`/summary tail below already runs past the deadline
-        # on every timed-out lane), and a fabricated label would be the one
-        # thing this project must never emit. If that read fails in turn,
-        # the ORIGINAL timeout propagates unchanged: a Git fault must not be
-        # renamed, and a lane that cannot be labelled at all is exactly the
-        # case `main()`'s handler still owns.
+        # known and the REPORT records exactly which field"). It is READ,
+        # never fabricated: a commit label is an IDENTITY, not a
+        # measurement, `budget` bounds the lane's work rather than the
+        # artifact's production (the `write_verdict`/summary tail below
+        # already runs past the deadline on every timed-out lane), and an
+        # invented label would be the one thing this project must never
+        # emit.
+        #
+        # (A-425/DA-R13) The read is BOUNDED, by its own short grace rather
+        # than by the lane's spent deadline -- which has zero left by
+        # construction, so reusing it would mean no timed-out lane ever gets
+        # the verdict `--verdict-json` reserved. A-420 shipped this call
+        # unbounded and DA-R13 ruled that out: assay never hangs, and a
+        # stalled mount would otherwise hang the refusal path itself. The
+        # grace is expressed through the SAME `remaining=` shape every other
+        # Git call uses -- `LaneDeadline` constructed directly because its
+        # `start` classmethod rejects a non-positive budget, and the
+        # grace-expired test sets `label_grace_seconds = 0.0` through the
+        # parameter rather than stubbing anything.
+        #
+        # If the grace ALSO expires, no verdict is written and the one line
+        # the emitter prints says the LABEL could not be read within it --
+        # the operator's next move is to look at Git, not at `budget`. Any
+        # OTHER Git fault re-raises the ORIGINAL timeout unchanged: a Git
+        # fault must not be renamed, and a lane that cannot be labelled at
+        # all is exactly the case `main()`'s handler already owns.
+        grace = runner.LaneDeadline(
+            expires_at=time.monotonic() + label_grace_seconds,
+            monotonic=time.monotonic,
+        )
         try:
-            commit = git.head_rev(lane_file.project_root)
-        except AssayError:
+            commit = git.head_rev(lane_file.project_root, remaining=grace.remaining)
+        except AssayError as label_exc:
+            if label_exc.reason_code is ReasonCode.LANE_TIMEOUT:
+                raise AssayError(
+                    f"the lane-wide deadline expired, and the commit label "
+                    f"the refusal verdict must carry could not be read from "
+                    f"{lane_file.project_root} within the "
+                    f"{label_grace_seconds}s grace allowed for it "
+                    f"(assay.cli.LABEL_GRACE_SECONDS); no verdict was "
+                    f"written -- git, not the lane's budget, is what did not "
+                    f"answer",
+                    outcome=exc.outcome,
+                    reason_code=exc.reason_code,
+                ) from None
             raise exc from None
         verdict = runner.refuse_lane(
             lane,
