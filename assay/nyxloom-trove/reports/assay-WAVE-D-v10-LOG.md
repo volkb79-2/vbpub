@@ -739,3 +739,182 @@ which generation 5 inherits:
   because it needs a live ciu 7.10.1 and a running dstdns instance, both of
   which were available. Transcript and the measured schema-1-vs-schema-2
   delta are in the REPORT and in the W2 `MANIFEST.md` addendum.
+
+---
+
+## Generation 5
+
+### 15. `docs(assay): R-1 round 1's FINAL report, verbatim` — `e44c1056`
+
+- Records only. Generation 4 had committed the 756-line interim copy R-1 had
+  written at the time; R-1's FINAL report — with the serialized targeted
+  mutation reruns landed — is **839 lines**. The repo copy is now that text,
+  byte-for-byte (`cp` of the scratchpad original; `git diff --stat` = 136
+  insertions, 53 deletions).
+- What the final version adds, and why it mattered to this generation's work:
+  `m3`/`m4`/`m6`/`m7` RED as expected; **`m1`/`m2` GREEN**, corroborating
+  BLOCKER 2 at BOTH ends of the threading; **`m5` GREEN**, so SF-5 stands as
+  insurance rather than being struck.
+
+### 16. `fix(assay): R-1 round 1's fix package -- both blockers and all five should-fixes (A-418..A-424)` — `8895ffbf`
+
+**One commit, seven A-rows.** Stated in the commit message and repeated here
+because it is a deviation from "each fix is a commit": the seven fixes
+interleave inside `runner.py`, `decisions.md` and `CHANGES.md`, so splitting
+by path would have put hunks under commits that did not make them. Each fix
+still carries its own A-row.
+
+| ruling | A-row | what landed |
+|---|---|---|
+| DA-R8 (BLOCKER 1) | **A-418** | both POST-command dirt/HEAD guards announce, on both dispatch paths |
+| — (BLOCKER 2) | **A-419** | the signature-only B029 test replaced by a value assertion, proven red |
+| DA-R9 (SF-1) | **A-420** | `LANE_TIMEOUT`-scoped handlers in `cli._run_reserved` |
+| — (SF-2) | **A-421** | the silent `OSError` → `GIT_FAILED` says what failed |
+| — (SF-3) | **A-422** | `_report_probe_refusal` folded onto the one emitter |
+| — (SF-4) | **A-423** | `try`/`finally` around the two per-mutant reservation reads |
+| — (SF-5) | **A-424** | the `statement_attribution` carries documented as insurance |
+
+**Seams touched** (line numbers as of `8895ffbf`):
+
+- `src/assay/runner.py:352` new `post_command_refusal` — the ONE composer both
+  dispatch paths use, so the two sentences cannot drift.
+- `src/assay/runner.py:2165-2166` `SnapshotUnitResult.post_dirty` /
+  `.post_observed_head`; kept at `:2422-2423`; returned at `:2502`; announced
+  at `:2901-2909` in `_run_prepared_lane` (`where=baseline_snapshot.root`).
+- `src/assay/runner.py:4683` `_finish_direct_r0_lane`, now with
+  `diagnostics: "TextIO | None" = None` at `:4696`, threaded at its single
+  call site (`:4629`); the guard keeps both facts at `:4748-4749` and
+  announces at `:4757`.
+- `src/assay/runner.py:4045` `except OSError as exc:` → composed and
+  announced at `:4052`.
+- `src/assay/runner.py:509` `_report_probe_refusal` → `announce_refusal`;
+  the probe's stderr/stdout tails still print as indented context lines below
+  the one line.
+- `src/assay/cli.py:685` the `head_rev` call now inside a `try` (`:684`),
+  with the `LANE_TIMEOUT` handler below it; `:827` the `try` around
+  `runner.run_lane` with the second handler.
+- `src/assay/mutation.py:1647` `try` / `finally` around the two reservation
+  reads and both `close()` calls.
+- `src/assay/statement_attribution.py:243`, `:364` — the two carries, with
+  their docstrings now stating the measurement.
+
+**Tests, all red-first:**
+
+- `tests/test_refusal_announcement.py` +163 lines, three CLI-level tests
+  (post-command DIRTY_TREE on direct R0, post-command HEAD_CHANGED on direct
+  R0, post-command DIRTY_TREE on the snapshot path). Red proof in a detached
+  scratch worktree at `e44c1056`: **3 failed**, each on
+  `len(_refusal_lines(...)) == 1` → `assert 0 == 1`. Green after: 20 passed.
+- `tests/test_r3_canary_sees_infrastructure.py`: the hollow test replaced by
+  two value tests. Red proof by deleting each forward in turn (detached
+  scratch worktree, never a stash) — the four runs are in the REPORT.
+- `tests/test_lane_timeout_writes_a_verdict.py` +134 lines, four tests
+  (`0.001s` per dispatch path; the injected-at-the-seam pair; the
+  non-timeout-is-never-laundered guard). Red proof: "the reserved
+  --verdict-json was never written: exit 4" on both `0.001s`
+  parametrisations. Green after: 12 passed.
+
+**Targeted suites run (serial, `nice -n 19 ionice -c 3`, never xdist):**
+
+```
+test_refusal_announcement.py                                     20 passed
+test_r3_canary_sees_infrastructure.py                             3 passed
+test_lane_timeout_writes_a_verdict.py                            12 passed
++ test_coverage_istanbul_contradictory_branch_arcs.py
++ test_statement_attribution_go_witnesses.py
++ test_environment_preflight.py + test_cli_run.py
++ test_runner_run_lane.py + test_runner_run_lane_r3.py          148 passed
+test_mutation_classification / _judge / _isolation,
+test_safeio_replaced_output_directory, test_output_reservation,
+test_runner_p23_cleanup_and_budget                               67 passed
+test_environment_preflight, test_runner_evaluate_r1,
+test_mutation_python_pipeline, test_cli_lanes                    54 passed
+python -m pyflakes src/assay                                      0 findings
+```
+
+**No whole-suite host run.** The registered gate runs it, once, per the
+throttle.
+
+### 17. `backlog(assay): B063 -- three test modules git -C PROJECT_ROOT.parent` — `e3ae8ada`
+
+- R-1's filing, with its measurement (11 failed + 13 errors, **constant** on
+  any copy of the tree outside the vbpub checkout, from
+  `tests/test_python_qualification.py:42`,
+  `tests/test_runner_snapshot_selection.py:805` and
+  `tests/test_distribution_build_release.py`). **Not fixed in this wave.**
+- **Id check, re-run before allocating, as the wave prompt requires.** The
+  controller's package text said "file as B062"; B062 was already taken on
+  this branch by generation 4's `tests/` pyflakes sweep (A-417), and the
+  controller corrected itself to B063 in the controller log.
+
+```
+$ git -C <worktree> show main:assay/nyxloom-trove/decisions.md | grep -o '^| A-[0-9]*' | tail -1
+| A-407
+$ git -C <worktree> show main:assay/nyxloom-trove/4-backlog.md  | grep -o '^## B[0-9]*'  | tail -1
+## B061
+$ git -C <worktree> rev-parse --short main
+c35baa9e
+```
+
+`main` has moved again (`72bc041f` → `c35baa9e`) and assay's two ledgers are
+still untouched on it. **Allocated this generation: A-418..A-424, B063. Next
+free: A-425, B064.**
+
+### Registered gate on the fix tip — GREEN, first try
+
+Log: `scratchpad/gate-gen5.log` (this session's scratchpad,
+`/tmp/claude-1003/-workspaces-vbpub/e35fad96-4fc2-4781-a1ca-9318989f44a3/scratchpad/gate-gen5.log`).
+Launched from `/workspaces/vbpub` after checking `docker ps` showed **no**
+`tester-unified:local` container (IMAGE column, not names — names are random)
+and `pgrep -af tester-unified-gate.sh` showed none; the container
+(`436c0affc8a6`) was capped with `docker update --cpus=3` immediately after
+launch (`NanoCpus` re-read as `3000000000`). The worktree was untouched for
+the whole run. Verdict read in a SEPARATE step:
+
+```
+COMPLETE_MARKERS=1          (ASSAY_REGISTERED_GATE_COMPLETE=1, exactly one)
+GATE_EXIT=0
+BAD=0                       (grep -cE 'FAILED|DIRTY_TREE|Traceback')
+wheel: assay-4.1.1.dev20+ge3ae8ada-py3-none-any.whl
+        size=530841 sha256=55a5bee13489546a7ff7471d1f4031d2cc0abc1bfe5c7de062900ca095dfb976
+tester-unified: PASS (exit 0)
+  commit: e3ae8ada1c4b00364aa9c3e8e320ea7ee9a40e45
+  argv: python -m pytest tests -q --ignore=tests/test_self_hosting.py --override-ini=pythonpath=
+
+ASSAY_GATE_PHASE=wheel-installed
+ASSAY_GATE_PHASE=attestation-hardened
+ASSAY_GATE_PHASE=verdict-v5-accepted
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified
+ASSAY_GATE_PHASE=verdict-v9-successors-verified
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_GATE_PHASE=pyflakes-clean
+```
+
+The wheel name carries the judged commit (`ge3ae8ada`). Both v9 schema phases
+passed again (`verdict-v6-v7-v8-hard-cut-verified` over 18 frozen templates,
+`verdict-v9-successors-verified`), and B024's `pyflakes-clean` still runs
+last: nothing under `verdict.py`, `verify.py`, `src/assay/schemas/` or the
+drift-guard carve-assets was touched, and no commit on the branch carries `!`.
+
+**FIX-TIP: `e3ae8ada`.** R-1 round 2 reviews `93188912..e3ae8ada`.
+
+Host load through the run: 5.05 → 5.97 at launch, container pinned at ~97 % of
+its 3-CPU cap, 194 MiB. No second gate, no xdist, no host whole-suite run.
+
+### 18. `docs(assay): Wave D generation 5 checkpoint -- the R-1 fix package landed and gate-green on e3ae8ada, BRIEF-5`
+
+- Records only: this LOG's generation-5 entries and gate transcript, the
+  REPORT's generation-5 sections, and
+  `nyxloom-trove/reports/assay-WAVE-D-v10-BRIEF-5.md` (new).
+- A docs-only successor to the gate-verified tip, as generations 1–4 did.
+  **The gate-verified commit stays `e3ae8ada`**; nothing executable changed
+  after it.
+- **Checkpoint taken here, at the E-008 boundary the clause names** (green
+  gate). Phase 2 was not started: the controller resumes R-1 round 2 on the
+  FIX-TIP word, and BRIEF-5 hands phase 2 to generation 6 with BRIEF-4 §5's
+  seam table intact and DA-R12 already ruled.

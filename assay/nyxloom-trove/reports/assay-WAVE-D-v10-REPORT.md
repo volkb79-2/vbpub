@@ -1485,3 +1485,276 @@ document, producer-pinned by ciu's own test.
   is now in the repository verbatim at
   `nyxloom-trove/reports/assay-WAVE-D-v10-REVIEW-R1-round1.md`.
 - **The ciu `schema_version` question was not decided.** Decision ask above.
+
+---
+
+# Generation 5 — R-1 round 1's fix package
+
+Commits: `e44c1056` (R-1's FINAL report, verbatim), `8895ffbf` (the fix
+package, A-418..A-424), `e3ae8ada` (B063), plus the checkpoint records commit.
+**FIX-TIP for R-1 round 2: `e3ae8ada`**, gate-green, reviewed as
+`93188912..e3ae8ada`.
+
+Phase 2 was NOT started. This generation reached its E-008 checkpoint at the
+green gate on the fix tip, which is the coherent boundary the clause names.
+
+## BLOCKER 1 (DA-R8, A-418) — the POST-command guards announce
+
+### The red proof
+
+`_refusal_lines()` — the module's own predicate, R-1's
+`grep -cE '^assay: [A-Z_]+/[A-Z_]+: '` minus B018's judge-provenance notice.
+Detached scratch worktree at `e44c1056` (never a stash), the three new tests
+copied in, product code untouched:
+
+```
+FAILED tests/test_refusal_announcement.py::test_a_command_that_dirties_the_tree_blames_the_command_on_a_direct_r0_lane
+FAILED tests/test_refusal_announcement.py::test_a_command_that_moves_head_names_both_revisions_on_a_direct_r0_lane
+FAILED tests/test_refusal_announcement.py::test_a_command_that_dirties_the_snapshot_blames_the_command_on_an_r1_lane
+3 failed, 17 deselected, 1 warning in 1.29s
+```
+
+Every one failed identically on `assert len(lines) == 1` → `assert 0 == 1`:
+the silence R-1 measured, reproduced from the branch's own tests. Green after
+the fix: `tests/test_refusal_announcement.py` **20 passed**.
+
+### The sentence, and why it is not the pre-run one
+
+`runner.post_command_refusal` (`runner.py:352`) composes both, so the two
+dispatch paths cannot drift. DIRTY_TREE:
+
+> the lane's own command left N uncommitted file(s) in `<repo>` — assay
+> observed that tree CLEAN at `<commit>` immediately before starting the
+> command, so this dirt is the command's own output and re-running after a
+> commit or a stash reproduces it. Point the command's output at the artifact
+> path the lane declares (assay reserves it for exactly this), or at a
+> gitignored path, so what assay measured stays the commit it judges.
+> Affected: `<paths>`
+
+HEAD_CHANGED:
+
+> the lane's own command moved HEAD in `<repo>` from `<pre>` to `<post>` —
+> assay judges the commit it resolved BEFORE the command ran, never one the
+> command created while it ran, so the verdict would name a commit that is no
+> longer what this repository is at. Remove the commit step from the lane's
+> command.
+
+The tests assert `"the lane's own command"` and, for DIRTY_TREE,
+`"commit or a stash reproduces it"`, so an edit that reintroduces the pre-run
+remedy here fails.
+
+### What did NOT change, and the three claims
+
+The A-178 observation order is untouched on both paths: exactly one
+`dirty_paths` call, `head_rev` ONLY on the clean branch, dirt keeping
+precedence. The only change is that the two facts are KEPT instead of
+evaluated for truthiness and dropped. No claim, no reason code, no wire field
+moved.
+
+The three claims R-1 named — `CHANGES.md:32`,
+`tests/test_refusal_announcement.py`'s DA-R3 section header and
+`runner.py`'s DA-R3 comment — **stay as written and are now true**, per DA-R8
+("no narrowing").
+
+## BLOCKER 2 (A-419) — a guard that can go red
+
+The replacement asserts the resolved VALUE, at both ends of the threading:
+
+- `runner.execute_command(...)` → `result.plan.env_effective[FACT] == VALUE`
+  **and** `result.outcome is Outcome.PASS`, where the child is
+  `python -c "import os; import pkg.mod; assert os.environ[FACT] == VALUE"` —
+  so PASS is itself evidence the value reached the process.
+- `canary.run_python_canary(...)` → `control_outcome is PASS` (the control
+  half runs that same argv), `transformed_outcome is FAIL`,
+  `observed_reason_code is COMMAND_FAILED`.
+
+The lane declares `ASSAY_B029_FACT = "derived:deploy.cgroup_parent"` against a
+real, gitignored `ciu.global.toml` written after the seed commit (A-293's
+shape), so the fact must genuinely resolve.
+
+**Red proof, detached scratch worktree at `e44c1056`, one mutant at a time:**
+
+| mutant | what was deleted | result |
+|---|---|---|
+| unmutated | — | **3 passed** |
+| `m1` | the two forwards in `runner.execute_command`'s `resolve_command_plan` call | **2 failed, 1 passed** |
+| `m2` | the two forwards in `canary._run_pipeline`'s `execute_command` call | **1 failed, 2 passed** |
+| `m1`+`m2` | both | **2 failed, 1 passed** |
+
+The failure in every case is
+`AssayError: lane declares a derived infrastructure fact but no
+infrastructure_source was supplied to resolve it against`, raised out of
+`resolve_command_plan` — exactly the misattributed refusal B029 filed, now
+reachable from a test rather than only from a prediction.
+
+`m2` alone failing ONLY the canary test is the part worth recording: the two
+halves of the threading are independently guarded, which a single combined
+mutant could not show.
+
+## SF-1 (DA-R9, A-420) — and the field that was unavailable
+
+**DA-R9's contingency clause fired, and the escape point is EARLIER than the
+ruling assumed.** Measured by wrapping `LaneDeadline.remaining` and printing
+the stack on the raise, `budget = "0.001s"`, R0-only lane through
+`assay.cli.main`:
+
+```
+  File ".../src/assay/cli.py", line 289, in main
+  File ".../src/assay/cli.py", line 596, in _cmd_run
+  File ".../src/assay/cli.py", line 680, in _run_reserved
+    commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
+  File ".../src/assay/git.py", line 564, in head_rev
+  File ".../src/assay/git.py", line 463, in run
+  File ".../src/assay/git.py", line 510, in _run_bytes
+  File ".../src/assay/git.py", line 483, in _run_raw
+  File ".../src/assay/git.py", line 418, in _resolve_repo
+  File ".../src/assay/git.py", line 268, in _run_bounded
+  File ".../src/assay/git.py", line 198, in _sample_remaining
+EXIT 4
+```
+
+That is `cli.py`'s OWN `head_rev`, before `commit` exists and before
+`run_lane` is entered at all. A handler placed only around `runner.run_lane` —
+DA-R9's letter — reads correct and measures red: with it alone, both `0.001s`
+tests still failed with *"the reserved --verdict-json was never written: exit
+4"*.
+
+**THE FIELD THAT WAS UNAVAILABLE: `Verdict.commit`.** DA-R9 says "the verdict
+carries what is known and the REPORT records exactly which field". It is
+`commit`, and the choice made — recorded here so the controller can overrule
+it — is to **read** it rather than carry a placeholder:
+
+```python
+try:
+    commit = git.head_rev(lane_file.project_root)   # no deadline
+except AssayError:
+    raise exc from None                             # the ORIGINAL timeout
+```
+
+Reasoning, in the code as a comment and here: a commit label is an IDENTITY,
+not a measurement; `budget` bounds the lane's work, and the
+artifact-production tail (`write_verdict`, the summary) already runs past the
+deadline on every timed-out lane; and a fabricated or sentinel label is the
+one thing this project must never emit. If that read fails in turn, the
+original timeout propagates unchanged and `main()`'s handler owns the case
+exactly as before.
+
+**Both handlers are scoped to `LANE_TIMEOUT` alone.** A test asserts that a
+non-timeout `AssayError` out of `run_lane` still propagates and writes NO
+artifact: a bug laundered into a verdict is the silent green this project
+exists to remove.
+
+**The second handler (around `run_lane`) is DA-R9's literal instruction and is
+kept**, because a deadline can still expire inside `run_lane` above its own
+two catches (`git.repo_top`). That window is real but milliseconds wide, so
+racing for it would be a flaky test; it is exercised by injecting the raise at
+that exact seam (`monkeypatch.setattr(runner, "run_lane", …)` raising the real
+`BUDGET_EXCEEDED`/`LANE_TIMEOUT` pair). That is a stub of assay's OWN function
+— **A-334 is about test doubles standing in for EXTERNAL systems**, and the
+thing under test here is the CLI's handler, with the exception built from the
+real `LaneDeadline` vocabulary.
+
+`tests/test_lane_timeout_writes_a_verdict.py`: **12 passed**; the two `0.001s`
+parametrisations were red before the fix with the exact message above.
+
+## SF-2 / SF-3 / SF-4 / SF-5
+
+- **SF-2 (A-421).** `runner.py:4045` `except OSError as exc:` now composes
+  `AssayError(f"snapshot preparation or cleanup failed: {exc}", ERROR,
+  GIT_FAILED)` and announces it at `:4052`. The `except RuntimeError` beside
+  it is untouched — it deliberately re-raises when there is no outcome, which
+  R-1 agreed is right.
+- **SF-3 (A-422).** `_report_probe_refusal` (`runner.py:509`) now calls
+  `announce_refusal` instead of printing the format string by hand. The
+  probe's `stderr`/`stdout` tails stay as indented `  probe stderr: …` context
+  lines BELOW the one line — folding them into the message would break the
+  one-refusal-one-line contract the counting tests assert.
+  `tests/test_environment_preflight.py` green.
+- **SF-4 (A-423).** `mutation.py:1647` `try`/`finally`: both `close()` calls
+  now run even when `equivalence_reservation.consume()` raises on B049's new
+  path.
+- **SF-5 (A-424).** KEPT, and **documented as insurance, not covered code**,
+  in both docstrings (`statement_attribution.py:243`, `:364`) and here:
+  **no real artifact reaches either carry today.** Both rebuilds are behind
+  `if file_cov.blocks is None: continue`; only `go-cover` populates `blocks`,
+  only `coverage-istanbul-json` populates `contradictory_branch_lines`. R-1's
+  mutant `m5` deletes both carries and the statement-attribution and
+  istanbul-contradictory modules stay green (41 passed, identical to the
+  unmutated baseline). Nobody should read these two lines as measured.
+
+## B063 — filed, not fixed
+
+R-1's measurement, recorded verbatim in the entry: `test_python_qualification`
+(`:42`), `test_runner_snapshot_selection` (`:805`) and
+`test_distribution_build_release` compute `REPO_ROOT = PROJECT_ROOT.parent`
+and `git -C` against it, so any copy of the tree outside the vbpub checkout
+contributes a **constant 11 failures and 13 errors** regardless of the copy's
+contents — the noise floor R-1's mutation sweep had to read its evidence
+against. Id note in the LOG: the controller's package text said "B062", which
+was already taken on this branch; B063 is the correct id and the controller
+had itself corrected to it.
+
+## Gate
+
+GREEN on `e3ae8ada`, first try. Markers, wheel and phases in the LOG. Twelve
+phases, ending `pyflakes-clean`; both v9 schema phases passed; `tester-unified:
+PASS (exit 0)` at `commit: e3ae8ada1c4b00364aa9c3e8e320ea7ee9a40e45`.
+
+## Decision asks for the controller
+
+1. **SF-1's unbounded commit-label read (NEW).** `cli._run_reserved`'s
+   pre-`commit` `LANE_TIMEOUT` handler re-reads `git.head_rev` with **no
+   deadline** to label the refusal, because at that point the label is exactly
+   the fact DA-R9 predicted would be missing. Rejected alternatives: a
+   sentinel label (inventing a commit id) and leaving the window unhandled
+   (DA-R9's letter met, its purpose not). **If a bounded read is preferred it
+   needs a bound to be stated, and there is no non-invented one available
+   after the budget is gone** (DESIGN-GUIDE §5) — so this is a product call,
+   not an implementation choice. Nothing else in the package depends on it,
+   and reverting it costs one `except` block and two test parametrisations.
+2. **The ciu `schema_version` ask from BRIEF-4 §4 is ANSWERED** by DA-R12
+   (accept the integer set `{1, 2}` through one parser). Recorded so it is not
+   counted twice; it is carried into phase 2's A-rows, not into this package.
+3. **B063 is filed, not fixed**, per the wave's scope. If the controller wants
+   the suite runnable from a copy inside this wave, that is a three-module
+   change R-1 would have to re-verify, and it should be said explicitly.
+
+## What a reviewer should push on (this package)
+
+- The post-command guards on a lane whose command does BOTH (dirties AND
+  commits): dirt keeps precedence by A-178, so the line must be the
+  DIRTY_TREE one, and there must still be exactly one.
+- `post_command_refusal`'s two branches over a path containing a space, a
+  newline or a non-ASCII byte — `git.dirty_paths` reads `-z` for exactly that
+  reason, and the message `', '.join(...)`s the results.
+- The `0.001s` tests on a slower or faster host: the assertion is about the
+  artifact existing, not about WHERE the deadline fired. Check they are not
+  accidentally passing through the `run_lane` handler rather than the
+  `head_rev` one — the stack above says which fires today.
+- Whether the unbounded `head_rev` in the timeout handler can hang, and
+  whether "the artifact tail already runs past the deadline" is a good enough
+  argument for it. This is decision ask 1.
+- That `_report_probe_refusal`'s fold did not change the emitted text (the
+  format string was byte-compatible) and that the tails still print below the
+  line, not inside it.
+- That the injected-at-the-seam timeout test is not doing the work the two
+  `0.001s` tests should be doing — it is a second, narrower case, and the
+  `0.001s` pair is the real one.
+- That nothing in this package touched `verdict.py`, `verify.py`,
+  `src/assay/schemas/` or the drift-guard carve-assets, and that no commit on
+  the branch carries `!`. (`git diff --name-only 93188912..e3ae8ada` over
+  those paths returns only generation 4's two W2 ciu re-capture files.)
+
+## What I did NOT do, and why
+
+- **Phase 2.** Not started. The checkpoint clause names the green gate on the
+  fix tip as a cut boundary, and the controller resumes R-1 round 2 on the
+  FIX-TIP word while phase 2 proceeds behind it — which is generation 6's
+  work, with BRIEF-4 §5's seam table and DA-R12 already in hand.
+- **B063's fix.** Filed only, per the ruling.
+- **Splitting the package into seven commits.** The seven fixes interleave in
+  `runner.py`, `decisions.md` and `CHANGES.md`; splitting by path would have
+  put hunks under commits that did not make them. Each fix carries its own
+  A-row, and the LOG names which seam belongs to which.
+- **A whole-suite host run.** The registered gate runs it, once, per the host
+  throttle. The targeted runs are listed in the LOG.
