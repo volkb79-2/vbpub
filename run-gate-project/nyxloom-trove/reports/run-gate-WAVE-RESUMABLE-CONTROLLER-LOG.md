@@ -188,9 +188,12 @@ controller's entries from the implementer's return onward; wave records
   `clean_tree` moves), RW-16 (`3f157a3e`, `{{.Id}}` + "No such object" as
   the only gone signal), coverage tests (`450b3e22`), LOG + BRIEF-1
   (`e87007cc`). Selftest on `450b3e22`: `505 passed, 2 skipped`,
-  `diff-coverage OK: 342/342`, `lane 'selftest' exit 0`
-  (`selftest-fix-rw16b.log`, read separately). B2's red-first proven against
-  `be7d94b3`. **Remaining: RW-15, RW-17, RW-18, RW-19, and the live
+  `diff-coverage OK: 342/342`, `lane 'selftest' exit 0` — QUOTED from the
+  implementer's return message; the named log (`selftest-fix-rw16b.log`)
+  was NOT found under any scratchpad on this host, so the successor's first
+  act is one selftest on the committed tip, read separately, before
+  building on it. B2's red-first proven against `be7d94b3` (per the same
+  report). **Remaining: RW-15, RW-17, RW-18, RW-19, and the live
   two-client probe** — seams in
   `run-gate-WAVE-RESUMABLE-BRIEF-1.md` on the branch. The successor is a
   FRESH implementer seeded with BRIEF-1 + RW-13..RW-22, dispatched when the
