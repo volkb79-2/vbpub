@@ -795,3 +795,58 @@ principles don't already resolve.
   boxes, each citing something run; (4) B057's last box per above. Then
   return — on completion the fresh adversarial reviewer (3-round cap),
   merge, `cmru release` (MINOR), deploy, dstdns notify.
+
+- **2026-09-02 (generation 6 returned — Wave C scope COMPLETE; reviewer
+  dispatched)** — Generation 6 finished the whole list in ~48 minutes and
+  164 tool calls: tip `d938ab8c`, tree clean. **Gate verified by the
+  controller from the run-10 log directly** (`gate-run10.log`: wheel
+  `assay-4.0.1.dev39+g3355d238`, phases through `self-hosted-lane-passed`
+  / `cmru-b006a-qualified` / `independent-self-hosting-passed`,
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0`, zero red hits); the
+  sole later commit confirmed docs-only (BRIEF-7, LOG, REPORT §43);
+  `git diff --stat main...HEAD -- shared-ramdisk-depot-manager` is EMPTY
+  (nothing committed into srdm, as ruled); `2-product-definition.md` F008
+  reads `shipped` with A1–A5 `proven`, `3-roadmap.md` M6 reads `done`;
+  B061 filed. Branch: 26 commits, 71 files, +13147/−300 against `main`.
+
+  What landed: **F008-A4** (`394c6cc2`) — a committed in-image
+  regeneration script (`carve-assets/P27-recarve/regenerate-fixtures.sh`,
+  go1.25.14, `--network=none`) produced `hello.out`, both canary profiles
+  AND a `fixture-oracle.json`; the tests join them with the production
+  `attribute_statements`, so expectations are the oracle's, not
+  hand-typed (union-fidelity's sets went `{29,30}`/`{36,37}` →
+  `{33}`/`{39}`, with a control test asserting the naive expansion of the
+  SAME real bytes is `{32,33,34}`/`{38,39,40}` — the concrete form of
+  A-234's warning); B057 closed on all three boxes, `_PreOracleGoAdapter`
+  deleted (DA-9's condition was met). **B061** (`875382d2`) — **a real
+  defect found by the srdm run on its first pass**: `-coverpkg=./...`
+  emits one record per test binary per block (20 per block in srdm), the
+  statement join keyed a dict by extent so the LAST record won, and
+  covered blocks became `missing` — 255 lines reported uncovered where the
+  profile's own line-level fold says 45; fixed by folding executed-wins
+  before any count is read. **F008-A5** (`3355d238`) — the synthetic
+  two-commit repo built in-container from `git archive 10b174a5|83c2ff79`,
+  lane at the module root per DA-9, nothing declaring the module path:
+  assay PASS 418/394 (94.3%), covergate PASS 684/639 (93.4%) on the
+  byte-identical profile; classified BEFORE naming a side — 266 lines
+  extent-expansion (each begins no statement), file-absence axis EMPTY,
+  no third category; both tools' rules re-implemented and reproducing
+  their own printed numbers. **Two things the controller notes:** (a) the
+  B061 catch is a direct product of DA-6's classify-first rule — the
+  denominator fit the extent-expansion prediction (418 < 684) while the
+  covered RATIO did not (39.0% vs 93.4%), and stopping at the denominator
+  would have shipped B061 as "assay is stricter, by design"; (b) memory's
+  "covergate silently skipped P14's package" does NOT reproduce at this
+  commit pair — the file-absence axis is empty — so srdm's own backlog
+  entry needs that fact (controller's, after the merge; not a Wave C
+  item). Edits were per-file via the Edit tool; two Python helpers were
+  analysis-only and are noted in the LOG. `decisions.md` untouched (next
+  free A-405); next backlog id B062; no open decision asks.
+
+  **Fresh adversarial reviewer dispatched** (fresh Opus, never a fork,
+  3-round cap as in Wave B), blind phase first over `main...d938ab8c`,
+  then reconciliation against the seven briefs, the LOG and the REPORT.
+  On ACCEPT: merge `--no-ff` to `main` resolving the `4-backlog.md`
+  collision (main's B053/B054 + the branch's B055–B061), then `cmru
+  release --project assay` (MINOR — no `!` commit on the branch,
+  confirmed), deploy to the devcontainer venv, dstdns notify.
