@@ -619,7 +619,7 @@ export default defineConfig({
       reporter: ['json'],          // 'json' IS coverage-final.json
       reportsDirectory: '.assay',
       include: ['src/**'],
-      clean: false,                // REQUIRED inside an assay snapshot -- see below
+      clean: false,                // RECOMMENDED inside an assay snapshot -- see below
     },
   },
 })
@@ -630,29 +630,44 @@ export default defineConfig({
 registry format — if you prefer it, declare `format = "lcov"` instead and
 point at `lcov.info`).
 
-**`clean: false` is REQUIRED for any lane assay judges — measured, not a
-style preference (B049).** Vitest's own default (`coverage.clean = true`)
-deletes and recreates `reportsDirectory` before writing to it. assay's own
+**`clean: false` is RECOMMENDED for any lane assay judges — and if you
+forget it, assay now names the cause instead of reporting no coverage
+(B049/A-408).** Vitest's own default (`coverage.clean = true`) deletes and
+recreates `reportsDirectory` before writing to it. assay's own
 `safeio.reserve_output` (`runner.py:1692`) opens and holds that directory's
 own file handle *before* your lane's command runs, specifically so it can
 read the artifact back afterward without a second, race-prone directory
 walk (B006(b)); `reservation.consume()` (`runner.py:1771`) then reads through
 that SAME held handle once the command exits. A tool that deletes and
 recreates the directory — rather than writing into the one directory assay
-already opened — silently orphans that handle: it now points at an empty,
-unlinked directory, so `consume()` finds nothing, even though a fully
-populated `coverage-final.json` genuinely exists on disk at that path by the
-time your command exits. This reads as `NO_MEASUREMENT`/`EMPTY_COVERAGE` —
-"your tests produced no coverage" — for a lane that in fact ran cleanly and
-covered everything; nothing about the failure points at `coverage.clean`.
+already opened — orphans that handle: it now points at an empty, unlinked
+directory, so `consume()` finds nothing, even though a fully populated
+`coverage-final.json` genuinely exists on disk at that path by the time your
+command exits.
+
+Up to assay 4.1.0 that read as `NO_MEASUREMENT`/`EMPTY_COVERAGE` — "your
+tests produced no coverage" — for a lane that in fact ran cleanly and
+covered everything, and nothing about the failure pointed at
+`coverage.clean`. **From 5.0.0 it is `ERROR`/`UNREADABLE_ARTIFACT`, and the
+message names the directory, the cause and the fix**: *"the directory
+'.assay' that assay reserved this output in was deleted and recreated while
+the lane's command ran … Turn the tool's clean/rm-first option off (for
+example Vitest's `coverage.clean = false`) or have it write into the
+existing directory instead of replacing it."* The check is one `fstat` on
+the descriptor assay already holds (`st_nlink == 0` on the orphaned
+directory inode), so it costs nothing and adds no new race; it applies to
+**every** artifact assay reserves, not only coverage — a SQL R2
+`equivalence_artifact` and a mutation lane's kill-signal artifact are read
+through the same reservation, and a directory-recreating step under either
+of those used to report every mutant as `crashed`.
+
+Declaring `clean: false` is still the right thing to do — it is one line, it
+keeps the lane on the fast path, and a named refusal is still a refusal.
 Measured directly: an otherwise fully-covered real lane run through the real
-CLI returns `EMPTY_COVERAGE` with Vitest's default `clean: true`, and `PASS`
-with the correct 100% figure the moment `clean: false` is added and nothing
-else changes. `cleanOnRerun` (Vitest's watch-mode-only sibling) is
-irrelevant to `vitest run` and does not need setting. This is a real,
-filed gap in assay's own reservation mechanism, not a JS-specific
-requirement in principle — see **B049** for the underlying defect and why
-it is not fixed in this release.
+CLI returned `EMPTY_COVERAGE` with Vitest's default `clean: true` on 4.0.0,
+and `PASS` with the correct 100% figure the moment `clean: false` was added
+and nothing else changed. `cleanOnRerun` (Vitest's watch-mode-only sibling)
+is irrelevant to `vitest run` and does not need setting.
 
 ### JavaScript lanes and the dependency closure
 

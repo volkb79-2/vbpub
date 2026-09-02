@@ -533,6 +533,45 @@ regression even for a path Git status could not report. Untracked caller residue
 such as `__pycache__/` is not part of the commit and therefore never enters the
 snapshot.
 
+### A replaced output directory is named, not folded into EMPTY_COVERAGE
+
+**(B049/A-408.)** P20's held-parent-descriptor discipline above buys the
+TOCTOU cover that a re-open by name cannot, and it has one blind spot: a
+tool that does `rm -rf <dir> && mkdir <dir> && write <artifact>` — Vitest's
+own default `coverage.clean = true`, and a common build-step convention far
+beyond it — writes a complete artifact into a *different* inode that merely
+answers to the same path. The held descriptor still refers to the orphaned
+original, so `consume()`'s basename lookup raises `FileNotFoundError` and
+returns `None`. Every caller reads that `None` as the truthful absence
+above: `NO_MEASUREMENT`/`EMPTY_COVERAGE` for a coverage read, a `crashed`
+mutant for `mutation.py`'s absent read. Both messages then assert a
+checkable falsehood over an artifact that was complete on disk at the
+declared path the whole time — the exact "a check is only as strong as what
+it actually compares" shape AGENTS.md names, one layer down: the *absence*
+being reported is real, but the *conclusion drawn from it* is not.
+
+The fix is one `fstat` on a descriptor the reservation already owns:
+`st_nlink == 0` is the exact, name-free witness that this directory inode
+has been unlinked while an open descriptor keeps it alive. It is checked at
+`consume()` time, so it costs nothing during the command and, unlike a
+re-open by name, adds **no new TOCTOU surface at all** — which is why it,
+rather than B049's option (1), is what ships. The refusal is
+`ERROR`/`UNREADABLE_ARTIFACT`, a value the frozen schema already reserves
+for "an object that exists but cannot be trusted … or a race the caller's
+own reservation already detected": no new reason code, no schema change
+(A-138/A-170).
+
+Because the check lives in `OutputReservation.consume` itself, every
+reserved artifact inherits it by construction — the coverage read, the SQL
+R2 `equivalence_artifact`, the ingested mutation report, and `mutation.py`'s
+per-mutant equivalence and kill-signal reads. Rejected alternatives, from
+B049's own list: re-opening the parent chain by name (loses the P20 cover
+this module exists to provide), and documenting the constraint only (which
+says nothing about tools other than Vitest that share the convention). The
+`clean: false` guidance stays in README/CONSUMERS as a *recommendation* —
+it keeps the lane on the fast path — but forgetting it is now diagnosable
+rather than silently mis-diagnosed.
+
 ### Mutation resume and sharding (B012)
 
 Mutation state lives outside each ephemeral replacement snapshot. One bounded

@@ -5,6 +5,25 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
+### Fixed
+- A coverage or mutation tool that deletes and recreates its own output
+  directory (Vitest's default `coverage.clean = true`, or any `rm -rf out &&
+  mkdir out` build step) no longer reads as `NO_MEASUREMENT`/`EMPTY_COVERAGE`
+  — "your command wrote nothing" — over an artifact that was complete on disk
+  the whole time. `OutputReservation.consume()` now `fstat`s the parent
+  descriptor it already holds and refuses `ERROR`/`UNREADABLE_ARTIFACT` on
+  `st_nlink == 0`, naming the directory, the cause and the remedy. Applies to
+  every reserved artifact — coverage, the SQL R2 equivalence artifact, the
+  ingested mutation report, and a mutation lane's per-mutant equivalence and
+  kill-signal reads, where the same absent-read fold classified a
+  perfectly-executed mutant `crashed`. (B049, A-408)
+
+### Documentation
+- README and `docs/CONSUMERS.md` downgrade Vitest's `coverage.clean = false`
+  from REQUIRED to RECOMMENDED and state what a consumer who forgets it now
+  sees; `docs/DESIGN-GUIDE.md` gains "A replaced output directory is named,
+  not folded into EMPTY_COVERAGE" with the rejected alternatives. (B049, A-408)
+
 <!-- Post-release housekeeping, 2026-08-18: this block is CLEARED immediately
      after a release. cmru generates the dated entry below from the commit
      range, but it does NOT clear the hand-written block that fed it -- so

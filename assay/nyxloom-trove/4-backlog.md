@@ -4699,14 +4699,37 @@ candidates:
 
 ### Acceptance
 
-- [ ] a product ruling among the four options above (or a fifth), recorded
-      as a decision;
-- [ ] if (1), (2) or (4): a regression test that plants a directory-recreating
+- [x] a product ruling among the four options above (or a fifth), recorded
+      as a decision — **option (4)**, ruled DA-D1 in
+      `WAVE-PROMPT-2026-09-02-wave-d-v10-integrity.md` and recorded as
+      **A-408**, naming (1)/(2)/(3) as rejected. Implemented as
+      `assay.safeio.OutputReservation._refuse_if_parent_was_replaced`
+      (`src/assay/safeio.py:285`), called from `consume()`
+      (`src/assay/safeio.py:276`) so all five reserved-artifact reads
+      inherit it: `runner.py:2241` (coverage), `runner.py:2256` (SQL R2
+      `equivalence_artifact`), `runner.py:2286` (ingested mutation report),
+      `mutation.py:1642` (per-mutant equivalence), `mutation.py:1192`
+      (kill signal, the `crashed` fold);
+- [x] if (1), (2) or (4): a regression test that plants a directory-recreating
       fake tool (no real Vitest needed to prove the CORE mechanism) and
-      asserts the new, non-silent behaviour;
-- [ ] CONSUMERS' `clean: false` note (added this wave) updated to match
+      asserts the new, non-silent behaviour — **`tests/test_safeio_replaced_output_directory.py`**,
+      8 tests: the seam itself, the coverage read end-to-end through
+      `runner.run_lane` with a real `rm -rf && mkdir && cat >` shell command
+      (`ERROR`/`UNREADABLE_ARTIFACT`, not `EMPTY_COVERAGE`), `mutation.
+      _read_kill_signal` (refuses instead of folding to `crashed`), and the
+      two legitimate-state controls (an artifact written INTO the reserved
+      directory still reads; a genuinely absent one is still the truthful
+      `None`). Red-first: 4 failed / 4 passed with `src/assay/safeio.py`
+      stashed to the pre-fix state, 8 passed with the fix;
+- [x] CONSUMERS' `clean: false` note (added this wave) updated to match
       whatever ships — either it stays required with the same reason, or it
-      becomes optional with the new diagnostic named instead.
+      becomes optional with the new diagnostic named instead — **now
+      RECOMMENDED**, with the new refusal quoted:
+      `docs/CONSUMERS.md:622,633` and `README.md:264,269`;
+      reasoning in `docs/DESIGN-GUIDE.md` §"A replaced output directory is
+      named, not folded into EMPTY_COVERAGE".
+
+**Status: RESOLVED 2026-09-02 (Wave D phase 1) — A-408.**
 
 ---
 
