@@ -87,3 +87,94 @@ controller's entries from the implementer's return onward; wave records
   re-attach probe under the host rule (Wave D generation 9 holds the gate
   container at the moment; the prompt says wait, never two), report
   committed as the only file it touches.
+
+- **2026-09-02 (reviewer round 1: NOT ACCEPT — 2 BLOCKER, 7 SHOULD-FIX,
+  5 NIT, 6 hollow tests; RW-13..RW-19; fix package dispatched to a FRESH
+  implementer)** — Report `be7d94b3` on the branch
+  (`run-gate-WAVE-RESUMABLE-REVIEW-round1.md`). Verified green by the
+  reviewer independently: red-first reproduced on a detached `main`
+  worktree (`assert 2 == 1`), selftest on `73e6b061` `488 passed` /
+  `diff-coverage OK 269/269` / `exit 0`, live re-attach probe on a real
+  container (SIGKILL survived ≥16 s, no second container, one history entry
+  from the container's clock). The findings are accepted as real; every one
+  is ruled below. The fix goes to a fresh implementer (E-008: the original
+  is past 340k tokens), seeded with the review, these rulings and the wave
+  records.
+  - **RW-13 (B1 — RG-32's impact and migration): all three halves.** (i)
+    CHANGES, REPORT, LOG and the dstdns notification say the PARSED number —
+    13 of 29 dstdns lanes refuse at load (the reviewer's loader run, listed
+    by name) — and describe the two-round shape a text-grep sweep hid. (ii)
+    Migration text: a LANE key found under a pin table is MOVED one level
+    up, never deleted; `clean_tree = false` is named as the case that occurs
+    today on four dstdns lanes, where deleting it would silently flip them
+    to the default `true`. (iii) Code: when an unrecognised pin key is itself
+    a legal lane key, the refusal says so in one clause — "`clean_tree` is a
+    lane key; it belongs one level up in `[lanes.<n>]`, where it is
+    load-bearing — move it, do not delete it". Red-first against the
+    current generic message. The four inert `clean_tree = false` lines are
+    a live dstdns defect run-gate just found; the notification says so as a
+    finding for dstdns to file (a controller-to-peer message, not a run-gate
+    change).
+  - **RW-14 (B2 — two clients, one lane): owner-liveness in the record;
+    an alive owner is FOLLOWED, never hijacked.** The record gains
+    `owner_pid`, `owner_start` (the process start time read from
+    `/proc/<pid>/stat`, so a reused pid is not mistaken for the owner) and
+    `boot_id` (`/proc/sys/kernel/random/boot_id`). On invocation with a
+    record whose owner is ALIVE (same boot, pid present, same start time):
+    the second client prints `run-gate: following <name> (owner pid N,
+    started <t>)`, streams `docker logs -f`, `docker wait`s, exits with the
+    container's code, and does NOT `rm` the container, NOT clear the record,
+    NOT write history — the owner does all three, exactly once (RW-3 holds
+    end to end). `--fresh` while the owner is alive REFUSES (exit 2) naming
+    the pid: run-gate never kills another client's run. Owner DEAD (other
+    boot, pid gone, or a different start time) → re-attach as owner, the
+    behaviour RW-1 already defines. `SPEC.md:895`'s arbitration sentence is
+    replaced by this rule; RW-2 is amended to match. The reviewer's
+    two-client probe becomes the red-first test: A exits 0 with its true
+    result, B follows and exits 0, one `docker run`, one `rm`, one history
+    entry. Rejected: a lifetime lock (refusing the second terminal outright
+    loses the follow, which is the operator's most common second
+    invocation) and deleting the claim (the behaviour, not the sentence, is
+    the defect).
+  - **RW-15 (S1 — `--since`): dropped outright.** Plain `docker logs -f`
+    replays from the first line; `started_at` stays in the record for
+    display and duration only. The argv-asserting test (`:6245`) is replaced
+    by one that asserts the replayed FIRST line (hollow test 1).
+  - **RW-16 (S2 + S3 — identity and the daemon): `{{.Id}}` joins the
+    existing `docker inspect -f` format; an id mismatch is GONE-by-name**
+    ("a different container now wears this name; run-gate will not touch
+    it"), record cleared, fresh run. **"No such object"/"No such container"
+    on stderr is the ONLY gone signal**; any other inspect failure is
+    infrastructure — exit 3, record UNTOUCHED, no history write — so a
+    daemon restart on this host can never orphan a live container or write
+    a false `aborted`. Ask 4 answered: distinguish, do not document a loss.
+  - **RW-17 (S4 — collected duration): `FinishedAt − StartedAt` from
+    `docker inspect` on the collect path**, the record's `started_at` only
+    as the fallback when inspect lacks either; the re-attach path keeps
+    `now − started`. Ask 5 answered: use `FinishedAt`.
+  - **RW-18 (S5 + S6 — what the client says): `--dry-run` computes the
+    commit comparison FIRST and names the refusal it would give; the
+    re-attach and follow paths print the same `budget` and `stall_timeout`
+    disclosure lines the fresh path prints** (facts about the lane, not
+    about this client's mounts). Ask 6 answered: RG-40's acceptance criteria
+    gain "the source-of-signal line is printed on re-attach and follow too"
+    now, so the next wave inherits the rule and not the defect.
+  - **RW-19 (S7, N1–N5, hollow tests 2–6): all taken.** S7: the dstdns
+    consumer for RG-34 is `scale-admission` (`schema` was fixed at
+    `dstdns@65582354`); N1: SPEC says what the poll actually does (stat +
+    full read + per-line parse) — an incremental read from a saved offset is
+    accepted if the implementer prefers it, the sentence must be true
+    either way; N2: `INFLIGHT_SCHEMA` checked on read, a mismatch disclosed
+    and treated as no record; N3: the record's `verdict` and `progress` ARE
+    READ on re-attach and follow (they are that run's declared artifacts;
+    the live config is not the authority for a run already in flight); N4:
+    a progress file that vanishes mid-run gets its own sentence and silence
+    keeps counting toward `stall_timeout` (a vanished file is silence, not
+    "not an R2 lane"); N5: the CONSUMERS transcript verbatim, and the
+    wave-prompt path stated as the main checkout's. Hollow tests 2–6
+    replaced by behaviour assertions exactly as the review lists them.
+  - **Fix implementer dispatched** (fresh Opus): one package in the order
+    RW-14 → RW-13 → RW-16 → RW-15 → RW-17 → RW-18 → RW-19, red-first where
+    the review's probes already express it, selftest on the committed tip
+    only, one live two-client probe under the host rule, records appended
+    (LOG/REPORT), no push. Reviewer round 2 on its tip (round cap 3).
