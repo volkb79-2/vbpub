@@ -305,6 +305,16 @@ tracked files remain dirty regardless of any exclude source.
 
 ## Resume and shard a long mutation lane
 
+**A consumer gate passes `--resume --progress <path>` on EVERY lane it runs,
+not only its mutation lanes.** Both are no-ops where a lane has nothing to
+checkpoint — `--progress` is ignored without R2, and resume state is touched
+only by the mutation sweep — so a uniform invocation costs nothing and means a
+lane that later gains R2 needs no gate change to become resumable and
+observable. Write the progress file outside the tree under judgement: an
+untracked path inside it is a `NO_MEASUREMENT`/`DIRTY_TREE` of the gate's own
+making. (assay's own registered gate does this to itself, in
+`tools/tester-unified-gate.sh`.)
+
 Preview a subset without executing it:
 
 ```sh

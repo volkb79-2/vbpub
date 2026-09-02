@@ -115,6 +115,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   rather than a second hand-written copy of its format string. A leaked
   parent descriptor on B049's new raise path in the per-mutant equivalence
   read is closed by a `try`/`finally`. (B053/B049, A-421, A-422, A-423)
+- assay's own registered gate now invokes its self-hosted lane the way the
+  estate requires every `assay run` to be invoked: with `--resume --progress
+  <path>` (both no-ops on an R0 lane, and deliberately so — the invocation
+  shape is uniform whether or not a lane has anything to checkpoint). The
+  progress file is written beside the verdict in the gate's scratch
+  directory, never into the tree under judgement. CONSUMERS states the same
+  rule for consumer gates. (A-429)
 - The last silent terminal in `assay.runner` also speaks: a cleanup that
   reports leaked snapshot state *after* the lane's own work completed
   replaces the highest higher-rigor claim with `ERROR`/`GIT_FAILED`, and now

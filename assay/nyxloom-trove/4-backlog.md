@@ -6380,3 +6380,72 @@ failure of assay.
 - [ ] the three modules still measure what they measure today when the tree
       IS in the vbpub checkout — proven by running them in place, unchanged
       results.
+
+---
+
+## B064 — progress and resume beyond R2: what R0/R1 could observably report, and why R3's canary is the one tier where both are actually feasible
+
+**Filed 2026-09-02** by the controller, from an operator question during Wave
+D: *do R0/R1 runtimes justify progress/resume, and could the canary (R3) have
+them?* **FILED, NOT IMPLEMENTED — no scope in Wave D.** This entry records the
+measured answer so the question is not re-asked from scratch, and so that
+whoever builds B007 knows which of its design choices this one is coupled to.
+
+### The measured answer, tier by tier
+
+**R0 and R1: resume is a rerun by construction, and that is not a gap.**
+Each is exactly ONE command — the lane's own `argv` — run once. There is no
+checkpoint *inside* a foreign test runner for assay to resume from: assay does
+not know which of the runner's tests completed, and it must not guess. Worse,
+a coverage judgment assembled from a PARTIAL rerun would be unsound: the
+artifact would describe a subset of the suite while the claim describes the
+lane, which is precisely the laundering `EMPTY_COVERAGE` and B049's
+orphaned-reservation refusal exist to prevent. So "resume at R0/R1" can only
+ever mean "run the command again", which is what a consumer already does.
+
+**R0/R1 progress is cheap and merely unwired.** The run has a small, fixed
+set of phase boundaries that assay itself owns and can timestamp without
+knowing anything about the runner: run header, snapshot materialised, command
+finished (with its exit status), coverage parsed, verdict written. That is a
+uniform phase stream, the same shape at every tier, and it would make a lane
+that currently looks hung for nine minutes legible. Nothing about it is hard;
+it simply has no producer today, because `--progress` was built for the
+mutation sweep's per-candidate events.
+
+**R3 is the tier where BOTH are genuinely feasible**, and for the same reason
+they were feasible at R2: the canary has the same per-unit shape as a mutation
+sweep — one command per target/attempt, a small number of units, each with a
+deterministic identity — so the existing state mechanism (`.assay/`-persisted,
+identity-keyed records, the `schema_version`-mismatch-is-an-absent-record
+rule) applies without new substrate. Per-attempt progress events and
+per-target resume both fall out of that.
+
+### The B007 coupling — read this before designing B007's payload
+
+B007's ordered multi-target R3 canary already defines a **per-attempt payload**
+(ordered array, closed "why not attempted" vocabulary). That payload is
+exactly what a per-attempt progress EVENT would carry, and its identity is
+exactly what a per-target resume record would be keyed by. So B007's payload
+shape decides this entry's shape whether or not this entry is ever built.
+B007's A-row must say so in one sentence; nothing here widens B007's scope.
+
+### Explicitly not proposed here
+
+- No `--progress` producer at R0/R1, no resume at R0/R1, no R3 progress or
+  resume **in Wave D**.
+- Nothing that makes `--progress` or `--resume` mean something different per
+  tier: A-429 just made the estate pass both on every lane precisely because a
+  uniform invocation shape is the thing worth having.
+
+### Acceptance (for whoever picks this up)
+
+- [ ] a ruling recorded as an A-row on whether the R0/R1 phase stream is
+      built, naming the rejected alternatives (nothing; per-tier bespoke
+      events; a runner-aware progress that assay must not attempt);
+- [ ] if built, the phase vocabulary is CLOSED and identical across tiers, and
+      `verify.py` is untouched (progress is diagnostic, never evidence);
+- [ ] R3 progress/resume, if built, reuses B007's per-attempt identity rather
+      than inventing a second one — proven by a test that resumes a
+      multi-target canary and re-runs only the unattempted targets;
+- [ ] the measured claims above are re-checked, not inherited, at the time of
+      building.

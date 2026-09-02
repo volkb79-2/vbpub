@@ -706,3 +706,34 @@ def test_the_shipped_source_tree_is_pyflakes_clean(
 
     proc = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions, timeout=180)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_the_self_hosted_lane_is_invoked_with_resume_and_progress() -> None:
+    """(A-429) The 2026-09-02 operator directive, now estate policy: EVERY
+    ``assay run`` in the estate passes ``--resume --progress <path>``
+    (vbpub ``AGENTS.md``; run-gate SPEC R-38 / RG-33, run-gate rev 33).
+
+    run-gate appends both to every assay-kind lane it drives. This gate calls
+    ``assay run`` itself, so it is the one invocation in the estate a
+    run-gate change cannot reach — which is exactly why it is asserted here
+    rather than assumed. Both flags are no-ops on this R0 lane by assay's own
+    contract, and that is the point: the shape is uniform whether or not a
+    lane has anything to checkpoint.
+
+    The progress path must stay under the gate's ``$scratch``. A progress file
+    written into the worktree would be an untracked path in the tree the lane
+    is judging, i.e. a self-inflicted ``DIRTY_TREE``.
+    """
+    source = GATE_SCRIPT.read_text(encoding="utf-8")
+    invocation = source.split("assay run tester-unified", 1)[1].split("; then", 1)[0]
+
+    assert "--resume" in invocation, invocation
+    assert '--progress "$scratch/progress-tester-unified.jsonl"' in invocation, (
+        invocation
+    )
+    assert "--require-judge-provenance" in invocation, invocation
+    assert '--verdict-json "$scratch/verdict.json"' in invocation, invocation
+    # Exactly one such invocation: a second, unflagged one would defeat this.
+    assert source.count("assay run tester-unified") == 1, source.count(
+        "assay run tester-unified"
+    )

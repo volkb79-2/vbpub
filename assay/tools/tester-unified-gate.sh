@@ -279,7 +279,19 @@ run_self_hosted_lane() {
   # artifact it came from -- so a self-hosted run that somehow imported source
   # instead of the installed wheel stops here, loudly, rather than producing
   # evidence attributed to a build it never ran.
+  # (A-429) `--resume --progress` on EVERY `assay run` in the estate is an
+  # operator directive of 2026-09-02, now estate policy (vbpub AGENTS.md,
+  # run-gate SPEC R-38 / RG-33, run-gate rev 33). run-gate appends both to
+  # every assay-kind lane it drives; this gate calls `assay run` itself, so it
+  # mirrors the policy rather than being the one exception to it. Both are
+  # no-ops on THIS lane by assay's own contract -- `--progress` is ignored
+  # without R2 and resume state is touched only by the mutation sweep -- which
+  # is the point: the invocation shape is uniform across the estate whether or
+  # not a given lane has anything to checkpoint. The progress file lives in
+  # `$scratch` like the verdict, never in the worktree, where an untracked
+  # file would read as DIRTY_TREE.
   if ! assay run tester-unified --require-judge-provenance \
+      --resume --progress "$scratch/progress-tester-unified.jsonl" \
       --verdict-json "$scratch/verdict.json"; then
     echo 'ASSAY_GATE_DIAGNOSTIC=self-hosted-lane-red; rerunning its command for visible diagnostics' >&2
     # A red lane has two very different shapes and the rerun below only shows
