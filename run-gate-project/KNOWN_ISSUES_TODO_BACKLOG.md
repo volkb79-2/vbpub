@@ -2148,6 +2148,63 @@ lane's schema sub-lane against a dedicated container since
 finishing P152's own composite gate run under the operator's single-stack
 host-contention directive.
 
+### Second independent reproduction, BROADER consequence (dstdns P156, 2026-09-02)
+
+Same root fact (a Mode-B worktree's own dedicated test-runner container
+mounts ONLY that worktree's subtree, never the main checkout's `.git`), a
+DIFFERENT and wider-reaching symptom than the schema-lane argv bug above:
+running `run-gate test-runner --worktree <p156 worktree>` (the disclosed
+RG-24 `docker exec` workaround, since run-gate's own container resolution
+still targets the MAIN landscape per RG-24, still open) surfaced 12 failed
++ 14 errors across FIVE unrelated files, ALL tracing to the identical cause
+— a bare `subprocess.run(["git", ...], cwd=REPO_ROOT, ...)` where
+`REPO_ROOT` is `Path(__file__).resolve().parents[N]` (correctly resolving
+to the worktree checkout itself, NOT the P152 script-path bug) but that
+worktree's `.git` FILE names a `gitdir:` target
+(`/workspaces/dstdns/.git/worktrees/<name>`) unreachable from inside the
+container:
+```
+fatal: not a git repository: /workspaces/dstdns/.git/worktrees/p156-scale-admission-live-bounds
+```
+Files hit: `tests/config/test_lane_membership_census.py` (2 tests, `git
+ls-files`), `tests/config/test_workflow_stream_sources_agree.py` (all 14
+nodes error, `git ls-files '*.toml' '*.j2'`), `tests/config/
+test_doc_hygiene.py` (2 tests), `tests/config/
+test_legacy_config_system_is_gone.py` (6 tests), `tests/config/
+test_service_identity_inline.py` (2 tests, `git show <rev>:<path>`).
+Confirmed as environmental, not a P156 regression, via the discriminating
+test the acceptance criteria above already call for: the SAME 26 test
+nodes, run unchanged against `main`'s shared Mode-A test-runner (full repo
+root mounted, real `.git`), all PASS. Zero of these five files are P152's
+`schema-gate.sh`, so this is proof the mount gap is not scoped to one
+script — it is ANY in-container `git` subprocess call, repo-wide, and this
+backlog's own SPEC.md `R-23` claim ("run-gate's OWN container lanes are
+unaffected, because R-23 dual-mounts the REPO root") does not hold for this
+call path: R-23 only fires when run-gate itself constructs the container's
+mounts, and RG-24's disclosed Mode-B `docker exec` workaround never goes
+through that construction — it execs into a container ciu already deployed
+with its own (single-mount) compose definition.
+
+**Where the real fix belongs, most likely NOT here:** the test-runner
+container's mount set is a dstdns-owned artifact
+(`tools/test-runner/ciu.compose.yml.j2`), not something run-gate
+constructs for the RG-24 exec path — so the durable fix is almost
+certainly a second, read-only bind mount of the main checkout's `.git`
+into every Mode-B dedicated test-runner (git worktrees are DESIGNED to
+share one object database this way; it would not compromise per-worktree
+file isolation). Filed here rather than only as a dstdns-local note because
+this entry is where the mount-scope fact already lives, and because R-23's
+"container lanes are unaffected" claim in SPEC.md needs a caveat for the
+RG-24 exec-into-existing-container path specifically, independent of
+whichever repo lands the compose-mount fix. dstdns-local workaround applied
+in the interim, scoped to exactly one already-in-scope file (`test_
+lane_membership_census.py`): a cheap `git rev-parse --git-dir` liveness
+probe, `pytest.mark.skipif` on the one test needing `git ls-files`, honest
+`reason=` naming this exact gap — mirroring `test_run_gate_pointer_linkage.
+py`'s own "skip, don't fail, when the environment genuinely can't" pattern.
+The other four files were left unfixed (out of P156's own scope; this
+finding is the report of that decision, not a claim they were repaired).
+
 ## RG-35 — a lane's container outlives a dead run-gate client, but nothing re-attaches; a restart starts a duplicate
 
 **Filed 2026-09-02 (vbpub controller session), from the operator's ask to make
