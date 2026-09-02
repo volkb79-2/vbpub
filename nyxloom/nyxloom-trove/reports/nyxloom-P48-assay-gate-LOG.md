@@ -314,5 +314,96 @@ tests/, or un-locking a pinned handoff value, neither of which is mine to
 do.`
 
 Branch left as-is (committed W1-W5 at `345944cb`), plus this LOG and the
-REPORT committed in a follow-up commit. Not merged (controller's step, per
-the handoff and per doctrine).
+REPORT committed in a follow-up commit (`2c00fe7d`). Not merged (controller's
+step, per the handoff and per doctrine).
+
+## Controller correction + fix cycle (2026-09-02, same session)
+
+The coordinator reviewed the BLOCKED finding and issued an explicit,
+mechanical correction (root-caused identically to this LOG's own diagnosis:
+`"assay-verdict"` was never actually added to nyxloom's schema enum; NL-1's
+own proposed-contract text and ciu's copy were both aspirational/unvalidated
+on this specific point):
+
+1. Drop `"assay-verdict"` from `nyxloom-trove/nyxloom.toml`
+   `[gates.tester-unified].asserts` (a file already in `scope.touch`) --
+   `asserts = ["tests-pass", "changed-line-coverage", "canary-verified"]`.
+   `"mutation"` stays out too (R2 still deferred, unchanged from before).
+2. Added a one-line comment explaining the omission is deliberate (schema
+   doesn't support the value yet), not forgotten.
+3. Re-verify + re-run the full live gate for real O2 evidence.
+4. Cheaply confirm the two `TestL10Size` failures are pre-existing/unrelated.
+
+### Edit + local pre-check
+
+Edited `nyxloom-trove/nyxloom.toml` per the correction (see diff in the
+commit below). Local host pre-check before spending a docker run:
+```
+$ PYTHONPATH=src python3 -m pytest tests -k test_repos_own_config_no_findings -q
+.                                                                        [100%]
+```
+CFG1 clears. Committed: `git add -- nyxloom-trove/nyxloom.toml && git commit
+...` -> `da9ce890` ("fix(nyxloom): P48 -- drop unsupported \"assay-verdict\"
+from gate asserts"). `git status --short` confirmed empty (clean tree)
+before the re-run.
+
+### TestL10Size cheap pre-existing check (item 4)
+
+```
+$ git diff --stat a74bc6f6 -- tests/test_lint.py
+(empty -- byte-identical, confirms nothing in this package touched the file)
+$ PYTHONPATH=src python3 -m pytest tests -k "test_large_handoff_warning or test_huge_handoff_error" -q
+FAILED tests/test_lint.py::TestL10Size::test_large_handoff_warning
+FAILED tests/test_lint.py::TestL10Size::test_huge_handoff_error
+```
+Both reproduce on host, independent of any docker/gate config, using
+synthetic `tmp_path`-based fixtures that never read this package's edited
+files. Root-caused precisely: `src/nyxloom/lint.py`'s `_check_l10` (line
+~1078) hardcodes thresholds at 10000 tokens (warning) / 18000 tokens
+(error); the two tests' own docstrings say "over 6k tokens" /
+"over 12k tokens" -- i.e. the tests were written against smaller threshold
+constants that no longer match the shipped code. This is precisely the gap
+NL-3 already tracks ("L10 handoff-size thresholds are hardcoded constants,
+need a per-project nyxloom.toml override") and is unrelated to gates/asserts
+config -- confirmed pre-existing, not caused by this package, per item 4's
+instruction (one-sentence note, not chased further).
+
+### Full live gate re-run
+
+Command (from `nyxloom/`, same as before): `./run-gate.py --worktree
+/workspaces/vbpub/.worktrees/nyxloom-P48-assay-gate tester-unified`. Run in
+background, checked in on for real progress mid-run (`docker ps` -> new
+container `run-gate-vbpub-tester-unified-1162362-1788317606` "Up"; `docker
+exec <cid> ps aux` -> the real assay process + pytest + 7 live xdist workers
+accumulating CPU time), then waited on with a foreground blocking poll
+(`until grep -q EXIT_CODE ...; do sleep 4; done`) rather than a passive
+text-only pause.
+
+**Result: exit 1 again** (`EXIT_CODE:1`), but the verdict JSON's
+`result_stdout_tail` now shows ONLY the two pre-existing `TestL10Size`
+failures -- the CFG1 finding is confirmed GONE (no `LintFinding` /
+`test_repos_own_config_no_findings` failure anywhere in the output). Verdict
+read as a separate `cat` step: `.assay/verdict-tester-unified.json` ->
+`"commit": "da9ce8904fe408aef86f19b7ecb1e130d89ee052"`, `"outcome": "FAIL"`,
+`"reason_code": "COMMAND_FAILED"`, `"exit_code": 1`. Claims: R0 =
+FAIL/COMMAND_FAILED (because pytest itself still exits nonzero, on the two
+pre-existing L10 failures alone); R1 = PASS (coverage pct 100.0, trivial
+empty-delta pass, as before).
+
+### Conclusion of the fix cycle
+
+The controller-corrected carve defect (unsupported `"assay-verdict"` enum
+value) is CONFIRMED FIXED: verified twice (host pre-check + the live gate's
+own verdict, which no longer reports CFG1/`test_repos_own_config_no_findings`
+as a failure). However, the live gate STILL cannot reach O2's required
+"exit 0 / R0 PASS" today, for an entirely separate, pre-existing,
+already-tracked (NL-3) reason that this package's diff never touched and
+cannot fix within `scope.touch` (fixing `_check_l10`'s thresholds or the two
+tests both require touching forbidden `src/`/`tests/`). This is NOT a new
+carve defect in this package -- it is nyxloom's OWN current baseline
+(`a74bc6f6` and unchanged since) already failing 2 of its own tests,
+independent of gates/asserts/coverage entirely. Reported honestly rather
+than fabricating a PASS; left for the controller to decide (e.g. sequence
+NL-3's fix ahead of/alongside this package, or accept this package's own
+scope as complete and treat the residual non-green as a pre-existing,
+separately-tracked gap).
