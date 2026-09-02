@@ -1228,3 +1228,31 @@ candidate mechanism for the post-Wave-C consumer-diagnostics patch wave
 (B053 + B049), not for Wave C. Note that A-407 is what makes the "the
 verdict's R1 claim carries that same pair" sentence TRUE end to end — before
 it, both of these refusals produced no verdict at all.
+
+### `<this commit>` — `docs(assay): Wave C generation 8 -- gate run 12 PASS on 99d2a443`
+
+**Gate run 12: PASS on `99d2a443`** — `ASSAY_REGISTERED_GATE_COMPLETE=1`
+exactly once, all eleven phase markers through `topos-qualified` /
+`cmru-b006a-qualified` / `independent-self-hosting-passed`, the installed
+wheel `assay-4.0.1.dev52+g99d2a443` and the self-hosted lane's own receipt
+both naming the judged commit, a SEPARATE independent grep for
+`FAILED|DIRTY_TREE|Traceback` returning nothing, and my own appended
+`MY_GATE_WRAPPER_EXIT=0` — `$?` taken immediately after the gate script
+returned, never a harness report of a backgrounded shell. Transcript and the
+full read-back in REPORT §54, including the two earlier attempts that were
+killed (one by a tool timeout at phase 8, one deliberately at phase 2 when
+self-review found the missing A-407 control) and are not cited as this run.
+
+All five source commits of this generation are under that run. On the same
+tree: full suite **3943 passed, 20 skipped**; Go qualification in
+`tester-unified-go:local` **7 passed**.
+
+**Process note, volunteered for the reviewer.** Every change to a tracked file
+this generation was made with the Edit tool, per the operator's standing
+directive — no rewrite scripts over tracked files. Two mutation probes edited
+scratch worktree copies under `scratchpad/g8/` (also via Edit), never the
+worktree, and both were applied to a COMMITTED tree in that copy so that a
+zipapp built from it measures the mutation rather than a working-tree edit.
+
+This section and REPORT §54 are the only content in this commit; both were
+written after run 12 returned, not during it.

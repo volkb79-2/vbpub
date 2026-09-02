@@ -2439,4 +2439,77 @@ venv (Python 3.14.6), over the whole `tests/` tree with no `--ignore`:
 * **The srdm F008-A5 harness was not re-run.** The reviewer rebuilt it
   against the tip in round 2 and measured 418/394/94.26% unchanged; nothing
   in this generation touches the join, the parser or the fold — the diff is
-  one guard in claim assembly, three tests and two docs blocks.
+  one guard in claim assembly, four tests and two docs blocks.
+
+---
+
+## 54. Gate — run 12, PASS on commit `99d2a443`
+
+`bash assay/tools/tester-unified-gate.sh
+/workspaces/vbpub/.worktrees/assay-wave-c-go`, from `/workspaces/vbpub`, log
+written OUTSIDE the worktree (`scratchpad/g8/gate-run12.log`), worktree clean
+and unedited for the duration (confirmed before the run and after it), verdict
+read in a SEPARATE step from the run.
+
+```console
+$ grep -c "ASSAY_REGISTERED_GATE_COMPLETE=1" gate-run12.log
+1
+$ grep -n "MY_GATE_WRAPPER_EXIT" gate-run12.log
+62:MY_GATE_WRAPPER_EXIT=0
+$ grep "ASSAY_GATE_PHASE" gate-run12.log
+ASSAY_GATE_PHASE=wheel-installed
+ASSAY_GATE_PHASE=attestation-hardened
+ASSAY_GATE_PHASE=verdict-v5-accepted
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified
+ASSAY_GATE_PHASE=verdict-v9-successors-verified
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+$ grep -nE "FAILED|DIRTY_TREE|Traceback" gate-run12.log
+(no hits)
+$ grep -o "assay-4.0.1.dev[0-9]*+g[0-9a-f]*" gate-run12.log | sort -u
+assay-4.0.1.dev52+g99d2a443
+$ grep -n "commit: " gate-run12.log
+38:  commit: 99d2a443ea8ddd317d4047d760188a074e162568
+```
+
+Eleven phases, and the installed wheel names the judged commit — the check
+that says the gate measured THIS tree and not a stale build. The self-hosted
+lane's own receipt agrees: `tester-unified: PASS (exit 0)`, `commit:
+99d2a443…`. The B006(a) receipt reports `outcome=PASS exit_code=0` with all
+four claims PASS, the R2 killed identity and the R3 canary's expected ==
+observed `UNCOVERED_LINES`; the independent self-hosting phase is `7 passed`.
+
+**`MY_GATE_WRAPPER_EXIT=0` is my own appended marker, and it is not the same
+string §49 quotes.** Run 11's `GATE_EXIT=0` was generation 7's own wrapper
+echo, not something the gate script emits; I appended mine under a different
+name so the two cannot be confused in a grep across both logs. It is
+`$?` taken immediately after the gate script returns, in the same `bash -c`
+that redirected its output — so it is the SCRIPT's exit status, never the
+harness's report of a backgrounded shell. The harness's own completion notice
+also said exit 0; the only reason this paragraph can say which was true is
+that the marker was read on its own.
+
+**Two runs preceded it and neither is being passed off as this one.** A first
+attempt was killed by a 10-minute tool timeout at phase 8 and a second was
+stopped deliberately at phase 2, when self-review found the missing A-407
+control test (§50). Both left an orphaned inner container, which was stopped
+and confirmed gone before the next start; the worktree was verified clean and
+unchanged after each. Neither produced a verdict and neither is cited.
+
+Also on this tree, both before the gate, from the worktree's `assay/` with the
+devcontainer venv:
+
+* **Full suite: 3943 passed, 20 skipped**, exit 0, whole `tests/` tree with no
+  `--ignore` (`scratchpad/g8/full-suite-final2.log`).
+* **`ASSAY_GO_QUALIFICATION=1 pytest tests/qualification/test_go_r1_real.py`:
+  7 passed**, 48.1s, in `tester-unified-go:local`
+  (`scratchpad/g8/qual-final2.log`) — the five existing tests plus A-407's
+  scenarios B and E.
+
+**The only commit after run 12 is docs-only** — this section and the LOG's
+gate paragraph. No source, test, packaging, vocabulary, fixture, witness or
+decision-file change.
