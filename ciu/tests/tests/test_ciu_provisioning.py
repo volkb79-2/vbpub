@@ -1743,6 +1743,25 @@ def test_resolve_probe_container_with_override_uses_declared_service_key():
     assert cname == "p-t-postgres"  # container_name(config, "postgres") -- CORRECT
 
 
+def test_resolve_probe_container_override_falls_back_to_literal_on_unresolvable_config():
+    """A `provides_container` override, when `container_name()` itself raises
+    (no `deploy.project_name`/`environment_tag` in *config*), falls back to
+    the bare override string -- the same `except (ValueError, KeyError)`
+    fallback contract `_stack_container_name` already has for the
+    basename-guess path (see
+    `test_stack_container_name_no_config_no_match_falls_back_to_selector`)."""
+    stacks = {
+        "infra/foo-core": {
+            "requires": [],
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/bar": "postgres"},
+        }
+    }
+    cname, unresolved = provisioning._resolve_probe_container("pg:db/bar", {}, stacks)
+    assert unresolved is None
+    assert cname == "postgres"
+
+
 def test_resolve_probe_container_override_absent_for_this_ref_falls_through():
     """A provides_container table that overrides a DIFFERENT ref of the same
     stack leaves this ref on the basename guess, unaffected."""
