@@ -50,6 +50,9 @@ SPEC §9.
 | RG-30 | `doctor` and `--check-env` both pass `None` to `resolve_repo_and_worktree` (`run-gate.py:1789`, `:2068`) instead of the caller's `--worktree` value, so `doctor --worktree B` silently reports the INVOKING tree's answers, not B's — including RG-21's worktree-specific host-lane git-view WARN, which is exactly the per-tree answer that can legitimately differ | Medium | FIXED 2026-08-31 (rev 31, run-gate-P04) — new shared `resolve_worktree_scope()` (validates a real git worktree, refuses by name otherwise); `doctor`'s per-tree checks (git identity, RG-21 warning, mountinfo) and the shared `assay_toolchain_findings()` probe's `cd` target (used by both `doctor` and `--check-env`) now resolve/relocate under `--worktree`, disclosed in the report; `--check-env`'s env-drift scan follows it too and refuses upfront on a bad override (no per-check ledger to degrade into). SPEC `R-37` (`R-37a`/`R-37b`/`R-37c`). `./run-gate.py selftest` green: 394 passed, 2 skipped, diff-coverage 22/22 = 100.0%, exit 0 (commit `929be064`) |
 | RG-31 | `assay_toolchain_findings()`'s own `resolve_repo_and_worktree` call (the toolchain-fitness probe shared by `doctor` check 5 and `--check-env`) still takes the RAW `worktree_override` string, not RG-30's new validated `resolve_worktree_scope()` — so a bad `--worktree` combined with an assay lane present degrades safely (a `[SKIP]` on that check, no false-`[OK]`) but with a MISLEADING reason string (blames "an assay older than 3.2.0" rather than naming the real `--worktree` problem, which `doctor` check 3 already reported correctly two checks earlier in the same report) | Low | FIXED 2026-09-01 (rev 32) — routed through `resolve_worktree_scope()`, the same validated resolver check 3 and `--check-env` already use; a bad override now raises the identical `GateError` and the existing per-lane `except GateError` SKIP handler reports the real cause, never a guess about assay's version. New regression test `test_bad_worktree_skip_names_the_real_problem_not_assay_version` asserts the SKIP line repeats check 3's own "not a directory" cause and never says "older than 3.2.0". `./run-gate.py selftest --allow-dirty` green: 395 passed, 2 skipped, diff-coverage 0/0 = 100.0% (pre-commit run), exit 0 |
 | RG-33 | `kind = "assay"` mutation lanes never receive `--resume` (or `--progress`), so a budget-capped retry re-tests every mutant from #1 — dstdns `sql-mutation`, three 120-minute retries spent on the first of four target files, `.assay/mutation-state/` never written | Major | FIXED 2026-09-02 (rev 33, SPEC `R-38`) — every assay-kind invocation now carries `--resume --progress .assay/progress-<assay_lane>.jsonl` unconditionally (no-ops without R2, per assay's own contract); a pin declaring a judge older than 2.4.1 refuses by name at argv construction; five new tests in `TestResumeAndProgressAlways` including the executed host-runner argv and the dry-run docker argv line; assay's own gate script mirrors it in the assay wave |
+| RG-35 | a lane's container outlives a dead run-gate client (`docker run -d` … `rm -f` in a `finally` the client never reaches), but nothing re-attaches: exit status, evidence and history are lost and the next invocation starts a DUPLICATE container for the same lane — the one-gate rule broken by the tool | Major | OPEN 2026-09-02 — `.run-gate/inflight/<lane>.json` on start, re-attach (`docker logs -f --since` + `wait`) or collect-and-finish on restart, `--fresh` to force; operator's "re-attachable runs" pattern |
+| RG-36 | the only liveness bound for a long assay lane is a GUESSED total `budget` (advisory here, hard in assay); rev 33's progress file makes rate/ETA/stall observable but run-gate reads none of it | Major | OPEN 2026-09-02 — periodic `progress <lane>: i/N, rate, ETA` disclosure + optional `stall_timeout` (stop only when running AND silent for that long, never on total elapsed); exact timing needs assay B065 |
+| RG-37 | resume state lives under the JUDGED project root, so a fresh worktree per run (cmru release transaction, Mode-B instances) loses it and a retry restarts from mutant #1 despite `--resume` | Medium | OPEN 2026-09-02 — bind-mount a per-repo durable `.run-gate/assay-state/<project>/` at the state path; needs assay B066 (`--state-dir`); copy-in/out fallback until then |
 
 ---
 
@@ -2143,3 +2146,137 @@ lane's schema sub-lane against a dedicated container since
 `dstdns` P152 (`nyxloom-trove/decisions.md` D-319), discovered live while
 finishing P152's own composite gate run under the operator's single-stack
 host-contention directive.
+
+## RG-35 — a lane's container outlives a dead run-gate client, but nothing re-attaches; a restart starts a duplicate
+
+**Filed 2026-09-02 (vbpub controller session), from the operator's ask to make
+dstdns's "progress artifact + re-attachable runs + unbounded budget" pattern
+the default for assay/run-gate too. This is the re-attach leg.**
+
+### What's wrong
+
+`run_container_lane` does `docker run -d --name <lane-pid-ts>` →
+`docker logs -f` → `docker wait` → `docker rm -f` in a `finally`
+(`run-gate.py:2500-2554`). When the CLIENT dies — SIGKILL, a devcontainer
+restart, a harness that reaps a background command (measured the same day:
+the Claude harness killed a detached-by-mistake `cmru release` after 33 s
+and its inner gate container ran to completion unobserved) — the container
+keeps running and the judge still writes `.assay/verdict-<lane>.json` into
+the bind-mounted worktree, but nobody collects the exit status, no evidence
+is captured (RG-12), no history record is written (RG-27), and the next
+invocation of the same lane on the same worktree starts a SECOND container
+— the one-gate-at-a-time rule broken by the tool itself, on a host that
+shares 8 cores with a production game server (load 85 that afternoon).
+
+### Proposed fix
+
+- On a successful `docker run -d`, write `.run-gate/inflight/<lane>.json`
+  (git-ignored, R-36's store discipline): container name and id,
+  `started_at`, judged commit, worktree, verdict path, progress path.
+- On invocation, if an inflight record names a container that still
+  EXISTS: re-attach — `docker logs -f --since <recorded>` + `docker wait` —
+  instead of starting one, disclosed as
+  `run-gate: re-attached to <name> (started <t>, <elapsed> ago)`; if it has
+  already exited: collect exit code, logs (evidence on failure) and the
+  verdict, finish the run exactly as an attached one would, then remove the
+  container. `--fresh` forces a new run (removes the old container first,
+  disclosed by name). The record is cleared in the same `finally` that
+  removes the container.
+- RG-27 history records a re-attached run once, with the real duration from
+  `started_at`.
+
+### Acceptance
+
+- [ ] kill -9 the client mid-lane (fake docker AND one live probe): the
+      container finishes; a second invocation prints the re-attach line,
+      yields the container's real exit code, records history once, and
+      starts NO second container;
+- [ ] an inflight record whose container is gone (host reboot) is reported
+      and cleared, never silently ignored;
+- [ ] `--dry-run` discloses an existing inflight record.
+
+## RG-36 — liveness judged from the progress file, not from a guessed wall budget: `stall_timeout` and ETA disclosure for assay lanes
+
+**Filed 2026-09-02, same ask as RG-35; this is the "unbounded budget by
+convention" leg.**
+
+### What's wrong
+
+`budget` is advisory in run-gate (`run-gate.py:2519`, printed, never
+enforced) and a hard lane-wide bound in assay (`LANE_TIMEOUT`). The only way
+to bound a long mutation lane today is to guess a TOTAL number: dstdns raised
+`sql-mutation` from 90m to 120m once and it still could not finish a
+budget window (RG-33's transcript). Since rev 33 every assay lane writes
+`.assay/progress-<lane>.jsonl` — per-candidate events carrying
+`candidate_index` / `candidate_total` — so health can be judged from
+progress instead: rate, ETA, and stall.
+
+### Proposed fix
+
+- While the container runs, tail the progress file and print
+  `run-gate: progress <lane>: candidate 37/172, 1.9/min, ETA 71m` at a fixed
+  interval (disclosure only, R-05). No progress file (an R0/R1 lane, or a
+  judge that writes none) is disclosed once and never treated as a fault.
+- Optional lane key `stall_timeout = "15m"`: the lane is stopped (`docker rm
+  -f`, evidence saved, exit 3 naming the stall and the last event seen) only
+  when the container is still running AND no event has been appended for
+  that long — never on total elapsed time. `budget` stays advisory; the
+  documented shape for a mutation lane becomes a generous assay `budget` +
+  `judge.mutation.budget_per_candidate` + run-gate `stall_timeout`.
+- Dependency: assay's events carry no timestamp today (`_progress_event`,
+  `mutation.py:755`), so ETA uses run-gate's own clock from the first event
+  it observed and stall uses the file's mtime — coarse but measured; assay
+  B065 (per-event `emitted_at` / `elapsed_s`) makes both exact.
+
+### Acceptance
+
+- [ ] a progress file advancing under a fake judge produces the ETA line
+      with the right arithmetic; a frozen file + running container trips
+      the stall at the configured time with evidence saved and exit 3;
+- [ ] no `stall_timeout` declared → behaviour unchanged;
+- [ ] an R0/R1 lane (no events) never stalls and says why, once.
+
+## RG-37 — resume state does not survive an ephemeral worktree (cmru release worktrees, Mode-B worktrees)
+
+**Filed 2026-09-02, same ask; this is the durability half of the resume leg.**
+
+### What's wrong
+
+assay writes `.assay/mutation-state/<candidate-id>.json` under the JUDGED
+project root (`mutation.py:797-806`). With a persistent worktree (dstdns's
+main checkout) retries now resume (rev 33). cmru's release transaction and
+dstdns's Mode-B instances create a FRESH worktree per run, so a retried
+release or Mode-B mutation lane starts from mutant #1 despite `--resume`.
+Candidate ids fold in the file's exact bytes, span, replacement and
+operator, so state is safe to share across worktrees and commits by
+construction: a record either matches the candidate exactly or is ignored.
+
+### Proposed fix
+
+Bind-mount a per-repo durable directory (`<repo>/.run-gate/assay-state/
+<project>/`, git-ignored) at the container path assay writes to. That needs
+assay to accept a state location (`--state-dir`, assay **B066**) because the
+path is derived from `project_root` today; until B066 ships, a disclosed
+copy-in / copy-out of `.assay/mutation-state/` around the lane is the
+fallback. Once B007 (multi-target canary) and F015 (R4) land, the same
+directory holds their per-target / per-attempt records.
+
+### Acceptance
+
+- [ ] two invocations on two DIFFERENT worktrees of the same commit: the
+      second's progress file shows `event: resume` with `resumed_total > 0`;
+- [ ] a source edit between them re-executes every candidate touching the
+      edited file (resume must never mask a change — RG-33's third item,
+      inherited).
+
+### Source (RG-35..RG-37)
+
+Operator, 2026-09-02, after dstdns's own drive()/drive_corpus() fix (progress
+JSONL a caller polls; run ids persisted and re-attached; an unbounded budget
+once health comes from the progress file): "can we make this a default
+pattern/best practice to be used with assay/run-gate as well?" The three
+legs map onto RG-35 (re-attach), RG-36 (progress-judged liveness) and
+RG-37 + assay B065/B066/B067 (durable resume state, timestamped events,
+per-unit bounds). R0/R1 lanes are one command each and cannot resume below
+that grain by construction; canary (R3) and red-first (R4) have mutation's
+per-unit shape and get the same mechanism through assay B064/B066.

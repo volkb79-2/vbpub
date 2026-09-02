@@ -5845,3 +5845,112 @@ srdm-shaped repetition being asserted in three orders (a fix handling only
       not launder an uncovered block (same test, final stanza);
 - [x] re-run F008-A5's qualification on the fixed build and record the
       classified table against covergate (REPORT).
+
+## B065 — progress events carry no time and no outcome, so a caller cannot compute rate, ETA or stall from the file alone
+
+**Filed 2026-09-02 by the vbpub controller on main, from the operator's ask to
+make "progress artifact a caller polls + re-attachable runs + unbounded
+budget by convention" the default pattern for assay and run-gate.
+Complements B064 (filed on the Wave D branch: phase-level events for R0/R1
+and per-attempt events for canary); ids allocated on main — the branch
+re-checks main before allocating.**
+
+### What was measured
+
+`--progress` (B031/A-320) writes `run`, `baseline`, `shard`, `resume` and
+one event per candidate, each carrying `candidate_index` / `candidate_total`
+and the candidate's identity (`_progress_event`, `mutation.py:755-780`), but
+**no timestamp, no elapsed time, and no outcome bucket**. A monitor tailing
+the file can count, but it cannot tell 30 candidates in 3 minutes from 30 in
+3 hours, cannot extrapolate an ETA without its own clock from the first event
+it happened to see, and cannot distinguish "slow" from "stalled" except by
+the file's mtime. run-gate RG-36 (stall detection + ETA disclosure) is
+blocked on exactly this.
+
+### Proposed change (additive to the progress stream only — not the verdict, no schema cut)
+
+- every event gains `emitted_at` (UTC, ISO 8601) and `elapsed_s` (monotonic
+  seconds since the `run` header);
+- each completed-candidate event carries its `outcome_bucket` (the same
+  vocabulary the verdict uses) and the candidate's own wall time;
+- the `run` header carries `candidate_total`, `budget_s` and
+  `budget_per_candidate_s` so the reader knows the bounds without the lane
+  file;
+- a terminal `end` event carries the bucket counts, so a reader can tell a
+  finished run from a dead one without the verdict.
+
+### Acceptance
+
+- [ ] a reader with ONLY the progress file computes rate, ETA and
+      last-event age; the numbers agree with the verdict's counts and the
+      run's measured wall time (real run, not a fixture);
+- [ ] `assay verify` is unaffected (the stream is not evidence);
+- [ ] CONSUMERS' progress paragraph names the fields.
+
+## B066 — the state location is derived from `project_root`; there is no way to keep resume state outside an ephemeral worktree
+
+**Filed 2026-09-02 (same ask). Pairs with run-gate RG-37.**
+
+### What was measured
+
+`mutation_state_record_path` (`mutation.py:797-806`) fixes the records under
+`<project_root>/.assay/mutation-state/`; `--resume` reads and writes there
+and nowhere else. A persistent worktree resumes across retries; a fresh
+worktree per run (cmru's release transaction, dstdns Mode-B instances) never
+does, so `--resume` is inert exactly where budget-capped retries happen most.
+Candidate ids fold in the file's exact bytes, span, replacement and operator,
+so a shared store is safe by construction: a record matches or is ignored
+(and a contradictory record already fails the lane `UNREADABLE_ARTIFACT`).
+
+### Proposed change
+
+`assay run … --state-dir PATH` (default: today's path, unchanged), validated
+the way `--progress` is (`validate_progress_destination`'s shape: outside the
+repository or git-ignored; a directory, created on demand). Mutation records
+move under it; once B007 (multi-target canary) and F015/R4 (red-first) land,
+their per-target / per-attempt records use the same root. Verify and refusal
+semantics unchanged. A run-gate consumer can then bind-mount a durable
+per-repo directory at that path (RG-37).
+
+### Acceptance
+
+- [ ] two runs of one commit from two different worktrees with the same
+      `--state-dir`: the second resumes (`event: resume`, `resumed_total`
+      > 0); a source edit between them re-executes the touched file's
+      candidates;
+- [ ] a `--state-dir` inside the judged tree and not git-ignored refuses
+      before any work, naming the reason (the DIRTY_TREE it would cause).
+
+## B067 — `budget` is the only liveness bound a lane has; "unbounded by convention" needs per-unit bounds first
+
+**Filed 2026-09-02 (same ask). A product decision for the operator or the
+next wave, not a fix.**
+
+### What was measured
+
+`budget` is required (`config.py:1226`) and enforced lane-wide
+(`LANE_TIMEOUT`, DA-D10/DA-R9/DA-R13 this wave); `judge.mutation.budget_per_candidate`
+is optional. There is no way to say "no total bound; every unit is bounded and
+liveness is judged from the progress file", which is the pattern dstdns
+adopted for its own long runs on 2026-09-02 and the operator asked to make
+the default here. Guessing a total (dstdns `sql-mutation` 90m → 120m, still
+short) is the failure mode.
+
+### Proposed change
+
+Allow `budget = "unbounded"` ONLY when every unit of the lane's work carries
+its own bound: R2 requires `budget_per_candidate`; R3 (and R4 when it lands)
+require the per-attempt bound B007's design (A-432) declares; an R0/R1 lane
+is ONE command, whose only bound IS `budget`, so `unbounded` is refused there
+by name. The lane-wide deadline machinery is untouched for a numeric budget.
+Stall detection stays with the caller (run-gate RG-36): assay cannot judge
+its own stall, and a hung unit is already caught by its unit bound.
+
+### Acceptance
+
+- [ ] `unbounded` with a missing unit bound refuses at load naming the unit;
+- [ ] an unbounded R2 lane with `budget_per_candidate` runs to completion
+      with no `LANE_TIMEOUT` path reachable (measured on a real lane);
+- [ ] CONSUMERS' worked mutation lane shows the recommended shape:
+      `budget = "unbounded"` + `budget_per_candidate` + run-gate
+      `stall_timeout`.
