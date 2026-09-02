@@ -1,29 +1,28 @@
-# applications/webapp-ui-react/ciu.compose.yml.j2 — v8 notation
-# Injected by ciu: container_name/hostname (dstdns-<instance>-webapp_ui_react-ui),
-# the instance network, base labels, cgroup fields. No volume mount: static
-# assets are baked into the image at /usr/share/nginx/html/app.
+# applications/webapp-ui-react/ciu.compose.yml.j2 — v8 notation (draft.3)
+# Injected by ciu: container_name/hostname (dstdns-<instance>-webapp-ui-react-ui),
+# the instance network, ciu.* labels, CIU_* identity env, healthcheck timing,
+# cgroup fields. No secrets, no bindings. No volume mount: static assets are
+# baked into the image at /usr/share/nginx/html/app.
 services:
   ui:
     image: {{ ciu_stack.ui.image }}
     user: "0:0"
     environment:
-      {% for key, value in deploy.env.defaults.items() %}
+      {% for key, value in env_defaults.items() %}
       - {{ key }}={{ value }}
       {% endfor %}
       - NGINX_PORT={{ ciu_stack.ui.endpoints.http.port }}
-      # public values rendered to /app/env.js by the nginx entrypoint
-      - AUTH_MODE={{ ciu_stack.ui.auth.mode }}
-      # "" in the stack file = derive the same-origin authority from this container's own identity (S3.5.3)
-      - OIDC_AUTHORITY={{ (ciu_stack.ui.auth.oidc_authority or 'http://' ~ ciu_stack.ui.identity.hostname ~ '/application/o/' ~ authentik.oidc_slug ~ '/') if auth.enabled else '' }}
+      # public values rendered to /app/env.js by the nginx entrypoint; the auth
+      # mode follows the control flag project.control.auth_enabled directly
+      - AUTH_MODE={{ 'oidc' if project.control.auth_enabled else 'stub' }}
+      # "" in the stack file = derive the same-origin authority from this container's own derived identity (S4.4.2)
+      - OIDC_AUTHORITY={{ (ciu_stack.ui.auth.oidc_authority or 'http://' ~ ciu_stack.ui.identity.hostname ~ '/application/o/' ~ authentik.oidc_slug ~ '/') if project.control.auth_enabled else '' }}
       - OIDC_CLIENT_ID={{ ciu_stack.ui.auth.oidc_client_id }}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:{{ ciu_stack.ui.endpoints.http.port }}{{ ciu_stack.ui.endpoints.http.path }}/"]
-      interval: {{ ciu_stack.ui.health.interval }}
-      timeout: {{ ciu_stack.ui.health.timeout }}
-      retries: {{ ciu_stack.ui.health.retries }}
-      start_period: {{ ciu_stack.ui.health.start_period }}
+      # interval / timeout / retries / start_period: injected from ciu_stack.ui.health (S6.6.4)
     restart: unless-stopped
     labels:
-      - "{{ deploy.labels.prefix }}.stack=application"      # extra label: docker-stats-exporter groups by it
-      - "{{ deploy.labels.prefix }}.service-type=frontend"
-      - "{{ deploy.labels.prefix }}.service-container=false"
+      - "de.vxxu.volkb79.stack=application"      # extra label: docker-stats-exporter groups by it; ownership labels (ciu.*) are injected (S4.5)
+      - "de.vxxu.volkb79.service-type=frontend"
+      - "de.vxxu.volkb79.service-container=false"

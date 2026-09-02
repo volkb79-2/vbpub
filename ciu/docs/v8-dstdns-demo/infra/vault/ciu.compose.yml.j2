@@ -1,7 +1,8 @@
-# infra/vault/ciu.compose.yml.j2 — v8 notation
+# infra/vault/ciu.compose.yml.j2 — v8 notation (draft.3)
 # ciu injects per service: container_name, hostname, networks (instance
-# network), base labels, secrets stanzas, depends_on conditions, cgroup fields.
-# The template writes only what is genuinely the stack's own.
+# network), ciu.* labels, CIU_* env, secrets stanzas, depends_on conditions,
+# healthcheck timing, cgroup fields. The template writes only what is genuinely
+# the stack's own.
 services:
   init:
     image: {{ ciu_stack.init.image }}
@@ -17,7 +18,7 @@ services:
     pull_policy: always
     command: server
     environment:
-      {% for key, value in deploy.env.defaults.items() %}
+      {% for key, value in env_defaults.items() %}
       - {{ key }}={{ value }}
       {% endfor %}
       - VAULT_ADDR=http://0.0.0.0:{{ ciu_stack.vault.endpoints.api.port }}
@@ -31,16 +32,13 @@ services:
       - IPC_LOCK
     healthcheck:
       test: ["CMD", "sh", "-c", "vault status || test $? -eq 2"]
-      interval: {{ ciu_stack.vault.health.interval }}
-      timeout: {{ ciu_stack.vault.health.timeout }}
-      retries: {{ ciu_stack.vault.health.retries }}
-      start_period: {{ ciu_stack.vault.health.start_period }}
+      # timing injected from ciu_stack.vault.health (60s / 10s / 5 / 240s)
     restart: unless-stopped
     labels:
-      - "{{ deploy.labels.prefix }}.service-container=false"
+      - "de.vxxu.volkb79.service-container=false"
 
 volumes:
   vault-data:
-    name: {{ instance.project }}-{{ instance.id }}-vault-data      # instance-scoped: two instances never share state
+    name: {{ instance.project }}-{{ instance.id }}-vault-data      # instance-scoped: two instances never share state (S11.3 requires this prefix)
   vault-logs:
     name: {{ instance.project }}-{{ instance.id }}-vault-logs

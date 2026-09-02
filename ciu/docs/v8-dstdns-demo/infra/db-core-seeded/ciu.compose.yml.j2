@@ -1,20 +1,23 @@
-# infra/db-core-seeded/ciu.compose.yml.j2 — v8 notation (identity, network, labels, cgroup fields injected by ciu)
+# infra/db-core-seeded/ciu.compose.yml.j2 — v8 notation (draft.3)
+# Injected by ciu: container_name/hostname (dstdns-<instance>-db-core-seeded-postgres),
+# the instance network, ciu.* labels, CIU_* env, healthcheck timing, cgroup
+# fields. No init job and no init-scripts mount: roles, schema and fixtures are
+# baked into the image; the hostdir is the instance's working copy of that snapshot.
 services:
   postgres:
     image: {{ ciu_stack.postgres.image }}
-    user: "1000:{{ instance.docker_gid }}"   # built FROM the same timescaledb-ha base as db_core: postgres uid 1000
+    user: "1000:{{ host.docker_gid }}"   # built FROM the same timescaledb-ha base as db_core: postgres uid 1000
     environment:
-      {% for key, value in deploy.env.defaults.items() %}
+      {% for key, value in env_defaults.items() %}
       - {{ key }}={{ value }}
       {% endfor %}
     volumes:
       - {{ ciu_stack.postgres.hostdir.data }}:/home/postgres/pgdata
     healthcheck:
+      # accepting connections is what the gate waits for here; consumers additionally
+      # wait on the pg:* facts their bindings list (S8.5.2) and on the hook-provided Vault facts
       test: ["CMD-SHELL", "pg_isready -h localhost -U {{ registry.postgresql.superuser }}"]
-      interval: {{ ciu_stack.postgres.health.interval }}
-      timeout: {{ ciu_stack.postgres.health.timeout }}
-      retries: {{ ciu_stack.postgres.health.retries }}
-      start_period: {{ ciu_stack.postgres.health.start_period }}
+      # interval / timeout / retries / start_period: injected from ciu_stack.postgres.health (S6.6.4)
     restart: unless-stopped
     labels:
-      - "{{ deploy.labels.prefix }}.service-container=false"
+      - "de.vxxu.volkb79.service-container=false"   # consumer label; ownership labels (ciu.*) are injected (S4.5)

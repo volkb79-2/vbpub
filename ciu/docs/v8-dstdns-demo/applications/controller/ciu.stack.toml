@@ -1,0 +1,75 @@
+# applications/controller/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `controller` (bound by ciu.toml [realization.controller]). One service
+# keyed like the realization, so its container is dstdns-<instance>-controller.
+# DERIVED, never written here: the identity, the compose project, the wave, the
+# vault edge (from the secrets), the minter edges (postgres_password → db_core,
+# consul_token → consul_server, …), EVERY address (the bindings below), and the
+# publication of the http endpoint (on prod3 the proxy on tsstammtisch and
+# worker_db on gstammtisch bind it over mesh, so rs1002 publishes 8083 on its
+# mesh address — S7.4.1).
+
+[ciu_stack.controller]
+image = "dstdns/controller:latest"    # <project.registry.namespace>/controller — a literal in plain TOML; `ciu build` tags exactly this
+requires = ["app_schema"]             # ordering only: an edge to db_init.runner's completion; no data, no publication (R-22)
+endpoints.http = { port = 8080, protocol = "http", publish = "proxy", host_port = 8083, path = "/api/controller", allow_from = ["host.tsstammtisch", "host.gstammtisch"] }
+# host_port 8083, not 8080: cadvisor (observability bundle, same host in prod3) already publishes host_port 8080 (S6.3.2).
+
+# Bindings (S6.4): what this service depends on, under ITS OWN local names, with a
+# delivery like a secret's. `env` → ciu injects <PREFIX>_HOST / _PORT (/ _URL) into
+# the container, so the compose template carries no address at all; `template` →
+# the resolution is bound as ciu_stack.controller.binds.<local> for the templates.
+[ciu_stack.controller.binds.database]
+to = "main_db.sql"
+delivery = "env"
+env_prefix = "POSTGRES"               # POSTGRES_HOST, POSTGRES_PORT
+facts = ["pg:db/dstdns", "pg:role/controller"]   # what controller relies on → main_db's DERIVED contract (S5.3); probed before this wave (S8.5.2)
+
+[ciu_stack.controller.binds.redis]
+to = "redis.redis"
+delivery = "env"
+env_prefix = "REDIS"                  # REDIS_HOST, REDIS_PORT
+
+[ciu_stack.controller.binds.consul]
+to = "consul.http"
+delivery = "template"                 # config.toml.j2 reads ciu_stack.controller.binds.consul.url
+
+[ciu_stack.controller.binds.tracing]
+to = "tracing.grpc"
+wait = "none"                         # runtime-only: the OAP address is read when a span is sent; no ordering edge (was `uses`)
+delivery = "template"                 # SW_AGENT_COLLECTOR_BACKEND_SERVICES in the compose template
+
+[ciu_stack.controller.hostdir]
+logs = ""
+cache = ""
+
+[ciu_stack.controller.settings]       # consumer data (rendered into config.toml via the configfile below)
+concurrency = 10
+hello_world_interval = 0
+log_level = "info"
+# The rev-2 [database]/[redis]/[consul]/[tracing]/[workflow] mapping tables are
+# gone: addresses come from the bindings; database name and user come from
+# registry.* and the workflow/pubsub keys from the user tables — all of which the
+# templates see directly (S3.5.1). A declaration file cannot reference another
+# table's value (plain TOML), and it no longer needs to.
+
+# Secrets: structured sources (S10.1). `path` names a [vault.paths] key (checked;
+# a literal path with '/' is also accepted). `delivery` is mandatory. env =
+# process environment (restart-bound; ciu check lists these); file =
+# /run/secrets/<key>. The AppRole pair is the bootstrap credential — the app
+# fetches the rest of its secrets itself (native).
+[ciu_stack.controller.secrets]
+postgres_password  = { from = "vault", path = "postgres_controller_password", delivery = "file" }
+redis_password     = { from = "vault", path = "redis_password",               delivery = "file" }
+consul_token       = { from = "vault", path = "consul_controller_token",      delivery = "file" }
+bootstrap_token    = { from = "generate", store = "vault", path = "controller_bootstrap_token", delivery = "env", env_name = "CONTROLLER_BOOTSTRAP_TOKEN" }
+internal_dlq_token = { from = "generate", store = "vault", path = "internal_dlq_token",        delivery = "file" }   # derives vault:secret/internal/internal_dlq_token (S10.1.2): worker_io's minter edge points here
+vault_role_id      = { from = "vault", path = "controller_vault_role_id",     delivery = "env", env_name = "CONTROLLER_VAULT_ROLE_ID" }
+vault_secret_id    = { from = "vault", path = "controller_vault_secret_id",   delivery = "env", env_name = "CONTROLLER_VAULT_SECRET_ID" }
+
+[ciu_stack.controller.configfile.app]   # rendered to applications/controller/ciu.rendered/controller/etc/controller/config.toml; the PARENT directory /etc/controller is mounted read-only (S6.9.1)
+template = "config.toml.j2"
+target = "/etc/controller/config.toml"
+
+[hooks]
+pre_compose = []
+post_compose = []

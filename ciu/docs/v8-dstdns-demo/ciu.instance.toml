@@ -1,0 +1,25 @@
+# ciu.instance.toml — per-instance OPERATOR declarations (gitignored; ALWAYS
+# present for a project with realizations, the primary checkout included).
+# Plain TOML (draft.3): `ciu instance init` creates it, `ciu instance add --join`
+# appends tables with a round-trip writer that keeps your comments (S9.5.5);
+# nothing here is ever rewritten whole. Merged after ciu.site.toml.
+#
+# The split (S14.2): this file carries what the OPERATOR decides for this
+# instance — layout, bundles, label, host-port overrides, joins ([realization.<n>]
+# kind = "joined" + [service.<n>] rows, see examples/ciu.instance.joined.toml).
+# Everything ciu KNOWS about the instance (identity, host facts, build facts,
+# the realness record per layout) lives in the ciu-owned, plain-TOML
+# ciu.instance.generated.toml, merged AFTER this file — never hand-edit that one.
+# This example is the primary devcontainer checkout of dstdns.
+
+[ciu.instance]
+layout = "local"                      # which placement this instance deploys (required for every mutating verb, S7.6.1)
+bundles = ["all", "test"]             # default bundle selection for `ciu up`
+label = "primary"                     # unique per git family (S14.7.2); what a join names; never part of an identity
+
+# Optional per-instance host-port overrides, "<realization>.<svc>.<endpoint>" = port
+# (S6.3.2, S14.2): a second instance on the same machine moves a colliding
+# publish = "host" port here instead of editing a stack file. Unused in the primary:
+# [ciu.instance.host_ports]
+# "cadvisor.cadvisor.http" = 18080
+# "otel_collector_node.collector.otlp_grpc" = 14319

@@ -1,0 +1,48 @@
+# infra-global/github-runner/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `github_runner` (bound by ciu.toml [realization.github_runner]) = the
+# `github_runner` LogicalService. Services:
+#   init    one-shot: work-dir ownership (runner uid : docker gid), exits 0
+#   runner  PRIMARY: the self-hosted Actions runner (docker-socket access)
+# DERIVED, never written here: the identities (dstdns-<instance>-github-runner-<svc>;
+# the runner's container name doubles as its RUNNER_NAME, unique per instance),
+# the init depends_on condition (service_completed_successfully), the docker gid
+# (a host fact, host.docker_gid — no getent dance). No bindings: the runner reads
+# nothing from the deploy set, and nobody binds it.
+
+[ciu_stack.init]
+image = "alpine:latest"              # what the v7 compose actually ran (the defaults' github-runner:latest was unused)
+one_shot = true
+
+[ciu_stack.runner]
+image = "myoung34/github-runner:latest"
+primary = true
+depends_on = ["init"]
+[ciu_stack.runner.hostdir]
+work = ""                            # "" = ciu-generated host path
+[ciu_stack.runner.settings]
+repository_url = ""                  # REQUIRED: set per site by the merged path ([realization.github_runner.services.runner.settings] in ciu.site.toml, S3.1.3)
+runner_uid = "1001"
+runner_gid = "1001"
+# Structured source (S10.1): `ask` = CIU_SECRET_GITHUB_RUNNER_TOKEN in ciu's
+# environment, else the store, else a prompt. env delivery is restart-bound; ciu
+# check stage 9 lists it.
+[ciu_stack.runner.secrets]
+runner_token = { from = "ask", var = "GITHUB_RUNNER_TOKEN", delivery = "env", env_name = "GITHUB_RUNNER_SECRETS_RUNNER_TOKEN" }
+
+# Stack-level, hook-delivered (S10.2.5): materialized and handed to this stack's
+# hooks in their context (ctx.secrets["github_api_token"]), delivered to no
+# container — the pre_compose hook needs it to fetch a registration token from
+# the GitHub API when no .runner file exists yet. Not one service's secret.
+[ciu_stack.secrets]
+github_api_token = { from = "ask", var = "GITHUB_API_TOKEN", delivery = "hook" }
+
+[hooks]
+# pre_compose_hook.py: with the hook-delivered API token it fetches a fresh
+# registration token when the work hostdir holds no .runner file and hands it to
+# ciu through the hook output (emit(secrets=…), S12.3 — never through state: a
+# secret-shaped state key is refused, S6.10). The store is the `ask` source's
+# second lookup, so that value feeds runner_token from the NEXT run on —
+# materialization (S8.7 step 3) precedes pre_compose (step 4); the first run
+# takes CIU_SECRET_GITHUB_RUNNER_TOKEN or the prompt.
+pre_compose = ["./pre_compose_hook.py"]
+post_compose = []

@@ -1,0 +1,78 @@
+# infra/docker-stats-exporter/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `docker_stats_exporter` (bound by ciu.toml
+# [realization.docker_stats_exporter]) = the `docker_stats_exporter`
+# LogicalService. DERIVED, never written here: the container/host name
+# (dstdns-<instance>-docker-stats-exporter-exporter), the network, the Redis /
+# Consul / OTLP addresses (the bindings below — were app_identity.* / topology.*
+# copies), the landscape name-prefix filter (instance facts, read by the config
+# template), the Vault edge and the minter edges (from the secrets, S8.3) and the
+# wave. The O2/P120 `requires` rows are bindings by capability: those facts live
+# in redis's and consul's DERIVED contracts. Policy (scrape interval, workers,
+# *_enabled switches) stays in the image's L0 (config.defaults.toml) and Consul
+# (L2) — never restated here (P119).
+
+[ciu_stack.exporter]
+image = "dstdns/docker-stats-exporter:latest"   # <project.registry.namespace>/docker-stats-exporter — a literal in plain TOML; `ciu build` tags exactly this
+# The compose env MUST carry the consul token (AGENTS.md §4.2a): an empty one is a
+# 403 on every KV read — a permanently degraded exporter that still looks healthy.
+# No fail-fast key on the service in v8: the secret's `env_name` below guarantees
+# the variable is present in the compose environment (S10.2.2, S11.6).
+[ciu_stack.exporter.endpoints]
+# B071: the scrape port is published on the host for the main landscape. An
+# isolated instance that would collide on 9558 overrides it in ITS files, never
+# here: publish = "instance" through the merged view in ciu.site.toml
+# ([realization.docker_stats_exporter.services.exporter.endpoints.metrics]), or
+# another host port for the endpoint in the instance file (S6.3.2, S14.2).
+metrics = { port = 9558, protocol = "http", publish = "host", host_port = 9558 }   # Prometheus surface
+health  = { port = 9559, protocol = "http" }   # = metrics + 1: exporter.py binds health_port there unconditionally (D-173 DA-1); keep in step
+
+# Bindings (S6.4) — all template-delivered: the values land in the rendered
+# config.toml (configfile.app), composed there (host:port, http://host:port), so
+# the config template reads ciu_stack.exporter.binds.<local>.host/.port/.url.
+[ciu_stack.exporter.binds.redis]
+to = "redis.redis"
+delivery = "template"                # tcp: host + port
+
+[ciu_stack.exporter.binds.consul]
+to = "consul.http"
+delivery = "template"                # http: `url` = http://<host>:<port> (S7.8 step 7) → the config's consul address
+
+[ciu_stack.exporter.binds.collector]
+to = "otel_collector.otlp_grpc"
+wait = "none"                        # OTLP target read at run time: a resolution only, no ordering edge (S8.2)
+delivery = "template"                # tcp: the config's otlp_endpoint = <host>:<port>
+
+[ciu_stack.exporter.settings]        # consumer data rendered into config.toml (configfile.app)
+label_filter = ""                    # the container-name prefix, not a label, is the landscape boundary
+# name_prefix (<instance.project>-<instance.id>-), the pubsub channel names and
+# the redis username are no longer copied here: the config template reads
+# instance.*, pubsub.* and registry.redis.users.docker_stats_exporter.username
+# directly (S3.5.1); the OTLP endpoint is binds.collector.
+otlp_insecure = true
+swap_proc_path = "/host/proc"        # the same two keys render the read-only host binds in the compose template: paths cannot drift
+swap_sys_path = "/host/sys"
+
+[ciu_stack.exporter.consul]          # consumer data; the address is binds.consul
+kv_path = "services/docker-stats-exporter"   # this service's KV leaf under dstdns/<landscape>/ — the consul policy names this spelling; not an identity (was `name`)
+
+[ciu_stack.exporter.redis]           # consumer data; the address is binds.redis, the username is registry.redis.users.docker_stats_exporter.username
+db = 0
+
+# Structured sources (S10.1); delivery mandatory; env = compose process environment
+# (restart-bound; ciu check lists it). Each `from = "vault"` row derives the Vault
+# edge and a minter edge to whoever provides vault:secret/<path> — redis/password
+# and consul/docker-stats-exporter/token (consul_server's hook) — S8.3.
+[ciu_stack.exporter.secrets]
+redis_password = { from = "vault", path = "redis_password",                      delivery = "env", env_name = "DOCKER_STATS_EXPORTER_REDIS_PASSWORD" }
+consul_token   = { from = "vault", path = "consul_docker_stats_exporter_token", delivery = "env", env_name = "DOCKER_STATS_EXPORTER_CONSUL_TOKEN" }
+
+[ciu_stack.exporter.configfile.app]  # L1 instance file: rendered to ciu.rendered/exporter/etc/docker-stats-exporter/config.toml; the PARENT directory is mounted read-only at /etc/docker-stats-exporter (S6.9.1)
+template = "config.toml.j2"
+target = "/etc/docker-stats-exporter/config.toml"
+
+[ciu_stack.exporter.hostdir]
+data = ""                            # as in the original (the compose template does not mount it)
+
+[hooks]
+pre_compose = []
+post_compose = []

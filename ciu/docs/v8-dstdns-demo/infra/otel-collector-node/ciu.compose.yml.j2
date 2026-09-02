@@ -1,31 +1,32 @@
-# infra/otel-collector-node/ciu.compose.yml.j2 — v8 notation
-# Injected by ciu: container_name/hostname, the instance network, base labels,
-# the config-file mount (configfile.otel), cgroup fields.
+# infra/otel-collector-node/ciu.compose.yml.j2 — v8 notation (draft.3)
+# Injected by ciu: container_name/hostname, the instance network, ciu.* labels,
+# CIU_* env, ports: (the four publish = "host" endpoints), the config-DIRECTORY
+# mount (/etc/otelcol, S6.9.1), healthcheck timing, cgroup fields. The aggregator
+# address is the template-delivered binding ciu_stack.collector.binds.aggregator;
+# this file carries no address of its own.
 services:
   collector:
     image: {{ ciu_stack.collector.image }}
     pull_policy: always                      # `:latest` is otherwise pulled once and cached forever
     command: ["--config={{ ciu_stack.collector.configfile.otel.target }}"]
-    user: "{{ instance.user_uid }}:{{ instance.user_gid }}"
+    user: "{{ host.user_uid }}:{{ host.user_gid }}"
     environment:
-      {% for key, value in deploy.env.defaults.items() %}
+      {% for key, value in env_defaults.items() %}
       - {{ key }}={{ value }}
       {% endfor %}
-      # expanded by the collector inside its config file (env: syntax)
-      - OTEL_AGGREGATOR_ENDPOINT={{ ciu_stack.collector.exporters.aggregator_endpoint }}
-    # ports: injected by ciu from [ciu_stack.collector.endpoints] (publish = "host"/"proxy")
+      # expanded by the collector inside its config file (env: syntax); host:port composed here from the binding (D18)
+      - OTEL_AGGREGATOR_ENDPOINT={{ ciu_stack.collector.binds.aggregator.host }}:{{ ciu_stack.collector.binds.aggregator.port }}
+    # ports: injected from [ciu_stack.collector.endpoints] (publish = "host", S7.4.2); a template that writes them is refused (S11.3)
     volumes:
       - {{ ciu_stack.collector.hostdir.data }}:{{ ciu_stack.collector.file_storage.directory }}
+      # /etc/otelcol (the rendered otel-collector-config.yml): the config-directory mount is injected (S6.9.1)
     healthcheck:
       # Distroless image: no shell, no wget/curl. Docker already guarantees the
       # main process is running while a healthcheck executes; validate the
       # mounted config with the collector binary itself instead.
       test: ["CMD", "/otelcol-contrib", "validate", "--config={{ ciu_stack.collector.configfile.otel.target }}"]
-      interval: {{ ciu_stack.collector.health.interval }}
-      timeout: {{ ciu_stack.collector.health.timeout }}
-      retries: {{ ciu_stack.collector.health.retries }}
-      start_period: {{ ciu_stack.collector.health.start_period }}
+      # interval / timeout / retries / start_period: injected from ciu_stack.collector.health (S6.6.4)
     restart: unless-stopped
     labels:
-      - "{{ deploy.labels.prefix }}.stack=observability"    # extra label: docker-stats-exporter groups by it
-      - "{{ deploy.labels.prefix }}.service-container=false"
+      - "de.vxxu.volkb79.stack=observability"    # consumer label: docker-stats-exporter groups by it; ownership labels (ciu.*) are injected (S4.5)
+      - "de.vxxu.volkb79.service-container=false"

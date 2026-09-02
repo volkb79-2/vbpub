@@ -1,9 +1,14 @@
 # assay.toml — judge lane policy (assay lane schema v2; assay's own file, unchanged
-# in shape by CIU v8). Excerpt: three of dstdns's 25 lanes, showing the two
-# v8-facing changes: (1) `infrastructure.derived:` paths point at the derived
-# [ciu.instance.resolved.*] tables of the rendered ciu.global.toml, (2) a lane
-# that delegates its comparison base to the gate (`judge.base_source =
-# "request"`) — `ciu gate` passes --request-base for it.
+# in shape by CIU v8). Excerpt: four of dstdns's 25 lanes. What v8 changed on the
+# CIU side: (1) ciu never parses this file — it asks `assay lanes --json` for lane
+# names, base_source, external_tools, argv0 and env_required (S16.7.1); (2) a lane
+# that delegates its comparison base to the gate (`judge.base_source = "request"`)
+# gets --request-base from `ciu gate` without any ciu-side key; (3) infrastructure
+# facts arrive as ENVIRONMENT VARIABLES injected by the gate environment's
+# `binds` (ciu.toml [testing.environments.clean]), so `required-env:` covers them
+# and assay needs no knowledge of ciu's file layout. `derived:` paths stay
+# supported (they would target resolved.bindings.env.clean.db.host in
+# ciu.resolved.toml) but nothing here uses them any more.
 schema_version = 2
 
 [lanes.durable_dlq]
@@ -55,14 +60,11 @@ scope = "S1"
 rigor = ["R0", "R2"]
 enforcement = "gate"
 argv = ["scripts/schema-gate-lane.sh"]
-env_passthrough = ["PATH", "SCHEMA_GATE_DSN", "SCHEMA_GATE_PG_DUMP"]
-env_required = ["SCHEMA_GATE_DSN", "SCHEMA_GATE_PG_DUMP"]
-budget = "90m"
-allow_argv_append = false
-[lanes.cw2b_schema.infrastructure]              # facts injected from the instance — v8 paths
-network = "derived:ciu.instance.resolved.networks.instance.name"
-db_host = "derived:ciu.instance.resolved.routes.test_runner.main_db.sql.host"
-db_port = "derived:ciu.instance.resolved.routes.test_runner.main_db.sql.port"
+env_passthrough = ["PATH", "POSTGRES_HOST", "POSTGRES_PORT", "SCHEMA_GATE_PG_DUMP"]
+env_required = ["POSTGRES_HOST", "POSTGRES_PORT", "SCHEMA_GATE_PG_DUMP"]
+[lanes.cw2b_schema.infrastructure]              # facts from the instance — as environment variables the gate environment injects (binds.db, env_prefix = "POSTGRES")
+db_host = "required-env:POSTGRES_HOST"
+db_port = "required-env:POSTGRES_PORT"
 [lanes.cw2b_schema.isolation]
 snapshot_selection = "repository"
 [lanes.cw2b_schema.judge]
@@ -76,13 +78,13 @@ max_mutants = 200
 operators = ["sql:constraint-drop", "sql:default-swap"]
 equivalence_artifact = "artifacts/schema/equivalence.json"
 
-[lanes.ui_unit]                                 # CIU-73 / assay B041: a language-bound lane (javascript, assay >= 3.1.0)
+[lanes.ui_unit]                                 # a language-bound lane (javascript, assay >= 3.1.0; B041)
 scope = "S1"
 rigor = ["R0", "R1"]
 enforcement = "gate"
 # assay's snapshot holds committed objects only — no node_modules. The closure is
 # rebuilt OFFLINE from the committed lockfile out of the npm cache the tester
-# environment provides (extra_mounts, ciu.global.defaults.toml.j2 [testing.environments.tester]);
+# environment provides (extra_mounts, ciu.toml [testing.environments.tester]);
 # --offline and --no-install make a missing package a refusal, never a fetch.
 # The `bash -c "cd …"` shape retires with assay B043 (`cwd`).
 argv = ["bash", "-c", "npm ci --offline --no-audit --no-fund --prefix applications/webapp-ui-react && npx --no-install --prefix applications/webapp-ui-react vitest run --coverage --root applications/webapp-ui-react"]

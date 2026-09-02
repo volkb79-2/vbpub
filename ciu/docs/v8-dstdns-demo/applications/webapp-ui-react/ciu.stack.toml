@@ -1,0 +1,37 @@
+# applications/webapp-ui-react/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `webapp_ui_react` (bound by ciu.toml [realization.webapp_ui_react])
+# = the `webapp_ui` LogicalService: the React SPA behind nginx, fronted by the
+# reverse proxy at /app. Assets are baked into the image (multi-stage build).
+# DERIVED, never written here: the identity (dstdns-<instance>-webapp-ui-react-ui)
+# — which the same-origin OIDC authority default reads from
+# ciu_stack.ui.identity.hostname in the COMPOSE template (S4.4.2; a stack file
+# is plain data and cannot read `ciu_stack`) — the network, the image string,
+# and the CONTRACT of webapp_ui (S5.3): authentik binds webapp_ui.http for its
+# redirect origins, the reverse proxy for its upstream. No bindings: this stack
+# reads nobody's address — the browser-facing authority is same-origin (the
+# image's nginx proxies /application/… to Authentik, resolved lazily by name),
+# so no binding to identity_provider is declared here.
+
+[ciu_stack.ui]
+image = "dstdns/webapp-ui-react:latest"   # <project.registry.namespace>/webapp-ui-react — a literal in plain TOML; `ciu build` tags exactly this
+# The reverse proxy fronts `path`; in prod3 it (tsstammtisch) is on another host than this stack (rs1002), so
+# publish = "proxy" needs host_port + allow_from (S7.4.3). 8082: controller holds 8083, webapp_server 8081, cadvisor 8080 there (S6.3.2).
+# gstammtisch is admitted too: authentik (identity bundle) binds this origin for its redirect URIs over the mesh in prod3 (wait = "none").
+endpoints.http = { port = 80, protocol = "http", publish = "proxy", host_port = 8082, path = "/app", allow_from = ["host.tsstammtisch", "host.gstammtisch"] }
+
+# Public browser configuration, rendered into /app/env.js at container start.
+# The UI auth MODE follows the control flag project.control.auth_enabled, which the compose
+# template reads directly ('oidc' when on, 'stub' when off) — the rev-2 `mode`
+# copy is gone.
+[ciu_stack.ui.auth]
+# When auth is on, the browser reaches Authentik through this container's own
+# nginx same-origin proxy (/application/...). "" = the compose template derives
+# http://<ciu_stack.ui.identity.hostname>/application/o/<authentik.oidc_slug>/.
+# Production operators override with their public issuer in ciu.site.toml
+# ([realization.webapp_ui_react.services.ui.auth] oidc_authority = "…", S3.1.3).
+oidc_authority = ""
+oidc_client_id = "dstdns-ui"
+
+[hooks]
+pre_compose = []
+post_compose = []

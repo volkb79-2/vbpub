@@ -1,0 +1,6 @@
+# examples/minimal/web/ciu.stack.toml — one service, one host-published endpoint.
+# The realization name (`web`) is bound by ciu.toml [realization.web].location;
+# the container is hello-<instance>-web (service == realization → no suffix).
+[ciu_stack.web]
+image = "nginx:1.27"
+endpoints.http = { port = 80, protocol = "http", publish = "host", host_port = 8080 }

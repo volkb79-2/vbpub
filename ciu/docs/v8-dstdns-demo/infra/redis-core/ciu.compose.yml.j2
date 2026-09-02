@@ -1,4 +1,8 @@
-# infra/redis-core/ciu.compose.yml.j2 — v8 notation (identity, network, labels, cgroup fields injected by ciu)
+# infra/redis-core/ciu.compose.yml.j2 — v8 notation (draft.3)
+# Injected by ciu: container_name/hostname, the instance network, ciu.* labels,
+# CIU_* env, healthcheck timing, cgroup fields. The password is the env-delivered
+# secret (${REDIS_CORE_SECRETS_REDIS_PASSWORD}: compose process environment,
+# S11.6); nothing else here is anything but the stack's own.
 services:
   redis:
     image: {{ ciu_stack.redis.image }}
@@ -11,18 +15,15 @@ services:
       - --appendfsync
       - everysec
     environment:
-      {% for key, value in deploy.env.defaults.items() %}
+      {% for key, value in env_defaults.items() %}
       - {{ key }}={{ value }}
       {% endfor %}
       - REDIS_PASSWORD=${REDIS_CORE_SECRETS_REDIS_PASSWORD}
     volumes:
       - {{ ciu_stack.redis.hostdir.data }}:/data
     healthcheck:
-      test: ["CMD", "sh", "-c", "redis-cli -a $${REDIS_PASSWORD} ping | grep PONG"]
-      interval: {{ ciu_stack.redis.health.interval }}
-      timeout: {{ ciu_stack.redis.health.timeout }}
-      retries: {{ ciu_stack.redis.health.retries }}
-      start_period: {{ ciu_stack.redis.health.start_period }}
+      test: ["CMD", "sh", "-c", "redis-cli -a $$REDIS_PASSWORD ping | grep PONG"]   # $$ = a literal $ for the container shell, not a compose variable (S11.6)
+      # interval / timeout / retries / start_period: injected from ciu_stack.redis.health (S6.6.4)
     restart: unless-stopped
     labels:
-      - "{{ deploy.labels.prefix }}.service-container=false"
+      - "de.vxxu.volkb79.service-container=false"

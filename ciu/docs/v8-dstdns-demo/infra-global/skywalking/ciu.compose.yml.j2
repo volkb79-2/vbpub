@@ -1,7 +1,11 @@
-# infra-global/skywalking/ciu.compose.yml.j2 — v8 notation
+# infra-global/skywalking/ciu.compose.yml.j2 — v8 notation (draft.3)
 # Injected by ciu per service: container_name/hostname
-# (dstdns-<instance>-skywalking-<svc>), networks, base labels, depends_on
-# conditions (from `depends_on` in the stack file), cgroup fields.
+# (dstdns-<instance>-skywalking-<svc>), networks, ciu.* labels, CIU_* identity
+# env, depends_on conditions (from `depends_on` in the stack file), healthcheck
+# timing (from each service's merged `health` table, S6.6.4), cgroup fields.
+# The stack-level secret arrives as ${SKYWALKING_SECRETS_POSTGRES_PASSWORD} in
+# the compose process environment (env delivery, S11.6). No bindings: sibling
+# addresses are derived identities (ciu_stack.<svc>.identity.hostname).
 # Features: dedicated telemetry postgres (JDBC), OAP self-observability, named
 # volumes (docker-managed — no permission issues).
 # References: storage   https://skywalking.apache.org/docs/main/next/en/setup/backend/storages/postgresql/
@@ -10,7 +14,9 @@
 services:
   {% if ciu_stack.banyandb.enabled %}
   # BanyanDB — retired 2026-07-17 (README "DB Backend Choice"); rendered only
-  # while [ciu_stack.banyandb] enabled = true. Runs as root internally.
+  # while [ciu_stack.banyandb] enabled = true (ciu would remove a disabled
+  # service's block anyway, S6.7.1 — the guard also keeps its named volumes
+  # out of the file). Runs as root internally.
   banyandb:
     image: {{ ciu_stack.banyandb.image }}
     pull_policy: always
@@ -18,7 +24,7 @@ services:
     command:
       - standalone
     environment:
-      {% for key, value in deploy.env.defaults.items() %}
+      {% for key, value in env_defaults.items() %}
       - {{ key }}={{ value }}
       {% endfor %}
       - BANYANDB_LOGGING_LEVEL=info
@@ -30,13 +36,10 @@ services:
       - banyandb-metadata:/tmp/banyandb-metadata
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:{{ ciu_stack.banyandb.endpoints.banyandb_http.port }}/api/healthz || exit 1"]
-      interval: {{ ciu_stack.banyandb.health.interval }}
-      timeout: {{ ciu_stack.banyandb.health.timeout }}
-      retries: {{ ciu_stack.banyandb.health.retries }}
-      start_period: {{ ciu_stack.banyandb.health.start_period }}
+      # timing injected from ciu_stack.banyandb.health (S6.6.4)
     restart: unless-stopped
     labels:
-      - "{{ deploy.labels.prefix }}.service-container=true"
+      - "de.vxxu.volkb79.service-container=true"    # consumer label; ownership labels (ciu.*) are injected (S4.5)
   {% endif %}
 
   # Dedicated telemetry DB — deliberately NOT the app db-core postgres (operator
@@ -56,7 +59,7 @@ services:
       - -c
       - max_connections={{ ciu_stack.postgres.settings.max_connections }}
     environment:
-      {% for key, value in deploy.env.defaults.items() %}
+      {% for key, value in env_defaults.items() %}
       - {{ key }}={{ value }}
       {% endfor %}
       - POSTGRES_DB={{ ciu_stack.postgres.settings.db }}
@@ -69,13 +72,10 @@ services:
       - skywalking-postgres-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U {{ ciu_stack.postgres.settings.user }} -d {{ ciu_stack.postgres.settings.db }} || exit 1"]
-      interval: {{ ciu_stack.postgres.health.interval }}
-      timeout: {{ ciu_stack.postgres.health.timeout }}
-      retries: {{ ciu_stack.postgres.health.retries }}
-      start_period: {{ ciu_stack.postgres.health.start_period }}
+      # timing injected from ciu_stack.postgres.health (S6.6.4)
     restart: unless-stopped
     labels:
-      - "{{ deploy.labels.prefix }}.service-container=true"
+      - "de.vxxu.volkb79.service-container=true"    # consumer label; ownership labels (ciu.*) are injected (S4.5)
 
   # OAP — Observability Analysis Platform (runs as the skywalking user, UID 10001)
   oap:
@@ -83,7 +83,7 @@ services:
     pull_policy: always                      # `:latest` is otherwise pulled once and cached forever
     user: "10001:10001"
     environment:
-      {% for key, value in deploy.env.defaults.items() %}
+      {% for key, value in env_defaults.items() %}
       - {{ key }}={{ value }}
       {% endfor %}
       {% for key, value in ciu_stack.oap.env.items() %}
@@ -142,13 +142,10 @@ services:
       # The OAP image ships ONLY bash (no wget/curl): probe the REST port with
       # /dev/tcp. Deep health (OAP<->storage round-trip) is a test's job.
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/{{ ciu_stack.oap.endpoints.rest.port }}' || exit 1"]
-      interval: {{ ciu_stack.oap.health.interval }}
-      timeout: {{ ciu_stack.oap.health.timeout }}
-      retries: {{ ciu_stack.oap.health.retries }}
-      start_period: {{ ciu_stack.oap.health.start_period }}
+      # timing injected from ciu_stack.oap.health (10s / 5s / 10 / 90s, S6.6.4)
     restart: unless-stopped
     labels:
-      - "{{ deploy.labels.prefix }}.service-container=true"
+      - "de.vxxu.volkb79.service-container=true"    # consumer label; ownership labels (ciu.*) are injected (S4.5)
 
   # UI — web dashboard (runs as the skywalking user internally)
   ui:
@@ -156,7 +153,7 @@ services:
     pull_policy: always
     user: "10001:10001"
     environment:
-      {% for key, value in deploy.env.defaults.items() %}
+      {% for key, value in env_defaults.items() %}
       - {{ key }}={{ value }}
       {% endfor %}
       - SW_OAP_ADDRESS=http://{{ ciu_stack.oap.identity.hostname }}:{{ ciu_stack.oap.endpoints.rest.port }}
@@ -166,13 +163,10 @@ services:
     healthcheck:
       # wget with output to /dev/null (--spider is unreliable here)
       test: ["CMD-SHELL", "wget -qO/dev/null http://127.0.0.1:{{ ciu_stack.ui.endpoints.ui.port }}/ || exit 1"]
-      interval: {{ ciu_stack.ui.health.interval }}
-      timeout: {{ ciu_stack.ui.health.timeout }}
-      retries: {{ ciu_stack.ui.health.retries }}
-      start_period: {{ ciu_stack.ui.health.start_period }}
+      # timing injected from ciu_stack.ui.health (S6.6.4)
     restart: unless-stopped
     labels:
-      - "{{ deploy.labels.prefix }}.service-container=true"
+      - "de.vxxu.volkb79.service-container=true"    # consumer label; ownership labels (ciu.*) are injected (S4.5)
 
 volumes:
   skywalking-postgres-data:

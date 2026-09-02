@@ -1,0 +1,37 @@
+# infra/vault/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# The stack does not know its own name: ciu.toml [realization.vault] binds this
+# directory. Services live under [ciu_stack.<svc>]. DERIVED (never written here):
+# container/host names, the compose project, the instance network, ordering
+# (waves), every consumer's resolution, secrets stanzas.
+# The AppRole credentials this stack mints (post_compose_vault.py) are declared as
+# the hook entry's `provides`; every stack with a vault-sourced or vault-stored
+# secret gains a derived edge onto this realization (S8.3), so nobody declares
+# `requires vault:healthy` any more.
+
+[ciu_stack.init]
+image = "hashicorp/vault:latest"
+one_shot = true                      # fixes volume ownership, then exits 0
+
+[ciu_stack.vault]
+image = "hashicorp/vault:latest"
+primary = true                       # the health-bearing service of this two-service stack (gate, probes, exec target)
+depends_on = ["init"]                # rendered as depends_on: init: condition: service_completed_successfully
+endpoints.api = { port = 8200, protocol = "http" }     # publish = "instance" (default): published cross-host only where a binding with data reaches it — CIU's own implicit binding (S7.8.7) counts
+[ciu_stack.vault.health]             # slow steady-state check on purpose: `vault status` is a CLI process; ciu injects these into the compose healthcheck (S6.6.4)
+interval = "60s"
+timeout = "10s"
+retries = 5
+start_period = "240s"
+# gate_timeout derives to 240s + 60s*5 + 30s = 570s; declare it only to tighten.
+
+[hooks]
+pre_compose = []
+post_compose = [
+  { run = "./post_compose_vault.py", provides = [   # init/unseal, policies, AppRoles; bootstrap values go to ciu.secrets.toml through the hook output (S12.3); probed in the primary (vault)
+    "vault:secret/vault/controller/role_id", "vault:secret/vault/controller/secret_id",
+    "vault:secret/vault/webapp-server/role_id", "vault:secret/vault/webapp-server/secret_id",
+  ] },
+]
+
+# No [state] table here: the hook's non-secret state (initialized, initialized_at) lives in
+# <location>/ciu.state.toml, written by ciu from the hook's output (S6.10, S12.3); root_token/unseal_key are in ciu.secrets.toml.

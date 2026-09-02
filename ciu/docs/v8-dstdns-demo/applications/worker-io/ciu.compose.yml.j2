@@ -1,49 +1,56 @@
-# applications/worker-io/ciu.compose.yml.j2 — v8 notation
+# applications/worker-io/ciu.compose.yml.j2 — v8 notation (draft.3)
 # Injected by ciu per replica: container_name/hostname
-# (dstdns-<instance>-worker_io-worker-<n>), networks, base labels, the
-# config-file mount, cgroup fields. One service block per replica row; the
-# replica's compose key, container name and index come from the identity table.
+# (dstdns-<instance>-worker-io-worker-<k>), networks (+ the service-level
+# compose key as an alias on every replica), ciu.* labels incl. ciu.replica,
+# CIU_* identity env incl. CIU_REPLICA, the config-directory mount
+# (/etc/worker-io, rendered per replica), healthcheck timing, cgroup fields.
+# One service block per replica row: the loop variable is `replica` (S3.5.1,
+# S11.3); its compose_key is the compose service name, its container name
+# replaces the hand-numbered worker-io-1/-2. Addresses come from the
+# template-delivered bindings (ciu_stack.worker.binds.<local>).
 services:
-  {% for r in ciu_stack.worker.identity.replicas %}
-  {{ r.compose_key }}:
+  {% for replica in ciu_stack.worker.identity.replicas %}
+  {{ replica.compose_key }}:
     image: {{ ciu_stack.worker.image }}
     restart: "no"                            # fail-fast for development
-    user: "{{ instance.user_uid }}:{{ instance.user_gid }}"
+    user: "{{ host.user_uid }}:{{ host.user_gid }}"
     environment:
-      {% for key, value in deploy.env.defaults.items() %}
+      {% for key, value in env_defaults.items() %}
       - {{ key }}={{ value }}
       {% endfor %}
       # N8/D-116(7): build metadata is ciu's own (repo git hash + deploy time);
-      # the app REQUIRES it (no `${BUILD_VERSION:-dev}` publishing under schema/dev).
+      # the app REQUIRES it (no default-interpolation fallback publishing under schema/dev; that form is refused, S11.3).
       - BUILD_VERSION={{ instance.build_version }}
       - BUILD_TIME={{ instance.build_time }}
-      # S5.5 bootstrap pointers — all config is in the mounted TOML file; the
+      # bootstrap pointers — all config is in the mounted TOML file; the
       # identity pointers are needed BEFORE the merge, to find the Consul tree.
       - WORKER_IO_CONFIG_FILE=/etc/worker-io/config.toml
       - DSTDNS_LANDSCAPE_ID={{ instance.landscape_id }}
-      - DSTDNS_INSTANCE_ID={{ r.container_name }}
+      - DSTDNS_INSTANCE_ID={{ replica.container_name }}
       - DSTDNS_SERVICE_PROFILE=default
-      # Consul ACL token (env delivery). N5/D-116(7): the loader reads the token
-      # out of the rendered config file; this line makes the secret VISIBLE to
-      # the service (S4.20). Plain ${VAR}: the fail-if-unset interpolation form is
-      # refused (S11.3) — the secret's env_name guarantees the variable is present
-      # and ciu refuses to deploy without the value (S10.2.2, S11.6).
+      # env-delivered secrets: every one is referenced as plain ${VAR} (S10.2.2);
+      # the fail-if-unset interpolation form is refused (S11.3) — the secret's
+      # env_name guarantees the variable is present and ciu refuses to deploy
+      # without the value (S11.6). The Consul ACL token stays VISIBLE to the
+      # service this way (N5/D-116(7)).
       - WORKER_IO_CONSUL_TOKEN=${WORKER_IO_CONSUL_TOKEN}
-      # SkyWalking native agent — the OAP address is a route
-      - SW_AGENT_COLLECTOR_BACKEND_SERVICES={{ ciu_stack.worker.tracing.oap }}
-      - REDIS_HOST={{ ciu_stack.worker.redis.host }}
-      - REDIS_PORT={{ ciu_stack.worker.redis.port }}
+      - WORKER_IO_REDIS_PASSWORD=${WORKER_IO_REDIS_PASSWORD}
+      - WORKER_IO_SECRETS_INTERNAL_DLQ_TOKEN=${WORKER_IO_SECRETS_INTERNAL_DLQ_TOKEN}
+      - WORKER_IO_MINIO_ACCESS_KEY=${WORKER_IO_MINIO_ACCESS_KEY}
+      - WORKER_IO_MINIO_SECRET_KEY=${WORKER_IO_MINIO_SECRET_KEY}
+      # SkyWalking native agent — the OAP address is the template-delivered binding (host:port)
+      - SW_AGENT_COLLECTOR_BACKEND_SERVICES={{ ciu_stack.worker.binds.tracing.host }}:{{ ciu_stack.worker.binds.tracing.port }}
+      # the redis binding is template-delivered (config.toml.j2 reads the same resolution)
+      - REDIS_HOST={{ ciu_stack.worker.binds.redis.host }}
+      - REDIS_PORT={{ ciu_stack.worker.binds.redis.port }}
     volumes:
       - {{ ciu_stack.worker.hostdir.logs }}:/app/logs
       - {{ ciu_stack.worker.hostdir.cache }}:/app/cache
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:{{ ciu_stack.worker.endpoints.http.port }}/health')"]
-      interval: {{ ciu_stack.worker.health.interval }}
-      timeout: {{ ciu_stack.worker.health.timeout }}
-      retries: {{ ciu_stack.worker.health.retries }}
-      start_period: {{ ciu_stack.worker.health.start_period }}
+      # interval / timeout / retries / start_period: injected from ciu_stack.worker.health (S6.6.4)
     labels:
-      - "{{ deploy.labels.prefix }}.worker-type=io"
-      # no replica label of our own: ciu stamps <prefix>.replica per replica (S4.5.1); the v7 key was a reserved one (S4.5.2)
-      - "{{ deploy.labels.prefix }}.service-container=false"
+      - "de.vxxu.volkb79.worker-type=io"
+      # no replica label of our own: ciu stamps ciu.replica per replica (S4.5.1); a ciu.* key in a template is refused (S4.5.2)
+      - "de.vxxu.volkb79.service-container=false"
   {% endfor %}

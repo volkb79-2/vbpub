@@ -1,0 +1,42 @@
+# infra/otel-aggregator/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `otel_aggregator` (bound by ciu.toml [realization.otel_aggregator])
+# = the `otel_aggregator` LogicalService: central telemetry processing. Node
+# collectors export to it through their binding to otel_aggregator.otlp_grpc.
+# DERIVED, never written here: the container/host name
+# (dstdns-<instance>-otel-aggregator-collector), the network, the SkyWalking OAP
+# address (the binding below — was a hard-coded "skywalking-oap:11800"), the
+# host-port publications (the endpoints, S7.4.2) and the config-directory mount
+# (a configfile, was a ${PHYSICAL_REPO_ROOT} bind).
+
+[ciu_stack.collector]
+image = "otel/opentelemetry-collector-contrib:latest"
+[ciu_stack.collector.endpoints]     # all four published on the host as before (host_port = port)
+otlp_grpc = { port = 4317,  protocol = "tcp",  publish = "host", host_port = 4317 }    # OTLP gRPC receiver
+otlp_http = { port = 4318,  protocol = "http", publish = "host", host_port = 4318 }    # OTLP HTTP receiver
+metrics   = { port = 8888,  protocol = "http", publish = "host", host_port = 8888 }    # Prometheus metrics
+health    = { port = 13133, protocol = "http", publish = "host", host_port = 13133 }   # health_check extension
+
+[ciu_stack.collector.binds.tracing]
+to = "tracing.grpc"                  # the OAP gRPC endpoint (11800) — the same spelling in every layout
+wait = "none"                        # the export target is read at run time: a resolution only, no ordering edge (S8.2); the sending queue buffers a late OAP
+delivery = "template"                # tcp: no url — the compose template composes <host>:<port> for SKYWALKING_ENDPOINT
+
+[ciu_stack.collector.processors]     # consumer data: documents the pipeline sizing in the static config file
+batch_size = 8192
+batch_timeout = "200ms"
+memory_limit_mib = 1024
+tail_sampling_rate = 100
+
+[ciu_stack.collector.exporters]      # consumer data; the OAP address is binds.tracing (the rev-2 endpoint/host copies are gone)
+skywalking_enabled = true
+
+[ciu_stack.collector.hostdir]
+data = ""                            # file_storage extension (persistent sending queue); "" = ciu-generated host path
+
+[ciu_stack.collector.configfile.otel]   # rendered to ciu.rendered/collector/etc/otelcol/otel-aggregator-config.yml; the PARENT directory /etc/otelcol is mounted read-only (S6.9.1) — further YAMLs under it share that one mount
+template = "otel-aggregator-config.yml"   # static YAML: its ${VAR} references are the collector's own env expansion, not Jinja
+target = "/etc/otelcol/otel-aggregator-config.yml"
+
+[hooks]
+pre_compose = []
+post_compose = []

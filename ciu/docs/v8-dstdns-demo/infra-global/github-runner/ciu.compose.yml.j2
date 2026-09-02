@@ -1,7 +1,9 @@
-# infra-global/github-runner/ciu.compose.yml.j2 — v8 notation
-# Injected by ciu: container_name/hostname (dstdns-<instance>-github_runner-<svc>),
-# networks (the init job too — no implicit `<project>_default` bridge), base
-# labels, the init depends_on condition, cgroup fields.
+# infra-global/github-runner/ciu.compose.yml.j2 — v8 notation (draft.3)
+# Injected by ciu: container_name/hostname (dstdns-<instance>-github-runner-<svc>),
+# networks (the init job too — no implicit `<project>_default` bridge), ciu.*
+# labels, CIU_* env, the init depends_on condition, cgroup fields. The
+# registration token is the env-delivered secret (compose process environment,
+# S11.6); the docker gid is a host fact.
 services:
   # Init: runner directories with the right ownership (same pattern as postgres-init & co.)
   init:
@@ -11,7 +13,7 @@ services:
       sh -c "
       echo '[INIT] Setting up GitHub runner directories...';
       mkdir -p /runner/_work /actions-runner;
-      chown -R {{ ciu_stack.runner.settings.runner_uid }}:{{ instance.docker_gid }} /runner /actions-runner;
+      chown -R {{ ciu_stack.runner.settings.runner_uid }}:{{ host.docker_gid }} /runner /actions-runner;
       chmod -R 775 /runner /actions-runner;
       ls -la /runner /actions-runner;
       echo '[INIT] Init container completed successfully';
@@ -19,19 +21,19 @@ services:
     volumes:
       - {{ ciu_stack.runner.hostdir.work }}:/runner/_work
     labels:
-      - "{{ deploy.labels.prefix }}.service-container=false"
+      - "de.vxxu.volkb79.service-container=false"
 
   # Main runner: runs as the service uid with the docker group
   runner:
     image: {{ ciu_stack.runner.image }}
     restart: unless-stopped
-    user: "{{ ciu_stack.runner.settings.runner_uid }}:{{ instance.docker_gid }}"
+    user: "{{ ciu_stack.runner.settings.runner_uid }}:{{ host.docker_gid }}"
     environment:
-      {% for key, value in deploy.env.defaults.items() %}
+      {% for key, value in env_defaults.items() %}
       - {{ key }}={{ value }}
       {% endfor %}
-      - RUNNER_TOKEN=${GITHUB_RUNNER_SECRETS_RUNNER_TOKEN}          # env delivery
-      - RUNNER_NAME={{ ciu_stack.runner.identity.container_name }}
+      - RUNNER_TOKEN=${GITHUB_RUNNER_SECRETS_RUNNER_TOKEN}          # env-delivered secret
+      - RUNNER_NAME={{ ciu_stack.runner.identity.container_name }}   # derived identity (S4.4.2), unique per instance
       - REPO_URL={{ ciu_stack.runner.settings.repository_url }}
       - RUNNER_WORKDIR=/runner/_work
       - LABELS=self-hosted,linux,docker
@@ -39,5 +41,6 @@ services:
     volumes:
       - {{ ciu_stack.runner.hostdir.work }}:/runner/_work
       - /var/run/docker.sock:/var/run/docker.sock
+    # no healthcheck: nobody binds github_runner, so it is never a gate provider (S8.5.1, S11.5); healthy = Running (S8.6.3)
     labels:
-      - "{{ deploy.labels.prefix }}.service-container=false"
+      - "de.vxxu.volkb79.service-container=false"

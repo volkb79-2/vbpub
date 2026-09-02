@@ -1,7 +1,29 @@
 # V8 provisioning model — the realization graph
 
-**Status:** design note, feeding `CIU-V8-TESTING-GATE-PROPOSAL.md` §3.1/§4.3
-**Session:** dstdns/vbpub joint design discussion, 2026-08-26
+**Status:** design note (revision 2, 2026-09-02), feeding `CIU-V8-TESTING-GATE-PROPOSAL.md` §4.1.6/§4.3.4
+**Session:** dstdns/vbpub joint design discussion, 2026-08-26; preface added 2026-09-02
+
+> **Reading this note against proposal rev 3.0 / SPEC-V8 draft.3 (2026-09-02).** The
+> entity split this note argues for — a consumer depends on a *logical* name, never on
+> the row that currently satisfies it — is unchanged and is the basis of v8. The
+> notation below is the 2026-08-26 draft's and is kept verbatim because the value of
+> this note is the trace and its correction history, not the key names. Map as follows:
+>
+> | in this note | in rev 3.0 / draft.3 | why it changed |
+> |---|---|---|
+> | `[service.<n>] contract = [...]` | no `contract` key — the contract is **derived** from what consumers bind (`binds.<local>.facts`, bound endpoints); every variant is checked against it | a hand-typed contract was a copy of the provider's list (review R-19) |
+> | `[service.<n>.live] realized_by = "x"` | `[service.<n>] live = "x"` (string form) or `{ realized_by, service }` | one line per variant |
+> | `[ciu_stack.<name>] location = …`, `[external.<name>]` | `[realization.<name>] kind = "ciu_stack" \| "external" \| "joined"` (one registry, generic `kind`) | operator decision F18c (2026-08-30) |
+> | `init_provides` on the Realization | `provides` on the RealizedService (`[ciu_stack.<svc>]`) or on a hook entry; `vault:secret/*` facts derived from `from = "generate", store = "vault"` secrets | facts are attributed to the container that creates them (probe target) |
+> | `init_requires = ["our_main_db", "vault:secret/redis/password"]` | `requires = ["our_main_db"]` (an ordering edge) or `binds.<local> = { to = "our_main_db.sql", facts = [...], delivery = "env" }` (edge + resolved, delivered address); a vault path is asked by a secret (`from = "vault"`) and the edge to its minter is derived | one concept — the binding — instead of typed refs (review R-18) |
+> | `stack:<path>:healthy \| completed` refs | do not exist: a `requires`/`binds` edge waits for the target's variant service to be healthy, or completed for `one_shot` | CIU-63's class is closed structurally |
+> | `pg:schema/*` "does not exist" | exists (v7 S13.2); "schema *applied* by the init job" is a `one_shot` provider's completion | proposal X14 |
+> | phases / waves computed from the graph | waves are computed and written to `ciu.resolved.toml` `[resolved] waves`, `edges`, `gates` | operator decision F6 |
+> | "contract conformance at config time — not planned anywhere yet" | `ciu check` stage 5 (draft.3 S5.3, S15.3) | the prerequisite this note names for dropping `[deploy.phases]` is now specified |
+> | multi-host transport readiness "not modeled" | `[network.<n>] realized_by` + derived **network** edges on both ends; `per_host` realizations | proposal X15 |
+>
+> The five-wave dstdns trace, the two races (D-210, D-212) and their lessons are unchanged
+> and remain the acceptance narrative for V8-7 (the graph package).
 **Problem this resolves:** §3.1's worked examples nest a service's realness
 variants inside the stack that happens to run it today
 (`service.our_db_stack.postgres.live`). That is an addressing scheme, not an

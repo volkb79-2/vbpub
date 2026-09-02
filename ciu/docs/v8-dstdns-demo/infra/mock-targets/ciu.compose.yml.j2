@@ -1,16 +1,21 @@
-# infra/mock-targets/ciu.compose.yml.j2 — v8 notation
-# Injected by ciu: container_name/hostname, the instance network, base labels,
-# cgroup fields. Sibling containers reach the servers through derived routes
-# (routes.probe_targets.dns.host:port UDP, routes.probe_targets.http.host:port).
-# One image, built here from the Dockerfile in [mock_image] (build context =
-# repo root so it can COPY tests/ and libs/).
+# infra/mock-targets/ciu.compose.yml.j2 — v8 notation (draft.3)
+# Injected by ciu: container_name/hostname (dstdns-<instance>-mock-targets-dns /
+# -http), the instance network, ciu.* labels, CIU_* env, healthcheck timing,
+# cgroup fields. Consumers reach the servers through their own bindings
+# (to = "probe_targets.dns" → udp://<host>:<port>, to = "probe_targets.http" →
+# http://<host>:<port>, S7.8); nothing here names them. One image, built here
+# from the Dockerfile in [mock_image] (build context = repo root so it can COPY
+# tests/ and libs/); the base image tag comes from the global [build] user table.
+# Both services carry a healthcheck: dns is the variant service the `release`
+# lane gates on (requires.healthy = ["probe_targets"]) and the workers' bindings
+# wait on each endpoint's owning service (S6.4, S11.5).
 services:
   dns:
     build:
       context: {{ mock_image.context }}
       dockerfile: {{ mock_image.dockerfile }}
       args:
-        PYTHON_BASE_IMAGE: "{{ mock_image.python_base_image }}"
+        PYTHON_BASE_IMAGE: "{{ build.mock_python_base_image }}"
     image: {{ ciu_stack.dns.image }}
     command: ["python", "-m", "tests._harness.mock_targets.mock_dns"]
     restart: unless-stopped
@@ -19,13 +24,17 @@ services:
       - {{ key }}={{ value }}
       {% endfor %}
       - MOCK_DNS_PORT={{ ciu_stack.dns.endpoints.dns.port }}
+    healthcheck:
+      # one A query for example.com over UDP; any reply (fixture answer or NXDOMAIN) = serving
+      test: ["CMD", "python", "-c", "import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3); s.sendto(bytes.fromhex('123401000001000000000000076578616d706c6503636f6d0000010001'), ('127.0.0.1', {{ ciu_stack.dns.endpoints.dns.port }})); s.recv(512)"]
+      # interval / timeout / retries / start_period: injected from ciu_stack.dns.health (S6.6.4)
 
   http:
     build:
       context: {{ mock_image.context }}
       dockerfile: {{ mock_image.dockerfile }}
       args:
-        PYTHON_BASE_IMAGE: "{{ mock_image.python_base_image }}"
+        PYTHON_BASE_IMAGE: "{{ build.mock_python_base_image }}"
     image: {{ ciu_stack.http.image }}
     command: ["python", "-m", "tests._harness.mock_targets.http_target"]
     restart: unless-stopped
@@ -34,3 +43,7 @@ services:
       - {{ key }}={{ value }}
       {% endfor %}
       - MOCK_HTTP_PORT={{ ciu_stack.http.endpoints.http.port }}
+    healthcheck:
+      # the listener accepts connections (the served paths are fixture-defined, so none is assumed)
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', {{ ciu_stack.http.endpoints.http.port }}), timeout=3).close()"]
+      # interval / timeout / retries / start_period: injected from ciu_stack.http.health (S6.6.4)

@@ -1,0 +1,43 @@
+# infra/tailscale-node/ciu.stack.toml — v8 notation (plain TOML, draft.3; SPEC H §7)
+# Realization `tailscale_node` (bound by ciu.toml [realization.tailscale_node]
+# with per_host = true — declared THERE, S5.4, never in a stack file) = the
+# `mesh_node` LogicalService AND the transport of [network.mesh]
+# (`realized_by = "tailscale_node"`). Nobody depends on this stack by name:
+# every cross-host binding resolution over the mesh gains a DERIVED network edge
+# onto it on the consumer's host and, being per_host, on the provider's (S8.3),
+# plus a reachability probe of the resolution before the consumer's wave
+# (S8.5.3) — so it lands in wave 0 on every host of the `mesh` bundle, with the
+# SAME identity on each (S4.2.4). DERIVED here: the identity
+# (dstdns-<instance>-tailscale-node-tailscale), the wave. No endpoints: the node
+# publishes nothing — it IS the network, and a per_host realization can never
+# be a binding target with data (S7.6.5). Kept from the original: host
+# networking, single-use auth key from the enrollment seed file (never env;
+# deleted after join), restart-from-state, authenticated health check,
+# peer-readiness gate (pre/post hooks).
+
+[ciu_stack.tailscale]
+image = "tailscale/tailscale:v1.82.5"
+host_network = true                  # ciu injects network_mode: host, no hostname and no instance network (S11.4)
+
+[ciu_stack.tailscale.settings]       # consumer data read by the hooks and the compose template
+# No tailnet hostname here: the compose template reads host.hostname (a host fact
+# from [ciu.host.generated], S3.5.3). The v7 interpolation of the deploying
+# shell's HOSTNAME is impossible in v8 — the compose process environment is
+# closed (S11.6).
+# Enrollment seed file (mode 0400) holding the single-use auth key, written by the
+# SPEC F bootstrap action before `ciu up`; deleted by the pre_compose hook after a
+# successful join. NEVER passed via environment.
+auth_key_file = "/run/enrollment/tailscale-authkey"
+# Persistent tailscaled state: host-local storage (not a hostdir under the
+# checkout, not a docker volume) so the node survives stack teardown without
+# re-enrolling.
+state_dir = "/var/lib/tailscale-node"
+# Peers (hostnames or Tailscale IPs) that must be reachable before dependent
+# services start; [] = the gate is a no-op. Override per site by the merged path
+# ([realization.tailscale_node.services.tailscale.settings] in ciu.site.toml, S3.1.3).
+required_peers = []
+peer_gate_timeout_s = 120
+
+[hooks]
+pre_compose = ["./pre_compose_tailscale.py"]    # `tailscale up` with the seed-file key, verify join, delete the key; reads settings.* and host.* from its context (S12.2)
+post_compose = ["./post_compose_tailscale.py"]  # peer-readiness gate: a bounded wait via ciu.hookkit (S12.5), no hand-rolled poll

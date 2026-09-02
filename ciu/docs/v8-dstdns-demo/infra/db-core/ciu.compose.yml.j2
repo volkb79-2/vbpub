@@ -1,10 +1,12 @@
-# infra/db-core/ciu.compose.yml.j2 — v8 notation
+# infra/db-core/ciu.compose.yml.j2 — v8 notation (draft.3)
 # ciu injects per service: container_name, hostname, networks (the instance
 # network — the init jobs are pinned to it too, so compose never auto-creates a
-# `<project>_default` bridge), base labels, depends_on conditions (from
-# depends_on/one_shot), the pgadmin configfile mounts, cgroup fields. Bind-mount
-# sources use instance.physical_repo_root: the HOST-visible checkout path (the
-# daemon runs on the host — Docker-outside-Docker in the devcontainer).
+# `<project>_default` bridge), ciu.* labels, CIU_* env, depends_on conditions
+# (from depends_on/one_shot), the pgadmin config-directory mount, healthcheck
+# timing, cgroup fields. Bind-mount sources use host.physical_repo_root: the
+# HOST-visible checkout path (the daemon runs on the host — Docker-outside-Docker
+# in the devcontainer). Role and database NAMES are read from registry.* directly
+# (templates see it, S3.5.1); the rev-2 settings copies are gone.
 services:
   postgres_init:
     image: {{ ciu_stack.postgres_init.image }}
@@ -21,7 +23,7 @@ services:
         exit 0
       fi &&
       mkdir -p /home/postgres/pgdata &&
-      chown -R 1000:{{ instance.docker_gid }} /home/postgres/pgdata &&
+      chown -R 1000:{{ host.docker_gid }} /home/postgres/pgdata &&
       chmod -R 775 /home/postgres/pgdata &&
       echo 'PostgreSQL data directory initialized (1000:docker, group-writable)'
       "
@@ -30,49 +32,46 @@ services:
 
   postgres:
     image: {{ ciu_stack.postgres.image }}
-    user: "1000:{{ instance.docker_gid }}"   # timescaledb-ha (Ubuntu-based) runs postgres as uid 1000
+    user: "1000:{{ host.docker_gid }}"   # timescaledb-ha (Ubuntu-based) runs postgres as uid 1000
     environment:
-      {% for key, value in deploy.env.defaults.items() %}
+      {% for key, value in env_defaults.items() %}
       - {{ key }}={{ value }}
       {% endfor %}
       # superuser
-      - POSTGRES_USER={{ ciu_stack.postgres.settings.superuser }}
+      - POSTGRES_USER={{ registry.postgresql.superuser }}
       - POSTGRES_PASSWORD=${DB_CORE_SECRETS_POSTGRES_SUPERUSER_PASSWORD}
       - POSTGRES_DB={{ ciu_stack.postgres.settings.superuser_db }}
       # 01-init-users.sh: DBA layer (roles + databases); passwords are env-delivered secrets
-      - DATABASE_NAME={{ ciu_stack.postgres.settings.database }}
-      - DATABASE_USER_CONTROLLER={{ ciu_stack.postgres.settings.controller_user }}
-      - DATABASE_USER_CONTROLLER_DDL={{ ciu_stack.postgres.settings.controller_ddl_user }}
-      - DATABASE_USER_WORKERDB={{ ciu_stack.postgres.settings.workerdb_user }}
-      - DATABASE_USER_WEBAPP={{ ciu_stack.postgres.settings.webapp_user }}
-      - POSTGRES_CONTROLLER_USER={{ ciu_stack.postgres.settings.controller_user }}
+      - DATABASE_NAME={{ registry.postgresql.database }}
+      - DATABASE_USER_CONTROLLER={{ registry.postgresql.users.controller }}
+      - DATABASE_USER_CONTROLLER_DDL={{ registry.postgresql.users.controller_ddl }}
+      - DATABASE_USER_WORKERDB={{ registry.postgresql.users.workerdb }}
+      - DATABASE_USER_WEBAPP={{ registry.postgresql.users.webapp }}
+      - POSTGRES_CONTROLLER_USER={{ registry.postgresql.users.controller }}
       - POSTGRES_CONTROLLER_PASSWORD=${DB_CORE_SECRETS_POSTGRES_CONTROLLER_PASSWORD}
       - POSTGRES_CONTROLLER_DDL_PASSWORD=${DB_CORE_SECRETS_POSTGRES_CONTROLLER_DDL_PASSWORD}
-      - POSTGRES_CONTROLLER_DB={{ ciu_stack.postgres.settings.database }}
-      - POSTGRES_WORKERDB_USER={{ ciu_stack.postgres.settings.workerdb_user }}
+      - POSTGRES_CONTROLLER_DB={{ registry.postgresql.database }}
+      - POSTGRES_WORKERDB_USER={{ registry.postgresql.users.workerdb }}
       - POSTGRES_WORKERDB_PASSWORD=${DB_CORE_SECRETS_POSTGRES_WORKERDB_PASSWORD}
-      - POSTGRES_WEBAPP_USER={{ ciu_stack.postgres.settings.webapp_user }}
+      - POSTGRES_WEBAPP_USER={{ registry.postgresql.users.webapp }}
       - POSTGRES_WEBAPP_PASSWORD=${DB_CORE_SECRETS_POSTGRES_WEBAPP_PASSWORD}
       - POSTGRES_AUTHENTIK_PASSWORD=${DB_CORE_SECRETS_POSTGRES_AUTHENTIK_PASSWORD}
-      - AUTHENTIK_DATABASE={{ ciu_stack.postgres.settings.authentik_database }}
+      - AUTHENTIK_DATABASE={{ registry.postgresql.authentik_database }}
     volumes:
       # Mount the image's VOLUME parent (/home/postgres/pgdata), NOT the nested PGDATA
       # (/home/postgres/pgdata/data): the entrypoint then creates PGDATA itself (0700,
       # uid 1000) and runs /docker-entrypoint-initdb.d on first start. Mounting PGDATA
       # directly would make it "find existing data" and skip the init scripts.
       - {{ ciu_stack.postgres.hostdir.data }}:/home/postgres/pgdata
-      - {{ instance.physical_repo_root }}/infra/db-core/init-scripts:/docker-entrypoint-initdb.d:ro
+      - {{ host.physical_repo_root }}/infra/db-core/init-scripts:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      # accepting connections ≠ roles/databases ready: consumers wait on main_db's
-      # contract facts (pg:* probes), not on this check alone
-      test: ["CMD-SHELL", "pg_isready -h localhost -U {{ ciu_stack.postgres.settings.superuser }}"]
-      interval: {{ ciu_stack.postgres.health.interval }}
-      timeout: {{ ciu_stack.postgres.health.timeout }}
-      retries: {{ ciu_stack.postgres.health.retries }}
-      start_period: {{ ciu_stack.postgres.health.start_period }}
+      # accepting connections ≠ roles/databases ready: consumers wait on the facts
+      # their bindings list (pg:* probes, S8.5.2), not on this check alone
+      test: ["CMD-SHELL", "pg_isready -h localhost -U {{ registry.postgresql.superuser }}"]
+      # timing injected from ciu_stack.postgres.health (S6.6.4)
     restart: unless-stopped
     labels:
-      - "{{ deploy.labels.prefix }}.service-container=false"
+      - "de.vxxu.volkb79.service-container=false"
 
   pgadmin_init:
     image: {{ ciu_stack.pgadmin_init.image }}
@@ -88,7 +87,7 @@ services:
         exit 0
       fi &&
       mkdir -p /data /certs &&
-      chown -R 5050:{{ instance.docker_gid }} /data /certs &&
+      chown -R 5050:{{ host.docker_gid }} /data /certs &&
       chmod -R 775 /data &&
       echo 'pgAdmin directories initialized (5050:docker, group-writable)'
       "
@@ -103,9 +102,9 @@ services:
   pgadmin:
     image: {{ ciu_stack.pgadmin.image }}
     pull_policy: always
-    user: "5050:{{ instance.docker_gid }}"   # the image's pgadmin uid + docker group
+    user: "5050:{{ host.docker_gid }}"   # the image's pgadmin uid + docker group
     environment:
-      {% for key, value in deploy.env.defaults.items() %}
+      {% for key, value in env_defaults.items() %}
       - {{ key }}={{ value }}
       {% endfor %}
       - PGADMIN_DEFAULT_EMAIL={{ ciu_stack.pgadmin.settings.email }}
@@ -117,40 +116,32 @@ services:
       {% endif %}
     volumes:
       - {{ ciu_stack.pgadmin.hostdir.data }}:/var/lib/pgadmin
-      # servers.json / preferences.json: configfile mounts injected by ciu
+      # /pgadmin4 (servers.json, preferences.json): the config DIRECTORY mount is injected by ciu (S6.9.1)
       {% if ciu_stack.pgadmin.settings.enable_tls %}
       - {{ ciu_stack.pgadmin.hostdir.certs }}/server.cert:/certs/server.cert:ro
       - {{ ciu_stack.pgadmin.hostdir.certs }}/server.key:/certs/server.key:ro
       {% endif %}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:{{ ciu_stack.pgadmin.endpoints.pgadmin.port }}/misc/ping"]
-      interval: {{ ciu_stack.pgadmin.health.interval }}
-      timeout: {{ ciu_stack.pgadmin.health.timeout }}
-      retries: {{ ciu_stack.pgadmin.health.retries }}
-      start_period: {{ ciu_stack.pgadmin.health.start_period }}
     restart: unless-stopped
     labels:
-      - "{{ deploy.labels.prefix }}.service-container=false"
+      - "de.vxxu.volkb79.service-container=false"
 
   adminer:
     image: {{ ciu_stack.adminer.image }}
     pull_policy: always
-    user: "{{ instance.user_uid }}:{{ instance.user_gid }}"
+    user: "{{ host.user_uid }}:{{ host.user_gid }}"
     environment:
-      {% for key, value in deploy.env.defaults.items() %}
+      {% for key, value in env_defaults.items() %}
       - {{ key }}={{ value }}
       {% endfor %}
       - ADMINER_DESIGN=dracula
-      - ADMINER_DEFAULT_SERVER={{ ciu_stack.postgres.identity.hostname }}   # own sibling: derived identity, not a route
+      - ADMINER_DEFAULT_SERVER={{ ciu_stack.postgres.identity.hostname }}   # own sibling: derived identity, not a binding
     healthcheck:
       test: ["CMD", "php", "-r", "if(file_get_contents('http://127.0.0.1:{{ ciu_stack.adminer.endpoints.adminer.port }}')!==false){exit(0);}exit(1);"]
-      interval: {{ ciu_stack.adminer.health.interval }}
-      timeout: {{ ciu_stack.adminer.health.timeout }}
-      retries: {{ ciu_stack.adminer.health.retries }}
-      start_period: {{ ciu_stack.adminer.health.start_period }}
     restart: unless-stopped
     labels:
-      - "{{ deploy.labels.prefix }}.service-container=false"
+      - "de.vxxu.volkb79.service-container=false"
 
   minio_init:
     image: {{ ciu_stack.minio_init.image }}
@@ -166,9 +157,9 @@ services:
         exit 0
       fi &&
       rm -rf /data/.minio.sys/tmp/* &&
-      chown -R {{ instance.user_uid }}:{{ instance.docker_gid }} /data &&
+      chown -R {{ host.user_uid }}:{{ host.docker_gid }} /data &&
       chmod -R 775 /data &&
-      echo 'MinIO data directory initialized ({{ instance.user_uid }}:docker, group-writable)'
+      echo 'MinIO data directory initialized ({{ host.user_uid }}:docker, group-writable)'
       "
     volumes:
       - {{ ciu_stack.minio.hostdir.data }}:/data
@@ -176,10 +167,10 @@ services:
   minio:
     image: {{ ciu_stack.minio.image }}
     pull_policy: always
-    user: "{{ instance.user_uid }}:{{ instance.user_gid }}"
+    user: "{{ host.user_uid }}:{{ host.user_gid }}"
     command: server /data --console-address ":{{ ciu_stack.minio.endpoints.console.port }}"
     environment:
-      {% for key, value in deploy.env.defaults.items() %}
+      {% for key, value in env_defaults.items() %}
       - {{ key }}={{ value }}
       {% endfor %}
       - MINIO_ROOT_USER={{ ciu_stack.minio.settings.root_user }}
@@ -189,10 +180,6 @@ services:
       - {{ ciu_stack.minio.hostdir.data }}:/data
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
-      interval: {{ ciu_stack.minio.health.interval }}
-      timeout: {{ ciu_stack.minio.health.timeout }}
-      retries: {{ ciu_stack.minio.health.retries }}
-      start_period: {{ ciu_stack.minio.health.start_period }}
     restart: unless-stopped
     labels:
-      - "{{ deploy.labels.prefix }}.service-container=false"
+      - "de.vxxu.volkb79.service-container=false"

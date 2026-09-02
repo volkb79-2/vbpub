@@ -1,0 +1,46 @@
+# infra/db-init/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `db_init` (bound by ciu.toml [realization.db_init]) = the
+# `app_schema` LogicalService (contract []: depending on app_schema means
+# "db_init.runner completed", S5.3.4). One-shot: applies the dstdns application
+# schema as controller_ddl, then exits 0 — Decision 8
+# (DATABASE-STRATEGY-AND-DECISIONS.md): the schema is owned by this container,
+# not by db_core's entrypoint (superuser) and not by any long-running app.
+# DERIVED: the container name (dstdns-<instance>-db-init-runner), the wave (the
+# bind edge replaces phase order and the `stack:infra/db-init:completed`
+# self-fact apps used to spell out), the postgres address (the binding below,
+# injected as POSTGRES_HOST/PORT), the Vault edge and the minter edge to db_core
+# (both derived from the secret, S8.3).
+
+[ciu_stack.runner]
+image = "postgres:18-alpine"         # official image at the server's PG major; only the psql client is needed here
+one_shot = true                      # the gate waits for `completed`, not `healthy`
+# Nothing to list: consumers bind app_schema without facts (controller:
+# requires = ["app_schema"]) — a `wait = "healthy"` edge onto a one_shot service
+# is satisfied by its completion (S6.4). A pg:schema/<name> fact would go here
+# (and into db_core_seeded's provides, S5.3.2) the day a consumer binds one.
+provides = []
+
+# main_db = the address plus the database and the controller_ddl role (facts,
+# probed before this wave, S8.5.2). env delivery: ciu injects POSTGRES_HOST /
+# POSTGRES_PORT (tcp: no URL) into the container — the template writes no address
+# (S11.3). `vault` is derived from the secret below (S8.3): no `requires` for it.
+[ciu_stack.runner.binds.database]
+to = "main_db.sql"
+delivery = "env"
+env_prefix = "POSTGRES"
+facts = ["pg:db/dstdns", "pg:role/controller_ddl"]
+
+# The rev-2 [database] mapping table is gone: the address is the binding; the
+# database and role NAMES — including the DML roles controller_ddl grants to
+# (90-grant-permissions.sh) — come from registry.postgresql.*, which the compose
+# template reads directly (S3.5.1).
+
+# Minted by db_core (`store = "vault"` there → the secret→minter edge, S8.3), read
+# here. env delivery: psql takes PGPASSWORD from the environment (restart-bound;
+# ciu check lists it).
+[ciu_stack.runner.secrets]
+postgres_controller_ddl_password = { from = "vault", path = "postgres_controller_ddl_password", delivery = "env", env_name = "DB_INIT_SECRETS_POSTGRES_CONTROLLER_DDL_PASSWORD" }
+
+[hooks]
+pre_compose = []
+post_compose = []

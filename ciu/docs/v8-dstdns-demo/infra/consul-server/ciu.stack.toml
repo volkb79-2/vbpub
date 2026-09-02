@@ -1,0 +1,56 @@
+# infra/consul-server/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `consul_server` (bound by ciu.toml [realization.consul_server]; it
+# realizes the LogicalService `consul`). DERIVED, never written here: container/
+# host names (dstdns-<instance>-consul-server-consul), the compose project, the
+# instance network, the wave, and every consumer's resolution (their bindings to
+# consul.http / consul.grpc / consul.dns). The ACL tokens the post_compose hook
+# mints into Vault are the hook entry's `provides` (S6.10): they enter `consul`'s
+# DERIVED contract as consumers bind them (S5.3). Consumers depend on `consul`,
+# never on this stack.
+
+[ciu_stack.init]
+image = "hashicorp/consul:latest"
+one_shot = true                      # pre-chowns the data/config hostdirs to the workspace user, exits 0
+
+[ciu_stack.consul]
+image = "hashicorp/consul:latest"
+primary = true                       # health-bearing service: the variant service of `consul`, exec target, image source, where the hook's facts are probed
+depends_on = ["init"]                # rendered as depends_on: init: condition: service_completed_successfully
+# Ordering only (S6.4.4: a binding without data). The hook writes tokens INTO
+# Vault, so Vault must be up and unsealed first. This stack declares no
+# vault-sourced secret (the hook authenticates with the bootstrap token from
+# ciu.secrets.toml, S10.3.2, and reaches Vault the way ciu does — the pseudo-consumer
+# `ciu`'s resolution, S7.8.7), so nothing derives that edge — it is declared. The
+# edge waits for vault's whole wave, i.e. for its post_compose hook (init/unseal,
+# AppRoles) to have completed (S8.7): exactly the readiness this hook needs.
+requires = ["vault"]
+# Endpoints: instance network only by default. Host publishing is a SITE decision
+# made through the merged view, never here: ciu.site.toml carries
+# [realization.consul_server.services.consul.endpoints.http] publish = "host",
+# host_port = 8500, host_bind = "127.0.0.1" (S3.1.3 — the former `publish_host_ports` flag).
+endpoints.http = { port = 8500, protocol = "http" }   # HTTP API + UI
+endpoints.grpc = { port = 8300, protocol = "tcp" }    # server RPC
+endpoints.dns  = { port = 8600, protocol = "udp" }    # DNS
+
+[ciu_stack.consul.settings]          # consumer data
+datacenter = "dc1"
+
+[ciu_stack.consul.hostdir]
+data = ""                            # "" = ciu-generated host path
+config = ""
+
+[hooks]
+pre_compose = []
+post_compose = [
+  # ACL bootstrap, policies from [registry.consul.policies], tokens → Vault;
+  # identities from its context (ciu.hookkit). `provides` = the facts the hook
+  # creates, attributed to the primary (consul) and probed there before the next
+  # wave (S8.5.2). cmru_node tokens are issued per node by auto_config at
+  # enrollment, so they are not pre-minted here.
+  { run = "./post_compose_consul.py", provides = [
+    "vault:secret/consul/controller/token", "vault:secret/consul/worker-io/token",
+    "vault:secret/consul/worker-db/token", "vault:secret/consul/webapp-server/token",
+    "vault:secret/consul/docker-stats-exporter/token",
+    "vault:secret/consul/cmru/bootstrap-bearer-token", "vault:secret/consul/cmru/viewer/token",
+  ] },
+]

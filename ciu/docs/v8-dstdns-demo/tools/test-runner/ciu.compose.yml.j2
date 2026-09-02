@@ -1,41 +1,41 @@
-# tools/test-runner/ciu.compose.yml.j2 — v8 notation (identity, network, labels, cgroup fields injected by ciu)
+# tools/test-runner/ciu.compose.yml.j2 — v8 notation (draft.3): identity, network,
+# ciu.* labels, CIU_* env, the env-delivered bindings (POSTGRES_HOST/PORT,
+# REDIS_HOST/PORT, CONTROLLER_HOST/PORT/URL, WEBAPP_SERVER_HOST/PORT/URL),
+# healthcheck timing and cgroup fields are injected by ciu.
 services:
   runner:
     image: {{ ciu_stack.runner.image }}
     restart: unless-stopped
-    user: "{{ instance.user_uid }}:{{ instance.user_gid }}"
+    user: "{{ host.user_uid }}:{{ host.user_gid }}"
     environment:
-      {% for key, value in deploy.env.defaults.items() %}
+      {% for key, value in env_defaults.items() %}
       - {{ key }}={{ value }}
       {% endfor %}
       # RUN_LIVE_TESTS / MOCK_MODE are NOT container env: the compose environment
       # is closed (S11.6) — the gate hands them to the lane PROCESS instead
       # ([testing.environments.tester] forward_env carries RUN_LIVE_TESTS; the
       # `unit` lane sets MOCK_MODE=true in its own argv).
-      - PWMCP_CONTRACT_URL={{ ciu_stack.runner.browser.url }}/contract
-      - DSTDNS_PWMCP_WS={{ ciu_stack.runner.browser.url }}
+      - PWMCP_CONTRACT_URL={{ ciu_stack.runner.binds.browser.url }}/contract
+      - DSTDNS_PWMCP_WS={{ ciu_stack.runner.binds.browser.url }}
       - PWMCP_LEASE_SECONDS={{ ciu_stack.runner.browser.lease_seconds }}
       - PWMCP_SESSION_LABEL={{ ciu_stack.runner.browser.session_label }}
       - PYTHONPATH=/workspace:/workspace/scripts
       - REPO_ROOT=/workspace
-      - POSTGRES_HOST={{ ciu_stack.runner.database.host }}
-      - POSTGRES_PORT={{ ciu_stack.runner.database.port }}
-      - POSTGRES_USER={{ ciu_stack.runner.database.user }}
+      - POSTGRES_USER={{ registry.postgresql.users.controller }}
       - POSTGRES_PASSWORD=${TEST_RUNNER_SECRETS_POSTGRES_PASSWORD}
-      - POSTGRES_DB={{ ciu_stack.runner.database.database }}
-      - REDIS_HOST={{ ciu_stack.runner.redis.host }}
-      - REDIS_PORT={{ ciu_stack.runner.redis.port }}
+      - POSTGRES_DB={{ registry.postgresql.database }}
       - REDIS_PASSWORD=${TEST_RUNNER_SECRETS_REDIS_PASSWORD}
-      - CONTROLLER_URL={{ ciu_stack.runner.controller.url }}
-      - WEBAPP_SERVER_URL={{ ciu_stack.runner.webapp_server.url }}
+      # POSTGRES_HOST/PORT, REDIS_HOST/PORT, CONTROLLER_URL, WEBAPP_SERVER_URL: injected (env-delivered bindings)
     cap_add:
       - IPC_LOCK
     volumes:
-      - {{ ciu_stack.runner.mounts.workspace }}:/workspace:rw
+      - {{ host.physical_repo_root }}:/workspace:rw     # THIS checkout — the gate's mount proof (S16.4.3) checks exactly this bind
       - /var/run/docker.sock:/var/run/docker.sock:rw
     working_dir: /workspace
     stdin_open: true
     tty: true
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sys; sys.exit(0)"]   # a gate provider that is not one_shot MUST declare a healthcheck (S11.5)
     labels:
-      - "{{ deploy.labels.prefix }}.service-type=test"
-      - "{{ deploy.labels.prefix }}.service-container=true"
+      - "de.vxxu.volkb79.service-type=test"
+      - "de.vxxu.volkb79.service-container=true"
