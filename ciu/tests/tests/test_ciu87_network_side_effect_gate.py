@@ -34,10 +34,15 @@ def _result(returncode: int = 0, stdout: str = "", stderr: str = "") -> subproce
 
 
 def test_the_suite_declares_the_gate_for_every_test() -> None:
-    """Deleting conftest's CIU_TEST_SUITE assignment fails here.
+    """Removing the `_ciu_test_suite_gate` autouse fixture's `setenv` fails
+    here — as does any conftest that stops raising the gate by both routes.
 
-    The gate is worthless if the suite forgets to raise it, and a test body is
-    where a spawned `ciu` subprocess would inherit it from.
+    Scope note (ciu-P48 review B2): this pins that SOME mechanism has the gate
+    up during a test body. It does NOT distinguish the two — conftest's
+    import-time assignment and the autouse fixture both write `os.environ`, so
+    deleting either one alone leaves this green. The import-time half is
+    pinned separately, in a child process, by
+    `test_conftest_raises_the_gate_at_import_not_only_per_test`.
     """
     import os
 
@@ -122,11 +127,15 @@ def test_gate_absent_restores_the_real_devcontainer_attach(
 
 
 def test_gate_reaches_a_spawned_ciu_subprocess() -> None:
-    """Setting the gate only from a fixture (never in os.environ) fails here.
+    """Signalling the gate by anything a child process cannot see — a pytest
+    marker, a module global, a `sys` attribute — fails here.
 
-    Several of the tests that used to leak drive ciu through a child process;
-    a fixture-only signal would not survive the fork, so conftest sets the
-    variable in os.environ at import time as well.
+    Several of the tests that used to leak drive ciu through a child process,
+    so the signal has to live in the process ENVIRONMENT, not merely in the
+    interpreter that runs the test. (Scope note, ciu-P48 review B2: this says
+    nothing about WHICH conftest mechanism put it there — the autouse
+    fixture's `setenv` writes `os.environ` too, so a child inherits it either
+    way. See `test_conftest_raises_the_gate_at_import_not_only_per_test`.)
     """
     proc = subprocess.run(
         [sys.executable, "-c", "import os; print(os.environ.get('CIU_TEST_SUITE'))"],
@@ -135,6 +144,37 @@ def test_gate_reaches_a_spawned_ciu_subprocess() -> None:
         check=True,
     )
     assert proc.stdout.strip() == "1"
+
+
+def test_conftest_raises_the_gate_at_import_not_only_per_test() -> None:
+    """Deleting conftest's import-time `os.environ[...] = "1"` fails here, and
+    fails ONLY here.
+
+    Import time is the half no fixture can cover: collection-time module
+    bodies run before any fixture, and a `ciu` subprocess spawned from one
+    would inherit an ungated environment. Every in-process assertion about
+    this is masked by the autouse fixture, which writes the same variable —
+    so the check has to happen in a child interpreter that imports conftest
+    with the variable deliberately removed and nothing else running.
+    """
+    tests_root = str(Path(__file__).resolve().parents[1])
+    probe = (
+        "import os, sys\n"
+        "os.environ.pop('CIU_TEST_SUITE', None)\n"
+        "sys.path.insert(0, sys.argv[1])\n"
+        "import conftest\n"
+        "print(os.environ.get('CIU_TEST_SUITE'))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe, tests_root],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert proc.stdout.strip() == "1", (
+        "importing tests/conftest.py must itself raise CIU_TEST_SUITE; "
+        f"child reported {proc.stdout.strip()!r}"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -222,10 +262,17 @@ def test_network_exists_reads_the_inspect_exit_status() -> None:
     assert suite_conftest.network_exists("n", runner=_recording_runner([], 1)) is False
 
 
-def _tracker(exists_answers: list[bool], *, suppressed: bool = False):
-    answers = iter(exists_answers)
+def _tracker(
+    exists_answers: list[bool],
+    *,
+    attached_answers: list[bool] | None = None,
+    suppressed: bool = False,
+):
+    exists = iter(exists_answers)
+    attached = iter(attached_answers or [])
     return suite_conftest.NetworkSideEffectTracker(
-        exists=lambda _name: next(answers),
+        exists=lambda _name: next(exists),
+        attached=lambda _name: next(attached),
         suppressed=lambda: suppressed,
     )
 
@@ -264,8 +311,9 @@ def test_tracker_registers_a_network_whose_creation_then_failed_only_if_real() -
 
 def test_tracker_records_the_join_even_when_the_product_call_raises() -> None:
     """Recording after the call instead of in a `finally` fails here: a
-    membership created before an exception is still a membership."""
-    tracker = _tracker([])
+    membership that really appeared before an exception is still a
+    membership, and still has to be undone."""
+    tracker = _tracker([], attached_answers=[False, True])
 
     with pytest.raises(RuntimeError):
         tracker.wrap_connect(lambda _name: (_ for _ in ()).throw(RuntimeError("boom")))(
@@ -273,6 +321,62 @@ def test_tracker_records_the_join_even_when_the_product_call_raises() -> None:
         )
 
     assert tracker.joined == ["joined-net"]
+
+
+def test_tracker_registers_a_join_only_when_a_membership_really_appeared() -> None:
+    """ciu-P48 review B1. Recording every name the product was ASKED to
+    connect — the original `finally: self.joined.append(...)` — fails here.
+
+    A boundary test that mocks `subprocess.run` makes no attachment at all, so
+    nothing may be registered, so teardown may issue no `docker network
+    disconnect -f`. The bug this pins was live: teardown really did disconnect
+    the cockpit from a network a mocked test merely NAMED.
+    """
+    tracker = _tracker([], attached_answers=[False, False])
+
+    tracker.wrap_connect(lambda _name: None)("mocked-seam-never-attached")
+
+    assert tracker.joined == []
+
+
+def test_tracker_ignores_a_membership_that_predates_the_call() -> None:
+    """Registering on "attached afterwards" alone fails here: a cockpit that
+    was ALREADY on the network was put there by someone else, and forcibly
+    disconnecting it is the shared-host harm, not the fix."""
+    tracker = _tracker([], attached_answers=[True, True])
+
+    tracker.wrap_connect(lambda _name: None)("someone-elses-live-network")
+
+    assert tracker.joined == []
+
+
+def test_a_mocked_seam_join_leaves_the_teardown_ledger_empty(
+    real_network_side_effects: None,
+    _track_real_docker_networks: "suite_conftest.NetworkSideEffectTracker",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ciu-P48 review B1, end to end through the real fixture.
+
+    This is the reviewer's reproduction, inverted into a regression test: the
+    gate is off, the product's whole Docker seam is mocked, and
+    `_connect_devcontainer_to_network` is driven against a network name this
+    test does not own. Nothing may reach the ledger — because everything in
+    the ledger becomes a real `docker network disconnect -f`/`rm` against the
+    live shared daemon at teardown.
+    """
+    monkeypatch.setenv("ENV_TYPE", "devcontainer")
+    monkeypatch.setenv("DEVCONTAINER_NAME", "ciu-cockpit")
+    monkeypatch.setattr(workspace_env, "_docker_available", lambda: True)
+    monkeypatch.setattr(
+        workspace_env.subprocess,
+        "run",
+        lambda *_a, **_k: _result(stdout=""),
+    )
+
+    workspace_env._connect_devcontainer_to_network("ciu-p48-not-ours-network")
+
+    assert _track_real_docker_networks.joined == []
+    assert _track_real_docker_networks.created == []
 
 
 def test_tracker_is_a_pass_through_while_the_gate_is_active() -> None:

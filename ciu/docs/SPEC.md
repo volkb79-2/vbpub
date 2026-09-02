@@ -261,6 +261,14 @@ requirements are marked *(withdrawn)*.
   `DOCKER_NETWORK_INTERNAL` is still the S2.2 hard failure, and the S1.9
   `ENV_TYPE` no-op is still evaluated first and on its own terms.
 
+  This is the third member of the ambient `CIU_*` toggle family described at
+  S10.6 — `CIU_SKIP_DOOD_PREFLIGHT` (S1.5, `engine.py`, likewise documented
+  in-source as "for tests" and likewise an exact `== "1"` match),
+  `CIU_ADOPT_LEGACY_PROJECT` and `CIU_SSH_INSECURE_TOFU` — and follows the
+  same shape for the same reasons: env-var-only with no dedicated CLI flag,
+  exact-value match so ambient shell state cannot weaken the posture by
+  accident. It is NOT a new pattern; treat it as one of that set.
+
 ## S3 — Configuration model
 
 ### Files and layering

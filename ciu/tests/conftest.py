@@ -136,6 +136,28 @@ def network_exists(name: str, *, runner: Optional[Runner] = None) -> bool:
     return run_docker(["network", "inspect", name], runner=runner).returncode == 0
 
 
+def network_has_container(
+    name: str, container: str, *, runner: Optional[Runner] = None
+) -> bool:
+    """Whether *container* is currently attached to network *name* (CIU-87).
+
+    The membership half of the tracker's "did THIS call cause it?" rule. An
+    unnamed cockpit, an absent network and an unreachable daemon all answer
+    False — teardown may act only on a membership it positively observed
+    appearing, never on one it merely failed to rule out.
+    """
+    if not container:
+        return False
+    probe = run_docker(
+        [
+            "network", "inspect", name,
+            "--format", "{{range .Containers}}{{.Name}} {{end}}",
+        ],
+        runner=runner,
+    )
+    return probe.returncode == 0 and container in probe.stdout.split()
+
+
 def release_test_network(
     name: str,
     container: str,
@@ -169,18 +191,31 @@ class NetworkSideEffectTracker:
 
     Kept as a plain object rather than fixture-local closures so its rules are
     directly assertable (``tests/tests/test_ciu87_network_side_effect_gate.py``
-    drives it with fakes): "register a network only when this call is what
-    brought it into existence" is the whole difference between a surgical
-    teardown and a blanket sweep that would eat a co-tenant's live network.
+    drives it with fakes): "register a side effect only when THIS call is what
+    caused it" is the whole difference between a surgical teardown and a
+    blanket sweep that would eat a co-tenant's live network.
+
+    Both ledgers obey that rule symmetrically, via a before/after observation
+    of the daemon: ``created`` needs the network to have come into existence
+    across the call, ``joined`` needs the cockpit's membership to have
+    appeared across it. The membership half was NOT observation-gated in the
+    first cut of this fixture (ciu-P48 review B1) — it recorded every name the
+    product was ASKED to connect, so a boundary test that fully mocked
+    ``subprocess.run`` and merely NAMED a network still had teardown issue a
+    real ``docker network disconnect -f`` against the live daemon. That is the
+    precise shared-host hazard this whole fixture exists to prevent, reached
+    from the inside.
     """
 
     def __init__(
         self,
         *,
         exists: Callable[[str], bool],
+        attached: Callable[[str], bool],
         suppressed: Callable[[], bool],
     ) -> None:
         self._exists = exists
+        self._attached = attached
         self._suppressed = suppressed
         self.created: list[str] = []
         self.joined: list[str] = []
@@ -204,10 +239,16 @@ class NetworkSideEffectTracker:
         def _connect(network_name: str) -> None:
             if self._suppressed():
                 return original(network_name)
+            attached = self._attached(network_name)
             try:
                 return original(network_name)
             finally:
-                self.joined.append(network_name)
+                # Same discipline as `wrap_ensure`, for the same reason: a
+                # membership that did not appear across this call is not this
+                # test's to undo. A pre-existing attachment belongs to whoever
+                # made it, and a mocked seam creates no attachment at all.
+                if not attached and self._attached(network_name):
+                    self.joined.append(network_name)
 
         return _connect
 
@@ -237,11 +278,22 @@ def _track_real_docker_networks(monkeypatch: pytest.MonkeyPatch):
     host with no docker client), since the product code cannot then reach the
     daemon at all — the tracking cost is paid only by a test that deliberately
     opted out.
+
+    Yields the tracker, so a test can assert on the ledger the teardown is
+    about to act on (that is how the B1 regression above is pinned).
+
+    The cockpit name is resolved ONCE here, before the test body can rewrite
+    ``DEVCONTAINER_NAME``/``HOSTNAME``. A boundary test that sets a fictional
+    cockpit name must not make the membership probe ask about a container that
+    does not exist, and teardown must disconnect the same container the probe
+    watched.
     """
     from ciu import workspace_env
 
+    cockpit = workspace_env.detect_devcontainer_name()
     tracker = NetworkSideEffectTracker(
         exists=network_exists,
+        attached=lambda name: network_has_container(name, cockpit),
         suppressed=lambda: (
             workspace_env._test_suite_gate_active() or not docker_cli_available()
         ),
@@ -257,10 +309,10 @@ def _track_real_docker_networks(monkeypatch: pytest.MonkeyPatch):
         tracker.wrap_connect(workspace_env._connect_devcontainer_to_network),
     )
 
-    yield
+    yield tracker
 
     if tracker.created or tracker.joined:
-        tracker.release(workspace_env.detect_devcontainer_name())
+        tracker.release(cockpit)
 
 
 @pytest.fixture
