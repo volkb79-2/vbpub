@@ -440,3 +440,30 @@ precedent for shape and discipline.
     No round 3 for phase 1: R-1 states it does not need to re-verify a
     ten-line read, and R-2's range will include it. R-1's session is
     kept resumable for one round should the merge need it.
+
+- **2026-09-02 (OPERATOR DIRECTIVE, estate-wide: "all assay lanes make use
+  of `resume` and `progress`" — handled outside the branch, two items
+  routed in)** — Measured: both are `assay run` flags, not lane keys;
+  assay ignores `--progress` on a lane without R2 and only the mutation
+  sweep touches resume state; vbpub's four lanes are all R0/R1 and every
+  one but assay's own runs through run-gate, which never passed either
+  flag (the dstdns peer had filed it as run-gate **RG-33** the same day).
+  Landed on main by the controller, not in this wave: run-gate **rev 33 /
+  R-38** (`0a4862db`) — every assay-kind lane gets `--resume --progress
+  .assay/progress-<lane>.jsonl` unconditionally, a pin below assay 2.4.1
+  refuses by name; cmru re-pinned 2.3.0 → 4.1.0 (`b36c6925`, verified by
+  `cmru tool-deps` and a clean-worktree lane run: PASS, verdict schema 9,
+  judge 4.1.0, no progress file on an R0 lane — the no-op confirmed);
+  AGENTS.md carries the rule; run-gate 23.3.0 release in flight. Routed to
+  generation 6 for the branch: (a) assay's own gate script passes both
+  flags (small A-row + test + one CONSUMERS sentence); (b) backlog
+  **B064**, filed not built: progress/resume beyond R2 — R0/R1 are one
+  command each (resume = rerun by construction; a phase-level progress
+  stream is possible, not wired), R3 canary has mutation's per-unit shape
+  (per-attempt events and per-target resume feasible; B007's per-attempt
+  payload is what such an event would carry). The operator's follow-up
+  ("why pin a judge version in vbpub's own projects?") answered on the
+  spot: pins are evidence binding + provenance + no-network gates; the
+  cost is staleness, remedied by `cmru tool-deps --refresh assay` as an
+  assay-release checklist step, not by tree-tracking — no policy change
+  made without the operator's word.
