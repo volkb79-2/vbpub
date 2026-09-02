@@ -2033,3 +2033,88 @@ CONSUMERS.md's own guidance to keep it off the tracked/judged tree.
 `dstdns` P165 (`nyxloom-trove/decisions.md` D-318/D-319), discovered while
 investigating why its `sql-mutation` retry needed a full budget window
 without finishing even one of its four target files.
+
+## RG-34 — `schema` lane's argv doesn't template `{worktree}` into its own script path, breaking any Mode-B worktree with a dedicated (non-shared) test-runner container
+
+### What's wrong
+
+`run-gate.toml`'s `[lanes.schema]`:
+
+```toml
+argv = ["scripts/schema-gate.sh", "{worktree}"]
+```
+
+Only the ARGUMENT is templated with `{worktree}`; the script path itself
+(`scripts/schema-gate.sh`) is a bare relative string, resolved against
+whatever `--workdir` the docker exec uses. The sibling `p128-schema-lineage`
+lane gets this right: `argv = ["bash", "{worktree}/scripts/p128-assay-schema.sh"]`.
+
+For MAIN's shared `test-runner` container this is invisible: it bind-mounts
+the WHOLE host repo root at `/workspaces/dstdns`
+(`docker inspect`: `/home/vb/.../dstdns -> /workspaces/dstdns`), so
+`--workdir /workspaces/dstdns` + bare `scripts/schema-gate.sh` happens to
+resolve correctly regardless of which worktree's tests are actually being
+judged. A Mode-B instance's own DEDICATED test-runner container (one per
+worktree, not the shared one) mounts only that worktree's subtree, remapped
+to the SAME container path: `docker inspect` on
+`p152-...-test-runner` shows `/home/vb/.../dstdns/.worktrees/p152-... ->
+/workspaces/dstdns/.worktrees/p152-...` — nothing is mounted at bare
+`/workspaces/dstdns` in that container at all. `scripts/schema-gate.sh`
+relative to `--workdir /workspaces/dstdns` then resolves to a path that
+genuinely doesn't exist in that container's filesystem, even though the
+identical file exists both on the host and inside the container under its
+real mount point. Confirmed live 2026-09-02: `run-gate gate --worktree
+.../p152-real-fault-harness-restart-matrix` failed immediately —
+`bash: line 1: scripts/schema-gate.sh: No such file or directory`,
+`lane 'schema' exit 127`, `lane 'gate' exit 127` — while
+`docker exec p152-...-test-runner sh -c 'ls scripts/schema-gate.sh'`
+(relative to the container's own default cwd, which IS its worktree root)
+finds the same file without issue.
+
+### Why now, not always
+
+This traces to TODAY's retirement of `./scripts/testing-exec.sh`
+(dstdns `CLAUDE.md`, 2026-09-02): the old Mode-B gate path ran
+`testing-exec.sh` FROM INSIDE the worktree with the worktree's own `ciu.env`
+sourced (GUIDE.md §3.4, "VALIDATED 2026-07-16"), so a bare relative script
+path always resolved correctly by construction — cwd itself was already the
+worktree root. The direct `run-gate <lane> --worktree` replacement path
+never carried that same-cwd guarantee forward for lanes whose argv wasn't
+already `{worktree}`-prefixed on the script path.
+
+### Impact
+
+Total, silent-until-hit: the `schema` lane (and therefore the composite
+`gate` lane, which runs it) cannot pass against ANY Mode-B worktree with its
+own dedicated test-runner container, ever — not flaky, not budget-related,
+100% reproducible. Confirmed on `dstdns` P152.
+
+### Proposed fix
+
+Template `{worktree}` into the script-path element of `[lanes.schema]`'s
+argv too, matching `p128-schema-lineage`'s already-correct pattern:
+`argv = ["{worktree}/scripts/schema-gate.sh", "{worktree}"]`. More
+generally: audit every `kind = "command"` lane's argv for the same
+class of defect (a relative script path NOT prefixed with `{worktree}`,
+relying on `--workdir` alone) — `schema` was found only because P152
+happened to be the first Mode-B package to exercise the composite `gate`
+lane's schema sub-lane against a dedicated container since
+`testing-exec.sh`'s retirement today.
+
+### Acceptance
+
+- [ ] `[lanes.schema]`'s argv resolves correctly against a worktree whose
+      test-runner container mounts only that worktree's own subtree (not
+      the full repo root) — verified via a real Mode-B dedicated-container
+      run, not just main's shared-container case;
+- [ ] Every other `kind = "command"` lane's argv is swept for the same
+      unprefixed-script-path pattern;
+- [ ] A regression test (or `doctor`/`validate-pointers`-style static check)
+      catches a lane argv whose first element lacks `{worktree}` when its
+      environment is `test-runner` and it takes a `--worktree` argument.
+
+### Source
+
+`dstdns` P152 (`nyxloom-trove/decisions.md` D-319), discovered live while
+finishing P152's own composite gate run under the operator's single-stack
+host-contention directive.
