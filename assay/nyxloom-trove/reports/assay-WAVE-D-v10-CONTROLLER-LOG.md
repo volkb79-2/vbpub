@@ -148,3 +148,61 @@ precedent for shape and discipline.
   DA-R3..R6: B028, DA-R3/DA-R4 follow-ups, B029, B024, then gate, BRIEF-3,
   return (phase 1 complete → R-1 + generation 4 for phase 2). Next free
   ids **A-414** / **B062**.
+
+- **2026-09-02 (generation 3 returned — PHASE 1 COMPLETE 10/10; gate PASS
+  on `93188912`; DA-R7 ruled; R-1 and generation 4 dispatched in
+  parallel)** — Generation 3 (~65 min, 230 calls) landed `21bdf19d` B053
+  follow-ups/A-414 (six formerly silent refusal sites compose their
+  message where the fact is known and go through `announce_refusal`; the
+  discardable early-R2 refusal is announced only where the surviving claim
+  is chosen; red-first 7F/10P), `dd8f4d2c` B028/A-415 (measured first: the
+  higher-rigor entry point already wrote its verdict; only direct R0 exited
+  without the reserved `--verdict-json`, so ONE boundary was added, with
+  the post-command guard moved verbatim into `_finish_direct_r0_lane`;
+  BRIEF-2's guess about `runner.py:3776` was wrong the other way — that
+  handler laundered a `LANE_TIMEOUT` cleanup failure into `GIT_FAILED`,
+  now fixed; real `budget = "1s"` + `sleep 30`; red-first 3F/4P),
+  `81228b25` B029/A-416 (RESOLVED BY MEASUREMENT per DA-R6: the predicted
+  misattributed R3 claim does not reproduce on the shipped isolated-canary
+  path, which never reaches `execute_command`; the threading landed on the
+  legacy path anyway, docstring corrected, the CLI test labelled a
+  regression guard), `93188912` B024 (DA-D15's escape hatch: the image
+  carries neither `pyflakes` nor `ruff`, the wheelhouse holds exactly the
+  five build wheels, the gate has no other ingress; NOTHING landed;
+  decision ask with three options). Tip `b90ca598`; **gate-verified
+  commit `93188912`** — controller checked the LOG's marker transcript
+  (one `ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0`, zero red flags,
+  wheel `assay-4.1.1.dev14+g93188912`, `PASS (exit 0)`, both v9 schema
+  phases, suite 3985/20); `93188912..b90ca598` is BRIEF/LOG only; nothing
+  under `verdict.py`/`verify.py`/`schemas/`/the drift-guard; zero `!`
+  markers. Main moved to `f43da249` (run-gate RG-32 and ciu CIU-90 docs;
+  assay untouched).
+
+  **DA-R7 (B024): option (b), pyflakes only, in its OWN closure.** Add
+  `gate/distribution/lint-requirements.txt` (`pyflakes==<pin> --hash=…`)
+  and `gate/distribution/lint-wheelhouse/` holding that one pure-Python
+  wheel (~100 KB), fetched ONCE on the devcontainer with `pip download
+  --no-deps`, sha256 recorded in the requirements and a manifest beside
+  the existing `build-wheelhouse-manifest.json`, committed. The gate
+  installs it `--no-index --require-hashes` into a THIRD venv, `lint-venv`
+  — never `build-venv` or `run-venv`, so A-198's five-wheel closure
+  assertion is byte-for-byte untouched — and runs `python -m pyflakes
+  src/assay` as a phase AFTER the suite; pyflakes' whole rule set is the
+  F-rule set DA-D15 asked for. `ruff` is dropped: its platform binary
+  wheel is ~10 MB and adds nothing over pyflakes for F-rules. Rejected:
+  (a) the shared image (outside `assay/**`, re-risks four other products'
+  gates for a linter), (c) outside the gate (B024's own rejection —
+  nothing that is not part of the verdict counts). Generation 4 lands it
+  FIRST, before the cut, so the phase-1 fallback release carries it; R-1
+  verifies it in its fix-verification round (its round-1 tip predates it).
+
+  **R-1 dispatched** — fresh Opus, blind pass on `a4a865da...93188912`
+  first, the wave prompt's R-1 push list plus the DA-R rulings, own
+  detached worktree for probes, registered gate on the tip itself, report
+  to the scratchpad as `assay-WAVE-D-v10-REVIEW-R1-round1.md`, 3-round
+  cap. **Generation 4 dispatched** — fresh Opus, seeded with BRIEF-1+2+3
+  and DA-R7: B024 first, then phase 2's design step (A-rows for B050,
+  B053 `detail`, B004 with re-captured ciu 7.10.1 assets, B007 with a
+  measured materialisation cost, F015), then the single `feat(assay)!:`
+  cut, then B050 → B051 → B052 → B053 `detail` → B004 → B007 → migration
+  notes. Next free ids **A-417** / **B062**.
