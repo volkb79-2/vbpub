@@ -314,6 +314,14 @@ NOT IN SCOPE — STOP AND WRITE A DECISION ASK IN THE REPORT INSTEAD
   - loosening the gate's hash-bound build closure for any tool.
 
 RULES YOU ARE HELD TO
+  - HOST LOAD (added 2026-09-02 after a load-85 incident on this 8-core host,
+    which also runs a production game server): pytest SERIAL only — never
+    `-n`/xdist — prefixed `nice -n 19 ionice -c 3`; targeted test files over
+    the whole suite, the whole suite at most once per checkpoint; ONE gate
+    container at a time across every agent of this wave (check `docker ps |
+    grep tester-unified` and wait), and `docker update --cpus=3 $(docker ps
+    -q --filter ancestor=tester-unified:local)` right after launching yours;
+    no build/pip/wheel step concurrent with a suite run. Reviewers too.
   - A-334: no test double as evidence about an external system (Stryker,
     ciu provenance, vitest, go): committed real artifact + PROVENANCE entry,
     or a transcript in the REPORT, or the criterion stays `absent`.

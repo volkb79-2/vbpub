@@ -206,3 +206,27 @@ precedent for shape and discipline.
   measured materialisation cost, F015), then the single `feat(assay)!:`
   cut, then B050 → B051 → B052 → B053 `detail` → B004 → B007 → migration
   notes. Next free ids **A-417** / **B062**.
+
+- **2026-09-02 (HOST LOAD INCIDENT — throttled; standing rule added to the
+  wave prompt)** — A dstdns peer session reported the host's 1-minute
+  load spiking from ~13 to ~80 within two minutes, CPU PSI avg10 47.65%,
+  every top consumer under this session's scratchpad, and reminded that
+  the host runs a production game server the operator had flagged as
+  degraded by exactly this pattern earlier the same day. Measured by the
+  controller: load 85.28 on 8 cores; R-1's pytest-xdist workers
+  (`popen-gw0..gw3`) running the distribution-build tests (each builds a
+  venv and pip-installs) on the host, concurrently with generation 4's
+  registered-gate container (`dev-background.slice`, no `--cpus` cap) and
+  the dstdns side's own schema gate. Actions, all reversible, none killing
+  an in-flight run: reniced (19) + ionice'd (idle) 50 host-side processes
+  of R-1's run; `docker update --cpus=3` on the running gate container;
+  messaged R-1 and generation 4 with the standing rule (serial pytest under
+  nice/ionice, whole suite at most once per checkpoint, ONE gate container
+  at a time across all agents, cap every new gate container right after
+  launch, no build step concurrent with a suite run); answered the peer
+  with what was done and the expected durations; a Monitor watches load
+  for 12 minutes with SIGSTOP/SIGCONT of R-1's test tree as the next
+  escalation if it stays above 20. The rule is now in the wave prompt's
+  RULES block (commit on main) and in memory
+  (`host-shared-with-production-load-rule`). Backlog candidate for a later
+  wave: a `--cpus` cap in `tester-unified-gate.sh`'s own `docker run`.
