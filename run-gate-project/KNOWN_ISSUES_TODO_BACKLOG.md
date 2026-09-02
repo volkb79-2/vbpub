@@ -52,7 +52,8 @@ SPEC §9.
 | RG-33 | `kind = "assay"` mutation lanes never receive `--resume` (or `--progress`), so a budget-capped retry re-tests every mutant from #1 — dstdns `sql-mutation`, three 120-minute retries spent on the first of four target files, `.assay/mutation-state/` never written | Major | FIXED 2026-09-02 (rev 33, SPEC `R-38`) — every assay-kind invocation now carries `--resume --progress .assay/progress-<assay_lane>.jsonl` unconditionally (no-ops without R2, per assay's own contract); a pin declaring a judge older than 2.4.1 refuses by name at argv construction; five new tests in `TestResumeAndProgressAlways` including the executed host-runner argv and the dry-run docker argv line; assay's own gate script mirrors it in the assay wave |
 | RG-35 | a lane's container outlives a dead run-gate client (`docker run -d` … `rm -f` in a `finally` the client never reaches), but nothing re-attaches: exit status, evidence and history are lost and the next invocation starts a DUPLICATE container for the same lane — the one-gate rule broken by the tool | Major | OPEN 2026-09-02 — `.run-gate/inflight/<lane>.json` on start, re-attach (`docker logs -f --since` + `wait`) or collect-and-finish on restart, `--fresh` to force; operator's "re-attachable runs" pattern |
 | RG-36 | the only liveness bound for a long assay lane is a GUESSED total `budget` (advisory here, hard in assay); rev 33's progress file makes rate/ETA/stall observable but run-gate reads none of it | Major | OPEN 2026-09-02 — periodic `progress <lane>: i/N, rate, ETA` disclosure + optional `stall_timeout` (stop only when running AND silent for that long, never on total elapsed); exact timing needs assay B065 |
-| RG-37 | resume state lives under the JUDGED project root, so a fresh worktree per run (cmru release transaction, Mode-B instances) loses it and a retry restarts from mutant #1 despite `--resume` | Medium | OPEN 2026-09-02 — bind-mount a per-repo durable `.run-gate/assay-state/<project>/` at the state path; needs assay B066 (`--state-dir`); copy-in/out fallback until then |
+| RG-37 | exec-mode container derivation (`run-gate.py` `resolve_container_name`, R-14a) reads `deploy.project_name` + `deploy.environment_tag` (fallback `deploy.network_name`) from the consumer's rendered `ciu.global.toml`; a CIU v8 checkout (SPEC-V8 draft.3, ciu CIU-92) renders `ciu.resolved.toml` instead, with identities as data under `[resolved.identities.<realization>.<service>] container_name`, and has no `deploy` table — every dstdns exec lane would fail container resolution the day dstdns moves to v8, while the operator decided (2026-09-02) that run-gate STAYS maintained in parallel with `ciu gate` and is "aligned with future changes in ciu v8" | Major | OPEN 2026-09-02 — filed from the v8 design review (ciu `docs/CIU-V8-ADVERSARIAL-REVIEW-2026-09-02.md` R-01, proposal §4.4 V8-19 / §4.11 N18): additive lookup order — when `ciu.resolved.toml` exists in the judged checkout, resolve `environments.<n>.container_name` (or a new `exec_in = "<realization>.<service>"` key) through `resolved.identities`, otherwise keep the v7 path; `kind = "sequence"` in-process conjunction lanes (N21) are the second alignment item |
+| RG-38 | resume state lives under the JUDGED project root, so a fresh worktree per run (cmru release transaction, Mode-B instances) loses it and a retry restarts from mutant #1 despite `--resume` | Medium | OPEN 2026-09-02 — bind-mount a per-repo durable `.run-gate/assay-state/<project>/` at the state path; needs assay B066 (`--state-dir`); copy-in/out fallback until then |
 
 ---
 
@@ -2236,7 +2237,7 @@ progress instead: rate, ETA, and stall.
 - [ ] no `stall_timeout` declared → behaviour unchanged;
 - [ ] an R0/R1 lane (no events) never stalls and says why, once.
 
-## RG-37 — resume state does not survive an ephemeral worktree (cmru release worktrees, Mode-B worktrees)
+## RG-38 — resume state does not survive an ephemeral worktree (cmru release worktrees, Mode-B worktrees)
 
 **Filed 2026-09-02, same ask; this is the durability half of the resume leg.**
 
@@ -2269,14 +2270,14 @@ directory holds their per-target / per-attempt records.
       edited file (resume must never mask a change — RG-33's third item,
       inherited).
 
-### Source (RG-35..RG-37)
+### Source (RG-35, RG-36, RG-38)
 
 Operator, 2026-09-02, after dstdns's own drive()/drive_corpus() fix (progress
 JSONL a caller polls; run ids persisted and re-attached; an unbounded budget
 once health comes from the progress file): "can we make this a default
 pattern/best practice to be used with assay/run-gate as well?" The three
 legs map onto RG-35 (re-attach), RG-36 (progress-judged liveness) and
-RG-37 + assay B065/B066/B067 (durable resume state, timestamped events,
+RG-38 + assay B065/B066/B067 (durable resume state, timestamped events,
 per-unit bounds). R0/R1 lanes are one command each and cannot resume below
 that grain by construction; canary (R3) and red-first (R4) have mutation's
 per-unit shape and get the same mechanism through assay B064/B066.

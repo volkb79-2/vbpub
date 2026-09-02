@@ -33,7 +33,7 @@ assay 4.1.0; the Wave D branch changes none of this):
 | leg | assay (judge) | run-gate (gate) | gap → item |
 |---|---|---|---|
 | progress artifact | `--progress` writes `run`/`baseline`/`shard`/`resume` + one event per candidate with index/total; **no timestamp, no outcome** (`mutation.py:755`). R0/R1: no events (one command). R3: no events. | rev 33 passes `--progress .assay/progress-<lane>.jsonl` on every assay lane; reads none of it. | **B065** timestamps/outcome/end event; **B064** (branch) phase events for R0/R1, per-attempt for canary; **RG-36** ETA disclosure |
-| resumability | `--resume` + `.assay/mutation-state/<id>.json` under the judged project root; ids fold in the file's exact bytes, so a shared store is safe. R3/R4: no state. | rev 33 passes `--resume` always. The lane CONTAINER survives a dead client (`docker run -d` … `rm -f` in a `finally` the client never reaches) but nothing re-attaches; a restart starts a duplicate. Fresh worktrees (cmru release, Mode-B) lose the state. | **RG-35** re-attach; **B066** `--state-dir`; **RG-37** durable per-repo state dir; B064/B066 for canary and R4 records |
+| resumability | `--resume` + `.assay/mutation-state/<id>.json` under the judged project root; ids fold in the file's exact bytes, so a shared store is safe. R3/R4: no state. | rev 33 passes `--resume` always. The lane CONTAINER survives a dead client (`docker run -d` … `rm -f` in a `finally` the client never reaches) but nothing re-attaches; a restart starts a duplicate. Fresh worktrees (cmru release, Mode-B) lose the state. | **RG-35** re-attach; **B066** `--state-dir`; **RG-38** durable per-repo state dir; B064/B066 for canary and R4 records |
 | unbounded budget | `budget` required, enforced lane-wide (`LANE_TIMEOUT`); `budget_per_candidate` optional (R2). | `budget` advisory (printed, never enforced). | **B067** `budget = "unbounded"` iff every unit is bounded; **RG-36** `stall_timeout` |
 
 Two facts bound what is possible:
@@ -58,11 +58,11 @@ Two facts bound what is possible:
 assay B064 (branch; phase/attempt events), B065 (timestamped, outcome-bearing
 events + `end`), B066 (`--state-dir`), B067 (`budget = "unbounded"`, decision
 D1). run-gate RG-35 (re-attach / inflight record / `--fresh`), RG-36
-(progress tail: rate + ETA disclosure; optional `stall_timeout`), RG-37
+(progress tail: rate + ETA disclosure; optional `stall_timeout`), RG-38
 (durable `.run-gate/assay-state/<project>/` bind-mounted at the state path).
 
 Dependencies: B065 → RG-36's exact timing (RG-36 can ship with mtime-based
-stall and clock-based ETA first, disclosed as coarse). B066 → RG-37 (copy-in/
+stall and clock-based ETA first, disclosed as coarse). B066 → RG-38 (copy-in/
 copy-out is the disclosed fallback). RG-35 depends on nothing. B067 depends on
 B065 + RG-36 being real, and on decision D1.
 
@@ -71,9 +71,10 @@ assay B062 (`tests/` pyflakes sweep, 31 findings in 19 modules), B063 (three
 test modules `git -C PROJECT_ROOT.parent`, so the suite cannot run from a copy).
 run-gate RG-32 (`pins.assay.budget` silently inert), RG-34 (a consumer's
 `schema` lane argv not `{worktree}`-templated — dstdns config; run-gate's
-share is a validation/doc rule), RG-18 (dstdns-side). A further peer filing
-is pending as RG-38 (exec-mode container derivation reads `deploy.*` from the
-consumer's ciu.global.toml).
+share is a validation/doc rule), RG-18 (dstdns-side). RG-37 (filed by the
+ciu v8 design session the same day: exec-mode container derivation reads
+`deploy.*` from the consumer's ciu.global.toml) — its index row is on main,
+its section is still that session's to write.
 
 **G3 — Wave D's explicit exclusions, carried forward unchanged** (see the
 wave prompt's exclusion list): B020, B023, B001 residual, B010's orchestration
@@ -90,9 +91,9 @@ mechanism or tree-tracking replaces it.
 
 | step | scope | why this order |
 |---|---|---|
-| **E-1 run-gate 23.4.0** | RG-35 re-attach; RG-32; RG-34's run-gate share; RG-38 if filed | independent of assay; RG-35 removes the duplicate-container hazard the host rule exists for; small, one reviewer round |
+| **E-1 run-gate 23.4.0** | RG-35 re-attach; RG-32; RG-34's run-gate share; RG-37 once its section exists | independent of assay; RG-35 removes the duplicate-container hazard the host rule exists for; small, one reviewer round |
 | **E-2 assay 5.1.0** | B065, B066, B064 (phase + per-attempt events); B062, B063 hygiene | all additive to the progress stream / CLI — no verdict schema change, so a minor release; unblocks E-3 exactly |
-| **E-3 run-gate 23.5.0** | RG-36 (exact ETA/stall on B065's timestamps), RG-37 (on B066) | the consumer-facing payoff; dstdns `sql-mutation` is the acceptance lane |
+| **E-3 run-gate 23.5.0** | RG-36 (exact ETA/stall on B065's timestamps), RG-38 (on B066) | the consumer-facing payoff; dstdns `sql-mutation` is the acceptance lane |
 | **E-4 assay 5.2.0** | B067 `budget = "unbounded"` (needs D1); F015/R4 implementation (phase 3 of Wave D if it does not fit there; its wire shape ships in 5.0.0); canary per-target resume | only after E-2/E-3 make "health from progress" true, so an unbounded budget is honest |
 
 Sizes are not estimated in hours: the analogous shipped items are RG-33
@@ -152,7 +153,7 @@ disclosing the attach line. (b) is safer in the abstract but reintroduces the
 manual step the host rule was written to prevent.
 **Recommendation: (a), always disclosed, with commit and worktree matched.**
 
-**D5 — durable state placement (RG-37/B066).**
+**D5 — durable state placement (RG-38/B066).**
 Options: (a) bind-mount a per-repo `.run-gate/assay-state/<project>/` at the
 state path; (b) copy `.assay/mutation-state/` in before and out after the
 lane. Pros of (a): zero copy cost, state visible to a re-attached run, works

@@ -5889,7 +5889,7 @@ blocked on exactly this.
 
 ## B066 — the state location is derived from `project_root`; there is no way to keep resume state outside an ephemeral worktree
 
-**Filed 2026-09-02 (same ask). Pairs with run-gate RG-37.**
+**Filed 2026-09-02 (same ask). Pairs with run-gate RG-38.**
 
 ### What was measured
 
@@ -5910,7 +5910,7 @@ repository or git-ignored; a directory, created on demand). Mutation records
 move under it; once B007 (multi-target canary) and F015/R4 (red-first) land,
 their per-target / per-attempt records use the same root. Verify and refusal
 semantics unchanged. A run-gate consumer can then bind-mount a durable
-per-repo directory at that path (RG-37).
+per-repo directory at that path (RG-38).
 
 ### Acceptance
 
