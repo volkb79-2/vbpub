@@ -1157,3 +1157,25 @@ seconds of launch. Load stayed 5.1–7.4.
   version, over a ~4000-test suite), and the clause forbids cutting a
   checkpoint mid-schema. Starting it with the calls remaining would have
   guaranteed exactly that.
+
+## Generation 8 (fresh Opus, seeded by BRIEF-7)
+
+### 26. `docs(assay): A-434 — DA-R18 amends A-433, RED_FIRST_UNPROVEN is a judged FAIL`
+
+- `decisions.md` gains **A-434** only, as a later append-only row (A-408):
+  DA-R18's corrected set membership for `RED_FIRST_UNPROVEN`, carried into the
+  cut that follows. Ids re-checked against `main` at `48c48599` immediately
+  before allocating: `main`'s last decision row is `A-407` and its last
+  backlog id `B061` (assay's two ledgers still untouched on `main`), so the
+  branch's own `A-433`/`B064` are the real high-water marks and **A-434** was
+  free.
+- The row settles what DA-R18 left to the implementer: the HEAD-side judged
+  FAIL does **not** reuse `FAIL`/`COMMAND_FAILED`, on the R3 precedent
+  (`canary.py:734-756` maps neither of its own two runs onto R0's code), on
+  the which-side ambiguity a bare `COMMAND_FAILED` would leave on a claim
+  whose before-run is *expected* to fail, and on `errors.py`'s own stated rule
+  that which mechanism refused is the distinction the project keeps. Both
+  judged halves therefore carry `FAIL`/`RED_FIRST_UNPROVEN`, discriminated by
+  the two recorded outcomes and by `detail` (A-428).
+- No code. No gate (records-only; the gate-verified commit stays `bfb55e3f`
+  until the cut is judged).
