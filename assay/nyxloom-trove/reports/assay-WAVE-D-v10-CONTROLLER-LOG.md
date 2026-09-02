@@ -467,3 +467,57 @@ precedent for shape and discipline.
   cost is staleness, remedied by `cmru tool-deps --refresh assay` as an
   assay-release checklist step, not by tree-tracking — no policy change
   made without the operator's word.
+
+- **2026-09-02 (GENERATION 6 VERIFIED — A-425/A-426/A-429 + design rows
+  A-427/A-428 + B064, gate GREEN on `bfb55e3f`; DA-R16 (F015 = R4) and
+  DA-R17 (B007 measured first); generation 7 dispatched)** — Controller
+  read `scratchpad/gate-gen6c.log` separately: one
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0`, no
+  `FAILED|DIRTY_TREE|Traceback`, wheel `assay-4.1.1.dev25+gbfb55e3f`, last
+  phase `pyflakes-clean`. Tip `ed287d73` (records, BRIEF-6). Zero `!`
+  commits; schema/verify/drift-guard untouched. Landed: `ba2f1133` A-425
+  (DA-R13, `cli.LABEL_GRACE_SECONDS = 2.0` through `remaining=`);
+  `b69a9248` A-426 (DA-R15/SF-6, the last silent terminal announces; R-1's
+  round-2 report verbatim); `f254b702` A-429 (the gate's own `assay run`
+  carries `--resume --progress`, per the operator directive / R-38) +
+  A-427 (B050 `judgment.r2.fail_under`, DA-D6: producer fork, three
+  places, the `config.py:2483-2512` refusal deleted) + A-428 (B053
+  `claim.detail`, DA-D2: non-PASS only, 2048 bytes, head kept,
+  `detail_dropped_bytes` sibling) + B064 filed; `bfb55e3f` the gate stubs
+  read `--verdict-json` from argv (a three-token gate-script edit had gone
+  RED on `f254b702` — 4 failed / 3997 passed — and was fixed at the cause,
+  relayed honestly). Not designed: B004, B007, F015 — the cut is correctly
+  blocked until they are.
+  - **DA-R16 (BRIEF-6 ask 1 — F015's claim kind): `R4`, the next rung of
+    the ordered ladder.** The ladder orders evidence strength about the
+    change; fail-before/pass-after asserts a strictly more specific
+    property than R3's canary ("this test would have caught this bug" vs
+    "the tests can fail on a synthetic break"), and its evidence needs two
+    materialisations (the pre-fix commit with HEAD's declared test files
+    overlaid, and HEAD), so on a cleanup failure it IS the claim most
+    dependent on cleanup — `_replace_highest_higher_rigor_claim_with_git_failed`
+    replacing it first is the honest behaviour, not a side effect to
+    engineer around. A non-ordered claim kind would need a second keying
+    model nobody asked for at this cut; riding R3 with a second `judgment`
+    block puts two mechanisms under one claim (the presence-selects hazard
+    A-007 exists to forbid). Consequences to land in the A-row: `RIGOR_LEVELS`
+    gains `"R4"` (declaration stays non-contiguous — the loader
+    canonicalises order at `config.py:1089` and requires no ladder; a lane
+    may declare R4 with any subset); `judgment.r4` per DA-D9 (declared test
+    files, broken commit defaulting to the lane's resolved base); the v10
+    schema's `claims[].rigor` enum gains `R4` and the claim carries both
+    recorded outcomes; `verify.py` re-derives the R4 status from the two
+    outcomes; W6's expected templates include one R4 verdict; docs name it
+    "red-first (fail-before/pass-after)", the wire keeps `R4`.
+  - **DA-R17 (ask 2): B007's target bound is measured as generation 7's
+    FIRST act**, in a gate-free window (`docker ps` shows no
+    `tester-unified:local`), one materialisation under `nice`, wall time
+    and bytes recorded as measured numbers in the A-row (DA-D8); the
+    design row follows from that number, never the other way round.
+  - Ask 3 (B064↔B007 note carried in BRIEF-6) — accepted; the sentence
+    lands in B007's A-row when it is written.
+  - **Generation 7 dispatched** (fresh Opus, BRIEF-6 seed): B007
+    measurement + design, B004 design (DA-D7 + DA-R12), F015 design
+    (DA-D9 + DA-R16), then the single `feat(assay)!:` cut, then B050 →
+    B051 → B052 → B053 `detail` → B004 → B007 → migration notes. Next
+    free ids **A-430** / **B065**.
