@@ -4,6 +4,6 @@
 
 | ID | Title | Status | Type | Priority | Provenance |
 |---|---|---|---|---|---|
-| [NL-1](NL-1-assay-backed-implementation-gate-pinned-pyz-judge-replaces-cove.md) | assay-backed implementation gate: pinned pyz judge replaces coverage_gate/mutation_gate self-judgment | open | feature | 2 | controller session 2026-08-21; evidence: nyxloom-trove/reports/backlog-entries-test-evidence-2026-08-21.md |
 | [NL-2](NL-2-authoring-md-s-tier-worked-example-implement-2-and-prose-are-un.md) | AUTHORING.md's tier worked example ('implement-2') and prose are unroutable against live routes.toml — no mechanical check exists | open | bugfix |  | dstdns P130/P132/P133 carve-reviews, decisions.md D-187 |
 | [NL-3](NL-3-l10-handoff-size-thresholds-are-hardcoded-constants-need-a-per.md) | L10 handoff-size thresholds are hardcoded constants, need a per-project nyxloom.toml override | open | feature |  | dstdns 2026-08-29, packages P137/P138 (nyxloom-trove/reviews/dstdns-P137-carve-review-r1.md, dstdns-P138-carve-review-r1.md) |
+| [NL-1](NL-1-assay-backed-implementation-gate-pinned-pyz-judge-replaces-cove.md) | assay-backed implementation gate: pinned pyz judge replaces coverage_gate/mutation_gate self-judgment | carved | feature | 2 | controller session 2026-08-21; evidence: nyxloom-trove/reports/backlog-entries-test-evidence-2026-08-21.md |

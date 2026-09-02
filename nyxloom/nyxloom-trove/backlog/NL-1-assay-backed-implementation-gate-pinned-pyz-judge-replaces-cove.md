@@ -3,13 +3,14 @@ kind: backlog-entry
 schema_version: 1
 id: NL-1
 title: "assay-backed implementation gate: pinned pyz judge replaces coverage_gate/mutation_gate self-judgment"
-status: open
+status: carved
 type: "feature"
 severity: "medium"
 component: "gates"
 provenance: "controller session 2026-08-21; evidence: nyxloom-trove/reports/backlog-entries-test-evidence-2026-08-21.md"
 priority: 2
 filed_date: "2026-08-21"
+carved_handoff: nyxloom-P48-assay-gate
 ---
 
 ## Observed mechanism and reproduction
