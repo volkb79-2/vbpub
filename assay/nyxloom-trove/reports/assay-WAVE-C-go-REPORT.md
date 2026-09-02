@@ -2187,3 +2187,225 @@ worktree with the devcontainer venv:
 **The only commit after run 11 is docs-only** — this section and the LOG's gate
 paragraph. No source, test, packaging, vocabulary, fixture, witness or
 decision-file change.
+
+---
+
+## 50. A-407 — the masking, measured before and after, in my own hands
+
+The round-2 reviewer left its five-lane battery in place
+(`scratchpad/ldlane/work`: `setup.sh`, `laneA..E.sh`). I copied it to
+`scratchpad/g8/ldlane/work` and drove it twice with the identical scripts —
+once against a zipapp built from `71a59967` (the tip plus the verbatim review
+commit, before any repair), once against one built from `0fb6fb94` (the fix).
+Both builds came from `gate/distribution/build_release.py --repo <worktree>
+--outdir <scratch>`, so both measure a COMMITTED tree, and both ran in
+`tester-unified-go:local` under `--network=none` and
+`--cgroup-parent=dev-background.slice` with real `go test` and the real
+oracle (A-334, A-042/A-043, B060).
+
+Transcripts: `scratchpad/g8/ldlane-BEFORE.log`, `scratchpad/g8/ldlane-AFTER.log`.
+
+**Before — `assay 4.0.1.dev47+g71a59967`:**
+
+```text
+=== SCENARIO A: only calc.go changed; gen.go IS in the profile ... but has NO judged lines ===
+unit: PASS (exit 0)
+
+=== SCENARIO B: the //line-remapped file now HAS changed lines under source_roots ===
+assay: ERROR/BAD_LANE_CONFIG: lane 'unit' recorded helper role(s)
+['statement-positions'] but rendered no claim carrying the payload each
+requires -- a helpers[] entry exists because it produced a claim payload, so
+this pairing describes work that judged nothing. Refusing before constructing
+an incomplete verdict.
+exit=2
+--- verdictB written? ---
+ls: cannot access '/work/verdictB.json': No such file or directory
+
+=== SCENARIO C: a STALE Go profile (the failure the docs advertise) ===
+assay: ERROR/BAD_LANE_CONFIG: lane 'stale' recorded helper role(s) ... judged nothing.
+exit=2
+--- verdictC.json written? ---
+ls: cannot access '/work/verdictC.json': No such file or directory
+
+=== SCENARIO D: the ONLY block-bearing file is //line-remapped and IS judged ===
+unit: ERROR/BAD_LANE_CONFIG (exit 2)
+--- verdictD written? ---
+-rw-r--r-- 1 gate gate 1839 /work/verdictD.json
+
+=== SCENARIO E: STALE profile, NO //line file anywhere ===
+assay: ERROR/BAD_LANE_CONFIG: lane 'stale' recorded helper role(s) ... judged nothing.
+exit=2
+--- verdictE written? ---
+ls: cannot access '/work/verdictE.json': No such file or directory
+```
+
+**After — `assay 4.0.1.dev48+g0fb6fb94`:**
+
+```text
+=== SCENARIO A ===  unit:  PASS (exit 0)
+=== SCENARIO B ===  unit:  ERROR/BAD_LANE_CONFIG   (exit 2)   verdictB.json 1839 bytes
+=== SCENARIO C ===  stale: ERROR/UNREADABLE_ARTIFACT (exit 2) verdictC.json 1702 bytes
+=== SCENARIO D ===  unit:  ERROR/BAD_LANE_CONFIG   (exit 2)   verdictD.json 1839 bytes
+=== SCENARIO E ===  stale: ERROR/UNREADABLE_ARTIFACT (exit 2) verdictE.json 1744 bytes
+```
+
+The five verdict documents, read in a SEPARATE step from the run that produced
+them (L4):
+
+| verdict | outcome | reason_code | R1 claim | `helpers` |
+|---|---|---|---|---|
+| A | `PASS` | — | `PASS` | **present** |
+| B | `ERROR` | `BAD_LANE_CONFIG` | `ERROR`/`BAD_LANE_CONFIG` | absent |
+| C | `ERROR` | `UNREADABLE_ARTIFACT` | `ERROR`/`UNREADABLE_ARTIFACT` | absent |
+| D | `ERROR` | `BAD_LANE_CONFIG` | `ERROR`/`BAD_LANE_CONFIG` | absent |
+| E | `ERROR` | `UNREADABLE_ARTIFACT` | `ERROR`/`UNREADABLE_ARTIFACT` | absent |
+
+**Scenario A is the assertion that stops this being a blanket filter.** Its
+lane PASSED, so the payload the oracle produced survives and the `helpers[]`
+entry stays exactly where it was. Only a payload-free R1 claim drops one.
+
+So the masking is gone as a measured fact, not as a patch that applied. The
+message a consumer now gets in B and E is the judge's own, and in every masked
+case a verdict artifact exists where none did before.
+
+### The order that produces it, for the record
+
+1. `_attribute_statements_for_lane` calls `adapter.statement_blocks(...)` and
+   fires `on_helper_invoked(report.helper)` immediately (`runner.py:997` at
+   the tip the review measured; `:1005` after this generation's comment).
+2. `attribute_statements` (or, later, `evaluate_coverage`/`evaluate_targets`)
+   refuses.
+3. `evaluate_r1` catches it and returns a payload-free R1 `Claim` — the R1
+   seam working exactly as designed.
+4. **A-407**: `_run_prepared_lane` drops the helpers that claim can no longer
+   support, at the site that took the payload away.
+5. `assemble_verdict`'s B047-item-5 guard sees a consistent pair and stays a
+   wiring assertion.
+
+Steps 1-3 and 5 are unchanged. Step 4 is the whole change.
+
+---
+
+## 51. The two surviving mutants, killed — SF-R2-1 and SF-R2-2
+
+Both mutations were applied as COMMITS in a detached scratch worktree
+(`scratchpad/g8/prewt`), never as working-tree edits, because
+`build_release.py` builds from HEAD's committed OID and because a working-tree
+mutation is the invalid-probe shape round 1 already recorded.
+
+### M-B2 — the whole-target A-405 branch
+
+`evaluate.py:1071`'s `if file_cov is not None and
+file_cov.line_directive_remapped:` replaced by `if False:`. The reviewer
+measured `69 passed — SURVIVED`. With the repaired
+`test_the_same_refusal_fires_in_whole_target_mode`:
+
+```text
+FAILED tests/test_go_line_directive_witness.py::test_the_same_refusal_fires_in_whole_target_mode
+1 failed, 48 passed
+```
+
+and the assertion it dies on names the exact misdirection the branch's own
+ordering comment predicts:
+
+```text
+E  assert <Outcome.NO_MEASUREMENT: 'NO_MEASUREMENT'> is <Outcome.ERROR: 'ERROR'>
+E   where ... = AssayError("judge.targets entry 'linedup.go' (coverage artifact
+E   key 'linedup.go') has zero executable lines in the coverage artifact -- a
+E   whole-target floor refuses rather than pass on a target that was never
+E   measured").outcome
+```
+
+That is `TARGET_NOT_MEASURED` answering for `//line`, which is why the check
+is ordered before it: "this target has zero executable lines" is true and
+names the wrong cause, and its implied remedy — write tests — is not the
+remedy.
+
+**Why the old test could not see it.** Its fixture judged
+`repo_top=Path("/repo")`, a path that does not exist, so
+`_resolve_whole_target` refused first with "judge.targets entry 'linedup.go'
+does not exist as a regular file under the project root /repo" — and that
+message satisfies `"judge.targets" in str(...)` just as well as the real one
+does. Three assertions, all true, none of them about A-405. The repair
+materialises the target on `tmp_path` and adds two assertions that name the
+other two refusals in order to EXCLUDE them.
+
+### M-F — the runner's remapped-file filter
+
+`runner.py`'s `to_attribute` comprehension replaced by
+`list(block_bearing)`. The reviewer measured `69 passed — SURVIVED`. With the
+new `test_the_oracle_is_never_ASKED_about_a_line_directive_remapped_file`,
+over all four A-405 modules:
+
+```text
+FAILED tests/test_runner_statement_attribution_wiring.py::test_the_oracle_is_never_ASKED_about_a_line_directive_remapped_file
+1 failed, 60 passed
+```
+
+The controller preferred the test to the comment downgrade; both were done,
+because the comment as written did not say what makes the two guards
+non-redundant. It does now: this filter is what stops an external toolchain
+being RUN, inside the lane's budget, over a source whose answer is then
+discarded — with that toolchain's own failure modes newly on the path — and
+it is the one call whose result structurally cannot match, since the oracle
+derives physical positions and the profile carries the directive's virtual
+ones. The downstream skip in `attribute_statements` is what makes the
+RESULT correct; this one is what makes the WORK not happen.
+
+---
+
+## 52. The skip count, and why generation 7's "11" was not reproducible
+
+The reviewer measured 18 skips twice and could not reproduce the LOG's 11.
+The cause is in §49's own text: generation 7 ran the suite with
+`--ignore=tests/qualification`, which removes exactly 7 environment-gated
+skips (5 × `qualification/test_go_r1_real.py`, 2 ×
+`qualification/test_javascript_real_vitest.py`). 11 + 7 = 18. Neither number
+was wrong; the LOG did not say which command produced it, which is the
+finding.
+
+Measured this generation, from the worktree's `assay/` with the devcontainer
+venv (Python 3.14.6), over the whole `tests/` tree with no `--ignore`:
+
+* at `74c64858`: **3942 passed, 20 skipped**, exit 0
+  (`scratchpad/g8/full-suite-final.log`)
+* the reviewer's baseline was 3939/18. +3 tests: two in
+  `test_runner_helpers_envelope.py` (A-407, toolchain-free, so the registered
+  gate runs them) and one in `test_runner_statement_attribution_wiring.py`
+  (SF-R2-2). +2 skips: the two new `qualification/test_go_r1_real.py` tests,
+  which skip without `ASSAY_GO_QUALIFICATION=1`. `test_go_line_directive_
+  witness.py`'s count is unchanged — SF-R2-1 repaired a test rather than
+  adding one.
+* `ASSAY_GO_QUALIFICATION=1 pytest tests/qualification/test_go_r1_real.py`:
+  **7 passed**, 42.5s, in `tester-unified-go:local`
+  (`scratchpad/g8/qual-final.log`).
+
+---
+
+## 53. What generation 8 did NOT do, and why
+
+* **No `diagnostics` route for judge-phase refusal text.** DA-R3 is ruled
+  (a) now, (b) in the patch wave. `runner.py:365`'s stream is a one-line call
+  site and it is deliberately untouched here: the wave's scope forbids it, and
+  wiring it would change what every ERROR lane prints in a wave whose subject
+  is Go.
+* **No new reason code and no wire field.** `BAD_LANE_CONFIG` still covers
+  several distinct Go causes; that is A-050's closed vocabulary and a v10
+  question.
+* **`assemble_verdict`'s guard is not weakened.** A filter there would have
+  been fewer lines and would have covered both drop sites — and would have
+  deleted, in effect, the one check that catches a producer recording a role
+  no claim can support. Two comments that said this was the ONE such site
+  were corrected instead, because it is now two.
+* **Main's B054** (an istanbul record for a never-executed file outside the
+  judged set) is still not fixed here. A-405's ruling assigns it to the
+  post-Wave-C patch wave and nothing this generation learned changes that.
+* **No backlog entry filed.** Nothing new was found: every defect this
+  generation touched was already carried by the round-2 review, and B053 —
+  the one open consumer-facing gap the work brushed against — is already on
+  main with the controller's DA-R3 note assigned to it after the merge. Next
+  free id remains **B062**.
+* **The srdm F008-A5 harness was not re-run.** The reviewer rebuilt it
+  against the tip in round 2 and measured 418/394/94.26% unchanged; nothing
+  in this generation touches the join, the parser or the fold — the diff is
+  one guard in claim assembly, three tests and two docs blocks.
