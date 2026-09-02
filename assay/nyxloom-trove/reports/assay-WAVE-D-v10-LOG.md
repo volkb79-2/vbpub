@@ -1133,3 +1133,27 @@ seconds of launch. Load stayed 5.1–7.4.
   branch is still releasable on v9. **All five phase-2 wire changes now exist
   as A-rows (A-427, A-428, A-430, A-432, A-433), which is the precondition the
   wave prompt puts on writing the cut.**
+- Commit `26b38cc4`.
+
+### 25. `docs(assay): Wave D generation 7 checkpoint — A-430..A-433, B007 measured, BRIEF-7`
+
+- Records only: LOG entry 24 and this one, the REPORT's generation-7 section,
+  and `reports/assay-WAVE-D-v10-BRIEF-7.md` (new).
+- **NO GATE RUN THIS GENERATION, deliberately.** Generation 7 landed no code:
+  `git diff --stat bfb55e3f HEAD` before this commit was four files, all under
+  `assay/nyxloom-trove/` (`decisions.md`, BRIEF-6, LOG, REPORT), 739
+  insertions and zero deletions. A registered-gate run on a records-only
+  commit proves nothing and costs the shared 8-core host ~25 minutes, which
+  the HOST LOAD rule exists to avoid; generation 6 set the same precedent for
+  its own docs-only checkpoint commit. **The gate-verified commit stays
+  `bfb55e3f`.** Generation 8's first gate judges the cut.
+- Host discipline through generation 7: no gate container launched, no pytest
+  run at all, one measurement script under `nice -n 19 ionice -c 3` in a
+  window where `docker ps` showed no `tester-unified:local` and load was 3.87.
+- **Checkpoint taken here, at a coherent boundary the clause names** (commit +
+  LOG/REPORT write, on a branch with no red anything). The v10 cut was NOT
+  started — deliberately: §3.2 of BRIEF-7 measures its blast radius (4 test
+  modules construct `CanaryResult`, 14 pass `canary=`, 56 name the schema
+  version, over a ~4000-test suite), and the clause forbids cutting a
+  checkpoint mid-schema. Starting it with the calls remaining would have
+  guaranteed exactly that.
