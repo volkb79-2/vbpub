@@ -151,8 +151,10 @@ oracles:
       it): `reconcile.VerifyGate` does not exist as an attribute of the `reconcile` module;
       `effects_gates.GateEffector` has no `verify_gate`, `_run_verify_probe`, or `drain_verify`
       attribute; `types.EventType` has no `GATE_VERIFY_RECORDED` member;
-      `[f.name for f in dataclasses.fields(config.Policy)]` contains neither
-      `gate_verify_interval_days` nor `days_since_gate_verify`; and no entry in
+      `[f.name for f in dataclasses.fields(config.Policy)]` does not contain
+      `gate_verify_interval_days`; `[f.name for f in dataclasses.fields(reconcile.
+      ReconcileInput)]` does not contain `days_since_gate_verify` (this field lives
+      on `ReconcileInput`, not `Policy` — verified reconcile.py:920); and no entry in
       `planning.rule_table()`'s returned specs has `channel` equal to a gate-verify-cadence
       channel or a `rule` attribute equal to `rules_attention.gate_verify` (removed in the
       same change, so this reduces to: `rules_attention` module has no `gate_verify`
@@ -167,12 +169,14 @@ oracles:
   - id: O9
     observable: >-
       `grep -n "coverage_gate" src/nyxloom/onboarding_gate.py src/nyxloom/gate_scaffold.py`
-      returns no matches in either file, and `grep -c "nyxloom gate verify"
+      returns no matches in either file, `grep -c "nyxloom gate verify"
       src/nyxloom/onboarding_gate.py` prints `0` (both of onboarding_gate.py's two mentions,
-      per Work item 5, are gone).
+      per Work item 5, are gone), and `grep -c "cmd_gate_verify" src/nyxloom/config.py`
+      prints `0` (the stale GateDef.asserts docstring reference, Work item 6).
     negative: >-
       Fixing only one of onboarding_gate.py's two mentions (the missing-gate guidance text OR
-      _has_gate_recommendation, but not both) fails this oracle.
+      _has_gate_recommendation, but not both) fails this oracle. So does leaving config.py's
+      docstring reference to the deleted cmd_gate_verify in place.
     gate: tester-unified
 gates: [tester-unified]
 escalate_if:
@@ -373,10 +377,14 @@ a contract item.
    `"assay-verdict"` to the `asserts` array's `enum` (alongside the
    existing `tests-pass`, `changed-line-coverage`, `mutation`,
    `canary-verified`). Mirror the addition in `config.py`'s `GateDef.
-   asserts` docstring comment listing the same enum (config.py:64-65). Do
-   the STANDARD.md mirror as part of Work item 7's edit, not separately —
-   the two touch the same paragraph and must be done together to avoid
-   the contradiction the first carve draft had.
+   asserts` docstring comment listing the same enum (config.py:64-65), and
+   in the same docstring (config.py:66-70) remove the now-stale sentence
+   "`nyxloom gate verify` cross-checks it against its own observed
+   verdict ... see `cli.cmd_gate_verify`" — both name a function this
+   package deletes (Work item 2). Do the STANDARD.md mirror as part of
+   Work item 7's edit, not separately — the two touch the same paragraph
+   and must be done together to avoid the contradiction the first carve
+   draft had.
 7. **STANDARD.md — one unambiguous edit plan covering all three
    occurrences of "nyxloom gate verify" plus the NL-4 mirror, in this
    order:**
