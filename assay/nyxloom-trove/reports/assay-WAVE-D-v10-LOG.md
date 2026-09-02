@@ -31,3 +31,42 @@ anything, from **B062**. No collision with a concurrent branch was found.
   `tests/test_safeio.py` (45 tests) unchanged green.
 - No `verdict.py` / `verify.py` / schema / drift-guard file was touched —
   phase 1 stays releasable on v9.
+
+### 2. `docs(assay): Wave D generation 1 checkpoint -- BRIEF-1, and the gate discipline it cost`
+
+- No product code. `nyxloom-trove/reports/assay-WAVE-D-v10-BRIEF-1.md` (new),
+  plus this LOG's gate entries and the REPORT's gate transcript.
+
+### Gate runs, generation 1
+
+**Run 1 — VOID, not a verdict.** Launched as `S=… && setsid … &`, which
+backgrounds the whole `&&` list: the variable existed only in the background
+subshell, the parent's follow-up `ls` looked at the wrong path and appeared
+to show a failed launch, and a second launch was issued. **Two gate
+containers ran concurrently, both appending to one log.** Both were killed
+(`docker kill sleepy_wing unruffled_germain`), the log deleted. No verdict is
+claimed from it — an interleaved log cannot be read as one.
+
+**Run 2 — RED, and the cause was mine.** Single run, `3b2b8e62`, from
+`/workspaces/vbpub`. The suite itself was entirely green (`3944 passed, 20
+skipped in 567.14s`) and every schema phase passed
+(`ASSAY_GATE_PHASE=verdict-v9-successors-verified`), but the self-hosted
+assay lane refused:
+
+```
+tester-unified: NO_MEASUREMENT/DIRTY_TREE (exit 3)
+  commit: 3b2b8e62b0cbc341fcc9def1302b0a8cc2998e15
+ASSAY_GATE_DIAGNOSTIC=worktree-untracked-by-assays-own-query
+assay/nyxloom-trove/reports/assay-WAVE-D-v10-BRIEF-1.md
+```
+
+`GATE_EXIT=1`, zero `ASSAY_REGISTERED_GATE_COMPLETE=1` markers. **Cause: I
+wrote BRIEF-1 into the worktree while the gate was running**, so an untracked
+file existed when the self-hosted lane read the tree. That is the wave
+prompt's own "commit before you gate (an untracked file is DIRTY_TREE)" rule,
+broken by writing a file DURING the run rather than before it. The lesson is
+narrower than the rule as written and worth stating: **the worktree must stay
+untouched for the whole gate run, not merely be clean at launch.**
+
+**Run 3 — the real verdict for the tip.** Recorded below, read from the log's
+own markers in a separate step.
