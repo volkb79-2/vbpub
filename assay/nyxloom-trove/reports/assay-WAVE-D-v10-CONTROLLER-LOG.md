@@ -230,3 +230,14 @@ precedent for shape and discipline.
   RULES block (commit on main) and in memory
   (`host-shared-with-production-load-rule`). Backlog candidate for a later
   wave: a `--cpus` cap in `tester-unified-gate.sh`'s own `docker run`.
+  **Escalation 16:51** — renice alone left load at 87 (CPU PSI avg10 88 %,
+  292 MB free): the reviewer had launched SEVEN concurrent full-suite
+  mutation probes (`mut1..mut7`, each `-n 4`, each distribution test
+  building a venv and pip-installing) on top of the gate. Controller
+  SIGSTOPped six of the seven and a detached serializer
+  (`scratchpad/serialize-r1-muts.sh`) now CONTs the next only after the
+  previous log carries its `MUTEXIT=` line; load 87 → 54 within a minute,
+  PSI 88 → 40 %. No run was killed, so the mut logs stay valid evidence.
+  Rule tightened for reviewers: one pytest invocation alive at a time,
+  targeted test files per mutant rather than the whole suite. R-1 and the
+  peer were told; the peer resumed its own queue at its discretion.
