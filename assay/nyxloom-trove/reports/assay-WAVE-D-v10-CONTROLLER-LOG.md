@@ -521,3 +521,60 @@ precedent for shape and discipline.
     (DA-D9 + DA-R16), then the single `feat(assay)!:` cut, then B050 →
     B051 → B052 → B053 `detail` → B004 → B007 → migration notes. Next
     free ids **A-430** / **B065**.
+
+- **2026-09-02 (GENERATION 7 VERIFIED — design complete: A-430..A-433,
+  B007 measured; no code, no gate needed; DA-R18/DA-R19/DA-R20; generation
+  8 dispatched for the cut)** — Two records-only commits (`26b38cc4`,
+  `0016d6cf`); `git diff --stat bfb55e3f HEAD` is four markdown files, so
+  the gate-verified commit stays `bfb55e3f` (controller re-checked the
+  diff scope). A-430 B004 (DA-D7 as narrowed by DA-R12: `PROVENANCE_UNVERIFIED`
+  in the `NO_MEASUREMENT` set, `mismatch → NO_MEASUREMENT` never `FAIL`,
+  one parser for `schema_version ∈ {1, 2}`, green path's only witness
+  stated); A-431 the three W0 ledger corrections as a later append-only
+  row; A-432 B007 (DA-D8 + DA-R17); A-433 F015 (DA-D9 + DA-R16: `R4`,
+  `judgment.r4 = {tests, broken_commit, broken_commit_source}`, both
+  outcomes on the claim, `verify.py` re-derives `PASS` iff `before != PASS
+  and after == PASS`, W6 R4 template, reserved code `RED_FIRST_UNPROVEN`).
+  **B007 measured** (DA-R17, gate-free window, load 3.87, three
+  iterations under nice, shipped substrate at `ed287d73`): `prepare_snapshot`
+  4.071 s once per lane; `materialize` 0.89–1.06 s; `materialize_replacement`
+  1.27–1.36 s; snapshot 96,023,420 bytes / 3,757 files; one target ≈ 2.76 s
+  of materialisation plus two command runs; peak disk one snapshot. ⇒
+  `MAX_CANARY_TARGETS = 8` (22.1 s, 7.4 % of the smallest worked-example
+  budget). All five wire changes now exist as A-rows (A-427, A-428, A-430,
+  A-432, A-433): the cut's precondition is met; generation 7 stopped
+  before it because the clause forbids a checkpoint mid-schema (blast
+  radius measured: 4 test modules build `CanaryResult`, 14 pass `canary=`,
+  56 name the schema version). Minor: both commit messages say the REPORT
+  section rides the checkpoint commit; it rides `26b38cc4` — noted, not
+  rewritten.
+  - **DA-R18 (ask 1 — `RED_FIRST_UNPROVEN`'s outcome class): the judged
+    case is `FAIL`, not `NO_MEASUREMENT`.** When both commits materialised
+    and both runs completed, assay has measured something: the declared
+    test does not discriminate the fix. That is `CANARY_SURVIVED` one rung
+    up and belongs in the same class. Split: `FAIL`/`RED_FIRST_UNPROVEN`
+    for "the test PASSED at the broken commit" (both outcomes recorded on
+    the claim, `detail` names the broken commit and the test); "the test
+    did not PASS at HEAD" is also a judged `FAIL` — reuse the existing
+    reason code the R0 path gives a failing command if one fits exactly,
+    else `RED_FIRST_UNPROVEN` with `detail` naming the HEAD side (the A-row
+    says which and why); every failure of the mechanism itself
+    (materialisation, overlay, timeout, unreadable output) stays
+    `NO_MEASUREMENT` under an existing or reserved code, as DA-D9's
+    "anything else" half already says. A-433 is amended by a later row
+    (append-only), and the v10 schema's set membership carries it — this
+    is free before the merge and a v11 after, which is why it is ruled
+    now.
+  - **DA-R19 (ask 2 — `all` does not short-circuit on a FAIL): affirmed.**
+    The worst case is exactly 2N runs at a measured 22.1 s of
+    materialisation; the diagnostic value (every target's own outcome on
+    the payload) is the point of per-attempt payloads. R-2 is told the
+    2N bound is deliberate.
+  - **DA-R20 (ask 3 — one shared control materialisation rejected):
+    affirmed** at ≤ 8.8 s for per-attempt independence, per-attempt
+    bookkeeping and B064's resume keying.
+  - **Generation 8 dispatched** (fresh Opus, BRIEF-7 seed): the single
+    `feat(assay)!:` cut first (BRIEF-7's (a)–(g), with DA-R18 folded into
+    the R4 claim's set membership before the cut lands), gate, then B050
+    → B051 → B052 → B053 `detail` → B004 → B007 → migration notes. Next
+    free ids **A-434** / **B065**.
