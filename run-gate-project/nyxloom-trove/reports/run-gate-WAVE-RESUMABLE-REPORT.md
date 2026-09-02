@@ -10,9 +10,26 @@ target run-gate 23.4.0 / `__revision__ = 34`. Wave prompt:
 | item | commit | SPEC | one line |
 |---|---|---|---|
 | RG-35 re-attach | `6fe633f5` | `R-39` | an inflight record per (lane × worktree × project); re-attach / collect / report-lost / refuse-on-commit-mismatch / `--fresh` |
-| RG-32 inert pin key | `<next>` | `R-08a` | **BREAKING**: `pins.*.budget` refused at load by name; pin tables validate their keys at all |
+| RG-32 inert pin key | `8db781e6` | `R-08a` | **BREAKING**: `pins.*.budget` refused at load by name; pin tables validate their keys at all |
+| RG-34 unprefixed argv[0] | `1e41069f` | `R-30b` | `doctor` names it, with the fix and the mechanism; a warning, never a refusal |
+| RG-36 progress-judged liveness | `10aa59e2` | `R-40` | 30 s rate/ETA disclosure; optional `stall_timeout` bounding SILENCE, never elapsed |
 
-(Table filled in as the remaining items land: RG-34 → RG-36.)
+All four are `__revision__ = 34`, one `[Unreleased]` block, one SPEC.
+
+**Final gate** (`nice -n 19 ionice -c 3 ./run-gate.py selftest --allow-dirty`
+from the worktree's `run-gate-project/`, clean tree, verdict read in a
+separate step from `scratchpad/selftest-final.log`):
+
+```
+488 passed, 2 skipped, 2 warnings in 69.52s (0:01:09)
+diff-coverage OK: 269/269 changed executable lines covered (100.0% >= 100.0% floor)
+run-gate: lane 'selftest' exit 0
+```
+
+Per-item gate runs, all read separately from their own logs: RG-35
+`455 passed / 156-156 / exit 0`; RG-32 `459 passed / 153-153 / exit 0`;
+RG-34 `465 passed / 163-163 / exit 0`; RG-36 (final, above)
+`488 passed / 269-269 / exit 0`. The wave added **60 tests** (428 -> 488).
 
 ## RG-35 — live acceptance probe (verbatim)
 
@@ -114,7 +131,59 @@ should see them as decisions rather than accidents.
    `run-gate: rev 34 | lane <n> | re-attach — no new container was started`
    instead.
 
+6. **`stall_timeout` on a `kind = "command"` lane is REFUSED at load**
+   (`R-40c`). RW-5's "a lane without a progress file cannot stall by this
+   rule" is about an ASSAY lane whose judge writes no events (an R0/R1
+   lane) — that case is disclosed once and stays healthy, exactly as ruled.
+   A COMMAND lane can never have the file at all, so the key there would be
+   inert config indistinguishable from a real setting: RG-32's defect, one
+   key over, landing in the same wave. See the decision ask below.
+7. **The stall exits 3, and `finish_run_record` therefore records the run as
+   `error`** (a `GateInfraError` is an `Exception`). Exit 3 is RW-5's;
+   `aborted` stays reserved for a `BaseException` (Ctrl-C) and for RG-35's
+   lost-container case. Either way it is never a pass and never joins the
+   trend series.
+
 ## Decision asks for the controller
 
-(None outstanding for RG-35. Any that arise in the remaining items are added
-here.)
+1. **`stall_timeout` on a command lane: refuse (shipped) or accept-and-inert?**
+   I refused it, for the reason in decision 6 above. The cost of the refusal
+   is that a container COMMAND lane — the shape most likely to hang, and the
+   one this estate runs most — gets nothing from RG-36 at all: run-gate has
+   no liveness signal for it, because only assay writes a progress file. If
+   the controller wants the key accepted there as a forward declaration
+   (inert until some future command-lane progress source exists), that is a
+   one-line change plus a disclosure line, and it should be decided
+   deliberately rather than by my silence. **Nothing in the rulings settles
+   it.**
+2. **`--fresh` is not offered on the conjunction path.** RW-2 says a
+   conjunction lane carries the behaviour to each SUB-lane. It does, because
+   each sub-lane is a separate `run-gate <lane>` invocation with its own
+   record — but the conjunction's own argv is a consumer-authored string, so
+   a caller who wants `--fresh` to reach the sub-lanes has to put it there
+   (exactly as `--worktree` and `{base}` already work, R-25/R-35). Flagging
+   it in case the controller wants `--fresh` added to the documented
+   conjunction argv recipe in CONSUMERS.md; I did not change consumer
+   recipes.
+3. **New backlog filing: RG-39** — `tools/coverage_gate.py` reports
+   misleading uncovered LINE NUMBERS when the `selftest` lane runs with
+   `--allow-dirty` (its diff comes from `base..HEAD`, its coverage from the
+   file on disk). Measured twice in this wave, `98.9%` dirty vs `100.0%`
+   committed on identical code, each costing a gate round. Filed with the
+   transcript and two proposed fixes; NOT fixed here (out of the wave's
+   scope, and it touches the gate every other item was measured with).
+
+## For the controller's dstdns notification (RW-7's, plus two more)
+
+- **Blocking:** `pins.assay.budget` must be deleted from dstdns's
+  `run-gate.toml` (`sql-mutation`, `assay-p129-enumeration-cursor`) BEFORE
+  upgrading to 23.4.0 — the key now refuses at load.
+- **Recommended:** dstdns's `[lanes.schema] argv = ["scripts/schema-gate.sh",
+  "{worktree}"]` is RG-34's own evidence case; `run-gate doctor` will now
+  name it on every run until the script path is `{worktree}`-prefixed. The
+  edit is dstdns's — run-gate deliberately does not rewrite argv.
+- **Offered:** `sql-mutation` is the lane RG-36 was built for. The shape is a
+  generous assay `budget` + `judge.mutation.budget_per_candidate` +
+  `stall_timeout = "15m"` in run-gate.toml; the lane then stops on SILENCE
+  instead of on a guessed total, and a killed client re-attaches instead of
+  starting a second 120-minute container.

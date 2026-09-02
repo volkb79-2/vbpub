@@ -221,3 +221,32 @@ blocks.
 
 Measured: `-k "ProgressWatch or StallTimeout or StallEndToEnd"` → **22
 passed in 5.39 s**; whole suite **487 passed, 2 skipped in 73.38 s**.
+
+## E9 — wave close, 2026-09-02
+
+Coverage round on RG-36: one uncovered line (`_rate_per_min`'s "the file
+moved but the candidate did not" return) — a real gap, not the dirty-tree
+artifact; covered by
+`test_a_rewrite_that_does_not_advance_the_candidate_yields_no_rate`, and the
+RG-36 commit amended with it.
+
+**Final gate, clean tree** (`scratchpad/selftest-final.log`, verdict read in
+a separate step): `488 passed, 2 skipped, 2 warnings in 69.52s`,
+`diff-coverage OK: 269/269 changed executable lines covered (100.0%)`,
+`run-gate: lane 'selftest' exit 0`.
+
+Commits: RG-35 `6fe633f5`, RG-32 `8db781e6`, RG-34 `1e41069f`, RG-36
+`10aa59e2`. 428 -> 488 tests (+60).
+
+Filed while here: **RG-39** — `tools/coverage_gate.py`'s dirty-tree line
+numbers (the artifact E5/E7 record), with the transcript and two proposed
+fixes. Not fixed in this wave: it is the gate every other item was measured
+with, and changing it mid-wave would have invalidated those measurements.
+
+E-008 checkpoint note: the clause armed at ~60 tool calls after RG-34's
+green gate. Judged NOT to cut there — the model is the 1M-context one, the
+remaining work was a single well-scoped item whose design was already fixed
+by RW-4..RW-6, and a successor's re-orientation (wave prompt + RG-36
+backlog + the container loop + the fixture conventions) would have cost more
+than the item did. Recorded as a deliberate deviation, not an oversight; no
+BRIEF was needed because nothing is left open.
