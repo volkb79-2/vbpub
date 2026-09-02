@@ -9,6 +9,42 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
+### Fixed
+- **RG-35 — a lane's container is found again after its client dies (rev 34,
+  SPEC `R-39`).** A container lane runs detached and is removed by an
+  explicit `docker rm -f` in a `finally`. When the CLIENT dies — SIGKILL, a
+  devcontainer restart, a harness that reaps a background command (measured
+  2026-09-02: the Claude harness killed a detached `cmru release` after 33 s
+  and its inner gate container ran to completion unobserved) — that `finally`
+  never runs, and until now nothing on disk named the container: exit status,
+  evidence and history were lost and the NEXT invocation started a SECOND
+  container for the same lane on the same commit.
+  - A successful `docker run -d` now writes
+    `<project>/.run-gate/inflight/<lane>.json` — container name and id,
+    `started_at`, the judged commit, worktree, project dir, the lane's
+    verdict/progress paths and `__revision__ ` — under the same store
+    discipline the history file already has (per judged worktree × project ×
+    lane, git-ignore CHECKED over record + lock + temp, sibling lock +
+    atomic rename).
+  - A later invocation of the same lane **re-attaches** to a running
+    container (`docker logs -f --since <started_at>` + `docker wait`),
+    **collects** an exited one and finishes exactly as an attached run
+    would, **reports and clears** one the host lost (recording that run as
+    `aborted`, never as a pass) and runs fresh, and **refuses (exit 2)** when
+    the record judges a different commit — naming both commits and the new
+    `--fresh` flag, which removes the named container first and runs anew.
+    Every branch is disclosed by name.
+  - History records a re-attached or collected run ONCE, with the duration
+    measured from the container's start rather than from the seconds the
+    client was attached.
+  - **New flag `--fresh`** (run path, ephemeral container lanes only —
+    refused by name on host lanes, exec lanes and every verb). `--dry-run`
+    discloses an inflight record and changes nothing.
+  - **Consumer note:** the record lives in the `.run-gate/` directory
+    adopters already git-ignore for `history.json`; no config change is
+    needed. A project that has NOT ignored it gets one warning per run
+    saying re-attach is off, and the lane still runs.
+
 <!-- Post-release housekeeping (assay CHANGES.md precedent): this block is
      CLEARED immediately after a release. cmru generates the dated entry
      below from the commit range but does NOT clear this hand-written block

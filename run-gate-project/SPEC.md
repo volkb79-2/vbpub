@@ -822,6 +822,72 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     claim to hold it to); an older judge then fails the lane loudly with
     assay's own `unrecognized arguments` line, never silently.
 
+- `R-39` **Re-attach: a lane's container outlives its client, and is found
+  again (RG-35).** A container lane runs detached (`R-15`) and is removed by
+  an explicit `docker rm -f` in a `finally`. When the CLIENT dies — SIGKILL,
+  a devcontainer restart, a harness that reaps a background command — that
+  `finally` never runs: the container keeps going, the judge still writes its
+  verdict into the bind-mounted worktree, and nobody collects the exit
+  status, the evidence (`R-26`) or the history record (`R-36`). Until rev 34
+  the next invocation of the same lane then started a SECOND container for
+  the same commit. It does not any more.
+  - **`R-39a` The inflight record.** On a SUCCESSFUL `docker run -d`, and
+    only then, run-gate writes `<effective project dir>/.run-gate/inflight/
+    <lane>.json`: container name and id, `started_at` (UTC ISO) and
+    `started_epoch`, the judged commit, worktree, project dir, the lane's
+    verdict and progress paths (`null` for a command lane), and
+    `__revision__`. Scope is (judged worktree x project x lane) BY
+    CONSTRUCTION — `R-21` already relocates the effective project dir into
+    the judged tree, so two worktrees' gates address two different files and
+    never meet, which is `R-36f`'s scoping answer reused rather than
+    re-derived. The residual case (two clients, one lane, one tree) is
+    arbitrated the same way: a sibling `inflight.lock` (`O_NOFOLLOW`, 0600,
+    bounded) plus write-temp-then-`os.replace`. The store must be
+    git-ignored and that is CHECKED, exactly as `R-36g` checks it, over all
+    three paths the writer can leave behind. A store that cannot be
+    confirmed ignored, or cannot be written, degrades to ONE warning that
+    says what is lost ("if this client dies … the next invocation will start
+    a second one") and the lane RUNS: refusing to write is not refusing to
+    run, and run-gate has never made an un-ignored `.run-gate/` fatal.
+  - **`R-39b` The decision, taken before anything is built.** With a record
+    present, `docker inspect` answers for the named container and exactly
+    one of five things happens, each DISCLOSED by name (`R-05`) — silence
+    here is what turns a surviving container into a duplicate:
+    **running + same commit** → re-attach (`run-gate: re-attached to <name>
+    (started <t>, running for <m>m <s>s)`, then `docker logs -f --since
+    <started_at>` + `docker wait`); **exited + same commit** → collect
+    (`run-gate: collected <name> (exited <code> at <t>)`) and finish exactly
+    as an attached run would; **gone** (inspect exits non-zero: the daemon or
+    the host lost it) → say so, record that run as `aborted`, clear the
+    record, run fresh; **a different commit** → refuse, exit 2, naming both
+    commits, the container, and `--fresh`; **`--fresh`** → remove the named
+    container (by name, disclosed), clear the record, run anew. An `inspect`
+    answer that parses as NEITHER a state nor a gone signal refuses (exit 3)
+    rather than guessing — guessing "gone" would start the duplicate this
+    requirement exists to prevent. Automatic re-attach with `--fresh` as the
+    escape, rather than a refusal requiring an `--attach` flag, is decision
+    D4 of the post-v10 plan: a restart is the COMMON case after a client
+    death, and a manual step is exactly what the host's one-container rule
+    was written to avoid.
+  - **`R-39c` One finish, one history record.** The fresh, re-attached and
+    collected paths share ONE tail (`await_container`): logs, `docker wait`,
+    evidence on failure, `docker rm -f`, record cleared in the SAME `finally`
+    that removes the container, artifacts disclosed. History records the run
+    ONCE, with the outcome from the real exit code and the duration measured
+    from the CONTAINER's `started_epoch` — not from the seconds this client
+    happened to be attached. A run whose container is gone is recorded
+    `aborted`, never a pass; a container that disappears mid-collect leaves
+    `docker wait` unreadable, which is already an exit-3 refusal, never a
+    pass.
+  - **`R-39d` Where it does not apply.** `--dry-run` DISCLOSES a record (and
+    what a live run would do with it) and changes nothing — it does not
+    attach, collect, clear or remove. Host lanes and exec lanes start no
+    container of run-gate's own, so they have no record and refuse `--fresh`
+    by name (`R-25`/`R-35`'s rule), as do `doctor`, `history`,
+    `validate-pointers` and a bare invocation. A conjunction lane carries the
+    behaviour to each SUB-lane it invokes; the conjunction itself is a
+    command lane with no container of its own and no record.
+
 ## 6. Non-goals (unchanged from CONSUMERS)
 
 No second parser of `run-gate.toml`; no judgment policy here (assay owns

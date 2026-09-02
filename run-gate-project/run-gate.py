@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 33  # rev 33: RG-33 -- every `kind = "assay"` lane is invoked with `--resume --progress .assay/progress-<assay_lane>.jsonl`, unconditionally (R-38): both are no-ops on a lane without R2 and, on a mutation lane, the difference between a budget-capped retry resuming from `.assay/mutation-state/` and one re-testing every mutant from #1 (dstdns `sql-mutation`, three retries, state never written). Progress lands beside the verdict under the git-ignored `.assay/`, never in the judged tree. Requires a judge that knows both flags (assay >= 2.4.2); an older pin fails the lane by argparse, loudly, not silently. rev 32: RG-31 --`assay_toolchain_findings()`'s own worktree resolution (shared by `doctor` check 5 and `--check-env`) still took the RAW `--worktree` string through the run-path's lenient `resolve_repo_and_worktree` (no upfront validation) instead of RG-30's validated `resolve_worktree_scope()`; a bad override silently produced a `probe_dir` nothing mounted, and the resulting SKIP blamed "assay older than 3.2.0" instead of the real `--worktree` problem `doctor` check 3 already names correctly two checks earlier in the same report. Now routed through `resolve_worktree_scope()` like every other RG-30/R-37 read-scope site, so a bad override raises the SAME `GateError` and is caught by the existing per-lane SKIP handler with the real cause. rev 31: RG-30 -- `doctor` and `--check-env` both passed `None` to `resolve_repo_and_worktree` instead of the caller's `--worktree`, so `doctor --worktree B` silently reported the INVOKING tree's answers under B's name (including the R-30a host-lane git-view WARN); the same read-scope hazard `history` (RG-27 B1, rev 30) already closed for that verb, now closed for the last remaining instance. `doctor`'s per-tree checks (git identity, R-30a, mountinfo) and the shared assay-toolchain probe's `cd` target (`assay_toolchain_findings`) both follow `--worktree` now, resolved+validated via a new shared `resolve_worktree_scope()`; a bad override becomes a `[FAIL] git` record inside doctor's own existing try/except rather than a false `[OK]` on the R-30a check. `--check-env`'s env-drift scan follows it too and refuses upfront (no per-check ledger to degrade into). Both verbs disclose the selected tree in their output (R-37). rev 30 (round-2 review fixes folded in: `history` honors --worktree on the READ side and refuses an override that names no git work tree, so a query can never answer with the invoking checkout's data under another tree's name; flushing a record is at-most-once, so a Ctrl-C inside the telemetry write surfaces as the KeyboardInterrupt instead of a second-flush traceback; `--json` is refused by name outside `history` instead of accepted and ignored; `history` as a lane name is a flagged LOAD-TIME breaking change): RG-27 lane invocation history — a per-(judged worktree × project) `.run-gate/history.json` store holding, per lane, a `latest` slot (ANY outcome, dirty/aborted/mid-rebase included) and a bounded per-commit trend series ([history] keep, default 10); completed fails join history WITH their outcome and the stats are split passes/completed, aborted+dirty+mid-rebase runs never do; new `history [LANE] [--json]` query verb; concurrency answered by SCOPE first (two worktrees address two files) then a sibling-lockfile + atomic-rename write; the store must be git-ignored or the write is refused with the remedy rather than dirtying the tree (R-36); rev 29: P02 review round — the RG-25 `command -v` fitness probe is BATCHED per environment over the union of every lane's tools (was one container per lane, which made R-30's own cost claim quantitatively false), and the three places still claiming `--dry-run`/`doctor` start nothing now say what they actually start; rev 28: RG-26 `--base REF` reaches a delegating assay lane as `--request-base` (assay B019 usable from the gate at last) — delegation DERIVED from `assay lanes --json`, no new run-gate.toml key; conjunction lanes propagate it through a `{base}` token; a non-delegating lane refuses it by name (R-35). Also RG-28: an assay lane on the built-in host environment no longer raises KeyError('argv') (R-19); rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 34  # rev 34 (the "resumable, observable gate" wave): RG-35 -- a lane's container outlives its client BY DESIGN (`docker run -d`, `rm -f` in a finally a killed client never reaches), and until now nothing on disk named it: the exit status, the evidence and the history record were lost and the NEXT invocation started a SECOND container for the same lane on the same commit -- the one-gate rule broken by the tool itself, on a host that shares 8 cores with a production workload. A successful `docker run -d` now writes `.run-gate/inflight/<lane>.json` (same store, same R-36f/g discipline: per (judged worktree x project x lane), git-ignore CHECKED, sibling lock + atomic rename) naming the container, its id, the judged commit, the tree and the assay artifacts; a later invocation of the same lane re-attaches to a RUNNING container (`docker logs -f --since` + `wait`), COLLECTS an exited one and finishes exactly as an attached run would, reports and clears a GONE one (recording that run as `aborted`, never as a pass) and runs fresh, and REFUSES (exit 2) when the record judges another commit -- naming both commits and `--fresh`, which removes the named container first. History records such a run ONCE, with the duration measured from the CONTAINER's start (R-39). rev 33: RG-33 -- every `kind = "assay"` lane is invoked with `--resume --progress .assay/progress-<assay_lane>.jsonl`, unconditionally (R-38): both are no-ops on a lane without R2 and, on a mutation lane, the difference between a budget-capped retry resuming from `.assay/mutation-state/` and one re-testing every mutant from #1 (dstdns `sql-mutation`, three retries, state never written). Progress lands beside the verdict under the git-ignored `.assay/`, never in the judged tree. Requires a judge that knows both flags (assay >= 2.4.2); an older pin fails the lane by argparse, loudly, not silently. rev 32: RG-31 --`assay_toolchain_findings()`'s own worktree resolution (shared by `doctor` check 5 and `--check-env`) still took the RAW `--worktree` string through the run-path's lenient `resolve_repo_and_worktree` (no upfront validation) instead of RG-30's validated `resolve_worktree_scope()`; a bad override silently produced a `probe_dir` nothing mounted, and the resulting SKIP blamed "assay older than 3.2.0" instead of the real `--worktree` problem `doctor` check 3 already names correctly two checks earlier in the same report. Now routed through `resolve_worktree_scope()` like every other RG-30/R-37 read-scope site, so a bad override raises the SAME `GateError` and is caught by the existing per-lane SKIP handler with the real cause. rev 31: RG-30 -- `doctor` and `--check-env` both passed `None` to `resolve_repo_and_worktree` instead of the caller's `--worktree`, so `doctor --worktree B` silently reported the INVOKING tree's answers under B's name (including the R-30a host-lane git-view WARN); the same read-scope hazard `history` (RG-27 B1, rev 30) already closed for that verb, now closed for the last remaining instance. `doctor`'s per-tree checks (git identity, R-30a, mountinfo) and the shared assay-toolchain probe's `cd` target (`assay_toolchain_findings`) both follow `--worktree` now, resolved+validated via a new shared `resolve_worktree_scope()`; a bad override becomes a `[FAIL] git` record inside doctor's own existing try/except rather than a false `[OK]` on the R-30a check. `--check-env`'s env-drift scan follows it too and refuses upfront (no per-check ledger to degrade into). Both verbs disclose the selected tree in their output (R-37). rev 30 (round-2 review fixes folded in: `history` honors --worktree on the READ side and refuses an override that names no git work tree, so a query can never answer with the invoking checkout's data under another tree's name; flushing a record is at-most-once, so a Ctrl-C inside the telemetry write surfaces as the KeyboardInterrupt instead of a second-flush traceback; `--json` is refused by name outside `history` instead of accepted and ignored; `history` as a lane name is a flagged LOAD-TIME breaking change): RG-27 lane invocation history — a per-(judged worktree × project) `.run-gate/history.json` store holding, per lane, a `latest` slot (ANY outcome, dirty/aborted/mid-rebase included) and a bounded per-commit trend series ([history] keep, default 10); completed fails join history WITH their outcome and the stats are split passes/completed, aborted+dirty+mid-rebase runs never do; new `history [LANE] [--json]` query verb; concurrency answered by SCOPE first (two worktrees address two files) then a sibling-lockfile + atomic-rename write; the store must be git-ignored or the write is refused with the remedy rather than dirtying the tree (R-36); rev 29: P02 review round — the RG-25 `command -v` fitness probe is BATCHED per environment over the union of every lane's tools (was one container per lane, which made R-30's own cost claim quantitatively false), and the three places still claiming `--dry-run`/`doctor` start nothing now say what they actually start; rev 28: RG-26 `--base REF` reaches a delegating assay lane as `--request-base` (assay B019 usable from the gate at last) — delegation DERIVED from `assay lanes --json`, no new run-gate.toml key; conjunction lanes propagate it through a `{base}` token; a non-delegating lane refuses it by name (R-35). Also RG-28: an assay lane on the built-in host environment no longer raises KeyError('argv') (R-19); rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import ast
@@ -55,6 +55,17 @@ HISTORY_SCHEMA = 1
 HISTORY_KEEP_DEFAULT = 10
 HISTORY_LOCK_TIMEOUT = 5.0   # seconds — telemetry NEVER blocks a gate
 HISTORY_OUTCOMES = ("pass", "fail", "error", "aborted")
+
+# RG-35 inflight (re-attach) records. One file per lane inside the SAME
+# `.run-gate/` store the history file lives in, so the scope is (judged
+# worktree x project x lane) by construction — R-36f's scoping answer, reused
+# rather than re-derived. A lane's container outlives its client by design
+# (`docker run -d`, `rm -f` in a finally the client may never reach); this
+# record is the only thing that can tell the NEXT invocation that the
+# container it is about to duplicate already exists.
+INFLIGHT_DIR_NAME = "inflight"
+INFLIGHT_LOCK_NAME = "inflight.lock"
+INFLIGHT_SCHEMA = 1
 
 
 class GateError(Exception):
@@ -868,8 +879,17 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
     # traceback (R-36h). No stamp => no duration => not a measurement, which
     # the eligibility conjunction below then refuses on its own terms.
     started = record.pop("_started_monotonic", None)
-    record["duration_seconds"] = None if started is None \
-        else round(time.monotonic() - started, 3)
+    # RG-35 (RW-3): a re-attached or collected run is ONE run, and its
+    # duration belongs to the CONTAINER, not to the client that happened to
+    # attach to it — `adopt_inflight_start` swaps this invocation's monotonic
+    # stamp for the recorded container start, which is wall-clock by
+    # necessity (it was taken in another process).
+    epoch = record.pop("_started_epoch", None)
+    if epoch is not None:
+        record["duration_seconds"] = round(max(0.0, time.time() - epoch), 3)
+    else:
+        record["duration_seconds"] = None if started is None \
+            else round(time.monotonic() - started, 3)
     if error is not None:
         record["outcome"] = "aborted" if not isinstance(error, Exception) \
             else "error"
@@ -946,13 +966,36 @@ def _apply_record(store: dict, record: dict, keep: int) -> dict:
     return store
 
 
-def _write_history_store(store: dict, path: Path) -> None:
+def _write_json_atomic(data: dict, path: Path) -> None:
     """Atomic replace. This is what lets READERS take no lock at all: a
     reader either sees the whole old file or the whole new one, never a
-    half-written middle."""
+    half-written middle. Shared by the history store and RG-35's inflight
+    record — same store, same discipline."""
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
-    tmp.write_text(json.dumps(store, indent=2, sort_keys=True) + "\n")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
     os.replace(tmp, path)
+
+
+def _acquire_store_lock(lock_path: Path, what: str) -> int:
+    """Exclusive, BOUNDED flock on a SIBLING lock file; returns the fd, which
+    the caller closes (that releases it). 0600 + O_NOFOLLOW, matching
+    acquire_shared_locks: content-free coordination state at a predictable
+    path. Bounded unlike RG-20's shared-infra lock, which blocks forever ON
+    PURPOSE — that one protects the CORRECTNESS of the run, this one protects
+    a small record, and a gate that hangs waiting to write one has inverted
+    the priority."""
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    deadline = time.monotonic() + HISTORY_LOCK_TIMEOUT
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                raise GateError(f"{what}: {lock_path} held by another gate "
+                                f"for >{HISTORY_LOCK_TIMEOUT:g}s")
+            time.sleep(0.05)
 
 
 def _record_invocation(project_dir: Path, worktree: Path, record: dict,
@@ -968,28 +1011,11 @@ def _record_invocation(project_dir: Path, worktree: Path, record: dict,
             f"clean-tree check — add '{HISTORY_DIR_NAME}/' to the .gitignore "
             f"covering {worktree}")
     hdir.mkdir(parents=True, exist_ok=True)
-    lock_path = hdir / HISTORY_LOCK_NAME
-    # 0600 + O_NOFOLLOW, matching acquire_shared_locks: content-free
-    # coordination state at a predictable path.
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    fd = _acquire_store_lock(hdir / HISTORY_LOCK_NAME,
+                             "lane history not recorded")
     try:
-        deadline = time.monotonic() + HISTORY_LOCK_TIMEOUT
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                # Bounded, unlike RG-20's shared-infra lock which blocks
-                # forever ON PURPOSE. That one protects the CORRECTNESS of
-                # the run; this one protects a measurement, and a gate that
-                # hangs waiting to write telemetry has inverted the priority.
-                if time.monotonic() >= deadline:
-                    raise GateError(
-                        f"lane history not recorded: {lock_path} held by "
-                        f"another gate for >{HISTORY_LOCK_TIMEOUT:g}s")
-                time.sleep(0.05)
         store_path = history_store_path(project_dir)
-        _write_history_store(
+        _write_json_atomic(
             _apply_record(load_history_store(store_path), record, keep),
             store_path)
     finally:
@@ -1035,6 +1061,155 @@ def flush_run_record(record: dict | None, *, exit_code: int | None = None,
                       finish_run_record(record, exit_code=exit_code,
                                         error=error),
                       record["_keep"])
+
+
+# ---------------------------------------------------------------------------
+# RG-35 / R-39 — the inflight record: what a dead client leaves behind
+# ---------------------------------------------------------------------------
+
+def inflight_dir(project_dir: Path) -> Path:
+    return history_dir(project_dir) / INFLIGHT_DIR_NAME
+
+
+def inflight_path(project_dir: Path, lane_name: str) -> Path:
+    return inflight_dir(project_dir) / f"{lane_name}.json"
+
+
+def inflight_written_paths(project_dir: Path, lane_name: str) -> list[Path]:
+    """Every path the writer can leave behind — record, lock, and the temp
+    file a crash between write and rename would strand. R-36g's rule: the
+    ignore question is asked about ALL of them, never only the obvious one."""
+    idir = inflight_dir(project_dir)
+    return [idir / f"{lane_name}.json", idir / INFLIGHT_LOCK_NAME,
+            idir / f"{lane_name}.json.tmp.{os.getpid()}"]
+
+
+def load_inflight_record(path: Path) -> dict | None:
+    """Never raises: a missing, unreadable, corrupt or container-less record
+    reads as "no inflight run". The record is a HINT that saves a duplicate
+    container; a gate that died because its hint was malformed would be a
+    worse tool than one that starts the container."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("container") else None
+
+
+def write_inflight_record(project_dir: Path, worktree: Path, lane_name: str,
+                          payload: dict) -> bool:
+    """Record the container that is now running, so a restart re-attaches
+    instead of starting a second one. Returns whether it was written.
+
+    The git-ignore gate is R-36g's, applied to the same store for the same
+    reason: writing an un-ignored file here would leave the judged tree dirty
+    for the NEXT lane's clean-tree check. Refusing to WRITE is not refusing to
+    RUN — the lane proceeds, disclosing that this run cannot be re-attached,
+    because run-gate has never made an un-ignored `.run-gate/` fatal and this
+    wave is not the place to start (the one BREAKING config change here is
+    RG-32's, declared as such)."""
+    if paths_are_git_ignored(worktree, inflight_written_paths(
+            project_dir, lane_name)) is not True:
+        print(f"{PROG}: WARNING: re-attach record NOT written: "
+              f"{inflight_dir(project_dir)} could not be confirmed "
+              f"git-ignored, and writing there would leave the judged tree "
+              f"dirty for the NEXT lane's clean-tree check — add "
+              f"'{HISTORY_DIR_NAME}/' to the .gitignore covering {worktree}. "
+              f"If this client dies, its container will be orphaned and the "
+              f"next invocation will start a second one (RG-35)",
+              file=sys.stderr, flush=True)
+        return False
+    try:
+        idir = inflight_dir(project_dir)
+        idir.mkdir(parents=True, exist_ok=True)
+        fd = _acquire_store_lock(idir / INFLIGHT_LOCK_NAME,
+                                 "re-attach record not written")
+        try:
+            _write_json_atomic(payload, inflight_path(project_dir, lane_name))
+        finally:
+            os.close(fd)  # releases the flock
+        return True
+    except (OSError, GateError) as exc:
+        print(f"{PROG}: WARNING: re-attach record not written: {exc}",
+              file=sys.stderr, flush=True)
+        return False
+
+
+def clear_inflight_record(project_dir: Path, lane_name: str) -> None:
+    """Idempotent and best-effort: this runs in the same `finally` that
+    removes the container, and a gate must never die in its own cleanup."""
+    try:
+        inflight_path(project_dir, lane_name).unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"{PROG}: WARNING: could not clear "
+              f"{inflight_path(project_dir, lane_name)}: {exc}",
+              file=sys.stderr, flush=True)
+
+
+def container_state(docker: str, name: str) -> tuple[str | None, int | None, str]:
+    """(status, exit code, finished-at) for a container, or (None, None, "")
+    when it does not exist — `docker inspect`'s own non-zero exit on
+    `No such object` IS the gone signal, and the only one that is safe to
+    read as gone. An answer that parses as neither is NOT an answer: guessing
+    "gone" there would start the duplicate container this whole mechanism
+    exists to prevent, so it refuses (exit 3) like `docker wait` already
+    does."""
+    probe = subprocess.run(
+        [docker, "inspect", "-f",
+         "{{.State.Status}}|{{.State.ExitCode}}|{{.State.FinishedAt}}", name],
+        capture_output=True, text=True)
+    if probe.returncode != 0:
+        return None, None, ""
+    parts = probe.stdout.strip().split("|")
+    if len(parts) != 3 or not re.fullmatch(r"-?\d+", parts[1]):
+        fail_infra(f"could not read the state of container {name}: docker "
+                   f"inspect answered {probe.stdout.strip()!r} — refusing to "
+                   f"guess whether a gate container is still running")
+    return parts[0], int(parts[1]), parts[2]
+
+
+def _fmt_age(epoch: object) -> str:
+    if not isinstance(epoch, (int, float)) or isinstance(epoch, bool):
+        return "for an unknown time"
+    delta = max(0.0, time.time() - epoch)
+    return f"for {int(delta // 60)}m {int(delta % 60):02d}s"
+
+
+def adopt_inflight_start(run_record: dict, pending: dict) -> None:
+    """RW-3: history records a re-attached or collected run ONCE, with the
+    duration measured from the CONTAINER's start. Without this the entry
+    would claim a mutation lane took the four seconds this client was
+    attached to it."""
+    run_record["started_at"] = pending["started_at"]
+    epoch = pending.get("started_epoch")
+    if isinstance(epoch, (int, float)) and not isinstance(epoch, bool):
+        run_record.pop("_started_monotonic", None)
+        run_record["_started_epoch"] = epoch
+
+
+def record_lost_run(project_dir: Path, worktree: Path, repo: Path,
+                    lane_name: str, pending: dict, keep: int) -> None:
+    """RW-3: a run whose container is GONE is recorded as `aborted`, never as
+    a pass. Its exit status and logs went with the container, so there is
+    nothing left to call a result — and staying silent would let a lost run
+    look like a run that never happened."""
+    record_invocation(project_dir, worktree, {
+        "lane": lane_name,
+        "commit": pending.get("commit"),
+        "outcome": "aborted",
+        "exit_code": None,
+        "started_at": pending.get("started_at"),
+        "duration_seconds": None,
+        "worktree": str(worktree),
+        "repo": str(repo),
+        "dirty": None,
+        "git_operation": None,
+        "history_eligible": False,
+        "excluded_reason": (
+            f"aborted: container {pending.get('container')} is gone — its "
+            f"exit status and logs went with it, so this run has no result"),
+        "revision": pending.get("revision"),
+    }, keep)
 
 
 def duration_stats(entries: list[dict]) -> dict:
@@ -2344,9 +2519,30 @@ def declared_version_tuple(declared: str) -> tuple[int, ...] | None:
     return tuple(int(part) for part in parts)
 
 
+def assay_verdict_rel(assay_lane: str) -> str:
+    return f".assay/verdict-{assay_lane}.json"
+
+
+def assay_progress_rel(assay_lane: str) -> str:
+    return f".assay/progress-{assay_lane}.jsonl"
+
+
+def assay_artifact_paths(lane: dict, project_dir: Path
+                         ) -> tuple[str | None, str | None]:
+    """(verdict, progress) as ABSOLUTE strings for an assay lane, (None, None)
+    for a command lane. R-38 constructs both relative to the effective project
+    dir; the inflight record (R-39) and the progress watch (R-40) need the
+    same two answers, so all three derive them from one place — a second
+    construction of the same path is how the two drift apart."""
+    if lane["kind"] != "assay":
+        return None, None
+    return (str(project_dir / assay_verdict_rel(lane["assay_lane"])),
+            str(project_dir / assay_progress_rel(lane["assay_lane"])))
+
+
 def build_assay_inner(lane: dict, project_dir: Path,
                       request_base: str | None = None) -> str:
-    verdict = f".assay/verdict-{lane['assay_lane']}.json"
+    verdict = assay_verdict_rel(lane["assay_lane"])
     for pin_name, pin in lane.get("pins", {}).items():
         # R-38: a judge too old for the flags below refuses HERE, by name,
         # not inside the container under assay's own `unrecognized
@@ -2415,7 +2611,7 @@ def build_assay_inner(lane: dict, project_dir: Path,
     # file landed in the work tree). Gating the flags on the inventory's
     # declared rigor was rejected: a second reading of an assay-owned fact
     # for no behavioural gain.
-    progress = f".assay/progress-{lane['assay_lane']}.jsonl"
+    progress = assay_progress_rel(lane["assay_lane"])
     run_argv = [*lane["assay_command"], "run", lane["assay_lane"],
                 "--file", "assay.toml", "--verdict-json", verdict,
                 "--resume", "--progress", progress]
@@ -2466,16 +2662,145 @@ def dual_mount_flags(repo: Path, phys: Path) -> list[str]:
     return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{namespace}"]
 
 
+def await_container(docker: str, name: str, lane: dict, lane_name: str,
+                    project_dir: Path, worktree: Path,
+                    since: str | None = None) -> int:
+    """Stream a running container's logs, wait for its status, preserve
+    evidence on failure, remove it, clear its inflight record, disclose its
+    artifacts. ONE path for all three arrivals (a fresh `docker run -d`, a
+    re-attach, a collect of an already-exited container), because RW-1's
+    "finish exactly as an attached run would" is a promise about the finish,
+    and two code paths would eventually make it false."""
+    saved_log: Path | None = None
+    try:
+        # `--since` on a re-attach: the container's own start, so a client
+        # that reconnects sees the run from the beginning rather than only
+        # what happened after it arrived.
+        logs = subprocess.run([docker, "logs", "-f",
+                               *(["--since", since] if since else []), name])
+        waited = subprocess.run([docker, "wait", name], capture_output=True,
+                                text=True)
+        out = waited.stdout.strip()
+        code = int(out) if waited.returncode == 0 and re.fullmatch(r"-?\d+", out) else None
+        # Review fix (R-26): evidence is for FAILING containers — a green
+        # lane leaves nothing in the evidence dir. Captured here, BEFORE the
+        # finally removes the container (an unreadable exit status counts as
+        # failing: infra diagnosis needs the logs too).
+        if code is None or code != 0:
+            saved_log = save_container_logs(docker, name)
+    finally:
+        subprocess.run([docker, "rm", "-f", name], capture_output=True)
+        # RW-1: the record is cleared in the SAME finally that removes the
+        # container — the two facts it asserts (this container exists, it
+        # belongs to this lane) stop being true at the same instant.
+        clear_inflight_record(project_dir, lane_name)
+    if logs.returncode != 0:
+        print(f"run-gate: WARNING: docker logs exit {logs.returncode}", file=sys.stderr)
+    if code is None:
+        fail_infra("could not read the container's exit status (docker wait failed) — "
+                   "refusing to guess")
+    if code != 0:
+        where = (f"; full container logs preserved at {saved_log}"
+                 if saved_log else
+                 "; container logs could NOT be captured before removal")
+        print(f"run-gate: lane {lane_name!r} failed with exit {code}{where}",
+              flush=True)
+    print_lane_artifacts(lane, lane_name, project_dir, worktree)
+    return code
+
+
+def resolve_inflight(docker: str, lane: dict, lane_name: str,
+                     project_dir: Path, repo: Path, worktree: Path,
+                     fresh: bool, dry_run: bool,
+                     run_record: dict | None) -> int | None:
+    """RG-35 / R-39. Decide what to do about a container this lane left
+    behind, BEFORE anything is built or started. Returns the lane's exit code
+    when the existing container answered for this invocation (re-attach or
+    collect), else None — meaning "nothing to attach to, run fresh".
+
+    Every branch is disclosed by name (R-05): silence here is what turns a
+    surviving container into a duplicate."""
+    pending = load_inflight_record(inflight_path(project_dir, lane_name))
+    if pending is None:
+        if fresh:
+            print(f"run-gate: --fresh: no inflight record for lane "
+                  f"{lane_name!r} — nothing to remove", flush=True)
+        return None
+    name = pending["container"]
+    started = pending.get("started_at")
+    status, exit_code, finished = container_state(docker, name)
+    if dry_run:
+        # RW-1: a dry run DISCLOSES the record and changes nothing — it does
+        # not attach, collect, clear, or remove.
+        print(f"run-gate: DRY RUN: an inflight record names container {name} "
+              f"(started {started}, state {status or 'gone'}) — a live run "
+              f"would " + ("re-attach to it or collect it" if status
+                           else "report it lost, clear the record and start "
+                                "a new container"), flush=True)
+        return None
+    if status is None:
+        print(f"run-gate: inflight record names {name} (started {started}) "
+              f"but no such container exists — the daemon or the host lost "
+              f"it; recording that run as aborted, clearing the record and "
+              f"running fresh", flush=True)
+        record_lost_run(project_dir, worktree, repo, lane_name, pending,
+                        (run_record or {}).get("_keep") or HISTORY_KEEP_DEFAULT)
+        clear_inflight_record(project_dir, lane_name)
+        return None
+    if fresh:
+        print(f"run-gate: --fresh: removing inflight container {name} "
+              f"(started {started}, {status}) and running anew", flush=True)
+        subprocess.run([docker, "rm", "-f", name], capture_output=True)
+        clear_inflight_record(project_dir, lane_name)
+        return None
+    head = head_commit(worktree)
+    if head is None or head != pending.get("commit"):
+        # Neither attaching nor starting a second container is defensible
+        # here: one would credit this commit with another commit's run, the
+        # other would break the one-gate rule. Refuse and name the escape.
+        fail(f"lane {lane_name!r} has an inflight container {name} (started "
+             f"{started}, {status}) judging commit {pending.get('commit')}, "
+             f"but {worktree} is now at {head} — run-gate will not attach "
+             f"that run to this commit, and will not start a second "
+             f"container for the same lane. Wait for it to finish, or re-run "
+             f"with --fresh (which removes {name} first)")
+    adopt_inflight_start(run_record, pending)
+    if status == "running":
+        print(f"run-gate: re-attached to {name} (started {started}, running "
+              f"{_fmt_age(pending.get('started_epoch'))})", flush=True)
+    else:
+        print(f"run-gate: collected {name} (exited {exit_code} at {finished})",
+              flush=True)
+    # The usual `rev | lane | env | slice` header belongs to a run this
+    # client STARTED; this run was started by another one, and the header
+    # that identifies it would be a claim about mounts and a slice this
+    # invocation never chose. Disclose what it IS instead (R-05).
+    print(f"run-gate: rev {__revision__} | lane {lane_name} | re-attach — no "
+          f"new container was started", flush=True)
+    return await_container(docker, name, lane, lane_name, project_dir,
+                           worktree, since=started)
+
+
 def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                        worktree: Path, env: dict, env_source: str,
                        slice_name: str, slice_src: str,
                        dry_run: bool = False,
-                       request_base: str | None = None) -> int:
+                       request_base: str | None = None,
+                       fresh: bool = False,
+                       run_record: dict | None = None) -> int:
     # project_dir arrives already relocated into the judged worktree (RG-15):
     # pin verification, assay config, and artifacts all resolve there.
     docker = shutil.which("docker")
     if not docker:
         fail_infra("docker not found on PATH — container lanes need it")
+    # RG-35: before ANYTHING is built — the re-attach line is the first thing
+    # a returning client should see, and a lane that already has a container
+    # must not spend a mount derivation or a slice check on a run it is not
+    # going to start.
+    attached = resolve_inflight(docker, lane, lane_name, project_dir, repo,
+                                worktree, fresh, dry_run, run_record)
+    if attached is not None:
+        return attached
     phys = physical_path(repo)
     mounts = dual_mount_flags(repo, phys)  # dual: worktree gitfiles (RG-3)
     extra_mounts_raw = os.environ.get(EXTRA_MOUNT_ENV_VAR, "")
@@ -2538,33 +2863,30 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         where = f"\nrun-gate: partial container logs: {saved}" if saved else ""
         fail_infra(f"docker run failed (exit {started.returncode}); last "
                    f"stderr line(s):\n{tail}{where}")
-    saved_log: Path | None = None
-    try:
-        logs = subprocess.run([docker, "logs", "-f", name])
-        waited = subprocess.run([docker, "wait", name], capture_output=True, text=True)
-        out = waited.stdout.strip()
-        code = int(out) if waited.returncode == 0 and re.fullmatch(r"-?\d+", out) else None
-        # Review fix (R-26): evidence is for FAILING containers — a green
-        # lane leaves nothing in the evidence dir. Captured here, BEFORE the
-        # finally removes the container (an unreadable exit status counts as
-        # failing: infra diagnosis needs the logs too).
-        if code is None or code != 0:
-            saved_log = save_container_logs(docker, name)
-    finally:
-        subprocess.run([docker, "rm", "-f", name], capture_output=True)
-    if logs.returncode != 0:
-        print(f"run-gate: WARNING: docker logs exit {logs.returncode}", file=sys.stderr)
-    if code is None:
-        fail_infra("could not read the container's exit status (docker wait failed) — "
-                   "refusing to guess")
-    if code != 0:
-        where = (f"; full container logs preserved at {saved_log}"
-                 if saved_log else
-                 "; container logs could NOT be captured before removal")
-        print(f"run-gate: lane {lane_name!r} failed with exit {code}{where}",
-              flush=True)
-    print_lane_artifacts(lane, lane_name, project_dir, worktree)
-    return code
+    # RW-1: written on a SUCCESSFUL `docker run -d` and only then — a record
+    # naming a container that was never created would send the next
+    # invocation looking for a ghost.
+    verdict_path, progress_path = assay_artifact_paths(lane, project_dir)
+    write_inflight_record(project_dir, worktree, lane_name, {
+        "schema": INFLIGHT_SCHEMA,
+        "lane": lane_name,
+        "container": name,
+        "container_id": (started.stdout.strip().splitlines() or [""])[-1],
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        # The epoch is stored beside the ISO stamp deliberately: `--since`
+        # and human output want the stamp, elapsed time and RW-3's duration
+        # want a number, and parsing the stamp back would add a date library
+        # (and a parse failure) to a path that already knows the answer.
+        "started_epoch": time.time(),
+        "commit": head_commit(worktree),
+        "worktree": str(worktree),
+        "project_dir": str(project_dir),
+        "verdict": verdict_path,
+        "progress": progress_path,
+        "revision": __revision__,
+    })
+    return await_container(docker, name, lane, lane_name, project_dir,
+                           worktree)
 
 
 def resolve_container_name(env_name: str, env: dict, repo: Path,
@@ -2745,7 +3067,8 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
     lines = [
         f"{PROG} rev {__revision__} — the per-project gate entrypoint",
         "",
-        "usage: run-gate.py <lane> [--worktree PATH] [--allow-dirty] [--base REF]",
+        "usage: run-gate.py <lane> [--worktree PATH] [--allow-dirty] [--base REF]"
+        " [--fresh]",
         "       run-gate.py --list   (machine-readable: name<TAB>kind<TAB>environment)",
         "       run-gate.py validate-pointers CONSUMER.toml [--root DIR]",
         "         (RG-2: certify every run-gate pointer in a consumer document —",
@@ -2826,6 +3149,13 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    THAT tree, named in the report (RG-30); a --worktree",
         "                    that names no real git worktree refuses outright",
         "                    rather than scan/probe nothing under its name",
+        "  --fresh           RG-35: a container lane whose previous client died",
+        "                    RE-ATTACHES to the container that client left behind",
+        "                    (same lane, same worktree, same commit) instead of",
+        "                    starting a second one. --fresh removes that container",
+        "                    first — by name, disclosed — and runs anew. Refused",
+        "                    by name on host and exec lanes, which start no",
+        "                    container of run-gate's own",
         "  --json            `history` ONLY: the same data as one JSON document",
         "                    (latest + bounded history + median/min/max, split",
         "                    passes vs all completed runs). Every other verb",
@@ -2903,6 +3233,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="RG-27: `history` emits one machine-readable "
                              "JSON document instead of the human table")
     parser.add_argument("--allow-dirty", action="store_true")
+    parser.add_argument("--fresh", action="store_true",
+                        help="RG-35: remove the container an earlier client "
+                             "left running for this lane (disclosed by name) "
+                             "and start a new one, instead of re-attaching")
     parser.add_argument("--dry-run", action="store_true",
                         help="print the full execution plan and exit 0 — every "
                              "preflight is rehearsed and no JUDGED lane is "
@@ -2920,6 +3254,15 @@ def main(argv: list[str] | None = None) -> int:
         # RG-26's --base: a flag the command cannot honor is a refusal, never
         # a silent no-op — a consumer piping `--list --json` into a parser
         # would otherwise get a TSV where it asked for JSON.
+        # Same rule for RG-35's flag: `--fresh` names an ephemeral container
+        # lane's inflight run, so every verb and every other runner refuses
+        # it by name rather than accepting it and doing nothing (R-25/R-35).
+        if args.fresh and args.lane in (None, "doctor", "history",
+                                        "validate-pointers"):
+            fail("--fresh is honored on the run path only (run-gate.py <lane> "
+                 "--fresh) — it removes the container an earlier client left "
+                 "running for that lane; the query and preflight verbs start "
+                 "no container and have nothing to refresh")
         if args.json and args.lane != "history":
             fail("--json is honored by the `history` verb only (run-gate.py "
                  "history [LANE] --json); `--list` is already a machine "
@@ -3011,6 +3354,15 @@ def main(argv: list[str] | None = None) -> int:
         lane = lanes[args.lane]
         env, env_source = resolve_environment(lane, args.lane, cfg, central,
                                               cfg_path, central_path)
+        if args.fresh and (not env or env.get("mode") == "exec"):
+            # A host lane runs in this process and an exec lane runs inside a
+            # runner run-gate did not start and will not remove: neither
+            # leaves a container behind, so neither has an inflight record.
+            fail(f"--fresh names the container an ephemeral container lane "
+                 f"left running, but lane {args.lane!r} runs on "
+                 f"{'the built-in host environment' if not env else f'exec-mode environment {env_source}'} "
+                 f"— run-gate starts no container of its own there, so there "
+                 f"is nothing to re-attach to or replace")
         # RG-17/19: declared inputs verified BEFORE anything runs — presence
         # in the invoking environment for every kind; for container lanes
         # also that the names are on the forward_env allowlist at all.
@@ -3121,7 +3473,9 @@ def main(argv: list[str] | None = None) -> int:
                                           worktree, env, env_source,
                                           slice_name, slice_src,
                                           dry_run=args.dry_run,
-                                          request_base=request_base)
+                                          request_base=request_base,
+                                          fresh=args.fresh,
+                                          run_record=record)
             print(f"run-gate: lane {args.lane!r} exit {code}", flush=True)
         finally:
             for fd in locks:

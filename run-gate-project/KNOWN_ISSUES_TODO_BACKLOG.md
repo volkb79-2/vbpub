@@ -50,7 +50,7 @@ SPEC §9.
 | RG-30 | `doctor` and `--check-env` both pass `None` to `resolve_repo_and_worktree` (`run-gate.py:1789`, `:2068`) instead of the caller's `--worktree` value, so `doctor --worktree B` silently reports the INVOKING tree's answers, not B's — including RG-21's worktree-specific host-lane git-view WARN, which is exactly the per-tree answer that can legitimately differ | Medium | FIXED 2026-08-31 (rev 31, run-gate-P04) — new shared `resolve_worktree_scope()` (validates a real git worktree, refuses by name otherwise); `doctor`'s per-tree checks (git identity, RG-21 warning, mountinfo) and the shared `assay_toolchain_findings()` probe's `cd` target (used by both `doctor` and `--check-env`) now resolve/relocate under `--worktree`, disclosed in the report; `--check-env`'s env-drift scan follows it too and refuses upfront on a bad override (no per-check ledger to degrade into). SPEC `R-37` (`R-37a`/`R-37b`/`R-37c`). `./run-gate.py selftest` green: 394 passed, 2 skipped, diff-coverage 22/22 = 100.0%, exit 0 (commit `929be064`) |
 | RG-31 | `assay_toolchain_findings()`'s own `resolve_repo_and_worktree` call (the toolchain-fitness probe shared by `doctor` check 5 and `--check-env`) still takes the RAW `worktree_override` string, not RG-30's new validated `resolve_worktree_scope()` — so a bad `--worktree` combined with an assay lane present degrades safely (a `[SKIP]` on that check, no false-`[OK]`) but with a MISLEADING reason string (blames "an assay older than 3.2.0" rather than naming the real `--worktree` problem, which `doctor` check 3 already reported correctly two checks earlier in the same report) | Low | FIXED 2026-09-01 (rev 32) — routed through `resolve_worktree_scope()`, the same validated resolver check 3 and `--check-env` already use; a bad override now raises the identical `GateError` and the existing per-lane `except GateError` SKIP handler reports the real cause, never a guess about assay's version. New regression test `test_bad_worktree_skip_names_the_real_problem_not_assay_version` asserts the SKIP line repeats check 3's own "not a directory" cause and never says "older than 3.2.0". `./run-gate.py selftest --allow-dirty` green: 395 passed, 2 skipped, diff-coverage 0/0 = 100.0% (pre-commit run), exit 0 |
 | RG-33 | `kind = "assay"` mutation lanes never receive `--resume` (or `--progress`), so a budget-capped retry re-tests every mutant from #1 — dstdns `sql-mutation`, three 120-minute retries spent on the first of four target files, `.assay/mutation-state/` never written | Major | FIXED 2026-09-02 (rev 33, SPEC `R-38`) — every assay-kind invocation now carries `--resume --progress .assay/progress-<assay_lane>.jsonl` unconditionally (no-ops without R2, per assay's own contract); a pin declaring a judge older than 2.4.1 refuses by name at argv construction; five new tests in `TestResumeAndProgressAlways` including the executed host-runner argv and the dry-run docker argv line; assay's own gate script mirrors it in the assay wave |
-| RG-35 | a lane's container outlives a dead run-gate client (`docker run -d` … `rm -f` in a `finally` the client never reaches), but nothing re-attaches: exit status, evidence and history are lost and the next invocation starts a DUPLICATE container for the same lane — the one-gate rule broken by the tool | Major | OPEN 2026-09-02 — `.run-gate/inflight/<lane>.json` on start, re-attach (`docker logs -f --since` + `wait`) or collect-and-finish on restart, `--fresh` to force; operator's "re-attachable runs" pattern |
+| RG-35 | a lane's container outlives a dead run-gate client (`docker run -d` … `rm -f` in a `finally` the client never reaches), but nothing re-attaches: exit status, evidence and history are lost and the next invocation starts a DUPLICATE container for the same lane — the one-gate rule broken by the tool | Major | FIXED 2026-09-02 (rev 34, SPEC `R-39`) — `.run-gate/inflight/<lane>.json`, automatic re-attach/collect/report-lost, `--fresh` escape, commit mismatch refused |
 | RG-36 | the only liveness bound for a long assay lane is a GUESSED total `budget` (advisory here, hard in assay); rev 33's progress file makes rate/ETA/stall observable but run-gate reads none of it | Major | OPEN 2026-09-02 — periodic `progress <lane>: i/N, rate, ETA` disclosure + optional `stall_timeout` (stop only when running AND silent for that long, never on total elapsed); exact timing needs assay B065 |
 | RG-37 | exec-mode container derivation (`run-gate.py` `resolve_container_name`, R-14a) reads `deploy.project_name` + `deploy.environment_tag` (fallback `deploy.network_name`) from the consumer's rendered `ciu.global.toml`; a CIU v8 checkout (SPEC-V8 draft.3, ciu CIU-92) renders `ciu.resolved.toml` instead, with identities as data under `[resolved.identities.<realization>.<service>] container_name`, and has no `deploy` table — every dstdns exec lane would fail container resolution the day dstdns moves to v8, while the operator decided (2026-09-02) that run-gate STAYS maintained in parallel with `ciu gate` and is "aligned with future changes in ciu v8" | Major | OPEN 2026-09-02 — filed from the v8 design review (ciu `docs/CIU-V8-ADVERSARIAL-REVIEW-2026-09-02.md` R-01, proposal §4.4 V8-19 / §4.11 N18): additive lookup order — when `ciu.resolved.toml` exists in the judged checkout, resolve `environments.<n>.container_name` (or a new `exec_in = "<realization>.<service>"` key) through `resolved.identities`, otherwise keep the v7 path; `kind = "sequence"` in-process conjunction lanes (N21) are the second alignment item |
 | RG-38 | resume state lives under the JUDGED project root, so a fresh worktree per run (cmru release transaction, Mode-B instances) loses it and a retry restarts from mutant #1 despite `--resume` | Medium | OPEN 2026-09-02 — bind-mount a per-repo durable `.run-gate/assay-state/<project>/` at the state path; needs assay B066 (`--state-dir`); copy-in/out fallback until then |
@@ -2188,13 +2188,51 @@ shares 8 cores with a production game server (load 85 that afternoon).
 
 ### Acceptance
 
-- [ ] kill -9 the client mid-lane (fake docker AND one live probe): the
-      container finishes; a second invocation prints the re-attach line,
-      yields the container's real exit code, records history once, and
-      starts NO second container;
-- [ ] an inflight record whose container is gone (host reboot) is reported
+- [x] kill -9 the client mid-lane (fake docker AND one live probe — the
+      live one is recorded in the wave REPORT): the container finishes; a
+      second invocation prints the re-attach line, yields the container's
+      real exit code, records history once, and starts NO second container;
+- [x] an inflight record whose container is gone (host reboot) is reported
       and cleared, never silently ignored;
-- [ ] `--dry-run` discloses an existing inflight record.
+- [x] `--dry-run` discloses an existing inflight record.
+
+### Status — FIXED 2026-09-02 (rev 34, SPEC `R-39`)
+
+Landed under the "resumable, observable gate" wave (RW-1..RW-3 of
+`nyxloom-trove/WAVE-PROMPT-2026-09-02-resumable-gate.md`; decision D4 of the
+post-v10 plan — automatic re-attach with `--fresh` as the escape, not an
+`--attach` flag).
+
+**Red proof (the controlled wrong implementation was the shipped rev 33).**
+`TestReattachAcrossADeadClient` drives a real client to its death against a
+STATEFUL fake docker (`fake_docker_stateful`: `run -d` creates a container,
+`inspect` answers from it or exits 1 like `No such object`, `wait` returns
+the recorded code, `rm -f` destroys it, a `.hang` marker makes `logs -f`
+block). Against rev 33 (measured on a detached worktree at `f6d3a858`):
+
+```
+AssertionError: a SECOND container was started for a lane that already had
+one running: [… '--name', 'run-gate-repo-suite-1779582-1788385365' …],
+             [… '--name', 'run-gate-repo-suite-1779695-1788385369' …]
+assert 2 == 1
+```
+
+Same test post-fix: one `docker run`, `run-gate: re-attached to
+run-gate-repo-suite-…`, exit 0, container removed, record cleared.
+
+**What landed.** `.run-gate/inflight/<lane>.json` written on a successful
+`docker run -d` (R-39a); `resolve_inflight()` taking the five-way decision
+before anything is built (R-39b: re-attach / collect / report-lost-and-run /
+refuse on a commit mismatch / `--fresh`); `await_container()` as the single
+finish shared by all three arrival paths (R-39c); `--fresh` refused by name
+on host lanes, exec lanes and every verb (R-39d). History records such a run
+once, with the duration from the container's own start (RW-3).
+
+**Live acceptance probe** (a fake-docker argv proves construction, not
+acceptance — AGENTS.md): one real `tester-unified:local` run, client killed
+mid-lane, second invocation re-attaches. Run under the host's
+one-container-at-a-time rule; transcript in
+`nyxloom-trove/reports/run-gate-WAVE-RESUMABLE-REPORT.md`.
 
 ## RG-36 — liveness judged from the progress file, not from a guessed wall budget: `stall_timeout` and ETA disclosure for assay lanes
 
