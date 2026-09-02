@@ -20,13 +20,21 @@ Three subcommands ship so far:
   P27 re-carve adds Go at R1 only, A-394):
   ``_built_in_registry`` is the CLI's own closed capability declaration
   (work item 2, widened by every rigor-wiring package since) — Python is
-  registered at R1, R2 and R3, SQL at R2 only, JavaScript at R1 only, Go at
-  R1 only (A-394, the P27 re-carve), and nothing else, so a lane declaring
+  registered at R1, R2 and R3, SQL at R2 only, JavaScript at R1 and R2
+  (B046, the INGESTED path only), Go at R1 only (A-394, the P27 re-carve),
+  and nothing else, so a lane declaring
   ``judge.language`` as anything but
   ``"python"``/``"sql"``/``"javascript"``/``"go"``, a SQL lane declaring R1
-  or R3, a JavaScript or Go lane declaring R2 or R3, or a rigor level for a
+  or R3, a JavaScript lane declaring R3, a Go lane declaring R2 or R3, or a
+  rigor level for a
   language this registry does not know at all, is refused
-  (``ERROR``/``BAD_LANE_CONFIG``) before the lane's command ever runs. A
+  (``ERROR``/``BAD_LANE_CONFIG``) before the lane's command ever runs.
+  (This sentence said "JavaScript at R1 only" and "a JavaScript or Go lane
+  declaring R2 or R3" until the round-1 fix round; B046 had admitted
+  ``javascript`` at R2 and this copy was not updated. Corrected here for the
+  same reason ``registry.py``'s two paragraphs were: the fact is
+  :func:`_built_in_registry`'s, and every restatement of it has now gone
+  stale at least once.) A
   declared R3 lane's own canary run happens in
   an independently-owned scratch copy of the consumer's repository
   (:func:`assay.canary.run_isolated_canary`, via
@@ -368,7 +376,21 @@ def _built_in_registry() -> registry.Registry:
     unconditionally ``"UNSUPPORTED"``, so an R2 entry would advertise a
     producer path that does not exist -- the failure this docstring's first
     paragraph is about. Both refusals are asserted as controls in
-    ``tests/test_cli_run.py``, alongside the R1 test that now inverts.
+    ``tests/test_cli_run.py``
+    (``test_run_refuses_go_at_r2_the_language_is_registered_r1_only`` and its
+    R3 sibling), alongside the R1 test that now inverts.
+
+    **What those two controls do NOT cover, corrected in the round-1 fix
+    round.** This paragraph used to continue that a rigor level "for a
+    language this registry does not know at all" was asserted as a control
+    there too. It was, by the same two Go tests -- until A-394 registered
+    ``go`` and they silently became registered-at-another-rigor tests, so no
+    CLI-level test exercised the unknown-language branch at all. The
+    adversarial round-1 review found it; one of the two is now
+    ``test_run_refuses_a_language_this_registry_does_not_know_at_all``, which
+    declares ``rust`` and asserts ``rust`` really is absent from the registry
+    so it cannot drift the same way. The unit-level control is
+    ``test_registry.py::test_an_unregistered_language_is_refused_not_defaulted``.
 
     **P34/W6: SQL is registered at R2 ONLY** (A-242's own sentence,
     ``SqlAdapter``'s own module docstring). That single fact is what makes

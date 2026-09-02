@@ -702,30 +702,39 @@ def test_run_injects_a_resolved_required_env_infrastructure_fact(
     assert document["outcome"] == "PASS"
 
 
-def test_run_refuses_an_r2_lane_for_an_unregistered_language(
+def test_run_refuses_go_at_r2_the_language_is_registered_r1_only(
     git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator
 ):
     """(P33 work item 5 / A-225) v5 gives Go and SQL an operator SPELLING; it
     gives neither a producer, and this test exists so a later package cannot
     quietly change that without saying so.
 
-    `cli._built_in_registry` registers Python only, and
-    `cli._resolve_declared_adapters` refuses any declared level above R0 for
-    an unregistered language with `ERROR`/`BAD_LANE_CONFIG` before anything
-    executes (A-139). That was true before v5 and is still true after it --
-    populating the vocabulary changed the artifact contract, not the
-    registry. The marker file is the proof that nothing ran.
+    `cli._resolve_declared_adapters` refuses a declared level above R0 that
+    the registry does not reach for that language, with
+    `ERROR`/`BAD_LANE_CONFIG` before anything executes (A-139). The marker
+    file is the proof that nothing ran.
 
     **P34/W6 says so explicitly, as this test's own docstring promised it
     would:** SQL is no longer unregistered -- `_built_in_registry` now names
     it at R2 (`test_run_evaluates_a_real_r2_pass_end_to_end_for_sql` below
     is the positive proof), so it is dropped from this parametrization.
-    SQL's own R1/R3 refusal (still `BAD_LANE_CONFIG`, for the DIFFERENT
-    reason that its one registry entry is R2-only) is
+    SQL's own R1/R3 refusal is
     `test_run_refuses_sql_at_r1_the_language_is_registered_r2_only` and
     `test_run_refuses_sql_at_r3_the_language_is_registered_r2_only` below.
-    Go remains here: it still has no producer path wired to any rigor level
-    (P22).
+
+    **RENAMED in the round-1 fix round, and the old name was the defect.**
+    It was `test_run_refuses_an_r2_lane_for_an_unregistered_language`, and
+    its docstring ended "Go remains here: it still has no producer path wired
+    to any rigor level (P22)". A-394 registered `go` at R1, so that sentence
+    became false and this lane stopped exercising the unknown-language
+    branch: it takes the *registered-at-a-different-rigor* branch now, which
+    is a real and worth-testing property but not the one the name claimed
+    (A-399's own decoy shape, found by adversarial review round 1). This test
+    KEEPS `go` on purpose -- R2 must stay refused while
+    `generate_mutation_sites` is unconditionally `UNSUPPORTED` -- and says so
+    in its name. The unknown-language branch is
+    `test_run_refuses_a_language_this_registry_does_not_know_at_all`, which
+    declares `rust`.
     """
     marker = tmp_path / "the-command-ran"
     lane = f"""\
@@ -866,10 +875,18 @@ def test_run_refuses_sql_at_r1_the_language_is_registered_r2_only(
 ):
     """(P34/W6) The registry gate that refuses an entirely unknown language
     ALSO refuses a KNOWN one at a level this build never wired it to
-    (A-139): SQL is registered R2 only, so R1 is `BAD_LANE_CONFIG` exactly
-    like Go's own total non-registration one test up -- proving W6's
-    `rigor=frozenset({{"R2"}})` is what makes this refusal fire, not merely
-    an unregistered-language special case."""
+    (A-139): SQL is registered R2 only, so R1 is `BAD_LANE_CONFIG` -- proving
+    W6's `rigor=frozenset({{"R2"}})` is what makes this refusal fire, not
+    merely an unregistered-language special case.
+
+    **The comparison this docstring used to draw is gone**: it said "exactly
+    like Go's own total non-registration one test up", which was true when
+    written and false from A-394 onward -- `go` IS registered, at R1. The
+    genuinely-unknown-language control is
+    `test_run_refuses_a_language_this_registry_does_not_know_at_all`
+    (`rust`); the neighbour one test up is now Go's own
+    registered-at-another-rigor case, which is the same shape as this one
+    rather than its opposite."""
     marker = tmp_path / "the-command-ran"
     lane = set_key(_r1_lane_writing_a_marker(marker), "language", '"sql"')
     path = _write_and_commit_lane(git_repo, lane)
@@ -926,9 +943,22 @@ def test_a_go_r1_lane_now_resolves_and_is_refused_for_the_TOOLCHAIN_not_the_regi
 
     R2 and R3 stay unregistered for Go and stay refused
     ``BAD_LANE_CONFIG`` -- the sibling tests in this module are the controls
-    proving this inversion is scoped to R1 and did not quietly widen."""
+    proving this inversion is scoped to R1 and did not quietly widen.
+
+    **The lane declares ``go-cover`` since A-406, and it must.** It used to
+    inherit ``R1_LANE``'s ``coverage-py-json``, which is now refused at CONFIG
+    LOAD for a ``go`` lane (DA-R1: a language judged from block extents may
+    only declare a format that carries them). Leaving the old format here
+    would still have produced a refusal and a green test -- with exit 2 for
+    the wrong reason, one layer earlier, never reaching the preflight this
+    test exists to exercise. That is exactly the decoy shape A-399 named, so
+    the fixture moves and the subject stays."""
     marker = tmp_path / "the-command-ran"
     lane = set_key(_r1_lane_writing_a_marker(marker), "language", '"go"')
+    lane = lane.replace(
+        'coverage = { format = "coverage-py-json", artifact = "cov.json" }',
+        'coverage = { format = "go-cover", artifact = "cov.out" }',
+    )
     path = _write_and_commit_lane(git_repo, lane)
     for name in ("src", "scripts"):
         (git_repo.path / name).mkdir(exist_ok=True)
@@ -1093,26 +1123,42 @@ target = "pkg/mod.py"
     assert git_repo.git("status", "--porcelain") == ""
 
 
-def test_run_refuses_an_unregistered_language_at_r3_with_a_real_artifact(
+def test_run_refuses_a_language_this_registry_does_not_know_at_all(
     git_repo: GitRepo, tmp_path: Path, validator: Draft202012Validator
 ):
-    """The R3-level mirror of ``test_run_refuses_an_unregistered_language_
-    at_r1_with_a_real_artifact``: Go has no producer path wired to ANY
-    rigor level yet (P22), R3 included, so this is refused before the
-    lane's command ever runs -- proving the registry gate still guards R3
-    even though this build's OWN Python adapter now reaches it."""
+    """**The unknown-language branch, at CLI level -- re-pointed at ``rust``
+    in the round-1 fix round, and the re-pointing is the point.**
+
+    This was ``test_run_refuses_an_unregistered_language_at_r3_with_a_real_
+    artifact`` and it declared ``language = "go"``. When A-394 registered
+    ``go``, the lane stopped exercising the branch its name claimed: it still
+    refused, still ``BAD_LANE_CONFIG``, still before the command -- but
+    through the *registered-at-a-different-rigor* path, not the *unknown
+    language* one. A green test that no longer executes the call site it was
+    written for is A-399's own "quietly become a decoy" shape, one step
+    subtler than usual because no assertion had to be weakened for it to
+    happen. A-399's sweep caught the R1 sibling and missed this one and its
+    R2 cousin; the round-1 reviewer found both, and the consequence was that
+    NO CLI-level test exercised an entirely-unknown language any more.
+
+    ``rust`` is chosen because assay ships no Rust adapter at all -- not a
+    stub, not an unregistered one -- so the day someone adds one this test
+    breaks loudly instead of drifting into a decoy again. The R2 sibling
+    (``test_run_refuses_go_at_r2_the_language_is_registered_r1_only``) keeps
+    ``go`` deliberately and says so in its own name: the two now cover
+    different branches instead of the same one twice."""
     marker = tmp_path / "the-command-ran"
     (git_repo.path / "src").mkdir(exist_ok=True)
-    (git_repo.path / "src" / "mod.go").write_text("package src\n", encoding="utf-8")
+    (git_repo.path / "src" / "mod.rs").write_text("pub fn f() {}\n", encoding="utf-8")
     lane = set_key(R0_LANE, "argv", f'["/bin/sh", "-c", "touch {marker}"]')
     lane = set_key(lane, "rigor", '["R0", "R3"]')
     lane += (
         "\n[lanes.package.isolation]\n"
         'snapshot_selection = "repository"\n'
         "\n[lanes.package.judge]\n"
-        'language = "go"\nsource_roots = ["src"]\n'
+        'language = "rust"\nsource_roots = ["src"]\n'
         '\n[lanes.package.judge.canary]\n'
-        'mechanism = "import-break"\ntarget = "src/mod.go"\n'
+        'mechanism = "import-break"\ntarget = "src/mod.rs"\n'
     )
     path = _write_and_commit_lane(git_repo, lane)
 
@@ -1129,7 +1175,10 @@ def test_run_refuses_an_unregistered_language_at_r3_with_a_real_artifact(
         ("R3", "ERROR"),
     ]
     assert document.get("judgment") is None
-    assert "go" in err
+    assert "rust" in err
+    # The anti-vacuity half: `rust` really is absent from the registry, so
+    # this test cannot be passing for the sibling's reason.
+    assert "rust" not in _built_in_registry().entries
 
 
 def test_run_refuses_sql_at_r3_the_language_is_registered_r2_only(
@@ -1138,9 +1187,14 @@ def test_run_refuses_sql_at_r3_the_language_is_registered_r2_only(
     """(P34/W6) The R3-level mirror of
     ``test_run_refuses_sql_at_r1_the_language_is_registered_r2_only``: SQL
     is registered R2 only, so R3 is refused too, the same
-    ``BAD_LANE_CONFIG`` shape Go's own total non-registration gets two
+    ``BAD_LANE_CONFIG`` shape ``rust``'s genuinely-unknown language gets two
     tests up -- proving the registry gate still guards R3 even though this
-    build's OWN `SqlAdapter` now reaches R2."""
+    build's OWN `SqlAdapter` now reaches R2.
+
+    (That neighbour used to be a ``go`` lane described as "Go's own total
+    non-registration". A-394 registered ``go``, so both halves of that
+    sentence went false; it was re-pointed at ``rust`` in the round-1 fix
+    round.)"""
     marker = tmp_path / "the-command-ran"
     (git_repo.path / "src").mkdir(exist_ok=True)
     (git_repo.path / "src" / "schema.sql").write_text(
