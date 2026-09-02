@@ -135,11 +135,11 @@ def _write_facts(root, **facts):
     """CIU-75: instance identity lives in the checkout's generated overlay
     table, so a fixture that wants a checkout to look provisioned writes THAT,
     not the legacy `ciu.env` export."""
-    from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
 
     payload = {key: "" for key in GENERATED_FACTS_KEYS}
     payload.update(facts)
-    upsert_generated_facts(root, payload)
+    write_generated_facts(root, payload)
 
 
 def _instance_repo(tmp_path: Path) -> Path:
@@ -540,7 +540,7 @@ def test_identity_env_parse_failure_is_indeterminate_not_no_network(
     same treatment its sibling volume/network/container enumerations already
     give indeterminacy.
     """
-    (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+    (tmp_path / "ciu.instance.generated.toml").write_text(
         "[ciu.instance.generated]\nnetwork = not-a-toml-value\n", encoding="utf-8"
     )
 
@@ -549,7 +549,7 @@ def test_identity_env_parse_failure_is_indeterminate_not_no_network(
     assert rc == 1
     out = capsys.readouterr().out
     assert "workspace identity network unresolvable (S6.4a)" in out
-    assert "ciu.global.worktree.toml.j2" in out
+    assert "ciu.instance.generated.toml" in out
 
 
 def test_identity_env_non_utf8_is_indeterminate_too(monkeypatch, tmp_path, capsys):
@@ -558,8 +558,8 @@ def test_identity_env_non_utf8_is_indeterminate_too(monkeypatch, tmp_path, capsy
     `except WorkspaceEnvError` caught neither it nor `OSError`, so a
     non-UTF-8 record escaped `action_clean` as a raw traceback rather than
     either of its two defined outcomes. CIU-75 moved the source to the
-    overlay and normalized all three types at the reader."""
-    (tmp_path / "ciu.global.worktree.toml.j2").write_bytes(
+    generated facts file and normalized all three types at the reader."""
+    (tmp_path / "ciu.instance.generated.toml").write_bytes(
         b'[ciu.instance.generated]\nnetwork = "\xff\xfe"\n'
     )
 
@@ -574,7 +574,7 @@ def test_identity_env_absent_still_reads_as_no_network(monkeypatch, tmp_path, ca
     generate` was never run genuinely HAS no identity network. That arc must
     stay green — a refusal whose condition also matches an ordinary state is
     a superset refusal, and gets switched off."""
-    assert not (tmp_path / "ciu.global.worktree.toml.j2").exists()
+    assert not (tmp_path / "ciu.instance.generated.toml").exists()
 
     rc = _clean_with_identity_env(monkeypatch, tmp_path)
 

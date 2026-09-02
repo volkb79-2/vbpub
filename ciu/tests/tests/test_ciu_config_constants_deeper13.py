@@ -11,9 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ciu.config_constants import (  # noqa: E402
     GLOBAL_CONFIG_DEFAULTS,
+    GLOBAL_CONFIG_INSTANCE_OVERRIDES,
     GLOBAL_CONFIG_OVERRIDES,
-    GLOBAL_CONFIG_WORKTREE_OVERRIDES,
     GLOBAL_CONFIG_RENDERED,
+    INSTANCE_GENERATED_FACTS,
     STACK_CONFIG_DEFAULTS,
     STACK_CONFIG_OVERRIDES,
     STACK_CONFIG_RENDERED,
@@ -72,8 +73,9 @@ def test_non_rendered_names_are_not_partially_converted(filename):
     [
         GLOBAL_CONFIG_DEFAULTS,
         GLOBAL_CONFIG_OVERRIDES,
-        GLOBAL_CONFIG_WORKTREE_OVERRIDES,
+        GLOBAL_CONFIG_INSTANCE_OVERRIDES,
         GLOBAL_CONFIG_RENDERED,
+        INSTANCE_GENERATED_FACTS,
         STACK_CONFIG_DEFAULTS,
         STACK_CONFIG_OVERRIDES,
         STACK_CONFIG_RENDERED,
@@ -85,7 +87,17 @@ def test_exact_known_config_filenames_are_recognized(filename):
 
 @pytest.mark.parametrize(
     "filename",
-    ["ciu.compose.yml", "docker-compose.yml", "ciu.env", "ciu.toml.backup", "subdir/ciu.toml"],
+    [
+        "ciu.compose.yml",
+        "docker-compose.yml",
+        "ciu.env",
+        "ciu.toml.backup",
+        "subdir/ciu.toml",
+        # ciu-P47 retired this spelling; it must NOT be recognized as a live
+        # CIU config filename any more, which is the hard-cutover half of the
+        # rename stated as a test rather than left to a reader's trust.
+        "ciu.global.worktree.toml.j2",
+    ],
 )
 def test_non_config_or_path_like_names_are_not_recognized(filename):
     assert is_config_file(filename) is False

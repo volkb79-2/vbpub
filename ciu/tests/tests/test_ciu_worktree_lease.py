@@ -54,7 +54,8 @@ def tmp_repo(tmp_path: Path) -> Path:
     assert _git(["config", "user.name", "Test"], repo).returncode == 0
     (repo / "README.md").write_text("hello\n", encoding="utf-8")
     (repo / ".gitignore").write_text(
-        "ciu.env\nciu.global.worktree.toml.j2\n", encoding="utf-8"
+        "ciu.env\nciu.global.instance.toml.j2\nciu.instance.generated.toml\n",
+        encoding="utf-8",
     )
     assert _git(["add", "README.md", ".gitignore"], repo).returncode == 0
     assert _git(["commit", "-m", "init"], repo).returncode == 0

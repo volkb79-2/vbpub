@@ -15,6 +15,10 @@ Naming convention (greenfield standard):
 - ``docker-compose.yml`` = OPTIONAL hand-written compose a maintainer MAY ship;
                            CIU never writes it. The ``--shipped`` path runs it.
 - ``ciu.env``            = gitignored workspace machine-identity env
+- ``ciu.instance.generated.toml``
+                         = gitignored, CIU-OWNED plain TOML (no ``.j2``): the
+                           ``[ciu.instance.generated]`` identity facts, rewritten
+                           wholesale by every ``ciu env generate`` (S3.1b).
 - ``.ciu/``              = machine-owned artifact dir (overlay, secrets, rendered,
                            lock); humans MUST NOT edit its contents (S1.6).
 
@@ -38,8 +42,17 @@ Why constants here, and not in ``ciu.global.toml``?
 # Global configuration (repository root)
 GLOBAL_CONFIG_DEFAULTS = 'ciu.global.defaults.toml.j2'
 GLOBAL_CONFIG_OVERRIDES = 'ciu.global.toml.j2'
-GLOBAL_CONFIG_WORKTREE_OVERRIDES = 'ciu.global.worktree.toml.j2'
+GLOBAL_CONFIG_INSTANCE_OVERRIDES = 'ciu.global.instance.toml.j2'
 GLOBAL_CONFIG_RENDERED = 'ciu.global.toml'
+
+# S3.1b — the CIU-OWNED `[ciu.instance.generated]` identity facts. A dedicated
+# file, and deliberately NOT a `.j2` template: nothing renders it, so a reader
+# needs no render context, and because CIU is its only writer `ciu env generate`
+# rewrites it WHOLESALE (there is no hand-authored content in it to preserve).
+# Split out of the hand-editable overlay above by ciu-P47; before that it was a
+# table embedded in that shared file, maintained by a text-level surgical block
+# replace that existed solely to protect an operator's own bytes.
+INSTANCE_GENERATED_FACTS = 'ciu.instance.generated.toml'
 
 # Stack configuration (per stack directory: applications/*, infra/*, tools/*)
 STACK_CONFIG_DEFAULTS = 'ciu.defaults.toml.j2'
@@ -115,8 +128,9 @@ def is_config_file(filename: str) -> bool:
     config_files = {
         GLOBAL_CONFIG_DEFAULTS,
         GLOBAL_CONFIG_OVERRIDES,
-        GLOBAL_CONFIG_WORKTREE_OVERRIDES,
+        GLOBAL_CONFIG_INSTANCE_OVERRIDES,
         GLOBAL_CONFIG_RENDERED,
+        INSTANCE_GENERATED_FACTS,
         STACK_CONFIG_DEFAULTS,
         STACK_CONFIG_OVERRIDES,
         STACK_CONFIG_RENDERED,

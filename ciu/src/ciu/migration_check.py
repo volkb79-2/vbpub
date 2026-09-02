@@ -61,7 +61,8 @@ from pathlib import Path
 from typing import Callable
 
 from ciu.config_constants import (
-    GLOBAL_CONFIG_WORKTREE_OVERRIDES,
+    GLOBAL_CONFIG_INSTANCE_OVERRIDES,
+    INSTANCE_GENERATED_FACTS,
     WORKSPACE_ENV,
 )
 
@@ -78,14 +79,19 @@ SEVERITIES: tuple[str, ...] = ("WARN", "ERROR")
 #: Overlay filenames CIU has USED and later retired, oldest first.
 #:
 #: Deliberately a literal history list, NOT derived from
-#: :data:`GLOBAL_CONFIG_WORKTREE_OVERRIDES` — the point of a history is that it
+#: :data:`GLOBAL_CONFIG_INSTANCE_OVERRIDES` — the point of a history is that it
 #: keeps naming a file the current code no longer knows about. Equally
 #: deliberately, :func:`detect_retired_overlay` filters this list against the
-#: CURRENT constant, so while a name is still the live one it produces no
-#: finding at all: as of ciu-P46 the rename has not happened, the live overlay
-#: is exactly this name, and this rule is correctly silent on every checkout.
-#: ciu-P47, which performs the rename, only has to change the constant — this
-#: rule goes live on its own, with no edit here and none to the registry.
+#: CURRENT constant, so a name that is still the live one produces no finding
+#: at all.
+#:
+#: **This rule is LIVE as of ciu-P47.** P46 shipped it dormant, because at that
+#: point ``ciu.global.worktree.toml.j2`` was still the live overlay and the
+#: filter suppressed it on every checkout. P47 renamed the overlay to
+#: ``ciu.global.instance.toml.j2``; the old name is now genuinely retired, no
+#: longer read by any code path, and this rule fires a WARN on any checkout
+#: that still carries it. No edit to the detector or the registry was needed —
+#: only the constant it filters against moved, exactly as P46 designed.
 RETIRED_OVERLAY_NAMES: tuple[str, ...] = ("ciu.global.worktree.toml.j2",)
 
 
@@ -138,14 +144,22 @@ def detect_retired_overlay(repo_root: Path) -> list[Finding]:
     """A previously-used, now-retired global overlay filename still on disk.
 
     WARN, never ERROR: the file's mere existence does not prove any real
-    content was lost — a leftover may be empty, or carry only the CIU-owned
-    generated table that has already been rewritten elsewhere. Hard-blocking
+    content was lost — a leftover may be empty, or (the ordinary ciu-P47 case)
+    carry only the CIU-owned ``[ciu.instance.generated]`` table, which
+    ``ciu env generate`` has already rewritten into its own file. Hard-blocking
     ``ciu up`` over a possibly-empty leftover would be a refusal the operator
     cannot act on without first reading the file anyway.
+
+    Independent of gitignore hygiene, deliberately: ciu-P47 dropped the retired
+    name from :data:`scaffold._GITIGNORE_ENTRIES` (it is no longer a
+    CIU-generated artifact worth telling every scaffolded consumer to ignore),
+    and this detector is unaffected because it asks the FILESYSTEM whether the
+    file is there, never the ``.gitignore``. Deriving detection from the ignore
+    list would have made one hygiene edit silently blind the other rule.
     """
     findings: list[Finding] = []
     for name in RETIRED_OVERLAY_NAMES:
-        if name == GLOBAL_CONFIG_WORKTREE_OVERRIDES:
+        if name == GLOBAL_CONFIG_INSTANCE_OVERRIDES:
             # Still the live overlay in this CIU — nothing retired about it.
             continue
         if not (Path(repo_root) / name).exists():
@@ -161,9 +175,11 @@ def detect_retired_overlay(repo_root: Path) -> list[Finding]:
                 ),
                 remediation=(
                     f"move any hand-authored overrides from '{name}' into "
-                    f"'{GLOBAL_CONFIG_WORKTREE_OVERRIDES}' by hand, then "
-                    f"delete '{name}'. CIU-owned generated facts need no "
-                    "hand-copying: re-run `ciu env generate`."
+                    f"'{GLOBAL_CONFIG_INSTANCE_OVERRIDES}' by hand, then "
+                    f"delete '{name}'. Its CIU-owned "
+                    f"[ciu.instance.generated] table needs no hand-copying — "
+                    f"`ciu env generate` rewrites those facts into "
+                    f"'{INSTANCE_GENERATED_FACTS}'; copy nothing from it."
                 ),
             )
         )
@@ -177,12 +193,13 @@ def detect_retired_overlay(repo_root: Path) -> list[Finding]:
 def detect_stale_identity_facts(repo_root: Path) -> list[Finding]:
     """A checkout still relying on ``ciu.env`` alone for instance identity.
 
-    Since CIU-60/CIU-75 (S3.1b/S3.1c) the ``[ciu.instance.generated]`` table in
-    the global overlay is the SOLE identity source CIU itself reads; ``ciu.env``
-    is a write-only legacy export. A checkout carrying ``ciu.env`` but no (or
-    an incomplete) generated table was last written by a pre-CIU-75 CIU, and
-    every identity read there now degrades to "unmanaged" — quietly, because an
-    absent record is a legitimate state.
+    Since CIU-60/CIU-75 (S3.1b/S3.1c) the ``[ciu.instance.generated]`` table is
+    the SOLE identity source CIU itself reads; ``ciu.env`` is a write-only
+    legacy export. A checkout carrying ``ciu.env`` but no (or an incomplete)
+    generated table was last written by a pre-CIU-75 CIU — or, since ciu-P47,
+    by a pre-P47 one that wrote the table into the OLD overlay filename, which
+    nothing reads any more — and every identity read there now degrades to
+    "unmanaged" — quietly, because an absent record is a legitimate state.
 
     Gated on ``ciu.env`` existing on purpose: a checkout with NEITHER artifact
     has simply never run ``ciu env generate``, which is a first-run state, not
@@ -228,7 +245,7 @@ def detect_stale_identity_facts(repo_root: Path) -> list[Finding]:
             message=(
                 f"'{WORKSPACE_ENV}' is present but "
                 f"[{workspace_env.GENERATED_FACTS_TABLE}] in "
-                f"'{GLOBAL_CONFIG_WORKTREE_OVERRIDES}' is incomplete "
+                f"'{INSTANCE_GENERATED_FACTS}' is incomplete "
                 f"({where}); this checkout carries pre-CIU-75 identity state "
                 "and CIU now reads identity ONLY from that table (S3.1c)"
             ),
@@ -253,7 +270,7 @@ def _gitignore_key(pattern: str) -> str:
     canonical entry as MISSING even when the checkout already carried the
     broader, equivalent spelling — a pure false positive, and one CIU's own
     repository triggered (its `.gitignore` uses ``**/ciu.env`` and
-    ``**/ciu.global.worktree.toml.j2``).
+    ``**/ciu.global.instance.toml.j2``).
     """
     return pattern[3:] if pattern.startswith("**/") else pattern
 

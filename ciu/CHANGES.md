@@ -21,6 +21,125 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.10.0] - 2026-09-02
+<!-- cmru: generated -->
+<!-- cmru: source-end=42c018ea4301b0871fad955ee3912a8e81c18cce -->
+
+### Added
+- feat(ciu)!: split [ciu.instance.generated] into its own file + rename the overlay (ciu-P47 C1-C3) (82d2154b)
+
+### Fixed
+- fix(ciu): ciu-P47 review fix pass -- B1-B5 + N1-N3 (80ef0a18)
+
+### Changed
+- merge(ciu): ciu-P47 -- ciu.instance.generated.toml split, overlay rename to ciu.global.instance.toml.j2 (42c018ea)
+
+### Documentation
+- docs(ciu): ciu-P47 -- adversarial review verdict (efdff1ce)
+- docs(ciu): ciu-P47 -- LOG/REPORT addendum for the review fix pass (2785d890)
+- docs(ciu): ciu-P48 -- carve handoff, CIU-87 devcontainer network leak (4cd45631)
+- docs(ciu): ciu-P47 -- LOG/REPORT for the identity-file split + overlay rename (8f174836)
+- docs(ciu): ciu-P47 -- exhaustive docs/consumer sweep for the file split + rename (d9e2d26a)
+- docs(ciu): ciu-P47 -- carve handoff, overlay file split + rename (945c7a16)
+
+## [7.10.0] - UNRELEASED
+
+> **This release is BREAKING, and ships as a MINOR on purpose** — the same
+> deliberate override 7.7.0 (CIU-75/CIU-79), 7.8.0 (CIU-54) and 7.9.0
+> (ciu-P46) already established. The estate's normal convention is that a
+> breaking change waits for the next major; this cutover is a filename split
+> and rename with a one-command migration, it depends on no v8 schema work,
+> and holding it for a major would only leave the fragile text-surgery writer
+> it deletes in place for longer — writing into a file operators are
+> explicitly invited to hand-edit.
+
+ciu-P47 — the CIU-owned identity facts get their own file, and the
+per-checkout overlay is renamed. This is the second half of the
+identity-file backport begun by CIU-60/CIU-75, and the v7 backport of
+`docs/CIU-V8-TESTING-GATE-PROPOSAL.md` V8-2 / `SPEC-V8.md` S4.1/S14.2.
+
+### The change
+
+One gitignored per-checkout file became two, with a hard ownership line
+between them:
+
+| before (≤ 7.9.0) | after | who owns it |
+|---|---|---|
+| `ciu.global.worktree.toml.j2` — the operator's sparse overrides AND CIU's `[ciu.instance.generated]` table | `ciu.global.instance.toml.j2` | the operator. **CIU never writes it** |
+| (the same file) | `ciu.instance.generated.toml` | CIU. Plain TOML — never a `.j2` — rewritten in full by every `ciu env generate` |
+
+- **`ciu.instance.generated.toml` (new, S3.1b).** Same six facts
+  (`repo_name`, `instance_id`, `network`, `physical_repo_root`, `repo_root`,
+  `public_fqdn`), same semantics, same position in the S3.3 merge chain
+  (merged last). Because CIU is its only writer, `ciu env generate` rewrites
+  it WHOLESALE — and the text-level surgical block replace that previously
+  maintained the table inside the shared file (find the header, find the next
+  table, walk back over the trailing comment run) is **deleted**, along with
+  its documented, accepted failure mode. Idempotence is now true by
+  construction rather than by careful implementation.
+- **`ciu.global.worktree.toml.j2` → `ciu.global.instance.toml.j2` (rename).**
+  A hard cutover: no fallback read anywhere. "Instance", not "worktree",
+  because every checkout is one — not only linked git worktrees. The file's
+  role is otherwise unchanged (sparse, non-secret, gitignored, hand-editable,
+  merged at the same point in the chain), but it now carries nothing CIU
+  owns, so nothing in it can be clobbered.
+- **`ciu migration-check`'s `retired-overlay-file` rule is now LIVE.** ciu-P46
+  shipped it dormant by construction — it filters a filename history against
+  the live-name constant, and at that point the "retired" name was still
+  current. This release moved that constant and nothing else; the rule fires a
+  WARN, with a remediation, on any checkout still carrying the old file.
+- **`ciu clean --vanilla` now removes four files, not three** — the new
+  generated file joins `ciu.global.toml`, `ciu.env` and the renamed overlay.
+  Both new files are artifacts of one `ciu env generate`, so removing one and
+  keeping the other would leave the workspace in neither state `--vanilla`
+  promises. Plain `ciu clean` still preserves all four. `--vanilla`'s help
+  text is now enumerated from the constant instead of restating a count.
+- **`ciu init`'s `.gitignore` set** (and the published `.gitignored.ciu`
+  sample) lists both new names and drops the retired one.
+
+**Templates are unaffected.** `{{ ciu.instance.generated.* }}` resolves
+exactly as before, from the same point in the chain. Adopting v8's richer
+`instance.*` binding shape now was weighed and declined on purpose, to keep
+this release's consumer-visible blast radius to the file rename alone. No
+stack template anywhere needs a character changed.
+
+**One deliberate asymmetry, worth stating because it looks like an
+oversight.** `render_global_chain` reads the new file through
+`workspace_env.generated_facts_document` (a plain TOML parse), NOT through
+`read_generated_facts` (which additionally refuses a non-string fact). The
+merge layer must stay exactly as tolerant as the overlay layer it was carved
+out of: enforcing the identity reader's strictness inside the render would
+turn CIU-80's `identity_unreadable` degradation at STEP 12 into a traceback
+out of the render, which is the opposite of what that flag exists for.
+
+### Adoption / Migration Notes
+
+1. **Act if your checkout has a `ciu.global.worktree.toml.j2`** — which is
+   every checkout that has ever run `ciu env generate` on 7.5.0 or later. Run
+   `ciu migration-check` (or just `ciu up`/`ciu check`, whose `migration`
+   stage runs the same rule); it names the file and the fix. Copy your OWN
+   content — `service_profiles`, a `[ciu.instance.shared_infra]` join,
+   `[topology.services.*]` aliases, ordinary sparse overrides — into
+   `ciu.global.instance.toml.j2`, delete the old file, and run
+   `ciu env generate`. **Do not copy the `[ciu.instance.generated]` table**:
+   it is CIU's, and the generate rewrites it into its own file.
+   A checkout with nothing hand-authored in the old file (the common case)
+   needs only the delete and the generate.
+2. **Safe to ignore if you only consume CIU through templates and verbs.** The
+   binding name did not change, `ciu.env`'s key set did not change, and
+   `ciu env print` is unaffected.
+3. **Act if you parse the identity facts yourself.** The helper in
+   `docs/CONSUMERS.md` §11b is simpler now: the facts file is plain TOML with
+   nothing else in it, so a whole-file `tomllib.load` is correct. The
+   block-slicing an older helper had to do — because the surrounding overlay
+   was a Jinja template — is no longer needed, and pointed at a filename that
+   no longer exists. `docs/CONSUMERS.md` §21 is the full migration note.
+4. **Add both new names to your `.gitignore`.** `ciu.global.instance.toml.j2`
+   and `ciu.instance.generated.toml`; `ciu migration-check`'s `gitignore-gaps`
+   rule reports either one missing. Dropping the retired pattern is optional
+   hygiene — the retired-overlay rule asks the filesystem, not your
+   `.gitignore`, so the two concerns stay independent.
+
 ## [7.9.0] - 2026-09-02
 <!-- cmru: generated -->
 <!-- cmru: source-end=83bcfa4e2e5d7c9b9e300cf618bcecf0e1314f01 -->

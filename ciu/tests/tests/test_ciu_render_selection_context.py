@@ -491,7 +491,7 @@ def test_engine_identity_read_survives_an_unparseable_identity_record(
     # instance_id=None cannot distinguish "unmanaged" from "corrupt, swallowed".
     out = capsys.readouterr().out
     assert "[WARN] [S3.12] could not read workspace identity" in out
-    assert "ciu.global.worktree.toml.j2" in out
+    assert "ciu.instance.generated.toml" in out
     assert payload in out, "the warning must name the underlying cause"
     assert "ciu env generate" in out, "the warning must name the repair"
 
@@ -524,7 +524,7 @@ def test_identity_unreadable_agrees_between_check_preflight_and_real_run(
     stack = _identity_probe_stack(repo_root, marker)
 
     monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **_kw: None)
-    (repo_root / "ciu.global.worktree.toml.j2").write_text(
+    (repo_root / "ciu.instance.generated.toml").write_text(
         "[ciu.instance.generated]\ninstance_id = 7\n", encoding="utf-8"
     )
 

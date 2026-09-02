@@ -279,10 +279,10 @@ def write_env(ciu_root: Path, instance_id: str) -> None:
     """CIU-75: a checkout looks like a live CIU instance because it carries the
     generated `[ciu.instance.generated]` overlay table — that is what
     `_runtime_identity` and `_reap_uses_clean` read now, not `ciu.env`."""
-    from ciu.workspace_env import upsert_generated_facts
+    from ciu.workspace_env import write_generated_facts
 
     ciu_root.mkdir(parents=True, exist_ok=True)
-    upsert_generated_facts(
+    write_generated_facts(
         ciu_root,
         {
             "repo_name": REPO_NAME,
@@ -1436,7 +1436,7 @@ class TestTransactionalIsolation:
             schema=2, lease=held(hours_from_now=-1), env=False,
         )
         write_env(root, "f00008")
-        (root / "ciu.global.worktree.toml.j2").unlink()
+        (root / "ciu.instance.generated.toml").unlink()
         docker.network(network_of("f00008"))
 
         out = worktree.reap_groups(repo, yes=True, dry_run=True, now=NOW)

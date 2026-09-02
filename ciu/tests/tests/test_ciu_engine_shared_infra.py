@@ -131,15 +131,15 @@ def _write_ciu_env(tmp_path: Path) -> None:
         )
     ) + "\n"
     (tmp_path / "ciu.env").write_text(body)
-    # CIU-75: the identity CIU actually reads back is the overlay's generated
-    # table; `ciu.env` stays as the legacy export the same generate writes.
-    _upsert_identity_facts(tmp_path)
+    # CIU-75: the identity CIU actually reads back is the generated facts
+    # file; `ciu.env` stays as the legacy export the same generate writes.
+    _write_identity_facts(tmp_path)
 
 
-def _upsert_identity_facts(tmp_path: Path) -> None:
-    from ciu.workspace_env import upsert_generated_facts
+def _write_identity_facts(tmp_path: Path) -> None:
+    from ciu.workspace_env import write_generated_facts
 
-    upsert_generated_facts(
+    write_generated_facts(
         tmp_path,
         {
             "repo_name": os.environ["REPO_NAME"],
@@ -161,11 +161,12 @@ def _write_worktree_overlay(
         body = INTENT_OVERLAY
     else:
         return
-    (tmp_path / "ciu.global.worktree.toml.j2").write_text(body)
-    # This helper writes the overlay WHOLESALE, so re-upsert the CIU-owned
-    # identity table `_write_ciu_env` put there (CIU-75) — a real checkout
-    # carries both, in exactly this order.
-    _upsert_identity_facts(tmp_path)
+    (tmp_path / "ciu.global.instance.toml.j2").write_text(body)
+    # ciu-P47: the CIU-owned identity table lives in its own file now, so
+    # writing the operator's overlay can no longer disturb it. The rewrite is
+    # kept anyway — a real checkout carries both files — but it is now
+    # order-independent rather than a repair.
+    _write_identity_facts(tmp_path)
 
 
 def _write_native_repo(

@@ -115,7 +115,9 @@ my-stack/
 
 At the repo root: `ciu.global.defaults.toml.j2` (committed, the root marker),
 `ciu.global.toml.j2` (committed, OPTIONAL sparse override — not auto-created),
-`ciu.global.worktree.toml.j2` (gitignored sparse per-worktree override), the
+`ciu.global.instance.toml.j2` (gitignored sparse per-checkout override, yours
+to edit — CIU never writes it), `ciu.instance.generated.toml` (gitignored,
+CIU-owned identity facts, rewritten in full by every `ciu env generate`), the
 rendered `ciu.global.toml` (gitignored), `ciu.env` (gitignored **legacy
 write-only** machine-identity export — see below), and, for managed linked
 checkouts, `ciu.worktree-instance.json` (gitignored durable
@@ -124,7 +126,7 @@ identity/lifecycle state).
 **Where instance identity lives (7.7.0, BREAKING).** `ciu env generate` writes
 its six identity facts — `repo_name`, `instance_id`, `network`,
 `physical_repo_root`, `repo_root`, `public_fqdn` — into
-`ciu.global.worktree.toml.j2`'s `[ciu.instance.generated]` table, and that
+`ciu.instance.generated.toml`'s `[ciu.instance.generated]` table, and that
 table is now the **only** record CIU itself reads them from. `ciu.env` is
 still written, with the identical key set, so a shell can `source` it; no
 identity fact is read back from it. Every verb also **seeds those six

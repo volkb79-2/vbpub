@@ -25,9 +25,16 @@ ciu.worktree-instance.json
 ciu.global.toml
 
 # per-checkout sparse global override (S3.1b) -- gitignored (unlike the
-# committed ciu.global.toml.j2 above); carries [ciu.instance.generated]
-# since CIU-60, the SOLE instance-identity source since CIU-75/7.7.0
-ciu.global.worktree.toml.j2
+# committed ciu.global.toml.j2 above); hand-authored and machine-specific.
+# Renamed from ciu.global.worktree.toml.j2 by ciu-P47 (hard cutover: the old
+# name is not read, and `ciu migration-check` reports a leftover copy).
+ciu.global.instance.toml.j2
+
+# CIU-owned generated identity facts (S3.1b) -- plain TOML, never a template,
+# rewritten in full by every `ciu env generate`. Carries
+# [ciu.instance.generated], the SOLE instance-identity source since
+# CIU-75/7.7.0; split out of the overlay above by ciu-P47.
+ciu.instance.generated.toml
 
 # rendered per-stack config -- track the ciu.toml.j2 source (NOT gitignored,
 # see the callout above), not this rendered output

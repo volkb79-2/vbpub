@@ -151,13 +151,13 @@ def _identity_repo(tmp_path: Path, *, with_env: bool = True, with_keys: bool = T
     if with_env:
         # CIU-75: `identity_compose_project_name` reads the generated overlay
         # table, not the legacy `ciu.env` export.
-        from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+        from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
 
         facts = {key: "" for key in GENERATED_FACTS_KEYS}
         facts["instance_id"] = INSTANCE_ID
         if with_keys:
             facts["repo_name"] = REPO_NAME
-        upsert_generated_facts(tmp_path, facts)
+        write_generated_facts(tmp_path, facts)
     return tmp_path
 
 
@@ -214,13 +214,13 @@ def test_identity_project_name_refuses_invalid_result(tmp_path):
     starting fine but... a basename that is ONLY invalid characters would
     still start with the identity prefix — so force the pathological case
     where the identity itself is hostile."""
-    from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
 
     repo = tmp_path
     facts = {key: "" for key in GENERATED_FACTS_KEYS}
     facts["repo_name"] = "!!!"
     facts["instance_id"] = "!!!"
-    upsert_generated_facts(repo, facts)
+    write_generated_facts(repo, facts)
     (repo / "apps" / "vault").mkdir(parents=True)
     with pytest.raises(ValueError, match="normalizes to"):
         engine.identity_compose_project_name(repo, repo / "apps" / "vault")

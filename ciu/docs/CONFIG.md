@@ -21,8 +21,10 @@ conflict, SPEC wins.
 │  Global: ciu.global.defaults.toml.j2 + ciu.global.toml.j2      │
 │  Per-stack: ciu.defaults.toml.j2 + ciu.toml.j2                 │
 ├─────────────────────────────────────────────────────────────────┤
-│  Layer 3 — Worktree config    (ciu.global.worktree.toml.j2)    │
-│  Gitignored sparse overrides for one managed checkout.          │
+│  Layer 3 — Instance config    (ciu.global.instance.toml.j2     │
+│                                + ciu.instance.generated.toml)  │
+│  Gitignored, per-checkout. The .j2 is YOURS (sparse overrides); │
+│  the .toml is CIU's (generated identity facts), merged last.    │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 4 — Container delivery  (overlay + configfile mounts)    │
 │  Machine-derived wiring: secret-file paths + configfile mounts. │
@@ -71,7 +73,8 @@ generated."
 |---|---|---|
 | `ciu.global.defaults.toml.j2` | Committed (repo-root marker, S1.1) | Canonical global defaults; used as-is if no override exists |
 | `ciu.global.toml.j2` | **Committed, OPTIONAL** | Global sparse override; **not auto-created** (S3.1a) — author only the keys that differ from defaults; absent = defaults apply alone |
-| `ciu.global.worktree.toml.j2` | **Gitignored, OPTIONAL** | Sparse per-checkout override, merged last; created initially by managed lifecycle options and then operator-editable; preserved by clean/env regeneration (S3.1b/S16). `ciu env generate` upserts one CIU-owned table into it, `[ciu.instance.generated]` (CIU-60) — every other byte is yours and survives byte for byte. Removed only by `ciu clean --vanilla` |
+| `ciu.global.instance.toml.j2` | **Gitignored, OPTIONAL** | Sparse per-checkout override; created initially by managed lifecycle options and then operator-editable; preserved by clean/env regeneration (S3.1b/S16). **CIU never writes it after that** — since ciu-P47 it holds nothing CIU owns, so nothing in it can be clobbered. Removed only by `ciu clean --vanilla`. Was `ciu.global.worktree.toml.j2` before ciu-P47 (hard cutover; `ciu migration-check` reports a leftover) |
+| `ciu.instance.generated.toml` | Gitignored, generated | CIU-OWNED identity facts, `[ciu.instance.generated]` (CIU-60). Plain TOML, never a template; rewritten in full by every `ciu env generate`; merged LAST in the chain. Hand edits do not survive. Removed only by `ciu clean --vanilla` |
 | `ciu.global.toml` | Gitignored, rendered | Runtime global config; read by profile-based CIU verbs |
 | `ciu.env` | Gitignored, generated | Machine-identity env (S2); written by `ciu env generate`. **Since 7.7.0 CIU reads no INSTANCE identity from it** — that comes from `[ciu.instance.generated]` above (S3.1c); this file still carries the machine facts and is what a shell `source`s |
 | `<stack>/ciu.defaults.toml.j2` | Committed (stack marker) | Stack defaults |
@@ -92,8 +95,8 @@ project's `.gitignore`. The only compose-shaped file that stays **committed** is
 a hand-written `docker-compose.yml` (S1.8/S8.5).
 
 **Merge chain** [S3.3]: global defaults → committed global overrides →
-(intermediate committed globals, nearest-last) → root worktree-local override →
-stack defaults → stack overrides. Deep merge is
+(intermediate committed globals, nearest-last) → root instance override →
+root generated identity facts → stack defaults → stack overrides. Deep merge is
 key-level; scalars and lists **replace** (no list concatenation).
 
 **Render pipeline** per template [S3.2]:
@@ -135,9 +138,10 @@ Hooks receive the same facts as `ctx.selected_profiles` /
 `ctx.deployed_stacks` plus `ctx.instance_id` / `ctx.network` (S9.3) and
 `ctx.identity_unreadable` (S9.3, CIU-80 — `True` only when this checkout's
 identity RECORD is present but unreadable, distinct from the genuinely-absent
-workspace, which leaves it `False`). **Since ciu 7.7.0 that record is
-`ciu.global.worktree.toml.j2`'s `[ciu.instance.generated]` table, not
-`ciu.env`** (CIU-75 / S3.1c): `ctx.instance_id` and `ctx.network` are read
+workspace, which leaves it `False`). **Since ciu 7.7.0 that record is the
+`[ciu.instance.generated]` table — carried by `ciu.instance.generated.toml`
+since ciu-P47 — not `ciu.env`** (CIU-75 / S3.1c): `ctx.instance_id` and
+`ctx.network` are read
 from it, and `identity_unreadable` is about it. A hook that branches on the
 flag needs no change — but if you were reasoning about *which file* CIU had
 failed to read, it is that one. The four ways it can be unreadable are an OS
@@ -196,7 +200,7 @@ user_tables = ["authentik", "auth", "workflow", "pubsub", "load_control"]
   declares `ciu.user_tables` sees zero behavior change, no matter what
   top-level tables it has.
 - Once declared, every top-level key in the FINAL merged global config
-  (after the committed chain and the worktree overlay, same timing as
+  (after the committed chain and the instance overlay, same timing as
   `[deploy].landscape_id`, S3.11) must be either one of CIU's own
   `RESERVED_GLOBAL_TABLES` (`ciu`, `deploy`, `topology`, `vault`,
   `registry`, `governance`, `service`, `auto_generated`,
@@ -1044,8 +1048,8 @@ as a configuration error even when nothing else would check it. Undeclared
 | `PUBLIC_TLS_KEY_PEM` | Conditional (S2.3, S2.4) | Operator-provided path; validated as-given |
 `CIU_SERVICES_PROFILE` remains an ambient compatibility input for direct CIU
 invocations, but managed worktrees persist their selection as
-`ciu.instance.service_profiles` in `ciu.global.worktree.toml.j2`. Shared-infra
-intent also lives only in that worktree-local configuration layer, never in
+`ciu.instance.service_profiles` in `ciu.global.instance.toml.j2`. Shared-infra
+intent also lives only in that per-checkout configuration layer, never in
 generated `ciu.env`.
 
 All numeric values (`CONTAINER_UID`, `DOCKER_GID`, etc.) are validated as
@@ -1087,16 +1091,21 @@ rule.
 
 `ciu env generate` derives this workspace's identity tuple, writes it to
 `ciu.env` for shells, and — from the same in-memory values, in the same
-invocation — upserts it into `ciu.global.worktree.toml.j2` as a table. Since
+invocation — writes it to `ciu.instance.generated.toml`. Since
 7.7.0 that table is the record CIU itself reads (S3.1c): templates read it
 through the merged config chain, hooks get it on their context, and every
-verb seeds its own process environment from it:
+verb seeds its own process environment from it.
+
+The whole file, as CIU writes it:
 
 ```toml
+# CIU-owned (S3.1b) — GENERATED. Rewritten in full by every
+# `ciu env generate`; hand edits are silently overwritten.
+# Gitignored, machine-specific, and regenerable: never commit it.
+# Put YOUR own per-checkout overrides in ciu.global.instance.toml.j2,
+# which CIU never writes.
+
 [ciu.instance.generated]
-# CIU-owned (S3.1b): rewritten in full by every `ciu env generate`.
-# Do NOT hand-edit keys in THIS table — edits here are silently
-# overwritten. Every OTHER byte of this file is yours and is preserved.
 repo_name = "dstdns"
 instance_id = "98535c"
 network = "dstdns-98535c-network"
@@ -1119,22 +1128,29 @@ sibling checkout's `ciu.env` carries THAT checkout's paths, and a template
 reading `env.*` silently renders them. `ciu.instance.generated.*` comes from a
 file in this repo root, written for this repo root, that you can `cat`.
 
-Two rules make it safe to keep your own content in the same file:
+Two rules, and since ciu-P47 they are enforced by the filesystem rather than
+by careful writing:
 
-- **CIU owns exactly this one table** and rewrites it whole on every
-  `env generate`, so a hand-edit to a key inside it does not survive.
-- **Nothing else in the file is touched.** The write is a surgical text
-  replace of that table's own lines, not a re-serialization of the file, so
-  your comments, spacing, key ordering and unrelated tables are preserved byte
-  for byte — before, between and after the generated block.
+- **CIU owns every byte of `ciu.instance.generated.toml`** and rewrites the
+  whole file on every `env generate`, so a hand edit anywhere in it does not
+  survive. There is nothing of yours in it to lose.
+- **CIU never writes `ciu.global.instance.toml.j2` at all** after the managed
+  lifecycle command that may create it. Your comments, spacing, key ordering
+  and tables are safe there because no CIU code path opens that file for
+  writing — not because a careful text-replace works around them.
 
-Removing it is `ciu clean --vanilla`; ordinary `ciu clean` preserves it.
+  (Before ciu-P47 both roles shared one file, and the second rule had to be
+  bought with a surgical text replace of exactly the CIU-owned span. That
+  mechanism is gone.)
+
+Removing them is `ciu clean --vanilla`; ordinary `ciu clean` preserves both.
 
 ### Shared-infra join example [S16.1]
 
-Managed worktree configuration has this closed CIU-owned shape; other ordinary
-global keys (and the CIU-owned `[ciu.instance.generated]` table above) live in
-the same file:
+Managed worktree configuration has this closed CIU-owned shape, in
+`ciu.global.instance.toml.j2`; other ordinary global keys live in the same
+file. (The `[ciu.instance.generated]` table above does NOT — since ciu-P47 it
+has its own file.)
 
 ```toml
 [ciu.instance]
@@ -1180,7 +1196,7 @@ worktree ready: /repo/.worktrees/myapp-20260817_123456-pkg-under-test
   next: ciu worktree up pkg-under-test
 ```
 
-The new checkout's `ciu.global.worktree.toml.j2` carries the service-profile
+The new checkout's `ciu.global.instance.toml.j2` carries the service-profile
 and closed `[ciu.instance.shared_infra]` intent. `ciu up` there deploys
 `pkg-under-test`'s OWN `api`/`worker`
 containers on its OWN network exactly as any worktree would, then — only

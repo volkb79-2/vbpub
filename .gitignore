@@ -191,7 +191,16 @@ ciu.worktree-instance.json
 # Same B017 class, third occurrence (vbpub's own worktrees, 2026-08-29): another
 # CIU-generated per-worktree render input, same untracked-dirt/false
 # DIRTY_TREE symptom on assay's dirty_paths() check.
+#
+# ciu-P47 (2026-09-02) split and renamed that file, which silently retired this
+# mitigation for the two names that replaced it — `ciu/.gitignore` covers them
+# inside `ciu/`, but this root list is what protects vbpub's OWN worktrees. Both
+# new names added below. The retired name is KEPT alongside them: it costs
+# nothing and still suppresses a leftover copy in a checkout that has not
+# migrated yet.
 ciu.global.worktree.toml.j2
+ciu.global.instance.toml.j2
+ciu.instance.generated.toml
 
 # Spyder project settings
 .spyderproject

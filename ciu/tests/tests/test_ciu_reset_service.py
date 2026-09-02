@@ -31,11 +31,11 @@ def _write_facts(root, **facts):
     """CIU-75: instance identity lives in the checkout's generated overlay
     table, so a fixture that wants a checkout to look provisioned writes THAT,
     not the legacy `ciu.env` export."""
-    from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
 
     payload = {key: "" for key in GENERATED_FACTS_KEYS}
     payload.update(facts)
-    upsert_generated_facts(root, payload)
+    write_generated_facts(root, payload)
 
 
 @pytest.fixture(autouse=True)

@@ -850,3 +850,121 @@ principles don't already resolve.
   collision (main's B053/B054 + the branch's B055–B061), then `cmru
   release --project assay` (MINOR — no `!` commit on the branch,
   confirmed), deploy to the devcontainer venv, dstdns notify.
+
+- **2026-09-02 (review round 1: ACCEPT-conditional — 2 blockers, 7
+  should-fixes, 2 decision asks; DA-R1/DA-R2 ruled; fix generation
+  dispatched)** — The reviewer (fresh Opus, blind phase first, ~36 min,
+  195 tool calls) independently reproduced essentially everything: the
+  oracle against all eight witnesses (collision pair `{4,6}`/`{4,5}`),
+  the transcription diffed function by function against the real
+  `cover.go`, `regenerate-fixtures.sh` re-run byte-identical, the srdm
+  two-commit repo rebuilt and both tools re-run with ITS OWN classifier
+  (684/639 vs 418/394, 266 lines all extent-expansion, zero assay-only,
+  file-absence axis positively empty — all 12 changed non-test files in
+  the profile), the registered gate on the tip PASS, the Go
+  qualification 5/5, the full suite 3908 (the implementer's 3905+3 exact),
+  wire schema untouched, the 25-file renumber provably pure, eight
+  subject mutations reddening the right tests. Review file: scratchpad
+  `assay-WAVE-C-go-REVIEW-round1.md` (417 lines; the fix generation
+  commits it verbatim onto the branch as its first commit so the
+  fix-verification round reads it from the tree). Worktree left exactly
+  as found.
+
+  **BLOCKER 1 — column 0.** The reviewer built Go's own canonical
+  `//line`-directive fixture (`cmd/cover/cover_test.go`'s
+  `lineDupContents`) in-image; the real toolchain emits
+  `linedup.go:100.0,102.0 1 50`. The branch refuses the WHOLE artifact
+  (`go_cover.py:230` "column number 0 … is not positive"; the same false
+  invariant in `model.py:221` and `statement_attribution.py:108`, "a
+  1-based source position is never below 1") — a guessed fact about
+  `cmd/cover` that `cmd/cover` disproves (`cover.go:1053-1058`'s own
+  comment, issues #27530/#30746), the exact class this wave exists to
+  remove; `main` parsed those bytes but expanded them to lines 5–105 of
+  a 22-line file, so "restore main" is not the ask either. Good news
+  inside it: the oracle reproduces all nine extents and `num_stmts`
+  exactly, which PROVES the `dedup` replication REPORT §5 item 4 had
+  left unproven. Blast radius: goyacc/peg/ragel-style generated Go and
+  anything hand-emitting `//line`; one generated file poisons the lane.
+
+  **DA-R2 ruled: shape (ii), per-file, on the north star's own rule.**
+  `1-north-star.md`: "pre-existing code outside the diff is invisible to
+  the verdict by construction, because it is not what is under review",
+  and "0/0 is never 100%". So: (1) the parser ACCEPTS column 0 as the
+  true fact it is and marks the FILE as `//line`-remapped (any record
+  with a zero column in that file; positions in such a file cannot be
+  told physical from virtual, so the flag is per file, conservative);
+  the three invariant sites state the true rule with the `go/token`
+  citation; (2) at evaluation, a flagged file with NO lines in the
+  judged set (changed lines after `source_roots`/`is_test_path`
+  filtering, or declared targets in whole-target mode) is IGNORED —
+  it is not under review and must not take the lane down; (3) a flagged
+  file WITH lines in the judged set → refuse, from the existing closed
+  vocabulary (the implementer picks the honest code and records why —
+  no new code), with a message naming `//line` as the cause, the file,
+  and the remedy (generated sources belong outside `source_roots`);
+  never a silent 0/0 (shape (i) rejected: remapped virtual lines
+  intersect no physical diff line and the file would measure nothing
+  while looking judged). Shape (iii) — whole-lane refusal with a correct
+  message — is NOT ruled: it would leave every Go project with one
+  generated file unable to use R1 at all, on the eve of the first Go
+  consumer, and the per-file seam is a bounded change (parser flag,
+  join skip, one evaluate check). **The same principle is hereby the
+  ruling for main's B054** (an istanbul record for a never-executed file
+  outside the judged set must not refuse the lane) — applied to the
+  istanbul parser in the post-Wave-C patch wave, not here. Witness: the
+  `linedup` profile + oracle document + provenance into
+  `carve-assets/P27-recarve/` (should-fix 7), tests for all three
+  outcomes (ignored / refused-named / normal file unaffected), CONSUMERS'
+  Go section gains the limit beside the other four.
+
+  **BLOCKER 2** — `registry.py:41-44` still says "no real entry here
+  ever exercises one" about `external_tools`; Go declares `("go",)`.
+  Rewrite as `cli.py:328-347` was, citing A-394/B047 item 2; fix the
+  adjacent pre-Wave-C staleness (`registry.py:29-32`, "no entry at all
+  for Go", already false since SQL/JS registered) in the same edit.
+
+  **DA-R1 ruled: REFUSE, never vacuous, for a `requires_statement_
+  attribution` adapter.** The reviewer's reachable case is decisive:
+  `judge.language` and `judge.coverage.format` are independent
+  (`config.py:2169-2172`), so a Go lane may declare `format = "lcov"`,
+  and lcov converted from a Go coverprofile carries exactly the naive
+  block expansion A-392 exists to refuse — yet `runner.
+  _attribute_statements_for_lane` (`runner.py:912-920`) marks a
+  block-less profile `statement_attributed=True`, no oracle, no helper,
+  and the guard passes. There is no honest Go profile without block
+  extents. Ruling: (1) a `requires_statement_attribution` adapter with
+  a format that carries no block extents is refused at CONFIG LOAD,
+  `ERROR`/`BAD_LANE_CONFIG`, naming the language, the format, and the
+  one format that can be attributed (`go-cover`, producers `go-test`
+  and `covdata`); (2) the vacuous branch is DELETED for such adapters —
+  a block-bearing format whose parsed profile has no block-bearing files
+  is either the empty profile (must terminate in `NO_MEASUREMENT`/
+  `EMPTY_COVERAGE`, proven by a test that also asserts no `helpers`
+  entry and no PASS) or a contradiction (refused); the branch stays
+  only for adapters that do not require attribution, and its test is
+  rewritten to say so; (3) the docstring's "such a profile is already
+  statement truth" is retracted at the site.
+
+  **Should-fixes 1, 2, 4, 5, 6, 7: all applied**, none deferred — 6
+  (`numStmts` inconsistency across repeated records) is IMPLEMENTED as
+  a refusal in the fold, not filed: the fold now transcribes `x/tools/
+  cover/profile.go`'s merge (should-fix 4's citation, `Count |=` for
+  `set`, `+=` otherwise), and that same loop refuses `inconsistent
+  NumStmt`; transcribing half of a cited rule is the pattern this wave
+  keeps catching. 5 (a bare `ValueError` escaping `go_cover.parse`, no
+  verdict written, reservation never closed) is a real consumer-facing
+  crash and `main` accepted those bytes — fix via `_malformed` at the
+  construction site. 1 re-points one of the two `test_cli_run.py`
+  decoys at a genuinely unregistered language and labels the other as
+  the registered-at-another-rigor control, and corrects `cli.py:325-326`.
+  2 fixes the three `go.mod` divergences (trailing slash, `module /`,
+  quote-in-ident) to match the real parser, with tests.
+
+  **Fix generation (7) dispatched:** fresh Opus session, same worktree/
+  branch, tip `d938ab8c`, seeded with BRIEF-1..7, the review file and
+  this entry. Order: commit the review verbatim → blocker 2 → blocker 1
+  per DA-R2 (with the `linedup` witness) → DA-R1 → should-fixes 1/2/4/5/
+  6 → docs/CHANGES/LOG/REPORT → gate → return. Decisions: **A-405**
+  (DA-R2, the `//line` rule), **A-406** (DA-R1, no vacuous
+  attribution), both citing this entry. Next backlog id **B062**. Then
+  the SAME reviewer is resumed for fix-verification (round 2 of 3).

@@ -61,7 +61,6 @@ from .config_constants import (
     CIU_COMPOSE_TEMPLATE,
     GLOBAL_CONFIG_DEFAULTS,
     GLOBAL_CONFIG_RENDERED,
-    GLOBAL_CONFIG_WORKTREE_OVERRIDES,
     MACHINE_DIR,
     OVERLAY_NAME,
     RENDERED_SUBDIR,
@@ -81,6 +80,7 @@ from .workspace_env import (  # P8 contract — relied on exactly, never edited 
     bootstrap_workspace_env,
     enforce_standalone_root,
     ensure_workspace_network,
+    generated_facts_path,
     read_generated_facts,
     resolve_env_root,
     validate_required_certs,
@@ -953,7 +953,7 @@ def identity_compose_project_name(repo_root: Path, stack_dir: Path) -> str:
     """Workspace-identity compose project for config-less deployments (CIU-46).
 
     ``{repo_name}-{instance_id}-{stack_basename}``, derived from THIS
-    workspace's own ``[ciu.instance.generated]`` overlay table read by EXACT
+    workspace's own ``[ciu.instance.generated]`` facts file read by EXACT
     path (CIU-75: the sole instance-fact source — never the legacy ``ciu.env``
     export, and never the ambient process environment, which a shell that
     sourced another checkout's record would contaminate). Unique per workspace
@@ -962,15 +962,15 @@ def identity_compose_project_name(repo_root: Path, stack_dir: Path) -> str:
     clean's S6.4a enumeration: up and clean call this same function, so they
     name a project identically by construction.
 
-    Raises ValueError naming the overlay when the generated facts are missing
-    or lack the identity keys — a deployment that cannot be NAMED must not
-    start, and a teardown that cannot be named must refuse rather than skip
+    Raises ValueError naming the generated facts file when the facts are
+    missing or lack the identity keys — a deployment that cannot be NAMED must
+    not start, and a teardown that cannot be named must refuse rather than skip
     (defaults-are-hazards: no invented basename stands in for identity).
     The composed name is normalized exactly like docker compose's own
     project-name rule (lowercase, ``[a-z0-9_-]`` only) and must still start
     with an alphanumeric, else ValueError.
     """
-    overlay_path = Path(repo_root) / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    facts_path = generated_facts_path(repo_root)
     values = read_generated_facts(Path(repo_root))
     repo_name = values.get("repo_name", "")
     instance_id = values.get("instance_id", "")
@@ -978,7 +978,7 @@ def identity_compose_project_name(repo_root: Path, stack_dir: Path) -> str:
         raise ValueError(
             "[S8.7] {root} declares no repo_name/instance_id — run `ciu env "
             "generate` first; the workspace-identity compose project is "
-            "derived from them".format(root=overlay_path)
+            "derived from them".format(root=facts_path)
         )
     name = re.sub(
         r"[^a-z0-9_-]",
@@ -1206,8 +1206,8 @@ def workspace_ownership_labels(repo_root: Path) -> dict[str, str] | None:
     the primary workspace is a decision that needs its own package, not a
     side effect of this one.
 
-    Both values are read from THIS workspace's OWN generated
-    ``[ciu.instance.generated]`` overlay table by EXACT PATH (CIU-75) — never
+    Both values are read from THIS workspace's OWN
+    ``ciu.instance.generated.toml`` by EXACT PATH (CIU-75) — never
     from the legacy ``ciu.env`` export, and never from the ambient process
     environment, which a shell that sourced a sibling checkout's ciu.env
     carries (the CIU-41 species of contamination). Mislabeling here would be
@@ -1216,13 +1216,13 @@ def workspace_ownership_labels(repo_root: Path) -> dict[str, str] | None:
     """
     if not (repo_root / worktree.WORKTREE_INSTANCE_RECORD).is_file():
         return None
-    overlay_path = repo_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    facts_path = generated_facts_path(repo_root)
     values = read_generated_facts(repo_root)
     instance_id = values.get("instance_id", "")
     physical_root = values.get("physical_repo_root", "")
     if not instance_id or not physical_root:
         raise ValueError(
-            f"[S16.9] {overlay_path} lacks instance_id/physical_repo_root — "
+            f"[S16.9] {facts_path} lacks instance_id/physical_repo_root — "
             "this managed worktree instance cannot label the resources it "
             "creates. Run `ciu env generate` in this checkout."
         )
@@ -1523,7 +1523,8 @@ def main_execution(
         # — `OSError` (the read), `UnicodeDecodeError` (a non-UTF-8 byte) and a
         # malformed table — and before CIU-62 a non-UTF-8 record escaped here
         # and crashed `ciu up` at STEP 12 with a raw traceback. CIU-75 moved
-        # the SOURCE to the `[ciu.instance.generated]` overlay table and the
+        # the SOURCE to the `[ciu.instance.generated]` table (its own file
+        # since ciu-P47) and the
         # reader now normalizes all three to `WorkspaceEnvError`, so one name
         # covers what three used to. The degradation it falls back to is
         # deliberately unchanged: `{}`, so `ctx.instance_id` / `ctx.network`
@@ -1531,7 +1532,7 @@ def main_execution(
         # Both preflight and real run must answer this question the same way,
         # or a hook's `validate_config` would see an identity its own `run()`
         # will not.
-        _overlay_path = repo_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+        _facts_path = generated_facts_path(repo_root)
         _hook_identity: dict = {}
         _hook_identity_unreadable = False
         try:
@@ -1555,7 +1556,7 @@ def main_execution(
             # form — so the flag is true exactly when CIU-80 says it should be.
             print(
                 f"[WARN] [S3.12] could not read workspace identity from "
-                f"{_overlay_path}: {_identity_exc}. Hook context identity "
+                f"{_facts_path}: {_identity_exc}. Hook context identity "
                 "(instance_id, network) will be None for this run — repair "
                 "with `ciu env generate`",
                 flush=True,

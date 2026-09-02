@@ -124,8 +124,8 @@ usage be reconsidered for every `ciu` verb?*
 
 The gap was real and asymmetric. Hooks stopped trusting ambient environment in
 S9.3: a hook receives `ctx.instance_id`/`ctx.network` read from THIS
-workspace's own record by exact path — `ciu.env` at the time, the overlay's
-`[ciu.instance.generated]` table since CIU-75 (see the section below). Jinja template rendering never got
+workspace's own record by exact path — `ciu.env` at the time, the
+`[ciu.instance.generated]` facts file since CIU-75 (see the section below). Jinja template rendering never got
 that treatment — S3.2's `env` context is still raw `os.environ`. So the exact
 scenario CIU-41 and CIU-53 were filed over (a login shell that once sourced a
 sibling checkout's `ciu.env`, which is a *documented* convenience) renders a
@@ -142,15 +142,15 @@ moves where the surprise lives.
 
 What shipped instead reuses a mechanism that was already there, already
 gitignored, already merged into every render, and already proven out by CIU-52
-for a different field: the per-checkout overlay
-`ciu.global.worktree.toml.j2`. `ciu env generate` upserts one CIU-owned table
+for a different field: the per-checkout overlay (then named
+`ciu.global.worktree.toml.j2`). `ciu env generate` upserted one CIU-owned table
 into it, `[ciu.instance.generated]`, carrying the same six values it just
 wrote to `ciu.env`, from the same in-memory tuple. Templates then read them
 the way they read every other config value, through the ordinary merge chain,
 with no new context-building code anywhere. Three properties fall out of that
 choice rather than having to be engineered:
 
-- **Every value is backed by a file.** `cat ciu.global.worktree.toml.j2` shows
+- **Every value is backed by a file.** `cat ciu.instance.generated.toml` shows
   exactly what CIU derived for this checkout. A wrong render is now diffable.
 - **The primary checkout is covered for free.** `render_global_chain` reads
   this file unconditionally by exact path, with no S16 instance-record gating,
@@ -169,19 +169,45 @@ every time is silently lost. `ciu.global.toml.j2` was rejected because it is
 committed — writing machine-specific host paths into a tracked file is how one
 developer's mount path reaches everybody.
 
-The write is a **surgical text replace of that one table**, not a
+The write was a **surgical text replace of that one table**, not a
 `tomllib` parse plus a `tomli_w` dump of the whole file. A full round-trip
 would carry every VALUE across correctly and destroy every comment and every
 hand-chosen bit of formatting on the way — in a file S3.1b explicitly invites
 operators to edit. Owning exactly the bytes between the table's own header and
 the next table (minus the trailing comment run that belongs to that next
-table) is what lets CIU rewrite its facts on every single `env generate`
+table) was what let CIU rewrite its facts on every single `env generate`
 without ever touching a line a human wrote.
+
+## Why that mechanism was then deleted rather than hardened (ciu-P47)
+
+Everything above is true of the design as it shipped, and the surgical replace
+did its job. It was still the wrong shape, for a reason that has nothing to do
+with whether the implementation was correct: **it existed only because two
+owners shared one file.** A byte-level scan for a table header, a scan for the
+next table, and a walk back over the trailing comment run are three chances to
+be subtly wrong about a file whose contents CIU does not control — and the
+docstring had to carry a known, accepted limit (a line reading exactly
+`[ciu.instance.generated]` inside a multi-line string elsewhere in the file
+would be mistaken for the header).
+
+ciu-P47 removed the shared ownership instead of hardening the scan. The
+CIU-owned facts moved to `ciu.instance.generated.toml`, a file nothing but CIU
+ever writes, so the writer became a full-file rewrite with no preservation
+logic at all, and the operator's own file — renamed
+`ciu.global.instance.toml.j2` in the same change, because every checkout is an
+instance and not every checkout is a git worktree — gained a stronger
+guarantee than the surgical replace could give it: CIU has no writer for it.
+
+The general lesson, which outlives this file pair: when a mechanism exists to
+make two owners safe in one place, ask whether the two owners have to be in one
+place. Splitting is usually cheaper than the machinery for sharing, and it
+converts a property you have to keep proving into one that is true by
+construction.
 
 ## Why the SECOND record then had to become the ONLY one read (CIU-75)
 
 CIU-60 above left two records of the same six facts: `ciu.env`, which CIU
-itself read, and the overlay table, which templates read. Written together
+itself read, and the generated table, which templates read. Written together
 from one in-memory tuple, so they agree at birth — and nothing anywhere
 noticed when they later disagreed. That is the shape this codebase keeps
 finding: not a wrong value, but two places a value can come from and no rule
@@ -198,19 +224,27 @@ same day would be gratuitous.
 Two design choices in that cutover are worth the ink, because both look
 arbitrary until you try the alternative.
 
-**The reader is a text-level scan of CIU's own block, not a config render.**
+**The reader is a direct parse of CIU's own record, not a config render.**
 The obvious implementation is "render the merged chain and read
-`ciu.instance.generated`". It fails on its own terms: the overlay is a Jinja
-template whose render needs the merged config it is a layer of; six of the
-twelve call sites read a checkout that is NOT this process's repo root (a
-shared-infra reference, a budget candidate, a reap group) whose committed
-chain may legitimately be absent or broken; and the block is merged last, so
-its own bytes ARE the merged value — a render could only agree with it. The
-block is plain TOML by construction (the writer emits quoted strings), so it
-is readable with no context at all. The reader slices to it before parsing,
-which is also why the migration helper published for consumers does the same:
-an operator's own Jinja or TOML elsewhere in that file must not break the
-identity read.
+`ciu.instance.generated`". It fails on its own terms, and the reasons survive
+ciu-P47's file split unchanged: six of the twelve call sites read a checkout
+that is NOT this process's repo root (a shared-infra reference, a budget
+candidate, a reap group) whose committed chain may legitimately be absent or
+broken; and the record is merged last, so its own bytes ARE the merged value —
+a render could only agree with it.
+
+What DID change is how that "readable with no context at all" property is
+obtained. At CIU-75 the facts were a table inside the operator's own Jinja
+overlay, so the reader had to *slice* to CIU's own block before parsing — a
+Jinja `{% if %}` or a bare `$VAR` an operator wrote elsewhere in that file
+would otherwise have broken the identity read, and the consumer helper
+published in `docs/CONSUMERS.md` §11b had to do the same slicing for the same
+reason. ciu-P47 removed the cause instead of the symptom: the facts live in
+`ciu.instance.generated.toml`, which is plain TOML, has no operator content in
+it and is not a template, so both readers are now an ordinary whole-file
+`tomllib` parse and the slicing is gone from both. See "Why that mechanism was
+then deleted rather than hardened" above for why the shared file was split
+rather than the slicing hardened.
 
 **Moving the twelve reads was not the cutover — the process environment was.**
 The first implementation migrated all twelve call sites, documented the

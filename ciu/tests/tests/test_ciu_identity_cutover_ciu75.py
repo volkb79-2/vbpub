@@ -1,9 +1,10 @@
 """CIU-75 — the v8 F2 identity cutover, proven rather than asserted.
 
-Since ciu 7.7.0 the ``[ciu.instance.generated]`` table in a checkout's
-``ciu.global.worktree.toml.j2`` is the SOLE source of instance identity that
-CIU itself reads. ``ciu.env`` keeps being WRITTEN, byte-identical key set, but
-is a legacy write-only export: no CIU internal reads it back.
+Since ciu 7.7.0 the ``[ciu.instance.generated]`` table is the SOLE source of
+instance identity that CIU itself reads — carried since ciu-P47 by a checkout's
+own ``ciu.instance.generated.toml``, and before that by the per-checkout
+overlay it was split out of. ``ciu.env`` keeps being WRITTEN, byte-identical
+key set, but is a legacy write-only export: no CIU internal reads it back.
 
 Two oracles, and the second is the load-bearing one:
 
@@ -38,9 +39,17 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ciu import config_model, deploy, engine, workspace_env, worktree  # noqa: E402
-from ciu.config_constants import GLOBAL_CONFIG_WORKTREE_OVERRIDES  # noqa: E402
+from ciu.config_constants import (  # noqa: E402
+    GLOBAL_CONFIG_INSTANCE_OVERRIDES,
+    INSTANCE_GENERATED_FACTS,
+)
 
-OVERLAY = GLOBAL_CONFIG_WORKTREE_OVERRIDES
+# ciu-P47 split these two apart: OVERLAY is the operator's own hand-editable
+# per-checkout override, FACTS is the CIU-owned generated identity record that
+# used to be a table inside it. Every identity assertion below moved to FACTS;
+# OVERLAY stays only where the subject really is the operator's own file.
+OVERLAY = GLOBAL_CONFIG_INSTANCE_OVERRIDES
+FACTS = INSTANCE_GENERATED_FACTS
 TEST_REPO = Path(__file__).resolve().parents[2] / "test-repo"
 
 
@@ -108,18 +117,38 @@ def mangle(request):
 
 
 class TestGeneratedFactsReader:
-    def test_absent_overlay_reads_as_no_facts(self, tmp_path):
+    def test_absent_record_reads_as_no_facts(self, tmp_path):
         assert workspace_env.read_generated_facts(tmp_path) == {}
         assert workspace_env.read_instance_identity_env(tmp_path) == {}
         assert workspace_env.has_generated_facts(tmp_path) is False
 
-    def test_overlay_without_the_table_reads_as_no_facts(self, tmp_path):
-        """An operator's own sparse override is not an identity — and saying
-        it were would make `ciu clean` claim a checkout it cannot name."""
-        (tmp_path / OVERLAY).write_text(
+    def test_record_without_the_table_reads_as_no_facts(self, tmp_path):
+        """A truncated or emptied record is not an identity — and saying it
+        were would make `ciu clean` claim a checkout it cannot name."""
+        (tmp_path / FACTS).write_text(
             '[ciu.instance]\nservice_profiles = ["core"]\n', encoding="utf-8"
         )
         assert workspace_env.read_generated_facts(tmp_path) == {}
+        assert workspace_env.has_generated_facts(tmp_path) is False
+
+    def test_the_operators_own_overlay_is_never_read_for_identity(self, tmp_path):
+        """ciu-P47's hard cutover, stated as a test.
+
+        A checkout whose `[ciu.instance.generated]` table is still in the OLD
+        place — the hand-editable overlay, where every pre-P47 CIU wrote it —
+        has NO identity as far as this reader is concerned. There is no
+        fallback read, so an upgrading checkout reads as "no facts" until
+        `ciu env generate` writes the dedicated file (and `ciu migration-check`
+        is what tells the operator so).
+        """
+        (tmp_path / OVERLAY).write_text(
+            "[ciu.instance.generated]\n"
+            'repo_name = "repo"\n'
+            'instance_id = "abc123"\n',
+            encoding="utf-8",
+        )
+        assert workspace_env.read_generated_facts(tmp_path) == {}
+        assert workspace_env.read_instance_identity_env(tmp_path) == {}
         assert workspace_env.has_generated_facts(tmp_path) is False
 
     def test_present_table_round_trips_the_writer(self, tmp_path):
@@ -131,7 +160,7 @@ class TestGeneratedFactsReader:
             "repo_root": str(tmp_path),
             "public_fqdn": "",
         }
-        workspace_env.upsert_generated_facts(tmp_path, facts)
+        workspace_env.write_generated_facts(tmp_path, facts)
         assert workspace_env.read_generated_facts(tmp_path) == facts
         assert workspace_env.has_generated_facts(tmp_path) is True
         assert workspace_env.read_instance_identity_env(tmp_path) == {
@@ -150,7 +179,7 @@ class TestGeneratedFactsReader:
         # Written by hand: the shipped writer emits exactly
         # GENERATED_FACTS_KEYS, so only a hand-edit (or a future CIU) can put
         # an unknown key here — which is precisely the case under test.
-        (tmp_path / OVERLAY).write_text(
+        (tmp_path / FACTS).write_text(
             "[ciu.instance.generated]\n"
             'instance_id = "abc123"\n'
             'extra = "x"\n',
@@ -164,7 +193,7 @@ class TestGeneratedFactsReader:
     def test_non_utf8_record_is_indeterminate_not_empty(self, tmp_path):
         """CIU-62's byte-level half, at the new source. `UnicodeDecodeError`
         is a `ValueError` subclass and a SIBLING of `WorkspaceEnvError`."""
-        (tmp_path / OVERLAY).write_bytes(
+        (tmp_path / FACTS).write_bytes(
             b'[ciu.instance.generated]\nnetwork = "\xff\xfe"\n'
         )
         with pytest.raises(workspace_env.WorkspaceEnvError, match="could not read"):
@@ -174,15 +203,15 @@ class TestGeneratedFactsReader:
         assert workspace_env.has_generated_facts(tmp_path) is True
 
     def test_unreadable_path_is_indeterminate_not_empty(self, tmp_path):
-        """A DIRECTORY where the overlay belongs: `OSError`, which neither
+        """A DIRECTORY where the record belongs: `OSError`, which neither
         `ValueError` arm covers."""
-        (tmp_path / OVERLAY).mkdir()
+        (tmp_path / FACTS).mkdir()
         with pytest.raises(workspace_env.WorkspaceEnvError, match="could not read"):
             workspace_env.read_generated_facts(tmp_path)
         assert workspace_env.has_generated_facts(tmp_path) is True
 
     def test_malformed_table_is_indeterminate_not_empty(self, tmp_path):
-        (tmp_path / OVERLAY).write_text(
+        (tmp_path / FACTS).write_text(
             "[ciu.instance.generated]\nnetwork = bare-word\n", encoding="utf-8"
         )
         with pytest.raises(workspace_env.WorkspaceEnvError, match="malformed"):
@@ -192,7 +221,7 @@ class TestGeneratedFactsReader:
         """Every generated fact is a string by construction; a number here
         would flow into a compose project name or a docker label as
         ``str(int)`` and be silently wrong instead of loudly refused."""
-        (tmp_path / OVERLAY).write_text(
+        (tmp_path / FACTS).write_text(
             "[ciu.instance.generated]\ninstance_id = 7\n", encoding="utf-8"
         )
         with pytest.raises(
@@ -200,10 +229,16 @@ class TestGeneratedFactsReader:
         ):
             workspace_env.read_generated_facts(tmp_path)
 
-    def test_table_stops_at_the_next_table(self, tmp_path):
-        """The reader owns exactly the writer's own region — a key under a
-        LATER table is not silently adopted as a generated fact."""
-        (tmp_path / OVERLAY).write_text(
+    def test_only_the_generated_table_is_read(self, tmp_path):
+        """A key under a SIBLING table is not adopted as a generated fact.
+
+        Before ciu-P47 this was a property of the reader's text slicing (it
+        stopped at the next table header). It is now a property of an ordinary
+        TOML parse addressed at one table path — a strictly stronger guarantee,
+        pinned here so the mechanism change did not quietly widen what counts
+        as an identity fact.
+        """
+        (tmp_path / FACTS).write_text(
             "[ciu.instance.generated]\n"
             'instance_id = "mine"\n'
             "\n"
@@ -212,6 +247,26 @@ class TestGeneratedFactsReader:
             encoding="utf-8",
         )
         assert workspace_env.read_generated_facts(tmp_path) == {"instance_id": "mine"}
+
+    def test_a_non_table_at_the_facts_path_refuses(self, tmp_path):
+        """Indeterminacy, not emptiness: the name is taken, by a non-table.
+
+        Two shapes, because the descent hits them at different depths — a
+        scalar part-way down the dotted path, and a scalar at the leaf itself.
+        Either could otherwise have degraded to "this checkout has no
+        identity", which is the absence-for-emptiness anti-pattern.
+        """
+        (tmp_path / FACTS).write_text('ciu = "not-a-table"\n', encoding="utf-8")
+        with pytest.raises(
+            workspace_env.WorkspaceEnvError, match="non-table value"
+        ):
+            workspace_env.read_generated_facts(tmp_path)
+
+        (tmp_path / FACTS).write_text(
+            'ciu.instance.generated = "not-a-table"\n', encoding="utf-8"
+        )
+        with pytest.raises(workspace_env.WorkspaceEnvError, match="not a table"):
+            workspace_env.read_generated_facts(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +303,7 @@ def test_generate_warns_once_that_ciu_env_is_now_write_only(
     assert "[WARN] [S3.1c]" in out
     assert "LEGACY WRITE-ONLY export as of ciu 7.7.0" in out
     assert 'eval "$(ciu env print)"' in out
-    assert GLOBAL_CONFIG_WORKTREE_OVERRIDES in out
+    assert INSTANCE_GENERATED_FACTS in out
 
 
 def test_env_show_nudges_on_stderr_and_keeps_stdout_parseable(
@@ -492,17 +547,17 @@ def test_cutover_budget_candidates_ignore_a_broken_ciu_env(cutover_repo, mangle)
     ]
 
 
-def test_cutover_leaves_the_overlay_as_the_only_load_bearing_record(
+def test_cutover_leaves_the_generated_record_as_the_only_load_bearing_one(
     cutover_repo, mangle
 ):
-    """The converse of every assertion above: remove the OVERLAY instead, and
-    the same sites stop answering. Without this, "it still works with ciu.env
-    deleted" would also be satisfied by a site that reads neither."""
+    """The converse of every assertion above: remove the FACTS file instead,
+    and the same sites stop answering. Without this, "it still works with
+    ciu.env deleted" would also be satisfied by a site that reads neither."""
     repo, _wt, _facts, _wt_facts = cutover_repo
     mangle(repo)  # the legacy export is already irrelevant
-    (repo / OVERLAY).unlink()
+    (repo / FACTS).unlink()
 
-    # CIU-80: the overlay is genuinely ABSENT here, which is the legitimate
+    # CIU-80: the record is genuinely ABSENT here, which is the legitimate
     # state its flag exists to keep apart from an unreadable one.
     assert deploy._workspace_identity(repo) == ({}, False)
     assert deploy._workspace_identity_network(repo) == ""
@@ -685,8 +740,8 @@ def test_the_regenerated_legacy_export_cannot_change_identity(
     that the regeneration cannot move identity: the facts before and after are
     identical, and the render still names the recorded network. (The absent
     case is genuinely covered by
-    `test_cutover_leaves_the_overlay_as_the_only_load_bearing_record`, which
-    removes the record CIU actually reads.)
+    `test_cutover_leaves_the_generated_record_as_the_only_load_bearing_one`,
+    which removes the record CIU actually reads.)
     """
     repo, stack, facts = verb_repo
     (repo / "ciu.env").unlink()
@@ -729,13 +784,20 @@ def test_a_checkout_with_no_generated_table_is_repaired_not_refused(
 ):
     """The upgrade path: the record CIU reads is the record CIU repairs.
 
-    The overlay is gitignored, so "no generated table" is an ordinary state —
-    a fresh clone, a CI runner, a pre-CIU-60 checkout. Since 7.7.0 it is also
-    the state in which CIU knows nothing about the instance, so bootstrap
-    regenerates it rather than refusing a verb the operator just ran. The
-    notice says so, on stderr.
+    The generated record is gitignored, so "no generated table" is an ordinary
+    state — a fresh clone, a CI runner, a pre-CIU-60 checkout, or (since
+    ciu-P47) a checkout whose facts are still in the retired overlay filename.
+    Since 7.7.0 it is also the state in which CIU knows nothing about the
+    instance, so bootstrap regenerates it rather than refusing a verb the
+    operator just ran. The notice says so, on stderr.
+
+    The operator's own overlay is present throughout, with its own bytes and
+    NO generated table. After ciu-P47 that file is not merely preserved across
+    the repair — it is never opened by any writer at all, which is the whole
+    point of the split, so its bytes must come through untouched.
     """
     repo, stack, facts = verb_repo
+    (repo / FACTS).unlink()
     (repo / OVERLAY).write_text("# operator's own file, no CIU table\n", encoding="utf-8")
     assert workspace_env.read_generated_facts(repo) == {}
 
@@ -747,9 +809,10 @@ def test_a_checkout_with_no_generated_table_is_repaired_not_refused(
     assert seen["rendered"]["deploy"]["network_name"] == facts["network"]
     err = capsys.readouterr().err
     assert "carries no [ciu.instance.generated] table" in err
-    # The operator's own bytes are still theirs (upsert_generated_facts owns
-    # only its own block).
-    assert "operator's own file" in (repo / OVERLAY).read_text(encoding="utf-8")
+    # The operator's file is byte-for-byte untouched: CIU has no writer for it.
+    assert (repo / OVERLAY).read_text(encoding="utf-8") == (
+        "# operator's own file, no CIU table\n"
+    )
 
 
 def test_a_reap_that_cannot_delegate_to_clean_says_what_it_skipped(

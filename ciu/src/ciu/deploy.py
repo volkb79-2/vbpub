@@ -60,8 +60,9 @@ from . import worktree as worktree_pkg
 from .cli_utils import get_cli_version
 from .config_constants import (
     GLOBAL_CONFIG_DEFAULTS,
+    GLOBAL_CONFIG_INSTANCE_OVERRIDES,
     GLOBAL_CONFIG_RENDERED,
-    GLOBAL_CONFIG_WORKTREE_OVERRIDES,
+    INSTANCE_GENERATED_FACTS,
     STACK_CONFIG_RENDERED,
     WORKSPACE_ENV,
 )
@@ -82,6 +83,7 @@ from .workspace_env import (
     bootstrap_workspace_env,
     enforce_standalone_root,
     ensure_workspace_network,
+    generated_facts_path,
     read_generated_facts,
     resolve_env_root,
 )
@@ -2231,10 +2233,10 @@ def _workspace_identity(repo_root: Path) -> tuple[dict, bool]:
     ``ctx.instance_id`` / ``ctx.network`` a real ``run()`` would (CIU-41:
     hooks read identity from the context, never from ambient environment
     state). CIU-75 moved both twins from the legacy ``ciu.env`` export to the
-    overlay's generated table, together, for exactly that reason. An absent
-    overlay (or an overlay with no generated table) yields ``{}`` — the
-    context fields then stay ``None``, exactly as during a real run outside a
-    provisioned workspace.
+    generated facts table, together, for exactly that reason. An absent
+    ``ciu.instance.generated.toml`` (or one with no generated table) yields
+    ``{}`` — the context fields then stay ``None``, exactly as during a real
+    run outside a provisioned workspace.
 
     "Unreadable" is still all three ways the read can fail (CIU-62): an
     ``OSError``, a non-UTF-8 byte (``UnicodeDecodeError``) and a malformed
@@ -2257,11 +2259,11 @@ def _workspace_identity(repo_root: Path) -> tuple[dict, bool]:
     belongs, an unreadable mode). That is the absence-for-emptiness
     anti-pattern inside the very field that exists to separate absence from
     indeterminacy. The reader now decides: it raises for every present-but-
-    unreadable form and returns ``{}`` only for a genuinely absent overlay or
-    an overlay carrying no generated table, so the flag is exactly true when
+    unreadable form and returns ``{}`` only for a genuinely absent facts file
+    or one carrying no generated table, so the flag is exactly true when
     CIU-80 says it should be.
     """
-    overlay_path = repo_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    facts_path = generated_facts_path(repo_root)
     try:
         return read_generated_facts(repo_root), False
     except WorkspaceEnvError as exc:
@@ -2286,7 +2288,7 @@ def _workspace_identity(repo_root: Path) -> tuple[dict, bool]:
         # stdout channel to protect and stdout `[WARN]` is its own idiom.
         print(
             f"[WARN] [S3.12] could not read workspace identity from "
-            f"{overlay_path}: {exc}. Hook context identity (instance_id, network) "
+            f"{facts_path}: {exc}. Hook context identity (instance_id, network) "
             "will be None for this check — repair with `ciu env generate`",
             file=sys.stderr,
             flush=True,
@@ -2581,7 +2583,7 @@ def _check_hooks_for_stack(
                 secret_file=_check_secret_file,
                 selected_profiles=tuple(ciu_context.get("selected_profiles") or []),
                 deployed_stacks=tuple(ciu_context.get("deployed_stacks") or []),
-                # CIU-75 renamed the fact keys (the overlay's snake_case
+                # CIU-75 renamed the fact keys (the generated table's snake_case
                 # names, not `ciu.env`'s SCREAMING_CASE); CIU-80's flag rides
                 # alongside them unchanged. Both halves are load-bearing: drop
                 # the rename and this reads `None` forever, drop the flag and
@@ -3385,7 +3387,7 @@ def action_stop(config: dict) -> int:
 def _workspace_identity_network(repo_root: Path) -> str:
     """Read the instance ``network`` from THIS workspace's own generated facts.
 
-    The generated ``[ciu.instance.generated]`` overlay table (S3.1b/S3.1c) is
+    The generated ``[ciu.instance.generated]`` facts file (S3.1b/S3.1c) is
     the authority for the workspace's network name since CIU-75 — never the
     legacy ``ciu.env`` export, and never the ambient process environment,
     which a shell that sourced a different checkout's ciu.env may carry
@@ -3400,20 +3402,20 @@ def _workspace_identity_network(repo_root: Path) -> str:
     clean would silently skip removing its own identity network and still
     announce the S6.4a zero-objects invariant as satisfied, because a network
     that was never resolved is never enumerated as a survivor either. So a
-    PRESENT but unreadable overlay raises: ``OSError`` (read), a non-UTF-8
+    PRESENT but unreadable facts file raises: ``OSError`` (read), a non-UTF-8
     byte (``UnicodeDecodeError``) and a malformed table (all normalized to
     ``WorkspaceEnvError`` by the reader) become one ``ValueError``, which
     :func:`action_clean` reports and fails the clean on — the same treatment
     its sibling volume/network/container enumerations already give
     indeterminacy. An ABSENT generated table still returns ``""``, unchanged.
     """
-    overlay_path = repo_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    facts_path = generated_facts_path(repo_root)
     try:
         values = read_generated_facts(repo_root)
     except WorkspaceEnvError as exc:
         raise ValueError(
             f"could not read the workspace identity network from "
-            f"{overlay_path}: {exc}"
+            f"{facts_path}: {exc}"
         ) from exc
     return values.get("network", "")
 
@@ -3440,7 +3442,7 @@ def _stack_compose_project(repo_root: Path, config: dict, stack_dir: Path) -> st
 
     CIU-46: when ``deploy.project_name``/``environment_tag`` are absent,
     shipped mode still deploys under the WORKSPACE-IDENTITY compose project
-    derived from THIS checkout's generated overlay facts (the basename
+    derived from THIS checkout's generated identity facts (the basename
     fallback is withdrawn) — ``engine.identity_compose_project_name`` (raises
     when they are missing or key-less: a project that cannot be named refuses,
     never guesses). Tags present keeps the S8.7 scoped name via
@@ -3460,7 +3462,7 @@ def _stack_compose_projects(repo_root: Path, config: dict, selection: list[dict]
 
     CIU-46 cutover: when ``deploy.project_name``/``environment_tag`` are
     absent, shipped mode still deploys — under the WORKSPACE-IDENTITY compose
-    project derived from THIS checkout's generated overlay facts (S8.7; the
+    project derived from THIS checkout's generated identity facts (S8.7; the
     basename fallback
     is withdrawn). Returning ``[]`` here (the pre-CIU-46 behavior) made every
     S6.4a enumeration pass skip those stacks entirely, so their
@@ -3734,16 +3736,23 @@ def _remove_identity_networks(
     return removed, blocked
 
 
-# S6.4b (CIU-60) — the three workspace-level files `ciu clean --vanilla`
+# S6.4b (CIU-60) — the workspace-level files `ciu clean --vanilla`
 # additionally removes. Every one of them is gitignored and regenerable:
-# `ciu.global.toml` by any render, `ciu.env` by `ciu env generate`, and
-# `ciu.global.worktree.toml.j2` by the lifecycle/`env generate` writers (its
-# HAND-authored content, if any, is not regenerable — which is exactly why
-# plain `clean` must never touch it and `--vanilla` must be explicit).
+# `ciu.global.toml` by any render, `ciu.env` and `ciu.instance.generated.toml`
+# by `ciu env generate`, and `ciu.global.instance.toml.j2` by the worktree
+# lifecycle writer (its HAND-authored content, if any, is not regenerable —
+# which is exactly why plain `clean` must never touch it and `--vanilla` must
+# be explicit).
+#
+# ciu-P47 added the fourth entry rather than leaving it out: the generated
+# facts file is now a separate artifact of the same `ciu env generate` that
+# writes `ciu.env`, so a `--vanilla` that removed one and kept the other would
+# leave the workspace in a state neither "freshly cloned" nor generated.
 VANILLA_RESET_FILES: tuple[str, ...] = (
     GLOBAL_CONFIG_RENDERED,
     WORKSPACE_ENV,
-    GLOBAL_CONFIG_WORKTREE_OVERRIDES,
+    GLOBAL_CONFIG_INSTANCE_OVERRIDES,
+    INSTANCE_GENERATED_FACTS,
 )
 
 
@@ -3814,15 +3823,16 @@ def action_clean(
 
     *vanilla* (S6.4b / CIU-60) is purely ADDITIVE: with it False — the default,
     and what every existing caller gets — this function's behaviour is
-    unchanged, and in particular `ciu.global.toml`, `ciu.env` and
-    `ciu.global.worktree.toml.j2` are left exactly where they are, as they
-    always have been (S3.1b even makes the last of those a preservation
-    REQUIREMENT of plain clean). With it True, those three are additionally
-    removed after everything above, for a full reset to freshly-cloned state —
-    but only when everything above SUCCEEDED. A clean that failed leaves them
-    in place: `ciu.global.worktree.toml.j2` carries the workspace identity
-    the retry needs (and `ciu.env` its legacy export), and deleting them over
-    a half-torn-down workspace would take away the very record naming what is
+    unchanged, and in particular every :data:`VANILLA_RESET_FILES` entry
+    (`ciu.global.toml`, `ciu.env`, `ciu.global.instance.toml.j2` and
+    `ciu.instance.generated.toml`) is left exactly where it is, as they always
+    have been (S3.1b even makes preservation of the last two a REQUIREMENT of
+    plain clean). With it True, they are additionally removed after everything
+    above, for a full reset to freshly-cloned state — but only when everything
+    above SUCCEEDED. A clean that failed leaves them in place:
+    `ciu.instance.generated.toml` carries the workspace identity the retry
+    needs (and `ciu.env` its legacy export), and deleting them over a
+    half-torn-down workspace would take away the very record naming what is
     still standing.
     """
     info("=" * 60)
@@ -3833,7 +3843,7 @@ def action_clean(
 
     # CIU-46: resolve the selected stacks' compose projects ONCE — S8.7 scoped
     # names when the deploy tags are set, workspace-identity names derived
-    # from THIS checkout's overlay facts when absent (a tagless shipped stack runs
+    # from THIS checkout's generated identity facts when absent (a tagless shipped stack runs
     # under the identity project; clean must enumerate what up actually
     # named). Drives the container, volume, and network passes below.
     deploy_cfg = config.get("deploy", {})
@@ -3919,13 +3929,13 @@ def action_clean(
         survivors = []
 
     # Step 4 (S6.4a / CIU-43): remove identity-scoped networks. The workspace
-    # identity network comes from THIS workspace's own overlay facts; the per-stack
+    # identity network comes from THIS workspace's own generated identity facts; the per-stack
     # ``<compose-project>_default`` networks come from the S8.7 project names.
     is_instance = _is_worktree_instance(repo_root)
     try:
         identity_network = _workspace_identity_network(repo_root)
     except ValueError as exc:
-        # CIU-62: a PRESENT but unparseable overlay leaves the identity
+        # CIU-62: a PRESENT but unparseable facts file leaves the identity
         # network indeterminate. Never fold that into "there is no identity
         # network" — that would skip its removal AND skip it from the S6.4a
         # survivor check, reporting a complete clean over a surviving network.
@@ -4321,10 +4331,13 @@ Examples:
                          help="Continue past failures (final exit is still 1) (S7.3)")
     control.add_argument("--vanilla", action="store_true",
                          help="With --clean: ALSO remove this workspace's "
-                              f"{GLOBAL_CONFIG_RENDERED}, {WORKSPACE_ENV} and "
-                              f"{GLOBAL_CONFIG_WORKTREE_OVERRIDES} — a full "
+                              # Enumerated from VANILLA_RESET_FILES, never
+                              # restated: a hand-written list here drifted from
+                              # the real set the moment ciu-P47 added a file to
+                              # it, and a count word ("all three") drifts twice.
+                              f"{', '.join(VANILLA_RESET_FILES)} — a full "
                               "reset to freshly-cloned state (S6.4b). Without "
-                              "it, clean leaves all three untouched")
+                              "it, clean leaves every one of them untouched")
     control.add_argument("--dry-run", dest="dry_run", action="store_true",
                          help="Run the pipeline but skip docker compose up (S8.3)")
     control.add_argument("--root-folder", "--define-root", dest="define_root", type=Path, default=None,

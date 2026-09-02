@@ -18,12 +18,12 @@ def _write_identity_facts(root):
     """CIU-75: reset's config-less down path derives its compose project from
     the checkout's generated `[ciu.instance.generated]` overlay table, not its
     legacy `ciu.env` export."""
-    from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
 
     facts = {key: "" for key in GENERATED_FACTS_KEYS}
     facts["repo_name"] = "dstdns"
     facts["instance_id"] = "abc123"
-    upsert_generated_facts(root, facts)
+    write_generated_facts(root, facts)
 
 
 

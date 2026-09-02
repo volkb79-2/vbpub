@@ -199,9 +199,9 @@ ciu capabilities [--json]
     "env": """\
 ciu env — show ciu.env key=value pairs (read-only)
 ciu env generate [--define-root PATH] — (re)generate ciu.env from system state,
-  and refresh the CIU-owned [ciu.instance.generated] table in this checkout's
-  ciu.global.worktree.toml.j2 so TEMPLATES read those identity facts from the
-  merged config chain instead of ambient environment (S3.1b)
+  and rewrite this checkout's CIU-owned ciu.instance.generated.toml (the
+  [ciu.instance.generated] table) so TEMPLATES read those identity facts from
+  the merged config chain instead of ambient environment (S3.1b)
 ciu env print [--define-root PATH] — print the existing ciu.env as shell
   `export KEY='value'` lines, for: eval "$(ciu env print)"
   It PRINTS; it cannot itself change your shell (no subprocess can), and it
@@ -327,10 +327,11 @@ ciu clean [--profile NAME] [--phases N,M] [-y] [--ignore-errors]
   -y, --yes          assume yes to prompts
   --ignore-errors    continue past a failing stack (best-effort per stack)
   --vanilla          ALSO remove this workspace's ciu.global.toml (rendered),
-                     ciu.env, and ciu.global.worktree.toml.j2 — a full reset to
-                     freshly-cloned state. Without it those three are left
-                     untouched, exactly as before. Only runs when the teardown
-                     above succeeded; a failed clean keeps them for the retry.
+                     ciu.env, ciu.global.instance.toml.j2 and
+                     ciu.instance.generated.toml — a full reset to
+                     freshly-cloned state. Without it they are left untouched,
+                     exactly as before. Only runs when the teardown above
+                     succeeded; a failed clean keeps them for the retry.
 """,
     "health": """\
 ciu health [--profile NAME] [--phases N,M] [--define-root PATH]

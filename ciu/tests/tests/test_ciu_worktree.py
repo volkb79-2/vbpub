@@ -36,10 +36,12 @@ def tmp_repo(tmp_path: Path) -> Path:
     assert _git(["config", "user.email", "t@example.com"], repo).returncode == 0
     assert _git(["config", "user.name", "Test"], repo).returncode == 0
     (repo / "README.md").write_text("hello\n", encoding="utf-8")
-    # Both CIU-generated identity artifacts are gitignored (S3.1b): the overlay
-    # is the one CIU reads (CIU-75), `ciu.env` its legacy export.
+    # Every per-checkout CIU artifact is gitignored (S3.1b): the generated
+    # facts file is the one CIU reads (CIU-75), `ciu.env` its legacy export,
+    # and the instance overlay the operator's own sparse override.
     (repo / ".gitignore").write_text(
-        "ciu.env\nciu.global.worktree.toml.j2\n", encoding="utf-8"
+        "ciu.env\nciu.global.instance.toml.j2\nciu.instance.generated.toml\n",
+        encoding="utf-8",
     )
     assert _git(["add", "README.md", ".gitignore"], repo).returncode == 0
     assert _git(["commit", "-m", "init"], repo).returncode == 0
@@ -55,9 +57,10 @@ def fake_generate_env(monkeypatch, write_instance_facts):
     """Stand in for `ciu env generate` — writing BOTH of its outputs.
 
     CIU-75: the real verb still writes `ciu.env` (a legacy write-only export)
-    AND upserts `[ciu.instance.generated]` into the overlay, and only the
-    SECOND is what CIU reads back. A fake that wrote only the first would let
-    every test here pass against a product that no longer works.
+    AND writes `[ciu.instance.generated]` — into its own
+    `ciu.instance.generated.toml` since ciu-P47 — and only the SECOND is what
+    CIU reads back. A fake that wrote only the first would let every test here
+    pass against a product that no longer works.
     """
     def fake(path: Path, *, identity_only: bool = False) -> int:
         instance_id = _instance_id_for(path)
@@ -98,9 +101,9 @@ class TestAddRemoveList:
         with pytest.raises(worktree.WorktreeError, match="already exists"):
             worktree.add(tmp_repo, "dup", base="main")
 
-    def test_add_profile_writes_durable_worktree_override(self, tmp_repo, fake_generate_env):
+    def test_add_profile_writes_durable_instance_override(self, tmp_repo, fake_generate_env):
         target = worktree.add(tmp_repo, "wt", base="main", profile="core,db")
-        overlay = (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+        overlay = (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
         assert 'service_profiles = ["core", "db"]' in overlay
         assert "CIU_SERVICES_PROFILE" not in (target / "ciu.env").read_text(encoding="utf-8")
 
@@ -271,7 +274,7 @@ class TestManagedIdentityLifecycle:
         assert failed is not None
         assert failed.state == "recovery-required"
         assert failed.recovery_status == "env-generation-failed"
-        assert (failed.ciu_root / "ciu.global.worktree.toml.j2").is_file()
+        assert (failed.ciu_root / "ciu.global.instance.toml.j2").is_file()
 
         def recover(path: Path, **_kw) -> int:
             write_instance_facts(
@@ -343,7 +346,9 @@ class TestManagedIdentityLifecycle:
         assert _git(["config", "user.email", "t@example.com"], git_root).returncode == 0
         assert _git(["config", "user.name", "Test"], git_root).returncode == 0
         (ciu_root / "ciu.global.defaults.toml.j2").write_text("[ciu]\n", encoding="utf-8")
-        (git_root / ".gitignore").write_text("ciu.env\nciu.global.worktree.toml.j2\n")
+        (git_root / ".gitignore").write_text(
+            "ciu.env\nciu.global.instance.toml.j2\nciu.instance.generated.toml\n"
+        )
         assert _git(["add", "."], git_root).returncode == 0
         assert _git(["commit", "-m", "init"], git_root).returncode == 0
 
@@ -626,7 +631,7 @@ class TestManagedHelperRefusals:
                 worktree.parse_shared_infra_config(config)
 
     def test_overlay_refuses_existing_and_reports_write_failure(self, tmp_path, monkeypatch):
-        path = tmp_path / "ciu.global.worktree.toml.j2"
+        path = tmp_path / "ciu.global.instance.toml.j2"
         path.write_text("[ciu.instance]\n", encoding="utf-8")
         with pytest.raises(worktree.WorktreeError, match="refusing to overwrite"):
             worktree._write_worktree_overlay(tmp_path, "core", None)
@@ -668,9 +673,9 @@ class TestManagedHelperRefusals:
     def test_runtime_identity_reader_rejects_missing_and_malformed_env(
         self, tmp_path, write_instance_facts
     ):
-        """CIU-75 — the reader's source is the overlay's generated table, so
-        both refusals are proven against THAT file, not against `ciu.env`."""
-        (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+        """CIU-75 — the reader's source is the generated facts file, so both
+        refusals are proven against THAT file, not against `ciu.env`."""
+        (tmp_path / "ciu.instance.generated.toml").write_text(
             "[ciu.instance.generated]\ninstance_id = not-a-toml-value\n",
             encoding="utf-8",
         )
@@ -752,7 +757,7 @@ class TestAdoptRefusals:
             worktree.adopt(tmp_repo, "head-fails", str(target))
 
         monkeypatch.setattr(worktree, "_git", real_git)
-        (target / "ciu.global.worktree.toml.j2").write_text(
+        (target / "ciu.global.instance.toml.j2").write_text(
             "[ciu.instance]\nservice_profiles = [\"existing\"]\n", encoding="utf-8"
         )
         with pytest.raises(worktree.WorktreeError, match="refusing to replace"):
@@ -776,7 +781,7 @@ class TestAdoptRefusals:
             shared_infra_ref_projects="reference-project",
         )
         assert "reference-network" in (
-            adopted.ciu_root / "ciu.global.worktree.toml.j2"
+            adopted.ciu_root / "ciu.global.instance.toml.j2"
         ).read_text(encoding="utf-8")
 
 
@@ -934,12 +939,13 @@ class TestWorktreeSubprocessEnvironment:
         ):
             worktree._clean_in(tmp_path, yes=False)
 
-    def test_clean_refuses_when_the_overlay_carries_no_generated_table(
+    def test_clean_refuses_when_no_generated_facts_exist(
         self, tmp_path
     ):
-        """CIU-75 — an overlay that exists but was never through `ciu env
-        generate` (an operator's bare profile override) is NOT an identity."""
-        (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+        """CIU-75 — a checkout that was never through `ciu env generate` is NOT
+        an identity, and (ciu-P47) the operator's own instance overlay does not
+        become one however much it carries."""
+        (tmp_path / "ciu.global.instance.toml.j2").write_text(
             '[ciu]\nservice_profiles = ["core"]\n', encoding="utf-8"
         )
         with pytest.raises(
@@ -948,7 +954,7 @@ class TestWorktreeSubprocessEnvironment:
             worktree._clean_in(tmp_path, yes=False)
 
     def test_clean_surfaces_unreadable_target_env(self, tmp_path, monkeypatch):
-        (tmp_path / "ciu.global.worktree.toml.j2").mkdir()
+        (tmp_path / "ciu.instance.generated.toml").mkdir()
         with pytest.raises(worktree.WorktreeError, match="could not read"):
             worktree._clean_in(tmp_path, yes=False)
 
@@ -957,8 +963,8 @@ class TestWorktreeSubprocessEnvironment:
         OSError` alone let `WorkspaceEnvError` (a `ValueError` subclass)
         escape as a raw traceback, and this function exists precisely so a
         clean never runs under a half-known identity. CIU-75 moved the source
-        to the overlay; the refusal contract is unchanged."""
-        (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+        to the generated facts; the refusal contract is unchanged."""
+        (tmp_path / "ciu.instance.generated.toml").write_text(
             "[ciu.instance.generated]\nrepo_root = not-a-toml-value\n",
             encoding="utf-8",
         )
@@ -969,7 +975,7 @@ class TestWorktreeSubprocessEnvironment:
         """CIU-62 — the byte-level half: `UnicodeDecodeError` is a SIBLING of
         `WorkspaceEnvError` under `ValueError`, so naming either one alone
         still leaves this open."""
-        (tmp_path / "ciu.global.worktree.toml.j2").write_bytes(
+        (tmp_path / "ciu.instance.generated.toml").write_bytes(
             b'[ciu.instance.generated]\nrepo_root = "\xff\xfe"\n'
         )
         with pytest.raises(worktree.WorktreeError, match=r"\[S16\] could not read"):
@@ -1219,7 +1225,7 @@ class TestExactWorktreeControl:
 
     @pytest.fixture
     def ready(self, tmp_repo, fake_generate_env, write_instance_facts):
-        """A ready managed instance whose generated overlay table carries the
+        """A ready managed instance whose generated facts file carries the
         FULL required identity vocabulary (repo_root, physical_repo_root,
         repo_name, instance_id, network), all matching the record."""
         worktree.create(tmp_repo, "ctrl")
@@ -1304,7 +1310,7 @@ class TestExactWorktreeControl:
 
     def test_sanitized_env_surfaces_unreadable_env(self, ready):
         repo_root, record = ready
-        (record.ciu_root / "ciu.global.worktree.toml.j2").write_text(
+        (record.ciu_root / "ciu.instance.generated.toml").write_text(
             "[ciu.instance.generated]\nrepo_root = not-a-toml-value\n",
             encoding="utf-8",
         )
