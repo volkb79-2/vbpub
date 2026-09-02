@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: NL-1
 title: "assay-backed implementation gate: pinned pyz judge replaces coverage_gate/mutation_gate self-judgment"
-status: carved
+status: fixed
 type: "feature"
 severity: "medium"
 component: "gates"
@@ -11,6 +11,8 @@ provenance: "controller session 2026-08-21; evidence: nyxloom-trove/reports/back
 priority: 2
 filed_date: "2026-08-21"
 carved_handoff: nyxloom-P48-assay-gate
+closed_date: "2026-09-02"
+closed_reason: "Merged 2a8f5278 -- nyxloom-P48-assay-gate: nyxloom's own tester-unified gate now judged by Assay's R0/R1 changed-line judge, replacing the retired coverage_gate self-judgment. R2 mutation + gate_canary.py/R3 reconciliation deferred to NL-5. ('merged' is auto-tick-only via the daemon's merge hook, which this hand-driven package never went through; 'fixed' records the actual resolution.)"
 ---
 
 ## Observed mechanism and reproduction
