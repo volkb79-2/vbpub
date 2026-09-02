@@ -5055,6 +5055,23 @@ the actual message required monkeypatching `AssayError.__init__` in a Python
 REPL to print a stack trace at construction time, then reading off the
 `message` argument by hand.
 
+> **Note 2026-09-02 (assay controller) — second, independent reproduction,
+> PRIORITY EVIDENCE.** Wave C generation 4 hit exactly this on the Go path
+> the same day, before this entry existed: `python3 <pyz> run unit …` inside
+> `tester-unified-go:local` printed only `unit: ERROR/UNREADABLE_ARTIFACT
+> (exit 2)` plus the `commit:`/`argv:` lines, and the actual message (a
+> module-path mismatch misreported as "the profile and the working tree are
+> not the same revision") had to be recovered by probing the library
+> directly. Transcript: `reports/assay-WAVE-C-go-REPORT.md` §26 and the
+> Wave C backlog entry "`go` is registered at R1, but no Go lane reachable
+> through the shipped CLI can resolve its own coverage keys" (B059 after the
+> Wave C merge; provisionally B057 on `feature/assay-wave-c-go`). Two
+> languages, two consumers, one day. Disposition: NOT folded into Wave C
+> (its scope is Go; this is the CLI's error surface) — paired with B049 for
+> the post-Wave-C consumer-diagnostics patch wave, where the narrower
+> stderr option below is the natural first cut and the verdict-JSON option
+> waits for the next schema cut.
+
 ### Why assay owns it
 
 This is not one lane's config being wrong — it's every `ERROR`-outcome path

@@ -647,3 +647,52 @@ principles don't already resolve.
   free ids: **A-404**, **B058**. Checkpoint clause unchanged (BRIEF-6).
   On completion: fresh adversarial reviewer, 3-round cap, then merge →
   `cmru release` (MINOR) → deploy → dstdns notify, same terms as Wave B.
+
+- **2026-09-02 (backlog id collision with main; dstdns adopted the JS
+  lane overnight)** — The operator flagged two upstream findings filed to
+  assay's backlog as B053/B054. Confirmed: main commit `a050a467`
+  (2026-09-02 00:27, provenance `dstdns/docs/plan-tooling-adoption-and-
+  hygiene-2026-09-01.md` §3) filed **B053** (an `ERROR`-outcome verdict's
+  detailed message is never surfaced — not stdout, not stderr, not the
+  verdict JSON; only `cli.py`'s one wrapped call prints it) and **B054**
+  (a never-executed file matched by `coverage.include` can make
+  `@vitest/coverage-istanbul` emit a self-contradictory `branchMap`, and
+  `UNREADABLE_ARTIFACT` refuses the WHOLE verdict rather than the one
+  file). Both came from dstdns's first `javascript` lane — which means the
+  brief written yesterday was picked up the same night: dstdns's plan doc
+  cites it by path, `run-gate.toml` now pins `assay-4.0.0.pyz`, and
+  `assay.toml` carries `[lanes.ui_unit]` with `language = "javascript"`
+  and `link_paths`. Two of the three "consumer adoption" gaps from the
+  assessment closed in one day; the third (srdm, A-O04) waits on F008-A5.
+
+  **The collision.** The Wave C branch already carries its own B053..B058
+  (lit.go laundering, the inert package-data stanza, the downgraded-adapter
+  tests, covergate's over-approximation, the module-path blocker, the
+  `zipapp-staging/` leftover) — ~108 references in 24 tracked files at
+  generation 5's current tip `1885d64e`. **Ruling: main's ids win** (the
+  estate's precedent is the CIU-55 shift at the ciu backlog wave's
+  checkpoint 2); the branch renumbers B053→B055, B054→B056, B055→B057,
+  B056→B058, B057→B059, B058→B060, in descending order, historical briefs
+  and logs included (an id that now resolves to a different entry is worse
+  than an edited record), as its own `chore(assay):` commit before the
+  next gate, with a renumbering note at the top of the new B055 and a LOG
+  entry carrying the map; main's two entries are NOT copied onto the
+  branch — the merge brings them and the controller resolves the
+  `4-backlog.md` conflict. Sent to generation 5 via `SendMessage` (resume,
+  not a fresh spawn). Next free backlog id on the branch becomes B061.
+
+  **Fold-in.** Main's B053 is a second, independent reproduction of what
+  generation 4's B057 (→B059) transcript showed on the Go path the same
+  day — the bare three-line summary, message recoverable only by probing
+  the library. Noted on main's B053 as priority evidence. Consequence for
+  DA-8's proof (c): the message is provable at the library boundary and
+  only the reason code through the CLI; generation 5 told to prove both
+  where each is observable and say so in the REPORT. **Neither main
+  finding is folded into Wave C** (scope is Go; these are the CLI's error
+  surface and the JS parser's per-file isolation): both pair with B049 as
+  the **post-Wave-C consumer-diagnostics patch wave** — three findings from
+  the first JS consumer's first week, all schema-free in their narrow
+  form (B053's stderr option; B049's `st_nlink` check; B054's per-file
+  `NO_MEASUREMENT` isolation or, failing a ruling, the documented
+  `coverage.include` constraint). The srdm backlog's pointer to "B056" was
+  corrected on main to name the entry by title and its post-merge id.

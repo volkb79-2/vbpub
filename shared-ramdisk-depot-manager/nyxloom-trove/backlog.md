@@ -42,7 +42,8 @@ tree already has is worse than an empty one.
   examined, not a statement about the whole change** — and P14's real
   changed-line coverage is currently UNKNOWN, not 98.4%.
   **Note 2026-09-01 (from assay Wave C, vbpub `assay/nyxloom-trove/reports/
-  assay-WAVE-C-go-REPORT.md` §17, backlog B056):** the mechanism is located
+  assay-WAVE-C-go-REPORT.md` §17; the assay backlog entry is B058 after the
+  Wave C merge, provisionally B056 on the branch):** the mechanism is located
   by reading `tools/covergate` itself. `Evaluate`'s `fc == nil` branch is
   where a changed file absent from the profile goes: it becomes `NoCode`
   (excluded from the ratio) or `Unmeasured` (counted uncovered), and the
@@ -57,8 +58,11 @@ tree already has is worse than an empty one.
   "first thing to check" without srdm re-deriving it.
 - **`tools/covergate` counts every line inside a cover block's extent as
   executable, so the floor measures more lines than Go has statements**
-  (filed 2026-09-01 from assay Wave C; vbpub assay backlog **B056** carries
-  the full evidence, this is the srdm-side pointer). `profile.go`'s
+  (filed 2026-09-01 from assay Wave C; the vbpub assay backlog entry of the
+  same title carries the full evidence — **B058 once the Wave C branch
+  merges**; it was provisionally B056 on `feature/assay-wave-c-go` until
+  main's own B053/B054 filings of 2026-09-02 shifted the branch's ids by two —
+  this is the srdm-side pointer). `profile.go`'s
   `ParseCoverProfile` does `for l := start; l <= end; l++` and
   `Executable(line)` is `Executed[line] || Missing[line]`, so function
   signature lines, `case` labels, closing braces and statement-continuation
