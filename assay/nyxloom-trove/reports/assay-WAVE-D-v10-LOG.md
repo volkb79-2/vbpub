@@ -1179,3 +1179,84 @@ seconds of launch. Load stayed 5.1–7.4.
   the two recorded outcomes and by `detail` (A-428).
 - No code. No gate (records-only; the gate-verified commit stays `bfb55e3f`
   until the cut is judged).
+
+### 27. `feat(assay)!: verdict schema v9 -> v10 — the integrity cut (B050/B053/B004/B007/F015)`
+
+- **`b2fd09f3`. THE CUT. The only `!` commit on this branch, and the gate is
+  GREEN on it.** 97 files, +8840/-532.
+- Contents, against BRIEF-7 §3.1 (a)-(g): the JSON Schema (`$id`
+  `urn:assay:schema:verdict:10`), `verdict.py` (the dataclasses and
+  `VERDICT_SCHEMA_VERSION = 10`), `verify.py`'s independent re-derivation,
+  `errors.py`'s two new reason codes, `config.py`'s `RIGOR_LEVELS` gaining
+  `R4`, the producer-side re-wiring in `canary.py`/`runner.py`, the
+  `carve-assets/W6/` drift guard, `tools/tester-unified-gate.sh`'s new phase,
+  `docs/DESIGN-GUIDE.md` §6, and `CHANGES.md`'s `[Unreleased]` breaking entry.
+  The test-suite blast radius rides the same commit because the suite must be
+  green at the cut: 48 verdict fixtures plus ~24 modules.
+- **Six wire changes**, each an A-row before a line of it was written:
+  `judgment.r2.fail_under` (A-427), `claim.detail`/`detail_dropped_bytes`
+  (A-428), `PROVENANCE_UNVERIFIED` + the `adjudicated ⇒ verified_by_assay:
+  false` narrowing (A-430), the ordered bounded canary `targets` list with a
+  closed `aggregation` and a per-attempt payload (A-432), and `R4`/`red_first`
+  /`RED_FIRST_UNPROVEN` (A-433 as amended by A-434).
+- **W5 is KEPT byte-for-byte.** `git diff` over `carve-assets/W5/` is empty
+  across the whole commit; the hard-cut sweep in W6's suite is what proves its
+  seven v9 documents are now REFUSED rather than migrated, and the gate's
+  `verdict-v6-v7-v8-v9-hard-cut-verified` phase reports "hard-cut guard passed
+  for 25 frozen templates".
+- **Three gate-only consumers were found by the gate, one per run**, and this
+  is the generation's transferable lesson: `pytest tests/` is green on this
+  branch with **20 tests skipped**, and those 20 are exactly the harnesses that
+  read a real produced artifact inside the tester-unified image.
+  - Run **a** (`gate-gen8a.log`, `GATE_EXIT=1`): `gate/python/qualify_topos.py`
+    still pointed `_EXPECTED_ROOT` at `carve-assets/W5/expected` and hardcoded
+    `schema_version != 9` twice. This is the P25 Topos harness's FIFTH
+    generation advance (P33 → W1 → W2 → W4 → W5 → W6) and its own header
+    records the rule.
+  - Run **b** (`gate-gen8b.log`, `GATE_EXIT=1`): `topos-qualified` now passes,
+    and `gate/python/qualify_cmru_b006a.py` fails on the next phase reading a
+    flat `canary.control_outcome` that is `canary.attempts[0].control_outcome`
+    now.
+  - Run **c** (`gate-gen8c.log`): **GREEN.**
+- **Gate verdict on `b2fd09f3`** — `/tmp/…/scratchpad/gate-gen8c.log`:
+  `GATE_EXIT=0`; exactly ONE `ASSAY_REGISTERED_GATE_COMPLETE=1`; ZERO
+  `FAILED|DIRTY_TREE|Traceback`; wheel
+  `assay-4.1.1.dev30+gb2fd09f3-py3-none-any.whl` (the judged commit is in the
+  wheel name); all TWELVE phases in order —
+  `wheel-installed`, `attestation-hardened`, `verdict-v5-accepted`,
+  `lane-schema-v2-successors-verified`,
+  `verdict-v6-v7-v8-v9-hard-cut-verified`,
+  **`verdict-v10-successors-verified`** (79 passed in 1.10s),
+  `judge-provenance-bound-to-the-installed-wheel`, `self-hosted-lane-passed`,
+  `topos-qualified`, `cmru-b006a-qualified`,
+  `independent-self-hosting-passed`, `pyflakes-clean`.
+- Host discipline: three gate runs, each launched only after `docker ps
+  --format '{{.Image}}'` showed no `tester-unified:local` and `pgrep -af
+  tester-unified-gate.sh` was clear, each capped with `docker update
+  --cpus=3` within seconds of launch (`6117465f707a`, `0ad19f33176e`), never
+  two at once. Every local pytest was serial under `nice -n 19 ionice -c 3`
+  and targeted at the module under repair; the whole suite ran once, before
+  run a. Load average stayed in the 5-7 band it was already in.
+
+### 28. `docs(assay): Wave D generation 8 checkpoint — the v10 cut is green, BRIEF-8`
+
+- Records only, plus the DA-R21 note. LOG entries 27/28, the REPORT's
+  generation-8 section, `reports/assay-WAVE-D-v10-BRIEF-8.md` (new), and the
+  two one-line PLANNED notes DA-R21 asks for on `3-roadmap.md`'s M7 and
+  `2-product-definition.md`'s F015 — F015's wire shape is in v10, its
+  IMPLEMENTATION is the post-v10 plan's E-4, and neither file may read as done
+  or proven.
+- **No gate this commit, deliberately** (records + two doc notes; the
+  gate-verified commit stays **`b2fd09f3`**), on the precedent generations 6
+  and 7 set for their own docs-only checkpoints.
+- **Checkpoint taken at the boundary the E-008 clause ranks HIGHEST: a green
+  registered gate.** The seven post-cut items (B050 → B051 → B052 → B053
+  `detail` → B004 → B007 → CONSUMERS migration notes) were NOT started, so no
+  half-done item is left behind; BRIEF-8 hands them to generation 9 in order
+  with their measured seams.
+- Ids: re-checked against `main` before allocating, as the rules and both
+  controller messages require. `git show main:…/4-backlog.md | grep -o '^## B[0-9]*'
+  | tail -1` → **B068**, so the next free branch id is **B069**. **No B-id was
+  allocated this generation** and no backlog entry was needed. `main`'s last
+  decision row is still `A-407`; the branch's own high-water mark is
+  **A-434**, allocated in entry 26, so the next free A-id is **A-435**.

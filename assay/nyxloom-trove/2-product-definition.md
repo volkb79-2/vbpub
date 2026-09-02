@@ -471,6 +471,7 @@ features:
   acceptance:
   - A lane can assert that a new test would have caught the bug it was written for - the canary machinery inverted, requiring the test to fail at the pre-fix commit and pass at HEAD.
   - The claim is Tier 1 (computed in-process, fully deterministic), reusing the existing build-a-variant-commit path rather than new substrate.
+  notes: Verdict schema v10 (Wave D) carries the WIRE SHAPE only - R4, judgment.r4, claim.red_first and FAIL/RED_FIRST_UNPROVEN, with no producer and an R4 lane refused at load. Neither acceptance above is met by that. The implementation is the post-v10 plan's E-4 (DA-R21).
   status: planned
   milestone: M7
 non_goals:

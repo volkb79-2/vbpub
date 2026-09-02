@@ -2017,3 +2017,168 @@ rows, and nothing is implemented yet.
   the cut.
 - **Any lane-file or consumer change.** `LANE_SCHEMA_VERSION` stays 2 and
   `inventory_schema` stays 1 in every row written here.
+
+---
+
+# Generation 8 — THE CUT (fresh Opus, seeded by BRIEF-7)
+
+## What landed
+
+| commit | what |
+|---|---|
+| `4538bd66` | `docs(assay)`: **A-434** only — DA-R18's delegated question, answered as an argued row |
+| **`b2fd09f3`** | **`feat(assay)!`: verdict schema v9 → v10, the integrity cut. The branch's only `!` commit. GATE GREEN.** |
+| (this commit) | `docs(assay)`: generation-8 checkpoint — LOG 27/28, this section, BRIEF-8, and DA-R21's two PLANNED notes |
+
+The seven post-cut items are **not started**. That is the checkpoint decision,
+argued below, not an omission.
+
+## A-434 — the DA-R18 question, and why it is not `COMMAND_FAILED`
+
+DA-R18 corrected A-433 (`RED_FIRST_UNPROVEN` is a judged `FAIL`, not
+`NO_MEASUREMENT`) and left one thing to the implementer: the code for the HEAD
+side, "reuse the R0 failing-command code if one fits exactly, else
+`RED_FIRST_UNPROVEN`". It does not fit exactly, and A-434 says why in three
+parts rather than asserting it:
+
+1. **R3 precedent.** `canary.py:734-756` runs two commands of its own and maps
+   NEITHER onto R0's `COMMAND_FAILED`. A red-first claim is the same shape —
+   two runs the judge itself orchestrates — so reusing R0's code here would
+   make R4 the odd one out.
+2. **Which-side ambiguity.** On a red-first claim the BEFORE run is *expected*
+   to fail. `FAIL`/`COMMAND_FAILED` on such a document cannot say which half
+   went wrong without the reader consulting the two recorded outcomes anyway,
+   so the code would carry no information the payload does not already carry.
+3. **`errors.py` states the rule against itself**: "which mechanism refused is
+   the distinction this project exists to keep."
+
+Both judged halves therefore carry `FAIL`/`RED_FIRST_UNPROVEN`, discriminated
+by `before_outcome`/`after_outcome` and by `detail` (A-428), which is REQUIRED
+on both and composed at the `runner.announce_refusal` conversion site.
+Mechanism failures — a snapshot that could not be built, a base that could not
+be resolved — keep their existing substrate codes under `NO_MEASUREMENT` and
+are untouched. `verify.py` still re-derives `PASS` iff
+`before != PASS and after == PASS`, so the code is a label on a judgement the
+verifier reaches on its own.
+
+## The gate found three consumers the local suite cannot see
+
+This is the finding worth carrying out of this generation, and it cost two
+full ~25-minute gate runs to learn:
+
+> `pytest tests/` on this branch is green with **20 tests skipped**, and those
+> 20 skips are exactly the harnesses that read a REAL produced artifact inside
+> the tester-unified image (`requires the tester-unified image's own
+> /opt/tester-venv`). Every consumer of a wire shape that lives in
+> `gate/python/` is therefore invisible to a local run. A schema cut must
+> enumerate `gate/python/` BY GREP before the first gate run, not discover it
+> one phase per run.
+
+The three sites, and what each actually was:
+
+| run | site | what it read | why it is a v10 change and not a workaround |
+|---|---|---|---|
+| a | `gate/python/qualify_topos.py:92,848,905` | `_EXPECTED_ROOT` at `W5/expected`; `schema_version != 9` twice | The P25 Topos harness's **fifth** generation advance. Its own header records the rule (P33 → W1 → W2 → W4 → W5), and the W6 `p25-*-v10-template.json` pair is W5's own pair with `schema_version` 9 → 10 and **nothing else** — a P25 lane declares R0,R1 and touches none of the six shapes this cut moved. Verified by `diff` over the sorted JSON. |
+| a | `tests/test_python_qualification.py:329,348` | the same root, as a consumer | Follows the harness, and must never lag it. |
+| b | `gate/python/qualify_cmru_b006a.py:552-561` | `canary.control_outcome` etc., flat | The payload is `{mechanism, attempts[]}` now (B007/A-432). It reads `attempts[0]` **after asserting there is exactly one** — this lane declares one target, and a second attempt would mean the thing being qualified stopped being the lane the harness describes. |
+
+While `qualify_cmru_b006a.py` was open, two checks were **added**, because the
+cut created the fork that makes them possible and a fork covered on one branch
+is how a fork rots (W5's own lesson about `producer`, applied again):
+
+* the attempt's `disposition` must be `"attempted"` — a probe that never ran is
+  not a control that passed;
+* `judgment.r3.targets` must be exactly the one target the attempt names, with
+  **no** `aggregation` — with one declared probe `any` and `all` denote the
+  same function, so recording either records a policy the lane never stated.
+
+Four negatives were added to `tests/test_gate_qualify_cmru_b006a.py` for the
+four new refusals (63 passed).
+
+## Gate — the acceptance evidence
+
+Three runs, one at a time, each capped at 3 CPUs within seconds of launch.
+
+| run | log | commit | verdict |
+|---|---|---|---|
+| a | `gate-gen8a.log` | `7cb6f525` | `GATE_EXIT=1` — 2 failed / 4054 passed / 20 skipped; both new phases reached |
+| b | `gate-gen8b.log` | `6287da59` | `GATE_EXIT=1` — suite green, `topos-qualified` reached, `qualify_cmru_b006a` raised |
+| **c** | **`gate-gen8c.log`** | **`b2fd09f3`** | **`GATE_EXIT=0`** |
+
+Run c, read in a separate step as LESSONS L4 requires:
+
+* `GATE_EXIT=0`
+* `ASSAY_REGISTERED_GATE_COMPLETE=1` — exactly one
+* `FAILED|DIRTY_TREE|Traceback` — **zero**
+* wheel `assay-4.1.1.dev30+gb2fd09f3-py3-none-any.whl` — the judged commit is
+  in the wheel name, so the artifact under test was built from committed HEAD
+* twelve phases, in order, including **`verdict-v10-successors-verified`**
+  (79 passed) and the renamed `verdict-v6-v7-v8-v9-hard-cut-verified`
+  ("hard-cut guard passed for 25 frozen templates")
+* the self-hosted lane's own line: `tester-unified: PASS (exit 0)  commit:
+  b2fd09f3…`
+
+## Decision asks for the controller
+
+1. **`judgment.r2.fail_under` and the mutation score's denominator (B050,
+   post-cut).** A-427 says `judge_mutation` "regains the parameter A-380
+   removed … already written and tested once, so a re-wiring, not new
+   arithmetic". It was not: `git log -S fail_under -- src/assay/mutation.py`
+   returns exactly one commit (`d0aab6fd`, B046) and that commit only
+   *describes* the removal in prose — no arithmetic was ever committed. The
+   denominator is nonetheless **derivable rather than inventable**: the
+   `survived` branch is reached only after `crashed` and `budget_exceeded` are
+   known empty, and `Mutation.equivalent`'s own docstring already states it is
+   "excluded from the mutation score's denominator", so
+   `pct = 100 * len(killed) / (len(killed) + len(survived))`. **Confirm that
+   reading** before generation 9 writes it; it is the one place where B050
+   could quietly invent a product number.
+2. **B051's `discarded` and that same denominator.** B051 makes `discarded` a
+   listed field. If discarded mutants are also excluded from the denominator
+   (they are, on B046's own "excluded from the score's denominator" wording for
+   `CompileError`/`RuntimeError`), then B050's arithmetic and B051's landing
+   interact and B050 should be written with that already in mind rather than
+   amended by B051. Generation 9 should land them adjacently and say so.
+3. **DA-R21 is recorded, not interpreted.** M7 and F015 are left `PLANNED`
+   with a one-line note each pointing at the post-v10 plan's E-4. Nothing in
+   this branch marks either done or proven, and the v10 cut carries F015's wire
+   shape with no producer and an `R4` lane refused at load. If the controller
+   wants that note worded differently — or wants the R4 refusal made a named
+   backlog entry so it cannot be forgotten — say so; I did not allocate a B-id
+   for it.
+
+## What a reviewer should push on (generation 8's own work)
+
+1. **The W6 `p25-*` pair.** Push on whether `schema_version` 9 → 10 really is
+   the whole migration. The argument is that a P25 lane declares `R0,R1` and
+   the cut moved six shapes, none of which an R0/R1 lane emits — check that
+   claim against the template's own `judgment` block (`r1` + `resolved`, no
+   `r2`, no `canary`) rather than taking it.
+2. **`qualify_cmru_b006a.py`'s new `len(attempts) != 1` assertion.** It is
+   stricter than the old code. If a future qualification lane legitimately
+   declares two canary targets, this refuses. That is deliberate — the harness
+   describes ONE lane — but it is the kind of strictness that gets loosened by
+   the wrong person later, so it is worth an explicit second opinion.
+3. **Whether the gate should fail FAST on a schema-version consumer.** Three
+   runs, three sites, ~75 minutes of shared-host time. A cheap grep phase
+   (`grep -rn 'schema_version.*!= [0-9]' gate/`) placed before the wheel build
+   would have caught two of the three in five seconds. I did not add one,
+   because inventing a gate phase is a product decision and the wave prompt is
+   explicit that I do not improvise those — but it is the obvious next backlog
+   entry and I am flagging it rather than filing it.
+
+## What I did NOT do, and why
+
+* **The seven post-cut items.** Not started. The E-008 clause ranks a green
+  registered gate as the highest-priority checkpoint boundary, and the cut went
+  green at roughly the call budget the clause names. Starting B050 — which
+  touches `mutation.py`, `config.py`, `verify.py`, two test modules and
+  `CONSUMERS.md` — would have guaranteed stopping in the middle of it. BRIEF-8
+  hands all seven over in order with their seams already measured.
+* **No B-id allocated.** Both controller messages moved the floor (B065-B067,
+  then B068). The check was re-run at each: `main`'s last backlog id is
+  **B068**, next free **B069**. Nothing this generation needed one; the three
+  gate-consumer fixes are the cut's own blast radius, not new findings.
+* **No `git push`, no merge, no release.** As instructed.
+* **No `assay/**` boundary crossed.** Every path in all three commits is under
+  `assay/`.

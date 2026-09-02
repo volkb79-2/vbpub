@@ -165,6 +165,14 @@ declaration").
 
 **Delivers F015: `fail-before/pass-after` as a Tier 1 computed method.**
 
+**Still PLANNED after the v10 cut (DA-R21).** Wave D landed F015's WIRE SHAPE
+only — `R4`, `judgment.r4`, `claim.red_first` and the
+`FAIL`/`RED_FIRST_UNPROVEN` pairing are in verdict schema v10 with no producer,
+which A-138 allows and which the `carve-assets/W6/` drift guard freezes. An
+`R4` lane is refused at load, deliberately and loudly. The IMPLEMENTATION moved
+out of this wave to the post-v10 plan's **E-4**; nothing here is done or
+proven.
+
 Accepted as the next capability priority after the Go wave closes (A-244),
 explicitly as a *planning acceptance and not a dispatch* — it has no package
 number, does not gate the ship milestone, and nothing in the current queue may
