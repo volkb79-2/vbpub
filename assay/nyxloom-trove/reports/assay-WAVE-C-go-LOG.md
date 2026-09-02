@@ -1185,3 +1185,29 @@ source whose answer is then discarded — and it names the test.
 Mutation **M-F** (`to_attribute = list(block_bearing)`), same worktree, run
 over all four A-405 modules: **1 failed, 60 passed**, and the one failure is
 the new test. Before it, the reviewer measured `69 passed — SURVIVED`.
+
+### `<this commit>` — `docs(assay): SF-R2-3 -- CONSUMERS' Go refusals say what a consumer actually sees`
+
+Both blocks presented `status: ERROR / reason_code: … / <full message>` as
+the operator's output. It is not, on any surface: a judge-phase `AssayError`
+is folded into the R1 claim and a `Verdict` carries no free-text cause
+(A-138/A-170). The reviewer's control, on the tip, was a Python lane with a
+deliberately malformed artifact: `unit: ERROR/FORMAT_MISMATCH (exit 2)`, and
+nothing else.
+
+Both are rewritten to the shape the controller ruled: a `console` block
+showing what `assay run` really prints, then the refusal assay *raises*, with
+an explicit statement of who can read it — a caller of
+`assay.evaluate.evaluate_coverage`/`evaluate_targets`/
+`assay.statement_attribution.attribute_statements`, not an `assay run`
+consumer — and a pointer to main's **B053**. The `//line` block adds the one
+practical consequence: `BAD_LANE_CONFIG` is shared by several distinct causes
+on the Go path, so a generated file inside `source_roots` is worth checking
+first when a Go lane shows it.
+
+**DA-R3 is ruled docs-now and this is all of it.** No wire field, no new
+reason code, no `diagnostics` route: `runner.py:365`'s stream is the recorded
+candidate mechanism for the post-Wave-C consumer-diagnostics patch wave
+(B053 + B049), not for Wave C. Note that A-407 is what makes the "the
+verdict's R1 claim carries that same pair" sentence TRUE end to end — before
+it, both of these refusals produced no verdict at all.

@@ -1883,22 +1883,41 @@ slim image needs `go` too. Why assay cannot just parse the profile harder:
 Assay re-runs the segmentation over your source and joins it to your profile
 on the exact block extents. If they disagree — a profile carried over from an
 earlier commit, a file edited between the test run and the judgment, a
-different toolchain — the lane refuses rather than attributing lines:
+different toolchain — the lane refuses rather than attributing lines. What you
+see is the reason code:
+
+```console
+$ assay run unit --file assay.toml
+unit: ERROR/UNREADABLE_ARTIFACT (exit 2)
+```
+
+and the verdict document's R1 claim carries the same `ERROR` /
+`UNREADABLE_ARTIFACT` pair with no coverage payload.
+
+The refusal assay *raises* underneath that names the file and the disagreeing
+extents:
 
 ```text
-status: ERROR
-reason_code: UNREADABLE_ARTIFACT
 go statement attribution: 'internal/x.go': the coverage profile and the
 source-side oracle disagree about which blocks exist, so they were not
 produced from the same revision of this file. 1 record(s) only in the
 profile (28.22,29.2); 0 only from the source (none)
 ```
 
-The extents in that message are spelled the way your `.out` file spells them,
-so you can grep the artifact for them directly. The fix is to regenerate the
-profile from the tree you are judging — never to relax the check, which
-exists because attributing anyway would publish a verdict about lines that are
-not the lines that ran.
+The extents in it are spelled the way your `.out` file spells them, so they
+can be grepped against the artifact directly — but **that text reaches only a
+caller that invokes the evaluation layer itself**
+(`assay.evaluate.evaluate_coverage`,
+`assay.statement_attribution.attribute_statements`). `assay run` folds a
+judge-phase refusal into the R1 claim, and a verdict carries no free-text
+cause by design, so a CLI consumer gets the reason code and nothing more.
+Surfacing it is tracked as **B053** ("an `ERROR`-outcome verdict's detailed
+message is constructed but never surfaced anywhere a consumer can read it");
+it is not this wave's to fix, and the refusal itself is unaffected.
+
+The fix on your side is to regenerate the profile from the tree you are
+judging — never to relax the check, which exists because attributing anyway
+would publish a verdict about lines that are not the lines that ran.
 
 **3. A verdict from a Go lane carries `helpers[]`.** It records which
 toolchain actually derived those positions, because "which Go compiled this"
@@ -1950,9 +1969,16 @@ one:
   One generated file does not take your lane down.
 * a `//line`-bearing file **inside** the judged set refuses:
 
+```console
+$ assay run unit --file assay.toml
+unit: ERROR/BAD_LANE_CONFIG (exit 2)
+```
+
+The verdict's R1 claim carries that same `ERROR` / `BAD_LANE_CONFIG` pair and
+no coverage payload. The refusal assay *raises* underneath it names the cause,
+the file and the remedy:
+
 ```text
-status: ERROR
-reason_code: BAD_LANE_CONFIG
 'internal/parser/y.go' carries coverage records whose positions were remapped
 by a `//line` directive ... so its recorded line numbers are the directive's
 and not this file's. This lane judges it: 3 changed line(s) in it are inside
@@ -1961,6 +1987,13 @@ cannot be matched to the lines a diff names -- that would report a clean
 percentage over nothing measured. Generated sources belong outside the lane's
 judge.source_roots (or its judge.targets)
 ```
+
+As in limit 2 above, that text is visible to a caller of the evaluation layer
+(`assay.evaluate.evaluate_coverage` / `evaluate_targets`) and **not** to an
+`assay run` consumer, who gets the reason code — B053. `BAD_LANE_CONFIG` is
+shared by several distinct causes on the Go path, so when you see it on a Go
+lane, a generated file inside `source_roots` is one of the first things to
+check.
 
 The remedy is the same thing you would do for any generated file: keep it out
 of `source_roots` (or out of `judge.targets`). What assay will not do is the
