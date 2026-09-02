@@ -968,3 +968,42 @@ principles don't already resolve.
   (DA-R2, the `//line` rule), **A-406** (DA-R1, no vacuous
   attribution), both citing this entry. Next backlog id **B062**. Then
   the SAME reviewer is resumed for fix-verification (round 2 of 3).
+
+- **2026-09-02 (fix generation returned — gate run 11 PASS; reviewer
+  resumed for round 2)** — Generation 7 landed everything in ~50 minutes
+  and 274 tool calls: six commits on `d938ab8c` (`210812f6` the review
+  verbatim — controller confirmed sha256-identical to the reviewer's
+  file; `4c876306` BLOCKER 2; `7cda9d11` should-fix 2; `bdbb2557`
+  should-fix 1; `4c3e83f4` BLOCKER 1 as **A-405** + DA-R1 as **A-406** +
+  should-fixes 4/5/6/7; `1d464fc4` docs). **Gate verified by the
+  controller from the run-11 log directly** (`gate-run11.log`: wheel
+  `assay-4.0.1.dev45+g4c3e83f4`, all phases through
+  `independent-self-hosting-passed`, `ASSAY_REGISTERED_GATE_COMPLETE=1`,
+  `GATE_EXIT=0`, zero red hits); `git diff --stat 4c3e83f4..1d464fc4` is
+  two trove report files; tree clean; `verify.py`, `schemas/`,
+  `carve-assets/W5/` and `shared-ramdisk-depot-manager/` unchanged
+  against `main`; `verdict.py` differs by +51/−17, which the round-2
+  reviewer is asked to confirm is the helpers correspondence rule and
+  not a wire change. Implementer's counts: suite 3939/11, Go
+  qualification 5/5 in-image. Notable in the landing: the `linedup`
+  witness committed with a recipe (`probe-linedup.sh`, `linedup.out`,
+  `linedup-oracle.json`) — nine records, eight zero-column, the oracle
+  reproducing all nine extents and counts, REPORT §5 item 4's "unproven"
+  struck; `FileCoverage.line_directive_remapped` DERIVED from the blocks
+  rather than stored; the DA-R1 load-time seam is
+  `vocabulary.STATEMENT_ATTRIBUTABLE_FORMATS_BY_LANGUAGE` (the
+  adapter-attribute alternative rejected in A-406 because `config` must
+  not import `adapters`, registry's O2 guarantee) with a drift guard
+  derived from `_built_in_registry`; a third stale registry-summary copy
+  found in `cli.py`'s module docstring and fixed; the `cover.go` comment
+  measured at lines 1055-1060 in this image versus the review's
+  1053-1058, recorded rather than adjusted. Deliberately NOT repeated:
+  the srdm F008-A5 rebuild after the fold and parser changed shape
+  (REPORT §48) — handed to the reviewer as a pre-adjudicated residue to
+  re-run if its round-1 harness survives.
+
+  **Round 2 sent to the SAME reviewer via `SendMessage`** (resume, never
+  a fresh spawn): re-run its own probes verbatim, per-blocker checklist,
+  the `verdict.py` diff question, the srdm residue; round 2 of the
+  3-round cap; "on ACCEPT state it unambiguously — the controller merges
+  on your word."
