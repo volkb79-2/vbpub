@@ -115,6 +115,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   rather than a second hand-written copy of its format string. A leaked
   parent descriptor on B049's new raise path in the per-mutant equivalence
   read is closed by a `try`/`finally`. (B053/B049, A-421, A-422, A-423)
+- The last silent terminal in `assay.runner` also speaks: a cleanup that
+  reports leaked snapshot state *after* the lane's own work completed
+  replaces the highest higher-rigor claim with `ERROR`/`GIT_FAILED`, and now
+  says so instead of refusing wordlessly. The same condition with no result
+  in hand still propagates untouched — that one is a programmer error, not a
+  verdict. (B053, A-426)
 - The only test of B029's own diff no longer asserts parameter names and a
   docstring: it asserts the resolved `derived:` fact reaching the command's
   environment, at both ends of the threading, and was proven red by deleting

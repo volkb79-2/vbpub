@@ -4063,12 +4063,31 @@ def _run_higher_rigor_lane(
             )
         else:
             return refuse_all(Outcome.ERROR, ReasonCode.GIT_FAILED)
-    except RuntimeError:
+    except RuntimeError as exc:
         # `prepare_snapshot`'s own programmer-error leak detection. Only a
         # cleanup-time occurrence (after a normal result already exists) is
         # this module's problem; anything else is a genuine bug and must
         # propagate rather than be laundered into a claim.
+        #
+        # (B053/DA-R15, SF-6) When it IS laundered into a claim, it owes the
+        # same sentence the `OSError` branch four lines up owes (A-421): this
+        # was the last terminal in this module that replaced a claim with
+        # `ERROR`/`GIT_FAILED` and said nothing, so `CHANGES.md`'s "with no
+        # exceptions" was one site short of true. The announcement belongs
+        # ONLY on this side of the fork -- the `raise` below re-raises a
+        # genuine bug to the caller with its traceback intact, and a refusal
+        # line printed beside a propagating programmer error would describe a
+        # verdict that was never written.
         if outcome_holder:
+            announce_refusal(
+                AssayError(
+                    f"the lane's own work completed, but snapshot cleanup "
+                    f"detected leaked state: {exc}",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.GIT_FAILED,
+                ),
+                diagnostics=diagnostics,
+            )
             outcome = _replace_highest_higher_rigor_claim_with_git_failed(
                 lane, outcome_holder[0]
             )

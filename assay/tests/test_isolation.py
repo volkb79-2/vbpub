@@ -353,6 +353,40 @@ def test_read_regular_file_refuses_a_symlink_and_an_absent_path(
             assert caught.value.reason_code is ReasonCode.GIT_FAILED
 
 
+def test_a_leaked_materialization_raises_at_context_exit(tmp_path: Path) -> None:
+    """(B053/DA-R15, SF-6) The REAL exception, from a real leak.
+
+    ``_run_higher_rigor_lane``'s ``except RuntimeError`` catches exactly this
+    and — since SF-6 — announces it when an outcome is already in hand. That
+    handler's test drives the same exception class through assay's own
+    cleanup seam; this one is why the class and its sentence are not
+    invented: a genuine repository, a genuine materialization that is never
+    closed, no double anywhere.
+
+    It is also the measurement behind A-426's "not reachable from ``assay
+    run``": the only way to arrive here is for assay's OWN code to leave a
+    materialization open, which no lane, tool or repository state can cause.
+    """
+    repo, commit = _root_repo(tmp_path)
+    scratch = _scratch(tmp_path)
+
+    with pytest.raises(RuntimeError) as caught:
+        with prepare_snapshot(_spec(repo, scratch, commit), timeout=TIMEOUT) as prepared:
+            # Entered and deliberately never exited: the leak the guard exists
+            # to detect. The context manager is BOUND rather than discarded --
+            # an unreferenced generator-based CM is collected the moment
+            # `__enter__` returns, and closing it runs the very cleanup this
+            # test is trying to skip.
+            leaked = prepared.materialize(timeout=TIMEOUT)
+            leaked.__enter__()
+
+    assert "close every materialization first" in str(caught.value)
+    assert "1 live snapshot context(s)" in str(caught.value)
+    # The guard removes the leaked trees before raising, so the programmer
+    # error never doubles as a state leak.
+    assert list(scratch.iterdir()) == []
+
+
 # --------------------------------------------------------------------------
 # Lifecycle
 # --------------------------------------------------------------------------

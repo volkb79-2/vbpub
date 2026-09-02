@@ -867,3 +867,140 @@ def test_a_command_that_dirties_the_snapshot_blames_the_command_on_an_r1_lane(
     assert lines[0].startswith("assay: NO_MEASUREMENT/DIRTY_TREE: "), lines
     assert "leftover.txt" in lines[0], lines
     assert "the lane's own command" in lines[0], lines
+
+
+# --- SF-6 / DA-R15: the LAST silent terminal in runner.py ------------------
+#
+# `_run_higher_rigor_lane`'s `except RuntimeError` replaced the highest
+# higher-rigor claim with ERROR/GIT_FAILED and said nothing -- four lines
+# below the `except OSError` A-421 fixed, and the last such site in the
+# module (R-1 round 2 re-audited every terminal). MEASURED, and recorded in
+# A-426: it is NOT reachable from `assay run` by any operator input. The only
+# raiser is `isolation.prepare_snapshot`'s own programmer-error leak
+# detection, which fires when assay's own code leaves a materialization open
+# -- i.e. an assay bug, not a lane, a tool or a repository state. So it is
+# covered at the seam instead, in two real halves:
+#
+#   1. `tests/test_isolation.py::test_a_leaked_materialization_raises_at_
+#      context_exit` proves the exception and its sentence are real, from a
+#      real repository and a real leak, with no double at all;
+#   2. the test below proves the HANDLER announces, driving the same
+#      exception class carrying that same real sentence in through
+#      `scratch_root_factory` -- assay's OWN cleanup seam, the one A-193/
+#      A-194's rule is written about and the one the timeout module already
+#      uses for this purpose. A-334 governs evidence about EXTERNAL systems;
+#      the subject here is assay's own except branch.
+
+#: Verbatim from `isolation.py`'s own raise (pinned real by the companion
+#: test named above), so this module cannot drift into asserting a sentence
+#: no code produces.
+REAL_LEAK_MESSAGE = (
+    "prepare_snapshot's context closed with 1 live snapshot context(s); "
+    "close every materialization first"
+)
+
+
+def _scratch_root_factory_leaking_on_exit():
+    @contextlib.contextmanager
+    def factory():
+        with runner.default_scratch_root() as root:
+            yield root
+        raise RuntimeError(REAL_LEAK_MESSAGE)
+
+    return factory
+
+
+def test_a_cleanup_time_state_leak_says_so_instead_of_refusing_in_silence(
+    git_repo: GitRepo,
+):
+    """DA-R15 / R-1 round 2's SF-6.
+
+    The lane's own work COMPLETED -- there is an outcome in hand -- and only
+    the cleanup then reported leaked state. That is the one occurrence this
+    module owns (anything else is a genuine bug and still propagates, proven
+    by the control below), and it replaces the R1 claim with
+    ``ERROR``/``GIT_FAILED``. Before this fix it did so without a word, so
+    ``CHANGES.md``'s "every refusal reachable through ``assay run``, with no
+    exceptions" was one site short of true.
+    """
+    git_repo.write(".gitignore", "cov.json\n")
+    git_repo.write("pkg/mod.zzz", "BASE\n")
+    base_rev = git_repo.commit_all("add pkg base")
+    git_repo.write("pkg/mod.zzz", "BASE\nLINE2\n")
+    head_rev = git_repo.commit_all("add pkg head")
+
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
+    # A VALID artifact: the lane's own work must genuinely complete, so that
+    # the only refusal in the whole run is the cleanup one under test.
+    payload = (
+        '{"files": {"pkg/mod.zzz": {"executed_lines": [1, 2], '
+        '"missing_lines": [], "excluded_lines": []}}}'
+    )
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=("/bin/sh", "-c", f"printf '%s' '{payload}' > cov.json"),
+    )
+    diagnostics = io.StringIO()
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        scratch_root_factory=_scratch_root_factory_leaking_on_exit(),
+        diagnostics=diagnostics,
+    )
+
+    r1 = [claim for claim in verdict.claims if claim.rigor == "R1"]
+    assert r1 and r1[0].status is Outcome.ERROR, verdict.claims
+    assert r1[0].reason_code is ReasonCode.GIT_FAILED, r1[0]
+    lines = _refusal_lines(diagnostics.getvalue())
+    assert len(lines) == 1, diagnostics.getvalue()
+    assert lines[0].startswith("assay: ERROR/GIT_FAILED: "), lines
+    assert "snapshot cleanup detected leaked state" in lines[0], lines
+    assert "close every materialization first" in lines[0], lines
+
+
+def test_a_state_leak_with_no_outcome_in_hand_still_propagates_and_stays_silent(
+    git_repo: GitRepo,
+):
+    """The control, and the reason the announcement sits on ONE side of the
+    fork.
+
+    With no outcome in hand the ``RuntimeError`` is a genuine programmer
+    error and is re-raised to the caller with its traceback intact. No
+    verdict is written, so a refusal line printed here would describe a
+    document that does not exist -- and B053's contract is one line per
+    refusal, not one line per exception.
+    """
+    git_repo.write("pkg/mod.zzz", "BASE\n")
+    base_rev = git_repo.commit_all("add pkg base")
+    git_repo.write("pkg/mod.zzz", "BASE\nLINE2\n")
+    head_rev = git_repo.commit_all("add pkg head")
+
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
+    lane = make_lane(rigor=("R0", "R1"), judge=judge)
+    diagnostics = io.StringIO()
+
+    @contextlib.contextmanager
+    def factory():
+        # Raises BEFORE any lane work happens, so no outcome is ever built.
+        raise RuntimeError(REAL_LEAK_MESSAGE)
+        yield  # pragma: no cover - unreachable, required to make this a CM
+
+    with pytest.raises(RuntimeError):
+        runner.run_lane(
+            lane,
+            commit=head_rev,
+            repo=git_repo.path,
+            project_root=git_repo.path,
+            adapter=ADAPTER,
+            assay_version="0.1.0",
+            scratch_root_factory=factory,
+            diagnostics=diagnostics,
+        )
+
+    assert _refusal_lines(diagnostics.getvalue()) == [], diagnostics.getvalue()
