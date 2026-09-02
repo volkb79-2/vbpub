@@ -241,3 +241,10 @@ precedent for shape and discipline.
   Rule tightened for reviewers: one pytest invocation alive at a time,
   targeted test files per mutant rather than the whole suite. R-1 and the
   peer were told; the peer resumed its own queue at its discretion.
+  **Second escalation 16:58** — the peer flagged IO PSI rising 36 → 62 %.
+  Measured: swap-out ~19 MB/s, 21 GB of swap in use, iowait 27–40 % — the
+  six paused runs' resident memory being evicted. Controller SIGKILLed the
+  six paused runs (mut1, still running, untouched); swap-out went to 0
+  within seconds, load 1-min 26 and falling. R-1 was told to rerun the six
+  mutants serially with targeted test files after mut1 and the gate finish;
+  the mutated copies are intact, so no evidence is lost, only recomputed.
