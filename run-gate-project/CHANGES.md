@@ -111,6 +111,16 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     the record judges a different commit — naming both commits and the new
     `--fresh` flag, which removes the named container first and runs anew.
     Every branch is disclosed by name.
+  - **Two clients on one lane: the second FOLLOWS, it does not take over.**
+    The record names the client that started the container (`owner_pid`,
+    the process start time from `/proc/<pid>/stat`, and `boot_id` — a
+    conjunction, so a recycled pid and a post-reboot pid both read as dead).
+    An invocation that finds a LIVE owner prints `following <name> (owner
+    pid N, started <t>)`, streams the same logs, exits with the same code and
+    removes nothing: not the container, not the record, not a history entry —
+    all three stay with the owner, so the run is still recorded exactly once.
+    `--fresh` against a live owner is refused by pid; run-gate never removes
+    another client's container. A DEAD owner is adopted exactly as above.
   - History records a re-attached or collected run ONCE, with the duration
     measured from the container's start rather than from the seconds the
     client was attached.

@@ -891,9 +891,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     CONSTRUCTION — `R-21` already relocates the effective project dir into
     the judged tree, so two worktrees' gates address two different files and
     never meet, which is `R-36f`'s scoping answer reused rather than
-    re-derived. The residual case (two clients, one lane, one tree) is
-    arbitrated the same way: a sibling `inflight.lock` (`O_NOFOLLOW`, 0600,
-    bounded) plus write-temp-then-`os.replace`. The store must be
+    re-derived. The record's WRITE is serialised by a sibling
+    `inflight.lock` (`O_NOFOLLOW`, 0600, bounded) plus
+    write-temp-then-`os.replace`; that lock spans the write and nothing
+    else, and it is NOT what arbitrates two live clients — `R-39e` is. The
+    record therefore also names its OWNER: `owner_pid`, `owner_start` (the
+    process start time, field 22 of `/proc/<pid>/stat`, so a recycled pid
+    cannot impersonate the owner) and `boot_id` (a pid means nothing across
+    a reboot). The store must be
     git-ignored and that is CHECKED, exactly as `R-36g` checks it, over all
     three paths the writer can leave behind. A store that cannot be
     confirmed ignored, or cannot be written, degrades to ONE warning that
@@ -901,9 +906,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     a second one") and the lane RUNS: refusing to write is not refusing to
     run, and run-gate has never made an un-ignored `.run-gate/` fatal.
   - **`R-39b` The decision, taken before anything is built.** With a record
-    present, `docker inspect` answers for the named container and exactly
-    one of five things happens, each DISCLOSED by name (`R-05`) — silence
-    here is what turns a surviving container into a duplicate:
+    present, run-gate first asks whether the record's OWNER is still alive
+    (`R-39e`); if it is, this invocation FOLLOWS and none of the branches
+    below apply. Otherwise `docker inspect` answers for the named container
+    and exactly one of five things happens, each DISCLOSED by name (`R-05`)
+    — silence here is what turns a surviving container into a duplicate:
     **running + same commit** → re-attach (`run-gate: re-attached to <name>
     (started <t>, running for <m>m <s>s)`, then `docker logs -f --since
     <started_at>` + `docker wait`); **exited + same commit** → collect
@@ -947,6 +954,39 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     as exit 2 (verified; CONSUMERS "Gate-conjunction lanes" carries the
     transcript and the shape a consumer writes if it wants one sub-lane
     always fresh).
+  - **`R-39e` Two clients, one lane: the live owner is FOLLOWED, never
+    hijacked.** Scope answers two worktrees (`R-39a`); it does not answer two
+    terminals on ONE tree, and that case is common precisely because the
+    host's rule is one gate container at a time ACROSS agents. The record's
+    owner triple (`owner_pid` + `owner_start` + `boot_id`) is checked before
+    anything else: the owner is ALIVE when the boot id matches this boot, the
+    pid exists, and its start time is the recorded one — a conjunction, so a
+    recycled pid and a post-reboot pid both read as DEAD.
+    - **Owner alive** → this client FOLLOWS: `run-gate: following <name>
+      (owner pid <N>, started <t>)`, then the same `docker logs -f` stream
+      and the same exit code — and it removes NOTHING. Not the container, not
+      the record, not a history entry: all three belong to the client that
+      started the run and is still there to do them, which is what keeps
+      `R-39c`'s "ONCE" true with two clients attached. `docker wait` is
+      issued BEFORE the log stream and runs concurrently with it, because the
+      owner removes the container within milliseconds of its exit and a wait
+      issued after that removal would answer "No such container" — a
+      follower reporting exit 3 on a lane it just watched pass.
+    - **Owner alive, `--fresh`** → REFUSED (exit 2), naming the pid.
+      run-gate never removes another client's container; `--fresh` is an
+      escape from a container nobody is watching.
+    - **Owner alive, container already gone** → refused (exit 2) naming the
+      pid, record untouched: the owner is inside its own `finally` and owns
+      that outcome; a second `aborted` written from here would be a second
+      result for one run.
+    - **Owner dead** (or a record from before rev 34, which names no owner)
+      → `R-39b` unchanged: re-attach, collect, report-and-clear, or refuse on
+      a commit mismatch. "After its client dies" is now literally what the
+      code checks.
+    - Rejected: a lock held for the LIFETIME of the run, which would refuse
+      the second terminal outright and lose the follow — the operator's most
+      common second invocation is "show me what it is doing", not "start
+      another one".
 
 - `R-40` **Progress-judged liveness (RG-36).** `budget` is advisory here and
   a hard lane-wide bound in assay, so the only way to bound a long mutation

@@ -6198,6 +6198,86 @@ def _docker_calls(log: Path) -> list[list[str]]:
             for line in log.read_text().splitlines()]
 
 
+def live_owner_fields() -> dict:
+    """The owner triple for a record owned by THIS process — the cheapest
+    honest "the owner is alive" a test can plant."""
+    return {"owner_pid": os.getpid(),
+            "owner_start": run_gate.process_start_ticks(os.getpid()),
+            "boot_id": run_gate.boot_id()}
+
+
+def _wait_for(predicate, what: str, timeout: float = 30.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(0.05)
+    raise AssertionError(f"timed out waiting for {what}")
+
+
+class TestTwoClientsOneLane:
+    """RW-14 (review B2). The controlled WRONG implementation is the one that
+    shipped at `73e6b061`: the second client RE-ATTACHED to a container whose
+    owner was still alive, `docker rm -f`'d it out from under that owner and
+    cleared the record — so the client that actually started the run got
+    `docker wait` on a container that no longer existed and reported **exit 3
+    on a green lane**, writing `outcome: "error"` into `latest`. Against it,
+    every assertion below fails: A's returncode is 3, there are two `rm`
+    calls, and history holds two entries.
+
+    The rule: an ALIVE owner is FOLLOWED, never hijacked. The follower
+    streams the logs, exits with the container's code, and touches nothing —
+    no `rm`, no cleared record, no history write. The owner does all three,
+    exactly once (RW-3 end to end).
+    """
+
+    def _client(self, proj: Path):
+        return subprocess.Popen([sys.executable, str(_TOOL_INVOKE), "suite"],
+                                cwd=proj, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+
+    def test_the_second_client_follows_and_the_owner_reports_its_own_result(
+            self, tmp_path, monkeypatch):
+        repo, proj = make_history_repo(tmp_path, SIMPLE_LANE)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        (state / ".hang").write_text("")      # `docker logs -f` blocks
+        record = proj / ".run-gate" / "inflight" / "suite.json"
+        owner = self._client(proj)
+        try:
+            _wait_for(record.exists, "client A's inflight record")
+            follower = self._client(proj)
+            try:
+                # B must be INSIDE its follow (streaming the same container's
+                # logs) before the container is allowed to finish, or the
+                # test would prove nothing about two live clients.
+                _wait_for(lambda: len([c for c in _docker_calls(log)
+                                       if c[:2] == ["logs", "-f"]]) == 2,
+                          "client B to attach to the same container's logs")
+                (state / ".hang").unlink()    # the container finishes
+                out_b = follower.communicate(timeout=60)[0]
+            finally:
+                follower.kill()
+            out_a = owner.communicate(timeout=60)[0]
+        finally:
+            owner.kill()
+
+        name = lane_runs(log)[0][3]
+        assert follower.returncode == 0, out_b
+        assert f"run-gate: following {name} (owner pid " in out_b, out_b
+        assert "re-attached" not in out_b, out_b
+        # The owner keeps its own true result — the whole point of B2.
+        assert owner.returncode == 0, out_a
+        assert "lane 'suite' exit 0" in out_a, out_a
+        assert len(lane_runs(log)) == 1, lane_runs(log)
+        assert len([c for c in _docker_calls(log) if c[0] == "rm"]) == 1, \
+            _docker_calls(log)
+        slot = lane_slot(proj)
+        assert len(slot["history"]) == 1, slot
+        assert slot["latest"]["outcome"] == "pass", slot["latest"]
+        assert not record.exists()
+
+
 class TestInflightRecordDecisions:
     """RG-35 / R-39, branch by branch, driven THROUGH `main()` in-process —
     the killed-client test above proves the shipped entrypoint, these reach
@@ -6244,6 +6324,76 @@ class TestInflightRecordDecisions:
         # arrived.
         assert ["logs", "-f", "--since", "2026-09-02T11:00:00Z",
                 "run-gate-planted"] in _docker_calls(log)
+        assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+
+    def test_a_live_owners_container_is_followed_and_left_alone(
+            self, tmp_path, monkeypatch, capsys):
+        """RW-14, through main(): the follower streams and exits with the
+        container's code, and the container, the record and the history entry
+        all stay the owner's."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, status="running", code=0,
+                                **live_owner_fields())
+        assert run_gate.main(["suite"]) == 0
+        out = capsys.readouterr().out
+        assert (f"run-gate: following run-gate-planted (owner pid "
+                f"{os.getpid()}, started 2026-09-02T11:00:00Z)") in out
+        assert "re-attached" not in out
+        assert "| follow — no new container was started" in out
+        assert lane_runs(log) == []
+        assert [c for c in _docker_calls(log) if c[0] == "rm"] == []
+        assert record.exists()                 # not the follower's to clear
+        assert (state / "run-gate-planted").exists()
+        # not the follower's to record: the owner writes the one entry
+        assert not (proj / ".run-gate" / "history.json").exists()
+
+    def test_a_live_owner_refuses_fresh_by_pid(self, tmp_path, monkeypatch,
+                                               capsys):
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, **live_owner_fields())
+        assert run_gate.main(["suite", "--fresh"]) == 2
+        err = capsys.readouterr().err
+        assert f"LIVE client (pid {os.getpid()}" in err
+        assert "never removes another client's container" in err
+        assert [c for c in _docker_calls(log) if c[0] == "rm"] == []
+        assert record.exists() and (state / "run-gate-planted").exists()
+
+    def test_a_live_owner_whose_container_vanished_refuses_by_pid(
+            self, tmp_path, monkeypatch, capsys):
+        """One run, one outcome: the owner is in its own finally right now,
+        and a second `aborted` record written from here would be a second
+        result for a run this client never started."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, status=None,
+                                **live_owner_fields())
+        assert run_gate.main(["suite"]) == 2
+        err = capsys.readouterr().err
+        assert f"owned by a live client (pid {os.getpid()}" in err
+        assert lane_runs(log) == []
+        # This client's own refusal is recorded (RG-27's `latest` holds any
+        # outcome), but the OWNER's run is not: no `aborted` entry for a run
+        # this client did not start and cannot report on.
+        assert "is gone" not in json.dumps(read_store(proj))
+        assert record.exists()
+
+    @pytest.mark.parametrize("over, why", [
+        ({"owner_start": 1}, "the pid was recycled onto another process"),
+        ({"boot_id": "3f1c0b1e-0000-0000-0000-000000000000"}, "another boot"),
+        ({"owner_pid": None}, "a record written before rev 34"),
+    ])
+    def test_a_dead_owner_is_adopted_not_followed(self, tmp_path, monkeypatch,
+                                                  capsys, over, why):
+        """"The owner is alive" is the ONLY thing that turns an adoption into
+        a follow, and it is judged from three facts together — a pid alone
+        would make a recycled number look like this lane's client."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        fields = live_owner_fields()
+        fields.update(over)
+        plant_inflight(proj, repo, state, status="running", **fields)
+        assert run_gate.main(["suite"]) == 0
+        out = capsys.readouterr().out
+        assert "run-gate: re-attached to run-gate-planted" in out, why
+        assert "following" not in out
         assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
 
     def test_a_gone_container_is_reported_cleared_and_the_lane_runs_fresh(
