@@ -270,6 +270,56 @@ def test_gitignore_rule_reuses_ciu61_comment_normalization(tmp_path: Path) -> No
     assert migration_check.detect_gitignore_gaps(root) == []
 
 
+def test_gitignore_rule_accepts_the_broader_glob_spelling(tmp_path: Path) -> None:
+    """`**/ciu.env` already ignores everything `ciu.env` does — not a gap.
+
+    git treats a pattern with no `/` (or only a trailing one) as matching at
+    ANY depth, so the two spellings are literally equivalent. Comparing raw
+    strings reported the canonical entry as MISSING anyway — a pure false
+    positive, which CIU's OWN `.gitignore` triggered (it uses `**/ciu.env` and
+    `**/ciu.global.worktree.toml.j2`).
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    root.joinpath(".gitignore").write_text(
+        "\n".join(f"**/{entry}" if not entry.startswith("**/") else entry
+                  for entry, _why in _GITIGNORE_ENTRIES) + "\n",
+        encoding="utf-8",
+    )
+
+    assert migration_check.detect_gitignore_gaps(root) == []
+
+
+def test_gitignore_rule_is_clean_against_cius_own_checkout() -> None:
+    """The regression this fix exists for, asserted against the real file.
+
+    `ciu migration-check` reporting gaps in ciu's own repository is the
+    loudest possible false positive, and no synthetic fixture would have
+    caught it — the real `.gitignore`'s glob spellings are the trigger.
+    """
+    ciu_root = Path(__file__).resolve().parents[2]
+    assert (ciu_root / ".gitignore").is_file()
+
+    assert migration_check.detect_gitignore_gaps(ciu_root) == []
+
+
+def test_gitignore_rule_still_reports_a_genuinely_absent_entry(tmp_path: Path) -> None:
+    """The normalization must not turn the rule off — a real gap still fires."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    dropped = _GITIGNORE_ENTRIES[0][0]
+    root.joinpath(".gitignore").write_text(
+        "\n".join(f"**/{entry}" if not entry.startswith("**/") else entry
+                  for entry, _why in _GITIGNORE_ENTRIES[1:]) + "\n",
+        encoding="utf-8",
+    )
+
+    findings = migration_check.detect_gitignore_gaps(root)
+
+    assert len(findings) == 1
+    assert dropped in findings[0].message
+
+
 def test_gitignore_rule_is_silent_without_a_gitignore(tmp_path: Path) -> None:
     """A repo that never ran `ciu init` is a first-run state, not a migration."""
     root = tmp_path / "repo"

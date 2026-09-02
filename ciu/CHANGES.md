@@ -50,10 +50,15 @@ is how a checkout tells you which, if any, apply to it.
    static pipeline automatically (S13.4c), the refusal reaches `ciu up` too.
    Change the hook's return from `"persist": "state"` to `"persist":
    "secret"` for that entry and delete the key from the stack's `[state]`
-   table. The value then lands in the ordinary per-stack secret store
-   (`<stack>/.ciu/secrets/<name>`, 0440, atomic, masked, leak-scanned)
-   instead of in a plaintext, world-readable rendered `ciu.toml`. See
-   `docs/SPEC.md` S9.4a and worked example §B.2a.
+   table. The value then lands in the ordinary per-stack secret store: a 0440
+   file in a 0700 store dir, written atomically (`mkstemp` + `os.replace`)
+   under the stack's S4.26 lock, and never entering the in-memory config or
+   any log path. (It is NOT additionally masked or leak-scanned — S4.22's
+   scan covers directive-materialized values and runs at Step 14, before
+   Step 17's `post_compose` hooks even execute. It does not need to be: a
+   value that never reaches the config or a log has nothing for those
+   barriers to catch. `docs/SPEC.md` S9.4a claims only "never logged", which
+   is what is actually enforced.) See S9.4a and worked example §B.2a.
 2. **You rely on S4.16's Vault-token source #3.** ACTION NEEDED. Source #3 no
    longer reads `[state].root_token` from the vault stack's rendered
    `ciu.toml`; it reads the hook-persisted store file

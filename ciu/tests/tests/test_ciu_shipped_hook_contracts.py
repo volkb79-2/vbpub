@@ -55,8 +55,19 @@ def test_pre_compose_example_applies_value_visible_to_templates(tmp_path: Path) 
     assert config["deploy"]["computed_tag"] == "sample-ready"
 
 
-def test_post_compose_example_persists_project_runtime_state(tmp_path: Path) -> None:
-    """The copyable post-compose example persists exactly its advertised token."""
+def test_post_compose_example_persists_its_token_into_the_secret_store(
+    tmp_path: Path,
+) -> None:
+    """The copyable post-compose example persists exactly its advertised token.
+
+    ciu-P46: through the SECRET store (S9.4a), not `[state]`. A copyable
+    example that wrote a secret-shaped key into `[state]` would hand every
+    consumer who copied it a stack `ciu check` refuses (S3.4a).
+    """
+    import stat
+
+    from ciu.secrets.materialize import hook_secret_store, read_hook_manifest
+
     config = {"deploy": {"project_name": "sample", "environment_tag": "ci"}}
     state_path = tmp_path / "ciu.toml"
     run_hooks(
@@ -67,9 +78,12 @@ def test_post_compose_example_persists_project_runtime_state(tmp_path: Path) -> 
         state_path,
     )
 
-    with state_path.open("rb") as fh:
-        saved = tomllib.load(fh)
-    assert saved["state"] == {"root_token": "placeholder-sample-ci"}
+    store = hook_secret_store(tmp_path, "root_token")
+    assert store.read_text(encoding="utf-8") == "placeholder-sample-ci"
+    assert stat.S_IMODE(store.stat().st_mode) == 0o440
+    assert "root_token" in read_hook_manifest(tmp_path)
+    # Nothing was written to [state] at all — the file is never created.
+    assert not state_path.exists()
 
 
 def test_demo_app_hook_path_applies_runtime_note_for_configfile_render(tmp_path: Path) -> None:

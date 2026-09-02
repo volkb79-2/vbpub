@@ -480,7 +480,8 @@ def vault_preflight(
         raise ValueError(
             "[S7.6] the selection declares *_VAULT secrets but the vault stack "
             "is not in an earlier phase and no Vault token resolved (VAULT_TOKEN "
-            "env, vault.token_file, or the vault stack's [state].root_token). "
+            "env, vault.token_file, or the vault stack's hook-persisted "
+            "'root_token' secret store file, S9.4a). "
             "Aborting before any phase runs."
         )
     info(f"[S7.6] Vault token + address ({addr}) resolved — OK")

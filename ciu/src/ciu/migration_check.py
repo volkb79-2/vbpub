@@ -241,6 +241,23 @@ def detect_stale_identity_facts(repo_root: Path) -> list[Finding]:
 # Rule 3 — pre-CIU-61 gitignore gaps
 # ---------------------------------------------------------------------------
 
+def _gitignore_key(pattern: str) -> str:
+    """Normalize a ``.gitignore`` pattern for equivalence comparison.
+
+    Strips a leading ``**/``, which git itself treats as a no-op for these
+    patterns: a pattern containing no ``/`` (or only a trailing one, like
+    ``.ciu/``) already matches at ANY depth, so ``**/ciu.env`` and ``ciu.env``
+    ignore exactly the same paths.
+
+    Without this, the gap detector compared raw strings and reported a
+    canonical entry as MISSING even when the checkout already carried the
+    broader, equivalent spelling — a pure false positive, and one CIU's own
+    repository triggered (its `.gitignore` uses ``**/ciu.env`` and
+    ``**/ciu.global.worktree.toml.j2``).
+    """
+    return pattern[3:] if pattern.startswith("**/") else pattern
+
+
 def detect_gitignore_gaps(repo_root: Path) -> list[Finding]:
     """A ``.gitignore`` missing entries CIU-61 added to ``ciu init``'s set.
 
@@ -248,10 +265,13 @@ def detect_gitignore_gaps(repo_root: Path) -> list[Finding]:
     (``scaffold._GITIGNORE_ENTRIES`` against the checkout's real ``.gitignore``,
     normalized the same way ``init_main`` normalizes it so a prior init's
     trailing ``  # why`` comment is not read as part of a pattern) — pointed at
-    the CURRENT checkout instead of at a freshly scaffolded one. A repo
-    scaffolded before CIU-61 never received the three entries it added, and the
-    consequence is silent: a machine-specific, host-path-carrying overlay that
-    a developer can commit by accident.
+    the CURRENT checkout instead of at a freshly scaffolded one, and with the
+    additional ``**/``-equivalence normalization above, which the scaffold path
+    does not need (it appends to a file it is also reading) but a detector
+    pointed at a hand-maintained ``.gitignore`` does. A repo scaffolded before
+    CIU-61 never received the three entries it added, and the consequence is
+    silent: a machine-specific, host-path-carrying overlay that a developer can
+    commit by accident.
 
     An ABSENT ``.gitignore`` is deliberately not a finding: that is a checkout
     which never ran ``ciu init`` at all, which is a first-run state rather than
@@ -278,11 +298,14 @@ def detect_gitignore_gaps(repo_root: Path) -> list[Finding]:
         ]
 
     present = {
-        line.split("  # ")[0].strip()
+        _gitignore_key(line.split("  # ")[0].strip())
         for line in raw.splitlines()
         if line.strip()
     }
-    missing = [entry for entry, _why in _GITIGNORE_ENTRIES if entry not in present]
+    missing = [
+        entry for entry, _why in _GITIGNORE_ENTRIES
+        if _gitignore_key(entry) not in present
+    ]
     if not missing:
         return []
     return [

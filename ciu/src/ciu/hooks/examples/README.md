@@ -55,24 +55,59 @@ return {
         "value": "computed-value",
         "apply_to_config": True,   # optional — default False
     },
-    # Persist a value into [state].<key> in the stack's ciu.toml:
+    # Persist a NON-SECRET fact into [state].<key> in the stack's ciu.toml:
+    "initialized": {
+        "value": True,
+        "persist": "state",
+    },
+    # Persist a MINTED SECRET into <stack>/.ciu/secrets/<name>, mode 0440:
     "root_token": {
-        "value": "s.secret-token",
-        "persist": "state",        # only valid destination
+        "value": "s.minted-by-this-hook",
+        "persist": "secret",       # S9.4a
     },
 }
 ```
 
-Plain `{KEY: scalar}` (v1 form) is **rejected** with exit 2 [S9.4].
+`state` and `secret` are the only two persist destinations [S9.4/S9.4a]; any
+other value is rejected. Plain `{KEY: scalar}` (v1 form) is **rejected** with
+exit 2 [S9.4].
+
+### Choosing between the two
+
+`[state]` is an ordinarily rendered, ordinarily readable plaintext table. It
+is for **non-secret facts only** — booleans, counters, URIs, timestamps. A
+secret-shaped key there (last `_`-separated component `password`/`token`/
+`secret`/`api_key`/`credential`/`passphrase`/`private_key`/`key`, paired with
+a literal string of 8+ characters) is refused outright by `ciu check`'s
+`state-secrets` stage [S3.4a].
+
+`persist: "secret"` [S9.4a] writes into the stack's secret store using the
+same machinery a directive uses (0440 file, 0700 store dir, atomic write,
+under the stack's lock). It is for a credential a hook **mints** — one no
+directive could have expressed in advance, the canonical case being a real
+Vault's `operator init` output. A value a directive CAN express belongs in
+the stack's secrets table [S4.1] instead; a hook re-persisting an
+already-materialized value is a second, unnecessary copy, and re-using a
+declared name is refused as an S4.6 collision.
+
+Two things `persist: "secret"` refuses, worth knowing before you write it:
+combining it with `apply_to_config` (that would put the raw value in front of
+every later template and hook — read it back with `ctx.secret_file(name)`
+instead), and a dotted path (a secret name is flat; it IS the compose secret
+name and the `/run/secrets/<name>` basename).
 
 ---
 
 ## Files
 
 - `pre_compose_example.py` — shows `apply_to_config` (inject a computed value)
-- `post_compose_example.py` — shows `persist:'state'` (save a runtime token)
+- `post_compose_example.py` — shows `persist:'secret'` (store a minted runtime
+  token, S9.4a)
 
 ## Live examples in the test-repo
 
-- `test-repo/infra/vault/post_compose_vault.py` — persists Vault's root token
+- `test-repo/infra/vault/post_compose_vault.py` — persists only the non-secret
+  `initialized` flag into `[state]`; its root token is `GEN_LOCAL`-declared
+  and therefore already materialized by the ordinary S4 machinery, so the hook
+  deliberately persists no token at all
 - `test-repo/applications/app-config/pre_compose_app.py` — reads a secret file path
