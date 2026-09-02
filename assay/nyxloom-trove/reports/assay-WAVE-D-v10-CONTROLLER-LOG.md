@@ -318,3 +318,49 @@ precedent for shape and discipline.
     and names that tip; R-1 is then resumed for round 2 against
     `93188912..<fix tip>` only, while phase 2 continues on the branch
     behind it. Next free ids **A-418** / **B063**.
+  - **Correction (from generation 4's checkpoint):** B062 was already
+    allocated on the branch to B024's `tests/` pyflakes sweep. R-1's
+    `git -C PROJECT_ROOT.parent` filing is **B063**; next free **B064**.
+  - **R-1's final report** (after its serialized targeted reruns landed:
+    `m3`/`m4`/`m6`/`m7` RED as expected, `m1`/`m2` GREEN = BLOCKER 2
+    corroborated at both ends of the threading, `m5` GREEN = SF-5 stands)
+    is 839 lines; the copy generation 4 committed is the 756-line interim.
+    Generation 5 refreshes the repo copy from the scratchpad original in
+    its first commit. R-1 offered BLOCKER 2 as downgradable to a
+    should-fix; **not taken** — DA-R6 asked for a regression guard, and a
+    guard that cannot go red is not one. Fix stands as ruled.
+
+- **2026-09-02 (GENERATION 4 VERIFIED — B024 landed, gate GREEN on
+  `7c9e8dd1`; DA-R12; generation 5 dispatched)** — Controller read the
+  gate log (`scratchpad/gate-gen4.log`) separately: one
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0`, no
+  `FAILED|DIRTY_TREE|Traceback`, wheel `assay-4.1.1.dev16+g7c9e8dd1`,
+  `commit: 7c9e8dd142cfb8c6…`, last phase `ASSAY_GATE_PHASE=pyflakes-clean`.
+  Branch tip `efbab2bb` (records only: R-1's interim report, the DA-D7 ciu
+  re-capture, LOG/REPORT/BRIEF-4). No `!` commit; both v9 schema phases
+  passed. Generation 4 cut at its E-008 checkpoint per instruction, with
+  R-1's fix package as BRIEF-4 §3, generation 5's first work item. B024's
+  landing per DA-R7: pyflakes 3.4.0 as its own hash-bound offline closure
+  in a third venv, phase after the suite over the private exact-OID
+  clone's `src/assay`; scope `src/assay` by measurement (`tests/` carries
+  31 findings across 19 modules → B062, not swept).
+  - **DA-R12 (B004 / DA-D7's `schema_version`, generation 4's ask):
+    accept the integer set `{1, 2}` through ONE parser.** Measured by the
+    re-capture: the only schema-relevant delta between the frozen 6.0.3
+    (schema 1) and 7.10.1 (schema 2) documents is that integer — keys,
+    container count, status vocabulary (`unlabelled` already present in
+    schema 1) and `overall` identical. Refusing `1` would be a hard cut
+    against a measured-identical shape; a lane-declared version is config
+    surface for nothing. Anything else (the integer 3, the string `"2"`,
+    absent) is refused with a message naming the accepted values and the
+    observed one. Tests: one per frozen asset, plus the three refusals.
+    W2 §5.4 is narrowed accordingly under DA-D7; the wave prompt's
+    "`unlabelled` is new" phrasing is corrected by measurement, not
+    followed. `overall` is still `mismatch` on this host, so the green
+    path keeps `ciu-provenance-green-reference.json` as its only witness —
+    say so in the A-row.
+  - **Generation 5 dispatched** (fresh Opus, BRIEF-4 seed): (A) refresh
+    the review copy, land the fix package as A-418.. with DA-R8/DA-R9,
+    re-gate, name the FIX-TIP; (B) phase 2 per the wave prompt with
+    DA-R12. R-1 round 2 is resumed by the controller once the FIX-TIP is
+    named and gate-green. Next free ids **A-418** / **B064**.
