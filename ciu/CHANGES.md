@@ -21,6 +21,27 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.10.0] - 2026-09-02
+<!-- cmru: generated -->
+<!-- cmru: source-end=42c018ea4301b0871fad955ee3912a8e81c18cce -->
+
+### Added
+- feat(ciu)!: split [ciu.instance.generated] into its own file + rename the overlay (ciu-P47 C1-C3) (82d2154b)
+
+### Fixed
+- fix(ciu): ciu-P47 review fix pass -- B1-B5 + N1-N3 (80ef0a18)
+
+### Changed
+- merge(ciu): ciu-P47 -- ciu.instance.generated.toml split, overlay rename to ciu.global.instance.toml.j2 (42c018ea)
+
+### Documentation
+- docs(ciu): ciu-P47 -- adversarial review verdict (efdff1ce)
+- docs(ciu): ciu-P47 -- LOG/REPORT addendum for the review fix pass (2785d890)
+- docs(ciu): ciu-P48 -- carve handoff, CIU-87 devcontainer network leak (4cd45631)
+- docs(ciu): ciu-P47 -- LOG/REPORT for the identity-file split + overlay rename (8f174836)
+- docs(ciu): ciu-P47 -- exhaustive docs/consumer sweep for the file split + rename (d9e2d26a)
+- docs(ciu): ciu-P47 -- carve handoff, overlay file split + rename (945c7a16)
+
 ## [7.10.0] - UNRELEASED
 
 > **This release is BREAKING, and ships as a MINOR on purpose** — the same
