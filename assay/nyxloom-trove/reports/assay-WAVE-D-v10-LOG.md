@@ -1370,5 +1370,49 @@ seconds of launch. Load stayed 5.1–7.4.
   test_verdict_judgment.py test_runner_assemble_verdict_judgment.py
   test_refusal_announcement.py` → **161 passed**, and
   `test_runner_ingested_r2.py` alone → **23 passed** after the two new tests.
-  The gate runs once at the checkpoint, over B050 + B051 together (DA-R23
-  lands them adjacently).
+  The gate runs once at the checkpoint. (It ran over B069 + B050 only, not
+  B050 + B051 — see entry 31: B051 is BLOCKED.)
+- **GATE GREEN on this commit**, `gate-gen9a.log`, read in a separate step:
+  `GATE_EXIT=0` (one), `ASSAY_REGISTERED_GATE_COMPLETE=1` (one), zero
+  `FAILED|DIRTY_TREE|Traceback`, wheel
+  **`assay-4.1.1.dev33+g962211cd-py3-none-any.whl`**, all twelve phases
+  including `verdict-v10-successors-verified`.
+
+### 31. `docs(assay): Wave D generation 9 checkpoint — B069 + B050 gate-green, B051 BLOCKED, BRIEF-9`
+
+- Records only. LOG entries 29-31, the REPORT's generation-9 section, and
+  `reports/assay-WAVE-D-v10-BRIEF-9.md` (new).
+- **B051 is BLOCKED and nothing was improvised in its place.** DA-D4 rules
+  `discarded` means "listed" — which `mutation.ingest_mutation_report` already
+  implements (`mutation.py:1845`, `:1968`, shipped by B046) — and then asks
+  `verify._check_ingested_r2_agrees_with_its_payload` to re-derive it. **It
+  cannot.** A discarded mutant is absent from every bucket
+  (`mutation.py:1967-1969` `continue`s past the assignment), absent from
+  `candidate_count` (both it and `total` are set to `attempted`,
+  `mutation.py:1992-1997`, and `Mutation._check_arithmetic`
+  `verdict.py:1684-1703` FORBIDS `candidate_count != total` outside the limit
+  sentinel), and its line is absent from `lines_without_candidates`
+  (`mutated_lines.add` precedes the discard `continue`, correctly). So the
+  count is not recoverable from the document, and every bound that catches the
+  `9999` reproduction (`discarded <= total`, `<= candidate_count`) refuses a
+  TRUTHFUL report that could not compile most of its mutants — which is the
+  exact report the field exists to make visible. B051's own entry says this in
+  its "Why this is not fixable in Wave B" section. Written up as **decision ask
+  2** with three routes; none chosen.
+- **B052 was deliberately NOT started in B051's place.** DA-R23 orders B051
+  immediately after B050; reordering unasked is the silent product call the
+  BLOCKED clause forbids. Flagged as decision ask 3.
+- **Decision ask 1** records the one text-versus-code gap DA-R22's "falls
+  through to the existing terminals" ran into: A-223d's guard, restored to its
+  stated form in entry 30 and changing no shipped outcome.
+- **No gate this commit, deliberately** (records only; the gate-verified commit
+  stays **`962211cd`**), on the precedent generations 6, 7 and 8 set for their
+  docs-only checkpoints.
+- **Checkpoint taken at the boundary the E-008 clause ranks HIGHEST: a green
+  registered gate.** No half-done item is left behind — B069 and B050 are
+  complete, and B051 was never started because it is blocked.
+- Ids: **A-435** and **A-436** allocated (next free **A-437**); **B069**
+  allocated (next free **B070**). `main` re-checked immediately before each
+  allocation: `git show main:assay/nyxloom-trove/4-backlog.md | grep -o '^## B[0-9]*'
+  | tail -1` → **B068**; `main`'s decision high-water mark is still **A-407**.
+  Re-check before allocating anything further; main wins on ids at merge.

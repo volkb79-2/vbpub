@@ -2182,3 +2182,273 @@ Run c, read in a separate step as LESSONS L4 requires:
 * **No `git push`, no merge, no release.** As instructed.
 * **No `assay/**` boundary crossed.** Every path in all three commits is under
   `assay/`.
+
+---
+
+# Generation 9 (fresh Opus, seeded by BRIEF-8; DA-R22..DA-R24 in the prompt)
+
+Two of the eight items landed, both gate-green. The third (**B051**) is
+**BLOCKED on a ruling that cannot be applied as written** — the argument is
+below as decision ask 2, and per the wave prompt's BLOCKED clause nothing was
+improvised in its place.
+
+## What landed
+
+| # | Item | Commit | Rows |
+|---|---|---|---|
+| 0 | B069 tripwire (DA-R24) | `61b8d836` `test(assay): a local tripwire for the gate harnesses' contract pins` | **A-435**, **B069** |
+| 1 | B050 producer + consumer (DA-R22) | `962211cd` `feat(assay): judgment.r2.fail_under becomes a floor that is TAKEN` | **A-436**, B050 RESOLVED |
+
+## Gate — the acceptance evidence (generation 9)
+
+`/tmp/claude-1003/-workspaces-vbpub/e35fad96-4fc2-4781-a1ca-9318989f44a3/scratchpad/gate-gen9a.log`,
+launched from `/workspaces/vbpub` on a clean worktree at `962211cd`, read in a
+SEPARATE step (LESSONS L4). All five markers:
+
+1. `GATE_EXIT=0` — exactly one occurrence;
+2. `ASSAY_REGISTERED_GATE_COMPLETE=1` — exactly one occurrence;
+3. `grep -cE 'FAILED|DIRTY_TREE|Traceback'` → **0**;
+4. wheel `assay-4.1.1.dev33+g962211cd-py3-none-any.whl` — the judged commit is
+   in the name;
+5. twelve phases, all present: `wheel-installed`, `pyflakes-clean`,
+   `verdict-v5-accepted`, `verdict-v6-v7-v8-v9-hard-cut-verified`,
+   **`verdict-v10-successors-verified`**, `lane-schema-v2-successors-verified`,
+   `self-hosted-lane-passed`, `independent-self-hosting-passed`,
+   `judge-provenance-bound-to-the-installed-wheel`, `attestation-hardened`,
+   `topos-qualified`, `cmru-b006a-qualified`.
+
+Host discipline: `docker ps --format '{{.Image}} {{.Names}}'` showed no
+`tester-unified:local` and `pgrep -af tester-unified-gate.sh` was clear before
+launch (load average 3.53); the container `a57226e8fd80` was capped with
+`docker update --cpus=3` within seconds of appearing; ONE container, one run.
+Every local pytest was serial under `nice -n 19 ionice -c 3`, targeted while
+iterating, and the whole suite ran exactly once before the gate — **4081
+passed, 20 skipped** in 484s. No build or wheel step ran concurrently with a
+suite.
+
+## B069 — the tripwire, and the measurement that justifies it
+
+`tests/test_gate_harness_version_pins.py` scans `gate/python/*.py` for two pin
+families and asserts each names the current contract. The scanner is a **pure
+function over text**, which is what makes the red expressible three ways:
+
+* over the real tree — must be empty (`test_gate_harnesses_pin_the_current_verdict_schema_version`,
+  `test_gate_harnesses_pin_the_newest_carve_asset_generation`);
+* over a fixture copy of the pre-cut harness lines — must report both families
+  (`test_the_scanner_reports_a_pre_cut_harness_as_stale`);
+* **measured, not committed as a test**: run over the genuine
+  `b2fd09f3^:gate/python/qualify_topos.py` it reports **all three** real stale
+  pins that cost generation 8 two ~25-minute gate runs —
+
+  ```
+  carve_asset_generation   92  5  | _EXPECTED_ROOT = _PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W5" / "expected"
+  verdict_schema_version  848  9  | if normalized.get("schema_version") != 9:
+  verdict_schema_version  905  9  | if expected.get("schema_version") != 9:
+  ```
+
+Both real-tree tests assert the FOUND set is non-empty **before** asserting the
+stale set is empty. A text-scanning test's characteristic failure is the
+pattern rotting off its subject and passing vacuously; that assertion is the
+control which makes the green mean something.
+
+Two families are deliberately out of scope, each with its own regression test:
+the lane-file `schema_version = 2` inside a TOML template string
+(`qualify_cmru_b006a.py:116`, `qualify_dstdns_sql.py:923` —
+`LANE_SCHEMA_VERSION` is a separate contract, still 2), and prose references to
+frozen earlier generations (`qualify_topos.py:71`, `:811`). `P25` is a
+carve-asset directory but not a `W<n>` generation and is proven not read as
+generation 25.
+
+## B050 — acceptance, box by box, with file:line evidence
+
+- [x] **the field in three places** — `src/assay/schemas/verdict.schema.json:1576`,
+      `verdict.py:2136-2154` + the `__post_init__` producer fork at `:2452-2464`,
+      and `verify._check_r2_rederivation`; the frozen drift-guard asset
+      `nyxloom-trove/carve-assets/W6/expected/ingested-r2-v10-template.json`
+      carries `"fail_under": 100.0`. All of that rode the cut `b2fd09f3`
+      (A-427); this generation added no wire shape.
+- [x] **`judge_mutation` honours it, `verify.py` re-derives from the document
+      alone.** `mutation.py`'s `survived` branch is now
+      `if mutation.survived and mutation_pct(mutation) < fail_under:`;
+      `verify._check_r2_rederivation` reads `judgment.r2.fail_under` and calls
+      the same two functions. **No second formula exists in the package** —
+      `mutation_pct` (`mutation.py:2174`, B046) is the only score.
+- [x] **The witness is the document the v9 build could not produce, and one of
+      the two is REAL.**
+      `tests/test_runner_ingested_r2.py::test_a_declared_floor_the_real_report_MEETS_produces_a_verified_pass`
+      runs the committed StrykerJS artifact through a real repo and a real run:
+      21 killed / 88 survived = **19.2660550458%**, declared floor 19.0, R2
+      **`PASS` recording all 88 survivors**, `verify_document(...) == []`.
+      `test_the_same_run_at_the_default_floor_is_the_unchanged_fail` shares
+      that fixture at 100.0 and is still `FAIL`/`MUTANTS_SURVIVED` — the floor
+      is the only difference between them.
+      `tests/test_verdict_conformance.py::test_verify_accepts_an_ingested_r2_PASS_with_recorded_survivors_at_a_met_floor`
+      is the synthetic pair, with
+      `test_verify_rejects_that_same_PASS_when_the_recorded_floor_is_not_met`
+      as its control.
+- [x] **the load-time refusal deleted**, the `0.0..100.0` range check kept
+      (`config.py:2502-2507`, still proven by
+      `test_a_fail_under_outside_the_percentage_range_is_refused`), and
+      `test_a_sub_hundred_fail_under_is_refused_naming_the_wire_gap` replaced by
+      `test_a_sub_hundred_fail_under_LOADS_and_is_carried_to_the_judge`.
+- [x] **CONSUMERS' "must be `100.0`" paragraph dropped** (`docs/CONSUMERS.md:1281`),
+      replaced by what the field now does; the four worked lanes at `:251`/
+      `:437`/`:813`/`:1260` keep `100.0` and stay legal.
+
+**The gate was grepped before the gate run, per BRIEF-8 §3.** `grep -rn
+fail_under gate/python/` returns exactly two hits, `qualify_topos.py:449` and
+`qualify_cmru_b006a.py:141`, and both are the **R1 coverage** floor in a
+`[lanes.*.judge]` table — not `judge.mutation.fail_under`. Neither gate lane is
+ingested (cmru's mutation table is native, `jobs = 1`), so no gate harness sits
+on B050's blast radius. The gate result confirms the grep.
+
+`src/assay/schemas/verdict.schema.json` was deliberately **not** touched: W6's
+`test_shipped_schema_is_byte_identical_to_the_locked_v10_asset` freezes it, and
+B050's producer needs no shape change.
+
+## Decision asks for the controller (generation 9)
+
+### DECISION ASK 1 — A-223d's equivalence terminal, under a floor that is MET
+
+**Settled provisionally in the direction I judged faithful; confirm or reverse.**
+
+DA-R22 says the `survived` branch "falls through to the existing terminals".
+The next terminal down is A-223d's, whose own words are *"`killed + survived ==
+0` with a non-empty `equivalent`"* — but its CODE read `not mutation.killed and
+mutation.equivalent`, because up to v9 `survived` was guaranteed empty by the
+branch above it. A met floor now reaches it with survivors recorded, and
+"`INCONCLUSIVE`/`ALL_MUTANTS_EQUIVALENT`" would then be a false statement about
+a payload that names a survivor.
+
+I restored the stated guard: `not killed and not survived and equivalent`
+(`mutation.py`, with `test_a_met_floor_beside_equivalents_does_not_become_all_equivalent`
+pinning both directions). **This changes no shipped outcome** — at the default
+floor of 100.0 the branch is unreachable, which is why the drift was invisible.
+I read it as restoring A-223d rather than amending it, but it is the one place
+DA-R22's "existing terminals" had a text-versus-code gap, so it is recorded as
+an ask rather than assumed.
+
+### DECISION ASK 2 — B051's verify-side re-derivation is NOT constructible, and DA-D4 assumes it is. **This blocks B051.**
+
+DA-D4 rules `discarded` means **listed** and instructs: *"Derive it in
+`ingest_mutation_report`, re-derive it in
+`verify._check_ingested_r2_agrees_with_its_payload` beside the other three
+facts, refuse a document whose `discarded` disagrees (the `9999` test)."*
+
+**The first half already ships.** `mutation.ingest_mutation_report` derives
+`discarded` by counting in-scope mutants whose status is in
+`_INGESTED_DISCARDED_STATUSES` (`mutation.py:1845`, `:1968`) — B046 landed
+exactly the "listed" semantics DA-D4 rules for. Nothing there is missing.
+
+**The second half has no input.** `verify` is handed the DOCUMENT, and a
+discarded mutant is by construction absent from it:
+
+* it is not in any `Mutation` bucket — `ingest_mutation_report` `continue`s
+  past the bucket assignment (`mutation.py:1967-1969`);
+* it is not in `candidate_count` either. Both `candidate_count` and `total` are
+  set to `attempted`, the bucket sum (`mutation.py:1992-1997`), and
+  `Mutation._check_arithmetic` (`verdict.py:1684-1703`) permits only
+  `candidate_count == total` or the limit sentinel — so `discarded ==
+  candidate_count - total` is not merely absent, it is FORBIDDEN by the model;
+* its LINE is not in `lines_without_candidates` either: `mutated_lines.add(...)`
+  happens BEFORE the discard `continue` (`mutation.py:1966-1968`), which is
+  correct — the tool did produce a candidate there.
+
+So a line whose only mutants were discarded appears in **neither** the payload
+**nor** `lines_without_candidates`, and recovering the count would require the
+set of in-scope non-blank lines, which the verdict does not carry. Concretely:
+a truthful ingested document with 5 bucketed and 900 discarded mutants is
+byte-indistinguishable from a truthful one with 5 bucketed and 0 discarded.
+
+**Every bound I can construct is unsound in the refusing direction.** The
+`9999` reproduction (9999 > the report's 109 mutants) is caught by
+`discarded <= total`, or by `discarded <= candidate_count` — but a report that
+genuinely could not compile most of its own mutants has `discarded > total`
+legitimately, and that report is precisely the one the field exists to make
+visible. A bound that refuses it would fail the honest document to catch the
+dishonest one.
+
+This is not a discovery: **B051's own entry says it**, in the section titled
+"Why this is not fixable in Wave B" — *"a re-derivation would check the easy
+half, report agreement, and leave the half that matters exactly as unchecked as
+it is now — while LOOKING like the field had been audited."* DA-D4 rules
+"listed" over "encountered", which is the right call and which the ingest side
+already implements; what it does not settle is what a verify-side check can
+actually assert once the discarded mutants are, by the ruling's own semantics,
+outside the document.
+
+**The three routes I can see, none of which I will pick unasked:**
+
+1. **Accept that `discarded` is DECLARED-not-verified at the raw layer** and
+   say so where `producer_tool` already says it (schema description,
+   DESIGN-GUIDE §11, CONSUMERS) — i.e. B051's own "encountered" remedy applied
+   to a field whose MEANING is "listed". Honest, cheap, and closes the entry;
+   costs the `9999` refusal, which stays impossible.
+2. **Put the missing quantity on the wire** — e.g. an ingested-only count of
+   in-scope listed mutants — so `discarded` becomes a difference the raw layer
+   can take. This is a **schema change**, and the branch's hard invariant is
+   exactly ONE `!` commit, which already exists. Out of scope for this wave by
+   construction; a v11 item.
+3. **Rule an unsound upper bound acceptable** (`discarded <= candidate_count`,
+   catching the reproduction). I recommend against it for the reason above,
+   and it is the specific failure B051 was filed to avoid.
+
+**Also still open under DA-D4 regardless of the above:** its own witness
+clause. It asks for *"a REAL Stryker report with a non-zero `discarded`,
+produced in-image from the Wave B probe-js harness"*, and adds *"if Stryker
+cannot be driven offline in `tester-unified:local`, that is a decision ask, not
+a hand-edited fixture (A-334)"*. An implementer cannot drive the registered
+gate image interactively (the project's own instructions forbid invoking it
+directly), so producing that artifact is not something this role can do. Under
+A-334 the alternative is not a hand-authored fixture, so the witness box stays
+open until the controller says who produces it.
+
+### DECISION ASK 3 — DA-R23's adjacency, given ask 2
+
+DA-R23 requires B050 and B051 to land **adjacently**, both rows carrying the
+`discarded`-is-a-COUNT sentence. B050 landed with that sentence in A-436 (7),
+in the code comment on the floor branch (`mutation.py`), and in B050's own
+backlog entry. If B051 is unblocked with route 1 it can still land next and the
+adjacency holds. If it is deferred, **the successor should be told explicitly
+whether to proceed to B052 in B051's place**, because doing so on its own
+initiative would break DA-R23's ordering silently.
+
+## What a reviewer should push on (generation 9's own work)
+
+* **The `19.0` floor in the real-report test is chosen, not derived.** It sits
+  below the artifact's true 19.27% on purpose, so the test proves the
+  fall-through. If the committed artifact is ever re-captured with different
+  counts the assertion on `mutation_pct` will catch it, but the FLOOR is a
+  literal and a reviewer should confirm that is the intended shape rather than,
+  say, computing it from the payload (which would make the test agree with
+  itself).
+* **The verifier's failure message changed.** It now appends
+  `at the floor the document itself records (judgment.r2.fail_under N)`. Three
+  existing assertions in `test_verdict_conformance.py` match the ORIGINAL text
+  as a substring prefix and stay green — a reviewer should confirm none of them
+  was silently weakened; they were not edited.
+* **`_as_ingested_at_floor` in `test_verdict_conformance.py` empties the three
+  ingested derived facts.** That is legal and keeps
+  `_check_ingested_r2_agrees_with_its_payload`'s four re-derivations trivially
+  satisfied — but a reviewer should confirm it is not mocking away the check
+  the test is meant to exercise. The REAL-report test exists precisely so the
+  synthetic one is not the only evidence.
+* **B069's scanner is regex-based over harness text.** Its blind spots are
+  deliberate and documented, but a reviewer should ask whether a pin form
+  exists in `gate/python/` that neither pattern catches. The found-set
+  non-emptiness assertions bound how badly that can fail silently.
+
+## What I did NOT do, and why
+
+* **B051 through B007, and the CONSUMERS migration notes.** B051 is blocked on
+  decision ask 2 and the wave prompt's BLOCKED clause is explicit: implement
+  what does not depend on the ruling, write the exact question, commit, return.
+  Nothing in B051 is independent of it. **B052 was NOT started in its place** —
+  DA-R23 orders B051 immediately after B050, and reordering on my own
+  initiative is the kind of silent product call the same clause forbids.
+* **No new gate phase** — DA-R24 rules it out, and B069 is the local tripwire
+  it rules in.
+* **No schema edit.** The wire shapes all landed in the cut; W6 freezes the
+  schema byte-for-byte.
+* **No second `!` commit.** The branch still carries exactly one, `b2fd09f3`.
+* **No `git push`, no merge, no release.** No path outside `assay/**`.
