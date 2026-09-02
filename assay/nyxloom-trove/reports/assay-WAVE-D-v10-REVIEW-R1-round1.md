@@ -66,7 +66,7 @@ self-compaction prompt below.
 
 ---
 
-## VERDICT: **NOT ACCEPT** — 2 blockers, both in B053.
+## VERDICT: **NOT ACCEPT** — 2 blockers (B053, B029).
 
 The engineering is, with two exceptions, genuinely good and genuinely
 measured: B049 works at all five reserved-artifact reads through the CLI with
@@ -74,9 +74,15 @@ non-vacuous controls; B054's per-file split works on both sides of the judged
 set; B028's direct-R0 fix is real and red-provable against the base; B029's
 "does not reproduce" is reproducible; B024's escape hatch is correctly taken
 against three checks I re-ran myself; the registered gate is green on the
-subject commit. The blockers are not about any of that. They are that
-**B053's central claim is false as shipped**, and the branch asserts it is
-true in three places including `CHANGES.md`.
+subject commit; and a 7-mutant hollow-test sweep found B049's, B054's,
+B028's and DA-R4's guards all real and surgical. The blockers are not about
+any of that. They are:
+
+1. **B053's central claim is false as shipped** — two refusal sites still
+   print nothing, and the branch asserts none remain in three places
+   including `CHANGES.md`.
+2. **B029's code change ships with zero executable coverage** — the one test
+   named after it survives the deletion of both halves of what it names.
 
 ---
 
@@ -152,9 +158,11 @@ needs.
    `runner.py:2809`, where `diagnostics` is already in scope, compose the
    `AssayError` and call `announce_refusal`.
 2. `_finish_direct_r0_lane`: give it a `diagnostics: "TextIO | None"`
-   parameter (`run_lane` has one, and already passes `diagnostics` to five
-   other sites), keep `dirty`/`observed_head` in locals instead of discarding
-   them, and announce before the terminal `assemble_verdict`.
+   parameter, keep `dirty`/`observed_head` in locals instead of discarding
+   them, and announce before the terminal `assemble_verdict`. This is a
+   one-line change at one call site: the function has **exactly one** caller
+   (`runner.py:4514`), and `run_lane` already threads `diagnostics` through
+   nine other call sites in the same function body.
 3. **The message must name the cause, not just the state.** The pre-run
    sentence ("commit or stash, then re-run") is *wrong* here: the operator did
    not leave the dirt, the lane's command did. Say so — "the lane's own
@@ -202,7 +210,7 @@ whole guard, and a signature check cannot fail for a dropped forward.
 
 **Mutation evidence — decisive, and already in.** `m1` = the tip with the two
 forwards deleted from `runner.execute_command`'s `resolve_command_plan` call
-(`runner.py:881-887`). Whole suite, completed:
+(`runner.py:884-885`). Whole suite, completed:
 
 ```
 MUTEXIT=1
@@ -215,8 +223,32 @@ Every one of those 24 is in `tests/test_python_qualification.py`,
 `git -C REPO_ROOT` against `PROJECT_ROOT.parent` and therefore fail on **any**
 scratchpad copy, mutated or not (see the harness caveat in the method note).
 **Not one canary, infrastructure or R3 test moved.**
-`test_r3_canary_sees_infrastructure.py` passed with the forwarding gone. The
-guard does not guard.
+`test_r3_canary_sees_infrastructure.py` passed with the forwarding gone.
+
+The targeted rerun settles it beyond the copy-harness noise — the five
+canary/R3 modules, unmutated baseline versus `m1`, back to back on the same
+harness:
+
+```
+base-canary exit=0 :: 25 passed in 58.14s   (unmutated tip)
+m1-canary   exit=0 :: 25 passed in 41.43s   (runner.execute_command's forwards deleted)
+m2-canary   exit=0 :: 25 passed in 42.58s   (canary._run_pipeline's forwards deleted)
+```
+
+Same 25 tests, same result, at **both** ends of the threading. The guard does
+not guard — and neither half of B029's diff is covered by anything.
+
+**The counter-argument, stated fairly, since the controller may want to
+downgrade this.** DA-R6 asked for "the CLI-driven test as a regression guard
+(R3 claim PASS/FAIL with a derived fact)" — and *that* test exists, is real,
+and is good. So DA-R6's letter is arguably met. What is not met is anything
+weaker than this: **every line B029 actually changed ships with zero
+executable coverage, on a public API, and the one test named after it cannot
+fail.** That is the same defect class as the wave's own B056 finding (a test
+whose stated measurement a re-run refutes), committed one wave later. I grade
+it a blocker because the fix is ~15 lines and the REPORT already says the red
+proof is available; the controller may reasonably downgrade it to a
+should-fix, and I will not re-litigate that.
 
 **Prescription.** Replace the signature assertions with a value assertion
 that a dropped forward cannot survive. The cheapest honest shape needs no new
@@ -250,9 +282,10 @@ enough to expire inside `git.repo_top` and see what happens". I did.
 
 Escape point, captured from the traceback:
 `git.py:418 _resolve_repo` → `git.py:268 _run_bounded` →
-`git.py:198 _sample_remaining` → `runner.py:219 remaining` — i.e.
-`git.repo_top` inside `run_lane`, upstream of both the new direct-R0 `try`
-(`runner.py:4480`) and `_run_higher_rigor_lane`'s outer catch. It reaches
+`git.py:198 _sample_remaining` → `runner.py:219 remaining`
+(`LaneDeadline.remaining`, `runner.py:216-224`) — i.e. `git.repo_top` inside
+`run_lane`, upstream of both the new direct-R0 `try` (which opens at
+`runner.py:4504-4505`) and `_run_higher_rigor_lane`'s outer catch. It reaches
 `cli.main`'s handler, which prints and returns the exit code without writing
 anything.
 
@@ -299,15 +332,18 @@ a leak. A `try/finally` around the two reads fixes it.
 
 ### SF-5 — the `contradictory_branch_lines` carry through `statement_attribution` is unreachable by any real artifact.
 
-`src/assay/statement_attribution.py:225` and `:344`. Both rebuilds are behind
+`src/assay/statement_attribution.py:229` and `:346`. Both rebuilds are behind
 `if file_cov.blocks is None: continue` — only `go-cover` populates `blocks`,
 and only `coverage-istanbul-json` populates `contradictory_branch_lines`, so
 no artifact can reach either carry today. The carry is correct and cheap
 insurance, and the docstring's reasoning is right; it just should not be read
 as covered.
 
-Mutation `m5` (both carries deleted) is queued and is expected GREEN; if it
-comes back RED I am wrong about reachability and this note should be struck.
+**Measured:** mutation `m5` deletes both carries; the statement-attribution and
+istanbul-contradictory modules stay green (`41 passed`, identical to the
+unmutated baseline). Nothing in the suite can tell the difference, which is
+the definition of unreachable — so treat these two lines as insurance, not as
+covered code.
 
 ---
 
@@ -401,10 +437,11 @@ per-invariant, not a blanket ignore" claim holds. The two rewritten tests in
 `test_coverage_istanbul_branch_arcs.py` are renamed to what they now assert
 (`…_is_unreadable` → `…_is_isolated_to_that_file`), which is A-399 done right.
 
-Mutation `m4` (parser records `contradictory_branch_lines=None`) had already
-produced three failures in the istanbul modules before the run was killed, so
-the B054 tests are not hollow; the targeted rerun is queued for the exact
-count.
+**Not hollow, measured:** mutation `m4` makes the parser record
+`contradictory_branch_lines=None` and five tests go red — the three in
+`test_coverage_istanbul_contradictory_branch_arcs.py` that cover isolation,
+the skipped-and-named half and the judged-and-refused half, plus both
+rewritten invariant tests. Named in the sweep below.
 
 ### 3. B053 / DA-D2 + DA-R1 + DA-R4 — everything except BLOCKER 1.
 
@@ -424,7 +461,7 @@ count.
   the verdict says `COMMAND_FAILED`. When the command **succeeds**, the same
   refusal survives into the document and `[emitter lines: 1]` naming the
   artifact. That is exactly DA-R4's rule, and it is the deferral at
-  `runner.py:3211-3216` doing it.
+  `runner.py:3214-3215` doing it.
 * **DA-D2 (b), the library half.** `runner.run_lane(..., diagnostics=buf)`
   with `stderr` redirected: the full sentence lands on `buf`, `stderr` is
   `(EMPTY)`.
@@ -464,10 +501,12 @@ vacuous — a hand-edited `exit_code: 99` in the same document is refused
 narrows on `exc.reason_code is ReasonCode.LANE_TIMEOUT` only — so the
 GIT_FAILED rule is narrowed for one cause, not replaced.
 
-Mutation `m6` (the `LANE_TIMEOUT` branch deleted) is queued;
-`test_a_cleanup_that_failed_because_time_ran_out_says_so` injects the cleanup
-failure through a `scratch_root_factory` double, so it must move, and its
-control (`…_still_says_git_failed`) proves the narrowing is a narrowing.
+**Measured:** mutation `m6` deletes the `LANE_TIMEOUT` branch so every cleanup
+failure relabels to `GIT_FAILED` again, and exactly one test goes red —
+`test_a_cleanup_that_failed_because_time_ran_out_says_so`, which injects the
+cleanup failure through a `scratch_root_factory` double. Its control
+(`…_still_says_git_failed`) stays green, which is what proves the change is a
+narrowing of A-193/A-194 rather than a replacement of it.
 
 ### 5. B029 / DA-R6 — re-measured; the premise does not reproduce, and the shipped path really is untouched.
 
@@ -600,29 +639,73 @@ condition inverted **with the `Edit` tool** on a throwaway copy of the tip
 exercise that module were run against the copy. The tip itself was never
 modified; the copies are disposable.
 
-**Status of the evidence.** `m1` is a completed whole-suite run (the answer
-that matters most, and it is in — see BLOCKER 2). `m2`..`m7` were killed
-mid-flight by the controller during the host-load incident and are **re-running
-now, strictly serially, targeted, `nice -n 19 ionice -c 3`**, gated behind
-`docker ps | grep tester-unified` being empty — generation 4's gate container
-has been up 23 minutes and the queue starts the moment it clears. Results land
-in `scratchpad/reruns.summary` and `scratchpad/rr-<label>.log`, with a
-baseline run of the identical file set against the **unmutated** tip for every
-mutant so a GREEN result is attributable rather than accidental. **None of the
-pending rows can change this round's verdict** — BLOCKER 1 rests on CLI
-transcripts and BLOCKER 2 on `m1` plus the `execute_command`-call-count
-instrumentation — so I am not holding the report for them; they are
-corroboration, and the fix round reads them.
+**Status of the evidence: complete.** `m1` is a completed whole-suite run;
+`m2`..`m7` were killed mid-flight by the controller during the host-load
+incident and were **re-run strictly serially, targeted, `nice -n 19 ionice -c
+3`**, after generation 4's gate container cleared at 17:04:20. Every mutant is
+paired with a run of the **identical file set against the unmutated tip**, so
+a GREEN result is attributable rather than accidental — all six baselines are
+green (25 / 81 / 116 / 41 / 35 / 38 passed). Raw logs:
+`scratchpad/reruns.summary` and `scratchpad/rr-<label>.log`.
 
 | # | subject mutated | file:line | expectation | result |
 |---|---|---|---|---|
-| m1 | `execute_command` drops both infrastructure forwards to `resolve_command_plan` | `runner.py:881-887` | RED if B029's guard is real | **GREEN — hollow → BLOCKER 2** (24 pre-existing copy-harness failures only, no canary test) |
-| m2 | `canary._run_pipeline` drops both forwards to `execute_command` | `canary.py:215-224` | RED if the canary half is guarded | queued (targeted: the 5 canary/R3 modules) |
-| m3 | B049's guard removed (`_refuse_if_parent_was_replaced` returns unconditionally) | `safeio.py:328-330` | RED — partial confirmation already seen (4 `F`s before the kill) | queued (targeted: `test_safeio_replaced_output_directory.py`, `test_safeio.py`, `test_runner_run_lane.py`) |
-| m4 | istanbul parser records `contradictory_branch_lines=None` | `coverage_istanbul_json.py:337` | RED — partial confirmation already seen (3 `F`s before the kill) | queued (targeted: the 4 istanbul modules) |
-| m5 | both `statement_attribution` carries removed | `statement_attribution.py:225,344` | **GREEN expected** — no artifact populates `blocks` *and* `contradictory_branch_lines` (SF-5) | queued |
-| m6 | B028's `LANE_TIMEOUT` branch removed (always `GIT_FAILED`) | `runner.py:3927-3941` | RED — `test_a_cleanup_that_failed_because_time_ran_out_says_so` injects the failure through `scratch_root_factory`, so it must move | queued |
-| m7 | DA-R4's deferred announcement removed | `runner.py:3211-3216` | RED — `test_a_surviving_early_r2_refusal_is_announced_once` | queued |
+**Baselines first — the file sets are real and green unmutated:**
+
+```
+base-canary  exit=0 ::  25 passed in 58.14s
+base-safeio  exit=0 ::  81 passed in  6.65s
+base-istan   exit=0 :: 116 passed in  2.04s
+base-stmt    exit=0 ::  41 passed in  3.27s
+base-timeout exit=0 ::  35 passed in 11.41s
+base-refusal exit=0 ::  38 passed in 10.14s
+```
+
+| # | subject mutated | file:line | expectation | result |
+|---|---|---|---|---|
+| m1 | `execute_command` drops both infrastructure forwards to `resolve_command_plan` | `runner.py:884-885` | RED if B029's guard is real | **GREEN — hollow → BLOCKER 2.** Targeted: `exit=0 :: 25 passed in 41.43s`, identical to the `base-canary` baseline's 25. Whole suite agreed (24 copy-harness failures only, no canary test) |
+| m2 | `canary._run_pipeline` drops both forwards to `execute_command` | `canary.py:227-228` | RED if the canary half is guarded | **GREEN — hollow, same defect as m1** (`exit=0 :: 25 passed in 42.58s`) |
+| m3 | B049's guard removed (`_refuse_if_parent_was_replaced` returns unconditionally) | `safeio.py:320-322` | RED | **RED — guard is real** (`4 failed, 77 passed`) |
+| m4 | istanbul parser records `contradictory_branch_lines=None` | `coverage_istanbul_json.py:336` | RED | **RED — guard is real** (`5 failed, 111 passed`) |
+| m5 | both `statement_attribution` carries removed | `statement_attribution.py:229,346` | **GREEN expected** — no artifact populates `blocks` *and* `contradictory_branch_lines` (SF-5) | **GREEN, as predicted** (`41 passed`) — unreachable, confirmed |
+| m6 | B028's `LANE_TIMEOUT` branch removed (always `GIT_FAILED`) | `runner.py:3931-3941` | RED | **RED — guard is real** (`1 failed, 34 passed`) |
+| m7 | DA-R4's deferred announcement removed | `runner.py:3214-3215` | RED | **RED — guard is real** (`1 failed, 37 passed`) |
+
+**The two RED mutants killed exactly the right tests** — the guards are
+specific, not incidental:
+
+```
+m3 (B049 guard removed) -- 4 failed:
+  test_consume_refuses_when_the_held_parent_directory_was_replaced
+  test_a_top_level_artifact_whose_project_root_was_replaced_names_the_root
+  test_run_lane_r1_names_the_replaced_directory_instead_of_reporting_no_coverage
+  test_read_kill_signal_refuses_a_replaced_directory_instead_of_folding_to_crashed
+
+m4 (parser records None) -- 5 failed:
+  test_the_parser_isolates_the_defect_and_keeps_every_other_file
+  test_a_defective_file_outside_the_judged_set_is_skipped_and_named
+  test_a_defective_file_inside_the_judged_set_refuses_and_names_the_arc_line
+  test_an_arc_on_a_line_no_statement_covers_is_isolated_to_that_file
+  test_a_covered_arc_on_a_never_executed_line_is_isolated_to_that_file
+```
+
+`m6` and `m7` each killed exactly one test, and exactly the right one:
+
+```
+m6 (LANE_TIMEOUT carry removed) -- 1 failed:
+  test_a_cleanup_that_failed_because_time_ran_out_says_so
+m7 (DA-R4 deferral removed)     -- 1 failed:
+  test_a_surviving_early_r2_refusal_is_announced_once
+```
+
+Every failing name is a name that describes the removed behaviour — no
+collateral, no vague breakage. **B049, B054, B028 and B053/DA-R4 all have
+honest, surgical test suites.** The sweep found exactly one hollow guard, and
+it is B029's (`m1` and `m2`, both GREEN), plus one deliberate confirmation
+that SF-5's carry is dead code (`m5`, GREEN as predicted).
+
+**Sweep scoreboard: 7 mutants, 4 RED (guards real), 2 GREEN-and-wrong
+(BLOCKER 2), 1 GREEN-and-expected (SF-5).**
 
 **Independently of the sweep, the two tests that matter most are not hollow**,
 because I reproduced both of their subjects from outside: DA-R4 flips
@@ -700,7 +783,7 @@ parameters`, which does not test forwarding — BLOCKER 2.
   escape at `git.repo_top` → `runner.py:219`). **SF-2** `runner.py:3944-3950`
   silent `GIT_FAILED`. **SF-3** `_report_probe_refusal` second spelling
   (`runner.py:447`). **SF-4** fd nit at `mutation.py:1642/1648`. **SF-5**
-  `statement_attribution.py:225,344` carry unreachable by any real artifact.
+  `statement_attribution.py:229,346` carry unreachable by any real artifact.
 - **Already verified — do NOT re-verify unless the fix touches them:** B049 at
   all five reads with non-vacuous controls; B054 both halves + A-357 intact +
   empty-not-None `BranchCoverage`; B053's six DA-R3 sites and DA-R4 both
@@ -721,13 +804,13 @@ parameters`, which does not test forwarding — BLOCKER 2.
   kill-signal + DA-R4), `probe49ing` (ingested report), `probe54` (two-file
   istanbul), `probe53` / `probe53b` / `probe53c` (refusal classes),
   `probe28` (timeouts), `probe29` (R3 + `derived:` fact).
-- **Pending evidence to collect on resume (round 1 left it in flight):**
-  `scratchpad/reruns.summary` + `scratchpad/rr-*.log` — a strictly serial,
-  targeted, niced rerun of mutants `m2`..`m7` plus an unmutated baseline of
-  each file set, queued behind `docker ps | grep tester-unified` being empty.
-  Expected: `m2` GREEN (corroborates BLOCKER 2), `m3`/`m4`/`m6`/`m7` RED
-  (those guards are real), `m5` GREEN (corroborates SF-5). If `m5` comes back
-  RED, strike SF-5. None of these can change round 1's verdict.
+- **Hollow-test sweep is COMPLETE — do not re-run it.** 7 mutants, each paired
+  with a green unmutated baseline of the same file set. RED (guard real):
+  `m3` B049 4-failed, `m4` B054 5-failed, `m6` B028 1-failed, `m7` DA-R4
+  1-failed. GREEN-and-wrong: `m1` and `m2`, B029's forwarding — **BLOCKER 2**.
+  GREEN-and-expected: `m5`, SF-5's dead carry. Raw logs kept at
+  `scratchpad/reruns.summary` + `scratchpad/rr-*.log`. Re-run only the
+  mutant whose subject a fix actually touches.
 - **Throttle rules now in force:** no `pytest -n`/xdist — serial only, prefixed
   `nice -n 19 ionice -c 3`; prefer targeted test files; whole suite at most
   once; before launching the registered gate check `docker ps | grep
