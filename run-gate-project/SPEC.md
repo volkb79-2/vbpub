@@ -117,6 +117,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `assay_lane` + `assay_command` (assay kind: both required; `assay_command`
   is a non-empty string list — the tool NEVER invents an assay invocation),
   `pins` (assay kind: table of `{sha256 = "<path>", version = "<str>"}` —
+  **those TWO keys and no others: an unrecognized key under
+  `[lanes.<name>.pins.<pin>]` is refused at load exactly as an unrecognized
+  lane key is (RG-32, rev 34), and `budget` is refused with its own message
+  naming the value's real owner** —
   `sha256` required, path relative to the project and existence-checked at
   load (project lanes and inherited central lanes alike); a declared
   `version` is VERIFIED in-lane via `<assay_command> --version`, which must
@@ -145,6 +149,27 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   NON-EMPTY list of non-empty path strings the lane is expected to leave
   behind — disclosed after every run per R-18; `{worktree}` tokens are
   substituted, relative entries resolve against the effective project dir).
+- `R-08a` **Pin tables carry two keys, and `budget` is not one of them
+  (RG-32).** `[lanes.<name>.pins.<pin>]` accepts `sha256` and `version`
+  ONLY. A `budget` key there is refused at load, by name, with the message
+  `pin '<pin>' declares 'budget' — run-gate never enforced it; the lane's
+  budget lives in the consumer's assay.toml [lanes.<assay_lane>] (delete
+  this key; the lane-level run-gate 'budget' stays advisory)`. This is an
+  `R-04`-class defect, not a nit: the key sat one nesting level below a
+  REAL, load-bearing `budget` that looks identical when read, and it did
+  nothing. Measured cost — three readers on one dstdns session (two
+  independent Opus review agents and the controller) each read
+  `pins.assay.budget = "90m"` as the governing bound of a mutation lane
+  whose `assay.toml` actually declared `120m`; the two numbers had drifted
+  with nothing able to notice. Renaming it to `budget_hint` plus a
+  drift check was REJECTED: the check would be a second reading of an
+  assay-owned fact, which `R-35` already forbids for the comparison base,
+  and a decorative key is still a key a reviewer must learn to ignore. The
+  generic unknown-key refusal is the durable half — a pin table that
+  accepted anything is how `budget` came to live there. **BREAKING** for any
+  consumer that declares the key today (dstdns does); migration is one
+  deletion, recorded in CHANGES.
+
 - `R-09` Environment resolution: project `[environments.<name>]` shadows the
   central one entirely (same name = project wins, no field merging); an
   undefined name → error naming the lane and BOTH candidate files. The

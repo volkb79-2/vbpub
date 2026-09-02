@@ -139,3 +139,30 @@ new container was started` line after the re-attach/collect disclosure. The
 usual `rev | lane | env | slice` header belongs to a run this client
 STARTED; printing it on a re-attach would claim mounts and a slice this
 invocation never chose.
+
+## E6 — RG-32 (rev 34, SPEC R-08a), BREAKING, 2026-09-02
+
+Ruling RW-7: refuse, do not rename. `_validate_lane`'s pin loop gains (a) a
+`budget`-specific refusal naming the value's real owner
+(`assay.toml [lanes.<assay_lane>]`) and (b) `_check_keys(pin, {"sha256",
+"version"})` — the durable half: a pin table that accepted anything is HOW
+`budget` came to live there. Message is RW-7's verbatim, with
+`<assay_lane>` substituted from the lane.
+
+No red-first proof possible in the usual sense: the pre-fix implementation
+is "accept silently", so the controlled wrong implementation IS the
+absence of a check, and the four new tests in `TestPinKeysAreValidated` fail
+against rev 33 by construction (the `pytest.raises` never fires).
+
+Estate sweep (`grep -rn budget --include=run-gate.toml`): every `budget` in
+the vbpub estate is a LANE-level one; no consumer here declares
+`pins.*.budget`. dstdns does (`sql-mutation`,
+`assay-p129-enumeration-cursor`) — controller notifies dstdns-23; the key
+must be deleted BEFORE upgrading, since it now refuses at load.
+
+Docs: SPEC `R-08a` + the `R-08` pins clause; CHANGES `### BREAKING` with the
+one-deletion migration; CONSUMERS lane-schema pin block; backlog index row
+(RG-32 had none) + section acceptance/status.
+
+Measured: `-k PinKeys` → 4 passed in 1.69 s; full file 451 passed, 2 skipped
+in 66.47 s.

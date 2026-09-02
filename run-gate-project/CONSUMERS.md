@@ -115,6 +115,11 @@ assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-2.1.0.pyz"]
 [lanes.<name>.pins.assay]
 version = "2.1.0"                   # DECLARING it = a claim: the lane verifies <assay_command> --version reports it
 sha256 = "tools/assay/assay-2.1.0.pyz.sha256"   # verified FROM its own directory
+# ...and NOTHING else. A pin table takes these two keys; any other is
+# refused at load (RG-32, rev 34). In particular `budget` here was never
+# enforced and is now a refusal: a kind = "assay" lane's real budget lives
+# in the TARGET assay.toml's [lanes.<assay_lane>], and run-gate's own
+# lane-level `budget` (one level up, no `pins` in the path) stays advisory.
 ```
 
 Environment facts resolution order (no silent fallbacks anywhere):

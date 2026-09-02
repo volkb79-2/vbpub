@@ -9,6 +9,31 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
+### BREAKING
+- **RG-32 — `[lanes.*.pins.*].budget` is refused at load (rev 34, SPEC
+  `R-08a`).** The key was silently inert: `run-gate` never read it, and the
+  value that actually governs a `kind = "assay"` lane's run time is the
+  TARGET `assay.toml`'s own `[lanes.<assay_lane>] budget`. It sat one
+  nesting level below a REAL, load-bearing lane-level `budget` that looks
+  identical when read — an `R-04`-class defect, measured three times in one
+  dstdns session (two independent review agents and the controller each read
+  `pins.assay.budget = "90m"` as the bound of a lane whose `assay.toml` said
+  `120m`; the numbers had drifted with nothing able to notice).
+  - **Migration (one deletion per lane):** delete the `budget` line from
+    every `[lanes.<name>.pins.<pin>]` table in your `run-gate.toml`. Nothing
+    replaces it — the lane's real budget already lives in your `assay.toml`
+    `[lanes.<assay_lane>]`, and run-gate's own lane-level `budget` (one
+    level up, no `pins` in the path) is unchanged and still advisory. Until
+    the key is removed, the lane refuses at load with a message naming the
+    pin, the assay.toml table that owns the value, and the remedy.
+  - `pins` tables now validate their keys at all: `sha256` and `version` are
+    the only ones accepted, and any other is refused the way an unrecognized
+    lane key already was. A pin table that accepted anything is how `budget`
+    came to live there.
+  - **Known affected consumer:** dstdns (`sql-mutation`,
+    `assay-p129-enumeration-cursor`). No vbpub-estate `run-gate.toml`
+    declares the key.
+
 ### Fixed
 - **RG-35 — a lane's container is found again after its client dies (rev 34,
   SPEC `R-39`).** A container lane runs detached and is removed by an

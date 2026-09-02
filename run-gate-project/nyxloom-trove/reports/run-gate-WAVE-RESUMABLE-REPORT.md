@@ -9,9 +9,10 @@ target run-gate 23.4.0 / `__revision__ = 34`. Wave prompt:
 
 | item | commit | SPEC | one line |
 |---|---|---|---|
-| RG-35 re-attach | `cee805ce` | `R-39` | an inflight record per (lane × worktree × project); re-attach / collect / report-lost / refuse-on-commit-mismatch / `--fresh` |
+| RG-35 re-attach | `6fe633f5` | `R-39` | an inflight record per (lane × worktree × project); re-attach / collect / report-lost / refuse-on-commit-mismatch / `--fresh` |
+| RG-32 inert pin key | `<next>` | `R-08a` | **BREAKING**: `pins.*.budget` refused at load by name; pin tables validate their keys at all |
 
-(Table filled in as the remaining items land: RG-32 → RG-34 → RG-36.)
+(Table filled in as the remaining items land: RG-34 → RG-36.)
 
 ## RG-35 — live acceptance probe (verbatim)
 

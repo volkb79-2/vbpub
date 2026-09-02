@@ -6332,6 +6332,73 @@ class TestInflightRecordDecisions:
         assert "refusing to guess" in err
 
 
+class TestPinKeysAreValidated:
+    """RG-32 / R-04. `[lanes.<n>.pins.<p>].budget` looked exactly like the
+    real, load-bearing lane-level `budget` one nesting level up and was dead
+    text: three readers on ONE dstdns session (two Opus review agents and the
+    controller) each read `pins.assay.budget = "90m"` as the governing bound
+    of a mutation lane whose `assay.toml` actually said `120m`. Refused by
+    name now — a BREAKING config change with its migration in CHANGES."""
+
+    PIN_LANE = """\
+        schema_version = 1
+        [environments.tester-unified]
+        image = "tester-unified:local"
+        [lanes.sql-mutation]
+        kind = "assay"
+        environment = "tester-unified"
+        assay_lane = "cw2b_schema"
+        assay_command = ["./tools/assay.pyz"]
+        clean_tree = false
+        [lanes.sql-mutation.pins.assay]
+        version = "4.1.0"
+        sha256 = "tools/assay.pyz.sha256"
+    """
+
+    def _load(self, tmp_path, extra: str):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self.PIN_LANE + extra)
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.load_config(proj)
+        return str(exc.value)
+
+    def test_budget_under_a_pin_refuses_and_names_its_real_owner(
+            self, tmp_path):
+        msg = self._load(tmp_path, '        budget = "90m"\n')
+        assert "pin 'assay' declares 'budget'" in msg
+        assert "run-gate never enforced it" in msg
+        # The remedy names the file AND the exact table that owns the value.
+        assert "assay.toml [lanes.cw2b_schema]" in msg
+        assert "delete this key" in msg
+        assert "the lane-level run-gate 'budget' stays advisory" in msg
+        assert "[lanes.sql-mutation].pins.assay" in msg
+
+    def test_any_other_unknown_pin_key_refuses_too(self, tmp_path):
+        """A pin table that silently accepted anything is HOW `budget`
+        survived there; the generic check is the durable half of the fix."""
+        msg = self._load(tmp_path, '        budget_hint = "90m"\n')
+        assert "unknown key(s) budget_hint" in msg
+        assert "allowed: sha256, version" in msg
+        assert "[lanes.sql-mutation].pins.assay" in msg
+
+    def test_the_two_real_pin_keys_still_load(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self.PIN_LANE)
+        cfg, _, _, _ = run_gate.load_config(proj)
+        assert cfg["lanes"]["sql-mutation"]["pins"]["assay"] == {
+            "version": "4.1.0", "sha256": "tools/assay.pyz.sha256"}
+
+    def test_a_lane_level_budget_is_still_accepted_and_still_advisory(
+            self, tmp_path, monkeypatch, capsys):
+        """The whole point of the refusal is that ONE of the two lookalikes
+        is real. That one keeps working, unchanged."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self.PIN_LANE.replace(
+            'clean_tree = false', 'clean_tree = false\nbudget = "120m"'))
+        cfg, _, _, _ = run_gate.load_config(proj)
+        assert cfg["lanes"]["sql-mutation"]["budget"] == "120m"
+
+
 class TestContainerFinishPathsInProcess:
     """The finish (`await_container`) and the start refusals, driven through
     `main()`. These behaviours predate RG-35 and were proven through the
