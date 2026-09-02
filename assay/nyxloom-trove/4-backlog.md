@@ -5509,9 +5509,19 @@ would be a protocol change on top of A-397's.
       path and the `go.mod` it came from. The staleness message survives for
       its actual subject — a key that IS under the module and still names no
       file — which is recorded in `go_stmtpos._derive`'s own comment.**
-- [ ] F008-A5's srdm run, which cannot start until this is closed. **Now
-      unblocked; see REPORT §37 for a lane-shape correction DA-6's
-      prescription needs before it can run.**
+- [x] F008-A5's srdm run, which cannot start until this is closed. **RAN
+      2026-09-02 (Wave C generation 6), on the corrected lane shape REPORT §37
+      derived and DA-9 accepted: the lane file inside
+      `shared-ramdisk-depot-manager/`, `source_roots = ["internal"]`, no
+      `cwd`.** A synthetic two-commit repository built inside the container
+      from `git archive 10b174a5|83c2ff79 shared-ramdisk-depot-manager`, base
+      = commit 1, srdm's own `gate.sh:105` argv. The derivation is what made
+      it possible at all: `srdm/internal/...` keys stripped by the module path
+      read from srdm's own `go.mod`, with nothing declared anywhere.
+      `assay run` → PASS, 12 files, 418 executable, 394 covered, 94.3%,
+      `helpers[{role: statement-positions, identity: "go version go1.25.14"}]`,
+      `judge_provenance.artifact: "zipapp"`. Transcript and the classified
+      table: REPORT §41.
 
 ---
 

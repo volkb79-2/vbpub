@@ -168,6 +168,16 @@ a Go lane runnable while the parser still reported block extents as statement
 truth, which is the wrong verdict the impossibility proof exists to prevent,
 reachable by a consumer who did nothing wrong.
 
+**Qualified on a real project, not only on fixtures.** The Go path was run end
+to end against `shared-ramdisk-depot-manager` at a real commit range, through
+the shipped zipapp, inside the Go gate image, and compared line by line with
+that project's own diff-coverage gate on the byte-identical profile: 418
+executable changed lines against its 684, agreeing on all 24 statements that
+are genuinely uncovered, with every one of the 266 extra lines it counts shown
+to begin no statement. The worked lane is
+[CONSUMERS.md point 7](docs/CONSUMERS.md); the qualification also found a real
+defect in assay itself (B061), which is what a qualification is for.
+
 **A Go lane requires a real Go toolchain on PATH.** The statement-position
 oracle is a Go program — A-217 rules that a Python re-implementation of
 `cmd/cover`'s segmentation is not an acceptable substitute — so on a machine

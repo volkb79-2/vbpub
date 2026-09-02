@@ -298,9 +298,13 @@ features:
     - tests/test_adapters_go_union_fidelity.py::test_the_committed_profile_and_the_committed_oracle_describe_the_same_bytes
     - tests/test_canary_go_pipeline.py::test_the_canary_fixtures_are_statement_granular_not_the_block_expansion
   - id: F008-A5
-    text: Qualified end to end on srdm's own tree - a real statement-granular Go R1 verdict produced by the shipped CLI inside tester-unified-go at a real srdm commit range, and every line on which srdm's covergate disagrees at the same commits classified as extent-expansion (assay correct, A-217/B058) or file-absence (covergate's NoCode/Unmeasured split), with the independent hand manifest as the neutral third party where one exists. Reworded by A-401 - the previous "union fidelity" wording was unattainable by construction.
-    status: absent
-  status: building
+    text: Qualified end to end on srdm's own tree - a real statement-granular Go R1 verdict produced by the shipped CLI inside tester-unified-go at a real srdm commit range, and every line on which srdm's covergate disagrees at the same commits classified as extent-expansion (assay correct, A-217/B058) or file-absence (covergate's NoCode/Unmeasured split), with the independent hand manifest as the neutral third party where one exists. Reworded by A-401 - the previous "union fidelity" wording was unattainable by construction. RUN 2026-09-02 (DA-6 as corrected by DA-9) on 10b174a5..83c2ff79, the pair that isolates P14: assay PASS, 418 executable / 394 covered / 94.3%; covergate PASS, 684/639/93.4% on the byte-identical profile in the same checkout. Every one of the 266 lines in covergate's larger denominator was classified BEFORE a side was named, and all 266 begin no statement (extent-expansion); the file-absence axis is empty at this range - no changed file lacks coverage records. The 24 lines assay reports uncovered are a strict subset of covergate's 45, and the 21 extra are closing braces and signatures a developer cannot make executable. Classifying first is what found B061, a real defect in assay that the denominator alone would have hidden. Full transcript and the classified table are REPORT section 41; nothing was committed under shared-ramdisk-depot-manager/. The two entries below are opt-in (ASSAY_GO_QUALIFICATION=1) for A3's reason; the third needs no toolchain and is the defect's own regression test.
+    status: proven
+    evidence:
+    - tests/qualification/test_go_r1_real.py::test_a_real_go_lane_passes_and_records_the_toolchain_that_judged_it
+    - tests/qualification/test_go_r1_real.py::test_a_real_go_lane_fails_and_names_the_uncovered_statement_line
+    - tests/test_statement_attribution_go_witnesses.py::test_repeated_records_for_one_block_fold_executed_wins_not_last_wins
+  status: shipped
   milestone: M6
 - id: F009
   title: Attested evidence, bound to a commit and checked for staleness
@@ -498,11 +502,12 @@ re-carve through P32; F014 is B002/B003; F015 is A-O06 under A-244. Package
 numbers are identity, not sequence (A-153/A-167/A-219) — read
 `handoffs/README.md` for order.
 
-## The one feature that is deliberately honest rather than flattering
+## The one feature that WAS deliberately honest rather than flattering
 
-**F008 (the Go adapter) is `building`, not `shipped`**, and exactly one of its
-five criteria is `absent` — down from three, and the two that closed are worth
-reading as a pair because the second could not have landed without the first:
+**F008 (the Go adapter) is `shipped` as of 2026-09-02**, and this section is
+kept rather than deleted because the shape of what it recorded is the point:
+three of its five criteria sat `absent` for months, with the reason written
+down, and they closed by being built rather than by being re-read.
 
 - The registration, protocol surface and fail-closed `has_executable_code` are
   real and tested (F008-A1, F008-A2).
@@ -522,11 +527,20 @@ reading as a pair because the second could not have landed without the first:
   hypothetical: the real `hello.out` block `32.32,34.2` expands naively to
   three lines where Go has one statement, so bytes-only would have made the
   fixture assert *more* wrong lines than the hand-authored version did.
-- What remains `absent` is **F008-A5**: qualification on a real consumer's own
-  tree (srdm), against its own `covergate`, at a real commit range.
+- And **F008-A5** — qualification on a real consumer's own tree — ran on
+  2026-09-02 against srdm at `10b174a5..83c2ff79`, the pair that isolates P14.
+  Both tools PASS on the byte-identical profile: assay 394/418 (94.3%),
+  `covergate` 639/684 (93.4%). Every line of the 266-line denominator
+  difference was classified before either side was called wrong, and all 266
+  are lines that begin no statement. That discipline earned its keep
+  immediately: the covered RATIO did not fit the extent-expansion hypothesis
+  either, and chasing the part that did not fit found **B061**, a real defect
+  in assay's own join. A conclusion drawn from the denominator alone would
+  have shipped it as "assay is stricter, by design".
 
-Recording that as `shipped` would be the hollow-proven claim the spine schema
-exists to make impossible.
+Recording this as `shipped` before those criteria closed would have been the
+hollow-proven claim the spine schema exists to make impossible; recording it as
+`building` now would be the opposite error.
 
 ## What "proven" costs here
 

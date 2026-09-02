@@ -739,3 +739,91 @@ History is immutable and rewriting it to tidy a reference would be a far worse
 trade than an explained mismatch. Read them against the map in the
 `e7eb5241` entry above: those three mean B055, B059, and "B059 closed, B060
 filed" respectively.
+
+---
+
+## Generation 6 (2026-09-02) — F008-A4, F008-A5, B061; F008 shipped
+
+Fresh Opus session seeded with BRIEF-1..6 plus the controller's 2026-09-02
+entry at `vbpub@53eba55b` (DA-9). Inherited tip `86b4efae`, tree clean,
+verified before anything was touched.
+
+### `394c6cc2` — `fix(assay): F008-A4 — the Go coverage fixtures are real toolchain output, and their expectations are the oracle's`
+
+Both halves in one change, which is A-234's own warning honoured rather than
+quoted. One run of the new committed
+`nyxloom-trove/carve-assets/P27-recarve/regenerate-fixtures.sh` inside
+`tester-unified-go:local` (go1.25.14, `--network=none`,
+`--cgroup-parent=dev-background.slice`, tar pipe) produced `hello.out`, both
+canary profiles and `fixture-oracle.json` from the FINAL committed source
+bytes — settled before the run, because a block extent is a line/column pair
+and the profiles are position-bound.
+
+The tests join the two documents with the production `attribute_statements`,
+so an edit that moves a function body without a re-run refuses
+`UNREADABLE_ARTIFACT` instead of attributing stale lines. Union-fidelity's
+sets go `{29,30}`/`{36,37}` → `{33}`/`{39}`; a named control asserts the naive
+expansion of the SAME real bytes is `{32,33,34}`/`{38,39,40}` — the concrete
+form of "bytes alone would have been worse", since the old hand-authored
+blocks ended at the return statement's own column and so expanded correctly by
+accident.
+
+B057 closes on all three boxes. `_PreOracleGoAdapter` is DELETED rather than
+documented: with genuinely statement-attributed fixtures the shipped adapter
+judges the canary, so cause-sensitivity is now proven at statement
+granularity. `as_pre_oracle_attributed` → `as_statement_attributed`, which
+refuses a multi-line block extent instead of trusting the caller; the oracle
+reader moves to one `conftest.load_go_statement_oracle`. Stale A-234 banners
+in `adapters/go.py` and `coverage_parsers/go_cover.py` record the discharge.
+Devcontainer suite: **3905 passed, 18 skipped**.
+
+### `875382d2` — `fix(assay): B061 — the statement join kept only the LAST record for a repeated block`
+
+**Found by F008-A5's qualification, on its first run.** `go test
+-coverpkg=./...` gives one record per test binary per block; srdm's profile
+carries twenty per block, nineteen zeros and a one.
+`attribute_statements`' `{block.extent: block}` kept the last, so a covered
+block whose non-zero record was not final became `missing` — 255 lines
+reported uncovered where the same profile's own line-level fold says 45.
+
+The finding is a direct product of DA-6's "classify before naming a side"
+rule. The denominator fit the extent-expansion prediction perfectly (418 <
+684); the covered RATIO did not (39.0% vs 93.4%), and extent-expansion cannot
+produce that. Reading the denominator alone would have shipped the defect with
+"assay is stricter, by design" written next to it.
+
+Fold is executed-wins before any count is read — the parser's own rule one
+layer down. Three record orders asserted (a fix handling only "the non-zero
+record comes first" passes one), an all-zero extent still missing, and the
+invariant stated as a property: a correction may never downgrade a line the
+parser called executed. Invisible until now because every frozen P27 witness
+and every F008-A4 fixture has exactly one record per block.
+
+### `<this commit>` — `docs(assay): F008-A5's srdm qualification, F008 shipped, M6 done`
+
+The run itself, per DA-6 as corrected by DA-9. Synthetic two-commit repository
+built inside the container by `git archive 10b174a5|83c2ff79
+shared-ramdisk-depot-manager` from the bind-mounted host repo (read-only);
+lane file at the module root, `source_roots = ["internal"]`, no `cwd`, srdm's
+own `gate.sh:105` argv; nothing declared about the module path, nothing
+committed under `shared-ramdisk-depot-manager/` in vbpub.
+
+Result on `875382d2`'s zipapp: **assay PASS, 12 files, 418 executable, 394
+covered, 94.3%**, `helpers[{statement-positions, "go version go1.25.14"}]`,
+`judge_provenance.artifact = "zipapp"`. `covergate` on the byte-identical
+profile: **PASS, 639/684, 93.4%**. A control lane judging `covergate`'s own
+profile file returned assay's identical numbers, so every difference is a
+judging rule and none is a measurement.
+
+Classified: **266 lines of extent-expansion** (every line in `covergate`'s
+larger denominator begins no statement, checked against the oracle), **zero**
+on the file-absence axis (no changed file lacks records; project memory's
+"covergate silently skipped P14's package" does not reproduce at this pair),
+**zero** in any third category. Both tools' rules were re-implemented from
+their own published descriptions and reproduce their own printed numbers,
+which is what makes this a measurement. REPORT §41.
+
+F008-A4 and F008-A5 both tick, so **F008 is `shipped`** and **M6 is `done`**.
+B059's last box and all three of B057's close. B061 filed. CONSUMERS.md gains
+point 7 — a worked Go lane that is the one that really ran, with the srdm-side
+consequence stated: not more lines seen, a truer denominator.

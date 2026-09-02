@@ -1672,3 +1672,229 @@ job's completion notification agreed with its own appended marker — eight
 instances across four generations, four of them agreeing. The markers were
 read separately anyway, in their own step, which is the only reason this
 sentence can say which was true rather than assuming it.
+
+---
+
+# Generation 6
+
+## 40. Scope state, and what generation 6 did
+
+Inherited tip `86b4efae` (gate-verified `dd1e2c46` plus one docs-only commit),
+tree clean, verified before anything was touched. The controller's 2026-09-02
+entry at `vbpub@53eba55b` rules **DA-9** and dispatches four items.
+
+| item | state |
+|---|---|
+| 1. F008-A4 — fixture regeneration + re-derived expectations | **DONE**, `394c6cc2` |
+| 2. F008-A5 — the srdm qualification per DA-6 as corrected by DA-9 | **DONE**, §41 |
+| 3. the F008-A4/A5 acceptance boxes | **DONE** — both `proven`; **F008 is `shipped`** and **M6 is `done`** |
+| 4. B057's remaining boxes | **DONE** — all three tick; the canary double is deleted, not documented |
+
+One item was not on the list and is the most consequential thing here:
+**B061**, a real defect in assay's own statement join, found by F008-A5's
+qualification on its first run and fixed at `875382d2`. §41 is the reasoning
+that found it, and it is the reason the classification discipline DA-6 imposed
+is worth more than the run it governs.
+
+## 41. F008-A5 — the srdm qualification, and the defect it found
+
+### The harness
+
+DA-9's ruling, followed exactly. A synthetic two-commit repository built
+INSIDE `tester-unified-go:local` from the bind-mounted host repository, read
+only:
+
+```sh
+git -c safe.directory=* --git-dir=/hostrepo/.git archive 10b174a5 shared-ramdisk-depot-manager | tar -x
+git add -A && git commit -m "commit1: srdm subtree at 10b174a5"   # -> e1b39fb8
+rm -rf shared-ramdisk-depot-manager
+git -c safe.directory=* --git-dir=/hostrepo/.git archive 83c2ff79 shared-ramdisk-depot-manager | tar -x
+git add -A && git commit -m "commit2: srdm subtree at 83c2ff79 (P14)"
+```
+
+`git diff --stat` of that pair inside the synthetic repository: **32 files
+changed, 3917 insertions(+), 35 deletions(-)**, including `internal/power/*`
+and `internal/opctl/update.go` — the controller's own re-check, reproduced.
+**Nothing was committed under `shared-ramdisk-depot-manager/` in vbpub**; the
+whole exercise lives in a container-local repository under `/work`.
+
+The lane file sits at `shared-ramdisk-depot-manager/assay-qualification.toml`
+inside that synthetic repository — BRIEF-6 §3's corrected shape, so
+`project_root` IS the module root — with `source_roots = ["internal"]`, **no
+`cwd`**, and srdm's own `tools/gate.sh:105` argv verbatim but for the
+`-coverprofile` path, which is assay's reserved artifact. It is committed (a
+third commit) rather than left untracked, because `covergate` refuses on a
+dirty tree while assay's own dirty check is scoped to source roots; committing
+it satisfies both, and a `.toml` outside `internal/` is judged by neither.
+
+**Nothing declares the module path.** srdm's `go.mod` says `module srdm`, so
+its profile keys are `srdm/internal/...`; A-404's derivation strips them. That
+is the whole of B059's fix, exercised on a real consumer's tree for the first
+time.
+
+### The first run, and the number that did not fit
+
+| | changed executable | covered | pct | verdict |
+|---|---|---|---|---|
+| `covergate` | 684 | 639 | 93.4% | PASS (75% floor) |
+| assay (as shipped at `394c6cc2`) | 418 | 163 | 39.0% | **FAIL/`UNCOVERED_LINES`, 255 lines** |
+
+The denominator fit the prediction exactly: A-217/B058 say `covergate`
+over-approximates, so assay's executable set must be SMALLER, and 418 < 684.
+Had I stopped there, the honest-looking conclusion was already available —
+"assay is stricter by design, as A-217 predicted in writing" — and it would
+have been wrong.
+
+**The covered RATIO did not fit.** Extent-expansion inflates numerator and
+denominator together; it cannot move 93.4% to 39.0%. Something was calling ~210
+genuinely-covered statement lines missing, and neither of DA-6's two categories
+covers that. Chasing the part that did not fit is what found the defect.
+
+**Two controls were run before any hypothesis was tested.** First, srdm's argv
+twice in the same checkout: the profiles are NOT byte-identical, but every
+difference is in `cmd/srdm`, outside both tools' `internal` scope. Second, and
+decisively, a control lane whose argv is `cp /work/srdm-cover-1.out
+.assay/cover.out` — assay judging the *byte-identical file* `covergate`
+judged. It returned `418 / 163 / 39.0%`, identical to the real lane. So the
+disagreement was not a measurement difference at all; it was a judging-rule
+difference, in one of the two rules.
+
+### B061
+
+`go test -coverpkg=./...` instruments every package into **every** test binary
+and `go test` concatenates each binary's own profile section, so one block gets
+one record per binary. srdm's profile is 68 761 lines and carries **20 records
+per block**:
+
+```text
+$ grep -c '^srdm/internal/power/wings.go:' srdm-cover-1.out
+1780
+$ grep '^srdm/internal/power/wings.go:59.22,65.3 ' srdm-cover-1.out | sort | uniq -c
+     19 srdm/internal/power/wings.go:59.22,65.3 1 0
+      1 srdm/internal/power/wings.go:59.22,65.3 1 1
+```
+
+`go_cover.parse` folds those correctly at LINE granularity and keeps every
+record unmerged in `FileCoverage.blocks` (A-239, deliberately).
+`attribute_statements` then built `{block.extent: block}` — keeping whichever
+record came **last** — and read `count` off it. Last is `0`, so a block the
+toolchain reports as executed was attributed to `missing`.
+
+Fixed at `875382d2` by folding repeated records executed-wins before any count
+is read. The full entry, including why every frozen P27 witness and every
+F008-A4 fixture has exactly one record per block and so could never have caught
+this, is **B061**.
+
+### The qualification, on the fixed build
+
+`assay-4.0.1.dev38+g875382d2.pyz`, `python3 <pyz> run coverage --file … --verdict-json … --require-judge-provenance`, inside
+`tester-unified-go:local`, `--network=none`, `--cgroup-parent=dev-background.slice`:
+
+```text
+coverage: PASS (exit 0)
+  commit: 82ebfa4291727907c0c5a547ecabc8f3abc97afa
+  argv: go test ./... -count=1 -coverpkg=./... -covermode=atomic -coverprofile=.assay/cover.out
+
+R1 PASS  considered=12  executable=418  covered=394  pct=94.26
+helpers: [{role: statement-positions, tool: go,
+           resolved_path: /usr/local/go/bin/go, identity: "go version go1.25.14"}]
+judge_provenance: {artifact: zipapp, version: 4.0.1.dev38+g875382d2, sha256: 2780f84a…}
+```
+
+and the same numbers, `418 / 394 / 94.26`, from the control lane judging
+`covergate`'s own profile file. `covergate` on that file: `diff-coverage OK:
+639/684 changed executable lines covered (93.4% >= 75.0% floor)`.
+
+### The classified table — every disagreement, classified before a side was named
+
+`covergate` was re-run at `-fail-under 100` purely to make it PRINT its
+uncovered set (the threshold changes no classification), and the oracle was run
+over all 26 changed `internal/` files at HEAD.
+
+**Uncovered lines, per file:**
+
+| file | assay | covergate | both | covergate-only, begins NO statement | covergate-only, IS a statement | assay-only |
+|---|---|---|---|---|---|---|
+| `internal/config/config.go` | 2 | 4 | 2 | 2 | 0 | 0 |
+| `internal/doctor/doctor.go` | 1 | 1 | 1 | 0 | 0 | 0 |
+| `internal/doctor/headroom.go` | 3 | 4 | 3 | 1 | 0 | 0 |
+| `internal/opctl/update.go` | 10 | 20 | 10 | 10 | 0 | 0 |
+| `internal/power/readiness.go` | 1 | 2 | 1 | 1 | 0 | 0 |
+| `internal/power/wings.go` | 5 | 10 | 5 | 5 | 0 | 0 |
+| `internal/publish/sizing.go` | 2 | 4 | 2 | 2 | 0 | 0 |
+| **total** | **24** | **45** | **24** | **21** | **0** | **0** |
+
+**Denominator**, recomputed independently by re-implementing each tool's own
+published rule over the same three inputs (the `--unified=0` diff, the profile,
+the oracle document) and checked against what each tool actually printed:
+
+| rule | executable | covered | pct |
+|---|---|---|---|
+| `covergate` (`Executed[line] \|\| Missing[line]` over expanded extents) | 684 | 639 | 93.4% |
+| assay (statement lines only) | 418 | 394 | 94.3% |
+
+Both reproduce their tool's own output exactly, which is what makes the
+classification a measurement rather than an argument.
+
+**The classification:**
+
+* **extent-expansion — 266 lines, assay correct (A-217/B058).** Every one of
+  the 266 lines in `covergate`'s larger denominator begins no statement,
+  checked line by line against the oracle. The 21 uncovered-set disagreements
+  are a subset of them: closing braces and `func` signatures, the pairs visible
+  in `covergate`'s own output (`[70 71 76 77 82 83 …]`).
+* **file-absence — EMPTY at this range.** No changed non-test `.go` file under
+  `internal/` lacks coverage records, `covergate` tagged nothing
+  `[file absent from the cover profile]`, and assay's `files_missing_coverage`
+  is `[]`. So `covergate`'s `NoCode`/`Unmeasured` split never fires here and
+  the two tools cannot disagree on that axis. **Project memory's note that
+  "covergate silently skipped P14's package" does not reproduce at this commit
+  pair** — `-coverpkg=./...` is doing exactly the job its comment claims.
+* **no third category.** Zero lines assay calls uncovered that `covergate`
+  calls covered, and zero `covergate`-only uncovered lines that begin a
+  statement. After B061, the two tools' uncovered sets stand in a strict subset
+  relation.
+
+The neutral third party (`carve-assets/P27/fixture/manifest/calc-statements.json`)
+was not needed: there is no line on which the two tools disagree *about a
+statement*, so nothing needs a third opinion. It remains the arbiter for the
+frozen fixture pair, where it already is one
+(`test_statement_attribution_go_witnesses.py`).
+
+### The srdm-side consequence, stated plainly
+
+**No — assay does not see P14 lines `covergate`'s floor never counted.** The
+relation runs the other way: assay's executable set is a strict subset of
+`covergate`'s, 418 of 684. What srdm would gain by moving is not more coverage
+but a truer denominator. Today its 75% floor is measured against 684 lines of
+which 266 are not code a test can execute, and when the gate fails it hands a
+developer 45 lines to fix of which 21 are closing braces and signatures. Under
+assay the same change is 24 real statements, and the headline number rises
+(94.3% vs 93.4%) not because the bar moved but because the denominator stopped
+counting punctuation.
+
+One caveat srdm should hear with that: **`-coverpkg=./...` is load-bearing on
+both sides**, and dropping it would shrink the profile, empty the file-absence
+axis's protection, and — before B061 — would have hidden the defect this run
+found.
+
+## 42. What generation 6 did NOT do
+
+**Nothing on the dispatched list.** All four items are done and both remaining
+acceptance boxes tick, so F008 is `shipped` and M6 is `done`.
+
+**No decision row was written.** B061 is a defect fix implementing a rule that
+was already ruled and already stated in the code's own comment (executed-wins,
+A-391); calling it a decision would inflate a bug into a design change.
+Likewise no new reason code, no schema field, no protocol change — the fix is
+eleven lines inside one function.
+
+**`covergate` was not changed**, and B058 stays open as a finding about srdm's
+tool rather than a patch this wave landed. That is srdm's call to make with
+this evidence, not assay's to make for it.
+
+**The determinism gap in srdm's own profile was recorded, not chased.** Two
+runs of srdm's own argv in the same checkout differ in `cmd/srdm` block counts.
+It is outside `internal/`, outside both tools' scope, and belongs to srdm; it
+is noted here only because a reviewer re-running the harness will see it and
+should know it was seen.

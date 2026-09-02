@@ -1996,3 +1996,69 @@ The previously-documented library workaround — building `GoAdapter(module_path
 yourself and calling `runner.run_lane` — is no longer needed for this, and a
 `module_path` you construct by hand that disagrees with your `go.mod` is now
 refused rather than given precedence.
+
+**7. A worked Go lane, and it is one that really ran.** This is the lane
+F008-A5's qualification used against `shared-ramdisk-depot-manager` (srdm) at a
+real commit range, unedited except for the base ref. Note what it does NOT
+contain: no `cwd`, no module path, and `source_roots` spelled relative to the
+lane file's own directory.
+
+```toml
+schema_version = 2
+
+[lanes.coverage]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+# Your project's own test command, verbatim. srdm's is `tools/gate.sh:105`;
+# only the -coverprofile path is assay's, because assay reserves the artifact
+# it is going to read.
+argv = ["go", "test", "./...", "-count=1", "-coverpkg=./...", "-covermode=atomic", "-coverprofile=.assay/cover.out"]
+# `default_process_runner` REPLACES the child environment, so a Go lane must
+# declare what it needs rather than inheriting it. PATH is how the toolchain
+# is found at all; GOCACHE/GOMODCACHE keep a warm build cache warm.
+env = { GOPROXY = "off", GOFLAGS = "-mod=mod", GOTOOLCHAIN = "local", GOWORK = "off" }
+env_passthrough = ["PATH", "HOME", "GOCACHE", "GOMODCACHE"]
+budget = "30m"
+allow_argv_append = false
+
+[lanes.coverage.isolation]
+snapshot_selection = "repository"
+
+[lanes.coverage.judge]
+language = "go"
+source_roots = ["internal"]     # project-relative, i.e. <module root>/internal
+fail_under = 75.0
+allow_excluded = false
+base = "<the ref your change is measured against>"
+
+[lanes.coverage.judge.coverage]
+format = "go-cover"
+artifact = ".assay/cover.out"
+producer = "go-test"
+```
+
+The file lives at `<module root>/assay.toml` — for srdm, inside
+`shared-ramdisk-depot-manager/`, not at the repository top. That is point 6
+restated as a placement rule, and it is the one thing an adopter with a
+subdirectory module gets wrong first: a lane file at the repository top makes
+the project root the repository top, `go.mod` is not there, and the lane
+refuses `BAD_LANE_CONFIG` before it judges anything.
+
+**Keep `-coverpkg=./...` if you have it.** It is what stops a package with no
+test file of its own from vanishing from the profile entirely — the
+"file-absence" failure mode, which reports a changed file as either excluded or
+wholly uncovered depending on how the tool guesses. It also means one block
+gets one record per test binary, which assay folds executed-wins (B061); a
+profile without it is smaller and measures less.
+
+**What that lane produced**, through `python3 assay-<version>.pyz run coverage`
+inside the Go gate image: `PASS`, 12 files considered, 418 executable changed
+lines, 394 covered, 94.3%, and a `helpers[]` entry naming `go version
+go1.25.14` as the toolchain that derived the statement positions. srdm's own
+`covergate` on the byte-identical profile said 684/639 — a 266-line larger
+denominator, every line of which begins no statement. Both tools agree on all
+24 statements that are genuinely uncovered; the 21 extra lines `covergate`
+names are closing braces and signatures a developer cannot make executable.
+That difference is the whole reason A-217 ruled for a source-side oracle, and
+it is what a Go consumer gains by moving.
