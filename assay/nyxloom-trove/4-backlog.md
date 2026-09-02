@@ -2802,15 +2802,58 @@ than left to be discovered as a confusing `BAD_LANE_CONFIG` claim.
 
 ### Acceptance
 
-- [ ] a decision recorded on whether R3's canary side-run should resolve
+- [x] a decision recorded on whether R3's canary side-run should resolve
       infrastructure facts at all;
-- [ ] if yes: `execute_command`/`canary.py`'s two call sites thread
+- [x] if yes: `execute_command`/`canary.py`'s two call sites thread
       *infrastructure_source*/*infrastructure_environment* through, and a
       CLI-driven test proves a resolvable `derived:` fact no longer produces
       a false `ERROR`/`BAD_LANE_CONFIG` R3 claim;
 - [ ] if no: documented explicitly as a known limitation in `docs/CONSUMERS.md`
       and `docs/DESIGN-GUIDE.md`, so a consumer hitting the misattributed
-      claim has somewhere to learn why.
+      claim has somewhere to learn why. — **not applicable; the answer was
+      yes, and it was already yes on the shipped path.**
+
+### Resolution — RESOLVED BY MEASUREMENT, Wave D phase 1 (DA-D11 as re-scoped by DA-R6 → A-416)
+
+**This entry's premise is corrected, not merely satisfied.** DA-R6 required
+measuring before writing code. Measured at `dd8f4d2c` through
+`assay.cli.main`, on a real R3 lane with a real gitignored `ciu.global.toml`
+and `[infrastructure] ASSAY_B029_FACT = "derived:deploy.cgroup_parent"`,
+whose pytest suite asserts the fact's value out of `os.environ`:
+
+```
+package: PASS (exit 0)
+"rigor": "R3", "status": "PASS",
+"canary": {"control_outcome": "PASS", "transformed_outcome": "FAIL",
+           "observed_reason_code": "COMMAND_FAILED",
+           "mechanism": "import-break", "target": "pkg/mod.py"}
+```
+
+The canary's own CONTROL half ran the fact-asserting suite and passed, so the
+shipped side-run **does** see the lane's infrastructure world. The entry says
+"only the canary's own side-run plan does not [resolve them]"; that is true
+of the LEGACY standalone `canary.run_python_canary`, and false of
+`canary.run_isolated_canary`, which is what `runner._run_prepared_lane`
+actually uses — it takes an already-executed `unit.result` from the
+snapshot-unit machinery and never reaches `execute_command`.
+
+- [x] **The threading landed anyway**, per DA-R6: `runner.execute_command`
+      (`src/assay/runner.py:828`) and `canary._run_pipeline` /
+      `canary.run_python_canary` (`src/assay/canary.py:188`, `:225`) take and
+      forward `infrastructure_source`/`infrastructure_environment`, both
+      defaulting to `None` so no existing caller changes.
+- [x] **`execute_command`'s docstring is corrected.** It stated the defect as
+      live in assay's own words ("this function accepts no
+      *infrastructure_source*/*infrastructure_environment* of its own"); it
+      now states what was measured, including which path was really affected.
+- [x] **Regression guard, not a red-first proof**, and labelled as such:
+      `tests/test_r3_canary_sees_infrastructure.py` — the CLI-driven R3 claim
+      with the fact-asserting suite, plus a signature/docstring check for the
+      legacy path. There was nothing red to show; the transcript above is the
+      evidence, and A-334 is satisfied because nothing here is a double.
+- [x] **`docs/CONSUMERS.md`** states the coupling positively in the
+      infrastructure section: both halves of an R3 canary run with the
+      resolved facts.
 
 ## B030 — `assay plan` reports zero candidates for every lane; its own test asserts the bug
 

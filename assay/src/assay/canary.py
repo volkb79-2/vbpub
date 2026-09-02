@@ -192,6 +192,8 @@ def _run_pipeline(
     project_root: Path,
     base_commit: str,
     adapter: LanguageAdapter,
+    infrastructure_source: Path | None = None,
+    infrastructure_environment: Mapping[str, str] | None = None,
     process_runner: ProcessRunner,
     clock: Clock,
 ) -> tuple[Outcome, ReasonCode | None]:
@@ -210,8 +212,22 @@ def _run_pipeline(
     file — a DIFFERENT, unrelated cause from either mechanism's own
     intended one. The R0 outcome is reported instead, honestly.
     """
+    # (B029/DA-R6) The side-run's own plan resolves the lane's infrastructure
+    # facts exactly as the lane's main command does. Before this, a
+    # ``derived:`` fact raised out of `resolve_command_plan` here on a lane
+    # whose infrastructure resolves everywhere else, and this function's
+    # caller turned that into a misattributed R3 claim. Only this LEGACY
+    # standalone path was ever affected -- `run_isolated_canary`, the path
+    # `runner._run_prepared_lane` actually uses, takes an already-executed
+    # `unit.result` and was measured correct (DA-R6's transcript) -- but this
+    # path is public API and its plan should not be a second, poorer world.
     result = execute_command(
-        lane, cwd=project_root, process_runner=process_runner, clock=clock
+        lane,
+        cwd=project_root,
+        infrastructure_source=infrastructure_source,
+        infrastructure_environment=infrastructure_environment,
+        process_runner=process_runner,
+        clock=clock,
     )
     r0_claim = build_r0_claim(result)
     if r0_claim.status is not Outcome.PASS or "R1" not in lane.rigor:
@@ -231,6 +247,13 @@ def run_python_canary(
     target_path: str,
     adapter: LanguageAdapter,
     mechanism: str,
+    #: (B029/DA-R6) Forwarded, unchanged, to BOTH halves' own
+    #: :func:`~assay.runner.execute_command` -- the control and the
+    #: transformed run see one infrastructure world, and it is the lane's.
+    #: Defaulting both to ``None`` keeps every existing caller's behaviour
+    #: byte-identical on a lane that declares no infrastructure.
+    infrastructure_source: Path | None = None,
+    infrastructure_environment: Mapping[str, str] | None = None,
     process_runner: ProcessRunner = default_process_runner,
     clock: Clock = _utc_now,
 ) -> CanaryResult:
@@ -264,6 +287,8 @@ def run_python_canary(
         project_root=project_root,
         base_commit=base_commit,
         adapter=adapter,
+        infrastructure_source=infrastructure_source,
+        infrastructure_environment=infrastructure_environment,
         process_runner=process_runner,
         clock=clock,
     )
@@ -308,6 +333,8 @@ def run_python_canary(
         project_root=project_root,
         base_commit=control_commit,
         adapter=adapter,
+        infrastructure_source=infrastructure_source,
+        infrastructure_environment=infrastructure_environment,
         process_runner=process_runner,
         clock=clock,
     )

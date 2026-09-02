@@ -377,6 +377,13 @@ declared `env` or `env_passthrough` name refuses at load time; the same
 collision is refused again at run time as defence-in-depth, so a `Lane`
 constructed directly (bypassing the loader) cannot reach it unprotected.
 
+**An R3 canary's side-run sees the same facts.** A lane may declare
+`[lanes.<name>.infrastructure]` alongside `rigor = [..., "R3"]`; both halves
+of the canary — the known-good control and the transformed variant — run with
+the resolved facts in their environment, exactly as the lane's own command
+does. Verified end to end with a `derived:` fact and a suite that reads it out
+of `os.environ`: the control passes, so the facts really are there (B029).
+
 **If the infrastructure declaration itself is what's unresolvable**, a refusal
 that was ALREADY going to happen for some other reason (a bad `--shard`, an
 unrelated adapter refusal) still writes a real, schema-valid verdict — but

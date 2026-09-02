@@ -399,3 +399,47 @@ free row; no new backlog entry filed at this commit.
   `docs/DESIGN-GUIDE.md`, `CHANGES.md`, `nyxloom-trove/decisions.md`
   (A-415), `nyxloom-trove/4-backlog.md` (B028 acceptance ticked, RESOLVED).
 - No `verdict.py` / `verify.py` / schema / drift-guard file touched; no `!`.
+
+### 10. `fix(assay): the canary side-run resolves infrastructure; B029's premise corrected by measurement (B029, A-416)`
+
+- Item: **B029**, ruling **DA-D11** as re-scoped by **DA-R6** ("MEASURE
+  FIRST").
+- **The measurement, at `dd8f4d2c`, through `assay.cli.main`.** A real R3
+  lane: `rigor = ["R0","R3"]`, `judge.canary.mechanism = "import-break"`, a
+  real gitignored `ciu.global.toml`, `[infrastructure] ASSAY_B029_FACT =
+  "derived:deploy.cgroup_parent"`, and a pytest suite that asserts
+  `os.environ["ASSAY_B029_FACT"] == "assay-b029.slice"`:
+
+  ```
+  package: PASS (exit 0)
+  "rigor": "R3", "status": "PASS",
+  "canary": {"control_outcome": "PASS", "transformed_outcome": "FAIL",
+             "observed_reason_code": "COMMAND_FAILED"}
+  ```
+
+  **It does NOT reproduce.** The control half ran the fact-asserting suite
+  and passed, which is direct evidence the shipped side-run sees the lane's
+  infrastructure world. Generation 2's decision ask 4 was right: the shipped
+  path is `run_isolated_canary`, which takes an already-executed
+  `unit.result` and never reaches `execute_command`.
+- **DA-R6's second branch taken.** `runner.execute_command`
+  (`runner.py:828`) and `canary._run_pipeline` / `canary.run_python_canary`
+  (`canary.py:188`, `:225`) now take and forward
+  `infrastructure_source`/`infrastructure_environment`, defaulting to `None`.
+  `execute_command`'s docstring, which named the defect as live, states the
+  measurement instead.
+- **The test is labelled a regression guard, not a red-first proof**, because
+  there was nothing red: `tests/test_r3_canary_sees_infrastructure.py`, 2
+  tests. Suite check including every neighbouring canary module
+  (`test_canary_python_pipeline`, `test_runner_run_lane_r3`,
+  `test_canary_p23_isolated_edges`): **23 passed in 75.68s**.
+- A trap worth recording: the first two measurement runs refused
+  `NO_MEASUREMENT`/`DIRTY_TREE` because `--verdict-json` was written INSIDE
+  the scratch repository. The new DA-R3 message named the offending file
+  (`Affected: v.json`) and the diagnosis took one read instead of a bisect —
+  commit 8's own value, observed in the field within the hour.
+- Changed: `src/assay/runner.py`, `src/assay/canary.py`,
+  `tests/test_r3_canary_sees_infrastructure.py` (new), `docs/CONSUMERS.md`,
+  `CHANGES.md`, `nyxloom-trove/decisions.md` (A-416),
+  `nyxloom-trove/4-backlog.md` (B029 RESOLVED BY MEASUREMENT).
+- No `verdict.py` / `verify.py` / schema / drift-guard file touched; no `!`.

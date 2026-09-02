@@ -832,6 +832,8 @@ def execute_command(
     cwd: Path,
     passthrough_source: Mapping[str, str] | None = None,
     project_prefix: PurePosixPath | None = None,
+    infrastructure_source: Path | None = None,
+    infrastructure_environment: Mapping[str, str] | None = None,
     process_runner: ProcessRunner = default_process_runner,
     clock: Clock = _utc_now,
 ) -> CommandResult:
@@ -841,15 +843,26 @@ def execute_command(
     Ordering, all before anything launches:
 
     1. :func:`resolve_command_plan` -- pure, but CAN raise
-       :class:`~assay.errors.AssayError` since B013: this function accepts no
-       *infrastructure_source*/*infrastructure_environment* of its own, so a
-       lane declaring any infrastructure fact reaches :func:`resolve_command_plan`
-       with neither -- a ``derived:`` fact always raises here regardless of
-       whether it is actually resolvable elsewhere (B029, filed rather than
-       fixed: this function's only caller, :mod:`assay.canary`'s R3 side-run,
-       catches the raise and reports a misattributed ``ERROR``/
-       ``BAD_LANE_CONFIG`` R3 claim rather than crashing, but the claim's own
-       cause is wrong on a lane whose infrastructure resolves everywhere else).
+       :class:`~assay.errors.AssayError` since B013. **(B029/DA-R6)** This
+       function now accepts *infrastructure_source* and
+       *infrastructure_environment* and forwards both, so a lane declaring a
+       ``derived:`` fact resolves it here exactly as the lane's main command
+       does. Until this change it accepted neither, and this docstring said
+       so: a ``derived:`` fact raised regardless of whether it was actually
+       resolvable elsewhere.
+
+       **What that defect was, and was not.** B029 predicted a misattributed
+       ``ERROR``/``BAD_LANE_CONFIG`` R3 claim on the SHIPPED canary path.
+       Measured through the installed CLI on a real R3 lane with a resolvable
+       ``derived:`` fact (Wave D, DA-R6), it does not reproduce: the shipped
+       path is :func:`assay.canary.run_isolated_canary`, which receives an
+       already-executed ``unit.result`` from the snapshot-unit machinery --
+       which DOES resolve infrastructure -- and never reaches this function
+       at all. The R3 claim was ``PASS``, and a suite asserting the fact's
+       value from ``os.environ`` passed inside the canary's own control half.
+       The defect was therefore confined to the LEGACY standalone
+       :func:`assay.canary.run_python_canary` path, which is public API and
+       is what this parameter pair fixes.
     2. the append-permission gate (A-095): if *argv_append* is non-empty and
        ``lane.allow_argv_append`` is false, this returns
        ``ERROR``/``EXEC_FAILED`` WITHOUT calling *process_runner* at all --
@@ -868,6 +881,8 @@ def execute_command(
     plan = resolve_command_plan(
         lane, argv_append=argv_append, passthrough_source=passthrough_source,
         project_prefix=project_prefix,
+        infrastructure_source=infrastructure_source,
+        infrastructure_environment=infrastructure_environment,
     )
     return execute_plan(
         plan,

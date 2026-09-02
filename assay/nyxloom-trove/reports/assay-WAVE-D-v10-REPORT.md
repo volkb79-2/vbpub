@@ -914,3 +914,113 @@ draws.
   `LANE_TIMEOUT` pair already exists and already renders.
 - **No fake clock anywhere in the CLI tests** — DA-D10 asks for a real
   `budget_seconds` and a genuinely slow command.
+
+## B029 — the R3 canary's infrastructure wiring (DA-D11 → DA-R6 → A-416)
+
+**Ruling applied.** DA-R6: measure first. If the misattributed
+`ERROR`/`BAD_LANE_CONFIG` R3 claim reproduces on the shipped isolated-canary
+path, fix where that path builds the side-run's plan. If it does not, thread
+the two parameters through `execute_command` anyway (the legacy
+`run_python_canary` path is public), correct the docstring, land the
+CLI-driven test as a regression guard, and mark B029 RESOLVED-by-measurement
+with the transcript, noting that its premise was confined to the legacy path.
+
+**It did not reproduce. The second branch was taken.**
+
+### The measurement, in full
+
+Scratch repository, real git, real `pytest`, driven through
+`assay.cli.main` at `dd8f4d2c`. The lane:
+
+```toml
+rigor = ["R0", "R3"]
+argv = ["python", "-m", "pytest", "tests", "-q"]
+
+[lanes.package.infrastructure]
+ASSAY_B029_FACT = "derived:deploy.cgroup_parent"
+
+[lanes.package.judge.canary]
+mechanism = "import-break"
+target = "pkg/mod.py"
+```
+
+with `ciu.global.toml` (gitignored, as ciu itself keeps it — A-293) carrying
+`[deploy] cgroup_parent = "assay-b029.slice"`, and a suite containing
+
+```python
+def test_infrastructure_fact_is_present():
+    assert os.environ["ASSAY_B029_FACT"] == "assay-b029.slice"
+```
+
+Result:
+
+```
+package: PASS (exit 0)
+[{"rigor": "R3", "status": "PASS", "source": "computed",
+  "verified_by_assay": true,
+  "canary": {"mechanism": "import-break", "target": "pkg/mod.py",
+             "control_outcome": "PASS", "transformed_outcome": "FAIL",
+             "expected_reason_code": "COMMAND_FAILED",
+             "observed_reason_code": "COMMAND_FAILED",
+             "description": "inserted `raise AssertionError(\"assay-canary-import-break\")` at line 1"}}]
+```
+
+**Why this is evidence and not a tautology.** A verdict-only assertion (the
+R3 claim is `PASS`) would prove nothing about the fact: a canary whose
+control half lost the variable would fail for that reason and render some
+other claim. The suite inside the canary REFUSES when the fact is absent, so
+`control_outcome: PASS` cannot be produced by a side-run that did not have
+it. That single field is the measurement.
+
+**What B029 got wrong, precisely.** The entry says `execute_command` "has
+never had anywhere to forward these params TO ... only the canary's own
+side-run plan does not [resolve them]". The first clause was true. The second
+conflates two entry points: `canary.run_python_canary` (legacy, standalone,
+public, goes through `execute_command`) and `canary.run_isolated_canary`
+(what `runner._run_prepared_lane` actually uses, takes a pre-executed
+`unit.result` from the snapshot-unit machinery, never reaches
+`execute_command`). Generation 2 raised exactly this as decision ask 4 before
+writing any code, and it was right.
+
+### Acceptance, with file:line evidence
+
+| box | evidence |
+|---|---|
+| a decision on whether the side-run should resolve infrastructure | A-416 — yes, and it already did on the shipped path |
+| the two parameters threaded | `src/assay/runner.py:828` (`execute_command`'s signature) and `:884` (forwarded into `resolve_command_plan`); `src/assay/canary.py:188` (`_run_pipeline`), `:225` (`run_python_canary`), forwarded at both `_run_pipeline` call sites |
+| both default to `None` | asserted mechanically by `test_the_legacy_standalone_canary_forwards_the_same_two_parameters` via `inspect.signature`, so no existing caller changes |
+| the docstring no longer states a defect that is not live | `src/assay/runner.py:840-870`; the same test asserts `"accepts no" not in doc` |
+| a CLI-driven test with a resolvable `derived:` fact | `tests/test_r3_canary_sees_infrastructure.py::test_an_r3_lane_with_a_resolvable_derived_fact_judges_its_canary` |
+| the R3 claim is PASS/FAIL, never `ERROR`/`BAD_LANE_CONFIG` | the same test asserts `status == "PASS"` and `reason_code is None` |
+| documented for consumers | `docs/CONSUMERS.md`, the infrastructure section: both halves of an R3 canary run with the resolved facts |
+| no wire change | nothing under `verdict.py`, `verify.py`, `src/assay/schemas/` or the drift-guard |
+
+Neighbouring-suite check: `test_r3_canary_sees_infrastructure`,
+`test_canary_python_pipeline`, `test_runner_run_lane_r3`,
+`test_canary_p23_isolated_edges` — **23 passed in 75.68s**.
+
+### What a reviewer should push on
+
+- **The regression guard is labelled, not disguised.** There is no red-first
+  transcript for B029 and this REPORT says so. If R-1 believes a red proof is
+  reachable, the shape would be a lane that drives `run_python_canary`
+  directly with a `derived:` fact — that IS red before this commit, and was
+  left out because DA-R6 asked for the CLI-driven lane test and the
+  signature/docstring check, not for a second harness around a legacy path.
+- **`infrastructure_environment` is threaded but never exercised with a
+  non-`None` value in these tests.** Only `infrastructure_source` is, via
+  the CLI's own `ciu.global.toml` resolution. The pair is passed together
+  everywhere it exists, so this is a completeness gap, not a correctness one.
+- **The measurement used one mechanism** (`import-break`). A second
+  mechanism (`uncovered-line`, which needs R1 declared alongside) would
+  exercise `_run_pipeline`'s R1 half; that path takes no infrastructure at
+  all, by design, since `evaluate_r1` reads artifacts rather than running a
+  command.
+
+### What I did NOT do, and why
+
+- **I did not close B029 as not-a-defect.** `run_python_canary` is public
+  API and its docstring named the defect in assay's own words; a second,
+  poorer infrastructure world reachable from a public function is a trap
+  whether a lane takes it today or not. DA-R6 says so explicitly.
+- **I did not touch `run_isolated_canary`.** It was measured correct.

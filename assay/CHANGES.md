@@ -54,6 +54,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   the run's own argv, timing and output tails. A timeout during snapshot
   cleanup after a completed run is also no longer relabelled
   `ERROR`/`GIT_FAILED`: a lane that ran out of time is told so. (B028, A-415)
+- `runner.execute_command` and `canary.run_python_canary` now accept and
+  forward `infrastructure_source`/`infrastructure_environment`, so the
+  standalone canary pipeline resolves a lane's `derived:` facts instead of
+  refusing every one of them. **The R3 path a lane actually takes was
+  measured and found already correct** — `canary.run_isolated_canary`
+  receives an already-executed result from the snapshot-unit machinery and
+  never reached the affected function — so B029's predicted misattributed
+  `ERROR`/`BAD_LANE_CONFIG` R3 claim was confined to the legacy public API.
+  `execute_command`'s docstring, which described the defect as live, is
+  corrected to the measurement. (B029, A-416)
 - An istanbul coverage record whose `branchMap` contradicts its own
   `statementMap`/`s` line classification is now a defect of THAT FILE, not of
   the whole verdict. `@vitest/coverage-istanbul` statically instruments every
