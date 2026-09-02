@@ -45,6 +45,82 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [4.1.0] - 2026-09-02
+<!-- cmru: generated -->
+<!-- cmru: source-end=1e80268181516b9a6ad83a63b8e71a5f9908c3c5 -->
+
+### Added
+- feat(assay): derive a Go lane's module path from its own go.mod (B057, A-404) (4b5e7707)
+- feat(assay): helpers[] gets its first producer, and its real-toolchain proof (B047 item 5) (77d9d6b9)
+- feat(assay): register the Go adapter at R1, and open the go-cover producer vocabulary (367bbdf5)
+- feat(assay): wire the Go statement-attribution chain end to end (c85c703a)
+- feat(assay): declare the Go helper as package data, and retract my own blocker claim (428f69e2)
+- feat(assay): keep Go block extents and correct them (A-239 items 1+3) (fe9aaf7c)
+- feat(assay): the Go statement-position oracle (B047 item 1, A-217) (271af037)
+
+### Fixed
+- fix(assay): A-407 -- drop an orphaned helper where the payload went (0fb6fb94)
+- fix(assay): BLOCKER 1 (A-405) and DA-R1 (A-406), with should-fixes 4, 5, 6, 7 (4c3e83f4)
+- fix(assay): should-fix 1 -- restore a CLI test of the unknown-language branch (bdbb2557)
+- fix(assay): should-fix 2 -- three go.mod divergences from the real parser (7cda9d11)
+- fix(assay): BLOCKER 2 -- registry.py's two stale docstring facts (4c876306)
+- fix(assay): B061 -- the statement join kept only the LAST record for a repeated block, so covered code reported as uncovered (875382d2)
+- fix(assay): F008-A4 -- the Go coverage fixtures are real toolchain output, and their expectations are the oracle's (394c6cc2)
+- fix(assay): reach the Go oracle from the shipped zipapp (A-403) (8d7f8740)
+
+### Changed
+- merge(assay): Wave C -- Go at R1, statement-granular, through the shipped zipapp (1e802681)
+- chore(assay): renumber Wave C backlog ids B053-B058 -> B055-B060 (main's B053/B054 landed first) (e7eb5241)
+- backlog(assay): file B053 (ERROR verdict messages never surfaced) + B054 (never-executed file's istanbul quirk refuses the whole verdict) (a050a467)
+
+### Documentation
+- docs(assay): Wave C review round 3 -- reviewer's report, verbatim (5091a413)
+- docs(assay): Wave C controller log -- generation 8 verified (gate run 12 PASS on 99d2a443), round 3 sent to the reviewer (7288b3dc)
+- docs(assay): correct this generation's own claim about its mutation probes (4889b742)
+- docs(assay): Wave C generation 8 -- gate run 12 PASS on 99d2a443 (e1d8128f)
+- docs(assay): Wave C generation 8 -- REPORT sections 50-53 (494c8ee2)
+- docs(assay): SF-R2-3 -- CONSUMERS' Go refusals say what a consumer sees (74c64858)
+- docs(assay): Wave C review round 2 -- reviewer's report, verbatim (71a59967)
+- docs(assay): Wave C controller log -- review round 2 NOT ACCEPT (one pre-existing blocker, fix proven), DA-R3 ruled, final fix round dispatched (12e028c7)
+- docs(assay): Wave C controller log -- fix generation verified (gate run 11), reviewer resumed for round 2 (d71e0a0e)
+- docs(assay): Wave C generation 7 -- gate run 11 PASS on 4c3e83f4 (1d464fc4)
+- docs(assay): Wave C review round 1 -- reviewer's report, verbatim (210812f6)
+- docs(assay): Wave C controller log -- review round 1 ACCEPT-conditional, DA-R1/DA-R2 ruled, fix generation dispatched (5b6f77cc)
+- docs(assay): Wave C controller log -- generation 6 verified, scope complete (F008 shipped, M6 done), reviewer dispatched (a74bc6f6)
+- docs(assay): Wave C generation 6 -- BRIEF-7, gate run 10 PASS on 3355d238 (d938ab8c)
+- docs(assay): F008-A5 -- the srdm qualification ran; F008 is shipped, M6 is done (3355d238)
+- docs(assay): Wave C controller log -- generation 5 verified (A-404 landed, F008-A3 proven), DA-9 lane shape, generation 6 dispatched (53eba55b)
+- docs(assay): Wave C generation 5 -- gate run 9 verdict for dd1e2c46 (86b4efae)
+- docs(assay): fold in main's B053, tick F008-A3, and BRIEF-6 (dd1e2c46)
+- docs(assay,srdm): B053 corroboration note, Wave C id-collision ruling, srdm pointer corrected (173eda68)
+- docs(assay): Wave C generation 5 -- A-404's record, B057 closed, B058 filed (1885d64e)
+- docs(assay): Wave C controller log -- generation 4 checkpoint verified, DA-8 ruled (derive the Go module path from go.mod) (3a95459e)
+- docs(assay): Wave C generation 4 checkpoint -- BRIEF-5, and the gate verdict for 9714361c (524dd16c)
+- docs(assay): file B057 and decision ask DA-8 -- a CLI Go lane cannot resolve its own coverage keys (854d20c3)
+- docs(assay): reword F008-A5, and record the in-image harness ruling (A-401, A-402) (2f0cd223)
+- docs(assay,srdm): Wave C controller log -- 2026-09-01 assessment, DA-4..DA-7, generation 4 rulings (237b9585)
+- docs(assay): Wave C checkpoint 4 -- gate verdict for 91b05186 (4cff97bc)
+- docs(assay): Wave C controller log -- session checkpoint, gate green on 91b05186 (ce08d077)
+- docs(assay): Wave C controller log -- goal cleared, closing out the last in-flight gate (4ad164da)
+- docs(assay): Wave C generation 3 continuation brief (BRIEF-4) (91b05186)
+- docs(assay): Wave C controller log -- checkpoint 3, gate green, DA-3 resolved (a259bc98)
+- docs(assay): Wave C checkpoint 3 -- gate verdict for c85c703a (4a326ddc)
+- docs(assay): Wave C controller log -- generation 2 implementer dispatched (055115ba)
+- docs(assay): Wave C controller log -- checkpoint 2, dispatching fresh successor (ddbcf9af)
+- docs(assay): Wave C checkpoint 2 -- gate verdict for 428f69e2 (335636b4)
+- docs(assay): Wave C controller log -- gate PASS, self-correcting the packaging call (a80832c0)
+- docs(assay): Wave C controller log -- checkpoint 1, both decision asks resolved (8fd9dd68)
+- docs(assay): Wave C checkpoint 1 -- LOG/REPORT/BRIEF, and file B053 (4408622b)
+- docs(assay): Wave C controller log -- created, implementer dispatched (205b0cd2)
+- docs(assay): Wave C dispatch plan -- the P27 re-carve, scoped to F008-A3/A4/A5 (25b1f7fb)
+- docs(assay): Wave B controller log -- Wave C pre-dispatch research dispatched (106aea3a)
+- docs(assay): Wave B controller log -- release published, deployed, dstdns notified (97d4b409)
+
+### Testing
+- test(assay): A-407's control -- a judged R1 lane KEEPS its helper (99d2a443)
+- test(assay): SF-R2-1/SF-R2-2 -- kill the two surviving A-405 mutants (ba09eb61)
+- test(assay): the Go qualification driver resolves judge provenance, as cmd_run does (9714361c)
+
 ## [4.0.0] - 2026-08-31
 <!-- cmru: generated -->
 <!-- cmru: source-end=12234a9742066ed3b622af7946c74fe53e66899d -->
