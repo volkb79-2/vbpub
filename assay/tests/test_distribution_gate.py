@@ -393,6 +393,19 @@ class _SelfHostedLaneFixture:
         )
 
 
+#: Shell preamble every `assay` stub in this module shares: resolve the
+#: verdict path the way the real CLI does — the token after `--verdict-json` —
+#: instead of by argv position. See `_self_hosted_lane_fixture`'s docstring.
+_VERDICT_PATH_FROM_ARGV = (
+    'out=""; prev=""\n'
+    'for arg in "$@"; do\n'
+    '  if [ "$prev" = "--verdict-json" ]; then out="$arg"; fi\n'
+    '  prev="$arg"\n'
+    "done\n"
+    'if [ -z "$out" ]; then echo "stub: no --verdict-json in argv" >&2; exit 64; fi\n'
+)
+
+
 def _self_hosted_lane_fixture(
     tmp_path: Path, *, version: str, digest: str | None = None
 ) -> _SelfHostedLaneFixture:
@@ -404,8 +417,13 @@ def _self_hosted_lane_fixture(
     exercised by a value the stub did not simply echo back from the gate.
     *digest* overrides it to drive the refusal branch.
 
-    Note the argv position: the gate now passes `--require-judge-provenance`
-    before `--verdict-json`, so the artifact path the stub writes to is `$5`.
+    The stub finds its output path by READING the argv for `--verdict-json`
+    rather than by position. It used to write to `$5`, with a note here saying
+    so — and that note had to move once already when
+    `--require-judge-provenance` was added, and would have moved again when
+    A-429 added `--resume --progress`. A stub whose contract is "the value
+    after `--verdict-json`" is the same contract the real CLI has, and it does
+    not break every time the gate's invocation grows a flag.
     """
     tmp_path.mkdir(parents=True, exist_ok=True)
     stub_dir = tmp_path / "stubs"
@@ -429,7 +447,8 @@ def _self_hosted_lane_fixture(
     stub_assay = stub_dir / "assay"
     stub_assay.write_text(
         "#!/usr/bin/env bash\n"
-        f"printf '%s' {shlex.quote(document)} > \"$5\"\n"
+        + _VERDICT_PATH_FROM_ARGV
+        + f"printf '%s' {shlex.quote(document)} > \"$out\"\n"
         "exit 0\n"
     )
     stub_assay.chmod(0o755)
@@ -488,7 +507,9 @@ def test_self_hosted_lane_refuses_a_verdict_carrying_no_judge_identity(
     stub_dir.mkdir()
     stub_assay = stub_dir / "assay"
     stub_assay.write_text(
-        '#!/usr/bin/env bash\nprintf \'{"assay_version": "9.9.9"}\' > "$5"\nexit 0\n'
+        "#!/usr/bin/env bash\n"
+        + _VERDICT_PATH_FROM_ARGV
+        + 'printf \'{"assay_version": "9.9.9"}\' > "$out"\nexit 0\n'
     )
     stub_assay.chmod(0o755)
     worktree = tmp_path / "worktree"
@@ -524,7 +545,8 @@ def test_the_self_hosted_lane_demands_the_judge_identity_from_assay_itself(
     stub_assay.write_text(
         "#!/usr/bin/env bash\n"
         f'printf \'%s\\n\' "$@" > "{argv_log}"\n'
-        'printf \'{"assay_version": "9.9.9"}\' > "$5"\n'
+        + _VERDICT_PATH_FROM_ARGV
+        + 'printf \'{"assay_version": "9.9.9"}\' > "$out"\n'
         "exit 0\n"
     )
     stub_assay.chmod(0o755)
@@ -545,6 +567,12 @@ def test_the_self_hosted_lane_demands_the_judge_identity_from_assay_itself(
         "run",
         "tester-unified",
         "--require-judge-provenance",
+        # (A-429) the estate-wide pair, on the one `assay run` run-gate does
+        # not drive. Asserted on the invocation the stub RECEIVED, so this is
+        # the flags actually reaching assay, not a substring of the script.
+        "--resume",
+        "--progress",
+        f"{scratch}/progress-tester-unified.jsonl",
         "--verdict-json",
         f"{scratch}/verdict.json",
     ]
