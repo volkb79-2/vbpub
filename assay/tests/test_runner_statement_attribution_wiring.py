@@ -468,3 +468,85 @@ def test_an_empty_profile_terminates_before_the_seam_with_no_helper_and_no_pass(
     assert claim.status is not Outcome.PASS
     assert helpers == []
     assert adapter.calls == []
+
+
+# --- A-405's runner-side filter, on its own (SF-R2-2) -------------------------
+
+#: The same extent as `_BLOCK`, with the zero columns `go/token` reports for a
+#: position a `//line` directive remapped. `FileCoverage.line_directive_
+#: remapped` is DERIVED from exactly this (A-405), so one such record flags
+#: the file.
+_REMAPPED_BLOCK = CoverageBlock(
+    start_line=3, start_col=0, end_line=7, end_col=0, num_stmts=2, count=1
+)
+
+
+def _flagged_beside_ordinary() -> CoverageProfile:
+    """One profile carrying an ordinary block-bearing file and a
+    `//line`-remapped one, which is what every real Go module with a
+    generated source looks like."""
+    ordinary = FileCoverage(
+        executed=frozenset({3, 4, 5, 6, 7}),
+        missing=frozenset(),
+        excluded=None,
+        branches=None,
+        blocks=(_BLOCK,),
+    )
+    flagged = FileCoverage(
+        executed=frozenset({3, 4, 5, 6, 7}),
+        missing=frozenset(),
+        excluded=None,
+        branches=None,
+        blocks=(_REMAPPED_BLOCK,),
+    )
+    return CoverageProfile(
+        files=MappingProxyType({"pkg/mod.blk": ordinary, "pkg/gen.blk": flagged})
+    )
+
+
+def test_the_oracle_is_never_ASKED_about_a_line_directive_remapped_file(
+    git_repo: GitRepo,
+):
+    """**SF-R2-2.** The runner's `to_attribute` filter, asserted directly on
+    what the adapter was asked for.
+
+    Round 2's mutation M-F removed that filter and every one of the 69 tests
+    across the A-405 modules stayed green, because `attribute_statements`
+    skips a flagged file anyway -- two guards with one test between them,
+    which is the shape that rots. This is the missing one, and it is a
+    correctness assertion rather than a tidiness one: asking the oracle about
+    a remapped file means RUNNING an external toolchain over a source whose
+    answer is then discarded, inside the lane's own budget, with the
+    toolchain's failure modes (a missing helper, a compile error in a
+    generated file) newly on the path -- and it is the exact call whose
+    result cannot match, since the oracle derives PHYSICAL positions and the
+    profile carries the directive's virtual ones.
+
+    The lane PASSes here, which is A-405's ignoring half: the flagged file is
+    in the profile and under the source root but is not a declared target, so
+    it is not judged, and the ordinary file is judged normally."""
+    _seed(git_repo)
+    git_repo.write("pkg/gen.blk", "".join(f"line {n}\n" for n in range(1, 11)))
+    git_repo.commit_all("a generated file, in the profile and not judged")
+    adapter = _OracleAdapter()
+
+    claim = runner.evaluate_r1(
+        _whole_target_lane(git_repo),
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        base=None,
+        adapter=adapter,
+        profile=_flagged_beside_ordinary(),
+    )
+
+    assert len(adapter.calls) == 1
+    _, rel_paths = adapter.calls[0]
+    assert rel_paths == ("pkg/mod.blk",), (
+        "the oracle was asked about a `//line`-remapped file, whose answer "
+        "cannot match the profile and would be discarded"
+    )
+    # Vacuity guard: the flagged file really IS in the profile the runner was
+    # handed, so "not asked about" is a decision and not an absence.
+    assert "pkg/gen.blk" in _flagged_beside_ordinary().files
+    assert claim.status is Outcome.PASS
+    assert claim.coverage.executable == 2

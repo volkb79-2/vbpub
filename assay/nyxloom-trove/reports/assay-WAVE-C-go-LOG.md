@@ -1141,3 +1141,47 @@ did not reproduce; the delta is my two new qualification tests, which skip
 without `ASSAY_GO_QUALIFICATION=1`). Measured with the devcontainer venv
 (Python 3.14.6) from the worktree's `assay/`, which is where the 18 was
 measured too.
+
+### `<this commit>` — `test(assay): SF-R2-1/SF-R2-2 -- kill the two surviving A-405 mutants`
+
+Both should-fixes are mutation-proved, not merely written: the mutation was
+applied to a scratch worktree's committed tree, the modules re-run, and the
+kill observed.
+
+**SF-R2-1** — `test_the_same_refusal_fires_in_whole_target_mode` judged
+against `repo_top=Path("/repo")`, which does not exist, so
+`_resolve_whole_target` refused FIRST ("judge.targets entry 'linedup.go' does
+not exist as a regular file under the project root /repo") and all three of
+its assertions were satisfied by that wrong refusal. The target is now
+materialised on a real `tmp_path` project, and the assertions name the
+`//line` message. The file's CONTENT is never read in whole-target mode —
+`_resolve_whole_target` checks existence, kind, containment, globs and
+test-path only — so the fixture writes a marker and says so, rather than
+pretending to be Go's corpus (which is `linedup.out`, and really is).
+
+Mutation **M-B2** (`evaluate.py:1071`'s
+`if file_cov is not None and file_cov.line_directive_remapped:` → `if False:`),
+applied in `scratchpad/g8/prewt`: **the repaired test kills it**, and the
+message it dies on is precisely the misdirection A-405's ordering comment
+predicts —
+
+```text
+E  assert <Outcome.NO_MEASUREMENT> is <Outcome.ERROR>
+E   where ... = AssayError("judge.targets entry 'linedup.go' (coverage artifact
+E   key 'linedup.go') has zero executable lines in the coverage artifact -- a
+E   whole-target floor refuses rather than pass on a target that was never
+E   measured").outcome
+```
+
+**SF-R2-2** — the controller preferred the test to the comment downgrade, so
+both were done: `test_the_oracle_is_never_ASKED_about_a_line_directive_
+remapped_file` asserts the recorded call arguments directly, over a profile
+carrying an ordinary block-bearing file beside a zero-column one (with a
+vacuity guard that the flagged file really IS in the profile handed in), and
+the filter's comment now states what makes the two guards non-redundant: this
+one stops an external toolchain being RUN, inside the lane's budget, over a
+source whose answer is then discarded — and it names the test.
+
+Mutation **M-F** (`to_attribute = list(block_bearing)`), same worktree, run
+over all four A-405 modules: **1 failed, 60 passed**, and the one failure is
+the new test. Before it, the reviewer measured `69 passed — SURVIVED`.

@@ -319,13 +319,36 @@ def test_a_flagged_file_inside_the_judged_set_refuses_and_names_the_cause():
     assert "judge.source_roots" in message
 
 
-def test_the_same_refusal_fires_in_whole_target_mode():
+def test_the_same_refusal_fires_in_whole_target_mode(tmp_path: Path):
     """`evaluate_targets` has its own copy of the judged-set question --
     "declared in judge.targets" rather than "changed inside source_roots" --
     and the check is placed BEFORE its `TARGET_NOT_MEASURED` guard on
     purpose: an emptied file would trip that one instead, and "this target has
     zero executable lines" names the wrong cause and implies the wrong remedy
-    (write tests)."""
+    (write tests).
+
+    **The target is materialised on a real `tmp_path` project (SF-R2-1).**
+    This test used to judge against `repo_top=Path("/repo")`, which does not
+    exist -- so `_resolve_whole_target` refused first, "judge.targets entry
+    'linedup.go' does not exist as a regular file under the project root
+    /repo", and all three of its assertions (`ERROR`, `BAD_LANE_CONFIG`, and
+    `"judge.targets" in ...`) were satisfied by that WRONG refusal. The
+    round-2 reviewer proved it: mutation M-B2, replacing `evaluate.py`'s
+    whole-target `line_directive_remapped` branch with `if False:`, left all
+    69 tests across the four A-405 modules green. The branch was correct,
+    correctly ordered, and completely unexercised.
+
+    The file's CONTENT is never read -- whole-target mode judges the profile's
+    own line sets, and `_resolve_whole_target` checks only that the entry
+    exists, is a regular non-symlink file inside a declared source root,
+    matches the adapter's source globs and is not a test path -- so the
+    fixture writes a marker rather than pretending to be Go's corpus, which
+    lives in `linedup.out` and is what the profile above was really produced
+    from.
+    """
+    (tmp_path / "linedup.go").write_text(
+        "// content never read: see this test's docstring\n", encoding="utf-8"
+    )
     corrected = attribute_statements(
         _flagged_and_ordinary(), {"linedup/plain.go": _PLAIN_ORACLE}
     )
@@ -335,13 +358,24 @@ def test_the_same_refusal_fires_in_whole_target_mode():
             targets=("linedup.go",),
             profile=corrected,
             adapter=GoAdapter(module_path="linedup"),
-            repo_top=Path("/repo"),
-            project_root=Path("/repo"),
-            source_root_paths=(Path("/repo"),),
+            repo_top=tmp_path,
+            project_root=tmp_path,
+            source_root_paths=(tmp_path,),
             fail_under=100.0,
             allow_excluded=False,
         )
 
     assert excinfo.value.outcome is Outcome.ERROR
     assert excinfo.value.reason_code is ReasonCode.BAD_LANE_CONFIG
-    assert "judge.targets" in str(excinfo.value)
+    message = str(excinfo.value)
+    # The discriminating assertions: this is the `//line` refusal, naming the
+    # cause, the file and the remedy -- not target resolution's own, and not
+    # `TARGET_NOT_MEASURED`'s "zero executable lines".
+    assert "`//line`" in message
+    assert "linedup.go" in message
+    assert "judge.targets" in message
+    assert "does not exist as a regular file" not in message, (
+        "target resolution refused first, so this test is proving nothing "
+        f"about A-405: {message}"
+    )
+    assert "zero executable lines" not in message

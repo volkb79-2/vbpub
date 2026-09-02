@@ -966,6 +966,14 @@ def _attribute_statements_for_lane(
     # take down the WHOLE artifact over one generated file. It skips such a
     # file too (emptying its line sets), and `evaluate` refuses only if the
     # lane actually judges it.
+    #
+    # This filter and `attribute_statements`' own skip are two guards, and
+    # they are NOT redundant: this one is what stops an external toolchain
+    # being RUN, inside the lane's budget, over a source whose answer is then
+    # discarded. It has its own test asserting the oracle is never asked
+    # about a flagged path (`test_runner_statement_attribution_wiring.py::
+    # test_the_oracle_is_never_ASKED_about_a_line_directive_remapped_file`),
+    # because round 2 found that removing it left all 69 A-405 tests green.
     to_attribute = [
         raw_key
         for raw_key in block_bearing
