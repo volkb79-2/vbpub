@@ -6316,3 +6316,67 @@ a pass that reads each site, not in a lint-wiring commit.
 - [ ] the scope comment at `tools/tester-unified-gate.sh:111-116`, which
       records today's measurement as the reason for the narrow scope, is
       updated rather than left to rot.
+
+---
+
+## B063 — three test modules `git -C PROJECT_ROOT.parent`, so the suite cannot run from a copy of the tree
+
+**Filed 2026-09-02** from R-1's round-1 review of Wave D phase 1 (report:
+`nyxloom-trove/reports/assay-WAVE-D-v10-REVIEW-R1-round1.md`). **Not fixed in
+Wave D** — recorded here with R-1's measurement so the next person who copies
+the tree does not spend the same hour on it.
+
+Three modules compute `REPO_ROOT = PROJECT_ROOT.parent` and shell out to
+`git -C` against it:
+
+- `tests/test_python_qualification.py:42`
+- `tests/test_runner_snapshot_selection.py:805`
+- `tests/test_distribution_build_release.py`
+
+`PROJECT_ROOT` is assay's own directory, so `PROJECT_ROOT.parent` is the vbpub
+checkout — a real repository only when the tree is IN that checkout. Copy
+`assay/` anywhere else (`cp -r` into a scratchpad, a container bind of the
+project directory alone, a vendored subtree) and the parent is not a
+repository at all.
+
+**R-1's measurement, and why it matters that it is CONSTANT.** Running the
+whole suite from a `cp -r` copy of the worktree's `assay/` directory:
+
+```
+11 failed, 3956 passed, 18 skipped, 13 errors in 821.95s
+```
+
+**All 24 are in those three modules, on every copy, regardless of what else
+the copy contains.** R-1 hit this while mutation-testing: each mutant's
+whole-suite run carried the same 11+13, so a real regression would have had to
+be spotted against a noisy floor. The targeted reruns avoided the three
+modules entirely, which is how the mutation evidence stayed readable — but
+that is a workaround a reviewer had to discover, not a property of the suite.
+
+### Why this is a real defect and not just an odd fixture
+
+The suite's own claim is that it measures assay. A module that fails because
+of where the tree happens to sit is measuring the checkout, and it does it
+loudly enough (24 results) to mask the thing under test. It also silently
+sets the price of every future mutation, bisection or container run of the
+suite.
+
+### What a fix probably looks like (not prescribed)
+
+Resolve the repository from the test's own context rather than from a fixed
+parent hop — `git rev-parse --show-toplevel` from `PROJECT_ROOT`, or a
+fixture that SKIPS with a named reason when `PROJECT_ROOT.parent` is not a
+work tree. The second is cheap and honest: what these tests need is a
+repository, and "there is no repository here" is a skip condition, not a
+failure of assay.
+
+### Acceptance
+
+- [ ] a `cp -r` copy of `assay/` outside the vbpub checkout runs the suite
+      with **zero** failures and **zero** errors attributable to the missing
+      parent repository (measure it, quote the numbers);
+- [ ] whichever of skip-with-a-reason or resolve-from-context is chosen, the
+      choice is stated at the seam with the rejected alternative;
+- [ ] the three modules still measure what they measure today when the tree
+      IS in the vbpub checkout — proven by running them in place, unchanged
+      results.
