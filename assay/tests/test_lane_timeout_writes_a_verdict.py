@@ -50,7 +50,14 @@ BUDGET = "1s"
 SLOW_COMMAND = "sleep 30"
 
 
-def _lane_file(*, rigor: list[str], base: str | None = None) -> str:
+#: (DA-R9/SF-1) A budget so short that the deadline is already spent before
+#: `run_lane` reaches ANY of its own catches -- R-1's round-1 probe value.
+EXHAUSTED_BUDGET = "0.001s"
+
+
+def _lane_file(
+    *, rigor: list[str], base: str | None = None, budget: str = BUDGET
+) -> str:
     judge = ""
     if base is not None:
         judge = f"""
@@ -75,7 +82,7 @@ enforcement = "gate"
 argv = ["/bin/sh", "-c", {json.dumps(SLOW_COMMAND)}]
 env = {{}}
 env_passthrough = ["PATH"]
-budget = "{BUDGET}"
+budget = "{budget}"
 allow_argv_append = false
 {judge}"""
 
@@ -166,6 +173,129 @@ def test_a_higher_rigor_lane_that_runs_out_of_time_still_writes_its_verdict(
     assert document["outcome"] == "BUDGET_EXCEEDED", document
     assert document["reason_code"] == "LANE_TIMEOUT", document
     assert {claim["rigor"] for claim in document["claims"]} == {"R0", "R1"}, document
+
+
+@pytest.mark.parametrize("rigor", [["R0"], ["R0", "R1"]])
+def test_a_budget_already_spent_before_run_lane_still_writes_its_verdict(
+    git_repo: GitRepo, tmp_path: Path, rigor: list[str]
+):
+    """DA-R9 / R-1 round 1's SF-1, on BOTH dispatch paths.
+
+    ``budget = "0.001s"`` is spent before ``run_lane`` reaches either of
+    B028's own catches: R-1 captured the escape at ``git.repo_top`` ->
+    ``git._run_bounded`` -> ``LaneDeadline.remaining``, upstream of the
+    direct-R0 ``try`` and of ``_run_higher_rigor_lane``'s outer catch alike.
+    The error reached ``main()``'s handler, which printed the line and
+    returned exit 4 having written nothing -- identically on the pre-B028
+    build, so this was never something B028 regressed; it is the part of
+    DA-D10's intent that the two in-``run_lane`` catches structurally cannot
+    reach.
+
+    One ``except AssayError`` scoped to ``LANE_TIMEOUT`` in
+    ``cli._run_reserved`` covers both paths, because both go through the one
+    ``run_lane`` call. The document it writes is the ordinary payload-free
+    refusal ``refuse_lane`` builds on every declared level.
+    """
+    base_rev = _seed(git_repo)
+    destination = tmp_path / "verdict.json"
+
+    code, err = _run_to_reserved_path(
+        git_repo,
+        _lane_file(
+            rigor=rigor,
+            base=base_rev if "R1" in rigor else None,
+            budget=EXHAUSTED_BUDGET,
+        ),
+        destination,
+    )
+
+    assert code == Outcome.BUDGET_EXCEEDED.exit_code, err
+    assert destination.exists(), (
+        "the reserved --verdict-json was never written: "
+        f"exit {code}, stderr {err!r}"
+    )
+    document = json.loads(destination.read_text(encoding="utf-8"))
+    assert document["outcome"] == "BUDGET_EXCEEDED", document
+    assert document["reason_code"] == "LANE_TIMEOUT", document
+    assert {claim["rigor"] for claim in document["claims"]} == set(rigor), document
+    for claim in document["claims"]:
+        assert claim["reason_code"] == "LANE_TIMEOUT", document
+    # The line still says WHY, exactly once (B053/DA-R3's bar).
+    assert err.count("assay: BUDGET_EXCEEDED/LANE_TIMEOUT: ") == 1, err
+
+
+@pytest.mark.parametrize("rigor", [["R0"], ["R0", "R1"]])
+def test_a_timeout_inside_run_lane_but_above_its_own_catches_writes_a_verdict(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    rigor: list[str],
+):
+    """The second half of DA-R9's handler: a ``LANE_TIMEOUT`` raised inside
+    ``run_lane`` but ABOVE both of B028's catches -- ``git.repo_top`` is one
+    such call, before the direct-R0 ``try`` opens.
+
+    The window is real but not reachable by choosing a budget: it is the few
+    milliseconds between the CLI's own ``head_rev`` and ``run_lane``'s first
+    internal catch, and a test that raced for it would be flaky by
+    construction. So the deadline expiry is injected at that exact seam --
+    ``runner.run_lane`` itself raising what ``LaneDeadline.remaining`` raises.
+    That is a stub of assay's OWN function, never of an external system
+    (A-334); what is under test is the CLI's handler, and the exception it
+    must handle is constructed from the real ``LaneDeadline`` vocabulary.
+    """
+    base_rev = _seed(git_repo)
+    destination = tmp_path / "verdict.json"
+
+    def _timed_out(*args: object, **kwargs: object):
+        raise AssayError(
+            "the lane-wide deadline expired",
+            outcome=Outcome.BUDGET_EXCEEDED,
+            reason_code=ReasonCode.LANE_TIMEOUT,
+        )
+
+    monkeypatch.setattr(runner, "run_lane", _timed_out)
+
+    code, err = _run_to_reserved_path(
+        git_repo,
+        _lane_file(rigor=rigor, base=base_rev if "R1" in rigor else None),
+        destination,
+    )
+
+    assert code == Outcome.BUDGET_EXCEEDED.exit_code, err
+    assert destination.exists(), err
+    document = json.loads(destination.read_text(encoding="utf-8"))
+    assert document["outcome"] == "BUDGET_EXCEEDED", document
+    assert document["reason_code"] == "LANE_TIMEOUT", document
+    assert {claim["rigor"] for claim in document["claims"]} == set(rigor), document
+    # The commit label is a REAL resolved commit here: this seam is past the
+    # CLI's own `head_rev`, so nothing had to be recovered.
+    assert document["commit"] == git_repo.head(), document
+    assert err.count("assay: BUDGET_EXCEEDED/LANE_TIMEOUT: ") == 1, err
+
+
+def test_a_non_timeout_error_out_of_run_lane_is_never_laundered_into_a_verdict(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The handler is scoped to ``LANE_TIMEOUT`` alone. Anything else still
+    propagates to ``main()``'s handler: a bug turned into a verdict is the
+    silent green this project exists to remove."""
+    _seed(git_repo)
+    destination = tmp_path / "verdict.json"
+
+    def _other(*args: object, **kwargs: object):
+        raise AssayError(
+            "something else entirely",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.GIT_FAILED,
+        )
+
+    monkeypatch.setattr(runner, "run_lane", _other)
+
+    code, err = _run_to_reserved_path(git_repo, _lane_file(rigor=["R0"]), destination)
+
+    assert code == Outcome.ERROR.exit_code, err
+    assert not destination.exists(), (
+        "a non-timeout error was converted into a verdict artifact"
+    )
 
 
 @pytest.mark.parametrize("rigor", [["R0"], ["R0", "R1"]])

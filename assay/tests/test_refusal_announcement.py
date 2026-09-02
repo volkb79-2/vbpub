@@ -704,3 +704,166 @@ def test_an_early_r2_refusal_the_verdict_discards_is_never_announced(
     assert r2[0]["reason_code"] == "COMMAND_FAILED", document
     lines = _refusal_lines(err.getvalue())
     assert not any("equivalence_artifact" in line for line in lines), lines
+
+
+# --- DA-R8: the POST-command guards, on both dispatch paths -------------------
+#
+# R-1's round-1 BLOCKER 1. DA-R3's five sites are the PRE-run guards: they
+# prove what existed BEFORE the lane's command. The post-command dirt/HEAD
+# guards are a different pair of sites, one per dispatch path, and both still
+# refused from a bare `(status, reason_code)` literal -- while `CHANGES.md`,
+# this module's own DA-R3 section and `runner.py`'s DA-R3 comment all claimed
+# "every refusal reachable through `assay run`, with no exceptions".
+#
+# This is the `DIRTY_TREE` an operator is LEAST able to explain: they ran it
+# on a tree they know was clean, and the dirt is their own command's. So the
+# sentence must blame the command and prescribe a remedy that works --
+# "commit or stash" is wrong here, because the next run reproduces it.
+
+
+def _r0_lane_running(command: str) -> str:
+    """An R0-only lane whose command is *command* -- the direct dispatch path
+    (A-189: an R0-only lane never enters the snapshot state machine)."""
+    return f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", {json.dumps(command)}]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "1m"
+allow_argv_append = false
+"""
+
+
+def test_a_command_that_dirties_the_tree_blames_the_command_on_a_direct_r0_lane(
+    git_repo: GitRepo,
+):
+    """DA-R8, dispatch path 1: ``_finish_direct_r0_lane``'s post-command
+    guard, which had no ``diagnostics`` parameter at all before this fix.
+
+    The tree is committed clean; the lane's own command leaves
+    ``leftover.txt`` behind.
+    """
+    path = git_repo.write(
+        "assay.toml", _r0_lane_running("echo output > leftover.txt")
+    )
+    git_repo.commit_all("add lane")
+
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        ["run", "package", "--file", str(path), "--verdict-json", "-"],
+        stdout=out,
+        stderr=err,
+    )
+
+    assert code == Outcome.NO_MEASUREMENT.exit_code, err.getvalue()
+    document = json.loads(out.getvalue())
+    assert document["claims"][0]["reason_code"] == "DIRTY_TREE", document
+    lines = _refusal_lines(err.getvalue())
+    assert len(lines) == 1, err.getvalue()
+    assert lines[0].startswith("assay: NO_MEASUREMENT/DIRTY_TREE: "), lines
+    assert "leftover.txt" in lines[0], lines
+    # The remedy must be the one that applies. "Commit or stash" is the
+    # PRE-run sentence and is actively misleading here.
+    assert "the lane's own command" in lines[0], lines
+    assert "commit or a stash reproduces it" in lines[0], lines
+
+
+def test_a_command_that_moves_head_names_both_revisions_on_a_direct_r0_lane(
+    git_repo: GitRepo,
+):
+    """DA-R8, the other branch of the same guard: a command that COMMITS
+    leaves a perfectly clean tree (A-178), so the dirt check passes and the
+    HEAD comparison is what catches it. The line must name both revisions --
+    "HEAD changed" without the two values does not say which way.
+    """
+    path = git_repo.write(
+        "assay.toml", _r0_lane_running("git commit -q --allow-empty -m moved")
+    )
+    pre_run_head = git_repo.commit_all("add lane")
+
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        ["run", "package", "--file", str(path), "--verdict-json", "-"],
+        stdout=out,
+        stderr=err,
+    )
+
+    assert code == Outcome.NO_MEASUREMENT.exit_code, err.getvalue()
+    post_run_head = git_repo.head()
+    assert post_run_head != pre_run_head, "the command did not actually commit"
+    document = json.loads(out.getvalue())
+    assert document["claims"][0]["reason_code"] == "HEAD_CHANGED", document
+    lines = _refusal_lines(err.getvalue())
+    assert len(lines) == 1, err.getvalue()
+    assert lines[0].startswith("assay: NO_MEASUREMENT/HEAD_CHANGED: "), lines
+    assert pre_run_head in lines[0] and post_run_head in lines[0], lines
+    assert "the lane's own command" in lines[0], lines
+
+
+def _r1_lane_running(command: str, *, base: str) -> str:
+    """A higher-rigor (R0+R1) lane whose command is *command* -- the snapshot
+    dispatch path, where the guard runs against the materialized snapshot."""
+    return f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", {json.dumps(command)}]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "2m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+coverage = {{ format = "coverage-py-json", artifact = "cov.json" }}
+base = "{base}"
+"""
+
+
+def test_a_command_that_dirties_the_snapshot_blames_the_command_on_an_r1_lane(
+    git_repo: GitRepo,
+):
+    """DA-R8, dispatch path 2: ``_execute_snapshot_unit``'s post-command
+    guard, consumed in ``_run_prepared_lane``.
+
+    The facts now travel out on ``SnapshotUnitResult`` beside ``post_reason``
+    -- the producer has the fact, the consumer has the ``diagnostics``
+    stream -- exactly as ``profile_error`` already did.
+    """
+    base_rev = _seed_python_project(git_repo)
+    path = git_repo.write(
+        "assay.toml",
+        _r1_lane_running("echo output > leftover.txt", base=base_rev),
+    )
+    git_repo.commit_all("add assay.toml")
+
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        ["run", "package", "--file", str(path), "--verdict-json", "-"],
+        stdout=out,
+        stderr=err,
+    )
+
+    assert code == Outcome.NO_MEASUREMENT.exit_code, err.getvalue()
+    document = json.loads(out.getvalue())
+    r1 = [claim for claim in document["claims"] if claim["rigor"] == "R1"]
+    assert r1 and r1[0]["reason_code"] == "DIRTY_TREE", document
+    lines = _refusal_lines(err.getvalue())
+    assert len(lines) == 1, err.getvalue()
+    assert lines[0].startswith("assay: NO_MEASUREMENT/DIRTY_TREE: "), lines
+    assert "leftover.txt" in lines[0], lines
+    assert "the lane's own command" in lines[0], lines

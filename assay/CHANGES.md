@@ -84,6 +84,34 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   in-repository invocation `--outdir assay/dist` used to leave an untracked
   `assay/zipapp-staging/` behind, which the self-hosted gate lane then
   correctly refused as `NO_MEASUREMENT`/`DIRTY_TREE`. (B060, A-411)
+- **The refusal an operator can least explain now explains itself.** The
+  POST-command dirty-tree and moved-`HEAD` guards — the pair that fires
+  after the lane's own command ran, on both dispatch paths — still refused
+  in silence, so a lane run on a tree the operator KNEW was clean reported
+  `NO_MEASUREMENT`/`DIRTY_TREE` and nothing else. Both now announce, and the
+  sentence blames the right party: it is the lane's own command that left
+  the files (named) or moved `HEAD` (both revisions named), so the pre-run
+  remedy "commit or stash, then re-run" is not offered — re-running
+  reproduces it. Point the command's output at the artifact path the lane
+  declares, or at a gitignored path; drop the commit step. (B053, A-418)
+- A lane whose `budget` is already spent before `run_lane` is even entered
+  now writes its verdict too. B028 added one catch per dispatch path INSIDE
+  `run_lane`; a deadline that expires upstream of both — at the CLI's own
+  `git rev-parse HEAD`, reproducible with `budget = "0.001s"` — still exited
+  4 with the reserved `--verdict-json` never created. One `LANE_TIMEOUT`-
+  scoped handler in the CLI now covers both paths and every earlier seam;
+  anything that is not a timeout still propagates rather than being
+  laundered into a verdict. (B028, A-420)
+- A snapshot preparation or cleanup `OSError` now says what failed instead
+  of refusing `ERROR`/`GIT_FAILED` with no sentence, and the
+  `environment_command` preflight's refusal goes through the one emitter
+  rather than a second hand-written copy of its format string. A leaked
+  parent descriptor on B049's new raise path in the per-mutant equivalence
+  read is closed by a `try`/`finally`. (B053/B049, A-421, A-422, A-423)
+- The only test of B029's own diff no longer asserts parameter names and a
+  docstring: it asserts the resolved `derived:` fact reaching the command's
+  environment, at both ends of the threading, and was proven red by deleting
+  each forward in turn. (B029, A-419)
 
 ### Changed
 - **The registered gate now lints its own source.** After the suite,

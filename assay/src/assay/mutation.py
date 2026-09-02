@@ -1637,18 +1637,29 @@ def _execute_mutation_jobs(
             equivalence_bytes: bytes | None = None
             kill_signal_text: str | None = None
             decode_error: AssayError | None = None
-            if dirt is None:
+            # (B049/DA-D1, SF-4) `consume()` can now RAISE -- B049 gave it the
+            # replaced-parent refusal -- and before this `try`/`finally` that
+            # raise skipped both `close()` calls below, leaking
+            # `kill_signal_reservation`'s parent descriptor. Bounded at one
+            # descriptor per run (the raise is fatal to the whole R2 claim),
+            # so it was never a leak that grows; it is still a descriptor this
+            # function opened and owes.
+            try:
+                if dirt is None:
+                    if equivalence_reservation is not None:
+                        equivalence_bytes = equivalence_reservation.consume()
+                    if kill_signal_reservation is not None:
+                        try:
+                            kill_signal_text = _read_kill_signal(
+                                kill_signal_reservation
+                            )
+                        except AssayError as exc:
+                            decode_error = exc
+            finally:
                 if equivalence_reservation is not None:
-                    equivalence_bytes = equivalence_reservation.consume()
+                    equivalence_reservation.close()
                 if kill_signal_reservation is not None:
-                    try:
-                        kill_signal_text = _read_kill_signal(kill_signal_reservation)
-                    except AssayError as exc:
-                        decode_error = exc
-            if equivalence_reservation is not None:
-                equivalence_reservation.close()
-            if kill_signal_reservation is not None:
-                kill_signal_reservation.close()
+                    kill_signal_reservation.close()
             if dirt is not None:
                 raise dirt
             if decode_error is not None:

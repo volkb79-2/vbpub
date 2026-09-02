@@ -349,6 +349,63 @@ def announce_refusal(exc: AssayError, *, diagnostics: "TextIO | None") -> None:
     )
 
 
+def post_command_refusal(
+    reason_code: ReasonCode,
+    *,
+    where: Path,
+    recorded_commit: str,
+    dirty: tuple[str, ...] = (),
+    observed_head: str | None = None,
+) -> AssayError:
+    """(B053/DA-R8) Compose the sentence the POST-command dirt/HEAD guard owes,
+    where the facts are known, for :func:`announce_refusal` to emit.
+
+    **Why this is not the pre-run guard's sentence.** The pre-run guards
+    (``runner.py`` direct-R0 and higher-rigor, both announced since DA-R3) say
+    "commit or stash, then re-run", and that is the right remedy there: the
+    operator left the dirt before the lane started, so the operator can remove
+    it. This guard fires AFTER the lane's own command ran on a tree assay had
+    already observed clean at ``recorded_commit``. The dirt -- or the new
+    commit -- is therefore the COMMAND's, not the operator's, and "commit or
+    stash" is a remedy that cannot work: the next run reproduces it. R-1's
+    round-1 BLOCKER 1 measured this as the ``DIRTY_TREE`` an operator is least
+    able to explain, precisely because they ran it on a tree they knew was
+    clean.
+
+    So the sentence blames the command, names the paths (or the two
+    revisions), and prescribes the remedy that applies: stop the command
+    writing into the working tree, or stop it committing.
+
+    A-175/A-178 are why the guard exists at all: a command that dirties the
+    tree makes the measured tree something other than ``recorded_commit``, and
+    a command that COMMITS leaves a clean tree while making the verdict's
+    commit label untrue.
+    """
+    if reason_code is ReasonCode.DIRTY_TREE:
+        return AssayError(
+            f"the lane's own command left {len(dirty)} uncommitted file(s) in "
+            f"{where} -- assay observed that tree CLEAN at "
+            f"{recorded_commit} immediately before starting the command, so "
+            f"this dirt is the command's own output and re-running after a "
+            f"commit or a stash reproduces it. Point the command's output at "
+            f"the artifact path the lane declares (assay reserves it for "
+            f"exactly this), or at a gitignored path, so what assay measured "
+            f"stays the commit it judges. Affected: {', '.join(dirty)}",
+            outcome=Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.DIRTY_TREE,
+        )
+    return AssayError(
+        f"the lane's own command moved HEAD in {where} from "
+        f"{recorded_commit} to {observed_head} -- assay judges the commit it "
+        f"resolved BEFORE the command ran, never one the command created "
+        f"while it ran, so the verdict would name a commit that is no longer "
+        f"what this repository is at. Remove the commit step from the lane's "
+        f"command.",
+        outcome=Outcome.NO_MEASUREMENT,
+        reason_code=ReasonCode.HEAD_CHANGED,
+    )
+
+
 def _announce_contradictory_branch_records(
     profile: CoverageProfile, *, diagnostics: "TextIO | None"
 ) -> None:
@@ -444,11 +501,24 @@ def _report_probe_refusal(
             f"its declared environment does not match the invoking one "
             f"({detail}), so the lane's own command never started"
         )
-    print(
-        f"assay: {status.value}/{reason_code.value}: lane {lane.name!r}: "
-        f"{cause}. Run via the declared wrapper: {wrapper}",
-        file=diagnostics,
+    # (B053/DA-R8, SF-3) Through the ONE emitter, not a second spelling of
+    # its format string. The two were byte-compatible, which is exactly how
+    # two spellings of one line drift apart -- `announce_refusal`'s own
+    # docstring names that hazard as the reason `cli.py`'s prints were
+    # refactored onto it, and this print predated that pass.
+    announce_refusal(
+        AssayError(
+            f"lane {lane.name!r}: {cause}. "
+            f"Run via the declared wrapper: {wrapper}",
+            outcome=status,
+            reason_code=reason_code,
+        ),
+        diagnostics=diagnostics,
     )
+    # The probe's own output stays as INDENTED context lines below the one
+    # line, never folded into it: B033's whole-target site already uses this
+    # shape, and a tail inside the emitter's message would break the
+    # one-refusal-one-line contract the counting tests assert.
     for label, tail in (
         ("stderr", probe_result.stderr_tail),
         ("stdout", probe_result.stdout_tail),
@@ -2087,6 +2157,13 @@ class SnapshotUnitResult:
     post_reason: ReasonCode | None
     profile: CoverageProfile | None
     profile_error: AssayError | None
+    #: (B053/DA-R8) The FACTS behind ``post_reason``, carried out beside it for
+    #: exactly the reason *profile_error* is: the refusal is composed where the
+    #: fact is known and announced where the diagnostics stream is in scope,
+    #: and this producer has the fact while :func:`_run_prepared_lane` has the
+    #: stream. Empty/``None`` whenever ``post_reason`` is ``None``.
+    post_dirty: tuple[str, ...] = ()
+    post_observed_head: str | None = None
     baseline_equivalence: bytes | None = None
     equivalence_error: AssayError | None = None
     #: (B046) The raw bytes of an INGESTED mutation report, read through the
@@ -2337,11 +2414,19 @@ def _execute_snapshot_unit(
         clock=clock,
     )
 
+    # (B053/DA-R8) One `dirty_paths` call and `head_rev` ONLY on the clean
+    # branch -- the A-178 observation order is unchanged. What changed is that
+    # both facts are KEPT instead of evaluated for truthiness and dropped, so
+    # `_run_prepared_lane` can say which paths, or which two revisions.
     post_reason: ReasonCode | None = None
-    if git.dirty_paths(snapshot.root, remaining=deadline.remaining):
+    post_dirty = git.dirty_paths(snapshot.root, remaining=deadline.remaining)
+    post_observed_head: str | None = None
+    if post_dirty:
         post_reason = ReasonCode.DIRTY_TREE
-    elif git.head_rev(snapshot.root, remaining=deadline.remaining) != snapshot.commit:
-        post_reason = ReasonCode.HEAD_CHANGED
+    else:
+        post_observed_head = git.head_rev(snapshot.root, remaining=deadline.remaining)
+        if post_observed_head != snapshot.commit:
+            post_reason = ReasonCode.HEAD_CHANGED
 
     profile: CoverageProfile | None = None
     profile_error: AssayError | None = None
@@ -2414,6 +2499,8 @@ def _execute_snapshot_unit(
     return SnapshotUnitResult(
         result=result,
         post_reason=post_reason,
+        post_dirty=post_dirty,
+        post_observed_head=post_observed_head,
         profile=profile,
         profile_error=profile_error,
         baseline_equivalence=baseline_equivalence,
@@ -2807,6 +2894,20 @@ def _run_prepared_lane(
         r0_claim = build_r0_claim(result)
 
         if unit.post_reason is not None:
+            # (B053/DA-R8) Say WHY, once, before the claims are built --
+            # `diagnostics` is in scope here and is not in
+            # `_execute_snapshot_unit`, which is why the facts travel on
+            # `SnapshotUnitResult` rather than the sentence.
+            announce_refusal(
+                post_command_refusal(
+                    unit.post_reason,
+                    where=baseline_snapshot.root,
+                    recorded_commit=baseline_snapshot.commit,
+                    dirty=unit.post_dirty,
+                    observed_head=unit.post_observed_head,
+                ),
+                diagnostics=diagnostics,
+            )
             # A-195, mirroring P20's own direct-path claim precedence: the
             # REAL R0 claim stands; every OTHER declared level becomes the
             # unchanged payload-free pair.
@@ -3941,7 +4042,21 @@ def _run_higher_rigor_lane(
                 )
         else:
             return refuse_all(exc.outcome, exc.reason_code)
-    except OSError:
+    except OSError as exc:
+        # (B053/DA-R8, SF-2) The third bare, silent refusal R-1 found: an
+        # `OSError` with a perfectly good `str()` became
+        # `ERROR`/`GIT_FAILED` with no sentence at all. It is not one of
+        # DA-R3's five sites, so nothing before this covered it -- but the
+        # rule is the same one: a refusal site that HAS the fact and does not
+        # compose it leaves the operator with a two-word pair and a guess.
+        announce_refusal(
+            AssayError(
+                f"snapshot preparation or cleanup failed: {exc}",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.GIT_FAILED,
+            ),
+            diagnostics=diagnostics,
+        )
         if outcome_holder:
             outcome = _replace_highest_higher_rigor_claim_with_git_failed(
                 lane, outcome_holder[0]
@@ -4523,6 +4638,7 @@ def run_lane(
             evidence=evidence,
             declared_evidence=declared_evidence,
             clock=clock,
+            diagnostics=diagnostics,
         )
     except AssayError as exc:
         announce_refusal(exc, diagnostics=diagnostics)
@@ -4577,6 +4693,7 @@ def _finish_direct_r0_lane(
     evidence: tuple[Evidence, ...],
     declared_evidence: tuple[EvidenceDeclaration, ...],
     clock: Clock,
+    diagnostics: "TextIO | None" = None,
 ) -> Verdict:
     """The direct-R0 path's post-command work, extracted verbatim so that
     B028's one outer catch can span it without indenting sixty lines of
@@ -4585,6 +4702,14 @@ def _finish_direct_r0_lane(
     Nothing here changed with B028 except its address: the post-run dirt/HEAD
     guard, its precedence rule and its two terminals are exactly what
     :func:`run_lane` executed inline before.
+
+    (B053/DA-R8) *diagnostics* is the one thing B028's extraction did NOT
+    carry over, and R-1's round 1 measured the consequence: this function was
+    created in this branch and given no stream, so the post-command
+    ``DIRTY_TREE``/``HEAD_CHANGED`` it refuses with printed nothing while the
+    branch claimed "every refusal reachable through ``assay run``" was
+    announced. Its single caller (:func:`run_lane`) already threads the
+    stream through nine other call sites in the same body.
     """
     r0_claim = build_r0_claim(result)
 
@@ -4615,12 +4740,30 @@ def _finish_direct_r0_lane(
     # A clean tree whose HEAD moved is NOT dirty, and calling it DIRTY_TREE
     # was a false diagnosis for exactly the case P20 reproduced (a command
     # that commits away its own uncovered line).
+    #
+    # (B053/DA-R8) Both facts are KEPT rather than evaluated for truthiness
+    # and dropped -- the observation order above is unchanged, but the guard
+    # can now name which paths, or which two revisions, and does.
     post_run_reason: ReasonCode | None = None
-    if git.dirty_paths(repo, remaining=deadline.remaining):
+    post_dirty = git.dirty_paths(repo, remaining=deadline.remaining)
+    post_observed_head: str | None = None
+    if post_dirty:
         post_run_reason = ReasonCode.DIRTY_TREE
-    elif git.head_rev(repo, remaining=deadline.remaining) != pre_run_head:
-        post_run_reason = ReasonCode.HEAD_CHANGED
+    else:
+        post_observed_head = git.head_rev(repo, remaining=deadline.remaining)
+        if post_observed_head != pre_run_head:
+            post_run_reason = ReasonCode.HEAD_CHANGED
     if post_run_reason is not None:
+        announce_refusal(
+            post_command_refusal(
+                post_run_reason,
+                where=repo,
+                recorded_commit=pre_run_head,
+                dirty=post_dirty,
+                observed_head=post_observed_head,
+            ),
+            diagnostics=diagnostics,
+        )
         return assemble_verdict(
             lane=lane,
             commit=commit,
