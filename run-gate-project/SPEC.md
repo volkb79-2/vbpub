@@ -939,14 +939,28 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     (started <t>, running for <m>m <s>s)`, then `docker logs -f --since
     <started_at>` + `docker wait`); **exited + same commit** → collect
     (`run-gate: collected <name> (exited <code> at <t>)`) and finish exactly
-    as an attached run would; **gone** (inspect exits non-zero: the daemon or
-    the host lost it) → say so, record that run as `aborted`, clear the
-    record, run fresh; **a different commit** → refuse, exit 2, naming both
-    commits, the container, and `--fresh`; **`--fresh`** → remove the named
-    container (by name, disclosed), clear the record, run anew. An `inspect`
-    answer that parses as NEITHER a state nor a gone signal refuses (exit 3)
-    rather than guessing — guessing "gone" would start the duplicate this
-    requirement exists to prevent. Automatic re-attach with `--fresh` as the
+    as an attached run would; **gone** → say so, record that run as
+    `aborted`, clear the record, run fresh; **a different commit** → refuse,
+    exit 2, naming both commits, the container, and `--fresh`; **`--fresh`**
+    → remove the named container (by name, disclosed), clear the record, run
+    anew. An `inspect` answer that parses as NEITHER a state nor a gone
+    signal refuses (exit 3) rather than guessing — guessing "gone" would
+    start the duplicate this requirement exists to prevent.
+    - **What "gone" is, exactly.** ONLY `No such object` / `No such
+      container` on `docker inspect`'s stderr. Every other inspect failure —
+      an unreachable daemon above all — is INFRASTRUCTURE: exit 3, the
+      record UNTOUCHED, no history write. Reading a daemon outage as gone
+      (rev 34's first cut did) writes a false `aborted` entry and deletes
+      the only thing on disk that can find the still-running container once
+      the daemon returns, which is the loss `R-39` exists to end.
+    - **The name is not the identity.** Container names are deterministic
+      per (environment, repo, lane), so a record that outlives its container
+      can name a DIFFERENT container that later took the same name. `{{.Id}}`
+      rides along in the same `inspect` format (no extra call) and a
+      mismatch is treated as GONE, disclosed by name: `a different container
+      now wears this name; run-gate will not touch it`. The record is
+      cleared and the lane runs fresh — run-gate never re-attaches to, and
+      never removes, a container it cannot identify as its own. Automatic re-attach with `--fresh` as the
     escape, rather than a refusal requiring an `--attach` flag, is decision
     D4 of the post-v10 plan: a restart is the COMMON case after a client
     death, and a manual step is exactly what the host's one-container rule

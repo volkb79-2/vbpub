@@ -6085,8 +6085,9 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
           inspect)
             name="$3"
             [ -f "$S/$name" ] || {{ echo "Error: No such object: $name" >&2; exit 1; }}
-            read status code < "$S/$name"
-            printf '%s|%s|2026-09-02T12:00:00Z\\n' "$status" "$code"
+            read status code id < "$S/$name"
+            [ -n "$id" ] || id="sha256:fakeid-$name"
+            printf '%s|%s|2026-09-02T12:00:00Z|%s\\n' "$status" "$code" "$id"
             ;;
           logs)
             # Only the STREAMING form blocks. `docker logs <name>` is how
@@ -6170,7 +6171,8 @@ class TestReattachAcrossADeadClient:
 def plant_inflight(proj: Path, repo: Path, state: Path | None, *,
                    lane: str = "suite", container: str = "run-gate-planted",
                    status: str | None = "running", code: int = 0,
-                   commit: str | None = "HEAD", **over) -> Path:
+                   commit: str | None = "HEAD", state_id: str = "",
+                   **over) -> Path:
     """Write an inflight record for `lane`, optionally giving the stateful
     shim a container to match it. `commit="HEAD"` means the repo's real HEAD
     (the matching case); anything else is used verbatim."""
@@ -6189,7 +6191,9 @@ def plant_inflight(proj: Path, repo: Path, state: Path | None, *,
     payload.update(over)
     path.write_text(json.dumps(payload))
     if state is not None and status is not None:
-        (state / container).write_text(f"{status} {code}\n")
+        # A third field lets a test give the LIVE container an id that is not
+        # the recorded one — the name-reuse case (S2).
+        (state / container).write_text(f"{status} {code} {state_id}\n")
     return path
 
 
@@ -6471,6 +6475,54 @@ class TestInflightRecordDecisions:
         assert ("state gone) — a live run would report it lost"
                 in capsys.readouterr().out)
         assert record.exists()
+
+    def test_a_name_worn_by_a_different_container_is_gone_by_name(
+            self, tmp_path, monkeypatch, capsys):
+        """RW-16 (review S2). Container names are deterministic per (env,
+        repo, lane), so a record that outlives its container can name a
+        DIFFERENT container that later took the same name. Inspecting by name
+        alone re-attached to that stranger and `rm -f`'d it."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, status="running",
+                                state_id="sha256:A-DIFFERENT-CONTAINER")
+        assert run_gate.main(["suite"]) == 0
+        out = capsys.readouterr().out
+        assert ("a different container now wears this name; run-gate will "
+                "not touch it") in out
+        assert "sha256:A-DIFFERENT-CONTAINER" in out
+        # The stranger is neither followed, re-attached, nor removed: the
+        # only docker call that ever names it is the inspect that found it.
+        assert [c for c in _docker_calls(log)
+                if "run-gate-planted" in c and c[0] != "inspect"] == []
+        assert (state / "run-gate-planted").exists()
+        # …and the lane runs fresh with its own new container.
+        assert len(lane_runs(log)) == 1
+        assert not record.exists()
+
+    def test_a_docker_failure_that_is_not_gone_leaves_the_record_alone(
+            self, tmp_path, monkeypatch, capsys):
+        """RW-16 (review S3). `docker inspect` exits non-zero for an
+        unreachable daemon too. Reading that as GONE wrote a false `aborted`
+        entry and deleted the only thing on disk that can find the container
+        once the daemon comes back — the exact loss R-39 exists to end, on a
+        host where a docker restart is routine."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state)
+        before = record.read_text()
+        shim = shim_dir_of(monkeypatch) / "docker"
+        shim.write_text("#!/bin/sh\n"
+                        "echo 'Cannot connect to the Docker daemon at "
+                        "unix:///var/run/docker.sock.' >&2\nexit 1\n")
+        shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+        assert run_gate.main(["suite"]) == 3
+        err = capsys.readouterr().err
+        assert "docker inspect could not answer for container " \
+               "run-gate-planted" in err
+        assert "Cannot connect to the Docker daemon" in err
+        assert "that is not a 'No such object' answer" in err
+        assert "the inflight record is untouched" in err
+        assert record.read_text() == before      # still findable afterwards
+        assert "is gone" not in json.dumps(read_store(proj))  # no `aborted`
 
     def test_an_unreadable_container_state_refuses_rather_than_guessing(
             self, tmp_path, monkeypatch, capsys):

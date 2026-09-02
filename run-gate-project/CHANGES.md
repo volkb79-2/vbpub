@@ -142,6 +142,17 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     all three stay with the owner, so the run is still recorded exactly once.
     `--fresh` against a live owner is refused by pid; run-gate never removes
     another client's container. A DEAD owner is adopted exactly as above.
+  - **"Gone" is exactly one thing, and the name is not the identity.** Only
+    `No such object` / `No such container` on `docker inspect`'s stderr
+    means the container is gone; every other inspect failure (an unreachable
+    daemon above all) is exit 3 with the record UNTOUCHED and nothing
+    recorded — a docker restart can never orphan a live gate container or
+    write a false `aborted`. And because container names are deterministic
+    per (environment, repo, lane), the container's `{{.Id}}` is read in the
+    same inspect call and compared with the recorded one: a mismatch is
+    disclosed (`a different container now wears this name; run-gate will not
+    touch it`), the record is cleared and the lane runs fresh. run-gate
+    never re-attaches to, or removes, a container it cannot identify.
   - History records a re-attached or collected run ONCE, with the duration
     measured from the container's start rather than from the seconds the
     client was attached.
