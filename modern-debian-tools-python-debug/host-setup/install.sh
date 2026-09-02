@@ -32,6 +32,25 @@ done
 # After arg parsing so --help works unprivileged.
 [ "$(id -u)" = 0 ] || { echo "run as root"; exit 1; }
 
+echo "== reactive per-container cap watcher: inotify availability check =="
+# mdt-dev-cap-watcher.py needs a working inotify_init1() — true on any
+# kernel since 2.6.27, but checked explicitly rather than let a confusing
+# errno surface later inside the service. A failure here skips installing
+# the watcher entirely; mdt-apply-dev-caps.sh's periodic sweep still runs
+# either way, just without the reactive/instant half.
+if python3 -c "
+import ctypes, ctypes.util, sys
+libc = ctypes.CDLL(ctypes.util.find_library('c') or 'libc.so.6', use_errno=True)
+fd = libc.inotify_init1(0)
+sys.exit(0 if fd >= 0 else 1)
+" 2>/dev/null; then
+  INOTIFY_OK=1
+  echo "inotify: available"
+else
+  INOTIFY_OK=0
+  echo "WARN: inotify_init1() failed on this host — skipping mdt-dev-cap-watcher.service; the periodic sweep (mdt-host-slices.timer) still applies IO caps and will be the only source of per-container limits"
+fi
+
 echo "== config =="
 mkdir -p /etc/mdt /var/lib/mdt
 if [ -f /etc/mdt/host-setup.env ] && [ "$FORCE" = 1 ]; then
@@ -114,6 +133,9 @@ render "$HERE/units/dev-buildkitd.slice.in"    /etc/systemd/system/dev-buildkitd
 render "$HERE/units/mdt-buildkitd.service.in"  /etc/systemd/system/mdt-buildkitd.service
 render "$HERE/units/mdt-host-slices.timer.in"  /etc/systemd/system/mdt-host-slices.timer
 install -m 0644 "$HERE/units/mdt-host-slices.service" /etc/systemd/system/mdt-host-slices.service
+if [ "${INOTIFY_OK:-}" = 1 ]; then
+  install -m 0644 "$HERE/units/mdt-dev-cap-watcher.service" /etc/systemd/system/mdt-dev-cap-watcher.service
+fi
 
 mkdir -p /etc/systemd/system/docker-.scope.d
 render "$HERE/units/docker-scope-default-limits.conf.in" \
@@ -142,17 +164,20 @@ if [ -n "$SD_VER" ] && [ "$SD_VER" -lt 256 ] 2>/dev/null; then
   echo "systemd $SD_VER < 256 — dropped MemoryZSwapWriteback= (runtime raw-write fallback covers it)"
 fi
 
-echo "== docker daemon.json (merge, not overwrite — full ownership, host dev-tier cgroup governance rollout) =="
-# Sets/updates only the keys this project cares about; leaves any other
-# existing key in the file untouched. Requires a dockerd RESTART (not
-# reload) for cgroup-parent to take effect — NOT done here, that's
-# disruptive (restarts every running container) and belongs in a scheduled
-# window, not a routine install.sh run.
-python3 - "$DOCKER_DAEMON_CGROUP_PARENT" "$DOCKER_DAEMON_LIVE_RESTORE" \
-         "$DOCKER_DAEMON_LOG_DRIVER" "$DOCKER_DAEMON_LOG_MAX_SIZE" "$DOCKER_DAEMON_LOG_MAX_FILE" <<'PY'
+echo "== docker daemon.json (merge, not overwrite — cgroup-parent only, host dev-tier cgroup governance rollout) =="
+# Sets/updates ONLY cgroup-parent; leaves every other existing key untouched
+# — including live-restore/log-driver/log-opts, which debian-install-v2 owns
+# now (D-F1 ownership split: assigning a default container cgroup placement
+# is squarely an mdt/dev-workload concern, base docker daemon logging/restart
+# policy is not). Each tool's own read-merge-write cycle is order-independent
+# — whichever runs later simply adds to what's already there. Requires a
+# dockerd RESTART (not reload) for cgroup-parent to take effect — NOT done
+# here, that's disruptive (restarts every running container) and belongs in
+# a scheduled window, not a routine install.sh run.
+python3 - "$DOCKER_DAEMON_CGROUP_PARENT" <<'PY'
 import json, sys, pathlib
 
-cgroup_parent, live_restore, log_driver, log_max_size, log_max_file = sys.argv[1:6]
+cgroup_parent, = sys.argv[1:2]
 path = pathlib.Path("/etc/docker/daemon.json")
 try:
     config = json.loads(path.read_text()) if path.exists() else {}
@@ -160,11 +185,6 @@ except json.JSONDecodeError as exc:
     sys.exit(f"refusing to merge into an unparseable {path}: {exc}")
 
 config["cgroup-parent"] = cgroup_parent
-config["live-restore"] = live_restore.strip().lower() in {"1", "true", "yes"}
-config["log-driver"] = log_driver
-config.setdefault("log-opts", {})
-config["log-opts"]["max-size"] = log_max_size
-config["log-opts"]["max-file"] = log_max_file
 
 path.write_text(json.dumps(config, indent=2) + "\n")
 print(f"merged into {path}: cgroup-parent={cgroup_parent} (needs a dockerd RESTART to take effect)")
@@ -176,6 +196,9 @@ install -m 0755 "$HERE/scripts/mdt-io-baseline.py"     /usr/local/sbin/mdt-io-ba
 install -m 0755 "$HERE/scripts/mdt-slice-audit.py"     /usr/local/sbin/mdt-slice-audit.py
 install -m 0755 "$HERE/scripts/check.sh"               /usr/local/sbin/mdt-host-check.sh
 install -m 0755 "$HERE/scripts/docker-safe-restart.sh" /usr/local/sbin/mdt-docker-safe-restart
+if [ "$INOTIFY_OK" = 1 ]; then
+  install -m 0755 "$HERE/scripts/mdt-dev-cap-watcher.py" /usr/local/sbin/mdt-dev-cap-watcher.py
+fi
 
 echo "== BFQ scheduler (io.weight needs it; io.max caps work on any scheduler) =="
 install -m 0644 "$HERE/etc/modules-load.d/bfq.conf"            /etc/modules-load.d/mdt-bfq.conf
@@ -196,6 +219,9 @@ systemctl start dev.slice dev-interactive.slice dev-background.slice dev-buildki
 systemctl enable mdt-host-slices.service          # boot-time apply
 systemctl enable --now mdt-host-slices.timer      # periodic sweep
 systemctl enable --now mdt-buildkitd.service      # host-managed BuildKit worker
+if [ "$INOTIFY_OK" = 1 ]; then
+  systemctl enable --now mdt-dev-cap-watcher.service  # reactive per-container MemoryMax
+fi
 
 if [ "$WITH_BASELINE" = 1 ]; then
   echo "== io baseline (fio — disk will be saturated for ~4 min) =="

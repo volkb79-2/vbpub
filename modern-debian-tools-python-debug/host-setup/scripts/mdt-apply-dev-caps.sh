@@ -54,25 +54,52 @@ SWEEP_IO_CAP_PCT="${SWEEP_IO_CAP_PCT:-80}"
 TESTRUNNER_IMAGE_PATTERNS="${TESTRUNNER_IMAGE_PATTERNS:-*test-runner*}"
 BUILDKIT_NAME_PATTERNS="${BUILDKIT_NAME_PATTERNS:-buildx_buildkit_*}"
 DEVCONTAINER_NAME_PATTERNS="${DEVCONTAINER_NAME_PATTERNS:-*devcontainer*}"
-CGROUP2_FLAGS="${CGROUP2_FLAGS:-warn}"
+CGROUP2_FLAGS="${CGROUP2_FLAGS:-fix}"
 IO_BASELINE_ENV="${IO_BASELINE_ENV:-/var/lib/mdt/io-baseline.env}"
 DEV_INTERACTIVE_ZSWAP_WRITEBACK="${DEV_INTERACTIVE_ZSWAP_WRITEBACK:-no}"
 
 # --- cgroup2 mount flags -----------------------------------------------------
 # systemd mounts cgroup2 with nsdelegate,memory_recursiveprot at boot; a later
-# remount from the init cgroup namespace can strip them. Only processes in the
-# init cgroup namespace can change them back — i.e. this script on the host,
-# NOT anything running inside a container.
+# remount from the init cgroup namespace can strip them (observed live,
+# 2026-08-28: present at one sweep, gone five minutes later, with no code in
+# this repo doing it — most likely an incidental side effect of an external
+# --privileged/--cgroupns=host container touching the host mount namespace).
+# Only processes in the init cgroup namespace can change them back — i.e.
+# this script on the host, NOT anything running inside a container. Default
+# is now CGROUP2_FLAGS=fix: self-heal every sweep (<= SWEEP_INTERVAL of
+# exposure) rather than only warn, since this flag being missing silently
+# defeats MemoryLow/MemoryMin with no other symptom.
+#
+# memory_hugetlb_accounting (kernel >= 6.6, systemd >= 260 mounts it by
+# default) folds HugeTLB pages into memory.current/memory.max — without it a
+# cgroup's hugetlb usage is invisible to the memory controller entirely.
+# Kernel-gated here the same way MemoryZSwapWriteback is systemd-gated in
+# install.sh: an unsupported mount option fails the WHOLE remount, so it must
+# not be offered to a kernel that predates it.
+KVER=$(uname -r | grep -oE '^[0-9]+\.[0-9]+')
+KMAJOR=${KVER%%.*}
+KMINOR=${KVER##*.}
+HUGETLB_OPT=""
+if [ -n "$KMAJOR" ] && [ -n "$KMINOR" ] \
+   && { [ "$KMAJOR" -gt 6 ] || { [ "$KMAJOR" -eq 6 ] && [ "$KMINOR" -ge 6 ]; }; }; then
+  HUGETLB_OPT=",memory_hugetlb_accounting"
+fi
 CG_OPTS=$(findmnt -no OPTIONS "$CG" 2>/dev/null || true)
-if [ -n "$CG_OPTS" ] && ! echo "$CG_OPTS" | grep -q memory_recursiveprot; then
+MISSING=""
+if [ -n "$CG_OPTS" ]; then
+  echo "$CG_OPTS" | grep -q memory_recursiveprot || MISSING="${MISSING}memory_recursiveprot "
+  [ -n "$HUGETLB_OPT" ] && { echo "$CG_OPTS" | grep -q memory_hugetlb_accounting || MISSING="${MISSING}memory_hugetlb_accounting "; }
+fi
+if [ -n "$MISSING" ]; then
+  log "WARN: cgroup2 mounted WITHOUT: ${MISSING}(current opts: $CG_OPTS) — slice MemoryLow/MemoryMin do NOT protect container pages without memory_recursiveprot$([ -n "$HUGETLB_OPT" ] && echo "; hugetlb usage is invisible to memory accounting without memory_hugetlb_accounting")"
   if [ "$CGROUP2_FLAGS" = "fix" ]; then
-    if mount -o remount,nsdelegate,memory_recursiveprot "$CG" 2>/dev/null; then
-      log "cgroup2: restored nsdelegate,memory_recursiveprot (was: $CG_OPTS)"
+    if mount -o "remount,nsdelegate,memory_recursiveprot${HUGETLB_OPT}" "$CG" 2>/dev/null; then
+      log "cgroup2: restored nsdelegate,memory_recursiveprot${HUGETLB_OPT}"
     else
-      log "WARN: cgroup2 remount failed — MemoryLow/MemoryMin will not protect container pages"
+      log "WARN: cgroup2 remount failed — missing flag(s) remain missing"
     fi
   else
-    log "WARN: cgroup2 mounted WITHOUT memory_recursiveprot — slice MemoryLow/MemoryMin do NOT reach container pages. Fix: mount -o remount,nsdelegate,memory_recursiveprot $CG (or set CGROUP2_FLAGS=fix)"
+    log "cgroup2: CGROUP2_FLAGS=warn — not auto-fixing. Fix: mount -o remount,nsdelegate,memory_recursiveprot${HUGETLB_OPT} $CG"
   fi
 fi
 

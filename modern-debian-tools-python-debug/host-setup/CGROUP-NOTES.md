@@ -226,6 +226,16 @@ weights buy, so NVMe hosts keep `none` and rely on the caps alone. On such a
 host `mdt-host-check.sh` warning "no disk uses BFQ" is the expected result, not
 a defect.
 
+**Three device classes, three answers** — `etc/udev/rules.d/60-bfq-scheduler.rules`
+already covers the first two; the third is a documented option, not shipped
+(see [io.cost vs BFQ](#iocost-vs-bfq--an-option-this-host-doesnt-use-yet) below):
+
+| Device class | `KERNEL==` match | Weight fairness |
+|---|---|---|
+| virtio-guest (`vd[a-z]`) | matched | BFQ |
+| bare-metal SATA/SCSI/SAS (`sd[a-z]`) | matched | BFQ |
+| NVMe (`nvme*`) | **not** matched, on purpose | none today — `io.max` caps only; `io.cost` if weight fairness is ever needed there |
+
 ### 5. Weights only decide contention; caps bound absolutely
 
 A weight does nothing on an idle device — it only settles who yields when two
@@ -321,3 +331,170 @@ echo 1 > /sys/fs/cgroup/<path>/memory.zswap.writeback
 Setting it to `no` is defensible only when you have *measured* stalls caused by
 swap-in on that tier. Weigh it against the pool RAM it permanently occupies:
 that RAM is taken from every other tier, including production.
+
+---
+
+## io.cost vs BFQ — an option this host doesn't use (yet)
+
+`io.latency` (the block-cgroup controller that would let a slice declare "keep
+my reads under N µs, throttle everyone poorer than me until you do") is **not
+compiled into this kernel** (`CONFIG_BLK_CGROUP_IOLATENCY` unset — a
+kernel-rebuild question, not a config one; see the kernel-rebuild doc).
+`io.cost` **is compiled in** (`CONFIG_BLK_CGROUP_IOCOST=y`) and gets you a
+related but different guarantee. This section is what turning it on would
+actually require — it is not done on this host today, only measured.
+
+### What it is, and how it differs from BFQ
+
+BFQ enforces proportional weight **unconditionally** — even on an idle device,
+two cgroups queuing at the same instant are serviced in weight ratio. `io.cost`
+only intervenes when the device is measured to be missing its own latency
+target: on a quiet device every cgroup runs unthrottled regardless of weight,
+and weights only start mattering once aggregate observed latency crosses the
+QoS target you configured. For a workload whose entire complaint is "there is
+no IO demand from us, only 3rd-party contention we want suppressed when it
+happens" (Soulmask, see the [wings-cgroups README](../../wings-cgroups/v1-legacy/README.md)
+finding), that is a closer philosophical match than BFQ's always-on model —
+but it needs its inputs measured, not guessed, or it does nothing (target too
+loose) or throttles constantly (target too tight).
+
+### Two things must both be configured — a model alone does nothing
+
+`io.cost.qos` and `io.cost.model` are **root-cgroup-only** files (they do not
+exist on non-root cgroups — the policy is device-wide, keyed by the target
+device's `<major>:<minor>`, not a per-subtree setting):
+
+```bash
+# The linear cost model — what iocost-calibrate.sh measures (see below).
+echo "<major>:<minor> ctrl=user model=linear \
+  rbps=<...> rseqiops=<...> rrandiops=<...> \
+  wbps=<...> wseqiops=<...> wrandiops=<...>" \
+  > /sys/fs/cgroup/io.cost.model
+
+# The QoS target — THIS is the on/off switch. A model with no enable=1 QoS
+# line sits inert, exactly like a calibrated fuel gauge on an engine that
+# was never started.
+echo "<major>:<minor> enable=1 ctrl=user \
+  rpct=95.00 rlat=<usec> wpct=95.00 wlat=<usec> min=1 max=100" \
+  > /sys/fs/cgroup/io.cost.qos
+```
+
+| `io.cost.qos` field | Meaning |
+|---|---|
+| `enable` | `1` turns the controller on for this device; `0` (default) means the model is stored but inert |
+| `ctrl` | `auto` lets the kernel self-tune the model over time; `user` pins it to exactly what you wrote — use `user`, an auto-tuned model drifts without you noticing |
+| `rpct`/`rlat`, `wpct`/`wlat` | "`rpct`% of reads must complete within `rlat` µs" (same shape for writes) — this is the actual protected metric; get it wrong and either nothing throttles (target looser than the device's real latency) or the device throttles permanently (target tighter than it can sustain) |
+| `min`/`max` | Bounds (as % of the calibrated model) on how far vrate is allowed to move — floor prevents starving low-weight cgroups to zero, ceiling prevents over-crediting an idle device |
+
+**What's blocking turning this on today:** the `rbps`/`rseqiops`/`rrandiops`/
+`wbps`/`wseqiops`/`wrandiops` half is done — `iocost-calibrate.sh` (wrapping
+the vendored, LVM-patched `iocost_coef_gen.py`, see `scripts/debian-install-v2/tools/`)
+has produced two live runs on this host (`/root/iocost-results/`). The
+`rlat`/`wlat` half has **not** — those are a latency baseline this host's own
+device has never had measured (virtio here, but potentially NVMe or spinning
+disk underneath depending on host; `mdt-io-baseline.py`'s existing 4-point
+ceiling baseline measures *throughput*, not the *latency-at-a-given-load*
+number `io.cost.qos` actually needs). Do not guess at `rlat`/`wlat` — write
+the model, leave `enable=0`, and treat picking a target latency as its own
+measurement task before ever setting `enable=1`.
+
+### The elevator has to leave BFQ
+
+`io.cost` needs the device scheduler to not also be doing its own per-request
+cgroup accounting underneath it — set it to `none` (exactly what
+`iocost_coef_gen.py` itself does for the calibration run, and consistent with
+[BFQ caveats #4](#4-the-iomax-caps-are-scheduler-independent---bfq-is-not-load-bearing-for-them)
+above: NVMe hosts already run `none` and rely on caps alone). This is a
+device-wide switch, not additive with BFQ — a host either runs BFQ weights or
+`io.cost`, never both on the same device.
+
+### Existing `IOWeight`s do not carry over — they were tuned to fight BFQ's curve
+
+This is the trap. [`wings.slice`](../../wings-cgroups/v1-legacy/t1-node-cgroup-parent/wings.slice)
+sets `IOWeight=7800`, and its own header comment explains why: that number
+exists *only* to land on `io.bfq.weight=800` after BFQ's compression (see
+[rule 1 above](#1-ioweight-is-rescaled--ratios-above-100-are-not-what-you-wrote)) —
+an intended 8:1 against the default 100.
+
+`io.cost` reads the **plain, uncompressed** `io.weight` file systemd wrote —
+no BFQ-side translation happens, because BFQ is no longer the thing reading
+it. Leave `IOWeight=7800` in place after switching schedulers and you silently
+get a **~78:1** ratio — nearly 10x stronger than what was actually intended.
+**Every slice whose `IOWeight` was hand-picked above 100 must be reset to the
+literal intended ratio before (or as part of) any switch to `io.cost`.** The
+upside: once retuned, `io.cost`'s weight math has no compression curve to
+account for — simpler to reason about than BFQ's going forward.
+
+### `io.max` still applies — the two mechanisms compose, they don't compete
+
+Yes, hard bandwidth/IOPS ceilings keep working. `io.max` is enforced by
+blk-throttle, a *separate* rq-qos policy from both BFQ's weighting and
+`io.cost`'s latency-triggered throttling — [rule 4 above](#4-the-iomax-caps-are-scheduler-independent---bfq-is-not-load-bearing-for-them)
+already established this is scheduler-independent; the same independence
+holds against `io.cost`. A request is bound by whichever mechanism is
+stricter at that instant: `io.max` gives the absolute "this cgroup can never
+exceed X regardless of anything else" ceiling (what a build storm is bounded
+by even on an idle device), while `io.cost` adds the "when the device gets
+busy, protect the latency-sensitive tenant's *responsiveness*, not just its
+throughput share" behavior that a static `io.max` number cannot express on its
+own (`io.max` doesn't know what latency the device is currently delivering,
+only bytes/ops per second). Keeping `dev.slice`'s root `io.max` in place while
+adding `io.cost` underneath it is the expected combination, not a redundancy.
+
+### What's new provisioning work, not yet built
+
+Every `io.cost.qos`/`io.cost.model` write above is a **runtime-only** kernel
+knob — nothing currently applies it at boot. Actually switching over needs a
+new step (mirroring `_configure_zswap()`'s pattern) that runs at boot, after
+the elevator is set to `none` and before workloads start, re-applying the
+calibrated model (and, once measured, the QoS latency target) — this doesn't
+exist in `debian-install-v2` or `host-setup` yet.
+
+### Verification cheat sheet
+
+```bash
+cat /sys/fs/cgroup/io.cost.model                    # active model, keyed by devno — empty if never written
+cat /sys/fs/cgroup/io.cost.qos                       # enable=0 means inert regardless of the model above
+cat /sys/block/vda/queue/scheduler                   # must show [none], not [bfq], for io.cost to be live
+cat /sys/fs/cgroup/wings.slice/io.weight             # what io.cost reads directly — no BFQ-side translation
+```
+
+---
+
+## A game-server-tuned custom kernel — what it would consider (not proposed, documentation only)
+
+Not work to do — a reference for *if* a kernel is ever rebuilt specifically
+for hosting game server(s) on this or a similar host. Nothing below is
+installed or recommended by default; several trade real throughput/complexity
+for worst-case latency, which is only worth paying with a demonstrated need.
+
+- **`CONFIG_BLK_CGROUP_IOLATENCY=y`** — the original motivation for this list:
+  enables `io.latency`, not compiled into this host's kernel today (see
+  [io.cost vs BFQ](#iocost-vs-bfq--an-option-this-host-doesnt-use-yet) above
+  for why `io.cost`, already compiled in, is the nearer-term option instead).
+- **Preemption model:** full `CONFIG_PREEMPT` (or `CONFIG_PREEMPT_DYNAMIC`)
+  over `CONFIG_PREEMPT_NONE`/`VOLUNTARY` — lower scheduling latency for a game
+  tick thread. `CONFIG_PREEMPT_RT` is the "nuclear option" (most kernel
+  spinlocks become preemptible, much better worst-case latency, real
+  throughput/maintenance cost, increasingly upstream) — worth knowing by
+  name, not a default recommendation.
+- **`CONFIG_HZ_1000`** (higher timer tick) and `CONFIG_NO_HZ_FULL` +
+  `isolcpus=`/`nohz_full=`/`rcu_nocbs=` boot params, if a game server's tick
+  thread is ever pinned to dedicated cores away from interrupts and other
+  host work (classic low-latency/HFT-style CPU isolation).
+- **`CONFIG_CGROUP_SCHED`/`CONFIG_FAIR_GROUP_SCHED`/`CONFIG_CFS_BANDWIDTH`/
+  `CONFIG_RT_GROUP_SCHED`** — the last one only if real-time
+  (`SCHED_FIFO`/`SCHED_RR`) priority for the tick thread is ever wanted, a
+  separate, more invasive lever than anything else on this list.
+- **THP mode** (`madvise` vs `always`) — already partially owned by
+  `debian-install-v2`'s `thp-config.service`; cross-reference rather than
+  duplicate a second knob for it here.
+- **Network side** — a game server's perceived "lag" is often packet
+  latency, not disk: `fq`/`fq_codel` qdisc, `CONFIG_TCP_CONG_BBR`, and
+  RPS/RFS/XPS IRQ steering to keep network interrupts off any
+  isolated/dedicated cores.
+- **`mitigations=` boot parameter** — Spectre/Meltdown mitigations cost CPU
+  in syscall-heavy paths; a security/performance trade-off worth naming
+  explicitly, never a silent recommendation to disable anything.
+- **`CONFIG_BLK_CGROUP_IOCOST=y`** — already compiled in on this host; keep
+  it in any rebuild too (see [io.cost vs BFQ](#iocost-vs-bfq--an-option-this-host-doesnt-use-yet)).
