@@ -1089,3 +1089,60 @@ principles don't already resolve.
   lives), citing this entry; next backlog id **B062**. Then the SAME
   reviewer for **round 3 — the cap**: if round 3 is not ACCEPT, the
   controller pauses for the operator rather than dispatching a fourth.
+
+- **2026-09-02 (generation 8 returned — gate run 12 PASS on `99d2a443`;
+  A-407 landed as prescribed; round 3, the cap, sent to the same
+  reviewer)** — Generation 8 (~79 min, 185 calls) returned tip
+  `4889b742`. The controller read gate run 12 itself from
+  `scratchpad/g8/gate-run12.log`: one `ASSAY_REGISTERED_GATE_COMPLETE=1`,
+  the implementer's own `MY_GATE_WRAPPER_EXIT=0` (its `$?` taken right
+  after the gate script), 11 phase markers, wheel
+  `assay-4.0.1.dev52+g99d2a443` naming the judged commit, no
+  `FAILED|DIRTY_TREE|Traceback`. `git diff --stat 99d2a443..4889b742`
+  touches only LOG/REPORT (docs-only tail); worktree clean. Commits
+  since the round-2 file: `0fb6fb94` A-407 (the fix is the six lines
+  the reviewer prescribed at `claims += (r1_claim,)`, `assemble_verdict`'s
+  guard untouched, the two "one such site" comments corrected to two —
+  the controller read the diff), `ba09eb61` SF-R2-1/2, `74c64858`
+  SF-R2-3, `494c8ee2` REPORT §50–53, `99d2a443` a control test beyond
+  the dispatch (a judged R1 lane KEEPS its helper — the implementer
+  noticed every A-407 assertion was about dropping, so an unconditional
+  drop would have passed them all; it reports mutant M-G2 fails exactly
+  this control, and that M-G (`if True:`) survives correctly because the
+  filter is idempotent on the passing path), `e1d8128f`/`4889b742`
+  records (the latter corrects its own claim that all mutation probes
+  were commits; four were working-tree edits). The implementer
+  reproduced R2-1 before touching anything, with the reviewer's
+  five-lane battery against a zipapp from `71a59967` (B, C, E masked,
+  no verdict file); after the fix all five behave as ruled and A keeps
+  its helper. Suite 3943 passed / 20 skipped; Go qualification 7
+  in-image. The generation-7 skip-count discrepancy is resolved: gen 7
+  ran with `--ignore=tests/qualification`, which removes exactly the 7
+  environment-gated skips (11+7=18); neither number was wrong, the LOG
+  did not say which command produced it. Scope: one production file
+  (`runner.py`), three test files, docs; nothing under
+  `shared-ramdisk-depot-manager/`, no schema/vocabulary/verify change,
+  no new reason code, no `diagnostics` route, no backlog entry; next
+  free **A-408** / **B062**.
+
+  **Round 3 sent to the SAME reviewer** (resumed; the cap): blind pass
+  on `71a59967..4889b742` first; re-run its five in-image scenarios
+  verbatim against a zipapp from the tip and read the verdicts back in
+  a separate step; re-apply its two A-405 mutants and report MEASURED
+  kill counts; SF-R2-3's text against real stderr/verdicts; mutate the
+  A-407 fix both ways and name which tests move, ruling on the control
+  test and on M-G's survival; A-399's question of every touched test.
+  Pre-adjudicated as non-blocking: DA-R3 deferred to the patch wave,
+  DA-R2 stands, the skip-count discrepancy, the control test's scope.
+  Report to `scratchpad/assay-WAVE-C-go-REVIEW-round3.md`; ACCEPT / NOT
+  ACCEPT with numbered blockers; no fourth round.
+
+  **Merge surface checked while waiting:** main moved to `0fc9c2a7`
+  (another session's origin sync; `ciu/CHANGES.md` only). Merge-base is
+  still `25b1f7fb`; the only file changed on BOTH sides since is
+  `assay/nyxloom-trove/4-backlog.md` — the id collision already ruled
+  (main's B053/B054 win, the branch carries B055–B061). Main's other
+  assay-side changes since the base are this log and the dstdns
+  adoption brief, both main-only. `nyxloom/docs/routing-model-redesign.md`
+  is dirty on the shared main checkout and is not this wave's; `--only`
+  commits leave it alone.
