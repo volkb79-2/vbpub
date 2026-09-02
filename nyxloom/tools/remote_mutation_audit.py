@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from nyxloom.mutation_gate import Mutant, generate_mutants
+from nyxloom.mutants import Mutant, generate_mutants
 
 
 WORKTREE_LOCK = threading.Lock()
