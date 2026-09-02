@@ -223,4 +223,109 @@ and would never have surfaced it. Pragma removed; the branch is now covered
 for real by monkeypatching `tomli_w.dump` to raise mid-write and asserting no
 stray `.tmp-hookman-*` survives in the store dir.
 
-## Commit 4 — this LOG/REPORT
+## Commit 4 — `d58b9dc5` — this LOG/REPORT (first pass)
+
+---
+
+# Fix pass — adversarial review ACCEPT-conditional
+
+Input: `nyxloom-trove/reports/ciu-P46-REVIEW.md` (fresh reviewer, independent
+control worktree, independent gate run PASS at `d58b9dc5`). Verdict on the
+A1-A5 mechanism was **ACCEPT** — every guard planted-and-fired, 8 hollow-test
+mutations all caught, the `token_file` deviation and all five judgment calls
+independently re-verified as correct. **No mechanism was reworked in this
+pass**; all 8 blockers were documentation/consumer-dimension gaps plus one
+unambiguous detector bug (N1).
+
+The one design ask the review raised — an escape hatch for A4's secret-shape
+heuristic, whose false-positive shapes (`sort_key`, `primary_key`,
+`public_key`, `idempotency_key`) the reviewer found by construction with ZERO
+live occurrences across ciu/test-repo/dstdns — was **answered by the
+operator: ship as-is, no suppression mechanism.** Nothing was built for it.
+
+## Commit 5 — `fee25e18` — `docs(ciu):` B1-B8 + N1
+
+13 files, +240/-43.
+
+**B1 — the shipped copyable example was itself the anti-pattern.** The
+sharpest finding of the review. `hooks/examples/post_compose_example.py`
+returned `root_token` with `persist:"state"`, and
+`is_secret_shaped("root_token", "placeholder-…")` is `True` — so CIU shipped,
+as the example consumers are told to copy, a hook whose output the package's
+own new `state-secrets` stage refuses. Two tests pinned that shape, actively
+defending it. Switched to `persist:"secret"` (the review's preferred option,
+and the more useful thing for this package to demonstrate); the module
+docstring now explains the state-vs-secret CHOICE rather than describing a
+single destination. Both pins updated:
+`test_ciu_hook_examples_deeper13.py`'s return-shape assertion, and
+`test_ciu_shipped_hook_contracts.py`'s end-to-end run — the latter now
+asserts the store file's content, its 0440 mode, its manifest row, AND that
+no `ciu.toml` is written at all. Added
+`test_post_compose_example_is_accepted_by_the_state_secrets_stage`, which
+checks the shipped example against the SAME `is_secret_shaped` predicate the
+stage uses rather than a restated copy of the rule — so a future drift back
+to `persist:"state"` fails loudly instead of silently re-shipping this.
+
+**B2** — `hooks/examples/README.md`: `"only valid destination"` (false as of
+S9.4a), the illustrative `root_token`/`"s.secret-token"` value (the exact
+closed anti-pattern), and the stale "persists Vault's root token" description
+of the test-repo hook. All three rewritten, plus a new "Choosing between the
+two" section: what `[state]` is for, what `persist:"secret"` is for, and the
+two pairings it refuses.
+
+**B3** — `deploy.py`'s S7.6 preflight message still named
+`the vault stack's [state].root_token`. `engine.py`'s twin had been corrected
+in commit 1 and this one missed; mirrored that wording exactly.
+
+**B4** — `test-repo/README.md`'s `infra/vault` row still described the old
+fixture. Rewritten to the real shape, including WHY both a `[state]` copy and
+`persist:"secret"` are wrong for that particular name.
+
+**B5** — `docs/CIU.md`'s "Structured return [S9.4]" block was labelled as
+`post_compose_vault.py` and showed the code commit 1 DELETED, followed by the
+now-false "only persistence destination" claim. Replaced with the production
+shape from SPEC §B.2a, the two-destination split, and an explicit note that
+the test-repo fixture is deliberately not that shape.
+
+**B6 / B7** — `docs/CIU-DEPLOY.md`'s source-#3 line and `README.md`'s front-
+door illustrative phrase, both updated.
+
+**B8 — a false claim in my own CHANGES.md.** Adoption Note 1 said a
+`persist:"secret"` value is "0440, atomic, masked, leak-scanned". Masked and
+leak-scanned are wrong: S4.22's scan covers `materialize()`'s
+directive-materialized return, and Step 14 runs BEFORE Step 17's
+`post_compose` hooks execute at all. The protection is real but different —
+the value never enters the in-memory config or any log path — so the note now
+states exactly what is enforced and says explicitly that it is not scanned
+and does not need to be. `docs/SPEC.md` S9.4a only ever claimed "never
+logged" and is unchanged; so is §B.2's own "masked, leak-scanned" phrase,
+which correctly describes a genuinely directive-materialized secret (checked,
+not assumed — grep for the phrase found exactly these two sites).
+
+**N1 — the gitignore-gaps false positive, and a true positive behind it.**
+The detector compared raw pattern strings, so a BROADER glob already covering
+a canonical entry still reported it missing. git treats a pattern with no `/`
+(or only a trailing one) as matching at any depth, so `**/ciu.env` and
+`ciu.env` are literally equivalent — the prescribed fix (normalize a leading
+`**/` on both sides) is not merely a heuristic, it matches git's own
+semantics. Implemented as `_gitignore_key`.
+
+That normalization cleared four of five findings against ciu's own checkout
+and left ONE standing: `ciu.worktree-instance.json`, which is a **true
+positive** — genuinely absent from ciu's `.gitignore` since CIU-61 added it
+to the canonical set, and not something the review had spotted. Muting it to
+satisfy the review's "clean against ciu's own repo" wording would have been
+exactly backwards: it is precisely the omission this rule exists to catch,
+found by the tool the same day it shipped. Added the entry to `.gitignore`
+with a comment recording that provenance. `ciu migration-check` now returns
+zero findings against ciu's own repo, asserted by a test that reads the REAL
+`.gitignore` — no synthetic fixture would have caught the glob bug, since the
+real file's spellings are the trigger — alongside the review's prescribed
+`**/`-prefixed fixture and a third test proving the normalization did not
+turn the rule off (a genuinely dropped entry still fires).
+
+**Checked, not a defect:** `hook_templates/post_compose_db.py` also uses
+`persist:"state"` twice (the same shipped-template class as B1), but both
+values are BOOLEANS, which `is_secret_shaped` correctly ignores. No change.
+
+## Commit 6 — this LOG/REPORT addendum

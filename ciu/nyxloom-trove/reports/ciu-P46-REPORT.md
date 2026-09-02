@@ -181,3 +181,96 @@ in-repo test stubs took exactly five positional parameters and gained `**_kw`.
 - No merge to `main`. Four commits sit on the worktree branch:
   `8ece3eb5` (feat, code+tests+docs), `af334ee8` (backlog),
   `bc23f15d` (pragma fix — the gate-green commit), and this LOG/REPORT.
+
+---
+
+# Addendum — fix pass for the adversarial review (ACCEPT-conditional)
+
+Input: `nyxloom-trove/reports/ciu-P46-REVIEW.md`. Mechanism verdict on A1-A5
+was **ACCEPT** (guards planted-and-fired, 8 hollow-test mutations all caught,
+the `token_file` deviation and all five judgment calls independently
+re-verified). This pass changed **no A1-A5 mechanism**: 8 blockers were
+documentation/consumer-dimension gaps, plus N1, an unambiguous detector bug.
+The one design ask (an escape hatch for A4's heuristic) was resolved by the
+operator as *ship as-is, no suppression mechanism* — nothing was built for it.
+
+## Gate — run 3, at `fee25e18` — **PASSED**
+
+Required, because B1 changed a pinned test. Same command, verdict again read
+in a separate step from the run.
+
+```
+run-gate: admission: lane 'ciu' declares no resources.memory — not memory-accounted (shared-infra rules still apply)
+run-gate: rev 32 | lane ciu | env [environments.tester-unified] in central /workspaces/vbpub/.claude/worktrees/agent-a3aef243215d54b0d/run-gate.toml | slice dev-background.slice ($CGROUP_PARENT_DEV_BACKGROUND)
+run-gate: ephemeral env (nothing declared)
+run-gate: budget 30m (advisory)
+assay-3.2.0.pyz: OK
+ciu: PASS (exit 0)
+  commit: fee25e18fd59def2a2ae928c34b911c7822e145f
+  argv: /opt/tester-venv/bin/python run-ciu-tests.py
+run-gate: verdict artifact: /workspaces/vbpub/.claude/worktrees/agent-a3aef243215d54b0d/ciu/.assay/verdict-ciu.json
+run-gate: lane 'ciu' exit 0
+```
+
+Verdict artifact:
+
+```
+outcome PASS   reason_code (none)   scope S1   declared_rigor ['R0', 'R1']
+R0 PASS
+R1 PASS  pct=100.0  covered=522/522  branches=82/82  considered=9 files
+         excluded_lines={}
+```
+
+Full suite at the same HEAD: **3523 passed**, 100.00% line + branch
+(was 3519 before this pass; net +4).
+
+## Per-blocker disposition
+
+| Item | Fixed in | Note |
+|---|---|---|
+| B1 example hook + its 2 pins | `post_compose_example.py`, `test_ciu_hook_examples_deeper13.py`, `test_ciu_shipped_hook_contracts.py` | switched to `persist:"secret"`; new guard asserts the shipped example against the SAME `is_secret_shaped` predicate the stage uses, not a restated rule |
+| B2 examples README | `src/ciu/hooks/examples/README.md` | all three false statements + a new "Choosing between the two" section |
+| B3 S7.6 message | `deploy.py:479-484` | mirrored `engine.py`'s already-corrected wording |
+| B4 test-repo README | `test-repo/README.md` | includes WHY both `[state]` and `persist:"secret"` are wrong for that name |
+| B5 CIU.md structured-return block | `docs/CIU.md` | replaced with SPEC §B.2a's production shape + the two-destination split |
+| B6 CIU-DEPLOY source #3 | `docs/CIU-DEPLOY.md` | |
+| B7 front-door phrase | `README.md` | |
+| B8 CHANGES overclaim | `CHANGES.md` | struck "masked, leak-scanned"; states what IS enforced and that scanning is not needed. Grep-verified the only other instance of that phrase (`SPEC.md` §B.2) is CORRECT — it describes a genuinely directive-materialized secret |
+| N1 gitignore glob | `migration_check._gitignore_key` + 3 tests | see below |
+
+## N1 — one thing the review did not anticipate
+
+The prescribed `**/` normalization is not just a heuristic: git treats a
+pattern with no `/` (or only a trailing one) as matching at any depth, so
+`**/ciu.env` and `ciu.env` ignore identical path sets. Implemented
+symmetrically.
+
+It cleared four of five findings against ciu's own checkout and left one:
+**`ciu.worktree-instance.json`, a TRUE positive** — genuinely absent from
+ciu's `.gitignore` since CIU-61 added it to the canonical set. The review's
+N1 wording ("so `ciu migration-check` is clean against ciu's own repo")
+assumed globs were the whole story. Silencing a real finding to satisfy that
+sentence would have been exactly backwards, so the `.gitignore` was fixed
+instead, with a comment recording that the new rule found it. Three tests
+cover this: the prescribed `**/`-prefixed fixture, a run against the REAL
+`.gitignore` (no synthetic fixture would have caught the original bug — the
+real file's spellings are the trigger), and a proof that a genuinely dropped
+entry still fires, so the normalization did not quietly disable the rule.
+
+**Reviewer-facing note:** the `.gitignore` edit is the one change in this pass
+that is not literally in the B1-B8/N1 list. It is the honest route to N1's
+stated goal, and it is a one-line hygiene fix to ciu's own repo, not a change
+to any shipped behaviour.
+
+## Also checked, not a defect
+
+`src/ciu/hook_templates/post_compose_db.py` uses `persist:"state"` twice —
+the same shipped-template class as B1 — but persists two BOOLEANS, which
+`is_secret_shaped` correctly ignores. Left unchanged.
+
+## Final state
+
+Six commits on `worktree-agent-a3aef243215d54b0d`, **not merged**:
+`8ece3eb5` (feat), `af334ee8` (backlog), `bc23f15d` (pragma fix),
+`d58b9dc5` (LOG/REPORT), `fee25e18` (**review fix pass — the gate-green
+commit**), and this addendum.
