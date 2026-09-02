@@ -1631,6 +1631,13 @@ def main_execution(
         def _hooks_for(point: str) -> list:
             return list(merged.get(root_key, {}).get("hooks", {}).get(point, []))
 
+        # S9.4a — every name this stack declares via an S4.1 directive. A
+        # `persist:'secret'` return colliding with one of these is refused
+        # (S4.6's uniqueness rule, now spanning both channels that can produce
+        # a store file). Computed from the SAME `specs` Step 5 discovered, so
+        # the two channels can never disagree about what is declared.
+        declared_secret_names = frozenset(spec.name for spec in specs)
+
         # ---- Step 9: pre_secrets hooks (S9) ----
         if skip_hooks:
             print("[STEP 9/17] --skip-hooks: skipping pre_secrets hooks", flush=True)
@@ -1639,7 +1646,10 @@ def main_execution(
             if pre_secrets:
                 print(f"[STEP 9/17] Running {len(pre_secrets)} pre_secrets hook(s)...", flush=True)
                 ctx.point = "pre_secrets"
-                hooks_runner.run_hooks(pre_secrets, "pre_secrets", merged, ctx, stack_toml_path)
+                hooks_runner.run_hooks(
+                    pre_secrets, "pre_secrets", merged, ctx, stack_toml_path,
+                    declared_secret_names=declared_secret_names,
+                )
 
         # ---- Step 10: secrets (S4) ----
         materialized: dict = {}
@@ -1654,8 +1664,9 @@ def main_execution(
                 if token is None:
                     raise VaultError(
                         "[S4.16] vault-backed secrets are declared but no Vault token "
-                        "resolved (VAULT_TOKEN env, vault.token_file, or the vault stack's "
-                        "[state].root_token). Aborting before any container starts."
+                        "resolved (VAULT_TOKEN env, vault.token_file, or the vault "
+                        "stack's hook-persisted 'root_token' secret store file, "
+                        "S9.4a). Aborting before any container starts."
                     )
                 vault = VaultKV2(addr, token)
             materialized = secret_materialize.materialize(
@@ -1677,7 +1688,10 @@ def main_execution(
             if pre_compose:
                 print(f"[STEP 11/17] Running {len(pre_compose)} pre_compose hook(s)...", flush=True)
                 ctx.point = "pre_compose"
-                hooks_runner.run_hooks(pre_compose, "pre_compose", merged, ctx, stack_toml_path)
+                hooks_runner.run_hooks(
+                    pre_compose, "pre_compose", merged, ctx, stack_toml_path,
+                    declared_secret_names=declared_secret_names,
+                )
 
         # ---- Step 12: configfiles (S5) ----
         print("[STEP 12/17] Rendering configfiles...", flush=True)
@@ -1859,7 +1873,10 @@ def main_execution(
             if post_compose:
                 print(f"[STEP 17/17] Running {len(post_compose)} post_compose hook(s)...", flush=True)
                 ctx.point = "post_compose"
-                hooks_runner.run_hooks(post_compose, "post_compose", merged, ctx, stack_toml_path)
+                hooks_runner.run_hooks(
+                    post_compose, "post_compose", merged, ctx, stack_toml_path,
+                    declared_secret_names=declared_secret_names,
+                )
 
         result["config"] = composefile.redact_config(merged, specs)
         return result
@@ -2145,15 +2162,24 @@ def secrets_command(args: argparse.Namespace) -> int:
     finally:
         os.chdir(original_cwd)
 
+    # S9.4a — a hook-persisted secret has no directive to discover, so it is
+    # enumerated from the stack's own provenance sidecar and appended to the
+    # directive rows. Without this it would be INVISIBLE to `ciu secrets list`
+    # while sitting in the very same store dir, and `ciu secrets reset` would
+    # skip exactly the values that have no other way of being reached.
+    hook_rows = secret_materialize.hook_secret_rows(
+        working_dir, (s.name for s in specs)
+    )
+
     if args.action == "list":
         rows = secret_materialize.list_secrets(specs, working_dir, repo_root)
-        _print_secret_table(rows)
+        _print_secret_table(rows + hook_rows)
         return 0
 
     # reset
     selected = [args.name] if args.name else None
     if selected:
-        known = {s.name for s in specs}
+        known = {s.name for s in specs} | {row["name"] for row in hook_rows}
         if args.name not in known:
             print(f"[ERROR] no such secret '{args.name}' in this stack", flush=True)
             return 2
@@ -2164,6 +2190,7 @@ def secrets_command(args: argparse.Namespace) -> int:
             print("[INFO] Aborted.", flush=True)
             return 0
     deleted = secret_materialize.reset_secrets(working_dir, repo_root, specs, names=selected)
+    deleted += secret_materialize.reset_hook_secrets(working_dir, names=selected)
     if deleted:
         for d in deleted:
             print(f"[INFO] Removed: {d}", flush=True)

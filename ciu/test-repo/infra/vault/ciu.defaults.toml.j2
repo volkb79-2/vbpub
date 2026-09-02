@@ -35,14 +35,18 @@ root_token = "GEN_LOCAL:demo/vault_root_token"
 
 # --- hooks (S9.1) -----------------------------------------------------------
 # post_compose runs after the container is up (S8.3 step 17); it records the
-# token + initialized flag into [state] so the S4.16 token resolver (source #3)
-# can hand it to LATER stacks that declare ASK_VAULT/GEN_TO_VAULT secrets.
+# `initialized` flag into [state]. It records NO token: ciu-P46 removed that
+# redundant plaintext copy (see the hook's own docstring), and this demo's
+# token reaches later stacks through [vault].token_file — S4.16 source #2 —
+# pointed at the SAME GEN_LOCAL project-store file generated below.
 [vault_core.hooks]
 post_compose = ["./post_compose_vault.py"]
 
 # --- state (S3.4 — the only re-render-preserved table) ----------------------
 # Written by post_compose_vault.py. `--reset` destroys the Vault data volume AND
 # this state together (S3.4): the next run re-initializes and re-records it.
+# NOTHING secret-shaped may live here: `ciu check`'s `state-secrets` stage
+# refuses it outright (S3.4a), and `persist:'secret'` (S9.4a) is the sanctioned
+# channel for a value that genuinely has no directive behind it.
 [state]
 initialized = false
-root_token = ""

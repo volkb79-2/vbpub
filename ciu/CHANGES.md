@@ -21,6 +21,105 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.9.0] - UNRELEASED
+
+> **This release is BREAKING, and ships as a MINOR on purpose** — the same
+> deliberate override 7.7.0 (CIU-75/CIU-79) and 7.8.0 (CIU-54) already
+> established. The estate's normal convention is that a breaking change waits
+> for the next major; ciu-P46's cutover is self-contained (one token-resolution
+> source, two new static refusals) and depends on no v8 schema-revision work,
+> so holding it for a major would only leave the plaintext-token exposure it
+> closes in place for longer.
+
+ciu-P46 — `persist: "secret"`, Vault-bootstrap migration off `[state]`, two
+new `ciu check` stages, and the `ciu migration-check` verb. This is the early
+backport of **F4** ("Vault bootstrap out of `[state]`") and **F7**
+("Vault-presence static rule") from `docs/CIU-V8-TESTING-GATE-PROPOSAL.md`'s
+secrets-audit table, landed on today's v7 model ahead of the full v8 cutover
+because neither depends on any v8 schema or registry work.
+
+### Adoption / Migration Notes
+
+Three groups of existing checkouts are affected. `ciu migration-check` (new)
+is how a checkout tells you which, if any, apply to it.
+
+1. **You have a hook that persists a secret-shaped value into `[state]` —
+   most likely a Vault bootstrap hook writing `root_token`/`unseal_key`.**
+   ACTION NEEDED. `ciu check` now REFUSES that table outright (new
+   `state-secrets` stage, `[S3.4a]`), and since `ciu up` runs `ciu check`'s
+   static pipeline automatically (S13.4c), the refusal reaches `ciu up` too.
+   Change the hook's return from `"persist": "state"` to `"persist":
+   "secret"` for that entry and delete the key from the stack's `[state]`
+   table. The value then lands in the ordinary per-stack secret store
+   (`<stack>/.ciu/secrets/<name>`, 0440, atomic, masked, leak-scanned)
+   instead of in a plaintext, world-readable rendered `ciu.toml`. See
+   `docs/SPEC.md` S9.4a and worked example §B.2a.
+2. **You rely on S4.16's Vault-token source #3.** ACTION NEEDED. Source #3 no
+   longer reads `[state].root_token` from the vault stack's rendered
+   `ciu.toml`; it reads the hook-persisted store file
+   `<vault.stack_path>/.ciu/secrets/root_token`. **There is no fallback** —
+   this is a hard cutover, deliberately, because a dual read would keep the
+   unsafe copy worth writing forever. Adopt (1) and source #3 keeps working
+   unchanged. If your vault stack's token is DIRECTIVE-backed instead (a
+   dev-mode `GEN_LOCAL`, as CIU's own `test-repo` fixture is), you cannot use
+   `persist: "secret"` for it at all — the name is already declared, and
+   S9.4a refuses the collision — so point `vault.token_file` (source #2) at
+   that store file instead. CIU's own reference fixture now does exactly
+   that; see `test-repo/ciu.global.defaults.toml.j2`.
+3. **You declare `ASK_VAULT`/`GEN_TO_VAULT` but no
+   `topology.services.vault`.** ACTION NEEDED. This used to fail only at
+   runtime, mid-`ciu up`, at S4.16. It is now a static `ciu check` refusal
+   (new `vault-presence` stage, `[S13.4d]`). Declare
+   `topology.services.vault.internal_host`/`internal_port`.
+
+**Safe to ignore, additive:** the `ciu migration-check` verb itself, the
+`HOOK` rows in `ciu secrets list`, and the `[state]` rule's effect on
+non-secret facts (booleans, counters, short strings, `{{ … }}`/`$VAR`
+references and `/`-bearing paths are all still perfectly legal there).
+
+**`ciu migration-check`'s own findings are WARN-only in v1** and therefore
+only NOTE (never fail) inside `ciu check`. The standalone verb exits non-zero
+on any finding, which is the intended shape for scripting it.
+
+**Not affected: CIU-38** (per-service Vault AppRole provisioning) stays OPEN
+and deferred. An earlier framing suggested `persist: "secret"` would unblock
+it; that was wrong and is corrected here — AppRole credentials route through
+Vault itself (a hook mints them into Vault; the consumer reads them back with
+an ordinary `ASK_VAULT`), which needs no new CIU mechanism at all.
+
+### Added
+- `persist: "secret"` hook-return kind (S9.4a): a hook may persist a value
+  into its stack's secret store, reusing the existing S4.9/S4.10/S4.26
+  primitives verbatim. For values NO directive could express (a real Vault's
+  `operator init` output) — not a general-purpose second secrets channel.
+  `apply_to_config` alongside it is refused; so are a dotted path, a
+  non-`^[a-z][a-z0-9_]*$` name, a non-string value, and a name a directive
+  already declares. Every refusal names the KEY, never the value (S4.23).
+- Hook-persisted secrets appear in `ciu secrets list` (kind `HOOK`, locator
+  `hook:<script>`) and are removed by `ciu secrets reset`, with or without
+  `--name`. Provenance is recorded in
+  `<stack>/.ciu/secrets/.hook-persisted.toml` (names and hook paths only).
+- `ciu check` stage `vault-presence` (S13.4d / F7).
+- `ciu check` stage `state-secrets` (S3.4a) — always-on, not
+  migration-specific: it is what stops a future hook regressing back into
+  `[state]`.
+- `ciu migration-check [--define-root PATH] [--json]` (S13.7) plus its
+  extensible rule registry, and `ciu check`'s `migration` stage as its second
+  entry point over the SAME registry. Three v1 rules: `retired-overlay-file`,
+  `stale-identity-facts` (CIU-60/CIU-75), `gitignore-gaps` (CIU-61). No rule
+  compares an installed CIU version against anything.
+
+### Changed
+- **BREAKING** S4.16 token source #3 now reads the vault stack's
+  hook-persisted `root_token` store file, not `[state].root_token`. The old
+  read path is removed with no fallback.
+- `test-repo/infra/vault/post_compose_vault.py` no longer returns
+  `root_token` at all — CIU's canonical reference fixture needed LESS code,
+  not more: its token is `GEN_LOCAL`-backed and was already safely
+  materialized, so the `[state]` write was a redundant second exposure.
+  `[state].root_token` removed from that stack's config; `[vault].token_file`
+  added to the demo's global config so its later stacks still resolve.
+
 ## [7.8.0] - 2026-08-31
 <!-- cmru: generated -->
 <!-- cmru: source-end=618926cbd6691b446f8afe6b2cf25c97f0bfe125 -->

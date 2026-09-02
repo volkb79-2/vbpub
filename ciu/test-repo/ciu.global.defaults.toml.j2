@@ -70,12 +70,22 @@ PHYSICAL_REPO_ROOT = "$PHYSICAL_REPO_ROOT"
 enable_app = true
 
 # --- [vault] : where the Vault stack lives + KV path map (S4.16 / S4.9) -----
-# stack_path tells the token resolver (S4.16 source #3) which stack's
-# ciu.toml [state] carries root_token. vault.paths.* are the canonical KV2
-# paths data stacks write to and apps read from (kept in ONE place so a path
-# rename is a single edit).
+# stack_path tells the token resolver (S4.16 source #3) which stack's secret
+# store carries the hook-persisted `root_token` (S9.4a). vault.paths.* are the
+# canonical KV2 paths data stacks write to and apps read from (kept in ONE
+# place so a path rename is a single edit).
+#
+# token_file is S4.16 source #2, and it is what makes THIS demo work: the
+# infra/vault stack's root token is DIRECTIVE-backed here
+# (`GEN_LOCAL:demo/vault_root_token`), so it materializes into the project
+# secret store rather than being minted by a hook — which means source #3's
+# hook-persisted file is legitimately absent and source #2 is the correct,
+# already-existing mechanism to point at the same 0440 store file. A real
+# (non-dev-mode) Vault, whose `operator init` mints a token no directive could
+# have expressed, uses `persist:'secret'` and source #3 instead (SPEC §B.2a).
 [vault]
 stack_path = "infra/vault"
+token_file = ".ciu/secrets/demo/vault_root_token"
 
 [vault.paths]
 redis_password = "demo/redis_password"

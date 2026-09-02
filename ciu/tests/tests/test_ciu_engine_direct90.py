@@ -63,7 +63,7 @@ def test_hook_readiness_adapters_normalize_docker_outcomes_and_forward_tcp(monke
         lambda host, port, *, timeout_s, interval_s: tcp_calls.append((host, port, timeout_s, interval_s)) or True,
     )
 
-    def hook(_hooks, point, _config, ctx, _stack_toml):
+    def hook(_hooks, point, _config, ctx, _stack_toml, **_kw):
         assert point == "pre_secrets"
         assert ctx.wait_healthy("api", timeout_s=1, interval_s=0.1) is False
         assert ctx.wait_healthy("api", timeout_s=1, interval_s=0.1) is False

@@ -107,6 +107,12 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
                                         validate the config pipeline (no deploy)
     graph [--format mermaid|dot|json]    render the dependency graph (no deploy)
 
+  MIGRATION
+    migration-check [--define-root PATH] [--json]
+                                        report stale pre-cutover artifacts in
+                                        this checkout (S13.7); exit non-zero on
+                                        ANY finding
+
   DEV-LOOP BUILDS
     bake [targets ...] [--profile NAME] [--no-cache]
                                           docker buildx bake --load
@@ -435,11 +441,39 @@ ciu check [--profile NAME] [--live] [--json] [--phases N,M] [--define-root PATH]
   leak scan, and the declared-vs-consumed secret cross-check. Entirely in
   memory: no hostdir, no materialized secret, no rendered file, no hook run().
 
+  Three further stages run here (ciu-P46): `vault-presence` refuses a stack
+  declaring ASK_VAULT/GEN_TO_VAULT with no topology.services.vault (S13.4d),
+  `state-secrets` refuses a secret-shaped key in any `[state]` table (S3.4a),
+  and `migration` walks `ciu migration-check`'s rule registry (S13.7) — the
+  same registry the standalone verb walks, with its findings weighted as this
+  report weighs every other stage's (WARN notes, ERROR fails).
+
   --profile NAME     restrict to the named host profile (repeatable)
   --live             probe live Vault/Postgres/MinIO/Consul/Docker state too
   --json             emit the per-stage report as one versioned JSON object
   --define-root PATH override repo root (alias: --root-folder)
   --phases N,M       restrict to the given phase numbers
+""",
+    "migration-check": """\
+ciu migration-check [--define-root PATH] [--json]
+  Report artifacts in THIS checkout left behind by an older CIU (S13.7).
+
+  CIU performs hard cutovers: a renamed or removed artifact is simply gone
+  from every normal code path — no fallback reads, no legacy-compat shims.
+  This verb is the single place that knows CIU's own version history, so a
+  stale artifact produces a named finding with a remediation instead of a
+  silent break. Every rule is pattern-based (does this file/key/table exist);
+  no rule compares an installed version against anything.
+
+  It is also registered as `ciu check`'s `migration` stage, so `ciu up`'s
+  automatic static preflight (S13.4c) covers it with no extra invocation.
+
+  Exit code: 0 when there are NO findings, non-zero when there are any —
+  regardless of WARN/ERROR. This is a diagnostic, not `ciu check`'s
+  severity-gated verdict; the stage form keeps `ciu check`'s aggregation.
+
+  --define-root PATH override repo root (alias: --root-folder)
+  --json             emit one versioned JSON object (rules + findings)
 """,
     "graph": """\
 ciu graph [--format mermaid|dot|json] [--profile NAME] [--phases N,M]
@@ -2171,6 +2205,15 @@ def main() -> None:
     elif verb == "check":
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--check"] + rest))
+
+    elif verb == "migration-check":
+        # S13.7 — the standalone entry point into the SAME rule registry
+        # `ciu check`'s `migration` stage walks. Root resolution is CIU-54's
+        # established convention for a verb with its own parser
+        # (`deploy.resolve_repo_root` via `_resolve_repo_root_deploy`), so it
+        # answers identically to `ciu check` run in the same checkout.
+        from .migration_check import main as migration_check_main
+        raise SystemExit(migration_check_main(rest))
 
     elif verb == "graph":
         from .deploy import main as deploy_main

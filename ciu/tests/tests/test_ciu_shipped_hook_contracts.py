@@ -92,12 +92,19 @@ def test_demo_app_hook_path_applies_runtime_note_for_configfile_render(tmp_path:
     ).read_text(encoding="utf-8")
 
 
-def test_demo_vault_hook_reads_secret_and_persists_bootstrap_state(tmp_path: Path) -> None:
-    """The declared bootstrap hook carries its resolved token into state."""
+def test_demo_vault_hook_persists_only_the_non_secret_initialized_flag(
+    tmp_path: Path,
+) -> None:
+    """ciu-P46/F4 — the demo bootstrap hook writes NO token into [state].
+
+    Before ciu-P46 this hook re-read its own GEN_LOCAL root token and
+    re-persisted it into `[state]`, purely so S4.16's old source #3 could find
+    it there. Source #3 now reads a hook-persisted secret store file (S9.4a),
+    so the second, unmasked, un-leak-scanned plaintext copy is simply gone.
+    `initialized` is a plain boolean fact and stays exactly where it was.
+    """
     stack = TEST_REPO / "infra" / "vault"
     declared = _declared_hook(stack, "vault_core", "post_compose")
-    secret_path = tmp_path / "root_token"
-    secret_path.write_text("s.demo-token\n", encoding="utf-8")
     config = {"vault_core": {}}
     state_path = tmp_path / "ciu.toml"
 
@@ -105,36 +112,31 @@ def test_demo_vault_hook_reads_secret_and_persists_bootstrap_state(tmp_path: Pat
         [str(stack / declared)],
         "post_compose",
         config,
-        _ctx(
-            tmp_path,
-            point="post_compose",
-            secret_file=lambda name: secret_path if name == "root_token" else _unknown_secret(name),
-        ),
+        _ctx(tmp_path, point="post_compose", secret_file=_unknown_secret),
         state_path,
     )
 
     with state_path.open("rb") as fh:
         saved = tomllib.load(fh)
     assert config["initialized"] is True
-    assert saved["state"] == {"initialized": True, "root_token": "s.demo-token"}
+    assert saved["state"] == {"initialized": True}
+    assert "root_token" not in saved["state"]
 
 
-def test_demo_vault_hook_fails_when_required_secret_context_is_unavailable(
-    tmp_path: Path,
-) -> None:
-    """A broken secret-file context is a runtime hook failure, never a green no-op."""
-    stack = TEST_REPO / "infra" / "vault"
-    declared = _declared_hook(stack, "vault_core", "post_compose")
+def test_demo_vault_stack_declares_no_secret_shaped_state_key(tmp_path: Path) -> None:
+    """The fixture's own `[state]` table passes S3.4a's always-on rule.
 
-    with pytest.raises(HookExecutionError, match="root_token"):
-        run_hooks(
-            [str(stack / declared)],
-            "post_compose",
-            {"vault_core": {}},
-            _ctx(
-                tmp_path,
-                point="post_compose",
-                secret_file=_unknown_secret,
-            ),
-            tmp_path / "ciu.toml",
-        )
+    `ciu check`'s `state-secrets` stage refuses a secret-shaped `[state]` key
+    outright; CIU's own canonical reference fixture must be the first thing
+    that satisfies it, or the rule ships already violated by its own example.
+    """
+    _ = tmp_path
+    import tomllib as _tomllib
+
+    from ciu.config_model import find_secret_shaped_keys
+
+    text = (TEST_REPO / "infra" / "vault" / "ciu.defaults.toml.j2").read_text(
+        encoding="utf-8"
+    )
+    parsed = _tomllib.loads(text)
+    assert find_secret_shaped_keys(parsed.get("state")) == []
