@@ -64,6 +64,9 @@ class _OracleAdapter:
     report_omits_paths: bool = False
     key_prefix: str = ""
 
+    def for_project(self, *, repo_top: Path, project_root: Path) -> "_OracleAdapter":
+        return self
+
     def is_test_path(self, rel_path: str) -> bool:
         return False
 

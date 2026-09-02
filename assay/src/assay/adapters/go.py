@@ -156,11 +156,24 @@ srdm's ``stripModulePrefix``"), confirmed directly against
 ``covergate/main.go``'s own ``stripModulePrefix``: a Go cover profile
 names files by full import path (``srdm/internal/store/x.go``) while
 ``git diff`` names the same file relative to the repo top
-(``internal/store/x.go``); :attr:`GoAdapter.module_path` names the known,
-declared module-path segment to strip, firing only at an exact
+(``internal/store/x.go``); :attr:`GoAdapter.module_path` names the
+module-path segment to strip, firing only at an exact
 ``module_path + "/"`` path-segment boundary so a sibling module that
 merely shares the prefix's characters (``"srdm_legacy/..."``) is never
 mis-stripped.
+
+**Where that module path comes from is a decision in its own right
+(A-404, DA-8), and the answer is: the project's own ``go.mod``.** A lane
+never declares it. ``covergate``'s ``-module srdm`` flag is
+``DESIGN-GUIDE.md`` §5's defaults anti-pattern #1 by name -- a literal
+standing in for a fact that lives authoritatively in the project's layout
+-- so :meth:`GoAdapter.for_project` reads it, once per lane, from the
+nearest ``go.mod`` at or above the lane's own ``cwd``
+(:mod:`assay.adapters.go_modfile`). One Go module per lane; ``cwd`` is
+that module's root. A key outside the derived module refuses rather than
+passing through, because an unstripped key does not fail loudly on its
+own -- it matches no file, and a lane that matches no file measures 0/0
+and PASSES.
 
 **``excluded_dir_names`` is the empty set, not an invented ``vendor``/
 ``testdata`` default.** Real Go tooling does special-case both by bare
@@ -176,12 +189,14 @@ has is precisely the hazard §5 exists to forbid.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Sequence
 
+from ..errors import AssayError, Outcome, ReasonCode
 from ..mutation import MutationSite
 from .base import Remaining, StatementBlockReport, StatementSpan
+from .go_modfile import find_module_declaration
 from .go_stmtpos import derive_statement_blocks
 
 __all__ = ["GoAdapter"]
@@ -535,12 +550,63 @@ class GoAdapter:
     #: A-042/A-043) refuses ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL``
     #: before anything runs, rather than crashing or guessing.
     external_tools: tuple[str, ...] = ("go",)
-    #: A declared, known module-path segment a coverage artifact's own keys
-    #: carry that the diff's spelling does not (Go's own analogue of
+    #: The module-path segment a coverage artifact's own keys carry that the
+    #: diff's spelling does not (Go's own analogue of
     #: :attr:`~assay.adapters.python.PythonAdapter.coverage_key_prefix`,
     #: mirroring ``covergate/main.go``'s own ``stripModulePrefix``). Empty
     #: means nothing to strip.
+    #:
+    #: **On a lane this is DERIVED, never declared** (A-404): :meth:`for_project`
+    #: reads it from the project's own ``go.mod`` and returns a copy carrying
+    #: it. Setting it directly is the library affordance a caller building
+    #: their own registry has (``tests/test_standalone.py``), and it leaves
+    #: :attr:`module_file` empty, which is the difference the refusal below
+    #: keys on.
     module_path: str = ""
+    #: The repo-top-relative path of the ``go.mod`` whose ``module`` directive
+    #: produced :attr:`module_path`, or ``""`` when the path was supplied by a
+    #: caller instead of derived. Provenance, and the thing a refusal names so
+    #: the consumer knows which file to open.
+    module_file: str = ""
+
+    def for_project(
+        self, *, repo_top: Path, project_root: Path
+    ) -> "GoAdapter":
+        """This adapter with its module path read out of the project's own
+        ``go.mod`` (A-404, ruled by DA-8).
+
+        The nearest ``go.mod`` at or above *project_root* and no higher than
+        *repo_top* is the lane's module; :mod:`assay.adapters.go_modfile`
+        parses its ``module`` directive and nothing else. **No ``go.mod`` in
+        that range is a refusal**, not a fallback to "strip nothing": B057
+        measured what the empty prefix does, and it is not a loud failure but
+        a profile whose every key resolves to a file that does not exist.
+
+        A *declared* :attr:`module_path` that DISAGREES with the derived one
+        is refused rather than given a precedence, which is A-328's own rule
+        applied here ("refuse precedence between two sources of one fact,
+        because whichever loses is config nothing reads") and the same
+        cross-check shape A-007 built for the coverage format. One that
+        agrees is simply re-derived with its provenance filled in.
+        """
+        declaration = find_module_declaration(repo_top, project_root)
+        if self.module_path and self.module_path != declaration.module_path:
+            raise AssayError(
+                f"this Go adapter was constructed with module_path "
+                f"{self.module_path!r}, but {declaration.module_file!r} "
+                f"declares `module {declaration.module_path}`. The module "
+                f"path is the project's fact, not the caller's, so the "
+                f"disagreement is refused rather than resolved by a "
+                f"precedence rule -- delete the declared value and let it be "
+                f"derived",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        return replace(
+            self,
+            module_path=declaration.module_path,
+            module_file=declaration.module_file,
+        )
 
     def is_test_path(self, rel_path: str) -> bool:
         return rel_path.endswith("_test.go")
@@ -549,10 +615,42 @@ class GoAdapter:
         return _has_top_level_func_body(text)
 
     def normalize_coverage_key(self, key: str) -> str:
+        """*key* with this module's own import-path prefix removed.
+
+        The strip fires only at an exact ``module_path + "/"`` path-segment
+        boundary, so a sibling module sharing the prefix's characters
+        (``srdm_legacy/...`` against ``srdm``) is never mis-stripped.
+
+        **When the module path was DERIVED** (:attr:`module_file` is set), a
+        key that is not under it is refused instead of passed through, and
+        A-404 (c) is why: `go test ./...` inside a module emits keys under
+        that module's import path and nothing else, so a foreign key means
+        the profile is not this lane's -- and passing it through produces a
+        path that matches no file, which surfaced as B057's misattributed
+        "the profile and the working tree are not the same revision". The
+        message names all three things a consumer needs: the key, the derived
+        module path, and the ``go.mod`` it came from.
+
+        **When it was DECLARED** by a library caller, the pass-through
+        stands: assay has no ``go.mod`` to contradict them with, so it has
+        nothing to say beyond "this is not a key I was told to strip".
+        """
         prefix = self.module_path
-        if not prefix or not key.startswith(prefix + "/"):
-            return key
-        return key[len(prefix) + 1 :]
+        if prefix and key.startswith(prefix + "/"):
+            return key[len(prefix) + 1 :]
+        if self.module_file:
+            raise AssayError(
+                f"the coverage artifact carries the key {key!r}, which is not "
+                f"under this lane's own Go module path {prefix!r} (declared "
+                f"by `module {prefix}` in {self.module_file!r}). A Go cover "
+                f"profile keys every record by import path, so a key outside "
+                f"the module was produced by a different module than the one "
+                f"the lane's `cwd` sits in -- one Go module per lane, and "
+                f"`cwd` is that module's root",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            )
+        return key
 
     def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
         return None

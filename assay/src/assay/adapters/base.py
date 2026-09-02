@@ -46,6 +46,14 @@ an absolute path" was written when no method needed to read a file; it is
 restated here as "an adapter never spells a path differently from ``git
 diff``, and never resolves a root of its own", which is the invariant that
 was actually load-bearing.
+
+**The fifth and last extension** (A-404, the same re-carve's DA-8):
+:meth:`LanguageAdapter.for_project` receives ``repo_top`` and
+``project_root`` and returns the adapter to use for THAT project. It is the
+one member whose return value is another adapter, and it exists so a fact
+living in the project's own layout — Go's module path, in its ``go.mod`` —
+can be DERIVED rather than declared (DESIGN-GUIDE §5) without the core
+learning what a ``go.mod`` is. Every adapter but Go returns ``self``.
 """
 
 from __future__ import annotations
@@ -181,13 +189,13 @@ class LanguageAdapter(Protocol):
     """A language's contribution to changed-line coverage evaluation, plus
     (P09) to the cause-sensitive canary and (P11) to mutant construction.
 
-    SIX attributes and EIGHT methods after the P27 re-carve
-    (A-097/A-101/A-105/A-114/A-397) — reached only because each of the FOUR
-    post-P05 extensions (:meth:`statement_spans`, the ``inject_*`` pair,
-    :meth:`generate_mutation_sites`, and now
-    :attr:`requires_statement_attribution` + :meth:`statement_blocks`) was
-    added by the package that first proved the need for it (A-084), never
-    spec'd in ahead of that need.
+    SIX attributes and NINE methods after the P27 re-carve
+    (A-097/A-101/A-105/A-114/A-397/A-404) — reached only because each of the
+    FIVE post-P05 extensions (:meth:`statement_spans`, the ``inject_*`` pair,
+    :meth:`generate_mutation_sites`, :attr:`requires_statement_attribution` +
+    :meth:`statement_blocks`, and now :meth:`for_project`) was added by the
+    package that first proved the need for it (A-084), never spec'd in ahead
+    of that need.
     """
 
     #: A short, stable, unique identifier — the exact string a lane's
@@ -253,6 +261,50 @@ class LanguageAdapter(Protocol):
     #: runs. Empty for an adapter that is pure Python text/AST processing
     #: with no subprocess boundary.
     external_tools: tuple[str, ...]
+
+    def for_project(
+        self, *, repo_top: Path, project_root: Path
+    ) -> LanguageAdapter:
+        """The adapter to use for the project rooted at *project_root* inside
+        *repo_top* — the FIFTH and final deliberate post-P05 protocol
+        extension (A-404, ruled by DA-8).
+
+        Called by the core ONCE per lane, at the one point where it holds both
+        anchors and before anything reads the profile, so that every
+        downstream consumer of the adapter (the key join, the statement
+        oracle, both evaluate modes) is handed the SAME object. An adapter
+        with nothing to learn from a project's layout returns ``self``; that
+        is the answer for every adapter but Go today, and it is the reason
+        this member can exist without the core knowing what any of them do
+        with it.
+
+        **Why the protocol grew a member rather than the core growing a
+        field.** A Go coverage profile keys its records by import path, so the
+        module path is needed before a key can be joined to a diff path — and
+        it is a fact of the project's own ``go.mod``, not of the lane's argv,
+        which DESIGN-GUIDE §5 requires assay to READ rather than accept as a
+        declared literal (covergate's ``-module srdm`` is that section's own
+        anti-pattern #1). The core cannot read it: doing so would put a
+        language's file format in :mod:`assay.evaluate`, which is the one
+        thing this protocol exists to prevent. So the core hands the adapter
+        the anchors and takes back an adapter.
+
+        **Returning a NEW object, never mutating.** Every adapter in this
+        project is a frozen dataclass and the registry holds one instance per
+        language for the whole process (``cli._built_in_registry``); binding
+        by mutation would make one lane's derived value visible to the next,
+        which is the shared-singleton bug this shape exists to avoid. An
+        adapter that derives something returns ``dataclasses.replace(self,
+        ...)``; the registry's own instance is never touched.
+
+        Raises :class:`~assay.errors.AssayError` when the project's layout
+        contradicts the lane — never returns a partially-bound adapter. There
+        is no fail-closed direction to guess in: an unresolved prefix does not
+        refuse, it silently matches no file, and a lane whose coverage matches
+        nothing measures 0/0 and PASSES (DESIGN-GUIDE §5's laundering-gate
+        test, one layer down).
+        """
+        ...
 
     def is_test_path(self, rel_path: str) -> bool:
         """Is *rel_path* a test file — never obligated to cover itself?

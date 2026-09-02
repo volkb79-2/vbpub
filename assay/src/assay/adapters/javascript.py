@@ -499,6 +499,18 @@ class JavaScriptAdapter:
     #: correct, so :meth:`statement_blocks` returns ``None``.
     requires_statement_attribution: bool = False
 
+    def for_project(
+        self, *, repo_top: Path, project_root: Path
+    ) -> "JavaScriptAdapter":
+        """``self`` -- A-404's default answer, and the honest one here.
+
+        Istanbul reports absolute paths, which the CORE reconciles
+        (``evaluate._to_repo_relative_key``); this adapter strips no prefix
+        at all, so a project's layout tells it nothing. A ``package.json``
+        is read by the LANE's own argv, never by assay.
+        """
+        return self
+
     def is_test_path(self, rel_path: str) -> bool:
         return bool(_TEST_FILE_RE.search(rel_path))
 

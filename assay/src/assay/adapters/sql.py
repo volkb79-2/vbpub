@@ -678,6 +678,22 @@ class SqlAdapter:
     #: attribute directly and a missing one is a broken adapter (A-397).
     requires_statement_attribution: bool = False
 
+    def for_project(self, *, repo_top: Path, project_root: Path) -> "SqlAdapter":
+        """Unreachable, exactly as :meth:`normalize_coverage_key` is, and for
+        the identical reason: A-404 places the ONE call to this member at the
+        top of :func:`assay.runner.evaluate_r1`, and a SQL lane is R0,R2-only
+        (§3.3, A-242), so it never gets there.
+
+        The A-404 ruling's own default for a non-Go adapter is ``return
+        self``, and it is deliberately NOT taken here. This module's rule is
+        that a method no SQL lane can reach raises rather than answering, so
+        that a future caller who routes SQL through R1 finds out loudly; a
+        ``return self`` would instead be a line no test could exercise
+        honestly, which is the vacuity this file's own negative tests exist
+        to prevent.
+        """
+        raise NotImplementedError(_UNREACHABLE.format(name="for_project"))
+
     def is_test_path(self, rel_path: str) -> bool:
         return bool(_TEST_FILE_RE.search(rel_path))
 

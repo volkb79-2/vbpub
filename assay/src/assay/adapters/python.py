@@ -819,6 +819,19 @@ class PythonAdapter:
     #: already matches the diff's own repo top.
     coverage_key_prefix: str = ""
 
+    def for_project(
+        self, *, repo_top: Path, project_root: Path
+    ) -> "PythonAdapter":
+        """``self`` -- A-404's default answer, and the honest one here.
+
+        Python has no project-layout fact to learn: ``coverage_key_prefix``
+        is a declared lane-side spelling, not a thing living in a file assay
+        could read (A-099), and nothing else about a Python project changes
+        what this adapter does. A ``pyproject.toml`` is read by the LANE's
+        own argv, never by assay.
+        """
+        return self
+
     def is_test_path(self, rel_path: str) -> bool:
         return bool(_TEST_FILE_RE.search(rel_path))
 

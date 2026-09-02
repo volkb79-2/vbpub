@@ -1496,6 +1496,77 @@ reason A-385/A-367 give about coverage keys: two copies can disagree, and the
 disagreement's shape here is a verdict the producer built and the schema then
 refuses with an uncaught `ValueError`.
 
+### A Go lane's module path is DERIVED from its `go.mod`, never declared (A-404)
+
+§5's defaults doctrine names four copies' worth of anti-pattern #1, and one of
+the four is `covergate`'s own `-source internal -module srdm`: *a literal
+standing in for a fact that lives authoritatively in the project's layout … A
+library cannot ship any of them; it must read them.* When the Go adapter
+became reachable through the CLI, that flag came back wearing a new name.
+
+The mechanics force the question. A Go cover profile keys every record by the
+package's IMPORT path — `<module path>/<dir>/<file>.go` — while `git diff`
+names the same file relative to the repository top. Something must supply the
+module path, and no fixture layout dodges it: an import path is the module
+path plus the directory, so the key equals the repo-relative path only for an
+empty module path, which `go.mod` forbids. **Every** real Go module hits this,
+and the failure is not loud: an unstripped key resolves to a file that does
+not exist, under no source root, so the lane measures nothing and — but for
+the oracle's own file-existence check — would have measured 0/0 and PASSED.
+That is the laundering gate §5 opens with, arrived at from the other side.
+
+Three shapes were on the table and the difference between them is doctrine,
+not taste. A **declared lane key** (`judge.module_path`) had the most recent
+precedent — A-328 added `judge.base_source` as an optional key with no
+lane-schema bump — and is the one rejected: A-007's selection rule asks *whose
+fact is this*, and answers by observing that the coverage FORMAT is a fact of
+the lane's own argv (so it is declared, and sniffed as a cross-check) while
+the module path is a fact of `go.mod`. A-328 is not a counter-precedent
+either: `base_source` delegates a fact that genuinely is the caller's — which
+base this gate request compares against — and A-328's own reasoning, *refuse
+precedence between two sources of one fact, because whichever loses is config
+nothing reads*, argues against a declared key sitting beside a derivation. A
+restatement-that-must-agree would catch nothing here, because `go test` read
+the same `go.mod`. A **per-lane registry** was rejected on measurement:
+`_built_in_registry` is read by the lane inventory (A-349), by the docs gate
+(A-400) and by every language resolution.
+
+What landed is **derivation, through one narrow protocol member**.
+`LanguageAdapter.for_project(repo_top, project_root)` returns the adapter to
+use for that project; every adapter but Go returns `self`, and `GoAdapter`
+returns a copy carrying the module path parsed out of the nearest `go.mod` at
+or above the project root. The core calls it once per lane, at the one point
+where it holds both anchors and before anything reads the profile, so the key
+join, the statement oracle and both evaluate modes are handed the same object
+— the alternative, binding for one consumer and not the others, would
+recreate the two-spellings drift A-385/A-367 rule against inside the fix for
+it. The core still does not know what a `go.mod` is.
+
+Three consequences are stated rather than left to be met:
+
+* **The parser reads the `module` directive and nothing else.** Its lexical
+  rules — `//` comments only, `/* */` a syntax error, bare or `"`-quoted
+  arguments and never backquoted, an identifier ending at `//` — are
+  transcribed from `go1.25.14`'s own vendored
+  `golang.org/x/mod/modfile/{read.go,rule.go}`, read inside the gate image
+  rather than recalled. A general `go.mod` parser would be a second
+  implementation of a file format assay cannot keep in step with a toolchain
+  it does not ship.
+* **A project root in no Go module refuses `ERROR`/`BAD_LANE_CONFIG`** — an
+  existing code, chosen because a Go judge declared over a directory that is
+  not a Go module is a lane/tree mismatch, the same shape as `evaluate.py`'s
+  "the project root is not contained by its own repository". A new reason code
+  would have been an enum widening, and the enum is closed (A-050).
+* **A profile key outside the derived module refuses**, naming the key, the
+  derived module path and the `go.mod` it came from. This replaces a
+  misattributed message that blamed staleness ("the profile and the working
+  tree are not the same revision") for what was an unstripped prefix; the
+  staleness message survives for its actual subject, a key that IS under the
+  module and still names no file. One Go module per lane, `cwd` is that
+  module's root, and no `go.work` support: nested modules never appear in
+  `go test ./...`'s own output, and a project root above several modules
+  surfaces as this refusal rather than as a silent partial measurement.
+
 ### Mutation is source-oriented
 
 An Assay mutation adapter describes a change to **tracked source bytes**; it

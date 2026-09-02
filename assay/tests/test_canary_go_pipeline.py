@@ -56,9 +56,23 @@ class _PreOracleGoAdapter(GoAdapter):
     A-234 records as stale, and F008-A4 replaces them. The gap between this
     double and the shipped adapter is filed as **B055**, so the shortcut is a
     tracked debt rather than a silent one.
+
+    **A-404 widens the downgrade by exactly one method, and no further.**
+    :meth:`~assay.adapters.go.GoAdapter.for_project` derives the module path
+    from the project's own ``go.mod``; these fixtures are two committed
+    ``.go`` files and two committed profiles, not a Go module, so the real
+    member would refuse ``BAD_LANE_CONFIG`` for a reason that is true and
+    beside the point. The override returns ``self``, which is the protocol's
+    own default answer and changes nothing else: the profiles' keys are
+    already spelled the way ``git diff`` spells them (``greet/greet.go``),
+    so there was never a prefix to strip here. Same B055 debt, one line
+    wider.
     """
 
     requires_statement_attribution: bool = False
+
+    def for_project(self, *, repo_top, project_root) -> "_PreOracleGoAdapter":
+        return self
 
 
 ADAPTER = _PreOracleGoAdapter()

@@ -46,6 +46,9 @@ class _BlockAdapter:
     requires_statement_attribution: bool = True
     external_tools: tuple[str, ...] = ()
 
+    def for_project(self, *, repo_top: Path, project_root: Path) -> "_BlockAdapter":
+        return self
+
     def is_test_path(self, rel_path: str) -> bool:
         return False
 

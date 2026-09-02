@@ -231,6 +231,9 @@ class SpanAdapter:
     external_tools: tuple[str, ...] = ()
     spans: tuple[StatementSpan, ...] | None = ()
 
+    def for_project(self, *, repo_top: Path, project_root: Path) -> "SpanAdapter":
+        return self
+
     def is_test_path(self, rel_path: str) -> bool:
         return False
 

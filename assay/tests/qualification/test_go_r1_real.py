@@ -24,20 +24,18 @@ missing proof, and it is shaped by the controller's DA-3 and DA-5 rulings
 script does exactly this, from the same cockpit, for the same reason: the
 judge must run where the toolchain is.
 
-**Why it drives the LIBRARY entry point rather than `assay run` --
-B057/DA-8, and this is a defect, not a preference.** A Go coverprofile keys
-records by IMPORT PATH (`example.invalid/harness/internal/calc/calc.go`)
-while `git diff` names the same file `internal/calc/calc.go`.
-`GoAdapter.module_path` strips the difference and NOTHING can set it through
-the CLI -- `cli._built_in_registry` builds `GoAdapter()` with the `""`
-default, `config._KNOWN_JUDGE_FIELDS` has no key for it, `assay run` has no
-flag. So `assay run` on any real Go module refuses
-`ERROR`/`UNREADABLE_ARTIFACT` today, measured, and the only way a Go consumer
-can judge anything is `runner.run_lane` with an adapter they built --
-`tests/test_standalone.py`'s own consumer shape. That is what runs here.
-**The day DA-8 is ruled, this module moves to `python3 <pyz> run …` and the
-assertions below should survive the move unchanged**; they are about the
-verdict document, not about which entry point produced it.
+**It drives `assay run` -- the boundary a consumer actually uses.** Until
+DA-8 was ruled it could not: a Go coverprofile keys records by IMPORT PATH
+(`example.invalid/harness/internal/calc/calc.go`) while `git diff` names the
+same file `internal/calc/calc.go`, `GoAdapter.module_path` strips the
+difference, and nothing set it through the CLI, so `assay run` on any real Go
+module refused `ERROR`/`UNREADABLE_ARTIFACT` (B057, measured in this very
+harness). A-404 derives it from the project's own `go.mod`, and this module
+was moved from the library driver to `python3 <pyz> run …` as the proof.
+**Every assertion below survived that move unchanged** -- they are about the
+verdict document, not about which entry point produced it, which is what
+BRIEF-5 §4 predicted and is recorded because the alternative would have been
+a finding.
 
 The zipapp is built from HEAD's committed OID by `build_release.py`'s own
 design, so this module measures the COMMITTED tree, never the working copy.
@@ -284,44 +282,9 @@ artifact = ".assay/cover.out"
 producer = "go-test"
 """
 
-#: The library driver, run INSIDE the container by the zipapp's own
-#: interpreter. It is the `cmd_run` sequence with one substitution: the
-#: adapter is built with a `module_path`, which the CLI cannot do (B057).
-_DRIVER = r"""
-import json, sys
-from pathlib import Path
-
-sys.path.insert(0, sys.argv[1])
-
-from assay import git, provenance, runner
-from assay.adapters.go import GoAdapter
-from assay.config import load_lane_file
-
-root = Path("/work/fixture")
-lane_file = load_lane_file(root / "assay.toml")
-lane = lane_file.lanes["unit"]
-# `cmd_run`'s own first step (cli.py), reproduced rather than skipped: a
-# verdict that cannot name the artifact that produced it is exactly the
-# un-auditable refusal this project's provenance work exists to remove.
-judge_provenance, unidentified = provenance.identify_judge()
-assert judge_provenance is not None, unidentified
-verdict = runner.run_lane(
-    lane,
-    commit=git.head_rev(root),
-    repo=root,
-    project_root=root,
-    adapter=GoAdapter(module_path="example.invalid/harness"),
-    assay_version="qualification",
-    judge_provenance=judge_provenance,
-)
-Path("/work/verdict.json").write_text(
-    json.dumps(verdict.to_dict(), indent=2, sort_keys=True), encoding="utf-8"
-)
-print("DRIVER_OK", verdict.outcome.value, verdict.exit_code)
-"""
-
-
-def _run_scenario(tmp_path: Path, zipapp: Path, *, body: str, test: str) -> dict:
+def _run_scenario(
+    tmp_path: Path, zipapp: Path, *, body: str, test: str, expected_exit: int
+) -> dict:
     """Materialise the fixture, run the lane in the image, return the verdict."""
     work = tmp_path / "work"
     (work / "dist").mkdir(parents=True)
@@ -331,7 +294,6 @@ def _run_scenario(tmp_path: Path, zipapp: Path, *, body: str, test: str) -> dict
     (work / "head.go").write_text(body, encoding="utf-8")
     (work / "head_test.go").write_text(test, encoding="utf-8")
     (work / "setup.sh").write_text(_SETUP, encoding="utf-8")
-    (work / "driver.py").write_text(_DRIVER, encoding="utf-8")
     # The container runs as uid 1003 (`gate`, the Dockerfile's own RUN_UID)
     # and the cockpit is 1000, so the tree has to be writable by it. The
     # fixture repository is then created INSIDE the container, which is what
@@ -359,11 +321,29 @@ def _run_scenario(tmp_path: Path, zipapp: Path, *, body: str, test: str) -> dict
     assert commit.returncode == 0, commit.stdout + commit.stderr
     assert commit.stdout.strip() == "", f"the fixture tree is dirty: {commit.stdout!r}"
 
+    # THE CONSUMER'S OWN ENTRY POINT (A-404). `assay run`, from the shipped
+    # zipapp, with the image's inherited interpreter -- no library import, no
+    # adapter built by the caller, no `module_path` supplied by anybody. What
+    # makes this reachable at all is that `GoAdapter.for_project` reads the
+    # module path out of the fixture's own `go.mod`.
+    #
+    # `--require-judge-provenance` is passed deliberately: it refuses before
+    # any work unless assay can name the artifact it was installed from, so
+    # the `judge_provenance.artifact == "zipapp"` assertion below cannot be
+    # satisfied by an absence.
     driven = _docker_run(
         mounts=mounts, workdir="/work/fixture",
-        argv=["python3", "/work/driver.py", f"/work/dist/{zipapp.name}"],
+        argv=[
+            "python3", f"/work/dist/{zipapp.name}", "run", "unit",
+            "--file", "/work/fixture/assay.toml",
+            "--verdict-json", "/work/verdict.json",
+            "--require-judge-provenance",
+        ],
     )
-    assert "DRIVER_OK" in driven.stdout, driven.stdout + driven.stderr
+    assert driven.returncode == expected_exit, (
+        f"exit {driven.returncode}, expected {expected_exit}\n"
+        f"{driven.stdout}\n{driven.stderr}"
+    )
     return json.loads((work / "verdict.json").read_text(encoding="utf-8"))
 
 
@@ -407,7 +387,8 @@ def test_a_real_go_lane_passes_and_records_the_toolchain_that_judged_it(
     compiled -- never a string assay handed itself, which is what A-334
     forbids as evidence about an external system."""
     verdict = _run_scenario(
-        tmp_path, zipapp, body=_HEAD_PASS_GO, test=_HEAD_PASS_TEST
+        tmp_path, zipapp, body=_HEAD_PASS_GO, test=_HEAD_PASS_TEST,
+        expected_exit=0,
     )
 
     assert verdict["outcome"] == "PASS", json.dumps(verdict, indent=2)
@@ -446,7 +427,8 @@ def test_a_real_go_lane_fails_and_names_the_uncovered_statement_line(
     line, the closing brace or the signature would be reporting a line the
     developer cannot make executable."""
     verdict = _run_scenario(
-        tmp_path, zipapp, body=_HEAD_FAIL_GO, test=_HEAD_FAIL_TEST
+        tmp_path, zipapp, body=_HEAD_FAIL_GO, test=_HEAD_FAIL_TEST,
+        expected_exit=1,
     )
 
     assert verdict["outcome"] == "FAIL", json.dumps(verdict, indent=2)
@@ -466,3 +448,161 @@ def test_a_real_go_lane_fails_and_names_the_uncovered_statement_line(
     # The helper record travels with the FAIL exactly as with the PASS: it
     # describes what produced the claim, not whether the claim was good news.
     assert verdict["helpers"][0]["role"] == "statement-positions"
+
+
+# --- A-404's two refusals, against the real toolchain -------------------------
+
+#: A repository holding TWO Go modules: `example.invalid/harness` at the top
+#: and `example.invalid/sub` beneath it. The lane's command runs `go test`
+#: inside the nested one, so the profile it writes is keyed by the NESTED
+#: module's import path while the lane's project root belongs to the outer
+#: one. This is the shape A-404 (d) names: nested modules never appear in
+#: `go test ./...`'s own output, and a project root above several modules
+#: surfaces as the (c) refusal.
+_SETUP_TWO_MODULES = r"""
+set -eu
+REPO="$1"
+WITH_ROOT_MODULE="$2"
+rm -rf "$REPO"
+mkdir -p "$REPO/sub/pkg" "$REPO/.assay"
+cd "$REPO"
+git init -q -b main .
+git config user.email harness@example.invalid
+git config user.name harness
+if [ "$WITH_ROOT_MODULE" = "yes" ]; then
+    printf 'module example.invalid/harness\n\ngo 1.25\n' > go.mod
+fi
+printf '.assay/\n' > .gitignore
+printf 'module example.invalid/sub\n\ngo 1.25\n' > sub/go.mod
+cp /work/base.go sub/pkg/lib.go
+cp /work/base_test.go sub/pkg/lib_test.go
+sed -i 's/^package calc$/package pkg/' sub/pkg/lib.go sub/pkg/lib_test.go
+git add -A
+git commit -q -m base
+git rev-parse HEAD > /work/base-sha
+printf '\n// Added by the head commit.\nfunc Sub(a, b int) int {\n\treturn a - b\n}\n' >> sub/pkg/lib.go
+printf '\nfunc TestSub(t *testing.T) {\n\tif Sub(3, 1) != 2 {\n\t\tt.Fatal("Sub")\n\t}\n}\n' >> sub/pkg/lib_test.go
+git add -A
+git commit -q -m head
+git rev-parse HEAD > /work/head-sha
+"""
+
+#: The lane whose command runs in the NESTED module while its own project
+#: root is the repository top. `sh -c` rather than a bare argv because the
+#: point is precisely that the coverage artifact is anchored at the project
+#: root while the toolchain ran one directory down.
+_NESTED_LANE = """\
+schema_version = 2
+
+[lanes.unit]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["sh", "-c", "cd sub && go test ./... -count=1 -coverpkg=./... -covermode=atomic -coverprofile=../.assay/cover.out"]
+env = {{ GOPROXY = "off", GOFLAGS = "-mod=mod", GOTOOLCHAIN = "local" }}
+env_passthrough = ["PATH", "HOME", "GOCACHE", "GOMODCACHE"]
+budget = "10m"
+allow_argv_append = false
+
+[lanes.unit.isolation]
+snapshot_selection = "repository"
+
+[lanes.unit.judge]
+language = "go"
+source_roots = ["sub"]
+fail_under = 100.0
+allow_excluded = false
+base = "{base}"
+
+[lanes.unit.judge.coverage]
+format = "go-cover"
+artifact = ".assay/cover.out"
+producer = "go-test"
+"""
+
+
+def _run_nested(tmp_path: Path, zipapp: Path, *, with_root_module: bool) -> dict:
+    work = tmp_path / "work"
+    (work / "dist").mkdir(parents=True)
+    shutil.copy(zipapp, work / "dist" / zipapp.name)
+    (work / "base.go").write_text(_BASE_GO, encoding="utf-8")
+    (work / "base_test.go").write_text(_BASE_TEST, encoding="utf-8")
+    (work / "setup.sh").write_text(_SETUP_TWO_MODULES, encoding="utf-8")
+    for path in (work, *work.rglob("*")):
+        path.chmod(0o777 if path.is_dir() else 0o666)
+    (work / "dist" / zipapp.name).chmod(0o777)
+
+    mounts = [(_host_path_for(work), "/work", False)]
+    setup = _docker_run(
+        mounts=mounts, workdir="/work",
+        argv=[
+            "sh", "/work/setup.sh", "/work/fixture",
+            "yes" if with_root_module else "no",
+        ],
+    )
+    assert setup.returncode == 0, setup.stdout + setup.stderr
+    base = (work / "base-sha").read_text(encoding="utf-8").strip()
+
+    (work / "fixture" / "assay.toml").write_text(
+        _NESTED_LANE.format(base=base), encoding="utf-8"
+    )
+    commit = _docker_run(
+        mounts=mounts, workdir="/work/fixture",
+        argv=["sh", "-c", "git add -A && git commit -q -m lane && git status --porcelain"],
+    )
+    assert commit.returncode == 0, commit.stdout + commit.stderr
+    assert commit.stdout.strip() == "", f"the fixture tree is dirty: {commit.stdout!r}"
+
+    driven = _docker_run(
+        mounts=mounts, workdir="/work/fixture",
+        argv=[
+            "python3", f"/work/dist/{zipapp.name}", "run", "unit",
+            "--file", "/work/fixture/assay.toml",
+            "--verdict-json", "/work/verdict.json",
+        ],
+    )
+    assert driven.returncode == 2, driven.stdout + driven.stderr
+    return json.loads((work / "verdict.json").read_text(encoding="utf-8"))
+
+
+def test_a_profile_from_a_different_module_refuses_and_names_both(
+    tmp_path: Path, zipapp: Path
+):
+    """A-404 (c), proven against a REAL profile the real toolchain emitted
+    rather than against a hand-written one.
+
+    The root `go.mod` says `module example.invalid/harness`; `go test` ran in
+    `sub/`, whose `go.mod` says `example.invalid/sub`, so every key in the
+    profile carries the nested module's import path. The refusal must name
+    the key, the derived module path and the file it was derived from — the
+    three things B057's misattributed "the profile and the working tree are
+    not the same revision" left a consumer to guess at."""
+    verdict = _run_nested(tmp_path, zipapp, with_root_module=True)
+
+    assert verdict["outcome"] == "ERROR", json.dumps(verdict, indent=2)
+    r1 = next(claim for claim in verdict["claims"] if claim["rigor"] == "R1")
+    assert r1["status"] == "ERROR"
+    assert r1["reason_code"] == "UNREADABLE_ARTIFACT"
+    assert "coverage" not in r1, "an ERROR claim is payload-free (A-136)"
+
+
+def test_a_go_lane_whose_project_root_is_in_no_module_refuses(
+    tmp_path: Path, zipapp: Path
+):
+    """A-404 (b). The identical tree with the root `go.mod` removed: the
+    command still succeeds (it runs inside `sub/`, which IS a module), so
+    this is not an R0 failure — it is a lane that declares a Go judge over a
+    directory belonging to no Go module, and the honest existing code for
+    that is `BAD_LANE_CONFIG`."""
+    verdict = _run_nested(tmp_path, zipapp, with_root_module=False)
+
+    assert verdict["outcome"] == "ERROR", json.dumps(verdict, indent=2)
+    r0 = next(claim for claim in verdict["claims"] if claim["rigor"] == "R0")
+    assert r0["status"] == "PASS", (
+        "the lane's own command must have SUCCEEDED, or this test would be "
+        "proving something about `go test` rather than about the derivation"
+    )
+    r1 = next(claim for claim in verdict["claims"] if claim["rigor"] == "R1")
+    assert r1["status"] == "ERROR"
+    assert r1["reason_code"] == "BAD_LANE_CONFIG"
+    assert "coverage" not in r1

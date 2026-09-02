@@ -1958,39 +1958,41 @@ to a temporary directory when it runs (`go run .` needs a real directory and
 a zip member is not one), so nothing has to be unpacked or installed
 alongside it.
 
-**6. A known gap you will hit on any real module: `assay run` cannot yet be
-told your module path.** A Go cover profile keys records by import path
+**6. One Go module per lane, and the lane's project root is that module's
+root.** A Go cover profile keys records by import path
 (`example.com/svc/internal/store/x.go`) while `git diff` names the same file
-`internal/store/x.go`. `GoAdapter.module_path` strips the difference — and no
-lane key and no CLI flag sets it today, so `assay run` on a real module
-refuses:
+`internal/store/x.go`. Assay bridges the two by **reading your module path
+out of your own `go.mod`** — the nearest one at or above the directory
+holding your `assay.toml`, and no higher than the repository top. There is
+no lane key and no CLI flag for it, deliberately: it is your project's fact,
+not a literal for you to restate (this is `covergate`'s `-module srdm` flag,
+which DESIGN-GUIDE §5 names as an anti-pattern by example). You declare
+nothing; it just works:
 
-```text
-status: ERROR
-reason_code: UNREADABLE_ARTIFACT
+```console
+$ python3 assay-<version>.pyz run unit --file assay.toml --verdict-json verdict.json
 ```
 
-with a message about the profile and the tree not being the same revision,
-which in this case names the wrong cause. Until that is closed (backlog
-**B057**, decision ask DA-8), a Go consumer drives the library entry point
-with an adapter they build:
+Two consequences worth planning around:
 
-```python
-from assay import git, runner
-from assay.adapters.go import GoAdapter
-from assay.config import load_lane_file
+* **Put `assay.toml` at your module root.** If your repository holds several
+  modules, give each one its own lane file at its own module root rather
+  than one lane file at the top. A project root sitting *above* several
+  modules does not silently pick one — the profile's keys will not be under
+  whichever `go.mod` was found first, and the lane refuses
+  `ERROR`/`UNREADABLE_ARTIFACT` with a message naming the key, the module
+  path assay derived and the `go.mod` it came from.
+* **A project root that is in no Go module at all refuses**
+  `ERROR`/`BAD_LANE_CONFIG`, naming the paths it looked at. That is a lane
+  configuration fault, not a coverage one, and it is reported as such.
 
-lane_file = load_lane_file(root / "assay.toml")
-verdict = runner.run_lane(
-    lane_file.lanes["unit"],
-    commit=git.head_rev(root),
-    repo=root,
-    project_root=root,
-    adapter=GoAdapter(module_path="example.com/svc"),
-    assay_version="…",
-)
-```
+**`go.work` is not supported this wave.** Nested modules never appear in
+`go test ./...`'s own output, so a workspace's other modules are simply not
+measured; a lane pointed at a workspace root surfaces as the first bullet
+above rather than as a partial measurement. If you need a workspace, run one
+lane per module.
 
-This is stated here rather than left to be discovered because the refusal it
-produces reads like a staleness problem and would send you looking at your
-commits.
+The previously-documented library workaround — building `GoAdapter(module_path=…)`
+yourself and calling `runner.run_lane` — is no longer needed for this, and a
+`module_path` you construct by hand that disagrees with your `go.mod` is now
+refused rather than given precedence.

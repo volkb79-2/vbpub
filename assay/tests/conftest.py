@@ -806,6 +806,13 @@ class FakeAdapter:
     test_marker: str = "_test.zzz"
     no_code_marker: str = "NO-CODE"
 
+    def for_project(self, *, repo_top: Path, project_root: Path) -> "FakeAdapter":
+        """``self`` (A-404). This fake has no project-layout fact to learn --
+        ``key_prefix`` is handed to it by whichever test constructed it, which
+        is the point: it stands in for a real adapter's strip WITHOUT standing
+        in for where a real adapter gets the value."""
+        return self
+
     def is_test_path(self, rel_path: str) -> bool:
         return self.test_marker in rel_path
 

@@ -1016,7 +1016,10 @@ def evaluate_r1(
     own guard sequence can raise -- P02's two measurability guards, P03's
     ``EMPTY_COVERAGE`` guard, a broken coverage artifact
     (``FORMAT_MISMATCH``, ``UNREADABLE_ARTIFACT``), a git failure resolving
-    the base or diffing it (``GIT_FAILED``), an ``evaluate_coverage``
+    the base or diffing it (``GIT_FAILED``), an adapter that cannot bind
+    itself to this project (``BAD_LANE_CONFIG`` -- A-404's
+    :meth:`~assay.adapters.base.LanguageAdapter.for_project`, e.g. a Go lane
+    whose ``cwd`` sits in no Go module), an ``evaluate_coverage``
     normalized-key collision, or an expected filesystem/Unicode failure
     reading a source file's text (``UNREADABLE_ARTIFACT``) -- is caught and
     returned as a complete R1 :class:`~assay.verdict.Claim` carrying that
@@ -1119,6 +1122,27 @@ def evaluate_r1(
             )
 
         repo_top = git.repo_top(repo, remaining=remaining)
+
+        # (P27 re-carve, A-404/DA-8) Bind the adapter to THIS project, once,
+        # before anything reads the profile. An adapter may need a fact that
+        # lives in the project's own layout rather than in the lane file --
+        # Go's module path, in its `go.mod`, which DESIGN-GUIDE §5 requires
+        # assay to READ rather than accept as a declared literal. The core
+        # supplies the two anchors it already holds and takes an adapter
+        # back; every adapter but Go returns itself.
+        #
+        # The position is load-bearing in three ways. It is BEFORE the key
+        # join, the statement oracle and both evaluate modes, so all four
+        # receive the same object and cannot resolve a key differently from
+        # one another (A-385/A-367: there is ONE join). It is after
+        # `repo_top`, which is half of what the member needs. And it rebinds
+        # the local name rather than passing the derived adapter to one
+        # callee, because a second, unbound adapter still in scope is exactly
+        # how the two spellings would drift apart again.
+        #
+        # Note again what is NOT here: no language name, no format test. The
+        # core does not know that `go.mod` exists.
+        adapter = adapter.for_project(repo_top=repo_top, project_root=project_root)
 
         # (P27 re-carve, A-217/A-239/A-392) The statement-attribution
         # correction, for an adapter whose coverage format reports something

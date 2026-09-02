@@ -15,8 +15,9 @@ linking against assay itself.
   JavaScript/TypeScript is supported at **R1 only** — changed-line coverage
   for `.js`/`.jsx`/`.ts`/`.tsx`, see
   [JavaScript/TypeScript changed-line coverage](#javascripttypescript-changed-line-coverage-r1-only)
-  below. Go still has reserved schema surface but no real adapter yet — see
-  [What assay is not (yet)](#what-assay-is-not-yet).
+  below. Go is supported at **R1 only** — changed-line coverage for `.go`,
+  statement-granular, requiring a real Go toolchain on the judging machine;
+  see the Go section below.
 
 ---
 
@@ -189,12 +190,17 @@ the shipped **zipapp** is the install path — copy the `.pyz` in, check its
 inside that archive and is staged out to a real directory when it runs, so
 there is nothing to unpack.
 
-**One gap to know before you plan a Go lane: `assay run` cannot yet be told
-your module path**, so it refuses on any real module and the message names
-the wrong cause. Backlog **B057** has the measured transcript and the
-library-level workaround; [CONSUMERS.md's Go
+**Your module path is read from your own `go.mod`, never declared.** A Go
+cover profile keys records by import path while `git diff` uses repo-relative
+paths; assay bridges them by reading the `module` directive out of the
+nearest `go.mod` at or above your project root, because that is where the
+fact lives (A-404 — `covergate`'s own `-module srdm` flag is the
+anti-pattern this avoids). The practical rule: **one Go module per lane, and
+`assay.toml` sits at that module's root.** A project root above several
+modules, or in none, refuses and says which — it never picks one silently.
+[CONSUMERS.md's Go
 section](docs/CONSUMERS.md#go-lanes-what-exists-today-and-what-a-go-lane-will-require)
-point 6 has the code.
+point 6 has the detail; `go.work` is not supported.
 
 Why the oracle is a subprocess rather than a Python rule:
 [DESIGN-GUIDE §11, "Go statement positions"](docs/DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
