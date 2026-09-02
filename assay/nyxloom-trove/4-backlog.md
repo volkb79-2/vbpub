@@ -5131,6 +5131,21 @@ not pre-decided:
   three-line-only summary on a case known to raise a detailed message deeper
   in `run_lane`.
 
+> **Note 2026-09-02 (assay controller, Wave C review round 2 → ruling
+> DA-R3).** The Wave C reviewer met the same gap from the Go side — a
+> judge-phase refusal's text (a stale profile, a `//line`-remapped file in
+> the judged set) reaches only a library caller, the CLI shows the reason
+> code — and proposed a third option beside the two above: route
+> judge-phase refusal text to the existing `diagnostics` stream that
+> `environment_command` already uses (near `runner.py:365` at 4.1.0; no
+> wire change, no schema field). Ruled DA-R3: Wave C changed only the
+> docs (`docs/CONSUMERS.md` now says exactly what a consumer sees and names
+> this entry); the `diagnostics` route is recorded here as the candidate
+> mechanism for the consumer-diagnostics patch wave, alongside the stderr
+> option above; a v10 verdict field is NOT taken. Shipped state at
+> assay-v4.1.0: unchanged. Records: `reports/assay-WAVE-C-go-CONTROLLER-LOG.md`
+> (round-2 entry) and `reports/assay-WAVE-C-go-REVIEW-round2.md`.
+
 ## B054 — a NEVER-EXECUTED file matching `coverage.include` can make `@vitest/coverage-istanbul` emit a self-contradictory `branchMap`, and `UNREADABLE_ARTIFACT` refuses the WHOLE verdict rather than isolating the one file — defeating `changed_lines` mode's cost-scoping promise
 
 **Filed 2026-09-02, dstdns's first `javascript` lane adoption

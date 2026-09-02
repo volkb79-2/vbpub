@@ -1146,3 +1146,96 @@ principles don't already resolve.
   adoption brief, both main-only. `nyxloom/docs/routing-model-redesign.md`
   is dirty on the shared main checkout and is not this wave's; `--only`
   commits leave it alone.
+
+- **2026-09-02 (review round 3: ACCEPT, unconditional — merged, released
+  as assay-v4.1.0, deployed, dstdns notified; Wave C CLOSED)** — The
+  reviewer (~30 min, 49 calls) re-ran its five in-image scenarios against
+  a zipapp built from `4889b742` (sha256 `d7460c73…`): A `PASS` with
+  `helpers[]` present (`statement-positions`/`go`), B and D
+  `ERROR/BAD_LANE_CONFIG`, C and E `ERROR/UNREADABLE_ARTIFACT`, every one
+  with a verdict document written and read back separately, the masked
+  `recorded helper role(s)` sentence 0 times in the transcript (round 2:
+  three). Both A-405 mutants now die (1 failed / 69 passed each, on the
+  named tests, M-B2 dying on the exact misdirection the ordering comment
+  predicts). A-407's mutation matrix: M-H (drop removed) killed by both
+  toolchain-free tests; M-G2 (unconditional bare clear) killed by the
+  control test **and nothing else** — the implementer's unasked-for
+  control is exactly the test that catches it; M-G (`if True:`) survives
+  and the reviewer agrees it is correct by construction (single producer,
+  filter is the identity on the passing path; verified over the whole
+  suite, zero difference). Both new in-image tests independently
+  red-proved at `4c11ca30`. All seven touched tests are about what their
+  names say (A-399). Registered gate PASS in its own hands on the tip (11
+  phases, wheel `assay-4.0.1.dev54+g4889b742`), suite 3943 / 20 skipped,
+  Go qualification 7/7 — every reported number reproduced. The review is
+  committed verbatim on the branch (`5091a413`, sha256 `679b1c37…`).
+
+  **Merge** `--no-ff` into main = `1e802681` (parents `7288b3dc` +
+  `5091a413`; 82 paths). One conflict, `4-backlog.md`, resolved as ruled:
+  main's B053/B054 followed by the branch's B055–B061, 61 entry headers
+  monotonic, no residual markers, no other file changed on both sides.
+  Pushed fast-forward `0fc9c2a7..1e802681` (origin/main was a strict
+  ancestor).
+
+  **The release took four attempts to START, none of them the gate's
+  fault, and each is a rule now.** Run 1: cmru refused
+  (`CMRU_RELEASE_EXIT=2`) on the untracked `assay/LAST_SUMMARY_CHECKPOINT`
+  — somebody's 2026-08-31 session summary, not repo content and not this
+  wave's to delete; `--allow-uncommitted` is the documented path
+  (origin/main is the only release source, so the file is excluded either
+  way). Run 2: refused (`=1`) because local main was 43 commits ahead of
+  origin/main — push first; the release snapshots origin/main. **The
+  harness reported "exit code 0" for BOTH refused runs; the log's own
+  marker said 2 and 1** (wrapper-vs-job, again; read the marker). Run 3,
+  launched as a background Bash task, was killed by the harness 33 s in
+  — not a timeout — leaving cmru's inner gate container running detached
+  in the retained worktree `cmru-release-20260902_060026-assay-72e31d02`;
+  `docker inspect` proved the container's mount and argv were that
+  worktree's gate, so it was stopped before the worktree was abandoned.
+  Run 4 was launched fully detached (`setsid nohup`, log in the
+  scratchpad) with a Monitor on the log emitting phase markers, the exit
+  marker and a `pgrep` liveness check: `cmru release --project assay
+  --allow-uncommitted --abandon all-previous`, snapshot `1e802681` in
+  `cmru-release-20260902_060231-assay-a932dc67`, **gate PASS in 880.4 s,
+  11 phases, one `ASSAY_REGISTERED_GATE_COMPLETE=1`** over the whole
+  since-4.0.0 diff (wheel under test `assay-4.0.1.dev132+g0f2800c5`),
+  prepared-inputs commit `0f2800c5` promoted to origin/main and tagged
+  **`assay-v4.1.0`** (MINOR — cmru's own bump logic from the range's
+  `feat:` commits, no `!` marker; matches the prediction), six assets
+  published (`gh release view`: wheel + `.whl.sha256`, `assay-4.1.0.pyz`
+  + `.pyz.sha256`, `release-manifest.json` + `.sha256`), `assay-latest`
+  pointer refreshed, isolated worktree removed, `CMRU_RELEASE_EXIT=0`.
+  cmru's final local-main rebase failed on the unrelated dirty
+  `nyxloom/docs/routing-model-redesign.md` (exit still 0, WARN in the
+  log); synced by hand with `git merge --ff-only origin/main` → main at
+  `0f2800c5`, 0/0 against origin.
+
+  **Deploy**: `gh release download assay-v4.1.0`, `sha256sum -c` against
+  the release's own sidecars (wheel `4a6271a8…` = the log's
+  `ASSAY_WHEEL_SHA256` = the manifest; pyz `a1a5b09c…`; manifest OK),
+  `pip install --no-deps --force-reinstall` into `/home/vscode/.venv`,
+  `assay --version` → `4.1.0`; `python3 assay-4.1.0.pyz --version` →
+  `4.1.0`.
+
+  **dstdns notify**: `/workspaces/dstdns/.assay-inbox/release.json`
+  rewritten per its CONTRACT.md — sha256 from the `.pyz.sha256` sidecar,
+  `landed: []` (none of dstdns's items; B053/B054 are filed, not built),
+  notes say Go at R1 only, no Python/JavaScript behaviour change, schema
+  still v9, low urgency: re-pin at leisure.
+
+  **Housekeeping**: `assay/CHANGES.md` `[Unreleased]` block cleared in
+  its own commit (the 2.0.0/2.1.0/3.2.0/4.0.0 precedent; cmru's generated
+  `[4.1.0]` section carries the range); DA-R3 note added to main's B053;
+  srdm's backlog told that the P14 "silently skipped" shape does not
+  reproduce on `10b174a5` → `83c2ff79`; this session's five scratch
+  worktrees removed (all clean); the wave worktree
+  `.worktrees/assay-wave-c-go` kept, like Wave A's and Wave B's. Memory
+  updated.
+
+  **Wave C is closed.** F008 `shipped`, M6 `done`, next free ids A-408 /
+  B062. What follows, in order and not started: the consumer-diagnostics
+  patch wave (B049 + B053 + B054, with DA-R3's `diagnostics` route as the
+  candidate mechanism and DA-R2's per-file principle ruling B054); the v10
+  integrity cut (B050/B051/B052 + B004 as verified Tier 2); the srdm
+  adopt-or-keep decision (A-O04; its blocker is void, python3 is in the Go
+  image); M7/F015 last.

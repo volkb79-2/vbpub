@@ -56,6 +56,23 @@ tree already has is worse than an empty one.
   inside `tester-unified-go` as its F008-A5 qualification; its classified
   result will be pasted into that REPORT and should settle this entry's
   "first thing to check" without srdm re-deriving it.
+  **Note 2026-09-02 (assay controller; Wave C shipped as assay-v4.1.0):**
+  that differential ran — `10b174a5` → `83c2ff79`, real `go test ./...
+  -coverpkg=./...` inside `tester-unified-go`, covergate and assay judging
+  the same profile — and the "silently skipped P14" shape does **not**
+  reproduce on that pair: assay's statement-granular result for the range
+  is 418 changed statements / 394 covered / 94.26%, reproduced exactly by
+  the wave's adversarial reviewer on the released build, with P14's files
+  present in the profile and in the judged set. The differences between the
+  two tools on that run are classified in vbpub
+  `assay/nyxloom-trove/reports/assay-WAVE-C-go-REPORT.md` (F008-A5
+  sections; the extent-expansion class is B058, and assay's own repeated-
+  record defect found by the same run is B061, fixed in 4.1.0). So the
+  identical-254/258 observation above is NOT explained by this branch on
+  THAT pair; do not carry "covergate skipped P14" forward as a fact — it
+  stays an unreproduced observation, and the `fc == nil` mechanism stays a
+  real but so-far-untriggered gap. Adopting assay here is the open A-O04
+  decision, unchanged by this note.
 - **`tools/covergate` counts every line inside a cover block's extent as
   executable, so the floor measures more lines than Go has statements**
   (filed 2026-09-01 from assay Wave C; the vbpub assay backlog entry of the
