@@ -248,3 +248,73 @@ precedent for shape and discipline.
   within seconds, load 1-min 26 and falling. R-1 was told to rerun the six
   mutants serially with targeted test files after mut1 and the gate finish;
   the mutated copies are intact, so no evidence is lost, only recomputed.
+  **Closed 17:05** — load 1-min 10.3, IO PSI avg10 12.8 %, CPU PSI 15.4 %,
+  confirmed independently by the peer, which resumed its own queue.
+
+- **2026-09-02 (R-1 ROUND 1: NOT ACCEPT — 2 blockers, 5 should-fixes, 4
+  decision asks; rulings DA-R8..DA-R11; fix package routed to the branch
+  owner ahead of the v10 cut)** — Report (to be committed verbatim on the
+  branch as `reports/assay-WAVE-D-v10-REVIEW-R1-round1.md` by the fix
+  package): B049/B054/B028-direct-R0/B029-non-repro/B060/B056/B055/B009/
+  B024 verified sound with non-vacuous controls, no wire change (six lanes
+  byte-identical base-vs-tip), registered gate GREEN on `93188912`, full
+  suite 3980 passed / 18 skipped. **BLOCKER 1:** the two POST-command
+  dirt/HEAD guards (`_finish_direct_r0_lane` `runner.py:4618-4642`, new in
+  this branch and given no `diagnostics`; `_execute_snapshot_unit`
+  `:2340-2344` → `:2809-2827`) still refuse silently on both dispatch
+  paths, while `CHANGES.md:32`, `tests/test_refusal_announcement.py:384`
+  and `runner.py:3813-3819` claim "no exceptions". **BLOCKER 2:** the only
+  test of B029's diff asserts parameter names/defaults/docstring; deleting
+  both forwards leaves the whole suite green (mutant `m1`, measured), and
+  `execute_command` is entered 0 times on a real R3 CLI run.
+  - **DA-R8 (ask 1, BLOCKER 1): FIX, in scope — no narrowing.** DA-R3's bar
+    was every refusal reachable through `assay run`; the post-command
+    `DIRTY_TREE` is the one an operator can least explain, and the direct-R0
+    function was created in this branch. Follow the prescription: carry
+    `post_dirty` / `post_observed_head` on `_PreparedUnit` beside
+    `post_reason` and announce in `_run_prepared_lane` where `diagnostics`
+    is in scope; give `_finish_direct_r0_lane` a `diagnostics` parameter
+    and announce before the terminal `assemble_verdict`; the sentence must
+    blame the lane's own command and name the paths / the two revisions
+    ("commit or stash" is wrong here); two CLI-level tests, one per
+    dispatch path, in `test_refusal_announcement.py`'s existing shape. The
+    three claims then stay as written and become true.
+  - **DA-R9 (ask 2, SF-1): option (a).** One `except AssayError` scoped to
+    `ReasonCode.LANE_TIMEOUT` around `runner.run_lane` in
+    `cli._run_reserved`, modelled on the attestation-timeout handler eleven
+    lines up, building the verdict through `runner.refuse_lane` and writing
+    it — one handler, both dispatch paths. DA-D10's intent ("the reserved
+    `--verdict-json` is WRITTEN") binds wherever the deadline expires, and
+    the `CHANGES.md` headline then stays true. One test per path with
+    `budget = "0.001s"` asserting the verdict file exists carrying
+    `BUDGET_EXCEEDED/LANE_TIMEOUT`. If `refuse_lane` needs a fact that is
+    unavailable before `git.repo_top` (the commit label), the verdict
+    carries what is known and the REPORT records exactly which field.
+  - **DA-R10 (ask 3, B054 reopen clause): DA-D3 held as written.** R-1
+    measured no consumer that needs an `excluded_files` wire list; the
+    diagnostics line is the route. No v10 field.
+  - **DA-R11 (ask 4): DA-R5 stands.** No action.
+  - **BLOCKER 2:** replace the signature assertions with a value assertion
+    a dropped forward cannot survive — call `runner.execute_command` and
+    `canary.run_python_canary` directly on a lane declaring `derived:` with
+    a real `infrastructure_source`, assert the resolved fact reaches the
+    command (`env_effective` / the command observes it); prove it red by
+    deleting the two forwards and record that red run in the REPORT.
+  - **Should-fixes:** SF-2 (silent `GIT_FAILED` at `runner.py:3944-3950`),
+    SF-3 (`_report_probe_refusal` folded onto `announce_refusal`, tails as
+    indented context lines) and SF-4 (`try/finally` at `mutation.py:1642`)
+    are all landed in the package. SF-5: the `statement_attribution` carry
+    stays as insurance; its docstring and the REPORT state that no real
+    artifact reaches it today (struck if R-1's `m5` rerun comes back RED).
+  - **Backlog filing:** three test modules (`test_python_qualification`,
+    `test_runner_snapshot_selection`, `test_distribution_build_release`)
+    run `git -C` against `PROJECT_ROOT.parent` and fail on any copy of the
+    tree outside the vbpub checkout — file as **B062** with R-1's
+    measurement, not fixed in this wave.
+  - **Routing:** the branch has one owner. Generation 4 (or generation 5
+    from BRIEF-4 if generation 4 cuts at its checkpoint after the B024
+    gate) lands the fix package as A-418.. commits BEFORE the v10 cut,
+    re-runs the registered gate on the fix tip (one container, capped),
+    and names that tip; R-1 is then resumed for round 2 against
+    `93188912..<fix tip>` only, while phase 2 continues on the branch
+    behind it. Next free ids **A-418** / **B063**.
