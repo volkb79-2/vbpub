@@ -338,7 +338,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     argv = [sys.executable, "-m", "pytest", "tests", "-q", "--cov=pkg",
             "--cov-report=json:cov.json"]
     expected = {
-        "schema_version": 9,
+        "schema_version": 10,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": "PASS",
@@ -642,7 +642,7 @@ def _expected_r2_artifact(
     mutation payload must emit."""
     argv = ["/bin/sh", "-c", script]
     document = {
-        "schema_version": 9,
+        "schema_version": 10,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1126,7 +1126,7 @@ def _expected_r3_artifact(
     argv = ["/bin/sh", "-c", script]
     env = {"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 9,
+        "schema_version": 10,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1146,7 +1146,10 @@ def _expected_r3_artifact(
         # would be an invented fact (and A-227 now refuses it outright).
         "judgment": {
             "resolved": {"language": "python", "source_roots": ["pkg"]},
-            "r3": {"mechanism": mechanism, "target": target},
+            # B007/A-432 (schema v10): the ORDERED `targets` list; a lane
+            # that declared ONE target normalises to a one-element array and
+            # records NO aggregation.
+            "r3": {"mechanism": mechanism, "targets": [target]},
         },
         # wave-1 §6 (A-269): declared_rigor names R3, a higher-rigor level.
         "snapshot_policy": {"selection": "repository"},
@@ -1206,14 +1209,19 @@ def test_a_real_r3_lane_proves_the_canary_and_passes_through_the_wheel(
                 "verified_by_assay": True,
                 "canary": {
                     "mechanism": "import-break",
-                    # P21/A-152: the field that finally makes
-                    # `judgment.r3.target` witnessable end to end.
-                    "target": "pkg/mod.py",
-                    "description": _IMPORT_BREAK_DESCRIPTION,
-                    "control_outcome": "PASS",
-                    "transformed_outcome": "FAIL",
-                    "expected_reason_code": "COMMAND_FAILED",
-                    "observed_reason_code": "COMMAND_FAILED",
+                    "attempts": [
+                        {
+                            # P21/A-152: the field that finally makes
+                            # `judgment.r3.targets` witnessable end to end.
+                            "target": "pkg/mod.py",
+                            "description": _IMPORT_BREAK_DESCRIPTION,
+                            "disposition": "attempted",
+                            "control_outcome": "PASS",
+                            "transformed_outcome": "FAIL",
+                            "expected_reason_code": "COMMAND_FAILED",
+                            "observed_reason_code": "COMMAND_FAILED",
+                        }
+                    ],
                 },
             },
         ),
@@ -1290,15 +1298,18 @@ def test_a_real_r3_lane_with_a_broken_control_is_inconclusive_through_the_wheel(
                 "reason_code": "CANARY_INCONCLUSIVE",
                 "canary": {
                     "mechanism": "import-break",
-                    # P21/A-152: the field that finally makes
-                    # `judgment.r3.target` witnessable end to end.
-                    "target": "pkg/mod.py",
-                    "description": (
-                        "the lane's baseline command did not PASS -- a "
-                        "canary control cannot be a known-good half of a "
-                        "failing lane"
-                    ),
-                    "control_outcome": "FAIL",
+                    "attempts": [
+                        {
+                            "target": "pkg/mod.py",
+                            "description": (
+                                "the lane's baseline command did not PASS -- "
+                                "a canary control cannot be a known-good half "
+                                "of a failing lane"
+                            ),
+                            "disposition": "attempted",
+                            "control_outcome": "FAIL",
+                        }
+                    ],
                 },
             },
         ),
@@ -1356,11 +1367,16 @@ def test_a_real_r3_lane_whose_bad_case_unexpectedly_passes_survives_through_the_
                 "reason_code": "CANARY_SURVIVED",
                 "canary": {
                     "mechanism": "import-break",
-                    "target": "pkg/mod.py",
-                    "description": _IMPORT_BREAK_DESCRIPTION,
-                    "control_outcome": "PASS",
-                    "transformed_outcome": "PASS",
-                    "expected_reason_code": "COMMAND_FAILED",
+                    "attempts": [
+                        {
+                            "target": "pkg/mod.py",
+                            "description": _IMPORT_BREAK_DESCRIPTION,
+                            "disposition": "attempted",
+                            "control_outcome": "PASS",
+                            "transformed_outcome": "PASS",
+                            "expected_reason_code": "COMMAND_FAILED",
+                        }
+                    ],
                 },
             },
         ),
@@ -1479,7 +1495,7 @@ def _r1_r3_expected(
     ]
     env = {"PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 9,
+        "schema_version": 10,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1512,7 +1528,10 @@ def _r1_r3_expected(
                 "mode": "changed_lines",
                 "require_branch": False,
             },
-            "r3": {"mechanism": mechanism, "target": target},
+            # B007/A-432 (schema v10): the ORDERED `targets` list; a lane
+            # that declared ONE target normalises to a one-element array and
+            # records NO aggregation.
+            "r3": {"mechanism": mechanism, "targets": [target]},
         },
         # wave-1 §6 (A-269): declared_rigor names R1/R3, both higher-rigor.
         "snapshot_policy": {"selection": "repository"},
@@ -1613,12 +1632,17 @@ def test_a_real_r3_lane_proves_the_uncovered_line_canary_through_the_wheel(
                 "verified_by_assay": True,
                 "canary": {
                     "mechanism": "uncovered-line",
-                    "target": "pkg/mod.py",
-                    "description": _UNCOVERED_LINE_DESCRIPTION,
-                    "control_outcome": "PASS",
-                    "transformed_outcome": "FAIL",
-                    "expected_reason_code": "UNCOVERED_LINES",
-                    "observed_reason_code": "UNCOVERED_LINES",
+                    "attempts": [
+                        {
+                            "target": "pkg/mod.py",
+                            "description": _UNCOVERED_LINE_DESCRIPTION,
+                            "disposition": "attempted",
+                            "control_outcome": "PASS",
+                            "transformed_outcome": "FAIL",
+                            "expected_reason_code": "UNCOVERED_LINES",
+                            "observed_reason_code": "UNCOVERED_LINES",
+                        }
+                    ],
                 },
             },
         ),
@@ -1710,19 +1734,22 @@ def test_a_real_r3_lane_whose_bad_case_fails_for_the_wrong_cause_survives(
                 "reason_code": "CANARY_SURVIVED",
                 "canary": {
                     "mechanism": "import-break",
-                    # P21/A-152: the field that finally makes
-                    # `judgment.r3.target` witnessable end to end.
-                    # P21/A-152: the payload's own target, which must EQUAL
-                    # `judgment.r3.target`. This lane declares `lonely.py`,
-                    # not the diffed `mod.py` -- exactly the case where a
-                    # target copied from the wrong place would have gone
-                    # unnoticed under v3.
-                    "target": "pkg/lonely.py",
-                    "description": _IMPORT_BREAK_DESCRIPTION,
-                    "control_outcome": "PASS",
-                    "transformed_outcome": "FAIL",
-                    "expected_reason_code": "COMMAND_FAILED",
-                    "observed_reason_code": "UNCOVERED_LINES",
+                    "attempts": [
+                        {
+                            # P21/A-152: the payload's own target, which must
+                            # EQUAL its `judgment.r3.targets` entry. This lane
+                            # declares `lonely.py`, not the diffed `mod.py` --
+                            # exactly the case where a target copied from the
+                            # wrong place would have gone unnoticed under v3.
+                            "target": "pkg/lonely.py",
+                            "description": _IMPORT_BREAK_DESCRIPTION,
+                            "disposition": "attempted",
+                            "control_outcome": "PASS",
+                            "transformed_outcome": "FAIL",
+                            "expected_reason_code": "COMMAND_FAILED",
+                            "observed_reason_code": "UNCOVERED_LINES",
+                        }
+                    ],
                 },
             },
         ),

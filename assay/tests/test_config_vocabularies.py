@@ -65,7 +65,11 @@ def judge_table_for(level: str) -> str:
 
 def test_the_vocabularies_are_exactly_what_the_decisions_close():
     assert SCOPES == {"S0", "S1", "S2", "S3", "S4"}
-    assert RIGOR_LEVELS == ("R0", "R1", "R2", "R3")
+    # F015/A-433 (schema v10): `R4` -- red-first -- is the next rung of the
+    # ORDERED ladder. Its judge does not exist until phase 3, which is why a
+    # lane that declares it is REFUSED at load (see below) rather than
+    # accepted into a silence.
+    assert RIGOR_LEVELS == ("R0", "R1", "R2", "R3", "R4")
     assert ENFORCEMENTS == {"gate", "advisory"}
 
 
@@ -84,7 +88,14 @@ def test_scope_outside_the_vocabulary_is_rejected(scope: str, project: Project):
         load_lane_file(path)
 
 
-@pytest.mark.parametrize("level", RIGOR_LEVELS)
+#: F015/A-433: `R4` is in the ladder from schema v10 but its judge is phase
+#: 3's, so it has no loadable lane yet -- the test below owns that case, and
+#: `test_r4_is_in_the_ladder_but_refused_at_load_until_its_judge_exists` owns
+#: the refusal. Both halves move together the moment the producer lands.
+_LOADABLE_RIGOR_LEVELS = tuple(level for level in RIGOR_LEVELS if level != "R4")
+
+
+@pytest.mark.parametrize("level", _LOADABLE_RIGOR_LEVELS)
 def test_every_declared_rigor_level_loads(level: str, project: Project):
     # Each level brings its own judge requirement, and A-062 refuses anything
     # beyond it, so the lane carries EXACTLY that level's table; the point
@@ -113,10 +124,27 @@ def test_every_declared_rigor_level_loads(level: str, project: Project):
     assert lane.rigor == rigor
 
 
-@pytest.mark.parametrize("level", ["R4", "r1", "R", "", "R0 "])
+@pytest.mark.parametrize("level", ["R5", "r1", "R", "", "R0 "])
 def test_rigor_outside_the_vocabulary_is_rejected(level: str, project: Project):
     path = project.write(set_key(R0_LANE, "rigor", f'["{level}"]'))
     with pytest.raises(LaneConfigError, match="'rigor' must contain only"):
+        load_lane_file(path)
+
+
+def test_r4_is_in_the_ladder_but_refused_at_load_until_its_judge_exists(
+    project: Project,
+):
+    """F015/A-433 lands R4's WIRE shape at the v10 cut; its producer lands in
+    phase 3. A rigor level whose judge does not exist must fail LOUDLY at
+    load rather than be accepted and render nothing (AGENTS.md §4.2a) --
+    ``JUDGE_FIELDS_BY_RIGOR["R4"]`` requires ``red_first``, which is not yet
+    a known judge field, so the declaration cannot be satisfied in either
+    direction.
+    """
+    assert JUDGE_FIELDS_BY_RIGOR["R4"] == ("red_first",)
+
+    path = project.write(set_key(R0_LANE, "rigor", '["R0", "R4"]'))
+    with pytest.raises(LaneConfigError, match="red_first"):
         load_lane_file(path)
 
 

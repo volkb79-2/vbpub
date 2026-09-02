@@ -82,6 +82,24 @@ class ReasonCode(StrEnum):
     MUTANTS_SURVIVED = "MUTANTS_SURVIVED"
     CANARY_SURVIVED = "CANARY_SURVIVED"
     COMMAND_FAILED = "COMMAND_FAILED"
+    #: (F015/M7, A-433 as amended by A-434/DA-R18) the R4 red-first claim's
+    #: judged refusal: assay materialised both commits and ran the declared
+    #: tests on both, and the ``fail-before/pass-after`` property did not
+    #: hold -- either the test PASSED at the broken commit (it does not
+    #: discriminate the fix) or it did not PASS at HEAD. Both halves take
+    #: this one code; WHICH half is read off the claim's two recorded
+    #: outcomes and its ``detail``. Deliberately a **FAIL**, not a
+    #: ``NO_MEASUREMENT``: both runs completed, so assay measured something
+    #: -- exactly ``CANARY_SURVIVED`` one rung down. Deliberately NOT
+    #: ``COMMAND_FAILED``: that is R0's statement about the LANE's declared
+    #: command, R3 likewise maps neither of its own two runs onto it, and on
+    #: a claim whose before-run is *expected* to fail a bare
+    #: ``COMMAND_FAILED`` could not say which side failed. Every failure of
+    #: the MECHANISM itself (snapshot, overlay, deadline, unreadable output)
+    #: keeps the code its own substrate already raises. **RESERVED at the
+    #: v10 cut and RENDERED in phase 3** -- the ``MISSING_EXTERNAL_TOOL``
+    #: pattern (A-013/A-086/A-144).
+    RED_FIRST_UNPROVEN = "RED_FIRST_UNPROVEN"
     # ERROR
     GIT_FAILED = "GIT_FAILED"
     UNREADABLE_ARTIFACT = "UNREADABLE_ARTIFACT"
@@ -136,6 +154,16 @@ class ReasonCode(StrEnum):
     #: lands the producer, `runner.run_lane`'s own preflight (A-284), before
     #: any snapshot, command or Git work.
     MISSING_EXTERNAL_TOOL = "MISSING_EXTERNAL_TOOL"
+    #: (B004/A-276, rendered at schema v10 by A-430) assay could not
+    #: establish WHICH artifact the lane's tests ran against: the adjudicated
+    #: image-provenance document is absent, unreadable, carries an
+    #: unaccepted ``schema_version``, or reports a mismatch. Payload-free --
+    #: the discriminating detail lives in the input document (W2 carve §5.2)
+    #: and, from v10, in the claim's ``detail``. `NO_MEASUREMENT` and never
+    #: `FAIL` (carve §4.1): a provenance mismatch says the measurement's
+    #: subject is unknown, not that the code is bad, and a `FAIL` would let
+    #: a consumer read "the code is bad" off a deployment fact.
+    PROVENANCE_UNVERIFIED = "PROVENANCE_UNVERIFIED"
     # BUDGET_EXCEEDED
     LANE_TIMEOUT = "LANE_TIMEOUT"
     #: (P21/A-163) candidate discovery reached the declared `max_mutants`
@@ -187,6 +215,7 @@ REASON_CODES: Mapping[Outcome, frozenset[ReasonCode]] = MappingProxyType(
                 ReasonCode.MUTANTS_SURVIVED,
                 ReasonCode.CANARY_SURVIVED,
                 ReasonCode.COMMAND_FAILED,
+                ReasonCode.RED_FIRST_UNPROVEN,
             }
         ),
         Outcome.ERROR: frozenset(
@@ -211,6 +240,7 @@ REASON_CODES: Mapping[Outcome, frozenset[ReasonCode]] = MappingProxyType(
                 ReasonCode.MISSING_ATTESTATION,
                 ReasonCode.STALE_ATTESTATION,
                 ReasonCode.MISSING_EXTERNAL_TOOL,
+                ReasonCode.PROVENANCE_UNVERIFIED,
             }
         ),
         Outcome.BUDGET_EXCEEDED: frozenset(

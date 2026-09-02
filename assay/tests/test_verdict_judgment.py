@@ -16,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from assay.verdict import (
+    CanaryAttempt,
     CanaryResult,
     Claim,
     Coverage,
@@ -137,12 +138,16 @@ def r2_pass_claim(*, survivor_operator: str | None = None) -> Claim:
 def r3_pass_claim(*, mechanism: str = "uncovered-line") -> Claim:
     canary = CanaryResult(
         mechanism=mechanism,
-        target="a.py",
-        description="x",
-        control_outcome=Outcome.PASS,
-        transformed_outcome=Outcome.FAIL,
-        expected_reason_code=ReasonCode.UNCOVERED_LINES,
-        observed_reason_code=ReasonCode.UNCOVERED_LINES,
+        attempts=(
+            CanaryAttempt(
+                target="a.py",
+                description="x",
+                control_outcome=Outcome.PASS,
+                transformed_outcome=Outcome.FAIL,
+                expected_reason_code=ReasonCode.UNCOVERED_LINES,
+                observed_reason_code=ReasonCode.UNCOVERED_LINES,
+            ),
+        ),
     )
     return Claim(
         rigor="R3", source="computed", status=Outcome.PASS,
@@ -543,20 +548,72 @@ def test_judgment_r2_operators_may_name_any_language_the_catalogue_knows(operato
 
 
 def test_judgment_r3_untouched_form_builds():
-    r3 = JudgmentR3(mechanism="uncovered-line", target="pkg/mod.py")
-    assert r3.to_dict() == {"mechanism": "uncovered-line", "target": "pkg/mod.py"}
+    r3 = JudgmentR3(mechanism="uncovered-line", targets=("pkg/mod.py",))
+    assert r3.to_dict() == {
+        "mechanism": "uncovered-line",
+        "targets": ["pkg/mod.py"],
+    }
 
 
 @pytest.mark.parametrize(
     "kwargs,match",
     [
-        ({"mechanism": "", "target": "pkg/mod.py"}, "mechanism"),
-        ({"mechanism": "uncovered-line", "target": ""}, "target"),
+        ({"mechanism": "", "targets": ("pkg/mod.py",)}, "mechanism"),
+        ({"mechanism": "uncovered-line", "targets": ("",)}, "targets"),
+        ({"mechanism": "uncovered-line", "targets": ()}, "non-empty tuple"),
+        (
+            {"mechanism": "uncovered-line", "targets": ("a.py", "a.py")},
+            "more than once",
+        ),
+        (
+            {
+                "mechanism": "uncovered-line",
+                "targets": tuple(f"m{i}.py" for i in range(9)),
+                "aggregation": "all",
+            },
+            "the bound is 8",
+        ),
+        (
+            {"mechanism": "uncovered-line", "targets": ("a.py", "b.py")},
+            "no aggregation",
+        ),
+        (
+            {
+                "mechanism": "uncovered-line",
+                "targets": ("a.py",),
+                "aggregation": "all",
+            },
+            "denote the same function",
+        ),
+        (
+            {
+                "mechanism": "uncovered-line",
+                "targets": ("a.py", "b.py"),
+                "aggregation": "most",
+            },
+            "aggregation must be one of",
+        ),
     ],
 )
 def test_judgment_r3_refuses_malformed_fields(kwargs: dict, match: str):
     with pytest.raises(ValueError, match=match):
         JudgmentR3(**kwargs)
+
+
+def test_judgment_r3_records_a_declared_aggregation_over_several_targets():
+    """B007/A-432: `aggregation` is present IFF the lane declared the plural
+    spelling, so its ABSENCE is the checkable statement 'one declared target,
+    no aggregation policy' rather than an invented value."""
+    r3 = JudgmentR3(
+        mechanism="uncovered-line",
+        targets=("pkg/a.py", "pkg/b.py"),
+        aggregation="all",
+    )
+    assert r3.to_dict() == {
+        "mechanism": "uncovered-line",
+        "targets": ["pkg/a.py", "pkg/b.py"],
+        "aggregation": "all",
+    }
 
 
 # --- Judgment ------------------------------------------------------------
@@ -566,7 +623,7 @@ def test_judgment_refuses_when_none_of_r1_r2_r3_are_given():
     """(P33/A-223g) v4 expressed this as `minProperties: 1`, which silently
     stopped meaning it once `resolved` became a fourth key: a judgment holding
     only `resolved` would have satisfied the count while judging nothing."""
-    with pytest.raises(ValueError, match="declares none of r1/r2/r3"):
+    with pytest.raises(ValueError, match="declares none of r1/r2/r3/r4"):
         Judgment(resolved=JudgmentResolved(**BASE_RESOLVED))
 
 
@@ -575,7 +632,7 @@ def test_judgment_to_dict_includes_only_the_populated_members():
     r2 = JudgmentR2(
         jobs=2, max_mutants=50, operators=("python:compare-swap",), **BASE_R2_POLICY
     )
-    r3 = JudgmentR3(mechanism="uncovered-line", target="pkg/mod.py")
+    r3 = JudgmentR3(mechanism="uncovered-line", targets=("pkg/mod.py",))
     r3_only = JudgmentResolved(language="python", source_roots=("src",))
 
     assert Judgment(resolved=resolved, r2=r2).to_dict() == {
@@ -737,7 +794,7 @@ def test_judgment_forbids_a_base_when_only_r3_is_present():
     with pytest.raises(ValueError, match="neither r1 nor r2"):
         Judgment(
             resolved=JudgmentResolved(**BASE_RESOLVED),
-            r3=JudgmentR3(mechanism="uncovered-line", target="pkg/mod.py"),
+            r3=JudgmentR3(mechanism="uncovered-line", targets=("pkg/mod.py",)),
         )
 
 
@@ -912,7 +969,7 @@ def test_verdict_refuses_judgment_r3_present_without_an_r3_canary_claim():
             claims=(r0_pass(),),
             judgment=Judgment(
                 resolved=JudgmentResolved(language="python", source_roots=("src",)),
-                r3=JudgmentR3(mechanism="uncovered-line", target="pkg/mod.py"),
+                r3=JudgmentR3(mechanism="uncovered-line", targets=("pkg/mod.py",)),
             ),
         )
 
@@ -940,11 +997,11 @@ def test_verdict_accepts_the_matched_r3_canary_and_judgment_pair():
             # Under v3 these two could name different files and nothing in
             # the artifact could tell, which is the gap A-152 recorded as
             # accepted-and-waiting-for-v4.
-            r3=JudgmentR3(mechanism="uncovered-line", target="a.py"),
+            r3=JudgmentR3(mechanism="uncovered-line", targets=("a.py",)),
         ),
         snapshot_policy=SnapshotPolicy(selection="repository"),
     )
-    assert verdict.judgment.r3.target == "a.py"
+    assert verdict.judgment.r3.targets == ("a.py",)
 
 
 # --- Verdict: P33's cross-object invariants ----------------------------------
@@ -1162,6 +1219,6 @@ def test_verdict_refuses_a_canary_payload_whose_mechanism_disagrees_with_judgmen
             claims=(r0_pass(), r3_pass_claim(mechanism="uncovered-line")),
             judgment=Judgment(
                 resolved=JudgmentResolved(language="python", source_roots=("src",)),
-                r3=JudgmentR3(mechanism="import-break", target="pkg/mod.py"),
+                r3=JudgmentR3(mechanism="import-break", targets=("pkg/mod.py",)),
             ),
         )

@@ -414,14 +414,32 @@ def _good_artifact() -> dict:
             ),
             _pass_claim(
                 "R3",
+                # (verdict v10 / B007 / A-432) `{mechanism, attempts[]}`, one
+                # entry per declared target; this lane declares exactly one.
                 canary={
-                    "control_outcome": "PASS",
-                    "transformed_outcome": "FAIL",
-                    "expected_reason_code": "UNCOVERED_LINES",
-                    "observed_reason_code": "UNCOVERED_LINES",
+                    "mechanism": "uncovered-line",
+                    "attempts": [
+                        {
+                            "target": "src/cmru/_b006a_probe.py",
+                            "disposition": "attempted",
+                            "control_outcome": "PASS",
+                            "transformed_outcome": "FAIL",
+                            "expected_reason_code": "UNCOVERED_LINES",
+                            "observed_reason_code": "UNCOVERED_LINES",
+                        }
+                    ],
                 },
             ),
         ],
+        # The judgment's declared target list is half of the pairing
+        # `check_qualification_artifact` now checks against the attempt's own
+        # target; `aggregation` is absent because one probe declares none.
+        "judgment": {
+            "r3": {
+                "mechanism": "uncovered-line",
+                "targets": ["src/cmru/_b006a_probe.py"],
+            }
+        },
     }
 
 
@@ -482,14 +500,14 @@ def test_check_qualification_artifact_refuses_a_surviving_mutant():
 
 def test_check_qualification_artifact_refuses_control_not_pass():
     artifact = _good_artifact()
-    artifact["claims"][3]["canary"]["control_outcome"] = "FAIL"
+    artifact["claims"][3]["canary"]["attempts"][0]["control_outcome"] = "FAIL"
     with pytest.raises(q.QualificationError, match="R3 control did not PASS"):
         q.check_qualification_artifact(artifact)
 
 
 def test_check_qualification_artifact_refuses_transformed_not_fail():
     artifact = _good_artifact()
-    artifact["claims"][3]["canary"]["transformed_outcome"] = "PASS"
+    artifact["claims"][3]["canary"]["attempts"][0]["transformed_outcome"] = "PASS"
     with pytest.raises(q.QualificationError, match="R3 transformed did not FAIL"):
         q.check_qualification_artifact(artifact)
 
@@ -497,8 +515,53 @@ def test_check_qualification_artifact_refuses_transformed_not_fail():
 def test_check_qualification_artifact_refuses_wrong_canary_reason():
     """Named differential: 'no marker on ... wrong canary reason'."""
     artifact = _good_artifact()
-    artifact["claims"][3]["canary"]["observed_reason_code"] = "COMMAND_FAILED"
+    artifact["claims"][3]["canary"]["attempts"][0]["observed_reason_code"] = "COMMAND_FAILED"
     with pytest.raises(q.QualificationError, match="R3 reason code mismatch"):
+        q.check_qualification_artifact(artifact)
+
+
+def test_check_qualification_artifact_refuses_a_second_canary_attempt():
+    """(verdict v10 / B007) The lane this harness drives declares ONE canary
+    target. A second attempt means the lane stopped being that lane, so the
+    length is asserted rather than indexed past -- reading ``attempts[0]``
+    and ignoring the rest would let the harness keep passing while the thing
+    it qualifies changed underneath it."""
+    artifact = _good_artifact()
+    canary = artifact["claims"][3]["canary"]
+    canary["attempts"] = list(canary["attempts"]) + [
+        dict(canary["attempts"][0], target="src/cmru/_b006a_probe_two.py")
+    ]
+    with pytest.raises(q.QualificationError, match="single-attempt payload"):
+        q.check_qualification_artifact(artifact)
+
+
+def test_check_qualification_artifact_refuses_a_target_the_judgment_never_declared():
+    """(verdict v10 / A-432) The attempt's target and ``judgment.r3.targets``
+    are one pairing, and it is checked here on a REAL artifact rather than
+    trusted from ``verify.py``'s own re-derivation."""
+    artifact = _good_artifact()
+    artifact["judgment"]["r3"]["targets"] = ["src/cmru/somewhere_else.py"]
+    with pytest.raises(q.QualificationError, match="does not declare exactly the one target"):
+        q.check_qualification_artifact(artifact)
+
+
+def test_check_qualification_artifact_refuses_an_aggregation_over_one_probe():
+    """(verdict v10 / A-432) With one declared probe ``any`` and ``all``
+    denote the same function, so recording either would record a policy the
+    lane never stated."""
+    artifact = _good_artifact()
+    artifact["judgment"]["r3"]["aggregation"] = "any"
+    with pytest.raises(q.QualificationError, match="with no aggregation"):
+        q.check_qualification_artifact(artifact)
+
+
+def test_check_qualification_artifact_refuses_a_not_attempted_disposition():
+    """(verdict v10 / B007) A probe that was never run is not a control that
+    passed; the disposition fork is checked before any run field is read."""
+    artifact = _good_artifact()
+    attempt = artifact["claims"][3]["canary"]["attempts"][0]
+    attempt["disposition"] = "not_attempted"
+    with pytest.raises(q.QualificationError, match="was not attempted"):
         q.check_qualification_artifact(artifact)
 
 
@@ -692,7 +755,7 @@ def test_qualify_raises_on_wrong_canary_reason(tmp_path, monkeypatch):
         artifact["commit"] = q._git(repository, "rev-parse", "HEAD")
         artifact["assay_version"] = "9.9.9"
         artifact["exit_code"] = 0
-        artifact["claims"][3]["canary"]["observed_reason_code"] = "COMMAND_FAILED"
+        artifact["claims"][3]["canary"]["attempts"][0]["observed_reason_code"] = "COMMAND_FAILED"
         artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
         proc = subprocess.CompletedProcess(args=["fake-assay"], returncode=0, stdout="", stderr="")
         return proc, artifact

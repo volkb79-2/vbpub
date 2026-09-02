@@ -122,9 +122,9 @@ def test_a_no_op_transform_judges_nothing_and_runs_no_transform_unit(
         ReasonCode.CANARY_INCONCLUSIVE,
     )
     assert r3.canary is not None
-    assert r3.canary.control_outcome is Outcome.PASS
-    assert r3.canary.transformed_outcome is None
-    assert r3.canary.expected_reason_code is ReasonCode.COMMAND_FAILED
+    assert r3.canary.attempts[0].control_outcome is Outcome.PASS
+    assert r3.canary.attempts[0].transformed_outcome is None
+    assert r3.canary.attempts[0].expected_reason_code is ReasonCode.COMMAND_FAILED
     assert verdict.judgment is not None and verdict.judgment.r3 is not None
 
 
@@ -205,11 +205,11 @@ def test_an_unrecognised_mechanism_judges_nothing_on_the_public_surface(
         )
 
     assert units == 1, "the control ran; nothing was transformed"
-    assert result.control_outcome is Outcome.PASS
-    assert result.transformed_outcome is None
-    assert result.expected_reason_code is None
-    assert "not a known canary mechanism" in result.description
-    assert "import-break" in result.description and "uncovered-line" in result.description
+    assert result.attempts[0].control_outcome is Outcome.PASS
+    assert result.attempts[0].transformed_outcome is None
+    assert result.attempts[0].expected_reason_code is None
+    assert "not a known canary mechanism" in result.attempts[0].description
+    assert "import-break" in result.attempts[0].description and "uncovered-line" in result.attempts[0].description
 
 
 def test_a_test_path_canary_target_is_still_refused_before_any_unit(

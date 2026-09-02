@@ -529,10 +529,16 @@ run_inner() {
   # lives on in W5's v9 successors, run for real further down. Nothing about
   # W4 is deleted or rewritten: `carve-assets/W4/` is the historical record of
   # what was proved under the contract that existed at the time.
+  #
+  # Wave D (the v10 integrity cut): 9 -> 10 does to W5 exactly what 8 -> 9 did
+  # to W4, so W5 JOINS the same demotion -- collect-only here, hard-cut-probed
+  # below -- and its positive coverage lives on in W6's v10 successors, run
+  # for real further down. `carve-assets/W5/` is untouched by that cut.
   for locked in \
     "nyxloom-trove/carve-assets/W1/test_acceptance_v6.py" \
     "nyxloom-trove/carve-assets/W2/test_acceptance_v7.py" \
-    "nyxloom-trove/carve-assets/W4/test_acceptance_v8.py"
+    "nyxloom-trove/carve-assets/W4/test_acceptance_v8.py" \
+    "nyxloom-trove/carve-assets/W5/test_acceptance_v9.py"
   do
     # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
     PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
@@ -549,7 +555,7 @@ from assay.verify import verify_document
 
 root = Path(sys.argv[1]) / "nyxloom-trove" / "carve-assets"
 checked = 0
-for wave, version in (("W1", 6), ("W2", 7), ("W4", 8)):
+for wave, version in (("W1", 6), ("W2", 7), ("W4", 8), ("W5", 9)):
     expected = root / wave / "expected"
     paths = sorted(expected.glob("*.json"))
     assert paths, f"{wave}/expected holds no frozen templates to check"
@@ -557,28 +563,30 @@ for wave, version in (("W1", 6), ("W2", 7), ("W4", 8)):
         document = json.loads(path.read_text())
         failures = verify_document(document)
         assert failures == [
-            f"schema_version {version} is not this verifier's version 9: a "
+            f"schema_version {version} is not this verifier's version 10: a "
             f"verdict artifact is rejected, never upgraded in place -- "
-            f"re-produce it with an assay whose VERDICT_SCHEMA_VERSION is 9"
+            f"re-produce it with an assay whose VERDICT_SCHEMA_VERSION is 10"
         ], (wave, path.name, failures)
         checked += 1
-print(f"v6/v7/v8 hard-cut guard passed for {checked} frozen templates")
+print(f"v6/v7/v8/v9 hard-cut guard passed for {checked} frozen templates")
 PYEOF
-  echo 'ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified'
+  echo 'ASSAY_GATE_PHASE=verdict-v6-v7-v8-v9-hard-cut-verified'
 
-  # A-359..A-366 (wave B, the producer cut): the locked v9 acceptance suite,
+  # A-427..A-434 (wave D, the integrity cut): the locked v10 acceptance suite,
   # run for real against the same installed wheel. It carries forward the
-  # positive coverage W1's, W2's and now W4's suites gave up above, and adds
-  # v9's own contract: `judgment.r2.producer` and BOTH directions of the fork
-  # it opens, the OPEN `stryker:` namespace beside three still-closed enums
-  # (plus the source-string drift guard that makes an open branch safe),
-  # `cwd_declared`'s deliberate absence from the lane-resolved group, and
-  # `snapshot_policy.link_paths`. Every negative in it is differential.
+  # positive coverage W1's, W2's, W4's and now W5's suites gave up above, and
+  # adds v10's own contract: `judgment.r2.fail_under` and BOTH directions of
+  # the producer fork it rides, `claim.detail` with its BYTE bound and its
+  # all-or-nothing dropped-byte pair, the two reserved reason codes in both
+  # schema places AND in `assay.errors` independently, the
+  # `adjudicated => verified_by_assay: false` narrowing, `canary.attempts[]`
+  # with its disposition fork and pairwise target equality, and `R4` with
+  # `judgment.r4`/`red_first`. Every negative in it is differential.
   # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
   PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
-    "$worktree/assay/nyxloom-trove/carve-assets/W5/test_acceptance_v9.py" \
+    "$worktree/assay/nyxloom-trove/carve-assets/W6/test_acceptance_v10.py" \
     -q -p no:randomly --override-ini=pythonpath=
-  echo 'ASSAY_GATE_PHASE=verdict-v9-successors-verified'
+  echo 'ASSAY_GATE_PHASE=verdict-v10-successors-verified'
 
   run_self_hosted_lane "$worktree" "$scratch" "$version" "$wheel"
 

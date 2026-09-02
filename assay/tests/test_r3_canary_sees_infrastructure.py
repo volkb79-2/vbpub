@@ -132,9 +132,10 @@ def test_an_r3_lane_with_a_resolvable_derived_fact_judges_its_canary(
     # The control half ran the suite -- the suite that refuses without the
     # fact -- and passed. That is the measurement: the canary's own side-run
     # saw the lane's infrastructure world.
-    assert canary["control_outcome"] == "PASS", canary
-    assert canary["transformed_outcome"] == "FAIL", canary
-    assert canary["observed_reason_code"] == "COMMAND_FAILED", canary
+    attempt = canary["attempts"][0]
+    assert attempt["control_outcome"] == "PASS", canary
+    assert attempt["transformed_outcome"] == "FAIL", canary
+    assert attempt["observed_reason_code"] == "COMMAND_FAILED", canary
     assert canary["mechanism"] == "import-break", canary
 
 
@@ -235,6 +236,6 @@ def test_the_legacy_standalone_canary_runs_both_halves_in_the_lanes_own_world(
         infrastructure_environment={},
     )
 
-    assert result.control_outcome is Outcome.PASS, result
-    assert result.transformed_outcome is Outcome.FAIL, result
-    assert result.observed_reason_code is ReasonCode.COMMAND_FAILED, result
+    assert result.attempts[0].control_outcome is Outcome.PASS, result
+    assert result.attempts[0].transformed_outcome is Outcome.FAIL, result
+    assert result.attempts[0].observed_reason_code is ReasonCode.COMMAND_FAILED, result

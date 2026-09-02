@@ -1125,12 +1125,13 @@ target = "pkg/mod.py"
     r3_claim = document["claims"][1]
     assert r3_claim["status"] == "PASS"
     assert r3_claim["canary"]["mechanism"] == "import-break"
-    assert r3_claim["canary"]["control_outcome"] == "PASS"
-    assert r3_claim["canary"]["transformed_outcome"] == "FAIL"
-    assert r3_claim["canary"]["observed_reason_code"] == "COMMAND_FAILED"
+    attempt = r3_claim["canary"]["attempts"][0]
+    assert attempt["control_outcome"] == "PASS"
+    assert attempt["transformed_outcome"] == "FAIL"
+    assert attempt["observed_reason_code"] == "COMMAND_FAILED"
     assert document["judgment"]["r3"] == {
         "mechanism": "import-break",
-        "target": "pkg/mod.py",
+        "targets": ["pkg/mod.py"],
     }
     # O2: the consumer's own repository is exactly as it was before the run.
     assert git_repo.head() == head_before

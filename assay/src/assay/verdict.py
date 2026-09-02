@@ -96,11 +96,19 @@ __all__ = [
     "MUTATION_OPERATORS_BY_LANGUAGE",
     "LANE_RESOLVED_FIELDS",
     "COMMAND_TAIL_BYTES",
+    "CLAIM_DETAIL_BYTES",
+    "CANARY_AGGREGATIONS",
+    "CANARY_DISPOSITIONS",
+    "CANARY_NOT_ATTEMPTED_REASONS",
+    "MIN_CANARY_TARGETS",
+    "MAX_CANARY_TARGETS",
+    "RED_FIRST_COMMIT_SOURCES",
     "REASON_CODES",
     "ROLLUP_PRECEDENCE",
     "SCHEMA_RESOURCE",
     "SNAPSHOT_SELECTIONS",
     "VERDICT_SCHEMA_VERSION",
+    "CanaryAttempt",
     "CanaryResult",
     "Claim",
     "Coverage",
@@ -112,6 +120,8 @@ __all__ = [
     "JudgmentR1",
     "JudgmentR2",
     "JudgmentR3",
+    "JudgmentR4",
+    "RedFirstResult",
     "JudgmentResolved",
     "Mutation",
     "MutantOutcome",
@@ -242,7 +252,37 @@ __all__ = [
 #: Same rule as every cut before it: no dual-version verifier, no compatibility
 #: shim (A-170) -- producers emit v9, and `assay verify` refuses v8 exactly as
 #: it refuses v7.
-VERDICT_SCHEMA_VERSION = 9
+#:
+#: **v10 (Wave D, the integrity cut).** Six changes, one bump, because each of
+#: them was independently "a wire field at the next schema cut" and cutting a
+#: version per field is the mistake B007's sequencing note was written to
+#: prevent:
+#:
+#: * `judgment.r2.fail_under` (B050/A-427) -- the mutation floor the document
+#:   itself states, REQUIRED under `producer = "ingested"` and FORBIDDEN under
+#:   `"native"`, so an ingested R2 PASS is re-derivable against the policy that
+#:   actually decided it instead of against a constant the loader forced.
+#: * `claim.detail` + `claim.detail_dropped_bytes` (B053/A-428) -- the refusing
+#:   sentence on the wire, on NON-PASS claims only, bounded at
+#:   `CLAIM_DETAIL_BYTES` with B014's truncation convention.
+#:   Declared-not-verified (A-230a): assay copies it and never parses it.
+#: * `PROVENANCE_UNVERIFIED` (B004/A-276/A-430) in the `NO_MEASUREMENT` set,
+#:   plus the `evidence` narrowing it pays for: `source = "adjudicated"` now
+#:   implies `verified_by_assay: false` in BOTH the model and the document.
+#: * `judgment.r3.targets`/`aggregation` and `canary.attempts[]` (B007/A-432)
+#:   -- an ORDERED, bounded canary target list with a CLOSED aggregation and a
+#:   per-attempt payload. The singular `judgment.r3.target` and the flat
+#:   `canary` body do NOT survive: a one-element `targets` array is every
+#:   existing R3 lane's migration.
+#: * `"R4"` in the rigor vocabulary, `judgment.r4` and the `red_first` claim
+#:   payload (F015/M7, A-433 as amended by A-434) -- red-first
+#:   (fail-before/pass-after) as the next rung of the ordered ladder. The wire
+#:   shape lands here; the producer lands in phase 3, which is why
+#:   `RED_FIRST_UNPROVEN` is RESERVED in the `FAIL` set now.
+#:
+#: Same rule again: producers emit v10, and `assay verify` refuses v9 exactly
+#: as v9 refused v8.
+VERDICT_SCHEMA_VERSION = 10
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
 #: distinction inside the artifact. `"unavailable"` means the coverage FORMAT
@@ -377,6 +417,62 @@ LANE_RESOLVED_FIELDS: tuple[str, ...] = (
 #: acceptance, and a model that could serialize an oversized tail would let a
 #: forged verdict agree with itself.
 COMMAND_TAIL_BYTES = 64 * 1024
+
+#: (B053/DA-D2(c), A-428, schema v10) the maximum retained UTF-8 byte length of
+#: `Claim.detail`. Two bounds exist deliberately and they are not the same
+#: bound: JSON Schema's `maxLength` counts CHARACTERS, so the document carries
+#: `maxLength: 2048` -- which every <=2048-BYTE UTF-8 string satisfies, so it
+#: never rejects a legal document -- and this model plus `assay verify` then
+#: complete it with the exact BYTE check, which is where DA-D2(c) puts the
+#: bound anyway. Truncation keeps the HEAD, the opposite end from
+#: :data:`COMMAND_TAIL_BYTES`: a command's output is most informative at its
+#: END (the failure is last), while a refusal message assay COMPOSES is most
+#: informative at its START (which artifact, which target, which declaration).
+CLAIM_DETAIL_BYTES = 2048
+
+#: (B007/DA-D8, A-432, schema v10) the closed bounds on an R3 lane's ordered
+#: canary target list, spelled as a MIN_/MAX_ pair beside
+#: `config.MIN_/MAX_MUTANTS`, the module convention. **Measured, not chosen by
+#: taste** (DA-R17, 2026-09-02, through the shipped substrate): one canary
+#: target costs ~2.76 s of materialisation (control 1.26 s + transform 1.50 s)
+#: plus two full runs of the lane's command, and peak disk is ONE snapshot
+#: because `run_isolated_canary`'s two contexts are sequential. 8 x 2.76 s =
+#: 22.1 s = 7.4 % of the smallest budget any shipped worked example declares
+#: (`5m`, `docs/DESIGN-GUIDE.md`), the largest round N whose materialisation
+#: floor stays under a tenth of that budget.
+MIN_CANARY_TARGETS = 1
+MAX_CANARY_TARGETS = 8
+
+#: (B007/A-432) the CLOSED aggregation vocabulary for a multi-target R3 lane.
+#: `"any"` -- the claim PASSes as soon as one declared probe is caught, and the
+#: first PASS SHORT-CIRCUITS. `"all"` -- every declared probe must be caught,
+#: and every target is attempted even after a FAIL (DA-R19 affirms the
+#: deliberate 2N bound: naming EVERY surviving probe is why a lane declares
+#: several). No default: an aggregation assay invented is a policy no one
+#: declared.
+CANARY_AGGREGATIONS: tuple[str, ...] = ("any", "all")
+
+#: (B007/A-432) the CLOSED "why this target was never attempted" vocabulary.
+#: `"short_circuited"` -- under `any`, an earlier target already PASSed.
+#: `"budget_exhausted"` -- the lane deadline had nothing left before this
+#: target's control materialisation. `"earlier_target_terminal"` -- an earlier
+#: attempt ended the claim (a refusal or an INCONCLUSIVE); the discriminating
+#: detail is on THAT attempt, which is why one member suffices where two would
+#: duplicate it.
+CANARY_NOT_ATTEMPTED_REASONS: tuple[str, ...] = (
+    "short_circuited",
+    "budget_exhausted",
+    "earlier_target_terminal",
+)
+
+#: (B007/A-432) whether a recorded canary attempt ran at all.
+CANARY_DISPOSITIONS: tuple[str, ...] = ("attempted", "not_attempted")
+
+#: (F015/A-433) where `judgment.r4.broken_commit` came from. Recorded because a
+#: reader must be able to tell a lane that NAMED a commit from one that
+#: inherited its resolved base, and re-resolving a base later can give a
+#: different answer.
+RED_FIRST_COMMIT_SOURCES: tuple[str, ...] = ("declared", "resolved_base")
 
 # Kept deliberately identical in intent to `$defs/timestamp` in the schema. The
 # duplication is real; the alternative is a model that can build an artifact its
@@ -1026,13 +1122,28 @@ class Coverage:
 
 
 @dataclass(frozen=True, kw_only=True)
-class CanaryResult:
-    """The R3 claim payload (P09, A-092/A-108): the evidence a cause-
-    sensitive canary produces, carried separately from the JUDGEMENT
-    :mod:`assay.canary` derives from it — the identical split
-    :class:`Coverage` already keeps from :class:`Claim` (this is its exact
-    construction-time-validation template, restated for canary's own four
-    named fields, O2).
+class CanaryAttempt:
+    """ONE canary target's own record (B007/A-432, schema v10): the evidence
+    a cause-sensitive canary produces for a single declared target, carried
+    separately from the JUDGEMENT :mod:`assay.canary` derives from it — the
+    identical split :class:`Coverage` already keeps from :class:`Claim` (this
+    is its exact construction-time-validation template, restated for canary's
+    own named fields, O2).
+
+    Up to schema v9 this class WAS the R3 payload and carried the
+    ``mechanism`` as well. At v10 the payload became :class:`CanaryResult`
+    = ``{mechanism, attempts}``: the mechanism is one policy for the whole
+    lane (it is what ``judgment.r3.mechanism`` records and what
+    :meth:`Verdict._check_judgment_matches_claims` matches against), while
+    everything below is per TARGET.
+
+    An attempt is either ``"attempted"`` — it ran, and carries the run
+    fields below — or ``"not_attempted"``, which carries NO run fields and a
+    :attr:`not_attempted_reason` from the closed
+    :data:`CANARY_NOT_ATTEMPTED_REASONS` vocabulary. The two dispositions are
+    a wire fact rather than an inference from absent fields, because "this
+    probe was never tried" and "this probe was tried and produced nothing"
+    are exactly the two statements a multi-target R3 claim must keep apart.
 
     A known-good CONTROL is run through the real pipeline and MUST have
     produced :attr:`control_outcome`; a deliberately minimal, known-bad
@@ -1047,20 +1158,16 @@ class CanaryResult:
     rendered. :mod:`assay.canary`'s ``judge_canary`` compares the two.
     """
 
-    #: A short, stable identity for the transform attempted (e.g.
-    #: ``"import-break"``/``"uncovered-line"``) — NOT restricted to a closed
-    #: set here, because a malformed/unrecognised mechanism name must still
-    #: be representable (O3's own "malformed transform" case names the
-    #: mechanism it could not resolve).
-    mechanism: str
     #: (P21/A-152/A-O18) the project-relative file the transform was applied
     #: to, in the normalized wire-path grammar. Its whole reason to exist is
-    #: to make ``judgment.r3.target`` independently witnessable:
-    #: :meth:`Verdict._check_judgment_matches_claims` requires the two to be
-    #: EQUAL, so a policy naming one file while the canary ran against
-    #: another is now unconstructible. Under schema v3 nothing in the
-    #: artifact could witness ``target`` at all, which A-152 recorded as an
-    #: accepted gap explicitly waiting for this migration.
+    #: to make ``judgment.r3.targets`` independently witnessable:
+    #: :meth:`Verdict._check_judgment_matches_claims` requires the attempts
+    #: and the declared targets to be PAIRWISE EQUAL IN ORDER (B007/A-432
+    #: generalises P21's single-target equality), so a policy naming one file
+    #: while the canary ran against another is now unconstructible. Under
+    #: schema v3 nothing in the artifact could witness ``target`` at all,
+    #: which A-152 recorded as an accepted gap explicitly waiting for this
+    #: migration.
     #:
     #: :attr:`description` remains prose and is never a parseable identity
     #: channel -- inferring the target by scraping it out of the description
@@ -1070,9 +1177,23 @@ class CanaryResult:
     #: Human-readable account of the concrete transform attempted, or of WHY
     #: nothing could be built (a malformed mechanism, or a no-op) — from the
     #: adapter's own ``inject_*``'s ``(text, description)`` return, never
-    #: parsed back apart by any caller.
+    #: parsed back apart by any caller. On a ``"not_attempted"`` entry it
+    #: still names the transform that WOULD have been applied — it is the
+    #: mechanism's own account of the target, not a run field.
     description: str
-    control_outcome: Outcome
+    #: (B007/A-432) ``"attempted"`` or ``"not_attempted"`` — see
+    #: :data:`CANARY_DISPOSITIONS`. Required on every attempt, and the
+    #: discriminator every rule below forks on.
+    disposition: str = "attempted"
+    #: (B007/A-432) required under ``"not_attempted"``, FORBIDDEN under
+    #: ``"attempted"``; a member of :data:`CANARY_NOT_ATTEMPTED_REASONS`.
+    not_attempted_reason: str | None = None
+    #: Required under ``"attempted"`` (it is the run that must have happened
+    #: for anything else here to mean something) and FORBIDDEN under
+    #: ``"not_attempted"``: B007/A-432 moved it out of the unconditionally
+    #: required set, because a probe that was never tried has no control run
+    #: to report.
+    control_outcome: Outcome | None = None
     #: ``None`` exactly when the transformed half was never genuinely run
     #: (O3's two INCONCLUSIVE causes: a malformed/unrecognised mechanism, or
     #: a transform that changed nothing to judge).
@@ -1087,21 +1208,51 @@ class CanaryResult:
     observed_reason_code: ReasonCode | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.mechanism, str) or not self.mechanism:
-            raise ValueError(
-                f"canary.mechanism must be a non-empty string, got "
-                f"{self.mechanism!r}"
-            )
-        _check_wire_path(self.target, "canary.target")
+        _check_wire_path(self.target, "canary.attempts[].target")
         if not isinstance(self.description, str) or not self.description:
             raise ValueError(
-                f"canary.description must be a non-empty string, got "
-                f"{self.description!r}"
+                f"canary.attempts[].description must be a non-empty string, "
+                f"got {self.description!r}"
+            )
+        if self.disposition not in CANARY_DISPOSITIONS:
+            raise ValueError(
+                f"canary.attempts[].disposition must be one of "
+                f"{list(CANARY_DISPOSITIONS)}, got {self.disposition!r}"
+            )
+        if self.disposition == "not_attempted":
+            if self.not_attempted_reason not in CANARY_NOT_ATTEMPTED_REASONS:
+                raise ValueError(
+                    f"canary.attempts[{self.target}]: a not_attempted entry "
+                    f"requires a not_attempted_reason from "
+                    f"{list(CANARY_NOT_ATTEMPTED_REASONS)}, got "
+                    f"{self.not_attempted_reason!r} -- an open string is a "
+                    f"vocabulary nobody can check (A-432)"
+                )
+            run_fields = (
+                ("control_outcome", self.control_outcome),
+                ("transformed_outcome", self.transformed_outcome),
+                ("expected_reason_code", self.expected_reason_code),
+                ("observed_reason_code", self.observed_reason_code),
+            )
+            present = [name for name, value in run_fields if value is not None]
+            if present:
+                raise ValueError(
+                    f"canary.attempts[{self.target}]: a not_attempted entry "
+                    f"carries no run fields, but {', '.join(present)} "
+                    f"{'is' if len(present) == 1 else 'are'} present -- a "
+                    f"probe that was never tried reports no run"
+                )
+            return
+        if self.not_attempted_reason is not None:
+            raise ValueError(
+                f"canary.attempts[{self.target}]: not_attempted_reason "
+                f"{self.not_attempted_reason!r} on an attempted entry -- the "
+                f"probe ran, so there is no reason it was skipped"
             )
         if not isinstance(self.control_outcome, Outcome):
             raise ValueError(
-                f"canary.control_outcome must be an Outcome, got "
-                f"{self.control_outcome!r}"
+                f"canary.attempts[].control_outcome must be an Outcome on an "
+                f"attempted entry, got {self.control_outcome!r}"
             )
         if self.transformed_outcome is not None and not isinstance(
             self.transformed_outcome, Outcome
@@ -1146,12 +1297,15 @@ class CanaryResult:
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "mechanism": self.mechanism,
             "target": self.target,
             "description": self.description,
-            "control_outcome": self.control_outcome.value,
+            "disposition": self.disposition,
         }
+        if self.not_attempted_reason is not None:
+            payload["not_attempted_reason"] = self.not_attempted_reason
         # Absent means never run/unknowable; never null (mirrors A-025/A-051).
+        if self.control_outcome is not None:
+            payload["control_outcome"] = self.control_outcome.value
         if self.transformed_outcome is not None:
             payload["transformed_outcome"] = self.transformed_outcome.value
         if self.expected_reason_code is not None:
@@ -1159,6 +1313,72 @@ class CanaryResult:
         if self.observed_reason_code is not None:
             payload["observed_reason_code"] = self.observed_reason_code.value
         return payload
+
+
+@dataclass(frozen=True, kw_only=True)
+class CanaryResult:
+    """The R3 claim payload at schema v10 (B007/A-432): one ``mechanism`` and
+    an ORDERED, bounded array of :class:`CanaryAttempt` records, one per
+    declared canary target, in the order the lane declared them.
+
+    Up to v9 this was one flat record for one target. A lane that wants to
+    prove several probes are caught had to declare several lanes, and B007
+    filed that; the migration for every existing single-target lane is a
+    one-element :attr:`attempts` array, which is a spelling normalisation of
+    the kind ``wire_path`` already performs, not a value assay chose.
+
+    The bound is :data:`MAX_CANARY_TARGETS`, derived from a measurement and
+    not from taste — see that constant. The judgement over the array (the
+    ``aggregation``, the short-circuit bookkeeping) belongs to
+    :mod:`assay.canary`, exactly as the single-target judgement always did;
+    this class owns only what a well-formed record looks like.
+    """
+
+    #: A short, stable identity for the transform attempted (e.g.
+    #: ``"import-break"``/``"uncovered-line"``) — NOT restricted to a closed
+    #: set here, because a malformed/unrecognised mechanism name must still
+    #: be representable (O3's own "malformed transform" case names the
+    #: mechanism it could not resolve). ONE per lane:
+    #: :meth:`Verdict._check_judgment_matches_claims` requires it to equal
+    #: ``judgment.r3.mechanism``.
+    mechanism: str
+    attempts: tuple[CanaryAttempt, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.mechanism, str) or not self.mechanism:
+            raise ValueError(
+                f"canary.mechanism must be a non-empty string, got "
+                f"{self.mechanism!r}"
+            )
+        if not isinstance(self.attempts, tuple) or not all(
+            isinstance(attempt, CanaryAttempt) for attempt in self.attempts
+        ):
+            raise ValueError(
+                f"canary.attempts must be a tuple of CanaryAttempt, got "
+                f"{self.attempts!r}"
+            )
+        if not MIN_CANARY_TARGETS <= len(self.attempts) <= MAX_CANARY_TARGETS:
+            raise ValueError(
+                f"canary.attempts records {len(self.attempts)} attempt(s); a "
+                f"canary payload carries between {MIN_CANARY_TARGETS} and "
+                f"{MAX_CANARY_TARGETS} (A-432: the bound is the measured "
+                f"materialisation cost of a target, ~2.76 s, against the "
+                f"smallest documented lane budget)"
+            )
+        targets = [attempt.target for attempt in self.attempts]
+        duplicates = sorted({t for t in targets if targets.count(t) > 1})
+        if duplicates:
+            raise ValueError(
+                f"canary.attempts records target(s) {duplicates} more than "
+                f"once -- one attempt per declared target, and two records "
+                f"for one target cannot both be that target's result"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mechanism": self.mechanism,
+            "attempts": [attempt.to_dict() for attempt in self.attempts],
+        }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1916,6 +2136,22 @@ class JudgmentR2:
     #: most of its own mutants measured far less than its score implies.
     #: Required (possibly `0`) under `"ingested"`, `None` under `"native"`.
     discarded: int | None = None
+    #: (B050/DA-D6, A-427, schema v10) the mutation-score floor this judgment
+    #: applied, **REQUIRED under `producer = "ingested"` and FORBIDDEN under
+    #: `"native"`**. Spelled byte-identically to
+    #: :attr:`JudgmentR1.fail_under` -- the same quantity at a different tier,
+    #: and two spellings of one policy number is how they drift.
+    #:
+    #: The fork is not ergonomics. A native R2 has no floor at all --
+    #: `judge_mutation`'s `survived` branch fails on any survivor whatsoever
+    #: -- so a native document carrying one would record a policy that
+    #: nothing applied, which is B050's own un-auditable claim inverted. An
+    #: ingested one is judged against a floor the lane declared, and until
+    #: this field existed the loader FORCED that floor to `100.0` so that
+    #: `verify.py` could assume it; the assumption is now READ from the
+    #: document instead, which is what makes the re-derivation total rather
+    #: than partial.
+    fail_under: float | None = None
     #: (B046) In-scope executable lines the foreign tool produced NO mutant
     #: for. Required (possibly empty) under `"ingested"`, `None` under
     #: `"native"`. Same empty-vs-absent rule as :attr:`survived_uncovered`.
@@ -2112,6 +2348,11 @@ class JudgmentR2:
         "survived_uncovered",
         "discarded",
         "lines_without_candidates",
+        # B050/A-427 (schema v10): the floor the ingested judgment applied.
+        # It joins this group rather than being optional on both sides for
+        # the group's own stated reason -- a native R2 has no floor, so one
+        # recorded there would name a policy nothing applied.
+        "fail_under",
     )
 
     def _check_producer_fork(self) -> None:
@@ -2208,6 +2449,20 @@ class JudgmentR2:
             raise ValueError(
                 f"judgment.r2.discarded must be in 0..10,000, got {self.discarded}"
             )
+        # B050/A-427: byte-identical to `judgment.r1.fail_under`'s own two
+        # checks, deliberately -- the same quantity at a different tier, and
+        # two spellings of one policy number is how they drift.
+        if isinstance(self.fail_under, bool) or not isinstance(
+            self.fail_under, (int, float)
+        ):
+            raise ValueError(
+                f"judgment.r2.fail_under must be a number, got {self.fail_under!r}"
+            )
+        if not 0.0 <= float(self.fail_under) <= 100.0:
+            raise ValueError(
+                f"judgment.r2.fail_under must be a percentage between 0 and "
+                f"100, got {self.fail_under}"
+            )
         for name in ("survived_uncovered", "lines_without_candidates"):
             value = getattr(self, name)
             what = f"judgment.r2.{name}"
@@ -2259,6 +2514,10 @@ class JudgmentR2:
             payload["lines_without_candidates"] = [
                 item.to_dict() for item in self.lines_without_candidates or ()
             ]
+            # B050/A-427: always emitted under `ingested`, exactly as
+            # `judgment.r1.fail_under` is -- an optional floor leaves the
+            # re-derivation partial again.
+            payload["fail_under"] = float(self.fail_under)
         if self.targets is not None:
             payload["targets"] = list(self.targets)
         # Omitted, never null (A-051).
@@ -2276,9 +2535,10 @@ class JudgmentR2:
 class JudgmentR3:
     """Populated by ``assay run``'s own isolated R3 CLI wiring (P19)
     whenever the rendered R3 claim carries a ``canary`` payload. The canary
-    declaration that produced it: the ``mechanism`` name and the
-    project-relative ``target`` path, so a consumer can tell WHICH declared
-    canary a rendered R3 claim answers for.
+    declaration that produced it: the ``mechanism`` name and the ORDERED
+    ``targets`` list (B007/A-432, schema v10 — the singular ``target`` at
+    v9), so a consumer can tell WHICH declared canary a rendered R3 claim
+    answers for, and in what order the probes were tried.
 
     :func:`assay.canary.judge_canary` already re-derives R3 *status* from
     :class:`CanaryResult`'s own fields alone, the identical reason
@@ -2291,18 +2551,202 @@ class JudgmentR3:
     """
 
     mechanism: str
-    target: str
+    #: (B007/A-432, schema v10) the ORDERED declared target list, 1..8. The
+    #: singular v9 `target` does NOT survive on the wire: two shapes for one
+    #: payload is exactly what a hard cut exists to avoid, and a lane that
+    #: declared one target normalises to a one-element list.
+    targets: tuple[str, ...]
+    #: (B007/A-432) present **iff** the lane declared the plural spelling, so
+    #: its ABSENCE is the checkable statement "one declared target, no
+    #: aggregation policy" rather than an invented value. A member of
+    #: :data:`CANARY_AGGREGATIONS`.
+    aggregation: str | None = None
 
     def __post_init__(self) -> None:
         _check_nonempty(self.mechanism, "judgment.r3.mechanism")
-        # P21: the same normalized wire grammar `CanaryResult.target` obeys.
-        # Both ends of the equality A-152 was waiting for must speak one
-        # spelling, or the equality can be satisfied by two records that
-        # merely agree on a non-normalized path.
-        _check_wire_path(self.target, "judgment.r3.target")
+        if not isinstance(self.targets, tuple) or not self.targets:
+            raise ValueError(
+                f"judgment.r3.targets must be a non-empty tuple, got "
+                f"{self.targets!r}"
+            )
+        if len(self.targets) > MAX_CANARY_TARGETS:
+            raise ValueError(
+                f"judgment.r3.targets declares {len(self.targets)} targets; "
+                f"the bound is {MAX_CANARY_TARGETS} (A-432)"
+            )
+        duplicates = sorted(
+            {t for t in self.targets if list(self.targets).count(t) > 1}
+        )
+        if duplicates:
+            raise ValueError(
+                f"judgment.r3.targets declares {duplicates} more than once; "
+                f"a repeated probe is the same probe"
+            )
+        for target in self.targets:
+            # P21: the same normalized wire grammar `CanaryAttempt.target`
+            # obeys. Both ends of the equality A-152 was waiting for must
+            # speak one spelling, or the equality can be satisfied by two
+            # records that merely agree on a non-normalized path.
+            _check_wire_path(target, "judgment.r3.targets[]")
+        if self.aggregation is not None and self.aggregation not in CANARY_AGGREGATIONS:
+            raise ValueError(
+                f"judgment.r3.aggregation must be one of "
+                f"{list(CANARY_AGGREGATIONS)} or absent, got "
+                f"{self.aggregation!r}"
+            )
+        if len(self.targets) > 1 and self.aggregation is None:
+            raise ValueError(
+                f"judgment.r3 declares {len(self.targets)} targets but no "
+                f"aggregation -- with more than one probe the claim's status "
+                f"is not defined without one, and assay does not invent a "
+                f"policy the lane never stated (A-432)"
+            )
+        if len(self.targets) == 1 and self.aggregation is not None:
+            raise ValueError(
+                f"judgment.r3 declares one target and an aggregation "
+                f"{self.aggregation!r} -- with one target 'any' and 'all' "
+                f"denote the same function, so recording one would record a "
+                f"policy the lane never stated (A-432)"
+            )
 
     def to_dict(self) -> dict[str, Any]:
-        return {"mechanism": self.mechanism, "target": self.target}
+        payload: dict[str, Any] = {
+            "mechanism": self.mechanism,
+            "targets": list(self.targets),
+        }
+        if self.aggregation is not None:
+            payload["aggregation"] = self.aggregation
+        return payload
+
+
+@dataclass(frozen=True, kw_only=True)
+class JudgmentR4:
+    """(F015/M7, A-433 as amended by A-434, schema v10) the effective R4
+    policy: red-first, ``fail-before/pass-after``.
+
+    R4 is the next rung of the ORDERED rigor ladder, not a new keying model
+    (DA-R16): claims are keyed by ``rigor``, ``RIGOR_LEVELS`` canonicalises a
+    lane's declaration against that order, and
+    ``_replace_highest_higher_rigor_claim_with_git_failed`` replaces the
+    highest declared higher-rigor claim — so red-first is the claim replaced
+    first on a cleanup failure, which is honest: it asserts a strictly more
+    specific property than R3's canary ("this test would have caught THIS
+    bug" versus "the tests can fail on a synthetic break") and its evidence
+    needs TWO materialisations.
+
+    **The wire shape lands at the v10 cut; the PRODUCER lands in phase 3.**
+    This class and the ``red_first`` claim payload exist so the drift guard
+    pins the shape from the cut onward, before any producer exists — the same
+    discipline the reserved ``RED_FIRST_UNPROVEN`` reason code follows
+    (A-013/A-086/A-144).
+    """
+
+    #: The declared test path(s), project-relative, in the normalized wire
+    #: grammar. Ordered, at least one, duplicates refused.
+    tests: tuple[str, ...]
+    #: The full commit identity of the "broken" commit the tests are run at.
+    broken_commit: str
+    #: ``"declared"`` or ``"resolved_base"`` — see
+    #: :data:`RED_FIRST_COMMIT_SOURCES`. Recorded because a reader must be
+    #: able to tell a lane that NAMED a commit from one that inherited its
+    #: resolved base, and re-resolving the base later can give a different
+    #: answer.
+    broken_commit_source: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.tests, tuple) or not self.tests:
+            raise ValueError(
+                f"judgment.r4.tests must be a non-empty tuple, got {self.tests!r}"
+            )
+        duplicates = sorted({t for t in self.tests if list(self.tests).count(t) > 1})
+        if duplicates:
+            raise ValueError(
+                f"judgment.r4.tests declares {duplicates} more than once"
+            )
+        for test in self.tests:
+            _check_wire_path(test, "judgment.r4.tests[]")
+        _check_nonempty(self.broken_commit, "judgment.r4.broken_commit")
+        if self.broken_commit_source not in RED_FIRST_COMMIT_SOURCES:
+            raise ValueError(
+                f"judgment.r4.broken_commit_source must be one of "
+                f"{list(RED_FIRST_COMMIT_SOURCES)}, got "
+                f"{self.broken_commit_source!r}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tests": list(self.tests),
+            "broken_commit": self.broken_commit,
+            "broken_commit_source": self.broken_commit_source,
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
+class RedFirstResult:
+    """(F015/M7, A-433/A-434, schema v10) the R4 claim payload: BOTH recorded
+    outcomes, so a consumer re-derives the status rather than trusting it.
+
+    ``assay verify`` re-derives ``PASS`` **iff**
+    ``before_outcome != PASS and after_outcome == PASS`` — hand-transcribed
+    (A-182), never by importing this model. Every other combination is
+    ``FAIL``/``RED_FIRST_UNPROVEN`` (A-434 correcting A-433 under DA-R18):
+    both commits materialised and both runs completed, so assay measured
+    something — that the declared test does not discriminate the fix — which
+    is ``CANARY_SURVIVED`` one rung down and belongs in the same class.
+
+    :attr:`after_outcome` is absent exactly when the before-run already ended
+    the claim (the test PASSED at the broken commit, so running HEAD proves
+    nothing further). Failures of the MECHANISM itself — snapshot, overlay,
+    deadline, unreadable output — never reach this payload at all; they keep
+    the outcome and code their own substrate raises.
+    """
+
+    broken_commit: str
+    tests: tuple[str, ...]
+    before_outcome: Outcome
+    after_outcome: Outcome | None = None
+
+    def __post_init__(self) -> None:
+        _check_nonempty(self.broken_commit, "red_first.broken_commit")
+        if not isinstance(self.tests, tuple) or not self.tests:
+            raise ValueError(
+                f"red_first.tests must be a non-empty tuple, got {self.tests!r}"
+            )
+        for test in self.tests:
+            _check_wire_path(test, "red_first.tests[]")
+        if not isinstance(self.before_outcome, Outcome):
+            raise ValueError(
+                f"red_first.before_outcome must be an Outcome, got "
+                f"{self.before_outcome!r}"
+            )
+        if self.after_outcome is not None and not isinstance(
+            self.after_outcome, Outcome
+        ):
+            raise ValueError(
+                f"red_first.after_outcome must be an Outcome or absent, got "
+                f"{self.after_outcome!r}"
+            )
+        if self.before_outcome is Outcome.PASS and self.after_outcome is not None:
+            raise ValueError(
+                "red_first: the declared test PASSED at the broken commit, "
+                "which ends the claim -- recording an after_outcome would "
+                "assert a HEAD run that answers a question already closed"
+            )
+        if self.before_outcome is not Outcome.PASS and self.after_outcome is None:
+            raise ValueError(
+                "red_first: the before-run did not end the claim, so the HEAD "
+                "run is what decides it and after_outcome cannot be absent"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "broken_commit": self.broken_commit,
+            "tests": list(self.tests),
+            "before_outcome": self.before_outcome.value,
+        }
+        if self.after_outcome is not None:
+            payload["after_outcome"] = self.after_outcome.value
+        return payload
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -2328,6 +2772,9 @@ class Judgment:
     r1: JudgmentR1 | None = None
     r2: JudgmentR2 | None = None
     r3: JudgmentR3 | None = None
+    #: (F015/A-433, schema v10) the red-first policy. Wire shape only at the
+    #: v10 cut; its producer lands in phase 3.
+    r4: JudgmentR4 | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.resolved, JudgmentResolved):
@@ -2335,9 +2782,14 @@ class Judgment:
                 f"judgment.resolved must be a JudgmentResolved, got "
                 f"{self.resolved!r}"
             )
-        if self.r1 is None and self.r2 is None and self.r3 is None:
+        if (
+            self.r1 is None
+            and self.r2 is None
+            and self.r3 is None
+            and self.r4 is None
+        ):
             raise ValueError(
-                "judgment declares none of r1/r2/r3 -- an empty judgment "
+                "judgment declares none of r1/r2/r3/r4 -- an empty judgment "
                 "records no policy and should be omitted (None) instead"
             )
         # A-223a/A-227, widened by wave-1 §6 (A-260) and CORRECTED by
@@ -2421,8 +2873,8 @@ class Judgment:
                 )
             raise ValueError(
                 f"judgment.resolved records base {self.resolved.base!r} but "
-                f"judgment carries neither r1 nor r2 -- R3 alone never "
-                f"resolves anything against a base"
+                f"judgment carries neither r1 nor r2 -- R3 and R4 alone never "
+                f"resolve anything against a base"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -2433,6 +2885,8 @@ class Judgment:
             payload["r2"] = self.r2.to_dict()
         if self.r3 is not None:
             payload["r3"] = self.r3.to_dict()
+        if self.r4 is not None:
+            payload["r4"] = self.r4.to_dict()
         return payload
 
 
@@ -2448,6 +2902,31 @@ class Claim:
     coverage: Coverage | None = None
     canary: CanaryResult | None = None
     mutation: Mutation | None = None
+    #: (F015/A-433, schema v10) the R4 payload. Wire shape only at the cut.
+    red_first: RedFirstResult | None = None
+    #: (B053/DA-D2(c), A-428, schema v10) the refusing sentence, byte-copied
+    #: from the text the same conversion site puts on the diagnostics stream,
+    #: so the line a caller reads and the document a consumer archives can
+    #: never say different things.
+    #:
+    #: **Per CLAIM, not per verdict**: one lane can refuse at two tiers for
+    #: two different reasons, and a single verdict-level string would have to
+    #: pick one. **On NON-PASS claims only** — absent on ``PASS`` (there is
+    #: no refusal to explain) and absent when no refusal produced text.
+    #:
+    #: **Declared, not verified** (A-230a, ``producer_tool``'s own words):
+    #: assay copies this text and never parses it; this layer and
+    #: ``assay verify`` check the PRESENCE rule and the BYTE bound and never
+    #: the content. The closed ``(status, reason_code)`` pair remains the
+    #: only machine-readable statement in the document (A-138/A-170), and a
+    #: consumer that pattern-matches ``detail`` is reading diagnosis as
+    #: policy.
+    detail: str | None = None
+    #: (B053/A-428) B014's truncation convention: the bytes removed, present
+    #: if and only if :attr:`detail` is, so a reader can never mistake a
+    #: short message for a cut one. Truncation keeps the HEAD — see
+    #: :data:`CLAIM_DETAIL_BYTES`.
+    detail_dropped_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if self.rigor not in RIGOR_LEVELS:
@@ -2530,9 +3009,84 @@ class Claim:
                     f"A-025 applies to coverage"
                 )
 
+        if self.red_first is not None:
+            # A-433: the exact R1/coverage template above, restated for R4.
+            if self.rigor != "R4":
+                raise ValueError(
+                    f"claim[{self.rigor}]: a red_first payload belongs to the "
+                    f"R4 claim; R4 is the level that declares red-first"
+                )
+            if self.status is Outcome.NO_MEASUREMENT:
+                raise ValueError(
+                    f"claim[{self.rigor}]: NO_MEASUREMENT carries no red_first "
+                    f"payload at all — omitted, not zeroed, the same discipline "
+                    f"A-025 applies to coverage"
+                )
+
+        self._check_detail()
         self._check_a_judged_status_carries_its_own_payload()
         self._check_mutation_terminal_correspondence()
         self._check_r1_only_reason_codes()
+        self._check_red_first_reason_code()
+
+    def _check_red_first_reason_code(self) -> None:
+        """(A-433 as amended by A-434/DA-R18) ``RED_FIRST_UNPROVEN`` is read
+        off R4's own two recorded outcomes and nowhere else -- the identical
+        binding :meth:`_check_r1_only_reason_codes` applies one tier down."""
+        if self.reason_code is ReasonCode.RED_FIRST_UNPROVEN and self.rigor != "R4":
+            raise ValueError(
+                f"claim[{self.rigor}]: RED_FIRST_UNPROVEN describes the R4 "
+                f"fail-before/pass-after judgement and belongs to the R4 claim"
+            )
+
+    def _check_detail(self) -> None:
+        """(B053/DA-D2(c), A-428) the presence rule and the BYTE bound —
+        never the content.
+
+        Three rules, and only three, because ``detail`` is
+        declared-not-verified (A-230a): it is present only where a refusal
+        could have produced text, its sibling byte count is present exactly
+        with it, and the retained text fits :data:`CLAIM_DETAIL_BYTES`. What
+        it SAYS is diagnosis, and this layer does not read diagnosis.
+        """
+        if self.detail is None:
+            if self.detail_dropped_bytes is not None:
+                raise ValueError(
+                    f"claim[{self.rigor}]: detail_dropped_bytes "
+                    f"{self.detail_dropped_bytes!r} with no detail -- the "
+                    f"count describes a truncation of text that is not here"
+                )
+            return
+        if self.status is Outcome.PASS:
+            raise ValueError(
+                f"claim[{self.rigor}]: a PASS carries no detail -- detail is "
+                f"the refusing sentence, and a pass refused nothing (A-428)"
+            )
+        if not isinstance(self.detail, str) or not self.detail:
+            raise ValueError(
+                f"claim[{self.rigor}]: detail must be a non-empty string when "
+                f"present, got {self.detail!r} -- absent says 'no refusal "
+                f"produced text', which an empty string cannot say"
+            )
+        if len(self.detail.encode("utf-8")) > CLAIM_DETAIL_BYTES:
+            raise ValueError(
+                f"claim[{self.rigor}]: detail is "
+                f"{len(self.detail.encode('utf-8'))} UTF-8 bytes, over the "
+                f"{CLAIM_DETAIL_BYTES}-byte bound (A-428); truncate to the "
+                f"HEAD and record the removed bytes in detail_dropped_bytes"
+            )
+        if (
+            self.detail_dropped_bytes is None
+            or isinstance(self.detail_dropped_bytes, bool)
+            or not isinstance(self.detail_dropped_bytes, int)
+            or self.detail_dropped_bytes < 0
+        ):
+            raise ValueError(
+                f"claim[{self.rigor}]: detail requires detail_dropped_bytes as "
+                f"a non-negative integer, got {self.detail_dropped_bytes!r} -- "
+                f"a silently truncated sentence is worse than no sentence "
+                f"(A-428/B014)"
+            )
 
     def _check_r1_only_reason_codes(self) -> None:
         """(wave-1 §4/§5, A-259/A-260) ``BRANCH_UNAVAILABLE`` and
@@ -2678,6 +3232,19 @@ class Claim:
                     f"payload -- that status is a judgement OF a canary "
                     f"result, so the result it judged must be recorded"
                 )
+        # A-433/A-434: R3's rule one rung up. A judged R4 status is derived
+        # from the two recorded outcomes, so the record it judged must be
+        # present. ERROR/BUDGET_EXCEEDED/NO_MEASUREMENT stay representable
+        # without one: those describe the MECHANISM failing to produce a
+        # result at all, not a judgement of one.
+        if self.rigor == "R4" and self.red_first is None:
+            if self.status in {Outcome.PASS, Outcome.FAIL}:
+                raise ValueError(
+                    f"claim[R4]: {self.status.value} without a red_first "
+                    f"payload -- that status is a judgement OF a "
+                    f"fail-before/pass-after run, so the two outcomes it was "
+                    f"derived from must be recorded"
+                )
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -2695,6 +3262,11 @@ class Claim:
             payload["canary"] = self.canary.to_dict()
         if self.mutation is not None:
             payload["mutation"] = self.mutation.to_dict()
+        if self.red_first is not None:
+            payload["red_first"] = self.red_first.to_dict()
+        if self.detail is not None:
+            payload["detail"] = self.detail
+            payload["detail_dropped_bytes"] = self.detail_dropped_bytes
         return payload
 
 
@@ -2773,6 +3345,21 @@ class Evidence:
         payload = (self.producer, self.attested_commit, self.reviewed_paths)
         if self.source == "adjudicated" and any(value is not None for value in payload):
             raise ValueError(f"{label}: attestation payload belongs only to attested evidence")
+        if self.source == "adjudicated" and self.verified_by_assay:
+            # B004/A-430, schema v10. Up to v9 `verified_by_assay` was
+            # constrained to False only under `source == "attested"`, and the
+            # `adjudicated` branch left it an unconstrained boolean -- so a
+            # Tier-2 result could ship `verified_by_assay: true` and be legal
+            # in BOTH layers, reading as computed. Tier 2 is a document assay
+            # READ, never a measurement assay made, and B004 is the first
+            # adjudicated producer, so the narrowing lands in the bump that
+            # carries its reason code (A-029: a narrowing is still a
+            # compatibility fact).
+            raise ValueError(
+                f"{label}: adjudicated evidence always carries "
+                f"verified_by_assay=False; assay judged a document it read, "
+                f"it did not compute the fact the document asserts"
+            )
         if self.source == "attested":
             if self.verified_by_assay:
                 raise ValueError(
@@ -3553,13 +4140,57 @@ class Verdict:
                     f"two must name the same mechanism"
                 )
             # P21/A-152/A-O18: the half schema v3 could not witness at all.
-            if r3_claim.canary.target != judgment_r3.target:
+            # B007/A-432 generalises it from one equality to a PAIRWISE,
+            # IN-ORDER one: attempts run in declared order, so attempt i must
+            # be the record of target i, and the two lists must have the same
+            # length. A shorter attempts list would let a lane declare probes
+            # it never recorded, and a reordered one would let a surviving
+            # probe be reported under a caught probe's name.
+            attempted_targets = tuple(
+                attempt.target for attempt in r3_claim.canary.attempts
+            )
+            if attempted_targets != tuple(judgment_r3.targets):
                 raise ValueError(
-                    f"claim[R3].canary ran against target "
-                    f"{r3_claim.canary.target!r}, but judgment.r3 records the "
-                    f"policy target as {judgment_r3.target!r} -- a canary that "
-                    f"answers for a different file than the one declared is "
+                    f"claim[R3].canary recorded attempts for "
+                    f"{list(attempted_targets)}, but judgment.r3 declares "
+                    f"targets {list(judgment_r3.targets)} -- the attempts are "
+                    f"the declared targets, in the declared order, one each; "
+                    f"a canary that answers for different files than the ones "
+                    f"declared is evidence about nothing the lane asked for"
+                )
+
+        # F015/A-433: A-148's correspondence, restated for R4 exactly as the
+        # R2 and R3 blocks above state it for their own tiers.
+        r4_claim = next((claim for claim in self.claims if claim.rigor == "R4"), None)
+        r4_judged = r4_claim is not None and r4_claim.red_first is not None
+        judgment_r4 = None if self.judgment is None else self.judgment.r4
+        if judgment_r4 is not None and not r4_judged:
+            raise ValueError(
+                "judgment.r4 is present but no R4 claim rendered a red_first "
+                "payload -- a policy is recorded for a judgment that never "
+                "happened"
+            )
+        if judgment_r4 is None and r4_judged:
+            raise ValueError(
+                "the R4 claim rendered a red_first payload but judgment.r4 is "
+                "absent -- an independent consumer cannot re-derive R4's "
+                "status without the policy that decided it"
+            )
+        if r4_judged and judgment_r4 is not None:
+            if r4_claim.red_first.tests != tuple(judgment_r4.tests):
+                raise ValueError(
+                    f"claim[R4].red_first ran tests "
+                    f"{list(r4_claim.red_first.tests)}, but judgment.r4 "
+                    f"declares {list(judgment_r4.tests)} -- a red-first run "
+                    f"that judged different tests than the ones declared is "
                     f"evidence about nothing the lane asked for"
+                )
+            if r4_claim.red_first.broken_commit != judgment_r4.broken_commit:
+                raise ValueError(
+                    f"claim[R4].red_first ran against broken commit "
+                    f"{r4_claim.red_first.broken_commit!r}, but judgment.r4 "
+                    f"records {judgment_r4.broken_commit!r} -- the two must "
+                    f"name the same commit"
                 )
 
     def _check_operator_language_agrees(self, policy: JudgmentR2) -> None:

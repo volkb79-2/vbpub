@@ -119,6 +119,7 @@ from .evaluate import evaluate_coverage, evaluate_targets, resolve_coverage_keys
 from .statement_attribution import attribute_statements
 from .output import VerdictOutput
 from .verdict import (
+    CanaryAttempt,
     CanaryResult,
     Claim,
     Coverage,
@@ -3438,31 +3439,44 @@ def _run_prepared_lane(
         if result.outcome is not Outcome.PASS:
             canary_result = CanaryResult(
                 mechanism=canary_cfg.mechanism,
-                target=canary_cfg.target,
-                description=(
-                    "the lane's baseline command did not PASS -- a canary "
-                    "control cannot be a known-good half of a failing lane"
+                attempts=(
+                    CanaryAttempt(
+                        target=canary_cfg.target,
+                        description=(
+                            "the lane's baseline command did not PASS -- a "
+                            "canary control cannot be a known-good half of a "
+                            "failing lane"
+                        ),
+                        control_outcome=result.outcome,
+                    ),
                 ),
-                control_outcome=result.outcome,
             )
             claims += (build_canary_claim(canary_result),)
-            judgment_r3 = JudgmentR3(mechanism=canary_cfg.mechanism, target=canary_cfg.target)
+            judgment_r3 = JudgmentR3(
+                mechanism=canary_cfg.mechanism, targets=(canary_cfg.target,)
+            )
         elif canary_cfg.mechanism == "uncovered-line" and next(
             claim for claim in claims if claim.rigor == "R1"
         ).status is not Outcome.PASS:
             r1_status = next(claim for claim in claims if claim.rigor == "R1").status
             canary_result = CanaryResult(
                 mechanism=canary_cfg.mechanism,
-                target=canary_cfg.target,
-                description=(
-                    "the lane's baseline R1 coverage measurement did not "
-                    "PASS -- an uncovered-line canary control has no "
-                    "known-good coverage baseline"
+                attempts=(
+                    CanaryAttempt(
+                        target=canary_cfg.target,
+                        description=(
+                            "the lane's baseline R1 coverage measurement did "
+                            "not PASS -- an uncovered-line canary control has "
+                            "no known-good coverage baseline"
+                        ),
+                        control_outcome=r1_status,
+                    ),
                 ),
-                control_outcome=r1_status,
             )
             claims += (build_canary_claim(canary_result),)
-            judgment_r3 = JudgmentR3(mechanism=canary_cfg.mechanism, target=canary_cfg.target)
+            judgment_r3 = JudgmentR3(
+                mechanism=canary_cfg.mechanism, targets=(canary_cfg.target,)
+            )
         else:
             try:
                 canary_result = run_isolated_canary(
@@ -3492,7 +3506,7 @@ def _run_prepared_lane(
             else:
                 claims += (build_canary_claim(canary_result),)
                 judgment_r3 = JudgmentR3(
-                    mechanism=canary_cfg.mechanism, target=canary_cfg.target
+                    mechanism=canary_cfg.mechanism, targets=(canary_cfg.target,)
                 )
         ended = iso_utc(clock())
 
@@ -3659,6 +3673,11 @@ def _build_ingested_judgment_r2(
         survived_uncovered=ingested.survived_uncovered,
         discarded=ingested.discarded,
         lines_without_candidates=ingested.lines_without_candidates,
+        # B050/A-427 (schema v10): the floor the ingested judgment applied,
+        # read from the lane rather than assumed to be 100.0 -- which is the
+        # whole point of the field. It is REQUIRED under `ingested` and
+        # FORBIDDEN under `native`, because a native R2 has no floor at all.
+        fail_under=lane.judge.mutation.fail_under,
         kill_attribution="unattributed",
         mode=lane.judge.mode or "changed_lines",
         targets=lane.judge.targets if lane.judge.mode == "whole_target" else None,

@@ -383,11 +383,39 @@ must stop and ask, never invent one:
 | Outcome | `reason_code` |
 |---|---|
 | `PASS` | the key is **omitted**, not null. A pass has no cause to name. |
-| `FAIL` | `UNCOVERED_LINES`, `UNCOVERED_BRANCHES`, `EXCLUDED_LINES`, `UNCLASSIFIED_LINES`, `MUTANTS_SURVIVED`, `CANARY_SURVIVED`, `COMMAND_FAILED` |
+| `FAIL` | `UNCOVERED_LINES`, `UNCOVERED_BRANCHES`, `EXCLUDED_LINES`, `UNCLASSIFIED_LINES`, `MUTANTS_SURVIVED`, `CANARY_SURVIVED`, `COMMAND_FAILED`, `RED_FIRST_UNPROVEN` |
 | `ERROR` | `GIT_FAILED`, `UNREADABLE_ARTIFACT`, `FORMAT_MISMATCH`, `BAD_LANE_CONFIG`, `EXEC_FAILED`, `OUTPUT_WRITE_FAILED`, `MUTATION_DISCOVERY_FAILED` |
-| `NO_MEASUREMENT` | `DIRTY_TREE`, `HEAD_CHANGED`, `BASE_IS_HEAD`, `EMPTY_COVERAGE`, `BRANCH_UNAVAILABLE`, `TARGET_NOT_MEASURED`, `MISSING_ATTESTATION`, `STALE_ATTESTATION`, `MISSING_EXTERNAL_TOOL` |
+| `NO_MEASUREMENT` | `DIRTY_TREE`, `HEAD_CHANGED`, `BASE_IS_HEAD`, `EMPTY_COVERAGE`, `BRANCH_UNAVAILABLE`, `TARGET_NOT_MEASURED`, `MISSING_ATTESTATION`, `STALE_ATTESTATION`, `MISSING_EXTERNAL_TOOL`, `PROVENANCE_UNVERIFIED` |
 | `BUDGET_EXCEEDED` | `LANE_TIMEOUT`, `MUTANT_LIMIT_EXCEEDED`, `SNAPSHOT_LIMIT_EXCEEDED` |
 | `INCONCLUSIVE` | `NO_MUTANTS`, `MUTATION_UNSUPPORTED`, `CANARY_INCONCLUSIVE`, `ALL_MUTANTS_EQUIVALENT` |
+
+**Two codes join the table at schema v10 (Wave D), and both are RESERVED —
+the pattern `MISSING_EXTERNAL_TOOL` set (A-013/A-086/A-144): a code lands in
+the bump the project is already paying and its producer renders it later, for
+free, rather than costing a second cut of its own.**
+
+- **`NO_MEASUREMENT`/`PROVENANCE_UNVERIFIED`** (B004/A-276/A-430) — assay
+  could not establish WHICH artifact the lane's tests ran against: the
+  adjudicated image-provenance document is absent, unreadable, carries an
+  unaccepted `schema_version`, or reports a mismatch. Payload-free; the
+  discriminating detail lives in the input document and in the claim's
+  `detail`. **A mismatch is `NO_MEASUREMENT` and never `FAIL`**: it says the
+  measurement's subject is unknown, not that the code is bad, and a `FAIL`
+  would let a consumer read "the code is bad" off a deployment fact.
+- **`FAIL`/`RED_FIRST_UNPROVEN`** (F015/M7, A-433 as amended by A-434 under
+  DA-R18) — the R4 red-first (`fail-before/pass-after`) claim's judged
+  refusal: assay materialised both commits and ran the declared tests on
+  both, and the property did not hold. Either the test PASSED at the broken
+  commit (it does not discriminate the fix) or it did not PASS at HEAD; WHICH
+  is read off the claim's two recorded outcomes and its `detail`. It is a
+  judged **`FAIL`**, not a `NO_MEASUREMENT`, because both runs completed and
+  assay therefore measured something — `CANARY_SURVIVED` one rung down.
+  Deliberately not `COMMAND_FAILED`: that is R0's statement about the LANE's
+  declared command, R3 likewise maps neither of its own two runs onto it, and
+  on a claim whose before-run is *expected* to fail a bare `COMMAND_FAILED`
+  could not say which side failed. Every failure of the MECHANISM itself
+  (snapshot, overlay, deadline, unreadable output) keeps the code its own
+  substrate already raises.
 
 **(B026 N-4, decided 2026-08-25) A refusal's diagnosis is `reason_code`
 alone — never a free-text field — and that is deliberate, not an
@@ -416,6 +444,28 @@ every member is a real, previously-decided fact, and `BAD_LANE_CONFIG`
 already says enough to know which lane-declaration class of problem this
 is even without the free-text string a `LaneConfigError` would have
 carried.
+
+**(B053/DA-D2, schema v10 — this is now PARTLY superseded, and the part that
+changed is exactly the part B026 N-4 called a real API commitment rather than
+a quick fix.)** Wave D pays both commitments, deliberately and in one cut:
+
+- the CLI prints ONE stderr line `assay: {outcome}/{reason_code}: {message}`
+  through a single handler at the `run` command's boundary, and the same text
+  goes to the library `diagnostics` stream, so a library caller gets it
+  without stderr (phase 1);
+- the same text is byte-copied onto the refusing claim as **`claim.detail`**
+  (A-428), bounded at 2048 UTF-8 bytes with B014's truncation convention
+  (`detail_dropped_bytes`), present on NON-PASS claims only.
+
+What did NOT change, and must not be read as changed: **`detail` is
+DECLARED, NOT VERIFIED** (A-230a, `producer_tool`'s own words). Assay copies
+that text and never parses it; the model and `assay verify` check the
+presence rule and the byte bound and never the content. The closed
+`(status, reason_code)` pair remains the ONLY machine-readable statement in
+the document (A-138/A-170), and a consumer that pattern-matches `detail` is
+reading diagnosis as policy. A structured detail was rejected for precisely
+that reason: `reason_code` is already the structured surface, and a second
+one would re-open the vocabulary A-138/A-170 shut.
 
 ### Bounded command-output tails
 

@@ -30,6 +30,7 @@ from jsonschema import Draft202012Validator
 
 from assay.errors import Outcome, ReasonCode
 from assay.verdict import (
+    CanaryAttempt,
     CanaryResult,
     Claim,
     Judgment,
@@ -69,15 +70,19 @@ def _validate(document: dict, validator: Draft202012Validator) -> None:
 def test_pass_matches_the_hand_written_fixture(validator: Draft202012Validator):
     canary_result = CanaryResult(
         mechanism="uncovered-line",
-        target="pkg/greet.py",
-        description=(
-            "appended never-called `def _assay_canary_unreached` "
-            "(2 uncovered lines) at end of file"
+        attempts=(
+            CanaryAttempt(
+                target="pkg/greet.py",
+                description=(
+                    "appended never-called `def _assay_canary_unreached` "
+                    "(2 uncovered lines) at end of file"
+                ),
+                control_outcome=Outcome.PASS,
+                transformed_outcome=Outcome.FAIL,
+                expected_reason_code=ReasonCode.UNCOVERED_LINES,
+                observed_reason_code=ReasonCode.UNCOVERED_LINES,
+            ),
         ),
-        control_outcome=Outcome.PASS,
-        transformed_outcome=Outcome.FAIL,
-        expected_reason_code=ReasonCode.UNCOVERED_LINES,
-        observed_reason_code=ReasonCode.UNCOVERED_LINES,
     )
     r3_claim = Claim(
         rigor="R3", source="computed", status=Outcome.PASS,
@@ -94,7 +99,7 @@ def test_pass_matches_the_hand_written_fixture(validator: Draft202012Validator):
             # roots and NO base -- JUDGE_FIELDS_BY_RIGOR gives R3 none, so a
             # comparison commit here would be invented rather than resolved.
             resolved=JudgmentResolved(language="python", source_roots=("pkg",)),
-            r3=JudgmentR3(mechanism="uncovered-line", target="pkg/greet.py"),
+            r3=JudgmentR3(mechanism="uncovered-line", targets=("pkg/greet.py",)),
         ),
         claims=(R0_PASS, r3_claim),
     )
@@ -109,15 +114,19 @@ def test_canary_survived_via_unexpected_pass_matches_the_hand_written_fixture(
 ):
     canary_result = CanaryResult(
         mechanism="uncovered-line",
-        target="pkg/greet.py",
-        description=(
-            "appended never-called `def _assay_canary_unreached` "
-            "(2 uncovered lines) at end of file"
+        attempts=(
+            CanaryAttempt(
+                target="pkg/greet.py",
+                description=(
+                    "appended never-called `def _assay_canary_unreached` "
+                    "(2 uncovered lines) at end of file"
+                ),
+                control_outcome=Outcome.PASS,
+                transformed_outcome=Outcome.PASS,  # unexpectedly passed
+                expected_reason_code=ReasonCode.UNCOVERED_LINES,
+                observed_reason_code=None,
+            ),
         ),
-        control_outcome=Outcome.PASS,
-        transformed_outcome=Outcome.PASS,  # the bad case unexpectedly passed
-        expected_reason_code=ReasonCode.UNCOVERED_LINES,
-        observed_reason_code=None,
     )
     r3_claim = Claim(
         rigor="R3", source="computed", status=Outcome.FAIL,
@@ -136,7 +145,7 @@ def test_canary_survived_via_unexpected_pass_matches_the_hand_written_fixture(
             # roots and NO base -- JUDGE_FIELDS_BY_RIGOR gives R3 none, so a
             # comparison commit here would be invented rather than resolved.
             resolved=JudgmentResolved(language="python", source_roots=("pkg",)),
-            r3=JudgmentR3(mechanism="uncovered-line", target="pkg/greet.py"),
+            r3=JudgmentR3(mechanism="uncovered-line", targets=("pkg/greet.py",)),
         ),
         claims=(R0_PASS, r3_claim),
     )
@@ -151,15 +160,19 @@ def test_canary_survived_via_wrong_reason_matches_the_hand_written_fixture(
 ):
     canary_result = CanaryResult(
         mechanism="import-break",
-        target="pkg/greet.py",
-        description=(
-            "mislabeled: performed the uncovered-line transform under the "
-            "import-break mechanism name"
+        attempts=(
+            CanaryAttempt(
+                target="pkg/greet.py",
+                description=(
+                    "mislabeled: performed the uncovered-line transform under "
+                    "the import-break mechanism name"
+                ),
+                control_outcome=Outcome.PASS,
+                transformed_outcome=Outcome.FAIL,
+                expected_reason_code=ReasonCode.COMMAND_FAILED,
+                observed_reason_code=ReasonCode.UNCOVERED_LINES,  # wrong cause
+            ),
         ),
-        control_outcome=Outcome.PASS,
-        transformed_outcome=Outcome.FAIL,
-        expected_reason_code=ReasonCode.COMMAND_FAILED,
-        observed_reason_code=ReasonCode.UNCOVERED_LINES,  # wrong cause
     )
     r3_claim = Claim(
         rigor="R3", source="computed", status=Outcome.FAIL,
@@ -175,7 +188,7 @@ def test_canary_survived_via_wrong_reason_matches_the_hand_written_fixture(
         ended="2026-08-07T13:10:05+00:00",
         judgment=Judgment(
             resolved=JudgmentResolved(language="python", source_roots=("pkg",)),
-            r3=JudgmentR3(mechanism="import-break", target="pkg/greet.py"),
+            r3=JudgmentR3(mechanism="import-break", targets=("pkg/greet.py",)),
         ),
         claims=(R0_PASS, r3_claim),
     )
@@ -190,13 +203,17 @@ def test_canary_inconclusive_matches_the_hand_written_fixture(
 ):
     canary_result = CanaryResult(
         mechanism="not-a-real-mechanism",
-        target="pkg/greet.py",
-        description=(
-            "'not-a-real-mechanism' is not a known canary mechanism -- "
-            "expected one of ['import-break', 'uncovered-line']; nothing "
-            "to judge"
+        attempts=(
+            CanaryAttempt(
+                target="pkg/greet.py",
+                description=(
+                    "'not-a-real-mechanism' is not a known canary mechanism -- "
+                    "expected one of ['import-break', 'uncovered-line']; "
+                    "nothing to judge"
+                ),
+                control_outcome=Outcome.PASS,
+            ),
         ),
-        control_outcome=Outcome.PASS,
     )
     r3_claim = Claim(
         rigor="R3", source="computed", status=Outcome.INCONCLUSIVE,
@@ -212,7 +229,7 @@ def test_canary_inconclusive_matches_the_hand_written_fixture(
         ended="2026-08-07T13:15:05+00:00",
         judgment=Judgment(
             resolved=JudgmentResolved(language="python", source_roots=("pkg",)),
-            r3=JudgmentR3(mechanism="not-a-real-mechanism", target="pkg/greet.py"),
+            r3=JudgmentR3(mechanism="not-a-real-mechanism", targets=("pkg/greet.py",)),
         ),
         claims=(R0_PASS, r3_claim),
     )
@@ -236,7 +253,7 @@ def test_recording_only_rejected_true_would_differ_from_the_expected_artifact(
     document = canary_verdict_fixture("r3_pass")
     assert why_invalid(validator, document) == []
 
-    del document["claims"][1]["canary"]["observed_reason_code"]
+    del document["claims"][1]["canary"]["attempts"][0]["observed_reason_code"]
     messages = why_invalid(validator, document)
     assert messages, (
         "a non-PASS transformed_outcome without observed_reason_code was accepted"
@@ -272,8 +289,13 @@ def test_a_canary_payload_outside_the_r3_branch_is_rejected(
 
 def test_the_model_refuses_a_canary_payload_outside_r3():
     canary_result = CanaryResult(
-        mechanism="uncovered-line", target="pkg/greet.py", description="x",
-        control_outcome=Outcome.PASS,
+        mechanism="uncovered-line",
+        attempts=(
+            CanaryAttempt(
+                target="pkg/greet.py", description="x",
+                control_outcome=Outcome.PASS,
+            ),
+        ),
     )
     with pytest.raises(ValueError, match="a canary payload belongs to the R3 claim"):
         Claim(
@@ -284,8 +306,13 @@ def test_the_model_refuses_a_canary_payload_outside_r3():
 
 def test_the_model_refuses_a_canary_payload_on_a_no_measurement_claim():
     canary_result = CanaryResult(
-        mechanism="uncovered-line", target="pkg/greet.py", description="x",
-        control_outcome=Outcome.PASS,
+        mechanism="uncovered-line",
+        attempts=(
+            CanaryAttempt(
+                target="pkg/greet.py", description="x",
+                control_outcome=Outcome.PASS,
+            ),
+        ),
     )
     with pytest.raises(ValueError, match="NO_MEASUREMENT carries no canary payload"):
         Claim(

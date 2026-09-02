@@ -5,6 +5,76 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
+### Changed — BREAKING: verdict schema v9 → v10
+
+**`VERDICT_SCHEMA_VERSION` is now 10, and `assay verify` refuses a v9 document
+exactly as v9 refused v8** — one version-only diagnostic, no dual-version
+verifier, no compatibility writer, no in-place upgrade (A-138/A-170). Six wire
+changes ride ONE bump, deliberately: each was independently "a field at the
+next schema cut", and cutting a version per field is the mistake this project
+wrote B007's sequencing note to prevent.
+
+**Every consumer pins its own `.pyz`, so nothing re-points until it re-pins;
+these notes are what it re-pins against.** The full "Migration notes
+(v9 → v10)" section lands in `docs/CONSUMERS.md` with the rest of this wave,
+once the items that ride this bump have their own refusals to describe. The
+short form:
+
+- **`judgment.r2.fail_under`** — REQUIRED under `producer = "ingested"`,
+  FORBIDDEN under `"native"`, spelled byte-identically to
+  `judgment.r1.fail_under`. An ingested R2 verdict now states the mutation
+  floor it was judged against, so `assay verify` reads that floor FROM the
+  document instead of assuming the `100.0` the loader used to force. Every
+  ingested lane that could have produced a v9 document declared `100.0`, so
+  that is the value a migrated document carries. (B050, A-427)
+- **`claim.detail` + `claim.detail_dropped_bytes`** — the refusing sentence on
+  the wire, on NON-PASS claims only, byte-copied from the same text the
+  diagnostics stream carries, bounded at 2048 UTF-8 bytes with B014's
+  truncation convention (head kept, bytes dropped counted). **Declared, not
+  verified** (A-230a): assay copies this text and never parses it, and the
+  closed `(status, reason_code)` pair remains the only machine-readable
+  statement in the document. A consumer that pattern-matches `detail` is
+  reading diagnosis as policy. (B053/DA-D2(c), A-428)
+- **`judgment.r3.targets` + `judgment.r3.aggregation`, and `canary.attempts[]`**
+  — an R3 lane's canary declaration is now an ORDERED, bounded list. The
+  singular `judgment.r3.target` and the flat `canary` body do NOT survive:
+  **the migration for every existing single-target R3 lane is a one-element
+  `targets` array and a one-element `attempts` array**, and such a lane
+  records NO `aggregation` (with one probe `any` and `all` denote the same
+  function). The bound is `MAX_CANARY_TARGETS = 8`, MEASURED — ~2.76 s of
+  materialisation per target against the smallest budget any shipped worked
+  example declares. Each attempt carries a required `disposition`
+  (`"attempted"`/`"not_attempted"`) and, when not attempted, a closed
+  `not_attempted_reason`. (B007/DA-D8, A-432)
+- **`PROVENANCE_UNVERIFIED`** joins the `NO_MEASUREMENT` reason-code set, and
+  **`RED_FIRST_UNPROVEN`** joins the `FAIL` set. Both are RESERVED at this cut
+  and rendered by their own producers later — the `MISSING_EXTERNAL_TOOL`
+  pattern (A-013/A-086/A-144). A consumer keeping its own copy of the
+  vocabulary must accept both members. (B004/A-430; F015/A-433 as amended by
+  A-434 under DA-R18)
+- **`evidence` narrowing**: `source = "adjudicated"` now implies
+  `verified_by_assay: false` in BOTH the model and the JSON Schema. Up to v9
+  the adjudicated branch left it an unconstrained boolean, so a Tier-2 result
+  could ship `true` and be legal in both layers, reading as computed. This is
+  a narrowing, and a narrowing is still a compatibility fact (A-029), so it
+  lands in the bump that carries its reason code. (B004, A-430)
+- **`"R4"`** joins the ordered rigor ladder, with `judgment.r4 = {tests,
+  broken_commit, broken_commit_source}` and the `red_first` claim payload
+  carrying BOTH recorded outcomes. `assay verify` re-derives the status as
+  `PASS` iff `before_outcome != PASS` and `after_outcome == PASS`. **Only the
+  WIRE SHAPE lands here**; the producer is a later package, and until it
+  exists a lane that declares `R4` is refused at load with a clean
+  `ERROR`/`BAD_LANE_CONFIG` rather than accepted into a silence. (F015/M7,
+  A-433/A-434)
+
+**What did NOT change, and is not going to**: `assay.toml`'s
+`schema_version` stays **2** — every lane-file addition above is additive and
+optional, and every existing lane file keeps loading byte-unchanged;
+`assay lanes --json`'s `inventory_schema` stays **1**; `assay.diff`,
+`assay.git`, `assay.mutation` and `assay.adapters.python` keep their names and
+signatures; and `outcome`, `status`, `coverage.pct`, `coverage.missing_lines`
+and `coverage.missing_branch_lines` are still read by those names.
+
 ### Fixed
 - A coverage or mutation tool that deletes and recreates its own output
   directory (Vitest's default `coverage.clean = true`, or any `rm -rf out &&

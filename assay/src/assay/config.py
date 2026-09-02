@@ -142,7 +142,25 @@ LANE_SCHEMA_VERSION = 2
 
 #: A-053. TESTING-METHODOLOGY §Axis 1 / §Axis 2, and §12's table.
 SCOPES: frozenset[str] = frozenset({"S0", "S1", "S2", "S3", "S4"})
-RIGOR_LEVELS: tuple[str, ...] = ("R0", "R1", "R2", "R3")
+#: (F015/M7, A-433 under DA-R16, schema v10) ``"R4"`` — red-first
+#: (fail-before/pass-after) — is the next rung of the ORDERED ladder, not a
+#: new keying model: claims are keyed by ``rigor``, this tuple is what
+#: canonicalises a lane's declaration (an R0-led ordered SUBSEQUENCE, so
+#: ``["R0","R4"]`` is legal and declaration stays non-contiguous), and
+#: ``_replace_highest_higher_rigor_claim_with_git_failed`` replaces the
+#: highest declared higher-rigor claim. Red-first asserts a strictly more
+#: specific property than R3's canary and needs TWO materialisations, so it
+#: genuinely is the claim most dependent on cleanup.
+#:
+#: **The PRODUCER lands in phase 3.** Until it does, a lane that declares
+#: ``"R4"`` is refused at load with a clean ``LaneConfigError`` rather than
+#: accepted into a silence: :data:`JUDGE_FIELDS_BY_RIGOR` requires
+#: ``red_first``, which is not yet a member of :data:`_KNOWN_JUDGE_FIELDS`,
+#: so the declaration cannot be satisfied in either direction. That is
+#: deliberate and is the only shape AGENTS.md §4.2a permits for a level whose
+#: judge does not exist yet — an accepted-but-inert rigor level would render
+#: no claim and trip A-024's coverage rule as an unhandled ValueError.
+RIGOR_LEVELS: tuple[str, ...] = ("R0", "R1", "R2", "R3", "R4")
 ENFORCEMENTS: frozenset[str] = frozenset({"gate", "advisory"})
 
 #: The eight fields every lane declares at its top level, whatever its rigor.
@@ -238,6 +256,13 @@ JUDGE_FIELDS_BY_RIGOR: Mapping[str, tuple[str, ...]] = MappingProxyType(
         ),
         "R2": ("language", "source_roots", "mutation", "base"),
         "R3": ("language", "source_roots", "canary"),
+        # F015/A-433: the declaration red-first needs. `red_first` is NOT yet
+        # in `_KNOWN_JUDGE_FIELDS` (phase 3 adds it with its producer), so an
+        # R4 lane is refused at load in both directions -- omit it and the
+        # required field is missing, supply it and the field is unknown. A
+        # clean `LaneConfigError` either way, which is what a level whose
+        # judge does not exist yet must give (AGENTS.md §4.2a).
+        "R4": ("red_first",),
     }
 )
 
