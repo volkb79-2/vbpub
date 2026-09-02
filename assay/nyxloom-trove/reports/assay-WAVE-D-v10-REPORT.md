@@ -1333,3 +1333,155 @@ recorded here because a reviewer will (rightly) ask about it.
   offered one; with `src/assay` clean it would record nothing and could only
   become a place for findings to hide. Recorded as a rejected alternative in
   A-417.
+
+## Generation 4 — gate transcript
+
+**GATE-VERIFIED COMMIT: `7c9e8dd1`.** One run, first try, green, with B024's
+new phase present and running last. Verdict read in a SEPARATE step from the
+log's own markers:
+
+```
+COMPLETE_MARKERS=1          (ASSAY_REGISTERED_GATE_COMPLETE=1, exactly one)
+GATE_EXIT=0
+BAD=0                       (grep -c -E 'FAILED|DIRTY_TREE|Traceback')
+Created wheel for assay: filename=assay-4.1.1.dev16+g7c9e8dd1-py3-none-any.whl
+  size=526691 sha256=cc1116d7591e3f5f7c35bee40ed5c5e439f5453c3070dfed48edb4c881c147b4
+tester-unified: PASS (exit 0)
+  commit: 7c9e8dd142cfb8c6057655218846fa3aed680c5c
+ASSAY_GATE_PHASE=wheel-installed
+ASSAY_GATE_PHASE=attestation-hardened
+ASSAY_GATE_PHASE=verdict-v5-accepted
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified
+ASSAY_GATE_PHASE=verdict-v9-successors-verified
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_GATE_PHASE=pyflakes-clean
+```
+
+`ASSAY_GATE_PHASE=pyflakes-clean` is the end-to-end proof the scratch
+transcript could not give: the phase runs in the real container, from the
+committed one-wheel closure, after every other phase, on a run where all of
+them passed. The wheel name carries the judged commit.
+
+**No whole-suite run preceded this gate**, under the host-load throttle
+(below). The targeted runs were `tests/test_distribution_gate.py` (21 passed)
+and that module plus `test_docs_examples_and_vocabulary.py` and
+`test_distribution_build_release.py` (92 passed). Generation 3's last
+whole-suite figure was 3985 passed / 20 skipped; this generation adds 6 tests
+to `test_distribution_gate.py`, so the expected figure at the next
+whole-suite run is **3991**. That is an arithmetic expectation, **not a
+measurement** — generation 5 must measure it, not quote it.
+
+## Generation 4 — the host-load throttle (controller directive, binding)
+
+The host's 1-minute load reached **85 on 8 cores** and degraded a production
+game server sharing the host, from this wave's own concurrent work (R-1's
+pytest plus a gate container). The controller capped the running gate
+container to 3 CPUs live; it completed green, slower. Measured recovery
+across the rest of the run: **85 → 10.28 → 7.45** (1-minute average).
+
+Binding for the rest of the wave: never `pytest -n`/xdist (serial only,
+`nice -n 19 ionice -c 3`, targeted files, whole suite at most once per
+checkpoint); never two gate containers at once (check `docker ps | grep
+tester-unified` is empty first, then
+`docker update --cpus=3 $(docker ps -q --filter ancestor=tester-unified:local)`
+right after launching); no build/pip/wheel step concurrent with a suite run.
+
+## Generation 4 — B004's ciu assets, RE-CAPTURED (DA-D7), with the measured delta
+
+DA-D7 requires the W2 frozen ciu assets to be re-captured before anything is
+built against them, on the stated ground that ciu 7.10.1 emits
+`schema_version: 2`. Done. **The delta is real but much smaller than the
+ruling assumes, and one clause of the ruling's premise is wrong.**
+
+### Transcript — the capture
+
+```
+$ cd /workspaces/dstdns && ciu version
+ciu 7.10.1
+$ ciu provenance --json > <scratch>/ciu-provenance.json 2> <scratch>/ciu-provenance.err
+EXIT=2                    # stderr EMPTY; exit 2 is the mismatch signal, not an error
+$ sha256sum <scratch>/ciu-provenance.json
+e7fa23dab5cc5e08e2d8156c82a16c2f4ed2742c9b9657805c96508ba68765af
+$ wc -c
+3512
+```
+
+Frozen in the repository as
+`nyxloom-trove/carve-assets/W2/ciu-provenance-live-mismatch-ciu-7.10.1.json`
+— a **new** asset beside the 6.0.3 ones, never a rewrite of them, which is
+that MANIFEST's own stated rule. The full delta table is in the MANIFEST
+addendum; the summary:
+
+| | frozen 6.0.3 asset | live 7.10.1 capture |
+|---|---|---|
+| `schema_version` | `1` | **`2`** |
+| top-level keys | `schema_version`, `instance`, `commit_under_test`, `tree_state`, `containers`, `overall` | **identical** |
+| per-container keys | `name`, `image`, `labelled_revision`, `status` | **identical** |
+| containers | 20 | 20 |
+| statuses | 16 `unlabelled`, 4 `mismatch` | **16 `unlabelled`, 4 `mismatch`** |
+| `overall` | `mismatch` | `mismatch` |
+| `instance` | `dstdns-98535c` | `dstdns-98535c` |
+
+**The correction.** The wave prompt says ciu 7.10.1 "now emits
+`schema_version: 2` with an `unlabelled` container status", which reads as if
+`unlabelled` arrived with the bump. It did not: the frozen **6.0.3 /
+schema-1** asset already carries sixteen `unlabelled` entries. Measured
+directly by parsing both documents. So the adjudicator's status vocabulary
+needs no widening for the observed set; the ONLY schema-relevant change is
+the version integer.
+
+Everything else that moved is a fact about dstdns and its vendor images, not
+about ciu's document shape: `commit_under_test` `016a2674` → `a9b10791`;
+four `labelled_revision` values changed as upstream images moved
+(`otel-aggregator`/`otel-collector-node` `1400269f…` → `f8178323…`,
+`skywalking-ui` `9fc54aa1…` → `19ca126d…`); six `image` fields flipped
+between a tag and a bare image id; one container swapped in dstdns's own
+compose (`webapp-ui` → `pwmcp`).
+
+### What this changes for the carve, and what it deliberately does not
+
+W2 §5.4's refusal table (carve line 230) makes `schema_version` being the
+integer `1` a PASS condition and anything else `ERROR`/`FORMAT_MISMATCH`.
+That is the one place the bump bites, and it is a **product call** the carve
+does not answer: accept `{1, 2}`, accept `2` only, or accept a
+lane-declared version. **I did not decide it** — see the decision ask below.
+
+**Still true, and still B004's real blocker:** `overall` is pinned at
+`mismatch` on this host for the reason the 6.0.3 note gives (ciu compares
+every running container's `org.opencontainers.image.revision` against its own
+repository's short hash, and the labelled ones carry upstream vendor
+revisions). The green-path oracle still has no live-host witness;
+`ciu-provenance-green-reference.json` remains the only real `verified-match`
+document, producer-pinned by ciu's own test.
+
+### Decision ask (B004 / DA-D7, for the controller)
+
+> W2 §5.4 refuses any `schema_version` that is not the integer `1`. ciu now
+> emits `2`, and the two documents are otherwise structurally identical on
+> this host (same keys, same status vocabulary, same `overall`). Should the
+> adjudicator (a) accept `{1, 2}` and refuse anything else, (b) accept `2`
+> only — a hard cut matching assay's own hard-cut doctrine for its verdict
+> schema, at the cost of refusing any consumer still on a ciu 6.x host, or
+> (c) take the accepted version from the lane declaration? The carve names no
+> rule for a bumped producer version, and A-334 forbids me inventing one.
+
+## Generation 4 — what is NOT done, and why
+
+- **Phase 2 was not started.** No A-row for B050/B051/B052/B053-`detail`/
+  B004/B007/F015 exists yet; `verdict.py`, `verify.py`, `src/assay/schemas/`
+  and the drift-guard carve-assets are untouched and no commit carries `!`.
+  The branch is still releasable on v9. The seams generation 4 located for
+  that work are in BRIEF-4 §5, so generation 5 does not re-derive them.
+- **R-1's round-1 fix package was not started.** It arrived from the
+  controller while this generation's gate was running, with the explicit
+  instruction to cut rather than begin it if at/past the E-008 threshold —
+  which generation 4 was. It is BRIEF-4's first work item, and R-1's report
+  is now in the repository verbatim at
+  `nyxloom-trove/reports/assay-WAVE-D-v10-REVIEW-R1-round1.md`.
+- **The ciu `schema_version` question was not decided.** Decision ask above.

@@ -643,3 +643,99 @@ below.
 - **No schema work in this commit**: `verdict.py`, `verify.py`,
   `src/assay/schemas/` and the drift-guard carve-assets are untouched, and
   the commit carries no `!`. The phase-1 fallback release can carry it.
+
+### Registered gate — GREEN on `7c9e8dd1`, with the new phase present
+
+Launched exactly as BRIEF-2 §7 shows (log path a literal inside the `bash -c`
+string; worktree committed clean and left untouched for the whole run).
+
+**A launch-check correction worth passing on.** BRIEF-1 §6 says to confirm
+exactly one gate process and one container. Two `tester-unified` containers
+were running at launch — but the second was **reviewer R-1's**, on its own
+worktree `.worktrees/assay-wave-d-r1`, which is expected and is not the
+BRIEF-1 hazard (two gates appending to ONE log). `pgrep -af
+'tester-unified-gate.sh'` shows the worktree path in the argv; check THAT,
+not the count. Also: `docker ps --format '{{.Names}}'` never matches
+"tester-unified" — container names are random (`hardcore_euler`), so grep the
+IMAGE. Twice this generation that mistake read as "my gate died".
+
+Verdict read in a SEPARATE step from the log's own markers:
+
+```
+COMPLETE_MARKERS=1          (ASSAY_REGISTERED_GATE_COMPLETE=1, exactly one)
+GATE_EXIT=0
+BAD=0                       (grep -c -E 'FAILED|DIRTY_TREE|Traceback')
+Created wheel for assay: filename=assay-4.1.1.dev16+g7c9e8dd1-py3-none-any.whl
+  size=526691 sha256=cc1116d7591e3f5f7c35bee40ed5c5e439f5453c3070dfed48edb4c881c147b4
+tester-unified: PASS (exit 0)
+  commit: 7c9e8dd142cfb8c6057655218846fa3aed680c5c
+ASSAY_GATE_PHASE=wheel-installed
+ASSAY_GATE_PHASE=attestation-hardened
+ASSAY_GATE_PHASE=verdict-v5-accepted
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified
+ASSAY_GATE_PHASE=verdict-v9-successors-verified
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_GATE_PHASE=pyflakes-clean
+```
+
+The wheel name carries the judged commit (`g7c9e8dd1`). **`7c9e8dd1` is the
+gate-verified commit**, and `ASSAY_GATE_PHASE=pyflakes-clean` is B024's new
+phase, running last, in the real container, from the committed one-wheel
+closure — the end-to-end proof the scratch transcript could not give.
+
+Both v9 schema phases passed again: no `verdict.py`, `verify.py`, schema or
+drift-guard file was touched, and no commit on the branch carries `!`.
+
+**No whole-suite run preceded this gate** — see the throttle below. The
+targeted runs were `tests/test_distribution_gate.py` (21 passed) and that
+module plus `test_docs_examples_and_vocabulary.py` and
+`test_distribution_build_release.py` (92 passed).
+
+### HOST LOAD THROTTLE — controller directive, 2026-09-02, binding for the rest of the wave
+
+The host's 1-minute load reached **85 on 8 cores** and degraded a production
+game server sharing it, from this wave's own concurrent work (R-1's pytest
+plus a gate container). The controller capped this generation's running gate
+container to 3 CPUs live (`docker update --cpus=3`); it finished green,
+slower. **Load fell 85 → 10.28 → 7.45 over the rest of the run.** The rules,
+which generation 5 inherits:
+
+1. **Never `pytest -n` / xdist.** Serial only, prefixed `nice -n 19 ionice -c
+   3`. Prefer targeted test files; run the whole suite **at most once per
+   checkpoint**.
+2. **Never two gate containers at once.** Before launching, check `docker ps
+   | grep tester-unified` is EMPTY and wait if it is not — R-1 runs one too.
+   Immediately after launching, run
+   `docker update --cpus=3 $(docker ps -q --filter ancestor=tester-unified:local)`.
+3. **No build/pip/wheel step concurrently with a suite run.** (B024's
+   `pip download` is tiny and exempt.)
+
+### 14. `docs(assay): Wave D generation 4 checkpoint -- B024 landed and gate-green, R-1 round 1 filed, BRIEF-4`
+
+- No product code, no test change. Records only:
+  `nyxloom-trove/reports/assay-WAVE-D-v10-REVIEW-R1-round1.md` (R-1's round-1
+  report, copied **verbatim** per the controller's package step (a)),
+  `nyxloom-trove/reports/assay-WAVE-D-v10-BRIEF-4.md` (new),
+  `nyxloom-trove/carve-assets/W2/ciu-provenance-live-mismatch-ciu-7.10.1.json`
+  (new frozen asset) with its `MANIFEST.md` addendum, this LOG's gate entry,
+  and the REPORT's generation-4 sections.
+- **A docs-only successor to the gate-verified tip**, as generations 2 and 3
+  did. The gate-verified commit stays `7c9e8dd1`; nothing executable changed
+  after it.
+- **Checkpoint taken here on the controller's instruction.** R-1's round 1 on
+  the phase-1 tip `93188912` came back **NOT ACCEPT** (2 blockers, 5
+  should-fixes) while this generation's gate was running. The controller
+  ruled the fix package lands on this branch BEFORE the v10 cut, and that
+  since generation 4 is at/past its E-008 threshold it should cut rather than
+  start the package — one owner at a time on this worktree. BRIEF-4 carries
+  the package as generation 5's FIRST work item.
+- **The ciu re-capture DA-D7 demands was done here** rather than deferred,
+  because it needs a live ciu 7.10.1 and a running dstdns instance, both of
+  which were available. Transcript and the measured schema-1-vs-schema-2
+  delta are in the REPORT and in the W2 `MANIFEST.md` addendum.
