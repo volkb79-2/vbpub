@@ -15,8 +15,9 @@ linking against assay itself.
   JavaScript/TypeScript is supported at **R1 only** — changed-line coverage
   for `.js`/`.jsx`/`.ts`/`.tsx`, see
   [JavaScript/TypeScript changed-line coverage](#javascripttypescript-changed-line-coverage-r1-only)
-  below. Go still has reserved schema surface but no real adapter yet — see
-  [What assay is not (yet)](#what-assay-is-not-yet).
+  below. Go is supported at **R1 only** — changed-line coverage for `.go`,
+  statement-granular, requiring a real Go toolchain on the judging machine;
+  see the Go section below.
 
 ---
 
@@ -132,11 +133,12 @@ where to run it.**
 ### What assay is not (yet)
 
 The verdict schema reserves a `go:*` operator vocabulary and
-`external_tools`/`helpers` machinery for a Go adapter. **None of that is a
-working Go adapter today** — `judge.language = "go"` is refused
-`ERROR`/`BAD_LANE_CONFIG` at every rigor level; the schema surface exists so
-a later package does not need a compatibility bump to fill it in. Go support
-in particular is blocked on a real, proven design problem: `go test
+`external_tools`/`helpers` machinery for a Go adapter. **`judge.language =
+"go"` now resolves at R1 — see the Go section below for what that does and
+does not get you.** R2 and R3 are still refused
+`ERROR`/`BAD_LANE_CONFIG`; the schema surface exists so a later package does
+not need a compatibility bump to fill them in. Go support was blocked, for
+several packages, on a real and proven design problem: `go test
 -coverprofile` cannot express which physical line a statement starts on —
 only a block's byte extent plus a bare statement *count* — and two different
 gofmt-clean source files can produce byte-identical coverage profiles while
@@ -147,10 +149,85 @@ documented before any Go code shipped. See decisions A-172, A-217, A-218 in
 finding and the ruling (build a real statement-position oracle, not a
 line-range heuristic).
 
+**What has landed against that ruling**: the oracle itself ships in the
+wheel (`assay/helpers/go/stmtpos/`, adapted from `cmd/cover`'s own
+instrumenter and proven against every frozen witness, including the
+byte-identical-profile pair); the Go parser keeps each record's whole block
+extent instead of expanding it into lines; a new `statement_blocks` adapter
+hook supplies source-derived statement positions; and the evaluator now
+**refuses** a Go profile that has not been through that correction, rather
+than judging block extents as statement truth. The Go adapter accordingly
+declares `external_tools = ("go",)`.
+
 If you see `go:` anywhere in the schema or vocabulary and are wondering
-whether you can use it today: no. Declaring a rigor level a lane can't
-actually back up is exactly the failure this project exists to prevent, so
-don't be the first exception. **`sql:*` is different — see below.**
+whether you can use it today: **at R1, yes — and read the toolchain sentence
+before planning around it.** The Go adapter is now in the built-in registry
+at `{"R1"}` (decision A-394), which was deliberately the *last* step of the
+work above rather than the first: registering it any earlier would have made
+a Go lane runnable while the parser still reported block extents as statement
+truth, which is the wrong verdict the impossibility proof exists to prevent,
+reachable by a consumer who did nothing wrong.
+
+**Qualified on a real project, not only on fixtures.** The Go path was run end
+to end against `shared-ramdisk-depot-manager` at a real commit range, through
+the shipped zipapp, inside the Go gate image, and compared line by line with
+that project's own diff-coverage gate on the byte-identical profile: 418
+executable changed lines against its 684, agreeing on all 24 statements that
+are genuinely uncovered, with every one of the 266 extra lines it counts shown
+to begin no statement. The worked lane is
+[CONSUMERS.md point 8](docs/CONSUMERS.md); the qualification also found a real
+defect in assay itself (B061), which is what a qualification is for.
+
+**A Go lane requires a real Go toolchain on PATH.** The statement-position
+oracle is a Go program — A-217 rules that a Python re-implementation of
+`cmd/cover`'s segmentation is not an acceptable substitute — so on a machine
+without `go`, an R1 Go lane is refused `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL`
+*before the lane's command runs*, rather than guessing or running a suite it
+could not judge. That refusal is what makes the registration safe everywhere
+rather than only where a toolchain happens to exist: a Go lane is either
+judged against real statement positions or cleanly refused, and there is no
+third state in which it is quietly wrong.
+
+**Generated Go sources carrying `//line` directives are not judged, and that
+is a per-FILE rule.** A `//line file:line` directive makes the toolchain
+report positions as if they came from another file, and `go test
+-coverprofile` records those remapped numbers — Go's own `TestLineDup`
+fixture is 24 lines long and its profile names lines 100-105. `git diff`
+names physical lines, so the two cannot be joined by anyone. Assay reads such
+a profile without complaint and simply IGNORES a remapped file that has no
+changed line in the judged set; a remapped file that IS judged refuses
+`ERROR`/`BAD_LANE_CONFIG`, naming the file and the remedy (keep generated
+sources out of `judge.source_roots`). What it will not do is measure the
+virtual line numbers, match nothing, and report a clean percentage over
+nothing measured. See [CONSUMERS.md point 5](docs/CONSUMERS.md).
+
+**R2 and R3 remain unregistered for Go.** `generate_mutation_sites` is
+unconditionally `UNSUPPORTED`, and declaring a rigor level a lane can't
+actually back up is exactly the failure this project exists to prevent.
+
+**Getting assay into a Go gate image costs nothing extra**, and this is what
+stdlib-only (A-005) buys: a `golang:1.25`-based image already carries
+`/usr/bin/python3` 3.13.5, above assay's `>=3.11` floor. It has no pip, so
+the shipped **zipapp** is the install path — copy the `.pyz` in, check its
+`.sha256`, run it with the interpreter that is there. The Go oracle rides
+inside that archive and is staged out to a real directory when it runs, so
+there is nothing to unpack.
+
+**Your module path is read from your own `go.mod`, never declared.** A Go
+cover profile keys records by import path while `git diff` uses repo-relative
+paths; assay bridges them by reading the `module` directive out of the
+nearest `go.mod` at or above your project root, because that is where the
+fact lives (A-404 — `covergate`'s own `-module srdm` flag is the
+anti-pattern this avoids). The practical rule: **one Go module per lane, and
+`assay.toml` sits at that module's root.** A project root above several
+modules, or in none, refuses and says which — it never picks one silently.
+[CONSUMERS.md's Go
+section](docs/CONSUMERS.md#go-lanes-what-exists-today-and-what-a-go-lane-will-require)
+point 6 has the detail; `go.work` is not supported.
+
+Why the oracle is a subprocess rather than a Python rule:
+[DESIGN-GUIDE §11, "Go statement positions"](docs/DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
+**`sql:*` is different — see below.**
 
 ### JavaScript/TypeScript changed-line coverage (R1 only)
 

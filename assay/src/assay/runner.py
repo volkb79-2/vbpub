@@ -114,7 +114,9 @@ from .config import (
 from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
-from .evaluate import evaluate_coverage, evaluate_targets
+from .adapters.base import HelperInvocation
+from .evaluate import evaluate_coverage, evaluate_targets, resolve_coverage_keys
+from .statement_attribution import attribute_statements
 from .output import VerdictOutput
 from .verdict import (
     CanaryResult,
@@ -122,6 +124,7 @@ from .verdict import (
     Coverage,
     Evidence,
     EvidenceDeclaration,
+    Helper,
     JudgeProvenance,
     Judgment,
     JudgmentR1,
@@ -132,6 +135,7 @@ from .verdict import (
     Verdict,
     iso_utc,
     rollup,
+    supported_helper_roles,
 )
 
 __all__ = [
@@ -862,6 +866,203 @@ def _read_bounded_source_text(repo_top: Path, path: str, *, why: str) -> str:
         ) from exc
 
 
+def _attribute_statements_for_lane(
+    profile: CoverageProfile,
+    adapter: LanguageAdapter,
+    *,
+    repo_top: Path,
+    project_root: Path,
+    remaining: git.Remaining | None,
+    on_helper_invoked: Callable[[HelperInvocation], None] | None = None,
+) -> CoverageProfile:
+    """*profile* with its block-based records resolved to statement-granular
+    line sets by *adapter*'s own source-side oracle (A-217/A-239).
+
+    **The key resolution is borrowed, never re-derived.**
+    :func:`assay.evaluate.resolve_coverage_keys` is the same
+    ``normalize_coverage_key`` -> ``_to_repo_relative_key`` join
+    :func:`~assay.evaluate.evaluate_coverage` judges by, and calling it here
+    is what guarantees the file the oracle READS is the file the evaluator
+    JUDGES. A private copy of that mapping in this module would be a second
+    implementation of a join A-385/A-367 say there is exactly one of; if the
+    two ever disagreed, assay would correct one file's lines and judge
+    another's, and nothing would report it.
+
+    Only files whose records actually carry block extents are sent to the
+    oracle. A profile mixing block-based and line-based files cannot occur
+    from one parser today, but the filter is a property of the DATA rather
+    than of which parser produced it, which is what keeps this function
+    language-free. Files whose positions a ``//line`` directive remapped are
+    filtered out too, for a different reason and with a different consequence
+    (A-405) -- see the comment at the filter.
+
+    A profile with NO block-bearing file at all is REFUSED, not passed
+    through (A-406/DA-R1); the branch that used to mark it attributed
+    vacuously is gone, and the comment at that site records what it got
+    wrong.
+
+    Raises :class:`~assay.errors.AssayError` on every failure -- the missing
+    file, the helper's own refusals, and
+    :func:`~assay.statement_attribution.attribute_statements`' extent
+    mismatch. :func:`evaluate_r1`'s own ``except AssayError`` turns each into
+    a complete, payload-free R1 claim carrying that cause, so a Go lane whose
+    profile is stale reports it rather than publishing a verdict about the
+    wrong lines.
+    """
+    repo_path_by_raw_key = resolve_coverage_keys(
+        profile, adapter, repo_top=repo_top, project_root=project_root
+    )
+    block_bearing = [
+        raw_key
+        for raw_key, file_cov in profile.files.items()
+        if file_cov.blocks is not None
+    ]
+    if not block_bearing:
+        # (A-406, DA-R1) THIS USED TO PASS VACUOUSLY -- it returned
+        # `statement_attributed=True` with the comment "every record in it is
+        # already statement truth, vacuously". That is retracted. For an
+        # adapter that REQUIRES statement attribution there is no such
+        # profile, and the branch was reachable with a wrong answer at the end
+        # of it: `judge.language` and `judge.coverage.format` are independent
+        # by design (`config.py`), so a Go lane could declare `format =
+        # "lcov"`, and lcov CONVERTED from a Go coverprofile carries exactly
+        # the naive block expansion A-392 exists to refuse -- signatures,
+        # closing braces and `case` labels counted as executable code. The
+        # profile would arrive with no blocks, be marked attributed here with
+        # no oracle and no `helpers` entry, and A-392's guard would wave it
+        # through. Found by adversarial review round 1 (should-fix 3), ruled
+        # by DA-R1.
+        #
+        # The two honest readings of "no block-bearing files", and where each
+        # one now terminates:
+        #
+        #   * the EMPTY profile -- already refused upstream, before this
+        #     function is reached, by `coverage.check_empty_coverage` in
+        #     `evaluate_r1`'s own guard sequence: NO_MEASUREMENT /
+        #     EMPTY_COVERAGE, payload-free, no helper, never a PASS.
+        #   * a NON-empty profile in a format that carries no extents -- a
+        #     contradiction, and refused here. `config` refuses this lane at
+        #     LOAD time (A-406's first half), so reaching this point means the
+        #     load-time check was bypassed (a library caller, a hand-built
+        #     Lane); the refusal is kept as the second of two independent
+        #     guards rather than deleted as unreachable.
+        raise AssayError(
+            f"the {adapter.name!r} adapter requires statement attribution, "
+            f"but the coverage profile it was handed carries no block extents "
+            f"in any of its {len(profile.files)} file(s). A format that "
+            f"reports block extents is the only kind this adapter can be "
+            f"judged from -- line sets alone are an over-approximation of a "
+            f"block-based language's executable code, and marking them "
+            f"attributed would certify the very expansion A-392 refuses. "
+            f"Check judge.coverage.format against the language",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+
+    # (A-405) A `//line`-remapped file is NOT sent to the oracle. The oracle
+    # derives PHYSICAL positions from the real source file, while the
+    # profile's records carry the directive's virtual ones, so the extent
+    # sets cannot match and `attribute_statements`' mismatch refusal would
+    # take down the WHOLE artifact over one generated file. It skips such a
+    # file too (emptying its line sets), and `evaluate` refuses only if the
+    # lane actually judges it.
+    #
+    # This filter and `attribute_statements`' own skip are two guards, and
+    # they are NOT redundant: this one is what stops an external toolchain
+    # being RUN, inside the lane's budget, over a source whose answer is then
+    # discarded. It has its own test asserting the oracle is never asked
+    # about a flagged path (`test_runner_statement_attribution_wiring.py::
+    # test_the_oracle_is_never_ASKED_about_a_line_directive_remapped_file`),
+    # because round 2 found that removing it left all 69 A-405 tests green.
+    to_attribute = [
+        raw_key
+        for raw_key in block_bearing
+        if not profile.files[raw_key].line_directive_remapped
+    ]
+    if not to_attribute:
+        # Every block-bearing file in this profile is `//line`-remapped.
+        # There is no path to ask the oracle about, so the helper never runs
+        # and no `helpers` entry is recorded -- which is honest: no toolchain
+        # derived any statement position for this lane. `attribute_statements`
+        # still runs, because emptying those files' line sets is what stops
+        # them being judged on virtual line numbers.
+        return attribute_statements(profile, {})
+
+    rel_paths = [repo_path_by_raw_key[raw_key] for raw_key in to_attribute]
+    report = adapter.statement_blocks(repo_top, rel_paths, remaining=remaining)
+    if report is None:
+        raise AssayError(
+            f"the {adapter.name!r} adapter declares "
+            f"requires_statement_attribution=True but its statement_blocks "
+            f"hook returned None, which means 'this adapter performs no "
+            f"statement attribution'. The two declarations contradict each "
+            f"other, and judging the profile anyway would attribute block "
+            f"extents as statement truth",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        )
+    if on_helper_invoked is not None:
+        on_helper_invoked(report.helper)
+
+    # `attribute_statements` is keyed by the artifact's OWN spelling (its
+    # docstring: that is what keeps it language-free), while the adapter was
+    # asked in repo-relative paths -- so the mapping is walked back here, on
+    # the one dict that produced both.
+    blocks_by_key: dict[str, tuple] = {}
+    for raw_key in to_attribute:
+        repo_path = repo_path_by_raw_key[raw_key]
+        blocks = report.blocks_by_path.get(repo_path)
+        if blocks is None:
+            # StatementBlockReport's contract is one entry per requested
+            # path. A violating adapter would otherwise raise KeyError past
+            # `evaluate_r1`'s `except AssayError` and crash the lane; this
+            # names the contract instead. Not a fallback -- there is no
+            # value to fall back TO, and the profile is still refused.
+            raise AssayError(
+                f"the {adapter.name!r} adapter's statement_blocks returned no "
+                f"entry for {repo_path!r}, which it was asked for; a report "
+                f"must carry one entry per requested path",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            )
+        blocks_by_key[raw_key] = blocks
+    return attribute_statements(profile, blocks_by_key)
+
+
+def _record_statement_position_helper(
+    sink: list[Helper],
+) -> Callable[[HelperInvocation], None]:
+    """The one place an adapter-layer :class:`HelperInvocation` becomes a
+    wire-layer :class:`~assay.verdict.Helper` (B047 item 5, A-397).
+
+    **The ROLE is supplied here, not by the adapter.** `HelperInvocation`
+    deliberately carries no role: it records what ran, and it is returned by
+    exactly one protocol method, so which of `HELPER_ROLES` it belongs to is
+    a fact of the CALL SITE rather than of the adapter's answer. Letting an
+    adapter name its own role would let it claim `mutation-sites` from a
+    coverage hook, and `Verdict._check_helpers` would then demand an R2
+    payload for work that produced an R1 one -- a refusal naming the wrong
+    thing. This is the same layering A-397 (c) records for the type split.
+
+    A list sink rather than a single slot because the callback's own contract
+    is "called once per invocation"; if that ever becomes twice, the
+    duplicate is visible in `helpers` (and `_check_helpers` still passes)
+    instead of being silently overwritten by whichever call came last.
+    """
+
+    def record(invocation: HelperInvocation) -> None:
+        sink.append(
+            Helper(
+                role="statement-positions",
+                tool=invocation.tool,
+                resolved_path=invocation.resolved_path,
+                identity=invocation.identity,
+            )
+        )
+
+    return record
+
+
 def evaluate_r1(
     lane: Lane,
     *,
@@ -873,6 +1074,7 @@ def evaluate_r1(
     on_added_resolved: Callable[[diff.AddedLines], None] | None = None,
     profile: CoverageProfile | None = None,
     remaining: git.Remaining | None = None,
+    on_helper_invoked: Callable[[HelperInvocation], None] | None = None,
 ) -> Claim:
     """The R1 step (A-090, A-094): P02's two measurability guards, then
     P03's ``EMPTY_COVERAGE`` guard, short-circuiting on the first that trips
@@ -883,7 +1085,10 @@ def evaluate_r1(
     own guard sequence can raise -- P02's two measurability guards, P03's
     ``EMPTY_COVERAGE`` guard, a broken coverage artifact
     (``FORMAT_MISMATCH``, ``UNREADABLE_ARTIFACT``), a git failure resolving
-    the base or diffing it (``GIT_FAILED``), an ``evaluate_coverage``
+    the base or diffing it (``GIT_FAILED``), an adapter that cannot bind
+    itself to this project (``BAD_LANE_CONFIG`` -- A-404's
+    :meth:`~assay.adapters.base.LanguageAdapter.for_project`, e.g. a Go lane
+    whose ``cwd`` sits in no Go module), an ``evaluate_coverage``
     normalized-key collision, or an expected filesystem/Unicode failure
     reading a source file's text (``UNREADABLE_ARTIFACT``) -- is caught and
     returned as a complete R1 :class:`~assay.verdict.Claim` carrying that
@@ -986,6 +1191,54 @@ def evaluate_r1(
             )
 
         repo_top = git.repo_top(repo, remaining=remaining)
+
+        # (P27 re-carve, A-404/DA-8) Bind the adapter to THIS project, once,
+        # before anything reads the profile. An adapter may need a fact that
+        # lives in the project's own layout rather than in the lane file --
+        # Go's module path, in its `go.mod`, which DESIGN-GUIDE §5 requires
+        # assay to READ rather than accept as a declared literal. The core
+        # supplies the two anchors it already holds and takes an adapter
+        # back; every adapter but Go returns itself.
+        #
+        # The position is load-bearing in three ways. It is BEFORE the key
+        # join, the statement oracle and both evaluate modes, so all four
+        # receive the same object and cannot resolve a key differently from
+        # one another (A-385/A-367: there is ONE join). It is after
+        # `repo_top`, which is half of what the member needs. And it rebinds
+        # the local name rather than passing the derived adapter to one
+        # callee, because a second, unbound adapter still in scope is exactly
+        # how the two spellings would drift apart again.
+        #
+        # Note again what is NOT here: no language name, no format test. The
+        # core does not know that `go.mod` exists.
+        adapter = adapter.for_project(repo_top=repo_top, project_root=project_root)
+
+        # (P27 re-carve, A-217/A-239/A-392) The statement-attribution
+        # correction, for an adapter whose coverage format reports something
+        # coarser than statement truth -- today, Go alone. It sits HERE, and
+        # the position is load-bearing in both directions: after
+        # `check_empty_coverage` (an empty artifact is a measurability
+        # verdict, not a thing to correct, and running a subprocess over
+        # nothing would be work with no subject) and after `repo_top` is
+        # resolved (the oracle reads real source files), but BEFORE the mode
+        # fork, because BOTH modes judge the same profile and a correction
+        # applied on one path only would be exactly the drift A-385 rules
+        # against one layer down.
+        #
+        # Note what is NOT here: any test of the adapter's name, or of the
+        # coverage format. `evaluate.py` never branches on a language and
+        # neither does this; the adapter's own declared
+        # `requires_statement_attribution` is the whole condition
+        # (DESIGN-GUIDE §11).
+        if adapter.requires_statement_attribution:
+            profile = _attribute_statements_for_lane(
+                profile,
+                adapter,
+                repo_top=repo_top,
+                project_root=project_root,
+                remaining=remaining,
+                on_helper_invoked=on_helper_invoked,
+            )
 
         if effective_mode == "whole_target":
             result = evaluate_targets(
@@ -1119,6 +1372,7 @@ def assemble_verdict(
     judgment: Judgment | None = None,
     ended: str | None = None,
     env_effective_incomplete: bool = False,
+    helpers: tuple[Helper, ...] = (),
 ) -> Verdict:
     """Final verdict assembly (A-094): separable from :func:`execute_command`.
 
@@ -1227,6 +1481,36 @@ def assemble_verdict(
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
+    # (B047 item 5) The same guard shape as the two above, for the same
+    # reason: `Verdict._check_helpers` raises a bare `ValueError` on a
+    # helper with no correspondingly-judged claim, and no caller catches
+    # one. Refusing here is LOUD and names the wiring defect. It is
+    # deliberately a refusal rather than a filter, and reaching it is a BUG
+    # in this module rather than anything a consumer did: the two legitimate
+    # ways to end up holding a helper whose claim has been voided both drop
+    # the entry themselves, at the site that took the payload away --
+    # `_replace_highest_higher_rigor_claim_with_git_failed` for the
+    # cleanup-only failure, and `_run_prepared_lane`'s own R1 claim site for
+    # a judge that refused after the oracle ran (A-407). A filter HERE would
+    # cover both of them and swallow a genuine wiring defect with them,
+    # which is the one thing this guard exists to catch.
+    unsupported = sorted(
+        {
+            helper.role
+            for helper in helpers
+            if helper.role not in supported_helper_roles(claims)
+        }
+    )
+    if unsupported:
+        raise AssayError(
+            f"lane {lane.name!r} recorded helper role(s) {unsupported} but "
+            f"rendered no claim carrying the payload each requires -- a "
+            f"helpers[] entry exists because it produced a claim payload, so "
+            f"this pairing describes work that judged nothing. Refusing "
+            f"before constructing an incomplete verdict.",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
     statuses = [claim.status for claim in claims]
     statuses.extend(item.status for item in evidence)
     outcome = rollup(statuses)
@@ -1262,6 +1546,12 @@ def assemble_verdict(
         judgment=judgment,
         claims=claims,
         evidence=evidence,
+        # (B047 item 5, A-230a) OMISSION is the empty case: a run that
+        # invoked no helper has no `helpers` key at all, never `helpers: []`.
+        # Every non-Go lane in this build lands here, which is what keeps
+        # `test_cli_run.py`'s `"helpers" not in document` control true
+        # (A-395) while the Go lane's parallel test asserts the opposite.
+        helpers=helpers or None,
         snapshot_policy=_verdict_snapshot_policy(lane),
         # (B043) Straight from the loaded lane, at the SINGLE verdict
         # construction site every producer path funnels through -- normal
@@ -2227,6 +2517,12 @@ class _PreparedOutcome:
     claims: tuple[Claim, ...]
     judgment: Judgment | None
     ended: str
+    #: (B047 item 5) every external helper an adapter actually invoked while
+    #: producing *claims*. Carried here rather than turned into
+    #: :class:`~assay.verdict.Helper` entries at the point of invocation for
+    #: the same reason ``judgment`` is: a cleanup-only failure can still void
+    #: the claim a helper produced, and the record has to be voidable with it.
+    helpers: tuple[Helper, ...] = ()
 
 
 def resolve_base_declaration(lane: Lane, request_base: str | None) -> str | None:
@@ -2421,6 +2717,10 @@ def _run_prepared_lane(
             )
 
         claims: tuple[Claim, ...] = (r0_claim,)
+        # (B047 item 5) Filled by `evaluate_r1`'s `on_helper_invoked` channel
+        # below, read after the snapshot is gone -- same shape and same reason
+        # as `r2_early_claim`/`ingested_r2` above.
+        helpers_seen: list[Helper] = []
         judgment_r1: JudgmentR1 | None = None
         added: diff.AddedLines | None = None
         targets: tuple[mutation.MutationTarget, ...] | None = None
@@ -2475,8 +2775,61 @@ def _run_prepared_lane(
                     on_base_resolved=resolved_base_holder.append,
                     on_added_resolved=added_holder.append,
                     remaining=deadline.remaining,
+                    on_helper_invoked=_record_statement_position_helper(
+                        helpers_seen
+                    ),
                 )
                 claims += (r1_claim,)
+                if r1_claim.coverage is None:
+                    # (A-407) The judge refused AFTER the oracle ran, so the
+                    # payload the helper produced went with it. `evaluate_r1`
+                    # catches its own `AssayError` and renders a payload-free
+                    # claim, which is the whole point of the R1 seam -- the
+                    # refusal is REPORTED, not raised past the verdict. But
+                    # `helpers_seen` was appended to the instant
+                    # `statement_blocks` returned, one layer down in
+                    # `_attribute_statements_for_lane`, so the entry outlives
+                    # the claim that justified it and `assemble_verdict`'s
+                    # B047-item-5 guard then refuses the whole run: the
+                    # consumer is told about assay's `helpers[]` WIRING
+                    # instead of about the stale profile or the `//line` file
+                    # that is actually wrong, and `run_lane` never returns, so
+                    # `--verdict-json` is never written.
+                    #
+                    # The entry is dropped HERE, at the site that took the
+                    # payload away -- exactly the move
+                    # `_replace_highest_higher_rigor_claim_with_git_failed`
+                    # already makes for the cleanup-failure path -- so
+                    # `assemble_verdict`'s guard stays a true assertion about
+                    # wiring rather than becoming the message a consumer gets
+                    # instead of the real refusal. Filtering inside that guard
+                    # was the rejected alternative: it would swallow a genuine
+                    # wiring defect too, which is the one thing the guard
+                    # exists to catch.
+                    #
+                    # `supported_helper_roles` is the SINGLE definition of the
+                    # correspondence rule (`verdict.py`, read by
+                    # `Verdict._check_helpers` as well), so this adds no
+                    # second copy of the table that could disagree with it.
+                    #
+                    # It is asked about the R1 claim ALONE, and that is exact
+                    # rather than convenient: `helpers_seen` is created a few
+                    # lines above and its ONLY producer is the
+                    # `_record_statement_position_helper` sink handed to
+                    # `evaluate_r1`, so every entry it holds at this point was
+                    # produced by R1's own work. R2/R3 have not run yet and
+                    # could not have contributed one. Should a second helper
+                    # channel ever be added -- an `executable-code` entry from
+                    # an R2 payload is the obvious candidate, since that role
+                    # takes EITHER payload -- it must not share this sink, or
+                    # this drop would void an entry whose own claim is still
+                    # to come. Its own producer would carry its own drop, at
+                    # the site that voids ITS payload; that is the rule, not
+                    # this call's argument list.
+                    kept = supported_helper_roles((r1_claim,))
+                    helpers_seen[:] = [
+                        helper for helper in helpers_seen if helper.role in kept
+                    ]
                 # wave-1 §6/A-264: R1 records its policy whenever R1 was
                 # ATTEMPTED -- one case wider than "rendered a coverage
                 # payload", mirroring A-183's identical R2 widening for
@@ -2906,7 +3259,13 @@ def _run_prepared_lane(
             r3=judgment_r3,
         )
 
-    return _PreparedOutcome(result=result, claims=claims, judgment=judgment, ended=ended)
+    return _PreparedOutcome(
+        result=result,
+        claims=claims,
+        judgment=judgment,
+        ended=ended,
+        helpers=tuple(helpers_seen),
+    )
 
 
 def _build_judgment_resolved(
@@ -3107,6 +3466,31 @@ def _replace_highest_higher_rigor_claim_with_git_failed(
     with the payload-free ``ERROR``/``GIT_FAILED`` pair and remove its
     matching judgment tier; every lower completed claim (including R0)
     remains exactly as it was.
+
+    **(B047 item 5) The helper record is voided with the claim, explicitly.**
+    ``helpers[].role`` is bound to a judged payload by
+    :meth:`~assay.verdict.Verdict._check_helpers`: a
+    ``statement-positions`` entry requires an R1 claim carrying coverage,
+    and this function is one of the two places that can take that payload
+    away after the helper really ran (the other is
+    :func:`_run_prepared_lane`'s R1 claim site, where a judge that refused
+    after the oracle ran renders a payload-free claim -- A-407, which
+    applies this same rule there rather than generalising either site).
+    Dropping the entry here is the same move the
+    judgment tier already gets one line down, for the same reason -- the
+    alternative, keeping it, produces a verdict that records a helper
+    alongside no claim it could have produced, which the schema refuses with
+    a ``ValueError`` no caller catches. It is deliberately NOT filtered
+    inside :func:`assemble_verdict`: a silent filter there would also
+    swallow a genuine wiring defect, whereas this drop is a decision about
+    one known state, taken where that state is created.
+
+    Which roles survive is asked of
+    :func:`~assay.verdict.supported_helper_roles`, the SAME function
+    ``_check_helpers`` validates with, rather than re-derived from a second
+    copy of the table here -- a copy would let the two disagree, and the
+    disagreement's shape is a verdict this function built and the schema
+    then refuses with an uncaught ``ValueError``.
     """
     target = next(level for level in ("R3", "R2", "R1") if level in lane.rigor)
     new_claims = tuple(
@@ -3130,8 +3514,15 @@ def _replace_highest_higher_rigor_claim_with_git_failed(
         }
         remaining[target.lower()] = None
         new_judgment = None if not any(remaining.values()) else replace(new_judgment, **remaining)
+    supported = supported_helper_roles(new_claims)
     return _PreparedOutcome(
-        result=outcome.result, claims=new_claims, judgment=new_judgment, ended=outcome.ended
+        result=outcome.result,
+        claims=new_claims,
+        judgment=new_judgment,
+        ended=outcome.ended,
+        helpers=tuple(
+            helper for helper in outcome.helpers if helper.role in supported
+        ),
     )
 
 
@@ -3351,6 +3742,7 @@ def _run_higher_rigor_lane(
         declared_evidence=declared_evidence,
         judgment=outcome.judgment,
         ended=outcome.ended,
+        helpers=outcome.helpers,
     )
 
 

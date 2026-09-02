@@ -15,16 +15,26 @@ Three subcommands ship so far:
   the process starts (A-095, via :mod:`assay.runner`).
 
   This build evaluates **R0, R1, R2 and R3 for Python, R2 for SQL, and R1
-  for JavaScript/TypeScript** (P19 closes sol finding 1 in full for Python;
-  P34/W6 adds SQL at R2 only; B036 adds JavaScript at R1 only):
+  for JavaScript/TypeScript and Go** (P19 closes sol finding 1 in full for
+  Python; P34/W6 adds SQL at R2 only; B036 adds JavaScript at R1 only; the
+  P27 re-carve adds Go at R1 only, A-394):
   ``_built_in_registry`` is the CLI's own closed capability declaration
   (work item 2, widened by every rigor-wiring package since) — Python is
-  registered at R1, R2 and R3, SQL at R2 only, JavaScript at R1 only, and
-  nothing else, so a lane declaring ``judge.language`` as anything but
-  ``"python"``/``"sql"``/``"javascript"``, a SQL lane declaring R1 or R3, a
-  JavaScript lane declaring R2 or R3, or a rigor level for a language this
-  registry does not know at all (Go, at any level — P22), is refused
-  (``ERROR``/``BAD_LANE_CONFIG``) before the lane's command ever runs. A
+  registered at R1, R2 and R3, SQL at R2 only, JavaScript at R1 and R2
+  (B046, the INGESTED path only), Go at R1 only (A-394, the P27 re-carve),
+  and nothing else, so a lane declaring
+  ``judge.language`` as anything but
+  ``"python"``/``"sql"``/``"javascript"``/``"go"``, a SQL lane declaring R1
+  or R3, a JavaScript lane declaring R3, a Go lane declaring R2 or R3, or a
+  rigor level for a
+  language this registry does not know at all, is refused
+  (``ERROR``/``BAD_LANE_CONFIG``) before the lane's command ever runs.
+  (This sentence said "JavaScript at R1 only" and "a JavaScript or Go lane
+  declaring R2 or R3" until the round-1 fix round; B046 had admitted
+  ``javascript`` at R2 and this copy was not updated. Corrected here for the
+  same reason ``registry.py``'s two paragraphs were: the fact is
+  :func:`_built_in_registry`'s, and every restatement of it has now gone
+  stale at least once.) A
   declared R3 lane's own canary run happens in
   an independently-owned scratch copy of the consumer's repository
   (:func:`assay.canary.run_isolated_canary`, via
@@ -72,6 +82,7 @@ from . import (
     runner,
 )
 from .adapters.base import LanguageAdapter
+from .adapters.go import GoAdapter
 from .adapters.javascript import JavaScriptAdapter
 from .adapters.python import PythonAdapter
 from .adapters.sql import SqlAdapter
@@ -164,7 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
             "appended after a literal `--`, if the lane permits it) and emit "
             "a verdict. Runs the command once; does not discover, select, "
             "order or retry anything. This build evaluates R0, Python R1, "
-            "Python R2, Python R3, JavaScript R1, and SQL R2."
+            "Python R2, Python R3, JavaScript R1, Go R1, and SQL R2."
         ),
     )
     run.add_argument("lane", help="the lane name to run, as declared in assay.toml")
@@ -317,12 +328,69 @@ def _built_in_registry() -> registry.Registry:
     Python is registered at R1, R2 AND R3 and nothing else: adding ``"R3"``
     to this ONE existing entry's ``rigor`` set is the whole registry change
     a Python R3 CLI pipeline needs (P18's own carried-in note, one level
-    further) -- Go (``adapters/go.py`` ships, DESIGN-GUIDE §10/§11's
-    fixture-based proof) has no producer path wired in at any rigor level
-    yet (P22). Naming a capability this build does not actually reach is
+    further). Naming a capability this build does not actually reach is
     exactly the failure the whole v1.1 repair series exists to remove one
     level up (the post-series review's own finding 1) -- this is that
     discipline applied to the registry itself.
+
+    **The sentence above used to continue "-- Go has no producer path wired
+    in at any rigor level yet (P22)". That is no longer true, and A-394 is
+    why: ``go`` IS registered, at** ``{"R1"}`` **only.** The paragraph is
+    rewritten rather than deleted because the SEQUENCING is the load-bearing
+    half of that ruling, and a later reader who sees only the finished entry
+    would not recover it. Registering Go was never gated on "someone got
+    around to it"; it was gated on a chain that had to land FIRST, because
+    :mod:`assay.coverage_parsers.go_cover` used to expand a cover block's
+    whole extent into lines and call the result statement truth -- the
+    conflation A-217's impossibility proof (two gofmt-clean files, one
+    byte-identical profile, different statement lines) rules out
+    unconditionally. A ``go`` entry added at ANY earlier point in Wave C
+    would have made that reachable through this very function, which is the
+    most expensive shape the A-334/A-335 honesty failure takes: a wrong
+    verdict a consumer can reach by declaring a supported language. The
+    chain, in the order it had to land:
+    :attr:`~assay.adapters.base.LanguageAdapter.requires_statement_attribution`,
+    the :meth:`~assay.adapters.base.LanguageAdapter.statement_blocks` hook
+    (A-397), the :func:`assay.evaluate` refusal that makes the flag bite
+    (A-392), and ``external_tools = ("go",)`` (B047 item 2). Only then this
+    entry.
+
+    **What this entry does NOT promise, and why that is not a gap.** A Go
+    lane needs a real Go toolchain: the statement-position oracle is a Go
+    program (A-217 -- a Python re-implementation of ``cmd/cover``'s
+    segmentation is explicitly not an acceptable substitute), so an
+    environment without ``go`` on PATH gets
+    ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` from A-253's preflight in
+    :func:`assay.runner.run_lane`, BEFORE the lane's command runs. That is
+    the property that makes this entry safe everywhere rather than only
+    where a toolchain happens to exist: a Go lane is either audited against
+    real statement positions or cleanly refused, and there is no third state
+    in which it is silently wrong. This devcontainer and the registered
+    gate's own image (``tester-unified``) both have no Go and both take the
+    refusal -- see ``tests/qualification/`` for where the real-toolchain
+    proof lives instead (DESIGN-GUIDE §10's pattern).
+
+    **R2 and R3 stay unregistered for Go**, which the Wave C prompt's own
+    NOT-IN-SCOPE list forbids changing:
+    :meth:`~assay.adapters.go.GoAdapter.generate_mutation_sites` is
+    unconditionally ``"UNSUPPORTED"``, so an R2 entry would advertise a
+    producer path that does not exist -- the failure this docstring's first
+    paragraph is about. Both refusals are asserted as controls in
+    ``tests/test_cli_run.py``
+    (``test_run_refuses_go_at_r2_the_language_is_registered_r1_only`` and its
+    R3 sibling), alongside the R1 test that now inverts.
+
+    **What those two controls do NOT cover, corrected in the round-1 fix
+    round.** This paragraph used to continue that a rigor level "for a
+    language this registry does not know at all" was asserted as a control
+    there too. It was, by the same two Go tests -- until A-394 registered
+    ``go`` and they silently became registered-at-another-rigor tests, so no
+    CLI-level test exercised the unknown-language branch at all. The
+    adversarial round-1 review found it; one of the two is now
+    ``test_run_refuses_a_language_this_registry_does_not_know_at_all``, which
+    declares ``rust`` and asserts ``rust`` really is absent from the registry
+    so it cannot drift the same way. The unit-level control is
+    ``test_registry.py::test_an_unregistered_language_is_refused_not_defaulted``.
 
     **P34/W6: SQL is registered at R2 ONLY** (A-242's own sentence,
     ``SqlAdapter``'s own module docstring). That single fact is what makes
@@ -400,6 +468,10 @@ def _built_in_registry() -> registry.Registry:
         registry.RegistryEntry(
             adapter=JavaScriptAdapter(), rigor=frozenset({"R1", "R2"})
         ),
+        # (A-394, Wave C) R1 ONLY, and deliberately the LAST thing this wave
+        # landed -- see this function's docstring for why the ordering is
+        # load-bearing rather than tidy.
+        registry.RegistryEntry(adapter=GoAdapter(), rigor=frozenset({"R1"})),
     )
 
 

@@ -164,10 +164,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
+from pathlib import Path
+from typing import Literal, Sequence
 
 from ..mutation import MutationSite
-from .base import StatementSpan
+from .base import Remaining, StatementBlockReport, StatementSpan
 
 __all__ = ["JavaScriptAdapter"]
 
@@ -491,6 +492,24 @@ class JavaScriptAdapter:
     #: for rule 3b to resolve. See this module's own docstring for the probe.
     requires_span_attribution: bool = False
     external_tools: tuple[str, ...] = ()
+    #: Istanbul's own JSON (and the lcov it emits) is already
+    #: statement-granular -- it records ``statementMap`` entries with their
+    #: real source positions, so nothing here is a positional
+    #: over-approximation an oracle would have to demote (A-397). Nothing to
+    #: correct, so :meth:`statement_blocks` returns ``None``.
+    requires_statement_attribution: bool = False
+
+    def for_project(
+        self, *, repo_top: Path, project_root: Path
+    ) -> "JavaScriptAdapter":
+        """``self`` -- A-404's default answer, and the honest one here.
+
+        Istanbul reports absolute paths, which the CORE reconciles
+        (``evaluate._to_repo_relative_key``); this adapter strips no prefix
+        at all, so a project's layout tells it nothing. A ``package.json``
+        is read by the LANE's own argv, never by assay.
+        """
+        return self
 
     def is_test_path(self, rel_path: str) -> bool:
         return bool(_TEST_FILE_RE.search(rel_path))
@@ -506,6 +525,17 @@ class JavaScriptAdapter:
         return key
 
     def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
+        return None
+
+    def statement_blocks(
+        self,
+        repo_top: Path,
+        rel_paths: Sequence[str],
+        *,
+        remaining: Remaining | None = None,
+    ) -> StatementBlockReport | None:
+        """``None`` -- A-101's convention, paired with
+        :attr:`requires_statement_attribution` being ``False``."""
         return None
 
     def inject_import_break(self, text: str) -> tuple[str, str]:

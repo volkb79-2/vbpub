@@ -231,14 +231,19 @@ def test_a_producer_from_ANOTHER_formats_vocabulary_is_refused(project: Project)
 def test_a_format_with_no_open_vocabulary_refuses_any_producer(project: Project):
     """DESIGN-GUIDE §5 — no speculative names.
 
-    ``go-cover``'s two producer names (``go-test``, ``covdata``) are B047's
-    to open, with the Go wave that can measure the difference between them.
-    Until then a ``go-cover`` lane declaring a producer is refused rather
-    than silently accepted-and-ignored, which would be a key that looks
-    honoured and is not.
+    **``go-cover`` used to head this list and no longer does (A-398).** It
+    was closed by A-354, which flagged itself as "the B045 call most open to
+    challenge" and named its own reopening condition: the Go wave, which
+    could measure what the two names mean. That wave has landed and ``go``
+    is registered (A-394), so the names are now backed by a lane this build
+    actually runs — see the acceptance tests below.
+
+    ``lcov`` and ``cobertura`` remain closed for the original reason, and
+    they are what keeps this test honest: the mechanism that refuses an
+    unexplainable producer name is still live and still tested, so opening
+    one format did not quietly open the door for every format.
     """
     for fmt, producer in (
-        ("go-cover", "go-test"),
         ("lcov", "istanbul"),
         ("cobertura", "istanbul"),
     ):
@@ -251,6 +256,78 @@ def test_a_format_with_no_open_vocabulary_refuses_any_producer(project: Project)
         )
         assert "no open producer vocabulary" in message
         assert fmt in message
+
+
+@pytest.mark.parametrize("producer", ["go-test", "covdata"])
+def test_both_go_cover_producers_are_accepted_and_recorded_verbatim(
+    project: Project, producer: str
+):
+    """(B047 item 3 / A-398) The vocabulary A-354 deliberately closed, now
+    open — and parametrized over BOTH names, because a test that only proved
+    ``go-test`` would leave ``covdata`` in exactly the speculative-name state
+    A-354 refused to ship.
+
+    ``covdata`` is not a synonym for ``go-test``. It names
+    ``go tool covdata textfmt`` over the counter data a ``go build -cover``
+    binary writes while doing real work — evidence about a running program,
+    not about a test binary — which is the integration path (an S3 lane).
+    Both emit ``cmd/cover``'s own textfmt, so assay's parser is
+    producer-independent here; the name records the PROVENANCE of the
+    evidence, which a reviewer cares about even when the bytes are
+    interchangeable.
+    """
+    lane_file = _coverage(
+        project,
+        f'{{ format = "go-cover", artifact = "cover.out", '
+        f'producer = "{producer}" }}',
+    )
+    judge = lane_file.lane("package").judge
+    assert judge is not None and judge.coverage is not None
+    assert judge.coverage.producer == producer
+
+
+def test_go_cover_is_open_but_still_CLOSED_against_a_name_it_does_not_know(
+    project: Project,
+):
+    """The anti-vacuity control for the pair above. Opening a vocabulary is
+    not the same as accepting free-form text, and the difference is the whole
+    point of a per-format table: ``gcov`` is a real coverage tool, a
+    plausible thing to type, and not a producer of this format."""
+    message = str(
+        _refusal(
+            project,
+            '{ format = "go-cover", artifact = "cover.out", producer = "gcov" }',
+        )
+    )
+    assert "gcov" in message
+    # It must fail as an UNKNOWN NAME for a known vocabulary, never as
+    # "this format has no vocabulary" -- that message is now false of
+    # `go-cover` and would send a reader to the wrong fix.
+    assert "no open producer vocabulary" not in message
+
+
+def test_go_covers_producer_is_OPTIONAL_because_its_two_producers_agree(
+    project: Project,
+):
+    """(A-398) Why ``go-cover`` is absent from
+    ``COVERAGE_PRODUCER_REQUIRED_FORMATS`` even though it now has two
+    producers — the count is not the test, DISAGREEMENT is.
+
+    ``coverage-istanbul-json`` requires the key because ``vitest-v8`` and
+    ``istanbul`` genuinely disagree about whether a line ran (A-346), so no
+    implied value is correct in every context. ``go-test`` and ``covdata``
+    emit the same instrumenter's same textfmt, so there is no reading of a
+    ``go-cover`` artifact that depends on which one wrote it — and requiring
+    a key that changes no answer would be ceremony, which DESIGN-GUIDE §5
+    treats as its own kind of dishonesty.
+    """
+    assert "go-cover" not in COVERAGE_PRODUCER_REQUIRED_FORMATS
+    lane_file = _coverage(
+        project, '{ format = "go-cover", artifact = "cover.out" }'
+    )
+    judge = lane_file.lane("package").judge
+    assert judge is not None and judge.coverage is not None
+    assert judge.coverage.producer is None
 
 
 def test_an_empty_producer_string_is_refused(project: Project):

@@ -914,7 +914,9 @@ artifact", not "is this a producer somewhere".
 | `coverage-istanbul-json` | `istanbul` — the babel-plugin-istanbul family: `nyc`/`istanbul`, Jest with its default `babel` provider, `@vitest/coverage-istanbul`, `vite-plugin-istanbul`. They share one instrumenter, so they are one producer for every purpose assay has. | **yes** |
 | | `vitest-v8`, `jest-v8`, `c8` — spellable, and **refused at load by name** (see below) | |
 | `coverage-py-json` | `coverage.py` — the only producer | no |
-| `lcov`, `cobertura`, `go-cover` | *no vocabulary is open yet* — declaring `producer` on one of these is refused | n/a |
+| `go-cover` | `go-test` — `go test -coverprofile=<file>`, the unit-test path | no |
+| | `covdata` — `go tool covdata textfmt -i=<GOCOVERDIR> -o=<file>`, over the counter data a `go build -cover` binary writes while running. The **integration** path: evidence about a real process, not a test binary. | |
+| `lcov`, `cobertura` | *no vocabulary is open yet* — declaring `producer` on one of these is refused | n/a |
 
 **Why it is REQUIRED for `coverage-istanbul-json` and optional elsewhere.** If
 an implied `istanbul` were wrong — the lane really runs
@@ -923,11 +925,16 @@ over lines that never executed. A default is legitimate only when it is
 correct in the absence of information, and here it is not. `coverage-py-json`
 has exactly one producer, so an omission cannot silently pick the wrong one.
 
-**`go-cover`'s two names are deliberately not shipped yet.** They belong to
-the Go wave that can measure the difference between `go test -coverprofile`
-and `go tool covdata textfmt`. Shipping a closed vocabulary nothing in this
-build can produce, check or explain would be exactly the speculative naming
-this project refuses.
+**`go-cover`'s two names shipped with the Go wave, and are OPTIONAL.** They
+were deliberately withheld until a build could actually run a Go lane —
+shipping a closed vocabulary nothing can produce, check or explain is exactly
+the speculative naming this project refuses. The key is optional rather than
+required because `go-test` and `covdata` **agree**: both emit `cmd/cover`'s
+own text format, from the same instrumenter, so no reading of the artifact
+depends on which one wrote it. Declare it anyway when you have the choice —
+it records how the evidence was obtained, and `covdata` evidence can cover
+code that no unit test executes, which is a materially different claim even
+when the bytes are interchangeable.
 
 #### The three producers assay refuses, and how to fix each
 
@@ -1836,3 +1843,297 @@ R2/R3 execution is local and isolates each unit in Git-based scratch snapshots. 
 would need an explicit artifact bundle, pinned toolchain/image digest, queue/auth contract,
 result attestation, cancellation/timeout semantics, and a way to prove the returned verdict was
 for the submitted commit. None of that is implemented or implied by the wheel/zipapp today.
+
+## Go lanes: what exists today, and what a Go lane will require
+
+**`judge.language = "go"` now resolves, at R1 only** (decision A-394).
+Registration was deliberately sequenced *after* the statement-attribution
+chain below, so a Go lane could never be runnable while the parser would
+still report block extents as statement truth. **R2 and R3 are still refused**
+`ERROR`/`BAD_LANE_CONFIG`: `generate_mutation_sites` is unconditionally
+`UNSUPPORTED`, so there is no mutation producer for a Go lane to reach.
+
+Read point 1 before you plan around this. The single most common way a Go
+lane fails is not a missing test — it is a judging environment with no Go
+toolchain, and assay will tell you so in those words rather than guessing.
+
+What is worth knowing before you plan a Go lane, because two of these will
+surprise an adopter who assumes Go behaves like Python:
+
+**1. A Go lane needs a real Go toolchain on the machine that runs `assay`,
+not only on the machine that ran the tests.** Assay normally consumes an
+artifact and never re-runs your tools. Go is the exception: `go test
+-coverprofile` records a block's byte extent plus a statement *count*, never
+the statements' own positions, so assay re-derives those positions from your
+source with a Go program it ships (`assay/helpers/go/stmtpos/`, stdlib-only,
+run with `GOPROXY=off` and no network). The adapter declares
+`external_tools = ("go",)`, so the effective-PATH preflight refuses before
+anything runs:
+
+```text
+status: NO_MEASUREMENT
+reason_code: MISSING_EXTERNAL_TOOL
+```
+
+If your gate container builds Go elsewhere and judges in a slim image, that
+slim image needs `go` too. Why assay cannot just parse the profile harder:
+[DESIGN-GUIDE §11, "Go statement positions"](DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
+
+**2. The coverage artifact and the working tree must be the same revision.**
+Assay re-runs the segmentation over your source and joins it to your profile
+on the exact block extents. If they disagree — a profile carried over from an
+earlier commit, a file edited between the test run and the judgment, a
+different toolchain — the lane refuses rather than attributing lines. What you
+see is the reason code:
+
+```console
+$ assay run unit --file assay.toml
+unit: ERROR/UNREADABLE_ARTIFACT (exit 2)
+```
+
+and the verdict document's R1 claim carries the same `ERROR` /
+`UNREADABLE_ARTIFACT` pair with no coverage payload.
+
+The refusal assay *raises* underneath that names the file and the disagreeing
+extents:
+
+```text
+go statement attribution: 'internal/x.go': the coverage profile and the
+source-side oracle disagree about which blocks exist, so they were not
+produced from the same revision of this file. 1 record(s) only in the
+profile (28.22,29.2); 0 only from the source (none)
+```
+
+The extents in it are spelled the way your `.out` file spells them, so they
+can be grepped against the artifact directly — but **that text reaches only a
+caller that invokes the evaluation layer itself**
+(`assay.evaluate.evaluate_coverage`,
+`assay.statement_attribution.attribute_statements`). `assay run` folds a
+judge-phase refusal into the R1 claim, and a verdict carries no free-text
+cause by design, so a CLI consumer gets the reason code and nothing more.
+Surfacing it is tracked as **B053** ("an `ERROR`-outcome verdict's detailed
+message is constructed but never surfaced anywhere a consumer can read it");
+it is not this wave's to fix, and the refusal itself is unaffected.
+
+The fix on your side is to regenerate the profile from the tree you are
+judging — never to relax the check, which exists because attributing anyway
+would publish a verdict about lines that are not the lines that ran.
+
+**3. A verdict from a Go lane carries `helpers[]`.** It records which
+toolchain actually derived those positions, because "which Go compiled this"
+is part of what the verdict means:
+
+```json
+"helpers": [
+  {
+    "role": "statement-positions",
+    "tool": "go",
+    "resolved_path": "/usr/local/go/bin/go",
+    "identity": "go version go1.25.14"
+  }
+]
+```
+
+`identity` is what the toolchain reported about ITSELF, from inside the
+program it compiled and ran — not a version string assay looked up. Lanes for
+every other language OMIT the key entirely: no helper ran, so nothing is
+claimed, and `helpers: []` is refused rather than written. A Go lane whose R1
+claim carries no coverage payload (an error, a refusal) also omits it — an
+entry exists because it produced a claim, so one standing beside no claim
+would describe work that judged nothing.
+
+**4. One known limit, stated so you do not discover it in a review.** An
+uncovered statement sharing a physical LINE with a covered one is still
+reported as executed — `f := func() int { return 7 }` is two counted
+statements that both genuinely begin on that line, and the line did run. This
+is line granularity's own limit, which coverage.py shares; it is not fixed by
+the oracle and is not claimed to be.
+
+**5. A second known limit: assay does not judge Go sources carrying `//line`
+directives — generated code.** Keep them out of `judge.source_roots`.
+
+A `//line file:line` directive tells the compiler to report positions as if
+they came from somewhere else, which is how `goyacc`, `peg`, `ragel` and
+similar generators point diagnostics at their own input rather than at the
+generated `.go`. `go test -coverprofile` records those remapped positions, so
+such a file's coverage records name the *directive's* line numbers, not the
+file's — Go's own `TestLineDup` fixture is 24 lines long and its profile
+reports lines 100 to 105. `git diff` names physical lines. The two cannot be
+joined, by anyone: this is not a check assay could relax.
+
+So the rule is per FILE, and it costs you nothing unless you actually judge
+one:
+
+* a `//line`-bearing file with **no changed line in the judged set** is
+  IGNORED. Its records contribute nothing and the lane proceeds normally.
+  One generated file does not take your lane down.
+* a `//line`-bearing file **inside** the judged set refuses:
+
+```console
+$ assay run unit --file assay.toml
+unit: ERROR/BAD_LANE_CONFIG (exit 2)
+```
+
+The verdict's R1 claim carries that same `ERROR` / `BAD_LANE_CONFIG` pair and
+no coverage payload. The refusal assay *raises* underneath it names the cause,
+the file and the remedy:
+
+```text
+'internal/parser/y.go' carries coverage records whose positions were remapped
+by a `//line` directive ... so its recorded line numbers are the directive's
+and not this file's. This lane judges it: 3 changed line(s) in it are inside
+judge.source_roots, and assay will not judge a file whose measured lines
+cannot be matched to the lines a diff names -- that would report a clean
+percentage over nothing measured. Generated sources belong outside the lane's
+judge.source_roots (or its judge.targets)
+```
+
+As in limit 2 above, that text is visible to a caller of the evaluation layer
+(`assay.evaluate.evaluate_coverage` / `evaluate_targets`) and **not** to an
+`assay run` consumer, who gets the reason code — B053. `BAD_LANE_CONFIG` is
+shared by several distinct causes on the Go path, so when you see it on a Go
+lane, a generated file inside `source_roots` is one of the first things to
+check.
+
+The remedy is the same thing you would do for any generated file: keep it out
+of `source_roots` (or out of `judge.targets`). What assay will not do is the
+quiet alternative — measure the file's virtual line numbers, match nothing,
+and report `0 executable of 0 changed` as a clean result. `0/0` is never
+`100%`.
+
+The witness for all of this is Go's own: `cmd/cover/cover_test.go`'s
+`lineDupContents`, run through the real toolchain and committed with its
+recipe at `nyxloom-trove/carve-assets/P27-recarve/`.
+
+**6. Installing assay into a Go gate image needs no Python packaging work.**
+The judge needs an *interpreter*, not a toolchain — assay is stdlib-only by
+design (A-005) — and a `golang:1.25`-based image already has one:
+`/usr/bin/python3` 3.13.5 on Debian trixie, against assay's own
+`requires-python = ">=3.11"`. Measured, not assumed:
+
+```console
+$ docker run --rm --network=none <your-go-gate-image> python3 --version
+Python 3.13.5
+```
+
+There is no pip and no ensurepip in that image, so the **zipapp is the
+install path**: copy `assay-<version>.pyz` in, check it against its shipped
+`.sha256` sidecar, and run it with the interpreter that is already there.
+
+```console
+$ sha256sum -c assay-<version>.pyz.sha256
+$ python3 assay-<version>.pyz run unit --file assay.toml --verdict-json verdict.json
+```
+
+The verdict records which archive judged it —
+`judge_provenance.artifact = "zipapp"` plus the archive's own sha256 — so a
+consumer can bind a verdict to the artifact that produced it without trusting
+a version string. The Go oracle ships INSIDE that archive and is staged out
+to a temporary directory when it runs (`go run .` needs a real directory and
+a zip member is not one), so nothing has to be unpacked or installed
+alongside it.
+
+**7. One Go module per lane, and the lane's project root is that module's
+root.** A Go cover profile keys records by import path
+(`example.com/svc/internal/store/x.go`) while `git diff` names the same file
+`internal/store/x.go`. Assay bridges the two by **reading your module path
+out of your own `go.mod`** — the nearest one at or above the directory
+holding your `assay.toml`, and no higher than the repository top. There is
+no lane key and no CLI flag for it, deliberately: it is your project's fact,
+not a literal for you to restate (this is `covergate`'s `-module srdm` flag,
+which DESIGN-GUIDE §5 names as an anti-pattern by example). You declare
+nothing; it just works:
+
+```console
+$ python3 assay-<version>.pyz run unit --file assay.toml --verdict-json verdict.json
+```
+
+Two consequences worth planning around:
+
+* **Put `assay.toml` at your module root.** If your repository holds several
+  modules, give each one its own lane file at its own module root rather
+  than one lane file at the top. A project root sitting *above* several
+  modules does not silently pick one — the profile's keys will not be under
+  whichever `go.mod` was found first, and the lane refuses
+  `ERROR`/`UNREADABLE_ARTIFACT` with a message naming the key, the module
+  path assay derived and the `go.mod` it came from.
+* **A project root that is in no Go module at all refuses**
+  `ERROR`/`BAD_LANE_CONFIG`, naming the paths it looked at. That is a lane
+  configuration fault, not a coverage one, and it is reported as such.
+
+**`go.work` is not supported this wave.** Nested modules never appear in
+`go test ./...`'s own output, so a workspace's other modules are simply not
+measured; a lane pointed at a workspace root surfaces as the first bullet
+above rather than as a partial measurement. If you need a workspace, run one
+lane per module.
+
+The previously-documented library workaround — building `GoAdapter(module_path=…)`
+yourself and calling `runner.run_lane` — is no longer needed for this, and a
+`module_path` you construct by hand that disagrees with your `go.mod` is now
+refused rather than given precedence.
+
+**8. A worked Go lane, and it is one that really ran.** This is the lane
+F008-A5's qualification used against `shared-ramdisk-depot-manager` (srdm) at a
+real commit range, unedited except for the base ref. Note what it does NOT
+contain: no `cwd`, no module path, and `source_roots` spelled relative to the
+lane file's own directory.
+
+```toml
+schema_version = 2
+
+[lanes.coverage]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+# Your project's own test command, verbatim. srdm's is `tools/gate.sh:105`;
+# only the -coverprofile path is assay's, because assay reserves the artifact
+# it is going to read.
+argv = ["go", "test", "./...", "-count=1", "-coverpkg=./...", "-covermode=atomic", "-coverprofile=.assay/cover.out"]
+# `default_process_runner` REPLACES the child environment, so a Go lane must
+# declare what it needs rather than inheriting it. PATH is how the toolchain
+# is found at all; GOCACHE/GOMODCACHE keep a warm build cache warm.
+env = { GOPROXY = "off", GOFLAGS = "-mod=mod", GOTOOLCHAIN = "local", GOWORK = "off" }
+env_passthrough = ["PATH", "HOME", "GOCACHE", "GOMODCACHE"]
+budget = "30m"
+allow_argv_append = false
+
+[lanes.coverage.isolation]
+snapshot_selection = "repository"
+
+[lanes.coverage.judge]
+language = "go"
+source_roots = ["internal"]     # project-relative, i.e. <module root>/internal
+fail_under = 75.0
+allow_excluded = false
+base = "<the ref your change is measured against>"
+
+[lanes.coverage.judge.coverage]
+format = "go-cover"
+artifact = ".assay/cover.out"
+producer = "go-test"
+```
+
+The file lives at `<module root>/assay.toml` — for srdm, inside
+`shared-ramdisk-depot-manager/`, not at the repository top. That is point 6
+restated as a placement rule, and it is the one thing an adopter with a
+subdirectory module gets wrong first: a lane file at the repository top makes
+the project root the repository top, `go.mod` is not there, and the lane
+refuses `BAD_LANE_CONFIG` before it judges anything.
+
+**Keep `-coverpkg=./...` if you have it.** It is what stops a package with no
+test file of its own from vanishing from the profile entirely — the
+"file-absence" failure mode, which reports a changed file as either excluded or
+wholly uncovered depending on how the tool guesses. It also means one block
+gets one record per test binary, which assay folds executed-wins (B061); a
+profile without it is smaller and measures less.
+
+**What that lane produced**, through `python3 assay-<version>.pyz run coverage`
+inside the Go gate image: `PASS`, 12 files considered, 418 executable changed
+lines, 394 covered, 94.3%, and a `helpers[]` entry naming `go version
+go1.25.14` as the toolchain that derived the statement positions. srdm's own
+`covergate` on the byte-identical profile said 684/639 — a 266-line larger
+denominator, every line of which begins no statement. Both tools agree on all
+24 statements that are genuinely uncovered; the 21 extra lines `covergate`
+names are closing braces and signatures a developer cannot make executable.
+That difference is the whole reason A-217 ruled for a source-side oracle, and
+it is what a Go consumer gains by moving.

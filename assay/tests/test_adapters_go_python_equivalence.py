@@ -23,6 +23,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import MappingProxyType
 
+from conftest import as_statement_attributed
+
 from assay.adapters.go import GoAdapter
 from assay.adapters.python import PythonAdapter
 from assay.coverage import load_coverage_profile
@@ -112,7 +114,10 @@ def test_python_and_go_return_equivalent_results_for_a_genuinely_equivalent_cons
                 {"pkg/classify.go": frozenset({1, 2, 3, 4, 5, 6})}
             )
         ),
-        profile=CoverageProfile(
+        # (A-392) Hand-built line sets, not a parsed block profile -- so they
+        # are already statement-granular by construction. The flag says so;
+        # GoAdapter refuses an uncorrected profile since the P27 re-carve.
+        profile=as_statement_attributed(CoverageProfile(
             files=MappingProxyType(
                 {
                     "pkg/classify.go": FileCoverage(
@@ -122,7 +127,7 @@ def test_python_and_go_return_equivalent_results_for_a_genuinely_equivalent_cons
                     )
                 }
             )
-        ),
+        )),
         adapter=GoAdapter(),
         repo_top=REPO_TOP,
         project_root=REPO_TOP,
@@ -177,7 +182,7 @@ def test_an_unknown_go_region_absent_from_coverage_renders_uncovered_lines():
 
     result = evaluate_coverage(
         added=added,
-        profile=profile,
+        profile=as_statement_attributed(profile),
         adapter=GoAdapter(),
         repo_top=REPO_TOP,
         project_root=REPO_TOP,

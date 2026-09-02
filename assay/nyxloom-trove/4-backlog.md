@@ -4484,6 +4484,26 @@ discover them. Each item names what is already ruled and what is not.
 - [x] item 4 landed (may ride the v9 wave or the Go wave — whichever is
       first) — landed in Wave A instead, ahead of both: see B039's own
       acceptance boxes.
+- [x] item 1 landed, option (a) as recommended — `assay/helpers/go/stmtpos/`
+      ships inside the wheel AND the zipapp; `GOPROXY=off`/`GOFLAGS=-mod=mod`
+      are forced on every invocation. One correction to the item's own text:
+      "invoke `go run <path>`" is not enough on its own, because the zipapp
+      has no path to give it — the source is staged out of the archive to a
+      real directory first (A-403).
+- [x] item 2 landed (Wave C generation 2) — `external_tools = ("go",)`.
+- [x] item 3 landed (Wave C generation 3, A-398) — `go-test` | `covdata`,
+      both documented, the key optional for this format.
+- [x] item 5 landed (Wave C generation 4) — and it was MORE than the
+      documentation item filed here. `Verdict.helpers` had no producer at
+      all: P33 validated the array and nothing populated it. A Go R1 lane now
+      emits a real entry, `assemble_verdict` refuses a helper with no
+      correspondingly-judged claim, `_replace_highest_higher_rigor_claim_with_git_failed`
+      drops one whose claim it voids, and the correspondence rule has one
+      definition (`verdict.supported_helper_roles`) read by both sides.
+      Proven end to end against the real toolchain by
+      `tests/qualification/test_go_r1_real.py` (A-395: never a mock).
+- [ ] item 6 (fixture regeneration, F008-A4) — still owed; blocked with
+      F008-A5 behind **B059**.
 
 ---
 
@@ -5198,3 +5218,615 @@ case).
   file's data without recording anything in the verdict would defeat the
   audit trail A-357 exists to preserve — any fix must keep the file
   nameable, not merely stop refusing.
+
+---
+
+## B055 — an uncovered Go statement sharing a physical LINE with a covered one is still laundered into `executed`; the statement-position oracle does not fix it, and cannot at line granularity
+
+> **Renumbering note, 2026-09-02.** Every id this Wave C branch filed was
+> shifted up by two: **B053→B055, B054→B056, B055→B057, B056→B058,
+> B057→B059, B058→B060**. Main's `a050a467` (2026-09-02, from dstdns's first
+> JavaScript lane adoption on assay 4.0.0) had already filed a *different*
+> B053 and B054, and main's ids win — the estate's precedent is the ciu
+> CIU-55 shift. The rewrite covered all 108 references in 25 tracked files,
+> historical briefs and logs included, because an id that silently resolves
+> to a different entry is worse than an edited record. Next free id after
+> this wave: **B061**. `decisions.md` is unaffected; the A-393/A-396/A-401/
+> A-404 rows that cite these entries were rewritten in place.
+
+**Filed 2026-08-31, Wave C (the P27 re-carve), with a frozen witness and a
+test that asserts the unfixed behaviour.** Recorded as decision **A-393**.
+
+### What happens
+
+`carve-assets/P27/witness/lit.go` line 4 is `f := func() int { return 7 }`.
+The real profile (`coverage-lit.out`) carries two records over it:
+
+```text
+example.invalid/lit/lit.go:3.14,4.18 1 1    <- the assignment, executed
+example.invalid/lit/lit.go:4.18,4.30 1 0    <- the func literal's body, NOT executed
+```
+
+Both counted statements genuinely begin on line 4. Executed-wins promotes the
+line, so the uncovered statement is invisible: `executed` contains 4 and
+`missing` is empty.
+
+A-217's source-side oracle (B047 item 1) does **not** change this, and this
+entry exists so that is on the record rather than discovered later as a
+surprise. What the oracle *does* fix on this file is the fabrication — line 3,
+the `func H() int {` signature, was reported executable by the shipped
+`range(start, end + 1)` expansion and is not code at all.
+
+### Why it is not simply a defect to fix
+
+`carve-assets/P27/BLOCKED-grammar.md` §3 already names this precisely: it is
+"line granularity's own limit — `coverage.py` shares it", unlike the comment
+and closing-brace cases, which are specific to block extent and ARE fixed. A
+verdict's wire schema speaks in line numbers; distinguishing two statements on
+one line needs a column-granular claim, which is a schema cut. So this is a
+**known and documented boundary of the R1 claim**, not an open bug — filed so
+that a future reader who notices it does not re-derive the analysis, and so
+that any future proposal to fix it is costed honestly as a schema cut.
+
+### Exposure, stated plainly
+
+The direction is toward false PASS: a genuinely untested func literal, or any
+second statement sharing a line with a covered one, is counted as covered.
+In real gofmt-clean Go the shape is uncommon (a func literal inline in an
+assignment, a `switch` case body on the `case` line, `x := 1; y := 2`), and
+`coverage.py` lanes have carried the identical limit since P06 without
+incident — but "uncommon" is not "absent", and the honest statement is that a
+Go R1 line claim is statement-granular **to the line**, not to the statement.
+
+### The fix, if it is ever ruled worth it
+
+1. Rule, as an A-row, whether a Go R1 claim should be able to express
+   "this line contains an uncovered statement" at all — the alternatives are
+   leaving it as documented (today's answer), a per-line partial marker, or
+   full column granularity.
+2. If ruled yes: a wire field, in schema + dataclass + `verify.py` (the three
+   places), at the next schema cut — never a producer-side upgrade (A-138/A-170).
+3. `assay.statement_attribution.attribute_statements` already has the data it
+   would need: it holds each block's own `count` and `stmt_lines` before the
+   executed-wins union collapses them, so the fix is a representation
+   question, not a measurement one.
+
+### Acceptance
+
+- [ ] the ruling recorded as an A-row, naming the three alternatives above;
+- [ ] if ruled to fix: the wire field in all three places, plus a test over
+      the REAL committed `coverage-lit.out` asserting line 4 reports the
+      uncovered statement — and a companion test proving an ordinary
+      single-statement line does NOT, so the marker is not vacuous;
+- [ ] CONSUMERS' Go section states the limit either way, in the same
+      paragraph that describes what a Go R1 line claim means;
+- [ ] `test_lit_go_drops_the_fabricated_signature_but_still_launders_line_four`
+      updated (it asserts today's behaviour deliberately, so it MUST go red
+      when this is fixed).
+
+---
+
+## B056 — `test_verdict_schema_is_packaged.py`'s docstring states a measurement that no longer holds: the `package-data` stanza it defends is inert, so its named negative is currently unreachable
+
+**Filed 2026-08-31, Wave C, as a side finding while packaging the Go helper.**
+Recorded as decision **A-396**. Not fixed here: the fix is a real call, not a
+typo repair.
+
+### What the test says
+
+`tests/test_verdict_schema_is_packaged.py`'s module docstring names its
+negative — *"the schema is not declared as package data, so it exists in the
+source tree and vanishes on install"* — and then states a measurement:
+
+> Measured in the gate image while writing this: with
+> `[tool.setuptools.package-data]` the wheel carries
+> `assay/schemas/verdict.schema.json`; without it the wheel carries only
+> `assay/__init__.py`, `assay/cli.py`, `assay/config.py`, `assay/errors.py` and
+> `assay/verdict.py`. **Both sides are real.**
+
+### What is true now
+
+Both sides are NOT real any more. Built from the current tree with the entire
+`[tool.setuptools.package-data]` stanza deleted, the wheel still carries
+`assay/schemas/verdict.schema.json` — and 47 members in total, not five.
+`setuptools_scm` installs a git file finder, and setuptools'
+`include_package_data` defaults to true under pyproject metadata, so every
+GIT-TRACKED file under the package directory ships regardless of the stanza.
+
+So the test's stated negative cannot currently be produced by the change it
+names. The test still PASSES, and what it asserts (the schema is in the wheel,
+and resolves from inside the venv) is still worth asserting — but it can no
+longer fail for the reason it says it exists to catch. That is AGENTS.md's
+"a check is only as strong as what it actually compares": the message states a
+conclusion about package-data that the comparison no longer tests.
+
+### Why it is not obvious which way to fix it
+
+1. **Correct the docstring only.** Cheapest and honest, but leaves a test whose
+   stated purpose no longer has a reachable failure mode.
+2. **Make the negative reachable again** — assert the outcome under a build
+   with the git finder disabled (a tree without `.git`, which is exactly the
+   build `[tool.setuptools_scm]`'s own `fallback_version` anticipates). This
+   restores a real two-sided check and would cover `A-029` properly, but adds a
+   second wheel build to the suite.
+3. **Drop the package-data declarations** as genuinely inert and rely on the
+   git finder. Rejected on sight for the schema (A-029 is a consumer-facing
+   guarantee and should not rest on git tracking), but naming it here so the
+   next reader does not have to re-derive why.
+
+Whichever is chosen applies identically to `tests/test_go_helper_is_packaged.py`,
+whose docstring already states the corrected position and asserts the OUTCOME
+rather than the mechanism — so it is unaffected either way, and is the shape
+option 1 would move the sibling toward.
+
+### Acceptance
+
+- [ ] the ruling recorded as an A-row naming the three options above;
+- [ ] `test_verdict_schema_is_packaged.py`'s docstring no longer states a
+      measurement that a re-run would refute;
+- [ ] if option 2: a build with the git file finder unavailable, asserting the
+      schema is ABSENT without the stanza and PRESENT with it — the two-sided
+      check the docstring currently claims;
+- [ ] whatever is decided, the same treatment applied to the Go helper's own
+      packaging test, so the two do not drift apart again.
+
+---
+
+## B057 — the Go canary and union tests now prove their subject against a DOWNGRADED adapter: `requires_statement_attribution=False`, because a real Go lane needs a toolchain the gate image does not have
+
+**Filed 2026-08-31, Wave C, while wiring A-392's guard.** Not a defect in the
+shipped code — the shipped `GoAdapter` declares `True` — but a real, tracked
+gap between what those tests exercise and what a consumer runs.
+
+**RESOLVED 2026-09-02 (Wave C generation 6), all three boxes.** F008-A4's
+fixture regeneration removed both shortcuts rather than documenting either:
+no Go test in the suite now judges a downgraded adapter or an uncorrected
+profile. The narrative below is kept as filed — it is the reasoning that
+selected the fix, and its "why it is filed rather than fixed here" paragraph
+is exactly what F008-A4 went on to do.
+
+### What happened
+
+`GoAdapter.requires_statement_attribution = True` makes
+`evaluate_coverage`/`evaluate_targets` refuse an uncorrected block profile
+(A-392), and the correction is a real Go subprocess (A-217: a Python
+re-implementation of `cmd/cover`'s segmentation is not an acceptable
+substitute). Thirteen pre-existing tests then went red, all of them Go tests
+that judge committed, pre-generated coverprofiles with **no toolchain**
+(A-042/A-087/A-107 — this devcontainer has none, and `tester-unified:local`,
+which runs the registered gate, has none either).
+
+Two different shortcuts were taken, and they are not equally cheap:
+
+1. **`tests/conftest.py::as_pre_oracle_attributed`** — used by
+   `test_adapters_go_union_fidelity.py`, `test_adapters_go_python_equivalence.py`
+   and `test_adapters_go_registration.py`. It sets the flag and leaves the line
+   sets untouched. For the two files whose profiles are HAND-BUILT line sets
+   this is exact: those sets are already statement-granular, and the flag
+   merely says so. For `test_adapters_go_union_fidelity.py`, whose profiles are
+   parsed from the committed `hello.out`, the sets are the naive expansion
+   A-234 already records as stale.
+2. **`tests/test_canary_go_pipeline.py::_PreOracleGoAdapter`** — a subclass of
+   the real adapter with the declaration flipped to `False`. Everything the
+   file tests (cause-sensitivity, the four INCONCLUSIVE causes, the real
+   `inject_uncovered_line`, the real union) is unaffected; what is lost is that
+   no Go canary is proven statement-granular anywhere.
+
+### Why it is filed rather than fixed here
+
+Fixing (1) properly IS F008-A4 (fixture regeneration, wave item 3): the correct
+new expectations depend on running the oracle over `hello.go`/`greet.go`
+through `tester-unified-go:local` and re-deriving every asserted set. A-234's
+own warning applies exactly — swapping in a real profile before the
+expectations are re-derived replaces a wrong profile with a real one still read
+as statement truth, which is the conflation A-O19 exists to remove.
+
+Fixing (2) needs a decision this entry does not pre-empt: either the canary Go
+tests grow a canned oracle (the profile-derived blocks would have to be threaded
+through `canary.run_go_canary`, which reads its artifacts itself), or the file
+splits into a logic half on the double and a real half that runs only where a
+Go toolchain exists — which the registered gate image does not provide.
+
+### Acceptance
+
+- [x] `test_adapters_go_union_fidelity.py`'s expectations re-derived from the
+      real oracle, and `as_pre_oracle_attributed` dropped from that file
+      (F008-A4). **Landed 2026-09-02 (Wave C generation 6).**
+      `tests/fixtures/go/hello/hello.out` is now real `go test -coverprofile`
+      output for the committed source bytes (`32.32,34.2 1 1` /
+      `38.35,40.2 1 0`), and the module joins it against
+      `carve-assets/P27-recarve/fixture-oracle.json` — the real oracle's
+      output over the same bytes — with the production
+      `attribute_statements`. The asserted sets went from `{29,30}`/`{36,37}`
+      to `{33}`/`{39}`: 2 executable lines, not 4. A named control test
+      asserts the naive expansion of the SAME real profile is
+      `{32,33,34}`/`{38,39,40}`, which is the concrete form of A-234's
+      warning — regenerating the bytes alone would have made the module
+      assert three wrong lines instead of two. Provenance, the raw run and
+      the per-fixture derivation table: `P27-recarve/PROVENANCE.md`.
+      `as_pre_oracle_attributed` is gone; the remaining hand-built-line-set
+      callers use `conftest.as_statement_attributed`, which now REFUSES a
+      multi-line block extent instead of trusting the caller.
+- [x] a decision recorded on the canary shortcut, and `_PreOracleGoAdapter`
+      either removed or reduced to the half that genuinely needs it.
+      **REMOVED 2026-09-02, same change — the shortcut fell out rather than
+      needing the decision this entry anticipated.** The controller's DA-9
+      (`vbpub@53eba55b`) said to close this box only if F008-A4's
+      regeneration made it fall out, and it did: `greet_control.out` and
+      `greet_transformed.out` are now real toolchain output, and
+      `test_canary_go_pipeline.py` corrects each with the real oracle
+      document before `run_go_canary` sees it. A genuinely
+      statement-attributed profile satisfies A-392's guard, so the SHIPPED
+      `GoAdapter` — `requires_statement_attribution=True`, no override of
+      any declaration — judges these fixtures directly. Neither option this
+      entry laid out was needed: no canned oracle threaded through
+      `run_go_canary` (which still reads its own artifacts), no file split.
+      The canary is now proven cause-sensitive at statement granularity
+      (`{36,37}` missing, not `{35,36,37,38}`), which is precisely what the
+      double could not prove.
+- [x] whichever survives, a test that goes RED if the shipped adapter's
+      `requires_statement_attribution` is ever flipped to `False` — so the
+      double can never quietly become the product. **Landed 2026-09-01
+      (Wave C generation 4):**
+      `test_adapters_go_registration.py::test_the_adapter_the_REGISTRY_hands_a_lane_is_the_undowngraded_one`
+      asserts it of the object a real lane RESOLVES, not merely of
+      `GoAdapter()`, and uses `type(...) is GoAdapter` rather than
+      `isinstance` — deliberately, because `_PreOracleGoAdapter` is a
+      subclass and would satisfy `isinstance` while carrying the flipped
+      declaration. The other two boxes stay open and both still depend on
+      F008-A4, which is now blocked behind **B059**.
+
+---
+
+## B058 — srdm's `covergate` classifies a cover block's whole extent as executable, so its own coverage floor measures more lines than Go has statements
+
+**Filed 2026-08-31, Wave C, while reading `covergate` for F008-A5's
+qualification.** Not an assay defect and not a blocker for this wave — assay's
+side is fixed. Filed because the qualification is about to compare the two,
+and because the finding has a consequence for srdm's own gate that srdm
+cannot see from inside itself.
+
+### What was found
+
+`shared-ramdisk-depot-manager/tools/covergate/profile.go`'s
+`ParseCoverProfile` expands every profile record across its whole line range:
+
+```go
+for l := start; l <= end; l++ {
+    if count > 0 { fc.Executed[l] = true; delete(fc.Missing, l); continue }
+    if !fc.Executed[l] { fc.Missing[l] = true }
+}
+```
+
+and `FileCoverage.Executable(line)` is `Executed[line] || Missing[line]`. So a
+line is "code" iff it falls inside some block's extent. Function signature
+lines, `case` labels, closing braces and statement-continuation lines are all
+inside a block extent and are all counted. The doc comment states the premise
+outright: "a block spans a range of lines and every line in that range is
+executable."
+
+**This is byte-for-byte the rule assay removed in this wave**, and A-217's
+impossibility proof applies to it unchanged: `carve-assets/P27/witness/
+collision-colA.go` and `collision-colB.go` are gofmt-clean, compile under the
+pinned toolchain, emit **byte-identical** cover profiles, and have statements
+beginning on different lines (`{4,6}` vs `{4,5}`). Any rule that is a
+function of the profile alone must answer both identically; the two correct
+answers differ; so covergate is wrong on at least one of them. A-217 already
+recorded this in passing ("covergate shares the inclusive convention") — what
+is new here is that it is now confirmed in covergate's shipped source rather
+than inferred, and that the consequence for srdm's own gate is spelled out.
+
+### Why it matters to srdm specifically
+
+`tools/gate.sh` runs `covergate -fail-under ${SRDM_COVERAGE_FLOOR:-75}` over
+`-source internal`. The denominator is changed lines the profile "deems
+executable", which over-counts. The direction is not uniformly lenient, which
+is the part worth care:
+
+* A change that adds a **tested** function inflates both numerator and
+  denominator (its signature and braces land in an executed block), which
+  drifts the ratio TOWARD 100% and makes the floor easier to clear than it
+  reads.
+* A change that adds an **untested** function inflates the denominator only,
+  which makes the floor HARDER to clear than it reads — and the lines it
+  names as uncovered include braces and signatures a developer cannot write
+  a test for, so the remedy the output implies does not exist.
+
+Two mitigations exist and neither closes it: `HasExecutableCode`
+(`hascode.go`) excludes a file declaring no function bodies, but that is
+per-FILE and cannot demote a signature line inside a file that does have
+functions; and `Evaluate` considers only ADDED lines, which bounds how often
+the difference is reachable without changing its direction.
+
+### The second, separate hazard the same reading surfaced
+
+`Evaluate`'s `fc == nil` branch splits a changed source file absent from the
+profile into `NoCode` (excluded from the ratio) and `Unmeasured` (counted
+uncovered), distinguished only by `HasExecutableCode`. Project memory records
+covergate "silently skipping a package (P14)" in a past run; this is where
+such a skip lands. `Unmeasured` is surfaced in the report but is a listing,
+not a refusal, so a package lost by a `-coverpkg` or build-tag problem is
+reported in the same breath as a package that genuinely lacks tests. **Any
+assay-vs-covergate disagreement must be classified as extent-expansion or as
+file-absence before either side is called wrong** — they are different
+questions and averaging them would produce a conclusion about neither.
+
+### What is NOT claimed
+
+No covergate run was performed. This is a reading of covergate's committed
+source, which is legitimate evidence about its ALGORITHM but is not a
+measurement of its OUTPUT on any particular commit. F008-A5's qualification is
+what produces that, and it is still owed.
+
+### Acceptance
+
+- [ ] F008-A5's qualification run, with the disagreement classified per the
+      split above rather than reported as a single number;
+- [ ] the finding relayed to srdm against its own backlog (cross-repo
+      convention: a finding about a TOOL is filed in that tool's backlog, not
+      worked around locally), with the two directions of drift named — a
+      "coverage floor" that is easier to clear on tested code and harder on
+      untested code is not the policy `-fail-under 75` reads as;
+- [ ] a decision on whether assay should ever CONSUME a covergate verdict
+      (today it does not, and this finding is a reason to keep it that way
+      unless the two are bound at statement granularity, which A-208 always
+      intended and A-217 explains is the only binding that is not circular).
+
+## B059 — `go` is registered at R1, but no Go lane reachable through the shipped CLI can resolve its own coverage keys
+
+**Filed 2026-09-01, Wave C generation 4, MEASURED end to end inside
+`tester-unified-go:local` (A-334) rather than reasoned about.** This is a
+BLOCKER for F008-A3/A5 and it carries an open decision ask (REPORT §"Decision
+asks", DA-8): the fix is a product/design fork with three defensible shapes,
+so it is filed rather than improvised.
+
+### What was found
+
+A Go cover profile keys every record by the package's **import path**:
+
+```text
+mode: atomic
+example.invalid/harness/internal/calc/calc.go:5.24,7.2 1 1
+example.invalid/harness/internal/calc/calc.go:10.29,12.2 1 1
+```
+
+while `git diff` names the same file `internal/calc/calc.go`. Stripping that
+module-path prefix is exactly what `GoAdapter.module_path` exists for
+(`adapters/go.py`, mirroring `covergate/main.go`'s own `stripModulePrefix`) —
+and **nothing can set it through the CLI.** `cli._built_in_registry`
+constructs `GoAdapter()`, whose `module_path` defaults to `""`, meaning "no
+strip"; `_KNOWN_JUDGE_FIELDS` (`config.py:243`) has no key for it and
+`assay run` has no flag for it. The only callers that set it anywhere in the
+tree are unit tests and `tests/test_standalone.py:1745`, a consumer building
+its OWN registry through the library API.
+
+Measured, in-image, on the real toolchain, with the shipped zipapp
+(`assay-4.0.1.dev26+g8d7f8740`, `judge_provenance.artifact = "zipapp"`):
+
+```text
+$ python3 <pyz> run unit --file /work/fixture/assay.toml --verdict-json /work/verdict.json
+unit: ERROR/UNREADABLE_ARTIFACT (exit 2)
+  commit: b7d3bb56c0dbce5135e2fa81bea89774cb2ad98a
+  argv: go test ./... -count=1 -coverpkg=./... -covermode=atomic -coverprofile=.assay/cover.out
+ASSAY_EXIT=2
+```
+
+and the mechanism, probed directly through the same zipapp in the same image:
+
+```text
+adapter.module_path = ''
+raw keys            = ['example.invalid/harness/internal/calc/calc.go']
+resolved            = {'example.invalid/harness/internal/calc/calc.go': 'example.invalid/harness/internal/calc/calc.go'}
+  exists(example.invalid/harness/internal/calc/calc.go) = False
+REFUSAL outcome     = ERROR
+REFUSAL reason_code = UNREADABLE_ARTIFACT
+REFUSAL message     = the coverage artifact carries block extents for
+  'example.invalid/harness/internal/calc/calc.go', but that file does not
+  exist at /work/fixture/example.invalid/harness/internal/calc/calc.go --
+  the profile and the working tree are not the same revision, so its blocks
+  cannot be resolved to statement positions
+
+with module_path set= {'example.invalid/harness/internal/calc/calc.go': 'internal/calc/calc.go'}
+helper identity     = go version go1.25.14
+helper tool/path    = go /usr/local/go/bin/go
+  internal/calc/calc.go: extent 5.24,7.2 numStmts=1 stmt_lines=[6]
+  internal/calc/calc.go: extent 10.29,12.2 numStmts=1 stmt_lines=[11]
+```
+
+The second half is the control, and it matters twice over: it shows the
+defect is ONLY the missing declaration — with `module_path` supplied,
+everything downstream works, the real `go1.25.14` oracle runs, and the
+statement lines come back as `{6}` and `{11}`, the two `return` lines, rather
+than the naive `{5,6,7}`/`{10,11,12}` that would include both signatures and
+both closing braces.
+
+### Why no fixture layout avoids it
+
+A package's import path is `<module path>/<dir relative to module root>`, and
+its profile key is that plus the file's basename. For the key to equal the
+repo-relative path, the module path would have to be empty, which `go.mod`
+does not permit. So this is not a property of an awkward fixture: **every**
+real Go module hits it. srdm hits it too — DA-6's prescribed lane
+(`cwd = "shared-ramdisk-depot-manager"`, `source_roots =
+["shared-ramdisk-depot-manager/internal"]`) would resolve srdm's own
+`srdm/internal/...` keys to
+`shared-ramdisk-depot-manager/srdm/internal/...`, which is under no source
+root and matches no file.
+
+### The second defect, which is separable and smaller
+
+The refusal names the **wrong cause**. "the profile and the working tree are
+not the same revision" is a staleness finding; the actual condition is an
+unstripped module prefix, and a consumer following that message would go
+looking at their commits. `derive_statement_blocks`' own input validation
+cannot tell the two apart today because by the time it runs, the key has
+already been through a no-op `normalize_coverage_key`.
+
+### What is NOT claimed
+
+That any particular fix is right. Three shapes are defensible and they are
+laid out in REPORT §"Decision asks" (DA-8): a declared lane key, derivation
+from the repository's own `go.mod`, or a registry that builds adapters per
+lane. §4.2a's DERIVE-then-READ preference and A-007's own precedent point at
+derivation; the architectural seam for it does not exist, and inventing one
+would be a protocol change on top of A-397's.
+
+### Acceptance
+
+- [x] DA-8 ruled, and the ruling recorded as a decision row. **Ruled by the
+      controller at `vbpub@3a95459e` — derive from the snapshot's own
+      `go.mod`, no declared key, the registry untouched — and recorded as
+      **A-404** (Wave C generation 5), which carries the member's name, exact
+      signature and the rejected alternatives.**
+- [x] a Go R1 lane run through `assay run` (the shipped CLI, not a
+      library-built registry) on a real Go module, producing a
+      statement-granular PASS and a paired FAIL that names the uncovered
+      line. **`tests/qualification/test_go_r1_real.py` now drives
+      `python3 <pyz> run unit --file … --verdict-json …` inside
+      `tester-unified-go:local`; every assertion survived the move from the
+      library driver unchanged. REPORT §35 has the transcript.**
+- [x] the misattributed refusal message either fixed or explicitly kept,
+      with the reason recorded. **FIXED, per A-404 (e): a profile key not
+      under the derived module path now refuses naming the key, the module
+      path and the `go.mod` it came from. The staleness message survives for
+      its actual subject — a key that IS under the module and still names no
+      file — which is recorded in `go_stmtpos._derive`'s own comment.**
+- [x] F008-A5's srdm run, which cannot start until this is closed. **RAN
+      2026-09-02 (Wave C generation 6), on the corrected lane shape REPORT §37
+      derived and DA-9 accepted: the lane file inside
+      `shared-ramdisk-depot-manager/`, `source_roots = ["internal"]`, no
+      `cwd`.** A synthetic two-commit repository built inside the container
+      from `git archive 10b174a5|83c2ff79 shared-ramdisk-depot-manager`, base
+      = commit 1, srdm's own `gate.sh:105` argv. The derivation is what made
+      it possible at all: `srdm/internal/...` keys stripped by the module path
+      read from srdm's own `go.mod`, with nothing declared anywhere.
+      `assay run` → PASS, 12 files, 418 executable, 394 covered, 94.3%,
+      `helpers[{role: statement-positions, identity: "go version go1.25.14"}]`,
+      `judge_provenance.artifact: "zipapp"`. Transcript and the classified
+      table: REPORT §41.
+
+---
+
+## B060 — `build_release.py` leaves a `zipapp-staging/` directory beside `--outdir` and never removes it, which can turn the project's own gate red
+
+**Filed 2026-09-02, Wave C generation 5, on the controller's ruling at
+`vbpub@3a95459e`.** Observed by generation 4 while building the in-image
+consumer harness (BRIEF-5 §3) and left unfiled as "a one-line property of a
+builder this wave did not otherwise touch"; the controller's disagreement is
+on cost, not substance — an unfiled hazard that can turn assay's own gate red
+is what the backlog is for.
+
+`gate/distribution/build_release.py` writes its staging tree to
+`zipapp-staging/` NEXT TO the directory named by `--outdir`, and never
+removes it. The natural invocation for building from inside the repository,
+`--outdir assay/dist`, therefore leaves `assay/zipapp-staging/` behind. That
+path is not gitignored, so the next run of the self-hosted gate lane sees an
+untracked directory in the tree it is judging and refuses
+`NO_MEASUREMENT`/`DIRTY_TREE` — correctly, and for a cause that has nothing
+to do with the change under judgment. The workaround is to pass an `--outdir`
+outside the worktree, which is what this wave's harness and its qualification
+module both do; that is a workaround, not a fix, and it is invisible to
+anyone who builds the release the obvious way.
+
+Three shapes are defensible and this entry does not pick one: remove the
+staging tree on success (a `finally`, or build it under a
+`TemporaryDirectory`); place it INSIDE `--outdir` so a caller who directs
+output outside the tree gets both; or gitignore the path and document that
+the builder leaves it. The first is the only one that also cleans up after a
+consumer who never reads this entry.
+
+### Acceptance
+
+- [ ] a build with `--outdir <repo>/assay/dist` leaves no untracked path in
+      the worktree;
+- [ ] a test that would go RED if a future edit reintroduced one, asserting
+      the OUTCOME (the tree is clean after a build) rather than the mechanism.
+
+---
+
+## B061 — the statement-position join kept only the LAST record for a repeated block, so `-coverpkg=./...` profiles reported covered code as uncovered
+
+**Filed 2026-09-02, Wave C generation 6, FOUND by F008-A5's srdm qualification
+— which is what that criterion exists for.** Fixed in the same change; this
+entry is the record, not a request.
+
+### What was found
+
+`go test -coverpkg=./...` instruments every package into **every** test binary,
+and `go test` concatenates each binary's own profile section into one file. So
+one block gets one record per test binary, and only the binary that actually
+executed it carries a non-zero count. srdm's real profile is 68 761 lines and
+carries **20 records for every block**:
+
+```text
+srdm/internal/power/wings.go:59.22,65.3 1 0
+srdm/internal/power/wings.go:59.22,65.3 1 0
+srdm/internal/power/wings.go:59.22,65.3 1 1      <- the binary that ran it
+srdm/internal/power/wings.go:59.22,65.3 1 0
+... (sixteen more zeros)
+```
+
+`coverage_parsers/go_cover.py::parse` folds these correctly at LINE
+granularity — its `hits` map is explicitly executed-wins across every record in
+the whole profile — and keeps every record, unmerged, in `FileCoverage.blocks`
+(A-239, deliberately: the merge is what discards the column data the
+correction needs).
+
+`statement_attribution.attribute_statements` then did
+
+```python
+parsed_extents = {block.extent: block for block in file_cov.blocks}
+```
+
+which keeps whichever record came **last**, and read `parsed.count` off it. For
+`wings.go:59.22,65.3` the last record is `0`, so a block the toolchain reports
+as executed was attributed to `missing`. The function's own comment claimed
+"applied AFTER the loop so block order cannot matter" — true of distinct
+blocks, false of repeated records for one block, and that is exactly the case
+it never saw.
+
+### Why it was invisible until now
+
+**Every frozen P27 witness has exactly one record per block.** They are
+single-file, single-package probes; nothing in the corpus, in the regenerated
+F008-A4 fixtures, or in the two-package qualification fixture produces a
+repeated extent. The first profile in this project's history with repeated
+records is srdm's, and it exposed the defect on the first run.
+
+### The measurement
+
+Same checkout, same commit range, and — for the control — the byte-identical
+profile file:
+
+| | changed executable lines | covered | verdict |
+|---|---|---|---|
+| covergate | 684 | 639 (93.4%) | PASS at its own 75% floor |
+| assay, defective | 418 | 163 (39.0%) | FAIL/`UNCOVERED_LINES`, 255 lines named |
+| assay, fixed | 418 | see REPORT | — |
+
+The 255-vs-45 gap was not extent-expansion and not file-absence; it was this.
+Classifying before naming a side is what caught it: the extent-expansion
+hypothesis predicts assay's denominator is SMALLER (it is) and its covered
+RATIO similar (it was not), and that second half is the discrepancy that did
+not fit.
+
+### The fix
+
+Fold repeated records for one extent executed-wins **before** anything reads a
+count — the same rule the parser already applies one layer down, so the
+correction can no longer downgrade a line the uncorrected profile called
+executed. That invariant is now asserted directly, in addition to the
+srdm-shaped repetition being asserted in three orders (a fix handling only
+"the non-zero record comes first" passes one of them).
+
+### Acceptance
+
+- [x] repeated records for one extent fold executed-wins, in any order
+      (`test_statement_attribution_go_witnesses.py::test_repeated_records_for_one_block_fold_executed_wins_not_last_wins`);
+- [x] the correction can never downgrade a line the parser called executed,
+      asserted as the property
+      (`…::test_the_correction_can_never_downgrade_a_line_the_parser_called_executed`);
+- [x] an extent all of whose records are zero stays missing — the fold must
+      not launder an uncovered block (same test, final stanza);
+- [x] re-run F008-A5's qualification on the fixed build and record the
+      classified table against covergate (REPORT).

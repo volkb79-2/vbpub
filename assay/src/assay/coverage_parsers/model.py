@@ -47,6 +47,7 @@ __all__ = [
     "MAX_CLASSIFIED_LINES",
     "BranchCoverage",
     "ClassifiedLineBudget",
+    "CoverageBlock",
     "CoverageProfile",
     "FileCoverage",
 ]
@@ -175,6 +176,112 @@ class BranchCoverage:
 
 
 @dataclass(frozen=True, kw_only=True)
+class CoverageBlock:
+    """One coverage record's positional EXTENT, kept unmerged (A-239).
+
+    A Go cover record is ``<path>:<startLine>.<startCol>,<endLine>.<endCol>
+    <numStmts> <count>``: an extent plus a statement CARDINALITY, never the
+    statements' own positions. :mod:`.go_cover` used to expand that extent
+    straight into line sets with ``range(start, end + 1)``, which attributes
+    function signatures, closing braces, ``case`` labels and
+    statement-continuation lines as executable code.
+
+    **Why the extent is stored instead of only its expansion.** A-239 rejected
+    correcting that expansion afterwards, at the adapter/evaluate boundary, as
+    *information-theoretically insufficient* rather than merely untidy: two
+    blocks may share a boundary position, the parser's own executed-wins
+    overlap merge collapses them DURING parsing, and no later pass can recover
+    the per-block column data the correction would need, because the merge has
+    already discarded it. Keeping the record whole is what makes the
+    correction possible at all — see
+    :func:`assay.statement_attribution.attribute_statements`, which joins these
+    extents against a source-side oracle's.
+
+    Columns are carried even though a verdict speaks only in LINES. They are
+    load-bearing here for exactly the reason above: ``28.22,29.2`` and
+    ``29.2,31.3`` are two different blocks that a line-only key would fuse.
+
+    ``count`` is the record's own execution count, kept per block rather than
+    folded into a line classification, for the same reason.
+
+    **Lines are 1-based; columns are ``>= 0`` (A-405).** A zero column is not
+    a malformed record — it is what :class:`go/token.Position` carries for a
+    position remapped by a ``//line file:line`` directive that specifies no
+    column, and it is why ``cmd/cover`` has a ``dedup`` helper at all. Its
+    own comment, go1.25.14 ``/usr/local/go/src/cmd/cover/cover.go:1055-1060``:
+    "It is possible for positions to repeat when there is a line directive
+    that does not specify column information and the input has not been
+    passed through gofmt. See issues #27530 and #30746. Tests are
+    TestHtmlUnformatted and TestLineDup." This class used to assert "a 1-based
+    source position is never below 1" about all four coordinates, which is
+    true of the LINE and false of the COLUMN, and the real toolchain's own
+    ``TestLineDup`` corpus (committed at
+    ``nyxloom-trove/carve-assets/P27-recarve/linedup.out``) disproved it.
+    Negative stays refused in both coordinates: nothing in ``go/token``
+    emits one.
+    """
+
+    start_line: int
+    start_col: int
+    end_line: int
+    end_col: int
+    num_stmts: int
+    count: int
+
+    def __post_init__(self) -> None:
+        for name in ("start_line", "end_line"):
+            value = getattr(self, name)
+            if value < 1:
+                raise ValueError(
+                    f"CoverageBlock.{name} is {value}; a 1-based source line "
+                    f"is never below 1, and a `//line` directive's own line "
+                    f"number must be positive too"
+                )
+        for name in ("start_col", "end_col"):
+            value = getattr(self, name)
+            if value < 0:
+                raise ValueError(
+                    f"CoverageBlock.{name} is {value}; a column is 0 when the "
+                    f"position came from a `//line` directive carrying no "
+                    f"column, and >= 1 otherwise -- never negative"
+                )
+        if self.num_stmts < 0:
+            raise ValueError(
+                f"CoverageBlock.num_stmts is {self.num_stmts}, must be >= 0"
+            )
+        if self.count < 0:
+            raise ValueError(
+                f"CoverageBlock.count is {self.count}, must be >= 0"
+            )
+        if (self.end_line, self.end_col) < (self.start_line, self.start_col):
+            raise ValueError(
+                f"CoverageBlock ends at {self.end_line}.{self.end_col}, "
+                f"before it starts at {self.start_line}.{self.start_col}"
+            )
+
+    @property
+    def extent(self) -> tuple[int, int, int, int]:
+        """The join key: the whole four-part position, never a line alone.
+
+        :func:`assay.statement_attribution.attribute_statements` matches a
+        parsed record to an oracle-derived one on exactly this tuple, so a
+        shared boundary position cannot fuse two records.
+        """
+        return (self.start_line, self.start_col, self.end_line, self.end_col)
+
+    @property
+    def has_remapped_position(self) -> bool:
+        """This record carries a position a ``//line`` directive remapped
+        (A-405): either coordinate's column is 0.
+
+        DERIVED, never stored. A stored flag would be a second fact about
+        the same four numbers, and the two could disagree; there is nothing
+        here a parser could set wrongly.
+        """
+        return self.start_col == 0 or self.end_col == 0
+
+
+@dataclass(frozen=True, kw_only=True)
 class FileCoverage:
     """One file's line classification, format-normalized.
 
@@ -209,12 +316,24 @@ class FileCoverage:
     anti-tamper invariant available here, which all three branch-bearing
     formats agree on — a line in ``missing`` can never carry a covered arc,
     because a line that never ran cannot have taken one.
+
+    ``blocks`` (A-239) keeps the SAME ``None``/populated split ``excluded`` and
+    ``branches`` already establish (A-008): ``None`` means the format has no
+    block-extent concept to report (every line-based format — ``coverage.py``
+    JSON, lcov, Cobertura, istanbul), a different fact from "block-based, and
+    there are zero blocks". Only :mod:`.go_cover` populates it today. A
+    populated tuple means the line sets above are still the format's own
+    over-approximation and are corrected by
+    :func:`assay.statement_attribution.attribute_statements`; see
+    :class:`CoverageProfile.statement_attributed` for why that correction
+    cannot be silently skipped.
     """
 
     executed: frozenset[int]
     missing: frozenset[int]
     excluded: frozenset[int] | None
     branches: "BranchCoverage | None" = None
+    blocks: "tuple[CoverageBlock, ...] | None" = None
 
     def __post_init__(self) -> None:
         for name in ("executed", "missing", "excluded"):
@@ -296,6 +415,48 @@ class FileCoverage:
         """
         return self.executed | self.missing
 
+    @property
+    def line_directive_remapped(self) -> bool:
+        """This file's coverage records describe positions a ``//line``
+        directive remapped, so its line numbers are VIRTUAL (A-405).
+
+        **Per FILE, not per record, and deliberately conservative.** One
+        record with a zero column flags the whole file. Within a file that
+        carries a ``//line`` directive there is no way to tell a physical
+        position from a virtual one: the directive applies from where it
+        appears to the next one or to end of file, and the profile records
+        the remapped result with no marker saying which happened. Go's own
+        ``TestLineDup`` corpus is the witness — its profile
+        (``carve-assets/P27-recarve/linedup.out``) mixes ``6.21,7.25``
+        (physical, columns present) with ``100.0,102.1`` (virtual, columns
+        zeroed) in one file, and ``linedup.go`` is 24 lines long. Trusting
+        the records that LOOK physical would mean trusting a guess about
+        where the directive's scope began.
+
+        **DERIVED from ``blocks``, never stored.** A stored flag could
+        disagree with the records it describes, and every layer that rebuilds
+        a :class:`FileCoverage` (``attribute_statements``,
+        ``_normalized_profile_files``) would have to remember to carry it —
+        the "check that cannot fail" shape
+        :attr:`CoverageProfile.statement_attributed`'s own docstring argues
+        against. ``blocks`` is carried through every one of those rebuilds
+        already, so this property is carried by construction. ``False`` for
+        every line-based format, which has no ``blocks`` at all.
+
+        What CONSUMES it: :func:`assay.statement_attribution.
+        attribute_statements` skips such a file rather than sending it to a
+        source-side oracle that would derive PHYSICAL positions and refuse
+        the whole artifact for the resulting extent mismatch; and
+        :mod:`assay.evaluate` refuses — naming the file, the ``//line``
+        cause and the remedy — if such a file is in the judged set, while
+        ignoring it entirely if it is not. The asymmetry is the north star's
+        own rule: code outside the diff is invisible to the verdict by
+        construction, and 0/0 is never 100%.
+        """
+        if self.blocks is None:
+            return False
+        return any(block.has_remapped_position for block in self.blocks)
+
 
 @dataclass(frozen=True, kw_only=True)
 class CoverageProfile:
@@ -304,6 +465,24 @@ class CoverageProfile:
     resolution, no path normalization against a project layout — that stays
     the caller's job, the same separation :mod:`assay.diff` keeps from
     :mod:`assay.measurability`).
+
+    ``statement_attributed`` records whether this profile's line sets have been
+    corrected against a source-side statement-position oracle
+    (:func:`assay.statement_attribution.attribute_statements`, which is the
+    ONLY producer of a ``True`` — no parser sets it, and no consumer should).
+
+    **Why a flag rather than a convention.** For a block-based format the
+    parser's line sets are a strict over-approximation, and a consumer that
+    reads them un-corrected gets a wrong answer that looks exactly like a right
+    one. That is AGENTS.md's *masked default*, anti-pattern 3: wrong, harmless
+    in every context that happens to run the correction, and invisible to
+    testing for precisely that reason. So the omission is made to FAIL rather
+    than to pass quietly — :func:`assay.evaluate.evaluate_coverage` and
+    :func:`assay.evaluate.evaluate_targets` refuse when an adapter declares
+    ``requires_statement_attribution`` and the profile they were handed
+    reports ``False``. The flag is not a promise anybody keeps by remembering;
+    it is a check that can go red.
     """
 
     files: Mapping[str, FileCoverage]
+    statement_attributed: bool = False

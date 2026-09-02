@@ -301,4 +301,12 @@ def test_the_built_in_registry_names_exactly_the_languages_this_build_reaches():
         "sql": ["R2"],
         # B046: javascript gained R2, through the INGESTED path only.
         "javascript": ["R1", "R2"],
+        # A-394 (Wave C): go, at R1 ONLY. R2 would advertise a mutation
+        # producer that does not exist -- `generate_mutation_sites` is
+        # unconditionally `UNSUPPORTED` -- and R1 was itself sequenced
+        # deliberately last, after the statement-attribution chain, so a Go
+        # lane could never be runnable while the parser still read block
+        # extents as statement truth. This test is what made that landing
+        # visible rather than silent, which is what it is for.
+        "go": ["R1"],
     }
