@@ -4503,7 +4503,7 @@ discover them. Each item names what is already ruled and what is not.
       Proven end to end against the real toolchain by
       `tests/qualification/test_go_r1_real.py` (A-395: never a mock).
 - [ ] item 6 (fixture regeneration, F008-A4) — still owed; blocked with
-      F008-A5 behind **B057**.
+      F008-A5 behind **B059**.
 
 ---
 
@@ -5039,7 +5039,18 @@ is the actual question.
 
 ---
 
-## B053 — an uncovered Go statement sharing a physical LINE with a covered one is still laundered into `executed`; the statement-position oracle does not fix it, and cannot at line granularity
+## B055 — an uncovered Go statement sharing a physical LINE with a covered one is still laundered into `executed`; the statement-position oracle does not fix it, and cannot at line granularity
+
+> **Renumbering note, 2026-09-02.** Every id this Wave C branch filed was
+> shifted up by two: **B053→B055, B054→B056, B055→B057, B056→B058,
+> B057→B059, B058→B060**. Main's `a050a467` (2026-09-02, from dstdns's first
+> JavaScript lane adoption on assay 4.0.0) had already filed a *different*
+> B053 and B054, and main's ids win — the estate's precedent is the ciu
+> CIU-55 shift. The rewrite covered all 108 references in 25 tracked files,
+> historical briefs and logs included, because an id that silently resolves
+> to a different entry is worse than an edited record. Next free id after
+> this wave: **B061**. `decisions.md` is unaffected; the A-393/A-396/A-401/
+> A-404 rows that cite these entries were rewritten in place.
 
 **Filed 2026-08-31, Wave C (the P27 re-carve), with a frozen witness and a
 test that asserts the unfixed behaviour.** Recorded as decision **A-393**.
@@ -5113,7 +5124,7 @@ Go R1 line claim is statement-granular **to the line**, not to the statement.
 
 ---
 
-## B054 — `test_verdict_schema_is_packaged.py`'s docstring states a measurement that no longer holds: the `package-data` stanza it defends is inert, so its named negative is currently unreachable
+## B056 — `test_verdict_schema_is_packaged.py`'s docstring states a measurement that no longer holds: the `package-data` stanza it defends is inert, so its named negative is currently unreachable
 
 **Filed 2026-08-31, Wave C, as a side finding while packaging the Go helper.**
 Recorded as decision **A-396**. Not fixed here: the fix is a real call, not a
@@ -5179,7 +5190,7 @@ option 1 would move the sibling toward.
 
 ---
 
-## B055 — the Go canary and union tests now prove their subject against a DOWNGRADED adapter: `requires_statement_attribution=False`, because a real Go lane needs a toolchain the gate image does not have
+## B057 — the Go canary and union tests now prove their subject against a DOWNGRADED adapter: `requires_statement_attribution=False`, because a real Go lane needs a toolchain the gate image does not have
 
 **Filed 2026-08-31, Wave C, while wiring A-392's guard.** Not a defect in the
 shipped code — the shipped `GoAdapter` declares `True` — but a real, tracked
@@ -5244,11 +5255,11 @@ Go toolchain exists — which the registered gate image does not provide.
       `isinstance` — deliberately, because `_PreOracleGoAdapter` is a
       subclass and would satisfy `isinstance` while carrying the flipped
       declaration. The other two boxes stay open and both still depend on
-      F008-A4, which is now blocked behind **B057**.
+      F008-A4, which is now blocked behind **B059**.
 
 ---
 
-## B056 — srdm's `covergate` classifies a cover block's whole extent as executable, so its own coverage floor measures more lines than Go has statements
+## B058 — srdm's `covergate` classifies a cover block's whole extent as executable, so its own coverage floor measures more lines than Go has statements
 
 **Filed 2026-08-31, Wave C, while reading `covergate` for F008-A5's
 qualification.** Not an assay defect and not a blocker for this wave — assay's
@@ -5342,7 +5353,7 @@ what produces that, and it is still owed.
       unless the two are bound at statement granularity, which A-208 always
       intended and A-217 explains is the only binding that is not circular).
 
-## B057 — `go` is registered at R1, but no Go lane reachable through the shipped CLI can resolve its own coverage keys
+## B059 — `go` is registered at R1, but no Go lane reachable through the shipped CLI can resolve its own coverage keys
 
 **Filed 2026-09-01, Wave C generation 4, MEASURED end to end inside
 `tester-unified-go:local` (A-334) rather than reasoned about.** This is a
@@ -5467,7 +5478,7 @@ would be a protocol change on top of A-397's.
 
 ---
 
-## B058 — `build_release.py` leaves a `zipapp-staging/` directory beside `--outdir` and never removes it, which can turn the project's own gate red
+## B060 — `build_release.py` leaves a `zipapp-staging/` directory beside `--outdir` and never removes it, which can turn the project's own gate red
 
 **Filed 2026-09-02, Wave C generation 5, on the controller's ruling at
 `vbpub@3a95459e`.** Observed by generation 4 while building the in-image

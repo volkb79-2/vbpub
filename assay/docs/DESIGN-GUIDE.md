@@ -1459,7 +1459,7 @@ both genuinely begin on line 4, and the line did run. That is line
 granularity's own limit, which coverage.py shares; removing it needs a
 column-granular wire field. Asserted as unfixed by a test, so a future change
 that does fix it goes red rather than quietly contradicting this paragraph
-(A-393, backlog B053).
+(A-393, backlog B055).
 
 **The oracle is STAGED out of the artifact, and that is a consequence of how
 assay is installed rather than a convenience (A-403).** `go run .` takes a

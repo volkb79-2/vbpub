@@ -17,8 +17,8 @@ generation 5 on the same terms.
 | 0. record A-401/A-402, edit F008-A5's text | **DONE**, `2f0cd223` |
 | 1. the in-image harness (build the pyz, mount, run one real R1 Go lane) | **DONE as a harness.** The lane runs; the CLI form is BLOCKED — §2 |
 | 2. `helpers[]` wiring + the DA-3 qualification test | **DONE**, `77d9d6b9` + `9714361c` |
-| 3. F008-A4 fixture regeneration | **NOT DONE — blocked behind B057** |
-| 4. F008-A5 per DA-6 | **NOT DONE — blocked behind B057** |
+| 3. F008-A4 fixture regeneration | **NOT DONE — blocked behind B059** |
+| 4. F008-A5 per DA-6 | **NOT DONE — blocked behind B059** |
 | 5. the acceptance boxes | **none ticked**, deliberately — §4 |
 
 Two things landed that were not on the list, both found by running the
@@ -26,13 +26,13 @@ harness rather than by reading:
 
 * **A-403** (`8d7f8740`) — the shipped zipapp could not reach the Go oracle at
   all. FIXED.
-* **B057 / DA-8** (`854d20c3`) — no Go lane reachable through the shipped CLI
+* **B059 / DA-8** (`854d20c3`) — no Go lane reachable through the shipped CLI
   can resolve its own coverage keys. MEASURED, FILED, **not** fixed: it is a
   product/design fork.
 
-## 2. The blocker you inherit — read B057 before you plan anything
+## 2. The blocker you inherit — read B059 before you plan anything
 
-`4-backlog.md`'s **B057** and REPORT §26 carry the measurement; REPORT §27 is
+`4-backlog.md`'s **B059** and REPORT §26 carry the measurement; REPORT §27 is
 the decision ask. The one-paragraph version, so you can decide whether to wait
 for a ruling before touching items 3 and 4:
 
@@ -62,7 +62,7 @@ rules it, record the ruling as a decision row and cite it.
 `module_path` supplied, everything downstream works: the real `go1.25.14`
 oracle runs and returns statement lines `{6}` and `{11}` for a fixture whose
 naive expansion would be `{5,6,7}`/`{10,11,12}`. Measured, in-image, and the
-transcript is in B057.
+transcript is in B059.
 
 ## 3. Load-bearing facts a successor must not re-derive
 
@@ -127,7 +127,7 @@ consumer uses. When DA-8 lands, re-run the qualification through
 document, not the entry point, and should survive the move unchanged — and
 then tick it with that transcript.
 
-**F008-A4 and F008-A5 are blocked outright** behind B057. REPORT §31 says why
+**F008-A4 and F008-A5 are blocked outright** behind B059. REPORT §31 says why
 regenerating fixture bytes alone would be worse than not doing it (A-234's own
 warning).
 
@@ -137,7 +137,7 @@ warning).
    is downstream of it, and nothing else in the wave's remaining scope can
    start without it.
 2. **Item 3 / F008-A4** — fixture regeneration, runnable through the §3
-   harness once DA-8 lands. Discharges B055's first box.
+   harness once DA-8 lands. Discharges B057's first box.
 3. **Item 2 / F008-A5** — the covergate qualification per DA-6, with the
    classification (extent-expansion vs file-absence) done BEFORE either side
    is called wrong.
@@ -152,10 +152,10 @@ warning).
 Decisions this generation: **A-401** (F008-A5 reworded, DA-4), **A-402** (the
 in-image consumer harness, DA-5), **A-403** (the oracle is staged out of the
 artifact). **Next free: A-404.**
-Backlog: **B057** (the CLI Go lane cannot resolve its own coverage keys).
-**Next free: B058.**
+Backlog: **B059** (the CLI Go lane cannot resolve its own coverage keys).
+**Next free: B060.**
 Decision asks open: **DA-8** (REPORT §27).
-Backlog boxes ticked: B047 items 1/2/3/5; B055's third.
+Backlog boxes ticked: B047 items 1/2/3/5; B057's third.
 
 ## 7. Gate
 
@@ -193,8 +193,8 @@ is the only reason this sentence can say which was true.
 full; this brief in full; the wave prompt's "Wave C" section; the controller's
 2026-09-01 entry (DA-4..DA-7, `vbpub@237b9585`); BRIEF-1's rules block (A-334,
 A-335, A-042/A-043, A-097/A-101, decisions.md append-only from **A-404**,
-backlog from **B058**, `git commit -F <file> --only -- <paths>`, the trailer,
-no `!` marker); §2 (B057/DA-8) and §3 (the harness recipe) as the two things
+backlog from **B060**, `git commit -F <file> --only -- <paths>`, the trailer,
+no `!` marker); §2 (B059/DA-8) and §3 (the harness recipe) as the two things
 every remaining item stands on; §5 as the literal task list; the gate command
 and the separate-verdict-read discipline;
 `tests/qualification/test_go_r1_real.py` as the working example of an

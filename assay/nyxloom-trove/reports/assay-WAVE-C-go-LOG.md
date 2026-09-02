@@ -116,7 +116,7 @@ the tests say so: line 4 carries two counted statements (the assignment, count
 1; the func-literal body, count 0), executed-wins promotes it, and that is line
 granularity's own limit which `coverage.py` shares — `BLOCKED-grammar.md` §3 in
 those words. What IS fixed there is the fabrication: line 3, the signature, is
-gone from the executable set. Recorded as A-393 / B053.
+gone from the executable set. Recorded as A-393 / B055.
 
 **Tests added:** `tests/test_statement_attribution_go_witnesses.py`, 14 tests,
 all reading real artifacts (the frozen carver profiles + this wave's committed
@@ -127,10 +127,10 @@ executed-wins.
 
 ---
 
-## `4408622b` — docs(assay): Wave C checkpoint 1 — LOG/REPORT/BRIEF, and file B053
+## `4408622b` — docs(assay): Wave C checkpoint 1 — LOG/REPORT/BRIEF, and file B055
 
 LOG entries for the two commits above, the REPORT (every witness named with its
-derived result and the naive rule's answer beside it), BRIEF-1, and B053 (the
+derived result and the naive rule's answer beside it), BRIEF-1, and B055 (the
 `lit.go` laundering this wave does not fix and cannot at line granularity).
 
 **Gate: PASS on this commit** — all 11 phases,
@@ -151,7 +151,7 @@ being reported to me as "exit code 0" — REPORT §7.
 | `pyproject.toml` | package-data gains `helpers/go/stmtpos/*.go` + `go.mod` |
 | `tests/test_go_helper_is_packaged.py` | new — 6 tests |
 | `nyxloom-trove/decisions.md` | A-394, A-395 (controller rulings, `vbpub@8fd9dd68`), A-396 (my correction) |
-| `nyxloom-trove/4-backlog.md` | B054 |
+| `nyxloom-trove/4-backlog.md` | B056 |
 | `reports/assay-WAVE-C-go-BRIEF-1.md` | packaging bullet retracted in place |
 | `reports/assay-WAVE-C-go-REPORT.md` | gate transcript, the two exit-code incidents, the retraction |
 | `reports/assay-WAVE-C-go-BRIEF-2.md` | new |
@@ -172,7 +172,7 @@ retracted at every site it reached (A-396). The new test asserts the OUTCOME —
 the helper is in the wheel and resolves from inside the scratch venv — never
 the mechanism, so it survives the correction.
 
-Side finding filed as B054: `test_verdict_schema_is_packaged.py`'s docstring
+Side finding filed as B056: `test_verdict_schema_is_packaged.py`'s docstring
 states that same mechanism as a measurement, and a re-run refutes it, so its
 named negative is currently unreachable. Filed, not patched — three options,
 and choosing between them is a real call.
@@ -264,7 +264,7 @@ no toolchain (A-042/A-087/A-107), which A-392 now refuses. Seven go through
 `conftest.as_pre_oracle_attributed` (flag set, line sets untouched); six —
 `test_canary_go_pipeline.py` — go through a named `_PreOracleGoAdapter`
 subclass with the declaration downgraded. Both shortcuts are documented at the
-site and filed together as **B055**, because the honest fix for the first is
+site and filed together as **B057**, because the honest fix for the first is
 F008-A4 (fixture regeneration) and the second needs a decision this generation
 did not have the budget to make well.
 
@@ -496,7 +496,7 @@ tree, because `build_release.py` builds from HEAD's OID by design. It went
 red once before this commit for exactly that reason, and that is the builder
 working, not the test being flaky.
 
-## `854d20c3` — docs(assay): file B057 and decision ask DA-8
+## `854d20c3` — docs(assay): file B059 and decision ask DA-8
 
 The blocker, recorded before anything was built on top of it. A Go cover
 profile is keyed by IMPORT PATH; `git diff` is keyed by repo-relative path;
@@ -534,14 +534,14 @@ schema-valid document that lies.
 `test_cli_run.py:406`'s `"helpers" not in document` is untouched (A-395) and
 is now doing real work as the control: every non-Go lane still omits the key.
 
-Also closes B055's third acceptance box — cheap, unticked, and worth the four
+Also closes B057's third acceptance box — cheap, unticked, and worth the four
 lines: the adapter the REGISTRY hands a lane is asserted to be the
 undowngraded one, with `type(...) is GoAdapter` rather than `isinstance`,
 deliberately, because `_PreOracleGoAdapter` is a subclass carrying the flipped
 declaration and would satisfy `isinstance` while removing A-392's guard from
 every Go lane.
 
-Docs landed with the work: README (the zipapp install path and the B057 gap),
+Docs landed with the work: README (the zipapp install path and the B059 gap),
 CONSUMERS.md (the real `helpers[]` shape, how to install into a Go gate image,
 and the module-path workaround in code), DESIGN-GUIDE §11 (why the oracle is
 staged, and why the role belongs to the call site), CHANGES.md.
@@ -587,7 +587,7 @@ qualification into a skip that reads like "not enabled".
 
 # Generation 5
 
-## `4b5e7707` — feat(assay): derive a Go lane's module path from its own go.mod (B057, A-404)
+## `4b5e7707` — feat(assay): derive a Go lane's module path from its own go.mod (B059, A-404)
 
 DA-8 implemented, ruled by the controller at `vbpub@3a95459e`. The whole
 change is one sentence with a lot of consequences: **the module path is the
@@ -597,7 +597,7 @@ project's fact, so assay reads it.**
 keyword-only, returning a new adapter, called once from `evaluate_r1` the
 moment `repo_top` resolves and before anything reads the profile. Every
 adapter but Go returns `self`. The call site **rebinds the local name**,
-which is the part I would defend hardest: the entire cost of B057 was two
+which is the part I would defend hardest: the entire cost of B059 was two
 spellings of one path drifting apart, and handing the bound adapter to the
 statement oracle while an unbound one stayed in scope for the evaluator would
 have rebuilt that drift inside its own fix.
@@ -617,7 +617,7 @@ the project root → `ERROR`/`BAD_LANE_CONFIG` (the same shape as
 `evaluate.py`'s existing runtime "project root is not contained by its own
 repository"). A profile key outside the derived module →
 `ERROR`/`UNREADABLE_ARTIFACT` naming the key, the module path and the
-`go.mod`. The second REPLACES B057's misattributed staleness message; that
+`go.mod`. The second REPLACES B059's misattributed staleness message; that
 message survives for its real subject, a key that IS under the module and
 still names no file.
 
@@ -651,3 +651,38 @@ registered gate is below.
 `tester-unified-go:local` — and now through `python3 <pyz> run …` rather than
 a library driver. Every inherited assertion survived the move unchanged.
 REPORT §35 has the verdict document and §36 the two refusals.
+
+## `PENDING` — chore(assay): renumber Wave C backlog ids B053-B058 -> B055-B060
+
+Main's `a050a467` (2026-09-02 00:27, from dstdns's first JavaScript lane
+adoption on assay 4.0.0) filed a different **B053** ("an ERROR-outcome
+verdict's detailed message is constructed but never surfaced anywhere a
+consumer can read it") and **B054** ("a never-executed file matching
+`coverage.include` can make `@vitest/coverage-istanbul` emit a
+self-contradictory `branchMap`"). Main's ids win — the estate's precedent is
+the ciu CIU-55 shift — so this branch's whole run shifts up by two:
+
+| was | now |
+|---|---|
+| B053 (Go line-sharing laundering) | **B055** |
+| B054 (`test_verdict_schema_is_packaged` stale docstring) | **B056** |
+| B055 (the downgraded Go canary/union adapter) | **B057** |
+| B056 (covergate's extent over-approximation) | **B058** |
+| B057 (the CLI Go lane cannot resolve its own keys) | **B059** |
+| B058 (`build_release.py` leaves `zipapp-staging/`) | **B060** |
+
+Applied in DESCENDING order so no intermediate step collided, word-boundary
+anchored, across **108 references in 25 tracked files** — the backlog,
+`decisions.md` rows A-393/A-396/A-401/A-404, this LOG, the REPORT,
+BRIEF-1..5, `2-product-definition.md`, `DESIGN-GUIDE.md`, `CHANGES.md`,
+`carve-assets/P27-recarve/PROVENANCE.md`, three source comments and nine test
+modules. **Historical briefs and logs were rewritten too**, deliberately: an
+id that silently resolves to a different entry is worse than an edited
+record. The map and its reason are also recorded at the top of the new B055
+entry. Next free backlog id: **B061**; `decisions.md` is unaffected.
+
+This is a mechanical rewrite and it was scripted rather than hand-edited,
+which is the one case where that is the safer choice: 108 partial renames
+would be worse than none. The end state is verified by `git grep -n -E
+'\bB05[34]\b'` hitting only this entry and that note, and the diff was read
+before committing.

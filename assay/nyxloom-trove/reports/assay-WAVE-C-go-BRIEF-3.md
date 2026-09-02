@@ -70,9 +70,9 @@ coverprofiles with **no toolchain**. Seven now route through
 (`test_canary_go_pipeline.py`) through a named `_PreOracleGoAdapter` subclass
 with `requires_statement_attribution = False`.
 
-Filed as **B055**. Read the entry before touching either shortcut: the honest
+Filed as **B057**. Read the entry before touching either shortcut: the honest
 fix for the first IS F008-A4, and the second needs a real decision (thread a
-canned oracle through `canary.run_go_canary`, or split the file). B055's third
+canned oracle through `canary.run_go_canary`, or split the file). B057's third
 acceptance box asks for a test that goes RED if the shipped adapter's
 declaration is ever flipped — that box is unticked and is cheap; consider it.
 
@@ -106,7 +106,7 @@ A-334 and A-395 both forbid exactly that.
    records covergate silently skipping a package (P14) in a past run — if the
    two disagree, work out which side is right before concluding assay is.
 3. **Item 3 / F008-A4** — fixture regeneration. This also discharges half of
-   B055.
+   B057.
 4. **Item 5 / B047 item 3** — the `go-cover` producer vocabulary. Opens
    A-354's deliberately closed vocabulary; the refusal is at
    `config.py:2101-2107` and its test at
@@ -117,7 +117,7 @@ A-334 and A-395 both forbid exactly that.
 ## 6. Ledger
 
 Decisions: A-397 (this generation). **Next free: A-398.**
-Backlog: B055 (this generation). **Next free: B056.**
+Backlog: B057 (this generation). **Next free: B058.**
 
 ## 7. Gate
 
@@ -142,13 +142,13 @@ false greens in one wave.
 **KEEP:** BRIEF-1 in full (the seam map); BRIEF-2 in full; this brief in full;
 the wave prompt's "Wave C" section; BRIEF-1's rules block (A-334, A-335,
 A-042/A-043, A-097/A-101, decisions.md append-only from **A-398**, backlog
-from **B056**, `git commit --only -- <paths>`, the trailer, no `!` marker);
+from **B058**, `git commit --only -- <paths>`, the trailer, no `!` marker);
 §5 above as the literal next task list; the gate command and the
 separate-verdict-read discipline.
 
 **DROP:** how the `statement_blocks` signature was chosen (closed — A-397
 carries the whole argument, including the three rejected alternatives); the
-thirteen-red-tests repair (closed — B055 and REPORT §11 carry it); the
+thirteen-red-tests repair (closed — B057 and REPORT §11 carry it); the
 `_read_document` refusal catalogue (closed — it is 13 tests and its own
 module docstring); the A-396 packaging thread (already dropped by BRIEF-2 and
 nothing reopened it).

@@ -578,7 +578,7 @@ class GoAdapter:
         The nearest ``go.mod`` at or above *project_root* and no higher than
         *repo_top* is the lane's module; :mod:`assay.adapters.go_modfile`
         parses its ``module`` directive and nothing else. **No ``go.mod`` in
-        that range is a refusal**, not a fallback to "strip nothing": B057
+        that range is a refusal**, not a fallback to "strip nothing": B059
         measured what the empty prefix does, and it is not a loud failure but
         a profile whose every key resolves to a file that does not exist.
 
@@ -626,7 +626,7 @@ class GoAdapter:
         A-404 (c) is why: `go test ./...` inside a module emits keys under
         that module's import path and nothing else, so a foreign key means
         the profile is not this lane's -- and passing it through produces a
-        path that matches no file, which surfaced as B057's misattributed
+        path that matches no file, which surfaced as B059's misattributed
         "the profile and the working tree are not the same revision". The
         message names all three things a consumer needs: the key, the derived
         module path, and the ``go.mod`` it came from.

@@ -65,7 +65,7 @@ This is **line granularity's own limit, which `coverage.py` shares**
 remove: a verdict's wire schema speaks in line numbers. What the oracle does
 fix on `lit.go` is the fabrication — line 3, the `func H() int {` signature,
 was reported executable by the old expansion and is not code. Recorded as
-decision A-393 and backlog B053.
+decision A-393 and backlog B055.
 """
 
 from __future__ import annotations

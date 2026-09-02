@@ -93,7 +93,7 @@ releases at least one witness would have disagreed.
 
 ## 3. What I did NOT do, and why
 
-### 3.1 `lit.go`'s laundering is NOT fixed (A-393, filed B053)
+### 3.1 `lit.go`'s laundering is NOT fixed (A-393, filed B055)
 
 The wave prompt's reviewer emphasis asks whether "`lit.go`'s missing-set
 failure is actually fixed, not just the executed-set". **It is not, and it
@@ -235,7 +235,7 @@ All 11 phases, completion marker present, exit 0.
 
 ### Run 3 — PASS, on commit `428f69e2` (the current tip)
 
-Re-run after the packaging declaration, its test, A-394..A-396 and B054 landed,
+Re-run after the packaging declaration, its test, A-394..A-396 and B056 landed,
 because run 2's verdict belongs to `4408622b` and to nothing after it.
 
 ```text
@@ -297,7 +297,7 @@ build `fallback_version` anticipates), the claim is retracted at every site it
 reached, and the test written alongside deliberately asserts the OUTCOME rather
 than the mechanism so it survives the correction. The stale mechanism claim
 this exposed in `test_verdict_schema_is_packaged.py`'s docstring is filed as
-**B054**, not silently patched.
+**B056**, not silently patched.
 
 ---
 
@@ -309,7 +309,7 @@ this exposed in `test_verdict_schema_is_packaged.py`'s docstring is filed as
 |---|---|---|
 | 1 | A-239's shape carved concretely (`blocks` + new hook + core join) | **DONE** — the adapter/runner wiring generation 1 left open is landed and green |
 | 2 | the oracle itself (B047 item 1) | **DONE** (gen 1), and now actually INVOKED — `adapters/go_stmtpos.py` is its Python half |
-| 3 | fixture regeneration (F008-A4) | **not started** — and generation 2 added a reason to do it: B055 |
+| 3 | fixture regeneration (F008-A4) | **not started** — and generation 2 added a reason to do it: B057 |
 | 4 | `external_tools = ("go",)` (B047 item 2) | **DONE** |
 | 5 | `judge.coverage.producer` for `go-cover` (B047 item 3) | **not started** |
 | 6 | gate envelope `helpers[]` (B047 item 5) | **PARTIAL** — the producer side exists (`HelperInvocation` + `on_helper_invoked`, reported exactly once per lane, asserted); the `run_lane` → `Verdict.helpers` plumbing and A-395's parallel CLI test are NOT done |
@@ -361,7 +361,7 @@ they are parsed from the committed `hello.out`, and those sets are the naive
 expansion A-234 already records as stale — the flag there is a placeholder for
 F008-A4, not a claim.
 
-Filed as **B055**, with acceptance criteria that include a test which goes RED
+Filed as **B057**, with acceptance criteria that include a test which goes RED
 if the shipped adapter's declaration is ever flipped, so the double cannot
 quietly become the product.
 
@@ -557,7 +557,7 @@ not be half-landed: `Verdict._check_helpers` requires a
 correspondingly-judged claim per role, so a partial wiring is a schema-valid
 document that lies about what ran.
 
-**Neither B055 shortcut was touched.** Its own entry says the honest fix for
+**Neither B057 shortcut was touched.** Its own entry says the honest fix for
 the first IS F008-A4, and F008-A4 needs the toolchain path of §19. Flipping
 `as_pre_oracle_attributed` off without regenerating the fixtures would turn a
 documented placeholder into thirteen red tests with nothing gained.
@@ -765,7 +765,7 @@ about gate run 5 looked risky; the suite inside it was green.
 | 0 | A-401 (F008-A5 reworded) + A-402 (in-image harness) recorded | **DONE**, `2f0cd223` |
 | 1 | the in-image harness (build the pyz, mount, run a real R1 Go lane) | **DONE as a harness; the lane run BLOCKED at R1** — §25, §26 |
 | — | **A-403 — the zipapp could not reach the Go oracle at all** | **FOUND and FIXED**, `8d7f8740` — §25 |
-| — | **B057 / DA-8 — no Go lane reachable through the shipped CLI can resolve its own coverage keys** | **FOUND, MEASURED, NOT FIXED** — a product/design fork, §26 and §"Decision asks" |
+| — | **B059 / DA-8 — no Go lane reachable through the shipped CLI can resolve its own coverage keys** | **FOUND, MEASURED, NOT FIXED** — a product/design fork, §26 and §"Decision asks" |
 | 2 | `helpers[]` wiring + the DA-3 qualification test | see §28 |
 | 3 | F008-A4 fixture regeneration | not started |
 | 4 | F008-A5 per DA-6 | **cannot start** — blocked behind DA-8, §26 |
@@ -855,7 +855,7 @@ package data as real files". Both true. The conclusion (therefore use
 wheel install, and nothing in the test suite ran the zipapp against the Go
 path. One `docker run` found it.
 
-## 26. The blocker: a Go lane through the shipped CLI cannot resolve its own coverage keys (B057 / DA-8)
+## 26. The blocker: a Go lane through the shipped CLI cannot resolve its own coverage keys (B059 / DA-8)
 
 With A-403 fixed, the second run got further and refused for a different
 reason. This one is not fixable without a product call.
@@ -875,7 +875,7 @@ exists precisely to strip the difference — and `cli._built_in_registry`
 constructs `GoAdapter()` with `module_path = ""` ("nothing to strip"),
 `_KNOWN_JUDGE_FIELDS` (`config.py:243`) has no key for it, and `assay run`
 has no flag. The full transcript, the control run with `module_path`
-supplied, and the proof that no fixture layout can dodge it are in **B057**.
+supplied, and the proof that no fixture layout can dodge it are in **B059**.
 
 The two consequences worth carrying forward:
 
@@ -885,7 +885,7 @@ The two consequences worth carrying forward:
   `ERROR`, not a comparison.
 * **The refusal names the wrong cause.** A consumer gets "the profile and the
   working tree are not the same revision", which sends them to look at their
-  commits. That half is separable and smaller, and is listed in B057's
+  commits. That half is separable and smaller, and is listed in B059's
   acceptance.
 
 The control half of the same probe is the useful positive result, and it is
@@ -910,7 +910,7 @@ function signatures and both closing braces.
 
 **Blocks:** F008-A3's end-to-end evidence, F008-A5 entirely, item 2's
 qualification test in its `assay run` form, and item 3's fixture regeneration
-in any form that goes through a lane. **Evidence:** B057, measured in-image.
+in any form that goes through a lane. **Evidence:** B059, measured in-image.
 
 The fact is unambiguous (a Go profile is keyed by import path; `git diff` is
 keyed by repo-relative path; something must supply the module path). Three
@@ -944,7 +944,7 @@ shapes are defensible and they differ in more than taste:
 I have not picked one. Option 2 is what the project's own stated preference
 selects, and option 1 is what its most recent precedent selects; that is a
 real fork, not a gap in my reading, so it is written here rather than
-improvised (BLOCKED protocol). Whichever is chosen, B057's second half —
+improvised (BLOCKED protocol). Whichever is chosen, B059's second half —
 the misattributed "not the same revision" message — should be ruled on at the
 same time, because the right message depends on which layer owns the
 prefix.
@@ -1075,7 +1075,7 @@ carried no `judge_provenance` and the assertion that a consumer artifact names
 its own archive had nothing to read. Fixed in `9714361c`; the fix is what makes
 the `artifact: "zipapp"` line above real.
 
-**Why it drives the LIBRARY entry point.** B057/DA-8. `assay run` on any real
+**Why it drives the LIBRARY entry point.** B059/DA-8. `assay run` on any real
 Go module refuses today, measured (§26), so the only path a Go consumer has is
 `runner.run_lane` with an adapter they built. The module's docstring says this
 in full and says what to do when DA-8 lands: the assertions are about the
@@ -1146,7 +1146,7 @@ that is the only reason this paragraph can say which was true.
 **F008-A4 (fixture regeneration) was not started, and cannot be.** Its honest
 form regenerates `tests/fixtures/go/hello/hello.out` and the canary control
 from real toolchain output and re-derives every expectation from the oracle.
-That needs a Go lane whose keys resolve, which is B057. Regenerating the
+That needs a Go lane whose keys resolve, which is B059. Regenerating the
 profile bytes alone would replace a wrong profile with a real one still read
 against expectations derived from the wrong one — A-234's own warning, and the
 conflation A-O19 exists to remove.
@@ -1166,7 +1166,7 @@ judge a Go module would record a capability this build does not have at the
 boundary a consumer uses. It is one ruling away, and the evidence is already
 written down; that is a better state than a tick that has to be argued with.
 
-**B055's other two boxes were not touched.** Its own text says the first IS
+**B057's other two boxes were not touched.** Its own text says the first IS
 F008-A4, and the second needs a decision this generation had no standing to
 make. The third is done (§28's registry test).
 
@@ -1181,12 +1181,12 @@ commits), tree clean, verified before anything was touched. The controller's
 2026-09-01 entry at `vbpub@3a95459e` rules DA-8 and dispatches six items:
 (1) DA-8 → gate; (2) F008-A4 fixture regeneration through the in-image
 harness; (3) F008-A5 per DA-6, classification first; (4) F008-A3's tick with
-the CLI-form transcript; (5) the other boxes; (6) file B058.
+the CLI-form transcript; (5) the other boxes; (6) file B060.
 
 | item | state at this section's writing |
 |---|---|
 | 1. DA-8 | **DONE** — A-404, the protocol member, the derivation, both refusals, 42 new tests, docs, CLI help |
-| 6. B058 | **DONE** |
+| 6. B060 | **DONE** |
 | 4. F008-A3's tick | **DONE** — the qualification now drives `assay run` |
 | 2. F008-A4 | see §37 |
 | 3. F008-A5 | see §37 |
@@ -1200,7 +1200,7 @@ returning a NEW adapter, called once per lane from `runner.evaluate_r1`
 immediately after `repo_top = git.repo_top(...)` and before
 `_attribute_statements_for_lane`, `evaluate_targets` or `evaluate_coverage`
 sees anything. The local name is **rebound**, which is the part that is not
-decoration: the whole cost of B057 was two spellings of one path drifting
+decoration: the whole cost of B059 was two spellings of one path drifting
 apart, and a binding delivered to the statement oracle while an unbound
 adapter stayed in scope for the evaluator would have rebuilt that drift
 inside its own fix.
@@ -1327,7 +1327,7 @@ outermost one is the one that matters:
 * `tests/qualification/test_go_r1_real.py` catches it end to end against the
   real toolchain: `assay run` on a real Go module returns
   `ERROR`/`UNREADABLE_ARTIFACT` instead of a PASS, which is precisely the
-  B057 transcript. It is the strongest evidence and the only one that needs
+  B059 transcript. It is the strongest evidence and the only one that needs
   Go, which is why the first two exist.
 
 The vacuity guard for the second is its own companion test asserting the
@@ -1446,7 +1446,7 @@ several modules surfaces here rather than as a silent partial measurement.
 Payload-free, as an ERROR claim must be (A-136). The message names the key,
 the derived module path and `'go.mod'`; the test asserts the absence of the
 word "revision" as well as the presence of the three facts, because the
-message this replaces blamed staleness and that half of B057 is a FIX, not a
+message this replaces blamed staleness and that half of B059 is a FIX, not a
 keep.
 
 **(b) — a project root in no Go module.** The identical tree with the root
@@ -1530,9 +1530,9 @@ this kind of reason.
 ## 38. What generation 5 did NOT do, and why
 
 **F008-A4 (fixture regeneration) was not started.** It is now unblocked —
-B057 was the blocker and it is closed — but it is the larger of the two
+B059 was the blocker and it is closed — but it is the larger of the two
 remaining items and this generation cut at DA-8's green gate rather than
-starting it with too few calls left to finish honestly. B055's own text and
+starting it with too few calls left to finish honestly. B057's own text and
 REPORT §31 still state the shape it must take: regenerate
 `tests/fixtures/go/hello/hello.out` and the canary control from real
 toolchain output **and** re-derive every asserted line set from the oracle in
@@ -1550,4 +1550,4 @@ toolchain (§35) — and the tick is a one-line edit. It was left for the
 generation that also ticks A4 and A5, so the three land together against one
 gate rather than one box being ticked against a gate that did not judge the
 other two. The backlog boxes that WERE discharged are ticked in `4-backlog.md`
-(B057's first three) and nothing else was touched.
+(B059's first three) and nothing else was touched.

@@ -845,7 +845,7 @@ def as_pre_oracle_attributed(profile):
     replaces both the committed profiles and the expectations they carry, and
     A-234's own warning is that swapping in a real profile before the
     expectations are re-derived just replaces a wrong profile with a real one
-    still read as statement truth. Tracked as B055.
+    still read as statement truth. Tracked as B057.
 
     A test that needs the REAL correction drives it through
     :func:`assay.statement_attribution.attribute_statements` with real

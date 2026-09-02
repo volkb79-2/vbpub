@@ -101,7 +101,7 @@ Both are one probe each. Nothing in the REPORT depends on either.
 
 ## 4. covergate (item 2 / F008-A5) — the central question is answered; the RUN is owed
 
-Full detail in REPORT §17 and backlog **B056**. The three facts you need:
+Full detail in REPORT §17 and backlog **B058**. The three facts you need:
 
 **(a) covergate does the naive expansion.**
 `shared-ramdisk-depot-manager/tools/covergate/profile.go`'s
@@ -158,8 +158,8 @@ judge of the other. Use it.
    `Verdict._check_helpers` requires a correspondingly-judged claim per role,
    so a half-wired `helpers[]` is a schema-valid document that lies — land it
    whole or not at all.
-3. **Item 3 / F008-A4** — fixture regeneration. Discharges half of B055 (read
-   B055 first; the honest fix for its shortcut (1) IS this item, and its third
+3. **Item 3 / F008-A4** — fixture regeneration. Discharges half of B057 (read
+   B057 first; the honest fix for its shortcut (1) IS this item, and its third
    acceptance box — a test that goes RED if the shipped adapter's declaration
    is ever flipped — is cheap and still unticked).
 4. **Item 2 / F008-A5** — the covergate qualification, per §4.
@@ -171,7 +171,7 @@ judge of the other. Use it.
 
 Decisions this generation: **A-398** (go-cover vocabulary), **A-399** (the
 voided test subject), **A-400** (R2-scoped docs gate). **Next free: A-401.**
-Backlog: **B056** (covergate's extent expansion). **Next free: B057.**
+Backlog: **B058** (covergate's extent expansion). **Next free: B059.**
 
 ## 7. Gate
 
@@ -205,7 +205,7 @@ separately; every time.
 **KEEP:** BRIEF-1 in full (the seam map); BRIEF-2 and BRIEF-3 in full; this
 brief in full; the wave prompt's "Wave C" section; BRIEF-1's rules block
 (A-334, A-335, A-042/A-043, A-097/A-101, decisions.md append-only from
-**A-401**, backlog from **B057**, `git commit -F <file> --only -- <paths>`,
+**A-401**, backlog from **B059**, `git commit -F <file> --only -- <paths>`,
 the trailer, no `!` marker); §5 above as the literal next task list; the gate
 command and the separate-verdict-read discipline; `tests/qualification/
 test_javascript_real_vitest.py` as the pattern DA-3 rules for the Go
@@ -215,6 +215,6 @@ qualification test.
 are landed); the argument for why `go-cover`'s producer key is optional
 (closed — A-398 carries it whole, including the rejected alternative); how
 covergate's `Evaluate`/`hascode` internals work line by line (closed — §4 and
-B056 carry every consequence; do not re-read the Go source); the derivation of
+B058 carry every consequence; do not re-read the Go source); the derivation of
 the host-path mapping (closed — §3 has the measured values and the command
 that produced them).

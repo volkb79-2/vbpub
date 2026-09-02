@@ -105,7 +105,7 @@ def test_a_module_directive_with_no_argument_refuses():
 
 
 def test_an_empty_module_path_refuses_rather_than_stripping_nothing():
-    """The whole defect B057 measured is an empty prefix silently stripping
+    """The whole defect B059 measured is an empty prefix silently stripping
     nothing, so the one value that must never be derived is ``""``."""
     error = _refusal('module ""\n')
     assert "empty module path" in str(error)

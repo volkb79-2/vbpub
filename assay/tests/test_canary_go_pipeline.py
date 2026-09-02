@@ -54,7 +54,7 @@ class _PreOracleGoAdapter(GoAdapter):
     that a real Go canary produces statement-granular line sets. It cannot,
     here. The committed profiles' line sets are the pre-oracle expansion
     A-234 records as stale, and F008-A4 replaces them. The gap between this
-    double and the shipped adapter is filed as **B055**, so the shortcut is a
+    double and the shipped adapter is filed as **B057**, so the shortcut is a
     tracked debt rather than a silent one.
 
     **A-404 widens the downgrade by exactly one method, and no further.**
@@ -65,7 +65,7 @@ class _PreOracleGoAdapter(GoAdapter):
     beside the point. The override returns ``self``, which is the protocol's
     own default answer and changes nothing else: the profiles' keys are
     already spelled the way ``git diff`` spells them (``greet/greet.go``),
-    so there was never a prefix to strip here. Same B055 debt, one line
+    so there was never a prefix to strip here. Same B057 debt, one line
     wider.
     """
 

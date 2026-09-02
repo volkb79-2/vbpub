@@ -29,7 +29,7 @@ DA-8 was ruled it could not: a Go coverprofile keys records by IMPORT PATH
 (`example.invalid/harness/internal/calc/calc.go`) while `git diff` names the
 same file `internal/calc/calc.go`, `GoAdapter.module_path` strips the
 difference, and nothing set it through the CLI, so `assay run` on any real Go
-module refused `ERROR`/`UNREADABLE_ARTIFACT` (B057, measured in this very
+module refused `ERROR`/`UNREADABLE_ARTIFACT` (B059, measured in this very
 harness). A-404 derives it from the project's own `go.mod`, and this module
 was moved from the library driver to `python3 <pyz> run …` as the proof.
 **Every assertion below survived that move unchanged** -- they are about the
@@ -575,7 +575,7 @@ def test_a_profile_from_a_different_module_refuses_and_names_both(
     `sub/`, whose `go.mod` says `example.invalid/sub`, so every key in the
     profile carries the nested module's import path. The refusal must name
     the key, the derived module path and the file it was derived from — the
-    three things B057's misattributed "the profile and the working tree are
+    three things B059's misattributed "the profile and the working tree are
     not the same revision" left a consumer to guess at."""
     verdict = _run_nested(tmp_path, zipapp, with_root_module=True)
 

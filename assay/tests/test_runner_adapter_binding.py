@@ -5,7 +5,7 @@ back.
 The failure this file exists to catch is not "``for_project`` was not called"
 — that would be caught by any test of the Go adapter. It is the subtler one
 the ruling warns about: the core calling it and then continuing to use the
-UNBOUND adapter for some of the work. B057's whole cost was two spellings of
+UNBOUND adapter for some of the work. B059's whole cost was two spellings of
 one path drifting apart, so a binding that reaches the statement oracle but
 not the key join (or the other mode) would recreate it inside the fix.
 
@@ -118,7 +118,7 @@ def test_the_bound_adapter_is_what_resolves_the_profiles_keys(git_repo: GitRepo)
     and the tree has ``pkg/mod.bnd``; only the BOUND adapter knows the prefix,
     so a PASS here is proof the core judged with what ``for_project``
     returned. With the unbound one the key resolves to a file that does not
-    exist, under no source root — which is B057, exactly."""
+    exist, under no source root — which is B059, exactly."""
     _seed(git_repo)
     adapter = _BindingAdapter()
 

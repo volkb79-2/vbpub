@@ -1,7 +1,7 @@
 """A-404 (DA-8) — ``GoAdapter.for_project`` derives the lane's module path
 from the project's own ``go.mod``, and a key outside that module refuses.
 
-The defect this closes is **B057**, measured end to end inside
+The defect this closes is **B059**, measured end to end inside
 ``tester-unified-go:local``: ``cli._built_in_registry`` builds ``GoAdapter()``
 with ``module_path = ""``, so every profile key kept its import-path prefix,
 resolved to a file that does not exist, and refused with a message about the
@@ -149,7 +149,7 @@ def test_a_bound_adapter_strips_its_own_modules_prefix(tmp_path: Path):
 def test_a_key_outside_the_derived_module_refuses_and_names_all_three_facts(
     tmp_path: Path,
 ):
-    """A-404 (c), and it REPLACES B057's misattributed message. The three
+    """A-404 (c), and it REPLACES B059's misattributed message. The three
     things a consumer needs are the key, the module path assay derived, and
     the file it derived it from — the last one because their next action is to
     open it."""
@@ -170,7 +170,7 @@ def test_a_key_outside_the_derived_module_refuses_and_names_all_three_facts(
     assert "srdm/go.mod" in message
     assert "revision" not in message, (
         "the message this replaces blamed staleness; naming the wrong cause "
-        "is the half of B057 that is a FIX rather than a keep"
+        "is the half of B059 that is a FIX rather than a keep"
     )
 
 

@@ -140,7 +140,7 @@ def test_lit_go_drops_the_fabricated_signature_but_still_launders_line_four():
     NOT FIXED, and not fixable at line granularity: line 4 carries TWO counted
     statements — the assignment (block `3.14,4.18`, count 1) and the func
     literal's own body (block `4.18,4.30`, count 0) — so executed-wins still
-    promotes it. `coverage.py` shares this limit. Recorded as A-393/B053.
+    promotes it. `coverage.py` shares this limit. Recorded as A-393/B055.
     """
     file_cov = _attribute("coverage-lit.out", "lit.go")
     assert 3 not in file_cov.executable, "the signature is not code"

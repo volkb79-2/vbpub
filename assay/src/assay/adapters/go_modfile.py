@@ -142,7 +142,7 @@ def find_module_declaration(
     by *repo_top*, when no ``go.mod`` exists in that range at all, or when the
     one found carries no usable ``module`` directive. There is no default to
     fall back to: an empty module path means "strip nothing", which is exactly
-    the silent wrong answer B057 measured.
+    the silent wrong answer B059 measured.
     """
     top = repo_top.resolve()
     start = project_root.resolve()

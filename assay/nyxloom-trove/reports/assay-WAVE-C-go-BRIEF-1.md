@@ -134,7 +134,7 @@ to `carve-assets/P27-recarve/`.
   `tests/test_go_helper_is_packaged.py` asserts the OUTCOME (in the wheel,
   resolves from the venv) rather than the mechanism. The stale mechanism claim
   this exposed in `test_verdict_schema_is_packaged.py`'s own docstring is
-  filed as B054.
+  filed as B056.
 * **`external_tools` preflight** is inline at `runner.py:3472-3489`
   (`shutil.which`), tested by `tests/test_runner_external_tool_preflight.py`.
   Adding `("go",)` to `GoAdapter` (`go.py:501`) means every Go lane refuses in
@@ -154,8 +154,8 @@ to `carve-assets/P27-recarve/`.
 `A-390` (the `blocks` representation), `A-391` (join on extents, not
 containment; refuse on disagreement), `A-392` (`statement_attributed` + the
 evaluate refusal, as a masked-default guard), `A-393` (`lit.go` laundering NOT
-fixed — documented and asserted, filed as B053).
-Next free row: **A-394**. Next free backlog id: **B053** (max in
+fixed — documented and asserted, filed as B055).
+Next free row: **A-394**. Next free backlog id: **B055** (max in
 `4-backlog.md` is B052).
 
 ## 6. Gate state
@@ -180,7 +180,7 @@ run from `/workspaces/vbpub`, verdict read in a SEPARATE step (exit code + the
   `$CGROUP_PARENT_DEV_BACKGROUND`), A-335 (the registered gate, not `pytest`),
   A-042/A-043 (no Go in the devcontainer, ever), A-097/A-101 (`statement_spans`
   is frozen — build the new hook), DESIGN-GUIDE §5 (cite a source for every
-  convention), decisions.md append-only from A-394, backlog from B053,
+  convention), decisions.md append-only from A-394, backlog from B055,
   `git commit --only -- <paths>`, trailer
   `Co-Authored-By: Claude Sonnet <noreply@anthropic.com>`, no `!` marker.
 - The three docs that must land WITH the work, not after (AGENTS.md): README

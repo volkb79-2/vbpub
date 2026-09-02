@@ -60,7 +60,7 @@ def test_the_go_adapter_declares_the_expected_protocol_surface():
 
 
 def test_the_adapter_the_REGISTRY_hands_a_lane_is_the_undowngraded_one():
-    """B055's third acceptance box: a test that goes RED if the shipped
+    """B057's third acceptance box: a test that goes RED if the shipped
     declaration is ever flipped, so **the double can never quietly become the
     product**.
 
@@ -68,7 +68,7 @@ def test_the_adapter_the_REGISTRY_hands_a_lane_is_the_undowngraded_one():
     object a real lane actually resolves, which is the one that matters and
     is not the same claim: ``tests/test_canary_go_pipeline.py``'s
     ``_PreOracleGoAdapter`` is a SUBCLASS of this very class with
-    ``requires_statement_attribution`` flipped to ``False`` (B055 shortcut 2,
+    ``requires_statement_attribution`` flipped to ``False`` (B057 shortcut 2,
     filed rather than fixed). A subclass registered by accident, or a
     downgraded instance constructed in ``cli._built_in_registry``, would
     satisfy every ``isinstance`` check in the suite while removing A-392's

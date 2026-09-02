@@ -27,7 +27,7 @@ delivers it, and stays red if none does.
 That distinction matters because the sibling
 `test_verdict_schema_is_packaged.py` states the mechanism claim as measured
 fact in its own docstring, and that measurement no longer holds for the current
-build configuration — filed as B054, not fixed here.
+build configuration — filed as B056, not fixed here.
 
 So, matching that file's three defences:
 

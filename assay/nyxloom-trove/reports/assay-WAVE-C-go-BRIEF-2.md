@@ -45,7 +45,7 @@ anticipates. `tests/test_go_helper_is_packaged.py` asserts the OUTCOME (in the
 wheel, resolves from inside the venv) rather than the mechanism, so it survives
 the correction.
 
-Side finding, filed as **B054**: `test_verdict_schema_is_packaged.py`'s
+Side finding, filed as **B056**: `test_verdict_schema_is_packaged.py`'s
 docstring states this same mechanism as measured fact, and a re-run refutes it
 — so that test's named negative is currently unreachable. Filed, not patched;
 three options are laid out in the entry.
@@ -57,7 +57,7 @@ three options are laid out in the entry.
 | `pyproject.toml` | package-data extended with `helpers/go/stmtpos/*.go` + `go.mod`, comment states the measured truth |
 | `tests/test_go_helper_is_packaged.py` | **new**, 6 tests: source-tree presence, no `require` directives, stdlib-only imports, wheel namelist, venv resolution, `go run .` layout |
 | `nyxloom-trove/decisions.md` | A-394, A-395, A-396 |
-| `nyxloom-trove/4-backlog.md` | B054 |
+| `nyxloom-trove/4-backlog.md` | B056 |
 | `reports/assay-WAVE-C-go-BRIEF-1.md` | packaging bullet retracted in place |
 | `reports/assay-WAVE-C-go-REPORT.md` | gate transcript (§6), the two wrapper-exit-code incidents (§7), the A-396 retraction (§8) |
 
@@ -111,8 +111,8 @@ closed vocabulary; the refusal is at `config.py:2101-2107` and its test at
 ## 6. Ledger
 
 Decisions used: A-390..A-393 (brief 1), **A-394, A-395, A-396** (this brief).
-Next free: **A-397**. Backlog: B053 (brief 1), **B054** (this brief). Next
-free: **B055**.
+Next free: **A-397**. Backlog: B055 (brief 1), **B056** (this brief). Next
+free: **B057**.
 
 ---
 
@@ -123,7 +123,7 @@ prompt's "Wave C" section; the rules block from BRIEF-1's own compaction
 prompt; §5 above as the literal next task list; the gate command and the
 separate-verdict-read discipline.
 
-**DROP:** the packaging investigation (closed — A-396 + B054 carry the whole
+**DROP:** the packaging investigation (closed — A-396 + B056 carry the whole
 result); the derivation of the two decision asks (closed — A-394/A-395); the
 `go.mod` substring-match test bug (fixed, and its lesson is in the test's own
 comment).

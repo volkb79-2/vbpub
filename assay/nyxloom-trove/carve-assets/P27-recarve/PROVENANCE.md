@@ -99,7 +99,7 @@ uncovered statement is still laundered by its covered neighbour. That is
 both statements genuinely begin on line 4, and a verdict speaks in lines.
 Fixing it would require a column-granular wire field, which this wave is
 explicitly forbidden to cut. Recorded as decision **A-393** and as backlog
-**B053**.
+**B055**.
 
 **`shapes.go` — the half-open / shared-boundary proof.** Every block whose
 extent's end position is also the next block's start position
