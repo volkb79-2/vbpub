@@ -22,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ciu import config_model, deploy, migration_check  # noqa: E402
 from ciu.config_constants import (  # noqa: E402
-    GLOBAL_CONFIG_WORKTREE_OVERRIDES,
+    GLOBAL_CONFIG_INSTANCE_OVERRIDES,
+    INSTANCE_GENERATED_FACTS,
     WORKSPACE_ENV,
 )
 from ciu.deploy_pkg.profiles import Profile  # noqa: E402
@@ -40,7 +41,7 @@ def _complete_gitignore(root: Path) -> None:
 def _complete_identity(root: Path) -> None:
     lines = [GENERATED_FACTS_HEADER]
     lines += [f'{key} = "x"' for key in GENERATED_FACTS_KEYS]
-    root.joinpath(GLOBAL_CONFIG_WORKTREE_OVERRIDES).write_text(
+    root.joinpath(INSTANCE_GENERATED_FACTS).write_text(
         "\n".join(lines) + "\n", encoding="utf-8"
     )
 
@@ -124,53 +125,61 @@ def test_every_finding_carries_a_remediation(tmp_path: Path) -> None:
 # Rule 1 — retired overlay filename
 # ---------------------------------------------------------------------------
 
-def test_retired_overlay_rule_is_silent_while_the_name_is_still_current(
+def test_retired_overlay_rule_fires_for_real_after_the_p47_rename(
     tmp_path: Path,
 ) -> None:
-    """As of ciu-P46 the rename has not happened, so this rule finds nothing.
+    """The REAL cutover, with no monkeypatch: the rule is live as of ciu-P47.
 
-    The detector filters its history list against the LIVE constant, which is
-    what makes it correct both today (the name is current → silent) and after
-    ciu-P47 flips that constant (the name is retired → live), with no edit to
-    the detector or the registry.
+    P46 shipped this rule dormant and could only prove the flip by patching
+    the live-filename constant. P47 performed the rename for real, so the
+    proof is now the unpatched module: ``ciu.global.worktree.toml.j2`` is in
+    the history list, is NOT the live overlay name, and a checkout still
+    carrying it gets a WARN naming both the retired file and its replacement.
     """
     root = tmp_path / "repo"
     root.mkdir()
-    root.joinpath(GLOBAL_CONFIG_WORKTREE_OVERRIDES).write_text("x = 1\n")
-
-    assert GLOBAL_CONFIG_WORKTREE_OVERRIDES in migration_check.RETIRED_OVERLAY_NAMES
-    assert migration_check.detect_retired_overlay(root) == []
-
-
-def test_retired_overlay_rule_fires_once_the_name_is_no_longer_current(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The ciu-P47 shape, proven now: rename the constant, the rule goes live."""
-    root = tmp_path / "repo"
-    root.mkdir()
     root.joinpath("ciu.global.worktree.toml.j2").write_text("x = 1\n")
-    monkeypatch.setattr(
-        migration_check, "GLOBAL_CONFIG_WORKTREE_OVERRIDES",
-        "ciu.global.instance.toml.j2",
-    )
+
+    assert "ciu.global.worktree.toml.j2" in migration_check.RETIRED_OVERLAY_NAMES
+    assert GLOBAL_CONFIG_INSTANCE_OVERRIDES == "ciu.global.instance.toml.j2"
+    assert GLOBAL_CONFIG_INSTANCE_OVERRIDES not in migration_check.RETIRED_OVERLAY_NAMES
 
     findings = migration_check.detect_retired_overlay(root)
 
     assert len(findings) == 1
     assert findings[0].severity == "WARN"
     assert "ciu.global.worktree.toml.j2" in findings[0].message
-    assert "ciu.global.instance.toml.j2" in findings[0].remediation
+    # The remediation names WHERE hand-authored content goes, and says the
+    # CIU-owned facts table needs no hand-copying at all.
+    assert GLOBAL_CONFIG_INSTANCE_OVERRIDES in findings[0].remediation
+    assert INSTANCE_GENERATED_FACTS in findings[0].remediation
+
+
+def test_retired_overlay_rule_is_silent_for_the_live_overlay_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The filter that kept this rule dormant in P46 still works, unchanged.
+
+    Proven by adding the CURRENT overlay name to the history list: a name that
+    is still live must produce no finding, however it got into that list — the
+    property that lets a future rename reuse this rule the way P47 just did.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    root.joinpath(GLOBAL_CONFIG_INSTANCE_OVERRIDES).write_text("x = 1\n")
+    monkeypatch.setattr(
+        migration_check, "RETIRED_OVERLAY_NAMES",
+        (GLOBAL_CONFIG_INSTANCE_OVERRIDES,),
+    )
+
+    assert migration_check.detect_retired_overlay(root) == []
 
 
 def test_retired_overlay_rule_is_silent_when_the_leftover_is_absent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     root = tmp_path / "repo"
     root.mkdir()
-    monkeypatch.setattr(
-        migration_check, "GLOBAL_CONFIG_WORKTREE_OVERRIDES",
-        "ciu.global.instance.toml.j2",
-    )
     assert migration_check.detect_retired_overlay(root) == []
 
 
@@ -204,7 +213,7 @@ def test_identity_rule_fires_when_the_generated_table_is_incomplete(
     root = tmp_path / "repo"
     root.mkdir()
     root.joinpath(WORKSPACE_ENV).write_text("REPO_ROOT=/x\n", encoding="utf-8")
-    root.joinpath(GLOBAL_CONFIG_WORKTREE_OVERRIDES).write_text(
+    root.joinpath(INSTANCE_GENERATED_FACTS).write_text(
         f'{GENERATED_FACTS_HEADER}\nrepo_name = "x"\n', encoding="utf-8"
     )
 
@@ -224,7 +233,7 @@ def test_identity_rule_reports_an_unreadable_table_rather_than_raising(
     root = tmp_path / "repo"
     root.mkdir()
     root.joinpath(WORKSPACE_ENV).write_text("REPO_ROOT=/x\n", encoding="utf-8")
-    root.joinpath(GLOBAL_CONFIG_WORKTREE_OVERRIDES).write_text(
+    root.joinpath(INSTANCE_GENERATED_FACTS).write_text(
         f"{GENERATED_FACTS_HEADER}\nrepo_name = \n", encoding="utf-8"
     )
 

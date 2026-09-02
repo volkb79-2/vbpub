@@ -53,7 +53,8 @@ def tmp_repo(tmp_path: Path) -> Path:
     assert _git(["config", "user.name", "Test"], repo).returncode == 0
     (repo / "README.md").write_text("hello\n", encoding="utf-8")
     (repo / ".gitignore").write_text(
-        "ciu.env\nciu.global.worktree.toml.j2\n", encoding="utf-8"
+        "ciu.env\nciu.global.instance.toml.j2\nciu.instance.generated.toml\n",
+        encoding="utf-8",
     )
     assert _git(["add", "README.md", ".gitignore"], repo).returncode == 0
     assert _git(["commit", "-m", "init"], repo).returncode == 0
@@ -67,10 +68,11 @@ def _network_for(path: Path) -> str:
 @pytest.fixture
 def fake_generate_env(monkeypatch, write_instance_facts):
     """Replace the real (subprocess) env generation with one that writes
-    synthetic `[ciu.instance.generated]` overlay facts carrying a
-    deterministic instance_id and network for the target's own physical path
-    — no docker/subprocess dependency. CIU-75: the overlay table, not
-    `ciu.env`, is what CIU reads back."""
+    synthetic `[ciu.instance.generated]` facts carrying a deterministic
+    instance_id and network for the target's own physical path — no
+    docker/subprocess dependency. CIU-75: the generated facts file
+    (`ciu.instance.generated.toml` since ciu-P47), not `ciu.env`, is what CIU
+    reads back."""
     def fake(path: Path, **_kw) -> int:
         write_instance_facts(
             path,
@@ -208,7 +210,7 @@ class TestAddSharedInfra:
             shared_infra_services="api,worker",
             shared_infra_ref_projects="idp-dev-idp,vault-dev-vault",
         )
-        overlay_text = (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+        overlay_text = (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
         assert f'ref_path = "{ref_path}"' in overlay_text
         assert f'network = "{ref_network}"' in overlay_text
         assert 'services = ["api", "worker"]' in overlay_text
@@ -233,7 +235,7 @@ class TestAddSharedInfra:
             shared_infra_ref_projects="idp-dev-idp",
         )
         values = tomllib.loads(
-            (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+            (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
         )
         intent = worktree.parse_shared_infra_config(values)
         assert intent == worktree.SharedInfraIntent(
@@ -289,7 +291,7 @@ class TestAddSharedInfra:
         fake = ScriptedDocker()  # any call would raise -- proves none happens
         monkeypatch.setattr(worktree.procutil, "docker", fake)
         target = worktree.add(tmp_repo, "child", base="main", profile="core")
-        overlay_text = (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+        overlay_text = (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
         assert "shared_infra" not in overlay_text
         assert fake.calls == []
 
@@ -437,7 +439,7 @@ class TestAddSharedInfra:
 
     def test_ref_ciu_env_unreadable_fails(self, tmp_repo, ref_worktree, track_git_add_calls, monkeypatch):
         ref_path, _ref_network = ref_worktree
-        env_file = ref_path / "ciu.global.worktree.toml.j2"
+        env_file = ref_path / "ciu.instance.generated.toml"
         env_file.chmod(0o000)
         try:
             fake = ScriptedDocker()
@@ -463,7 +465,7 @@ class TestAddSharedInfra:
         here is the whole point of this preflight (O1: no git-add, no docker
         call). CIU-75 moved the source; the refusal contract is unchanged."""
         ref_path, _ref_network = ref_worktree
-        (ref_path / "ciu.global.worktree.toml.j2").write_text(
+        (ref_path / "ciu.instance.generated.toml").write_text(
             "[ciu.instance.generated]\nnetwork = not-a-toml-value\n",
             encoding="utf-8",
         )
@@ -486,7 +488,7 @@ class TestAddSharedInfra:
         of `WorkspaceEnvError` under `ValueError`. Neither name alone covers
         it, and `OSError` covers neither."""
         ref_path, _ref_network = ref_worktree
-        (ref_path / "ciu.global.worktree.toml.j2").write_bytes(
+        (ref_path / "ciu.instance.generated.toml").write_bytes(
             b'[ciu.instance.generated]\nnetwork = "\xff\xfe"\n'
         )
         fake = ScriptedDocker()
@@ -924,7 +926,7 @@ class TestConnectSharedInfraAfterUp:
 
     def test_ref_ciu_env_unreadable_at_post_up_fails(self, tmp_repo, ref_worktree, monkeypatch):
         ref_path, ref_network = ref_worktree
-        env_file = ref_path / "ciu.global.worktree.toml.j2"
+        env_file = ref_path / "ciu.instance.generated.toml"
         env_file.chmod(0o000)
         try:
             intent = worktree.SharedInfraIntent(
@@ -947,7 +949,7 @@ class TestConnectSharedInfraAfterUp:
         the join's own "has the reference's network changed?" guard could be
         skipped by a traceback rather than answered."""
         ref_path, ref_network = ref_worktree
-        (ref_path / "ciu.global.worktree.toml.j2").write_text(
+        (ref_path / "ciu.instance.generated.toml").write_text(
             "[ciu.instance.generated]\nnetwork = not-a-toml-value\n",
             encoding="utf-8",
         )
@@ -964,7 +966,7 @@ class TestConnectSharedInfraAfterUp:
     def test_ref_ciu_env_non_utf8_at_post_up_fails(self, tmp_repo, ref_worktree, monkeypatch):
         """CIU-62 — and the non-UTF-8 byte (`UnicodeDecodeError`)."""
         ref_path, ref_network = ref_worktree
-        (ref_path / "ciu.global.worktree.toml.j2").write_bytes(
+        (ref_path / "ciu.instance.generated.toml").write_bytes(
             b'[ciu.instance.generated]\nnetwork = "\xff\xfe"\n'
         )
         intent = worktree.SharedInfraIntent(
@@ -1223,7 +1225,7 @@ class TestRefServicesAddTimeResolution:
         target = _add_child(tmp_repo, "vault")
 
         values = tomllib.loads(
-            (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+            (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
         )
         assert values["topology"]["services"]["vault"] == {
             "internal_host": REF_VAULT,
@@ -1277,11 +1279,11 @@ class TestRefServicesAddTimeResolution:
         target = _add_child(tmp_repo, "vault")
 
         values = tomllib.loads(
-            (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+            (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
         )
         assert values["topology"]["services"]["vault"]["internal_host"] == REF_VAULT
         assert C_VAULT not in (
-            target / "ciu.global.worktree.toml.j2"
+            target / "ciu.global.instance.toml.j2"
         ).read_text(encoding="utf-8")
 
     def test_three_instance_impostor_alone_is_refused_not_adopted(
@@ -1316,7 +1318,7 @@ class TestRefServicesAddTimeResolution:
 
         target = _add_child(tmp_repo, "secrets=vault")
 
-        text = (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+        text = (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
         values = tomllib.loads(text)
         assert values["topology"]["services"]["secrets"]["internal_host"] == REF_VAULT
         assert "vault" not in values["topology"]["services"]
@@ -1337,7 +1339,7 @@ class TestRefServicesAddTimeResolution:
 
         target = _add_child(tmp_repo, "vault")
 
-        text = (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+        text = (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
         values = tomllib.loads(text)
         assert values["topology"]["services"]["vault"] == {"internal_host": REF_VAULT}
         assert "internal_port" not in text
@@ -1363,7 +1365,7 @@ class TestRefServicesAddTimeResolution:
 
         target = _add_child(tmp_repo, "vault")
         values = tomllib.loads(
-            (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+            (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
         )
         assert values["topology"]["services"]["vault"] == {"internal_host": REF_VAULT}
 
@@ -1375,7 +1377,7 @@ class TestRefServicesAddTimeResolution:
 
         target = _add_child(tmp_repo, "secrets=vault,vault")
         values = tomllib.loads(
-            (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+            (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
         )
         services = values["topology"]["services"]
         assert services["secrets"]["internal_host"] == REF_VAULT
@@ -1484,7 +1486,7 @@ class TestRefServicesRenderIsolation:
 
         assert after == before
         assert not (ref_path / "ciu.global.toml").exists()
-        text = (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+        text = (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
         assert REF_VAULT in text
         assert "poison" not in text
 
@@ -1493,7 +1495,7 @@ class TestRefServicesBackwardCompatibility:
     def _overlay_of(self, tmp_repo, name, ref_services, ref_network, monkeypatch):
         monkeypatch.setattr(worktree.procutil, "docker", _add_fake(ref_network))
         target = _add_child(tmp_repo, ref_services, name=name)
-        return (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+        return (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
 
     def test_omitting_the_flag_is_byte_identical_and_costs_zero_docker_calls(
         self, tmp_repo, ref_instance, monkeypatch
@@ -1518,12 +1520,12 @@ class TestRefServicesBackwardCompatibility:
             shared_infra_services="api",
             shared_infra_ref_projects="idp-dev-idp",
         )
-        text = (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+        text = (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
 
-        # CIU-75: `ciu env generate` also upserts its own CIU-owned identity
-        # table into this same file (it has since CIU-60), so the byte
-        # comparison covers the four-line pre-CIU-52 shape PLUS that table —
-        # what the shipped code path actually produces end to end.
+        # ciu-P47: the CIU-owned identity table is no longer appended into
+        # this file — it has its own — so the byte comparison is once again
+        # exactly the four-line pre-CIU-52 shape the worktree writer emits,
+        # and nothing else has touched the file since.
         assert text == (
             "# Worktree-local sparse global override (S3.1b / S16).\n"
             "# Durable configuration: preserved by `ciu clean` and `ciu env generate`.\n"
@@ -1535,11 +1537,12 @@ class TestRefServicesBackwardCompatibility:
             f'network = "{ref_network}"\n'
             'services = ["api"]\n'
             'ref_projects = ["idp-dev-idp"]\n'
-            "\n"
+        )
+        # The identity facts landed in their own file, in full, unchanged.
+        assert (target / "ciu.instance.generated.toml").read_text(
+            encoding="utf-8"
+        ).endswith(
             "[ciu.instance.generated]\n"
-            "# CIU-owned (S3.1b): rewritten in full by every `ciu env generate`.\n"
-            "# Do NOT hand-edit keys in THIS table — edits here are silently\n"
-            "# overwritten. Every OTHER byte of this file is yours and is preserved.\n"
             'repo_name = "repo"\n'
             f'instance_id = "{hashlib.sha256(str(target).encode()).hexdigest()[:6]}"\n'
             f'network = "{_network_for(target)}"\n'
@@ -1604,7 +1607,7 @@ class TestRefServicesSchemaRoundTrip:
         )
         target = _add_child(tmp_repo, "vault")
 
-        text = (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+        text = (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
         intent = worktree.parse_shared_infra_config(tomllib.loads(text))
         assert intent == worktree.SharedInfraIntent(
             ref_path=ref_path, network=ref_network,
@@ -1625,7 +1628,7 @@ class TestRefServicesSchemaRoundTrip:
         monkeypatch.setattr(worktree.procutil, "docker", _add_fake(ref_network))
 
         target = _add_child(tmp_repo, "zulu=vault,alpha=vault")
-        text = (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+        text = (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
         intent = worktree.parse_shared_infra_config(tomllib.loads(text))
         assert [e.alias for e in intent.ref_services] == ["alpha", "zulu"]
         assert text.index("[topology.services.alpha]") < text.index(
@@ -1857,7 +1860,7 @@ class TestRefServicesAuthenticationFailureModes:
         )
         target = _add_child(tmp_repo, "vault")
         values = tomllib.loads(
-            (target / "ciu.global.worktree.toml.j2").read_text(encoding="utf-8")
+            (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
         )
         assert values["topology"]["services"]["vault"]["internal_host"] == REF_VAULT
 

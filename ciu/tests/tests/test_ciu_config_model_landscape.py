@@ -84,7 +84,7 @@ def test_landscape_id_worktree_overlay_value_is_validated(tmp_path):
     """The worktree overlay merges LAST, so its landscape_id is part of the
     final merged config and is validated too."""
     _write_global_defaults(tmp_path, '[deploy]\nlandscape_id = "prod-eu"\n')
-    (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+    (tmp_path / "ciu.global.instance.toml.j2").write_text(
         '[deploy]\nlandscape_id = "prod_eu"\n', encoding="utf-8"
     )
     with pytest.raises(ValueError) as exc:

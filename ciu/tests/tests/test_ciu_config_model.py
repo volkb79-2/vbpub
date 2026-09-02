@@ -396,7 +396,7 @@ def test_render_global_chain_worktree_override_is_final_sparse_layer(tmp_path, m
         tmp_path, '[ciu]\nenv = "default"\nkeep = "project"\n'
     )
     _write_global_overrides(tmp_path, '[ciu]\nenv = "project"\n')
-    (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+    (tmp_path / "ciu.global.instance.toml.j2").write_text(
         '[ciu]\nenv = "worktree"\n', encoding="utf-8"
     )
     result = render_global_chain(tmp_path, tmp_path)
@@ -405,7 +405,7 @@ def test_render_global_chain_worktree_override_is_final_sparse_layer(tmp_path, m
 
 def test_render_global_chain_worktree_override_uses_normal_secret_scan(tmp_path):
     _write_global_defaults(tmp_path, '[ciu]\nenv = "default"\n')
-    (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+    (tmp_path / "ciu.global.instance.toml.j2").write_text(
         '[service]\npassword = "literal-secret-value"\n', encoding="utf-8"
     )
     with pytest.raises(ValueError, match="hardcoded credentials"):

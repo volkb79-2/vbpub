@@ -2,12 +2,15 @@
 
 Oracle O6 has two halves and the DEFAULT half is the load-bearing one:
 
-* plain `ciu clean` must keep leaving `ciu.global.toml`, `ciu.env` and
-  `ciu.global.worktree.toml.j2` completely untouched — a regression here would
-  silently start deleting an operator's rendered config and workspace identity
-  on every ordinary teardown;
-* `--vanilla` additionally removes exactly those three, tolerating an already
+* plain `ciu clean` must keep leaving every `deploy.VANILLA_RESET_FILES` entry
+  completely untouched — a regression here would silently start deleting an
+  operator's rendered config and workspace identity on every ordinary teardown;
+* `--vanilla` additionally removes exactly those files, tolerating an already
   absent one, after everything plain clean already does.
+
+The file list is taken FROM `deploy.VANILLA_RESET_FILES` rather than restated
+here: ciu-P47 added a fourth entry (`ciu.instance.generated.toml`), and a
+hand-copied tuple would have kept passing while covering only three of them.
 """
 from __future__ import annotations
 
@@ -21,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ciu import deploy  # noqa: E402
 
-RESET_FILES = ("ciu.global.toml", "ciu.env", "ciu.global.worktree.toml.j2")
+RESET_FILES = deploy.VANILLA_RESET_FILES
 
 
 def _profile():
@@ -35,12 +38,19 @@ def _workspace(tmp_path: Path, *, present=RESET_FILES) -> Path:
     bodies = {
         "ciu.global.toml": "[ciu]\nenv = 'rendered'\n",
         "ciu.env": 'export DOCKER_NETWORK_INTERNAL="proj-abc123-network"\n',
-        "ciu.global.worktree.toml.j2": "[ciu.instance]\nservice_profiles = ['core']\n",
+        "ciu.global.instance.toml.j2": "[ciu.instance]\nservice_profiles = ['core']\n",
+        "ciu.instance.generated.toml": (
+            '[ciu.instance.generated]\nnetwork = "proj-abc123-network"\n'
+        ),
     }
+    # Every reset file must have a body here: a new entry added to
+    # VANILLA_RESET_FILES with no fixture body would otherwise KeyError rather
+    # than quietly go untested.
+    assert set(bodies) == set(deploy.VANILLA_RESET_FILES)
     for name in present:
         (tmp_path / name).write_text(bodies[name], encoding="utf-8")
     # A committed override and a stack file, to prove clean's blast radius is
-    # exactly the three named files and nothing adjacent.
+    # exactly the named files and nothing adjacent.
     (tmp_path / "ciu.global.toml.j2").write_text("[ciu]\n", encoding="utf-8")
     (tmp_path / "ciu.global.defaults.toml.j2").write_text("[ciu]\n", encoding="utf-8")
     return tmp_path
@@ -80,7 +90,7 @@ def _run_clean(monkeypatch, repo_root: Path, *, vanilla=False, fail=False):
 # ---------------------------------------------------------------------------
 
 
-def test_plain_clean_leaves_all_three_files_untouched(monkeypatch, tmp_path):
+def test_plain_clean_leaves_every_reset_file_untouched(monkeypatch, tmp_path):
     repo_root = _workspace(tmp_path)
     before = {name: (repo_root / name).read_bytes() for name in RESET_FILES}
 
@@ -115,7 +125,7 @@ def test_plain_clean_prints_nothing_about_vanilla(monkeypatch, tmp_path, capsys)
 # ---------------------------------------------------------------------------
 
 
-def test_vanilla_removes_exactly_the_three_files(monkeypatch, tmp_path, capsys):
+def test_vanilla_removes_exactly_the_reset_files(monkeypatch, tmp_path, capsys):
     repo_root = _workspace(tmp_path)
 
     assert _run_clean(monkeypatch, repo_root, vanilla=True) == 0
@@ -180,8 +190,19 @@ def test_vanilla_is_skipped_when_the_teardown_failed(monkeypatch, tmp_path, caps
     assert "--vanilla skipped" in capsys.readouterr().out
 
 
-def test_remove_vanilla_reset_files_names_the_three_constants():
-    assert deploy.VANILLA_RESET_FILES == RESET_FILES
+def test_vanilla_reset_files_is_exactly_the_documented_set():
+    """The one place the literal set is pinned.
+
+    Everything else in this file derives from `deploy.VANILLA_RESET_FILES`, so
+    this is what makes adding or dropping an entry a deliberate act rather than
+    a silent widening of what `--vanilla` deletes.
+    """
+    assert deploy.VANILLA_RESET_FILES == (
+        "ciu.global.toml",
+        "ciu.env",
+        "ciu.global.instance.toml.j2",
+        "ciu.instance.generated.toml",
+    )
 
 
 # ---------------------------------------------------------------------------

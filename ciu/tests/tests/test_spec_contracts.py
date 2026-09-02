@@ -712,7 +712,7 @@ class TestConfigfile:
         physical_prefix = tmp_path / "host-view"
         import ciu.workspace_env as _we_split
 
-        _we_split.upsert_generated_facts(
+        _we_split.write_generated_facts(
             repo,
             {**_we_split.read_generated_facts(repo),
              "physical_repo_root": str(physical_prefix)},

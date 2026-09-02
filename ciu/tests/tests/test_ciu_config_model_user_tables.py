@@ -233,7 +233,7 @@ def test_render_global_chain_validates_final_merged_worktree_overlay_value(tmp_p
         tmp_path,
         '[deploy]\nproject_name = "demo"\n',
     )
-    (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+    (tmp_path / "ciu.global.instance.toml.j2").write_text(
         '[ciu]\nuser_tables = ["authentik"]\n\n[mystery_table]\nkey = 1\n',
         encoding="utf-8",
     )
@@ -251,7 +251,7 @@ def test_render_global_chain_later_layer_relaxes_earlier_declaration(tmp_path):
         '[deploy]\nproject_name = "demo"\n\n'
         '[authentik]\nkey = 1\n',
     )
-    (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+    (tmp_path / "ciu.global.instance.toml.j2").write_text(
         '[ciu]\nuser_tables = ["workflow", "authentik"]\n',
         encoding="utf-8",
     )

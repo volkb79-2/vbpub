@@ -51,14 +51,15 @@ from typing import Mapping
 
 from .config_constants import (
     GLOBAL_CONFIG_DEFAULTS,
+    GLOBAL_CONFIG_INSTANCE_OVERRIDES,
     GLOBAL_CONFIG_OVERRIDES,
-    GLOBAL_CONFIG_WORKTREE_OVERRIDES,
     GLOBAL_CONFIG_RENDERED,
     SHIPPED_COMPOSE,
     STACK_CONFIG_DEFAULTS,
     STACK_CONFIG_OVERRIDES,
     STACK_CONFIG_RENDERED,
 )
+from .workspace_env import generated_facts_document
 
 # ---------------------------------------------------------------------------
 # S3.7 – reserved global-namespace names
@@ -633,10 +634,12 @@ def render_global_chain(
 
     Each template is rendered against the config merged SO FAR (v1 behaviour).
     After the committed chain, an optional sparse, gitignored
-    ``ciu.global.worktree.toml.j2`` at *repo_root* is rendered and merged last.
-    It is the durable local configuration layer for one linked worktree and is
-    never searched for in parent/intermediate directories. Then write
-    ciu.global.toml at repo_root; empty result → ValueError.
+    ``ciu.global.instance.toml.j2`` at *repo_root* is rendered and merged, then
+    the CIU-owned ``ciu.instance.generated.toml`` (plain TOML, never rendered)
+    is merged last of all. Both are the durable local configuration layer for
+    one checkout/instance and neither is searched for in parent/intermediate
+    directories. Then write ciu.global.toml at repo_root; empty result →
+    ValueError.
 
     S3.3 fix (B11): the leaf directory (working_dir) IS processed; repo_root
     is NOT processed twice.
@@ -694,21 +697,46 @@ def render_global_chain(
 
     # S3.1b — the gitignored per-checkout overlay, merged LAST. Read
     # unconditionally by exact path, with NO S16 instance-record gating, so the
-    # primary/main checkout is covered identically to a worktree instance. This
-    # is also the whole read side of S3.1b's `[ciu.instance.generated]` table
-    # (CIU-60): `ciu env generate` writes the identity facts here, and they
-    # reach templates through this ordinary merge — there is deliberately no
-    # bespoke Jinja context injection for them anywhere.
-    worktree_overrides_path = repo_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES
-    if worktree_overrides_path.exists():
-        raw_override = worktree_overrides_path.read_text(encoding="utf-8")
-        scan_override_for_secrets(raw_override, str(worktree_overrides_path))
-        worktree_overrides = render_toml_template(
-            worktree_overrides_path,
+    # primary/main checkout is covered identically to a worktree instance.
+    instance_overrides_path = repo_root / GLOBAL_CONFIG_INSTANCE_OVERRIDES
+    if instance_overrides_path.exists():
+        raw_override = instance_overrides_path.read_text(encoding="utf-8")
+        scan_override_for_secrets(raw_override, str(instance_overrides_path))
+        instance_overrides = render_toml_template(
+            instance_overrides_path,
             _make_render_context(merged, environ=environ),
             environ=environ,
         )
-        merged = deep_merge(merged, worktree_overrides)
+        merged = deep_merge(merged, instance_overrides)
+
+    # S3.1b — the CIU-owned `[ciu.instance.generated]` identity facts
+    # (CIU-60), merged at the very end of the global chain. Until ciu-P47 this
+    # table was embedded in the overlay immediately above and arrived through
+    # that same merge; splitting it into its own file changes WHERE the bytes
+    # live, not what a template sees — `{{ ciu.instance.generated.<key> }}`
+    # resolves exactly as before, from the same position in the S3.3 chain,
+    # and there is still deliberately no bespoke Jinja context injection for
+    # these facts anywhere.
+    #
+    # Merged AFTER the overlay, not before, which preserves the pre-split
+    # precedence: the surgical upsert made the CIU-written table the last word
+    # on those six keys inside that file, so anything an operator writes under
+    # `[ciu.instance.generated]` in their own overlay is still overridden by
+    # the derived fact rather than silently winning over it.
+    #
+    # No `scan_override_for_secrets` here, unlike the overlay: S3.1a's scan
+    # exists to stop a HUMAN committing a raw credential into a hand-authored
+    # override. This file has no human author — CIU writes all of it, from six
+    # derived non-secret facts — so a scan could only ever produce a false
+    # refusal on a repo path or hostname that happened to look secret-shaped.
+    # `generated_facts_document`, NOT `read_generated_facts`: this is the merge
+    # layer, and it must stay exactly as tolerant as the overlay layer it was
+    # carved out of. The identity reader's extra strictness (every fact a
+    # string) belongs to identity reads; enforcing it here would turn CIU-80's
+    # `identity_unreadable` degradation at STEP 12 into a traceback out of the
+    # render, which is the opposite of what that flag exists for. See that
+    # function's own docstring for the full split.
+    merged = deep_merge(merged, generated_facts_document(repo_root))
 
     if not merged:
         raise ValueError(
@@ -717,7 +745,8 @@ def render_global_chain(
         )
 
     # S3.11 (CIU-36): validate the FINAL merged config, once, after every layer
-    # (committed chain + worktree overlay) — never per chain directory, so a
+    # (committed chain + instance overlay + generated facts) — never per chain
+    # directory, so a
     # later layer that corrects an earlier bad value is honored, and an
     # overlay-set value is covered too.
     _validate_deploy_landscape_id(merged)
@@ -754,7 +783,7 @@ def _validate_deploy_landscape_id(merged: dict) -> None:
     one deployment landscape, which a consumer renders its Consul KV root
     (``dstdns/<landscape_id>/...``) and mesh ACL tags from.
 
-    Runs once, on the fully merged config (including the worktree overlay),
+    Runs once, on the fully merged config (including the instance overlay),
     never per chain directory — a leaf/override that corrects an earlier
     layer's value must be honored, and an overlay-set value is covered too.
 
@@ -783,7 +812,7 @@ _USER_TABLE_NAME_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9_-]+$")
 def validate_user_tables(merged: dict) -> None:
     """S3.13 (V8-PREP-1) — validate ``ciu.user_tables`` on the FINAL merged
     global config, once (same timing/reasoning as :func:`_validate_deploy_landscape_id`
-    directly above: after the committed chain and the worktree overlay, so a
+    directly above: after the committed chain and the instance overlay, so a
     later layer that corrects an earlier declaration is honored).
 
     ``ciu.user_tables`` is consumer opt-in: absence is a complete no-op — a

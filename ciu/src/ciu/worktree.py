@@ -48,7 +48,7 @@ from typing import Any
 
 from . import config_model
 from . import procutil
-from .config_constants import GLOBAL_CONFIG_WORKTREE_OVERRIDES
+from .config_constants import GLOBAL_CONFIG_INSTANCE_OVERRIDES
 from .paths import to_physical_path
 # CIU-85: the identity half of `_CIU_IDENTITY_ENV_KEYS` (below) is DERIVED
 # from this, the same canonical fact->env-name table `workspace_env.py`'s
@@ -622,7 +622,7 @@ class SharedInfraIntent:
     """S16.1/CIU-22 — a worktree's recorded intent to join a reference
     instance's shared-infra network, resolved and validated once at
     ``worktree add --shared-infra`` time and persisted verbatim into this
-    worktree's own global worktree overlay (see
+    worktree's own global instance overlay (see
     :func:`parse_shared_infra_config`,
     :func:`connect_shared_infra_after_up`).
 
@@ -878,10 +878,10 @@ def _write_worktree_overlay(
     payload = _worktree_overlay_text(profile, shared_infra)
     if payload is None:
         return
-    path = ciu_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    path = ciu_root / GLOBAL_CONFIG_INSTANCE_OVERRIDES
     if path.exists():
         raise WorktreeError(
-            f"[S16] refusing to overwrite existing worktree override {path}"
+            f"[S16] refusing to overwrite existing instance override {path}"
         )
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
@@ -1132,6 +1132,7 @@ def _preflight_shared_infra_for_add(
     from .workspace_env import (
         GENERATED_FACTS_HEADER,
         WorkspaceEnvError,
+        generated_facts_path,
         identity_env_from_facts,
         read_generated_facts,
     )
@@ -1149,7 +1150,7 @@ def _preflight_shared_infra_for_add(
         )
 
     # CIU-75: the reference's network is a FACT read, so it comes from that
-    # checkout's own `[ciu.instance.generated]` overlay table — the sole
+    # checkout's own `[ciu.instance.generated]` facts file — the sole
     # instance-fact source since 7.7.0 — not from its legacy `ciu.env` export.
     ref_ciu_root = ref.path / _ciu_root_offset(repo_root)
     try:
@@ -1165,7 +1166,7 @@ def _preflight_shared_infra_for_add(
         raise WorktreeError(
             f"[S16.1] {ref_ciu_root} declares no generated instance network "
             f"(no {GENERATED_FACTS_HEADER}.network in "
-            f"{GLOBAL_CONFIG_WORKTREE_OVERRIDES}), so it is not a usable CIU "
+            f"{generated_facts_path(ref_ciu_root).name}), so it is not a usable CIU "
             "instance. Run `ciu env generate` there first."
         )
 
@@ -1253,7 +1254,7 @@ def _clean_in(worktree: Path, *, yes: bool) -> int:
     import sys
 
     # CIU-75: read the target checkout's identity from its OWN
-    # `[ciu.instance.generated]` overlay table by exact path — never through
+    # `[ciu.instance.generated]` facts file by exact path — never through
     # `find_workspace_env`-style searching, which prefers `$REPO_ROOT` over
     # the directory it was given and would therefore answer with the PRIMARY's
     # identity, cleaning the wrong instance under a convincingly-correct-
@@ -1266,7 +1267,11 @@ def _clean_in(worktree: Path, *, yes: bool) -> int:
     # DOCKER_GID, PYTHON_EXECUTABLE, HOST_MDT_TMP — are facts about the
     # MACHINE, identical in both checkouts and now taken live from this
     # process rather than from a file that may predate a rebuild.
-    from .workspace_env import WorkspaceEnvError, read_instance_identity_env
+    from .workspace_env import (
+        WorkspaceEnvError,
+        generated_facts_path,
+        read_instance_identity_env,
+    )
 
     try:
         identity = read_instance_identity_env(worktree)
@@ -1274,7 +1279,7 @@ def _clean_in(worktree: Path, *, yes: bool) -> int:
         raise WorktreeError(f"[S16] could not read {worktree}: {exc}") from exc
     if not identity:
         raise WorktreeError(
-            f"[S16] {worktree / GLOBAL_CONFIG_WORKTREE_OVERRIDES} carries no "
+            f"[S16] {generated_facts_path(worktree)} carries no "
             "generated instance identity, so CIU cannot tell which instance to "
             "clean. Run `ciu env generate` in that worktree first — cleaning "
             "under the PRIMARY checkout's environment would target the wrong "
@@ -2027,7 +2032,7 @@ REAP_SCHEMA_VERSION = 1
 #   owned            — attributable to a checkout that still exists and still
 #                      claims it: a record whose lease is held/perpetual/
 #                      unconfigured, OR (no record) a REGISTERED worktree whose
-#                      own overlay facts declare that instance_id. Never destroyed
+#                      own generated facts declare that instance_id. Never destroyed
 #   lease-expired    — a readable record whose `held` lease's expires_at_utc is
 #                      in the past at survey time (S16.9). The ONLY grounded
 #                      "the operator's claim has lapsed" signal there is
@@ -2220,7 +2225,7 @@ def survey_instance_records(repo_root: Path) -> ReapIdentities:
        instance's labelled resources look unclaimed.
 
     Identity is also derived per checkout INDEPENDENTLY of the record, from
-    that checkout's own ``[ciu.instance.generated]`` overlay table by exact
+    that checkout's own ``[ciu.instance.generated]`` facts file by exact
     path (:func:`_runtime_identity`,
     never the ambient environment — the CIU-41 contamination species), so a
     live checkout whose record was deleted is still recognised as an owner.
@@ -2368,7 +2373,7 @@ def _classify_reap_group(
             return "owned", (
                 f"no instance record claims {instance_id!r}, but the registered "
                 f"checkout {checkout} declares that instance_id in its own "
-                "generated overlay facts — a live checkout still owns what it "
+                "generated identity facts — a live checkout still owns what it "
                 "created"
             )
         if repo_roots and not any(Path(root).is_dir() for root in repo_roots):
@@ -2693,7 +2698,7 @@ def _reap_uses_clean(group: Mapping[str, Any]) -> bool:
     run it in.
 
     CIU-75: the readiness signal is the checkout's ``[ciu.instance.generated]``
-    overlay table, NOT its ``ciu.env``. `ciu clean` derives the identity
+    facts file, NOT its ``ciu.env``. `ciu clean` derives the identity
     network and the identity compose project from that table now, so a
     checkout carrying only a legacy `ciu.env` can no longer clean itself and
     answering True for one would send this reap into a `_clean_in` that must
@@ -2993,34 +2998,35 @@ def _sanitized_target_env(
     env = {k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS}
     from .workspace_env import (
         WorkspaceEnvError,
+        generated_facts_path,
         identity_env_from_facts,
         read_generated_facts,
     )
 
-    overlay_path = record.ciu_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    facts_path = generated_facts_path(record.ciu_root)
     try:
         facts = read_generated_facts(record.ciu_root)
     except WorkspaceEnvError as exc:
-        raise WorktreeError(f"[S16] could not read {overlay_path}: {exc}") from exc
+        raise WorktreeError(f"[S16] could not read {facts_path}: {exc}") from exc
     missing = [k for k in _REQUIRED_TARGET_FACTS if not facts.get(k)]
     if missing:
         raise WorktreeError(
-            f"[S16] {overlay_path} lacks required identity fact(s): "
+            f"[S16] {facts_path} lacks required identity fact(s): "
             f"{', '.join(missing)}"
         )
     if Path(facts["repo_root"]).resolve() != record.ciu_root.resolve():
         raise WorktreeError(
-            f"[S16] {overlay_path} repo_root {facts['repo_root']!r} does not "
+            f"[S16] {facts_path} repo_root {facts['repo_root']!r} does not "
             f"match the selected instance's CIU root {record.ciu_root}"
         )
     if facts["instance_id"] != record.instance_id:
         raise WorktreeError(
-            f"[S16] {overlay_path} instance_id {facts['instance_id']!r} does "
+            f"[S16] {facts_path} instance_id {facts['instance_id']!r} does "
             f"not match the selected record's {record.instance_id!r}"
         )
     if facts["network"] != record.network:
         raise WorktreeError(
-            f"[S16] {overlay_path} network {facts['network']!r} does not "
+            f"[S16] {facts_path} network {facts['network']!r} does not "
             f"match the selected record's {record.network!r}"
         )
     env.update(identity_env_from_facts(facts))
@@ -3042,7 +3048,7 @@ def _run_child(
 def up_instance(repo_root: Path, logical_name: str) -> int:
     """``ciu worktree up LOGICAL`` — start the selected ready instance exactly.
 
-    Reads that instance's OWN ``[ciu.instance.generated]`` overlay facts by
+    Reads that instance's OWN ``[ciu.instance.generated]`` facts by
     exact path, builds the
     sanitized child environment (:func:`_sanitized_target_env`), and invokes
     CIU's existing up entry point as a subprocess in the instance's CIU root —
@@ -3361,26 +3367,30 @@ def _branch_exists(repo_root: Path, branch: str) -> bool:
 def _runtime_identity(ciu_root: Path) -> tuple[str, str]:
     """The (instance_id, network) *ciu env generate* just derived for *ciu_root*.
 
-    CIU-75: read from that checkout's own ``[ciu.instance.generated]`` overlay
-    table, the sole instance-fact source since 7.7.0. The legacy ``ciu.env``
+    CIU-75: read from that checkout's own ``[ciu.instance.generated]`` facts
+    file, the sole instance-fact source since 7.7.0. The legacy ``ciu.env``
     export is written by the same generate and carries the same two values,
     but is no longer read back by anything inside CIU.
     """
-    from .workspace_env import WorkspaceEnvError, read_generated_facts
+    from .workspace_env import (
+        WorkspaceEnvError,
+        generated_facts_path,
+        read_generated_facts,
+    )
 
-    overlay_path = ciu_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    facts_path = generated_facts_path(ciu_root)
     try:
         facts = read_generated_facts(ciu_root)
     except WorkspaceEnvError as exc:
         raise WorktreeError(
             f"[S16] could not read generated runtime identity from "
-            f"{overlay_path}: {exc}"
+            f"{facts_path}: {exc}"
         ) from exc
     instance_id = facts.get("instance_id", "")
     network = facts.get("network", "")
     if not instance_id or not network:
         raise WorktreeError(
-            f"[S16] {overlay_path} lacks instance_id or network"
+            f"[S16] {facts_path} lacks instance_id or network"
         )
     return instance_id, network
 
@@ -3513,7 +3523,7 @@ def create(
     *base*, then generates that checkout's own identity facts — which is what gives
     it a distinct ``INSTANCE_ID``, network and container prefix (S2).
     Worktree-local configuration is persisted separately in
-    ``ciu.global.worktree.toml.j2`` and survives env regeneration and clean.
+    ``ciu.global.instance.toml.j2`` and survives env regeneration and clean.
 
     The worktree lives UNDER the repo root deliberately. A consumer whose gating
     test container bind-mounts the repo can then see it for free; a worktree in
@@ -3780,12 +3790,12 @@ def adopt(
             base_ref=head.stdout.strip(), state="allocating",
         )
         _write_instance_record(record)
-        if (record.ciu_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES).exists() and (
+        if (record.ciu_root / GLOBAL_CONFIG_INSTANCE_OVERRIDES).exists() and (
             profile or shared_infra_intent is not None
         ):
             _mark_recovery(record, "env-generation-failed")
             raise WorktreeError(
-                f"[S16] {record.ciu_root} already has a worktree override; "
+                f"[S16] {record.ciu_root} already has an instance override; "
                 "refusing to replace it with adopt flags"
             )
         _write_worktree_overlay(record.ciu_root, profile, shared_infra_intent)
@@ -3940,7 +3950,7 @@ def connect_shared_infra_after_up(
 
     1. Re-resolve *intent.ref_path* against the CURRENT ``git worktree list``
        (the reference may have been removed since `add`); re-read its
-       explicit ``[ciu.instance.generated]`` overlay facts; require their
+       explicit ``[ciu.instance.generated]`` facts; require their
        ``network`` still
        equal *intent.network* (catches a stale recording); refuse any
        declared reference project equal to *compose_project* (a reference
@@ -3982,7 +3992,7 @@ def connect_shared_infra_after_up(
         )
 
     # CIU-75: the reference's CURRENT network is a fact read, so it comes from
-    # that checkout's own `[ciu.instance.generated]` overlay table.
+    # that checkout's own `[ciu.instance.generated]` facts file.
     ref_ciu_root = ref.path / _ciu_root_offset(repo_root)
     try:
         ref_facts = read_generated_facts(ref_ciu_root)
@@ -4372,7 +4382,7 @@ def _resolve_budget_candidates(
     """S16.3 — pre-lock candidate resolution: translate every git-registered
     worktree into its OWN CIU-root/stack/network/compose-project identity,
     rendered against that candidate's OWN explicit
-    ``[ciu.instance.generated]`` overlay facts — never the caller's ambient
+    ``[ciu.instance.generated]`` facts — never the caller's ambient
     IDENTITY. A candidate whose stack is genuinely absent on its checked-out
     branch is skipped (logged, not an error); everything else that cannot be
     resolved truthfully is a loud ``[S16.3]`` failure, never evidence of an
@@ -4392,6 +4402,7 @@ def _resolve_budget_candidates(
     """
     from .workspace_env import (
         WorkspaceEnvError,
+        generated_facts_path,
         identity_env_from_facts,
         read_generated_facts,
     )
@@ -4412,7 +4423,7 @@ def _resolve_budget_candidates(
             )
             continue
 
-        overlay_path = entry.path / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+        facts_path = generated_facts_path(entry.path)
         try:
             candidate_facts = read_generated_facts(entry.path)
         # CIU-62: the read (`OSError`), a non-UTF-8 byte (`UnicodeDecodeError`,
@@ -4421,7 +4432,7 @@ def _resolve_budget_candidates(
         # all three to WorkspaceEnvError so covering them here is one name.
         except WorkspaceEnvError as exc:
             raise WorktreeError(
-                f"[S16.3] could not read/parse {overlay_path}: {exc}"
+                f"[S16.3] could not read/parse {facts_path}: {exc}"
             ) from exc
         if not candidate_facts:
             # A raw git worktree, never registered as a CIU instance.
@@ -4429,7 +4440,7 @@ def _resolve_budget_candidates(
         network = candidate_facts.get("network", "")
         if not network:
             raise WorktreeError(
-                f"[S16.3] {overlay_path} declares no instance network; "
+                f"[S16.3] {facts_path} declares no instance network; "
                 f"{entry.path} looks like a registered CIU instance whose "
                 "deployment state cannot be truthfully counted."
             )

@@ -141,9 +141,9 @@ def _write_repo(
         )
         + f'\nexport INSTANCE_ID="{WORKSPACE_INSTANCE_ID}"\n'
     )
-    from ciu.workspace_env import upsert_generated_facts
+    from ciu.workspace_env import write_generated_facts
 
-    upsert_generated_facts(
+    write_generated_facts(
         tmp_path,
         {
             "repo_name": "repo",

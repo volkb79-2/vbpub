@@ -1,15 +1,18 @@
-"""ciu-P33 / CIU-60 — generated identity facts in the worktree overlay,
-plus `ciu env print`.
+"""ciu-P33 / CIU-60 / ciu-P47 — generated identity facts, plus `ciu env print`.
 
 Covers:
 
-* O1 — `ciu env generate` upserts a six-key `[ciu.instance.generated]` table
-  into `ciu.global.worktree.toml.j2`, from the SAME in-memory values it wrote
-  into `ciu.env`, idempotently.
-* O2 — hand-authored content elsewhere in that file survives BYTE FOR BYTE
-  (this is the oracle a `tomllib` + `tomli_w` full-file round-trip fails).
-* O3 — those facts reach templates through the EXISTING worktree-overlay merge
-  in `render_global_chain`, with no bespoke Jinja context injection.
+* O1 — `ciu env generate` writes a six-key `[ciu.instance.generated]` table to
+  `ciu.instance.generated.toml`, from the SAME in-memory values it wrote into
+  `ciu.env`, idempotently and WHOLESALE.
+* O2 — the operator's own `ciu.global.instance.toml.j2` is never written at
+  all. ciu-P47 replaced O2's old oracle ("hand-authored content in the SAME
+  file survives byte for byte", which the deleted surgical block-replace
+  existed to satisfy) with the stronger one the split makes available: CIU has
+  no writer for that file, so there is nothing left to survive.
+* O3 — those facts reach templates through `render_global_chain`'s merge, with
+  no bespoke Jinja context injection, and `{{ ciu.instance.generated.* }}`
+  resolves exactly as it did before the split.
 * O4 — the write fires for the PRIMARY/main checkout too (no S16 record, no
   pre-existing overlay), not only for worktree instances.
 * O5 — `ciu env print` emits `export KEY='value'` lines and nothing else.
@@ -30,7 +33,8 @@ from ciu import cli  # noqa: E402
 from ciu import workspace_env  # noqa: E402
 from ciu.config_model import render_global_chain, render_toml_template  # noqa: E402
 
-OVERLAY = "ciu.global.worktree.toml.j2"
+OVERLAY = "ciu.global.instance.toml.j2"
+FACTS_FILE = "ciu.instance.generated.toml"
 
 FACTS = {
     "repo_name": "vbpub",
@@ -81,10 +85,13 @@ def _generated_table(path: Path) -> dict:
 
 def test_generate_writes_the_six_generated_keys(monkeypatch, tmp_path):
     env_path = _hermetic_generate(monkeypatch, tmp_path)
-    overlay = tmp_path / OVERLAY
+    facts_file = tmp_path / FACTS_FILE
 
-    assert overlay.exists()
-    table = _generated_table(overlay)
+    assert facts_file.exists()
+    # ciu-P47: the operator's own overlay is NOT created as a side effect of a
+    # generate any more — the facts have their own file.
+    assert not (tmp_path / OVERLAY).exists()
+    table = _generated_table(facts_file)
     assert sorted(table) == sorted(workspace_env.GENERATED_FACTS_KEYS)
 
     # Same in-memory tuple as ciu.env: assert the two records AGREE, which is
@@ -115,34 +122,60 @@ def test_generate_never_re_reads_ciu_env_to_build_the_table(monkeypatch, tmp_pat
 
 def test_second_generate_is_byte_identical(monkeypatch, tmp_path):
     _hermetic_generate(monkeypatch, tmp_path)
-    first = (tmp_path / OVERLAY).read_text(encoding="utf-8")
+    first = (tmp_path / FACTS_FILE).read_text(encoding="utf-8")
     _hermetic_generate(monkeypatch, tmp_path)
-    second = (tmp_path / OVERLAY).read_text(encoding="utf-8")
+    second = (tmp_path / FACTS_FILE).read_text(encoding="utf-8")
 
     assert second == first
-    # Upsert, not append: exactly one table header, ever.
+    # Wholesale rewrite, not append: exactly one table header, ever.
     assert second.count("[ciu.instance.generated]") == 1
 
 
-def test_upsert_replaces_a_stale_value_without_duplicating_the_table(tmp_path):
-    workspace_env.upsert_generated_facts(tmp_path, FACTS)
-    workspace_env.upsert_generated_facts(
+def test_a_rewrite_replaces_a_stale_value_and_leaves_nothing_of_the_old_file(
+    tmp_path,
+):
+    """The whole file is replaced, so a stale value cannot linger anywhere in
+    it — the property the deleted surgical block-replace had to establish by
+    finding and rewriting exactly the right span."""
+    workspace_env.write_generated_facts(tmp_path, FACTS)
+    workspace_env.write_generated_facts(
         tmp_path, {**FACTS, "instance_id": "ff99ee"}
     )
-    body = (tmp_path / OVERLAY).read_text(encoding="utf-8")
+    body = (tmp_path / FACTS_FILE).read_text(encoding="utf-8")
 
     assert body.count("[ciu.instance.generated]") == 1
     assert 'instance_id = "ab12cd"' not in body
-    assert _generated_table(tmp_path / OVERLAY)["instance_id"] == "ff99ee"
+    assert _generated_table(tmp_path / FACTS_FILE)["instance_id"] == "ff99ee"
+
+
+def test_a_rewrite_discards_anything_hand_added_to_the_ciu_owned_file(tmp_path):
+    """CIU owns every byte of this file, and says so in its own banner.
+
+    A hand edit here is not preserved — that is the deliberate difference from
+    the operator's overlay next door, and the reason there is no preservation
+    logic left to get wrong.
+    """
+    workspace_env.write_generated_facts(tmp_path, FACTS)
+    path = tmp_path / FACTS_FILE
+    path.write_text(
+        path.read_text(encoding="utf-8") + '\n[operator]\nkeep = "me"\n',
+        encoding="utf-8",
+    )
+
+    workspace_env.write_generated_facts(tmp_path, FACTS)
+    body = path.read_text(encoding="utf-8")
+
+    assert "[operator]" not in body
+    assert "keep" not in body
 
 
 def test_incomplete_facts_are_refused_by_name(tmp_path):
     with pytest.raises(workspace_env.WorkspaceEnvError) as exc:
-        workspace_env.upsert_generated_facts(
+        workspace_env.write_generated_facts(
             tmp_path, {k: v for k, v in FACTS.items() if k != "public_fqdn"}
         )
     assert "public_fqdn" in str(exc.value)
-    assert not (tmp_path / OVERLAY).exists()
+    assert not (tmp_path / FACTS_FILE).exists()
 
 
 def test_block_key_order_is_fixed_not_mapping_order(tmp_path):
@@ -153,27 +186,38 @@ def test_block_key_order_is_fixed_not_mapping_order(tmp_path):
     assert tuple(keys) == workspace_env.GENERATED_FACTS_KEYS
 
 
-def test_unreadable_overlay_is_reported_not_swallowed(tmp_path, monkeypatch):
-    overlay = tmp_path / OVERLAY
-    overlay.write_text("[ciu.instance]\n", encoding="utf-8")
+def test_the_writer_never_reads_the_file_it_is_about_to_replace(
+    tmp_path, monkeypatch
+):
+    """ciu-P47's mechanism deletion, stated as a behaviour.
+
+    The surgical upsert had to READ the existing file to find the span it
+    owned, which is why an unreadable one was a distinct failure mode with its
+    own error path. A wholesale rewrite reads nothing — so a file that cannot
+    be read at all is not an obstacle to writing the correct one.
+    """
+    (tmp_path / FACTS_FILE).write_text("[ciu.instance]\n", encoding="utf-8")
 
     def boom(*_a, **_kw):
         raise OSError("EIO")
 
     monkeypatch.setattr(Path, "read_text", boom)
-    with pytest.raises(workspace_env.WorkspaceEnvError) as exc:
-        workspace_env.upsert_generated_facts(tmp_path, FACTS)
-    assert OVERLAY in str(exc.value)
+    workspace_env.write_generated_facts(tmp_path, FACTS)
+
+    monkeypatch.undo()
+    assert _generated_table(tmp_path / FACTS_FILE) == FACTS
 
 
-def test_unwritable_overlay_is_reported_and_leaves_no_temp_file(tmp_path, monkeypatch):
+def test_an_unwritable_target_is_reported_and_leaves_no_temp_file(
+    tmp_path, monkeypatch
+):
     def boom(*_a, **_kw):
         raise OSError("ENOSPC")
 
     monkeypatch.setattr(Path, "open", boom)
     with pytest.raises(workspace_env.WorkspaceEnvError) as exc:
-        workspace_env.upsert_generated_facts(tmp_path, FACTS)
-    assert OVERLAY in str(exc.value)
+        workspace_env.write_generated_facts(tmp_path, FACTS)
+    assert FACTS_FILE in str(exc.value)
     assert list(tmp_path.iterdir()) == []
 
 
@@ -183,7 +227,7 @@ def test_temp_file_is_cleaned_up_when_the_replace_fails(tmp_path, monkeypatch):
 
     monkeypatch.setattr(workspace_env.os, "replace", boom)
     with pytest.raises(workspace_env.WorkspaceEnvError):
-        workspace_env.upsert_generated_facts(tmp_path, FACTS)
+        workspace_env.write_generated_facts(tmp_path, FACTS)
     assert list(tmp_path.iterdir()) == []
 
 
@@ -198,12 +242,12 @@ def test_temp_file_unlink_failure_does_not_mask_the_write_error(
         Path, "unlink", lambda *a, **k: (_ for _ in ()).throw(OSError("EACCES"))
     )
     with pytest.raises(workspace_env.WorkspaceEnvError) as exc:
-        workspace_env.upsert_generated_facts(tmp_path, FACTS)
+        workspace_env.write_generated_facts(tmp_path, FACTS)
     assert "EXDEV" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
-# O2 — everything else in the file survives byte for byte
+# O2 — the operator's own overlay is never written at all (ciu-P47)
 # ---------------------------------------------------------------------------
 
 HAND_AUTHORED = """\
@@ -227,132 +271,82 @@ internal_host = "dstdns-98535c-vault"
 """
 
 
-def test_hand_authored_content_survives_byte_for_byte(tmp_path):
+def test_the_operators_overlay_is_untouched_by_a_generate(monkeypatch, tmp_path):
+    """The post-split form of O2, and a strictly stronger claim.
+
+    Before ciu-P47 this asserted that hand-authored content in the SAME file
+    survived the upsert. Now CIU has no writer for that file at all, so the
+    assertion is byte equality of the whole thing across a real generate —
+    comments, inline comment, blank lines, ordering and all.
+    """
     overlay = tmp_path / OVERLAY
     overlay.write_text(HAND_AUTHORED, encoding="utf-8")
 
-    workspace_env.upsert_generated_facts(tmp_path, FACTS)
-    body = overlay.read_text(encoding="utf-8")
+    _hermetic_generate(monkeypatch, tmp_path)
 
-    # The generated block was appended; every ORIGINAL byte is still there,
-    # in order, contiguously — comments, blank lines, inline comment and all.
-    assert body.startswith(HAND_AUTHORED)
-    assert "[ciu.instance.generated]" in body
-    for line in HAND_AUTHORED.splitlines():
-        assert line in body.splitlines()
+    assert overlay.read_text(encoding="utf-8") == HAND_AUTHORED
+    # …and the facts went somewhere else entirely.
+    assert "[ciu.instance.generated]" not in overlay.read_text(encoding="utf-8")
+    assert _generated_table(tmp_path / FACTS_FILE)["repo_root"] == str(tmp_path)
 
 
-def test_content_before_between_and_after_the_block_all_survive(tmp_path):
-    """The generated block placed MID-file, with hand-authored content on
-    both sides of it and a hand-written comment immediately below it."""
-    overlay = tmp_path / OVERLAY
-    seeded = (
-        "# leading operator comment\n"
-        '[ciu.instance]\nservice_profiles = ["core"]\n'
-        "\n"
-        "[ciu.instance.generated]\n"
-        'repo_name = "STALE"\n'
-        "\n"
-        "# a hand-written comment introducing the next table\n"
-        '[deploy]\nsome_key = "operator override"\n'
-        "\n"
-        "# a trailing hand-written comment at EOF\n"
+def test_no_writer_anywhere_opens_the_operators_overlay_during_a_generate(
+    monkeypatch, tmp_path
+):
+    """The negative, proven at the filesystem seam rather than by inspection.
+
+    A surviving surgical-upsert path would have to open the overlay for
+    writing; nothing does. Read access is deliberately still allowed — the
+    S3.3 chain renders that file — so only WRITE modes are refused here.
+    """
+    (tmp_path / OVERLAY).write_text(HAND_AUTHORED, encoding="utf-8")
+    real_open = Path.open
+
+    def guard(self, mode="r", *args, **kwargs):
+        if self.name.startswith(OVERLAY) and any(
+            flag in mode for flag in ("w", "a", "x", "+")
+        ):
+            raise AssertionError(f"a writer opened {self} with mode {mode!r}")
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guard)
+    _hermetic_generate(monkeypatch, tmp_path)
+
+    monkeypatch.undo()
+    assert (tmp_path / OVERLAY).read_text(encoding="utf-8") == HAND_AUTHORED
+
+
+def test_a_stale_generated_table_left_in_the_overlay_is_not_adopted(tmp_path):
+    """A pre-P47 checkout's leftover, and the hard cutover over it.
+
+    The old file may still carry a complete-looking `[ciu.instance.generated]`
+    table. It is not read, not migrated, and not deleted — `ciu migration-check`
+    reports it and the operator removes it.
+    """
+    (tmp_path / OVERLAY).write_text(
+        '[ciu.instance.generated]\nrepo_name = "STALE"\n', encoding="utf-8"
     )
-    overlay.write_text(seeded, encoding="utf-8")
+    assert workspace_env.read_generated_facts(tmp_path) == {}
 
-    workspace_env.upsert_generated_facts(tmp_path, FACTS)
-    body = overlay.read_text(encoding="utf-8")
-    lines = body.splitlines()
+    workspace_env.write_generated_facts(tmp_path, FACTS)
 
-    # Literal surrounding text, asserted as text — not "the values round-trip".
-    assert lines[0] == "# leading operator comment"
-    assert lines[1] == "[ciu.instance]"
-    assert lines[2] == 'service_profiles = ["core"]'
-    assert lines[3] == ""
-    assert lines[4] == "[ciu.instance.generated]"
-    idx = lines.index("# a hand-written comment introducing the next table")
-    assert lines[idx - 1] == ""
-    assert lines[idx + 1] == "[deploy]"
-    assert lines[idx + 2] == 'some_key = "operator override"'
-    assert lines[idx + 3] == ""
-    assert lines[idx + 4] == "# a trailing hand-written comment at EOF"
-    assert lines[idx + 4] == lines[-1]
-
-    assert "STALE" not in body
-    assert body.count("[ciu.instance.generated]") == 1
-
-    # And a mid-file block is idempotent too.
-    workspace_env.upsert_generated_facts(tmp_path, FACTS)
-    assert overlay.read_text(encoding="utf-8") == body
+    assert workspace_env.read_generated_facts(tmp_path) == FACTS
+    assert "STALE" not in (tmp_path / FACTS_FILE).read_text(encoding="utf-8")
+    assert "STALE" in (tmp_path / OVERLAY).read_text(encoding="utf-8")
 
 
-def test_a_full_toml_round_trip_would_have_failed_this(tmp_path):
-    """Guard the NEGATIVE of O2 explicitly: comments are not TOML data, so a
-    parse-then-dump implementation cannot reproduce this assertion."""
-    overlay = tmp_path / OVERLAY
-    overlay.write_text(HAND_AUTHORED, encoding="utf-8")
-    workspace_env.upsert_generated_facts(tmp_path, FACTS)
+def test_the_generated_file_names_itself_as_ciu_owned(tmp_path):
+    """The banner sits at the TOP of the file now (CIU owns all of it), and a
+    second write does not duplicate it."""
+    workspace_env.write_generated_facts(tmp_path, FACTS)
+    workspace_env.write_generated_facts(tmp_path, FACTS)
+    body = (tmp_path / FACTS_FILE).read_text(encoding="utf-8")
 
-    body = overlay.read_text(encoding="utf-8")
-    assert "# Operator notes: this checkout points at the staging reference." in body
-    assert "# An ordinary sparse override, nothing to do with [ciu.instance]." in body
-    assert 'some_key = "operator override"   # a trailing inline comment' in body
-    assert "# A hand-written comment introducing the last table." in body
-
-
-def test_append_does_not_double_the_blank_separator(tmp_path):
-    """An existing overlay already ending in a blank line gains exactly one
-    separator, not two."""
-    overlay = tmp_path / OVERLAY
-    overlay.write_text("[ciu.instance]\nservice_profiles = []\n\n", encoding="utf-8")
-
-    workspace_env.upsert_generated_facts(tmp_path, FACTS)
-    lines = overlay.read_text(encoding="utf-8").splitlines()
-
-    assert lines[:2] == ["[ciu.instance]", "service_profiles = []"]
-    assert lines[2] == ""
-    assert lines[3] == "[ciu.instance.generated]"
-
-
-def test_a_block_butted_against_the_next_table_gains_a_separator(tmp_path):
-    """Hand-authored file with NO blank line between the generated table and
-    the next one: the replace must not fuse the block onto that header."""
-    overlay = tmp_path / OVERLAY
-    overlay.write_text(
-        '[ciu.instance.generated]\nrepo_name = "STALE"\n'
-        '[deploy]\nsome_key = "operator override"\n',
-        encoding="utf-8",
-    )
-
-    workspace_env.upsert_generated_facts(tmp_path, FACTS)
-    body = overlay.read_text(encoding="utf-8")
-    lines = body.splitlines()
-
-    assert lines[-4] == 'public_fqdn = "example.test"'
-    assert lines[-3] == ""
-    assert lines[-2:] == ["[deploy]", 'some_key = "operator override"']
-    assert "STALE" not in body
-
-    workspace_env.upsert_generated_facts(tmp_path, FACTS)
-    assert overlay.read_text(encoding="utf-8") == body
-
-
-def test_a_fresh_file_gets_the_shared_overlay_header(tmp_path):
-    workspace_env.upsert_generated_facts(tmp_path, FACTS)
-    body = (tmp_path / OVERLAY).read_text(encoding="utf-8")
-    assert body.startswith(
-        "# Worktree-local sparse global override (S3.1b / S16).\n"
-    )
+    assert body.startswith("# CIU-owned (S3.1b) — GENERATED.")
+    assert body.count("hand edits are silently overwritten") == 1
+    # It points the reader at the file that IS theirs to edit.
+    assert OVERLAY in body
     assert body.endswith("\n")
-
-
-def test_the_owned_block_names_itself_as_ciu_owned(tmp_path):
-    """Mirrors CIU-52's 'do not hand-edit' precedent, INSIDE the block so it
-    is not duplicated on the next upsert."""
-    workspace_env.upsert_generated_facts(tmp_path, FACTS)
-    workspace_env.upsert_generated_facts(tmp_path, FACTS)
-    body = (tmp_path / OVERLAY).read_text(encoding="utf-8")
-    assert body.count("# Do NOT hand-edit keys in THIS table") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +395,7 @@ def test_a_jinja_template_can_read_the_facts_like_any_other_value(
 def test_the_facts_are_not_injected_as_a_bespoke_context_field(
     monkeypatch, tmp_path
 ):
-    """Negative of O3: with the OVERLAY FILE removed, the facts are gone. If
+    """Negative of O3: with the FACTS FILE removed, the facts are gone. If
     some code path were injecting them into the Jinja context directly, they
     would survive the file's absence — that is the hazard this design rejects.
     """
@@ -410,7 +404,7 @@ def test_the_facts_are_not_injected_as_a_bespoke_context_field(
         '[ciu]\nenv = "test"\n', encoding="utf-8"
     )
     _hermetic_generate(monkeypatch, tmp_path)
-    (tmp_path / OVERLAY).unlink()
+    (tmp_path / FACTS_FILE).unlink()
 
     merged = render_global_chain(tmp_path, tmp_path)
     assert "generated" not in merged.get("ciu", {}).get("instance", {})
@@ -427,12 +421,12 @@ def test_primary_checkout_with_no_instance_record_is_covered(monkeypatch, tmp_pa
     from ciu import worktree
 
     assert worktree.read_own_instance_record(tmp_path) is None
-    assert not (tmp_path / OVERLAY).exists()
+    assert not (tmp_path / FACTS_FILE).exists()
 
     _hermetic_generate(monkeypatch, tmp_path)
 
-    assert (tmp_path / OVERLAY).exists()
-    assert _generated_table(tmp_path / OVERLAY)["repo_root"] == str(tmp_path)
+    assert (tmp_path / FACTS_FILE).exists()
+    assert _generated_table(tmp_path / FACTS_FILE)["repo_root"] == str(tmp_path)
 
 
 def test_write_does_not_consult_the_instance_record_at_all(monkeypatch, tmp_path):
@@ -449,21 +443,25 @@ def test_write_does_not_consult_the_instance_record_at_all(monkeypatch, tmp_path
     monkeypatch.setattr(worktree, "read_own_instance_record", spy)
     _hermetic_generate(monkeypatch, tmp_path)
     assert seen == []
-    assert (tmp_path / OVERLAY).exists()
+    assert (tmp_path / FACTS_FILE).exists()
 
 
-def test_a_worktree_instance_shaped_overlay_is_extended_not_replaced(
+def test_a_worktree_instances_overlay_and_the_facts_merge_into_one_view(
     monkeypatch, tmp_path
 ):
     """The other half of O4: a worktree instance whose overlay CIU-52 already
-    wrote keeps every one of those values."""
-    overlay = tmp_path / OVERLAY
-    overlay.write_text(HAND_AUTHORED, encoding="utf-8")
+    wrote keeps every one of those values, AND the generated facts land in the
+    merged config alongside them — two files, one merged `[ciu.instance]`.
+    """
+    monkeypatch.setenv("REPO_ROOT", str(tmp_path))
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text(
+        '[ciu]\nenv = "test"\n', encoding="utf-8"
+    )
+    (tmp_path / OVERLAY).write_text(HAND_AUTHORED, encoding="utf-8")
 
     _hermetic_generate(monkeypatch, tmp_path)
 
-    parsed = tomllib.loads(overlay.read_text(encoding="utf-8"))
-    instance = parsed["ciu"]["instance"]
+    instance = render_global_chain(tmp_path, tmp_path)["ciu"]["instance"]
     assert instance["service_profiles"] == ["core", "db"]
     assert instance["shared_infra"]["ref_projects"] == ["idp-dev-idp"]
     assert sorted(instance["generated"]) == sorted(
