@@ -104,13 +104,13 @@ class TestActionStatusResolution:
         workspace identity), driven by THIS checkout's generated overlay
         facts."""
         (tmp_path / "apps" / "vault").mkdir(parents=True)
-        from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+        from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
 
         # CIU-75: the identity naming reads the generated overlay table.
         facts = {key: "" for key in GENERATED_FACTS_KEYS}
         facts["repo_name"] = "dstdns"
         facts["instance_id"] = "abc123"
-        upsert_generated_facts(tmp_path, facts)
+        write_generated_facts(tmp_path, facts)
         profile = _profile(config={"deploy": {}})
         selection = [{"path": "apps/vault", "name": "vault", "phase_key": "phase_1"}]
         monkeypatch.setattr(deploy.diagnose, "_inspect", lambda project: [])

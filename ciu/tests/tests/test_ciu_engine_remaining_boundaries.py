@@ -21,12 +21,12 @@ from ciu import engine  # noqa: E402
 def _write_identity_facts(root, repo_name, instance_id):
     """CIU-75: the shipped identity project is derived from the checkout's own
     generated `[ciu.instance.generated]` overlay table, not its `ciu.env`."""
-    from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
 
     facts = {key: "" for key in GENERATED_FACTS_KEYS}
     facts["repo_name"] = repo_name
     facts["instance_id"] = instance_id
-    upsert_generated_facts(root, facts)
+    write_generated_facts(root, facts)
 
 
 

@@ -83,8 +83,8 @@ def tmp_git_repo(tmp_path: Path) -> Path:
     _git_ok(["config", "user.email", "t@example.com"], repo)
     _git_ok(["config", "user.name", "Test"], repo)
     (repo / ".gitignore").write_text(
-        "ciu.env\nciu.global.worktree.toml.j2\n**/.ciu/\nciu.global.toml\n"
-        "ciu.toml\nciu.compose.yml\n"
+        "ciu.env\nciu.global.instance.toml.j2\nciu.instance.generated.toml\n"
+        "**/.ciu/\nciu.global.toml\nciu.toml\nciu.compose.yml\n"
     )
     project = repo / "project"
     project.mkdir()
@@ -109,16 +109,16 @@ def _stack_rel() -> Path:
 
 def _write_ciu_env(worktree_root: Path, *, network: str, instance_id: str = "") -> None:
     """CIU-75: the generated identity table lives in the GIT WORKTREE root's
-    `ciu.global.worktree.toml.j2` (matching `worktree.add`'s own existing,
+    `ciu.instance.generated.toml` (matching `worktree.add`'s own existing,
     already-shipped placement -- S16.1's `ref.path` precedent) -- NOT at the
     (possibly nested) CIU root. Named for the file it replaced, so the
     existing 36 call sites keep reading the same way."""
-    from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
 
     facts = {key: "" for key in GENERATED_FACTS_KEYS}
     facts["network"] = network
     facts["instance_id"] = instance_id
-    upsert_generated_facts(worktree_root, facts)
+    write_generated_facts(worktree_root, facts)
 
 
 def _add_linked_worktree(git_root: Path, branch: str, *, base: str = "main") -> Path:
@@ -596,7 +596,7 @@ class TestResolveBudgetCandidates:
     def test_env_unparseable_raises(self, tmp_git_repo):
         _write_ciu_env(tmp_git_repo, network="net-primary")
         linked = _add_linked_worktree(tmp_git_repo, "linked")
-        (linked / "ciu.global.worktree.toml.j2").write_text(
+        (linked / "ciu.instance.generated.toml").write_text(
             "[ciu.instance.generated]\nnetwork = not-a-toml-value\n"
         )
         with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\]"):
@@ -608,11 +608,11 @@ class TestResolveBudgetCandidates:
         `WorkspaceEnvError` under `ValueError`, not a subclass of it; the
         S16.3 capacity count must refuse an instance it cannot read rather
         than crash mid-survey (and never silently undercount). CIU-75 moved
-        the source to the overlay and normalized the three exception types at
-        the reader; the refusal contract is unchanged."""
+        the source to the generated facts file and normalized the three
+        exception types at the reader; the refusal contract is unchanged."""
         _write_ciu_env(tmp_git_repo, network="net-primary")
         linked = _add_linked_worktree(tmp_git_repo, "linked")
-        (linked / "ciu.global.worktree.toml.j2").write_bytes(
+        (linked / "ciu.instance.generated.toml").write_bytes(
             b'[ciu.instance.generated]\nnetwork = "\xff\xfe"\n'
         )
         with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\] could not read/parse"):

@@ -69,7 +69,7 @@ selected by the active/explicit profile; it deliberately has no `--dir` flag.
 | `ciu env generate` · `ciu env print` | `--define-root PATH` (alias: `--root-folder`) |
 | `ciu render` | `--profile NAME`, `--define-root PATH` |
 | `ciu up` | `--profile NAME` \| `--dir PATH` \| `--layout NAME`; `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors`, `--no-preflight`; remote: `--host NAME`, `--thin`, `--bootstrap`, `--rollback` |
-| `ciu clean` | `--profile NAME`, `-y`, `--ignore-errors`, `--vanilla` (also reset `ciu.global.toml` / `ciu.env` / `ciu.global.worktree.toml.j2`) |
+| `ciu clean` | `--profile NAME`, `-y`, `--ignore-errors`, `--vanilla` (also reset `ciu.global.toml` / `ciu.env` / `ciu.global.instance.toml.j2` / `ciu.instance.generated.toml`) |
 | `ciu secrets list\|reset` | `-d PATH`; `reset` also accepts `--name N`, `-y` |
 | `ciu check` | `--profile NAME`, `--phases N,M`, `--live` (also probe live state) |
 | `ciu graph` | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
@@ -555,11 +555,13 @@ environment, so `eval` around it is where that actually happens. If `ciu.env`
 does not exist it refuses and names `ciu env generate`.
 
 `ciu env generate` also writes the identity tuple into this checkout's
-`ciu.global.worktree.toml.j2` under `[ciu.instance.generated]` (S3.1b /
+`ciu.instance.generated.toml` under `[ciu.instance.generated]` (S3.1b /
 CIU-60), so **templates** read these facts from the merged config chain —
 `{{ ciu.instance.generated.physical_repo_root }}` — rather than from ambient
-environment. See [CONFIG.md](CONFIG.md) for the table and the
-preservation rules; `ciu clean --vanilla` is the only command that removes it.
+environment. The file is CIU's alone and is rewritten in full every time; your
+own per-checkout overrides go in `ciu.global.instance.toml.j2`, which CIU never
+writes. See [CONFIG.md](CONFIG.md) for both files and the ownership rules;
+`ciu clean --vanilla` is the only command that removes them.
 
 Always-required keys [S2.2]:
 

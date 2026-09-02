@@ -29,12 +29,21 @@ ciu.global.toml
 
 # Per-checkout sparse global override (S3.1b) — declared gitignored by SPEC
 # and by CIU's own published `.gitignored.ciu` sample rules, but missing here
-# until CIU-60: nothing wrote this file at a TRACKED repo root before
-# `ciu env generate` started upserting `[ciu.instance.generated]` into it, so
-# the omission was invisible. The integration suite generates into the
-# committed `test-repo/` fixture, which would otherwise leave an untracked
-# file that reds the dirty-tree gate (S18.4) on every run.
-**/ciu.global.worktree.toml.j2
+# until CIU-60. Renamed from `ciu.global.worktree.toml.j2` by ciu-P47; the old
+# spelling is dropped here as plain hygiene — it is no longer a CIU-generated
+# artifact, so this repo has nothing to ignore under that name. It carries NO
+# implication for `ciu migration-check`: that rule's retired-overlay detector
+# is a bare filesystem existence check and never consults a `.gitignore`, so
+# gitignore state and migration detection are independent (as
+# `migration_check.detect_retired_overlay`'s own docstring and CONSUMERS §21
+# both say).
+**/ciu.global.instance.toml.j2
+
+# CIU-owned generated identity facts (S3.1b), split out of the overlay above by
+# ciu-P47. The integration suite generates into the committed `test-repo/`
+# fixture, which would otherwise leave an untracked file that reds the
+# dirty-tree gate (S18.4) on every run.
+**/ciu.instance.generated.toml
 
 # Python caches
 __pycache__/

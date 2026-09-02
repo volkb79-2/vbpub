@@ -254,7 +254,8 @@ requirements are marked *(withdrawn)*.
   `ciu.global.defaults.toml.j2` (committed, full defaults) +
   `ciu.global.toml.j2` (**committed sparse override**, see S3.1a; optional —
   if absent, defaults apply only) + optional gitignored
-  `ciu.global.worktree.toml.j2` (S3.1b, merged last) → rendered
+  `ciu.global.instance.toml.j2` (S3.1b) + CIU-owned gitignored
+  `ciu.instance.generated.toml` (S3.1b, merged last of all) → rendered
   `ciu.global.toml` (gitignored);
   per stack `ciu.defaults.toml.j2` (committed, full defaults) +
   `ciu.toml.j2` (**committed sparse override**, see S3.1a; optional, **not
@@ -266,8 +267,12 @@ requirements are marked *(withdrawn)*.
   no generated intermediate now, so nothing can go stale.)
 
 - **S3.1a** Override constraints — apply identically to the global override
-  (`ciu.global.toml.j2`), worktree-local override
-  (`ciu.global.worktree.toml.j2`), and per-stack override (`ciu.toml.j2`):
+  (`ciu.global.toml.j2`), per-checkout instance override
+  (`ciu.global.instance.toml.j2`), and per-stack override (`ciu.toml.j2`).
+  They do NOT apply to `ciu.instance.generated.toml`, which has no human
+  author: CIU writes all of it, from six derived non-secret facts, so the
+  clause-1 secret scan could only ever raise a false refusal on a repo path
+  or hostname that happened to look secret-shaped:
   1. **Secret-free**: CIU MUST scan the raw template text before rendering.
      Any PEM key/certificate block (`-----BEGIN`) or sensitive key name
      (`password`, `token`, `secret`, `api_key`, `credential`, …) paired
@@ -286,58 +291,76 @@ requirements are marked *(withdrawn)*.
      absent override is the normal case (defaults apply alone). `clean`/`--reset`
      remove rendered outputs but MUST NOT remove a committed override.
 
-- **S3.1b** The optional `<ciu-root>/ciu.global.worktree.toml.j2` is a sparse,
-  non-secret, gitignored input for one checkout. It is merged after every
-  committed global layer and before stack defaults. Managed lifecycle commands
-  may create its initial `ciu.instance.service_profiles` and
-  `ciu.instance.shared_infra` values; operators may add ordinary sparse global
-  overrides afterward. `ciu clean` and `ciu env generate` MUST preserve it
-  (`ciu clean --vanilla`, S6.4b, is the one explicit opt-in that removes it).
-  Worktree configuration MUST NOT be appended to generated `ciu.env`.
+- **S3.1b** Two per-checkout files, with a hard ownership line between them
+  (ciu-P47; before it, both roles shared one file named
+  `ciu.global.worktree.toml.j2`).
 
-  **CIU-owned `[ciu.instance.generated]` (CIU-60, normative).** `ciu env
-  generate` MUST additionally upsert one table into this file, named
-  `[ciu.instance.generated]`, carrying exactly six snake_case keys —
-  `repo_name`, `instance_id`, `network`, `physical_repo_root`, `repo_root`,
-  `public_fqdn` — from the SAME in-memory values that invocation wrote into
-  `ciu.env`. They are never re-derived and `ciu.env` is never read back to
-  produce them: a second derivation could disagree with the first, and nothing
-  would catch it. The table exists so a Jinja TEMPLATE can read these facts
-  from the merged config chain (`{{ ciu.instance.generated.physical_repo_root }}`,
-  like any other config value) instead of from ambient process environment —
-  S3.2's `env` context is still raw `os.environ`, which hooks stopped trusting
-  in S9.3 and templates never did. There is deliberately NO bespoke Jinja
-  global for these facts: every value is backed by a file an operator can
-  `cat`. Rules:
-  1. **CIU owns exactly this table.** It is rewritten in full on every
-     `env generate`, so a hand-edit to a key INSIDE it is silently
-     overwritten — mirroring S16.1a's "do not hand-edit" precedent, and unlike
-     every other byte of the file. The block carries that warning inline.
-  2. **Every other byte is preserved verbatim.** The write is a text-level
-     surgical replace of the region from the `[ciu.instance.generated]` header
-     line to the next line beginning a table at column 0, MINUS that region's
-     trailing run of blank/comment lines (which belongs to the following
-     table). Hand-authored comments, blank-line spacing, key ordering and
-     unrelated tables anywhere else in the file survive unchanged. A
-     parse-whole-file-then-re-serialize round-trip is NOT permitted: it would
-     round-trip every value correctly while destroying every comment in a file
-     this section documents as operator-editable.
+  **The operator's file: `<ciu-root>/ciu.global.instance.toml.j2`.** A sparse,
+  non-secret, gitignored input for one checkout ("instance", not literally a
+  git worktree — every checkout is one). It is merged after every committed
+  global layer and before stack defaults. Managed lifecycle commands may create
+  its initial `ciu.instance.service_profiles` and `ciu.instance.shared_infra`
+  values; operators may add ordinary sparse global overrides afterward. **CIU
+  MUST NOT write it after that initial creation** — there is no upsert, no
+  append, and therefore nothing an operator can put in it that CIU can
+  clobber. `ciu clean` and `ciu env generate` MUST preserve it
+  (`ciu clean --vanilla`, S6.4b, is the one explicit opt-in that removes it).
+  Instance configuration MUST NOT be appended to generated `ciu.env`.
+
+  **CIU's file: `<ciu-root>/ciu.instance.generated.toml` (CIU-60, normative).**
+  A gitignored **plain TOML file, never a `.j2`** — nothing renders it, so a
+  reader needs no render context at all. `ciu env generate` MUST write it
+  carrying exactly one table, `[ciu.instance.generated]`, with exactly six
+  snake_case keys — `repo_name`, `instance_id`, `network`,
+  `physical_repo_root`, `repo_root`, `public_fqdn` — from the SAME in-memory
+  values that invocation wrote into `ciu.env`. They are never re-derived and
+  `ciu.env` is never read back to produce them: a second derivation could
+  disagree with the first, and nothing would catch it. The table exists so a
+  Jinja TEMPLATE can read these facts from the merged config chain
+  (`{{ ciu.instance.generated.physical_repo_root }}`, like any other config
+  value) instead of from ambient process environment — S3.2's `env` context is
+  still raw `os.environ`, which hooks stopped trusting in S9.3 and templates
+  never did. There is deliberately NO bespoke Jinja global for these facts:
+  every value is backed by a file an operator can `cat`. **The template-facing
+  binding name did NOT change when the file moved** — a template written
+  against CIU 7.5.0 reads identically today. Rules:
+  1. **CIU owns every byte of this file.** It is rewritten IN FULL on every
+     `env generate`, so any hand edit to it is silently overwritten —
+     mirroring S16.1a's "do not hand-edit" precedent. The file carries that
+     warning as its own header banner, and points the reader at
+     `ciu.global.instance.toml.j2`, which is theirs.
+  2. **Wholesale rewrite; no preservation logic.** Because nothing but CIU
+     ever writes here, the writer needs no notion of a region it owns and no
+     scan for surrounding content. (Until ciu-P47 this table lived inside the
+     operator's own file, and the writer had to be a text-level surgical
+     replace of exactly the owned span, purely so hand-authored comments and
+     tables elsewhere in that file survived. Splitting the file removed the
+     requirement and the mechanism with it.)
   3. **Idempotent.** A second `env generate` over an unchanged workspace
-     produces a byte-identical file — upsert, never append; never two tables.
+     produces a byte-identical file — true by construction, the rendered body
+     being a pure function of the six facts in a fixed key order.
   4. **Not gated on an S16 instance record.** The read side
      (`render_global_chain`) reads this file unconditionally by exact path for
      every `repo_root`, so the write side MUST NOT gate either; gating would
      leave the primary/main checkout — the common case — on the old
      ambient-environment path.
-  5. The file is created if absent, carrying the same header comment the
-     managed-lifecycle writer uses.
+  5. **Merged LAST in the S3.3 chain**, after the operator's instance override,
+     which preserves the pre-split precedence: the CIU-written table was the
+     last word on those six keys inside the shared file, so a `[ciu.instance.
+     generated]` key an operator writes into their OWN override is still
+     overridden by the derived fact rather than winning over it. The merge
+     read is an ordinary TOML parse and is deliberately **as tolerant as the
+     layer it replaced** — the identity reader's extra strictness (S3.1c
+     clause 4) belongs to identity reads, not to the render, or an unreadable
+     record would abort `ciu up` at the render instead of reaching S3.12's
+     `identity_unreadable` (CIU-80).
 
 - **S3.1c Identity-source precedence (CIU-75, normative; BREAKING in 7.7.0).**
   No earlier section owned this question: S2.7 says how each identity fact is
   DERIVED, S3.1b says where the derived facts are WRITTEN, and until CIU-75
   neither said which record CIU READS when the two disagree. They now cannot:
 
-  1. **`[ciu.instance.generated]` in `<ciu-root>/ciu.global.worktree.toml.j2`
+  1. **`[ciu.instance.generated]` in `<ciu-root>/ciu.instance.generated.toml`
      is the SOLE source of instance identity that CIU itself reads.** Every
      internal read of `repo_name`, `instance_id`, `network`,
      `physical_repo_root`, `repo_root` or `public_fqdn` — for a compose
@@ -372,7 +395,8 @@ requirements are marked *(withdrawn)*.
      twelve per-checkout reads of clause 1 were correct while ~26 internal
      sites, and every `$DOCKER_NETWORK_INTERNAL` in a rendered template, still
      read the inherited value (the CIU-41 hazard, arriving through the one
-     door a per-site cutover cannot close). A checkout whose overlay carries
+     door a per-site cutover cannot close). A checkout whose generated facts
+     file is absent or carries
      NO such table is REPAIRED — the record CIU reads is the record CIU
      regenerates, exactly as an absent `ciu.env` has always been regenerated —
      rather than refusing a verb the operator just ran; a PRESENT but
@@ -391,8 +415,9 @@ requirements are marked *(withdrawn)*.
      so a stdout notice there lands ahead of the JSON document and breaks
      every machine consumer's parse. The interactive `ciu env generate` verb
      keeps announcing on stdout.
-  4. **Reader semantics — three outcomes, never two.** An ABSENT overlay, or
-     an overlay carrying no such table, yields "no facts": a legitimate state
+  4. **Reader semantics — three outcomes, never two.** An ABSENT
+     `ciu.instance.generated.toml`, or one carrying no such table, yields
+     "no facts": a legitimate state
      (`ciu env generate` was never run here) that MUST stay silent. A PRESENT
      record that cannot be read — an `OSError` (including a directory where
      the file belongs), a non-UTF-8 byte, malformed TOML, or a non-string
@@ -400,14 +425,19 @@ requirements are marked *(withdrawn)*.
      "no facts" (the absence-for-emptiness anti-pattern; the live consequence
      it caused is recorded at S6.4a). Each call site's existing refuse-or-
      degrade contract is preserved exactly across the cutover.
-  5. **The read is scoped to CIU's own block.** It parses the region the
-     S3.1b writer owns — the table header through the last `key = value` line
-     before the next table — and not the whole file. The block is plain TOML
-     by construction even though the file is a Jinja template, so a reader
-     needs no render context; a full `render_global_chain` MUST NOT be
-     required, because several of these reads target a DIFFERENT checkout,
+  5. **The read is a whole-file plain-TOML parse.** `ciu.instance.generated.
+     toml` is not a template and contains nothing but the CIU-owned table, so
+     the read is an ordinary `tomllib` parse of the entire file — no scan for
+     a block boundary, and no render context of any kind. A full
+     `render_global_chain` MUST NOT be required, and the reasons are unchanged
+     by the file split: several of these reads target a DIFFERENT checkout,
      whose committed config chain may legitimately be absent or broken, and
-     because the block is merged last, making its own bytes the merged value.
+     the file is merged last, making its own bytes the merged value. (Before
+     ciu-P47 the same "no render context" property had to be obtained by
+     slicing CIU's owned region out of a Jinja template that also held
+     operator content; the dedicated file makes it literal.) The MERGE-side
+     read (S3.1b clause 5) is the same parse WITHOUT clause 4's non-string
+     refusal — see that clause for why.
   6. **Readiness means the table, not the file.** Where CIU tests whether a
      checkout can act as a CIU instance (e.g. S16.10's "can this checkout
      still clean itself?"), the signal is the PRESENCE of
@@ -523,7 +553,7 @@ requirements are marked *(withdrawn)*.
   landscape — e.g. a consumer renders its Consul KV root
   `dstdns/<landscape_id>/…` and mesh ACL tags from it. When present, CIU MUST
   validate it on the **final merged** global config — after the committed
-  chain and the worktree overlay (S3.1b) — and it MUST match
+  chain and both S3.1b per-checkout layers — and it MUST match
   `^[a-z][a-z0-9-]{0,62}$` (a DNS-label-safe slug: lowercase letter first,
   then lowercase letters, digits, or hyphens). Violation = abort naming the
   key and the pattern. Validation is once-per-render, never per chain
@@ -580,7 +610,7 @@ requirements are marked *(withdrawn)*.
   `RESERVED_GLOBAL_NAMESPACES` (which instead governs stack ROOT KEY
   collisions — a different question). When `ciu.user_tables` is declared,
   CIU validates the FINAL merged global config (same timing as S3.11 —
-  after the committed chain and the worktree overlay): every top-level key
+  after the committed chain and both S3.1b per-checkout layers): every top-level key
   that is neither in `RESERVED_GLOBAL_TABLES` nor listed in
   `ciu.user_tables` is a single collective `ValueError` naming every
   offending key. Absence of `ciu.user_tables` is a complete no-op — a
@@ -1032,19 +1062,20 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
      degradation to a warning, documented S6.4 behavior.
 
   **Workspace reset: `clean --vanilla` (S6.4b, CIU-60, normative).** `ciu
-  clean` without `--vanilla` MUST leave `ciu.global.toml` (rendered), `ciu.env`
-  and `ciu.global.worktree.toml.j2` completely untouched — S3.1b already makes
-  preserving the last of those a requirement, and the other two are the
-  workspace's rendered config and machine identity. `--vanilla` is a purely
-  ADDITIVE opt-in that removes exactly those three, and nothing else, for a
+  clean` without `--vanilla` MUST leave `ciu.global.toml` (rendered), `ciu.env`,
+  `ciu.global.instance.toml.j2` and `ciu.instance.generated.toml` completely
+  untouched — S3.1b already makes preserving the last two a requirement, and
+  the other two are the workspace's rendered config and machine facts.
+  `--vanilla` is a purely
+  ADDITIVE opt-in that removes exactly those four, and nothing else, for a
   full reset to freshly-CLONED state (committed inputs — the defaults and the
   committed override — are never in scope). Semantics:
   1. It runs LAST, after every pass S6.4/S6.4a describes.
   2. It runs ONLY when those passes all succeeded. A clean that failed keeps
-     all three and says so: `ciu.global.worktree.toml.j2`'s
+     all four and says so: `ciu.instance.generated.toml`'s
      `[ciu.instance.generated]` table is the workspace identity a retry and any
-     manual cleanup resolve from (`ciu.env` before CIU-75, which is why all
-     three are kept together), and removing it over a half-torn-down workspace
+     manual cleanup resolve from (`ciu.env` before CIU-75, which is why they
+     are kept together), and removing it over a half-torn-down workspace
      would take away the record naming what is still standing.
   3. An already-absent file is a silent no-op for that file — `--vanilla` over
      an already-vanilla workspace succeeds. A file that is present and cannot
@@ -1664,8 +1695,8 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   The context also carries the deployment-selection facts and workspace
   identity (S3.12 / CIU-44): `ctx.selected_profiles` / `ctx.deployed_stacks`
   (tuples; `None` outside a deployment render) and `ctx.instance_id` /
-  `ctx.network` (from this workspace's own `[ciu.instance.generated]` overlay
-  table by exact path — S3.1c; not `ciu.env`, since CIU-75 — or `None`). Hooks read
+  `ctx.network` (from this workspace's own `ciu.instance.generated.toml`
+  by exact path — S3.1c; not `ciu.env`, since CIU-75 — or `None`). Hooks read
   identity/selection from these fields — never from
   ambient environment state (S9.4 forbids env mutation; ambient reads are the
   CIU-41 contamination vector).
@@ -2357,8 +2388,8 @@ Normative rules:
 
 | Rule | Fires when | Remediation |
 |---|---|---|
-| `retired-overlay-file` | a global-overlay filename CIU has RETIRED is still present at the ciu root. The detector filters its history list against the live filename constant, so a name that is still current produces nothing | move hand-authored overrides into the current overlay, delete the old file |
-| `stale-identity-facts` | `ciu.env` exists but `[ciu.instance.generated]` (S3.1c) is absent, incomplete, or unreadable — pre-CIU-75 identity state, which every identity read now silently degrades to "unmanaged" | `ciu env generate` |
+| `retired-overlay-file` | a global-overlay filename CIU has RETIRED is still present at the ciu root. The detector filters its history list against the live filename constant, so a name that is still current produces nothing. **LIVE since ciu-P47**, which retired `ciu.global.worktree.toml.j2` in favour of `ciu.global.instance.toml.j2`; it was dormant-by-construction while that was still the current name | move hand-authored overrides into `ciu.global.instance.toml.j2`, delete the old file. Its `[ciu.instance.generated]` table needs no hand-copying — `ciu env generate` rewrites those facts into `ciu.instance.generated.toml` |
+| `stale-identity-facts` | `ciu.env` exists but `[ciu.instance.generated]` (S3.1c) is absent, incomplete, or unreadable — pre-CIU-75 identity state, or a pre-ciu-P47 checkout whose table is still in the retired overlay filename, which every identity read now silently degrades to "unmanaged" | `ciu env generate` |
 | `gitignore-gaps` | the checkout's `.gitignore` is missing entries from `ciu init`'s canonical set (CIU-61), using that mechanism's own comparison and comment normalization | add the named patterns |
 
 A secret-shaped `[state]` key is deliberately **not** a rule here: S3.4a's
@@ -3694,16 +3725,18 @@ logical identity, display/branch/Git-path facts, exact Git-root-to-CIU-root
 offset, allocation time, base reference, lifecycle state
 (`allocating | ready | recovery-required`), and runtime identity once derived.
 Current HEAD is inspected from Git and is never frozen in the record. The
-record owns lifecycle; `ciu.global.worktree.toml.j2` owns local configuration
-AND — in its CIU-owned `[ciu.instance.generated]` table — the instance
-identity CIU reads (S3.1c); `ciu.env` owns the generated MACHINE facts. Each
-fact has one authority.
+record owns lifecycle; `ciu.global.instance.toml.j2` owns local configuration;
+`ciu.instance.generated.toml` — its `[ciu.instance.generated]` table — owns the
+instance identity CIU reads (S3.1c); `ciu.env` owns the generated MACHINE
+facts. Each fact has one authority, and since ciu-P47 each authority has its
+own file.
 
 Create/adopt admission rejects an occupied logical identity, path, or active
 branch before allocation. CIU first writes an `allocating` record into a
 `--no-checkout` linked worktree, so interruption remains attributable; it then
-checks out the base and generates identity-only records (the overlay table
-CIU reads, and `ciu.env` beside it). Before any network
+checks out the base and generates identity-only records
+(`ciu.instance.generated.toml`, the record CIU reads, and `ciu.env` beside
+it). Before any network
 bootstrap it rejects duplicate family `INSTANCE_ID`/network values and an
 already-existing exact Docker network (independent-clone collision). Docker
 absence is valid for local-only projects; a present but failing Docker endpoint
@@ -3742,7 +3775,7 @@ network and the exact project label, so a bare labelled-container count
 elsewhere on the host is never mistaken for liveness. Only then does it
 create the checkout and record the resolved intent under
 `[ciu.instance.shared_infra]` in the new worktree's OWN
-`ciu.global.worktree.toml.j2`. The actual `docker network connect` calls happen
+`ciu.global.instance.toml.j2`. The actual `docker network connect` calls happen
 later, in the new worktree's own process, after `docker compose up`
 succeeds — never during `add`, and never before Compose has brought this
 instance's own stack up on its own network.
@@ -3869,8 +3902,9 @@ liveness check, BEFORE this instance's own target discovery, and before any
 between verbs is caught rather than silently addressed. Nothing has been
 connected at that point, so a refusal has nothing to roll back.
 
-Because the emitted block lands in the worktree overlay, which merges LAST
-(S3.1b), it overrides any committed `internal_host` default of the same key
+Because the emitted block lands in the instance overlay, which merges after
+every committed layer (S3.1b), it overrides any committed `internal_host`
+default of the same key
 while a committed `internal_port` the overlay does not write survives — and it
 is read through the ordinary `topology.services.<name>` consumer path
 (S4.16/S7.4), so no separate lookup mechanism exists.
@@ -3939,7 +3973,7 @@ rather than silently treating a real ambient request as "no cap".
 **The deployment classifier.** Candidates are exclusively the entries in
 `git worktree list --porcelain`; the primary is always included. A candidate
 is *registered* only when its own
-`<git-worktree>/<ciu-root-offset>/ciu.global.worktree.toml.j2` carries a
+`<git-worktree>/<ciu-root-offset>/ciu.instance.generated.toml` carries a
 `[ciu.instance.generated]` table that parses and supplies a distinct,
 non-empty `network` (`ciu.env`'s `DOCKER_NETWORK_INTERNAL` until CIU-75) — the
 same record managed lifecycle writes to and S16.1's shared-infra join already
@@ -4059,7 +4093,7 @@ on **exactly one** selected `ready` managed record. A missing record, or a
 record in `allocating`/`recovery-required`, refuses — no child starts.
 
 Both build the child environment from the target's OWN exact
-`<record.ciu_root>/ciu.global.worktree.toml.j2` generated table (read, never
+`<record.ciu_root>/ciu.instance.generated.toml` table (read, never
 sourced through a shell; `ciu.env` until CIU-75): the
 ambient process environment MINUS every CIU root/identity/network/profile key
 (`REPO_ROOT`, `PHYSICAL_REPO_ROOT`, `DOCKER_NETWORK_INTERNAL`, `INSTANCE_ID`,
@@ -4759,9 +4793,12 @@ generates a minimal CIU-enabled repository layout: a validated
 `ciu.global.defaults.toml.j2` (project identity, network from
 `$DOCKER_NETWORK_INTERNAL`, health timings), gitignore entries (`ciu.env`,
 `ciu.global.toml`, `**/.ciu/`, `**/ciu.compose.yml`, `ciu.worktree-instance.json`,
-`ciu.global.worktree.toml.j2`, `**/ciu.toml` — CIU-61 reconciled this list
+`ciu.global.instance.toml.j2`, `ciu.instance.generated.toml`, `**/ciu.toml` —
+CIU-61 reconciled this list
 against the repo root's own `.gitignored.ciu` sample-rules file, which had
-drifted from it; a test now keeps the two from drifting again), and optional
+drifted from it; a test now keeps the two from drifting again. ciu-P47 replaced
+the retired `ciu.global.worktree.toml.j2` entry with the two names above), and
+optional
 stack skeletons under `applications/<name>/` (defaults + compose template
 with one GEN_LOCAL secret). Templates ship INSIDE the wheel
 (`ciu/templates/`) so a plain `pip install ciu` carries them. Validation-first:

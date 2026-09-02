@@ -40,8 +40,11 @@ _GITIGNORE_ENTRIES = (
     ("**/.ciu/", "per-stack machine dirs: rendered ciu.toml, secrets, overlays"),
     ("**/ciu.compose.yml", "CIU's rendered compose output for .j2 templates (S8.1)"),
     ("ciu.worktree-instance.json", "managed worktree identity/lifecycle record (S16)"),
-    ("ciu.global.worktree.toml.j2",
-     "per-checkout sparse global override (S3.1b) — the SOLE instance-identity "
+    ("ciu.global.instance.toml.j2",
+     "per-checkout sparse global override (S3.1b) — hand-authored, "
+     "machine-specific; CIU never writes it"),
+    ("ciu.instance.generated.toml",
+     "CIU-owned generated identity facts (S3.1b) — the SOLE instance-identity "
      "source since CIU-75/7.7.0; committing it leaks host-specific facts"),
     ("**/ciu.toml", "rendered per-stack config — track the ciu.toml.j2 source, not its output"),
 )

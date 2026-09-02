@@ -28,8 +28,9 @@ import re
 from . import governance as governance_mod
 from .config_constants import (
     GLOBAL_CONFIG_DEFAULTS,
+    GLOBAL_CONFIG_INSTANCE_OVERRIDES,
     GLOBAL_CONFIG_RENDERED,
-    GLOBAL_CONFIG_WORKTREE_OVERRIDES,
+    INSTANCE_GENERATED_FACTS,
     WORKSPACE_ENV,
 )
 
@@ -64,11 +65,16 @@ REQUIRED_KEYS_CORE: tuple[str, ...] = (
     "DOCKER_GID",
 )
 
-# S3.1b (CIU-60) — the CIU-owned table `ciu env generate` upserts into this
-# checkout's `ciu.global.worktree.toml.j2`, so the identity facts a TEMPLATE
-# needs reach it through the ordinary merged-config chain instead of through
-# ambient `os.environ` (S3.2's `env` context is still raw process environment;
-# hooks got the safe treatment in S9.3, templates never did).
+# S3.1b (CIU-60, split to its own file by ciu-P47) — the CIU-owned table
+# `ciu env generate` writes into this checkout's `ciu.instance.generated.toml`,
+# so the identity facts a TEMPLATE needs reach it through the ordinary
+# merged-config chain instead of through ambient `os.environ` (S3.2's `env`
+# context is still raw process environment; hooks got the safe treatment in
+# S9.3, templates never did).
+#
+# The TEMPLATE-facing binding is unchanged by the split: a template still reads
+# `{{ ciu.instance.generated.<key> }}`, exactly as it did when this table was
+# embedded in the hand-editable overlay. Only the backing FILE moved.
 #
 # The key names are snake_case to match this file's existing key-naming
 # convention (`ref_path`, `network`, `ref_projects`), NOT the SCREAMING_CASE
@@ -84,8 +90,9 @@ GENERATED_FACTS_KEYS: tuple[str, ...] = (
     "public_fqdn",
 )
 
-# S3.1c (CIU-75) — the ONE translation table between the overlay's snake_case
-# fact names (above) and the legacy SCREAMING_CASE `ciu.env` key names. It
+# S3.1c (CIU-75) — the ONE translation table between the generated record's
+# snake_case fact names (above) and the legacy SCREAMING_CASE `ciu.env` key
+# names. It
 # exists because a CHILD ciu process and a template's `$VAR` expansion still
 # speak shell-env names; nothing inside CIU reads the `ciu.env` FILE any more.
 # Keep it exhaustive over GENERATED_FACTS_KEYS — a fact with no env name would
@@ -109,23 +116,19 @@ GENERATED_FACT_ENV_KEYS: dict[str, str] = {
 # other is exactly the drift this table exists to prevent.
 LEGACY_IDENTITY_ENV_KEYS: frozenset[str] = frozenset(GENERATED_FACT_ENV_KEYS.values())
 
-# Written once, at the top of a file this function had to create from nothing.
-# Mirrors `worktree._worktree_overlay_text`'s own header-comment style so a
-# CIU-created overlay looks the same whichever code path created it.
-_OVERLAY_FRESH_HEADER: tuple[str, ...] = (
-    "# Worktree-local sparse global override (S3.1b / S16).",
-    "# Durable configuration: preserved by `ciu clean` and `ciu env generate`.",
-)
-
-# These live INSIDE the owned block (below the table header, above the keys)
-# rather than above the header on purpose: the upsert owns exactly the region
-# from the header line to the next table, so a comment placed above the header
-# would survive the replace and be re-emitted on every run, growing a duplicate
-# banner per `env generate`. Below it, the block is byte-idempotent.
+# The whole-file banner. CIU owns every byte of `ciu.instance.generated.toml`,
+# so this sits at the TOP of the file rather than inside the table: before
+# ciu-P47 the table lived in the operator's own overlay and a comment above its
+# header would have survived the surgical replace and been re-emitted on every
+# run, growing a duplicate banner per `env generate`. With a dedicated file
+# rewritten wholesale, that constraint is gone and the banner belongs where a
+# reader opening the file sees it first.
 _GENERATED_FACTS_BANNER: tuple[str, ...] = (
-    "# CIU-owned (S3.1b): rewritten in full by every `ciu env generate`.",
-    "# Do NOT hand-edit keys in THIS table — edits here are silently",
-    "# overwritten. Every OTHER byte of this file is yours and is preserved.",
+    "# CIU-owned (S3.1b) — GENERATED. Rewritten in full by every",
+    "# `ciu env generate`; hand edits are silently overwritten.",
+    "# Gitignored, machine-specific, and regenerable: never commit it.",
+    f"# Put YOUR own per-checkout overrides in {GLOBAL_CONFIG_INSTANCE_OVERRIDES},",
+    "# which CIU never writes.",
 )
 
 
@@ -136,7 +139,7 @@ _GENERATED_FACTS_BANNER: tuple[str, ...] = (
 LEGACY_ENV_EXPORT_WARNING = (
     "[S3.1c] {path} is a LEGACY WRITE-ONLY export as of ciu 7.7.0: CIU itself "
     "no longer reads it — instance identity now comes only from the "
-    f"[{GENERATED_FACTS_TABLE}] table in {GLOBAL_CONFIG_WORKTREE_OVERRIDES}. "
+    f"[{GENERATED_FACTS_TABLE}] table in {INSTANCE_GENERATED_FACTS}. "
     "The key set is unchanged, so a shell or tool that `source`s it still "
     "works this release; switch it to `eval \"$(ciu env print)\"` — a future "
     "release stops writing the file."
@@ -803,7 +806,8 @@ def _warn_inconsistent_ambient(key: str, derived: str, *, remedy: str = "") -> N
 # on the far commoner path where nothing was generated this run — the reason a
 # sibling checkout's sourced identity could survive into a render at all. Its
 # CIU-41 rule ("the record computed for THIS repo root outranks inherited shell
-# state") is kept, unconditionally and from the overlay, in `seed_identity_env`.
+# state") is kept, unconditionally and from `ciu.instance.generated.toml`, in
+# `seed_identity_env`.
 
 
 def _docker_available() -> bool:
@@ -1006,8 +1010,18 @@ def ensure_workspace_network(
         _connect_devcontainer_to_network(resolved)
 
 
+def generated_facts_path(ciu_root: Path) -> Path:
+    """The one place the CIU-owned identity-facts FILE's location is composed.
+
+    Every reader, every writer and every diagnostic that names the file goes
+    through here, so "where do the generated facts live" has exactly one
+    answer in the code as well as in the SPEC.
+    """
+    return Path(ciu_root) / INSTANCE_GENERATED_FACTS
+
+
 def render_generated_facts_block(facts: Mapping[str, str]) -> list[str]:
-    """Render the `[ciu.instance.generated]` block as a list of TOML lines.
+    """Render the whole ``ciu.instance.generated.toml`` body as TOML lines.
 
     Values are emitted with ``json.dumps`` exactly as
     ``worktree._worktree_overlay_text`` already does for its own tables — TOML
@@ -1015,7 +1029,7 @@ def render_generated_facts_block(facts: Mapping[str, str]) -> list[str]:
     a filesystem path or a hostname can contain.
 
     Key ORDER is :data:`GENERATED_FACTS_KEYS`, never ``facts``' iteration
-    order, so the rendered block is byte-identical across runs regardless of
+    order, so the rendered file is byte-identical across runs regardless of
     how the caller built the mapping.
     """
     missing = [key for key in GENERATED_FACTS_KEYS if key not in facts]
@@ -1023,107 +1037,38 @@ def render_generated_facts_block(facts: Mapping[str, str]) -> list[str]:
         raise WorkspaceEnvError(
             f"[S3.1b] generated identity facts incomplete: missing {missing}"
         )
-    lines = [GENERATED_FACTS_HEADER, *_GENERATED_FACTS_BANNER]
+    lines = [*_GENERATED_FACTS_BANNER, "", GENERATED_FACTS_HEADER]
     lines.extend(f"{key} = {json.dumps(facts[key])}" for key in GENERATED_FACTS_KEYS)
     return lines
 
 
-def upsert_generated_facts(repo_root: Path, facts: Mapping[str, str]) -> Path:
-    """S3.1b (CIU-60) — write *facts* into ``ciu.global.worktree.toml.j2``.
+def write_generated_facts(ciu_root: Path, facts: Mapping[str, str]) -> Path:
+    """S3.1b — write *facts* to *ciu_root*'s ``ciu.instance.generated.toml``.
 
-    This is a TEXT-LEVEL surgical block replace, deliberately NOT a
-    ``tomllib`` parse + ``tomli_w`` dump round-trip. The overlay is documented
-    operator-editable (S3.1b): a full-file round-trip would round-trip every
-    VALUE correctly while silently discarding every comment and reformatting
-    every table an operator hand-authored.
+    A **wholesale** rewrite: the file is CIU's alone, so there is no
+    hand-authored content in it to preserve and therefore no preservation
+    logic to get wrong. Whatever was there is replaced by
+    :func:`render_generated_facts_block`'s output in full.
 
-    **The bytes CIU owns**, stated exactly, because the boundary is narrower
-    than "up to the next table" and the narrowness is the safety property:
-    from the ``[ciu.instance.generated]`` header line, up to and including the
-    last line this writer itself emits — its own banner comments and its own
-    ``key = value`` lines. The scan finds the next line beginning a table at
-    column 0 and then walks BACK over that region's trailing run of blank and
-    comment lines, which is never ours (the last line rendered is always a
-    ``key = value``) and which in TOML's ordinary reading introduces the
-    FOLLOWING table. That run is carried across untouched. So a comment
-    written immediately below the generated block survives, exactly like one
-    written above it. Nothing outside those owned lines is read, rewritten, or
-    reordered.
+    Before ciu-P47 these facts were a table embedded in the operator's own
+    ``ciu.global.instance.toml.j2`` (then named ``ciu.global.worktree.
+    toml.j2``), and this function had to be a text-level surgical block
+    replace — find the table header, find the next table, replace exactly that
+    span, walk back over the trailing comment run — purely so an operator's
+    comments and tables elsewhere in the SAME file survived every
+    ``ciu env generate``. Splitting the file removed the requirement, and with
+    it the mechanism: there is no longer any code path by which CIU writes
+    into a file an operator hand-edits.
 
-    Behaviour:
+    Idempotent by construction: the rendered body is a pure function of
+    *facts* with a fixed key order, so an unchanged workspace produces a
+    byte-identical file on every run.
 
-    * file absent → created, carrying the same header comment
-      ``worktree._worktree_overlay_text`` writes, then the block;
-    * table absent → block appended at EOF, one blank line after whatever was
-      already there;
-    * table present → its owned lines replaced in place, with the trailing
-      blank/comment run preserved verbatim (and a single blank separator
-      manufactured only when the region carried none at all), so a second run
-      over an unchanged workspace produces a byte-identical file.
-
-    Unlike ``worktree._write_worktree_overlay`` — which correctly REFUSES an
-    existing file, because its only call site is worktree creation on day zero
-    — this runs on every ``ciu env generate``, possibly the tenth one over a
-    file the operator has since added their own tables and comments to. Hence
-    upsert, not refuse-if-exists and not blind append. That refusal is left
-    exactly as it is; its other callers still need it.
-
-    Known and accepted limit of text scanning: a line reading exactly
-    ``[ciu.instance.generated]`` *inside a multi-line TOML string elsewhere in
-    the file* would be mistaken for the table header. That construct cannot
-    occur in a sparse override of the shape S3.1b describes, and the
-    alternative (a full-file round-trip) fails the far more likely case of an
-    operator comment.
-
-    Returns the overlay path.
+    Returns the path written.
     """
-    path = Path(repo_root) / GLOBAL_CONFIG_WORKTREE_OVERRIDES
-    block = render_generated_facts_block(facts)
-
-    try:
-        existing = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        existing = ""
-    except OSError as exc:
-        raise WorkspaceEnvError(f"[S3.1b] could not read {path}: {exc}") from exc
-
-    if existing:
-        lines = existing.splitlines()
-    else:
-        lines = list(_OVERLAY_FRESH_HEADER)
-
-    start = next(
-        (i for i, line in enumerate(lines) if line.strip() == GENERATED_FACTS_HEADER),
-        None,
-    )
-    if start is None:
-        if lines and lines[-1].strip():
-            lines.append("")
-        lines.extend(block)
-    else:
-        end = next(
-            (i for i in range(start + 1, len(lines)) if lines[i].startswith("[")),
-            len(lines),
-        )
-        # The region's TRAILING run of blank/comment lines is never ours — the
-        # last line this writer emits is always a `key = value` — so it is
-        # either the blank separator before the next table or, in TOML's
-        # ordinary reading, a hand-authored comment that belongs to that next
-        # table. Carrying it across keeps O2's promise for a comment written
-        # immediately BELOW the generated block, and is idempotent: the same
-        # run is re-detected and re-emitted unchanged on every later run.
-        keep = end
-        while keep > start + 1 and (
-            not lines[keep - 1].strip() or lines[keep - 1].lstrip().startswith("#")
-        ):
-            keep -= 1
-        tail = lines[keep:end]
-        # Only manufacture a separator when the region carried none at all.
-        if not tail and end < len(lines):
-            tail = [""]
-        lines[start:end] = [*block, *tail]
-
-    _atomic_write_text(path, "\n".join(lines) + "\n")
+    path = generated_facts_path(ciu_root)
+    body = "\n".join(render_generated_facts_block(facts)) + "\n"
+    _atomic_write_text(path, body)
     return path
 
 
@@ -1151,7 +1096,7 @@ def _atomic_write_text(path: Path, payload: str) -> None:
 
 
 def has_generated_facts(ciu_root: Path) -> bool:
-    """S3.1c (CIU-75) — does *ciu_root*'s overlay CARRY the CIU-owned table?
+    """S3.1c (CIU-75) — does *ciu_root* CARRY the CIU-owned facts table?
 
     PRESENCE, never readability: the header line exists or it does not. A
     present-but-corrupt table answers ``True`` here on purpose, so the caller's
@@ -1163,8 +1108,14 @@ def has_generated_facts(ciu_root: Path) -> bool:
     readiness signal: what makes a checkout able to act as a CIU instance is
     now the generated table, because that is what every internal fact read
     consults.
+
+    Still a HEADER scan rather than a bare ``exists()`` even though the file is
+    now CIU's alone (ciu-P47): a truncated or emptied
+    ``ciu.instance.generated.toml`` is genuinely "no facts here", and answering
+    ``True`` for it would make this predicate disagree with
+    :func:`read_generated_facts`, which returns ``{}`` for exactly that file.
     """
-    path = Path(ciu_root) / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    path = generated_facts_path(ciu_root)
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -1177,36 +1128,30 @@ def has_generated_facts(ciu_root: Path) -> bool:
     return any(line.strip() == GENERATED_FACTS_HEADER for line in text.splitlines())
 
 
-def read_generated_facts(ciu_root: Path) -> dict[str, str]:
-    """S3.1c (CIU-75) — the ``[ciu.instance.generated]`` facts for *ciu_root*.
+def generated_facts_document(ciu_root: Path) -> dict:
+    """The whole ``ciu.instance.generated.toml`` document, parsed, or ``{}``.
 
-    The READ side of S3.1b, and since CIU-75 the ONLY source CIU itself
-    consults for instance identity: ``ciu.env`` is a write-only legacy export
-    (contract item 2) and is never read back by any CIU internal.
+    Two callers, asking two DIFFERENT questions of the same bytes, and the
+    difference is deliberate (ciu-P47):
 
-    Deliberately a text-level scan of the CIU-owned block, exactly mirroring
-    :func:`upsert_generated_facts`'s own ownership boundary — NOT a
-    :func:`config_model.render_global_chain` of the whole checkout. Three
-    reasons, each of which the chain render fails:
+    * :func:`read_generated_facts` — "what is this checkout's IDENTITY?" It
+      layers this document's own strictness on top: every fact must be a
+      string, and the table must be a table, because an ``int`` flowing into a
+      compose project name as ``str(int)`` is silently wrong.
+    * :func:`config_model.render_global_chain` — "what does this layer
+      CONTRIBUTE to the merged global config?" It must be exactly as tolerant
+      as the S3.3 layer this file was carved out of: before the split these
+      bytes reached the merge through an ordinary TOML parse of the overlay,
+      with no type checking whatsoever, and CIU-80 requires that a corrupt
+      identity record surface as ``identity_unreadable`` at STEP 12 rather
+      than as a traceback out of the render. Putting the identity reader's
+      refusal into the chain would break exactly that.
 
-    * the overlay is a Jinja **template**; rendering it needs the merged
-      config it is itself a layer of, and (CIU-74) an undefined name is now a
-      hard error — but the CIU-owned block is plain TOML by construction
-      (``json.dumps``'d strings), so it can be read without any context;
-    * the sites this replaces (a reap survey, a shared-infra reference, a
-      budget candidate) read a checkout that is NOT this process's own repo
-      root and whose committed config chain may be absent or broken; the
-      ``ciu.env`` read they used had no such dependency and neither may this;
-    * the block is merged LAST in the chain and written by CIU alone, so its
-      own bytes ARE the merged value — reading the chain could only agree.
-
-    Returns ``{}`` when the overlay, or the table, is absent — the exact
-    counterpart of the pre-cutover "no ``ciu.env`` here" case. Raises
-    :class:`WorkspaceEnvError` when the file is present and cannot be read
-    (``OSError``), is not UTF-8, is not parseable TOML, or carries a
-    non-string value: all four are indeterminacy, never emptiness.
+    Absent file → ``{}``. Present-but-unreadable (``OSError``, non-UTF-8) or
+    unparseable TOML → :class:`WorkspaceEnvError`, which is a ``ValueError``
+    like every other malformed-layer failure in the chain.
     """
-    path = Path(ciu_root) / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    path = generated_facts_path(ciu_root)
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -1214,31 +1159,67 @@ def read_generated_facts(ciu_root: Path) -> dict[str, str]:
     except (OSError, UnicodeDecodeError) as exc:
         raise WorkspaceEnvError(f"[S3.1c] could not read {path}: {exc}") from exc
 
-    lines = text.splitlines()
-    start = next(
-        (i for i, line in enumerate(lines) if line.strip() == GENERATED_FACTS_HEADER),
-        None,
-    )
-    if start is None:
-        return {}
-    end = next(
-        (i for i in range(start + 1, len(lines)) if lines[i].startswith("[")),
-        len(lines),
-    )
     try:
-        parsed = tomllib.loads("\n".join(lines[start:end]))
+        return tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise WorkspaceEnvError(
             f"[S3.1c] {path} has a malformed {GENERATED_FACTS_HEADER} table: {exc}"
         ) from exc
 
-    # The slice STARTS at the table header and stops before the next line
-    # beginning a table, so the parse can only ever be this one nested table —
-    # no `.get(..., {})` defaulting is warranted, and inventing one would hide
-    # a slicing bug behind an empty result.
-    table: dict = parsed
+
+def read_generated_facts(ciu_root: Path) -> dict[str, str]:
+    """S3.1c (CIU-75) — the ``[ciu.instance.generated]`` facts for *ciu_root*.
+
+    The READ side of S3.1b, and since CIU-75 the ONLY source CIU itself
+    consults for instance identity: ``ciu.env`` is a write-only legacy export
+    (contract item 2) and is never read back by any CIU internal.
+
+    A plain whole-file ``tomllib`` parse — NOT a
+    :func:`config_model.render_global_chain` of the whole checkout. Three
+    reasons, each of which the chain render fails:
+
+    * ``ciu.instance.generated.toml`` is deliberately not a ``.j2``; rendering
+      the CHAIN would need the merged config this file is itself a layer of,
+      and (CIU-74) an undefined name is now a hard error — but this file is
+      plain TOML by construction (``json.dumps``'d strings), so it can be read
+      with no render context at all. Before ciu-P47 the same property had to be
+      obtained by slicing the CIU-owned block out of a Jinja template; the
+      dedicated file makes it literal;
+    * the sites this replaces (a reap survey, a shared-infra reference, a
+      budget candidate) read a checkout that is NOT this process's own repo
+      root and whose committed config chain may be absent or broken; the
+      ``ciu.env`` read they used had no such dependency and neither may this;
+    * the file is merged LAST in the chain and written by CIU alone, so its
+      own bytes ARE the merged value — reading the chain could only agree.
+
+    Returns ``{}`` when the file, or the table, is absent — the exact
+    counterpart of the pre-cutover "no ``ciu.env`` here" case. Raises
+    :class:`WorkspaceEnvError` when the file is present and cannot be read
+    (``OSError``), is not UTF-8, is not parseable TOML, does not carry
+    ``[ciu.instance.generated]`` as a TABLE, or carries a non-string value:
+    all of those are indeterminacy, never emptiness.
+    """
+    path = generated_facts_path(ciu_root)
+    parsed = generated_facts_document(ciu_root)
+
+    # Absence of the table is "no facts" (the file may be empty or truncated);
+    # the table being present as something OTHER than a table is indeterminacy
+    # and must refuse, not degrade to an empty result.
+    table: object = parsed
     for part in GENERATED_FACTS_TABLE.split("."):
+        if not isinstance(table, dict):
+            raise WorkspaceEnvError(
+                f"[S3.1c] {path} nests '{part}' under a non-table value, so it "
+                f"carries no readable {GENERATED_FACTS_HEADER}"
+            )
+        if part not in table:
+            return {}
         table = table[part]
+    if not isinstance(table, dict):
+        raise WorkspaceEnvError(
+            f"[S3.1c] {path} {GENERATED_FACTS_HEADER} is "
+            f"{type(table).__name__}, not a table"
+        )
     facts: dict[str, str] = {}
     for key, value in table.items():
         if not isinstance(value, str):
@@ -1277,10 +1258,10 @@ def read_instance_identity_env(ciu_root: Path) -> dict[str, str]:
 
 
 def seed_identity_env(ciu_root: Path) -> dict[str, str]:
-    """Put *ciu_root*'s overlay identity into ``os.environ``, OVERRIDING it.
+    """Put *ciu_root*'s generated identity into ``os.environ``, OVERRIDING it.
 
     S3.1c clause 2a, and the fix for the gap the CIU-75 review found: moving
-    the twelve per-checkout fact READS onto the overlay left the PROCESS
+    the twelve per-checkout fact READS onto the generated record left the PROCESS
     ENVIRONMENT still seeded from `ciu.env`, and ~26 internal sites read
     `REPO_ROOT` / `PHYSICAL_REPO_ROOT` / `DOCKER_NETWORK_INTERNAL` /
     `PUBLIC_FQDN` straight out of `os.environ` (a rendered
@@ -1290,7 +1271,7 @@ def seed_identity_env(ciu_root: Path) -> dict[str, str]:
     hazard, arriving through the one door the cutover had not closed.
 
     **Override, never skip-if-present.** This is `adopt_file_identity`'s old
-    CIU-41 rule with a better source: the overlay was written for THIS repo
+    CIU-41 rule with a better source: the facts record was written for THIS repo
     root and outranks inherited shell state by construction. Skip-if-present
     would re-open the hazard for every already-exported key, which is all of
     them in the case that actually bites.
@@ -1309,7 +1290,7 @@ def _load_legacy_machine_env(env_path: Path, *, override: bool) -> dict[str, str
     S3.1c clause 2: `ciu.env` remains the transport for MACHINE facts at
     process start — a cache of live derivation, regenerated when absent — and
     is never a source of instance identity. The identity keys it still carries
-    are skipped here and seeded from the overlay by
+    are skipped here and seeded from `ciu.instance.generated.toml` by
     :func:`seed_identity_env`; that is belt and braces (the caller seeds
     identity afterwards regardless), and it is what makes "no identity fact is
     ever read from `ciu.env`" true of the code rather than of the ordering.
@@ -1330,7 +1311,7 @@ def _load_legacy_machine_env(env_path: Path, *, override: bool) -> dict[str, str
             "(CONTAINER_UID, DOCKER_GID, ENV_TYPE, PUBLIC_TLS_*, …) fall back "
             "to this process's own environment; instance identity is "
             f"unaffected — since 7.7.0 it comes from "
-            f"{GLOBAL_CONFIG_WORKTREE_OVERRIDES}, not from this file. "
+            f"{INSTANCE_GENERATED_FACTS}, not from this file. "
             "Repair with: ciu env generate",
             stream=sys.stderr,
         )
@@ -1349,9 +1330,10 @@ def _seed_identity_or_repair(ciu_root: Path, *, generated: bool) -> dict[str, st
     """:func:`seed_identity_env`, repairing a checkout that has no table yet.
 
     A 7.6.x checkout upgrading in place has a `ciu.env` and — since CIU-60
-    (7.5.0) — usually an overlay table too, but not necessarily: the overlay is
-    gitignored, so a fresh clone, a lost worktree-local file or a
-    pre-CIU-60 record leaves nothing to read. The record CIU reads is the
+    (7.5.0) — usually a generated facts record too, but not necessarily: that
+    record is gitignored, so a fresh clone, a lost per-checkout file, a
+    pre-CIU-60 record, or a pre-ciu-P47 record still written into the OLD
+    overlay filename all leave nothing to read. The record CIU reads is the
     record CIU repairs, which is the same self-healing `ciu.env` has always had
     when absent — and it keeps the upgrade from being "your next `ciu up`
     refuses until you run a command it did not tell you about".
@@ -1365,7 +1347,7 @@ def _seed_identity_or_repair(ciu_root: Path, *, generated: bool) -> dict[str, st
     if identity or generated:
         return identity
     _log_warn(
-        f"[S3.1c] {ciu_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES} carries no "
+        f"[S3.1c] {generated_facts_path(ciu_root)} carries no "
         f"{GENERATED_FACTS_HEADER} table — regenerating this workspace's "
         "identity record (since 7.7.0 it is the only one CIU reads)",
         stream=sys.stderr,
@@ -1388,15 +1370,16 @@ def generate_ciu_env(
     stdout lands ahead of `ciu check --json`'s document and breaks the parse of
     every machine consumer that followed the migration advice.
 
-    Side-effects: writes the ciu.env file, and upserts the identity facts it
-    just derived into this checkout's `ciu.global.worktree.toml.j2` under
-    `[ciu.instance.generated]` (S3.1b / CIU-60) so TEMPLATES can read them from
-    the merged config chain instead of ambient `os.environ`. Both writes come
-    from the SAME in-memory values — the facts are never re-derived, and
-    `ciu.env` is never re-read to produce them. Network/TLS steps still belong
-    in bootstrap_env_init so tests stay simple (S2.8).
+    Side-effects: writes the ciu.env file, and rewrites this checkout's
+    `ciu.instance.generated.toml` in full with the identity facts it just
+    derived, under `[ciu.instance.generated]` (S3.1b / CIU-60; own file since
+    ciu-P47) so TEMPLATES can read them from the merged config chain instead of
+    ambient `os.environ`. Both writes come from the SAME in-memory values — the
+    facts are never re-derived, and `ciu.env` is never re-read to produce them.
+    Network/TLS steps still belong in bootstrap_env_init so tests stay simple
+    (S2.8).
 
-    The overlay write is NOT gated on an S16 worktree instance record: the
+    The facts write is NOT gated on an S16 worktree instance record: the
     primary/main checkout reads the same file through the same unconditional
     `render_global_chain` step, and gating would leave exactly that checkout
     on the old ambient-env path.
@@ -1548,7 +1531,7 @@ def generate_ciu_env(
     # merged-config chain, which is what a Jinja TEMPLATE can actually see.
     # Deriving them a second time (or reading them back out of ciu.env) would
     # admit a disagreement between the two records that nothing would catch.
-    upsert_generated_facts(
+    write_generated_facts(
         repo_root,
         {
             "repo_name": network_values["REPO_NAME"],
@@ -1580,8 +1563,8 @@ def bootstrap_env_init(repo_root: Path) -> Path:
 
     # Seed os.environ so the steps below see this workspace's values. Two
     # sources, on purpose (S3.1c clause 2): the MACHINE facts come from the
-    # file just written, and the IDENTITY comes from the overlay table the
-    # same generate wrote — always overriding ambient, because the network
+    # file just written, and the IDENTITY comes from the generated facts file
+    # the same generate wrote — always overriding ambient, because the network
     # step below must act on THIS workspace's network and not on a stale
     # DOCKER_NETWORK_INTERNAL inherited from another checkout's sourced
     # ciu.env (CIU-41).
@@ -1616,8 +1599,9 @@ def bootstrap_workspace_env(
     STEP 1 of `ciu up` / `check` / `render` / `graph`. Since 7.7.0 it seeds
     from TWO records, and which one owns what is the whole of S3.1c:
 
-    * **identity** — `[ciu.instance.generated]` in this checkout's overlay,
-      always, and always OVERRIDING whatever the ambient environment claims;
+    * **identity** — `[ciu.instance.generated]` in this checkout's
+      `ciu.instance.generated.toml`, always, and always OVERRIDING whatever the
+      ambient environment claims;
     * **machine facts** — `ciu.env`, a cache of live derivation, applied only
       where the ambient environment has nothing to say (unless `--define-root`
       pins the root, which has always overridden).
@@ -1641,7 +1625,7 @@ def bootstrap_workspace_env(
     # identity seed below exists to close, and there is no reason to leave it
     # open for machine facts either now that the root is already resolved.
     _load_legacy_machine_env(env_path, override=bool(define_root))
-    # S3.1c clause 2a — identity last, from the overlay, unconditionally
+    # S3.1c clause 2a — identity last, from the generated facts file, unconditionally
     # overriding. Ordering is not what makes this safe (the loader above skips
     # identity keys outright); it is here so a reader sees the precedence.
     _seed_identity_or_repair(env_root, generated=generated)

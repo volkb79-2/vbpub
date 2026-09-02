@@ -1445,7 +1445,10 @@ def test_action_clean_preserves_worktree_durable_inputs(monkeypatch, tmp_path):
     profile.config = config
     durable = {
         "ciu.env": 'export INSTANCE_ID="abc123"\n',
-        "ciu.global.worktree.toml.j2": "[ciu.instance]\nservice_profiles = [\"core\"]\n",
+        "ciu.global.instance.toml.j2": "[ciu.instance]\nservice_profiles = [\"core\"]\n",
+        "ciu.instance.generated.toml": (
+            '[ciu.instance.generated]\ninstance_id = "abc123"\n'
+        ),
         "ciu.worktree-instance.json": '{"schema_version": 1}\n',
     }
     for name, body in durable.items():
@@ -1587,11 +1590,11 @@ from ciu import provisioning  # noqa: E402
 def _write_identity_facts(root, **facts):
     """CIU-75: `ciu check`'s S3.12 identity comes from the checkout's generated
     `[ciu.instance.generated]` overlay table, not its legacy `ciu.env`."""
-    from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
 
     payload = {key: "" for key in GENERATED_FACTS_KEYS}
     payload.update(facts)
-    upsert_generated_facts(root, payload)
+    write_generated_facts(root, payload)
 
 
 
@@ -2447,8 +2450,8 @@ def test_check_identity_survives_a_non_utf8_record(tmp_path, capsys):
     i.e. the hook context's identity fields stay None. Written with a REAL
     undecodable file rather than a monkeypatched raiser, so it proves the
     exception type the shipped reader actually produces. CIU-75 moved the
-    source to the overlay's generated table."""
-    (tmp_path / "ciu.global.worktree.toml.j2").write_bytes(
+    source to the generated facts table, ciu-P47 to its own file."""
+    (tmp_path / "ciu.instance.generated.toml").write_bytes(
         b'[ciu.instance.generated]\ninstance_id = "\xff\xfe"\n'
     )
     _write(tmp_path / "infra/app/h.py", """\
@@ -2512,7 +2515,7 @@ def test_workspace_identity_degradation_warns_on_stderr(tmp_path, capsys, kind, 
        it breaks every machine consumer's parse. Using `warn()` here is a
        real regression that this assertion is what catches.
     """
-    env_path = tmp_path / "ciu.global.worktree.toml.j2"
+    env_path = tmp_path / "ciu.instance.generated.toml"
     if payload is None:
         env_path.mkdir()
     else:
@@ -2545,7 +2548,7 @@ def test_workspace_identity_absent_record_stays_silent(tmp_path, capsys):
     whose condition also matches an ordinary state gets switched off). A
     checkout where `ciu env generate` was never run genuinely HAS no identity;
     that must stay silent, and only that."""
-    assert not (tmp_path / "ciu.global.worktree.toml.j2").exists()
+    assert not (tmp_path / "ciu.instance.generated.toml").exists()
 
     identity, identity_unreadable = deploy._workspace_identity(tmp_path)
 

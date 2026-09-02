@@ -372,7 +372,7 @@ def test_render_global_chain_validates_final_merged_worktree_overlay_value(tmp_p
     overlay) — a malformed entry declared only via the worktree overlay is
     still caught."""
     _write_global_defaults(tmp_path, '[deploy]\nproject_name = "demo"\n')
-    (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+    (tmp_path / "ciu.global.instance.toml.j2").write_text(
         '[service.our_db_stack]\ntype = "BOGUS"\n', encoding="utf-8"
     )
     with pytest.raises(ValueError, match=r"\[S3\.14\].*our_db_stack"):
@@ -390,7 +390,7 @@ def test_render_global_chain_later_layer_corrects_an_earlier_bad_location(tmp_pa
         '[deploy]\nproject_name = "demo"\n\n'
         '[service.our_db_stack]\ntype = "CIU"\nlocation = "infra/does-not-exist"\n',
     )
-    (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+    (tmp_path / "ciu.global.instance.toml.j2").write_text(
         '[service.our_db_stack]\nlocation = "infra/real-db-core"\n',
         encoding="utf-8",
     )

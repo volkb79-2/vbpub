@@ -205,13 +205,13 @@ class TestResetKeepsShipped:
         (tmp_path / SHIPPED_COMPOSE).write_text(SHIPPED_COMPOSE_BODY)
         # CIU-46 cutover: the config-less naming pair needs the workspace
         # identity record for the down project.
-        from ciu.workspace_env import GENERATED_FACTS_KEYS, upsert_generated_facts
+        from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
 
         # CIU-75: the identity naming reads the generated overlay table.
         facts = {key: "" for key in GENERATED_FACTS_KEYS}
         facts["repo_name"] = "dstdns"
         facts["instance_id"] = "abc123"
-        upsert_generated_facts(tmp_path, facts)
+        write_generated_facts(tmp_path, facts)
 
         ok = MagicMock(returncode=0, stdout="", stderr="")
         with patch.object(engine.procutil, "run_cmd", return_value=ok):
