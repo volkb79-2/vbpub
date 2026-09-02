@@ -246,6 +246,21 @@ requirements are marked *(withdrawn)*.
   (today's logic is duplicated across `workspace_env.py` and those scripts —
   the script copies are retired).
 
+- **S2.8a** (CIU-87) The two daemon side effects of S2.8's middle steps —
+  creating `DOCKER_NETWORK_INTERNAL` and attaching the devcontainer to it —
+  MUST be suppressed when `CIU_TEST_SUITE=1` (exact string match). This is a
+  test-suite signal and nothing else: CIU's own suite drives these real code
+  paths from inside a devcontainer, where S1.9's `ENV_TYPE` condition is
+  genuinely satisfied and therefore cannot distinguish a test run from a real
+  provisioning run — so each run created a network and joined the cockpit to
+  it, and `ciu clean`'s (correct) refusal to remove a network a container is
+  still joined to made both permanent. No CIU code path sets this variable and
+  no consumer is expected to; it MUST be matched exactly, so an accidental
+  ambient value cannot disable a real workspace's network join. It MUST NOT
+  suppress any validation, only the side effect: an empty
+  `DOCKER_NETWORK_INTERNAL` is still the S2.2 hard failure, and the S1.9
+  `ENV_TYPE` no-op is still evaluated first and on its own terms.
+
 ## S3 — Configuration model
 
 ### Files and layering

@@ -53,6 +53,7 @@ def test_docker_available_requires_binary_and_successful_info(
     assert workspace_env._docker_available() is False
 
 
+@pytest.mark.usefixtures("real_network_side_effects")  # CIU-87 gate opt-out
 def test_network_existing_is_not_recreated_and_empty_name_is_rejected(
     monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -71,6 +72,7 @@ def test_network_existing_is_not_recreated_and_empty_name_is_rejected(
         workspace_env._ensure_network_exists("")
 
 
+@pytest.mark.usefixtures("real_network_side_effects")  # CIU-87 gate opt-out
 def test_network_unavailable_fails_before_inspecting_daemon(
     monkeypatch: pytest.MonkeyPatch
 ) -> None:

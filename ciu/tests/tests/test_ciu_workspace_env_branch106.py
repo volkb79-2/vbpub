@@ -102,6 +102,7 @@ def test_detect_devcontainer_name_empty_when_neither_is_set(
     assert workspace_env.detect_devcontainer_name() == ""
 
 
+@pytest.mark.usefixtures("real_network_side_effects")  # CIU-87 gate opt-out
 def test_network_creation_failure_preserves_daemon_diagnostic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -113,6 +114,7 @@ def test_network_creation_failure_preserves_daemon_diagnostic(
         workspace_env._ensure_network_exists("ciu-network")
 
 
+@pytest.mark.usefixtures("real_network_side_effects")  # CIU-87 gate opt-out
 def test_network_creation_succeeds_after_absent_network_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

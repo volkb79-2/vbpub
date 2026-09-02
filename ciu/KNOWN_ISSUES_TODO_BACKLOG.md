@@ -3080,7 +3080,7 @@ Two related asymmetries in the same tuple:
 ---
 
 
-## CIU-87 — integration test suite leaks a Docker network + devcontainer network-membership per real run
+## CIU-87 — FIXED (ciu-P48) — integration test suite leaks a Docker network + devcontainer network-membership per real run
 
 **Filed by:** dstdns, 2026-09-01, during a tooling-adoption/hygiene pass (see
 `dstdns/docs/plan-tooling-adoption-and-hygiene-2026-09-01.md` §4). Found while
@@ -3181,6 +3181,94 @@ Either of two independent fixes closes this (a combination is stronger):
 **SPEC ownership:** S1.9 (devcontainer network join) and S16 (worktree
 lifecycle/reap) — this is the test-suite-side gap in the discipline S16.10
 (`ciu worktree reap`) already establishes for real workspaces.
+
+### Resolution (ciu-P48, 2026-09-02) — both fixes built, measured on the real shared daemon
+
+**What shipped.** Both proposed fixes, as recommended, plus corrections to
+this entry's own accounting (below).
+
+1. **`CIU_TEST_SUITE=1`** (`workspace_env._test_suite_gate_active()`), checked
+   in `_ensure_network_exists()` and `_connect_devcontainer_to_network()`,
+   suppresses the daemon side effect. Deliberately a NEW signal, not a
+   relaxation of the existing `ENV_TYPE` check: that check is legitimate S1.9
+   behavior and is what makes the feature work in real devcontainer use, so it
+   is untouched and is still evaluated FIRST. The gate is matched against the
+   exact string `"1"`; a stray ambient value cannot disarm a real network
+   join. It is set only by `tests/conftest.py` — at module import (so
+   collection-time code and any `ciu` subprocess a test spawns inherit it) and
+   re-asserted per test through `monkeypatch` (so a test that changes it is
+   restored, failures included). Neither the empty-`DOCKER_NETWORK_INTERNAL`
+   refusal nor any other identity contract is suppressed: the gate stops the
+   side effect, never the validation.
+2. **A surgical teardown fixture** (`_track_real_docker_networks`, autouse,
+   yield-form so it runs on failure too). It wraps the two product functions,
+   records a network ONLY when that call is what brought it into existence
+   (existence is probed before and after), and releases exactly those —
+   `docker network disconnect -f` first, then `docker network rm`, the order
+   `deploy.py`/`worktree.py` already use and the one the daemon requires.
+   Explicitly NOT a `docker network ls --filter name=…` sweep: this
+   devcontainer is a shared host and a network the test did not create is
+   someone else's live work. Networks merely JOINED are disconnected but never
+   removed. The probing costs nothing while the gate of (1) is active, since
+   the product then cannot reach the daemon at all.
+
+Nine boundary tests whose actual subject IS the gated code opt out through a
+named `real_network_side_effects` fixture, which lifts (1) for that test and
+leaves (2) armed — the opt-out this entry's proposed contract asked for.
+
+**Corrections to this entry's own reproduction.** Instrumenting the real
+functions and running the whole suite (`PYTEST_CURRENT_TEST` attribution) gave
+the complete accounting, which differs from what was filed:
+
+- The leak comes from **two test files, not eight**:
+  `tests/tests/test_ciu_test_repo.py` and
+  `tests/tests/test_ciu_identity_cutover_ciu75.py`. The "7 sibling files"
+  matching the `test-repo` fixture-name pattern mostly mock
+  `ensure_workspace_network` and never reach the daemon; the second leaking
+  prefix (`repo-*`) is `test_ciu_identity_cutover_ciu75.py`'s `tmp_path /
+  "repo"` roots, **not** `test_ciu_worktree.py`/`test_ciu_worktree_lease.py`,
+  which construct `repo-…-network` name STRINGS but create no networks.
+- The network name's prefix is just `physical_root.name.lower()`, so prefix
+  matching (`^test-repo-`, `^repo-`) is an unreliable way to find these. The
+  fix and its oracle are name-agnostic for that reason.
+- The suite also creates and correctly REMOVES several networks per run — the
+  ones where the cockpit never got joined. Only the joined ones leak, which is
+  precisely the mechanism this entry identified.
+
+**Behavioral oracles — actual numbers, real shared daemon, 2026-09-02.**
+All measured by full `docker network ls` NAME-SET diffs, not counts alone,
+because other agents work on this host concurrently.
+
+| Configuration | before → after | networks leaked |
+|---|---|---|
+| Both fixes OFF (control) | 16 → 22 | **+6** (`repo-4db5eb`, `repo-5e7e89`, `repo-72328d`, `repo-bc877a`, `test-repo-1c9480`, `test-repo-512eea`) |
+| Gate OFF, teardown fixture ON (control) | 18 → 18 | 0 — the fixture really disconnected and removed all 6 |
+| Both fixes ON, run 1 | 18 → 18 | 0, identical name set |
+| Both fixes ON, run 2 (immediately after) | 18 → 18 | 0, identical name set |
+
+`^test-repo-` count 0 → 0 → 0 and `^repo-` count 2 → 2 → 2 across both fixed
+runs; the two surviving `repo-*` networks are another session's concurrent
+leak, left untouched — which is itself the surgical-teardown contract holding.
+Second oracle (`docker network inspect` shows the cockpit disconnected, or the
+network absent, once the suite exits): satisfied — under both fixes the suite
+creates no network at all, and the gate-OFF control demonstrates the
+disconnect-then-remove path working for real on the daemon.
+
+**Controlled wrong implementation.** Pinned executably, not asserted in prose:
+`tests/tests/test_ciu87_network_side_effect_gate.py` (24 tests, each naming in
+its docstring the wrong implementation it fails against). Reverting the gate
+fails 3 of them within one run; disarming the teardown fixture fails a 4th;
+both were run for real and are the first two rows of the table above.
+
+**Host cleanup applied as part of this work.** The pool was found **fully
+exhausted** — `docker network create` failed with *"all predefined address
+pools have been fully subnetted"*, the exact P152-class blocker this entry was
+filed from, and it silently invalidated a first measurement attempt (nothing
+could leak because nothing could be created). 17 leaked networks (12
+`repo-*`, 5 `test-repo-*`), each verified to hold **zero** ciu-managed
+workload containers — only `dstdns-devcontainer-vb` itself — were disconnected
+and removed, the same no-op-from-any-workload's-perspective cleanup dstdns
+applied at filing time. That restored the pool and made the oracle measurable.
 ## Compact resolved index
 
 Detailed history for closed work lives in the normative SPEC, release notes,

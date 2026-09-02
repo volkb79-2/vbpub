@@ -29,12 +29,50 @@ a plain ``del os.environ[...]`` would. This fixture is function-scoped
 (``monkeypatch`` itself is function-scoped) and autouse, so it runs before
 every test body; a test's own ``monkeypatch.setenv``/``monkeypatch.delenv``
 calls compose normally afterward, in fixture-then-test-body order.
+
+Docker-network side-effect containment (ciu-P48, CIU-87)
+--------------------------------------------------------
+Two mechanisms, both defined below:
+
+1. ``CIU_TEST_SUITE=1`` — the product-side gate. Set at conftest IMPORT time
+   (so collection-time code and any ``ciu`` subprocess a test spawns inherit
+   it) and re-asserted per test through ``monkeypatch`` (so a test that
+   mutates it is restored afterwards, failures included).
+2. ``_track_real_docker_networks`` — the autouse teardown net. It records the
+   networks a test's own ``_ensure_network_exists``/
+   ``_connect_devcontainer_to_network`` calls really created/joined, and
+   releases exactly those. It is deliberately NOT a
+   ``docker network ls --filter name=...`` sweep: this devcontainer is a
+   SHARED host and other sessions have legitimate, concurrent, not-yet-torn-
+   down networks of their own on it. A test's teardown may only ever touch
+   what that same test created.
+
+A test that must exercise the real gated path asks for the
+``real_network_side_effects`` fixture, which lifts mechanism 1 for that test
+only and leaves mechanism 2 armed.
 """
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 from pathlib import Path
+from typing import Callable, Optional
 
 import pytest
+
+# CIU-87. Captured at import time, before any test can `monkeypatch.setattr`
+# `subprocess.run` (which several boundary tests do, on the shared module
+# object). Teardown must reach the real daemon while a test's fake is
+# installed, and must not append to a fake's recorded-argv list and break that
+# test's own assertions.
+_REAL_SUBPROCESS_RUN = subprocess.run
+
+CIU_TEST_SUITE_ENV = "CIU_TEST_SUITE"
+
+# Mechanism 1, at import time: collection-time module bodies and any `ciu`
+# subprocess a test spawns both read os.environ, and neither sees a fixture.
+os.environ[CIU_TEST_SUITE_ENV] = "1"
 
 _AMBIENT_ENV_VARS = (
     "REPO_ROOT",
@@ -53,6 +91,193 @@ def _scrub_ambient_identity_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Clear ambient identity/policy env vars before each test body runs."""
     for name in _AMBIENT_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _ciu_test_suite_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Re-assert the CIU-87 product-side gate for every test body.
+
+    The import-time assignment above already covers collection and spawned
+    subprocesses; this restores the value after any test that changes it —
+    including ``real_network_side_effects``, which deletes it on purpose.
+    """
+    monkeypatch.setenv(CIU_TEST_SUITE_ENV, "1")
+
+
+Runner = Callable[..., "subprocess.CompletedProcess[str]"]
+
+
+def docker_cli_available() -> bool:
+    """True when a ``docker`` client binary is on PATH (CIU-87).
+
+    Teardown never *needs* Docker: a suite run on a host without the client
+    cannot have created a network in the first place.
+    """
+    return shutil.which("docker") is not None
+
+
+def run_docker(argv: list[str], *, runner: Optional[Runner] = None):
+    """Run ``docker <argv>`` for teardown purposes, never raising (CIU-87).
+
+    ``runner`` is the injection seam the unit tests drive; production teardown
+    uses the import-time-captured real :func:`subprocess.run`.
+    """
+    real = runner or _REAL_SUBPROCESS_RUN
+    try:
+        return real(
+            ["docker", *argv], capture_output=True, text=True, check=False
+        )
+    except OSError:  # docker vanished mid-run; nothing to clean up by hand
+        return subprocess.CompletedProcess(["docker", *argv], 1, "", "")
+
+
+def network_exists(name: str, *, runner: Optional[Runner] = None) -> bool:
+    """Whether Docker currently knows a network called *name* (CIU-87)."""
+    return run_docker(["network", "inspect", name], runner=runner).returncode == 0
+
+
+def release_test_network(
+    name: str,
+    container: str,
+    *,
+    remove: bool,
+    runner: Optional[Runner] = None,
+) -> list[list[str]]:
+    """Undo one test's Docker-network side effects (CIU-87).
+
+    Mirrors the order the product's own teardown uses (``deploy.py`` /
+    ``worktree.py``): DISCONNECT the cockpit first, then remove the network —
+    the daemon refuses to remove a network a container is still joined to,
+    which is exactly why the leak was permanent. Both steps tolerate "already
+    gone"; *remove* is False for a network the test merely joined and did not
+    create, so a pre-existing network is never destroyed.
+
+    Returns the argv actually issued (for the unit tests that pin the order).
+    """
+    issued: list[list[str]] = []
+    if container:
+        issued.append(["network", "disconnect", "-f", name, container])
+        run_docker(issued[-1], runner=runner)
+    if remove:
+        issued.append(["network", "rm", name])
+        run_docker(issued[-1], runner=runner)
+    return issued
+
+
+class NetworkSideEffectTracker:
+    """Ledger of the Docker networks ONE test really created and joined.
+
+    Kept as a plain object rather than fixture-local closures so its rules are
+    directly assertable (``tests/tests/test_ciu87_network_side_effect_gate.py``
+    drives it with fakes): "register a network only when this call is what
+    brought it into existence" is the whole difference between a surgical
+    teardown and a blanket sweep that would eat a co-tenant's live network.
+    """
+
+    def __init__(
+        self,
+        *,
+        exists: Callable[[str], bool],
+        suppressed: Callable[[], bool],
+    ) -> None:
+        self._exists = exists
+        self._suppressed = suppressed
+        self.created: list[str] = []
+        self.joined: list[str] = []
+
+    def wrap_ensure(self, original: Callable[[str], None]) -> Callable[[str], None]:
+        def _ensure(network_name: str) -> None:
+            if self._suppressed():
+                return original(network_name)
+            existed = self._exists(network_name)
+            try:
+                return original(network_name)
+            finally:
+                # A network that was already there belongs to whoever made it —
+                # possibly another agent's live work on this shared host.
+                if not existed and self._exists(network_name):
+                    self.created.append(network_name)
+
+        return _ensure
+
+    def wrap_connect(self, original: Callable[[str], None]) -> Callable[[str], None]:
+        def _connect(network_name: str) -> None:
+            if self._suppressed():
+                return original(network_name)
+            try:
+                return original(network_name)
+            finally:
+                self.joined.append(network_name)
+
+        return _connect
+
+    def release(
+        self,
+        container: str,
+        *,
+        releaser: Callable[..., object] = release_test_network,
+    ) -> list[str]:
+        """Undo the ledger. Networks merely JOINED are only disconnected;
+        only networks this test CREATED are also removed."""
+        names = list(dict.fromkeys([*self.joined, *self.created]))
+        for name in names:
+            releaser(name, container, remove=name in self.created)
+        return names
+
+
+@pytest.fixture(autouse=True)
+def _track_real_docker_networks(monkeypatch: pytest.MonkeyPatch):
+    """Release exactly the networks THIS test really created/joined (CIU-87).
+
+    A yield-fixture, not an end-of-test call: the teardown half runs even when
+    the test body raises, which is the failure mode a plain cleanup call in the
+    test body would skip.
+
+    The wrappers are pass-throughs while mechanism 1's gate is active (or on a
+    host with no docker client), since the product code cannot then reach the
+    daemon at all — the tracking cost is paid only by a test that deliberately
+    opted out.
+    """
+    from ciu import workspace_env
+
+    tracker = NetworkSideEffectTracker(
+        exists=network_exists,
+        suppressed=lambda: (
+            workspace_env._test_suite_gate_active() or not docker_cli_available()
+        ),
+    )
+    monkeypatch.setattr(
+        workspace_env,
+        "_ensure_network_exists",
+        tracker.wrap_ensure(workspace_env._ensure_network_exists),
+    )
+    monkeypatch.setattr(
+        workspace_env,
+        "_connect_devcontainer_to_network",
+        tracker.wrap_connect(workspace_env._connect_devcontainer_to_network),
+    )
+
+    yield
+
+    if tracker.created or tracker.joined:
+        tracker.release(workspace_env.detect_devcontainer_name())
+
+
+@pytest.fixture
+def real_network_side_effects(_ciu_test_suite_gate, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Opt this test OUT of the CIU-87 gate (mechanism 1).
+
+    For the boundary tests whose whole subject IS the gated code — they drive
+    it through a controlled ``subprocess.run``/``_docker_available`` seam, so
+    no daemon is reached, but the gate would otherwise return before the
+    behavior under test ran. ``_track_real_docker_networks`` stays armed for
+    every one of them, per CIU-87's requirement that an opted-out test carry
+    the teardown net.
+
+    Depends on ``_ciu_test_suite_gate`` explicitly so the ordering is a stated
+    fact rather than a property of pytest's autouse-first heuristic.
+    """
+    monkeypatch.delenv(CIU_TEST_SUITE_ENV, raising=False)
 
 
 @pytest.fixture

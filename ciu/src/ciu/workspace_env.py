@@ -806,6 +806,36 @@ def _warn_inconsistent_ambient(key: str, derived: str, *, remedy: str = "") -> N
 # state") is kept, unconditionally and from the overlay, in `seed_identity_env`.
 
 
+# CIU-87: the ciu test suite drives REAL `ciu env generate`/`ciu up` code paths
+# from inside a devcontainer, where `ENV_TYPE` genuinely IS "devcontainer" — so
+# the S1.9 guard in `_connect_devcontainer_to_network` cannot tell a test run
+# from a real provisioning run, and every suite run created a Docker network AND
+# joined the cockpit to it. `ciu clean` then refuses to remove a network a
+# container is still joined to (by design), so both the network and the
+# membership leaked permanently on the shared host, one pair per run, until an
+# unrelated workload hit the daemon's exhausted address pool.
+#
+# This variable is the missing signal. It is set by ciu's OWN `tests/conftest.py`
+# and by nothing else: no product code path sets it, no consumer is expected to,
+# and a real provisioning run in a real devcontainer never has it. The existing
+# `ENV_TYPE` check stays exactly as it is — it is legitimate S1.9 behavior and
+# removing/relaxing it would break the real feature.
+#
+# The suppressed branch is deliberately SILENT: `_log_info` writes to stdout, and
+# some of the very tests this gate covers assert that a STEP-1 bootstrap keeps
+# stdout clean for JSON consumers (S3.1c). The only reader of this branch is
+# ciu's own test suite, which needs no operator-facing narration.
+CIU_TEST_SUITE_ENV = "CIU_TEST_SUITE"
+
+
+def _test_suite_gate_active() -> bool:
+    """True when ciu's own test suite has asked for real Docker side effects
+    to be suppressed (CIU-87). Exact-match ``"1"`` on purpose: an accidental
+    ambient value must not silently disarm a real devcontainer's network join.
+    """
+    return os.environ.get(CIU_TEST_SUITE_ENV, "") == "1"
+
+
 def _docker_available() -> bool:
     if not shutil.which("docker"):
         return False
@@ -821,6 +851,11 @@ def _docker_available() -> bool:
 def _ensure_network_exists(network_name: str) -> None:
     if not network_name:
         raise WorkspaceEnvError("DOCKER_NETWORK_INTERNAL is missing or empty.")
+
+    # CIU-87. The identity contract above is a pure check and still applies: the
+    # gate suppresses the daemon SIDE EFFECT, never the validation that names it.
+    if _test_suite_gate_active():
+        return
 
     if not _docker_available():
         raise WorkspaceEnvError("Docker not available; cannot create network.")
@@ -854,6 +889,12 @@ def _connect_devcontainer_to_network(network_name: str) -> None:
     """
     env_type = os.environ.get("ENV_TYPE", "").lower()
     if env_type != "devcontainer":
+        return
+
+    # CIU-87. Checked AFTER the S1.9 guard, never instead of it: ENV_TYPE is the
+    # production contract, this is the narrower "and we are ciu's own suite"
+    # condition layered on top.
+    if _test_suite_gate_active():
         return
 
     container_name = detect_devcontainer_name()
