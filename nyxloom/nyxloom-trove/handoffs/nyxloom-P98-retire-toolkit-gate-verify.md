@@ -4,7 +4,7 @@ id: nyxloom-P98-retire-toolkit-gate-verify
 project: nyxloom
 title: "Retire the coverage/mutation/canary toolkit + GA1/GA4 gate-verify feature"
 tier: implement-2
-input_revision: "7aeb39ff"
+input_revision: "5473063c"
 depends_on: []
 session: fresh
 source:
