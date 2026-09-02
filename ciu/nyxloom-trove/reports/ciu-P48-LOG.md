@@ -202,3 +202,141 @@ The gate itself leaks nothing: its container mounts no Docker socket, so
 `_docker_available()` is False inside it. Confirmed by name-set diff across
 the gate run (only one new network appeared, `nyxloom-p49-…`, belonging to
 another agent's concurrent worktree).
+
+---
+
+# ciu-P48 — LOG addendum: review-fix pass (round 1)
+
+Fresh adversarial reviewer returned **ACCEPT-conditional**: mechanism, oracle,
+file-source correction, all 8 judgment calls and the merge-onto-current-main
+story confirmed; a 12-mutation sweep caught 11/12. Two real blockers and four
+accuracy items came back. All addressed here, same branch.
+
+## B1 — `wrap_connect` disconnected networks it never joined
+
+**Real bug, and the worst possible one for this package to ship**: the fixture
+built to stop a test from touching a co-tenant's Docker state was itself
+touching it.
+
+`NetworkSideEffectTracker.wrap_ensure` was observation-gated from the start —
+probe existence before, probe after, register only if the network appeared.
+`wrap_connect` was not: it appended every name the product was *asked* to
+connect, in a bare `finally`. `release()` then handed each one to the **real**
+daemon through the import-time-captured `subprocess.run`. So a boundary test
+that mocked `subprocess.run` entirely, touched no daemon, and merely *named* a
+network still produced a live `docker network disconnect -f` at teardown. The
+reviewer proved it end to end: they created a real network, attached the
+cockpit, ran a boundary-shaped test naming it, and watched teardown detach the
+cockpit from it.
+
+Nothing had gone wrong in practice only because the fabricated names in those
+tests (`ciu-internal`, `native-net`, `ciu-network`, `failed-net`) happen not
+to collide with anything live. That is luck, not a contract.
+
+**Why I missed it.** I reasoned about `wrap_ensure`'s rule carefully and then
+wrote `wrap_connect` as "the same thing for joins" without re-deriving it. The
+asymmetry is invisible unless you ask, per wrapper, *what observation licenses
+this entry?* — for creation I had an answer; for membership I had none, and
+did not notice the gap because both wrappers looked structurally alike.
+
+**Fix.** Gave the membership half the identical discipline, via a new
+`network_has_container(name, container)` predicate: probe attachment before,
+probe after, register only if the membership appeared across the call. Both a
+mocked seam (never attached → nothing registered) and a co-tenant's live
+membership (attached before → nothing registered) are now excluded by
+construction rather than by name-collision luck.
+
+Two supporting corrections fell out of it:
+
+- The cockpit name is now resolved **once, at fixture setup**, before the test
+  body can rewrite `DEVCONTAINER_NAME`/`HOSTNAME`, and the same value is used
+  for both the probe and the release. Previously the probe would have asked
+  about whatever fictional cockpit a boundary test had set, while teardown
+  disconnected the real one — a second, latent mismatch.
+- The fixture now `yield`s the tracker, so a test can assert on the ledger
+  teardown is about to act on. That is what makes the end-to-end regression
+  test possible at all.
+
+**Pinned by 3 new tests**, one of them the reviewer's reproduction inverted:
+`test_a_mocked_seam_join_leaves_the_teardown_ledger_empty` drives the real
+autouse fixture with the gate off and the whole Docker seam mocked, and
+asserts the ledger stays empty. Restoring the unconditional `finally` fails
+all 3 (verified by running the mutation).
+
+## B2 — the import-time gate assignment was pinned by nothing
+
+The reviewer deleted `os.environ[CIU_TEST_SUITE_ENV] = "1"` from
+`conftest.py` and **all 24 tests still passed**. Both tests that claimed to
+cover it were hollow: the autouse fixture's `monkeypatch.setenv` writes the
+same variable, so every in-process assertion is satisfied either way. This is
+a textbook redundant-mechanism masking problem — I built two mechanisms
+deliberately (LOG §2, "neither alone is sufficient"), then wrote tests that
+could not tell them apart, and read the resulting green as coverage of both.
+
+**Fix.** `test_conftest_raises_the_gate_at_import_not_only_per_test` runs a
+**child interpreter** that pops `CIU_TEST_SUITE`, puts `tests/` on
+`sys.path`, imports `conftest`, and prints the variable back. No fixture runs
+there, so nothing can mask the deletion. Verified both directions: with the
+line deleted it fails, **and it is the only test that fails**; restored, the
+suite is green.
+
+Both misleading docstrings were rewritten to state what each test actually
+pins and, explicitly, what it does *not* — each now names the other test that
+covers the half it cannot see.
+
+## Accuracy items
+
+**A1 — `+6` was wrong; the real number is `+4`.** Re-ran the both-fixes-OFF
+control on a verified-healthy pool: **18 → 22**, leaking `repo-48473e`,
+`repo-e3e94f`, `test-repo-1c9480`, `test-repo-adb5a9` — 2 `repo-*` + 2
+`test-repo-*`, exactly the reviewer's independent figure and exactly what the
+Step-1 attribution predicts (4 creates, 2 joined, 2 reaped by the test's own
+`ciu clean`).
+
+The original `+6` came from a control window that overlapped a **concurrent
+co-tenant's own ciu suite run**, whose networks share the same `repo-*`
+generator and were therefore indistinguishable in a name-set diff. Corrected
+everywhere, with the failure mode recorded: *a name-set diff does not isolate
+you from a co-tenant when the co-tenant's names come from the same generator —
+a leak-rate measurement on a shared daemon needs a quiet window too.* During
+this very pass the host again gained a network from elsewhere mid-sequence
+(17 → 18 between two of my own steps), so this is not hypothetical.
+
+Also flagged the Step-1 trace's provenance in the backlog: it was collected
+while the pool was exhausted, the same state I later declared worthless.
+Its *attribution* (which test made which call) is unaffected and the two-file
+conclusion was independently reproduced three times by the reviewer, but its
+*counts* are not leak counts, and the entry now says so rather than presenting
+it as clean evidence.
+
+**A2 — the "co-tenant's networks" claim was wrong, and they were mine.**
+`repo-4176ba-network` and `repo-d060db-network`, created 0.5 s apart — the
+`test_ciu_identity_cutover_ciu75.py` pair signature — both holding only
+`dstdns-devcontainer-vb`. Residue from one of my own control runs that I did
+not clean before writing "0 leaked". Inspected, removed, claim withdrawn in
+both the REPORT and the backlog. `^(test-)?repo-` on this host is now 0.
+
+That I wrote a *co-tenant* explanation for my own residue, in the same report
+where I congratulated the fixture for leaving co-tenant networks alone, is the
+uncomfortable part: the story was self-flattering and I did not check it.
+
+**A3 — "no existing convention" was too strong.** `CIU_SKIP_DOOD_PREFLIGHT`
+(`engine.py:897-899`) is documented in-source as "for tests", uses the same
+exact `== "1"` match, and is already listed in `docs/SPEC.md:1911` with
+`CIU_ADOPT_LEGACY_PROJECT` and `CIU_SSH_INSECURE_TOFU`. `CIU_TEST_SUITE` is
+the third member of that family, not a novel mechanism. There was also a
+hookable seam I missed: `test_spec_contracts.py:111-118`, a file-level autouse
+fixture no-opping `ensure_workspace_network` — in-process only, so it would
+not have covered the `ciu`-subprocess paths, which leaves the choice right for
+a different reason than the one I gave. My grep was for
+`monkeypatch`/`conftest` fixture *shapes*; the precedent was an env-var read
+in product code, which that search could not have found. Cited in the REPORT
+and cross-referenced from S2.8a so the next person does not re-derive it.
+
+**A4 — MD022.** Blank line added before `## Compact resolved index`.
+
+## Re-verification
+
+Every oracle row re-measured after a `docker network create`/`rm` pool probe,
+per the lesson from the first pass. Suite 3547 → 3551 tests (4 added: 3 for
+B1, 1 for B2). Numbers and the gate verdict in the REPORT addendum.
