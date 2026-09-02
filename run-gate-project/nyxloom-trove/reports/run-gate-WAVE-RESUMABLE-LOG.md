@@ -279,3 +279,49 @@ BRIEF was needed because nothing is left open.
 
 CHANGES `[Unreleased]`: one line under the RG-36 entry pointing at RG-40.
 Nothing else in that block changed.
+
+## Fix round 1 (after adversarial review round 1), 2026-09-02
+
+Fresh implementer session. Orders: controller-log rulings RW-13..RW-19, in
+the order RW-14 → RW-13 → RW-16 → RW-15 → RW-17 → RW-18 → RW-19.
+
+- **RW-14 (B2) — `73f2bb14`.** Red-first FIRST: `TestTwoClientsOneLane` drives
+  both clients through the shipped entrypoint against the stateful fake
+  docker; run against `be7d94b3` (the file swapped in from git, then
+  restored) it fails exactly as the review's probe did — one client
+  re-attaches, the other reports `could not read the container's exit status
+  (docker wait failed)` and exit 3 on a green lane. Then the fix: owner triple
+  in the record (`owner_pid` + `/proc/<pid>/stat` field 22 + `boot_id`),
+  `live_owner_pid` as the FIRST question in `resolve_inflight`,
+  `follow_container` with `docker wait` issued before and concurrently with
+  `docker logs -f`, `disown_run_record` claiming the flush sentinel so a
+  follower writes no history. Five further behaviour tests through `main()`
+  (follow, the two refusals, three ways an owner reads as dead). SPEC: R-39a's
+  arbitration sentence replaced, new `R-39e`, `R-39b` points at it first.
+- **RW-13 (B1) — `074ae074`.** Impact re-measured in-session with the rev-34
+  loader over all 29 dstdns lanes (not grepped): 13 refuse; after deleting
+  `budget`, four still refuse on `clean_tree` — so the migration is two
+  rounds, and the remedy for a misplaced LANE key is MOVE. New refusal clause
+  (`(set(pin) & LANE_KEYS) - PIN_KEYS - {"budget"}`, checked before the
+  generic `_check_keys`), three tests, `LANE_KEYS`/`PIN_KEYS` hoisted to
+  module constants so lane and pin checks read ONE list. CHANGES, SPEC R-08a,
+  CONSUMERS' pin block, the RG-32 index row and section corrected; the
+  REPORT's stale notification annotated SUPERSEDED with a corrected one
+  appended (records are append-only).
+- **RW-16 (S2+S3) — `3f157a3e`.** `container_state` returns a dict and reads
+  `{{.Id}}` in the same inspect call; only `No such object`/`No such
+  container` on stderr is GONE, every other failure is exit 3 with the record
+  untouched and no history write. Two behaviour tests (the impostor is never
+  logged/waited/removed; the daemon failure leaves the record byte-identical).
+- **Gate `450b3e22`.** The RW-16 tip gated `diff-coverage FAIL: 334/342
+  (97.7%)` — eight uncovered changed lines (the two `/proc` "no answer"
+  branches, the short-stat-line branch, and `follow_container`'s two unhappy
+  endings). Five tests added, all behaviour. Re-gated GREEN on the committed
+  tip: `505 passed, 2 skipped` / `diff-coverage OK: 342/342 (100.0%)` /
+  `run-gate: lane 'selftest' exit 0` (`scratchpad/selftest-fix-rw16b.log`,
+  read in a separate step).
+- **E-008 CUT here**, on the controller's instruction, at a coherent boundary
+  (green gate on a committed tip, no uncommitted product edits). RW-15,
+  RW-17, RW-18 and RW-19 remain, and the live two-client probe is still owed;
+  seams, red-first plan, decision asks and a retention prompt are in
+  `run-gate-WAVE-RESUMABLE-BRIEF-1.md`.
