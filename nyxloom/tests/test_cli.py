@@ -963,7 +963,7 @@ def test_onboard_check_gate_offers_a_gate_when_none_declared(tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert "gate check: NO GATE declared" in out
-    assert "nyxloom gate verify" in out
+    assert "assay/" in out
 
 
 def test_onboard_check_gate_reports_an_existing_gate(tmp_path, capsys):

@@ -39,7 +39,7 @@ def test_assess_gate_reports_no_gate_for_a_fresh_greenfield_project(tmp_path):
     assert offer.gate_id is None
     assert offer.recommendation
     assert "[gates." in offer.recommendation
-    assert "nyxloom gate verify" in offer.recommendation
+    assert "assay/" in offer.recommendation
 
 
 def test_assess_gate_no_gate_recommendation_names_the_standard(tmp_path):
@@ -67,12 +67,13 @@ def test_assess_gate_reports_has_gate_for_sample_project(tmp_state, sample_proje
     assert offer.gate_id == "pytest-q"
     assert offer.recommendation
     assert "no verification gate declared" not in offer.recommendation
-    assert "nyxloom gate verify" in offer.recommendation
+    assert "assay/" in offer.recommendation
 
 
 def test_assess_gate_is_a_pure_config_read_no_subprocess(tmp_state, sample_project, monkeypatch):
     """assess_gate must not shell out -- it is a cheap config check, never a
-    real gate invocation (that stays the operator's/GA1's/GA4's job)."""
+    real gate invocation (that stays the operator's/assay-or-run-gate's
+    job)."""
     import subprocess
 
     def _boom(*a, **kw):

@@ -6,19 +6,19 @@ with NO declared `[gates.*]` can be registered and onboarded today with no
 signal that its merges cannot be verified (`reference/STANDARD.md`'s "gate
 contract": nyxloom trusts the declared gate blindly). This module surfaces
 that gap at onboarding time instead of staying silent about it -- it prints
-guidance naming the concrete next step (declare a gate, then run
-`nyxloom gate verify`), but it does **not** author a Dockerfile, write a
-`[gates.*]` TOML section, or build a container. That scaffolding is v2
-(docs/plan-gate-adoption.md §GA3 "v2 scaffolding deferred").
+guidance naming the concrete next step (declare a gate), but it does **not**
+author a Dockerfile, write a `[gates.*]` TOML section, or build a container.
+That scaffolding is v2 (docs/plan-gate-adoption.md §GA3 "v2 scaffolding
+deferred").
 
 Deterministic and AI-free, mirroring F2's onboarding.py convention (module
 docstring there: "run_wizard ... No AI/LLM is consulted"). `assess_gate`
 does exactly one cheap, no-subprocess check
 (`gate_runner.select_verification_gate`) and returns a `GateOffer` describing
-what it found -- never runs the gate itself, never dispatches `nyxloom gate
-verify` inline (that's a minutes-long real gate invocation; GA4's periodic
-carver re-check already covers the "does it still work" cadence once a gate
-exists).
+what it found -- never runs the gate itself and never dispatches a real gate
+invocation inline (nyxloom-P98 retired GA4's periodic carver re-check;
+Assay's own R2/R3 mechanisms cover trustworthiness verification for a
+project that declares assay/run-gate lanes).
 """
 from __future__ import annotations
 
@@ -49,22 +49,18 @@ _NO_GATE_RECOMMENDATION = (
     "faithful, isolated environment (never the interactive cockpit), with "
     "`argv` (the `{worktree}` placeholder), `phase = \"implementation\"`, "
     "and a real `timeout_seconds` -- ideally with a changed-line coverage "
-    "floor (ecosystem `coverage_gate.py`/`cargo llvm-cov`/`nyc`) so it "
-    "catches untested new branches, not just import errors. Once declared, "
-    "run `nyxloom gate verify <project>` to prove it actually rejects "
-    "broken code (not just `argv=[\"true\"]` laundering every merge) before "
-    "trusting it."
+    "floor (`cargo llvm-cov`/`nyc`, or your project's own declared assay/ "
+    "run-gate lane) so it catches untested new branches, not just import "
+    "errors."
 )
 
 
 def _has_gate_recommendation(gate_id: str) -> str:
     return (
         f"gate '{gate_id}' declared -- this onboarding pass does not run it "
-        "(that's a real, possibly minutes-long invocation); run "
-        "`nyxloom gate verify <project>` yourself to confirm it rejects "
-        "broken code, or rely on the carver's periodic re-check "
-        "(`gate_verify_interval_days`, docs/plan-gate-adoption.md §GA4) "
-        "once the project is dispatching."
+        "(that's a real, possibly minutes-long invocation); adopt assay/ "
+        "run-gate (run-gate-project/CONSUMERS.md, assay/docs/CONSUMERS.md) "
+        "for real rigor once the project is dispatching."
     )
 
 
