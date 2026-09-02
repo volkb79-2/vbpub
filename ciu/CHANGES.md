@@ -47,14 +47,26 @@ restatement of the technical detail below it.
 ### Testing
 - test(ciu): ciu-P49 -- cover _resolve_probe_container's unresolvable-config fallback for a provides_container override (69c573a0)
 
-## [7.11.0] - UNRELEASED
+### Adoption / Migration Notes
 
-**Note to the releaser:** this section is a hand-authored draft (ciu-P49,
-CIU-89 + CIU-90) — fold CMRU's auto-generated commit-subject digest into
-this SAME section at release time (do not leave a separate never-renamed
-`[Unreleased]` header, per this file's own process note above), rename to
-the real version + date, and fill in the commit hashes below once they
-exist post-merge.
+**Safe to ignore for almost everyone — both keys are optional and default
+to today's behavior.** Act only if you want one of the two new
+capabilities:
+
+1. **You have a multi-service stack whose directory basename isn't one of
+   its own compose service keys, and you reference it with a `pg:`/
+   `minio:` requires/provides ref.** Add `provides_container = { "<ref>" =
+   "<service-key>" }` alongside that stack's `provides` declaration,
+   naming the real compose service key for each affected ref
+   (restricted to `pg:`/`minio:` refs — the only kinds a probe ever
+   resolves a container for). Everyone else is unaffected: the basename
+   guess CIU-70 already used is unchanged when no override is declared.
+2. **You enable `governance` and want a CPU quota enforced**, the same way
+   `mem_limit`/`mem_reservation` already are. Set `governance.cpus =
+   "<cores>"` (e.g. `"1.5"`) — same author-precedence rule (an author-set
+   `cpus:` compose key still wins) as the other four governance keys.
+   **Default stays unset/uncapped** — no currently-governed service gets a
+   new CPU ceiling just from upgrading.
 
 ### Added
 - feat(ciu): CIU-89 -- `provides_container` override table lets a stack
@@ -122,8 +134,6 @@ exist post-merge.
 - docs(ciu): ciu-P47 -- LOG/REPORT for the identity-file split + overlay rename (8f174836)
 - docs(ciu): ciu-P47 -- exhaustive docs/consumer sweep for the file split + rename (d9e2d26a)
 - docs(ciu): ciu-P47 -- carve handoff, overlay file split + rename (945c7a16)
-
-## [7.10.0] - UNRELEASED
 
 > **This release is BREAKING, and ships as a MINOR on purpose** — the same
 > deliberate override 7.7.0 (CIU-75/CIU-79), 7.8.0 (CIU-54) and 7.9.0
@@ -221,16 +231,15 @@ out of the render, which is the opposite of what that flag exists for.
    hygiene — the retired-overlay rule asks the filesystem, not your
    `.gitignore`, so the two concerns stay independent.
 
-## [7.10.1] - UNRELEASED
-
-> Version note for the releaser: this package (ciu-P48) was carved against
-> `main` at the ciu-v7.9.0/ciu-P46 revision, before ciu-P47's `[7.10.0]`
-> section merged. It is an ordinary, NON-breaking fix — no consumer-facing
-> behavior changes at all — so it takes the next PATCH above whatever P47
-> released as. Rename this header if that number moves.
-
 ciu-P48 — CIU-87: ciu's own test suite no longer leaks a Docker network, or a
 devcontainer network membership, into the host it runs on.
+
+### Adoption / Migration Notes
+
+**Safe to ignore for everyone.** Internal test-suite-only fix — nothing
+about how `ciu` provisions a real workspace changes. The only behavior
+that changes is what ciu's own test suite does to the Docker daemon it
+runs against.
 
 ### Fixed
 
@@ -297,8 +306,6 @@ devcontainer network membership, into the host it runs on.
 - docs(ciu): ciu-P46 -- LOG/REPORT addendum for the review fix pass (4d03e091)
 - docs(ciu): ciu-P46 review pass -- B1-B8 doc/consumer gaps + N1 gitignore-glob false positive (fee25e18)
 - docs(ciu): ciu-P46 -- LOG/REPORT for the persist:'secret' + migration-check package (d58b9dc5)
-
-## [7.9.0] - UNRELEASED
 
 > **This release is BREAKING, and ships as a MINOR on purpose** — the same
 > deliberate override 7.7.0 (CIU-75/CIU-79) and 7.8.0 (CIU-54) already
@@ -415,8 +422,6 @@ an ordinary `ASK_VAULT`), which needs no new CIU mechanism at all.
 ### Documentation
 - docs(ciu): ciu-P45 -- REPORT addendum, real gate re-run at true final HEAD (5b21d030)
 - docs(ciu): ciu-P45 -- LOG/REPORT for CIU-54's design-and-implement package (56d5dba9)
-
-## [7.8.0] - UNRELEASED
 
 > **This release is BREAKING, and ships as a MINOR on purpose** — same
 > deliberate override CIU-75/CIU-79 already established in 7.7.0: the estate's
@@ -1003,8 +1008,6 @@ this is a no-op for CIU's own repo.
 - docs(ciu): ciu-P34 -- CONSUMERS.md gains a migration note from hand-rolled internal_host to --shared-infra-ref-services (5e2c3593)
 - docs(ciu): enrich CIU-62 with the reviewer's class-wide grep (6 sites, 4 shapes) (baa91ae5)
 - docs(ciu): update ciu-P33's stale backlog-number suggestion (CIU-55 -> CIU-60) (9ea11db5)
-
-## [Unreleased]
 
 ### Adoption / Migration Notes
 
