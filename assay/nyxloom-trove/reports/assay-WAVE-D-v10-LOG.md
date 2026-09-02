@@ -1305,3 +1305,70 @@ seconds of launch. Load stayed 5.1–7.4.
   | tail -1` → **B068** (so **B069** was free and is now taken);
   `main` is still at `A-407`, the branch at `A-434`, so **A-435** was free and
   is now taken. Next free: **A-436** / **B070**, re-check before use.
+
+### 30. `feat(assay): judgment.r2.fail_under becomes a floor that is TAKEN (B050, A-436)`
+
+- **DA-R22 applied literally, including its "no second formula" clause.**
+  `mutation.judge_mutation` regains `fail_under: float = 100.0`; its
+  `survived` branch is now `if mutation.survived and mutation_pct(mutation) <
+  fail_under:`. `mutation_pct` (`mutation.py:2174`, shipped by B046) is the
+  one and only score in the package, and `verify._check_r2_rederivation`
+  calls the same two functions after reading `judgment.r2.fail_under` off the
+  document.
+- **Threading, one read:** `build_mutation_claim` gained the same
+  keyword-only parameter and passes it straight through;
+  `runner._run_prepared_lane`'s ingested branch supplies
+  `lane.judge.mutation.fail_under`, which is the SAME attribute
+  `runner._build_ingested_judgment_r2` writes onto the wire — so the document
+  cannot record a floor other than the one that judged it.
+- **`config._load_ingested_mutation`'s `if fail_under != 100.0:` refusal is
+  DELETED** (its message named B050 as the field a lower floor needs; the
+  field exists). The `0.0 <= fail_under <= 100.0` check above it stays, and
+  `test_a_fail_under_outside_the_percentage_range_is_refused` still proves it.
+- **A-223d's equivalence terminal now states the guard it used to inherit** —
+  `not killed and not survived and equivalent`. See A-436 (4) and **decision
+  ask 1**: DA-R22's "falls through to the existing terminals" is unambiguous
+  except here, where the terminal's stated rule (`killed + survived == 0`,
+  A-223d's own words) and its code had been allowed to differ because
+  `survived` could not be non-empty on that branch. A met floor makes it
+  non-empty. The restored guard is A-223d as written.
+- **Acceptance witnesses — the document the v9 build could not produce:**
+  `tests/test_verdict_conformance.py::test_verify_accepts_an_ingested_r2_PASS_with_recorded_survivors_at_a_met_floor`
+  (synthetic, plus
+  `test_verify_rejects_that_same_PASS_when_the_recorded_floor_is_not_met` as
+  the control that isolates the floor as the only cause) and, end to end over
+  the **committed real StrykerJS artifact**,
+  `tests/test_runner_ingested_r2.py::test_a_declared_floor_the_real_report_MEETS_produces_a_verified_pass`:
+  21 killed / 88 survived = **19.2660550458%**, declared floor 19.0, R2
+  `PASS` with all 88 survivors recorded, `verify_document(...) == []`.
+  `test_the_same_run_at_the_default_floor_is_the_unchanged_fail` shares that
+  fixture and is the regression witness for "no shipped outcome changed".
+- `tests/test_config_ingested_mutation.py`'s
+  `test_a_sub_hundred_fail_under_is_refused_naming_the_wire_gap` was replaced
+  by `test_a_sub_hundred_fail_under_LOADS_and_is_carried_to_the_judge` — the
+  same lane text asserting the opposite outcome.
+- **The gate was grepped BEFORE this commit, per BRIEF-8 §3.** `grep -rn
+  fail_under gate/python/` returns exactly two hits, `qualify_topos.py:449`
+  and `qualify_cmru_b006a.py:141`, and both are the **R1 coverage** floor in a
+  `[lanes.*.judge]` table, not `judge.mutation.fail_under`. Neither gate lane
+  is ingested (cmru's is native, with `[…judge.mutation] jobs = 1`), so no
+  gate harness is on B050's blast radius.
+- `src/assay/schemas/verdict.schema.json` was NOT touched: W6's
+  `test_shipped_schema_is_byte_identical_to_the_locked_v10_asset` freezes it,
+  the field and its producer fork already landed in the cut, and B050's
+  producer needs no shape change. The verifier's failure message gained a
+  suffix naming the floor it read; the three existing substring assertions in
+  `test_verdict_conformance.py` are prefix matches and stay green.
+- `docs/CONSUMERS.md:1281`'s "**`fail_under` must be `100.0` in this
+  release**" paragraph is replaced by what the field now does. The four worked
+  lanes keep `100.0` and stay legal.
+- Local, serial, targeted: `nice -n 19 ionice -c 3 python -m pytest` over
+  `test_verdict_conformance.py test_mutation_judge.py
+  test_config_ingested_mutation.py test_verify_layer_independence.py
+  test_verdict_mutation_artifacts.py test_verdict_interval_and_unsupported.py`
+  → **306 passed**; then `test_runner_ingested_r2.py test_runner_run_lane_r2.py
+  test_verdict_judgment.py test_runner_assemble_verdict_judgment.py
+  test_refusal_announcement.py` → **161 passed**, and
+  `test_runner_ingested_r2.py` alone → **23 passed** after the two new tests.
+  The gate runs once at the checkpoint, over B050 + B051 together (DA-R23
+  lands them adjacently).

@@ -210,26 +210,33 @@ def test_an_escaping_artifact_is_refused(app_project: Project):
     assert "not contained beneath the project root" in str(error)
 
 
-def test_a_sub_hundred_fail_under_is_refused_naming_the_wire_gap(
+def test_a_sub_hundred_fail_under_LOADS_and_is_carried_to_the_judge(
     app_project: Project,
 ):
-    """A-380/B050 — the one place this build cannot do what B046's contract
-    describes, refused LOUDLY rather than half-implemented.
+    """B050/A-427/DA-R22 — the positive counterpart of the refusal v9 needed.
 
-    A floor below 100 means some survivors are acceptable, and v9 has no
-    ``judgment.r2`` field recording WHICH floor was applied — so the verdict
-    would report PASS beside recorded survivors with nothing in it to explain
-    that, and ``verify.py``'s own re-derivation (which reuses
-    ``judge_mutation``) would correctly call the document inconsistent.
-    Accepting the key and ignoring it would be worse than either alternative:
-    inert config that cannot fail loudly when it is wrong.
+    Up to v9 this lane was refused at LOAD time with a message naming B050 as
+    the wire field a lower floor needs ("can only honour 100.0"). That field
+    exists now: ``judgment.r2.fail_under`` is REQUIRED under
+    ``producer = "ingested"``, so the verdict records WHICH floor was applied
+    and ``verify.py`` reads it back rather than assuming 100. The refusal is
+    therefore GONE rather than relaxed, and this test is the same lane text
+    asserting the opposite outcome.
+
+    The floor must arrive at the judge, not merely load: this asserts the
+    loaded value on the config, and
+    ``tests/test_mutation_judge.py`` asserts what ``judge_mutation`` does with
+    it. ``config`` is still the only thing that constrains the RANGE (the
+    test below), which is the half of the old block that stayed.
     """
-    error = _refusal(
+    lane = _load(
         app_project, INGESTED_LANE.replace("fail_under = 100.0", "fail_under = 90.0")
-    )
-    message = str(error)
-    assert "can only honour 100.0" in message
-    assert "B050" in message
+    ).lane("ui_mutation")
+    assert lane.judge is not None and lane.judge.mutation is not None
+    assert lane.judge.mutation.fail_under == 90.0
+    # And the value is a float the judge can compare, not the string the file
+    # spells it with -- `_as_float` is what the loader is for.
+    assert isinstance(lane.judge.mutation.fail_under, float)
 
 
 def test_a_fail_under_outside_the_percentage_range_is_refused(app_project: Project):

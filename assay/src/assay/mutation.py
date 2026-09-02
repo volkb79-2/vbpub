@@ -2193,7 +2193,10 @@ def mutation_pct(mutation: Mutation) -> float:
 
 
 def judge_mutation(
-    baseline: CommandResult, mutation: Mutation | Literal["UNSUPPORTED"] | None
+    baseline: CommandResult,
+    mutation: Mutation | Literal["UNSUPPORTED"] | None,
+    *,
+    fail_under: float = 100.0,
 ) -> tuple[Outcome, ReasonCode | None]:
     """A-117's outcome/reason-code mapping, using only already-existing
     ``ReasonCode``s (``errors.py`` stays forbidden, A-121): baseline
@@ -2218,21 +2221,42 @@ def judge_mutation(
     ``survived`` has already returned by then); it sits here for readability,
     not because the position is load-bearing.
 
-    **B046 takes NO producer fork, and that is a decision rather than an
-    omission (A-379).** An ingested R2 judgment is judged by exactly this
-    function, unchanged: same precedence, same terminals, same
-    "any survivor is ``FAIL``/``MUTANTS_SURVIVED``". A ``fail_under``
-    parameter was written here and then removed, because it would have broken
-    the one property :class:`~assay.verdict.JudgmentR2`'s own docstring
-    promises -- *"an independent consumer can already re-derive the R2 claim's
-    status from* :class:`~assay.verdict.Mutation`'s *own bucket fields
-    alone"*. The v9 wire has no ``judgment.r2`` field that could record a
-    mutation-score floor, so a lane judging at 90% would emit a PASS beside
-    survivors with nothing in the document explaining it, and
-    :func:`assay.verify._check_r2_rederivation` -- which reuses THIS function
-    -- would correctly call that document a lie. See
-    ``config._load_ingested_mutation`` for the load-time refusal that keeps
-    the two in agreement, and B050 for the wire field a later cut needs.
+    **``fail_under`` is the mutation-score FLOOR, and B050/A-427/DA-R22 is
+    what made it expressible.** Under v9 this parameter could not exist. It
+    had been written here once and removed (A-379), because a floor below 100
+    would have broken the one property :class:`~assay.verdict.JudgmentR2`'s
+    own docstring promises -- *"an independent consumer can already re-derive
+    the R2 claim's status from* :class:`~assay.verdict.Mutation`'s *own bucket
+    fields alone"*. The v9 wire had no ``judgment.r2`` field that could record
+    WHICH floor was applied, so a lane judging at 90% would have emitted a
+    PASS beside recorded survivors with nothing in the document explaining it,
+    and :func:`assay.verify._check_r2_rederivation` -- which reuses THIS
+    function -- would have correctly called that document a lie.
+
+    v10 records the floor (``judgment.r2.fail_under``, REQUIRED under
+    ``producer = "ingested"`` and FORBIDDEN under ``"native"``), so the
+    re-derivation reads it FROM the document instead of assuming it. The
+    property is preserved, not weakened: the status is still re-derivable
+    with no external policy input, because the policy is now IN the artifact.
+
+    **The floor is applied on the ``survived`` branch and nowhere else**
+    (DA-R22): a non-empty ``survived`` is ``FAIL``/``MUTANTS_SURVIVED`` iff
+    :func:`mutation_pct` is below the floor, otherwise the branch falls
+    through to the terminals below it, unchanged. There is exactly ONE
+    formula for the score in this package and it is :func:`mutation_pct`;
+    the verifier calls these same two functions rather than restating either
+    (a second formula is how the two would drift).
+
+    **The default ``100.0`` keeps every existing outcome byte-identical, and
+    that is the regression witness.** Any survivor at all makes the score
+    strictly less than 100, so a native lane -- which never passes this
+    parameter, and whose ``judgment.r2`` is FORBIDDEN from carrying a floor
+    -- reaches exactly the terminal it reached before. Only an INGESTED lane,
+    which now declares its floor on the wire, can take the fall-through.
+    ``config._load_ingested_mutation`` used to refuse any value but ``100.0``
+    for precisely this reason; that refusal is gone with the wire field that
+    replaced it, and only the ``0.0 <= fail_under <= 100.0`` range check
+    remains.
     """
     if mutation is None:
         return baseline.outcome, baseline.reason_code
@@ -2252,19 +2276,42 @@ def judge_mutation(
         return Outcome.ERROR, ReasonCode.EXEC_FAILED
     if mutation.budget_exceeded:
         return Outcome.BUDGET_EXCEEDED, ReasonCode.LANE_TIMEOUT
-    if mutation.survived:
+    if mutation.survived and mutation_pct(mutation) < fail_under:
+        # B050/A-427/DA-R22. At the default floor of 100.0 this is the v9
+        # branch verbatim -- any survivor puts the score below 100 -- so a
+        # native lane's outcome is unchanged. An ingested lane that declared
+        # a lower floor, and met it, falls through to the terminals below,
+        # and the floor it met is on the wire for the verifier to read.
+        #
+        # `discarded` is a COUNT beside the payload (DA-D4) and never enters
+        # `Mutation`'s buckets, so the denominator here is unaffected by
+        # construction rather than by an exclusion rule someone must
+        # remember.
         return Outcome.FAIL, ReasonCode.MUTANTS_SURVIVED
-    if not mutation.killed and mutation.equivalent:
+    if not mutation.killed and not mutation.survived and mutation.equivalent:
         # A-223d. `killed + survived == 0` and something was proven inert:
         # the run attempted real mutants and none of them could ever have
         # been caught, so there is no evidence about the tests here to pass
-        # on. `survived` is already known empty on this branch.
+        # on.
+        #
+        # (B050) `not mutation.survived` is now stated rather than inherited.
+        # Up to v9 the branch above returned on ANY non-empty `survived`, so
+        # emptiness was implied here and the condition A-223d actually
+        # specifies -- "`killed + survived == 0` with a non-empty
+        # `equivalent`", its own words -- could be written as half of itself.
+        # A declared floor the run MET now falls through this far with
+        # survivors recorded, and calling that "all mutants were equivalent"
+        # would be false about the payload. This restores A-223d's stated
+        # guard; it does not narrow it.
         return Outcome.INCONCLUSIVE, ReasonCode.ALL_MUTANTS_EQUIVALENT
     return Outcome.PASS, None
 
 
 def build_mutation_claim(
-    baseline: CommandResult, mutation: Mutation | Literal["UNSUPPORTED"] | None
+    baseline: CommandResult,
+    mutation: Mutation | Literal["UNSUPPORTED"] | None,
+    *,
+    fail_under: float = 100.0,
 ) -> Claim:
     """The R2 :class:`~assay.verdict.Claim` from :func:`run_mutation`'s own
     return — the exact mapping ``assay.runner.build_r0_claim`` /
@@ -2273,8 +2320,17 @@ def build_mutation_claim(
     The capability marker attaches NO payload (A-183): ``MUTATION_UNSUPPORTED``
     says no candidate analysis happened, and :class:`~assay.verdict.Claim`
     itself refuses the pairing if a payload is attached anyway.
+
+    ``fail_under`` is passed straight to :func:`judge_mutation` (B050/A-427);
+    it defaults to ``100.0``, so a native call site that omits it is the v9
+    behaviour exactly. The only caller that supplies it is the INGESTED
+    branch of :func:`assay.runner._run_prepared_lane`, which reads it from
+    the same ``lane.judge.mutation.fail_under`` that
+    ``runner._build_ingested_judgment_r2`` writes onto the wire -- one value,
+    one read, so the document cannot record a floor other than the one that
+    judged it.
     """
-    status, reason_code = judge_mutation(baseline, mutation)
+    status, reason_code = judge_mutation(baseline, mutation, fail_under=fail_under)
     payload = None if mutation == UNSUPPORTED else mutation
     return Claim(
         rigor="R2",

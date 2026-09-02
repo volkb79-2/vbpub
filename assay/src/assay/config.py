@@ -2505,38 +2505,18 @@ def _load_ingested_mutation(
             f"{where}: 'judge.mutation.fail_under' must be in 0.0..100.0, got "
             f"{fail_under}"
         )
-    if fail_under != 100.0:
-        # (A-380/B050) The one place this build cannot yet do what B046's
-        # contract describes, refused LOUDLY rather than half-implemented.
-        #
-        # A mutation-score floor below 100 means "some survivors are
-        # acceptable" -- and the v9 verdict has NO judgment.r2 field that can
-        # record which floor was applied. A lane judging at 90 would therefore
-        # emit a PASS beside recorded survivors with nothing in the document
-        # explaining it, and that breaks the single property judgment.r2
-        # exists to protect: that an independent consumer can re-derive the R2
-        # claim's STATUS from the payload's own buckets, with no external
-        # policy input. `verify.py`'s own re-derivation would (correctly) call
-        # such a document inconsistent.
-        #
-        # Accepting the key and silently ignoring it would be worse than
-        # either alternative -- inert config that cannot fail loudly when it
-        # is wrong (AGENTS.md 4.2a) -- and dropping the key would leave the
-        # documented worked lane unloadable. So: declarable, honoured at
-        # exactly its one currently-expressible value, and the message names
-        # the field a later schema cut needs.
-        raise LaneConfigError(
-            f"{where}: 'judge.mutation.fail_under' is {fail_under}, but this "
-            f"build can only honour 100.0 on an ingested lane. A lower floor "
-            f"means some surviving mutants are acceptable, and verdict schema "
-            f"v9 has no judgment.r2 field that records WHICH floor was "
-            f"applied -- so the verdict would report PASS beside recorded "
-            f"survivors with nothing in it to explain that, and an "
-            f"independent consumer re-deriving the R2 status from the payload "
-            f"(which is exactly what `assay verify` does) would call the "
-            f"document inconsistent. Declare 100.0, or track B050 for the "
-            f"wire field a lower floor needs"
-        )
+    # (B050/A-427, schema v10) The range check above is the WHOLE check now.
+    # Up to v9 a second refusal stood here rejecting every value but `100.0`,
+    # because the v9 verdict had no `judgment.r2` field that could record
+    # WHICH floor was applied: a lane judging at 90 would have emitted a PASS
+    # beside recorded survivors with nothing in the document explaining it,
+    # and `assay verify`'s own re-derivation would have (correctly) called
+    # that document inconsistent. v10 records the floor -- REQUIRED under
+    # `producer = "ingested"`, FORBIDDEN under `"native"` -- so the floor is
+    # honoured by `mutation.judge_mutation` and read back from the artifact
+    # by `verify._check_r2_rederivation`. The refusal's own message named
+    # B050 as the wire field a lower floor needs; that field exists, so the
+    # refusal is gone rather than relaxed.
     kill_signal_artifact: str | None = None
     if "kill_signal_artifact" in value:
         # Reachable only on a sql lane -- the reserved-key check above already

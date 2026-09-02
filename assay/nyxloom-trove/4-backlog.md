@@ -5005,17 +5005,42 @@ genuinely has no floor to record. Then:
 
 ### Acceptance
 
-- [ ] `judgment.r2.fail_under` in the schema, the dataclass and `verify.py`
+**RESOLVED 2026-09-02 by A-436 (Wave D, schema v10). The wire half landed with
+the cut `b2fd09f3`; the producer/consumer half is the commit A-436 names.**
+
+- [x] `judgment.r2.fail_under` in the schema, the dataclass and `verify.py`
       (the 2.4.0 lesson: three places), forked on `producer`, with the frozen
-      drift-guard asset updated at that cut;
-- [ ] `judge_mutation` honours it and `verify.py` re-derives the R2 status
+      drift-guard asset updated at that cut — `src/assay/schemas/verdict.schema.json:1576`,
+      `verdict.py:2136-2154` (+ the `__post_init__` fork at `:2452-2464`),
+      `verify.py`'s re-derivation, and
+      `nyxloom-trove/carve-assets/W6/expected/ingested-r2-v10-template.json`
+      carrying `"fail_under": 100.0`;
+- [x] `judge_mutation` honours it and `verify.py` re-derives the R2 status
       from the document alone — proven by a verdict that PASSes with recorded
-      survivors and verifies clean, which is exactly the document this build
-      cannot produce;
-- [ ] the load-time refusal deleted, and
+      survivors and verifies clean, which is exactly the document the v9 build
+      could not produce. Two witnesses, one synthetic and one real:
+      `tests/test_verdict_conformance.py::test_verify_accepts_an_ingested_r2_PASS_with_recorded_survivors_at_a_met_floor`
+      (with its floor-not-met control), and — end to end over the committed
+      StrykerJS artifact —
+      `tests/test_runner_ingested_r2.py::test_a_declared_floor_the_real_report_MEETS_produces_a_verified_pass`:
+      21 killed / 88 survived = 19.27%, declared floor 19.0, R2 `PASS` with
+      all 88 survivors recorded, `verify_document(...) == []`;
+- [x] the load-time refusal deleted, and
       `test_a_sub_hundred_fail_under_is_refused_naming_the_wire_gap` replaced
-      by its positive counterpart;
-- [ ] CONSUMERS' ingested-R2 section drops the "must be 100.0" paragraph.
+      by its positive counterpart
+      (`test_a_sub_hundred_fail_under_LOADS_and_is_carried_to_the_judge`);
+      the `0.0..100.0` range check at `config.py:2502-2507` stays, and
+      `test_a_fail_under_outside_the_percentage_range_is_refused` still proves
+      it;
+- [x] CONSUMERS' ingested-R2 section drops the "must be 100.0" paragraph
+      (`docs/CONSUMERS.md:1281`); the four worked lanes at `:251`/`:437`/
+      `:813`/`:1260` keep `100.0` and stay legal.
+
+**`discarded` (B051) does not affect the denominator, and by construction
+rather than by an exclusion rule someone has to remember**: it is a COUNT
+beside the payload (DA-D4), never a `Mutation` bucket, so
+`mutation.mutation_pct`'s `killed + survived` cannot see it. B050 and B051
+were landed adjacently for exactly this reason (DA-R23).
 
 ---
 

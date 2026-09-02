@@ -256,6 +256,22 @@ and `coverage.missing_branch_lines` are still read by those names.
   asserts the OUTCOME, and the declaration is kept for the git-metadata-absent
   build. (B056, A-412)
 
+### Added
+
+- **An ingested R2 lane's `judge.mutation.fail_under` is now a floor that is
+  TAKEN.** Any value in `0.0..100.0` loads; the mutation score
+  (`killed / (killed + survived)`, percent — `budget_exceeded`, `equivalent`
+  and `discarded` are all outside that denominator) is compared against it,
+  and a claim with recorded survivors is `FAIL`/`MUTANTS_SURVIVED` **iff** the
+  score is below the floor. The floor rides the wire as
+  `judgment.r2.fail_under`, so `assay verify` re-derives the status by reading
+  it FROM the document rather than assuming `100.0`. Up to schema v9 a lower
+  floor was refused at load, because v9 had no field recording WHICH floor
+  applied; **that refusal is deleted, and the `0.0..100.0` range check is all
+  that remains**. Native lanes are unaffected in every respect: they pass no
+  floor, are judged at the default `100.0`, and their `judgment.r2` is
+  forbidden from carrying one. (B050, A-427/A-436)
+
 ### Testing
 
 - **The gate-only qualification harnesses' contract pins now fail in the

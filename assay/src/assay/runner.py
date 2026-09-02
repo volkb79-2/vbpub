@@ -3336,12 +3336,24 @@ def _run_prepared_lane(
                 )
             else:
                 assert ingested_r2 is not None
-                # (A-379) No `fail_under` fork: an ingested R2 claim is judged
-                # by the SAME `judge_mutation` a native one is, so an
-                # independent consumer can still re-derive its status from the
-                # payload's buckets alone -- which is what `verify.py`'s own
-                # `_check_r2_rederivation` does, using this same function.
-                r2_claim = mutation.build_mutation_claim(result, ingested_r2.mutation)
+                assert lane.judge is not None and lane.judge.mutation is not None
+                # (B050/A-427, superseding A-379's no-fork note) An ingested
+                # R2 claim is still judged by the SAME `judge_mutation` a
+                # native one is -- same precedence, same terminals -- but it
+                # now supplies the FLOOR it declared. That floor is written
+                # onto the wire by `_build_ingested_judgment_r2` from this
+                # same `lane.judge.mutation.fail_under`, so the document
+                # records exactly the number that judged it, and
+                # `verify.py`'s `_check_r2_rederivation` re-derives the
+                # status by reading that number back and calling this same
+                # function. The v9 property survives the change: the status
+                # is still derivable with no external policy input, because
+                # the policy is now IN the artifact.
+                r2_claim = mutation.build_mutation_claim(
+                    result,
+                    ingested_r2.mutation,
+                    fail_under=lane.judge.mutation.fail_under,
+                )
                 claims += (r2_claim,)
                 if r2_claim.mutation is not None:
                     judgment_r2 = _build_ingested_judgment_r2(lane, ingested_r2)

@@ -1395,6 +1395,96 @@ def test_verify_rejects_an_r2_status_that_ignores_bucket_precedence(
     ), failures
 
 
+# --- B050/A-427/DA-R22: the floor is READ FROM THE DOCUMENT ----------------
+
+
+def _as_ingested_at_floor(document: dict, fail_under: float) -> dict:
+    """Rewrite an R2 fixture into the INGESTED shape at a declared floor.
+
+    Only the ingested contract's own fields change: `producer`, the tool
+    identity, the three derived facts (all empty, which is a legal ingested
+    record and keeps
+    `verify._check_ingested_r2_agrees_with_its_payload`'s four re-derivations
+    trivially satisfied rather than mocked away), assay's own policy fields
+    dropped (A-360 FORBIDS them here), and the operators renamed into the
+    ingested namespace, because an ingested payload records the foreign
+    tool's mutator names and `verify` refuses a native catalogue on an
+    ingested document.
+    """
+    judgment_r2 = document["judgment"]["r2"]
+    for assay_own_policy in ("jobs", "max_mutants", "operators"):
+        judgment_r2.pop(assay_own_policy, None)
+    judgment_r2["producer"] = "ingested"
+    judgment_r2["producer_tool"] = {
+        "name": "StrykerJS",
+        "version": "10.0.0",
+        "report_schema_version": "1.0",
+    }
+    judgment_r2["survived_uncovered"] = []
+    judgment_r2["lines_without_candidates"] = []
+    judgment_r2["discarded"] = 0
+    judgment_r2["fail_under"] = fail_under
+    claim = next(c for c in document["claims"] if c["rigor"] == "R2")
+    for bucket in ("killed", "survived", "crashed", "budget_exceeded", "equivalent"):
+        for mutant in claim["mutation"].get(bucket, []):
+            mutant["operator"] = "stryker:ConditionalExpression"
+    return document
+
+
+def test_verify_accepts_an_ingested_r2_PASS_with_recorded_survivors_at_a_met_floor(
+    validator: Draft202012Validator,
+):
+    """B050's acceptance witness: the document this build could not produce.
+
+    One killed and one survived is a 50.0% score. Declared floor 50.0, so
+    `judge_mutation`'s survived branch falls through and the claim is a PASS
+    that RECORDS its survivor — and `assay verify` re-derives that same PASS
+    by reading `judgment.r2.fail_under` off the wire, which is the whole
+    point of B050. Under v9 the lane could not even load (`config` refused any
+    floor but 100.0) and the verifier assumed 100, so this document was
+    unrepresentable AND unverifiable.
+    """
+    document = _as_ingested_at_floor(_load("r2_fail_mutants_survived.json"), 50.0)
+    claim = next(c for c in document["claims"] if c["rigor"] == "R2")
+    assert len(claim["mutation"]["killed"]) == 1
+    assert len(claim["mutation"]["survived"]) == 1
+    claim["status"] = "PASS"
+    del claim["reason_code"]
+    document["outcome"] = "PASS"
+    del document["reason_code"]
+    document["exit_code"] = 0
+
+    assert why_invalid(validator, document) == []
+    assert verify_document(document) == []
+
+
+def test_verify_rejects_that_same_PASS_when_the_recorded_floor_is_not_met(
+    validator: Draft202012Validator,
+):
+    """The control. Same payload, same PASS, floor 100.0 instead of 50.0.
+
+    Without this the test above would prove only that `verify` stopped
+    checking. The floor is the ONLY difference between the two documents, so
+    the accept and the refusal together show the check is reading it.
+    """
+    document = _as_ingested_at_floor(_load("r2_fail_mutants_survived.json"), 100.0)
+    claim = next(c for c in document["claims"] if c["rigor"] == "R2")
+    claim["status"] = "PASS"
+    del claim["reason_code"]
+    document["outcome"] = "PASS"
+    del document["reason_code"]
+    document["exit_code"] = 0
+
+    assert why_invalid(validator, document) == []
+    failures = verify_document(document)
+    assert any(
+        "disagrees with the re-derived judgment from mutation buckets "
+        "(FAIL, MUTANTS_SURVIVED)" in f
+        and "judgment.r2.fail_under 100.0" in f
+        for f in failures
+    ), failures
+
+
 def test_verify_rejects_an_r2_claim_that_misreports_its_own_failed_prerequisite(
     validator: Draft202012Validator,
 ):

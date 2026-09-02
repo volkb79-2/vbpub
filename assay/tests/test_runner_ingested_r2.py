@@ -91,6 +91,7 @@ def _lane(
     mode: str = "changed_lines",
     targets=None,
     base: str,
+    mutation_fail_under: float = 100.0,
 ):
     judge = JudgeConfig(
         language="javascript",
@@ -102,7 +103,7 @@ def _lane(
         mutation=MutationConfig(
             format="mutation-report-json",
             artifact=ARTIFACT,
-            fail_under=100.0,
+            fail_under=mutation_fail_under,
         ),
         canary=None,
         base=None if mode == "whole_target" else base,
@@ -287,6 +288,64 @@ def test_the_verdict_verifies_against_the_shipped_schema_and_the_raw_layer(
     verdict, _document = ingested
     failures = verify_document(verdict.to_dict())
     assert failures == [], failures
+
+
+def test_a_declared_floor_the_real_report_MEETS_produces_a_verified_pass(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """B050/A-427/DA-R22's acceptance witness, end to end over the real report.
+
+    The committed StrykerJS artifact scores 21 killed / (21 + 88 survived) =
+    19.26%. At `fail_under = 19.0` the lane declares that floor MET, so
+    `judge_mutation`'s survived branch falls through and the R2 claim is a
+    PASS **that records all 88 survivors** — and `assay verify` re-derives the
+    same PASS by reading `judgment.r2.fail_under` back off the wire.
+
+    Under v9 this document was doubly impossible: `config` refused any floor
+    but 100.0 at LOAD, and the verifier assumed 100 regardless. Nothing here
+    is fixtured toward the answer — same report, same repo, same run as the
+    `ingested` fixture; the floor is the only difference.
+    """
+    from assay.mutation import mutation_pct
+    from assay.verify import verify_document
+
+    document = _report_document()
+    document["projectRoot"] = PLACEHOLDER
+    staged = _stage_report(tmp_path, document)
+    _seed_repo(git_repo, document)
+    base = git_repo.git("rev-parse", "HEAD~1").strip()
+    verdict = _run(
+        git_repo,
+        _lane(
+            git_repo=git_repo,
+            staged=staged,
+            base=base,
+            mutation_fail_under=19.0,
+        ),
+    )
+
+    r2 = next(claim for claim in verdict.claims if claim.rigor == "R2")
+    assert len(r2.mutation.survived) == 88
+    assert mutation_pct(r2.mutation) == pytest.approx(19.2660550458, rel=1e-9)
+    assert (r2.status, r2.reason_code) == (Outcome.PASS, None)
+    # The floor is on the wire, and it is the SAME number the lane declared:
+    # the producer reads `lane.judge.mutation.fail_under` once, for both the
+    # judgment and the judge.
+    assert verdict.judgment.r2.fail_under == 19.0
+    assert verify_document(verdict.to_dict()) == [], verify_document(verdict.to_dict())
+
+
+def test_the_same_run_at_the_default_floor_is_the_unchanged_fail(ingested):
+    """The control for the test above: 100.0 is still FAIL/MUTANTS_SURVIVED.
+
+    `ingested` is the identical run at `fail_under = 100.0`, so the pair
+    isolates the floor as the only cause of the difference — and proves B050
+    changed no outcome that was not asked to change.
+    """
+    verdict, _document = ingested
+    r2 = next(claim for claim in verdict.claims if claim.rigor == "R2")
+    assert (r2.status, r2.reason_code) == (Outcome.FAIL, ReasonCode.MUTANTS_SURVIVED)
+    assert verdict.judgment.r2.fail_under == 100.0
 
 
 def test_lines_without_candidates_records_where_the_tool_declined(ingested):

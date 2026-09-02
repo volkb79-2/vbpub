@@ -2142,10 +2142,12 @@ class JudgmentR2:
     #: :attr:`JudgmentR1.fail_under` -- the same quantity at a different tier,
     #: and two spellings of one policy number is how they drift.
     #:
-    #: The fork is not ergonomics. A native R2 has no floor at all --
-    #: `judge_mutation`'s `survived` branch fails on any survivor whatsoever
-    #: -- so a native document carrying one would record a policy that
-    #: nothing applied, which is B050's own un-auditable claim inverted. An
+    #: The fork is not ergonomics. A native R2 has no floor at all -- no
+    #: native call site passes one, so `judge_mutation` judges it at its
+    #: default of `100.0` and its `survived` branch fails on any survivor
+    #: whatsoever -- so a native document carrying one would record a policy
+    #: that nothing applied, which is B050's own un-auditable claim
+    #: inverted. An
     #: ingested one is judged against a floor the lane declared, and until
     #: this field existed the loader FORCED that floor to `100.0` so that
     #: `verify.py` could assume it; the assumption is now READ from the

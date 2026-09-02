@@ -1278,13 +1278,22 @@ P1 hazard; recording them in the verdict under assay's name would be worse.
 related reason: they bound or partition an execution assay performs, and here
 assay executes no mutant at all.
 
-**`fail_under` must be `100.0` in this release.** A lower floor means some
-survivors are acceptable, and verdict schema v9 has no `judgment.r2` field
-that records WHICH floor was applied — so the verdict would report PASS beside
-recorded survivors with nothing in it to explain that, and `assay verify`
-(which re-derives the R2 status from the payload's own buckets) would
-correctly call the document inconsistent. A lower value is refused with that
-explanation rather than accepted and quietly ignored. Tracked as **B050**.
+**`fail_under` is the mutation-score floor, and it is recorded on the wire.**
+Any value in `0.0..100.0` loads. The floor lands in the verdict as
+`judgment.r2.fail_under`, which is REQUIRED under `producer = "ingested"` and
+FORBIDDEN under `"native"` — a native R2 has no floor at all, so a native
+document carrying one would record a policy that nothing applied. The score is
+`killed / (killed + survived)` as a percentage; `budget_exceeded`,
+`equivalent` and `discarded` are all outside that denominator, each for the
+reason its own row below gives. A claim with recorded survivors is
+`FAIL`/`MUTANTS_SURVIVED` **iff** the score is below the declared floor, so an
+ingested lane at `fail_under = 90.0` can PASS while listing the survivors it
+tolerated — and `assay verify` re-derives that same PASS by reading the floor
+FROM the document rather than assuming one. Up to schema v9 a lower floor was
+refused at load, because v9 had no field that could record WHICH floor
+applied; that refusal is gone with the field that replaced it, and only the
+`0.0..100.0` range check remains. (**B050**, schema v10 — see the migration
+notes.)
 
 **The status map**, each direction chosen for the visible-failure side:
 

@@ -2061,6 +2061,26 @@ def _check_r2_rederivation(verdict: Verdict, failures: list[str]) -> None:
     returning early on a missing R0 sibling would have let sol finding 2's
     second contradictory artifact — a ``PASS`` with a genuine surviving
     mutant — pass unexamined simply by not declaring R0 (P16 review).
+
+    **B050/A-427/DA-R22: the mutation floor is READ FROM THE DOCUMENT.** Up
+    to v9 this check assumed ``100.0``, and the assumption held only because
+    :mod:`assay.config` refused to load any other value on an ingested lane.
+    v10 puts the floor on the wire (``judgment.r2.fail_under``, REQUIRED
+    under ``producer = "ingested"`` and FORBIDDEN under ``"native"``), so the
+    re-derivation reads it here and hands it to the same
+    :func:`assay.mutation.judge_mutation`, which computes the score with the
+    same :func:`assay.mutation.mutation_pct`. **No second formula anywhere**:
+    a score hand-transcribed here would be a copy of the producer's
+    arithmetic free to drift from it silently, and A-182's independence
+    requirement is about not importing the producer's DECISION — which this
+    function has always satisfied by re-deriving the status from the payload
+    instead of trusting the recorded one, and still does.
+
+    An absent ``judgment.r2``, or an absent floor on it (which is the NATIVE
+    shape), means ``100.0`` — the parameter's own default, and the value a
+    native run is judged at. That is not a fallback papering over an unknown:
+    a native document is FORBIDDEN from recording a floor precisely because a
+    native R2 has none, so reading ``None`` here is reading a fact.
     """
     claim = next((item for item in verdict.claims if item.rigor == "R2"), None)
     if claim is None:
@@ -2143,12 +2163,20 @@ def _check_r2_rederivation(verdict: Verdict, failures: list[str]) -> None:
         # Never read on this branch; named so, rather than fabricated from a
         # claim that has nothing to do with it.
         baseline = _BASELINE_NEVER_READ
-    expected = judge_mutation(baseline, claim.mutation)
+    # B050/A-427/DA-R22: the floor comes from the artifact, never from a
+    # constant here. `judgment.r2` is absent on a payload-free R2 claim (those
+    # branches have all returned above) and its `fail_under` is absent on
+    # every NATIVE document, which the schema forbids from carrying one.
+    judgment_r2 = verdict.judgment.r2 if verdict.judgment is not None else None
+    recorded_floor = getattr(judgment_r2, "fail_under", None)
+    fail_under = 100.0 if recorded_floor is None else float(recorded_floor)
+    expected = judge_mutation(baseline, claim.mutation, fail_under=fail_under)
     if (claim.status, claim.reason_code) != expected:
         failures.append(
             f"R2 claim status {_fmt(claim.status, claim.reason_code)} "
             f"disagrees with the re-derived judgment from mutation buckets "
-            f"{_fmt(*expected)}"
+            f"{_fmt(*expected)} at the floor the document itself records "
+            f"(judgment.r2.fail_under {fail_under})"
         )
 
 
