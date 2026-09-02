@@ -159,3 +159,40 @@ def test_go_and_python_adapters_coexist_in_one_registry_each_independently_addre
     assert get_adapter(registry, "go", "R1") is go_adapter
     assert get_adapter(registry, "python", "R1") is python_adapter
     assert get_adapter(registry, "go", "R1") is not get_adapter(registry, "python", "R1")
+
+
+def test_a_real_built_in_registry_entry_now_exercises_the_external_tool_preflight():
+    """The fact that falsified A-087's premise, pinned where a future reader
+    will trip over it (Wave C round-1 review, BLOCKER 2).
+
+    ``registry.py``'s module docstring used to justify adding no preflight
+    machinery of its own with "every adapter a built-in registry can
+    advertise today (Python, Go, and P34's own SQL) declares
+    ``external_tools = ()``, so no real entry here ever exercises one." That
+    was true when A-087 wrote it and is false now: B047 item 2 gave
+    ``GoAdapter`` ``external_tools = ("go",)`` and A-394 registered that
+    adapter in ``cli._built_in_registry`` at R1, so a real entry exercises
+    ``run_lane``'s preflight on every Go lane.
+
+    The assertion is deliberately made over the WHOLE built-in registry
+    rather than over ``GoAdapter`` alone (which
+    ``test_the_go_adapter_declares_the_expected_protocol_surface`` already
+    pins): the stale sentence was about what a *registry* can advertise, so
+    the guard has to be too. It goes red if Go is unregistered, if its
+    declaration reverts to ``()``, or if some later wave drops the entry --
+    each of which would make the deleted sentence true again and this
+    module's rewritten paragraph the stale one."""
+    entries = _built_in_registry().entries
+
+    declaring = {
+        name: entry.adapter.external_tools
+        for name, entry in entries.items()
+        if entry.adapter.external_tools
+    }
+
+    assert declaring, (
+        "no built-in registry entry declares an external tool; "
+        "registry.py's rewritten preflight paragraph is now the stale one"
+    )
+    assert declaring["go"] == ("go",)
+    assert "R1" in entries["go"].rigor

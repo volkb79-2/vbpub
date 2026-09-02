@@ -851,3 +851,52 @@ tracked file: a Python one-shot that filled the gate verdict into BRIEF-7 while
 it was still an untracked scratchpad draft, and a Python script that computed
 the classified table in §41 from the run's JSON artifacts. Both are analysis,
 not editing.
+
+---
+
+## Generation 7 — the fix round after adversarial review round 1
+
+Dispatched fresh from tip `d938ab8c`, seeded with BRIEF-1..7, the reviewer's
+round-1 report and the controller's 2026-09-02 entry (`vbpub@5b6f77cc`), which
+rules DA-R1 and DA-R2 and dispositions all seven should-fixes.
+
+### `210812f6` — `docs(assay): Wave C review round 1 -- reviewer's report, verbatim`
+
+The review committed unchanged as
+`nyxloom-trove/reports/assay-WAVE-C-go-REVIEW-round1.md`, so the
+fix-verification round reads it from the tree rather than from a session-local
+scratchpad. Not reflowed, not annotated, not answered inline: the answers go in
+`decisions.md` (A-405, A-406), here, and in the REPORT.
+
+### `<this commit>` — `fix(assay): BLOCKER 2 -- registry.py's two stale docstring facts`
+
+Two paragraphs of `src/assay/registry.py`'s module docstring asserted things
+that are false.
+
+The blocker proper (`registry.py:37-49`): "every adapter a built-in registry
+can advertise today (Python, Go, and P34's own SQL) declares
+``external_tools = ()``, so no real entry here ever exercises one." That is
+A-087's premise, and this wave falsified it — `GoAdapter.external_tools` is
+`("go",)` (B047 item 2) and A-394 registered the adapter at R1, so every real
+Go lane exercises `run_lane`'s preflight. `cli.py:328-347` had the identical
+paragraph rewritten when A-394 landed; this copy was missed. Rewritten the same
+way: A-087's REASONING is kept (it is why the machinery lives in `runner`, and
+that is still true and is not what went stale), its factual premise is stated
+as falsified, and the sentence is quoted so a reader can see what changed.
+
+The adjacent staleness (`registry.py:29-32`), which predates Wave C: "the CLI
+… builds its own registry naming Python at ``R1`` only, and no entry at all for
+Go." False since A-242 (SQL at R2) and B036/B046 (JavaScript), and falser after
+A-394. Fixed in the same edit rather than filed, per the reviewer. The
+replacement does not restate the entry list: a duplicate of
+`cli._built_in_registry` here is precisely what rotted three times, so the
+paragraph now names that function as the one authority and makes only the claim
+that does not depend on its contents.
+
+Guard: `test_a_real_built_in_registry_entry_now_exercises_the_external_tool_preflight`
+asserts over the WHOLE built-in registry — not over `GoAdapter` alone, which
+`test_the_go_adapter_declares_the_expected_protocol_surface` already pins —
+because the stale sentence was a claim about what a registry can advertise. It
+goes red if Go is unregistered, if the declaration reverts to `()`, or if the
+entry is dropped: each of those would make the deleted sentence true again and
+the rewritten paragraph the stale one.
