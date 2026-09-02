@@ -590,8 +590,11 @@ class TestL10Size:
     """Test L10: size limits."""
 
     def test_large_handoff_warning(self, sample_project, tmp_path):
-        """Test L10 warning for handoff over 6k tokens."""
-        large_body = "x" * 25000  # 6250 tokens
+        """Test L10 warning for handoff over 10k tokens (NL-3: f3b89f46 raised
+        the L10 thresholds 6k/12k -> 10k/18k but left these fixtures sized for
+        the old floor, so they stopped tripping the new one -- a silent
+        regression discovered by nyxloom-P48's live gate run)."""
+        large_body = "x" * 45000  # 11250 tokens
         content = f"""---
 schema_version: 1
 id: demo-P01-test
@@ -622,8 +625,9 @@ worktree branch out of scope read first context to read
         assert any(f.severity == "warning" for f in l10_errors)
 
     def test_huge_handoff_error(self, sample_project, tmp_path):
-        """Test L10 error for handoff over 12k tokens."""
-        huge_body = "x" * 49000  # 12250 tokens
+        """Test L10 error for handoff over 18k tokens (NL-3: see the sibling
+        warning test's docstring for why this size changed)."""
+        huge_body = "x" * 80000  # 20000 tokens
         content = f"""---
 schema_version: 1
 id: demo-P01-test
