@@ -35,6 +35,36 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     declares the key.
 
 ### Added
+- **RG-36 — liveness judged from the progress file, not from a guessed wall
+  budget (rev 34, SPEC `R-40`).** `budget` is advisory here and a hard
+  lane-wide bound in assay, so the only way to bound a long mutation lane was
+  to guess a TOTAL — dstdns raised `sql-mutation` 90m → 120m and it still
+  could not finish a window. Since rev 33 every assay lane writes
+  `.assay/progress-<assay_lane>.jsonl`; run-gate now reads it.
+  - **Disclosure:** while an assay lane's container runs, the file is read
+    every `PROGRESS_POLL_SECONDS = 30` and, when something changed,
+    run-gate prints `progress <lane>: candidate 37/172, 1.9/min, ETA 71m`.
+    The first observation prints the count alone — one event with no clock
+    in the file is a baseline, not a measurement. A lane whose judge writes
+    no candidate events (an R0/R1 lane, or no file at all) is disclosed ONCE
+    and is never treated as a fault.
+  - **New optional lane key `stall_timeout` (assay lanes only)**, same
+    `\d+[smh]` grammar as `budget`. The lane is stopped only when its
+    container is still RUNNING and the progress file has not advanced for
+    that long: `docker rm -f`, evidence saved, exit 3, naming the stall, the
+    last event seen and the age. **Never on total elapsed time** — `budget`
+    stays advisory and its output is unchanged. Declared on a
+    `kind = "command"` lane it is refused at load: a command lane writes no
+    progress file and could never stall by this rule.
+  - **Timing is coarse today and becomes exact without a rewrite:** assay's
+    events carry no timestamp yet (assay B065), so the rate comes from
+    run-gate's own clock since the first event it observed and advancement
+    from the file's mtime; an event that already carries `elapsed_s` is
+    preferred.
+  - **Documented shape for a mutation lane:** a generous assay `budget` +
+    `judge.mutation.budget_per_candidate` + run-gate `stall_timeout`. For
+    R0/R1 lanes `budget` is the command's own bound and there is nothing to
+    add.
 - **RG-34 — `doctor` names an unprefixed script path in a container command
   lane (rev 34, SPEC `R-30b`).** One `[WARN]` per `kind = "command"` lane on
   a non-host environment whose `argv[0]` is a relative path containing `/`

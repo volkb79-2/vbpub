@@ -6089,7 +6089,12 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
             printf '%s|%s|2026-09-02T12:00:00Z\\n' "$status" "$code"
             ;;
           logs)
-            while [ -f "$S/.hang" ]; do sleep 0.2; done
+            # Only the STREAMING form blocks. `docker logs <name>` is how
+            # evidence is captured before removal, and a shim that blocked
+            # there too would hang the very path a stall depends on.
+            case "$*" in
+              *-f*) while [ -f "$S/.hang" ]; do sleep 0.2; done ;;
+            esac
             echo "FAKE-LOGS-LINE"
             ;;
           wait)
@@ -6330,6 +6335,322 @@ class TestInflightRecordDecisions:
         err = capsys.readouterr().err
         assert "could not read the state of container run-gate-planted" in err
         assert "refusing to guess" in err
+
+
+class FakeClock:
+    """A clock a test drives. Real durations would make the stall tests take
+    minutes and turn a timing assertion into a race."""
+
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, seconds):
+        self.t += seconds
+
+
+def write_progress(path: Path, *events: dict, header: bool = True) -> None:
+    """Write a progress file in assay's own shape: a `run` header line, then
+    one event per candidate."""
+    lines = ['{"event": "run", "lane": "cw2b_schema"}'] if header else []
+    lines += [json.dumps(e) for e in events]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n")
+
+
+def candidate(i: int, total: int = 172, **over) -> dict:
+    return {"event": "candidate", "candidate_index": i,
+            "candidate_total": total, **over}
+
+
+class TestProgressWatch:
+    """RG-36 / R-40. The arithmetic and the silence rule, on a driven clock.
+    `budget` is advisory here and hard in assay, so the only bound a long
+    mutation lane had was a GUESSED total: dstdns raised `sql-mutation`
+    90m -> 120m and still could not finish a window. This reads the file
+    instead."""
+
+    def _watch(self, tmp_path, stall=None):
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-cw2b_schema.jsonl"
+        return ProgressWatchFixture(
+            run_gate.ProgressWatch(path, "sql-mutation", stall, clock),
+            path, clock)
+
+    def test_a_moving_file_yields_rate_and_eta_from_run_gates_own_clock(
+            self, tmp_path, capsys):
+        w = self._watch(tmp_path)
+        write_progress(w.path, candidate(10))
+        assert w.watch.poll() is None
+        # First observation is a BASELINE: one event and no clock in the file
+        # is not a measurement, and inventing a rate would be the guess this
+        # replaces.
+        assert "progress sql-mutation: candidate 10/172\n" in capsys.readouterr().out
+        w.clock.advance(600)                      # 10 minutes
+        write_progress(w.path, candidate(29))     # +19 candidates
+        assert w.watch.poll() is None
+        out = capsys.readouterr().out
+        # 19 candidates in 10 min = 1.9/min; 143 left => 75m.
+        assert ("run-gate: progress sql-mutation: candidate 29/172, 1.9/min, "
+                "ETA 75m") in out
+
+    def test_an_event_carrying_elapsed_s_is_preferred_over_our_clock(
+            self, tmp_path, capsys):
+        """assay B065 adds per-event timing. The same code becomes exact the
+        day it lands — no rewrite, no second implementation."""
+        w = self._watch(tmp_path)
+        write_progress(w.path, candidate(60, elapsed_s=1200))   # 3.0/min
+        assert w.watch.poll() is None
+        assert ("run-gate: progress sql-mutation: candidate 60/172, 3.0/min, "
+                "ETA 37m") in capsys.readouterr().out
+
+    def test_a_rewrite_that_does_not_advance_the_candidate_yields_no_rate(
+            self, tmp_path, capsys):
+        """The file moved (mtime) but the candidate did not. There is still
+        nothing to measure, and `0.0/min, ETA infm` would be worse than
+        saying nothing — so the line degrades to the bare count."""
+        w = self._watch(tmp_path)
+        write_progress(w.path, candidate(10))
+        w.watch.poll()
+        capsys.readouterr()
+        w.clock.advance(30)
+        stat = w.path.stat()
+        os.utime(w.path, (stat.st_atime, stat.st_mtime + 5))
+        assert w.watch.poll() is None
+        out = capsys.readouterr().out
+        assert "run-gate: progress sql-mutation: candidate 10/172\n" in out
+        assert "/min" not in out and "ETA" not in out
+
+    def test_a_file_that_did_not_move_prints_nothing(self, tmp_path, capsys):
+        w = self._watch(tmp_path)
+        write_progress(w.path, candidate(10))
+        w.watch.poll()
+        capsys.readouterr()
+        w.clock.advance(30)
+        assert w.watch.poll() is None
+        assert capsys.readouterr().out == ""      # at most once per CHANGE
+
+    def test_no_file_is_disclosed_once_and_is_never_a_fault(self, tmp_path,
+                                                            capsys):
+        w = self._watch(tmp_path, stall=60)
+        for _ in range(3):
+            w.clock.advance(3600)
+            assert w.watch.poll() is None          # never a stall (RW-5)
+        assert capsys.readouterr().out.count(
+            "run-gate: progress sql-mutation: no candidate events "
+            "(not an R2 lane, or the judge writes none)") == 1
+
+    def test_a_header_only_file_counts_as_no_events(self, tmp_path, capsys):
+        """An R0/R1 lane's file has the `run` header and nothing else."""
+        w = self._watch(tmp_path, stall=60)
+        write_progress(w.path)
+        w.clock.advance(3600)
+        assert w.watch.poll() is None
+        assert "no candidate events" in capsys.readouterr().out
+
+    def test_a_torn_or_unparsable_line_is_skipped_not_fatal(self, tmp_path,
+                                                            capsys):
+        """The judge owns this file and may be mid-append."""
+        w = self._watch(tmp_path)
+        w.path.parent.mkdir(parents=True, exist_ok=True)
+        w.path.write_text('{"event": "run"}\n{"candidate_index": 4, "candi\n')
+        assert w.watch.poll() is None
+        assert "no candidate events" in capsys.readouterr().out
+
+    def test_a_frozen_file_trips_the_stall_with_the_last_event_and_the_age(
+            self, tmp_path, capsys):
+        w = self._watch(tmp_path, stall=900)
+        write_progress(w.path, candidate(37))
+        assert w.watch.poll() is None              # baseline, clock starts
+        w.clock.advance(899)
+        assert w.watch.poll() is None              # not yet
+        w.clock.advance(1)
+        stalled = w.watch.poll()
+        assert stalled is not None
+        assert "still RUNNING" in stalled
+        assert "has not advanced for 900s (stall_timeout 900s)" in stalled
+        assert "last event seen: candidate 37/172" in stalled
+
+    def test_without_stall_timeout_a_frozen_file_is_only_disclosure(
+            self, tmp_path, capsys):
+        w = self._watch(tmp_path, stall=None)
+        write_progress(w.path, candidate(37))
+        w.watch.poll()
+        w.clock.advance(100000)
+        assert w.watch.poll() is None              # behaviour unchanged
+
+    def test_movement_resets_the_stall_clock(self, tmp_path, capsys):
+        w = self._watch(tmp_path, stall=900)
+        write_progress(w.path, candidate(37))
+        w.watch.poll()
+        w.clock.advance(800)
+        write_progress(w.path, candidate(38))
+        assert w.watch.poll() is None
+        w.clock.advance(800)                       # 1600s total, 800 silent
+        assert w.watch.poll() is None
+
+    def test_a_total_that_is_absent_or_reached_prints_no_eta(self, tmp_path,
+                                                             capsys):
+        w = self._watch(tmp_path)
+        write_progress(w.path, {"event": "candidate", "candidate_index": 3})
+        w.watch.poll()
+        out = capsys.readouterr().out
+        assert "run-gate: progress sql-mutation: candidate 3\n" in out
+        assert "ETA" not in out
+
+
+class ProgressWatchFixture:
+    def __init__(self, watch, path, clock):
+        self.watch, self.path, self.clock = watch, path, clock
+
+
+class TestStallTimeoutLaneKey:
+    """The key is validated like `budget` (same grammar, read side by side)
+    and REFUSED where it could never do anything — RG-32's own lesson,
+    applied in the same wave."""
+
+    def _cfg(self, kind="assay", value='"15m"'):
+        body = ('assay_lane = "cw2b_schema"\n            '
+                'assay_command = ["./a.pyz"]' if kind == "assay"
+                else 'argv = ["bash", "-c", "true"]')
+        return f"""\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [lanes.sql-mutation]
+            kind = "{kind}"
+            environment = "tester-unified"
+            {body}
+            budget = "120m"
+            stall_timeout = {value}
+            clean_tree = false
+        """
+
+    def test_an_assay_lane_accepts_it_beside_an_advisory_budget(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self._cfg())
+        cfg, _, _, _ = run_gate.load_config(proj)
+        lane = cfg["lanes"]["sql-mutation"]
+        assert lane["stall_timeout"] == "15m" and lane["budget"] == "120m"
+
+    def test_a_command_lane_refuses_it_by_name(self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self._cfg(kind="command"))
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.load_config(proj)
+        msg = str(exc.value)
+        assert "'stall_timeout' is judged from" in msg
+        assert "could never stall by this rule" in msg
+
+    @pytest.mark.parametrize("value", ['"15"', '"15x"', "15", "true"])
+    def test_a_malformed_duration_refuses_naming_the_key(self, tmp_path, value):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self._cfg(value=value))
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.load_config(proj)
+        assert "'stall_timeout' must look like '30s', '20m' or '2h'" \
+            in str(exc.value)
+
+    @pytest.mark.parametrize("value, expected", [
+        ("45s", 45), ("15m", 900), ("2h", 7200)])
+    def test_budget_seconds(self, value, expected):
+        assert run_gate.budget_seconds(value) == expected
+
+    def test_usage_and_the_run_disclose_it(self, tmp_path, monkeypatch,
+                                           capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self._cfg())
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        assert run_gate.main(["--help"]) == 0
+        out = capsys.readouterr().out
+        assert "stall_timeout=15m (silence, not elapsed)" in out
+        assert "stall_timeout  optional lane key" in out
+
+
+class TestStallEndToEnd:
+    """The stall through `main()`, with a real container loop: a fake docker
+    whose `logs -f` blocks while the progress file sits frozen."""
+
+    def test_a_silent_lane_is_stopped_with_evidence_and_exit_3(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj = make_history_repo(tmp_path, """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [lanes.mutation]
+            kind = "assay"
+            environment = "tester-unified"
+            assay_lane = "cw2b_schema"
+            assay_command = ["./a.pyz"]
+            stall_timeout = "1s"
+            clean_tree = false
+        """)
+        monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
+        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        (state / ".hang").write_text("")          # `logs -f` never returns
+        write_progress(proj / ".assay" / "progress-cw2b_schema.jsonl",
+                       candidate(37))
+        assert run_gate.main(["mutation"]) == 3
+        err = capsys.readouterr().err
+        assert "lane 'mutation' STALLED" in err
+        assert "still RUNNING but progress-cw2b_schema.jsonl has not advanced" in err
+        assert "last event seen: candidate 37/172" in err
+        assert "container logs preserved at" in err
+        # …and the container is GONE: a stall stops the lane, it does not
+        # leave the thing that stalled running on a shared host.
+        assert state_containers(state) == []
+        assert not (proj / ".run-gate" / "inflight" / "mutation.json").exists()
+
+    def test_a_moving_lane_is_never_stopped(self, tmp_path, monkeypatch,
+                                            capsys):
+        repo, proj = make_history_repo(tmp_path, """\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [lanes.mutation]
+            kind = "assay"
+            environment = "tester-unified"
+            assay_lane = "cw2b_schema"
+            assay_command = ["./a.pyz"]
+            stall_timeout = "1s"
+            clean_tree = false
+        """)
+        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        progress = proj / ".assay" / "progress-cw2b_schema.jsonl"
+        write_progress(progress, candidate(1))
+
+        (state / ".hang").write_text("")
+        stop = threading.Event()
+
+        def advance():
+            i = 2
+            while not stop.wait(0.1):
+                write_progress(progress, candidate(i))
+                i += 1
+                if i > 12:
+                    (state / ".hang").unlink(missing_ok=True)
+                    return
+
+        mover = threading.Thread(target=advance, daemon=True)
+        mover.start()
+        try:
+            assert run_gate.main(["mutation"]) == 0
+        finally:
+            stop.set()
+            mover.join(timeout=10)
+        out = capsys.readouterr().out
+        assert "run-gate: progress mutation: candidate " in out
+        assert "STALLED" not in out
 
 
 class TestDoctorNamesUnprefixedScriptPaths:

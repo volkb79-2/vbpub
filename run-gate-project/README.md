@@ -34,7 +34,15 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    overrides), `clean_tree` (default TRUE — refusals are the doctrine;
    nyxloom adopts `false` explicitly until NL-1), `assay_command` REQUIRED
    and explicit (the tool never invents an assay invocation), `budget`
-   advisory-only.
+   advisory-only, `stall_timeout` (rev 34, RG-36/`R-40c`: same `\d+[smh]`
+   grammar as `budget` and read beside it, but it bounds SILENCE in the
+   lane's `.assay/progress-<assay_lane>.jsonl` — the lane is stopped only
+   while its container is still RUNNING and the file has not advanced for
+   that long, never on total elapsed time. assay lanes only; refused on a
+   `kind = "command"` lane, which writes no progress file and could never
+   stall by this rule. The documented shape for a mutation lane is a
+   generous assay `budget` + `judge.mutation.budget_per_candidate` +
+   this key).
 
 ## Intent — what problem this solves
 

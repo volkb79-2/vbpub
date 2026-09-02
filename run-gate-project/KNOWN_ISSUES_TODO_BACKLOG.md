@@ -53,7 +53,7 @@ SPEC §9.
 | RG-33 | `kind = "assay"` mutation lanes never receive `--resume` (or `--progress`), so a budget-capped retry re-tests every mutant from #1 — dstdns `sql-mutation`, three 120-minute retries spent on the first of four target files, `.assay/mutation-state/` never written | Major | FIXED 2026-09-02 (rev 33, SPEC `R-38`) — every assay-kind invocation now carries `--resume --progress .assay/progress-<assay_lane>.jsonl` unconditionally (no-ops without R2, per assay's own contract); a pin declaring a judge older than 2.4.1 refuses by name at argv construction; five new tests in `TestResumeAndProgressAlways` including the executed host-runner argv and the dry-run docker argv line; assay's own gate script mirrors it in the assay wave |
 | RG-34 | a `kind = "command"` container lane whose `argv[0]` is a bare relative script path resolves against the container's `--workdir`, so it dies with `exit 127` in any container that mounts only the judged worktree (dstdns P152's `schema` lane, 100% reproducible) while working under the shared full-repo mount | Major | FIXED 2026-09-02 (rev 34, SPEC `R-30b`) — run-gate's half: `doctor` names the lane, the element, the fix and the mechanism; a WARNING, never a refusal, and run-gate never rewrites a consumer's argv. The argv edit itself is dstdns-side |
 | RG-35 | a lane's container outlives a dead run-gate client (`docker run -d` … `rm -f` in a `finally` the client never reaches), but nothing re-attaches: exit status, evidence and history are lost and the next invocation starts a DUPLICATE container for the same lane — the one-gate rule broken by the tool | Major | FIXED 2026-09-02 (rev 34, SPEC `R-39`) — `.run-gate/inflight/<lane>.json`, automatic re-attach/collect/report-lost, `--fresh` escape, commit mismatch refused |
-| RG-36 | the only liveness bound for a long assay lane is a GUESSED total `budget` (advisory here, hard in assay); rev 33's progress file makes rate/ETA/stall observable but run-gate reads none of it | Major | OPEN 2026-09-02 — periodic `progress <lane>: i/N, rate, ETA` disclosure + optional `stall_timeout` (stop only when running AND silent for that long, never on total elapsed); exact timing needs assay B065 |
+| RG-36 | the only liveness bound for a long assay lane is a GUESSED total `budget` (advisory here, hard in assay); rev 33's progress file makes rate/ETA/stall observable but run-gate reads none of it | Major | FIXED 2026-09-02 (rev 34, SPEC `R-40`) — the COARSE half: 30 s progress disclosure with rate/ETA, no-events disclosed once and never a fault, optional `stall_timeout` lane key (assay lanes only; stops the lane only while RUNNING and silent that long, never on total elapsed). Exact timing = E-3, needs assay B065; the code already prefers an event's `elapsed_s`, so B065 makes it exact with no rewrite |
 | RG-37 | exec-mode container derivation (`run-gate.py` `resolve_container_name`, R-14a) reads `deploy.project_name` + `deploy.environment_tag` (fallback `deploy.network_name`) from the consumer's rendered `ciu.global.toml`; a CIU v8 checkout (SPEC-V8 draft.3, ciu CIU-92) renders `ciu.resolved.toml` instead, with identities as data under `[resolved.identities.<realization>.<service>] container_name`, and has no `deploy` table — every dstdns exec lane would fail container resolution the day dstdns moves to v8, while the operator decided (2026-09-02) that run-gate STAYS maintained in parallel with `ciu gate` and is "aligned with future changes in ciu v8" | Major | OPEN 2026-09-02 — filed from the v8 design review (ciu `docs/CIU-V8-ADVERSARIAL-REVIEW-2026-09-02.md` R-01, proposal §4.4 V8-19 / §4.11 N18): additive lookup order — when `ciu.resolved.toml` exists in the judged checkout, resolve `environments.<n>.container_name` (or a new `exec_in = "<realization>.<service>"` key) through `resolved.identities`, otherwise keep the v7 path; `kind = "sequence"` in-process conjunction lanes (N21) are the second alignment item |
 | RG-38 | resume state lives under the JUDGED project root, so a fresh worktree per run (cmru release transaction, Mode-B instances) loses it and a retry restarts from mutant #1 despite `--resume` | Medium | OPEN 2026-09-02 — bind-mount a per-repo durable `.run-gate/assay-state/<project>/` at the state path; needs assay B066 (`--state-dir`); copy-in/out fallback until then |
 
@@ -2346,11 +2346,63 @@ progress instead: rate, ETA, and stall.
 
 ### Acceptance
 
-- [ ] a progress file advancing under a fake judge produces the ETA line
+- [x] a progress file advancing under a fake judge produces the ETA line
       with the right arithmetic; a frozen file + running container trips
       the stall at the configured time with evidence saved and exit 3;
-- [ ] no `stall_timeout` declared → behaviour unchanged;
-- [ ] an R0/R1 lane (no events) never stalls and says why, once.
+- [x] no `stall_timeout` declared → behaviour unchanged;
+- [x] an R0/R1 lane (no events) never stalls and says why, once.
+
+### Status — FIXED 2026-09-02 (rev 34, SPEC `R-40`) — the COARSE half
+
+Rulings RW-4/RW-5/RW-6. The "exact timing" half waits on assay **B065**
+(per-event `emitted_at`/`elapsed_s`) and is E-3 of the post-v10 plan; the
+code here already PREFERS an event's `elapsed_s` where one exists, so B065
+makes the same implementation exact without a rewrite.
+
+**Disclosure (`R-40a`/`R-40b`).** While an assay lane's container runs, the
+file R-38 already asks for is read every `PROGRESS_POLL_SECONDS = 30` (a
+module constant with its reason: 30 s judges a 15-minute `stall_timeout` to
+within 3% and costs a 4-hour lane 480 `stat()`s) and, when something changed,
+one line is printed:
+
+```
+run-gate: progress sql-mutation: candidate 29/172, 1.9/min, ETA 75m
+```
+
+The FIRST observation prints the count alone — one event and no clock in the
+file is a baseline, not a measurement, and inventing a rate there would be
+the guess this replaces. No file, a header-only file (R0/R1), or a torn last
+line yields `progress <lane>: no candidate events (not an R2 lane, or the
+judge writes none)` exactly ONCE, and is healthy.
+
+**`stall_timeout` (`R-40c`).** Optional lane key, the `budget` grammar,
+assay lanes only. The lane is stopped only when the container is STILL
+RUNNING and the file has not advanced for that long — and "still running" is
+structural, not asserted: the check runs only inside the poll of a `docker
+logs -f` that has not returned. Stop = `docker rm -f`, evidence saved, exit
+3:
+
+```
+run-gate: lane 'mutation' STALLED: the container is still RUNNING but
+progress-cw2b_schema.jsonl has not advanced for 900s (stall_timeout 900s);
+last event seen: candidate 37/172. The container was removed; container logs
+preserved at /tmp/run-gate/run-gate-....log
+```
+
+Never on total elapsed time — `budget` stays advisory, its print unchanged,
+and the two are disclosed side by side saying which is which. Declared on a
+`kind = "command"` lane the key is REFUSED at load: it could never do
+anything there, which is exactly RG-32's defect one key over.
+
+**Tests** (22): `TestProgressWatch` drives the arithmetic and the silence
+rule on a substituted clock (rate from run-gate's clock, rate from a
+B065-shaped `elapsed_s`, no-change prints nothing, no-events disclosed once,
+header-only, torn line, stall at exactly the configured age, movement resets
+the stall clock, no `stall_timeout` = disclosure only, absent total = no
+ETA); `TestStallTimeoutLaneKey` the validation and the two disclosures;
+`TestStallEndToEnd` the real container loop through `main()` — a frozen file
+under a blocking `docker logs -f` exits 3 with the container removed and the
+inflight record cleared, and a file a thread keeps advancing never stalls.
 
 ## RG-38 — resume state does not survive an ephemeral worktree (cmru release worktrees, Mode-B worktrees)
 

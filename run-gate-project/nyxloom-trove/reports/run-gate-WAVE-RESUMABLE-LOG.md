@@ -191,3 +191,33 @@ uncommitted edit shifts the two apart and lines that ARE covered are
 reported uncovered (RG-32's round: `175/177 (98.9%)` dirty →
 `153/153 (100.0%)` on the same code once committed). The verdict that counts
 is the one taken with a clean tree, after the commit.
+
+## E8 — RG-36 (rev 34, SPEC R-40), the COARSE half, 2026-09-02
+
+Rulings RW-4/RW-5/RW-6. New `ProgressWatch` (a clock is injected so the
+stall tests are deterministic rather than a race), `make_progress_watch`
+(assay lanes only — a command lane has no file to read),
+`PROGRESS_POLL_SECONDS = 30` with its reason, `budget_seconds`,
+`stall_timeout` in the lane schema (same `_validate_budget` grammar with a
+`key` parameter so existing budget messages are untouched), and the
+container loop rewritten from a blocking `subprocess.run(docker logs -f)` to
+a `Popen` + `wait(timeout=PROGRESS_POLL_SECONDS)` loop. The "still running"
+half of RW-5 is STRUCTURAL: the poll only ever runs inside a `docker logs
+-f` that has not returned.
+
+Decision recorded (the rulings do not settle it): **`stall_timeout` on a
+`kind = "command"` lane is REFUSED at load.** RW-5's "a lane without a
+progress file cannot stall by this rule" is about an ASSAY lane whose judge
+writes no events (R0/R1) — that case is disclosed and healthy, as ruled. A
+command lane can never have the file at all, so the key there would be inert
+config indistinguishable from a real setting: RG-32's exact defect, landing
+in the same wave. Called out in the REPORT as a decision ask if the
+controller wants it accepted-and-inert instead.
+
+One fixture bug cost a round: `fake_docker_stateful`'s `logs` case blocked
+for BOTH `logs -f` and plain `logs`, so `save_container_logs` (the evidence
+capture a stall depends on) hung forever. Now only the streaming form
+blocks.
+
+Measured: `-k "ProgressWatch or StallTimeout or StallEndToEnd"` → **22
+passed in 5.39 s**; whole suite **487 passed, 2 skipped in 73.38 s**.

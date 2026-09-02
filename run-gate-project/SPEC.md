@@ -129,7 +129,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   tolerated; review fix) — declaring it asserts
   the command honors that convention,
   RG-4), `clean_tree` (bool, default **true**), `budget` (`\d+[smh]`,
-  advisory only), `memory` (`\d+[bkmg]?`, docker `--memory`),
+  advisory only), `stall_timeout` (`\d+[smh]`, assay lanes ONLY — bounds
+  SILENCE in the lane's progress file, never total elapsed time; `R-40c`),
+  `memory` (`\d+[bkmg]?`, docker `--memory`),
   `description` (optional non-empty string, one line, shown by `--help`),
   `required_env` (optional unique list of valid environment-variable names
   this lane's tests REQUIRE — enforced per R-24), `artifacts` (optional
@@ -936,6 +938,52 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `validate-pointers` and a bare invocation. A conjunction lane carries the
     behaviour to each SUB-lane it invokes; the conjunction itself is a
     command lane with no container of its own and no record.
+
+- `R-40` **Progress-judged liveness (RG-36).** `budget` is advisory here and
+  a hard lane-wide bound in assay, so the only way to bound a long mutation
+  lane was to guess a TOTAL: dstdns raised `sql-mutation` from 90m to 120m
+  and it still could not finish a window (`R-38`'s transcript). Since rev 33
+  every assay lane writes `.assay/progress-<assay_lane>.jsonl` with a
+  `candidate_index`/`candidate_total` per candidate, so health is read off
+  the file instead — rate, ETA, and the load-bearing one, SILENCE.
+  - **`R-40a` Disclosure, every `PROGRESS_POLL_SECONDS = 30`.** While an
+    assay lane's container runs, run-gate reads the file the same `R-38`
+    constructs and prints, AT MOST once per poll and only when something
+    changed: `run-gate: progress <lane>: candidate <i>/<N>, <rate>/min, ETA
+    <m>m`. The FIRST observation is a baseline and prints the count alone: a
+    single event with no clock in the file is not a measurement, and
+    inventing a rate would be the guess this replaces. 30 s judges a
+    15-minute `stall_timeout` to within 3% and costs a four-hour lane 480
+    `stat()`s. Disclosure only (`R-05`) — nothing here decides anything.
+  - **`R-40b` No events is disclosed ONCE and is never a fault.** A missing
+    file, a file holding only the `run` header (an R0/R1 lane — one command,
+    no candidates), or a judge that writes none, prints `run-gate: progress
+    <lane>: no candidate events (not an R2 lane, or the judge writes none)`
+    exactly once and is treated as healthy. A torn last line (the judge is
+    mid-append) is skipped, not fatal.
+  - **`R-40c` `stall_timeout`, an optional lane key with the `budget`
+    grammar.** The lane is stopped ONLY when the container is STILL RUNNING
+    and the progress file has not advanced for that long — `docker rm -f`,
+    evidence saved (`R-26`), exit 3, naming the stall, the last event seen
+    and the age. **NEVER on total elapsed time**: `budget` stays advisory and
+    its disclosure is unchanged. The "still running" half is structural, not
+    asserted: the check only ever runs in the poll of a `docker logs -f` that
+    has not returned. A lane whose file never appears cannot stall by this
+    rule (`R-40b` says so out loud), which is what keeps the key from killing
+    R0/R1 containers. Declared on a `kind = "command"` lane it is REFUSED at
+    load — a command lane writes no progress file, so the key could never do
+    anything, and an inert key that reads like a real one is the defect
+    `R-08a` was filed for one key over.
+  - **`R-40d` Coarse now, exact later, same code.** assay's events carry no
+    timestamp today, so the rate is measured against run-gate's OWN clock
+    from the first event it observed and advancement is the file's mtime.
+    Where an event already carries `elapsed_s` (assay B065) it is PREFERRED,
+    so the same implementation becomes exact when B065 lands — no rewrite,
+    and no second reading of the same fact.
+  - **`R-40e` The documented shape.** For a mutation lane: a generous assay
+    `budget` + `judge.mutation.budget_per_candidate` + run-gate
+    `stall_timeout`. For R0/R1: `budget` is the command's own bound and
+    there is nothing to add.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 
