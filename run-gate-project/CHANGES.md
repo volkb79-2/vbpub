@@ -38,6 +38,18 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [23.3.0] - 2026-09-02
+<!-- cmru: generated -->
+<!-- cmru: source-end=b36c6925d1d8ff8bf6fd4b74de8a5bd9f3855dbe -->
+
+### Fixed
+- fix(run-gate): RG-33 -- every assay lane runs with --resume and --progress, judge floor refused by name (rev 33, R-38) (0a4862db)
+
+### Documentation
+- docs(run-gate): RG-34 — schema lane argv doesn't template {worktree} into its own script path (eeda67ce)
+- docs(run-gate): RG-33 — assay mutation lanes never pass --resume, retries restart from scratch (a04c95c2)
+- docs(run-gate): RG-32 — pins.assay.budget is silently inert, real value lives in the consumer's assay.toml (8be4c6b9)
+
 ## [23.2.2] - 2026-09-01
 <!-- cmru: generated -->
 <!-- cmru: source-end=fad40555fb0f8125315f3811a8dcd95bea6db9c3 -->
