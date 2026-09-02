@@ -592,3 +592,67 @@ precedent for shape and discipline.
   unchanged (the cut + B050..B007 + migration notes); its successor and R-2
   get the ruling. Backlog ids on main moved to B068 (dstdns-filed); the
   branch allocates from B069.
+
+- **2026-09-02 (generation 8 returned — the v10 cut is on the branch and
+  GREEN; DA-R22..DA-R24; generation 9 dispatched)** — Verified from
+  `gate-gen8c.log` in a separate step: `GATE_EXIT=0`, exactly one
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, zero `FAILED|DIRTY_TREE|Traceback`,
+  wheel `assay-4.1.1.dev30+gb2fd09f3-py3-none-any.whl` (the judged commit in
+  the name), the new phase `verdict-v10-successors-verified` present and the
+  renamed `verdict-v6-v7-v8-v9-hard-cut-verified` passing 25 frozen
+  templates. `git log main..HEAD` shows exactly ONE `!` commit, **`b2fd09f3`**
+  (`feat(assay)!: verdict schema v9 -> v10 -- the integrity cut`, 97 files),
+  and its stat carries `schemas/verdict.schema.json`, `verdict.py`,
+  `verify.py` and the whole `carve-assets/W6/` drift guard (schema copy,
+  `test_acceptance_v10.py`, eight expected templates, MANIFEST) together; W5
+  is byte-identical to main. Two gate-only consumers (`gate/python/
+  qualify_topos.py`, `qualify_cmru_b006a.py`) were migrated INTO the cut
+  after two red runs — accepted: the same one-for-one-successor discipline,
+  not a workaround, and the commit message says so. None of the seven
+  post-cut items was started (E-008: a green registered gate outranks
+  starting a multi-file item). BRIEF-8 written; LOG 27/28 and the REPORT's
+  generation-8 section appended. DA-R21's two one-line PLANNED notes are in
+  `3-roadmap.md` (M7) and `2-product-definition.md` (F015); nothing reads as
+  done. Ids: no A/B allocated; next free **A-435** / **B069**.
+  - **DA-R22 (ask 1 — B050's denominator): the reading is CONFIRMED, and it
+    is not new arithmetic after all — it is `mutation.py:2174
+    mutation_pct`.** B046 shipped that function with exactly
+    `100 * killed / (killed + survived)`, a docstring that excludes
+    `budget_exceeded` and `equivalent` from the denominator by argument, and
+    the 0/0 → `0.0` guard (A-026/A-035). A-427's "already written and tested
+    once" was wrong about the PARAMETER (the `-S fail_under` history proves
+    the implementer right) but right about the NUMBER. Ruling: `judge_mutation`
+    regains `fail_under: float = 100.0`; on the `survived` branch it returns
+    `FAIL`/`MUTANTS_SURVIVED` iff `mutation_pct(mutation) < fail_under`, else
+    falls through to the existing terminals; **no second formula anywhere**
+    — `verify._check_r2_rederivation` reads `judgment.r2.fail_under` from the
+    document and calls the same two functions. The default `100.0` keeps
+    every existing outcome byte-identical (any survivor makes `pct < 100`),
+    which is the regression witness. Presence of the wire field forks on
+    `producer` exactly as A-427 spells it; do not widen.
+  - **DA-R23 (ask 2 — B050/B051 interaction): affirmed, land them
+    adjacently**, and both rows say the same sentence: `discarded` is a
+    COUNT beside the payload (DA-D4), it never enters `Mutation`'s buckets,
+    so the denominator is unaffected **by construction**, not by an
+    exclusion rule someone has to remember.
+  - **DA-R24 (ask 3 — should the gate fail fast on a schema-version
+    consumer?): no new gate phase; a LOCAL tripwire test instead, filed as
+    B069 and landed as generation 9's item 0.** The hardcoded pins in
+    `gate/python/` are a feature — they force a conscious W-generation
+    advance at every cut (the P25 harness's own header records the rule) —
+    and a grep phase inside the 25-minute gate would only move the red run
+    five seconds earlier. What was missing is a red that fires in the local
+    suite: one test under `tests/` that scans `gate/python/*.py` for
+    `schema_version` integer literals and `carve-assets/W<n>` roots and
+    asserts they equal `verdict.SCHEMA_VERSION` and the newest W directory.
+    Red-first is expressible (check out `7cb6f525`'s harness text in the
+    test's own fixture, or assert against a literal `9` in a temp copy). One
+    A-row, one commit, ≤ 30 minutes, before B050, because B007 will replace
+    a W6 template the same harnesses read.
+  - **Generation 9 dispatched** (fresh Opus, BRIEF-8 seed, DA-R22..R24 in
+    the prompt): B069 tripwire → B050 → B051 → B052 → B053 `detail` → B004
+    → B007 → CONSUMERS "Migration notes (v9 → v10)"; E-008 checkpoint
+    clause; the run-gate wave's reviewer may hold the one gate container
+    for its live probe, so the prompt says WAIT on `docker ps`, never a
+    second container. R-2 is dispatched on the phase-2 tip when generation
+    9 (or its successor) reports the seven items gate-green.
