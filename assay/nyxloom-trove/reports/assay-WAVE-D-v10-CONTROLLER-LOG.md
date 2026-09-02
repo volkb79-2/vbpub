@@ -364,3 +364,51 @@ precedent for shape and discipline.
     re-gate, name the FIX-TIP; (B) phase 2 per the wave prompt with
     DA-R12. R-1 round 2 is resumed by the controller once the FIX-TIP is
     named and gate-green. Next free ids **A-418** / **B064**.
+
+- **2026-09-02 (GENERATION 5 VERIFIED — R-1's fix package landed, FIX-TIP
+  `e3ae8ada` gate GREEN; DA-R13/DA-R14; R-1 round 2 resumed; generation 6
+  dispatched for phase 2)** — Controller read `scratchpad/gate-gen5.log`
+  separately: one `ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0`, no
+  `FAILED|DIRTY_TREE|Traceback`, wheel `assay-4.1.1.dev20+ge3ae8ada`,
+  `commit: e3ae8ada1c4b0036…`, last phase `pyflakes-clean`. Branch tip
+  `fb8d03f5` (records: LOG/REPORT/BRIEF-5); `93188912..e3ae8ada` carries
+  zero `!` commits and touches no schema/verify/drift-guard file. Landed:
+  `e44c1056` R-1's final 839-line report verbatim; `8895ffbf` A-418..A-424
+  (A-418 DA-R8 both post-command guards announce through one shared
+  composer `runner.post_command_refusal`, three CLI tests red-first;
+  A-419 the B029 value assertion, red four ways; A-420 DA-R9 handler;
+  A-421..A-424 SF-2..SF-5); `e3ae8ada` B063 filed. Generation 5 cut at
+  the green gate per the checkpoint clause; phase 2 not started; BRIEF-5
+  hands it to generation 6 whole.
+  - **DA-R13 (generation 5's ask 1 — A-420's label read after the budget
+    is gone): bounded, by a documented grace; not unbounded, not a
+    sentinel.** DA-R9's contingency fired at `cli.py:680`'s own
+    `git.head_rev`, so the handler at `cli.py:711` re-reads `head_rev`
+    with NO `remaining`. An unbounded git call after a lane's budget has
+    expired contradicts the budget's one purpose (assay never hangs — a
+    repository on a stalled mount would hang the refusal itself).
+    Ruling: a module-level constant `LABEL_GRACE_SECONDS = 2.0` with a
+    docstring giving the reason (on a healthy repository `git rev-parse
+    HEAD` completes in milliseconds; two seconds separates "budget too
+    small" from "git unavailable"), passed through the existing
+    `remaining=` shape — no new mechanism. If the grace also expires: no
+    verdict is written, the emitter's one line says the commit label
+    could not be read within the grace, exit code as today. Tests: the
+    grace path writes the verdict with the real commit (the `0.001s`
+    probe, already there); the grace-expired path through a function
+    parameter defaulting to the constant, set to `0.0` — a parameter, not
+    a test double; git stays real (A-334). This is a decision with a
+    stated reason, the same kind as DA-D2's 2048-byte `detail` bound;
+    DESIGN-GUIDE §5 forbids invented measurements, not documented policy
+    constants. Generation 6 lands it as **A-425** before phase 2.
+  - **DA-R14 (ask 3): B063 stays filed, not fixed, this wave.** It is a
+    test-harness portability defect, not a judge defect, and touching 19
+    modules' `git -C` roots is its own package.
+  - Ask 2 (ciu `schema_version`) is DA-R12 — counted once.
+  - **R-1 round 2 resumed** against `93188912..e3ae8ada` with DA-R13
+    disclosed as known-and-ruled so it is verified, not re-blockered; R-1
+    reads `gate-gen5.log`'s markers instead of re-running the gate on the
+    same commit (host rule; the review changes no code).
+  - **Generation 6 dispatched** (fresh Opus, BRIEF-5 seed): A-425 first,
+    then phase 2 per the wave prompt with DA-R12. Next free ids **A-426**
+    (after A-425) / **B064**.
