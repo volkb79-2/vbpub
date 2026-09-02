@@ -2284,6 +2284,36 @@ case a verdict artifact exists where none did before.
 
 Steps 1-3 and 5 are unchanged. Step 4 is the whole change.
 
+### Why step 4 asks about the R1 claim alone, and what that constrains
+
+`supported_helper_roles((r1_claim,))` sees only R1, which is exact rather
+than convenient. `helpers_seen` is created a few lines above the drop and its
+ONLY producer is the `_record_statement_position_helper` sink handed to
+`evaluate_r1`, so every entry it holds at that moment was produced by R1's own
+work; R2/R3 have not run and could not have contributed one. The constraint
+this places on a future change is written at the site: a second helper channel
+— an `executable-code` entry from an R2 payload is the obvious candidate,
+since that role takes EITHER payload — must not share this sink, or this drop
+would void an entry whose own claim is still to come. Its producer carries its
+own drop, at the site that voids ITS payload. That is the rule; the call's
+argument list is only this instance of it.
+
+### Two mutations at the new site, one killed and one deliberately not
+
+* **M-G2** — `helpers_seen[:] = []`, dropping unconditionally and entirely.
+  This is the real hazard the fix creates, because every other new assertion
+  is about a helper going away: it would delete `helpers[]` from every passing
+  Go verdict in the product. Killed by the new control
+  (`test_a_lane_whose_r1_really_JUDGED_keeps_its_helper_through_run_lane`),
+  and by nothing else: `1 failed, 9 passed`.
+* **M-G** — `if r1_claim.coverage is None:` → `if True:`. **SURVIVES, and
+  correctly.** `supported_helper_roles` of a judged R1 claim already keeps
+  `statement-positions`, so the filter is idempotent on the passing path and
+  the two programs are behaviourally identical. The `if` is an intent
+  statement, not a behavioural guard; it is kept because the controller ruled
+  the prescription applied exactly, and it is recorded here so a surviving
+  mutant at this site reads as measured rather than missed.
+
 ---
 
 ## 51. The two surviving mutants, killed — SF-R2-1 and SF-R2-2
@@ -2367,15 +2397,16 @@ finding.
 Measured this generation, from the worktree's `assay/` with the devcontainer
 venv (Python 3.14.6), over the whole `tests/` tree with no `--ignore`:
 
-* at `74c64858`: **3942 passed, 20 skipped**, exit 0
-  (`scratchpad/g8/full-suite-final.log`)
-* the reviewer's baseline was 3939/18. +3 tests: two in
-  `test_runner_helpers_envelope.py` (A-407, toolchain-free, so the registered
-  gate runs them) and one in `test_runner_statement_attribution_wiring.py`
-  (SF-R2-2). +2 skips: the two new `qualification/test_go_r1_real.py` tests,
-  which skip without `ASSAY_GO_QUALIFICATION=1`. `test_go_line_directive_
-  witness.py`'s count is unchanged — SF-R2-1 repaired a test rather than
-  adding one.
+* **3943 passed, 20 skipped**, exit 0
+  (`scratchpad/g8/full-suite-final2.log`; an earlier run at `74c64858`, before
+  the A-407 control test was added, measured 3942/20)
+* the reviewer's baseline was 3939/18. +4 tests: three in
+  `test_runner_helpers_envelope.py` (A-407's two refusals and its control —
+  toolchain-free, so the registered gate runs all three) and one in
+  `test_runner_statement_attribution_wiring.py` (SF-R2-2). +2 skips: the two
+  new `qualification/test_go_r1_real.py` tests, which skip without
+  `ASSAY_GO_QUALIFICATION=1`. `test_go_line_directive_witness.py`'s count is
+  unchanged — SF-R2-1 repaired a test rather than adding one.
 * `ASSAY_GO_QUALIFICATION=1 pytest tests/qualification/test_go_r1_real.py`:
   **7 passed**, 42.5s, in `tester-unified-go:local`
   (`scratchpad/g8/qual-final.log`).

@@ -2811,6 +2811,21 @@ def _run_prepared_lane(
                     # correspondence rule (`verdict.py`, read by
                     # `Verdict._check_helpers` as well), so this adds no
                     # second copy of the table that could disagree with it.
+                    #
+                    # It is asked about the R1 claim ALONE, and that is exact
+                    # rather than convenient: `helpers_seen` is created a few
+                    # lines above and its ONLY producer is the
+                    # `_record_statement_position_helper` sink handed to
+                    # `evaluate_r1`, so every entry it holds at this point was
+                    # produced by R1's own work. R2/R3 have not run yet and
+                    # could not have contributed one. Should a second helper
+                    # channel ever be added -- an `executable-code` entry from
+                    # an R2 payload is the obvious candidate, since that role
+                    # takes EITHER payload -- it must not share this sink, or
+                    # this drop would void an entry whose own claim is still
+                    # to come. Its own producer would carry its own drop, at
+                    # the site that voids ITS payload; that is the rule, not
+                    # this call's argument list.
                     kept = supported_helper_roles((r1_claim,))
                     helpers_seen[:] = [
                         helper for helper in helpers_seen if helper.role in kept

@@ -1112,17 +1112,34 @@ would be the drift this wave has caught three times already.
 
 **Tests, both proven RED without the fix, not merely written.**
 
-* `test_runner_helpers_envelope.py` gains two, driven through the real
-  `run_lane` with a synthetic `requires_statement_attribution` adapter whose
-  oracle reports a block ending two lines past the profile's (A-391's
-  "not the same revision" case). No toolchain, so **the registered gate runs
-  them**. The first asserts the verdict carries the judge's own
+* `test_runner_helpers_envelope.py` gains three, all driven through the real
+  `run_lane` with one synthetic `requires_statement_attribution` adapter whose
+  single parameter is the oracle's `end_line`. No toolchain, so **the
+  registered gate runs them**. `end_line=9` is A-391's "not the same revision"
+  case: the first test asserts the verdict carries the judge's own
   `UNREADABLE_ARTIFACT` and omits `helpers`, with R0 asserted PASS as the
   vacuity guard; the second repeats the CLI's own reserve-then-`write_verdict`
   two-step and reads the document back off the filesystem, because "no verdict
   artifact" is half of what A-407 fixes and a returned object cannot prove it.
   At `71a59967` both fail with the masked message verbatim
-  (`scratchpad/g8/prewt`).
+  (`scratchpad/g8/prewt2`).
+* **The third is the control, and it is not decoration.** `end_line=7` agrees
+  with the profile, the lane PASSes 2/2 statement-granular, and the helper
+  entry must SURVIVE. Everything else here is about a helper being dropped, so
+  an unconditional drop at the same site would satisfy all of it while
+  deleting `helpers[]` from every passing Go verdict in the product — and the
+  real-toolchain proof of the positive is opt-in, so without this the
+  registered gate held only one side of the rule. Mutation **M-G2**
+  (`helpers_seen[:] = []`, drop everything) fails exactly this test and
+  nothing else.
+* **M-G, recorded because it SURVIVES and that is correct.** Replacing the
+  `if r1_claim.coverage is None:` guard with `if True:` changes no behaviour:
+  `supported_helper_roles` of a judged R1 claim already keeps
+  `statement-positions`, so the filter is idempotent on the passing path. The
+  `if` is an intent statement — "this is the voided-payload case" — not a
+  behavioural guard, and it is kept because the controller ruled the
+  prescription applied exactly. Measured rather than assumed, so round 3 sees
+  it was understood rather than missed.
 * `tests/qualification/test_go_r1_real.py` gains the reviewer's scenarios B
   and E, in-image through the shipped zipapp. B is a real two-package Go
   module whose generated file carries Go's own `lineDupContents` `//line`
@@ -1135,12 +1152,12 @@ would be the drift this wave has caught three times already.
   (`scratchpad/g8/prewt2`, `2 failed, 5 passed`); with the fix,
   `7 passed`.
 
-Devcontainer full suite on this tree: **3941 passed, 20 skipped** (from
-3939/18 — the reviewer's own measurement, which generation 7's "11 skipped"
-did not reproduce; the delta is my two new qualification tests, which skip
-without `ASSAY_GO_QUALIFICATION=1`). Measured with the devcontainer venv
-(Python 3.14.6) from the worktree's `assay/`, which is where the 18 was
-measured too.
+Devcontainer full suite, whole `tests/` tree, no `--ignore`, devcontainer venv
+(Python 3.14.6), from the worktree's `assay/`: **3943 passed, 20 skipped** at
+the end of this generation, from the reviewer's 3939/18. The +2 skips are the
+two new qualification tests, which skip without `ASSAY_GO_QUALIFICATION=1`;
+REPORT §52 explains why generation 7's "11 skipped" was not reproducible and
+why neither number was wrong.
 
 ### `<this commit>` — `test(assay): SF-R2-1/SF-R2-2 -- kill the two surviving A-405 mutants`
 

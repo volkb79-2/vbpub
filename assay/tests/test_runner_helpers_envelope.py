@@ -303,15 +303,19 @@ _PROFILE_TEXT = "mode: count\npkg/mod.zzz:3.22,7.2 2 1\n"
 
 
 @dataclass(frozen=True, kw_only=True)
-class _StaleOracleAdapter:
-    """A ``requires_statement_attribution`` adapter whose oracle answers
-    honestly about a source the profile does not match.
+class _BlockOracleAdapter:
+    """A ``requires_statement_attribution`` adapter with a canned oracle.
 
     Synthetic and deliberately not Go: the defect under test is in
     :mod:`assay.runner`'s claim assembly, not in any language. What matters
     is only the ORDER -- ``statement_blocks`` returns (so the helper is
-    recorded) and the join then refuses -- which is every judge refusal that
-    happens downstream of the oracle.
+    recorded) and the judge then either accepts or refuses.
+
+    ``end_line`` is the ONE parameter that decides which: ``7`` agrees with
+    the profile and the lane is judged; ``9`` is the source having moved
+    while the profile did not, which `attribute_statements` refuses (A-391).
+    One class rather than two, so the pair below differs by exactly the thing
+    under test.
     """
 
     name: str = "zzz"
@@ -320,8 +324,9 @@ class _StaleOracleAdapter:
     requires_span_attribution: bool = False
     requires_statement_attribution: bool = True
     external_tools: tuple[str, ...] = ()
+    end_line: int = 7
 
-    def for_project(self, *, repo_top: Path, project_root: Path) -> "_StaleOracleAdapter":
+    def for_project(self, *, repo_top: Path, project_root: Path) -> "_BlockOracleAdapter":
         return self
 
     def is_test_path(self, rel_path: str) -> bool:
@@ -343,7 +348,7 @@ class _StaleOracleAdapter:
                     StatementBlock(
                         start_line=3,
                         start_col=22,
-                        end_line=9,
+                        end_line=self.end_line,
                         end_col=2,
                         num_stmts=2,
                         stmt_lines=(4, 6),
@@ -359,16 +364,22 @@ class _StaleOracleAdapter:
         )
 
 
-def _stale_profile_lane(git_repo: GitRepo) -> tuple[object, str]:
+def _oracle_lane(git_repo: GitRepo) -> tuple[object, str]:
     """A real two-commit repository whose lane command really writes the
-    profile above, and the head commit to judge it at."""
+    profile above, and the head commit to judge it at.
+
+    The head commit rewrites lines 4 and 6 -- the two the oracle calls
+    statements -- so an agreeing oracle yields a real 2/2 PASS and the pair
+    of tests below differ only in the oracle's answer.
+    """
+    body = [f"line {n}\n" for n in range(1, 11)]
     git_repo.write(".gitignore", "cov.out\n")
-    git_repo.write("pkg/mod.zzz", "".join(f"line {n}\n" for n in range(1, 11)))
+    git_repo.write("pkg/mod.zzz", "".join(body))
     base_rev = git_repo.commit_all("seed the source the oracle reads")
-    git_repo.write(
-        "pkg/mod.zzz", "".join(f"line {n}\n" for n in range(1, 11)) + "line 11\n"
-    )
-    head_rev = git_repo.commit_all("change it, so R1 has something to judge")
+    body[3] = "line 4 changed\n"
+    body[5] = "line 6 changed\n"
+    git_repo.write("pkg/mod.zzz", "".join(body))
+    head_rev = git_repo.commit_all("change the two statement lines")
     lane = make_lane(
         rigor=("R0", "R1"),
         judge=make_r1_judge(
@@ -380,6 +391,48 @@ def _stale_profile_lane(git_repo: GitRepo) -> tuple[object, str]:
         argv=("/bin/sh", "-c", f"cat > cov.out <<'EOF'\n{_PROFILE_TEXT}EOF"),
     )
     return lane, head_rev
+
+
+def test_a_lane_whose_r1_really_JUDGED_keeps_its_helper_through_run_lane(
+    git_repo: GitRepo,
+):
+    """**The control A-407 needs, at the runner level.** Everything below is
+    about a helper being DROPPED, and an unconditional drop at the same site
+    would satisfy all of it -- while silently deleting `helpers[]` from every
+    passing Go verdict in the product. The real-toolchain proof of the
+    positive is opt-in (`tests/qualification/test_go_r1_real.py`), so without
+    this the registered gate would not hold the other side of the rule.
+
+    Same fixture, same adapter class, one field different: the oracle agrees
+    with the profile, so the R1 claim carries a payload and the entry it
+    describes stays."""
+    lane, head_rev = _oracle_lane(git_repo)
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=_BlockOracleAdapter(end_line=7),
+        assay_version="0.1.0",
+    )
+
+    assert verdict.outcome is Outcome.PASS, verdict.reason_code
+    r1 = next(claim for claim in verdict.claims if claim.rigor == "R1")
+    assert r1.coverage is not None
+    # Statement-granular: two of the block's five lines, which is the whole
+    # subject of the wave and the reason the payload is worth a helper record.
+    assert r1.coverage.executable == 2
+    assert r1.coverage.covered == 2
+    assert verdict.helpers == (
+        Helper(
+            role="statement-positions",
+            tool="blocky-oracle",
+            resolved_path="/usr/bin/blocky",
+            identity="blocky version 1.2.3",
+        ),
+    )
+    assert verdict.to_dict()["helpers"][0]["role"] == "statement-positions"
 
 
 def test_a_judge_that_refuses_after_the_oracle_ran_reports_ITS_reason_not_the_wiring(
@@ -405,14 +458,14 @@ def test_a_judge_that_refuses_after_the_oracle_ran_reports_ITS_reason_not_the_wi
     ``test_a_stale_go_profile_refuses_through_the_cli_and_writes_a_verdict``
     and its ``//line`` sibling. This one needs no toolchain, which is why it
     is here: the registered gate runs it."""
-    lane, head_rev = _stale_profile_lane(git_repo)
+    lane, head_rev = _oracle_lane(git_repo)
 
     verdict = runner.run_lane(
         lane,
         commit=head_rev,
         repo=git_repo.path,
         project_root=git_repo.path,
-        adapter=_StaleOracleAdapter(),
+        adapter=_BlockOracleAdapter(end_line=9),
         assay_version="0.1.0",
     )
 
@@ -442,7 +495,7 @@ def test_that_refusal_really_reaches_a_verdict_ARTIFACT(
     the CLI's own two-step -- reserve, then
     :func:`~assay.runner.write_verdict` -- and reads the document back off
     the filesystem. A consumer's whole record of this run is that file."""
-    lane, head_rev = _stale_profile_lane(git_repo)
+    lane, head_rev = _oracle_lane(git_repo)
     target = tmp_path / "verdict.json"
 
     verdict = runner.run_lane(
@@ -450,7 +503,7 @@ def test_that_refusal_really_reaches_a_verdict_ARTIFACT(
         commit=head_rev,
         repo=git_repo.path,
         project_root=git_repo.path,
-        adapter=_StaleOracleAdapter(),
+        adapter=_BlockOracleAdapter(end_line=9),
         assay_version="0.1.0",
     )
     with reserve_verdict_output(str(target), stdout=io.StringIO()) as destination:
