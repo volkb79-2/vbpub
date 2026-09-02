@@ -510,7 +510,7 @@ ciu: PASS (exit 0)
 6. `57348c00` — `fix(ciu): ciu-P49 review fix pass -- TypeError->ValueError
    blocker + provides_container kind gate + FEATURES.md/CIU-91
    corrections` — all six review items above, one commit.
-7. `<this commit>` — this REPORT/LOG addendum.
+7. `9385168d` — this REPORT/LOG addendum.
 
 ## G. Items explicitly NOT done (controller ruling, recorded here per
 instruction, not filed as new backlog entries)
