@@ -92,3 +92,59 @@ precedent for shape and discipline.
   rulings, phase-1 items 2–10 in order, BRIEF-2 when phase 1 is
   gate-green (then R-1 + generation 3). Next free ids **A-409** / **B062**
   (main unchanged at `a4a865da`).
+
+- **2026-09-02 (generation 2 returned — 7 of 10 phase-1 items; gate PASS on
+  `c80b3452`; DA-R3..DA-R6 ruled; generation 3 dispatched)** — Generation
+  2 (~74 min, 263 calls) landed `440d5da9` B053 (a)+(b)/A-409 (one emitter
+  `runner.announce_refusal` at 13 conversion sites + `cli.py`'s three
+  prints; `evaluate_r1` gained `diagnostics`; 9 tests red-first),
+  `c37ca3fb` B054/A-410 (`FileCoverage.contradictory_branch_lines`,
+  parser drops the arcs and records the lines, `evaluate` refuses only
+  for a judged file, `runner` names every defective record on diagnostics;
+  7 tests red-first; two old verdict-wide-refusal tests rewritten),
+  `c80b3452` B060/A-411 (staging under a `TemporaryDirectory`, outcome
+  test), B056/A-412 (option 1), B055/A-413 (ruling + docs), B009 (docs —
+  and the entry's premise measured FALSE: all four consumers still vendor
+  a pinned `.pyz`; the docs describe that). Tip `10d9390d`;
+  **gate-verified commit `c80b3452`** — the controller checked the LOG's
+  marker transcript (one `ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0`,
+  zero red flags, wheel `assay-4.1.1.dev9+gc80b3452`, `PASS (exit 0)`,
+  suite 3968/20); `c80b3452..10d9390d` is BRIEF/LOG/REPORT only; nothing
+  under `verdict.py`/`verify.py`/`schemas/`/the drift-guard; no `!`. Main
+  moved to `9b0bca62` (a ciu backlog filing; assay untouched). BRIEF-2
+  corrects BRIEF-1 twice (B029: ONE `execute_command` caller; B028's
+  likely catch is the existing handler at `runner.py:3776`) and adds a
+  third trap (never run git after `cd /workspaces/vbpub`).
+
+  **DA-R3 (B053, ask 1): yes, and in phase 1, not phase 2.** The emitter's
+  contract is a message, not an exception: the five refusal sites that
+  call `refuse_lane`/`refuse_all` with a bare `(status, reason_code)` —
+  `DIRTY_TREE` (both), `HEAD_CHANGED`, `MISSING_EXTERNAL_TOOL`,
+  `env_required`, the bad `--shard` — compose their message where the
+  fact is known (the offending paths, the old and new HEAD, the tool, the
+  variable, the shard spec) and go through the same emitter; a typed
+  `AssayError` only if it simplifies the site. R-1's stated push ("every
+  refusal reachable through `assay run` prints exactly one line") must
+  hold without qualification before R-1 is dispatched.
+  **DA-R4 (B053, ask 2): not correct as landed.** A line about a refusal
+  that never reaches the verdict is a sentence the consumer cannot
+  reconcile with the document; defer that one site's announcement to
+  where the final claim is chosen (`runner.py:~3134`), no general buffer.
+  **DA-R5 (B056, ask 3): option 1 stands (DA-D13).** No second wheel build
+  for a docstring's negative; R-1 may argue, the controller will not
+  reverse on cost grounds alone.
+  **DA-R6 (B029, ask 4): measure first, as proposed.** Drive a real R3
+  lane with a resolvable `derived:` fact through the installed CLI at the
+  tip. If the misattributed `ERROR`/`BAD_LANE_CONFIG` reproduces on the
+  shipped isolated path, fix where that path builds the side-run's plan
+  (wherever it is) and land the CLI test. If it does NOT reproduce, thread
+  the parameters through `execute_command` anyway (the docstring names
+  the defect and the legacy path is public), correct the docstring, land
+  the CLI-driven test as a regression guard (R3 claim PASS/FAIL with a
+  derived fact), and mark B029 RESOLVED-by-measurement with the
+  transcript, noting the entry's premise was confined to the legacy path.
+
+  **Generation 3 dispatched** — fresh Opus, seeded with BRIEF-1+2 and
+  DA-R3..R6: B028, DA-R3/DA-R4 follow-ups, B029, B024, then gate, BRIEF-3,
+  return (phase 1 complete → R-1 + generation 4 for phase 2). Next free
+  ids **A-414** / **B062**.
