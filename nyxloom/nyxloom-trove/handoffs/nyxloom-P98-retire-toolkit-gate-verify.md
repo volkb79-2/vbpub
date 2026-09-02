@@ -50,7 +50,9 @@ scope:
     - "tests/test_planner_differential.py"          # same as planner_corpus.py -- consumes PROFILES generically, verify-only unless it special-cases "gate-verify-due" by name
     - "tests/test_snapshot_faults.py"                # module-level IRREVERSIBLE tuple includes EventType.GATE_VERIFY_RECORDED (~line 174) -- drop that member from the tuple, or it's an AttributeError at collection time
     - "tests/test_remote_mutation_audit_tools.py"    # verify-only, no edit expected: its `worker` fixture dynamically exec's tools/remote_mutation_audit.py rather than importing nyxloom.mutation_gate directly, so it needs no change once that file's import is updated (Work item 1); listed because O2 requires confirming it still collects and passes
+    - "tests/test_core_characterization.py"          # verify-only, no edit expected: it reads the inventory doc below and asserts against the real tree -- fixing the doc (Work item 10) is what makes it pass again; listed because O2 requires confirming it collects and passes
     - "nyxloom-trove/reports/nyxloom-P98-REPORT.md"  # NEW: the O8 symbol-absence script's source + PASS output, appended here as proof
+    - "nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md"  # a LIVE, mechanically-checked inventory (unlike legacy_planner.py -- this one is meant to track current reality; tests/test_core_characterization.py enforces it), missed by both prior review rounds because it's a nyxloom-trove/reports/ doc, outside the src/tests/tools sweep scope. Remove the `src/nyxloom/gate_canary.py` row entirely (test_inventory_paths_all_exist fails otherwise -- the file no longer exists). Update the `src/nyxloom/effects_gates.py` row's line count to its real post-edit count (test_inventory_sizes_are_within_the_declared_tolerance fails otherwise -- re-measure with `wc -l`, do not hardcode 354) and trim its "Present responsibility" text, which currently says "the gate-verify cadence and post-merge validation" -- the gate-verify cadence is gone (Work item 3), only post-merge validation remains. Follow the doc's own convention (see its "Re-measured DATE (CR-NN review) for ..." paragraphs) and add a short "Re-measured <today> (nyxloom-P98)" note explaining both changes.
   forbid:
     - "src/nyxloom/gate_runner.py"       # generic gate-argv executor; stays, becomes the ONLY gate-execution path
     - "src/nyxloom/effects_merge.py"     # the ("mutation", getattr(cfg.policy, "mutation_gate", False), effects_gates.select_mutation_gate) wiring is GENERIC (picks a project-DECLARED phase='mutation' GateDef, never imports the deleted module) -- confirmed by reverse-dependency sweep and independently re-verified by adversarial review; do not touch
@@ -76,13 +78,17 @@ oracles:
       reintroduces a deleted module at collection time and fails the run) passes green
       on HEAD, AND collection includes tests/test_planning.py, tests/test_gap_audit.py,
       tests/test_daemon.py, tests/test_remote_mutation_audit_tools.py,
-      tests/test_snapshot_faults.py, and tests/test_planner_differential.py by name (not
-      merely "the suite as a whole" -- a selection filter that skips any of these does not
-      satisfy this oracle). The last one specifically must include
+      tests/test_snapshot_faults.py, tests/test_planner_differential.py, and
+      tests/test_core_characterization.py by name (not merely "the suite as a whole" -- a
+      selection filter that skips any of these does not satisfy this oracle). The
+      differential file specifically must include
       test_legacy_baseline_is_the_committed_branch_point and the full PROFILES/corpus
-      parametrization, not a subset.
+      parametrization; the characterization file specifically must include
+      test_inventory_paths_all_exist and test_inventory_sizes_are_within_the_declared_tolerance
+      (Work item 10 exists because a real gate run, not either review round, is what caught
+      these two failing first).
     negative: >-
-      A gate run that never actually collects/executes the six named test files does not
+      A gate run that never actually collects/executes the seven named test files does not
       satisfy this oracle even if it exits 0.
     gate: tester-unified
   - id: O3
@@ -509,6 +515,26 @@ a contract item.
    superseded by the 2026-08-17 reorientation analysis and closed by
    nyxloom-P98, because it would have recreated testing capability Assay
    now provides.
+10. **Fix the ownership inventory `tests/test_core_characterization.py`
+    checks against reality.** In
+    `nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md`:
+    remove the `src/nyxloom/gate_canary.py` row entirely (its path no
+    longer exists —
+    `test_inventory_paths_all_exist` fails otherwise). Re-measure
+    `src/nyxloom/effects_gates.py` with `wc -l` on the tree AFTER Work item
+    3's edits land, and update its recorded line count to that real value
+    (`test_inventory_sizes_are_within_the_declared_tolerance` fails
+    otherwise — do not guess or hardcode a number from this handoff's own
+    prose, re-measure). Trim that same row's "Present responsibility" text:
+    it currently reads "the gate-verify cadence and post-merge validation"
+    — the gate-verify cadence is gone, so only "post-merge validation"
+    (and whatever else the file still does) remains accurate. Add a short
+    "Re-measured 2026-09-02 (nyxloom-P98)" note following the document's
+    own existing convention (see its "Re-measured DATE (CR-NN review)
+    for ..." paragraphs near the top), explaining both changes in one or
+    two sentences. This file is a *live*, mechanically-checked inventory —
+    unlike `tests/legacy_planner.py`, it is meant to be kept current, not
+    frozen; updating it is the correct fix, not a forbidden edit.
 
 ## Scope / forbid
 
