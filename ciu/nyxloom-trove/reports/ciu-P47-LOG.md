@@ -223,3 +223,107 @@ have to be in one place).
 `excluded_lines={}`. No `# pragma: no cover` was added anywhere in this
 package — checked explicitly, because that is precisely what failed ciu-P46's
 first gate run while `pytest` was green.
+
+---
+
+# Addendum — review fix pass (2026-09-02)
+
+A fresh adversarial reviewer returned **ACCEPT-conditional** on the three
+commits above. The mechanism (C1/C2/C3) was accepted without change: the
+reviewer specifically re-tried-to-break the `generated_facts_document` /
+`read_generated_facts` split against CIU-80's `identity_unreadable`
+degradation and it held, verified template-binding identity by differential
+execution against pre-P47 `main`, and verified C3 end-to-end with the real
+production constant. The fix list was five blockers and three nits, and its
+shape is the finding worth recording: **seven of the eight were stale prose,
+one was a missing test. Zero were mechanism defects.** That is ciu-P46's
+result reproduced exactly, on a package whose author had read P46's review
+and run a deliberate three-pass sweep specifically to avoid it.
+
+The reviewer's diagnosis of why the sweep missed them is the durable lesson:
+
+> P47's implementer did a real, documented 3-pass sweep specifically to
+> avoid P46's gap, and still shipped P46's exact defect class — because the
+> sweep's pattern list … does not match the prose that actually went stale.
+
+A grep sweep finds the *terms* you thought of. It does not find a paragraph
+that describes the old mechanism accurately in words that never name it —
+DESIGN-GUIDE's reader paragraph (B2) contained four false statements and not
+one of them used a filename or a renamed identifier. The sweep's own oracle
+was the blind spot, not the diligence applied to it.
+
+## What was fixed
+
+**B4 — the only functional gap, and the one worth the most.** The merge
+order between the operator's overlay and the generated-facts file was
+asserted in two places (`config_model.py`, SPEC S3.1b clause 5) and pinned by
+nothing: the reviewer moved the merge line above the overlay block, ran the
+full suite, and got 3526 passed. The regression is real — an operator
+hand-writing `[ciu.instance.generated]` into their overlay would silently
+shadow CIU's derived facts. Pre-P47 this class of bug was *structurally*
+impossible (one file, one table, no ordering choice); C1's split created the
+choice in code and left it unguarded. This is the sharper form of the split's
+cost, and it is exactly what the original implementation pass did not think
+to test, because before the split there was nothing there to test.
+
+Fixed by `test_the_derived_fact_outranks_the_same_key_hand_written_in_the_overlay`
+in `test_ciu_workspace_env.py`'s O3 section: generate real facts, then have
+the operator's overlay write `"OPERATOR-WINS"` over *every* derived key, and
+assert `render_global_chain` returns the derived table unchanged — plus that
+an unrelated overlay key still merges, so the test cannot pass by the overlay
+being ignored wholesale. Proven planted-and-fired rather than taken on faith:
+with the merge order flipped it fails on concrete diverging values
+(`{'instance_id': 'OPERATOR-WINS'} != {'instance_id': '8ffce1'}`); mutation
+reverted. `config_model.py` now carries a comment naming that test as the
+thing that pins the line's position, so the next person to tidy the merge
+sequence learns what they are moving.
+
+**B1/B2/B3 — stale prose, the P46 class.** B1: SPEC S3.1c clauses 2/4/5 still
+described slicing a region out of a Jinja overlay; clause 5 is now a
+whole-file plain-TOML parse, keeping the still-valid reasons a chain render
+must not be required to read identity. B2: DESIGN-GUIDE's reader paragraph
+past-tensed and pointed at the "why it was deleted" section above it (I first
+wrote "the section below" — the pointer was wrong in direction as well as the
+prose being wrong in tense). B3: eight "overlay" references naming the wrong
+file across `deploy.py`, `worktree.py`, SPEC S3.12, `tests/conftest.py` and
+`test_ciu_worktree.py`. The surviving "overlay" hits in those files are the
+unrelated env-var sense — overlaying keys onto a subprocess env — and were
+classified individually rather than swept.
+
+**B5 — the cross-repo gitignore gap, and my own error inside it.** vbpub's
+ROOT `.gitignore` carried an un-globbed `ciu.global.worktree.toml.j2`, added
+for assay's "B017 class, third occurrence"; the rename silently retired that
+mitigation for the two names that replaced it. `ciu/.gitignore` covers them
+*inside* `ciu/`, but the root list is what protects vbpub's own worktrees.
+Both new names added, retired name kept. My first edit wrote a comment
+claiming "the retired name above is KEPT" while the edit had actually removed
+that line — caught only because I ran `git check-ignore -v` against all three
+filenames instead of rereading my own diff, and got two matches for three
+names. The comment and the code disagreed, and the comment was the confident
+one. Re-added and re-verified: all three now resolve to lines 201-203.
+
+**N1/N2/N3.** N1: `ciu/.gitignore`'s comment asserted a causal link to
+`ciu migration-check` that the reviewer disproved by direct testing — the
+detector is a bare filesystem existence check that never consults a
+`.gitignore`. Restated as plain hygiene. N2: the *published* consumer helper
+in CONSUMERS §11b leaked a bare `AttributeError` on two shapes this package
+had just hardened CIU's own reader against. Rewritten with `isinstance`
+guards — and verified by extracting the helper from the markdown and
+**executing** it against nine shapes, rather than eyeballing it: absent → {},
+happy → facts, empty → {}, non-UTF-8 → ValueError, malformed TOML →
+ValueError, scalar ancestor → ValueError, scalar leaf → ValueError,
+non-string fact → ValueError, directory → ValueError. Published code is code;
+reading it is not testing it. The indeterminacy-case count was corrected from
+FOUR to FIVE in both the docstring and §21 — the whole-file parse makes a
+non-table at the table's path reachable where the old block-slice did not.
+N3: ARCHITECTURE.md's `workspace_env.py` inventory now lists the three new
+functions and states why the two readers are distinct.
+
+## Gate
+
+`./run-gate.py ciu --worktree …` at `80ef0a18`: **PASS**, R0 PASS, R1 PASS,
+`changed_lines` 100.0% — 141/141 executable lines and 12/12 branches over 10
+files, `excluded_lines={}`, `unclassified_lines={}`,
+`files_missing_coverage=[]`, base `945c7a16` by merge-base. Suite 3527 passed
+(3526 + the new B4 test). Still no `# pragma: no cover` anywhere in this
+package.

@@ -204,3 +204,111 @@ state is the fully-swept state regardless.
   `82d2154b` (feat — code, tests, gitignore), `d9e2d26a` (docs sweep,
   CHANGES, backlog, decisions — **the gate-green commit**), and this
   LOG/REPORT pair.
+
+---
+
+# Addendum — review fix pass (2026-09-02)
+
+## 7. Review outcome and what changed
+
+A fresh adversarial reviewer returned **ACCEPT-conditional**. The mechanism —
+C1 (the file split), C2 (the rename plus deletion of the text-surgery writer)
+and C3 (the migration-check flip) — was **accepted unchanged and is not
+touched by this pass.** Three things in it were independently re-verified by
+the reviewer rather than taken from this report: the
+`generated_facts_document` / `read_generated_facts` split was re-attacked
+against CIU-80's `identity_unreadable` degradation and held; template-binding
+identity (`{{ ciu.instance.generated.* }}` resolving exactly as before) was
+confirmed by differential execution against pre-P47 `main`; and C3 was
+exercised end-to-end with the real production constant rather than a
+monkeypatched one.
+
+Five blockers and three nits were fixed. **Seven of the eight were stale
+prose; one was a missing test; none was a mechanism defect** — ciu-P46's
+result reproduced on a package that had read P46's review and run a
+deliberate three-pass sweep to avoid exactly this. The reviewer's diagnosis
+is the part worth carrying forward: a grep sweep finds the terms you thought
+to grep for, and the paragraph that went stale (DESIGN-GUIDE's reader
+narrative, four false statements) named neither a filename nor a renamed
+identifier. **The sweep's pattern list is the oracle, and it was the blind
+spot.** A future package in this program should not answer "did you sweep?"
+but "what would a stale paragraph look like if it never used any word you
+searched for?" — which in practice means reading the surviving prose in the
+few files that explain the mechanism, not only grepping them.
+
+## 8. The one functional gap (B4) and why it existed
+
+`render_global_chain` merges the CIU-owned generated facts **after** the
+operator's instance overlay, so an operator who hand-writes
+`[ciu.instance.generated]` into their own file cannot shadow a CIU-derived
+fact. Both `config_model.py` and SPEC S3.1b clause 5 asserted this. **Nothing
+tested it:** the reviewer moved the merge line above the overlay block and
+the full suite still passed, 3526 green.
+
+The reason this slipped is structural and worth stating plainly, because it
+generalizes to any file split. Before P47 there was one file and one table —
+the precedence question could not be answered wrongly because it could not be
+asked. C1 created a genuine ordering choice in code, and a choice that is new
+has, by definition, no inherited test. The implementation pass wrote tests
+for everything the split *changed* and none for the thing the split
+*introduced*. **When a split turns an invariant into a decision, the decision
+needs its own guard on the same commit.**
+
+Now pinned by
+`test_the_derived_fact_outranks_the_same_key_hand_written_in_the_overlay`
+(O3): both files are seeded with a colliding `[ciu.instance.generated]`, the
+overlay claiming every derived key, and the derived table must survive intact
+— plus an unrelated overlay key must still merge, so the test cannot pass by
+the overlay being dropped wholesale. Verified planted-and-fired: under the
+flipped order it fails on concrete diverging values, not a vague assertion.
+`config_model.py` carries a comment naming the test, so the line's position
+is documented as load-bearing at the place someone would move it.
+
+## 9. Judgment calls in this pass
+
+**(h) N2's count: FIVE indeterminacy cases, not four.** The review left this
+to me ("or to the correct count if you decide not to guard all of them — your
+call, but state which"). I guarded all of them. The published helper now
+refuses a non-table at `ciu`, `ciu.instance`, or `ciu.instance.generated` as
+well as the original four shapes, because the move to a whole-file
+`tomllib.load` makes those reachable where the old block-slice could not
+produce them — a consumer copying the old helper into the new world would
+take a bare `AttributeError` on a config an operator can plausibly typo. The
+count is stated as FIVE in both the §11b docstring and §21.
+
+**(i) The published helper was executed, not reviewed.** It is shipped code
+that lives in a markdown file, which is the easiest kind of code to convince
+yourself is correct. Extracted and run against nine shapes; all nine behave
+as documented. This is the same discipline the gate applies to `src/`, applied
+by hand to the one piece of shipped code the gate cannot see.
+
+**(j) The remaining "overlay" words in B3's files were left alone
+deliberately.** `worktree.py` and `test_ciu_worktree.py` use "overlay" in an
+unrelated sense — overlaying environment keys onto a subprocess env (CIU-85).
+Each surviving hit was classified individually rather than swept, which is
+the same discipline the original C4 pass used and, this time, the right
+answer: a blanket replace would have introduced fresh false statements while
+fixing old ones.
+
+**(k) B5 was verified by `git check-ignore`, and that is how my own error was
+caught.** My first edit to vbpub's root `.gitignore` wrote a comment claiming
+the retired filename was kept while the edit had removed it. Rereading the
+diff would not have caught it — the comment was confident and the diff looked
+right. Asking git which of the three names were actually ignored returned two
+of three. **Ask the tool, not the text**, especially for a change whose entire
+purpose is to make a tool behave a certain way.
+
+## 10. Gate and commits
+
+`./run-gate.py ciu --worktree …` at **`80ef0a18`**: **PASS** — R0 PASS, R1
+PASS, `changed_lines` mode at `fail_under=100.0` with `require_branch=true`
+and `allow_excluded=false`, measuring **100.0%: 141/141 executable lines,
+12/12 branches, across 10 files**, with `excluded_lines={}`,
+`unclassified_lines={}` and `files_missing_coverage=[]`. Base `945c7a16`
+resolved by merge-base. Suite: **3527 passed** (3526 plus the new B4 test).
+No `# pragma: no cover` anywhere in the package.
+
+**Still no merge to `main`.** The branch `worktree-agent-a5db4950c58078004`
+now carries five commits: `82d2154b`, `d9e2d26a`, `8f174836` (the original
+three), **`80ef0a18`** (this fix pass — the gate-green commit) and this
+LOG/REPORT addendum.
