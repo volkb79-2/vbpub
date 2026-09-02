@@ -736,6 +736,12 @@ def render_global_chain(
     # `identity_unreadable` degradation at STEP 12 into a traceback out of the
     # render, which is the opposite of what that flag exists for. See that
     # function's own docstring for the full split.
+    #
+    # The ORDER of this line relative to the overlay block above is pinned by
+    # `test_the_derived_fact_outranks_the_same_key_hand_written_in_the_overlay`
+    # (ciu-P47 review, B4). Moving it above that block is a silent behaviour
+    # change — an operator's hand-written `[ciu.instance.generated]` would then
+    # shadow the derived facts — and nothing else in the suite notices.
     merged = deep_merge(merged, generated_facts_document(repo_root))
 
     if not merged:

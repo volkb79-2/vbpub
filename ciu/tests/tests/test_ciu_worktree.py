@@ -1225,7 +1225,7 @@ class TestExactWorktreeControl:
 
     @pytest.fixture
     def ready(self, tmp_repo, fake_generate_env, write_instance_facts):
-        """A ready managed instance whose generated overlay table carries the
+        """A ready managed instance whose generated facts file carries the
         FULL required identity vocabulary (repo_root, physical_repo_root,
         repo_name, instance_id, network), all matching the record."""
         worktree.create(tmp_repo, "ctrl")

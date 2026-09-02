@@ -2233,10 +2233,10 @@ def _workspace_identity(repo_root: Path) -> tuple[dict, bool]:
     ``ctx.instance_id`` / ``ctx.network`` a real ``run()`` would (CIU-41:
     hooks read identity from the context, never from ambient environment
     state). CIU-75 moved both twins from the legacy ``ciu.env`` export to the
-    overlay's generated table, together, for exactly that reason. An absent
-    overlay (or an overlay with no generated table) yields ``{}`` — the
-    context fields then stay ``None``, exactly as during a real run outside a
-    provisioned workspace.
+    generated facts table, together, for exactly that reason. An absent
+    ``ciu.instance.generated.toml`` (or one with no generated table) yields
+    ``{}`` — the context fields then stay ``None``, exactly as during a real
+    run outside a provisioned workspace.
 
     "Unreadable" is still all three ways the read can fail (CIU-62): an
     ``OSError``, a non-UTF-8 byte (``UnicodeDecodeError``) and a malformed
@@ -3935,7 +3935,7 @@ def action_clean(
     try:
         identity_network = _workspace_identity_network(repo_root)
     except ValueError as exc:
-        # CIU-62: a PRESENT but unparseable overlay leaves the identity
+        # CIU-62: a PRESENT but unparseable facts file leaves the identity
         # network indeterminate. Never fold that into "there is no identity
         # network" — that would skip its removal AND skip it from the S6.4a
         # survivor check, reporting a complete clean over a surviving network.

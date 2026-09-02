@@ -647,11 +647,11 @@ HEADER = "[ciu.instance.generated]"
 def read_ciu_identity(ciu_root) -> dict[str, str]:
     """The six facts, or {} when this checkout has never been generated.
 
-    Raises ValueError on all FOUR of the present-but-unreadable cases CIU
-    itself refuses (OS read error, non-UTF-8 byte, malformed TOML, non-string
-    fact). Do not collapse those into {}: "not a CIU instance" and "this
-    instance's identity cannot be determined" call for different behaviour on
-    your side too.
+    Raises ValueError on all FIVE of the present-but-unreadable cases CIU
+    itself refuses (OS read error, non-UTF-8 byte, malformed TOML, the table
+    path occupied by a NON-table, and a non-string fact). Do not collapse
+    those into {}: "not a CIU instance" and "this instance's identity cannot
+    be determined" call for different behaviour on your side too.
     """
     path = Path(ciu_root) / "ciu.instance.generated.toml"
     try:
@@ -666,9 +666,26 @@ def read_ciu_identity(ciu_root) -> dict[str, str]:
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise ValueError(f"malformed {path}: {exc}") from exc
 
-    facts = document.get("ciu", {}).get("instance", {}).get("generated")
-    if facts is None:
-        return {}                      # present but carries no table yet
+    # Walk the dotted table path with an isinstance guard at every step, the
+    # same shape CIU's own reader uses. A bare `.get("ciu", {}).get(...)`
+    # chain leaks an AttributeError instead of the ValueError this function
+    # documents whenever a segment is occupied by a scalar — `ciu = "x"`, or
+    # `ciu.instance.generated = "x"`. Both are indeterminacy, not emptiness.
+    facts = document
+    for part in ("ciu", "instance", "generated"):
+        if not isinstance(facts, dict):
+            raise ValueError(
+                f"{path} nests {part!r} under a non-table value, so it "
+                f"carries no readable {HEADER}"
+            )
+        if part not in facts:
+            return {}                  # present but carries no table yet
+        facts = facts[part]
+    if not isinstance(facts, dict):
+        raise ValueError(
+            f"{HEADER} in {path} is {type(facts).__name__}, not a table"
+        )
+
     for key, value in facts.items():
         # The fourth indeterminacy case, and the easiest to skip: every
         # generated fact is a string by construction, so a bare number here
@@ -1600,4 +1617,11 @@ would leave the workspace in neither state `--vanilla` promises. Plain
 is simpler now: `ciu.instance.generated.toml` is plain TOML with nothing else
 in it, so a whole-file `tomllib.load` is correct — the block-slicing an older
 helper had to do (because the surrounding overlay was a Jinja template) is no
-longer needed. Copy the current version from §11b.
+longer needed. Copy the current version from §11b; do not just delete the
+slicing from your own copy. The published helper now refuses **five**
+present-but-unreadable shapes rather than four (the fifth is the table path
+being occupied by a non-table — `ciu = "x"`, or
+`ciu.instance.generated = "x"`), because a whole-file parse makes those
+reachable where the old block-slice did not. A naive
+`document.get("ciu", {}).get("instance", {}).get("generated")` chain leaks a
+bare `AttributeError` on both.

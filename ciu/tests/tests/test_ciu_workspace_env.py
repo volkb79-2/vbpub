@@ -410,6 +410,55 @@ def test_the_facts_are_not_injected_as_a_bespoke_context_field(
     assert "generated" not in merged.get("ciu", {}).get("instance", {})
 
 
+def test_the_derived_fact_outranks_the_same_key_hand_written_in_the_overlay(
+    monkeypatch, tmp_path
+):
+    """O3's ORDERING half: generated facts merge AFTER the operator's overlay.
+
+    ciu-P47 introduced an ordering choice that did not exist before it. While
+    both lived in one file, the surgical upsert made the CIU-written table the
+    last word on those six keys by construction — there was no order to get
+    wrong. Two files means `render_global_chain` now picks, and the pick is
+    load-bearing: an operator who hand-writes `[ciu.instance.generated]` into
+    their OWN overlay (copying it out of a pre-split checkout during the §21
+    migration is the obvious way to end up here) must NOT thereby shadow the
+    derived value with a stale one. A compose project named from a stale
+    `instance_id` collides with, or silently adopts, another checkout's
+    resources.
+
+    Pinned with a value that DIVERGES between the two orders, so the assertion
+    fails if the merge line is ever moved above the overlay block rather than
+    passing under either — which is exactly what the ciu-P47 reviewer
+    demonstrated the suite could not previously tell apart.
+    """
+    monkeypatch.setenv("REPO_ROOT", str(tmp_path))
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text(
+        '[ciu]\nenv = "test"\n', encoding="utf-8"
+    )
+    _hermetic_generate(monkeypatch, tmp_path)
+    derived = _generated_table(tmp_path / FACTS_FILE)
+
+    # The operator's own file, claiming every one of CIU's six keys.
+    (tmp_path / OVERLAY).write_text(
+        "[ciu.instance.generated]\n"
+        + "".join(f'{key} = "OPERATOR-WINS"\n' for key in derived)
+        + "\n[deploy]\nproject_name = \"mine\"\n",
+        encoding="utf-8",
+    )
+
+    merged = render_global_chain(tmp_path, tmp_path)
+    generated = merged["ciu"]["instance"]["generated"]
+
+    assert generated == derived, (
+        "the CIU-derived facts must survive an operator writing the same keys"
+    )
+    assert "OPERATOR-WINS" not in generated.values()
+    # …and the overlay still wins everywhere it is not colliding with CIU's
+    # own table, so this is a precedence rule about six keys, not the overlay
+    # layer being demoted wholesale.
+    assert merged["deploy"]["project_name"] == "mine"
+
+
 # ---------------------------------------------------------------------------
 # O4 — the PRIMARY/main checkout, not just worktree instances
 # ---------------------------------------------------------------------------

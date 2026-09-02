@@ -224,19 +224,27 @@ same day would be gratuitous.
 Two design choices in that cutover are worth the ink, because both look
 arbitrary until you try the alternative.
 
-**The reader is a text-level scan of CIU's own block, not a config render.**
+**The reader is a direct parse of CIU's own record, not a config render.**
 The obvious implementation is "render the merged chain and read
-`ciu.instance.generated`". It fails on its own terms: the overlay is a Jinja
-template whose render needs the merged config it is a layer of; six of the
-twelve call sites read a checkout that is NOT this process's repo root (a
-shared-infra reference, a budget candidate, a reap group) whose committed
-chain may legitimately be absent or broken; and the block is merged last, so
-its own bytes ARE the merged value — a render could only agree with it. The
-block is plain TOML by construction (the writer emits quoted strings), so it
-is readable with no context at all. The reader slices to it before parsing,
-which is also why the migration helper published for consumers does the same:
-an operator's own Jinja or TOML elsewhere in that file must not break the
-identity read.
+`ciu.instance.generated`". It fails on its own terms, and the reasons survive
+ciu-P47's file split unchanged: six of the twelve call sites read a checkout
+that is NOT this process's repo root (a shared-infra reference, a budget
+candidate, a reap group) whose committed chain may legitimately be absent or
+broken; and the record is merged last, so its own bytes ARE the merged value —
+a render could only agree with it.
+
+What DID change is how that "readable with no context at all" property is
+obtained. At CIU-75 the facts were a table inside the operator's own Jinja
+overlay, so the reader had to *slice* to CIU's own block before parsing — a
+Jinja `{% if %}` or a bare `$VAR` an operator wrote elsewhere in that file
+would otherwise have broken the identity read, and the consumer helper
+published in `docs/CONSUMERS.md` §11b had to do the same slicing for the same
+reason. ciu-P47 removed the cause instead of the symptom: the facts live in
+`ciu.instance.generated.toml`, which is plain TOML, has no operator content in
+it and is not a template, so both readers are now an ordinary whole-file
+`tomllib` parse and the slicing is gone from both. See "Why that mechanism was
+then deleted rather than hardened" above for why the shared file was split
+rather than the slicing hardened.
 
 **Moving the twelve reads was not the cutover — the process environment was.**
 The first implementation migrated all twelve call sites, documented the

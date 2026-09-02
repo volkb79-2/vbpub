@@ -395,7 +395,8 @@ requirements are marked *(withdrawn)*.
      twelve per-checkout reads of clause 1 were correct while ~26 internal
      sites, and every `$DOCKER_NETWORK_INTERNAL` in a rendered template, still
      read the inherited value (the CIU-41 hazard, arriving through the one
-     door a per-site cutover cannot close). A checkout whose overlay carries
+     door a per-site cutover cannot close). A checkout whose generated facts
+     file is absent or carries
      NO such table is REPAIRED — the record CIU reads is the record CIU
      regenerates, exactly as an absent `ciu.env` has always been regenerated —
      rather than refusing a verb the operator just ran; a PRESENT but
@@ -414,8 +415,9 @@ requirements are marked *(withdrawn)*.
      so a stdout notice there lands ahead of the JSON document and breaks
      every machine consumer's parse. The interactive `ciu env generate` verb
      keeps announcing on stdout.
-  4. **Reader semantics — three outcomes, never two.** An ABSENT overlay, or
-     an overlay carrying no such table, yields "no facts": a legitimate state
+  4. **Reader semantics — three outcomes, never two.** An ABSENT
+     `ciu.instance.generated.toml`, or one carrying no such table, yields
+     "no facts": a legitimate state
      (`ciu env generate` was never run here) that MUST stay silent. A PRESENT
      record that cannot be read — an `OSError` (including a directory where
      the file belongs), a non-UTF-8 byte, malformed TOML, or a non-string
@@ -423,14 +425,19 @@ requirements are marked *(withdrawn)*.
      "no facts" (the absence-for-emptiness anti-pattern; the live consequence
      it caused is recorded at S6.4a). Each call site's existing refuse-or-
      degrade contract is preserved exactly across the cutover.
-  5. **The read is scoped to CIU's own block.** It parses the region the
-     S3.1b writer owns — the table header through the last `key = value` line
-     before the next table — and not the whole file. The block is plain TOML
-     by construction even though the file is a Jinja template, so a reader
-     needs no render context; a full `render_global_chain` MUST NOT be
-     required, because several of these reads target a DIFFERENT checkout,
+  5. **The read is a whole-file plain-TOML parse.** `ciu.instance.generated.
+     toml` is not a template and contains nothing but the CIU-owned table, so
+     the read is an ordinary `tomllib` parse of the entire file — no scan for
+     a block boundary, and no render context of any kind. A full
+     `render_global_chain` MUST NOT be required, and the reasons are unchanged
+     by the file split: several of these reads target a DIFFERENT checkout,
      whose committed config chain may legitimately be absent or broken, and
-     because the block is merged last, making its own bytes the merged value.
+     the file is merged last, making its own bytes the merged value. (Before
+     ciu-P47 the same "no render context" property had to be obtained by
+     slicing CIU's owned region out of a Jinja template that also held
+     operator content; the dedicated file makes it literal.) The MERGE-side
+     read (S3.1b clause 5) is the same parse WITHOUT clause 4's non-string
+     refusal — see that clause for why.
   6. **Readiness means the table, not the file.** Where CIU tests whether a
      checkout can act as a CIU instance (e.g. S16.10's "can this checkout
      still clean itself?"), the signal is the PRESENCE of
@@ -1688,8 +1695,8 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   The context also carries the deployment-selection facts and workspace
   identity (S3.12 / CIU-44): `ctx.selected_profiles` / `ctx.deployed_stacks`
   (tuples; `None` outside a deployment render) and `ctx.instance_id` /
-  `ctx.network` (from this workspace's own `[ciu.instance.generated]` overlay
-  table by exact path — S3.1c; not `ciu.env`, since CIU-75 — or `None`). Hooks read
+  `ctx.network` (from this workspace's own `ciu.instance.generated.toml`
+  by exact path — S3.1c; not `ciu.env`, since CIU-75 — or `None`). Hooks read
   identity/selection from these fields — never from
   ambient environment state (S9.4 forbids env mutation; ambient reads are the
   CIU-41 contamination vector).

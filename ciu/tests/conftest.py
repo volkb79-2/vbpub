@@ -57,14 +57,15 @@ def _scrub_ambient_identity_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def write_instance_facts():
-    """Write a checkout's ``[ciu.instance.generated]`` overlay facts (CIU-75).
+    """Write a checkout's ``ciu.instance.generated.toml`` facts (CIU-75).
 
     The post-cutover stand-in for the many fixtures that used to fabricate a
-    ``ciu.env``: since ciu 7.7.0 CIU reads instance identity ONLY from that
-    overlay table, so a test that wants a directory to look like a provisioned
-    CIU instance writes it here instead. Goes through the shipped writer
+    ``ciu.env``: since ciu 7.7.0 CIU reads instance identity ONLY from the
+    ``[ciu.instance.generated]`` table — carried by its own file since ciu-P47
+    — so a test that wants a directory to look like a provisioned CIU instance
+    writes it here instead. Goes through the shipped writer
     (``write_generated_facts``) rather than hand-rolled TOML, so a fixture can
-    never encode a block shape the product would not itself produce.
+    never encode a file shape the product would not itself produce.
 
     Unspecified facts default to ``""`` — the same shape ``ciu env generate``
     writes for a fact it could not derive (an FQDN-less workspace).

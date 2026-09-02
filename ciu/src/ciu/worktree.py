@@ -2273,8 +2273,8 @@ def survey_instance_records(repo_root: Path) -> ReapIdentities:
             identity = (record.instance_id, record.network)
         else:
             # No record, or an `allocating` one with no runtime identity yet:
-            # the checkout's OWN generated `[ciu.instance.generated]` overlay
-            # table is the authority (CIU-75), read by exact path. Absent/unreadable is not an error here — a checkout
+            # the checkout's OWN `ciu.instance.generated.toml`
+            # is the authority (CIU-75), read by exact path. Absent/unreadable is not an error here — a checkout
             # that never generated an environment never stamped a label.
             try:
                 identity = _runtime_identity(ciu_root)
@@ -2988,8 +2988,9 @@ def _sanitized_target_env(
 
     Ambient process environment MINUS every CIU root/identity/network/profile
     key, then overlaid with the target's OWN ``[ciu.instance.generated]``
-    facts read by exact path (CIU-75 — the overlay is the sole instance-fact
-    source; the target's legacy ``ciu.env`` is never consulted) — never
+    facts read by exact path (CIU-75 — ``ciu.instance.generated.toml`` is the
+    sole instance-fact source; the target's legacy ``ciu.env`` is never
+    consulted) — never
     sourced through a shell, never inherited from a sibling. Those facts must
     identify the selected record/root: a missing fact, or a repo_root /
     instance_id / network that disagrees with the record, is a refusal, never
@@ -4392,7 +4393,7 @@ def _resolve_budget_candidates(
     the change is deliberate. The pre-cutover code passed the candidate's
     parsed ``ciu.env`` and NOTHING else, so a candidate template referencing
     any non-identity variable (``$USER_UID``, ``$DOCKER_GID``) got it from
-    that file. The overlay carries identity facts only, so the environment is
+    that file. The generated facts file carries identity facts only, so the environment is
     now the ambient process environment MINUS every CIU identity key, PLUS the
     candidate's own facts — the same rule :func:`_sanitized_target_env` uses.
     Identity still comes exclusively from the candidate (which is the property
