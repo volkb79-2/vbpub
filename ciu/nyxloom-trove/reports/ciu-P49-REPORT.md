@@ -387,3 +387,142 @@ set exactly, then restoring the fix and re-confirming green; the live
 `docker inspect` values are copy-pasted from the actual terminal output,
 and the containers/networks created for that check were confirmed torn
 down with a post-hoc filter.
+
+---
+
+# REPORT addendum — review-fix pass (commit `57348c00`)
+
+Adversarial review of `13046641` returned **ACCEPT-conditional**: real
+gate re-run clean in the reviewer's own control worktree (R0/R1 PASS,
+100% coverage, matched this REPORT's own numbers), all 4 original
+mutation tests independently confirmed real, the live `docker inspect`
+numbers reproduced exactly, the `action_graph` exclusion (§2 above)
+verified true and correctly pinned, scope clean (13 files, all
+authorized), CIU-91's root cause independently confirmed correct. One
+blocker + several strongly-recommended items came back; all addressed in
+one commit, `57348c00`.
+
+## A. Blocker — `TypeError` regression, real reproduction
+
+```
+$ python3 -m pytest tests/tests/test_ciu_provisioning.py -q -k "nested_list"
+2 passed
+```
+Mutation (the buggy `set(declared_provides)` form, without the string
+filter, restored temporarily):
+```
+E   TypeError: cannot use 'list' as a set element (unhashable type: 'list')
+    src/ciu/config_model.py:1308: TypeError
+FAILED test_validate_stack_provisioning_provides_containing_a_nested_list_raises_valueerror_not_typeerror
+FAILED test_validate_stack_provisioning_provides_containing_a_nested_list_maps_to_exit_2_via_engine
+2 failed, 187 deselected
+```
+Restored the fix; re-ran: 2 passed, 0 failed. The reproduced traceback is
+the EXACT `TypeError` the review reported.
+
+## B. Strongly recommended #1 — `provides_container` kind gate
+
+```
+$ python3 -m pytest tests/tests/test_ciu_provisioning.py -q -k "kind_override or malformed_ref_does_not_double"
+5 passed
+```
+Mutation (kind check disabled via `if False and ref_kind not in (...)`):
+```
+FAILED test_validate_stack_provisioning_rejects_vault_kind_override
+FAILED test_validate_stack_provisioning_rejects_consul_kind_override
+FAILED test_validate_stack_provisioning_rejects_stack_kind_override
+3 failed, 1 passed, 185 deselected
+```
+`test_validate_stack_provisioning_accepts_minio_kind_override` stayed
+green under the mutation, confirming the mutation is precise (only the
+NEW gate is disabled, nothing else). Restored; re-ran: 5 passed, 0
+failed.
+
+## C. Should-fix — real `tomllib` round-trip, permanent regression
+
+```
+$ python3 -m pytest tests/tests/test_ciu_provisioning_ciu70_probe_container.py -q -k "real_toml_round_trip"
+1 passed
+```
+The test parses:
+```toml
+[db_core]
+provides = ["pg:db/dstdns", "pg:role/controller"]
+provides_container = { "pg:db/dstdns" = "postgres" }
+```
+with `tomllib.loads`, then drives it through
+`config_model.validate_stack_provisioning` (passes clean) ->
+`deploy.provisioning_graph` (confirms `provides_container` survives the
+graph-builder round-trip) -> `provisioning._resolve_probe_container`,
+asserting:
+- `pg:db/dstdns` (overridden) -> `p-t-postgres`
+- `pg:role/controller` (sibling, un-overridden) -> `p-t-db-core`
+
+Both numbers match the reviewer's own hand-verified figures exactly.
+
+## D. `docs/FEATURES.md` + CIU-91 correction
+
+Doc-only; no behavioral test. `docs/FEATURES.md:262-268`'s "keyed
+anything" bullet now carries the same qualifying clause + `provides_container`
+pointer SPEC.md's S13.2 has. `KNOWN_ISSUES_TODO_BACKLOG.md`'s CIU-91 row
+corrected: the wrong "ran before generation" alternative-mechanism claim
+struck (my own captured `entries` list from the first gate run already
+proved `ciu.toml` WAS present at `os.scandir` time — a vanish-mid-copy
+TOCTOU race, not an absence), fix direction (c) flagged as not actually a
+fix for the confirmed mechanism, (b) flagged as the real one.
+
+## E. Full suite + real gate, both re-run at `57348c00`
+
+```
+$ python3 -m pytest tests/ -q --cov=ciu --cov-branch --cov-report=term-missing:skip-covered
+TOTAL   10195      0   4108      0   100%
+3591 passed, 31 warnings in 68.61s
+```
+
+Real gate, verdict read in a separate step (never a piped tail):
+
+```
+$ ./run-gate.py ciu --worktree /workspaces/vbpub/.worktrees/feat/ciu-P49-probe-container-and-governance-cpu
+assay-3.2.0.pyz: OK
+ciu: PASS (exit 0)
+  commit: 57348c00afca1006bf40ff385b1a63c180b36b41
+```
+
+`.assay/verdict-ciu.json`, in full:
+```json
+{
+  "claims": [
+    {"rigor": "R0", "status": "PASS", "verified_by_assay": true},
+    {"rigor": "R1", "status": "PASS", "verified_by_assay": true,
+     "coverage": {"branches_total": 20, "branches_covered": 20,
+                  "executable": 94, "covered": 94,
+                  "missing_lines": {}, "missing_branch_lines": {},
+                  "pct": 100.0}}
+  ],
+  "commit": "57348c00afca1006bf40ff385b1a63c180b36b41",
+  "outcome": "PASS",
+  "exit_code": 0
+}
+```
+
+## F. Commits, this addendum
+
+6. `57348c00` — `fix(ciu): ciu-P49 review fix pass -- TypeError->ValueError
+   blocker + provides_container kind gate + FEATURES.md/CIU-91
+   corrections` — all six review items above, one commit.
+7. `<this commit>` — this REPORT/LOG addendum.
+
+## G. Items explicitly NOT done (controller ruling, recorded here per
+instruction, not filed as new backlog entries)
+
+- `governance.cpus` string validation is looser than Docker Compose's own
+  `cpus` parser would be (accepts any `float(...) > 0`-parseable string,
+  not Compose's own stricter grammar).
+- `provides_container` is not gated by `ciu check`'s `if requires or
+  provides:` guard when `provides` itself is empty/absent for that stack.
+- `composefile.py`/`SPEC.md` S15.7/S15.8 carry `INJECTED_KEYS`-adjacent
+  enumerations that already omitted `memswap_limit` before this package
+  (pre-existing, not introduced or worsened here).
+
+All three: reviewer's own call was "can ride a later package," controller
+agreed — noted here for the controller's own tracking decision.

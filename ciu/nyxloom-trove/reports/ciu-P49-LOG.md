@@ -166,5 +166,181 @@ verdict read in a separate step each time, never off a piped tail:
    R1 coverage-gap fix the first gate run caught.
 3. `880a6efb` — `backlog(ciu): file CIU-91 -- test-suite flake found
    during ciu-P49's own gate run`.
-4. `efcd7260` (this commit) — `docs(ciu): ciu-P49 -- LOG/REPORT for
-   CIU-89 + CIU-90`.
+4. `efcd7260` — `docs(ciu): ciu-P49 -- LOG/REPORT for CIU-89 + CIU-90`.
+5. `13046641` — `docs(ciu): ciu-P49 -- fill in the real commit hashes in
+   LOG/REPORT's commit lists`.
+
+---
+
+# ciu-P49 — LOG addendum: review-fix pass
+
+Fresh adversarial reviewer returned **ACCEPT-conditional** against commit
+`13046641`: real gate re-run clean in its own control worktree (R0/R1
+PASS, 100% coverage, matched my own numbers), all 4 mutation tests
+independently confirmed real (reviewer wrote its own mutations, watched
+the right test fail each time), the live `docker inspect` numbers
+reproduced exactly, the `action_graph` exclusion verified true and
+correctly pinned, scope clean (13 files, all authorized), CIU-91's root
+cause independently confirmed correct. One real blocker plus several
+strongly-recommended items came back. All addressed here, same branch,
+one commit: `57348c00`.
+
+## Blocker — `TypeError` regression from `main`
+
+Real bug, and a nasty one: `config_model.py`'s new `provides_container`
+validation built `declared_provides = set(root_section.get("provides"))`
+without checking that every ELEMENT of `provides` is itself hashable.
+`provides = [["pg:db/x"]]` — a `provides` entry that is ITSELF a list —
+passes `isinstance(val, list)` (the check that gates the whole
+`requires`/`provides` field), but the individual entry `["pg:db/x"]` is
+unhashable, so `set(...)` on it raised an uncaught `TypeError`. That
+`TypeError` propagates all the way up through every `except ValueError`
+handler in the call chain, including `engine._exit_code_for` (which maps
+`ValueError` -> exit 2, S10.3, but has no `TypeError` case) — so a config
+that `main` already reports cleanly, with a well-worded finding
+(`'provides[0]' must be a string, got list`) and exit code 2, instead
+crashes the CLI with an uncaught traceback and a DIFFERENT, silently wrong
+exit code on this branch.
+
+**Why I missed it.** The pre-existing requires/provides loop a few lines
+above already validates each `provides` entry is a string one at a time,
+and I read that loop before writing my own code — but I built
+`declared_provides` by re-deriving straight from `root_section.get(
+"provides")` (deliberately, to avoid depending on loop-local state), and
+in doing that re-derivation I dropped the type check the loop already had,
+reasoning "provides is a list, `set()` of a list of strings is fine" and
+not testing the case where an ELEMENT of that list is itself unhashable.
+
+**Fix.** Filter to string elements before building the set:
+`{p for p in provides_list if isinstance(p, str)}`. Safe because a
+non-string `provides` entry is already reported, once, by the pre-existing
+loop, and a `provides_container` key can never legitimately equal a
+non-string entry anyway (TOML table keys are always strings).
+
+**Pinned by 2 new tests**:
+`test_validate_stack_provisioning_provides_containing_a_nested_list_raises_valueerror_not_typeerror`
+(the raise-type + message-survives assertion) and
+`test_validate_stack_provisioning_provides_containing_a_nested_list_maps_to_exit_2_via_engine`
+(drives the SAME config through the real `engine._exit_code_for`, not just
+the raise type, closing the loop to the actual CLI-facing consequence).
+Reverting the fix to the buggy `set(declared_provides)` form reproduces
+the EXACT reported `TypeError` and fails both new tests; restored, both
+pass.
+
+## Strongly recommended #1 — `provides_container` kind gate
+
+`_resolve_probe_container` (the only consumer of `provides_container`) is
+reached exclusively from `_probe_pg`/`_probe_minio`. A `provides_container`
+entry keyed to a `vault:`/`consul:`/`stack:` ref was accepted by
+validation and then silently never consulted by anything — precisely the
+"looking live while never being consulted" failure the undeclared-ref
+check already exists to prevent, just for a different way of getting
+there.
+
+**Fix.** After the existing "key is in `provides`" and "value is a
+non-empty string" checks, `validate_stack_provisioning` now also parses
+the key with `provisioning.parse_ref` (function-local import — confirmed
+`provisioning.py` never imports `config_model.py`, so no circular-import
+risk, but kept local to match this file's own established convention for
+a cross-module reach used by one function) and requires
+`.kind in ("pg", "minio")`, raising a `[S13.2]`-tagged error naming the
+offending kind otherwise. A key equal to an already-malformed `provides`
+entry (fails `parse_ref` itself) is left to the pre-existing
+malformed-ref violation rather than double-reported — pinned by
+`test_validate_stack_provisioning_provides_container_key_that_is_itself_a_malformed_ref_does_not_double_report_or_crash`.
+
+**Pinned by 5 new tests** (`accepts_minio_kind_override` plus
+`rejects_{vault,consul,stack}_kind_override` plus the malformed-key
+no-double-report/no-crash case above). Disabling the new kind check (`if
+False and ref_kind not in (...)`) fails exactly the 3 rejection tests;
+`accepts_minio_kind_override` stays green, confirming the mutation is
+precise.
+
+`docs/SPEC.md` S13.2's `provides_container` paragraph and
+`docs/CONFIG.md`'s worked example both now state the restriction.
+
+## Strongly recommended #2 — `docs/FEATURES.md` stale parallel copy
+
+`docs/FEATURES.md`'s own "Your Postgres/MinIO service can be keyed
+anything" bullet is a SEPARATE copy of the claim SPEC.md's S13.2 makes —
+missed when SPEC.md was updated in the original package because I grepped
+for the exact SPEC.md section, not for every doc file carrying the same
+sentence. Added the identical qualifying clause + a pointer at
+`provides_container` as the escape hatch.
+
+## CIU-91 correction
+
+The reviewer caught a real factual error in the CIU-91 row I filed: I'd
+written "or simply run before that file has been generated at all in a
+fresh run" as an alternative failure mechanism alongside the TOCTOU race.
+That's wrong — `shutil.copytree`'s own `entries` list, captured once by
+`os.scandir` at the START of the call, is what a later per-entry
+`copy_function` iterates; a file that was never generated would simply be
+ABSENT from that list, and the copy would silently proceed without it —
+`shutil.copytree` cannot raise `[Errno 2] No such file or directory` for
+an entry that was never in its own listing. My OWN captured traceback (in
+the REPORT, from the first gate run) already contained the proof I hadn't
+looked at closely enough: `entries = [..., <DirEntry 'ciu.toml'>, ...]` —
+the file WAS in the scandir snapshot. The failure is strictly "present at
+scandir time, gone by the time `copy_function` reaches it a few lines
+later" — a vanish-mid-copy race, not an ordering/absence gap.
+
+Consequence for the proposed fix directions: **(c) ("`_add_stack` renders
+`ciu.toml` itself when absent") does not actually address the confirmed
+mechanism** — the file is never "absent" from `_add_stack`'s own
+perspective at the moment it would check; it disappears strictly during
+the window `_add_stack` doesn't control (between its own `scandir` and its
+own read). Only **(b)** (isolate/serialize the in-place-render tests so
+`_clean_stack_artifacts`'s unlink can't race a concurrent read) addresses
+the mechanism as actually confirmed. Corrected the CIU-91 row in
+`KNOWN_ISSUES_TODO_BACKLOG.md`: struck the wrong alternative-mechanism
+claim with an explanation grounded in the traceback's own `entries` list,
+and annotated (b)/(c) accordingly, so whoever picks CIU-91 up next isn't
+misled into implementing a fix that wouldn't fix anything.
+
+## Should-fix — permanent `tomllib` round-trip regression test
+
+Both CIU-89 oracles used hand-built in-memory dict fixtures rather than
+the `test-repo/` fixture the handoff literally described — the reviewer
+called this the right call (CIU-91 IS a `test-repo/`-sharing race;
+widening this package's own footprint into that shared directory would
+have made things worse, not better) but had to hand-verify, by reading
+code, that `provides_container` actually survives a REAL
+`tomllib`-parsed `ciu.toml` through the full production chain.
+
+Added ONE permanent test,
+`test_ciu89_real_toml_round_trip_through_validation_graph_and_resolution`
+(`test_ciu_provisioning_ciu70_probe_container.py`, the existing dedicated
+CIU-89 section — no new test infrastructure invented): parses an actual
+TOML string with `tomllib.loads` (not `test-repo/`, not a
+`tmp_path`-scoped file either — an in-memory string is sufficient here and
+keeps the test dependency-free), then drives it through the REAL
+`validate_stack_provisioning` -> `deploy.provisioning_graph` ->
+`provisioning._resolve_probe_container` chain, unmocked. Confirms
+`p-t-postgres` for the overridden ref and `p-t-db-core` for the
+un-overridden sibling in the same `provides` list — the exact numbers the
+reviewer reported hand-verifying.
+
+## Explicitly not done (controller ruling)
+
+Left alone, per the controller's explicit instruction: `cpus` string
+validation looser than Docker Compose's own parser; `provides_container`
+not gated by `ciu check`'s `if requires or provides:` guard when
+`provides` itself is empty/absent; stale `INJECTED_KEYS`-adjacent
+enumerations in `composefile.py`/`SPEC.md` S15.7/S15.8 that already
+omitted `memswap_limit` before this package; `provides_container` staying
+excluded from `ciu graph --fmt json` (kept as shipped, the controller's
+own call). None filed as new backlog entries — noted here for the
+controller's own tracking decision, per instruction.
+
+## Re-verification
+
+`pytest tests/ --cov=ciu --cov-branch`: **3591 passed**, 100% coverage
+(all local, before the gate run). Real gate
+(`./run-gate.py ciu --worktree <this worktree>`) at `57348c00`: **PASS**
+— R0 PASS, R1 PASS, 100% changed-line+branch coverage (94/94 executable
+lines, 20/20 branches). Verdict read in a separate step from the run, off
+`.assay/verdict-ciu.json`, never a piped tail. No stray Docker state
+(no live containers were started in this fix pass — the blocker/kind-gate
+fixes are pure validation logic, no live verification needed beyond the
+existing CIU-90 one from the original package).
