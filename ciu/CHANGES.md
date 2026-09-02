@@ -21,6 +21,32 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.11.0] - 2026-09-02
+<!-- cmru: generated -->
+<!-- cmru: source-end=9e86e8585f489ce9006adacbfd8c6208ad8e2c93 -->
+
+### Added
+- feat(ciu): CIU-89 -- provides_container probe-container override + CIU-90 -- governance.cpus quota key (ciu-P49) (66c990ba)
+
+### Fixed
+- fix(ciu): ciu-P49 review fix pass -- TypeError->ValueError blocker + provides_container kind gate + FEATURES.md/CIU-91 corrections (57348c00)
+
+### Changed
+- backlog(ciu): file CIU-91 -- test-suite flake found during ciu-P49's own gate run (880a6efb)
+- rm stale review (8f26a0e1)
+- backlog(ciu): file CIU-89 -- CIU-70's stack-path-basename probe resolution breaks multi-service stacks (9b0bca62)
+
+### Documentation
+- docs(ciu): ciu-P49 -- fill in the review-fix addendum's own commit hash (7df43b10)
+- docs(ciu): ciu-P49 -- LOG/REPORT addendum for the review fix pass (9385168d)
+- docs(ciu): ciu-P49 -- fill in the real commit hashes in LOG/REPORT's commit lists (13046641)
+- docs(ciu): ciu-P49 -- LOG/REPORT for CIU-89 + CIU-90 (efcd7260)
+- docs(ciu): ciu-P49 -- carve handoff, CIU-89 probe-container override + CIU-90 governance CPU quota (af98e1f0)
+- docs(ciu): CIU-90 — governance never injects a CPU-quota key (ratified D-264 PC-1, never filed) (f43da249)
+
+### Testing
+- test(ciu): ciu-P49 -- cover _resolve_probe_container's unresolvable-config fallback for a provides_container override (69c573a0)
+
 ## [7.11.0] - UNRELEASED
 
 **Note to the releaser:** this section is a hand-authored draft (ciu-P49,
