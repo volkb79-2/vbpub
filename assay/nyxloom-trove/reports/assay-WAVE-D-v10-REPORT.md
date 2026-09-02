@@ -126,6 +126,66 @@ resolves.
 
 ---
 
+## Gate — the registered gate, run by the implementer
+
+Command, from `/workspaces/vbpub`, detached, with the implementer's own
+marker appended in the same shell:
+
+```
+setsid nohup bash -c '{ bash assay/tools/tester-unified-gate.sh \
+  /workspaces/vbpub/.worktrees/assay-wave-d-v10; echo GATE_EXIT=$?; } \
+  > <log> 2>&1' &
+```
+
+Three runs were needed; the first two are recorded in the LOG in full,
+because both failures were the implementer's, not the product's.
+
+**Run 3, on `299d18a0` — GREEN.** Verdict read in a separate step from the
+log's own markers:
+
+```
+$ grep -c 'ASSAY_REGISTERED_GATE_COMPLETE=1' <log>   -> 1
+$ grep 'GATE_EXIT=' <log>                            -> GATE_EXIT=0
+$ grep -c -E 'FAILED|DIRTY_TREE|Traceback' <log>     -> 0
+```
+
+Head (build) and tail (completion):
+
+```
+Created wheel for assay: filename=assay-4.1.1.dev5+g299d18a0-py3-none-any.whl
+  size=517257 sha256=3b469a2b62be3e370f0b64ce5294fb6671b53c7bf72ddbce19c325e9823aae00
+...
+tester-unified: PASS (exit 0)
+  commit: 299d18a0e6e76fb2372af6b919b845f76558cfb3
+  argv: python -m pytest tests -q --ignore=tests/test_self_hosting.py --override-ini=pythonpath=
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+7 passed in 14.21s
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+GATE_EXIT=0
+```
+
+The wheel name carries the judged commit. **Gate-verified commit:
+`299d18a0`.** The branch tip is one docs-only commit past it (this report's
+own gate entry and the LOG's).
+
+Run 2's suite figure, worth keeping because it is the only full-suite count
+this generation measured: `3944 passed, 20 skipped in 567.14s (0:09:27)`.
+
 ## Decision asks
 
-*(none yet)*
+*(none — DA-D1 applied as written, no ruling proved inapplicable)*
+
+## Scope: what generation 1 did NOT reach
+
+Nine of phase 1's ten items are untouched: B054, B053(a)(b), B028, B029,
+B060, B056, B024, B055, B009. Phase 2 and phase 3 are untouched, and
+**nothing under `verdict.py`, `verify.py`, `src/assay/schemas/` or the
+drift-guard carve-assets was modified**, so the branch is still releasable on
+v9 at every commit, exactly as the wave prompt requires. The designs for the
+next two items (B054's per-file disposition and B053's single-emitter
+question) are worked out in `assay-WAVE-D-v10-BRIEF-1.md` §3 and §4 with the
+seams named, so generation 2 does not re-derive them.

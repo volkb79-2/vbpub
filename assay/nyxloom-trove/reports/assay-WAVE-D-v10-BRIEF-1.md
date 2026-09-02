@@ -266,10 +266,22 @@ file — a log that cannot be read as a verdict. Both were killed
 `pgrep -af 'tester-unified-gate.sh'` and `docker ps | grep tester-unified`
 after launching, and expect exactly one.
 
-**Verdict for `3b2b8e62`:** recorded in
-`assay-WAVE-D-v10-LOG.md` under generation 1 (read there — it is written from
-the log's own markers in a separate step, never from the launcher's exit
-status).
+**Second trap, same run:** BRIEF-1 was written into the worktree *while* run
+2 was executing, so the self-hosted lane read an untracked file and refused
+`NO_MEASUREMENT`/`DIRTY_TREE` (exit 3) on a run whose suite was entirely
+green — `3944 passed, 20 skipped in 567.14s`, every schema phase passed. The
+rule is "commit before you gate"; the sharper form generation 1 learned is
+**the worktree must stay untouched for the whole run, not merely be clean at
+launch.** Write your brief, commit it, and only then gate.
+
+**GATE-VERIFIED COMMIT: `299d18a0`.** Run 3, on the clean tip, was green:
+exactly one `ASSAY_REGISTERED_GATE_COMPLETE=1`, `GATE_EXIT=0`, zero
+`FAILED|DIRTY_TREE|Traceback`, `tester-unified: PASS (exit 0)` at
+`commit: 299d18a0e6e76fb2372af6b919b845f76558cfb3`, and the wheel
+`assay-4.1.1.dev5+g299d18a0-py3-none-any.whl` carrying that commit. Full
+marker transcript in `assay-WAVE-D-v10-LOG.md`. The branch tip is one
+docs-only commit past it (this brief's own gate entry); nothing executable
+changed after `299d18a0`.
 
 ## 7. Next free ids (checked against `main` at `a4a865da`, not assumed)
 
