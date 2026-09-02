@@ -412,3 +412,31 @@ precedent for shape and discipline.
   - **Generation 6 dispatched** (fresh Opus, BRIEF-5 seed): A-425 first,
     then phase 2 per the wave prompt with DA-R12. Next free ids **A-426**
     (after A-425) / **B064**.
+
+- **2026-09-02 (R-1 ROUND 2: ACCEPT-conditional on `e3ae8ada`; DA-R15;
+  phase-1 review closed at two of three rounds)** — Report
+  (`scratchpad/assay-WAVE-D-v10-REVIEW-R1-round2.md`, 416 lines; to be
+  committed verbatim on the branch by generation 6). Both round-1
+  blockers measured resolved: every post-command terminal now emits
+  exactly one line on both dispatch paths (round 1: 0, round 2: 1 at all
+  four), the sentence blames the lane's own command and offers no
+  "commit or stash"; R-1's own round-1 mutants against the new B029 test
+  go RED at both ends of the threading (`n1` 2 failed, `n2` 1 failed,
+  baseline 3 passed) with exact discrimination. All five should-fixes
+  verified; A-420 writes the verdict on both paths with the real `HEAD`
+  as the label, accepted by the branch and the shipped 4.1.0 verifiers.
+  No regressions across DA-R3's six sites, `evaluate_r1`'s four classes,
+  B049/B054/B029. Phase boundary clean; gate read from `gate-gen5.log`'s
+  markers by R-1 itself, no re-run. **The one condition — SF-6:**
+  `runner.py:4066-4076`'s `except RuntimeError` still relabels to
+  `ERROR`/`GIT_FAILED` unannounced, the last such site in `runner.py`; not
+  operator-reachable (snapshot preparation's internal leak detection),
+  but `CHANGES.md:32` says "no exceptions".
+  - **DA-R15: SF-6 lands with A-425** (generation 6 is already in that
+    function): mirror the adjacent `OSError` branch, announce only on the
+    `if outcome_holder:` side, never on the `raise` side; cover it at the
+    real seam (a unit test with a real repository if not reachable from
+    `assay run`, stated in the A-row). `CHANGES.md:32` stays as written.
+    No round 3 for phase 1: R-1 states it does not need to re-verify a
+    ten-line read, and R-2's range will include it. R-1's session is
+    kept resumable for one round should the merge need it.
