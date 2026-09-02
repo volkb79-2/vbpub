@@ -140,3 +140,55 @@ failures trace to a single stale row (`src/nyxloom/gate_canary.py`) in
 non-test report file not in this package's `scope.touch` and not named
 anywhere in the handoff, its Context list, or either prior adversarial
 review round.
+
+## Round 2 -- handoff repaired (input_revision `fca2d122`), Work item 10
+
+The coordinator confirmed the BLOCKED finding was correct and reported it
+repaired: the handoff grew a new Work item 10 (and `scope.touch`/O2 grew to
+match), frozen at `fca2d122`, matching this worktree's HEAD (`bb46cbbb`,
+"fix-verification round 4") before this round started. My 13 prior commits
+stood unchanged. Re-read the full handoff (frontmatter + body) to confirm
+Work item 10's exact wording before touching anything: THREE rows, not two
+-- `gate_canary.py` (remove), `effects_gates.py` and `cli.py` (both already
+over tolerance, re-measure for real with `wc -l`, don't hardcode), and
+`rules_attention.py` (re-measure too even though still in tolerance; trim
+its stale prose regardless).
+
+13. **`1b76dfa9`** -- docs(nyxloom): P98 -- Work item 10, fix all three
+    stale ownership-inventory rows. In
+    `nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md`:
+    removed the `src/nyxloom/gate_canary.py` row entirely. Re-measured with
+    real `wc -l` on the current tree: `effects_gates.py` 473 -> 354,
+    `cli.py` 2,469 -> 2,220, `rules_attention.py` 118 -> 83 (matches the
+    coordinator's stated numbers exactly). Trimmed `effects_gates.py`'s
+    "the gate-verify cadence and post-merge validation, including BOTH
+    background-work registries" to "post-merge validation, including its
+    background-work registry" (only one family remains); trimmed
+    `rules_attention.py`'s "...and the gate-verify cadence that is
+    deliberately outside the carve mutex" clause entirely (`cli.py`'s
+    "Operator and recovery commands" text needed no wording change, only
+    the count). Added one consolidated "Re-measured 2026-09-02
+    (nyxloom-P98)" note following the document's own existing convention,
+    covering all three rows and citing `decisions.md`. Verified locally:
+    all 26 `tests/test_core_characterization.py` tests pass, including
+    both named oracle tests.
+
+## Gate runs, round 2
+
+- **Run 3** (commit `1b76dfa9`): `FAIL/COMMAND_FAILED`. A single,
+  unrelated failure: `tests/test_properties.py::test_sequence_integrity_under_concurrency`
+  -- `sqlite3.OperationalError: database is locked` inside a forked worker,
+  a real-SQLite multiprocess-concurrency test with no connection to this
+  package's diff (nothing touched touches `storage.py`/`storage_sqlite.py`/
+  `test_properties.py`). Host load was 8.93/10.27/8.20 (1/5/15-min) with 67
+  containers running at the time -- consistent with a load-induced SQLite
+  lock-wait timeout, not a regression. Waited for load to ease (settled to
+  ~4.2 after several minutes) and re-ran rather than editing anything.
+- **Run 4** (same commit `1b76dfa9`, unchanged tree): `PASS (exit 0)`. Both
+  R0 and R1 assay claims PASS. Confirms Run 3's failure was the transient
+  host-contention flake it looked like, not a real regression -- identical
+  code, identical commit, clean pass once the host had room to run the
+  concurrency test's four forked workers without starving each other.
+
+All 9 oracles now verified PASS -- see REPORT.md's updated O2 section and
+closing verdict.

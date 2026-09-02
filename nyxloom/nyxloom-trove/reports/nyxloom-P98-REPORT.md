@@ -1,15 +1,17 @@
 # nyxloom-P98 -- implementation REPORT
 
-**Status: BLOCKED.** Work items 1-9 are fully implemented and committed
-(12 commits, `ec02107f`..`918c3a03`, see LOG.md). Oracles O1, O3, O4, O5, O6,
-O7, O8, O9 all pass, verified below with real command output. **O2 (the
-`tester-unified` gate passes green) does not pass** -- two real, reproducible
-pytest failures remain, both rooted in a single stale row in a non-test
-report file that is outside this package's `scope.touch`, not named
-anywhere in the handoff, its 13-item Context list, or either of the two
-prior adversarial review rounds. See "BLOCKED finding" below for the full
-diagnosis and why this is `escalate_if` #1 firing rather than something to
-fix by editing that file myself.
+**Status: DONE. All 10 Work items implemented, all 9 oracles PASS.** Work
+items 1-9 landed first (12 commits, `ec02107f`..`918c3a03`); that round
+correctly reported BLOCKED on O2 because
+`nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md` (a
+non-test file outside `scope.touch`) was stale in a way that broke
+`tests/test_core_characterization.py`. The coordinator confirmed the
+finding, repaired the handoff (frozen `fca2d122`) with a new Work item 10
+covering three stale rows (one more than my own report had found), and
+this session executed it (commit `1b76dfa9`). The gate now passes green;
+see the updated O2 section and "Round 2" below for the full evidence trail,
+including a genuine, unrelated host-contention flake encountered and
+resolved by re-running (not by editing anything).
 
 ## Independent sweep (before touching anything)
 
@@ -52,22 +54,67 @@ PASS.
 
 ### O2 -- the gate passes green
 
-**FAIL.** Full gate argv run twice (see LOG.md "Gate runs"). Final state
-(commit `918c3a03`): `tester-unified: FAIL/COMMAND_FAILED (exit 1)`, exactly
-two pytest failures, both in `tests/test_core_characterization.py`:
+**PASS (as of Work item 10, commit `1b76dfa9`).**
+
+First implementation round: two full gate runs (commits `699e6a68` then
+`918c3a03`) both `FAIL/COMMAND_FAILED`, isolating exactly two pytest
+failures, both in `tests/test_core_characterization.py`:
 `test_inventory_paths_all_exist` and
-`test_inventory_sizes_are_within_the_declared_tolerance`. Full diagnosis in
-"BLOCKED finding" below. All six named collection targets DO collect and
-run (confirmed in both gate runs' stdout, and independently via
-`pytest --collect-only` locally): `test_planning.py`, `test_gap_audit.py`,
-`test_daemon.py`, `test_remote_mutation_audit_tools.py`,
-`test_snapshot_faults.py`, `test_planner_differential.py` (including
-`test_legacy_baseline_is_the_committed_branch_point` and the full
-`PROFILES` parametrization -- confirmed by direct run, see below).
+`test_inventory_sizes_are_within_the_declared_tolerance` -- correctly
+reported BLOCKED (see "Round 1 BLOCKED finding, now resolved" below).
+
+After the coordinator's handoff repair (Work item 10, commit `1b76dfa9`):
 
 ```
+$ ./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-p98 tester-unified
+...
+tester-unified: FAIL/COMMAND_FAILED (exit 1)
+  commit: 1b76dfa98bbf592f7c845f5985232dbed23d3125
+```
+This run (call it Run 3) failed on a SINGLE, unrelated test:
+`tests/test_properties.py::test_sequence_integrity_under_concurrency` --
+`sqlite3.OperationalError: database is locked` inside one of four forked
+worker processes. This test exercises raw SQLite concurrent-write locking
+under `multiprocessing`; nothing in this package's diff touches
+`storage.py`, `storage_sqlite.py`, or `test_properties.py`. Host load at
+the time was `8.93/10.27/8.20` (1/5/15-min averages) with 67 containers
+running -- consistent with a load-induced SQLite lock-wait timeout on a
+shared host, not a regression. Waited for load to ease (settled to ~4.2)
+and re-ran the identical commit, unchanged:
+
+```
+$ ./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-p98 tester-unified
+...
+tester-unified: PASS (exit 0)
+  commit: 1b76dfa98bbf592f7c845f5985232dbed23d3125
+$ python3 -c "import json; d=json.load(open('.assay/verdict-tester-unified.json')); print(d['outcome'], d['reason_code'], d['exit_code']); [print(c['rigor'], c['status']) for c in d['claims']]"
+PASS None 0
+R0 PASS
+R1 PASS
+```
+Confirms Run 3's failure was the transient host-contention flake it looked
+like: identical commit, identical code, clean pass once the host had room
+to run the concurrency test's four forked workers without starving each
+other.
+
+All seven named collection targets DO collect and run, confirmed both via
+the gate's own pytest invocation and independently via
+`pytest --collect-only` locally against the final tree:
+
+```
+$ PYTHONPATH=src python3 -m pytest tests/test_planning.py tests/test_gap_audit.py tests/test_daemon.py tests/test_remote_mutation_audit_tools.py tests/test_snapshot_faults.py tests/test_planner_differential.py tests/test_core_characterization.py --collect-only -q
+tests/test_core_characterization.py: 26
+tests/test_daemon.py: 237
+tests/test_gap_audit.py: 23
+tests/test_planner_differential.py: 64
+tests/test_planning.py: 116
+tests/test_remote_mutation_audit_tools.py: 11
+tests/test_snapshot_faults.py: 40
 $ PYTHONPATH=src python3 -m pytest tests/test_planner_differential.py::test_legacy_baseline_is_the_committed_branch_point -q
 .                                                                        [100%]
+$ PYTHONPATH=src python3 -m pytest tests/test_core_characterization.py::test_inventory_paths_all_exist tests/test_core_characterization.py::test_inventory_sizes_are_within_the_declared_tolerance -v
+tests/test_core_characterization.py ..                                   [100%]
+========================= 2 passed, 1 warning in 0.22s =========================
 ```
 
 ### O3 -- no canary-probing subcommand under `gate`
@@ -314,7 +361,7 @@ $ grep -c "cmd_gate_verify" src/nyxloom/config.py
 ```
 PASS.
 
-## BLOCKED finding: `escalate_if` #1 firing
+## Round 1 BLOCKED finding, now resolved (Work item 10)
 
 **Root cause:** `nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md`
 (a frozen, mechanically-checked module-ownership inventory from the earlier
@@ -368,15 +415,24 @@ would independently fail the same test.
   continuations of already-instructed Work items -- a materially different
   situation from a brand-new non-test file nobody named.
 
-**What the fix would look like** (for the carve repair, not attempted
-here): update `CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md` line 123
-(remove or retire the `gate_canary.py` row) and line 68 (re-measure
-`effects_gates.py`'s line count, and likely its descriptive text, which
-still describes "the gate-verify cadence and post-merge validation" as
-current). Whether that inventory should also gain a P98-dated addendum
-note (mirroring how `decisions.md` records this package) or simply drop the
-row silently is a carve-level editorial call, not something to guess at
-mid-implementation.
+**Resolution (Work item 10, commit `1b76dfa9`):** the coordinator confirmed
+this finding and repaired the handoff (frozen `fca2d122`), adding Work item
+10 and growing `scope.touch`/O2 to name
+`CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md` explicitly. Adversarial
+fix-verification found the fix needed to go one row further than my report:
+**three** rows, not two -- `src/nyxloom/cli.py`'s row was ALSO stale
+(recorded 2,469, real 2,220 after Work item 2's commit `74a3664f`) and
+`src/nyxloom/rules_attention.py`'s row needed its stale "gate-verify
+cadence" description trimmed (its line count, 118 -> 83, stayed inside
+tolerance, but was re-measured anyway per the instruction). Executed
+exactly as specified: removed the `gate_canary.py` row; re-measured
+`effects_gates.py` (473 -> 354), `cli.py` (2,469 -> 2,220), and
+`rules_attention.py` (118 -> 83) with real `wc -l`, not a guessed number;
+trimmed `effects_gates.py`'s and `rules_attention.py`'s stale
+"gate-verify cadence" prose; added one consolidated "Re-measured 2026-09-02
+(nyxloom-P98)" note following the document's own convention. Full diff and
+rationale in commit `1b76dfa9`; gate verified green afterward (see O2
+above).
 
 ## Test-file pruning itemization (why each removal is safe)
 
@@ -461,6 +517,7 @@ mid-implementation.
 | `src/nyxloom/effects_gates.py` docstring | Module and `GateEffector` class docstrings reworded from "both gate families" to post-merge-only, with a short retirement note. |
 | `src/nyxloom/rules_attention.py` docstring | Reworded from "module contract items 6, 7 and 16" / "the gate-verify cadence runs a subprocess probe" to the two remaining items, noting nyxloom-P98's retirement of the third. |
 | `src/nyxloom/reconcile.py` | Item 17's cross-reference to item 16 edited (drops the `gate_verify_interval_days` half of the field-name comparison). `ReconcileInput.days_since_gate_verify`'s own field docstring (mentioning `GATE_VERIFY_RECORDED`/`daemon._days_since_gate_verify`) is left **completely unedited** per Scope/forbid, even though it now describes deleted machinery -- this is the deliberate exception, not an oversight. |
+| `nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md` | Work item 10 (round 2). Removed the `src/nyxloom/gate_canary.py` row entirely. Re-measured `effects_gates.py` (473 -> 354), `cli.py` (2,469 -> 2,220), `rules_attention.py` (118 -> 83) with real `wc -l`. Trimmed `effects_gates.py`'s and `rules_attention.py`'s "gate-verify cadence" prose. Added a consolidated "Re-measured 2026-09-02 (nyxloom-P98)" note. |
 
 ## Orientation telemetry
 
@@ -482,33 +539,31 @@ mid-implementation.
   `reconcile.py`, `rules_attention.py`, `planning.py`, `types.py`,
   `onboarding_gate.py`, `gate_scaffold.py`, `config.py`,
   `nyxloom-config.schema.json` before touching any of them).
-- 12 commits, 2 full gate runs (each `docker update --cpus=3`'d within
-  seconds of container start, per the shared-host load rule), both read in
-  a separate step from the run itself (no piped tail/grep on the run
-  command).
-- Approximate tool-call count at BLOCKED: comfortably under the ~60-call/
-  120k-context checkpoint threshold for a single dispatch; no checkpoint
-  brief was needed.
+- 13 commits total, 4 full gate runs across the two rounds (each
+  `docker update --cpus=3`'d within seconds of container start, per the
+  shared-host load rule), each read in a separate step from the run itself
+  (no piped tail/grep on the run command). Run 3's single failure
+  (`test_sequence_integrity_under_concurrency`, a real-SQLite concurrency
+  test unrelated to this package's diff) was diagnosed against host load
+  (8.93/10.27/8.20, 67 containers) before re-running rather than assumed
+  fixed or edited around.
+- Approximate tool-call count across both rounds: comfortably under the
+  ~60-call/120k-context checkpoint threshold per round; no checkpoint
+  brief was needed at any point.
 
 ## Closing
 
-All 9 Work items are implemented and committed. 8 of 9 oracles (O1, O3-O9)
-pass, verified above with real command output, not asserted. **O2 does not
-pass** -- the gate is red because of a single, precisely diagnosed,
-out-of-scope reverse-dependency (see "BLOCKED finding"), not because of
-anything within this package's `scope.touch`. I did not edit
-`nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md`, and
-I am not merging anything.
+All 10 Work items are implemented and committed (13 commits,
+`ec02107f`..`1b76dfa9`). **All 9 oracles (O1-O9) pass**, each verified above
+with real command output, not asserted -- O2 specifically verified green on
+`./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-p98
+tester-unified` (Run 4, commit `1b76dfa9`, `PASS (exit 0)`, both R0 and R1
+assay claims PASS). I am not merging anything.
 
-**BLOCKED: `nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md`
-(lines 68 and 123) is a non-test file outside this package's `scope.touch`
-whose stale rows (a deleted `gate_canary.py` path; `effects_gates.py`'s
-line count, 473 recorded vs. 354 actual) make
-`tests/test_core_characterization.py::test_inventory_paths_all_exist` and
-`::test_inventory_sizes_are_within_the_declared_tolerance` fail on a real
-`./run-gate.py tester-unified` run. This is `escalate_if` #1 firing: a real
-reverse-dependency neither the carve's three-token sweep (scoped to
-`src/`/`tests/`/`tools/`, not `nyxloom-trove/`) nor two rounds of
-adversarial review surfaced. The carve needs a repair round adding this
-file (or a replacement row/removal instruction for it) to `scope.touch`
-before this package can reach a green gate.**
+Round 1 correctly reported BLOCKED on a real, out-of-scope reverse-dependency
+(`CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md`, missed by the carve's
+`src`/`tests`/`tools`-scoped sweep and both prior adversarial review
+rounds); the coordinator confirmed it, repaired the handoff with Work item
+10 (one row further than my own report had found -- `cli.py`'s row was
+also stale), and this round executed that repair and re-verified the full
+gate green.
