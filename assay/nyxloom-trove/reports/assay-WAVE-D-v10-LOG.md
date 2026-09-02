@@ -230,3 +230,68 @@ test; splitting them would produce three commits nobody can gate separately.
   evaluation layer itself" and naming B053 as unfixed. B053 shipped in commit
   4 of this generation, so that paragraph was false as written.
 - No `verdict.py` / `verify.py` / schema / drift-guard file touched; no `!`.
+
+### Gate run, generation 2
+
+**One run, first try, GREEN, on `c80b3452`.** Launched detached from
+`/workspaces/vbpub`, worktree committed clean and left untouched for the
+whole run (BRIEF-1 §6's second trap). BRIEF-1 §6's first trap was avoided by
+putting the log path as a literal INSIDE the `bash -c` string rather than
+assigning a shell variable in front of a backgrounded list. Exactly one gate
+process and one `tester-unified` container were confirmed within 8s of
+launch:
+
+```
+$ pgrep -af 'tester-unified-gate.sh'
+439461 bash assay/tools/tester-unified-gate.sh /workspaces/vbpub/.worktrees/assay-wave-d-v10
+$ docker ps --format '{{.ID}} {{.Image}} {{.Names}}' | grep -i tester-unified
+edfd632eaecf tester-unified:local crazy_moser
+```
+
+Verdict read in a SEPARATE step from the log's own markers, never from the
+launcher's status:
+
+```
+$ grep -c 'ASSAY_REGISTERED_GATE_COMPLETE=1' <log>   -> 1
+$ grep 'GATE_EXIT=' <log>                            -> GATE_EXIT=0
+$ grep -c -E 'FAILED|DIRTY_TREE|Traceback' <log>     -> 0
+Created wheel for assay: filename=assay-4.1.1.dev9+gc80b3452-py3-none-any.whl
+  size=522688 sha256=c67b74feae1ccb866c40b1b810fdd5ec9e4d38be267d81e0b56789d8d8927b0c
+tester-unified: PASS (exit 0)
+  commit: c80b34521150c82a8dc87760e987b54e2f977c55
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified
+ASSAY_GATE_PHASE=verdict-v9-successors-verified
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+GATE_EXIT=0
+```
+
+The wheel name carries the judged commit (`gc80b3452`), which is the commit
+the lane reports and the tip that was gated. **`c80b3452` is the
+gate-verified commit of generation 2.**
+
+The v9 schema phases both passed, which is the mechanical confirmation that
+phase 1 is still releasable on v9 — no `verdict.py`, `verify.py`, schema or
+drift-guard file was touched by any of this generation's three commits.
+
+### 7. `docs(assay): Wave D generation 2 checkpoint -- BRIEF-2 and the green gate on c80b3452`
+
+- No product code, no test change. `nyxloom-trove/reports/assay-WAVE-D-v10-BRIEF-2.md`
+  (new) and this LOG's gate entry.
+- **A docs-only successor to the gate-verified tip.** The gate-verified
+  commit stays `c80b3452`; nothing executable changed after it, so re-gating
+  for a brief would reproduce the same result at ~13 minutes' cost.
+  Generation 3 gates its own first product commit.
+
+### A trap of generation 2's own, recorded
+
+`git commit` was issued after `cd /workspaces/vbpub` — the MAIN checkout, not
+the worktree. It failed on a pathspec (the new test file is untracked there)
+rather than committing to `main`, which was luck, not design. **Every git
+command belongs in the worktree (the tool's default cwd); the only thing that
+belongs in `/workspaces/vbpub` is the gate launch.** The same `cd` also made
+`git log --oneline -1` report main's tip, which is how it was noticed that
+`main` had moved to `9b0bca62` — see the id re-check in BRIEF-2 §8.

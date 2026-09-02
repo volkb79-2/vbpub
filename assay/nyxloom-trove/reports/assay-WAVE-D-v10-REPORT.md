@@ -609,3 +609,67 @@ line" section.
   may reasonably rule the other way.
 - **B009:** re-run the greps. The whole value of that section is that it is
   measured, so a reviewer should measure it again rather than read it.
+
+## Generation 2 — gate transcript and scope
+
+**GATE-VERIFIED COMMIT: `c80b3452`.** One run, first try, green. Full marker
+transcript in `assay-WAVE-D-v10-LOG.md`; the four verdict reads were
+`ASSAY_REGISTERED_GATE_COMPLETE=1` × 1, `GATE_EXIT=0`,
+`grep -c -E 'FAILED|DIRTY_TREE|Traceback'` = 0, and the wheel
+`assay-4.1.1.dev9+gc80b3452-py3-none-any.whl` carrying the judged commit.
+Both v9 schema phases passed, which is the mechanical confirmation that
+phase 1 is still releasable on v9.
+
+Whole suite, worktree-local, immediately before the commit that was gated:
+**3968 passed, 20 skipped in 509.12s (0:08:29)**, zero failures. Generation
+1's figure on the same suite was 3944; the 24 added are this generation's 9
+(B053) + 7 (B054) + 1 (B060) and 7 that were already on the branch.
+
+## Generation 2 — decision asks, collected
+
+1. **(B053)** Refusals that carry no `AssayError` — `DIRTY_TREE`
+   (`runner.py:3719`, `:4221`), `HEAD_CHANGED` (`:3721`),
+   `MISSING_EXTERNAL_TOOL` (`:3960`), the `env_required` refusal (`:4103`)
+   and the bad-`--shard` refusal (`:4149`) — print no stderr line, because
+   they call `refuse_lane`/`refuse_all` with a literal `(status,
+   reason_code)` and no message. DA-R1's format requires a message.
+   **Question:** should phase 2 give those five sites their own
+   `AssayError`, with the message composed where the fact is known (the
+   dirty-tree check already holds the offending paths from
+   `git.dirty_paths`), so that "every refusal reachable through `assay run`
+   prints exactly one line" holds without qualification?
+2. **(B053)** An `r2_early_claim` can be announced and then superseded by a
+   claim built from a failed command (`runner.py:3134`). That is one extra
+   TRUE sentence about a refusal that really happened, never a false one;
+   suppressing it needs a deferred-print buffer the ruling did not ask for.
+   **Question:** noise, or correct as landed?
+3. **(B056)** Option 2 — make the packaging test's negative reachable again
+   by building with the git file finder disabled — was declined on cost (a
+   second real wheel build in a suite that already pays for two). **Question
+   for R-1:** is the corrected message enough, or is the two-sided check
+   worth the build?
+4. **(B029, raised BEFORE implementing it)** DA-D11 says to thread
+   `infrastructure_source`/`infrastructure_environment` "into `canary.py`'s
+   two call sites". Measured, `runner.execute_command` has exactly ONE caller
+   (`canary.py:213`, inside `_run_pipeline`, which both halves of the LEGACY
+   standalone `run_python_canary` go through). The ISOLATED canary path
+   (`run_isolated_canary`), which is what `_run_prepared_lane` actually uses,
+   takes a pre-executed `unit.result`. **Question:** if the shipped R3 path
+   never reaches `execute_command`, is B029's defect confined to a code path
+   no lane uses — in which case the fix is still correct but the CLI-driven
+   test the ruling asks for cannot reach it, and the honest deliverable is a
+   docstring correction plus the threading, not a lane test? Generation 3
+   should resolve this by measurement before writing code.
+
+## Generation 2 — what is NOT done, and why
+
+**Three of phase 1's ten items are untouched: B028 (item 4), B029 (item 5),
+B024 (item 8).** They are the three that need either a new end-to-end harness
+(B028's slow-command CLI test), a measurement that has not been made (B029,
+decision ask 4), or an image/wheelhouse investigation with a
+land-nothing branch (B024). Generation 2 checkpointed at the E-008 boundary
+with the gate green rather than starting a fourth item it could not finish;
+BRIEF-2 §3-§5 carries the seams for all three, with two corrections to
+BRIEF-1's own numbers that generation 3 should not re-derive.
+
+Phase 2 and phase 3 are untouched. No `!` commit marker exists on the branch.
