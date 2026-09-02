@@ -85,6 +85,26 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `assay/zipapp-staging/` behind, which the self-hosted gate lane then
   correctly refused as `NO_MEASUREMENT`/`DIRTY_TREE`. (B060, A-411)
 
+### Changed
+- **The registered gate now lints its own source.** After the suite,
+  `tools/tester-unified-gate.sh` runs `pyflakes` over the private
+  exact-OID clone's `src/assay` and emits
+  `ASSAY_GATE_PHASE=pyflakes-clean`; any finding fails the gate. B024 was
+  filed because two shipped `NameError`s — uses of `LaneConfigError` and
+  `os` that were never imported — cleared two full self-review cycles that a
+  one-second lint pass would have caught. pyflakes gets its **own**
+  hash-bound offline closure in a **third** venv, `lint-venv`:
+  `gate/distribution/lint-requirements.txt`,
+  `gate/distribution/lint-wheelhouse/` (one 63 KB pure-Python wheel,
+  `pyflakes==3.4.0`, fetched once and committed) and
+  `gate/distribution/lint-wheelhouse-manifest.json`, installed `--no-index
+  --require-hashes`. Neither `build-venv` nor `run-venv` changes by a byte,
+  so A-198's five-wheel closure assertion still says exactly what it said,
+  and the gate's network-disabled ingress is not loosened. Scope is
+  `src/assay`: `tests/` carries 31 pre-existing findings and one
+  deliberately unparseable fixture, filed as B062 rather than swept here.
+  (B024, A-417)
+
 ### Documentation
 - README and `docs/CONSUMERS.md` downgrade Vitest's `coverage.clean = false`
   from REQUIRED to RECOMMENDED and state what a consumer who forgets it now

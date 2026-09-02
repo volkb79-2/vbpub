@@ -72,6 +72,55 @@ for name, want in expected.items():
 PYEOF
 }
 
+# B024/DA-R7: the lint closure is a THIRD venv, never `build-venv` and never
+# `run-venv`. A linter is not a build input and not a runtime dependency, so
+# putting it in either would change what A-198's five-wheel closure assertion
+# above is asserting -- that assertion must stay byte-for-byte what it was.
+# `lint-wheelhouse/` holds exactly one pure-Python wheel (pyflakes has no
+# dependencies), fetched once on a networked host and pinned by sha256 in
+# `lint-requirements.txt` and `lint-wheelhouse-manifest.json`; the install is
+# `--no-index --require-hashes`, so the gate's own network-less closure is not
+# loosened by a byte.
+build_lint_venv() {
+  local scratch="$1" distribution="$2" base_prefix
+  base_prefix="$(/opt/tester-venv/bin/python -c 'import sys; print(sys.base_prefix)')"
+  "$base_prefix/bin/python3" -m venv "$scratch/lint-venv"
+
+  "$scratch/lint-venv/bin/python" -m pip install \
+    --no-index \
+    --find-links "$distribution/lint-wheelhouse" \
+    --require-hashes \
+    -r "$distribution/lint-requirements.txt"
+
+  "$scratch/lint-venv/bin/python" - <<'PYEOF' || die "installed lint closure does not match the locked pyflakes pin"
+from importlib.metadata import version
+
+got = version("pyflakes")
+assert got == "3.4.0", f"pyflakes: expected 3.4.0, got {got}"
+PYEOF
+}
+
+# Runs pyflakes over the JUDGED source -- the private exact-OID clone, not the
+# bind-mounted worktree, for the same reason the wheel is built from the clone
+# (A-198): a gitignored stray `.py` in the caller's tree must not be able to
+# redden or to launder this phase. pyflakes' whole rule set IS the F-rule set
+# (undefined names, unused imports and locals, redefinitions, f-strings without
+# placeholders); it carries no style opinions, so there is no rule selection to
+# get wrong and no configuration file to drift.
+#
+# Scope is `src/assay` only. Measured at B024's landing: `src/assay` and
+# `gate/` are pyflakes-clean; `tests/` reports 31 findings across 19 modules
+# and contains `tests/fixtures/mutation/python/broken.py`, a DELIBERATELY
+# unparseable fixture that pyflakes can never pass. Widening the scope is a
+# separate sweep with its own evidence (B062), not a side effect of wiring
+# the phase.
+run_lint_phase() {
+  local scratch="$1"
+  "$scratch/lint-venv/bin/python" -m pyflakes "$scratch/clone/assay/src/assay" \
+    || die 'pyflakes reported findings in src/assay (see the lines above)'
+  echo 'ASSAY_GATE_PHASE=pyflakes-clean'
+}
+
 build_one_wheel() {
   local scratch="$1"
   local -a wheels
@@ -566,6 +615,13 @@ PYEOF
   echo 'ASSAY_GATE_PHASE=cmru-b006a-qualified'
 
   run_independent_witness "$scratch" "$run_venv_site"
+
+  # B024/DA-R7: lint runs AFTER the suite, deliberately. It is the cheapest
+  # phase here and could run first, but a linter that reddens the gate before
+  # the tests have spoken buys a five-second answer at the cost of the one the
+  # reviewer actually needs. Its closure is built here, next to its only use.
+  build_lint_venv "$scratch" "$distribution"
+  run_lint_phase "$scratch"
 }
 
 # --- entry points ------------------------------------------------------------

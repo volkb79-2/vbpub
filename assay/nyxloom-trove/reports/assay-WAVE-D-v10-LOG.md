@@ -531,3 +531,115 @@ moved to the background, so polling the gate log by hand does not work — the
 wall clock barely advanced across several apparent waits. **Arm a `Monitor`
 with `until grep -q 'GATE_EXIT=' <log>; do sleep 30; done` at launch time and
 let it fire.** That is what finally reported this run.
+
+---
+
+## Generation 4
+
+Next-free-id re-check before allocating, run from the worktree against `main`
+(which had moved again, to `72bc041f`, the controller's own Wave D log entry
+recording phase 1 complete and DA-R7 — assay's ledgers untouched):
+
+```
+$ git log --oneline -1 main
+72bc041f docs(assay): Wave D controller log -- phase 1 complete (gate PASS on 93188912), DA-R7 ruled (B024 lint closure), R-1 and generation 4 dispatched
+$ git show main:assay/nyxloom-trove/decisions.md | grep -o '^| A-[0-9]*' | tail -1
+| A-407
+$ git show main:assay/nyxloom-trove/4-backlog.md  | grep -o '^## B[0-9]*'  | tail -1
+## B061
+```
+
+Generation 3 allocated through A-416, so **A-417** is this generation's first
+free row, and **B062** the first free backlog id. Both are used by the commit
+below.
+
+### 13. `fix(assay): the registered gate lints its own source, from its own hash-bound closure (B024, A-417)`
+
+- Item: **B024**, ruling **DA-R7** (controller, superseding DA-D15's escape
+  hatch, which generation 3 correctly took).
+- **Option (b) of the three the decision ask offered: pyflakes only, in its
+  own closure.** Nothing else was landed and nothing outside `assay/**` was
+  touched; the shared `tester-unified` image is unchanged.
+- What landed:
+  - `gate/distribution/lint-requirements.txt` (new) — one line,
+    `pyflakes==3.4.0 --hash=sha256:f742a7db…`.
+  - `gate/distribution/lint-wheelhouse/pyflakes-3.4.0-py2.py3-none-any.whl`
+    (new) — 63551 bytes, sha256
+    `f742a7dbd0d9cb9ea41e9a24a918996e8170c799fa528688d40dd582c8265f4f`,
+    fetched ONCE on this networked devcontainer with `pip download pyflakes
+    --no-deps` (the gate itself never has a network). pyflakes has no
+    dependencies and is `py2.py3-none-any`, so the closure is one file with
+    no platform matrix.
+  - `gate/distribution/lint-wheelhouse-manifest.json` (new) — the same
+    sha256/size beside `build-wheelhouse-manifest.json`, same
+    `schema_version: 1` shape.
+  - `tools/tester-unified-gate.sh:84` `build_lint_venv` — a **third** venv,
+    `$scratch/lint-venv`, installed `--no-index --require-hashes` and
+    version-asserted. **`build_offline_closure_venvs` is untouched**, so
+    A-198's five-wheel assertion at `:59-72` is byte-for-byte what it was.
+  - `tools/tester-unified-gate.sh:117` `run_lint_phase` — `python -m
+    pyflakes "$scratch/clone/assay/src/assay"`, i.e. the **private exact-OID
+    clone**, not the bind-mounted worktree; `die` on any finding; `:121`
+    emits `ASSAY_GATE_PHASE=pyflakes-clean`.
+  - Called at `:623-624`, after `run_independent_witness` — after the suite,
+    as DA-R7 requires.
+- **The sweep was re-run before wiring** (B024's original sweep is from
+  2026-08-25 and could have drifted). It had not: `src/assay` → 0 findings,
+  `gate/` → 0 findings. `tests/` → **31 findings across 19 modules** plus
+  `tests/fixtures/mutation/python/broken.py`, a deliberately unparseable
+  fixture pyflakes can never pass — so DA-R7's "and tests/ if clean" resolves
+  to "not tests/", and the sweep is filed as **B062** rather than folded in.
+- **Red-first**, in a detached scratch worktree at `b90ca598` (never a bare
+  `git stash`) with only the new tests copied in:
+
+  ```
+  $ git worktree add --detach <scratch>/b024red HEAD
+  $ cp assay/tests/test_distribution_gate.py <scratch>/b024red/assay/tests/
+  $ cd <scratch>/b024red/assay && python -m pytest tests/test_distribution_gate.py \
+      -q -p no:randomly -k "lint or pyflakes or planted or undefined_name or shipped_source"
+  3 failed, 15 deselected, 1 warning, 3 errors in 0.73s
+  ```
+
+  The three failures are the static assertions (no pin file, no
+  `build_lint_venv`, no `pyflakes-clean` marker); the three errors are the
+  `lint_venv` fixture, which cannot build a closure that does not exist at
+  `HEAD`. Green on the branch: `21 passed` for that module,
+  `92 passed` for it plus `test_docs_examples_and_vocabulary.py` and
+  `test_distribution_build_release.py`.
+- **The planted-import proof DA-R7 asked for, as a scratch run of the gate's
+  OWN functions** (function definitions sourced from the real script, the
+  hardcoded `/opt/tester-venv` interpreter swapped for this cockpit's, a real
+  copy of `src/assay` as the clone):
+
+  ```
+  --- CLEAN RUN ---
+  ASSAY_GATE_PHASE=pyflakes-clean
+  CLEAN_EXIT=0
+
+  --- PLANTED UNUSED IMPORT IN verdict.py ---
+  <scratch>/clone/assay/src/assay/verdict.py:1:1: 'os' imported but unused
+  <scratch>/clone/assay/src/assay/verdict.py:57:1: from __future__ imports must occur at the beginning of the file
+  tester-unified-gate: pyflakes reported findings in src/assay (see the lines above)
+  PLANTED_EXIT=1
+  ```
+
+  The same proof is a permanent test:
+  `tests/test_distribution_gate.py:641` (unused import) and `:671`
+  (undefined name) assert the non-zero exit, the named file and line, and the
+  ABSENCE of the marker; `:695` runs the identical locked pyflakes over the
+  real shipped `src/assay`, so a finding surfaces in `pytest tests` instead
+  of only after a nine-minute container run.
+- One existing assertion moved with the code:
+  `tests/test_distribution_gate.py`'s `gate_functions` fixture counts uses of
+  `/opt/tester-venv/bin/python` in the function definitions and asserts the
+  count. `build_lint_venv` resolves the same base prefix the other two venvs
+  are cut from, so the count is **4**, not 3 — the fixture's own docstring
+  invites exactly that update.
+- Docs: `docs/DESIGN-GUIDE.md` §14's "Two venvs, not one" becomes "Two venvs
+  for the wheel, not one" plus "And a third for the linter", which states why
+  neither existing venv was the right home, why the clone rather than the
+  worktree, why after the suite, and that the scope is a measurement.
+  `CHANGES.md` gains a `### Changed` bullet.
+- **No schema work in this commit**: `verdict.py`, `verify.py`,
+  `src/assay/schemas/` and the drift-guard carve-assets are untouched, and
+  the commit carries no `!`. The phase-1 fallback release can carry it.

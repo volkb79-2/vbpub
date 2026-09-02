@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "requires_python": ">=3.9",
+  "requirements": [
+    {
+      "requirement": "pyflakes==3.4.0",
+      "filename": "pyflakes-3.4.0-py2.py3-none-any.whl",
+      "size": 63551,
+      "sha256": "f742a7dbd0d9cb9ea41e9a24a918996e8170c799fa528688d40dd582c8265f4f"
+    }
+  ]
+}

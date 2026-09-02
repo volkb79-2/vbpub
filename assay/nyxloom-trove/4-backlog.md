@@ -2255,11 +2255,19 @@ undetected.
 
 ### Acceptance
 
-- [ ] `tester-unified-gate.sh` runs a linter over `src/assay/` as a real
+- [x] `tester-unified-gate.sh` runs a linter over `src/assay/` as a real
       phase, failing the gate on any finding not in an explicit, dated
-      baseline (if the ratchet approach is chosen); — **BLOCKED on a
-      decision, Wave D phase 1, DA-D15's own escape hatch taken. Measured
-      2026-09-02, nothing landed. See the note below.**
+      baseline (if the ratchet approach is chosen); — **DONE 2026-09-02 under
+      DA-R7 (A-417), and with NO baseline: `src/assay` is pyflakes-clean, so
+      the phase enforces zero findings rather than a ratchet.**
+      `tools/tester-unified-gate.sh:84` (`build_lint_venv`, a THIRD venv
+      installed `--no-index --require-hashes` from
+      `gate/distribution/lint-wheelhouse/`), `:117` (`run_lint_phase`,
+      `python -m pyflakes "$scratch/clone/assay/src/assay"` → `:121`
+      `ASSAY_GATE_PHASE=pyflakes-clean`), called at `:623-624` after
+      `run_independent_witness`. A planted unused import reddens it:
+      transcript in the Wave D REPORT, and
+      `tests/test_distribution_gate.py:641` asserts it.
 - [x] the pre-existing findings above are either fixed or explicitly listed
       in that baseline with a reason each stays open — **fixed, all of
       them**: `python -m pyflakes` over the whole `src/assay/` tree
@@ -2342,6 +2350,51 @@ change rather than a local one.
 **Decision ask, verbatim, in the Wave D REPORT.** Nothing was landed: no
 phase added to `tools/tester-unified-gate.sh`, no line added to
 `build-requirements.txt`, no wheel added to `build-wheelhouse/`.
+
+### RESOLVED 2026-09-02 (Wave D, DA-R7, A-417) — option (b), a fourth closure
+
+The controller ruled the ask above as **DA-R7**: option (b), `pyflakes`
+**only**, in its **own** closure. What landed:
+
+- `gate/distribution/lint-requirements.txt` — one line,
+  `pyflakes==3.4.0 --hash=sha256:f742a7db…`.
+- `gate/distribution/lint-wheelhouse/pyflakes-3.4.0-py2.py3-none-any.whl` —
+  63551 bytes, sha256 `f742a7dbd0d9cb9ea41e9a24a918996e8170c799fa528688d40dd582c8265f4f`,
+  fetched ONCE on this networked devcontainer with
+  `pip download pyflakes --no-deps` and committed. pyflakes has no
+  dependencies and is a pure-Python `py2.py3-none-any` wheel, so the closure
+  is one file and needs no platform matrix.
+- `gate/distribution/lint-wheelhouse-manifest.json` — the same sha256 and
+  size beside the existing `build-wheelhouse-manifest.json`, same
+  `schema_version: 1` shape.
+- `tools/tester-unified-gate.sh:84` `build_lint_venv` — a **third** venv,
+  `lint-venv`. Never `build-venv`, never `run-venv`: A-198's five-wheel
+  closure assertion at `:59-72` is byte-for-byte what it was, and
+  `tests/test_distribution_gate.py` asserts that `build_offline_closure_venvs`
+  mentions neither `pyflakes` nor `lint`.
+- `tools/tester-unified-gate.sh:117` `run_lint_phase` — pyflakes over the
+  **private exact-OID clone's** `src/assay`, not the bind-mounted worktree,
+  for A-198's own reason: a gitignored stray `.py` in the caller's tree must
+  be able neither to redden nor to launder the phase.
+
+**Why pyflakes only, and why the whole rule set is the F-rule set.** DA-D15
+asked for "pyflakes and ruff, F-rules only". DA-R7 dropped ruff: it ships as
+a ~10 MB platform-specific binary wheel (so the closure would need a
+platform matrix), and the rule set DA-D15 actually wants — the `F` rules —
+is *ruff's re-implementation of pyflakes*. pyflakes' entire rule set is that
+set: undefined names, unused imports and locals, redefinitions, f-strings
+with no placeholders. There is no rule selection to configure and therefore
+none to drift.
+
+**Scope is `src/assay` only, and that is a measurement, not a preference.**
+Measured 2026-09-02 with the same locked pyflakes 3.4.0: `src/assay` → 0
+findings; `gate/` → 0 findings; `tests/` → **31 findings across 19 modules**,
+and `tests/fixtures/mutation/python/broken.py` is a deliberately unparseable
+fixture that pyflakes can never pass. DA-R7's "and tests/ if clean" therefore
+resolves to "not tests/". Sweeping those 32 is a separate item with its own
+evidence — filed as **B062**.
+
+**Status: RESOLVED 2026-09-02 (Wave D phase 1 tail, A-417).**
 
 ---
 
@@ -6202,3 +6255,64 @@ srdm-shaped repetition being asserted in three orders (a fix handling only
       not launder an uncovered block (same test, final stanza);
 - [x] re-run F008-A5's qualification on the fixed build and record the
       classified table against covergate (REPORT).
+
+---
+
+## B062 — `tests/` carries 31 pyflakes findings, so the gate's new lint phase judges `src/assay` only
+
+**Filed 2026-09-02** from B024's landing (Wave D phase 1, DA-R7, A-417).
+
+DA-R7 asked for the lint phase to cover `src/assay` "and `tests/` if clean".
+It is not clean. Measured with the same locked `pyflakes==3.4.0` the gate now
+installs, from the repository root:
+
+```
+$ python -m pyflakes src/assay ; echo $?      # 0 findings
+0
+$ python -m pyflakes gate ; echo $?           # 0 findings
+0
+$ python -m pyflakes tests | grep -cE '^tests/[^ ]+\.py:[0-9]+:[0-9]+: '
+32
+```
+
+**31 findings across 19 modules**, plus a 32nd line that is not a finding at
+all: `tests/fixtures/mutation/python/broken.py:8:12: invalid syntax`, a
+**deliberately** unparseable fixture the mutation suite needs in order to
+prove how assay reports a source file it cannot parse. pyflakes can never
+pass over that path, so any `tests/` phase must exclude `tests/fixtures/`
+explicitly rather than pretend the tree is uniform.
+
+The 31 real findings, by class:
+
+| class | count | example |
+|---|---|---|
+| `'X' imported but unused` | 25 | `tests/test_refusal_announcement.py:36: 'sys'` |
+| `local variable 'X' is assigned to but never used` | 5 | `tests/test_runner_evaluate_r1.py:443: 'head_rev'` |
+| `redefinition of unused 'X'` | 1 | `tests/test_mutation_progress_budget_plan.py:26: 'collect_mutation_sites'` |
+
+None is an undefined name, so none is a latent `NameError` of the kind that
+filed B024 in the first place — which is why this is a follow-up and not a
+blocker.
+
+### Why it was not swept inside B024
+
+Deleting 25 imports and 5 locals across 19 test modules is a 19-file diff
+touching suites that B024's own commit does not otherwise go near, in a wave
+whose phase-1 tip was already under review by R-1. Two of the classes also
+need judgement rather than deletion: an unused import in a test can be a
+`pytest.importorskip`-shaped availability probe, and an assigned-never-read
+local can be the *point* of the assertion above it. Sweeping them belongs in
+a pass that reads each site, not in a lint-wiring commit.
+
+### Acceptance
+
+- [ ] the 31 findings are fixed (or, per site, justified in writing and
+      silenced deliberately — never a blanket `# noqa`);
+- [ ] `tests/fixtures/` is excluded by an explicit, commented rule that names
+      `broken.py` as the reason;
+- [ ] `run_lint_phase` (`tools/tester-unified-gate.sh:117`) is widened to
+      cover `tests/`, and the widening is proven by planting an unused import
+      in a test module and watching the phase go red;
+- [ ] the scope comment at `tools/tester-unified-gate.sh:111-116`, which
+      records today's measurement as the reason for the narrow scope, is
+      updated rather than left to rot.

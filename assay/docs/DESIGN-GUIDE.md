@@ -2354,13 +2354,39 @@ opens. Feeding the verifier's own line into `pip install --no-index
 sha256 against the bytes it actually opens, so verification and installation
 are bound to the same artifact by construction rather than by discipline.
 
-**Two venvs, not one.** `build-venv` gets the hash-checked five-wheel closure
-and nothing else; `run-venv` gets the built wheel installed with `--no-index
---no-deps` and nothing else. The build closure never leaks into the runtime
-venv's `sys.path`, so "zero runtime dependencies" is checked against the
-*installed* artifact (`importlib.metadata.requires("assay")`, extras aside)
-rather than merely asserted from the pinned `dependencies = []` in
-`pyproject.toml`.
+**Two venvs for the wheel, not one.** `build-venv` gets the hash-checked
+five-wheel closure and nothing else; `run-venv` gets the built wheel installed
+with `--no-index --no-deps` and nothing else. The build closure never leaks
+into the runtime venv's `sys.path`, so "zero runtime dependencies" is checked
+against the *installed* artifact (`importlib.metadata.requires("assay")`,
+extras aside) rather than merely asserted from the pinned `dependencies = []`
+in `pyproject.toml`.
+
+**And a third for the linter (B024/A-417).** The gate lints its own source: a
+phase after the suite runs `pyflakes` over the private clone's `src/assay` and
+emits `ASSAY_GATE_PHASE=pyflakes-clean`. The obvious place to put a linter is
+one of the two venvs that already exist, and both are wrong. `run-venv` would
+add a package to the environment whose whole job is to show that the installed
+artifact needs nothing; `build-venv` would add a sixth wheel to a closure whose
+five-pin assertion is a claim about *what can enter the wheel* — the assertion
+would still pass, while quietly meaning less. So the linter gets `lint-venv`,
+built from its own one-wheel wheelhouse
+(`gate/distribution/lint-{requirements.txt,wheelhouse/,wheelhouse-manifest.json}`)
+installed the same way the build closure is, `--no-index --require-hashes`.
+pyflakes was fetched once on a networked host and committed; it is pure Python
+with no dependencies, so that closure is one 63 KB file and needs no platform
+matrix. The gate's network-disabled ingress is unchanged.
+
+Two smaller choices in the same phase, for the same reason the wheel is built
+from a clone: it lints the **private exact-OID clone**, so a gitignored stray
+`.py` in the caller's worktree can neither redden the phase nor launder it;
+and it runs **after** the suite, because a linter that reddens the gate before
+the tests have spoken buys a five-second answer at the cost of the one the
+reviewer needs. The rule set is pyflakes' whole rule set, which is exactly the
+F-rule set other tools re-implement — undefined names, unused imports and
+locals, redefinitions, placeholder-free f-strings — so there is no rule
+selection to configure and none to drift. Scope is `src/assay`; `tests/` is
+excluded on a recorded measurement (B062), not on taste.
 
 ## 15. Real Python-project qualification harness (P25)
 

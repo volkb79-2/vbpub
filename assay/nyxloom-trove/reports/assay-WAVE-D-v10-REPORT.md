@@ -1109,3 +1109,227 @@ BLOCKED.
   of closure question (a committed executable rather than a hashed wheel).
   That was not explored, because DA-D15 names the wheelhouse and the image
   and nothing else.
+
+---
+
+# Generation 4
+
+## B024 — the gate lints its own source (DA-D15 → **DA-R7** → A-417)
+
+The decision ask above was ruled by the controller as **DA-R7**: option (b),
+**pyflakes only**, in its **own** closure. Options (a) (the shared image) and
+(c) (outside the gate) were rejected; `ruff` was dropped from DA-D15's
+original "pyflakes and ruff". This section records what was built against
+that ruling and what was measured while building it.
+
+### The sweep was re-run first, not inherited
+
+B024's original sweep is from 2026-08-25, and DA-R7 explicitly warns it may
+have drifted. It had not — for `src/assay`. Measured 2026-09-02 with the
+same `pyflakes==3.4.0` the gate now installs, from `assay/`:
+
+| tree | findings | note |
+|---|---|---|
+| `src/assay` | **0** | the tree the phase judges |
+| `gate/` | **0** | measured, but out of DA-R7's stated scope; not wired |
+| `tests/` | **31** across 19 modules | plus one non-finding, below |
+
+```
+$ python -m pyflakes tests | grep -cE '^tests/[^ ]+\.py:[0-9]+:[0-9]+: '
+32
+$ python -m pyflakes tests | grep -E '^tests/[^ ]+\.py:[0-9]+:[0-9]+: ' \
+    | grep -v '^tests/fixtures/' | wc -l
+31
+$ … | cut -d: -f1 | sort -u | wc -l
+19
+```
+
+The 32nd line is `tests/fixtures/mutation/python/broken.py:8:12: invalid
+syntax` — a **deliberately** unparseable fixture the mutation suite needs in
+order to prove how assay reports a source file it cannot parse. pyflakes can
+never pass over it, so a `tests/` phase would need an explicit
+`tests/fixtures/` exclusion as well as a 19-file sweep. DA-R7's "and `tests/`
+if clean" therefore resolves to **not `tests/`**, and the sweep is filed as
+**B062** with the per-class breakdown (25 unused imports, 5 unused locals, 1
+redefinition; **no undefined names**, so none is a latent `NameError` of the
+class that filed B024).
+
+### Acceptance, with file:line evidence
+
+| DA-R7 clause | evidence |
+|---|---|
+| `gate/distribution/lint-requirements.txt` with `pyflakes==<pin> --hash=sha256:…` | the file, one line: `pyflakes==3.4.0 --hash=sha256:f742a7dbd0d9cb9ea41e9a24a918996e8170c799fa528688d40dd582c8265f4f` |
+| `gate/distribution/lint-wheelhouse/` holding that one pure-Python wheel | `pyflakes-3.4.0-py2.py3-none-any.whl`, 63551 bytes; asserted against the manifest and the pin by `tests/test_distribution_gate.py:577` |
+| fetched ONCE here with `pip download pyflakes --no-deps -d …` | transcript below |
+| sha256 recorded in the requirements file AND in a manifest beside `build-wheelhouse-manifest.json` | `gate/distribution/lint-wheelhouse-manifest.json`, `schema_version: 1`, same shape as the build manifest |
+| installed `--no-index --require-hashes` into a THIRD venv, `lint-venv` | `tools/tester-unified-gate.sh:84-101` (`build_lint_venv`), asserted by `tests/test_distribution_gate.py:604` |
+| never `build-venv` or `run-venv`; A-198's five-wheel assertion byte-for-byte untouched | `build_offline_closure_venvs` (`:47-73`) is unchanged in this commit's diff; `tests/test_distribution_gate.py:619-621` asserts it mentions neither `pyflakes` nor `lint` |
+| `python -m pyflakes src/assay` | `tools/tester-unified-gate.sh:119` — over `$scratch/clone/assay/src/assay` |
+| as a phase AFTER the suite | called at `:623-624`, after `run_self_hosted_lane` and `run_independent_witness`; ordering asserted by `tests/test_distribution_gate.py:630` |
+| its own `ASSAY_GATE_PHASE` marker | `:121`, `ASSAY_GATE_PHASE=pyflakes-clean` |
+| pyflakes' whole rule set is the F-rule set | stated in the A-row and at `tools/tester-unified-gate.sh:106-109`; there is no rule-selection flag and no config file, so there is nothing to drift |
+| ruff dropped | A-417's rejected-alternatives column |
+| sweep any pyflakes findings in `src/assay` first | 0 findings; nothing to sweep (table above) |
+| a planted unused import must turn the gate red — prove it once in a scratch run and record the transcript | transcript below, plus `tests/test_distribution_gate.py:641` and `:671` as permanent tests |
+
+### Transcript — the fetch (this devcontainer has a network; the gate never will)
+
+```
+$ pip download pyflakes --no-deps -d <scratch>/pyflakes-dl
+Collecting pyflakes
+  Downloading pyflakes-3.4.0-py2.py3-none-any.whl.metadata (3.5 kB)
+Downloading pyflakes-3.4.0-py2.py3-none-any.whl (63 kB)
+Saved <scratch>/pyflakes-dl/pyflakes-3.4.0-py2.py3-none-any.whl
+Successfully downloaded pyflakes
+
+$ sha256sum pyflakes-3.4.0-py2.py3-none-any.whl
+f742a7dbd0d9cb9ea41e9a24a918996e8170c799fa528688d40dd582c8265f4f
+$ stat -c %s pyflakes-3.4.0-py2.py3-none-any.whl
+63551
+$ python -c "<read the wheel's own METADATA>"
+Requires-Python: >=3.9
+Requires-Dist: None          # no dependencies: the closure is one file
+```
+
+### Transcript — the planted unused import turns the phase red
+
+Run against the gate's **own** functions, sourced from the real script (the
+entry-point dispatch stripped, and the hardcoded `/opt/tester-venv/bin/python`
+swapped for this cockpit's interpreter — the same substitution
+`tests/test_distribution_gate.py`'s `gate_functions` fixture makes), with a
+real copy of `src/assay` standing in as the private clone:
+
+```
+$ build_lint_venv <scratch>/b024scratch <worktree>/assay/gate/distribution
+Processing ./gate/distribution/lint-wheelhouse/pyflakes-3.4.0-py2.py3-none-any.whl
+  (from -r <worktree>/assay/gate/distribution/lint-requirements.txt (line 1))
+Installing collected packages: pyflakes
+Successfully installed pyflakes-3.4.0
+
+--- CLEAN RUN ---
+$ run_lint_phase <scratch>/b024scratch
+ASSAY_GATE_PHASE=pyflakes-clean
+CLEAN_EXIT=0
+
+--- PLANTED UNUSED IMPORT IN verdict.py ---
+$ run_lint_phase <scratch>/b024scratch
+<scratch>/clone/assay/src/assay/verdict.py:1:1: 'os' imported but unused
+<scratch>/clone/assay/src/assay/verdict.py:57:1: from __future__ imports must occur at the beginning of the file
+tester-unified-gate: pyflakes reported findings in src/assay (see the lines above)
+PLANTED_EXIT=1
+```
+
+Note the second line of the red run: planting `import os` at the top also
+displaced the module's `from __future__ import annotations`, so pyflakes
+reported two findings, not one. That is incidental to the proof — the phase
+`die`s on ANY finding — but it is what the transcript actually shows, so it
+is recorded rather than trimmed.
+
+### Transcript — red-first
+
+Written before the wiring, proven red in a **detached scratch worktree** at
+the branch tip `b90ca598` (the shared stack forbids a bare `git stash`):
+
+```
+$ git worktree add --detach <scratch>/b024red HEAD
+Preparing worktree (detached HEAD b90ca598)
+$ cp assay/tests/test_distribution_gate.py <scratch>/b024red/assay/tests/
+$ cd <scratch>/b024red/assay && python -m pytest tests/test_distribution_gate.py \
+    -q -p no:randomly -k "lint or pyflakes or planted or undefined_name or shipped_source"
+FAILED …::test_lint_requirements_pin_the_wheels_that_are_actually_committed
+FAILED …::test_the_lint_closure_is_a_third_venv_and_never_the_build_or_run_venv
+FAILED …::test_the_lint_phase_runs_after_the_suite_and_marks_itself
+ERROR  …::test_a_planted_unused_import_reddens_the_lint_phase
+ERROR  …::test_an_undefined_name_reddens_the_lint_phase
+ERROR  …::test_the_shipped_source_tree_is_pyflakes_clean
+3 failed, 15 deselected, 1 warning, 3 errors in 0.73s
+$ git worktree remove --force <scratch>/b024red
+```
+
+The three ERRORs are the `lint_venv` fixture: at `HEAD` there is no
+`build_lint_venv` to call and no wheelhouse to install from. Green on the
+branch:
+
+```
+$ python -m pytest tests/test_distribution_gate.py -q -p no:randomly
+21 passed, 1 warning in 27.59s
+$ python -m pytest tests/test_distribution_gate.py \
+    tests/test_docs_examples_and_vocabulary.py \
+    tests/test_distribution_build_release.py -q -p no:randomly
+92 passed, 1 warning in 54.79s
+```
+
+### Design choices inside the ruling, and why
+
+DA-R7 fixes the shape; three sub-decisions were still open, and each is
+recorded here because a reviewer will (rightly) ask about it.
+
+1. **It lints the private exact-OID clone, not the bind-mounted worktree.**
+   Same reason A-198 builds the wheel from the clone: a gitignored stray
+   `.py` in the caller's tree must be able neither to redden the phase nor to
+   launder it. The alternative — `$worktree/assay/src/assay` — is the same
+   bytes in the normal case and silently is not in exactly the case a gate
+   exists for.
+2. **The phase runs after the suite, not before it.** DA-R7 says "AFTER the
+   suite" and this is not a reinterpretation, but the cost is real: a lint
+   failure now costs a full container run to discover. That is the right
+   trade — a linter that reddens the gate before the tests have spoken buys a
+   five-second answer at the cost of the one the reviewer needs — and it is
+   why `tests/test_distribution_gate.py:695` brings the same assertion
+   forward into the ordinary suite, where `pytest tests` catches it in
+   seconds.
+3. **`gate/` was measured clean but is NOT linted.** DA-R7 names
+   `src/assay`. Widening on my own initiative would put un-ruled scope into a
+   commit whose whole subject is a ruling; the measurement is recorded here
+   and in the script's own scope comment so a later widening starts from a
+   number rather than a guess.
+
+### Docs disposition
+
+| doc | change |
+|---|---|
+| `docs/DESIGN-GUIDE.md` §14 | "Two venvs, not one" → "Two venvs for the wheel, not one", plus a new "And a third for the linter (B024/A-417)": why neither existing venv was the right home, the one-file closure, the clone-not-worktree and after-the-suite choices, and that the scope is a measurement |
+| `CHANGES.md` | a new `### Changed` bullet under `[Unreleased]` |
+| `README.md` | untouched — the gate's internal phases are not a consumer-facing surface, and README's gate paragraph does not enumerate phases |
+| `docs/CONSUMERS.md` | untouched — nothing a consumer of assay's verdicts can observe changed |
+
+### What a reviewer should push on
+
+- **Plant the import for real.** The transcript above and
+  `tests/test_distribution_gate.py:641` both exercise `run_lint_phase`
+  directly. Neither runs the whole container. R-1's own push — commit an
+  unused import into `src/assay` and run the registered gate end to end —
+  is still worth doing once, and is the only proof that the call site at
+  `:623-624` is reached on a run where every earlier phase passes.
+- **Check that `build-venv` really is untouched.** The claim "A-198's
+  five-wheel closure assertion is byte-for-byte what it was" is a claim about
+  a diff; read `git show <commit> -- assay/tools/tester-unified-gate.sh` and
+  confirm the only changes are additions.
+- **Check the wheel's provenance.** The committed wheel was fetched from
+  PyPI on this devcontainer. A reviewer with a network can re-download
+  `pyflakes==3.4.0` and confirm the sha256; a reviewer without one can at
+  least confirm the manifest, the pin line and the file on disk agree
+  (`tests/test_distribution_gate.py:577` does exactly this, which is the
+  point of that test).
+- **`lint-venv` is built inside the container with `--network=none`.** The
+  pip install is `--no-index --find-links` against a committed directory, so
+  it cannot reach out — but the `python -m venv` that precedes it must
+  bootstrap pip from `ensurepip`'s bundled wheels. That already works twice
+  in this script (`build-venv`, `run-venv`), so a third is not a new risk;
+  the registered gate run is what proves it.
+
+### What I did NOT do, and why
+
+- **Did not add `ruff`.** DA-R7 drops it. Recorded in A-417's rejected
+  alternatives with the reason (a ~10 MB platform-specific binary wheel for a
+  rule set that is a re-implementation of pyflakes' entire rule set).
+- **Did not sweep `tests/`.** 31 findings across 19 modules, two of whose
+  three classes need per-site judgement rather than deletion. Filed as B062
+  with acceptance criteria.
+- **Did not lint `gate/`.** Measured clean; out of DA-R7's stated scope.
+- **Did not touch `tester-unified/Dockerfile`** or anything outside
+  `assay/**`.
+- **Did not add a baseline or ratchet.** B024's own "Suggested approach"
+  offered one; with `src/assay` clean it would record nothing and could only
+  become a place for findings to hide. Recorded as a rejected alternative in
+  A-417.

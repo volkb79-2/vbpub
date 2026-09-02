@@ -63,8 +63,11 @@ def gate_functions(tmp_path_factory) -> Path:
     body = source.split(marker, 1)[0]
 
     if not Path(AMBIENT_TESTER_VENV_PYTHON).exists():
+        # 4 since B024/DA-R7: `build_lint_venv` resolves the same base prefix
+        # the build/run venvs are cut from, so the lint closure is built by the
+        # image's own interpreter and not by whatever is first on PATH.
         occurrences = body.count(AMBIENT_TESTER_VENV_PYTHON)
-        assert occurrences == 3, (
+        assert occurrences == 4, (
             f"expected exactly 3 uses of {AMBIENT_TESTER_VENV_PYTHON} in the "
             f"function definitions, found {occurrences}; update this test's "
             "substitution if the script changed"
@@ -545,3 +548,161 @@ def test_the_self_hosted_lane_demands_the_judge_identity_from_assay_itself(
         "--verdict-json",
         f"{scratch}/verdict.json",
     ]
+
+
+# --- B024/DA-R7: the pyflakes lint phase and its own hash-bound closure -----
+
+
+LINT_WHEELHOUSE = DISTRIBUTION / "lint-wheelhouse"
+LINT_REQUIREMENTS = DISTRIBUTION / "lint-requirements.txt"
+LINT_MANIFEST = DISTRIBUTION / "lint-wheelhouse-manifest.json"
+
+
+@pytest.fixture(scope="session")
+def lint_venv(tmp_path_factory, gate_functions: Path) -> Path:
+    """A real `lint-venv` built by the gate's OWN `build_lint_venv`, from the
+    committed offline wheelhouse with `--require-hashes`. Built once per
+    session because every assertion below wants the same closure the gate
+    installs, not a pip-resolved approximation of it."""
+    scratch = tmp_path_factory.mktemp("lint-scratch")
+    proc = run_bash(
+        f'build_lint_venv "{scratch}" "{DISTRIBUTION}"',
+        gate_functions=gate_functions,
+        timeout=180,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return scratch
+
+
+def test_lint_requirements_pin_the_wheels_that_are_actually_committed() -> None:
+    """The pin, the manifest and the bytes on disk must agree. A wheelhouse
+    whose hash line does not match its own file is a closure that will only
+    fail inside the network-less container, where nobody can fetch a fix."""
+    lines = [
+        line.strip()
+        for line in LINT_REQUIREMENTS.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert len(lines) == 1, lines
+    assert lines[0].startswith("pyflakes==3.4.0 --hash=sha256:"), lines[0]
+
+    manifest = json.loads(LINT_MANIFEST.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 1
+    entries = manifest["requirements"]
+    assert len(entries) == 1, entries
+
+    wheels = sorted(LINT_WHEELHOUSE.glob("*.whl"))
+    assert [w.name for w in wheels] == [entries[0]["filename"]]
+
+    payload = wheels[0].read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    assert digest == entries[0]["sha256"]
+    assert len(payload) == entries[0]["size"]
+    assert f"--hash=sha256:{digest}" in LINT_REQUIREMENTS.read_text(encoding="utf-8")
+
+
+def test_the_lint_closure_is_a_third_venv_and_never_the_build_or_run_venv() -> None:
+    """A-198's five-wheel build closure is an assertion about what can enter
+    the wheel. A linter is neither a build input nor a runtime dependency, so
+    it gets its own venv and the build closure's assertion stays exactly what
+    it was."""
+    source = GATE_SCRIPT.read_text(encoding="utf-8")
+    lint_fn = source.split("build_lint_venv() {", 1)[1].split("\n}\n", 1)[0]
+
+    assert "$scratch/lint-venv" in lint_fn
+    assert "build-venv" not in lint_fn
+    assert "run-venv" not in lint_fn
+    assert "--require-hashes" in lint_fn
+    assert "--no-index" in lint_fn
+    assert "lint-wheelhouse" in lint_fn
+
+    build_fn = source.split("build_offline_closure_venvs() {", 1)[1].split("\n}\n", 1)[0]
+    assert "pyflakes" not in build_fn
+    assert "lint" not in build_fn
+
+    run_fn = source.split("run_lint_phase() {", 1)[1].split("\n}\n", 1)[0]
+    assert "$scratch/lint-venv/bin/python" in run_fn
+    # The judged bytes are the private exact-OID clone's, never the caller's
+    # bind-mounted worktree.
+    assert "$scratch/clone/assay/src/assay" in run_fn
+
+
+def test_the_lint_phase_runs_after_the_suite_and_marks_itself() -> None:
+    source = GATE_SCRIPT.read_text(encoding="utf-8")
+    assert "echo 'ASSAY_GATE_PHASE=pyflakes-clean'" in source
+
+    inner = source.split("run_inner() {", 1)[1].split("# --- entry points", 1)[0]
+    self_host = inner.index("run_self_hosted_lane")
+    witness = inner.index("run_independent_witness")
+    lint = inner.index("run_lint_phase")
+    assert self_host < witness < lint
+
+
+def test_a_planted_unused_import_reddens_the_lint_phase(
+    tmp_path: Path, gate_functions: Path, lint_venv: Path
+) -> None:
+    """The whole point of the phase. A clean tree passes and emits the marker
+    exactly once; the same tree with one unused import fails, names the file
+    and line, and emits NO marker -- a phase that cannot go red is wiring, not
+    a gate."""
+    scratch = tmp_path / "scratch"
+    package = scratch / "clone" / "assay" / "src" / "assay"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    module = package / "config.py"
+    module.write_text("import json\n\n\ndef load(text: str) -> object:\n    return json.loads(text)\n", encoding="utf-8")
+    shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
+
+    clean = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
+    assert clean.returncode == 0, clean.stderr
+    assert clean.stdout.count("ASSAY_GATE_PHASE=pyflakes-clean") == 1
+
+    module.write_text(
+        "import json\nimport os\n\n\ndef load(text: str) -> object:\n    return json.loads(text)\n",
+        encoding="utf-8",
+    )
+    planted = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
+    assert planted.returncode != 0
+    assert "ASSAY_GATE_PHASE=pyflakes-clean" not in planted.stdout
+    assert "'os' imported but unused" in planted.stdout + planted.stderr
+    assert "config.py" in planted.stdout + planted.stderr
+
+
+def test_an_undefined_name_reddens_the_lint_phase(
+    tmp_path: Path, gate_functions: Path, lint_venv: Path
+) -> None:
+    """pyflakes' whole rule set is the F-rule set, and the rule that pays for
+    the phase is F821: a name that does not exist at runtime, which a test
+    suite only catches on the branch that executes it."""
+    scratch = tmp_path / "scratch"
+    package = scratch / "clone" / "assay" / "src" / "assay"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "errors.py").write_text(
+        "def refuse(reason: str) -> str:\n"
+        "    if reason == 'x':\n"
+        "        return REASON_TABLE[reason]\n"
+        "    return reason\n",
+        encoding="utf-8",
+    )
+    shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
+
+    proc = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
+    assert proc.returncode != 0
+    assert "undefined name 'REASON_TABLE'" in proc.stdout + proc.stderr
+
+
+def test_the_shipped_source_tree_is_pyflakes_clean(
+    tmp_path: Path, gate_functions: Path, lint_venv: Path
+) -> None:
+    """The gate's own assertion, brought forward into the ordinary suite so a
+    finding is visible in `pytest tests` instead of only after a nine-minute
+    container run. Runs the identical locked pyflakes over the identical
+    package the gate lints."""
+    scratch = tmp_path / "scratch"
+    (scratch / "clone" / "assay" / "src").mkdir(parents=True)
+    (scratch / "clone" / "assay" / "src" / "assay").symlink_to(PROJECT_ROOT / "src" / "assay")
+    shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
+
+    proc = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions, timeout=180)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
