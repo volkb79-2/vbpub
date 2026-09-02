@@ -1969,3 +1969,67 @@ silent 90m/120m drift found here).
 - [ ] Existing dstdns lanes with a stale `pins.assay.budget` (`sql-mutation`
       `90m` vs real `120m`; likely others — not exhaustively swept from this
       report) get a follow-up cleanup pass once the mechanism is fixed here.
+
+## RG-33 — `sql-mutation`-style assay mutation lanes never pass `--resume`, so a budget-exceeded retry re-tests everything from scratch
+
+### What's wrong
+
+`assay run` supports `--resume` (persists completed mutation candidates
+under `.assay/mutation-state/`, keyed by a deterministic id derived from the
+mutated file's path, exact source bytes, mutated byte span, replacement
+bytes, and operator — CONSUMERS.md §"Resume and shard a long mutation
+lane"). A real source change produces a different id, so `--resume` never
+masks a genuine change; it silently re-executes whatever no longer matches.
+
+`run-gate` never passes `--resume` (or `--progress`) when invoking an
+assay-kind mutation lane. Confirmed live on dstdns's `sql-mutation` lane
+(2026-09-02, retry r3): the actual docker exec argv was `python3
+tools/assay/assay-4.0.0.pyz run cw2b_schema --file assay.toml
+--verdict-json .assay/verdict-cw2b_schema.json` — no `--resume` anywhere.
+That attempt ran its full 120-minute budget, hit `budget_exceeded` on
+172 mutants of the FIRST of 4 target files, and ended
+`ERROR`/`EXEC_FAILED`. Checking the worktree's `.assay/` directory:
+`mutation-state/` does not exist at all, confirming `--resume` has never
+been used on this lane — every one of that lane's retries so far has
+started file 1 over from mutant #1.
+
+### Why it matters
+
+A mutation lane whose budget is already tight (raised 90m→120m once
+already for exactly this reason, per the target `assay.toml`'s own history)
+throws away a full budget window's worth of real progress on every retry
+that doesn't finish in time — the exact scenario `--resume` exists to
+avoid. On a host under any contention (the discovery context here: a
+shared dev/test host also running a production workload, CPU-starved per
+`/proc/pressure/cpu`), a lane that structurally cannot finish in one
+budget window can never finish at all under the current wiring, no matter
+how many times it's retried.
+
+### Proposed fix
+
+Have `run-gate` pass `--resume` unconditionally for every `kind = "assay"`
+lane invocation whose target declares an `R2` (mutation) rigor — it is
+safe by construction (resume never trusts a record whose source no longer
+matches) and there is no real scenario where re-testing already-verified
+mutants from scratch is the desired behavior. Optionally also wire
+`--progress <path-outside-the-worktree>` for observability, per
+CONSUMERS.md's own guidance to keep it off the tracked/judged tree.
+
+### Acceptance
+
+- [ ] A `kind = "assay"` lane with `R2` in its target's `declared_rigor`
+      gets `--resume` in its constructed argv, verified via the actual
+      docker exec command line, not just the TOML declaration;
+- [ ] A controlled two-attempt test (first attempt killed/budget-capped
+      mid-sweep, second attempt re-run against the same commit) shows the
+      second attempt's candidate count for already-completed mutants come
+      back from `.assay/mutation-state/` rather than re-executing;
+- [ ] A genuine source change between attempts (one target file edited)
+      still re-executes every candidate touching that file — resume must
+      never mask a real regression.
+
+### Source
+
+`dstdns` P165 (`nyxloom-trove/decisions.md` D-318/D-319), discovered while
+investigating why its `sql-mutation` retry needed a full budget window
+without finishing even one of its four target files.
