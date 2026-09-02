@@ -152,22 +152,6 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               project is not an error: iter_events yields
                               nothing for it, so nothing is printed and the
                               exit code is 0.
-  gate verify <project>        PACKAGE GA1 (docs/plan-gate-adoption.md
-                              checklist item 6): a "gate for the gate" --
-                              selects the project's verification gate
-                              (gate_runner.select_verification_gate), runs
-                              it at HEAD (must PASS), then builds a known-
-                              bad canary commit (gate_canary.
-                              build_canary_commit: a real behavioral
-                              mutation via mutation_gate, or a fallback
-                              module-top-level assertion) and runs the SAME
-                              gate against it (must FAIL). Prints
-                              pass-on-good / fail-on-bad plus a verdict:
-                              NO_GATE (no gate declared), BROKEN (rejects
-                              even good HEAD), LAUNDERS (passes the known-
-                              bad canary -- the `argv=["true"]` trap), or
-                              TRUSTWORTHY (exit 0; every other verdict is
-                              exit 1).
   version                     nyxloom.__version__.
   free-models list [--source NAME]
                               D-R12 (docs/routing-model-redesign.md,
@@ -916,238 +900,6 @@ def cmd_merge(args) -> int:
     return 0
 
 
-def _asserts_mismatch_report(asserts: list[str], verdict: str,
-                             coverage_verdict: str | None = None) -> tuple[list[str], bool]:
-    """GA2 (docs/plan-gate-adoption.md checklist item 7 "rigor declared"):
-    cross-check a gate's declared `asserts` against `gate verify`'s OWN
-    observed verdict (one of BROKEN/LAUNDERS/INCONCLUSIVE/TRUSTWORTHY).
-
-    Returns `(report_lines, mismatch)`. `report_lines` is `[]` when
-    `asserts` is empty -- GA1-compatible: an undeclared gate gets zero extra
-    output (O3). Rules that can flag `mismatch=True`:
-      * `canary-verified` declared but verdict is LAUNDERS -- every canary
-        attempt survived, so the gate was never shown to reject anything.
-      * `tests-pass` OR `canary-verified` declared but verdict is BROKEN --
-        the gate rejects known-good HEAD, so it never even ran a genuine
-        test pass, let alone reached the canary step.
-      * `changed-line-coverage` declared but `coverage_verdict` is LAUNDERS
-        (GA2b) -- an uncovered-line canary passed the gate, so the declared
-        coverage floor is not actually enforced.
-    `changed-line-coverage` is cross-checked via a SEPARATE coverage-canary
-    probe whose result the caller passes in as `coverage_verdict`
-    (ENFORCED/LAUNDERS/INCONCLUSIVE); when the caller ran no such probe
-    (`None` -- e.g. the BROKEN early-return, where good HEAD never passed),
-    it degrades to declared-but-unverified. `mutation` has no probe at all
-    and is always declared-but-unverified. This is deliberately an OVERLAY:
-    it never changes the verdict line itself, only adds `asserts:`/`MISMATCH:`
-    lines and (via the caller) can push a would-have-been-zero exit code to
-    non-zero.
-    """
-    if not asserts:
-        return [], False
-    lines = [f"asserts: {', '.join(asserts)}"]
-    mismatch = False
-    for a in asserts:
-        if a == "tests-pass":
-            if verdict == "BROKEN":
-                lines.append(f"  MISMATCH: '{a}' declared, but the gate rejects known-good HEAD")
-                mismatch = True
-            else:
-                lines.append(f"  OK: '{a}' confirmed (known-good HEAD passes)")
-        elif a == "canary-verified":
-            if verdict == "LAUNDERS":
-                lines.append(f"  MISMATCH: '{a}' declared, but every canary attempt survived")
-                mismatch = True
-            elif verdict == "BROKEN":
-                lines.append(f"  MISMATCH: '{a}' declared, but the gate never reached the "
-                              "canary step (rejects known-good HEAD)")
-                mismatch = True
-            elif verdict == "TRUSTWORTHY":
-                lines.append(f"  OK: '{a}' confirmed (a known-bad canary was rejected)")
-            else:  # INCONCLUSIVE
-                lines.append(f"  UNVERIFIED: '{a}' declared, but the canary probe was "
-                              "INCONCLUSIVE -- cannot confirm")
-        elif a == "changed-line-coverage":
-            if coverage_verdict == "ENFORCED":
-                lines.append(f"  OK: '{a}' confirmed (an uncovered-line canary was rejected)")
-            elif coverage_verdict == "LAUNDERS":
-                lines.append(f"  MISMATCH: '{a}' declared, but an uncovered-line canary "
-                              "passed the gate (coverage floor not enforced)")
-                mismatch = True
-            elif coverage_verdict == "INCONCLUSIVE":
-                lines.append(f"  UNVERIFIED: '{a}' declared, but the coverage-canary probe "
-                              "was INCONCLUSIVE -- cannot confirm")
-            else:  # None -- no coverage probe was run (e.g. gate BROKEN on good HEAD)
-                lines.append(f"  declared, not independently verified here: '{a}'")
-        else:  # mutation -- no probe for this assert
-            lines.append(f"  declared, not independently verified here: '{a}'")
-    return lines, mismatch
-
-
-def cmd_gate_verify(args) -> int:
-    """gate verify <project>
-
-    PACKAGE GA1 (docs/plan-gate-adoption.md checklist item 6: "Proven to
-    REJECT") -- a "gate for the gate". nyxloom otherwise trusts a project's
-    declared verification gate blindly (`reference/STANDARD.md` §"What
-    nyxloom requires of a project"); this verb proves it instead of assuming
-    it: selects the gate (gate_runner.select_verification_gate), runs it at
-    the project's current HEAD (must PASS), then tries up to several
-    known-bad canary commits against the SAME gate
-    (gate_canary.verify_gate_rejects_canary; see that module for the
-    multi-attempt/subtree-scoping design). Every gate run reuses
-    gate_runner's ONE isolation primitive.
-
-    Verdicts (printed as `verdict: <NAME> -- ...`):
-      NO_GATE            -- project declares no gate at all.        exit 1
-      TRANSPORT_UNTRUSTED-- the docker transport truncates output /
-                            forges exit codes (L18 defeat 4), so NO
-                            gate verdict here can be trusted.       exit 4
-      BROKEN             -- the gate rejects even known-good HEAD.  exit 1
-      LAUNDERS           -- every canary attempt PASSES.            exit 1
-      INCONCLUSIVE       -- no attempt was killed, but at least one never
-                            rendered a real verdict (timeout/exec-failure). exit 3
-      TRUSTWORTHY        -- passes good HEAD AND kills >=1 canary.  exit 0
-
-    A transport probe runs FIRST (transport_check.probe_default). A definitively
-    lying transport yields TRANSPORT_UNTRUSTED before any gate runs; an
-    "unavailable" probe (no docker / probe image missing) only prints a note and
-    proceeds, so it never manufactures a failure.
-
-    PACKAGE GA2 (checklist item 7 "rigor declared"): when the selected gate
-    declares `asserts=[...]`, the verdict above is followed by an `asserts:`
-    line plus a per-claim OK/MISMATCH/UNVERIFIED breakdown
-    (`_asserts_mismatch_report`). A gate with NO `asserts` prints nothing
-    extra at all (byte-compatible with GA1). A genuine MISMATCH is a
-    strictly additive overlay: the verdict line above is never rewritten,
-    but a would-have-been-zero (TRUSTWORTHY) exit code is forced non-zero,
-    since a false rigor claim means the gate cannot be fully trusted even
-    though the canary probe itself passed.
-
-    PACKAGE GA2b (coverage floor "proven, not just declared"): when the gate
-    declares `changed-line-coverage`, a SECOND canary probe
-    (gate_canary.verify_gate_enforces_coverage) builds an uncovered-line
-    canary -- a valid, test-neutral, never-executed line -- and confirms the
-    gate rejects it. Printed as a `coverage-floor: PASS/FAIL/INCONCLUSIVE`
-    line; a FAIL (the gate launders an uncovered line) is a DECLARATION
-    MISMATCH exactly like a laundered `canary-verified`. Only runs when the
-    assert is declared (no extra gate run otherwise) and only past the
-    BROKEN early-return (good HEAD already passed).
-    """
-    import subprocess
-
-    from . import gate_canary, gate_runner, transport_check
-
-    cfg = _cfg(args.project)
-
-    gate = gate_runner.select_verification_gate(cfg)
-    if gate is None:
-        print(f"verdict: NO_GATE -- {args.project} declares no verification gate "
-              "(no [gates.*] with phase 'implementation' or 'post-merge')")
-        return 1
-
-    # Transport preflight (L18 defeat 4). Every gate run below is carried over
-    # the docker transport; if that transport TRUNCATES output and forges exit
-    # codes, NO verdict computed here -- not even "good HEAD passes" -- can be
-    # trusted. A definitively-lying transport short-circuits to its own verdict
-    # BEFORE any gate runs. "unavailable" (no docker / probe image missing) is
-    # NOT a transport fault, so it only notes and proceeds -- an offline host
-    # never manufactures a failure.
-    probe = transport_check.probe_default()
-    if probe.lying:
-        print(f"verdict: TRANSPORT_UNTRUSTED -- {args.project}'s gate cannot be verified: "
-              f"{probe.detail}")
-        return 4
-    if probe.status == "unavailable":
-        # A skipped probe is NOT a verdict -- it goes to stderr so stdout (the
-        # verdict contract other tools/tests parse) is byte-unchanged when no
-        # docker/probe-image is present. Only a definitively lying transport
-        # emits a stdout verdict.
-        print(f"transport: probe skipped -- {probe.detail}", file=sys.stderr)
-
-    head = subprocess.run(
-        ["git", "-C", str(cfg.root), "rev-parse", "HEAD"],
-        capture_output=True, text=True,
-    )
-    if head.returncode != 0:
-        print(f"error: git rev-parse HEAD failed: {head.stderr.strip()}", file=sys.stderr)
-        return 1
-    commit = head.stdout.strip()
-
-    good = gate_runner.run_gate_at_commit(cfg, gate, commit, phase="verify-good")
-    if good.exit_code != 0:
-        print(f"pass-on-good: FAIL (gate {gate.gate_id} exit {good.exit_code} at "
-              f"known-good HEAD {commit[:12]})")
-        print(f"verdict: BROKEN -- {args.project}'s gate {gate.gate_id} rejects even "
-              "known-good HEAD; fix the gate/HEAD before trusting merges through it")
-        report_lines, mismatch = _asserts_mismatch_report(gate.asserts, "BROKEN")
-        for line in report_lines:
-            print(line)
-        if mismatch:
-            print(f"verdict: DECLARATION MISMATCH -- {args.project}'s gate {gate.gate_id} "
-                  "asserts do not match its observed behavior")
-        return 1
-
-    try:
-        canary_result = gate_canary.verify_gate_rejects_canary(cfg, gate, commit)
-    except gate_canary.CanaryError as e:
-        print(f"error: cannot build a canary for {args.project}: {e}", file=sys.stderr)
-        return 1
-
-    attempts_desc = "; ".join(
-        f"{a.target_path} (exit {a.exit_code})" for a in canary_result.attempts
-    )
-    print(f"pass-on-good: PASS (gate {gate.gate_id} exit {good.exit_code} at {commit[:12]})")
-    print(f"fail-on-bad: {'PASS' if canary_result.killed else 'FAIL'} "
-          f"({len(canary_result.attempts)} attempt(s): {attempts_desc})")
-
-    if canary_result.killed:
-        verdict, exit_code = "TRUSTWORTHY", 0
-        print(f"verdict: TRUSTWORTHY -- {args.project}'s gate {gate.gate_id} rejects a "
-              "known-bad canary")
-    elif canary_result.inconclusive:
-        verdict, exit_code = "INCONCLUSIVE", 3
-        print(f"verdict: INCONCLUSIVE -- {args.project}'s gate {gate.gate_id} never rendered "
-              "a real verdict on any canary attempt (timeout/exec-failure); cannot confirm "
-              "TRUSTWORTHY or LAUNDERS -- investigate the gate command itself")
-    else:
-        verdict, exit_code = "LAUNDERS", 1
-        print(f"verdict: LAUNDERS -- {args.project}'s gate {gate.gate_id} PASSES every "
-              f"known-bad canary tried ({len(canary_result.attempts)} attempt(s)); it cannot "
-              "be trusted to reject broken code")
-
-    # GA2b: when the gate DECLARES a changed-line-coverage floor, prove it
-    # with a separate uncovered-line canary (a valid, test-neutral, never-run
-    # line -- only a real coverage floor rejects it). Gated on the assert
-    # being declared so a gate that makes no such claim pays no extra gate
-    # run. Reached only past the BROKEN early-return above, so good HEAD has
-    # already passed.
-    coverage_verdict = None
-    if "changed-line-coverage" in gate.asserts:
-        try:
-            cov = gate_canary.verify_gate_enforces_coverage(cfg, gate, commit)
-        except gate_canary.CanaryError as e:
-            coverage_verdict = "INCONCLUSIVE"
-            print(f"coverage-floor: SKIPPED (cannot build a coverage canary: {e})")
-        else:
-            coverage_verdict = ("ENFORCED" if cov.killed
-                                else "INCONCLUSIVE" if cov.inconclusive else "LAUNDERS")
-            cov_desc = "; ".join(f"{a.target_path} (exit {a.exit_code})" for a in cov.attempts)
-            status = {"ENFORCED": "PASS", "LAUNDERS": "FAIL",
-                      "INCONCLUSIVE": "INCONCLUSIVE"}[coverage_verdict]
-            print(f"coverage-floor: {status} ({len(cov.attempts)} attempt(s): {cov_desc})")
-
-    report_lines, mismatch = _asserts_mismatch_report(gate.asserts, verdict, coverage_verdict)
-    for line in report_lines:
-        print(line)
-    if mismatch:
-        print(f"verdict: DECLARATION MISMATCH -- {args.project}'s gate {gate.gate_id} "
-              "asserts do not match its observed behavior")
-        if exit_code == 0:
-            exit_code = 1
-    return exit_code
-
-
 def cmd_pause(args) -> int:
     """pause <project> [task]"""
     from . import paths, storage
@@ -1586,8 +1338,9 @@ def cmd_onboard(args) -> int:
             print(f"  Dockerfile: {scaffold_result.dockerfile_path}")
             print(f"  config:     {scaffold_result.config_path}")
             print(
-                "  review the `# nyxloom-scaffold: adjust` markers, then run "
-                "`nyxloom gate verify` to confirm it actually rejects broken code"
+                "  review the `# nyxloom-scaffold: adjust` markers, then adopt "
+                "run-gate+assay (run-gate-project/CONSUMERS.md, "
+                "assay/docs/CONSUMERS.md) to confirm it actually rejects broken code"
             )
         else:
             print(f"gate scaffold skipped: {scaffold_result.skipped_reason}")
@@ -2158,12 +1911,12 @@ def main(argv: list[str] | None = None) -> int:
     merge_parser.add_argument("--force", action="store_true",
                               help="Record the merge even if the pre-merge gate fails (operator override; F).")
 
-    # gate (PACKAGE GA1: `gate verify` -- a gate for the gate)
+    # gate (retains the top-level verb with zero subcommands: GA1's `verify`
+    # was the only one, retired nyxloom-P98 -- gate_runner.py is now the
+    # only gate-execution path, and Assay's own R2/R3 mechanisms supersede
+    # external gate-trustworthiness verification)
     gate_parser = subparsers.add_parser("gate")
-    gate_subs = gate_parser.add_subparsers(dest="gate_cmd")
-
-    gate_verify_parser = gate_subs.add_parser("verify")
-    gate_verify_parser.add_argument("project", help="Project ID")
+    gate_parser.add_subparsers(dest="gate_cmd")
 
     # pause
     pause_parser = subparsers.add_parser("pause")
@@ -2240,7 +1993,7 @@ def main(argv: list[str] | None = None) -> int:
                                       "gate is declared, write a reviewable gate-runner Dockerfile "
                                       "and a `[gates.*]` skeleton into the project's trove -- a "
                                       "review skeleton (`# nyxloom-scaffold: adjust` markers), not a "
-                                      "guaranteed-working gate; run `nyxloom gate verify` after "
+                                      "guaranteed-working gate; adopt run-gate+assay after "
                                       "adjusting it (docs/plan-gate-adoption.md §GA3)")
 
     # free-models (D-R12: pluggable free-model discovery + routes.toml refresh)
@@ -2392,11 +2145,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "merge":
             return cmd_merge(args)
         elif args.cmd == "gate":
-            if args.gate_cmd == "verify":
-                return cmd_gate_verify(args)
-            else:
-                parser.print_help(sys.stderr)
-                return 2
+            parser.print_help(sys.stderr)
+            return 2
         elif args.cmd == "pause":
             return cmd_pause(args)
         elif args.cmd == "resume":
