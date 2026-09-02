@@ -582,3 +582,72 @@ the comment honest lives where it can fail — the qualification module asserts
 `python3 --version >= 3.11` inside the image, so a base-image change that
 drops the judge's interpreter goes red instead of turning every Go
 qualification into a skip that reads like "not enabled".
+
+---
+
+# Generation 5
+
+## `4b5e7707` — feat(assay): derive a Go lane's module path from its own go.mod (B057, A-404)
+
+DA-8 implemented, ruled by the controller at `vbpub@3a95459e`. The whole
+change is one sentence with a lot of consequences: **the module path is the
+project's fact, so assay reads it.**
+
+**The seam.** `LanguageAdapter.for_project(*, repo_top, project_root)` —
+keyword-only, returning a new adapter, called once from `evaluate_r1` the
+moment `repo_top` resolves and before anything reads the profile. Every
+adapter but Go returns `self`. The call site **rebinds the local name**,
+which is the part I would defend hardest: the entire cost of B057 was two
+spellings of one path drifting apart, and handing the bound adapter to the
+statement oracle while an unbound one stayed in scope for the evaluator would
+have rebuilt that drift inside its own fix.
+
+**The parser.** `adapters/go_modfile.py` reads the `module` directive and
+nothing else. I did not write it from the Modules Reference alone — the
+lexical rules came out of `go1.25.14`'s own vendored
+`golang.org/x/mod/modfile/{read.go,rule.go}`, read inside
+`tester-unified-go:local`, and one of them is a rule I would have got wrong
+from memory: **a backquoted module path is not valid input to `cmd/go`.** The
+lexer scans the token happily; `rule.go`'s `parseString` then rejects any
+non-`"`-prefixed token containing a quote character. Reading the real thing
+cost one `docker run`.
+
+**Two refusals, both from the closed vocabulary.** No `go.mod` at or above
+the project root → `ERROR`/`BAD_LANE_CONFIG` (the same shape as
+`evaluate.py`'s existing runtime "project root is not contained by its own
+repository"). A profile key outside the derived module →
+`ERROR`/`UNREADABLE_ARTIFACT` naming the key, the module path and the
+`go.mod`. The second REPLACES B057's misattributed staleness message; that
+message survives for its real subject, a key that IS under the module and
+still names no file.
+
+**Three things the ruling left to me, decided and recorded in A-404 rather
+than left for a reviewer to find.** (1) The (c) refusal fires only when the
+path was DERIVED — a library caller who supplies `module_path` by hand has no
+`go.mod` for assay to contradict them with, and this is what lets the three
+pre-existing boundary-safety tests keep both their subject and their
+assertions. (2) A hand-supplied `module_path` that disagrees with the derived
+one is refused rather than given a precedence (A-328's own rule). (3)
+`SqlAdapter` keeps its module-wide `_UNREACHABLE` raise instead of the
+ruling's `return self` default: the call site is exactly where
+`normalize_coverage_key` is reached from and a SQL lane is R0,R2-only, so
+`return self` there would be a line no SQL lane could execute.
+
+**A stale-prose finding, fixed in the same commit because it is at the
+boundary a consumer reads.** The CLI's module docstring and `run --help`
+still said `judge.language = "go"` was refused at any level, and README's
+summary still said Go had "no real adapter yet" — all three left behind by
+A-394's registration two generations ago. `_built_in_registry`'s own
+docstring had been updated; the user-visible text had not.
+
+**Suite:** `3902 passed, 18 skipped`, `PYTEST_EXIT=0` (from 3860 passed / 16
+skipped — 42 new tests: 24 for the directive parser, 11 for the adapter, 5
+for the core seam, 2 for the in-image refusals, which are the two new skips
+in a devcontainer with no Go). Not gate-green on its own (A-335); the
+registered gate is below.
+
+**Go qualification, run separately because neither gate image can host it:**
+`5 passed`, `PYTEST_EXIT=0`, 28.6s, against the real `go1.25.14` inside
+`tester-unified-go:local` — and now through `python3 <pyz> run …` rather than
+a library driver. Every inherited assertion survived the move unchanged.
+REPORT §35 has the verdict document and §36 the two refusals.

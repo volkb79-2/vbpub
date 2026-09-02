@@ -1169,3 +1169,385 @@ written down; that is a better state than a tick that has to be argued with.
 **B055's other two boxes were not touched.** Its own text says the first IS
 F008-A4, and the second needs a decision this generation had no standing to
 make. The third is done (§28's registry test).
+
+---
+
+# Generation 5
+
+## 32. Scope state at the start of generation 5
+
+Inherited tip `524dd16c` (gate-verified `9714361c` plus two docs-only
+commits), tree clean, verified before anything was touched. The controller's
+2026-09-01 entry at `vbpub@3a95459e` rules DA-8 and dispatches six items:
+(1) DA-8 → gate; (2) F008-A4 fixture regeneration through the in-image
+harness; (3) F008-A5 per DA-6, classification first; (4) F008-A3's tick with
+the CLI-form transcript; (5) the other boxes; (6) file B058.
+
+| item | state at this section's writing |
+|---|---|
+| 1. DA-8 | **DONE** — A-404, the protocol member, the derivation, both refusals, 42 new tests, docs, CLI help |
+| 6. B058 | **DONE** |
+| 4. F008-A3's tick | **DONE** — the qualification now drives `assay run` |
+| 2. F008-A4 | see §37 |
+| 3. F008-A5 | see §37 |
+| 5. the other boxes | see §37 |
+
+## 33. DA-8 — what was built, and what proves each piece
+
+**The member.** `LanguageAdapter.for_project(*, repo_top: Path,
+project_root: Path) -> LanguageAdapter`, `adapters/base.py`. Keyword-only,
+returning a NEW adapter, called once per lane from `runner.evaluate_r1`
+immediately after `repo_top = git.repo_top(...)` and before
+`_attribute_statements_for_lane`, `evaluate_targets` or `evaluate_coverage`
+sees anything. The local name is **rebound**, which is the part that is not
+decoration: the whole cost of B057 was two spellings of one path drifting
+apart, and a binding delivered to the statement oracle while an unbound
+adapter stayed in scope for the evaluator would have rebuilt that drift
+inside its own fix.
+
+Proved by `tests/test_runner_adapter_binding.py`, whose synthetic adapter
+learns a key prefix from the project exactly as `GoAdapter` learns a module
+path: the profile is keyed `example.invalid/harness/pkg/mod.bnd`, the tree
+has `pkg/mod.bnd`, and only the BOUND adapter can bridge them — so a PASS is
+positive evidence about which object judged. Its companion is a vacuity
+guard asserting the unbound adapter really cannot resolve that key and that
+the unstripped path really does not exist, because without it the PASS would
+prove nothing. Four more assertions cover: bound exactly once and with the
+lane's own two anchors; the same binding on the changed-lines path (both
+modes judge one profile, A-385); and `for_project` raising rendered as a
+complete payload-free R1 claim rather than escaping as a crash.
+
+**The derivation.** `adapters/go_modfile.py`, ~330 lines of which about half
+is the citation. `find_module_declaration(repo_top, project_root)` walks
+nearest-first from the project root to the repository top, reads each
+candidate through `safeio.read_bounded_file` (so the snapshot's own
+traversal safety applies and a 1 MiB ceiling is enforced), and returns a
+`ModuleDeclaration(module_path, module_file)` — the provenance is carried
+because refusal (c) is required to name the file.
+
+**On reading the grammar rather than recalling it.** The Modules Reference
+gives `ModuleDirective = "module" ( ModulePath | "(" newline ModulePath
+newline ")" ) newline .`, but the lexical rules are where a hand-written
+parser goes wrong, so they were read out of the toolchain that produces the
+profiles this join has to match:
+
+```console
+$ docker run --rm --network=none tester-unified-go:local sh -c \
+    "sed -n '540,640p' /usr/local/go/src/cmd/vendor/golang.org/x/mod/modfile/read.go"
+```
+
+Four rules came back and all four are load-bearing. `//` is the only comment
+form and `/*` calls `in.Error("mod files must use // comments (not /* */
+comments)")` — in **two** places, once between tokens and once inside an
+identifier scan, which is why `module example.com/foo/*x*/` is a syntax
+error and not a path. An identifier breaks on `in.peekPrefix("//")`, which
+is what makes `module example.com/x // vanity` yield the path. `isIdent` is
+a negative rule: every printable non-space rune except `( ) [ ] { } ,`. And
+`rule.go`'s `parseString` unquotes only a `"`-prefixed token, erroring on
+any other token containing a quote character — so a **backquoted module path
+is not valid input to `cmd/go`**, which is the one thing a reasonable
+implementer would have got wrong from memory (the lexer *does* scan the
+token; the rule then rejects it). `module` also appears in `rule.go`'s list
+of verbs that may take the factored form, and `f.add` refuses it unless it
+carries exactly one argument.
+
+`tests/test_adapters_go_modfile.py` (24 tests) asserts each accepted and
+refused shape, including the quoted form and the comment line the ruling
+names. Two of them exist only because the parser is narrow on purpose: an
+unknown escape refuses rather than decoding (a module path is ASCII letters,
+digits and `-._~+/`, so no escape can appear in a legitimate one, and a
+quietly mis-decoded `\n` would produce a prefix that matches nothing), and a
+line beginning with `module` **inside another directive's factored block** is
+not the module directive — paren depth is tracked, because a `require ( ... )`
+block's lines also start with a path token.
+
+**Refusal (b), no `go.mod`: `ERROR`/`BAD_LANE_CONFIG`.** The honest existing
+code. The vocabulary is closed (A-050) and a new member is an enum widening,
+which is a schema cut and out of scope. `BAD_LANE_CONFIG` is not a stretch
+to fit: `evaluate.py:615` already raises exactly it, at runtime, for "the
+project root is not contained by its own repository" — the same shape of
+fact (the lane's declaration and the tree disagree about where the project
+is). `UNREADABLE_ARTIFACT` was considered and rejected: its own docstring
+scopes it to reading an INPUT (coverage, attestation), nothing is wrong with
+the coverage artifact here, and blaming it would send a consumer to re-run
+their tests over a configuration fault. `MISSING_EXTERNAL_TOOL` is about
+PATH and would fold a lane fault into an environment one — the same
+mistake `go_stmtpos._derive`'s comment already warns about in the other
+direction.
+
+**Refusal (c), a foreign key: `ERROR`/`UNREADABLE_ARTIFACT`,** raised from
+`GoAdapter.normalize_coverage_key` and naming the key, the derived module
+path and the `go.mod`. Two placement questions were settled rather than
+drifted into. It cannot live in the core (`_attribute_statements_for_lane`
+would have to know what a module path is, which is the one thing the flat
+protocol prevents) and it cannot live in `statement_blocks` (which receives
+paths that have already been through the join and the project prefix, so it
+can no longer see the raw key). `normalize_coverage_key` is the only place
+that sees the raw key and knows the module path. It fires **only when the
+path was derived** — `module_file` non-empty — which is the ruling's own
+scoping, since the message it mandates names a `go.mod` that exists only in
+that case; a library caller who supplies `module_path` by hand has no
+`go.mod` for assay to contradict them with, so the three pre-existing
+boundary-safety tests keep their subject and their assertions.
+
+**Sub-decision the ruling left open, recorded rather than improvised:** a
+hand-constructed `module_path` that DISAGREES with the derived one is
+refused, not given a precedence. That is A-328's own rule pointed at this
+case — refuse precedence between two sources of one fact, because whichever
+loses is config nothing reads — and A-007's cross-check shape one field
+over.
+
+**`SqlAdapter` deviates from the ruling's "every other adapter returns
+`self`", deliberately and in one direction only.** The single call site is
+the top of `evaluate_r1`, which is exactly where `normalize_coverage_key` is
+reached from, and a SQL lane is R0,R2-only (A-242), so it never arrives.
+`return self` there would be a line no SQL lane could execute — the vacuity
+`test_adapters_sql_unreachable_methods.py` exists to prevent — while the
+raise makes a future caller who routes SQL through R1 find out loudly. The
+deviation is recorded in A-404 rather than left for a reviewer to notice.
+
+## 34. Which assertion catches a mutant that skips derivation
+
+The ruling asks for this explicitly, so it is stated rather than implied. A
+mutant that makes `GoAdapter.for_project` `return self` — leaving
+`module_path` as `""` — is caught at three different distances, and the
+outermost one is the one that matters:
+
+* `test_adapters_go_for_project.py::test_a_bound_adapter_strips_its_own_modules_prefix`
+  is the tightest and the least circular: it asserts the OUTCOME
+  (`example.invalid/harness/internal/calc/calc.go` → `internal/calc/calc.go`),
+  not that a field was set. A mutant returning `self` returns the key
+  unchanged and this goes red.
+* `test_runner_adapter_binding.py::test_the_bound_adapter_is_what_resolves_the_profiles_keys`
+  catches it through the CORE, and is language-free: with the unbound
+  adapter the key resolves to a file that does not exist, under no source
+  root, so the claim is no longer a PASS. This is the assertion that would
+  also catch the subtler mutant — the core calling `for_project` and then
+  using the unbound adapter anyway.
+* `tests/qualification/test_go_r1_real.py` catches it end to end against the
+  real toolchain: `assay run` on a real Go module returns
+  `ERROR`/`UNREADABLE_ARTIFACT` instead of a PASS, which is precisely the
+  B057 transcript. It is the strongest evidence and the only one that needs
+  Go, which is why the first two exist.
+
+The vacuity guard for the second is its own companion test asserting the
+unbound adapter genuinely cannot resolve that key — without it, a key that
+happened to resolve either way would make the PASS prove nothing.
+
+## 35. F008-A3's evidence, now through `assay run` — the CLI-form transcript
+
+`tests/qualification/test_go_r1_real.py`, **five** tests (three inherited,
+two new), `ASSAY_GO_QUALIFICATION=1`, against the real `go1.25.14` inside
+`tester-unified-go:local`:
+
+```text
+$ ASSAY_GO_QUALIFICATION=1 python3 -m pytest tests/qualification/test_go_r1_real.py -q
+.....                                                                    [100%]
+5 passed, 1 warning in 28.60s
+PYTEST_EXIT=0
+```
+
+**Every assertion survived the move from the library driver to the CLI
+unchanged**, which is what BRIEF-5 §4 predicted and is recorded because the
+alternative was a finding. What was deleted is the `_DRIVER` heredoc — 25
+lines that reproduced `cmd_run`'s sequence in order to slip
+`GoAdapter(module_path=…)` into it. What replaced it is the command a
+consumer types:
+
+```text
+$ python3 /work/dist/assay-4.0.1.dev32+g4b5e7707.pyz run unit \
+      --file /work/fixture/assay.toml --verdict-json /work/verdict.json \
+      --require-judge-provenance
+```
+
+`--require-judge-provenance` is new and deliberate: it refuses before any
+work unless assay can name the artifact it was installed from, so the
+`artifact: "zipapp"` assertion cannot be satisfied by an absence. The exit
+code is now asserted too (0 for the PASS scenario, 1 for the FAIL), which the
+library driver could not check at all.
+
+The verdict, re-run by hand against the same harness so it can be pasted
+rather than described (`scratchpad/capture.log`):
+
+```json
+{
+  "argv_effective": ["go", "test", "./...", "-count=1", "-coverpkg=./...",
+                     "-covermode=atomic", "-coverprofile=.assay/cover.out"],
+  "assay_version": "4.0.1.dev32+g4b5e7707",
+  "commit": "fa1db7dea8d4ff99d9a6affc10f4199bc96f6c43",
+  "helpers": [
+    {
+      "identity": "go version go1.25.14",
+      "resolved_path": "/usr/local/go/bin/go",
+      "role": "statement-positions",
+      "tool": "go"
+    }
+  ],
+  "judge_provenance": {
+    "artifact": "zipapp",
+    "digest": "ce3cccb055cfe7343c380e5a0123a1c96c54ef90a4496e95459dde6fcacacf1f",
+    "digest_algorithm": "sha256",
+    "name": "assay",
+    "version": "4.0.1.dev32+g4b5e7707"
+  },
+  "lane": "unit",
+  "outcome": "PASS",
+  "schema_version": 9,
+  "scope": "S1"
+}
+```
+
+and its R1 claim:
+
+```json
+{
+  "coverage": {
+    "considered": 1, "covered": 1, "executable": 1, "pct": 100.0,
+    "missing_lines": {}, "files_missing_coverage": [],
+    "branch_capability": "unavailable", "exclusion_capability": "unavailable"
+  },
+  "rigor": "R1", "source": "computed", "status": "PASS",
+  "verified_by_assay": true
+}
+```
+
+**Nothing in this document was declared.** `judgment.resolved.language` is
+`"go"`, `source_roots` is `["internal"]`, and the module path
+`example.invalid/harness` that made the keys resolvable appears nowhere in
+the lane file, in the argv, or on the command line — it was read out of the
+fixture's own `go.mod`. That absence is the whole of A-404.
+
+`executable: 1` is F008-A3's substance, unchanged from §29 and now produced
+at the boundary a consumer uses: the head commit adds four lines for
+`Multiply` — a comment, the signature, `return a * b`, the closing brace —
+and exactly one begins a counted statement. The removed rule reported 3.
+
+## 36. The two refusals, proven in-image against real profiles
+
+The ruling requires both, and neither is asserted against a hand-written
+profile: each is a real `go test` run whose real output disagrees with the
+tree in the specific way the refusal is about.
+
+**(c) — a profile from a different module.** The fixture is a repository
+holding TWO Go modules: `example.invalid/harness` at the top and
+`example.invalid/sub` beneath it. The lane's command is `sh -c "cd sub && go
+test ./... … -coverprofile=../.assay/cover.out"`, so the toolchain really did
+run in the nested module and really did key every record by
+`example.invalid/sub/pkg/…`, while the lane's project root belongs to the
+outer module. This is exactly the shape A-404 (d) names — nested modules
+never appear in `go test ./...`'s own output, and a project root above
+several modules surfaces here rather than as a silent partial measurement.
+
+```json
+{"reason_code": "UNREADABLE_ARTIFACT", "rigor": "R1", "source": "computed",
+ "status": "ERROR", "verified_by_assay": true}
+```
+
+Payload-free, as an ERROR claim must be (A-136). The message names the key,
+the derived module path and `'go.mod'`; the test asserts the absence of the
+word "revision" as well as the presence of the three facts, because the
+message this replaces blamed staleness and that half of B057 is a FIX, not a
+keep.
+
+**(b) — a project root in no Go module.** The identical tree with the root
+`go.mod` removed. The distinction that makes this test worth running is
+asserted rather than assumed: **R0 PASSES.** The lane's own command still
+succeeds, because it runs inside `sub/`, which IS a module. So this is not a
+`go test` failure wearing a different name — it is a lane that declares a Go
+judge over a directory belonging to no Go module.
+
+```json
+{"reason_code": "BAD_LANE_CONFIG", "rigor": "R1", "source": "computed",
+ "status": "ERROR", "verified_by_assay": true}
+```
+
+Both scenarios exit 2 from the shipped CLI, which the test asserts.
+
+
+## 37. F008-A5: DA-6's prescribed lane shape does not work, and the reason is the key join
+
+This is reconnaissance done while implementing DA-8, recorded here so
+generation 6 does not spend a container run discovering it. **It is not a
+disagreement with DA-6's substance** — the commits, the argv and the
+classification rule all stand. It is the lane FILE's shape.
+
+DA-6 prescribes `cwd = "shared-ramdisk-depot-manager"` with
+`source_roots = ["shared-ramdisk-depot-manager/internal"]`. Those two
+spellings together imply `project_root = /workspaces/vbpub` (the repository
+top), because `judge.source_roots` are resolved against the project root and
+B043's `cwd` moves only the COMMAND's working directory. Two things then
+fail, and the second is the interesting one:
+
+1. **A-404 (b) refuses.** The derivation searches at and above
+   `project_root`, and there is no `go.mod` at the repository top. The lane
+   would report `ERROR`/`BAD_LANE_CONFIG` before it judged anything.
+2. **Even with the module path in hand, the keys would not resolve.**
+   `evaluate._repo_path_by_raw_key` is `normalize_coverage_key` followed by
+   `_to_repo_relative_key(..., project_prefix)`, and `project_prefix` is
+   `project_root` relative to `repo_top`. With `project_root` at the
+   repository top that prefix is `.`, so `srdm/internal/store/x.go` strips to
+   `internal/store/x.go` and resolves to `<repo>/internal/store/x.go` — which
+   does not exist. The file is at
+   `shared-ramdisk-depot-manager/internal/store/x.go`.
+
+Both are the same fact from two directions: **for a Go lane, the project root
+must BE the module root.** That is not an artefact of A-404's derivation; the
+key join required it before this wave, and A-404 (d)'s "one Go module per
+lane, `cwd` is that module's root" is that requirement stated. It is now
+documented in CONSUMERS.md point 6 and README.
+
+**The corrected shape, which needs no change to anything DA-6 rules:**
+
+```toml
+# lives at shared-ramdisk-depot-manager/<name>.toml -- UNTRACKED, so srdm's
+# tree stays exactly as committed. `measurability.check_dirty_tree` is
+# scoped to `source_root_paths` (its own docstring), and this file is not
+# under `internal/`, so it does not make the lane refuse DIRTY_TREE.
+[lanes.coverage.judge]
+language = "go"
+source_roots = ["internal"]        # project-relative -> srdm/internal
+base = "10b174a5"
+```
+
+with `project_root = shared-ramdisk-depot-manager`, **no `cwd` at all**, and
+srdm's own `tools/gate.sh:105` argv. Facts checked while writing this:
+`shared-ramdisk-depot-manager/go.mod` declares `module srdm` (a bare
+non-domain path — legal, and it means profile keys are `srdm/internal/...`),
+and `gate.sh:105` is verbatim `go test ./... -count=1 -coverpkg=./...
+-covermode=atomic -coverprofile=/tmp/srdm-cover.out`, with `-coverpkg=./...`
+carrying the comment that explains why it is load-bearing.
+
+**One thing generation 6 must plan for that DA-6 does not mention:** `assay
+run` judges the repository's HEAD, and the differential is
+`10b174a5` → `83c2ff79`. Neither is `main`'s tip, and this wave may not move
+the shared checkout's HEAD. So the run needs its own checkout of
+`83c2ff79` — a `git worktree` outside the shared one, or a clone inside the
+container — with the lane file placed in its `shared-ramdisk-depot-manager/`.
+That is a harness question, not a product one, and the in-image harness
+(BRIEF-5 §3) already builds a git repository inside the container for exactly
+this kind of reason.
+
+## 38. What generation 5 did NOT do, and why
+
+**F008-A4 (fixture regeneration) was not started.** It is now unblocked —
+B057 was the blocker and it is closed — but it is the larger of the two
+remaining items and this generation cut at DA-8's green gate rather than
+starting it with too few calls left to finish honestly. B055's own text and
+REPORT §31 still state the shape it must take: regenerate
+`tests/fixtures/go/hello/hello.out` and the canary control from real
+toolchain output **and** re-derive every asserted line set from the oracle in
+the same change. Regenerating the bytes alone would replace a wrong profile
+with a real one still read against expectations derived from the wrong one,
+which is A-234's own warning.
+
+**F008-A5 was not run**, for the same budget reason; §37 is the
+reconnaissance it needs and is worth more than a half-finished run.
+
+**No acceptance box in `2-product-definition.md` was ticked.** F008-A3's
+evidence is now what A3 actually asks for — a statement-granular Go R1
+verdict from the shipped artifact, through `assay run`, against the real
+toolchain (§35) — and the tick is a one-line edit. It was left for the
+generation that also ticks A4 and A5, so the three land together against one
+gate rather than one box being ticked against a gate that did not judge the
+other two. The backlog boxes that WERE discharged are ticked in `4-backlog.md`
+(B057's first three) and nothing else was touched.

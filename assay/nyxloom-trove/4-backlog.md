@@ -5443,11 +5443,61 @@ would be a protocol change on top of A-397's.
 
 ### Acceptance
 
-- [ ] DA-8 ruled, and the ruling recorded as a decision row;
-- [ ] a Go R1 lane run through `assay run` (the shipped CLI, not a
+- [x] DA-8 ruled, and the ruling recorded as a decision row. **Ruled by the
+      controller at `vbpub@3a95459e` — derive from the snapshot's own
+      `go.mod`, no declared key, the registry untouched — and recorded as
+      **A-404** (Wave C generation 5), which carries the member's name, exact
+      signature and the rejected alternatives.**
+- [x] a Go R1 lane run through `assay run` (the shipped CLI, not a
       library-built registry) on a real Go module, producing a
       statement-granular PASS and a paired FAIL that names the uncovered
-      line;
-- [ ] the misattributed refusal message either fixed or explicitly kept,
-      with the reason recorded;
-- [ ] F008-A5's srdm run, which cannot start until this is closed.
+      line. **`tests/qualification/test_go_r1_real.py` now drives
+      `python3 <pyz> run unit --file … --verdict-json …` inside
+      `tester-unified-go:local`; every assertion survived the move from the
+      library driver unchanged. REPORT §35 has the transcript.**
+- [x] the misattributed refusal message either fixed or explicitly kept,
+      with the reason recorded. **FIXED, per A-404 (e): a profile key not
+      under the derived module path now refuses naming the key, the module
+      path and the `go.mod` it came from. The staleness message survives for
+      its actual subject — a key that IS under the module and still names no
+      file — which is recorded in `go_stmtpos._derive`'s own comment.**
+- [ ] F008-A5's srdm run, which cannot start until this is closed. **Now
+      unblocked; see REPORT §37 for a lane-shape correction DA-6's
+      prescription needs before it can run.**
+
+---
+
+## B058 — `build_release.py` leaves a `zipapp-staging/` directory beside `--outdir` and never removes it, which can turn the project's own gate red
+
+**Filed 2026-09-02, Wave C generation 5, on the controller's ruling at
+`vbpub@3a95459e`.** Observed by generation 4 while building the in-image
+consumer harness (BRIEF-5 §3) and left unfiled as "a one-line property of a
+builder this wave did not otherwise touch"; the controller's disagreement is
+on cost, not substance — an unfiled hazard that can turn assay's own gate red
+is what the backlog is for.
+
+`gate/distribution/build_release.py` writes its staging tree to
+`zipapp-staging/` NEXT TO the directory named by `--outdir`, and never
+removes it. The natural invocation for building from inside the repository,
+`--outdir assay/dist`, therefore leaves `assay/zipapp-staging/` behind. That
+path is not gitignored, so the next run of the self-hosted gate lane sees an
+untracked directory in the tree it is judging and refuses
+`NO_MEASUREMENT`/`DIRTY_TREE` — correctly, and for a cause that has nothing
+to do with the change under judgment. The workaround is to pass an `--outdir`
+outside the worktree, which is what this wave's harness and its qualification
+module both do; that is a workaround, not a fix, and it is invisible to
+anyone who builds the release the obvious way.
+
+Three shapes are defensible and this entry does not pick one: remove the
+staging tree on success (a `finally`, or build it under a
+`TemporaryDirectory`); place it INSIDE `--outdir` so a caller who directs
+output outside the tree gets both; or gitignore the path and document that
+the builder leaves it. The first is the only one that also cleans up after a
+consumer who never reads this entry.
+
+### Acceptance
+
+- [ ] a build with `--outdir <repo>/assay/dist` leaves no untracked path in
+      the worktree;
+- [ ] a test that would go RED if a future edit reintroduced one, asserting
+      the OUTCOME (the tree is clean after a build) rather than the mechanism.
