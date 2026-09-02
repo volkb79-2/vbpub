@@ -144,6 +144,19 @@ should see them as decisions rather than accidents.
    lost-container case. Either way it is never a pass and never joins the
    trend series.
 
+## Decision asks for the controller — ALL THREE RULED 2026-09-02
+
+**RW-9** — ask 1: the refusal STANDS; the gap is filed as **RG-40**
+(log-stream silence for container command lanes, source disclosed), E-3
+candidate, not implemented here. **RW-10** — ask 2: no propagation, no
+token; the shape is documented in CONSUMERS "Gate-conjunction lanes" and
+SPEC `R-39d`, and the refusal-through-the-chain claim was verified
+empirically first (transcript in the LOG, entry E10, and in CONSUMERS).
+**RW-11** — ask 3: RG-39 stands as filed, not fixed in this wave.
+**RW-12**: the E-008 deviation is accepted as recorded.
+
+The asks as originally written follow, for the record.
+
 ## Decision asks for the controller
 
 1. **`stall_timeout` on a command lane: refuse (shipped) or accept-and-inert?**

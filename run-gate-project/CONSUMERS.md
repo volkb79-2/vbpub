@@ -472,6 +472,35 @@ container command lane invoked with `--worktree` whose argv contains no
 override tree), so a dropped override fails loudly instead of silently
 judging some other tree.
 
+**`--fresh` does NOT fan out into a conjunction (RG-35, rev 34), and there is
+no token for it.** Unlike `--worktree` and `{base}`, which must reach every
+sub-lane or the gate judges the wrong thing, `--fresh` REMOVES a running
+container: propagating it would destroy every sub-lane's inflight container,
+including ones legitimately still running for another commit or another
+client. It stays per-invocation. Nothing is lost by that, because a sub-lane
+that has a container it cannot attach to refuses on its own terms and the
+refusal reaches the operator through the chain — verified 2026-09-02 against
+a host conjunction whose sub-lane carried a mismatched inflight record:
+
+```
+$ ./run-gate.py gate                                    # exit 2
+run-gate: rev 34 | lane gate | env built-in 'host'
+run-gate: lane 'sub' has an inflight container run-gate-conj-sub-1-1 (started
+2026-09-02T11:00:00Z, running) judging commit deaddead… , but <tree> is now at
+d9e396ed… — run-gate will not attach that run to this commit, and will not
+start a second container for the same lane. Wait for it to finish, or re-run
+with --fresh (which removes run-gate-conj-sub-1-1 first)
+run-gate: lane 'gate' exit 2
+```
+
+The `&&` chain stops at the refusing sub-lane (the step after it never ran),
+the message names THAT sub-lane, its container and `--fresh`, and exit 2
+passes through to the conjunction. The operator applies `--fresh` to that
+sub-lane directly: `./run-gate.py sub --fresh`. A consumer that wants one
+sub-lane always fresh writes `--fresh` into that sub-invocation's own static
+argv inside the conjunction — and thereby forfeits re-attach for it, which
+is a deliberate trade, not a default.
+
 ### Consumer examples
 
 **nyxloom `[gates.<name>]` — thin pointer only:**

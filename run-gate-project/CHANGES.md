@@ -65,6 +65,11 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     `judge.mutation.budget_per_candidate` + run-gate `stall_timeout`. For
     R0/R1 lanes `budget` is the command's own bound and there is nothing to
     add.
+  - **A container `kind = "command"` lane gets no liveness signal from this
+    and refuses `stall_timeout` by name** — it writes no progress file.
+    Backlog **RG-40** carries the answer (judge silence from the log stream
+    run-gate already tails, with the signal's SOURCE disclosed); not in this
+    release.
 - **RG-34 — `doctor` names an unprefixed script path in a container command
   lane (rev 34, SPEC `R-30b`).** One `[WARN]` per `kind = "command"` lane on
   a non-host environment whose `argv[0]` is a relative path containing `/`

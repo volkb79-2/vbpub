@@ -250,3 +250,32 @@ by RW-4..RW-6, and a successor's re-orientation (wave prompt + RG-36
 backlog + the container loop + the fixture conventions) would have cost more
 than the item did. Recorded as a deliberate deviation, not an oversight; no
 BRIEF was needed because nothing is left open.
+
+## E10 — controller rulings RW-9/RW-10/RW-11 + follow-up package, 2026-09-02
+
+- **RW-9** (ask 1): the `stall_timeout` refusal on command lanes STANDS.
+  The gap it leaves is filed as **RG-40** — judge silence from the LOG
+  STREAM run-gate already tails, same "silence, never elapsed" semantics as
+  R-40, with the signal's SOURCE disclosed at start. Section written in
+  RG-39's shape + index row; NOT implemented (E-3 candidate, 23.5.0).
+  Scope measured with `tomllib` rather than asserted: **5 container
+  `kind = "command"` lanes vs 3 container assay lanes** across vbpub's
+  `*/run-gate.toml` (plus 9 host lanes, outside the question) — the key is
+  available to the minority of containerised lanes.
+- **RW-10** (ask 2): no propagation, no token; document the shape. **The
+  claim was verified before it was written**, empirically, not by reading:
+  a scratch repo with a host conjunction `["bash", "-c", "./run-gate.py sub
+  && echo AFTER-SUB-RAN"]` and a mismatched inflight record planted on
+  `sub`. Measured: outer **exit 2**; `AFTER-SUB-RAN` never printed (the
+  chain stopped at the refusing sub-lane); stderr carries
+  `run-gate: lane 'sub' has an inflight container run-gate-conj-sub-1-1 …
+  re-run with --fresh (which removes run-gate-conj-sub-1-1 first)`; stdout
+  ends `run-gate: lane 'gate' exit 2`. The claim holds in full — sub-lane
+  named, container named, `--fresh` named, exit 2 through the chain.
+  Paragraph (with that transcript) added to CONSUMERS "Gate-conjunction
+  lanes"; one sentence added under SPEC `R-39d`.
+- **RW-11** (ask 3): RG-39 stands as filed, not fixed here. No action.
+- **RW-12**: the E-008 deviation is accepted as recorded.
+
+CHANGES `[Unreleased]`: one line under the RG-36 entry pointing at RG-40.
+Nothing else in that block changed.

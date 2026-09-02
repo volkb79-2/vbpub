@@ -55,6 +55,7 @@ SPEC §9.
 | RG-35 | a lane's container outlives a dead run-gate client (`docker run -d` … `rm -f` in a `finally` the client never reaches), but nothing re-attaches: exit status, evidence and history are lost and the next invocation starts a DUPLICATE container for the same lane — the one-gate rule broken by the tool | Major | FIXED 2026-09-02 (rev 34, SPEC `R-39`) — `.run-gate/inflight/<lane>.json`, automatic re-attach/collect/report-lost, `--fresh` escape, commit mismatch refused |
 | RG-36 | the only liveness bound for a long assay lane is a GUESSED total `budget` (advisory here, hard in assay); rev 33's progress file makes rate/ETA/stall observable but run-gate reads none of it | Major | FIXED 2026-09-02 (rev 34, SPEC `R-40`) — the COARSE half: 30 s progress disclosure with rate/ETA, no-events disclosed once and never a fault, optional `stall_timeout` lane key (assay lanes only; stops the lane only while RUNNING and silent that long, never on total elapsed). Exact timing = E-3, needs assay B065; the code already prefers an event's `elapsed_s`, so B065 makes it exact with no rewrite |
 | RG-37 | exec-mode container derivation (`run-gate.py` `resolve_container_name`, R-14a) reads `deploy.project_name` + `deploy.environment_tag` (fallback `deploy.network_name`) from the consumer's rendered `ciu.global.toml`; a CIU v8 checkout (SPEC-V8 draft.3, ciu CIU-92) renders `ciu.resolved.toml` instead, with identities as data under `[resolved.identities.<realization>.<service>] container_name`, and has no `deploy` table — every dstdns exec lane would fail container resolution the day dstdns moves to v8, while the operator decided (2026-09-02) that run-gate STAYS maintained in parallel with `ciu gate` and is "aligned with future changes in ciu v8" | Major | OPEN 2026-09-02 — filed from the v8 design review (ciu `docs/CIU-V8-ADVERSARIAL-REVIEW-2026-09-02.md` R-01, proposal §4.4 V8-19 / §4.11 N18): additive lookup order — when `ciu.resolved.toml` exists in the judged checkout, resolve `environments.<n>.container_name` (or a new `exec_in = "<realization>.<service>"` key) through `resolved.identities`, otherwise keep the v7 path; `kind = "sequence"` in-process conjunction lanes (N21) are the second alignment item |
+| RG-40 | a container `kind = "command"` lane has NO liveness signal at all: `stall_timeout` is refused there (rev 34, R-40c — it is judged from a progress file only an assay lane writes), so the lane shape most likely to hang is the one run-gate cannot bound except by a `budget` it never enforces | Major | OPEN 2026-09-02 — RW-9: judge silence from the LOG STREAM run-gate already tails (`docker logs -f`), same "silence, never elapsed" semantics as `R-40`, with the SOURCE of the signal disclosed at start (`progress file` vs `log stream`); E-3 candidate (23.5.0) |
 | RG-39 | `tools/coverage_gate.py` takes its changed-line numbers from `git diff base..HEAD` (committed) but its coverage from the file ON DISK, so running the `selftest` lane with `--allow-dirty` over an uncommitted change reports lines as uncovered that are covered — the two are offset by whatever the working tree added above them | Medium | OPEN 2026-09-02 — measured twice in the rev-34 wave (`175/177 (98.9%)` dirty → `153/153 (100.0%)` on the same code once committed); either diff the WORKING TREE when the tree is dirty, or refuse/disclose the mismatch instead of printing a number nobody can act on |
 | RG-38 | resume state lives under the JUDGED project root, so a fresh worktree per run (cmru release transaction, Mode-B instances) loses it and a retry restarts from mutant #1 despite `--resume` | Medium | OPEN 2026-09-02 — bind-mount a per-repo durable `.run-gate/assay-state/<project>/` at the state path; needs assay B066 (`--state-dir`); copy-in/out fallback until then |
 
@@ -2506,3 +2507,98 @@ minimum.
 
 run-gate rev 34's own implementation wave
 (`nyxloom-trove/reports/run-gate-WAVE-RESUMABLE-LOG.md`, entries E5 and E7).
+
+## RG-40 — a container `kind = "command"` lane has no liveness signal: judge silence from the LOG STREAM
+
+**Filed 2026-09-02 by controller ruling RW-9**, out of the rev-34 wave's own
+decision ask: `stall_timeout` was refused on command lanes, and the refusal
+STANDS — but the gap it leaves is real and is this item.
+
+### What's wrong
+
+`R-40c` bounds a lane by SILENCE in `.assay/progress-<assay_lane>.jsonl`.
+Only an assay lane writes that file, so `stall_timeout` on a
+`kind = "command"` lane could never do anything and is refused at load —
+correctly, because an inert key that reads like a real one is exactly
+`R-08a`'s defect (RG-32), and run-gate does not guess a second signal it was
+never given.
+
+The consequence is that the lane shape MOST likely to hang has no bound at
+all. A container command lane is an arbitrary consumer command (a pytest
+suite, a schema gate, a conjunction of sub-lanes) running detached on a host
+shared with a production workload; the only thing declared about its
+duration is `budget`, which run-gate prints and never enforces (`R-15`
+disclosure, not a bound). A wedged suite therefore holds a gate container
+until a human notices — the failure mode RG-36 was filed to end, still open
+for the majority of the estate's lanes.
+
+### Measured evidence
+
+run-gate's own refusal message, rev 34 (`_validate_lane`):
+
+```
+<file> [lanes.<n>]: 'stall_timeout' is judged from
+.assay/progress-<assay_lane>.jsonl, which only a kind = "assay" lane writes —
+a command lane has no progress file and could never stall by this rule; use
+the command's own timeout instead (R-40)
+```
+
+Scope of the gap, counted with `tomllib` over every `*/run-gate.toml` in
+vbpub (2026-09-02): **5 container `kind = "command"` lanes vs 3 container
+assay lanes** (plus 9 host lanes, which run in-process and are outside this
+question entirely). So `stall_timeout` is available to the minority of the
+containerised lanes, and unavailable to the majority — including every
+gate-conjunction lane, which is a `kind = "command"` lane by construction
+(CONSUMERS "Gate-conjunction lanes") and is the shape nyxloom's daemon
+invokes.
+
+### Proposed fix (RW-9)
+
+run-gate ALREADY tails the container's output: `await_container` streams
+`docker logs -f` for the whole run. The ARRIVAL TIME of the last line, on
+run-gate's own clock, carries exactly the semantics `R-40` gives the
+progress file's mtime — a lane that has printed nothing for 15 minutes is
+silent in the same sense, and "silence, never total elapsed" is the same
+rule. So:
+
+- make `stall_timeout` legal on a container `kind = "command"` lane, judged
+  from log-stream silence;
+- DISCLOSE the source at start, since the two signals differ in what they
+  can miss: `run-gate: stall_timeout 15m (source: progress file)` vs
+  `(source: log stream)`. A lane that legitimately prints nothing for long
+  stretches (a single silent compile) is the log stream's known blind spot
+  and the reason the source must be named, not inferred;
+- keep the assay-lane behaviour exactly as `R-40` defines it — the progress
+  file stays the better signal where it exists, and an assay lane must not
+  silently downgrade to the weaker one;
+- the stop, the evidence, the exit code and the message shape are `R-40c`'s
+  already: `docker rm -f`, evidence saved, exit 3, naming the stall, the
+  last thing seen and the age.
+
+The implementation seam is one line: the poll loop in `await_container`
+already runs every `PROGRESS_POLL_SECONDS` and already owns the process
+whose output would be timestamped. Reading the stream's arrival times means
+`docker logs -f` can no longer inherit run-gate's stdout untouched — that is
+the real cost of this item and the reason it is not a footnote to RG-36.
+
+### Acceptance
+
+- [ ] A container command lane declaring `stall_timeout` loads, and its run
+      discloses `source: log stream` at start;
+- [ ] A lane whose container is running and has printed nothing for the
+      declared window is stopped: `docker rm -f`, evidence saved, exit 3,
+      naming the age and the last line seen;
+- [ ] A lane that keeps printing is never stopped, and its output still
+      reaches the operator's terminal unbuffered and in order (the
+      pass-through must not regress into a captured-then-replayed stream);
+- [ ] An assay lane is unchanged — it still judges from the progress file
+      and discloses `source: progress file`, never downgrading to the log
+      stream because a file has not appeared yet.
+
+### Status — OPEN 2026-09-02, E-3 candidate (23.5.0)
+
+Sequenced with the other progress/resume work: E-3 of
+`assay/nyxloom-trove/WAVE-PLAN-2026-09-02-after-v10.md` (RG-36 exact timing
+once assay B065 lands, RG-38, RG-39). Not implemented in rev 34 by ruling —
+the wave shipped the refusal, and this is the answer to what the refusal
+costs.

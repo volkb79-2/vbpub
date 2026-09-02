@@ -937,7 +937,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     by name (`R-25`/`R-35`'s rule), as do `doctor`, `history`,
     `validate-pointers` and a bare invocation. A conjunction lane carries the
     behaviour to each SUB-lane it invokes; the conjunction itself is a
-    command lane with no container of its own and no record.
+    command lane with no container of its own and no record. `--fresh` is
+    per-invocation and deliberately does NOT fan out into a conjunction (no
+    token, unlike `--worktree` and `{base}`): it REMOVES a container, and
+    propagating it would destroy sub-lane containers that are legitimately
+    running. Nothing is lost — a sub-lane that cannot attach refuses on its
+    own terms, the `&&` chain stops there, and the refusal naming that
+    sub-lane, its container and `--fresh` passes out through the conjunction
+    as exit 2 (verified; CONSUMERS "Gate-conjunction lanes" carries the
+    transcript and the shape a consumer writes if it wants one sub-lane
+    always fresh).
 
 - `R-40` **Progress-judged liveness (RG-36).** `budget` is advisory here and
   a hard lane-wide bound in assay, so the only way to bound a long mutation
