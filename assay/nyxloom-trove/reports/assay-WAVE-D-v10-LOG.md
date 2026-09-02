@@ -460,3 +460,74 @@ free row; no new backlog entry filed at this commit.
   BLOCKED + a dated measurement note with the transcript),
   `nyxloom-trove/reports/assay-WAVE-D-v10-REPORT.md`, this LOG. No source,
   no test, no CHANGES bullet — there is nothing for a consumer to read about.
+
+### Gate run, generation 3
+
+**One run, first try, GREEN, on `93188912` — the PHASE-1 TIP, 10 of 10 items
+resolved.** Launched detached from `/workspaces/vbpub` exactly as BRIEF-2 §7
+shows (the log path a literal inside the `bash -c` string), worktree
+committed clean and left untouched for the whole run. Exactly one gate
+process and one `tester-unified` container confirmed 20s after launch:
+
+```
+$ pgrep -af 'tester-unified-gate.sh'
+664156 bash assay/tools/tester-unified-gate.sh /workspaces/vbpub/.worktrees/assay-wave-d-v10
+$ docker ps --format '{{.ID}} {{.Image}} {{.Names}}' | grep -i tester-unified
+05617a469ec7 tester-unified:local dazzling_yalow
+```
+
+Verdict read in a SEPARATE step from the log's own markers:
+
+```
+$ grep -c 'ASSAY_REGISTERED_GATE_COMPLETE=1' <log>   -> 1
+$ grep 'GATE_EXIT=' <log>                            -> GATE_EXIT=0
+$ grep -c -E 'FAILED|DIRTY_TREE|Traceback' <log>     -> 0
+Created wheel for assay: filename=assay-4.1.1.dev14+g93188912-py3-none-any.whl
+  size=526694 sha256=087415a9227f86ce9eb9ce7b0b1084911b5d083e19a7f855930cf2a1c6a299f2
+tester-unified: PASS (exit 0)
+  commit: 931889122cf663469a81e4db6e5e990c43d0263d
+ASSAY_GATE_PHASE=wheel-installed
+ASSAY_GATE_PHASE=attestation-hardened
+ASSAY_GATE_PHASE=verdict-v5-accepted
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified
+ASSAY_GATE_PHASE=verdict-v9-successors-verified
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+GATE_EXIT=0
+```
+
+The wheel name carries the judged commit (`g93188912`), which is the commit
+the self-hosted lane reports and the tip that was gated. **`93188912` is the
+gate-verified PHASE-1 TIP.**
+
+Both v9 schema phases passed — the mechanical confirmation that phase 1 is
+still releasable on v9: no `verdict.py`, `verify.py`, schema or drift-guard
+file was touched by any of this generation's four commits, and no commit on
+the branch carries `!`.
+
+Whole suite, worktree-local, immediately before the gate: **3985 passed, 20
+skipped in 538.51s**, zero failures (generation 2's figure was 3968; the 17
+added are 8 for B053's follow-ups, 7 for B028, 2 for B029).
+
+### 12. `docs(assay): Wave D generation 3 checkpoint -- phase 1 complete, BRIEF-3, green gate on 93188912`
+
+- No product code, no test change.
+  `nyxloom-trove/reports/assay-WAVE-D-v10-BRIEF-3.md` (new) and this LOG's
+  gate entry.
+- **A docs-only successor to the gate-verified tip**, as generation 2 did.
+  The gate-verified commit stays `93188912`; nothing executable changed after
+  it, so re-gating for a brief would reproduce the same result at ~40
+  minutes' cost.
+
+### An environment note of generation 3's own
+
+A foreground `sleep` is blocked in this harness and a long `Bash` call is
+moved to the background, so polling the gate log by hand does not work — the
+wall clock barely advanced across several apparent waits. **Arm a `Monitor`
+with `until grep -q 'GATE_EXIT=' <log>; do sleep 30; done` at launch time and
+let it fire.** That is what finally reported this run.
