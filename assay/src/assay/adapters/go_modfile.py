@@ -104,7 +104,10 @@ class ModuleDeclaration:
     produced the prefix, because the consumer's next action is to open it.
     """
 
-    #: The ``module`` directive's argument, unquoted, with no trailing slash.
+    #: The ``module`` directive's argument, unquoted. A trailing slash is
+    #: REFUSED rather than stripped (should-fix 2): the real toolchain says
+    #: ``malformed module path "...": trailing slash``, so such a go.mod
+    #: describes no module and there is no prefix to derive.
     module_path: str
     #: The ``go.mod``'s own repo-top-relative POSIX path.
     module_file: str
@@ -265,6 +268,27 @@ def _argument_at(
             f"directive is `module <module/path>`"
         )
     kind, value = tokens[index]
+    if kind == "ident" and ('"' in value or "`" in value):
+        # (should-fix 2) The rule this module's own docstring already claimed
+        # -- `parseString` unquotes only a `"`-prefixed token and REFUSES any
+        # other token containing a quote character -- and did not implement:
+        # `module ex"ample` was accepted as a bare ident. Measured against the
+        # real toolchain inside `tester-unified-go:local`, `go list -m` on
+        # exactly that go.mod says:
+        #
+        #   go.mod:1: invalid quoted string: unquoted string cannot contain
+        #   quote
+        #
+        # (identically for a backquote in mid-token). `_unquote` already
+        # refuses a token that STARTS with a backquote; this is the same rule
+        # for a quote character anywhere else in an unquoted token.
+        raise _refuse(
+            f"{source!r}'s `module` directive argument {value!r} is an "
+            f"unquoted string containing a quote character, which the Go "
+            f"toolchain's own go.mod parser refuses (\"invalid quoted "
+            f"string: unquoted string cannot contain quote\"); quote the "
+            f"whole path with `\"` if it really contains one"
+        )
     path = _unquote(value, source=source) if kind == "string" else value
     if not path:
         raise _refuse(
@@ -272,7 +296,34 @@ def _argument_at(
             f"strips nothing, which is indistinguishable from having no "
             f"module path at all"
         )
-    return path.rstrip("/")
+    if path.endswith("/"):
+        # (should-fix 2) REJECTED, not stripped. This used to be
+        # `path.rstrip("/")`, which silently accepted
+        # `module example.invalid/x/` as `example.invalid/x` -- and, worse,
+        # turned `module /` into the empty string AFTER the emptiness guard
+        # above had already run, so the fault escaped this module entirely
+        # and surfaced from `normalize_coverage_key` as
+        # `ERROR`/`UNREADABLE_ARTIFACT`: blaming the coverage artifact for a
+        # lane-configuration fault, which is exactly the misdirection
+        # `_refuse`'s own docstring exists to prevent.
+        #
+        # The real toolchain refuses both, measured in-image:
+        #
+        #   $ go list -m                     # module /
+        #   go: malformed module path "/": trailing slash
+        #   $ go list -m                     # module example.invalid/x/
+        #   go: malformed module path "example.invalid/x/": trailing slash
+        #
+        # So a go.mod with a trailing slash describes no buildable module,
+        # and accepting it would mean deriving a prefix for a project that
+        # cannot have produced a profile in the first place.
+        raise _refuse(
+            f"{source!r} declares module path {path!r}, which the Go "
+            f"toolchain refuses: `malformed module path {path!r}: trailing "
+            f"slash`. A go.mod the toolchain rejects describes no module, so "
+            f"there is no prefix to derive; fix the directive"
+        )
+    return path
 
 
 def _unquote(token: str, *, source: str) -> str:

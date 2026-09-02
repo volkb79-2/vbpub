@@ -64,10 +64,77 @@ def test_the_module_path_keeps_every_internal_slash_and_dot():
     assert parse("module github.com/org/repo/v2\n") == "github.com/org/repo/v2"
 
 
-def test_a_trailing_slash_is_dropped_so_the_boundary_strip_is_exact():
-    """``normalize_coverage_key`` fires on ``module_path + "/"``; a path that
-    already ended in one would make that ``foo//``, which matches nothing."""
-    assert parse('module "example.com/foo/"\n') == "example.com/foo"
+def test_a_trailing_slash_is_REFUSED_not_dropped():
+    """**This test INVERTED at should-fix 2, and the measurement is why.**
+
+    It used to assert that ``module "example.com/foo/"`` parsed to
+    ``example.com/foo``, reasoning that ``normalize_coverage_key`` fires on
+    ``module_path + "/"`` so a path already ending in one would make ``foo//``
+    and match nothing. The reasoning about the strip is still true; the
+    conclusion was not assay's to draw. Measured against the real toolchain
+    inside ``tester-unified-go:local``:
+
+        $ go list -m          # go.mod: module example.invalid/x/
+        go: malformed module path "example.invalid/x/": trailing slash
+
+    So such a go.mod describes no buildable module. There is no profile it
+    could have produced and therefore no prefix worth deriving; quietly
+    repairing it would be assay adapting an input the toolchain rejects
+    (A-217's own rule, in reverse)."""
+    with pytest.raises(AssayError) as excinfo:
+        parse('module "example.com/foo/"\n')
+
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert "trailing slash" in str(excinfo.value)
+
+
+def test_module_slash_is_refused_by_the_trailing_slash_rule_not_the_empty_one():
+    """The reviewer's own probe, and the reason the ORDER of the two guards
+    matters.
+
+    ``module /`` used to reach ``path.rstrip("/")`` -- which runs AFTER the
+    empty-path guard -- so it derived ``module_path = ""``, escaped this
+    module entirely, and surfaced later from ``normalize_coverage_key`` as
+    ``ERROR``/``UNREADABLE_ARTIFACT``: blaming the coverage artifact for a
+    lane-configuration fault, which is precisely the misdirection ``_refuse``'s
+    own docstring exists to prevent. The real toolchain calls it what it is:
+
+        $ go list -m          # go.mod: module /
+        go: malformed module path "/": trailing slash
+    """
+    with pytest.raises(AssayError) as excinfo:
+        parse("module /\n")
+
+    assert excinfo.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert "trailing slash" in str(excinfo.value)
+
+
+def test_an_unquoted_argument_containing_a_quote_is_refused():
+    """The rule this module's docstring claimed and did not implement:
+    ``parseString`` unquotes only a ``"``-prefixed token and refuses any other
+    token containing a quote character. ``module ex"ample`` was accepted as a
+    bare ident. Measured:
+
+        $ go list -m          # go.mod: module ex"ample
+        go.mod:1: invalid quoted string: unquoted string cannot contain quote
+
+    Both quote characters are asserted: a backquote MID-token never reached
+    ``_unquote``'s own backquote refusal, which only fires on a token that
+    STARTS with one."""
+    for text in ('module ex"ample\n', "module ex`ample\n"):
+        with pytest.raises(AssayError) as excinfo:
+            parse(text)
+        assert excinfo.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+        assert "unquoted string cannot contain quote" in str(excinfo.value)
+
+
+def test_an_ordinary_module_path_is_unaffected_by_all_three():
+    """The anti-vacuity control for the three refusals above: the common case
+    still parses, so none of them widened into a rule that refuses real
+    go.mod files."""
+    assert parse("module example.invalid/x\n") == "example.invalid/x"
+    assert parse('module "example.invalid/x"\n') == "example.invalid/x"
 
 
 def test_a_later_directive_beginning_a_line_inside_a_block_is_not_the_module():
