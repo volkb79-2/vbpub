@@ -188,6 +188,13 @@ The asks as originally written follow, for the record.
 
 ## For the controller's dstdns notification (RW-7's, plus two more)
 
+> **SUPERSEDED 2026-09-02 by "Fix round 1 — corrected dstdns notification
+> (RW-13)" at the end of this file.** The sweep behind this section was a
+> text `grep`, which cannot tell a lane-level `budget` from one inside a pin
+> table; parsed with the loader it is 13 lanes, not 2, the migration takes
+> two rounds, and `schema` was fixed at `dstdns@65582354`. Kept verbatim
+> because the record is append-only.
+
 - **Blocking:** `pins.assay.budget` must be deleted from dstdns's
   `run-gate.toml` (`sql-mutation`, `assay-p129-enumeration-cursor`) BEFORE
   upgrading to 23.4.0 — the key now refuses at load.
@@ -200,3 +207,55 @@ The asks as originally written follow, for the record.
   `stall_timeout = "15m"` in run-gate.toml; the lane then stops on SILENCE
   instead of on a guessed total, and a killed client re-attaches instead of
   starting a second 120-minute container.
+
+---
+
+# Fix round 1 (after adversarial review round 1), 2026-09-02
+
+Fresh implementer session; the original's is closed. Orders: controller-log
+rulings **RW-13..RW-19**, applied in the order RW-14 → RW-13 → RW-16 →
+RW-15 → RW-17 → RW-18 → RW-19. Every ruling is a behaviour change with a
+behaviour test; the review's probes are the red-first tests where the
+pre-fix tip expresses the wrong behaviour.
+
+## Corrected dstdns notification (RW-13, RW-19/S7)
+
+Everything below is PARSED with the rev-34 loader over every lane of
+`/workspaces/dstdns/run-gate.toml` (29 lanes), not text-grepped. Re-measured
+independently in this session.
+
+- **Blocking, and it is TWO rounds, not one deletion.** **13 of 29** lanes
+  refuse at load once run-gate is at 23.4.0:
+  `assay-dlq`, `assay`, `sql-mutation`, `assay-p129-enumeration-cursor`,
+  `worker-execution-admission`,
+  `worker-execution-admission-r2-{compare,boolop,flips,falsy}`,
+  `assay-p169-op-override-projection`,
+  `assay-p169-op-override-projection-r2-{compare,boolop,falsy}`.
+  - **Round 1:** delete `budget` from every `[lanes.<n>.pins.assay]` table.
+  - **Round 2:** re-load. Four of those lanes — `assay-dlq`, `assay`,
+    `sql-mutation`, `assay-p129-enumeration-cursor` — then refuse again on
+    `clean_tree`, which sits in the same misplaced position
+    (`/workspaces/dstdns/run-gate.toml:34-38, 92-96, 114-118, 145-149`; the
+    `clean_tree = false` lines are 37, 95, 117 and 148). The `budget`
+    refusal fires first and masks it, which is why one round is not enough.
+  - **`clean_tree` is MOVED one level up into `[lanes.<n>]`, never deleted.**
+    23.4.0's refusal says so by name. Deleting it would leave the lane on
+    the default `clean_tree = true`.
+- **A live dstdns defect run-gate found, for dstdns to file:** those four
+  lanes' `clean_tree = false` has been **inert since it was written** — the
+  key is under `[lanes.<n>.pins.assay]`, where run-gate never read it, so
+  all four have been running with `clean_tree = true`. Whether they SHOULD
+  run dirty-tolerant is dstdns's call; the point is that the config has been
+  saying one thing and the gate doing another. Filing it is dstdns's.
+- **Recommended (RG-34), corrected:** `[lanes.schema]` is **already fixed**
+  (`argv = ["{worktree}/scripts/schema-gate.sh", "{worktree}"]`, with an
+  RG-34 comment, since `dstdns@65582354`). The lane that trips the new
+  `doctor` WARN today is **`scale-admission`**
+  (`/workspaces/dstdns/run-gate.toml:81`, `argv[0] =
+  "scripts/schema-gate.sh"`) — one hit, parsed over every lane. RG-34 lands
+  with a live consumer hit.
+- **Offered (RG-36), unchanged:** `sql-mutation` is the lane RG-36 was built
+  for — a generous assay `budget` + `judge.mutation.budget_per_candidate` +
+  `stall_timeout = "15m"`, so the lane stops on SILENCE instead of on a
+  guessed total, and a killed client re-attaches instead of starting a
+  second 120-minute container.

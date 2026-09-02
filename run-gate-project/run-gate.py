@@ -156,6 +156,16 @@ def _validate_environment(name: str, table: dict, where: str) -> None:
         fail(f"{where} [environments.{name}]: 'forward_env' contains duplicates")
 
 
+# The lane table's own keys, in ONE place: `_validate_lane` checks a lane
+# against them, and the pin-table check (R-08a) asks whether an unrecognized
+# PIN key is one of them — which is the difference between "delete this" and
+# "move it one level up, it is load-bearing there".
+LANE_KEYS = {"kind", "environment", "argv", "assay_lane", "assay_command",
+             "pins", "clean_tree", "budget", "stall_timeout", "memory",
+             "description", "required_env", "artifacts", "resources"}
+PIN_KEYS = {"sha256", "version"}
+
+
 def _validate_budget(value: object, where: str, key: str = "budget") -> None:
     if not isinstance(value, str) or not re.fullmatch(r"\d+[smh]", value):
         fail(f"{where}: '{key}' must look like '30s', '20m' or '2h' (got {value!r})")
@@ -173,13 +183,7 @@ def _validate_memory(value: object, where: str) -> None:
 
 
 def _validate_lane(name: str, table: dict, where: str) -> None:
-    _check_keys(
-        table,
-        {"kind", "environment", "argv", "assay_lane", "assay_command", "pins",
-         "clean_tree", "budget", "stall_timeout", "memory", "description",
-         "required_env", "artifacts", "resources"},
-        f"{where} [lanes.{name}]",
-    )
+    _check_keys(table, LANE_KEYS, f"{where} [lanes.{name}]")
     kind = table.get("kind")
     if kind not in ("command", "assay"):
         fail(f"{where} [lanes.{name}]: 'kind' must be \"command\" or \"assay\" (got {kind!r})")
@@ -305,11 +309,37 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
                      f"enforced it; the lane's budget lives in the consumer's "
                      f"assay.toml [lanes.{table['assay_lane']}] (delete this "
                      f"key; the lane-level run-gate 'budget' stays advisory)")
+            # …and a pin key that is itself a legal LANE key is named as
+            # exactly that (review round 1, B1). The generic "unknown key(s)
+            # clean_tree (allowed: sha256, version)" is the message shape
+            # RG-32's own rationale says is not good enough: a key one
+            # nesting level below a real one that reads identically. It is
+            # also actively dangerous here, because the obvious remedy — the
+            # one the migration text used to give for `budget` — is to
+            # DELETE, and deleting a misplaced `clean_tree = false` silently
+            # flips its lane to the default `true`. Measured on dstdns
+            # 2026-09-02: four lanes (assay-dlq, assay, sql-mutation,
+            # assay-p129-enumeration-cursor) carry `clean_tree = false` under
+            # `[lanes.<n>.pins.assay]`, where it has been inert all along.
+            misplaced = sorted((set(pin) & LANE_KEYS) - PIN_KEYS - {"budget"})
+            if misplaced:
+                keys = ", ".join(f"'{key}'" for key in misplaced)
+                one = len(misplaced) == 1
+                fail(f"{where} [lanes.{name}].pins.{pin_name}: {keys} "
+                     f"{'is a lane key' if one else 'are lane keys'}; "
+                     f"{'it belongs' if one else 'they belong'} one level up "
+                     f"in [lanes.{name}], where "
+                     f"{'it is' if one else 'they are'} load-bearing — move "
+                     f"{'it' if one else 'them'}, do not delete "
+                     f"{'it' if one else 'them'} (under a pin table "
+                     f"{'it has' if one else 'they have'} never done "
+                     f"anything, so the lane has been running with the "
+                     f"default instead)")
             # …and every other unrecognized pin key gets the same treatment
             # `_validate_lane` gives an unrecognized lane key: a pin table
             # that silently accepted anything is how `budget` survived there
             # in the first place.
-            _check_keys(pin, {"sha256", "version"},
+            _check_keys(pin, PIN_KEYS,
                         f"{where} [lanes.{name}].pins.{pin_name}")
     if "clean_tree" in table and not isinstance(table["clean_tree"], bool):
         fail(f"{where} [lanes.{name}]: 'clean_tree' must be a boolean")

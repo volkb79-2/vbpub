@@ -6928,6 +6928,41 @@ class TestPinKeysAreValidated:
         assert "allowed: sha256, version" in msg
         assert "[lanes.sql-mutation].pins.assay" in msg
 
+    def test_a_misplaced_lane_key_is_named_as_one_and_says_move_it(
+            self, tmp_path):
+        """RW-13 (review B1). The generic "unknown key(s) clean_tree
+        (allowed: sha256, version)" is the exact message shape RG-32's own
+        rationale rejects — a key one nesting level below a real one that
+        reads identically — and here it is worse than useless: the remedy a
+        reader takes from it is DELETE, and deleting `clean_tree = false`
+        flips its lane to the default `true`. Four dstdns lanes carry
+        precisely this today (assay-dlq, assay, sql-mutation,
+        assay-p129-enumeration-cursor), where it has been inert all along."""
+        msg = self._load(tmp_path, '        clean_tree = false\n')
+        assert "'clean_tree' is a lane key" in msg
+        assert "it belongs one level up in [lanes.sql-mutation]" in msg
+        assert "where it is load-bearing — move it, do not delete it" in msg
+        assert "the lane has been running with the default instead" in msg
+        assert "[lanes.sql-mutation].pins.assay" in msg
+        # …and it never reaches the generic message, which would say delete.
+        assert "unknown key(s)" not in msg
+
+    def test_several_misplaced_lane_keys_read_as_a_sentence(self, tmp_path):
+        msg = self._load(tmp_path,
+                         '        clean_tree = false\n        memory = "4g"\n')
+        assert ("'clean_tree', 'memory' are lane keys; they belong one level "
+                "up in [lanes.sql-mutation], where they are load-bearing — "
+                "move them, do not delete them") in msg
+
+    def test_budget_keeps_its_own_message_not_the_move_one(self, tmp_path):
+        """`budget` is a lane key too, and it is the ONE misplaced key whose
+        remedy really is deletion: the value that governs the lane lives in
+        the consumer's assay.toml, not one level up. Its dedicated refusal
+        wins."""
+        msg = self._load(tmp_path, '        budget = "90m"\n')
+        assert "delete this key" in msg
+        assert "move it, do not delete it" not in msg
+
     def test_the_two_real_pin_keys_still_load(self, tmp_path):
         repo = make_repo(tmp_path)
         proj = make_project(repo, self.PIN_LANE)

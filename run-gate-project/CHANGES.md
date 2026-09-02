@@ -19,20 +19,41 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   dstdns session (two independent review agents and the controller each read
   `pins.assay.budget = "90m"` as the bound of a lane whose `assay.toml` said
   `120m`; the numbers had drifted with nothing able to notice).
-  - **Migration (one deletion per lane):** delete the `budget` line from
-    every `[lanes.<name>.pins.<pin>]` table in your `run-gate.toml`. Nothing
-    replaces it — the lane's real budget already lives in your `assay.toml`
-    `[lanes.<assay_lane>]`, and run-gate's own lane-level `budget` (one
-    level up, no `pins` in the path) is unchanged and still advisory. Until
-    the key is removed, the lane refuses at load with a message naming the
-    pin, the assay.toml table that owns the value, and the remedy.
   - `pins` tables now validate their keys at all: `sha256` and `version` are
     the only ones accepted, and any other is refused the way an unrecognized
     lane key already was. A pin table that accepted anything is how `budget`
     came to live there.
-  - **Known affected consumer:** dstdns (`sql-mutation`,
-    `assay-p129-enumeration-cursor`). No vbpub-estate `run-gate.toml`
-    declares the key.
+  - **Migration, in TWO rounds — and a key under a pin table is MOVED, never
+    deleted, unless it is `budget`.** The `budget` refusal fires first and
+    MASKS any other misplaced key in the same table, so the load has to be
+    run twice:
+    1. Delete the `budget` line from every `[lanes.<name>.pins.<pin>]`
+       table. Nothing replaces it — the lane's real budget already lives in
+       your `assay.toml` `[lanes.<assay_lane>]`, and run-gate's own
+       lane-level `budget` (one level up, no `pins` in the path) is
+       unchanged and still advisory. `budget` is the one key here whose
+       remedy really is deletion.
+    2. Re-run the load. Any remaining pin key that is itself a legal LANE
+       key is now refused by a message that says so — `'clean_tree' is a
+       lane key; it belongs one level up in [lanes.<n>], where it is
+       load-bearing — move it, do not delete it`. **Move it; do not delete
+       it.** Under a pin table it has never done anything, so the lane has
+       been running with the default; deleting a misplaced
+       `clean_tree = false` makes that silent default permanent, which is
+       the opposite of what the line was written to say.
+  - **Measured consumer impact (2026-09-02, parsed with the rev-34 loader
+    over every lane, not text-grepped):** **13 of 29** dstdns lanes refuse
+    at load — `assay-dlq`, `assay`, `sql-mutation`,
+    `assay-p129-enumeration-cursor`, `worker-execution-admission`,
+    `worker-execution-admission-r2-{compare,boolop,flips,falsy}`,
+    `assay-p169-op-override-projection`, and
+    `assay-p169-op-override-projection-r2-{compare,boolop,falsy}`. Four of
+    them (`assay-dlq`, `assay`, `sql-mutation`,
+    `assay-p129-enumeration-cursor`) also carry `clean_tree = false` under
+    `[lanes.<n>.pins.assay]`, where it has been inert all along — those four
+    lanes have been running with `clean_tree = true`, which is a live dstdns
+    defect this check just found, not a run-gate change. No vbpub-estate
+    `run-gate.toml` declares any of it (all eleven parsed).
 
 ### Added
 - **RG-36 — liveness judged from the progress file, not from a guessed wall

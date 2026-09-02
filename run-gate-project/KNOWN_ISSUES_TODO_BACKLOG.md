@@ -49,7 +49,7 @@ SPEC §9.
 | RG-27 | run-gate has no persisted per-lane-per-commit invocation history and no query verb — a controller deciding sync-vs-async/defer rigor has no data; retriaged from ciu CIU-55 (2026-08-25) to run-gate, which is the layer with direct invocation visibility in the current (pre-v8) architecture | Enhancement | FIXED 2026-08-31 (rev 30, run-gate-P03) — `history [LANE] [--json]` verb; store `<project>/.run-gate/history.json`, per (judged worktree × project) |
 | RG-30 | `doctor` and `--check-env` both pass `None` to `resolve_repo_and_worktree` (`run-gate.py:1789`, `:2068`) instead of the caller's `--worktree` value, so `doctor --worktree B` silently reports the INVOKING tree's answers, not B's — including RG-21's worktree-specific host-lane git-view WARN, which is exactly the per-tree answer that can legitimately differ | Medium | FIXED 2026-08-31 (rev 31, run-gate-P04) — new shared `resolve_worktree_scope()` (validates a real git worktree, refuses by name otherwise); `doctor`'s per-tree checks (git identity, RG-21 warning, mountinfo) and the shared `assay_toolchain_findings()` probe's `cd` target (used by both `doctor` and `--check-env`) now resolve/relocate under `--worktree`, disclosed in the report; `--check-env`'s env-drift scan follows it too and refuses upfront on a bad override (no per-check ledger to degrade into). SPEC `R-37` (`R-37a`/`R-37b`/`R-37c`). `./run-gate.py selftest` green: 394 passed, 2 skipped, diff-coverage 22/22 = 100.0%, exit 0 (commit `929be064`) |
 | RG-31 | `assay_toolchain_findings()`'s own `resolve_repo_and_worktree` call (the toolchain-fitness probe shared by `doctor` check 5 and `--check-env`) still takes the RAW `worktree_override` string, not RG-30's new validated `resolve_worktree_scope()` — so a bad `--worktree` combined with an assay lane present degrades safely (a `[SKIP]` on that check, no false-`[OK]`) but with a MISLEADING reason string (blames "an assay older than 3.2.0" rather than naming the real `--worktree` problem, which `doctor` check 3 already reported correctly two checks earlier in the same report) | Low | FIXED 2026-09-01 (rev 32) — routed through `resolve_worktree_scope()`, the same validated resolver check 3 and `--check-env` already use; a bad override now raises the identical `GateError` and the existing per-lane `except GateError` SKIP handler reports the real cause, never a guess about assay's version. New regression test `test_bad_worktree_skip_names_the_real_problem_not_assay_version` asserts the SKIP line repeats check 3's own "not a directory" cause and never says "older than 3.2.0". `./run-gate.py selftest --allow-dirty` green: 395 passed, 2 skipped, diff-coverage 0/0 = 100.0% (pre-commit run), exit 0 |
-| RG-32 | `[lanes.*.pins.*].budget` is silently inert — run-gate never read it, the governing value is the target `assay.toml`'s own `[lanes.<assay_lane>] budget`, and the key sits one nesting level below a REAL lane-level `budget` that reads identically (misread three times in one dstdns session) | Major | FIXED 2026-09-02 (rev 34, SPEC `R-08a`) — **BREAKING**: refused at load by name with the owner and the remedy; pin tables now validate their keys (`sha256`, `version`, nothing else); migration is one deletion, in CHANGES |
+| RG-32 | `[lanes.*.pins.*].budget` is silently inert — run-gate never read it, the governing value is the target `assay.toml`'s own `[lanes.<assay_lane>] budget`, and the key sits one nesting level below a REAL lane-level `budget` that reads identically (misread three times in one dstdns session) | Major | FIXED 2026-09-02 (rev 34, SPEC `R-08a`) — **BREAKING**: refused at load by name with the owner and the remedy; pin tables now validate their keys (`sha256`, `version`, nothing else), and a misplaced key that is itself a LANE key is named as one ("move it, do not delete it"); migration is TWO rounds over 13 of 29 dstdns lanes (parsed, RW-13), in CHANGES |
 | RG-33 | `kind = "assay"` mutation lanes never receive `--resume` (or `--progress`), so a budget-capped retry re-tests every mutant from #1 — dstdns `sql-mutation`, three 120-minute retries spent on the first of four target files, `.assay/mutation-state/` never written | Major | FIXED 2026-09-02 (rev 33, SPEC `R-38`) — every assay-kind invocation now carries `--resume --progress .assay/progress-<assay_lane>.jsonl` unconditionally (no-ops without R2, per assay's own contract); a pin declaring a judge older than 2.4.1 refuses by name at argv construction; five new tests in `TestResumeAndProgressAlways` including the executed host-runner argv and the dry-run docker argv line; assay's own gate script mirrors it in the assay wave |
 | RG-34 | a `kind = "command"` container lane whose `argv[0]` is a bare relative script path resolves against the container's `--workdir`, so it dies with `exit 127` in any container that mounts only the judged worktree (dstdns P152's `schema` lane, 100% reproducible) while working under the shared full-repo mount | Major | FIXED 2026-09-02 (rev 34, SPEC `R-30b`) — run-gate's half: `doctor` names the lane, the element, the fix and the mechanism; a WARNING, never a refusal, and run-gate never rewrites a consumer's argv. The argv edit itself is dstdns-side |
 | RG-35 | a lane's container outlives a dead run-gate client (`docker run -d` … `rm -f` in a `finally` the client never reaches), but nothing re-attaches: exit status, evidence and history are lost and the next invocation starts a DUPLICATE container for the same lane — the one-gate rule broken by the tool | Major | FIXED 2026-09-02 (rev 34, SPEC `R-39`) — `.run-gate/inflight/<lane>.json`, automatic re-attach/collect/report-lost, `--fresh` escape, commit mismatch refused |
@@ -2010,8 +2010,37 @@ that accepted anything is HOW `budget` came to live there. Four tests in
 `TestPinKeysAreValidated`, including one that pins the surviving
 lookalike — a real lane-level `budget` still loads and stays advisory.
 
-No vbpub-estate `run-gate.toml` declares the key (swept 2026-09-02); dstdns
-does, on `sql-mutation` and `assay-p129-enumeration-cursor`.
+No vbpub-estate `run-gate.toml` declares the key (swept 2026-09-02, all
+eleven configs parsed).
+
+**Amended 2026-09-02 after adversarial review round 1 (B1, ruling RW-13).**
+The first consumer-impact sweep was a text `grep`, which cannot tell a
+lane-level `budget` from one inside a pin table — the exact nesting confusion
+this item is about. PARSED with the rev-34 loader over every dstdns lane:
+
+- **13 of 29** lanes refuse at load, not 2: `assay-dlq`, `assay`,
+  `sql-mutation`, `assay-p129-enumeration-cursor`,
+  `worker-execution-admission`,
+  `worker-execution-admission-r2-{compare,boolop,flips,falsy}`,
+  `assay-p169-op-override-projection`,
+  `assay-p169-op-override-projection-r2-{compare,boolop,falsy}`.
+- The migration is **two rounds**: the `budget` refusal fires first and masks
+  every other misplaced key in the same table. Four of those lanes
+  (`assay-dlq`, `assay`, `sql-mutation`, `assay-p129-enumeration-cursor`)
+  then refuse again on `clean_tree = false`, which sits in the same
+  misplaced position.
+- **A misplaced key that is itself a legal LANE key is now named as one**, so
+  the fix does not merely rename its own defect class: `'clean_tree' is a
+  lane key; it belongs one level up in [lanes.<n>], where it is load-bearing
+  — move it, do not delete it (under a pin table it has never done anything,
+  so the lane has been running with the default instead)`. `budget` is
+  excluded from that clause and keeps its own message: it is the one
+  misplaced key whose remedy really is deletion. Three further tests in
+  `TestPinKeysAreValidated` cover the new clause, the plural form and
+  `budget`'s precedence over it.
+- **Found in passing, and it is dstdns's to file:** those four lanes'
+  `clean_tree = false` has been inert since it was written — they have been
+  running with `clean_tree = true`.
 
 ## RG-33 — `sql-mutation`-style assay mutation lanes never pass `--resume`, so a budget-exceeded retry re-tests everything from scratch
 

@@ -120,6 +120,12 @@ sha256 = "tools/assay/assay-2.1.0.pyz.sha256"   # verified FROM its own director
 # enforced and is now a refusal: a kind = "assay" lane's real budget lives
 # in the TARGET assay.toml's [lanes.<assay_lane>], and run-gate's own
 # lane-level `budget` (one level up, no `pins` in the path) stays advisory.
+# A pin key that is itself a legal LANE key is named as one — "'clean_tree'
+# is a lane key; it belongs one level up in [lanes.<n>], where it is
+# load-bearing — move it, do not delete it". MOVE it: under a pin table it
+# never did anything, so the lane has been running with the default.
+# `budget` is the one exception and keeps its own message: its value belongs
+# in the target assay.toml, so there really is nothing to move.
 ```
 
 Environment facts resolution order (no silent fallbacks anywhere):

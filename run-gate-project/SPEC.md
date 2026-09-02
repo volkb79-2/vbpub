@@ -169,8 +169,32 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   and a decorative key is still a key a reviewer must learn to ignore. The
   generic unknown-key refusal is the durable half — a pin table that
   accepted anything is how `budget` came to live there. **BREAKING** for any
-  consumer that declares the key today (dstdns does); migration is one
-  deletion, recorded in CHANGES.
+  consumer that declares the key today; the migration is recorded in
+  CHANGES, and it is not one deletion (see below).
+  - **A misplaced LANE key is named as one, and the remedy is MOVE, not
+    delete.** When an unrecognized pin key is itself a legal lane key, the
+    refusal says so: `'clean_tree' is a lane key; it belongs one level up in
+    [lanes.<n>], where it is load-bearing — move it, do not delete it (under
+    a pin table it has never done anything, so the lane has been running
+    with the default instead)`. Without this clause the refusal is the
+    generic `unknown key(s) clean_tree (allowed: sha256, version)`, whose
+    obvious remedy is deletion — and deleting a misplaced
+    `clean_tree = false` silently flips that lane to the default `true`,
+    i.e. `R-08a` would rename its own defect class rather than close it.
+    `budget` is deliberately excluded from this clause and keeps its own
+    message: it is the one misplaced key whose remedy really is deletion,
+    because the value that governs the lane lives in the consumer's
+    `assay.toml`, not one level up. Both checks run BEFORE the generic one.
+  - **Measured consumer impact (2026-09-02, parsed with this loader over
+    every lane of `/workspaces/dstdns/run-gate.toml`, not text-grepped):**
+    **13 of 29** dstdns lanes refuse at load on `pins.assay.budget`, and
+    **four** of those (`assay-dlq`, `assay`, `sql-mutation`,
+    `assay-p129-enumeration-cursor`) also carry `clean_tree = false` in the
+    same misplaced position. The migration is therefore TWO rounds: the
+    `budget` refusal fires first and masks the `clean_tree` one. The four
+    inert `clean_tree = false` lines are a live consumer defect this check
+    just discovered — those lanes have been running `clean_tree = true` all
+    along.
 
 - `R-09` Environment resolution: project `[environments.<name>]` shadows the
   central one entirely (same name = project wins, no field merging); an
