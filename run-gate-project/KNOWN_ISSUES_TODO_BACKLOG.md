@@ -1904,3 +1904,68 @@ Alternatively vendor the 2.2.0 pair back. Then re-run
       `assay_command` both moved;
 - [x] `run-gate-project`'s `selftest` lane is green end to end, including
       the diff-coverage step that currently never executes.
+
+## RG-32 — `pins.assay.budget` in `run-gate.toml` is silently inert; the governing value lives only in the consuming lane's `assay.toml`
+
+**Found 2026-09-02 in dstdns**, three independent times in one session
+(two different Opus code-review agents plus the controller), on the SAME
+`kind = "assay"` lane, each initially misreading which `budget` value
+governed a long-running mutation-testing gate before checking with
+`tomllib` instead of eyeballing `sed` output.
+
+### The bug
+
+For a `kind = "assay"` lane, `run-gate.toml` accepts a `budget` key
+directly under `[lanes.<name>.pins.assay]` (adjacent to `version`, `sha256`,
+`clean_tree`) — the shape looks like a normal, load-bearing lane setting,
+and both consumer authors and reviewers plausibly assume it constrains or
+documents the lane's run time. It does not: `run-gate` never reads
+`pins.assay.budget` for anything. The actual governing value, if any, is
+whatever the target `assay.toml`'s own `[lanes.<assay_lane>]` block declares
+as `budget` — a SEPARATE file, SEPARATE key path, silently unconnected to
+the one in `run-gate.toml`. Confirmed via `tomllib` on dstdns's own
+`run-gate.toml`:
+
+```
+sql-mutation                    lane.budget=None    pins.assay.budget='90m'
+assay-p129-enumeration-cursor   lane.budget=None    pins.assay.budget='10m'
+```
+
+Both `90m` and `10m` are dead text. `dstdns`'s `assay.toml` separately
+declares `budget = "120m"` for the `cw2b_schema` lane `sql-mutation` points
+at (raised from `90m` in an unrelated, later, per-project decision) — the
+two numbers drifted apart with nothing to notice or prevent it.
+
+**Why it matters beyond one misreading.** `kind = "command"` lanes (e.g.
+`scale-admission`, `schema`) DO carry a genuine lane-level `budget` (no
+`pins` sub-table), which some consumer-side tests key off of directly
+(dstdns's `test_o11b` asserts `timeout_seconds == _budget_to_seconds(budget)`
+against that real value). The two shapes look identical at a glance —
+same key name, same-looking TOML nesting one level apart — so a reviewer or
+implementer has no local signal that one is real and the other is
+decorative. This is a `R-04`-class defect (a config value indistinguishable
+from a real setting through normal reading, silently doing nothing) rather
+than a cosmetic nit.
+
+### Proposed fix
+
+Either (a) `_validate_lane` rejects an unrecognized `budget` key under
+`[lanes.*.pins.assay]` outright (a `kind = "assay"` lane's budget, if
+run-gate is meant to enforce one at all, belongs at the lane level like
+`kind = "command"` lanes, not inside `pins.assay`), or (b) if the intent was
+always "the consuming assay.toml owns budget enforcement, run-gate's copy is
+purely informational," rename the key (e.g. `budget_hint`) so it cannot be
+mistaken for an enforced value, and add a `validate-pointers`-style check
+that a declared `budget_hint` still matches the target `assay.toml` lane's
+real `budget` at least at declaration time (catching exactly the kind of
+silent 90m/120m drift found here).
+
+### Acceptance
+
+- [ ] A `pins.assay.budget` key (however named going forward) either
+      enforces something real or cannot be typo'd/misread as if it did;
+- [ ] `validate-pointers` (or an equivalent check) catches a declared value
+      that has drifted from the target `assay.toml` lane's real `budget`;
+- [ ] Existing dstdns lanes with a stale `pins.assay.budget` (`sql-mutation`
+      `90m` vs real `120m`; likely others — not exhaustively swept from this
+      report) get a follow-up cleanup pass once the mechanism is fixed here.
