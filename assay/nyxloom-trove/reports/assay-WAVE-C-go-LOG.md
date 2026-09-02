@@ -1035,3 +1035,30 @@ docstrings that pointed at "Go's own total non-registration" are corrected.
 same way, and while there: its module docstring's third copy of the registry
 list still said "JavaScript at R1 only", stale since B046. Fixed, and the
 correction says why every restatement of that list keeps rotting.
+
+### `<this commit>` — `docs(assay): Wave C generation 7 -- gate run 11 PASS on 4c3e83f4`
+
+**Gate run 11: PASS on `4c3e83f4`** — `ASSAY_REGISTERED_GATE_COMPLETE=1`
+exactly once, `GATE_EXIT=0`, eleven phase markers through
+`self-hosted-lane-passed` / `topos-qualified` / `cmru-b006a-qualified` /
+`independent-self-hosting-passed`, the installed wheel
+`assay-4.0.1.dev45+g4c3e83f4` and the self-hosted lane's own receipt both
+naming the judged commit, and a SEPARATE, independent grep for
+`FAILED|DIRTY_TREE|Traceback` returning nothing. Transcript in REPORT §49.
+
+All four source commits of this generation are under that run. Devcontainer
+full suite on the same tree: **3939 passed, 11 skipped** (from 3908/11). Go
+qualification in `tester-unified-go:local`: **5 passed**.
+
+**Process note, volunteered for the reviewer.** Every change to a tracked file
+this generation was made with the Edit tool or by appending a whole new file,
+per the operator's standing directive — no rewrite scripts over tracked files.
+Two mechanical helpers were used and neither edited one: a Python one-shot that
+pretty-printed the oracle probe's stdout into `linedup-oracle.json` (an
+artifact this generation created, and the normalisation is disclosed in
+PROVENANCE.md exactly as the two existing oracle documents' is), and `awk` to
+slice the probe log's `=== PROFILE ===` section into `linedup.out`. Both are
+artifact production from a container's output, not editing.
+
+This section and REPORT §49 are the only content in this commit; it was written
+after run 11 returned, not during it.

@@ -2126,3 +2126,64 @@ characters are now refused and both are asserted.
   asserted that per file). The new refusals are reachable only by inputs srdm's
   profile does not contain. If the fix-verification round disagrees, the
   harness is DA-9's and the recipe is in BRIEF-7 §2.
+
+## 49. Gate — run 11, PASS on commit `4c3e83f4`
+
+`bash assay/tools/tester-unified-gate.sh
+/workspaces/vbpub/.worktrees/assay-wave-c-go`, from `/workspaces/vbpub`, log
+written OUTSIDE the worktree, worktree clean and unedited for the duration,
+verdict read in a SEPARATE step.
+
+```console
+$ grep -c "ASSAY_REGISTERED_GATE_COMPLETE=1" gate-run11.log
+1
+$ grep -n "GATE_EXIT=" gate-run11.log
+62:GATE_EXIT=0
+$ grep "ASSAY_GATE_PHASE" gate-run11.log
+ASSAY_GATE_PHASE=wheel-installed
+ASSAY_GATE_PHASE=attestation-hardened
+ASSAY_GATE_PHASE=verdict-v5-accepted
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified
+ASSAY_GATE_PHASE=verdict-v9-successors-verified
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+$ grep -nE "FAILED|DIRTY_TREE|Traceback" gate-run11.log
+(no hits)
+$ grep -o "assay-4.0.1.dev[0-9]*+g[0-9a-f]*" gate-run11.log | sort -u
+assay-4.0.1.dev45+g4c3e83f4
+```
+
+Eleven phases, and the installed wheel names the judged commit itself — the
+check that says the gate measured THIS tree and not a stale build. The
+self-hosted lane's own receipt confirms it too:
+`commit: 4c3e83f4eae9e23820199614e732713ab2d005fc`.
+
+**The wrapper-vs-job trap did not fire, and it was still read separately.**
+The harness reported the backgrounded subshell's exit code as 0 — which is the
+WRAPPER's status and is always 0 here, because the subshell's last statement is
+the `echo` that appends the marker. It happened to agree with `GATE_EXIT=0`.
+The only reason this paragraph can say which was true is that the marker was
+read on its own.
+
+Two other runs on the same tree, both before the gate and both from the
+worktree with the devcontainer venv:
+
+* **Full suite: 3939 passed, 11 skipped**, exit 0 (from 3908/11 at `d938ab8c`
+  under the same `--ignore=tests/qualification`). +31 tests: ten in
+  `test_go_line_directive_witness.py`, ten in
+  `test_config_statement_attribution_format.py`, four in
+  `test_adapters_go_modfile.py`, two each in `test_coverage_parsers_go_cover.py`
+  and `test_statement_attribution_go_witnesses.py`, two in
+  `test_runner_statement_attribution_wiring.py`, one in
+  `test_runner_run_lane.py`, one in `test_adapters_go_registration.py` — minus
+  the one renamed rather than added.
+* **`ASSAY_GO_QUALIFICATION=1 pytest tests/qualification/test_go_r1_real.py`:
+  5 passed**, 28.8s, in `tester-unified-go:local`.
+
+**The only commit after run 11 is docs-only** — this section and the LOG's gate
+paragraph. No source, test, packaging, vocabulary, fixture, witness or
+decision-file change.
