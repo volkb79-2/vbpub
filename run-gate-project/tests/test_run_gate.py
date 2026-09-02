@@ -7113,6 +7113,66 @@ class TestContainerFinishPathsInProcess:
         assert "unknown lane 'nope'" in err and "known lanes: suite" in err
 
 
+class TestOwnerLivenessAndFollowEdges:
+    """RW-14's two primitives, and the follow path's two unhappy endings.
+    "Could not determine" always resolves toward NO OWNER CLAIM here: a
+    record whose owner cannot be established is adopted (`R-39b`), which is
+    rev 34's behaviour before the follow existed — never followed on a guess,
+    because a follower that is wrong about the owner reports someone else's
+    exit code and removes nothing."""
+
+    def test_a_kernel_that_answers_neither_question_yields_no_owner(
+            self, monkeypatch):
+        def boom(self, *a, **k):
+            raise OSError("no /proc here")
+        monkeypatch.setattr(Path, "read_text", boom)
+        assert run_gate.boot_id() is None
+        assert run_gate.process_start_ticks(1) is None
+        assert run_gate.live_owner_pid(
+            {"owner_pid": 1, "owner_start": 1, "boot_id": "x"}) is None
+
+    def test_a_stat_line_that_is_too_short_is_not_an_answer(self, monkeypatch):
+        """Field 22 is read from AFTER the last ')' — an executable named
+        `(a b) S` is exactly why. A line that does not reach field 22 is no
+        answer at all, not a wrong one."""
+        monkeypatch.setattr(Path, "read_text",
+                            lambda self, *a, **k: "7 (a b) S 1 2 3\n")
+        assert run_gate.process_start_ticks(7) is None
+
+    def test_no_such_process_is_not_an_answer(self):
+        assert run_gate.process_start_ticks(2 ** 22 + 1) is None
+
+    def _follow(self, tmp_path, monkeypatch, body):
+        fake_docker(tmp_path, monkeypatch)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        shim.write_text(body)
+        shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+        return run_gate.follow_container(str(shim), "run-gate-x",
+                                         {"kind": "command"}, "suite",
+                                         tmp_path, tmp_path)
+
+    def test_a_follower_that_cannot_read_the_status_touches_nothing(
+            self, tmp_path, monkeypatch):
+        with pytest.raises(run_gate.GateInfraError) as exc:
+            self._follow(tmp_path, monkeypatch,
+                         "#!/bin/sh\ncase $1 in wait) exit 1;; esac\nexit 0\n")
+        assert "followed container run-gate-x" in str(exc.value)
+        assert "nothing was removed, cleared or recorded here" in str(exc.value)
+
+    def test_a_followed_failure_names_who_keeps_the_evidence(
+            self, tmp_path, monkeypatch, capsys):
+        """The follower saves no evidence and removes no container, so it says
+        whose job that is rather than printing the owner's `logs preserved
+        at` line for a file it never wrote."""
+        code = self._follow(tmp_path, monkeypatch,
+                            "#!/bin/sh\ncase $1 in wait) echo 7;; esac\n"
+                            "exit 0\n")
+        assert code == 7
+        assert ("run-gate: lane 'suite' failed with exit 7 (followed — the "
+                "owning client preserves the evidence)"
+                ) in capsys.readouterr().out
+
+
 class TestInflightRecordStore:
     """The record is written under the SAME `.run-gate/` store discipline the
     history file already has (R-36f/g), and every failure to write it
