@@ -62,12 +62,8 @@ class GateDef:
     # GA2 (docs/plan-gate-adoption.md checklist item 7 "rigor declared"): an
     # optional, self-reported list of what this gate actually enforces --
     # constrained by the schema enum to {tests-pass, changed-line-coverage,
-    # mutation, canary-verified}. Defaults to [] (undeclared -- the GA1
-    # behavior, unchanged). `nyxloom gate verify` cross-checks it against
-    # its own observed verdict (a declared rigor claim the probe can
-    # actively contradict is a DECLARATION MISMATCH, not just decoration --
-    # see cli.cmd_gate_verify), which is what keeps this field off the P43
-    # dead-stub list.
+    # mutation, canary-verified, assay-verdict}. Defaults to [] (undeclared
+    # -- the GA1 behavior, unchanged).
     asserts: list[str] = field(default_factory=list)
 
 

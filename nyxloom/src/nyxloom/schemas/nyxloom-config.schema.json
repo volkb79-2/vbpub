@@ -127,7 +127,8 @@
                 "tests-pass",
                 "changed-line-coverage",
                 "mutation",
-                "canary-verified"
+                "canary-verified",
+                "assay-verdict"
               ]
             }
           }
