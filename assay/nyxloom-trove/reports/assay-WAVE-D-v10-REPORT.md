@@ -1888,3 +1888,132 @@ branch is still releasable on v9.
   change is exactly the product call the prompt says to hand back.
 - **A whole-suite host run.** Three registered-gate runs covered it; the
   targeted host runs are in the LOG.
+
+---
+
+# Generation 7 — the last three design rows, and B007's measured bound
+
+## B007's target-bound measurement (DA-R17) — the numbers, and how they were taken
+
+Taken as generation 7's FIRST act, exactly as DA-R17 orders, in a gate-free
+window: `docker ps --format '{{.Image}}'` listed no `tester-unified:local`
+(64 containers, all dstdns/ciu/estate infrastructure), and the host load
+average was `3.87 5.30 7.22`. Run once, three iterations, under
+`nice -n 19 ionice -c 3`.
+
+**It is not a test double (A-334 does not even apply — the subject is assay's
+own substrate, not an external system, but the standard is met anyway).** The
+script imports `assay.isolation` from this worktree's `src/` and calls
+`prepare_snapshot`, `SnapshotRepository.materialize` and
+`SnapshotRepository.materialize_replacement` — the exact three calls
+`canary.run_isolated_canary` makes (`canary.py:480`, `canary.py:552`) — against
+a REAL repository (this worktree, at `ed287d73`), a real project prefix
+(`assay`) and a real tracked target blob (`assay/src/assay/canary.py`,
+33,940 bytes). Script kept at `scratchpad/measure_b007.py`.
+
+Two setup facts, recorded because they cost time and will cost the next
+person the same:
+
+- `snapshot_selection = "repository"` FORBIDS `unsafe_symlink_omissions`
+  (`config.py:753`), and `_build_manifest` (`isolation.py:1545`) refuses a
+  symlink whose target is absolute. vbpub's HEAD carries three of them, all
+  in `topos/tests/fixtures/inspect_files` (`_danger/passwd_link`,
+  `cgroup_escape/.../passwd_escape`, `cgroup_nonreg/.../memory.current`) —
+  found with `git ls-tree -r HEAD` filtered on mode `120000` and an absolute
+  blob body. The measurement therefore ran under
+  `"repository-minus-unsafe-symlinks"` with those three declared.
+- The control and transform snapshot contexts in `run_isolated_canary` are
+  **sequential, not nested** (`canary.py:479-544` closes before `:551`
+  opens), so peak disk for one target is ONE snapshot.
+
+| quantity | iteration 0 | 1 | 2 |
+|---|---|---|---|
+| `prepare_snapshot` (once per lane) | **4.071 s** | — | — |
+| `materialize` enter | 1.063 s | 1.000 s | 0.894 s |
+| `materialize` enter→exit | 1.260 s | 1.182 s | 1.260 s |
+| `materialize_replacement` enter | 1.314 s | 1.358 s | 1.271 s |
+| `materialize_replacement` enter→exit | 1.502 s | 1.511 s | 1.486 s |
+| snapshot bytes / files | 96,023,420 / 3,757 | identical | identical |
+| replaced snapshot bytes | 96,037,902 | identical | identical |
+
+**Derived, and this is what A-432 uses:** one canary TARGET = one control
+materialisation + one transform materialisation = **~2.76 s** of
+materialisation (1.26 + 1.50, enter-to-exit, so cleanup included) plus two
+full runs of the lane's own command. Peak disk ≈ **96 MB**.
+
+**The bound follows the number, never the reverse (DA-R17).** The smallest
+budget any shipped worked example declares is `5m`
+(`docs/DESIGN-GUIDE.md:2127`; the others are 10m, 15m, 20m, 20m, 20m, 30m,
+45m). `MAX_CANARY_TARGETS = 8` is the largest round N whose materialisation
+floor stays under a tenth of that smallest budget: 8 × 2.76 = **22.1 s** =
+7.4 % of 5 minutes, 0.8 % of 45 minutes. `MIN_CANARY_TARGETS = 1`.
+
+## The three design rows
+
+| row | item | ruling applied | the thing most likely to be missed |
+|---|---|---|---|
+| **A-430** | B004 | DA-D7 narrowed by DA-R12 | the §5.4 narrowing lands in **both** layers this time (the carve deferred the schema half to "whichever bump carries `PROVENANCE_UNVERIFIED`" — this is that bump); `mismatch → NO_MEASUREMENT`, never `FAIL`; the green path's only witness stays `ciu-provenance-green-reference.json` |
+| **A-431** | carve W0's corrections | — | append-only: A-O12, A-257 and A-344 are NOT edited; this row is A-O12's erratum |
+| **A-432** | B007 | DA-D8 + DA-R17 | `LANE_SCHEMA_VERSION` stays 2 because the singular `target` SURVIVES on the lane (exactly-one-of with `targets`); it does NOT survive on the wire, where the singular normalises to a one-element array; `aggregation` is present on the wire **iff** the lane declared the plural spelling, so its absence is checkable rather than defaulted |
+| **A-433** | F015 | DA-D9 + DA-R16 | `R4` is the HIGHEST rung and therefore the claim `_replace_highest_higher_rigor_claim_with_git_failed` replaces first — DA-R16 rules that honest; the reserved reason code `RED_FIRST_UNPROVEN` lands in the v10 enum now and is rendered in phase 3 |
+
+Acceptance boxes are NOT ticked for B004, B007 or F015 — these are design
+rows, and nothing is implemented yet.
+
+## Decision asks (generation 7)
+
+1. **`RED_FIRST_UNPROVEN`'s outcome class: `NO_MEASUREMENT` (as designed, per
+   DA-D9's literal words) or `FAIL`?** DA-D9 says the mechanism's every
+   non-conforming case is "`NO_MEASUREMENT`-class with an existing or reserved
+   code", and A-433 follows it. But the case that matters most — *the declared
+   test PASSED at the broken commit* — is not a measurement failure: assay
+   materialised both commits, ran both tests, and learned that the test does
+   NOT discriminate the fix. By every analogy in this codebase that is a
+   judged `FAIL` (it is precisely `CANARY_SURVIVED` one tier up), and calling
+   it `NO_MEASUREMENT` tells a gate "nothing was measured" about a lane that
+   measured exactly what it set out to. **Why it must be ruled inside this
+   cut, not in phase 3:** the code's SET membership (`REASON_CODES[...]` and
+   `$defs/reason_codes/...`) is a schema fact. Changing it after 5.0.0 ships
+   is a v11. Changing it before the merge is free. Recommended split, if the
+   controller wants one: `FAIL`/`RED_FIRST_UNPROVEN` for "the test passed at
+   the broken commit" and "the test failed at HEAD", `NO_MEASUREMENT` with the
+   EXISTING codes for the mechanism's own failures (`GIT_FAILED`,
+   `TARGET_NOT_MEASURED`, `MISSING_EXTERNAL_TOOL`, `DIRTY_TREE`) — which is
+   what DA-D9's "existing" half already anticipates. **A-433 is written to
+   DA-D9 as ruled; a ruling either way is a one-line change to the row's
+   successor and two lines in the cut.**
+2. **`all` does not short-circuit on FAIL (A-432).** Ruled by me on cost
+   (bounded at 22.1 s) and diagnostic value (a multi-target `all` lane exists
+   to enumerate every surviving probe). It is stated and testable, not silent,
+   but the controller may prefer symmetry with `any`. Flagging it because
+   R-2's prompt names "the 2N bound" and this is the choice that makes the
+   worst case exactly 2N rather than "2N or less".
+3. **Sharing one control materialisation across targets was REJECTED**
+   (A-432), costing ~1.26 s per extra target — up to 8.8 s on a full 8-target
+   lane. Rejected because per-attempt independence is what the payload, the
+   short-circuit bookkeeping and B064's per-target resume keying all rest on.
+   Recorded here so the controller sees the price that was paid for it.
+
+## What a reviewer should push on (generation 7's additions)
+
+- That the B007 measurement really drove the shipped code path and not a
+  re-implementation of it: read `scratchpad/measure_b007.py` against
+  `canary.py:479-560`.
+- That 8 is derived and not chosen: the arithmetic is in A-432 and above, and
+  the `5m` anchor is a real line in a shipped doc.
+- A-432's bookkeeping rules: whether `verify.py` can really re-derive the
+  short-circuit pattern from the document alone, in both aggregations, with a
+  terminal attempt in the middle.
+- A-433's `broken_commit_source`: whether recording it is enough, or whether a
+  lane that inherits its base should be refused outright.
+
+## What I did NOT do, and why (generation 7)
+
+- **The v10 cut.** See the checkpoint note in the LOG — the five wire changes
+  now all exist as A-rows, which is the precondition; the cut itself is
+  generation 8's first act, and cutting it half-way at a context boundary is
+  the one thing the checkpoint clause forbids by name.
+- **Any implementation of B050/B051/B052/B053-`detail`/B004/B007.** All ride
+  the cut.
+- **Any lane-file or consumer change.** `LANE_SCHEMA_VERSION` stays 2 and
+  `inventory_schema` stays 1 in every row written here.

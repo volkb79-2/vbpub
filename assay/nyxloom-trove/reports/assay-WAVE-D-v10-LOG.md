@@ -1048,3 +1048,88 @@ seconds of launch. Load stayed 5.1–7.4.
   nothing under `verdict.py`, `verify.py`, `src/assay/schemas/` or the
   drift-guard carve-assets has been modified. The branch remains releasable
   on v9.
+
+## Generation 7
+
+### 24. `docs(assay): the last three phase-2 design rows — B004, B007 (measured), F015/R4 (A-430..A-433)`
+
+- **First act, per DA-R17: B007's target bound MEASURED**, in a gate-free
+  window (`docker ps --format '{{.Image}}'` showed no `tester-unified:local`;
+  load average `3.87 5.30 7.22`). Script:
+  `scratchpad/measure_b007.py`, run `nice -n 19 ionice -c 3`. It drives the
+  SHIPPED substrate — `isolation.prepare_snapshot` +
+  `SnapshotRepository.materialize` / `materialize_replacement`, the two calls
+  `canary.run_isolated_canary` makes at `canary.py:480` and `canary.py:552` —
+  against this worktree's own repository at `ed287d73`, project prefix
+  `assay`, replacement target `assay/src/assay/canary.py` (33,940 bytes),
+  three iterations. Two setup facts worth recording: the spec needed
+  `snapshot_selection = "repository-minus-unsafe-symlinks"` with the three
+  absolute-target symlinks vbpub's `topos/tests/fixtures/inspect_files` tree
+  carries declared as `unsafe_symlink_omissions` (`repository` mode FORBIDS
+  omissions and `_build_manifest` refuses the absolute symlink), and the
+  measurement is of a REAL 96 MB / 3,757-file monorepo commit, not a fixture.
+  **Numbers (all three iterations):** `prepare_snapshot` **4.071 s**, once per
+  lane; `materialize` **0.894 / 1.000 / 1.063 s** to enter and **1.26 / 1.182
+  / 1.26 s** enter-to-exit; `materialize_replacement` **1.314 / 1.358 /
+  1.271 s** to enter and **1.502 / 1.511 / 1.486 s** enter-to-exit; snapshot
+  **96,023,420 bytes / 3,757 files**, replaced snapshot **96,037,902 bytes**.
+  **One canary TARGET therefore costs ~2.76 s of materialisation** (control
+  enter-to-exit + transform enter-to-exit) plus two full runs of the lane's
+  command, and **peak disk is ONE snapshot (~96 MB), not two** — read at
+  `canary.py:479-544` and `:551-560`: the control and transform contexts are
+  SEQUENTIAL, not nested.
+- **A-430 (B004, DA-D7 as narrowed by DA-R12)** — `PROVENANCE_UNVERIFIED` in
+  the `NO_MEASUREMENT` set (four places: `errors.py`'s enum and
+  `REASON_CODES[NO_MEASUREMENT]` at `:203-215`; the schema's flat
+  `$defs/reason_code` at `:593` and `$defs/reason_codes/NO_MEASUREMENT` at
+  `:650`; plus `verify.py`'s independent pairing statement, A-182); the §5.4
+  narrowing in BOTH layers (`Evidence.__post_init__` at `verdict.py:2773-2781`
+  and the schema `else` at `verdict.schema.json:2463`, which today forbids the
+  attestation payload and leaves `verified_by_assay` unconstrained for
+  `adjudicated`); ONE parser accepting `schema_version ∈ {1, 2}` with named
+  refusals for `3`, `"2"` and absence; **the green path's only witness stays
+  `ciu-provenance-green-reference.json`**, said in the row.
+- **A-431** — the three ledger corrections the carve's W0 owes: A-O12's
+  `declared_unverified` claim is false (re-measured: the string is in neither
+  `src/`, `docs/` nor the schema); §B004's "no schema change" is true only of
+  A-255's `env_effective` route; A-O12's disposition is unchanged in substance.
+  Recorded as a LATER row, never an edit — `decisions.md` is append-only.
+- **A-432 (B007, DA-D8 + DA-R17)** — the measurement above, then
+  `MAX_CANARY_TARGETS = 8` derived from it (8 × 2.76 s = **22.1 s**, 7.4 % of
+  the smallest budget any worked example declares, `5m` at
+  `docs/DESIGN-GUIDE.md:2127`); `targets`/`aggregation` on the lane with
+  exactly-one-of against the surviving singular `target`
+  (`LANE_SCHEMA_VERSION` stays **2**, existing R3 lanes load byte-unchanged);
+  `judgment.r3` becoming `{mechanism, targets, aggregation?}` on the wire with
+  the singular spelling normalising to a one-element array; `$defs/canary`
+  becoming `{mechanism, attempts[]}` with a required `disposition` and a
+  CLOSED three-member `not_attempted_reason` vocabulary; `any` short-circuits
+  on the first PASS and `all` does not short-circuit on FAIL, both with their
+  reasons; refusals/`INCONCLUSIVE`/budget exhaustion terminal, never
+  aggregated; `verify.py` recomputing the aggregation AND the bookkeeping
+  hand-transcribed; the `verdict.py` cross-check generalised to a pairwise
+  in-order equality; B005's `config.py:1240-1257` rule generalised over the
+  list. **The B064 sentence the controller required is in the row.**
+- **A-433 (F015, DA-D9 + DA-R16)** — `R4` as the next rung: `RIGOR_LEVELS`
+  gains it, declaration stays non-contiguous (`config.py:1089` requires an
+  R0-led ordered SUBSEQUENCE, not a ladder), `judgment.r4` =
+  `{tests, broken_commit, broken_commit_source}`, the claim carries BOTH
+  outcomes, `verify.py` re-derives `PASS` iff `before != PASS and after ==
+  PASS`, a W6 template pins the shape before any producer exists, and the
+  not-proven case takes **`RED_FIRST_UNPROVEN`**, reserved in the v10
+  `NO_MEASUREMENT` set in this cut and rendered in phase 3 (the
+  `MISSING_EXTERNAL_TOOL` reservation pattern, A-013/A-086/A-144). **A
+  decision ask is filed against that code's SET membership** — see the REPORT.
+- Ids re-checked against `main` immediately before allocating, as the rules
+  require: `git show main:…/decisions.md | grep -o '^| A-[0-9]*' | tail -1` →
+  `A-407`; `git show main:…/4-backlog.md | grep -o '^## B[0-9]*' | tail -1` →
+  `B061`; `git rev-parse --short main` → **`6917423d`** (main moved again from
+  BRIEF-6's `af98e1f0`; assay's two ledgers are still untouched on it).
+  Allocated **A-430..A-433**. Next free: **A-434**, **B065** (no new backlog
+  entry was needed this step).
+- **No wire change has been made yet.** This commit is `decisions.md` +
+  records only; nothing under `verdict.py`, `verify.py`, `src/assay/schemas/`
+  or the drift-guard carve-assets is touched, and no commit carries `!`. The
+  branch is still releasable on v9. **All five phase-2 wire changes now exist
+  as A-rows (A-427, A-428, A-430, A-432, A-433), which is the precondition the
+  wave prompt puts on writing the cut.**
