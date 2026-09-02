@@ -123,6 +123,17 @@ def test_falsy_swap_ignores_other_return_values():
     assert mg.generate_mutants(source, {2}) == []
 
 
+def test_falsy_swap_ignores_a_non_literal_return_value():
+    """A return of a non-literal expression (a Compare, here) is not an
+    eligible falsy swap either -- `_falsy_swap_target`'s final fallback
+    (neither Constant/None/empty-literal nor List/Tuple/Set/Dict) applies to
+    anything else a `return` can carry, not just plain names/calls. Only the
+    compare-swap mutant fires for this line."""
+    source = "def f(x):\n    return x > 0\n"
+    mutants = mg.generate_mutants(source, {2})
+    assert [m.operator for m in mutants] == ["compare-swap"]
+
+
 @pytest.mark.parametrize("value", ["True", "False"])
 def test_boolean_returns_only_use_bool_const_flip(value):
     """Boolean returns are not duplicated by falsy-swap."""
