@@ -5954,3 +5954,70 @@ its own stall, and a hung unit is already caught by its unit bound.
 - [ ] CONSUMERS' worked mutation lane shows the recommended shape:
       `budget = "unbounded"` + `budget_per_candidate` + run-gate
       `stall_timeout`.
+
+## B068 — `assay run` (R0/R1 mock/coverage target) hard-fails `GIT_FAILED` in a Mode-B linked worktree, unconditionally of `clean_tree`
+
+**Filed 2026-09-02 (dstdns controller session, P152 real-fault-harness-restart-matrix,
+found while confirming a Mode-B git-access fix — dstdns D-322/D-325/D-326).**
+
+### What's wrong
+
+`assay-4.0.0.pyz run mock --file assay.toml --verdict-json .assay/verdict-mock.json
+--resume --progress .assay/progress-mock.jsonl`, invoked inside a dstdns
+Mode-B worktree's own dedicated `test-runner` container (that worktree's
+subtree mounted at `/workspaces/dstdns`, main checkout's `.git` never
+mounted — dstdns RG-34), fails outright before any judgment work starts:
+
+```
+assay: ERROR/GIT_FAILED: git rev-parse --absolute-git-dir failed resolving
+/workspaces/dstdns/.worktrees/p152-real-fault-harness-restart-matrix (128):
+fatal: not a git repository: /workspaces/dstdns/.git/worktrees/p152-real-fault-harness-restart-matrix
+```
+
+Root cause matches the class already documented nearby in this file
+(`git.py`'s `_resolve_repo()`, `git rev-parse --absolute-git-dir` anchoring
+for a LINKED worktree resolving to the private per-worktree dir under the
+MAIN repo's `.git/worktrees/<name>/`): in a Mode-B container, that main-repo
+path is never mounted at all — not "resolves to the wrong exclude file" (the
+neighboring dirty-tree entry above) but "does not exist as a git repository,
+full stop." **The lane's own `clean_tree = false` does not help** — the
+`git rev-parse` call runs unconditionally before any dirty-tree logic would
+even be reached, so there is no existing config lever to route around it.
+
+### A useful discriminator
+
+The SAME `assay-4.0.0.pyz` binary, in the SAME Mode-B mounting setup (a
+sibling worktree's own dedicated container), running the R2 `sql-mutation`
+lane, does NOT hit this — it has been running for 9+ hours making steady
+progress. Whatever code path R0/R1's `mock` target takes through
+`_resolve_repo()` differs from R2's, in a way worth tracing directly rather
+than assuming (not yet source-confirmed against `assay/git.py`).
+
+### Impact
+
+Blocks R0/R1 evidence entirely for any package validated via a Mode-B
+`ciu worktree` instance (dstdns's now-standard per-package isolation
+pattern) — not a P152-specific defect. dstdns's own mitigation: the
+`merge-p` pipeline already re-runs every gate from `main` (Mode-A, full git
+access) post-merge regardless of branch-time numbers, so this does not block
+merging — but it means Mode-B branch-time gates currently give ZERO R0/R1
+signal, only R2, until this is fixed.
+
+### Proposed fix
+
+Source-confirm exactly which of `_resolve_repo()`'s callers R0/R1 reaches
+that R2 doesn't, then either (a) make `_resolve_repo()` tolerate a
+`GIT_FAILED` linked-worktree resolution the same way some other path
+apparently already does, or (b) if git resolution is genuinely required for
+R0/R1's own semantics, surface a clear `ERROR/GIT_FAILED` with a suggestion
+(e.g. "run outside a linked worktree, or from the worktree's main checkout")
+rather than a bare `fatal:` git stderr passthrough.
+
+### Acceptance
+
+- [ ] `assay run <R0-or-R1-lane>` inside a genuine linked-worktree Mode-B
+      container (main repo's `.git` not mounted) either succeeds or fails
+      with a clear, actionable `ERROR/GIT_FAILED` message naming the
+      resolution gap, not a raw git stderr passthrough;
+- [ ] a regression test pins the R0/R1-vs-R2 discriminator above so it
+      cannot silently regress back to today's split behavior unexplained.

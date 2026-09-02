@@ -68,7 +68,13 @@ B065 + RG-36 being real, and on decision D1.
 
 **G2 — hygiene carried from Wave D and the peer's filings.**
 assay B062 (`tests/` pyflakes sweep, 31 findings in 19 modules), B063 (three
-test modules `git -C PROJECT_ROOT.parent`, so the suite cannot run from a copy).
+test modules `git -C PROJECT_ROOT.parent`, so the suite cannot run from a copy),
+B068 (dstdns-filed: an R0/R1 lane hard-fails `ERROR/GIT_FAILED` inside a
+linked-worktree container whose main `.git` is not mounted, while R2 in the
+same setup runs for hours — the harness-mount class run-gate RG-21/R-30a
+already names; the R0/R1-vs-R2 discriminator is to be traced in `git.py`,
+not assumed, and the refusal must name the gap rather than pass git's
+`fatal:` through).
 run-gate RG-32 (`pins.assay.budget` silently inert), RG-34 (a consumer's
 `schema` lane argv not `{worktree}`-templated — dstdns config; run-gate's
 share is a validation/doc rule), RG-18 (dstdns-side). RG-37 (filed by the
