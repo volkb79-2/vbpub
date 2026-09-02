@@ -17,12 +17,31 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   ingested mutation report, and a mutation lane's per-mutant equivalence and
   kill-signal reads, where the same absent-read fold classified a
   perfectly-executed mutant `crashed`. (B049, A-408)
+- Every refusal now says WHY. An `AssayError`'s message — which artifact was
+  unreadable, which infrastructure fact was unresolvable, which whole-target
+  declaration failed to resolve — used to be discarded the moment the error
+  became a refusal claim or verdict, leaving an operator with a bare
+  `(outcome, reason_code)` pair. One emitter,
+  `assay.runner.announce_refusal`, now prints exactly
+  `assay: {outcome}/{reason_code}: {message}`, once, at every site where an
+  `AssayError` becomes a refusal. From the CLI it lands on **stderr** (stdout
+  is untouched: the run summary and `--verdict-json -` are unchanged); a
+  library caller passes its own `diagnostics=` stream to
+  `runner.run_lane` and assay writes nothing to the process's stderr. No wire
+  change — the document is exactly as closed as it was. (B053, A-409)
 
 ### Documentation
 - README and `docs/CONSUMERS.md` downgrade Vitest's `coverage.clean = false`
   from REQUIRED to RECOMMENDED and state what a consumer who forgets it now
   sees; `docs/DESIGN-GUIDE.md` gains "A replaced output directory is named,
   not folded into EMPTY_COVERAGE" with the rejected alternatives. (B049, A-408)
+- `docs/CONSUMERS.md` gains "When a lane refuses, read the one stderr line —
+  the document does not carry the sentence" (what the line looks like, where
+  it goes from the CLI and from a library caller, that it appears exactly
+  once, that it is diagnostic text and not to be parsed, and which refusals
+  carry no line); `docs/DESIGN-GUIDE.md` gains "Every refusal says WHY,
+  exactly once, through one emitter" with the rejected CLI-boundary
+  alternative. (B053, A-409)
 
 <!-- Post-release housekeeping, 2026-08-18: this block is CLEARED immediately
      after a release. cmru generates the dated entry below from the commit

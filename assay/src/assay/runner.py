@@ -145,6 +145,7 @@ __all__ = [
     "MonotonicClock",
     "ProcessRunner",
     "ScratchRootFactory",
+    "announce_refusal",
     "assemble_verdict",
     "build_r0_claim",
     "default_process_runner",
@@ -301,6 +302,51 @@ def _probe_refusal_terminal(
     if probe_result.reason_code is ReasonCode.LANE_TIMEOUT:
         return probe_result.outcome, ReasonCode.LANE_TIMEOUT
     return Outcome.ERROR, ReasonCode.BAD_LANE_CONFIG
+
+
+def announce_refusal(exc: AssayError, *, diagnostics: "TextIO | None") -> None:
+    """(B053/DA-D2 (a)+(b), DA-R1) The ONE emitter for the one line every
+    refusal owes a human: ``assay: {outcome}/{reason_code}: {message}``.
+
+    B053's finding was that an :class:`~assay.errors.AssayError`'s *message*
+    -- the sentence that says WHICH file, WHICH target, WHICH declaration --
+    is discarded the moment the error becomes a refusal
+    :class:`~assay.verdict.Claim` or :class:`~assay.verdict.Verdict`: the
+    document carries the closed ``(status, reason_code)`` pair and nothing
+    else (A-138/A-170 keep it that way), so a consumer reads
+    ``ERROR``/``BAD_LANE_CONFIG`` and has to guess.
+
+    **Why one emitter called at every conversion site, and not one ``try``
+    at the CLI boundary.** :mod:`assay.cli` never sees most refusals. This
+    module converts an ``AssayError`` into a refusal claim or a refusal
+    verdict at ~15 places and RETURNS a document; nothing propagates. A
+    handler wrapped around the ``run`` command would therefore print for the
+    handful of errors that escape and stay silent for exactly the ones B053
+    filed. The rejected alternative is recorded as A-409.
+
+    **Exactly once.** The call belongs at the point where the error becomes
+    a claim or a verdict, and where one error feeds two claims (an R2
+    orchestration fault also refuses R3, :func:`_run_prepared_lane`) it is
+    announced at the first of them only.
+
+    *diagnostics* is the stream the caller already threads for
+    :func:`_report_probe_refusal` (A-322) and B033's whole-target note --
+    :mod:`assay.cli` passes its own ``stderr``, so the CLI gets the line for
+    free (half (a)) and a library caller gets it on its own stream without
+    stderr (half (b)). ``None`` means the caller asked for no diagnosis and
+    is not an error.
+
+    The text is byte-identical to what :mod:`assay.cli` has always printed
+    for the errors that DID reach it, which is why both of that module's
+    prints are refactored onto this function: two spellings of one line is
+    how the two drift apart.
+    """
+    if diagnostics is None:
+        return
+    print(
+        f"assay: {exc.outcome.value}/{exc.reason_code.value}: {exc}",
+        file=diagnostics,
+    )
 
 
 def _report_probe_refusal(
@@ -1075,6 +1121,7 @@ def evaluate_r1(
     profile: CoverageProfile | None = None,
     remaining: git.Remaining | None = None,
     on_helper_invoked: Callable[[HelperInvocation], None] | None = None,
+    diagnostics: "TextIO | None" = None,
 ) -> Claim:
     """The R1 step (A-090, A-094): P02's two measurability guards, then
     P03's ``EMPTY_COVERAGE`` guard, short-circuiting on the first that trips
@@ -1275,6 +1322,14 @@ def evaluate_r1(
                 read_source_text=read_source_text,
             )
     except AssayError as exc:
+        # (B053/A-409) The message this claim is about to drop -- which file,
+        # which key collision, which adapter could not bind -- goes to the
+        # caller's diagnostics stream before it is lost. `diagnostics`
+        # defaults to `None`, so :mod:`assay.canary`'s two internal
+        # `evaluate_r1` calls stay silent: a variant's R1 refusal is a step
+        # inside the canary mechanism, not the lane's own refusal, and
+        # announcing it would attribute the variant's cause to the lane.
+        announce_refusal(exc, diagnostics=diagnostics)
         return Claim(
             rigor="R1",
             source="computed",
@@ -2738,6 +2793,7 @@ def _run_prepared_lane(
             # mutant. Set HERE, before diff/target resolution below, so that
             # work is skipped entirely rather than merely discarded (the
             # `r2_early_claim is None` guard on that block).
+            announce_refusal(unit.equivalence_error, diagnostics=diagnostics)
             r2_early_claim = Claim(
                 rigor="R2",
                 source="computed",
@@ -2748,6 +2804,12 @@ def _run_prepared_lane(
 
         if r1_declared:
             if unit.profile_error is not None:
+                # (B053/A-409) Announced HERE and not where the error was
+                # caught (`_read_prepared_artifacts`): on a lane that does
+                # not declare R1 the coverage read's failure never becomes a
+                # claim at all, and announcing a refusal the verdict does not
+                # carry would be a line with no document behind it.
+                announce_refusal(unit.profile_error, diagnostics=diagnostics)
                 claims += (
                     Claim(
                         rigor="R1",
@@ -2772,6 +2834,7 @@ def _run_prepared_lane(
                     base=resolved_base,
                     adapter=adapter,
                     profile=unit.profile,
+                    diagnostics=diagnostics,
                     on_base_resolved=resolved_base_holder.append,
                     on_added_resolved=added_holder.append,
                     remaining=deadline.remaining,
@@ -2922,6 +2985,7 @@ def _run_prepared_lane(
                     )
                     added = diff.parse_added_lines(diff_text)
                 except AssayError as exc:
+                    announce_refusal(exc, diagnostics=diagnostics)
                     r2_early_claim = Claim(
                         rigor="R2",
                         source="computed",
@@ -2970,10 +3034,18 @@ def _run_prepared_lane(
                     # this, a whole-target R2 refusal is a bare
                     # `BAD_LANE_CONFIG` and the consumer has to guess which
                     # of N declared targets it names.
+                    #
+                    # (B053/A-409) That line is now the ONE emitter's line,
+                    # so B033's diagnosis and every other refusal's are the
+                    # same sentence in the same format. The lane and the
+                    # step stay -- as a SECOND, indented context line, never
+                    # a second copy of the message, which is how two
+                    # spellings of one refusal drift apart.
+                    announce_refusal(exc, diagnostics=diagnostics)
                     if diagnostics is not None:
                         print(
-                            f"assay: lane {lane.name}: R2 whole-target "
-                            f"resolution refused: {exc}",
+                            f"  in lane {lane.name!r}, resolving R2 "
+                            f"whole-target mutation targets",
                             file=diagnostics,
                         )
                     r2_early_claim = Claim(
@@ -2999,6 +3071,7 @@ def _run_prepared_lane(
                         source_root_paths=relocated_lane_r2.judge.source_root_paths,
                     )
                 except AssayError as exc:
+                    announce_refusal(exc, diagnostics=diagnostics)
                     r2_early_claim = Claim(
                         rigor="R2",
                         source="computed",
@@ -3065,6 +3138,11 @@ def _run_prepared_lane(
             # (B046) The read already happened inside the snapshot's own
             # `with` block above; this is only the JUDGMENT.
             if ingested_r2_error is not None:
+                # (B053/A-409) Both producers of this error land here -- the
+                # unread/absent report (`unit.mutation_report_error`) and
+                # `ingest_mutation_report`'s own refusal -- so one call
+                # announces both, exactly once.
+                announce_refusal(ingested_r2_error, diagnostics=diagnostics)
                 claims += (
                     Claim(
                         rigor="R2",
@@ -3126,6 +3204,10 @@ def _run_prepared_lane(
                     shard_count=shard_count,
                 )
             except AssayError as exc:
+                # (B053/A-409) Announced once, here. The SAME error also
+                # refuses R3 below (`r2_orchestration_fault`), and a second
+                # announcement there would report one fault twice.
+                announce_refusal(exc, diagnostics=diagnostics)
                 r2_orchestration_fault = exc
                 claims += (
                     Claim(
@@ -3216,6 +3298,7 @@ def _run_prepared_lane(
                     clock=clock,
                 )
             except AssayError as exc:
+                announce_refusal(exc, diagnostics=diagnostics)
                 claims += (
                     Claim(
                         rigor="R3",
@@ -3599,6 +3682,7 @@ def _run_higher_rigor_lane(
         # call hits this identical failure and falls back to a degraded
         # plan (`env_effective_incomplete=True`, see its own docstring)
         # instead of raising again from inside the refusal path itself.
+        announce_refusal(exc, diagnostics=diagnostics)
         return refuse_lane(
             lane,
             commit=commit,
@@ -3704,6 +3788,11 @@ def _run_higher_rigor_lane(
                     )
                 )
     except AssayError as exc:
+        # (B053/A-409) Announced on BOTH branches: the error refuses the
+        # whole lane on one and replaces the highest higher-rigor claim with
+        # GIT_FAILED on the other, and both are refusals whose message the
+        # document does not carry.
+        announce_refusal(exc, diagnostics=diagnostics)
         if outcome_holder:
             outcome = _replace_highest_higher_rigor_claim_with_git_failed(
                 lane, outcome_holder[0]
@@ -3915,6 +4004,7 @@ def run_lane(
             # is -- `project_prefix` stays `None`, matching the
             # MISSING_EXTERNAL_TOOL refusal just above, which resolves no
             # repository identity at this point either.
+            announce_refusal(exc, diagnostics=diagnostics)
             return refuse_lane(
                 lane,
                 commit=commit,
@@ -4161,6 +4251,7 @@ def run_lane(
         # `docs/CONSUMERS.md`'s own B013 example lane declares `rigor =
         # ["R0"]`, so this is not a rare corner of the dispatch -- it is the
         # documented shape for the feature.
+        announce_refusal(exc, diagnostics=diagnostics)
         return refuse_lane(
             lane,
             commit=commit,

@@ -98,3 +98,63 @@ gate-verified commit of generation 1.**
   gate-verified commit stays `299d18a0`; nothing executable changed after it,
   so re-gating for a changelog entry would only reproduce the same result at
   ~12 minutes' cost. Generation 2 gates its own first product commit.
+
+## Generation 2
+
+**Id allocation, re-checked against `main` before allocating** (BRIEF-1 §7's
+own instruction, because another branch may have landed in between):
+
+```
+$ git -C /workspaces/vbpub show main:assay/nyxloom-trove/decisions.md | grep -o '^| A-[0-9]*' | tail -1
+| A-407
+$ git -C /workspaces/vbpub show main:assay/nyxloom-trove/4-backlog.md  | grep -o '^## B[0-9]*'  | tail -1
+## B061
+$ git -C /workspaces/vbpub log --oneline -1 main
+a4a865da docs(assay): Wave D dispatched -- ...
+```
+
+Unchanged from BRIEF-1: `main` is still `a4a865da`, the last decision on main
+is **A-407** and the last backlog entry **B061**. Generation 1 took A-408, so
+this generation allocates from **A-409** and, if it files anything, from
+**B062**. No collision with a concurrent branch.
+
+**Item order, and why it is not the wave prompt's.** The wave prompt lists
+B054 (item 2) before B053 (item 3); BRIEF-1 §3 explicitly leaves the order to
+generation 2 because both items write to the same `diagnostics` stream and
+the plumbing should land once. **B053 was done first.** Its emitter is the
+smaller, self-contained piece and it establishes the one format; B054's
+per-file skip notice is then a second writer on a stream whose contract is
+already fixed and tested, rather than two half-specified writers landing
+together. Nothing in B054 turned out to depend on B053's emitter (the skip
+notice is not a refusal), so the order was a convenience, not a constraint.
+
+### 4. `fix(assay): every refusal says WHY, once, through one emitter (B053 a+b, A-409)`
+
+- Item: **B053** halves (a) and (b), ruling **DA-D2 (a)+(b)** as read by the
+  controller in **DA-R1**. Half (c) (the wire `detail` field) is phase 2 and
+  is untouched.
+- Changed: `src/assay/runner.py` (the emitter `announce_refusal` at `:307`,
+  `__all__`, `evaluate_r1`'s new `diagnostics` parameter, 13 call sites),
+  `src/assay/cli.py` (three existing prints refactored onto the emitter),
+  `tests/test_refusal_announcement.py` (new, 9 tests),
+  `tests/test_cli_run.py` (one test whose docstring asserted the OLD silence
+  — inverted, with the reason), `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`,
+  `CHANGES.md`, `nyxloom-trove/decisions.md` (A-409),
+  `nyxloom-trove/4-backlog.md` (B053 resolution block for (a)+(b); the entry
+  stays OPEN for (c)).
+- **Red-first**, against the pre-fix tree in a detached scratch worktree
+  (`git worktree add --detach <scratchpad>/prefix-b053 36ac802c`, the new test
+  file copied in — no `git stash` anywhere): **6 failed, 3 passed**. The 3
+  that pass on both sides are deliberate controls: the
+  `REASON_CODES`-completeness check (a property of `errors.py`, not of the
+  fix), the CLI-boundary refusal (which already printed — that is exactly why
+  a boundary-only handler is not the fix), and the no-`diagnostics` default.
+  With the fix: **9 passed**.
+- **Whole suite**, worktree-local, `pytest tests/ -q -p no:randomly`:
+  **3960 passed, 20 skipped in 526.62s**. One pre-existing test failed on the
+  first pass and was corrected rather than worked around —
+  `test_run_refuses_a_missing_required_infrastructure_env_var_without_crashing`
+  asserted, in its own docstring, that this refusal "did NOT gain a stderr
+  message of its own". That silence is the defect B053 filed; the test now
+  asserts the line and that it names `mynet` and the missing variable.
+- No `verdict.py` / `verify.py` / schema / drift-guard file touched; no `!`.

@@ -572,6 +572,49 @@ says nothing about tools other than Vitest that share the convention). The
 it keeps the lane on the fast path — but forgetting it is now diagnosable
 rather than silently mis-diagnosed.
 
+### Every refusal says WHY, exactly once, through one emitter (B053/A-409)
+
+The closed `(outcome, reason_code)` vocabulary is a wire contract and stays
+one (A-138/A-170): a consumer switches on it without parsing prose, and no
+free-text field is added to the document for this. But every layer that
+refuses already *composes* a sentence — which artifact, which declaration,
+which target — and that sentence was thrown away at the moment the
+`AssayError` became a refusal `Claim` or `Verdict`. The operator was left
+with `ERROR`/`BAD_LANE_CONFIG` and a guess.
+
+`runner.announce_refusal(exc, *, diagnostics)` is the one emitter. It writes
+exactly `assay: {outcome}/{reason_code}: {message}` and nothing else, to the
+caller's own `diagnostics` stream — the same stream `environment_command`'s
+probe refusal (A-322) and B033's whole-target note already use. `assay.cli`
+passes its own stderr, so the CLI gets the line for free; a library caller
+passes its own stream and assay never touches the process's stderr.
+
+**Why one emitter called at ~15 conversion sites, and not one `try` at the
+CLI boundary.** The obvious shape — wrap the `run` command in a handler and
+print whatever escapes — cannot see the defect. `assay.runner` converts an
+`AssayError` into a refusal claim or verdict at ~15 places and RETURNS a
+document; almost nothing propagates to the CLI. A boundary handler would
+therefore print for the handful of structural errors that DO escape (which
+already printed, from `cli.py`'s own two prints) and stay silent for exactly
+the refusals B053 filed. Both of those CLI prints are now calls to the same
+emitter, because two spellings of one line is how the two drift apart.
+
+**Exactly once.** The call belongs where the error becomes a claim or a
+verdict, not where it is caught and stored: a coverage-read failure on a lane
+that declares no R1 never becomes a claim at all, and announcing it would be
+a line with no document behind it. Where one error refuses two levels — an R2
+orchestration fault also refuses R3 — it is announced at the first only.
+
+**What still prints nothing, and why.** A refusal that no `AssayError`
+carries — `DIRTY_TREE`, `HEAD_CHANGED`, `MISSING_EXTERNAL_TOOL`, the
+`env_required`/`--shard` refusals — has no message to copy. Minting one here
+would be inventing text at the point of refusal rather than at the point of
+knowledge, which §5's defaults doctrine rules out; those codes already say
+the whole of what happened.
+
+The per-claim `detail` field (DA-D2 (c)) is a separate, later decision: it
+puts this text ON the wire, which is a schema change and belongs to a cut.
+
 ### Mutation resume and sharding (B012)
 
 Mutation state lives outside each ephemeral replacement snapshot. One bounded

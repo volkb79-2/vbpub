@@ -662,20 +662,34 @@ def test_run_refuses_a_missing_required_infrastructure_env_var_without_crashing(
     `refuse_lane` like every other post-HEAD-resolution refusal in this
     module, which writes a real, schema-valid artifact -- `env_effective`
     honestly `{}` and `env_effective_incomplete: true`, since the thing
-    that's broken is the infrastructure declaration itself. This case joins
-    the same silent-on-stderr bucket the `--shard`/`--operators` refusals
-    already occupy (a normal, non-exception `Verdict` return prints no `err`
-    message; see B026 N-4) -- it did NOT gain a stderr message of its own."""
+    that's broken is the infrastructure declaration itself.
+
+    **B053/A-409 (Wave D), which CHANGED this test's stderr expectation.**
+    This case used to be in the "silent on stderr" bucket alongside the
+    `--shard`/`--operators` refusals: a normal, non-exception `Verdict`
+    return printed no `err` message at all, so the operator got exit 2 and
+    `BAD_LANE_CONFIG` with no sentence saying WHICH declaration was
+    unresolvable. That silence WAS the defect B053 filed, and it is gone: the
+    one emitter (`runner.announce_refusal`) is now called at every site where
+    an `AssayError` becomes a refusal verdict, including
+    `_run_higher_rigor_lane`'s plan-resolution catch that this test reaches.
+    The assertion below is therefore the NEW truth, asserted positively --
+    the fact name is on the line -- rather than the old absence."""
     lane = _r2_lane_single_site(git_repo) + (
         "\n[lanes.package.infrastructure]\n"
         'mynet = "required-env:MISSING_NETWORK_VAR_FOR_TEST"\n'
     )
     path = _write_and_commit_lane(git_repo, lane)
     code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
-    # B018/A-327: still the silent-on-stderr bucket for the REFUSAL itself --
-    # the one line present is the judge-provenance notice this source-tree
-    # invocation prints on every run, not a message this path gained.
-    assert_stderr_is_only_the_judge_provenance_notice(err)
+    # B053/A-409: exactly one refusal line, in the one emitter's format, and
+    # it names the offending declaration -- which is the whole point.
+    refusals = [
+        line for line in err.splitlines()
+        if line.startswith("assay: ERROR/BAD_LANE_CONFIG: ")
+    ]
+    assert len(refusals) == 1, err
+    assert "mynet" in refusals[0], refusals
+    assert "MISSING_NETWORK_VAR_FOR_TEST" in refusals[0], refusals
     assert "Traceback" not in err
     document = json.loads(out)
     assert why_invalid(validator, document) == []

@@ -5169,6 +5169,53 @@ not pre-decided:
 > assay-v4.1.0: unchanged. Records: `reports/assay-WAVE-C-go-CONTROLLER-LOG.md`
 > (round-2 entry) and `reports/assay-WAVE-C-go-REVIEW-round2.md`.
 
+### Resolution — halves (a) and (b) SHIPPED, Wave D phase 1 (DA-D2 → A-409)
+
+Both non-wire halves are done; half (c) (a per-claim `detail` field) is phase
+2 of the same wave and this entry stays OPEN for it.
+
+- [x] **Every `AssayError` that becomes part of a verdict has somewhere to
+  carry its message.** One emitter, `assay.runner.announce_refusal`
+  (`src/assay/runner.py:307`), printing exactly
+  `assay: {outcome}/{reason_code}: {message}`.
+- [x] **The narrower fix's INTENT, achieved without its mechanism.** The
+  entry proposed widening `_cmd_run`'s exception handling. Measured, that
+  cannot work: `src/assay/runner.py` has 15 `except AssayError` handlers that
+  convert the error into a refusal `Claim`/`Verdict` and RETURN — nothing
+  propagates to `_cmd_run`. The emitter is therefore called at the conversion
+  sites themselves — 13 calls: `runner.py:1332` (`evaluate_r1`'s own catch),
+  `:2796` (the baseline equivalence artifact), `:2812` (the coverage read),
+  `:2988` (diff parse), `:3044` (whole-target resolution), `:3074`
+  (targets-from-diff), `:3145` (ingested R2), `:3210` (the R2 orchestration
+  fault, announced once for the R2 AND R3 claims it refuses), `:3301` (R3),
+  `:3685` (`_run_higher_rigor_lane`'s plan resolution), `:3795` (the snapshot
+  block), `:4007` and `:4254` (`run_lane`'s own two plan resolutions) — and
+  `cli.py`'s three prints of that same text are refactored onto it
+  (`cli.py:300`, `:716`, `:749`).
+- [x] **DA-R3's `diagnostics` route, taken.** The stream is exactly the one
+  `environment_command`'s probe refusal uses; `cli.py:781` passes
+  `diagnostics=err`, so half (a) and half (b) are one mechanism.
+- [x] **Behavioral oracle 1** — a refusal raised deep past
+  `_resolve_declared_adapters` prints its constructed message:
+  `tests/test_cli_run.py::test_run_refuses_a_missing_required_infrastructure_env_var_without_crashing`
+  now asserts the line names `mynet` and
+  `MISSING_NETWORK_VAR_FOR_TEST` (that test previously asserted the SILENCE,
+  and its docstring said so — the assertion inverted is the regression proof).
+- [x] **Behavioral oracle 2 (controlled wrong implementation)** — the new
+  `tests/test_refusal_announcement.py` run against the pre-fix tree
+  (`git worktree add --detach … 36ac802c`) is **6 failed / 3 passed**; the 3
+  that pass on both sides are the controls (the vocabulary-completeness
+  check, the CLI-boundary refusal that already printed, and the
+  no-`diagnostics` default).
+- [ ] **(c) the wire `detail` field** — phase 2 of Wave D (DA-D2 (c)), NOT
+  done here. Nothing under `verdict.py`/`verify.py`/`src/assay/schemas/` was
+  touched.
+
+**Known limit, recorded rather than papered over:** a refusal that no
+`AssayError` carries (`DIRTY_TREE`, `HEAD_CHANGED`, `MISSING_EXTERNAL_TOOL`,
+the `env_required` and `--shard` refusals) prints no line — there is no
+message to copy. See A-409 and the Wave D REPORT's decision asks.
+
 ## B054 — a NEVER-EXECUTED file matching `coverage.include` can make `@vitest/coverage-istanbul` emit a self-contradictory `branchMap`, and `UNREADABLE_ARTIFACT` refuses the WHOLE verdict rather than isolating the one file — defeating `changed_lines` mode's cost-scoping promise
 
 **Filed 2026-09-02, dstdns's first `javascript` lane adoption

@@ -1553,6 +1553,51 @@ outage with a one-line fix that is obvious only once you already know why the ga
 Every item below cost someone real time — here, in a consumer's repo, or in
 assay's own development. None is stylistic.
 
+### When a lane refuses, read the one stderr line — the document does not carry the sentence
+
+The verdict document records a closed `(outcome, reason_code)` pair and no
+free text. That is deliberate: the enumerations are a wire contract, and a
+consumer's gate must be able to switch on them without parsing prose. But the
+pair alone does not say WHICH file was unreadable, WHICH declaration was
+unresolvable, or WHICH target failed to resolve — and until 4.2.0 that
+sentence, which assay had all along, was discarded the moment the refusal
+became a claim.
+
+Every refusal now prints exactly one line, in exactly this shape:
+
+```
+assay: {OUTCOME}/{REASON_CODE}: {the sentence naming the cause}
+```
+
+for example:
+
+```
+assay: ERROR/FORMAT_MISMATCH: declared coverage format 'coverage-py-json', but the artifact's content does not match that format's own signature. The lane's argv may have changed coverage format without updating judge.coverage.format, or the wrong file was named as judge.coverage.artifact.
+```
+
+(One physical line — wrapped here only by your terminal.)
+
+Where it goes:
+
+- **From the CLI**, to **stderr**. Machine output is unaffected: stdout still
+  carries the three-line run summary, or the whole verdict document under
+  `--verdict-json -`. A gate that captures stderr into its log needs no
+  change to benefit.
+- **From a library caller**, to whatever stream you pass as `diagnostics=` to
+  `assay.runner.run_lane`. Nothing is written to the process's stderr behind
+  your back; omit the argument and assay stays silent, exactly as before.
+
+Two properties worth relying on: the line appears **once** per refusal (one
+emitter, called where the error becomes a claim or a verdict — never twice
+under two spellings), and the text after the second colon is the raising
+layer's own message, **byte for byte**. It is diagnostic text, not a wire
+field: do not parse it, and do not gate on it. Gate on the exit code and the
+document; read the line when you need to know why.
+
+Refusals that no `AssayError` carries — a dirty work tree, a moved `HEAD`, a
+missing external tool — print no such line, because there is no message to
+copy; their `reason_code` already says the whole of what happened.
+
 ### Your existing CI script probably cannot be the lane command
 
 A lane command runs inside an **ephemeral snapshot of a commit**, not your

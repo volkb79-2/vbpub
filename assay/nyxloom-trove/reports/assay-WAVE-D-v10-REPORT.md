@@ -189,3 +189,180 @@ v9 at every commit, exactly as the wave prompt requires. The designs for the
 next two items (B054's per-file disposition and B053's single-emitter
 question) are worked out in `assay-WAVE-D-v10-BRIEF-1.md` §3 and §4 with the
 seams named, so generation 2 does not re-derive them.
+
+---
+
+# Generation 2
+
+## B053 (a)+(b) — every refusal says WHY (DA-D2 (a)+(b) / DA-R1 → A-409)
+
+**Ruling applied:** ONE emitter, `runner.announce_refusal(exc, *,
+diagnostics)`, printing exactly `assay: {outcome}/{reason_code}: {message}`,
+called at every site where an `AssayError` becomes a refusal `Verdict` or
+`Claim`; `cli.py`'s existing prints refactored onto it; `cli.py` keeps
+`diagnostics=err`. Half (c) (the wire `detail`) deliberately NOT done.
+
+### Implementation, file:line
+
+| what | where |
+|---|---|
+| the one emitter | `src/assay/runner.py:307` `announce_refusal` |
+| exported | `src/assay/runner.py:148` (`__all__`, beside `assemble_verdict`) |
+| `evaluate_r1` gains `diagnostics`, default `None` | `src/assay/runner.py:1124` (signature), `:1332` (its own `except AssayError` → R1 claim) |
+| the stream, threaded (unchanged, pre-existing) | `cli.py:781` `diagnostics=err` → `run_lane` (`runner.py:3867`) → `_run_higher_rigor_lane` (`runner.py:3646`) → `_run_prepared_lane` (`runner.py:2684`) |
+
+The 13 conversion sites the emitter is called at, all of which build a
+refusal `Claim` or return a refusal `Verdict`:
+
+```
+runner.py:1332   evaluate_r1's own catch                  -> R1 Claim
+runner.py:2796   unit.equivalence_error                   -> R2 Claim (A-279)
+runner.py:2812   unit.profile_error                       -> R1 Claim
+runner.py:2988   diff parse for R2                        -> R2 Claim
+runner.py:3044   R2 whole-target resolution (B033)        -> R2 Claim
+runner.py:3074   R2 targets-from-diff                     -> R2 Claim
+runner.py:3145   ingested R2 (report absent OR unreadable)-> R2 Claim
+runner.py:3210   R2 orchestration fault                   -> R2 Claim (+the R3 Claim at :3237, announced once)
+runner.py:3301   R3 canary                                -> R3 Claim
+runner.py:3685   _run_higher_rigor_lane plan resolution   -> refuse_lane Verdict
+runner.py:3795   the snapshot block (git/isolation)       -> refuse_all Verdict, or GIT_FAILED claim replacement
+runner.py:4007   run_lane's env_effective plan resolution -> refuse_lane Verdict
+runner.py:4254   run_lane's direct-R0 plan resolution     -> refuse_lane Verdict
+cli.py:300       main()'s outer handler                   -> exit code only
+cli.py:716       attestation LANE_TIMEOUT                 -> refuse_lane Verdict
+cli.py:749       adapter resolution                       -> refuse_lane Verdict
+```
+
+**Placement rule, and the two places it bites.** The call goes where the
+error becomes a claim or a verdict, NOT where it is caught:
+
+- `runner.py:2812` announces `unit.profile_error` inside `if r1_declared:`
+  rather than at the catch in the artifact read (`runner.py:2812`'s error is
+  produced ~500 lines earlier). On a lane that declares no R1, that read's
+  failure never becomes a claim at all, and a line with no document behind it
+  would be noise a consumer cannot act on.
+- `runner.py:3210` announces the R2 orchestration fault ONCE, even though the
+  same error also builds the R3 refusal claim at `runner.py:3237-3247`. One
+  fault, one line.
+
+**B033's second spelling, removed.** `runner.py:3044` used to print
+`assay: lane {name}: R2 whole-target resolution refused: {exc}` — the same
+message in a different format. It is now `announce_refusal` plus an indented
+context line (`  in lane 'x', resolving R2 whole-target mutation targets`),
+so the refusal itself has exactly one spelling and the extra fact B033 wanted
+is still there. No test asserted the old text (`grep -rn 'R2 whole-target'
+tests/` → nothing).
+
+**`assay.canary` stays silent by construction.** `evaluate_r1`'s new
+parameter defaults to `None` and `canary.py:219`/`:360` do not pass it: a
+variant's R1 refusal is a step inside the canary mechanism, not the lane's
+own refusal, and announcing it would attribute the variant's cause to the
+lane.
+
+### Acceptance boxes, with evidence
+
+| B053 box | evidence |
+|---|---|
+| every `AssayError` that becomes part of a verdict has somewhere to carry its message | the 13+3 call sites above; `tests/test_refusal_announcement.py` |
+| the entry's proposed "narrower fix" (widen `_cmd_run`'s handler) | **cannot work, measured** — `grep -n 'except AssayError' src/assay/runner.py` → 15 handlers that convert and RETURN. Recorded as the rejected alternative in A-409 |
+| DA-R3's `diagnostics` route | taken; it is the same stream `_report_probe_refusal` (`runner.py:352`, its own print at `:408`) already writes to |
+| oracle 1: a deep refusal prints its message | `tests/test_cli_run.py::test_run_refuses_a_missing_required_infrastructure_env_var_without_crashing` (rewritten) |
+| oracle 2: controlled wrong implementation | the pre-fix worktree run below |
+
+### Transcripts
+
+Red-first, pre-fix tree (`36ac802c`) in a detached scratch worktree, the new
+test file copied in — no `git stash`:
+
+```
+$ git worktree add --detach <scratchpad>/prefix-b053 36ac802c
+$ cp tests/test_refusal_announcement.py <scratchpad>/prefix-b053/assay/tests/
+$ (cd <scratchpad>/prefix-b053/assay && python -m pytest tests/test_refusal_announcement.py -q)
+FAILED ...::test_the_emitter_renders_every_declared_outcome_reason_pair_in_one_format
+FAILED ...::test_the_emitter_writes_nothing_when_the_caller_asked_for_no_diagnostics
+FAILED ...::test_the_message_is_copied_byte_for_byte_and_not_reformatted
+FAILED ...::test_a_broken_coverage_artifact_names_its_cause_on_stderr_exactly_once
+FAILED ...::test_an_unresolvable_judge_base_names_the_git_failure_exactly_once
+FAILED ...::test_a_library_caller_gets_the_same_line_on_its_own_stream_and_not_stderr
+6 failed, 3 passed, 1 warning in 2.52s
+```
+
+The 3 passing are controls and MUST pass on both sides:
+`test_every_reason_code_in_the_closed_enumeration_is_reachable_by_that_test`
+(a property of `errors.py`),
+`test_a_structural_refusal_at_the_cli_boundary_uses_the_same_one_line`
+(`cli.py` already printed there — which is precisely why a boundary-only
+handler is not the fix), and
+`test_a_library_caller_that_names_no_stream_still_gets_a_verdict_and_no_output`.
+
+With the fix: `9 passed`. Whole suite, worktree-local:
+`3960 passed, 20 skipped in 526.62s (0:08:46)`, zero failures.
+
+The scratch worktree was removed (`git worktree remove --force`) before the
+suite ran.
+
+### Docs disposition
+
+| file | change |
+|---|---|
+| `docs/CONSUMERS.md` | new practice "When a lane refuses, read the one stderr line — the document does not carry the sentence": the exact line shape with a real example, where it goes from the CLI vs. a library caller, that it appears exactly once, that it is diagnostic text and must not be parsed or gated on, and which refusals carry no line |
+| `docs/DESIGN-GUIDE.md` | new §6 section "Every refusal says WHY, exactly once, through one emitter (B053/A-409)": why the wire stays closed, why one emitter beats a CLI-boundary `try`, the exactly-once rule, and what deliberately prints nothing |
+| `CHANGES.md` | one Fixed bullet and one Documentation bullet |
+
+### Decision asks
+
+1. **Refusals that carry no `AssayError` print no line.** `DIRTY_TREE`
+   (`runner.py:3719`, `:4221`), `HEAD_CHANGED` (`:3721`),
+   `MISSING_EXTERNAL_TOOL` (`:3960`), the `env_required` refusal (`:4103`)
+   and the bad-`--shard` refusal (`:4149`) call `refuse_lane`/`refuse_all`
+   with a literal `(status, reason_code)` and no message. DA-R1's format
+   requires a message; there is none to copy. Writing one would mint refusal
+   text at the point of refusal rather than the point of knowledge, which
+   DESIGN-GUIDE §5 forbids. **Question for the controller:** should phase 2
+   give those five sites their own `AssayError` (message composed where the
+   fact is known — e.g. the dirty-tree check already has the offending paths
+   from `git.dirty_paths`), so that "every refusal reachable through
+   `assay run` prints exactly one line" becomes true without qualification?
+   Landed as-is for now, and named as a known limit in A-409, the backlog
+   entry and CONSUMERS.
+2. **`_run_prepared_lane`'s `r2_early_claim` may be announced and then
+   superseded.** If the lane's own command already failed (`result.outcome is
+   not Outcome.PASS`), `runner.py:3134` builds the R2 claim from the command
+   result and the earlier `r2_early_claim` is discarded — but its cause was
+   already announced. That is one extra true sentence about a real refusal
+   that happened, never a false one, and suppressing it would need a
+   deferred-print buffer the ruling did not ask for. Flagged so R-1 can rule
+   it noise if it disagrees.
+
+### What a reviewer should push on
+
+- **Count, not presence.** Every end-to-end test here asserts
+  `len(refusal_lines) == 1`. Try to find a refusal class that prints twice —
+  the R2-orchestration-fault → R3 path (`runner.py:3210`/`:3237`) and the
+  ingested-report path (`unit.mutation_report_error` folded into
+  `ingested_r2_error` at `runner.py:3099`) are the two where a naive
+  "announce at the catch" would have double-printed.
+- **The enumeration.** `test_the_emitter_renders_every_declared_outcome_reason_pair_in_one_format`
+  iterates `errors.REASON_CODES`, and a second test proves that mapping
+  covers all of `ReasonCode`. It does NOT prove every code is *reachable
+  through `assay run`* — that would need a lane per code. R-1's stated push
+  is exactly that; the honest state is "the emitter renders all of them; four
+  classes are proven end-to-end (`FORMAT_MISMATCH`, `GIT_FAILED`,
+  `BAD_LANE_CONFIG` at the boundary, `BAD_LANE_CONFIG` from an infrastructure
+  fact)".
+- **stdout is untouched.** `_print_run_summary` was not modified, and the
+  `--verdict-json -` tests still parse the WHOLE of stdout as JSON.
+- **The canary silence** (`evaluate_r1(diagnostics=None)` from `canary.py`) is
+  a judgment call, not a ruling. If R-1 thinks a canary-internal R1 refusal
+  should be announced, it is a one-line change.
+
+### What I did NOT do, and why
+
+- **No wire `detail` field** (DA-D2 (c)) — phase 2. Nothing under
+  `verdict.py`, `verify.py`, `src/assay/schemas/` or the drift-guard was
+  touched.
+- **No context/lane name in the standard line.** DA-R1 pins the format to
+  `assay: {outcome}/{reason_code}: {message}`. Where a lane name genuinely
+  adds something (B033's whole-target site) it goes on a separate indented
+  line, so the pinned format stays exactly one thing.
+- **No message minted for the five message-less refusals** — decision ask 1.

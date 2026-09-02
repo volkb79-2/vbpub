@@ -294,7 +294,10 @@ def main(
         else:  # pragma: no cover - argparse rejects unknown subcommands first
             raise AssertionError(f"unhandled command {args.command!r}")
     except AssayError as exc:
-        print(f"assay: {exc.outcome}/{exc.reason_code}: {exc}", file=err)
+        # (B053/A-409) The same one emitter every internal conversion site
+        # now calls -- this print is where its format came from, and keeping
+        # a second spelling of it here is exactly how the two would drift.
+        runner.announce_refusal(exc, diagnostics=err)
         return exc.exit_code
     return Outcome.PASS.exit_code
 
@@ -710,7 +713,7 @@ def _run_reserved(
                 evidence=_timed_out_evidence(declared_evidence, exc),
                 declared_evidence=declared_evidence,
             )
-            print(f"assay: {exc.outcome}/{exc.reason_code}: {exc}", file=err)
+            runner.announce_refusal(exc, diagnostics=err)
             if destination is not None:
                 runner.write_verdict(verdict, destination)
             if args.verdict_json != "-":
@@ -743,7 +746,7 @@ def _run_reserved(
             evidence=evidence,
             declared_evidence=declared_evidence,
         )
-        print(f"assay: {exc.outcome}/{exc.reason_code}: {exc}", file=err)
+        runner.announce_refusal(exc, diagnostics=err)
     else:
         verdict = runner.run_lane(
             lane,
