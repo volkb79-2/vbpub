@@ -1,9 +1,10 @@
 """CIU-75 — the v8 F2 identity cutover, proven rather than asserted.
 
-Since ciu 7.7.0 the ``[ciu.instance.generated]`` table in a checkout's
-``ciu.global.worktree.toml.j2`` is the SOLE source of instance identity that
-CIU itself reads. ``ciu.env`` keeps being WRITTEN, byte-identical key set, but
-is a legacy write-only export: no CIU internal reads it back.
+Since ciu 7.7.0 the ``[ciu.instance.generated]`` table is the SOLE source of
+instance identity that CIU itself reads — carried since ciu-P47 by a checkout's
+own ``ciu.instance.generated.toml``, and before that by the per-checkout
+overlay it was split out of. ``ciu.env`` keeps being WRITTEN, byte-identical
+key set, but is a legacy write-only export: no CIU internal reads it back.
 
 Two oracles, and the second is the load-bearing one:
 

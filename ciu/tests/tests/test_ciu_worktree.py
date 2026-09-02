@@ -57,9 +57,10 @@ def fake_generate_env(monkeypatch, write_instance_facts):
     """Stand in for `ciu env generate` — writing BOTH of its outputs.
 
     CIU-75: the real verb still writes `ciu.env` (a legacy write-only export)
-    AND upserts `[ciu.instance.generated]` into the overlay, and only the
-    SECOND is what CIU reads back. A fake that wrote only the first would let
-    every test here pass against a product that no longer works.
+    AND writes `[ciu.instance.generated]` — into its own
+    `ciu.instance.generated.toml` since ciu-P47 — and only the SECOND is what
+    CIU reads back. A fake that wrote only the first would let every test here
+    pass against a product that no longer works.
     """
     def fake(path: Path, *, identity_only: bool = False) -> int:
         instance_id = _instance_id_for(path)

@@ -2583,7 +2583,7 @@ def _check_hooks_for_stack(
                 secret_file=_check_secret_file,
                 selected_profiles=tuple(ciu_context.get("selected_profiles") or []),
                 deployed_stacks=tuple(ciu_context.get("deployed_stacks") or []),
-                # CIU-75 renamed the fact keys (the overlay's snake_case
+                # CIU-75 renamed the fact keys (the generated table's snake_case
                 # names, not `ciu.env`'s SCREAMING_CASE); CIU-80's flag rides
                 # alongside them unchanged. Both halves are load-bearing: drop
                 # the rename and this reads `None` forever, drop the flag and

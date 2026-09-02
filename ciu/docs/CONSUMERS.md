@@ -434,7 +434,7 @@ own `[ciu]` table — existing switches like `auto_connect_network` stay visible
   silently ship an empty-selection default.
 - Hooks see the identical snapshot as `ctx.selected_profiles` /
   `ctx.deployed_stacks`, plus `ctx.instance_id` / `ctx.network` from this
-  workspace's own `[ciu.instance.generated]` overlay table — **not `ciu.env`,
+  workspace's own `[ciu.instance.generated]` facts file — **not `ciu.env`,
   since CIU-75** (§11b); read identity from ctx, never from ambient env
   (a sourced sibling checkout's `ciu.env` is the CIU-41 contamination path).
 - `ctx.instance_id` / `ctx.network` both `None` is ambiguous by itself —
@@ -446,7 +446,7 @@ own `[ciu]` table — existing switches like `auto_connect_network` stay visible
   doesn't care can ignore it (it defaults `False`).
 
   CIU-75 changed **which record** that flag is about, and sharpened it: it is
-  now the overlay's generated table, and a path that exists and cannot be read
+  now the generated facts file, and a path that exists and cannot be read
   at all — a directory where the record belongs, an unreadable mode — counts
   as unreadable. Under CIU-80 alone that case answered "absent" (`False`),
   because the check was `ciu.env.is_file()`. **A hook that was branching on
@@ -499,31 +499,31 @@ tear the old-named objects down manually once
 (`docker compose -p <old-basename> down -v --remove-orphans`, then
 `docker network rm <old-basename>_default`), or re-up under a tagged config.
 A `[ciu.instance.generated]` table with `repo_name`/`instance_id` must exist
-in `ciu.global.worktree.toml.j2` for a config-less shipped `up` or `clean` to
+in `ciu.instance.generated.toml` for a config-less shipped `up` or `clean` to
 name the project — `ciu env generate` writes it. **Since 7.7.0 that table, not
 `ciu.env`, is what must be present**: a checkout carrying only the legacy
 export can no longer name its own project (§11b).
 
 **What clean does NOT remove, and the `--vanilla` opt-in (S6.4b, CIU-60).**
 Ordinary `ciu clean` leaves your rendered `ciu.global.toml`, your `ciu.env`,
-and your `ciu.global.worktree.toml.j2` exactly where they are — that has
-always been true and does not change. When you want a workspace back at
-freshly-CLONED state, ask for it explicitly:
+your `ciu.global.instance.toml.j2` and your `ciu.instance.generated.toml`
+exactly where they are — that has always been true and does not change. When
+you want a workspace back at freshly-CLONED state, ask for it explicitly:
 
 ```console
 $ ciu clean --vanilla -y
 [SUCCESS] clean complete
-[INFO] --vanilla: removed ciu.global.toml, ciu.env, ciu.global.worktree.toml.j2
+[INFO] --vanilla: removed ciu.global.toml, ciu.env, ciu.global.instance.toml.j2, ciu.instance.generated.toml
 ```
 
-Only those three, only on an explicit `--vanilla`, and only when the teardown
-above actually succeeded (a failed clean keeps them — since 7.7.0 it is
-`ciu.global.worktree.toml.j2`'s generated table, not `ciu.env`, that carries
-the identity your retry resolves from). Committed inputs are never touched. An
+Only those four, only on an explicit `--vanilla`, and only when the teardown
+above actually succeeded (a failed clean keeps them — since 7.7.0 it is the
+`[ciu.instance.generated]` table, not `ciu.env`, that carries the identity
+your retry resolves from). Committed inputs are never touched. An
 already-absent file is fine. **Note that this deletes any hand-authored
-content in `ciu.global.worktree.toml.j2`** — service profiles, a shared-infra
-join, your own sparse overrides. `ciu env generate` regenerates only the
-CIU-owned `[ciu.instance.generated]` table, not your edits.
+content in `ciu.global.instance.toml.j2`** — service profiles, a shared-infra
+join, your own sparse overrides. `ciu env generate` regenerates
+`ciu.instance.generated.toml`, not your edits.
 
 ## 11a. Reading workspace identity in templates and shells (S3.1b, CIU-60)
 
@@ -536,14 +536,15 @@ volumes = ["{{ ciu.instance.generated.physical_repo_root }}:/repo:ro"]
 `{{ env.PHYSICAL_REPO_ROOT }}` is the raw process environment (S3.2). If the
 shell running `ciu` once sourced a sibling checkout's `ciu.env` — a documented
 convenience — that is the path it renders, silently, into your bind mount.
-`ciu.instance.generated.*` comes from `ciu.global.worktree.toml.j2`, which
+`ciu.instance.generated.*` comes from `ciu.instance.generated.toml`, which
 `ciu env generate` writes for THIS repo root; the six keys are `repo_name`,
 `instance_id`, `network`, `physical_repo_root`, `repo_root`, `public_fqdn`.
 
-You may keep your own tables and comments in that same file. CIU rewrites
-only its own `[ciu.instance.generated]` table and preserves every other byte —
-so hand-edits INSIDE that table are silently overwritten on the next
-`env generate`, and hand-edits anywhere else are safe forever.
+**That file is CIU's, not yours.** It is rewritten in full on every
+`env generate`, so any hand edit to it is gone on the next one. Your own
+tables and comments go in `ciu.global.instance.toml.j2` next to it — CIU never
+writes that file at all, so everything in it is safe forever. (Both roles
+shared one file, `ciu.global.worktree.toml.j2`, before the split; see §21.)
 
 In a **shell**, `ciu env print` prints the existing `ciu.env` as `export`
 lines:
@@ -560,11 +561,12 @@ why it is `print` and not `apply`/`source`. It generates nothing — if
 
 ## 11b. Migrating off `ciu.env` as an identity source (CIU-75, ciu 7.7.0) — BREAKING
 
-**What changed.** As of **ciu 7.7.0**, `ciu.global.worktree.toml.j2`'s
-`[ciu.instance.generated]` table is the **only** place CIU itself reads your
-instance identity from — these six facts:
+**What changed.** As of **ciu 7.7.0**, the `[ciu.instance.generated]` table is
+the **only** place CIU itself reads your instance identity from — these six
+facts. (The table lived in the per-checkout overlay until the ciu-P47 split;
+its file is `ciu.instance.generated.toml` now — see §21.)
 
-| overlay fact | legacy `ciu.env` / shell name | what it is |
+| generated fact | legacy `ciu.env` / shell name | what it is |
 |---|---|---|
 | `repo_name` | `REPO_NAME` | lowercased repository name, the compose-project prefix |
 | `instance_id` | `INSTANCE_ID` | deterministic id for this checkout's path |
@@ -597,7 +599,7 @@ Two consequences, and the second one surprises people:
 **What does NOT break.** Sourcing still works, byte for byte, this release:
 
 ```console
-$ ciu env generate            # writes ciu.env AND the overlay table
+$ ciu env generate            # writes ciu.env AND ciu.instance.generated.toml
 $ source ciu.env              # still works
 $ eval "$(ciu env print)"     # the forward path — same values, quoted safely
 ```
@@ -619,26 +621,23 @@ consult, so nothing detects it going stale. Concretely:
 
 | pattern | replace with |
 |---|---|
-| `grep -oP '(?<=^INSTANCE_ID=).*' ciu.env` (or any grep/awk/sed of the file) | `eval "$(ciu env print)"; echo "$INSTANCE_ID"` — or read `[ciu.instance.generated].instance_id` from `ciu.global.worktree.toml.j2` with a TOML parser |
-| a **Python** helper that parses `ciu.env` into a dict (a vendored `load_workspace_env`, a `dotenv`-style loader) | the `read_ciu_identity` helper below — scan to `[ciu.instance.generated]`, then `tomllib` — or shell out to `ciu env print`. Do **not** `tomllib.loads` the whole overlay file: it is a Jinja template and your own sections may not be valid TOML |
-| exporting `INSTANCE_ID=… ciu up` (or any of the six) to steer a run | change the record: `ciu env generate` (it still honors a consistent pre-set value) or edit the table. Since 7.7.0 the export is overwritten at startup |
-| `ciu env generate` **then** read `ciu.env` back to discover the network / instance id | read the overlay table, which is what CIU itself now reads; the two are written from the same in-memory values by the same command |
+| `grep -oP '(?<=^INSTANCE_ID=).*' ciu.env` (or any grep/awk/sed of the file) | `eval "$(ciu env print)"; echo "$INSTANCE_ID"` — or read `[ciu.instance.generated].instance_id` from `ciu.instance.generated.toml` with a TOML parser |
+| a **Python** helper that parses `ciu.env` into a dict (a vendored `load_workspace_env`, a `dotenv`-style loader) | the `read_ciu_identity` helper below — a plain `tomllib.load` of `ciu.instance.generated.toml` — or shell out to `ciu env print` |
+| exporting `INSTANCE_ID=… ciu up` (or any of the six) to steer a run | change the record: `ciu env generate` (it still honors a consistent pre-set value). Since 7.7.0 the export is overwritten at startup, and hand-editing the generated file does not survive the next generate |
+| `ciu env generate` **then** read `ciu.env` back to discover the network / instance id | read `ciu.instance.generated.toml`, which is what CIU itself now reads; the two are written from the same in-memory values by the same command |
 | a **template** using `{{ env.PHYSICAL_REPO_ROOT }}` | `{{ ciu.instance.generated.physical_repo_root }}` — see §11a; this has been the correct form since CIU-60 and is now the only one CIU agrees with |
 | `echo 'export CIU_SERVICES_PROFILE=…' >> ciu.env` | unaffected — that key is read from the process environment, not from the file; keep sourcing, or export it directly |
 
-**Reading the facts yourself, without `ciu.env` at all.** The
-`[ciu.instance.generated]` block is plain TOML by construction — CIU writes it
-as quoted strings and owns exactly those bytes — but **the surrounding file is
-a Jinja template and is yours to add to** (§11a: your own tables and comments
-may live anywhere else in it). So do not hand the WHOLE file to `tomllib`. It
-happens to work while everything you added is *also* valid TOML (Jinja inside
-a quoted string is fine), and it stops working the moment you use the file as
-the template it is — a `{% if %}` line, an unquoted `{{ … }}` value or a bare
-`$VAR` each raise `TOMLDecodeError`, on a file CIU reads without complaint.
-Scan to CIU's block first, exactly as CIU's own reader does:
+**Reading the facts yourself, without `ciu.env` at all.**
+`ciu.instance.generated.toml` is **plain TOML, not a template** — that is the
+point of it having its own file. Hand the whole thing to `tomllib`; there is
+nothing else in it and nothing of yours in it. (Before the ciu-P47 split the
+table lived inside the Jinja overlay, and a consumer had to slice the block out
+by hand first; if you carry that older helper, this is the version that
+replaces it.)
 
 ```python
-# ciu_identity.py — the same slice CIU itself reads (ciu >= 7.7.0)
+# ciu_identity.py — the same file CIU itself reads (ciu >= 7.10.0)
 import tomllib
 from pathlib import Path
 
@@ -654,25 +653,22 @@ def read_ciu_identity(ciu_root) -> dict[str, str]:
     instance's identity cannot be determined" call for different behaviour on
     your side too.
     """
-    path = Path(ciu_root) / "ciu.global.worktree.toml.j2"
+    path = Path(ciu_root) / "ciu.instance.generated.toml"
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        raw = path.read_bytes()
     except FileNotFoundError:
         return {}                      # never generated here — a real state
-    except (OSError, UnicodeDecodeError) as exc:
+    except OSError as exc:
         raise ValueError(f"could not read {path}: {exc}") from exc
 
-    start = next((i for i, line in enumerate(lines) if line.strip() == HEADER), None)
-    if start is None:
-        return {}                      # your own overlay, no CIU table yet
-    end = next((i for i in range(start + 1, len(lines))
-                if lines[i].startswith("[")), len(lines))
     try:
-        block = tomllib.loads("\n".join(lines[start:end]))
-    except tomllib.TOMLDecodeError as exc:
-        raise ValueError(f"malformed {HEADER} in {path}: {exc}") from exc
+        document = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError(f"malformed {path}: {exc}") from exc
 
-    facts = block["ciu"]["instance"]["generated"]
+    facts = document.get("ciu", {}).get("instance", {}).get("generated")
+    if facts is None:
+        return {}                      # present but carries no table yet
     for key, value in facts.items():
         # The fourth indeterminacy case, and the easiest to skip: every
         # generated fact is a string by construction, so a bare number here
@@ -706,7 +702,8 @@ re-pointed before `ciu.env` stops being written:
    `ciu.workspace_env` only inside the test-runner container, which puts
    `scripts/` on `PYTHONPATH` and has no real `ciu` wheel installed. This is
    the most load-bearing one: a **second implementation** of a read CIU has
-   now moved. It should read the overlay's `[ciu.instance.generated]` table
+   now moved. It should read `ciu.instance.generated.toml`'s
+   `[ciu.instance.generated]` table
    instead — same checkout, no `ciu` import needed (see the helper above).
    **Three importers, not one:** `scripts/config_helper.py:30` (uses
    `DOCKER_NETWORK_INTERNAL`), `scripts/url_builder.py:18` (uses `REPO_ROOT`),
@@ -792,12 +789,14 @@ myapp-abc123-network                 # the RECORD wins; the export did nothing
 If either now fails — or if that second command echoes `not-my-network` back
 at you — the failure is CIU's, not yours: file it.
 
-**Finally: `.gitignore`.** `ciu.global.worktree.toml.j2` must be gitignored
-and must not be deleted casually. It has always been declared gitignored
-(S3.1b), but it is now the only record of your instance identity. A checkout
-that loses it cannot name its own compose project, network or ownership
-labels until `ciu env generate` puts it back. `ciu clean --vanilla` removes it
-deliberately (that is a full reset); plain `ciu clean` preserves it.
+**Finally: `.gitignore`.** Both `ciu.global.instance.toml.j2` and
+`ciu.instance.generated.toml` must be gitignored, and the second must not be
+deleted casually. It has always been declared gitignored (S3.1b), but it is now
+the only record of your instance identity. A checkout that loses it cannot name
+its own compose project, network or ownership labels until `ciu env generate`
+puts it back. `ciu clean --vanilla` removes it deliberately (that is a full
+reset); plain `ciu clean` preserves it. `ciu migration-check` reports a
+`.gitignore` missing either entry.
 
 ## 12. The implementation gate (Assay-backed, S18)
 
@@ -1539,3 +1538,66 @@ and deferred, and needs none of this: AppRole credentials route through Vault
 itself (a hook mints them into Vault with its own `hvac`/HTTP calls; the
 consumer reads them back with an ordinary `ASK_VAULT` directive), which
 already works today with no new CIU mechanism.
+
+## 21. Rename the per-checkout overlay and pick up `ciu.instance.generated.toml` (S3.1b, ciu-P47, ciu 7.10.0) — BREAKING
+
+**What changed, in one sentence:** the one gitignored per-checkout file became
+two, and the one you hand-edit was renamed.
+
+| before (≤ 7.9.0) | after (7.10.0) | who owns it |
+|---|---|---|
+| `ciu.global.worktree.toml.j2` — your sparse overrides AND CIU's `[ciu.instance.generated]` table | `ciu.global.instance.toml.j2` | **you.** CIU never writes it |
+| (same file) | `ciu.instance.generated.toml` | **CIU.** Plain TOML, rewritten in full by every `ciu env generate` |
+
+**Nothing changes for a template.** `{{ ciu.instance.generated.* }}` reads
+exactly as before, from the same point in the S3.3 merge chain. This was
+weighed against adopting v8's richer `instance.*` binding now and declined on
+purpose: the binding name is not part of this change, so no stack template
+anywhere needs a single character edited.
+
+**This is a hard cutover.** CIU reads only the new names — there is no
+fallback read of `ciu.global.worktree.toml.j2` anywhere, and an existing
+checkout's copy of it stops being merged into any render the moment you
+upgrade. That is deliberate (no legacy-compat shims in normal code paths), and
+`ciu migration-check` is how you find out rather than being broken silently:
+
+```console
+$ ciu migration-check
+[WARN] retired-overlay-file: found 'ciu.global.worktree.toml.j2' at the ciu root — this filename is retired and its content is NO LONGER merged into any render
+          fix: move any hand-authored overrides from 'ciu.global.worktree.toml.j2' into 'ciu.global.instance.toml.j2' by hand, then delete 'ciu.global.worktree.toml.j2'. Its CIU-owned [ciu.instance.generated] table needs no hand-copying — `ciu env generate` rewrites those facts into 'ciu.instance.generated.toml'; copy nothing from it.
+[ERROR] migration-check: 1 finding(s)
+```
+
+**Migration, per checkout, once:**
+
+1. `ciu migration-check` — or just `ciu up`/`ciu check`, whose `migration`
+   stage runs the same rule and notes the finding.
+2. Copy your OWN content out of `ciu.global.worktree.toml.j2` into
+   `ciu.global.instance.toml.j2`: `[ciu.instance] service_profiles`, a
+   `[ciu.instance.shared_infra]` join, `[topology.services.*]` aliases, any
+   ordinary sparse global overrides. **Do not copy the
+   `[ciu.instance.generated]` table** — it is CIU's, and step 4 regenerates it.
+3. `rm ciu.global.worktree.toml.j2`.
+4. `ciu env generate` — writes `ciu.instance.generated.toml`.
+
+A checkout with nothing hand-authored in the old file (the common case: it was
+created by `ciu env generate` alone) needs only steps 3 and 4, in either order.
+
+**`.gitignore`:** `ciu init`'s canonical set now lists
+`ciu.global.instance.toml.j2` and `ciu.instance.generated.toml`, and no longer
+lists the retired name. Add both to an existing repo's `.gitignore`;
+`ciu migration-check`'s `gitignore-gaps` rule names them if you forget.
+Removing the old pattern is optional hygiene and does not affect detection —
+the retired-overlay rule asks the filesystem, not your `.gitignore`.
+
+**`ciu clean --vanilla` now removes four files**, not three: the new generated
+file joins `ciu.global.toml`, `ciu.env` and the (renamed) overlay. Both are
+artifacts of one `ciu env generate`, so removing one and keeping the other
+would leave the workspace in neither state `--vanilla` promises. Plain
+`ciu clean` still preserves all four.
+
+**If you parse the identity facts yourself**, §11b's `read_ciu_identity` helper
+is simpler now: `ciu.instance.generated.toml` is plain TOML with nothing else
+in it, so a whole-file `tomllib.load` is correct — the block-slicing an older
+helper had to do (because the surrounding overlay was a Jinja template) is no
+longer needed. Copy the current version from §11b.

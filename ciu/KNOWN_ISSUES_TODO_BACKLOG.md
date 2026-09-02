@@ -11,7 +11,27 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-09-01 — **F4 and F7 BACKPORTED EARLY (ciu-P46), ahead of
+Last updated: 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
+split and the overlay rename.** `[ciu.instance.generated]` moved out of the
+shared per-checkout overlay into its own CIU-owned
+`ciu.instance.generated.toml` (plain TOML, rewritten wholesale — the
+text-level surgical block replace that existed only to protect hand-authored
+bytes in a shared file is deleted), and the overlay itself was renamed
+`ciu.global.worktree.toml.j2` → `ciu.global.instance.toml.j2` as a hard
+cutover with no fallback reads. ciu-P46's `retired-overlay-file`
+migration-check rule went LIVE by the constant move alone, exactly as it was
+designed to. Ships as **ciu 7.10.0** (BREAKING-as-MINOR, the established
+override). **This closes the remaining half of the identity-file backport
+program begun by CIU-60 and completed for the READ side by CIU-75** (row
+below): CIU-75 made the generated table the sole fact source CIU reads;
+ciu-P47 gave that table a file of its own and retired the name it was
+borrowing. `docs/CONSUMERS.md` §21 carries the consumer migration; the
+program record is the `ciu-P46`/`ciu-P47` handoffs and reports under
+`nyxloom-trove/`. **CIU-50 is NOT part of this** and stays independently
+deferred — it renames the `instance_id` KEY inside the config, which is a
+different change that merely sounds adjacent.
+
+Previously, 2026-09-01 — **F4 and F7 BACKPORTED EARLY (ciu-P46), ahead of
 the v8 cutover.** `docs/CIU-V8-TESTING-GATE-PROPOSAL.md`'s secrets-audit table
 lines 880 (F4, "Vault bootstrap out of `[state]`") and 883 (F7,
 "Vault-presence static rule") are part of the v8 redesign of secrets and
