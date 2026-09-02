@@ -720,3 +720,28 @@ precedent for shape and discipline.
   - **Generation 10 dispatched** (fresh Opus, BRIEF-9 seed, DA-R25..R27 in
     the prompt; host rule, ONE gate container — the run-gate wave's reviewer
     is running a live probe on this host and may hold it).
+
+- **2026-09-02 (session limit — generation 10 checkpointed at `9de276bd`;
+  B051 + B052 gate-green; NO successor dispatched yet)** — Operator: "we
+  approach the session limit, don't start new work, make sure you can
+  resume running agents." Generation 10 cut at a green registered gate.
+  Verified from `gate-gen10a.log` in a separate step: `GATE_EXIT=0` once,
+  one `ASSAY_REGISTERED_GATE_COMPLETE=1`, zero `FAILED|DIRTY_TREE|Traceback`,
+  wheel `assay-4.1.1.dev36+g83c31f18-py3-none-any.whl`, the v10 successor
+  phase present. Branch: `5b2730b6` (B051 resolved by ruling, A-437 —
+  declared-not-verified in four places, the `9999` reproduction re-run and
+  NOT refused, B070 filed), `83c31f18` (B052 shipped, A-438 — content-tier
+  compare through `SnapshotRepository.read_regular_file`, line endings and
+  one trailing newline normalised, everything else byte-exact; seven tests
+  over the real StrykerJS artifact), `9de276bd` (checkpoint, BRIEF-10). Still
+  exactly one `!` commit; tree clean; full local suite 4091 passed / 20
+  skipped once. No decision asks; A-438 (4) folds "a measured path the
+  commit does not track" into the same content refusal — accepted as
+  recorded (no terminal, reason code or tier changes), R-2 may revisit.
+  **Done 4 of 8: B069, B050, B051, B052. Remaining, in DA-R27's order: B053
+  `detail` producers → B004 `PROVENANCE_UNVERIFIED` producer (leave
+  `EXCLUDED_ENTIRELY`) → B007 multi-target canary loop (the one authorised
+  W6 edit) → CONSUMERS "Migration notes (v9 → v10)".** Next ids **A-439 /
+  B071**. Generation 11 is a FRESH Opus successor seeded with BRIEF-10 +
+  DA-R1..R27, dispatched when the operator says work may start again; then
+  R-2 → merge → release 5.0.0 (low priority, DA-R21).
