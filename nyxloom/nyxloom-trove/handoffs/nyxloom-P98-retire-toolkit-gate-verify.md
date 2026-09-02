@@ -52,7 +52,7 @@ scope:
     - "tests/test_remote_mutation_audit_tools.py"    # verify-only, no edit expected: its `worker` fixture dynamically exec's tools/remote_mutation_audit.py rather than importing nyxloom.mutation_gate directly, so it needs no change once that file's import is updated (Work item 1); listed because O2 requires confirming it still collects and passes
     - "tests/test_core_characterization.py"          # verify-only, no edit expected: it reads the inventory doc below and asserts against the real tree -- fixing the doc (Work item 10) is what makes it pass again; listed because O2 requires confirming it collects and passes
     - "nyxloom-trove/reports/nyxloom-P98-REPORT.md"  # NEW: the O8 symbol-absence script's source + PASS output, appended here as proof
-    - "nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md"  # a LIVE, mechanically-checked inventory (unlike legacy_planner.py -- this one is meant to track current reality; tests/test_core_characterization.py enforces it), missed by both prior review rounds because it's a nyxloom-trove/reports/ doc, outside the src/tests/tools sweep scope. Remove the `src/nyxloom/gate_canary.py` row entirely (test_inventory_paths_all_exist fails otherwise -- the file no longer exists). Update the `src/nyxloom/effects_gates.py` row's line count to its real post-edit count (test_inventory_sizes_are_within_the_declared_tolerance fails otherwise -- re-measure with `wc -l`, do not hardcode 354) and trim its "Present responsibility" text, which currently says "the gate-verify cadence and post-merge validation" -- the gate-verify cadence is gone (Work item 3), only post-merge validation remains. Follow the doc's own convention (see its "Re-measured DATE (CR-NN review) for ..." paragraphs) and add a short "Re-measured <today> (nyxloom-P98)" note explaining both changes.
+    - "nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md"  # a LIVE, mechanically-checked inventory (unlike legacy_planner.py -- this one is meant to track current reality; tests/test_core_characterization.py enforces it), missed by both prior review rounds because it's a nyxloom-trove/reports/ doc, outside the src/tests/tools sweep scope. THREE rows need fixing, not two (fix-verification round 3 found the third by recomputing the tolerance check over every row, not just the two the carve first named -- see Work item 10): remove the `src/nyxloom/gate_canary.py` row entirely (file deleted); re-measure and update `src/nyxloom/effects_gates.py`, `src/nyxloom/cli.py`, and `src/nyxloom/rules_attention.py`'s recorded line counts with real `wc -l` output (effects_gates.py and cli.py both already exceed their own declared tolerance today; do not hardcode a number); trim the "Present responsibility" text on the effects_gates.py and rules_attention.py rows, both of which describe the now-deleted gate-verify cadence. Follow the doc's own convention (see its "Re-measured DATE (CR-NN review) for ..." paragraphs) and add a short "Re-measured <today> (nyxloom-P98)" note explaining all three changes.
   forbid:
     - "src/nyxloom/gate_runner.py"       # generic gate-argv executor; stays, becomes the ONLY gate-execution path
     - "src/nyxloom/effects_merge.py"     # the ("mutation", getattr(cfg.policy, "mutation_gate", False), effects_gates.select_mutation_gate) wiring is GENERIC (picks a project-DECLARED phase='mutation' GateDef, never imports the deleted module) -- confirmed by reverse-dependency sweep and independently re-verified by adversarial review; do not touch
@@ -516,23 +516,34 @@ a contract item.
    nyxloom-P98, because it would have recreated testing capability Assay
    now provides.
 10. **Fix the ownership inventory `tests/test_core_characterization.py`
-    checks against reality.** In
+    checks against reality — THREE rows, not two; re-measure every row
+    this package's edits could plausibly touch, don't stop at the first
+    two found.** In
     `nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md`:
     remove the `src/nyxloom/gate_canary.py` row entirely (its path no
-    longer exists —
-    `test_inventory_paths_all_exist` fails otherwise). Re-measure
-    `src/nyxloom/effects_gates.py` with `wc -l` on the tree AFTER Work item
-    3's edits land, and update its recorded line count to that real value
-    (`test_inventory_sizes_are_within_the_declared_tolerance` fails
+    longer exists — `test_inventory_paths_all_exist` fails otherwise).
+    Re-measure `src/nyxloom/effects_gates.py`, `src/nyxloom/cli.py`, AND
+    `src/nyxloom/rules_attention.py` with `wc -l` on the tree AFTER Work
+    items 2, 3, and 5's edits land, and update each recorded line count to
+    its real value. `effects_gates.py` (recorded 473) and `cli.py`
+    (recorded 2,469) both exceed their own declared tolerance today and
+    fail `test_inventory_sizes_are_within_the_declared_tolerance`
     otherwise — do not guess or hardcode a number from this handoff's own
-    prose, re-measure). Trim that same row's "Present responsibility" text:
-    it currently reads "the gate-verify cadence and post-merge validation"
-    — the gate-verify cadence is gone, so only "post-merge validation"
-    (and whatever else the file still does) remains accurate. Add a short
-    "Re-measured 2026-09-02 (nyxloom-P98)" note following the document's
-    own existing convention (see its "Re-measured DATE (CR-NN review)
-    for ..." paragraphs near the top), explaining both changes in one or
-    two sentences. This file is a *live*, mechanically-checked inventory —
+    prose (a carver-predicted number is exactly what got `cli.py`'s
+    original row this stale; re-measure for real). `rules_attention.py`
+    (recorded 118) is inside its own tolerance floor today but drifts
+    further once Work item 3 lands — re-measure it too rather than assume
+    it stays under. Trim two rows' "Present responsibility" text to match:
+    `effects_gates.py` currently reads "the gate-verify cadence and
+    post-merge validation" — the cadence half is gone, only "post-merge
+    validation" (and whatever else the file still does) remains accurate;
+    `rules_attention.py` currently reads "...and the gate-verify cadence
+    that is deliberately outside the carve mutex" — drop that clause, the
+    rule itself is deleted (Work item 3). Add a short "Re-measured
+    2026-09-02 (nyxloom-P98)" note following the document's own existing
+    convention (see its "Re-measured DATE (CR-NN review) for ..."
+    paragraphs near the top), explaining all three changes. This file is a
+    *live*, mechanically-checked inventory —
     unlike `tests/legacy_planner.py`, it is meant to be kept current, not
     frozen; updating it is the correct fix, not a forbidden edit.
 
