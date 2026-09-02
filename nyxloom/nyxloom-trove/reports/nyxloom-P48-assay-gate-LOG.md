@@ -407,3 +407,109 @@ than fabricating a PASS; left for the controller to decide (e.g. sequence
 NL-3's fix ahead of/alongside this package, or accept this package's own
 scope as complete and treat the residual non-green as a pre-existing,
 separately-tracked gap).
+
+## Round 3 -- controller's separate nyxloom-P49 fix merged, real green (2026-09-02, same session)
+
+The coordinator confirmed round 2's finding was correct, valuable, and out
+of this package's scope -- and fixed it separately as its own package
+(`nyxloom-P49`): resized the two `TestL10Size` fixtures to genuinely exceed
+the raised 10k/18k token thresholds (45000/80000 chars instead of the stale
+25000/49000), verified green with a real docker-wait + separate log/exit-code
+read, and merged it to the shared local `main` branch (`b1282b71`).
+
+### Merge into this branch
+
+```
+$ git fetch origin main
+   (origin/main only through 0a47c8cd -- the local repo's own shared `main`
+   ref, common to every worktree of this repo, already carried the P49
+   merge at b1282b71; no push to the GitHub remote was needed/expected)
+$ git log --oneline main | head -3
+b1282b71 merge(nyxloom): P49 -- resize L10 test fixtures for the raised 10k/18k thresholds
+62e08ffb fix(nyxloom): P49 -- resize L10 test fixtures for the raised 10k/18k thresholds
+0a47c8cd chore(ciu): prepare release inputs
+$ git merge main -m "merge(nyxloom): main -- pull in P49 ..."
+Merge made by the 'ort' strategy.
+ ... 63 files changed, 2599 insertions(+), 931 deletions(-) ...
+EXIT:0
+```
+Clean, no conflicts -- confirmed via `git status --short` (empty) immediately
+after. New tip: `4297be03` (merge commit, two parents: this branch's prior
+tip `0836760d` and `main`'s `b1282b71`). Bulk of the diff is unrelated
+ciu-P47 work that landed on `main` in the interim (ciu/ is sibling,
+read-only reference, not this package's concern); the only change inside
+`nyxloom/` is `nyxloom/tests/test_lint.py` (12 lines), confirmed to be
+exactly the described fixture resize:
+```
+$ git diff 0836760d..HEAD -- tests/test_lint.py
+-        large_body = "x" * 25000  # 6250 tokens
++        large_body = "x" * 45000  # 11250 tokens
+...
+-        huge_body = "x" * 49000  # 12250 tokens
++        huge_body = "x" * 80000  # 20000 tokens
+```
+Both new sizes now exceed the code's real 10000/18000-token thresholds
+(11250 > 10000; 20000 > 18000).
+
+### Full live gate re-run (real green)
+
+Per the coordinator's explicit instruction, avoided a poll-and-yield loop
+this time. Launched `./run-gate.py --worktree
+/workspaces/vbpub/.worktrees/nyxloom-P48-assay-gate tester-unified` as a
+backgrounded shell job (output redirected to a log file), confirmed the
+resulting container's name via `docker ps` (`run-gate-vbpub-tester-unified-
+1399275-1788318565`, "Up"), then used a SINGLE blocking foreground call,
+`docker wait run-gate-vbpub-tester-unified-1399275-1788318565`, which
+returned `0` once the container actually exited -- no polling, no
+turn-ending passive pause.
+
+Read the evidence in three SEPARATE steps, per the handoff's own discipline:
+
+1. **run-gate's own log** (`cat` of the redirected log file, after `docker
+   wait` returned):
+   ```
+   assay-4.0.0.pyz: OK
+   tester-unified: PASS (exit 0)
+     commit: 4297be039bb8f50956405e3d2fac60cff51ceee9
+     argv: /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-report=json:coverage.json
+   run-gate: verdict artifact: /workspaces/vbpub/.worktrees/nyxloom-P48-assay-gate/nyxloom/.assay/verdict-tester-unified.json
+   run-gate: lane 'tester-unified' exit 0
+   EXIT_CODE:0
+   ```
+2. **`docker logs <container>`**: `Error response from daemon: No such
+   container` -- run-gate.py only preserves/leaves the container (and its
+   logs at `/tmp/run-gate/*.log`) on FAILURE; on success it cleans the
+   container up automatically. Confirmed this is by design, not a gap: no
+   `/tmp/run-gate/*.log` file exists for this run's container name/PID/
+   timestamp either (only the two earlier FAILED runs' preserved logs are
+   present). The run-gate log above and the verdict JSON below are the
+   full durable record for a PASS.
+3. **Verdict JSON** (`cat .assay/verdict-tester-unified.json`, read
+   completely separately from the above, never a piped tail):
+   ```json
+   "outcome": "PASS",
+   "exit_code": 0,
+   "commit": "4297be039bb8f50956405e3d2fac60cff51ceee9",
+   "claims": [
+     {"rigor": "R0", "status": "PASS", "verified_by_assay": true, "source": "computed"},
+     {"rigor": "R1", "status": "PASS", "verified_by_assay": true, "source": "computed",
+      "coverage": {"pct": 100.0, "executable": 0, "covered": 0, "considered": 0, ...}}
+   ],
+   "judgment": {"resolved": {"base": "0836760d...", "base_resolution": "first-parent", ...}}
+   ```
+   `base_resolution: "first-parent"` is correct and expected: `HEAD`
+   (`4297be03`) is a merge commit with 2 parents, so assay's R1 judge used
+   the documented post-merge base-resolution rule (diff vs the first
+   parent, `0836760d` -- this package's own prior tip), exactly mirroring
+   `coverage_gate.py`'s own documented dual-mode base resolution. No
+   `reason_code` field is present (that field only appears on FAIL) --
+   consistent with a genuine PASS, not a masked or vacuous one.
+
+**This is a real, verified green: O2's full positive claim now holds --
+exit 0, R0 PASS, R1 PASS, verdict names lane `tester-unified` correctly.**
+
+### Final tree state
+
+`git status --short` empty at tip `4297be03` before writing this LOG
+update; the LOG/REPORT finalization below is committed as one further
+commit on top.
