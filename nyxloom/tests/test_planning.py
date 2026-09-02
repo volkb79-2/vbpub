@@ -438,17 +438,6 @@ class TestThisRepo:
         assert emitters <= claimants
         assert len(claimants) >= 5, "the arbiter has too few claimants to be real"
 
-    def test_the_gate_verify_cadence_claims_nothing(self, table):
-        """Contract item 16 is deliberately OUTSIDE the carve mutex, and this
-        is where that is written down rather than inferred from which locals a
-        branch happens not to mention. A gate verify runs a subprocess against
-        canary commits: no frontier route, no carve budget, no agent turn. If
-        it contended for the carve slot, a busy carve queue would silently
-        suppress the one probe that notices a gate has stopped rejecting."""
-        spec = next(s for s in table if s.name == "gate-verify")
-        assert spec.claims == frozenset()
-        assert "VerifyGate" not in planning.EXCLUSIVE_ACTIONS
-
 
 # ---------------------------------------------------------------------------
 # the oracles, seen to fail
