@@ -22,6 +22,7 @@ from ciu.composefile import (  # noqa: E402
     ConfigFileMount,
     SecretGuard,
     SecretLeakError,
+    check_env_required,
     compose_file_args,
     compose_process_env,
     generate_overlay,
@@ -30,6 +31,7 @@ from ciu.composefile import (  # noqa: E402
     redact_config,
     render_compose,
     render_configfiles,
+    resolve_env_required,
     validate_consumption,
 )
 from ciu import config_model  # noqa: E402
@@ -1316,3 +1318,966 @@ class TestRenderConfigfilesDynamicInstances:
         assert mounts[0].service == "svc"
         assert mounts[0].name == "myfile"
         assert mounts[0].target == "/etc/svc/conf"
+
+
+# ---------------------------------------------------------------------------
+# V8-PREP-6 (ciu-P24) — O1: service-level `instances` default + disagreement
+# refusal.
+# ---------------------------------------------------------------------------
+
+class TestServiceLevelInstancesDefault:
+    """O1 — [<root>.<service>] instances = N as the configfile default."""
+
+    def _make_stack(
+        self, tmp_path: Path, template_body: str = "id={{ instance_index }}\n"
+    ) -> Path:
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        (stack / "worker.conf.j2").write_text(template_body, encoding="utf-8")
+        return stack
+
+    def test_no_instances_anywhere_zero_behavior_change(self, tmp_path: Path) -> None:
+        """O4 regression bar: nothing declares instances -> ciu.instances
+        absent from context; mounts identical to pre-existing behavior."""
+        stack = self._make_stack(tmp_path)
+        config = {
+            "mystack": {
+                "worker": {
+                    "configfile": {
+                        "cfg": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/worker.conf",
+                        }
+                    }
+                }
+            }
+        }
+        ciu_context: dict = {}
+        mounts = render_configfiles(
+            stack, "mystack", config, lambda n: "v", ciu_context=ciu_context
+        )
+        assert len(mounts) == 1
+        assert mounts[0].service == "worker"
+        assert "instances" not in ciu_context
+
+    def test_service_level_default_explicitly_restated_fans_out(
+        self, tmp_path: Path
+    ) -> None:
+        """Service-level instances=3, configfile explicitly restates the SAME
+        value -> fans out 3x. This is the correct way to opt into
+        per-instance rendering under S7.5e (an omitted key refuses --
+        see TestMigrationSafetyRefusal below)."""
+        stack = self._make_stack(tmp_path)
+        config = {
+            "mystack": {
+                "worker": {
+                    "instances": 3,
+                    "configfile": {
+                        "cfg": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/worker.conf",
+                            "instances": 3,
+                        }
+                    },
+                }
+            }
+        }
+        mounts = render_configfiles(stack, "mystack", config, lambda n: "v")
+        assert len(mounts) == 3
+        assert [m.service for m in mounts] == ["worker-1", "worker-2", "worker-3"]
+        assert [m.name for m in mounts] == ["cfg-1", "cfg-2", "cfg-3"]
+
+    def test_service_level_and_configfile_level_agree_uses_value(
+        self, tmp_path: Path
+    ) -> None:
+        """Service-level=3, configfile-level=3 (agreeing) -> passes, uses 3."""
+        stack = self._make_stack(tmp_path)
+        config = {
+            "mystack": {
+                "worker": {
+                    "instances": 3,
+                    "configfile": {
+                        "cfg": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/worker.conf",
+                            "instances": 3,
+                        }
+                    },
+                }
+            }
+        }
+        mounts = render_configfiles(stack, "mystack", config, lambda n: "v")
+        assert len(mounts) == 3
+
+    def test_service_level_and_configfile_level_disagree_refuses(
+        self, tmp_path: Path
+    ) -> None:
+        """Service-level=3, configfile-level=5 (disagreeing) -> refusal naming
+        the service, the configfile, and both values."""
+        stack = self._make_stack(tmp_path)
+        config = {
+            "mystack": {
+                "worker": {
+                    "instances": 3,
+                    "configfile": {
+                        "cfg": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/worker.conf",
+                            "instances": 5,
+                        }
+                    },
+                }
+            }
+        }
+        with pytest.raises(ValueError) as excinfo:
+            render_configfiles(stack, "mystack", config, lambda n: "v")
+        msg = str(excinfo.value)
+        assert "worker" in msg
+        assert "cfg" in msg
+        assert "instances=3" in msg
+        assert "instances=5" in msg
+
+    def test_configfile_own_value_never_defaults_a_sibling_configfile(
+        self, tmp_path: Path
+    ) -> None:
+        """No service-level default: one configfile's OWN instances value
+        must never silently become another sibling configfile's default —
+        that would change what an omitted key has always meant."""
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        (stack / "a.conf.j2").write_text("a\n", encoding="utf-8")
+        (stack / "b.conf.j2").write_text("b\n", encoding="utf-8")
+        config = {
+            "mystack": {
+                "worker": {
+                    "configfile": {
+                        "a": {
+                            "template": "a.conf.j2",
+                            "target": "/etc/worker/a.conf",
+                            "instances": 5,
+                        },
+                        "b": {
+                            "template": "b.conf.j2",
+                            "target": "/etc/worker/b.conf",
+                        },
+                    }
+                }
+            }
+        }
+        mounts = render_configfiles(stack, "mystack", config, lambda n: "v")
+        a_mounts = [m for m in mounts if m.name.startswith("a")]
+        b_mounts = [m for m in mounts if m.name == "b"]
+        assert len(a_mounts) == 5
+        assert len(b_mounts) == 1  # 'b' stays single-instance, unaffected
+
+    @pytest.mark.parametrize("bad", [0, -1, "3", True])
+    def test_service_level_invalid_instances_raises(self, tmp_path: Path, bad) -> None:
+        stack = self._make_stack(tmp_path)
+        config = {
+            "mystack": {
+                "worker": {
+                    "instances": bad,
+                    "configfile": {
+                        "cfg": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/worker.conf",
+                        }
+                    },
+                }
+            }
+        }
+        with pytest.raises(ValueError, match="instances"):
+            render_configfiles(stack, "mystack", config, lambda n: "v")
+
+    def test_service_level_instances_with_no_configfile_at_all(
+        self, tmp_path: Path
+    ) -> None:
+        """A service MAY declare instances purely for compose enumeration,
+        with zero S5 configfiles -- still validated, still resolved (O2's
+        'service-level OR any configfile-level' presence rule does not
+        require a configfile to exist at all)."""
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        config = {"mystack": {"api": {"instances": 4}}}
+        ciu_context: dict = {}
+        mounts = render_configfiles(
+            stack, "mystack", config, lambda n: "v", ciu_context=ciu_context
+        )
+        assert mounts == []
+        assert ciu_context["instances"] == {"api": 4}
+
+    def test_service_level_invalid_instances_raises_even_with_no_configfile(
+        self, tmp_path: Path
+    ) -> None:
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        config = {"mystack": {"api": {"instances": 0}}}
+        with pytest.raises(ValueError, match="instances"):
+            render_configfiles(stack, "mystack", config, lambda n: "v")
+
+    def test_non_mapping_configfile_entry_still_raises_its_own_shape_error(
+        self, tmp_path: Path
+    ) -> None:
+        """A malformed (non-table) configfile entry is not this package's
+        concern to validate -- the pre-existing S5.1 shape check still
+        raises for it, unaffected by the new instances resolution pass."""
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        config = {
+            "mystack": {
+                "worker": {
+                    "configfile": {
+                        "bad": "not-a-table",
+                    }
+                }
+            }
+        }
+        with pytest.raises(ValueError, match="must be a table"):
+            render_configfiles(stack, "mystack", config, lambda n: "v")
+
+    def test_non_mapping_service_block_ignored(self, tmp_path: Path) -> None:
+        """A non-table value at the service level (e.g. an unrelated scalar
+        under the stack root) is silently skipped, exactly like the
+        pre-existing per-configfile loop already does."""
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        config = {"mystack": {"not_a_service": "scalar-value"}}
+        assert render_configfiles(stack, "mystack", config, lambda n: "v") == []
+
+
+# ---------------------------------------------------------------------------
+# V8-PREP-6 (ciu-P24) — S7.5e: migration-safety refusal (added post-review).
+#
+# A configfile that omits its own `instances` key, under a service that
+# DOES declare an explicit `instances` value > 1, refuses instead of
+# silently applying the service-level value as a default. This is the exact
+# shape the `applications/workers` test-repo demo had BEFORE it was
+# migrated to the new unified pattern (see CHANGES.md's migration note):
+# a service-level `instances` key used only to drive the stack's own
+# hand-rolled compose loop, with a configfile relying on the pre-existing
+# S5.3 base-selector fan-out of a single shared render. Silently
+# reinterpreting that omission as "render N independent times" the moment
+# this package ships would be a silent behavior change on upgrade for any
+# real consumer shaped the same way -- so it refuses loudly instead.
+# ---------------------------------------------------------------------------
+
+class TestMigrationSafetyRefusal:
+    """S7.5e -- omitted configfile `instances` + declared service default > 1
+    refuses; this is the exact collision the applications/workers demo had."""
+
+    def _make_stack(self, tmp_path: Path) -> Path:
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        (stack / "worker.conf.j2").write_text("ok\n", encoding="utf-8")
+        return stack
+
+    def test_reproduces_the_applications_workers_collision(
+        self, tmp_path: Path
+    ) -> None:
+        """The exact shape ciu-P24 found live: a service-level `instances`
+        default (used by the stack's own compose loop) plus a configfile
+        that never opted in -- must refuse, naming the service, the
+        configfile, and the declared value, with concrete remedies."""
+        stack = self._make_stack(tmp_path)
+        config = {
+            "workers": {
+                "worker": {
+                    "instances": 2,
+                    "configfile": {
+                        "main": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/config.toml",
+                        }
+                    },
+                }
+            }
+        }
+        with pytest.raises(ValueError) as excinfo:
+            render_configfiles(stack, "workers", config, lambda n: "v")
+        msg = str(excinfo.value)
+        assert "[S7.5e]" in msg
+        assert "worker" in msg
+        assert "main" in msg
+        assert "instances=2" in msg
+        # Both remedies are named, not just the fact of the refusal.
+        assert "instances = 2" in msg  # remedy (a): restate explicitly
+        assert "base-selector" in msg  # remedy (b): drop the service default
+
+    def test_explicit_restatement_avoids_the_refusal(self, tmp_path: Path) -> None:
+        """Remedy (a): declaring the SAME value on the configfile opts in
+        cleanly -- no refusal, correct 2x fan-out."""
+        stack = self._make_stack(tmp_path)
+        config = {
+            "workers": {
+                "worker": {
+                    "instances": 2,
+                    "configfile": {
+                        "main": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/config.toml",
+                            "instances": 2,
+                        }
+                    },
+                }
+            }
+        }
+        mounts = render_configfiles(stack, "workers", config, lambda n: "v")
+        assert [m.service for m in mounts] == ["worker-1", "worker-2"]
+
+    def test_no_service_level_default_avoids_the_refusal(
+        self, tmp_path: Path
+    ) -> None:
+        """Remedy (b): no service-level `instances` at all -- the configfile
+        stays single-instance, unaffected (byte-identical to pre-P24)."""
+        stack = self._make_stack(tmp_path)
+        config = {
+            "workers": {
+                "worker": {
+                    "configfile": {
+                        "main": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/config.toml",
+                        }
+                    },
+                }
+            }
+        }
+        mounts = render_configfiles(stack, "workers", config, lambda n: "v")
+        assert len(mounts) == 1
+        assert mounts[0].service == "worker"
+
+    def test_service_level_default_of_one_does_not_refuse(
+        self, tmp_path: Path
+    ) -> None:
+        """A degenerate `instances = 1` at the service level is below the
+        > 1 threshold -- never a hazard, never a refusal."""
+        stack = self._make_stack(tmp_path)
+        config = {
+            "workers": {
+                "worker": {
+                    "instances": 1,
+                    "configfile": {
+                        "main": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/config.toml",
+                        }
+                    },
+                }
+            }
+        }
+        mounts = render_configfiles(stack, "workers", config, lambda n: "v")
+        assert len(mounts) == 1
+        assert mounts[0].service == "worker"
+
+
+# ---------------------------------------------------------------------------
+# V8-PREP-6 (ciu-P24) — O2: `ciu.instances` compose-context injection.
+# ---------------------------------------------------------------------------
+
+class TestCiuInstancesContextInjection:
+    """O2 -- render_configfiles injects {service: N>1} into ciu_context."""
+
+    def test_no_ciu_context_no_mutation_attempted(self, tmp_path: Path) -> None:
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        (stack / "worker.conf.j2").write_text("ok\n", encoding="utf-8")
+        config = {
+            "mystack": {
+                "worker": {
+                    "instances": 3,
+                    "configfile": {
+                        "cfg": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/worker.conf",
+                            "instances": 3,
+                        }
+                    },
+                }
+            }
+        }
+        mounts = render_configfiles(stack, "mystack", config, lambda n: "v")
+        assert len(mounts) == 3
+
+    def test_instances_of_exactly_one_absent_from_ciu_instances(
+        self, tmp_path: Path
+    ) -> None:
+        """O4: ciu.instances contains exactly the services resolving > 1,
+        never a service that merely declared instances = 1."""
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        (stack / "worker.conf.j2").write_text("ok\n", encoding="utf-8")
+        config = {
+            "mystack": {
+                "worker": {
+                    "instances": 1,
+                    "configfile": {
+                        "cfg": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/worker.conf",
+                        }
+                    },
+                }
+            }
+        }
+        ciu_context: dict = {}
+        render_configfiles(
+            stack, "mystack", config, lambda n: "v", ciu_context=ciu_context
+        )
+        assert "instances" not in ciu_context
+
+    def test_multiple_services_only_multi_instance_ones_present(
+        self, tmp_path: Path
+    ) -> None:
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        (stack / "a.conf.j2").write_text("a\n", encoding="utf-8")
+        (stack / "b.conf.j2").write_text("b\n", encoding="utf-8")
+        config = {
+            "mystack": {
+                "api": {
+                    "instances": 3,
+                    "configfile": {
+                        "cfg": {
+                            "template": "a.conf.j2",
+                            "target": "/etc/api/a.conf",
+                            "instances": 3,
+                        }
+                    },
+                },
+                "single": {
+                    "configfile": {
+                        "cfg": {"template": "b.conf.j2", "target": "/etc/single/b.conf"}
+                    },
+                },
+            }
+        }
+        ciu_context: dict = {}
+        render_configfiles(
+            stack, "mystack", config, lambda n: "v", ciu_context=ciu_context
+        )
+        assert ciu_context["instances"] == {"api": 3}
+
+    def test_cross_stack_reuse_does_not_leak_stale_instances(
+        self, tmp_path: Path
+    ) -> None:
+        """The shared ciu_context object engine.py threads across EVERY
+        stack in one `ciu up` run must not carry a prior stack's fan-out
+        counts into a later stack that declares none of its own."""
+        stack_a = tmp_path / "stack_a"
+        stack_a.mkdir()
+        (stack_a / "worker.conf.j2").write_text("ok\n", encoding="utf-8")
+        config_a = {
+            "mystack": {
+                "worker": {
+                    "instances": 3,
+                    "configfile": {
+                        "cfg": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/worker.conf",
+                            "instances": 3,
+                        }
+                    },
+                }
+            }
+        }
+
+        stack_b = tmp_path / "stack_b"
+        stack_b.mkdir()
+        (stack_b / "worker.conf.j2").write_text("ok\n", encoding="utf-8")
+        config_b = {
+            "mystack": {
+                "worker": {
+                    "configfile": {
+                        "cfg": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/worker.conf",
+                        }
+                    },
+                }
+            }
+        }
+
+        shared_ciu_context: dict = {"selected_profiles": [], "deployed_stacks": []}
+        render_configfiles(
+            stack_a, "mystack", config_a, lambda n: "v", ciu_context=shared_ciu_context
+        )
+        assert shared_ciu_context["instances"] == {"worker": 3}
+
+        render_configfiles(
+            stack_b, "mystack", config_b, lambda n: "v", ciu_context=shared_ciu_context
+        )
+        assert "instances" not in shared_ciu_context
+        # Unrelated S3.12 facts survive untouched.
+        assert shared_ciu_context["selected_profiles"] == []
+
+    def test_cross_stack_reuse_replaces_not_merges_when_both_declare(
+        self, tmp_path: Path
+    ) -> None:
+        """Review-caught gap: the prior test only pins the pop-when-empty
+        half. This pins the OTHER half -- when the SECOND stack ALSO
+        declares its own (different) non-empty instances, its own map must
+        REPLACE the first stack's entirely, not accumulate alongside it.
+        This is the same shared-object hazard class `selected_profiles`/
+        `deployed_stacks` (S3.12) exists to guard against; a mutant that
+        turns the fresh assignment into
+        `ciu_context.setdefault("instances", {}).update(...)` passes every
+        OTHER test in this file but fails this one (stack B would see
+        `{'worker': 3, 'other': 2}` instead of just its own `{'other': 2}`).
+        """
+        stack_a = tmp_path / "stack_a"
+        stack_a.mkdir()
+        (stack_a / "worker.conf.j2").write_text("ok\n", encoding="utf-8")
+        config_a = {
+            "mystack": {
+                "worker": {
+                    "instances": 3,
+                    "configfile": {
+                        "cfg": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/worker.conf",
+                            "instances": 3,
+                        }
+                    },
+                }
+            }
+        }
+
+        stack_b = tmp_path / "stack_b"
+        stack_b.mkdir()
+        (stack_b / "other.conf.j2").write_text("ok\n", encoding="utf-8")
+        config_b = {
+            "mystack": {
+                "other": {
+                    "instances": 2,
+                    "configfile": {
+                        "cfg": {
+                            "template": "other.conf.j2",
+                            "target": "/etc/other/other.conf",
+                            "instances": 2,
+                        }
+                    },
+                }
+            }
+        }
+
+        shared_ciu_context: dict = {"selected_profiles": [], "deployed_stacks": []}
+        render_configfiles(
+            stack_a, "mystack", config_a, lambda n: "v", ciu_context=shared_ciu_context
+        )
+        assert shared_ciu_context["instances"] == {"worker": 3}
+
+        render_configfiles(
+            stack_b, "mystack", config_b, lambda n: "v", ciu_context=shared_ciu_context
+        )
+        # Stack B's own map only -- NOT {'worker': 3, 'other': 2}.
+        assert shared_ciu_context["instances"] == {"other": 2}
+
+
+# ---------------------------------------------------------------------------
+# V8-PREP-6 (ciu-P24) — O3: duplicate-mount post-render refusal.
+# ---------------------------------------------------------------------------
+
+class TestInstanceServiceKeyRefusal:
+    """O3 -- render_compose refuses when a declared-multi-instance service's
+    rendered compose keeps a bare key, or is missing an instance key."""
+
+    def test_bare_key_with_declared_instances_refuses(self, tmp_path: Path) -> None:
+        tmpl = tmp_path / "ciu.compose.yml.j2"
+        tmpl.write_text("services:\n  api:\n    image: myapp\n", encoding="utf-8")
+        ciu_context = {"instances": {"api": 3}}
+        with pytest.raises(ValueError) as excinfo:
+            render_compose(tmpl, {}, ciu_context=ciu_context)
+        msg = str(excinfo.value)
+        assert "api" in msg
+        assert "instances=3" in msg
+
+    def test_correctly_enumerated_instances_passes(self, tmp_path: Path) -> None:
+        tmpl = tmp_path / "ciu.compose.yml.j2"
+        tmpl.write_text(
+            "services:\n"
+            "{% for i in range(1, 4) %}\n"
+            "  api-{{ i }}:\n"
+            "    image: myapp\n"
+            "{% endfor %}\n",
+            encoding="utf-8",
+        )
+        ciu_context = {"instances": {"api": 3}}
+        out = render_compose(tmpl, {}, ciu_context=ciu_context)
+        assert "api-1" in out and "api-2" in out and "api-3" in out
+        assert "\n  api:\n" not in out
+
+    def test_missing_instance_key_refuses(self, tmp_path: Path) -> None:
+        """Only api-1/api-2 rendered but instances=3 declared -> refusal."""
+        tmpl = tmp_path / "ciu.compose.yml.j2"
+        tmpl.write_text(
+            "services:\n  api-1:\n    image: myapp\n  api-2:\n    image: myapp\n",
+            encoding="utf-8",
+        )
+        ciu_context = {"instances": {"api": 3}}
+        with pytest.raises(ValueError, match="api"):
+            render_compose(tmpl, {}, ciu_context=ciu_context)
+
+    def test_no_instances_key_in_ciu_context_skips_check(self, tmp_path: Path) -> None:
+        """A ciu_context with no 'instances' entry (the common case) never
+        triggers the check, even for a bare-looking service."""
+        tmpl = tmp_path / "ciu.compose.yml.j2"
+        tmpl.write_text("services:\n  api:\n    image: myapp\n", encoding="utf-8")
+        ciu_context = {"selected_profiles": [], "deployed_stacks": []}
+        out = render_compose(tmpl, {}, ciu_context=ciu_context)
+        assert "image: myapp" in out
+
+    def test_ciu_context_none_skips_check(self, tmp_path: Path) -> None:
+        tmpl = tmp_path / "ciu.compose.yml.j2"
+        tmpl.write_text("services:\n  api:\n    image: myapp\n", encoding="utf-8")
+        out = render_compose(tmpl, {})
+        assert "image: myapp" in out
+
+    def test_unrelated_numeric_looking_service_not_touched(self, tmp_path: Path) -> None:
+        """A service literally named 'worker-1', sitting alongside a
+        correctly-enumerated declared service, is never itself checked --
+        the refusal is scoped strictly to keys present in instances_map
+        ('worker' is not one), not to numeric-looking naming in general."""
+        tmpl = tmp_path / "ciu.compose.yml.j2"
+        tmpl.write_text(
+            "services:\n"
+            "  worker-1:\n    image: myapp\n"
+            "  api-1:\n    image: myapp\n"
+            "  api-2:\n    image: myapp\n",
+            encoding="utf-8",
+        )
+        ciu_context = {"instances": {"api": 2}}  # 'worker' is not declared
+        out = render_compose(tmpl, {}, ciu_context=ciu_context)
+        assert "worker-1" in out and "api-1" in out and "api-2" in out
+
+
+# ---------------------------------------------------------------------------
+# V8-PREP-6 (ciu-P24) — end-to-end wiring: ONE ciu_context object flows from
+# render_configfiles (engine.py Step 12) into render_compose (Step 13), for
+# the same stack render, exactly as engine.py calls them.
+# ---------------------------------------------------------------------------
+
+class TestEndToEndInstancesWiring:
+    def test_service_level_default_flows_through_to_compose_refusal(
+        self, tmp_path: Path
+    ) -> None:
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        (stack / "worker.conf.j2").write_text("ok\n", encoding="utf-8")
+        config = {
+            "mystack": {
+                "worker": {
+                    "instances": 3,
+                    "configfile": {
+                        "cfg": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/worker.conf",
+                            "instances": 3,
+                        }
+                    },
+                }
+            }
+        }
+        ciu_context: dict = {"selected_profiles": [], "deployed_stacks": []}
+        mounts = render_configfiles(
+            stack, "mystack", config, lambda n: "v", ciu_context=ciu_context
+        )
+        assert len(mounts) == 3
+
+        # The compose template forgot to loop -- a bare 'worker' key.
+        tmpl = stack / "ciu.compose.yml.j2"
+        tmpl.write_text("services:\n  worker:\n    image: myapp\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="worker"):
+            render_compose(tmpl, {}, ciu_context=ciu_context)
+
+    def test_service_level_default_flows_through_to_compose_success(
+        self, tmp_path: Path
+    ) -> None:
+        stack = tmp_path / "stack"
+        stack.mkdir()
+        (stack / "worker.conf.j2").write_text("ok\n", encoding="utf-8")
+        config = {
+            "mystack": {
+                "worker": {
+                    "instances": 2,
+                    "configfile": {
+                        "cfg": {
+                            "template": "worker.conf.j2",
+                            "target": "/etc/worker/worker.conf",
+                            "instances": 2,
+                        }
+                    },
+                }
+            }
+        }
+        ciu_context: dict = {"selected_profiles": [], "deployed_stacks": []}
+        render_configfiles(
+            stack, "mystack", config, lambda n: "v", ciu_context=ciu_context
+        )
+
+        # This is the O5 worked-example loop pattern, verbatim.
+        tmpl = stack / "ciu.compose.yml.j2"
+        tmpl.write_text(
+            "services:\n"
+            "{% for i in range(1, ciu.instances.worker + 1) %}\n"
+            "  worker-{{ i }}:\n"
+            "    image: myapp\n"
+            "{% endfor %}\n",
+            encoding="utf-8",
+        )
+        out = render_compose(tmpl, {}, ciu_context=ciu_context)
+        assert "worker-1" in out and "worker-2" in out
+
+
+# ---------------------------------------------------------------------------
+# V8-PREP-7 / S8.2a — env_required declarations
+# ---------------------------------------------------------------------------
+
+class TestResolveEnvRequired:
+    """O1 — [<root>.<service>] env_required = [...] shape validation."""
+
+    def test_absent_anywhere_returns_empty_zero_behavior_change(self) -> None:
+        root = {"worker": {"image": "myapp"}, "secrets": {"pw": {}}}
+        assert resolve_env_required(root) == {}
+
+    def test_single_service_valid_list(self) -> None:
+        root = {"postgres": {"env_required": ["POSTGRES_USER", "POSTGRES_PASSWORD_FILE"]}}
+        assert resolve_env_required(root) == {
+            "postgres": ["POSTGRES_USER", "POSTGRES_PASSWORD_FILE"]
+        }
+
+    def test_multiple_services_declared(self) -> None:
+        root = {
+            "postgres": {"env_required": ["POSTGRES_USER"]},
+            "redis": {"env_required": ["REDIS_URL"]},
+            "worker": {"image": "myapp"},  # no declaration -> absent from result
+        }
+        assert resolve_env_required(root) == {
+            "postgres": ["POSTGRES_USER"],
+            "redis": ["REDIS_URL"],
+        }
+
+    def test_non_mapping_service_block_skipped(self) -> None:
+        """A scalar/list value under root (never a service table) is simply
+        skipped, the same convention _resolve_service_instances uses."""
+        root = {"not_a_service": ["x"], "worker": {"env_required": ["X"]}}
+        assert resolve_env_required(root) == {"worker": ["X"]}
+
+    def test_reserved_looking_table_without_the_key_is_harmless(self) -> None:
+        """[<root>.secrets]/[<root>.hooks] are Mappings too, but never declare
+        env_required of their own -- no special-casing is needed."""
+        root = {
+            "secrets": {"pw": {"kind": "GEN_LOCAL"}},
+            "hooks": {"pre_compose": []},
+        }
+        assert resolve_env_required(root) == {}
+
+    def test_non_list_value_raises_naming_service_and_value(self) -> None:
+        root = {"postgres": {"env_required": "POSTGRES_USER"}}
+        with pytest.raises(ValueError) as excinfo:
+            resolve_env_required(root)
+        msg = str(excinfo.value)
+        assert "postgres" in msg
+        assert "POSTGRES_USER" in msg
+
+    @pytest.mark.parametrize("bad_entry", ["", 123, None, True, 1.5, ["nested"]])
+    def test_invalid_entry_type_raises(self, bad_entry: object) -> None:
+        root = {"postgres": {"env_required": [bad_entry]}}
+        with pytest.raises(ValueError) as excinfo:
+            resolve_env_required(root)
+        assert "postgres" in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        "bad_name", ["1BAD", "bad-name", "bad name", "bad.name", "-lead"]
+    )
+    def test_invalid_charset_raises(self, bad_name: str) -> None:
+        root = {"postgres": {"env_required": [bad_name]}}
+        with pytest.raises(ValueError) as excinfo:
+            resolve_env_required(root)
+        msg = str(excinfo.value)
+        assert "postgres" in msg
+        assert bad_name in msg
+
+    def test_duplicate_entry_within_one_service_raises(self) -> None:
+        root = {"postgres": {"env_required": ["POSTGRES_USER", "POSTGRES_USER"]}}
+        with pytest.raises(ValueError) as excinfo:
+            resolve_env_required(root)
+        msg = str(excinfo.value)
+        assert "postgres" in msg
+        assert "POSTGRES_USER" in msg
+
+    def test_empty_list_is_valid_and_harmless(self) -> None:
+        root = {"postgres": {"env_required": []}}
+        assert resolve_env_required(root) == {"postgres": []}
+
+    def test_valid_names_underscore_and_digits(self) -> None:
+        root = {"svc": {"env_required": ["_PRIVATE", "VAR_2", "A"]}}
+        assert resolve_env_required(root) == {"svc": ["_PRIVATE", "VAR_2", "A"]}
+
+
+class TestCheckEnvRequired:
+    """O2/O3 — collective presence check against a *built* env dict."""
+
+    def test_all_present_no_raise(self) -> None:
+        check_env_required(
+            {"postgres": ["POSTGRES_USER"]}, {"POSTGRES_USER": "alice"}
+        )  # must not raise
+
+    def test_empty_env_required_is_a_no_op(self) -> None:
+        check_env_required({}, {})  # must not raise
+
+    def test_single_missing_names_service_and_variable(self) -> None:
+        with pytest.raises(ValueError) as excinfo:
+            check_env_required({"postgres": ["POSTGRES_USER"]}, {})
+        assert "postgres.POSTGRES_USER" in str(excinfo.value)
+
+    def test_empty_string_value_counts_as_missing(self) -> None:
+        with pytest.raises(ValueError) as excinfo:
+            check_env_required(
+                {"postgres": ["POSTGRES_USER"]}, {"POSTGRES_USER": ""}
+            )
+        assert "postgres.POSTGRES_USER" in str(excinfo.value)
+
+    def test_o3_collective_error_names_every_missing_pair_not_just_first(
+        self,
+    ) -> None:
+        """O3 — missing vars across ALL services collected into ONE error,
+        never a stop after the first miss."""
+        env_required = {
+            "postgres": ["POSTGRES_USER", "POSTGRES_PASSWORD_FILE"],
+            "redis": ["REDIS_URL"],
+        }
+        with pytest.raises(ValueError) as excinfo:
+            check_env_required(env_required, {"POSTGRES_USER": "alice"})
+        msg = str(excinfo.value)
+        # POSTGRES_USER was present -> not reported missing.
+        assert "postgres.POSTGRES_USER" not in msg
+        # Both remaining misses, across BOTH services, are named in ONE error.
+        assert "postgres.POSTGRES_PASSWORD_FILE" in msg
+        assert "redis.REDIS_URL" in msg
+
+
+# ---------------------------------------------------------------------------
+# V8-PREP-7 — the real integration point: compose_process_env(config=, root_key=)
+# ---------------------------------------------------------------------------
+
+class TestComposeProcessEnvRequired:
+    def test_config_and_root_key_both_omitted_is_zero_behavior_change(self) -> None:
+        """The default (and the ONLY way engine.py calls this today, S8.2a):
+        omitting config/root_key never even looks at env_required."""
+        env = compose_process_env([], {}, base={"A": "1"})
+        assert set(env.keys()) == {"A", "PWD"}
+
+    def test_only_root_key_given_is_a_no_op(self) -> None:
+        env = compose_process_env(
+            [], {}, base={}, root_key="mystack"
+        )
+        assert set(env.keys()) == {"PWD"}
+
+    def test_only_config_given_is_a_no_op(self) -> None:
+        env = compose_process_env(
+            [], {}, base={},
+            config={"mystack": {"worker": {"env_required": ["MISSING"]}}},
+        )
+        assert set(env.keys()) == {"PWD"}
+
+    def test_root_key_not_present_in_config_is_a_no_op(self) -> None:
+        env = compose_process_env(
+            [], {}, base={}, config={}, root_key="mystack"
+        )
+        assert set(env.keys()) == {"PWD"}
+
+    def test_no_service_declares_env_required_zero_behavior_change(self) -> None:
+        config = {"mystack": {"worker": {"image": "myapp"}}}
+        env = compose_process_env(
+            [], {}, base={"A": "1"}, config=config, root_key="mystack"
+        )
+        assert set(env.keys()) == {"A", "PWD"}
+
+    def test_o1_malformed_declaration_raises_through_this_entry_point(self) -> None:
+        config = {"mystack": {"worker": {"env_required": "NOT_A_LIST"}}}
+        with pytest.raises(ValueError, match="worker"):
+            compose_process_env(
+                [], {}, base={}, config=config, root_key="mystack"
+            )
+
+    def test_all_required_present_via_base_passes(self) -> None:
+        config = {"mystack": {"worker": {"env_required": ["FOO"]}}}
+        env = compose_process_env(
+            [], {}, base={"FOO": "bar"}, config=config, root_key="mystack"
+        )
+        assert env["FOO"] == "bar"
+
+    def test_missing_required_raises_naming_service_and_variable(self) -> None:
+        config = {"mystack": {"worker": {"env_required": ["FOO"]}}}
+        with pytest.raises(ValueError) as excinfo:
+            compose_process_env(
+                [], {}, base={}, config=config, root_key="mystack"
+            )
+        assert "worker.FOO" in str(excinfo.value)
+
+    def test_o2_expose_env_secret_satisfies_env_required_no_false_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """O2 -- the exact false-failure trap this package exists to avoid:
+        a required var supplied ONLY via a secret's expose_env must NOT be
+        flagged missing, even though it is absent from `base` entirely
+        (the pre-materialization / bare-process-environment state)."""
+        config = {"mystack": {"postgres": {"env_required": ["POSTGRES_PASSWORD"]}}}
+        spec = _spec("pgpw", expose_env="POSTGRES_PASSWORD")
+        mats = {
+            "pgpw": MaterializedLike(spec, "pgpw", "s3cr3t", tmp_path / "pgpw"),
+        }
+        # `base` deliberately does NOT contain POSTGRES_PASSWORD -- it is
+        # only ever produced by expose_env materialization below.
+        env = compose_process_env(
+            [spec], mats, base={}, config=config, root_key="mystack"
+        )
+        assert env["POSTGRES_PASSWORD"] == "s3cr3t"
+
+    def test_o2_negative_checking_the_pre_materialization_env_false_fails(
+        self,
+    ) -> None:
+        """O2's negative case, made concrete: checking env_required against
+        the BARE pre-materialization environment (here, `base` alone,
+        standing in for os.environ before compose_process_env runs) DOES
+        raise a false failure for an expose_env-supplied variable -- proving
+        the wrong check point is exactly the bug this package avoids by
+        checking compose_process_env's own OUTPUT instead (previous test)."""
+        pre_materialization_env: dict[str, str] = {}
+        with pytest.raises(ValueError, match="postgres.POSTGRES_PASSWORD"):
+            check_env_required(
+                {"postgres": ["POSTGRES_PASSWORD"]}, pre_materialization_env
+            )
+
+    def test_o3_missing_across_multiple_services_one_error(self) -> None:
+        config = {
+            "mystack": {
+                "postgres": {"env_required": ["POSTGRES_USER"]},
+                "redis": {"env_required": ["REDIS_URL"]},
+            }
+        }
+        with pytest.raises(ValueError) as excinfo:
+            compose_process_env(
+                [], {}, base={}, config=config, root_key="mystack"
+            )
+        msg = str(excinfo.value)
+        assert "postgres.POSTGRES_USER" in msg
+        assert "redis.REDIS_URL" in msg
+
+
+class TestEnvRequiredNoNewJinjaMechanism:
+    """O4 — {{ env.* }} is unchanged: no new template-facing mechanism was
+    added or was needed to read a variable this package's check requires."""
+
+    def test_env_dot_star_already_renders_a_required_style_variable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABASE_URL", "postgres://example")
+        tmpl = tmp_path / "ciu.compose.yml.j2"
+        tmpl.write_text(
+            "services:\n  app:\n    environment:\n"
+            "      DATABASE_URL: {{ env.DATABASE_URL }}\n",
+            encoding="utf-8",
+        )
+        out = render_compose(tmpl, {})
+        assert "postgres://example" in out

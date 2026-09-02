@@ -42,6 +42,7 @@ class TestWorkspaceDockerBoundaries:
             '{{ range .Mounts }}{{ if eq .Destination "/tmp" }}{{ .Source }}{{ end }}{{ end }}',
         ]]
 
+    @pytest.mark.usefixtures("real_network_side_effects")  # CIU-87 gate opt-out
     def test_network_creation_failure_reports_network_and_daemon_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -63,6 +64,7 @@ class TestWorkspaceDockerBoundaries:
             ["docker", "network", "create", "failed-net"],
         ]
 
+    @pytest.mark.usefixtures("real_network_side_effects")  # CIU-87 gate opt-out
     def test_native_network_setup_never_attaches_cockpit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -106,8 +108,19 @@ class TestDevProfileAndExecutionBoundaries:
         explicit = tmp_path / "explicit"
         explicit.mkdir()
 
+        # cwd is inside a REAL ciu-managed tree (marker_root derives cleanly),
+        # but a disagreeing ambient REPO_ROOT is set -- S1.1 REFUSES rather
+        # than silently preferring either value (ciu-P32; this line used to
+        # assert the ambient value won, which was the exact masked-default
+        # defect that fix closes).
         monkeypatch.setenv("REPO_ROOT", str(explicit))
-        assert resolve_repo_root(None, nested) == explicit.resolve()
+        with pytest.raises(ValueError) as exc_info:
+            resolve_repo_root(None, nested)
+        message = str(exc_info.value)
+        assert "[S1.1]" in message
+        assert str(explicit.resolve()) in message
+        assert str(marker_root.resolve()) in message
+
         monkeypatch.delenv("REPO_ROOT", raising=False)
         assert resolve_repo_root(None, nested) == marker_root.resolve()
         assert resolve_repo_root(explicit, nested) == explicit.resolve()
@@ -138,7 +151,13 @@ class TestDevProfileAndExecutionBoundaries:
     def test_build_profile_runs_build_then_dev_container_with_selected_network(
         self, tmp_path: Path
     ) -> None:
+        # CIU-79: `build.context`/`dockerfile` resolve against `repo_root`,
+        # not `stack_dir` -- the same convention CIU-71 established for
+        # `ciu up`'s `docker compose --project-directory`. Fixture's
+        # `context = "src"` therefore means `<repo>/src`, not
+        # `<repo>/apps/builder/src`.
         repo = tmp_path / "repo"
+        repo_resolved = repo.resolve()
         stack = repo / "apps" / "builder"
         stack.mkdir(parents=True)
         (stack / "ciu.defaults.toml.j2").write_text(
@@ -159,13 +178,22 @@ class TestDevProfileAndExecutionBoundaries:
             global_loader=lambda _root: {"deploy": {"network_name": "default-net"}},
             run_fn=run_fn, interactive=False,
         ) == 0
+        build_context = repo_resolved / "src"
         assert calls == [
-            (["docker", "build", "-t", "app-dev", "-f", "src/Dockerfile.dev", "--target", "dev", "src"], str(stack)),
+            (
+                [
+                    "docker", "build", "-t", "app-dev",
+                    "-f", str(build_context / "Dockerfile.dev"),
+                    "--target", "dev", str(build_context),
+                ],
+                str(stack),
+            ),
             (["docker", "run", "--rm", "--network", "profile-net", "-w", "/app", "app-dev", "sh", "-c", "exec serve --reload"], str(stack)),
         ]
 
     def test_build_failure_does_not_launch_dev_container(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
+        repo_resolved = repo.resolve()
         stack = repo / "apps" / "builder"
         stack.mkdir(parents=True)
         (stack / "ciu.defaults.toml.j2").write_text(
@@ -183,7 +211,127 @@ class TestDevProfileAndExecutionBoundaries:
             run_fn=lambda *_args, **_kwargs: pytest.fail("dev run must not start"),
             build_run_fn=build_run_fn, interactive=False,
         ) == 1
-        assert calls == [["docker", "build", "-t", "ciu-dev-builder", "-f", "src/Dockerfile", "src"]]
+        build_context = repo_resolved / "src"
+        assert calls == [
+            ["docker", "build", "-t", "ciu-dev-builder", "-f", str(build_context / "Dockerfile"), str(build_context)]
+        ]
+
+    def test_build_context_resolves_against_repo_root_not_stack_dir(
+        self, tmp_path: Path
+    ) -> None:
+        """CIU-79: a `ciu dev` profile whose Dockerfile `COPY`s a
+        repo-root-relative path -- the same shape CIU-71's live repro hit
+        under `ciu up` -- must resolve `build.context = "."` against the
+        REPO ROOT, not the stack dir, so the COPY source is reachable.
+
+        Review fix: the Dockerfile lives at the REPO ROOT (where `context =
+        "."` resolves under the fix), not the stack dir -- an earlier round
+        of this test put it at the stack dir instead, so the fixture never
+        created the file the CORRECTED argv actually names; the fake
+        `build_run_fn` masked that (it never touches the filesystem), so the
+        test passed while certifying an argv naming a nonexistent file.
+
+        Controlled wrong implementation (manually verified while authoring
+        this fix): resolving `context` against `stack_dir` instead of
+        `repo_root` (the pre-fix behavior never resolves `context` to an
+        absolute path at all -- it passes the literal `"."` string through
+        and relies on `cwd=stack_dir` for docker's own resolution) makes
+        `context_arg == repo_resolved` fail FIRST, not the later
+        `copy_target.is_file()` check -- `argv[-1]` stays `Path(".")`,
+        which never equals the resolved repo root.
+        """
+        repo = tmp_path / "repo"
+        repo_resolved = repo.resolve()
+        copy_source = repo / "shared" / "assets" / "seed.txt"
+        copy_source.parent.mkdir(parents=True)
+        copy_source.write_text("seed\n", encoding="utf-8")
+
+        stack = repo / "apps" / "builder"
+        stack.mkdir(parents=True)
+        (repo / "Dockerfile").write_text(
+            "FROM scratch\nCOPY shared/assets/seed.txt /seed.txt\n", encoding="utf-8"
+        )
+        (stack / "ciu.defaults.toml.j2").write_text(
+            '[app]\n[app.dev]\ncommand = "serve"\nbuild = { context = "." }\n',
+            encoding="utf-8",
+        )
+
+        build_calls: list[list[str]] = []
+
+        def build_run_fn(argv: list[str], **_kwargs: object) -> int:
+            build_calls.append(argv)
+            return 0
+
+        def run_fn(argv: list[str], **_kwargs: object) -> int:
+            return 0
+
+        assert run_dev(
+            "apps/builder", repo_root=repo, global_loader=lambda _root: {},
+            run_fn=run_fn, build_run_fn=build_run_fn, interactive=False,
+        ) == 0
+
+        [argv] = build_calls
+        context_arg = Path(argv[-1])
+        dockerfile_arg = Path(argv[argv.index("-f") + 1])
+        assert context_arg == repo_resolved, (
+            f"build.context resolved to {context_arg}, not the repo root "
+            f"{repo_resolved} -- CIU-79 regressed"
+        )
+        assert dockerfile_arg == repo_resolved / "Dockerfile"
+        copy_target = context_arg / "shared" / "assets" / "seed.txt"
+        assert copy_target.is_file(), (
+            "the Dockerfile's COPY source is not reachable from the "
+            f"resolved build context ({context_arg}) -- CIU-79's failure class"
+        )
+
+    def test_ciu79_is_a_deliberate_break_for_stack_local_dockerfiles(
+        self, tmp_path: Path
+    ) -> None:
+        """CIU-79 is a DELIBERATE semantic break, not purely additive:
+        review found it undocumented as such (blocker 1). A `ciu dev`
+        profile whose Dockerfile lives IN THE STACK DIR -- `context = "."`
+        meaning "here", the shape every profile had before this fix, since
+        the old code resolved `context` against `stack_dir` -- now resolves
+        `-f`/context against the REPO ROOT instead, so a stack-local
+        Dockerfile is no longer what the argv names. This is the CORRECT,
+        intended behavior (the same repo-root-relative rule CIU-71 already
+        applies to `ciu up`), but a real docker build against a
+        stack-shaped Dockerfile like this one would now fail --
+        `docs/CONSUMERS.md` #18 carries the migration note.
+        """
+        repo = tmp_path / "repo"
+        repo_resolved = repo.resolve()
+        stack = repo / "apps" / "builder"
+        stack.mkdir(parents=True)
+        # The pre-CIU-79 shape: a Dockerfile living IN the stack dir, with
+        # no repo-root Dockerfile at all.
+        (stack / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+        (stack / "ciu.defaults.toml.j2").write_text(
+            '[app]\n[app.dev]\ncommand = "serve"\nbuild = { context = "." }\n',
+            encoding="utf-8",
+        )
+
+        build_calls: list[list[str]] = []
+
+        def build_run_fn(argv: list[str], **_kwargs: object) -> int:
+            build_calls.append(argv)
+            return 0
+
+        assert run_dev(
+            "apps/builder", repo_root=repo, global_loader=lambda _root: {},
+            run_fn=lambda *_a, **_k: 0, build_run_fn=build_run_fn,
+            interactive=False,
+        ) == 0
+
+        [argv] = build_calls
+        dockerfile_arg = Path(argv[argv.index("-f") + 1])
+        # The break, pinned: -f no longer points into the stack dir.
+        assert dockerfile_arg != stack / "Dockerfile"
+        assert dockerfile_arg == repo_resolved / "Dockerfile"
+        # And the resolved path is genuinely unreachable -- a real `docker
+        # build` on this argv would fail exactly the way the reviewer's
+        # live repro did (rc=1, "failed to read dockerfile").
+        assert not dockerfile_arg.is_file()
 
 
 def test_container_status_treats_malformed_daemon_state_as_not_found(monkeypatch: pytest.MonkeyPatch) -> None:

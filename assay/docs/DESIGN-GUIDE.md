@@ -244,7 +244,8 @@ and none of the four copies guards it.
 **Coverage format is READ and cross-checked by DERIVATION.** The lane declares
 it (it is a fact of the lane's own argv: `--cov-report=json` vs `lcov`), and
 assay sniffs the artifact (`mode:` → go-cover, `{"files":` → coverage.py JSON,
-`SF:` → lcov, `<coverage` → cobertura) and **refuses on mismatch**. A lane whose
+`SF:` → lcov, `<coverage` → cobertura, `"statementMap"` →
+`coverage-istanbul-json`) and **refuses on mismatch**. A lane whose
 argv changed format and was not updated fails loudly instead of mis-parsing.
 
 **`_derive_test_command` is deleted, not ported.** nyxloom's mutation gate maps
@@ -849,8 +850,36 @@ claims knowledge must say what it knows it from.
 
 Versioned JSON plus a **JSON Schema shipped as data**, so ciu, a CI system or
 nyxloom validates against a file rather than importing a package. The artifact
-carries `schema_version: 6` (an integer, bumped on any breaking shape change) and
-`assay_version`.
+carries `schema_version: 8` (an integer, bumped on any breaking shape change),
+`assay_version`, and — when the running build can identify itself — the
+optional `judge_provenance` block (B018/A-327).
+
+**`assay_version` names a version; `judge_provenance` names a build.** Any
+process can print a version string, so a consumer that resolved a judge
+artifact, verified its digest and then received a verdict had nothing binding
+the second to the first (CIU's V8 testing-gate proposal §11.3 is the concrete
+ask). `judge_provenance` records the distribution name, exact version,
+artifact kind (`wheel`/`zipapp` — a release publishes both, with different
+digests, so the kind is recorded rather than guessed), digest algorithm, and
+the artifact's own lowercase sha256. It is derived per invocation form from a
+handle that form actually exposes, each MEASURED rather than assumed: a
+zipapp's `zipimport.zipimporter.archive` is hashed directly; a wheel install
+reports the sha256 the installer wrote into PEP 610 `direct_url.json`, which
+is the only statement about the wheel that survives its own installation. A
+process whose imported code lies outside the distribution it found is refused
+too — reporting an installed wheel's digest for source imported over it would
+be a record that is not absent but false, which is worse.
+
+**The field is optional and its absence is meaningful, which is the whole
+design.** A source checkout has no build artifact; hashing `src/` and calling
+the result an artifact digest is exactly the laundering the field exists to
+prevent, so an unidentifiable invocation records NOTHING — never four of five
+fields — and announces the reason on the diagnostics stream. Making the
+identity mandatory instead would have forced either an invented digest or a
+tool that cannot run from a checkout at all. A consumer that genuinely needs
+the binding says so per invocation with `assay run
+--require-judge-provenance`, which refuses before any lane work rather than
+producing evidence it cannot attribute.
 
 **A version bump is a migration for the consumer, never an upgrade by the
 producer.** `assay verify` refuses any `schema_version` but its own, with a
@@ -933,6 +962,52 @@ happened. `JUDGE_FIELDS_BY_RIGOR` stays the single source for this — the
 required-field set becomes mode-dependent rather than duplicated into a second
 table — and an `R0,R1,R2` lane in whole-target mode declares no `base` and
 records none.
+
+**And at schema v8, the artifact can finally CHECK all of that for an `R0,R2`
+lane (B035/A-329).** A-325's correction was right and incomplete in one
+specific way: it wrote the rule to the part the document could witness, and
+for a lane declaring no R1 that part was empty. `judgment.r1.mode` was on the
+wire; `judgment.r2` had no `mode` at all, so nothing distinguished a
+diff-based R2 (which must carry a base) from a whole-target one (which must
+not) — and the shape with no R1 is not a corner case, it is every SQL lane,
+including dstdns's `cw2b_schema`. Both halves therefore went unenforced
+exactly where they mattered most, and a diff-based `R0,R2` verdict that
+omitted the base it was scoped against was accepted by 2.4.2 where 2.4.1 had
+refused it.
+
+`judgment.r2` now records `mode` (required, like R1's) and `targets`
+(required, non-empty, unique and sorted iff `mode = "whole_target"`, forbidden
+otherwise — R1's contract word for word). The model, `verify.py`'s raw layer
+and the packaged schema each read the lane's mode off `r1` if present and off
+`r2` otherwise, and enforce `base` required-or-forbidden for every shape.
+Where BOTH tiers are present their modes must agree and their target sets must
+be equal: one judgment records one lane's scope, and an ambiguous premise
+cannot carry a rule. `targets` also closes B035's smaller half — a
+whole-target verdict names mutated files only through `mutation.*[].path`, so
+without it a declared target that legitimately produced zero mutation sites is
+indistinguishable from one that was never considered.
+
+This is the one thing in the v7→v8 cut that *required* a bump rather than a
+widening, and the reason is mechanical rather than semantic: the packaged
+schema sets `additionalProperties: false` on the `judgment.r2` object, so a
+released consumer holding a v7 copy would reject any document carrying the new
+keys. B014's own 6→7 bump turned on the identical fact.
+
+**Who supplies the base is separable from whether one is required
+(B019/A-328).** `judge.base_source = "request"` lets a lane require
+changed-line judging while delegating the base's IDENTITY to the invoking gate
+request (`assay run --request-base REF`), so one static lane declaration stays
+correct across every branch and worktree while an orchestrator owns branch
+awareness. The request-supplied value is not a second code path: it is a
+second *source* for the same argument, resolved by the same
+`_resolve_declared_base` merge-base contract and recorded once in
+`judgment.resolved.base`, so nothing downstream can tell which owner supplied
+it — and nothing downstream needs to. The two owners are mutually exclusive
+and every disagreement is refused by name, applying A-062's inert-config rule
+rather than inventing a precedence order: whichever side lost a precedence
+contest would be configuration nothing reads. `base_source` is itself refused
+wherever `judge.base` would be (R0/R3-only lanes, whole-target lanes), because
+a policy about an inert field is inert.
 
 ### Branch coverage is judged whenever the artifact reports it (A-258)
 
@@ -1129,7 +1204,11 @@ Fixtures are hello-world projects carried in assay's own test data, each with an
 expected verdict artifact covering all six outcomes and every `reason_code`.
 
 - **Committed static data:** real source files plus **pre-generated** coverage
-  artifacts (coverage.py JSON, cobertura XML, `go test -coverprofile` output).
+  artifacts (coverage.py JSON, cobertura XML, `go test -coverprofile` output,
+  and — B036 — two real `vitest run --coverage` documents, one per provider,
+  produced outside this repository from the committed `tests/fixtures/coverage/
+  probe-js` project; assay's suite needs no Node toolchain for the same reason
+  it needs no Go one).
   Parsing a profile and injecting a canary into Go source are pure text
   operations, so **assay's suite needs no Go toolchain** — mandatory here, since
   this devcontainer has none.
@@ -1168,6 +1247,13 @@ parser to an adapter copies the lcov parser into every adapter that can emit
 lcov — the four-copies divergence, one layer down. So: **a parser registry keyed
 by format, and a `LanguageAdapter` keyed by language.**
 
+B036 is that claim landing twice over. `coverage-istanbul-json` — istanbul's
+own `coverage-final.json`, emitted natively by nyc/istanbul, by Jest, and by
+BOTH of Vitest's coverage providers — was added as a fifth FORMAT with no
+language attached, and the `javascript` adapter was added as a fourth LANGUAGE
+covering `.js`/`.jsx`/`.ts`/`.tsx` with no format attached. Neither change
+touched the other's module, the protocol, the core, or the registry.
+
 The registry's output type carries one distinction the current copies lack:
 
 ```
@@ -1186,7 +1272,29 @@ to `(covered_arcs, total_arcs)` — is `None` when the format cannot express
 branch arcs at all (a Go cover profile: statement counts, no arcs, ever;
 `go-cover`'s parser sets it unconditionally and a test asserts that as a
 *measured* property of the format, not an omission that later looks like an
-oversight, A-O16). It is a `BranchCoverage` with an EMPTY `by_line` for a real
+oversight, A-O16). `coverage-istanbul-json` is the case that made this a THREE-way distinction
+rather than a two-way one (A-344): the format HAS a `branchMap`, but its real
+producers disagree about what that map means — on one source file
+`@vitest/coverage-istanbul` reports 6 arcs across 3 typed branch nodes while
+`@vitest/coverage-v8` reports 4 single-location "branches" that are really
+v8's own executed/unexecuted ranges. Through schema v8 a lane declared the
+format and never the producer, so this format reported `None`
+unconditionally: a number whose meaning depends on an undeclared fact is the
+`declared_unverified`-class lie.
+
+**Since v9 the producer IS declared (B045), and the parser takes it.** For a
+producer in `vocabulary.ARC_BEARING_COVERAGE_PRODUCERS` — today exactly
+`istanbul` — the arcs are read; for every other producer, and for an
+undeclared one, `branches` stays `None`. The parameter is on all five
+parsers' `parse(text, *, producer)` signature, keyword-only with no default,
+so a caller that forgets it gets a `TypeError` rather than a silently
+arc-less profile. This does NOT make the capability sniffable: the producer
+is a *declaration*, checked against the artifact only in the fail-closed
+direction — a v8-range document declared as `istanbul` is REFUSED
+(`ERROR`/`UNREADABLE_ARTIFACT`) on its first `"branch"`-typed entry rather
+than being read as something it is not.
+
+Alongside the arcs, `branches` is a `BranchCoverage` with an EMPTY `by_line` for a real
 branch-tracking artifact's file that happens to have no branches — the exact
 trap `lcov` proves is real: `coverage.py` emits `BRF`/`BRH` for one file and
 nothing at all for a branch-free sibling in the SAME artifact, so capability
@@ -1222,6 +1330,309 @@ inject_import_break(text)              inject_uncovered_line(text)
 generate_mutation_sites(text, lines, operators, limit) -> sites | UNSUPPORTED
 ```
 
+Four adapters implement it today, and each reaches only the rigor levels this
+build actually wires it to (§7 — an adapter existing is not a capability):
+
+| `judge.language` | reached here | notes |
+|---|---|---|
+| `python` | R1, R2, R3 | the reference adapter; `requires_span_attribution = True` (coverage.py's multi-line-statement gap, recovered by a real AST walk) |
+| `sql` | R2 only | a stdlib lexer over DDL; no coverage tool exists for it, so no R1, and A-192 forbids R3 without R1 |
+| `javascript` | R1 only | `.js`/`.jsx`/`.ts`/`.tsx` under one name (A-340). R2 waits on B037's native-vs-ingest ruling, so `generate_mutation_sites` is unconditionally `UNSUPPORTED`; R3 is an unwired fast-follow |
+| `go` | nothing | ships and is tested, but no producer path is wired at any level (A-172/A-217) |
+
+**`javascript` needs no span attribution, and that too was measured rather
+than assumed (A-342).** Istanbul's `statementMap` carries each statement's own
+`[start.line, end.line]` EXTENT, so the parser expands a multi-line statement
+across its own lines — innermost extent wins, ties resolve by max count —
+recovering exactly the interior lines rule 3b exists to recover, from the
+artifact rather than from a re-parse. Python needs an AST walk for the same
+recovery only because `coverage.py`'s artifact does not carry extents. The
+rule is load-bearing and not a refinement: in real
+`@vitest/coverage-istanbul` output an `if` statement's extent has count 1
+while its own never-taken `return` inside it has count 0, so a go-cover-style
+"executed wins" merge would report a provably-unexecuted line as covered.
+
+This does **not** mean every line is classified, and A-342's original wording
+saying so was corrected by its own round-1 review: a line no statement extent
+covers at all — a function signature line and a function-level closing brace
+under the babel instrumenter, a comment under any of them — stays unclassified
+and takes rule 4, exactly as an untracked line does for every other format
+here. Measured: 23 such non-comment lines in the committed istanbul fixture,
+against 29 statement start lines and 54 lines classified after expansion.
+
+**Format is one axis; PRODUCER TRUSTWORTHINESS turns out to be a third one
+(A-346).** Two producers of `coverage-istanbul-json` disagree not only about
+what `branchMap` means (above) but about whether a line ran at all:
+`@vitest/coverage-v8` reports never-executed lines as executed after any
+conditional expression, measured on two major versions, while
+`@vitest/coverage-istanbul` is correct on every case measured. Nothing in the
+document distinguishes a true execution count from a false one, so this is not
+guardable in a parser and deliberately is not guarded — sniffing the producer
+from the artifact's shape is the §5 declaration-versus-sniffing collapse. It
+is handled where an undeclarable fact has to be handled: in the documentation
+that tells a consumer which producer to run, with committed witness artifacts
+and a test that fails if the defect is ever fixed. B040.
+
+### Go statement positions come from the SOURCE, never from the profile (A-217/A-239/A-397)
+
+Every other adapter in this project is pure text processing. The Go one shells
+out, and that asymmetry is worth the paragraph it costs, because it is the one
+place where "confine language-specificity to a leaf" stopped being enough.
+
+**The problem is an impossibility proof, not a rough edge.** A `go test
+-coverprofile` record is `<path>:<startLine>.<startCol>,<endLine>.<endCol>
+<numStmts> <count>` — a positional EXTENT plus a statement CARDINALITY, and
+never the statements' own positions. The shipped parser expanded that extent
+with `range(start, end + 1)`, which reports function signatures, closing
+braces, `case` labels and continuation lines as executable code. That is not
+merely imprecise: two gofmt-clean files (`carve-assets/P27/witness/collision-colA.go`
+and `collision-colB.go`) compile under the pinned toolchain and emit a
+byte-identical profile while their statements begin on different lines —
+`{4,6}` versus `{4,5}`. A rule reading only the profile is a function of the
+profile; identical input forces identical output; the two correct answers
+differ; so **every profile-only rule is wrong on at least one of them.**
+
+**Three options were considered; the operator ruled option 2.** (1) A better
+line-range heuristic — excluded by the proof above, and its cost is not
+confined to the permissive direction: a brace-only diff inside an untested
+function reports 0/1 and FAILs at `fail_under = 100.0` where statement truth
+is 0/0. (2) A source-side oracle. (3) A column-granular verdict field — a
+schema migration owned elsewhere, and forbidden here. Full reasoning: A-217.
+
+**Why the oracle is a Go subprocess and not a Python parser.** The algorithm
+that PRODUCES those blocks is `cmd/cover`'s own instrumenter, and A-217's
+implementation note is "adapt, do not invent". Assay ships that segmentation
+verbatim (`assay/helpers/go/stmtpos/`, stdlib-only, no `require` lines, run
+under `GOPROXY=off`) and runs it with the real toolchain. The rejected
+alternative — a hand-written Python approximation of Go's grammar — is not
+comparable to P08's hand-written Go lexer, and the difference is the direction
+of failure: `has_executable_code` may be conservative, so a wrong answer there
+is a false FAIL that fails closed, whereas a wrong statement position is a
+wrong published verdict with no fail-closed direction at all.
+
+**Why a NEW protocol hook, not `statement_spans`.** `statement_spans` is
+called ONLY for lines that fell into no coverage bucket (A-097/A-101, frozen).
+It gates in the wrong direction — it RESCUES lines nothing claimed, whereas Go
+needs to DEMOTE lines a block claimed wrongly — and its type is line-only,
+while the entire reason this hook exists is that `28.22,29.2` and `29.2,31.3`
+are two different blocks a line-only key would fuse. So `statement_blocks` is
+a fourth deliberate extension, added by the package that proved the need
+(A-084), with `requires_statement_attribution` as its gate (A-397).
+
+**Why the join is on the whole extent, never positional containment.**
+`cmd/cover` ends a block at the START position of its own last statement, so
+consecutive blocks genuinely SHARE a position. A statement beginning at a
+shared position belongs to the first block only: a closed interval matches
+both, a half-open one matches neither. The structure is not recoverable from
+positions, so the oracle reports each block's own statement list and the join
+is on the block (A-391).
+
+**Why a disagreement refuses instead of guessing.** The instrumenter is
+deterministic, so re-running it over the same source must reproduce the same
+extents. Every disagreement therefore means something real — a profile from a
+different revision than the source, a file edited between the run and the
+judgment, a different toolchain — and attributing anyway would publish a
+verdict about lines that are not the lines that ran. DERIVE / READ / **FAIL**,
+at its third branch. (It also turned the toolchain delta between the frozen
+witnesses and this wave's probe from an assumption into a measurement: all
+eight profiles joined exactly, which they could not have done had the
+instrumenter changed.)
+
+**Why the correction is a GUARD, not a step someone remembers.** An
+uncorrected block profile parses cleanly, produces well-formed line sets and
+yields a plausible percentage — it is simply about the wrong lines. That is
+the **masked default** in its purest form: rendered harmless by every context
+that runs the correction, and therefore invisible to testing, surfacing only
+on the path that skips it. So `CoverageProfile.statement_attributed` has
+exactly one producer (the join itself), and `evaluate_coverage`/
+`evaluate_targets` refuse when an adapter requires attribution and the profile
+reports it never happened (A-392). Two alternatives were rejected: emitting
+EMPTY line sets until corrected fails loudly but with the wrong sentence,
+reporting `NO_MEASUREMENT` over a complete artifact — "absence for emptiness",
+a false certification rather than a missing one; and relying on the runner's
+call order is not a check at all.
+
+**A guard with a way around it is not a guard (A-406).** The paragraph above
+was true and the guard was still bypassable, because the runner had one branch
+that set `statement_attributed = True` without any oracle: "this profile
+carries no block extents at all, so it is already statement truth, vacuously".
+That reads as harmless until you notice `judge.language` and
+`judge.coverage.format` are independent by design. A Go lane may declare
+`format = "lcov"`, and lcov CONVERTED from a Go coverprofile carries exactly
+the naive block expansion this whole section exists to refuse — signatures,
+closing braces and `case` labels as executable lines — and arrives with no
+blocks, so the vacuous branch marked it attributed and the guard passed it.
+No oracle ran and no `helpers` entry was written; nothing said so.
+
+The branch is deleted. A language judged from block extents is now refused at
+CONFIG LOAD if its declared format carries none — `ERROR`/`BAD_LANE_CONFIG`,
+naming the language, the format and `go-cover` with its producers — so the
+lane never runs; and the runner keeps a second, independent refusal for a
+library caller that hand-builds a `Lane`. The case the deleted branch sounded
+like it was protecting, an EMPTY profile, was never its case at all: that
+terminates one step earlier at `check_empty_coverage`, `NO_MEASUREMENT`/
+`EMPTY_COVERAGE`, and is now pinned by a test that also asserts no `helpers`
+entry and not a PASS. The general lesson is the one this project keeps
+relearning: a branch whose comment explains why it is safe deserves the same
+scrutiny as one that has no comment, because the explanation is where the
+unexamined assumption lives.
+
+**What it does NOT fix, recorded rather than glossed.** An uncovered statement
+sharing a physical LINE with a covered one is still promoted to `executed` —
+`lit.go`'s `f := func() int { return 7 }` carries two counted statements that
+both genuinely begin on line 4, and the line did run. That is line
+granularity's own limit, which coverage.py shares; removing it needs a
+column-granular wire field. Asserted as unfixed by a test, so a future change
+that does fix it goes red rather than quietly contradicting this paragraph
+(A-393, backlog B055).
+
+**A guessed fact about `cmd/cover` that `cmd/cover` disproved, and what the
+correction cost (A-405).** The parser and both block types asserted that "a
+1-based source position is never below 1" about all four coordinates of a
+cover record. That is true of the LINE and false of the COLUMN. `go/token`
+gives a position remapped by a `//line file:line` directive that names no
+column `Column == 0` by design, and `cmd/cover` says so itself, in the comment
+that introduces the `dedup` helper (go1.25.14, `cover.go:1055-1060`):
+"positions can repeat when there is a line directive that does not specify
+column information … See issues #27530 and #30746. Tests are
+TestHtmlUnformatted and TestLineDup." So the toolchain both documents the case
+and names the corpus that exercises it — and assay refused that corpus's real
+profile with "column number 0 in '100.0' is not positive". This is the exact
+class of defect §5's *cite a source for every convention* exists to prevent,
+found in the wave built to remove it, by an adversarial reviewer who ran the
+toolchain instead of reading the code.
+
+The invariant is now stated truly, with the citation, at all three sites. The
+interesting half is what to DO with such a file, because relaxing the bound
+alone would have been worse than the refusal it replaced. A `//line`-remapped
+file's records name the DIRECTIVE's line numbers: Go's own `TestLineDup`
+fixture is 24 lines long and its profile reports lines 100 to 105. `git diff`
+names physical lines. So a permissive parser plus an unchanged evaluator gives
+a file that measures 0 executable of 0 changed and disappears into a clean
+percentage — the laundering gate this section's own guard exists to close, and
+the north star's "0/0 is never 100%".
+
+The disposition is the north star's other rule, applied literally: *pre-existing
+code outside the diff is invisible to the verdict by construction, because it
+is not what is under review.* A remapped file is flagged per FILE (any record
+with a zero column flags it; within such a file physical and virtual positions
+are indistinguishable, so the conservative direction is the only honest one).
+If the lane does not judge it — no changed line inside `source_roots`, not a
+declared target — it is IGNORED: its records contribute nothing and the lane
+proceeds, which is what stops one goyacc-generated file from taking down R1
+for a whole project. If the lane DOES judge it, the lane refuses
+`ERROR`/`BAD_LANE_CONFIG`, naming `//line` as the cause, the file, and the
+remedy. `BAD_LANE_CONFIG` rather than `UNREADABLE_ARTIFACT` because nothing is
+wrong with the artifact — it is byte-for-byte what `go test` wrote — and
+blaming it would send a consumer to re-run tests over a lane-configuration
+fault, the same misdirection `go_modfile._refuse` was written to avoid.
+
+**The oracle is STAGED out of the artifact, and that is a consequence of how
+assay is installed rather than a convenience (A-403).** `go run .` takes a
+working DIRECTORY, so the first design resolved the helper's location from
+`__file__` and reasoned that "a wheel install always materialises package data
+as real files". True — and the shipped **zipapp** is not a wheel install. Its
+package data are zip members, `is_file()` answers False, and the adapter
+refused with "assay's Go statement-position oracle is missing from the
+installation" for an oracle the archive contained all along. That is the
+install path that matters most: a Go gate image built on `golang:1.25` has an
+interpreter but no pip and no ensurepip, so the zipapp is the ONLY way assay
+gets in (A-402), which makes the shape that could not run the oracle the shape
+every Go consumer runs. The files are now read through `importlib.resources`
+— the same call `verdict.schema_text` already used for the shipped JSON Schema
+— and written into a `TemporaryDirectory` for the duration of the call, on ONE
+path for every installation shape. The single path is the load-bearing half:
+a branch taken only inside a zipapp would never be exercised by the registered
+gate, which installs a wheel, so the consumer's own path would be proven by
+nothing but an opt-in qualification run.
+
+**Which toolchain judged a verdict is recorded, and the ROLE is the runner's
+to name (B047 item 5, A-397).** A Go lane's verdict carries a `helpers[]`
+entry — `role: "statement-positions"`, `tool: "go"`, the resolved path, and an
+`identity` the toolchain reported about ITSELF from inside the program it
+compiled. The adapter layer returns a `HelperInvocation` carrying no role at
+all: `statement_blocks` is the only protocol method that produces one, so
+which of `HELPER_ROLES` it belongs to is a fact of the CALL SITE. An adapter
+that could name its own role could claim `mutation-sites` from a coverage
+hook, and the schema's correspondence rule would then demand an R2 payload for
+work that produced an R1 one — a refusal naming the wrong thing. That
+correspondence rule (`verdict.supported_helper_roles`) has exactly one
+definition, read both by `Verdict`'s own validation and by the runner, for the
+reason A-385/A-367 give about coverage keys: two copies can disagree, and the
+disagreement's shape here is a verdict the producer built and the schema then
+refuses with an uncaught `ValueError`.
+
+### A Go lane's module path is DERIVED from its `go.mod`, never declared (A-404)
+
+§5's defaults doctrine names four copies' worth of anti-pattern #1, and one of
+the four is `covergate`'s own `-source internal -module srdm`: *a literal
+standing in for a fact that lives authoritatively in the project's layout … A
+library cannot ship any of them; it must read them.* When the Go adapter
+became reachable through the CLI, that flag came back wearing a new name.
+
+The mechanics force the question. A Go cover profile keys every record by the
+package's IMPORT path — `<module path>/<dir>/<file>.go` — while `git diff`
+names the same file relative to the repository top. Something must supply the
+module path, and no fixture layout dodges it: an import path is the module
+path plus the directory, so the key equals the repo-relative path only for an
+empty module path, which `go.mod` forbids. **Every** real Go module hits this,
+and the failure is not loud: an unstripped key resolves to a file that does
+not exist, under no source root, so the lane measures nothing and — but for
+the oracle's own file-existence check — would have measured 0/0 and PASSED.
+That is the laundering gate §5 opens with, arrived at from the other side.
+
+Three shapes were on the table and the difference between them is doctrine,
+not taste. A **declared lane key** (`judge.module_path`) had the most recent
+precedent — A-328 added `judge.base_source` as an optional key with no
+lane-schema bump — and is the one rejected: A-007's selection rule asks *whose
+fact is this*, and answers by observing that the coverage FORMAT is a fact of
+the lane's own argv (so it is declared, and sniffed as a cross-check) while
+the module path is a fact of `go.mod`. A-328 is not a counter-precedent
+either: `base_source` delegates a fact that genuinely is the caller's — which
+base this gate request compares against — and A-328's own reasoning, *refuse
+precedence between two sources of one fact, because whichever loses is config
+nothing reads*, argues against a declared key sitting beside a derivation. A
+restatement-that-must-agree would catch nothing here, because `go test` read
+the same `go.mod`. A **per-lane registry** was rejected on measurement:
+`_built_in_registry` is read by the lane inventory (A-349), by the docs gate
+(A-400) and by every language resolution.
+
+What landed is **derivation, through one narrow protocol member**.
+`LanguageAdapter.for_project(repo_top, project_root)` returns the adapter to
+use for that project; every adapter but Go returns `self`, and `GoAdapter`
+returns a copy carrying the module path parsed out of the nearest `go.mod` at
+or above the project root. The core calls it once per lane, at the one point
+where it holds both anchors and before anything reads the profile, so the key
+join, the statement oracle and both evaluate modes are handed the same object
+— the alternative, binding for one consumer and not the others, would
+recreate the two-spellings drift A-385/A-367 rule against inside the fix for
+it. The core still does not know what a `go.mod` is.
+
+Three consequences are stated rather than left to be met:
+
+* **The parser reads the `module` directive and nothing else.** Its lexical
+  rules — `//` comments only, `/* */` a syntax error, bare or `"`-quoted
+  arguments and never backquoted, an identifier ending at `//` — are
+  transcribed from `go1.25.14`'s own vendored
+  `golang.org/x/mod/modfile/{read.go,rule.go}`, read inside the gate image
+  rather than recalled. A general `go.mod` parser would be a second
+  implementation of a file format assay cannot keep in step with a toolchain
+  it does not ship.
+* **A project root in no Go module refuses `ERROR`/`BAD_LANE_CONFIG`** — an
+  existing code, chosen because a Go judge declared over a directory that is
+  not a Go module is a lane/tree mismatch, the same shape as `evaluate.py`'s
+  "the project root is not contained by its own repository". A new reason code
+  would have been an enum widening, and the enum is closed (A-050).
+* **A profile key outside the derived module refuses**, naming the key, the
+  derived module path and the `go.mod` it came from. This replaces a
+  misattributed message that blamed staleness ("the profile and the working
+  tree are not the same revision") for what was an unstripped prefix; the
+  staleness message survives for its actual subject, a key that IS under the
+  module and still names no file. One Go module per lane, `cwd` is that
+  module's root, and no `go.work` support: nested modules never appear in
+  `go test ./...`'s own output, and a project root above several modules
+  surfaces as this refusal rather than as a silent partial measurement.
+
 ### Mutation is source-oriented
 
 An Assay mutation adapter describes a change to **tracked source bytes**; it
@@ -1243,6 +1654,45 @@ declared command. A component that instead introspects and mutates a live
 database is a separate producer whose structured result may be consumed as
 Tier-2 adjudicated evidence; it is not a `LanguageAdapter` shortcut around the
 source/snapshot contract.
+
+**Ingested R2 (B046, schema v9): the same sentence with the producer
+substituted.** For a language Assay ships no mutation engine for, R2 may be
+computed over a report a foreign mutation tool wrote — and this is not a new
+trust boundary, it is the one R1 has always had. R1 ingests foreign evidence
+by construction: the lane's argv runs a coverage tool inside the private
+snapshot, the tool writes an artifact at a declared path, and Assay reads it
+through a FORMAT-keyed registry and computes the judgment. Ingested R2 is that
+paragraph with "mutation" substituted. Assay never invokes the tool itself and
+never accepts a report it did not watch being produced: the lane's own argv
+runs it inside the snapshot, so the report is bound to the resolved commit
+exactly as `coverage-final.json` is (A-161), and the declared artifact is held
+through the same single-owner reservation, so a committed or stale report
+cannot satisfy the path.
+
+**Scope stays Assay's computation, never the tool's.** The foreign tool
+mutated whatever its own configuration told it to; which of those mutants
+COUNTS is decided by Assay's own rule — under `changed_lines` a mutant counts
+iff its start line is an added line of the resolved diff, under
+`whole_target` iff its file is a declared target. Reading the tool's own score
+would be judging by a scope the lane never declared.
+
+**The tier statement, which is the whole reason this is expressible at all.**
+A verdict distinguishes Tier-1-computed-natively from
+Tier-1-computed-over-ingested-evidence, and it does so in the document rather
+than in a consumer's assumptions: `judgment.r2.producer` is required and is
+either `native` or `ingested`, and it FORKS the object. Under `ingested`,
+`jobs`, `max_mutants`, `operators` and `equivalence_artifact` are **forbidden**
+— they are Assay's own policy, and Assay chose none of it for a run it did not
+orchestrate. Filling them from the report would put the foreign tool's
+configuration on the wire under Assay's name, the same declared-versus-verified
+conflation A-230a keeps `helpers[]` clean of. The producer's own identity is
+recorded in `judgment.r2.producer_tool`, copied verbatim from the report and
+documented as **declared by artifact, not verified** — it is not a `helpers[]`
+entry, because `helpers[]` records tools Assay itself invoked. The operators
+the tool actually applied are not lost by any of this: they are on the wire,
+one per mutant, namespaced under a prefix Assay owns (`stryker:<mutatorName>`,
+admitted by an open pattern branch beside the three closed per-language enums)
+so a foreign name can never be confused for a native one.
 
 Consequently, R2 judges the selected mutation catalogue over the changed
 tracked source in scope. It never silently upgrades itself into a whole-project

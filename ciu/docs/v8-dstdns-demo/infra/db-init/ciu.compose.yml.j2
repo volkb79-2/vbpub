@@ -1,0 +1,37 @@
+# infra/db-init/ciu.compose.yml.j2 — v8 notation (draft.3)
+# Injected by ciu: container_name (dstdns-<instance>-db-init-runner), networks,
+# ciu.* labels, CIU_* env, POSTGRES_HOST / POSTGRES_PORT (the env-delivered
+# binding binds.database), cgroup fields. No compose depends_on on postgres — it
+# lives in another compose project (cross-project depends_on is invalid); the
+# bind edge (main_db healthy + the pg:db/dstdns and pg:role/controller_ddl
+# probes, S8.5) orders it, and run-schema.sh still polls pg_isready. One-shot: no
+# healthcheck — the gate waits for exit 0 (S8.6.3).
+services:
+  runner:
+    image: {{ ciu_stack.runner.image }}
+    environment:
+      {% for key, value in env_defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      # TCP connection as controller_ddl (not the entrypoint's unix socket).
+      # POSTGRES_HOST / POSTGRES_PORT are INJECTED (binds.database, env delivery); a
+      # template that writes them is refused (S11.3). run-schema.sh reads these two
+      # names (the v7 DATABASE_HOST / DATABASE_PORT spelling is gone).
+      - DATABASE_NAME={{ registry.postgresql.database }}
+      - DATABASE_DDL_USER={{ registry.postgresql.users.controller_ddl }}
+      - PGPASSWORD=${DB_INIT_SECRETS_POSTGRES_CONTROLLER_DDL_PASSWORD}      # env-delivered secret
+      # DML role names forwarded to 90-grant-permissions.sh
+      - DATABASE_USER_CONTROLLER={{ registry.postgresql.users.controller }}
+      - DATABASE_USER_WORKERDB={{ registry.postgresql.users.workerdb }}
+      - DATABASE_USER_WEBAPP={{ registry.postgresql.users.webapp }}
+    # run-schema.sh (thin wrapper) delegates to the shared scripts/schema-apply.sh op
+    # (D-042: one op shared with schema-gate.sh) over init-scripts; all read-only.
+    # Sources are host-visible paths (Docker-outside-Docker).
+    volumes:
+      - {{ host.physical_repo_root }}/infra/db-init/run-schema.sh:/run-schema.sh:ro
+      - {{ host.physical_repo_root }}/scripts/schema-apply.sh:/schema-apply.sh:ro
+      - {{ host.physical_repo_root }}/infra/db-init/init-scripts:/init-scripts:ro
+    command: ["/bin/sh", "/run-schema.sh"]
+    restart: "no"                              # one-shot; ciu gates later waves on its completion
+    labels:
+      - "de.vxxu.volkb79.service-container=false"   # consumer label; ownership labels (ciu.*) are injected (S4.5)

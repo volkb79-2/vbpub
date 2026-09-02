@@ -1,0 +1,16 @@
+# infra/cadvisor/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `cadvisor` (bound by ciu.toml [realization.cadvisor]) = the
+# `cadvisor` LogicalService; one service keyed like the realization, so its
+# container is dstdns-<instance>-cadvisor (S4.2.2). DERIVED, never written here:
+# the container/host name, the network, the wave, the host-port publication
+# (from the endpoint, S7.4.2). Inclusion is a [project.control] flag evaluated by
+# ciu — no expression (S6.7).
+
+[ciu_stack.cadvisor]
+image = "gcr.io/cadvisor/cadvisor:v0.47.2"
+enabled = "enable_observability"     # [project.control] flag name; a disabled service leaves the graph and the rendered compose (S6.7.1)
+endpoints.http = { port = 8080, protocol = "http", publish = "host", host_port = 8080 }   # metrics UI/API, published on the host in every layout (S7.4.2); this is why controller's proxy endpoint takes host_port 8083 (S6.3.2)
+
+[hooks]
+pre_compose = []
+post_compose = []

@@ -1,0 +1,58 @@
+# tools/test-runner/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `test_runner`, the `tester` LogicalService the gate execs into
+# ([testing.environments.tester] exec_in = "tester"). It is in the `test`
+# bundle, so `ciu up` brings it up with the rest of that bundle and `ciu clean`
+# removes it like everything else. Before every exec lane ciu proves that this
+# container mounts THIS checkout at /workspace (S16.4.3). The judge (assay) is
+# baked into this image at a version satisfying [testing.judge].version; the
+# gate verifies `assay --version` and each verdict's judge_provenance.
+
+[ciu_stack.runner]
+image = "dstdns/test-runner:latest"
+
+# Bindings with env delivery: the container gets POSTGRES_*, REDIS_*, CONTROLLER_*
+# and WEBAPP_SERVER_* injected, and `docker exec` inherits them — which is how a
+# lane process (and assay's required-env facts) see the instance's addresses.
+[ciu_stack.runner.binds.database]
+to = "main_db.sql"
+delivery = "env"
+env_prefix = "POSTGRES"              # POSTGRES_HOST, POSTGRES_PORT
+facts = ["pg:db/dstdns", "pg:role/controller"]
+
+[ciu_stack.runner.binds.redis]
+to = "redis.redis"
+delivery = "env"
+env_prefix = "REDIS"
+
+[ciu_stack.runner.binds.controller]  # lane targets read at run time: a resolution, no ordering edge (wait = "none"); lanes gate on their health via requires.healthy
+to = "controller.http"
+wait = "none"
+delivery = "env"
+env_prefix = "CONTROLLER"            # CONTROLLER_HOST, CONTROLLER_PORT, CONTROLLER_URL
+
+[ciu_stack.runner.binds.webapp_server]
+to = "webapp_server.http"
+wait = "none"
+delivery = "env"
+env_prefix = "WEBAPP_SERVER"
+
+[ciu_stack.runner.binds.browser]
+to = "browser_service.mcp"
+wait = "none"
+delivery = "template"                # the compose template composes <url>/contract
+
+[ciu_stack.runner.browser]           # consumer data
+lease_seconds = 1800
+session_label = "dstdns-test-runner"
+
+[ciu_stack.runner.secrets]
+postgres_password = { from = "vault", path = "postgres_controller_password", delivery = "env", env_name = "TEST_RUNNER_SECRETS_POSTGRES_PASSWORD" }
+redis_password    = { from = "vault", path = "redis_password",               delivery = "env", env_name = "TEST_RUNNER_SECRETS_REDIS_PASSWORD" }
+
+[governance]                         # per-stack override of the global base
+memory_max = "800M"
+memory_swap_max = "17G"
+
+[hooks]
+pre_compose = []
+post_compose = []

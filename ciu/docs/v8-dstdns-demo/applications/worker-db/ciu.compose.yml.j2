@@ -1,0 +1,53 @@
+# applications/worker-db/ciu.compose.yml.j2 — v8 notation (draft.3)
+# Injected by ciu per replica: container_name/hostname
+# (dstdns-<instance>-worker-db-worker-<k>), networks (+ the service-level
+# compose key as an alias on every replica), ciu.* labels incl. ciu.replica,
+# CIU_* identity env incl. CIU_REPLICA, the config-directory mount
+# (/etc/worker-db, rendered per replica), healthcheck timing, cgroup fields.
+# One service block per replica row: the loop variable is `replica` (S3.5.1,
+# S11.3); its compose_key is the compose service name, its container name
+# replaces the hand-numbered worker-db-1/-2. Addresses come from the
+# template-delivered bindings (ciu_stack.worker.binds.<local>).
+services:
+  {% for replica in ciu_stack.worker.identity.replicas %}
+  {{ replica.compose_key }}:
+    image: {{ ciu_stack.worker.image }}
+    restart: "no"                            # fail-fast for development
+    user: "{{ host.user_uid }}:{{ host.user_gid }}"
+    environment:
+      {% for key, value in env_defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      # N8/D-116(7): build metadata is ciu's own; the app REQUIRES it
+      - BUILD_VERSION={{ instance.build_version }}
+      - BUILD_TIME={{ instance.build_time }}
+      # bootstrap pointers — all config is in the mounted TOML file; the
+      # identity pointers are needed BEFORE the merge, to find the Consul tree.
+      - WORKER_DB_CONFIG_FILE=/etc/worker-db/config.toml
+      - DSTDNS_LANDSCAPE_ID={{ instance.landscape_id }}
+      - DSTDNS_INSTANCE_ID={{ replica.container_name }}
+      - DSTDNS_SERVICE_PROFILE=default
+      # env-delivered secrets: every one is referenced as plain ${VAR} (S10.2.2);
+      # the fail-if-unset interpolation form is refused (S11.3) — the secret's
+      # env_name guarantees the variable is present and ciu refuses to deploy
+      # without the value (S11.6). The Consul ACL token stays VISIBLE to the
+      # service this way.
+      - WORKER_DB_CONSUL_TOKEN=${WORKER_DB_CONSUL_TOKEN}
+      - WORKER_DB_DATABASE_PASSWORD=${WORKER_DB_DATABASE_PASSWORD}
+      - WORKER_DB_REDIS_PASSWORD=${WORKER_DB_REDIS_PASSWORD}
+      - WORKER_DB_MINIO_ACCESS_KEY=${WORKER_DB_MINIO_ACCESS_KEY}
+      - WORKER_DB_MINIO_SECRET_KEY=${WORKER_DB_MINIO_SECRET_KEY}
+      # Feed credentials (optional) and report storage are rendered into the
+      # config file from [ciu_stack.worker.datasets] — no env layer (D-094).
+      # SkyWalking native agent — the OAP address is the template-delivered binding (host:port)
+      - SW_AGENT_COLLECTOR_BACKEND_SERVICES={{ ciu_stack.worker.binds.tracing.host }}:{{ ciu_stack.worker.binds.tracing.port }}
+    volumes:
+      - {{ ciu_stack.worker.hostdir.logs }}:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:{{ ciu_stack.worker.endpoints.http.port }}/health')"]
+      # interval / timeout / retries / start_period: injected from ciu_stack.worker.health (S6.6.4)
+    labels:
+      - "de.vxxu.volkb79.worker-type=database"
+      # no replica label of our own: ciu stamps ciu.replica per replica (S4.5.1); a ciu.* key in a template is refused (S4.5.2)
+      - "de.vxxu.volkb79.service-container=false"
+  {% endfor %}

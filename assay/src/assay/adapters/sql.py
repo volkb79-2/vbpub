@@ -97,10 +97,11 @@ import hashlib
 import heapq
 import re
 from dataclasses import dataclass
-from typing import Literal, NamedTuple
+from pathlib import Path
+from typing import Literal, NamedTuple, Sequence
 
 from ..mutation import MutationSite, line_for_offset
-from .base import StatementSpan
+from .base import Remaining, StatementBlockReport, StatementSpan
 from .sql_lex import lex_sql
 
 __all__ = ["SqlAdapter"]
@@ -669,6 +670,29 @@ class SqlAdapter:
     excluded_dir_names: frozenset[str] = frozenset({"node_modules", "vendor", ".venv"})
     requires_span_attribution: bool = False
     external_tools: tuple[str, ...] = ()
+    #: ``False``, and for SQL it is not even the "already statement-granular"
+    #: reason the other adapters give: there is no SQL coverage tool at all
+    #: (this module's own §4.1 measurement), so no SQL profile exists to
+    #: correct. Declared explicitly rather than omitted, because
+    #: :func:`assay.evaluate._check_statement_attribution` reads this
+    #: attribute directly and a missing one is a broken adapter (A-397).
+    requires_statement_attribution: bool = False
+
+    def for_project(self, *, repo_top: Path, project_root: Path) -> "SqlAdapter":
+        """Unreachable, exactly as :meth:`normalize_coverage_key` is, and for
+        the identical reason: A-404 places the ONE call to this member at the
+        top of :func:`assay.runner.evaluate_r1`, and a SQL lane is R0,R2-only
+        (§3.3, A-242), so it never gets there.
+
+        The A-404 ruling's own default for a non-Go adapter is ``return
+        self``, and it is deliberately NOT taken here. This module's rule is
+        that a method no SQL lane can reach raises rather than answering, so
+        that a future caller who routes SQL through R1 finds out loudly; a
+        ``return self`` would instead be a line no test could exercise
+        honestly, which is the vacuity this file's own negative tests exist
+        to prevent.
+        """
+        raise NotImplementedError(_UNREACHABLE.format(name="for_project"))
 
     def is_test_path(self, rel_path: str) -> bool:
         return bool(_TEST_FILE_RE.search(rel_path))
@@ -681,6 +705,15 @@ class SqlAdapter:
 
     def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
         raise NotImplementedError(_UNREACHABLE.format(name="statement_spans"))
+
+    def statement_blocks(
+        self,
+        repo_top: Path,
+        rel_paths: Sequence[str],
+        *,
+        remaining: Remaining | None = None,
+    ) -> StatementBlockReport | None:
+        raise NotImplementedError(_UNREACHABLE.format(name="statement_blocks"))
 
     def inject_import_break(self, text: str) -> tuple[str, str]:
         raise NotImplementedError(_UNREACHABLE.format(name="inject_import_break"))

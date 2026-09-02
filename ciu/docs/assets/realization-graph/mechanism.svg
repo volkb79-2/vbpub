@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+      <svg xmlns="http://www.w3.org/2000/svg" style="background:#f4f5f8" viewBox="0 0 1180 500" role="img" aria-label="A consumer's init_requires points only at the logical service our_main_db, which lists a contract of typed facts. Its .live realness variant is realized_by db_core, a CIU-managed stack whose init_provides satisfies the logical contract without db_core ever referencing the logical name back. Its .owned-seeded variant is realized_by an external service instead, satisfying the same contract a different way. Only the realized_by pointer changes if the backend moves — nothing else in the diagram does.">
+
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#1b222c"></path>
+          </marker>
+          <marker id="arrow-logical" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#2c6ca4"></path>
+          </marker>
+          <marker id="arrow-realize" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#b56a2f"></path>
+          </marker>
+        </defs>
+
+        <!-- layer backdrops -->
+        <rect x="10" y="10" width="1160" height="480" fill="none"></rect>
+
+        <!-- ===== Consumer ===== -->
+        <rect x="20" y="120" width="180" height="70" rx="6" fill="none" stroke="#1b222c" stroke-width="1.5"></rect>
+        <text x="110" y="148" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="12.5" font-weight="600" fill="#1b222c">controller</text>
+        <text x="110" y="166" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#4a5361">applications/controller</text>
+
+        <!-- consumer -> logical service -->
+        <line x1="200" y1="155" x2="284" y2="155" stroke="#2c6ca4" stroke-width="1.8" marker-end="url(#arrow-logical)"></line>
+        <text x="242" y="143" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="#204f79">init_requires</text>
+
+        <!-- ===== Logical layer band ===== -->
+        <rect x="290" y="40" width="330" height="420" rx="10" fill="#e4edf5" opacity="0.55"></rect>
+        <text x="305" y="65" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" letter-spacing="0.06em" fill="#204f79">LOGICAL</text>
+
+        <!-- our_main_db -->
+        <rect x="310" y="90" width="290" height="110" rx="6" fill="#ffffff" stroke="#2c6ca4" stroke-width="1.8"></rect>
+        <text x="325" y="112" font-family="IBM Plex Mono, monospace" font-size="13" font-weight="700" fill="#204f79">[service.our_main_db]</text>
+        <text x="325" y="132" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#4a5361">contract =</text>
+        <text x="325" y="148" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#1b222c">  "pg:db/demo",</text>
+        <text x="325" y="164" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#1b222c">  "pg:role/controller"</text>
+        <text x="325" y="186" font-family="IBM Plex Mono, monospace" font-size="10" fill="#4a5361">— what any realization must supply</text>
+
+        <!-- .live -->
+        <rect x="330" y="240" width="260" height="70" rx="6" fill="#ffffff" stroke="#2c6ca4" stroke-width="1.3"></rect>
+        <text x="345" y="262" font-family="IBM Plex Mono, monospace" font-size="12" font-weight="600" fill="#204f79">.live</text>
+        <text x="345" y="280" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#1b222c">realized_by =</text>
+        <text x="345" y="296" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#1b222c">  "db_core.postgres"</text>
+
+        <!-- .owned-seeded -->
+        <rect x="330" y="330" width="260" height="70" rx="6" fill="#ffffff" stroke="#2c6ca4" stroke-width="1.3"></rect>
+        <text x="345" y="352" font-family="IBM Plex Mono, monospace" font-size="12" font-weight="600" fill="#204f79">.owned-seeded</text>
+        <text x="345" y="370" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#1b222c">realized_by =</text>
+        <text x="345" y="386" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#1b222c">  "db_service4"</text>
+
+        <!-- .mock -->
+        <rect x="330" y="420" width="260" height="70" rx="6" fill="#ffffff" stroke="#ccd2db" stroke-width="1.3" stroke-dasharray="3 3"></rect>
+        <text x="345" y="442" font-family="IBM Plex Mono, monospace" font-size="12" font-weight="600" fill="#4a5361">.mock</text>
+        <text x="345" y="460" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#1b222c">implementation =</text>
+        <text x="345" y="476" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#1b222c">  "tests/mocks/pg.py"</text>
+
+        <!-- our_main_db -> .live / .owned-seeded / .mock (containment) -->
+        <line x1="455" y1="200" x2="455" y2="240" stroke="#1b222c" stroke-width="1.2"></line>
+        <line x1="455" y1="200" x2="455" y2="330" stroke="#1b222c" stroke-width="1.2"></line>
+        <line x1="455" y1="330" x2="455" y2="330" stroke="#1b222c" stroke-width="1.2"></line>
+        <line x1="455" y1="200" x2="455" y2="420" stroke="#1b222c" stroke-width="1.2" stroke-dasharray="2 3"></line>
+
+        <!-- ===== Realization layer band ===== -->
+        <rect x="650" y="40" width="510" height="420" rx="10" fill="#f3e6d8" opacity="0.5"></rect>
+        <text x="665" y="65" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" letter-spacing="0.06em" fill="#8a4f22">REALIZATION</text>
+
+        <!-- db_core stack box: init_provides on the STACK itself, not a sub-entity -->
+        <rect x="670" y="90" width="470" height="140" rx="8" fill="#ffffff" stroke="#b56a2f" stroke-width="1.6"></rect>
+        <text x="685" y="112" font-family="IBM Plex Mono, monospace" font-size="12.5" font-weight="700" fill="#8a4f22">[ciu_stack.db_core]</text>
+        <text x="685" y="128" font-family="IBM Plex Mono, monospace" font-size="10" fill="#4a5361">location = "infra/db-core"</text>
+        <text x="685" y="150" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#1b222c">init_provides = ["pg:db/demo", "pg:role/controller"]</text>
+        <text x="685" y="167" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="#4a5361">— aggregated across whatever inside this stack produced them:</text>
+        <text x="685" y="181" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="#4a5361">a dedicated one-shot job, or postgres's own entrypoint script.</text>
+        <text x="685" y="200" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="#4a5361">Compose's own depends_on orders them internally — ciu doesn't see it.</text>
+
+        <!-- external realization -->
+        <rect x="670" y="270" width="300" height="90" rx="8" fill="#ffffff" stroke="#b56a2f" stroke-width="1.6"></rect>
+        <text x="685" y="292" font-family="IBM Plex Mono, monospace" font-size="12.5" font-weight="700" fill="#8a4f22">[external.db_service4]</text>
+        <text x="685" y="310" font-family="IBM Plex Mono, monospace" font-size="10" fill="#1b222c">servername = "qwe.sdf.vi"</text>
+        <text x="685" y="326" font-family="IBM Plex Mono, monospace" font-size="10" fill="#1b222c">init_provides = [ same two facts ]</text>
+        <text x="685" y="345" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="#4a5361">credentials live in ciu.secrets.toml</text>
+
+        <!-- realized_by arrows: .live -> db_core -->
+        <path d="M 590 265 C 630 265, 640 160, 670 160" fill="none" stroke="#b56a2f" stroke-width="1.8" marker-end="url(#arrow-realize)"></path>
+
+        <!-- realized_by arrows: .owned-seeded -> external -->
+        <path d="M 590 355 C 630 355, 640 315, 670 315" fill="none" stroke="#b56a2f" stroke-width="1.8" marker-end="url(#arrow-realize)"></path>
+
+        <!-- init_provides satisfies contract, both realizations -->
+        <path d="M 900 90 C 700 40, 620 50, 600 130" fill="none" stroke="#2c6ca4" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#arrow-logical)"></path>
+        <path d="M 900 270 C 700 20, 620 30, 600 140" fill="none" stroke="#2c6ca4" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#arrow-logical)"></path>
+        <text x="760" y="45" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#204f79">init_provides satisfies contract — checked, never stored as a back-reference</text>
+
+        <!-- swap note -->
+        <text x="905" y="420" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="#4a5361">Move the database →</text>
+        <text x="905" y="436" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="#4a5361">only .live's realized_by string changes.</text>
+        <text x="905" y="452" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="#4a5361">controller's init_requires, db_core's own</text>
+        <text x="905" y="468" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="#4a5361">config, and the contract list: untouched.</text>
+
+      </svg>

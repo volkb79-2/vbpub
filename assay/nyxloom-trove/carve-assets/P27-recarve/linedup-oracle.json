@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "go_version": "go1.25.14",
+  "files": [
+    {
+      "path": "linedup.go",
+      "blocks": [
+        {
+          "start_line": 6,
+          "start_col": 21,
+          "end_line": 7,
+          "end_col": 25,
+          "num_stmts": 1,
+          "stmt_lines": [
+            7
+          ]
+        },
+        {
+          "start_line": 7,
+          "start_col": 25,
+          "end_line": 100,
+          "end_col": 0,
+          "num_stmts": 1,
+          "stmt_lines": [
+            100
+          ]
+        },
+        {
+          "start_line": 103,
+          "start_col": 0,
+          "end_line": 103,
+          "end_col": 0,
+          "num_stmts": 1,
+          "stmt_lines": [
+            103
+          ]
+        },
+        {
+          "start_line": 100,
+          "start_col": 0,
+          "end_line": 100,
+          "end_col": 0,
+          "num_stmts": 1,
+          "stmt_lines": [
+            100
+          ]
+        },
+        {
+          "start_line": 103,
+          "start_col": 0,
+          "end_line": 103,
+          "end_col": 1,
+          "num_stmts": 1,
+          "stmt_lines": [
+            103
+          ]
+        },
+        {
+          "start_line": 100,
+          "start_col": 0,
+          "end_line": 102,
+          "end_col": 0,
+          "num_stmts": 1,
+          "stmt_lines": [
+            101
+          ]
+        },
+        {
+          "start_line": 103,
+          "start_col": 0,
+          "end_line": 105,
+          "end_col": 0,
+          "num_stmts": 2,
+          "stmt_lines": [
+            104
+          ]
+        },
+        {
+          "start_line": 100,
+          "start_col": 0,
+          "end_line": 102,
+          "end_col": 1,
+          "num_stmts": 3,
+          "stmt_lines": [
+            101
+          ]
+        },
+        {
+          "start_line": 103,
+          "start_col": 0,
+          "end_line": 105,
+          "end_col": 1,
+          "num_stmts": 4,
+          "stmt_lines": [
+            104
+          ]
+        }
+      ]
+    }
+  ]
+}

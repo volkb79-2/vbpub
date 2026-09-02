@@ -1,0 +1,62 @@
+# applications/ddcli/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `ddcli` (bound by ciu.toml [realization.ddcli]): a CLI tool
+# container (no endpoints, no healthcheck, restart "no"; exec into it). The
+# service is keyed like the realization, so its container is
+# dstdns-<instance>-ddcli. DERIVED, never written here: that identity, the
+# Authentik address (the binding below), the vault edge (from the
+# `from = "vault"` secret) and the minter edge to identity_provider —
+# vault:secret/ddcli/service_password is minted by authentik's post_compose hook
+# (S8.3). It belongs to the `admin` bundle; the fail-fast secret rule applies to
+# every stack.
+
+[ciu_stack.ddcli]
+image = "dstdns/ddcli:latest"        # <project.registry.namespace>/ddcli — a literal in plain TOML; `ciu build` tags exactly this
+
+# The one binding (S6.4). The OIDC issuer is COMPOSED in the compose template —
+# ciu_stack.ddcli.binds.idp.url + "/application/o/" + authentik.oidc_slug + "/" —
+# so the delivery is `template`. Default wait = "healthy" (was an init edge):
+# the token endpoint must answer before the CLI is usable.
+[ciu_stack.ddcli.binds.idp]
+to = "identity_provider.http"
+delivery = "template"
+
+[ciu_stack.ddcli.settings]           # CLI behaviour, rendered into config.toml.j2 (strings, as the app expects)
+timeout = "30"
+verify_ssl = "false"
+output_format = "pretty"
+output_color = "true"
+output_table_style = "rounded"
+demo_wait_interval = "2"
+demo_show_progress = "true"
+
+# Service identity (D-035, D-103): ddcli authenticates to the controller as the
+# Authentik service account `dstdns-cli-svc` (group dstdns-power-user), minting
+# a short-lived bearer via OAuth2 client_credentials. The non-secret half lives
+# here; the credential comes from Vault ([secrets] below). The issuer is the
+# OIDC `iss`; ddcli reads the TOKEN endpoint from the issuer's discovery
+# document (the endpoint is at the base, the issuer per application — never
+# concatenate). The rev-2 `enabled`/`issuer_url`/`client_id` copies are gone: the
+# compose template reads the control flag project.control.auth_enabled, the
+# binding and [authentik] oidc_slug directly (S3.5.1) and emits the credential
+# group only while auth is on — an auth-off deploy sends NO credential.
+[ciu_stack.ddcli.auth]
+service_user = "dstdns-cli-svc"
+
+[ciu_stack.ddcli.secrets]
+# env on purpose (D-112's scoped exception to D-094): ddcli/config.py reads the
+# app-password token from ${DDCLI_AUTH_PASSWORD}; nothing writes a file into
+# this image. `enabled` names the [project.control] flag (S10.2, S6.7.2): with
+# auth off (ciu.site.toml) the secret is neither materialized nor delivered and
+# derives no edge, and the compose template withholds the whole credential group —
+# so an unreferenced env-delivered secret (S10.2.2) can never occur on an auth-off site.
+service_password = { from = "vault", path = "ddcli_service_password", delivery = "env", env_name = "DDCLI_AUTH_PASSWORD", enabled = "auth_enabled" }
+
+[ciu_stack.ddcli.env]                # optional extra environment (empty by default; the compose template iterates it)
+
+[ciu_stack.ddcli.configfile.app]     # rendered to applications/ddcli/ciu.rendered/ddcli/etc/ddcli/config.toml; the PARENT directory /etc/ddcli is mounted read-only (S6.9.1)
+template = "config.toml.j2"
+target = "/etc/ddcli/config.toml"
+
+[hooks]
+pre_compose = []
+post_compose = []

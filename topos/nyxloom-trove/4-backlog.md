@@ -306,3 +306,5 @@ items that must be folded in somewhere, should not be forgotten
 - support for Kitty keyboard protocol/ modern terminal 
 - defined cgroup values focussed view (use case: add columns for any type of set cgroup type , show all set limits/guarantees like `memory.min`, MemoryMax, MemorySwapMax, IOReadIOPSMax, IOReadBandwidthMax. so you see the whole tree.)
 - automatically warn on inconsistent cgroup config / not in effect (e.g. parent missing `memory.min`/ `memory.low`  while a leaf has it set. role of memory_recursiveprot)
+- integration/visualization of kernel PSI - indicator for stalling on ressources not available
+- support of kitty grafics protocol desired? or other way to create nice diagrams/pixel level on terminal? (e.g. https://sw.kovidgoyal.net/kitty/graphics-protocol/, https://akmatori.com/blog/terminal-graphics-protocols )

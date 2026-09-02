@@ -1,0 +1,100 @@
+# applications/worker-db/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `worker_db` (bound by ciu.toml [realization.worker_db]): ONE
+# service `worker` with `instances = 2` replacing the hand-declared
+# worker-db-1/-2; ciu derives dstdns-<instance>-worker-db-worker-1/-2 and the
+# compose template iterates the replica identities (identity.replicas, S6.5 — a
+# render fact; a stack file is plain data and cannot read `ciu_stack`). Also
+# DERIVED, never written here: every peer address (the bindings below — the
+# rev-2 [settings]/[consul]/[tracing]/[database]/[redis] mapping tables and the
+# [workflow] copy are gone: config.toml.j2 reads ciu_stack.worker.binds.<local>.*
+# and the [workflow] user table directly, S3.5.1), the instance id, the vault
+# edge and the minter edges (from the secrets, S8.3), the schema edge
+# (`requires = ["app_schema"]`), the wave. D-095: ciu keeps PHYSICAL facts only —
+# app tunables live in config.defaults.toml.
+
+[ciu_stack.worker]
+image = "dstdns/worker-db:latest"    # <project.registry.namespace>/worker-db — a literal in plain TOML; `ciu build` tags exactly this
+instances = 2
+requires = ["app_schema"]            # ordering only: db_init's schema must be complete (was the one-shot-exit-0 probe). The vault edge derives from the secrets (S8.3) and is not repeated.
+endpoints.http = { port = 8080, protocol = "http" }    # /health; instance network only
+
+# Bindings (S6.4): `template` delivery = the resolution is bound as
+# ciu_stack.worker.binds.<local> for config.toml.j2 (rendered once per replica)
+# and the compose template. Default wait = "healthy" (was an init edge);
+# wait = "none" = a resolution only, read at run time (no ordering edge, S8.2).
+[ciu_stack.worker.binds.database]
+to = "main_db.sql"
+delivery = "template"                # config.toml.j2: [database] host/port; database and user come from registry.postgresql.*
+facts = ["pg:db/dstdns", "pg:role/workerdb"]   # → main_db's DERIVED contract (S5.3); probed before this wave (S8.5.2)
+
+[ciu_stack.worker.binds.redis]
+to = "redis.redis"
+delivery = "template"                # config.toml.j2: [redis] host/port
+
+[ciu_stack.worker.binds.consul]
+to = "consul.http"
+delivery = "template"                # config.toml.j2: [consul] address = .url
+
+[ciu_stack.worker.binds.object_store]
+to = "object_store.s3"
+delivery = "template"                # config.toml.j2: [datasets] minio_endpoint = host:port (its OWN MinIO keys, D-116 (5c))
+facts = ["minio:user/worker-db"]     # created by db_core's post_compose hook ([registry.minio.users.worker_db])
+
+[ciu_stack.worker.binds.controller]
+to = "controller.http"
+wait = "none"                        # the controller API is read at run time (cross-host over the mesh in prod3) — no ordering edge
+delivery = "template"                # config.toml.j2: [settings] controller_url = .url, controller_host = .host
+
+[ciu_stack.worker.binds.tracing]
+to = "tracing.grpc"
+wait = "none"
+delivery = "template"                # compose: SW_AGENT_COLLECTOR_BACKEND_SERVICES = host:port for the native agent
+
+[ciu_stack.worker.hostdir]
+logs = ""
+
+# External dataset endpoints: INSTANCE facts (where this landscape fetches
+# from); cadence and enable flags are app L0. The archive/reports buckets are
+# "<instance.project>-<instance.id>", composed in config.toml.j2 from instance.*;
+# the MinIO endpoint is binds.object_store.
+[ciu_stack.worker.datasets]
+tranco_url = "https://tranco-list.eu/top-1m.csv.zip"
+iptoasn_url = "https://iptoasn.com/data/ip2asn-combined.tsv.gz"
+maxmind_url = "https://download.maxmind.com/app/geoip_download"
+openphish_url = "https://openphish.com/feed.txt"
+urlhaus_url = "https://urlhaus.abuse.ch/downloads/csv_recent/"
+threatfox_url = "https://threatfox.abuse.ch/export/host_file/?format=host_file&type=all&limit=0"
+phishtank_url = "http://data.phishtank.com/data/{app_key}/online-valid.json"
+# Optional feed credentials — deliberately NOT secrets (see [secrets]).
+maxmind_license_key = ""
+phishtank_app_key = ""
+threatfox_auth_key = ""
+urlhaus_auth_key = ""
+
+# Secrets: structured sources (S10.1); `delivery` is mandatory. env kept from
+# the originals' expose_env (restart-bound; ciu check lists them); the compose
+# template references every one of them as ${env_name} (S10.2.2). One secret,
+# one delivery: a value the config file should render instead would be
+# `delivery = "configfile"` + secret("<key>") in config.toml.j2 (S10.2.6).
+[ciu_stack.worker.secrets]
+postgres_password = { from = "vault", path = "postgres_workerdb_password", delivery = "env", env_name = "WORKER_DB_DATABASE_PASSWORD" }
+redis_password    = { from = "vault", path = "redis_password",             delivery = "env", env_name = "WORKER_DB_REDIS_PASSWORD" }
+consul_token      = { from = "vault", path = "consul_worker_db_token",      delivery = "env", env_name = "WORKER_DB_CONSUL_TOKEN" }
+minio_access_key  = { from = "vault", path = "minio_worker_db_access_key", delivery = "env", env_name = "WORKER_DB_MINIO_ACCESS_KEY" }
+minio_secret_key  = { from = "vault", path = "minio_worker_db_secret_key", delivery = "env", env_name = "WORKER_DB_MINIO_SECRET_KEY" }
+# The four third-party feed credentials are NOT secrets: `from = "ask"` is
+# mandatory-by-design (P107 showed a landscape without a MaxMind account could
+# not deploy worker-db at all), while these are genuinely optional — the
+# importers fall back to the feeds' unauthenticated endpoints. Empty in
+# [datasets] is a POLICY value ("this landscape holds no credential", AGENTS.md
+# §4.2a). A landscape that has keys declares its own `from = "vault"` rows in
+# ciu.site.toml ([realization.worker_db.services.worker.secrets], S3.1.3);
+# never a live credential in this tracked file.
+
+[ciu_stack.worker.configfile.app]    # declared ONCE; ciu renders it per replica into ciu.rendered/worker-<k>/… with `replica` bound (S6.9.4); the PARENT directory /etc/worker-db is mounted read-only (S6.9.1)
+template = "config.toml.j2"
+target = "/etc/worker-db/config.toml"
+
+[hooks]
+pre_compose = []
+post_compose = []

@@ -77,7 +77,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, NoReturn, Sequence
 
 from .adapters.base import LanguageAdapter, StatementSpan
 from .coverage import derive_branch_capability, derive_exclusion_capability
@@ -85,7 +85,111 @@ from .coverage_parsers.model import CoverageProfile, FileCoverage
 from .diff import AddedLines
 from .errors import AssayError, Outcome, ReasonCode
 
-__all__ = ["CoverageEvaluation", "evaluate_coverage", "evaluate_targets"]
+__all__ = [
+    "CoverageEvaluation",
+    "evaluate_coverage",
+    "evaluate_targets",
+    "resolve_coverage_keys",
+]
+
+
+def _check_statement_attribution(
+    profile: CoverageProfile, adapter: LanguageAdapter
+) -> None:
+    """Refuse a profile *adapter* says needs statement attribution and that
+    reports it never received any (A-392).
+
+    The guard exists because the failure it catches is INVISIBLE otherwise.
+    An uncorrected Go coverprofile parses cleanly, produces well-formed line
+    sets, and yields a plausible percentage -- it is simply about the wrong
+    lines, attributing function signatures, closing braces and ``case``
+    labels as executable code. That is AGENTS.md's **masked default** in its
+    purest form: rendered harmless by every context that happens to run the
+    correction, and therefore reachable only on the one path that skips it.
+    "The runner remembers to call the oracle" is precisely the check that
+    cannot fail, so it is made into one here.
+
+    ``ERROR``/``UNREADABLE_ARTIFACT``, the same pair
+    :func:`assay.statement_attribution.attribute_statements` refuses with,
+    and for the same reason: what cannot be done is READING this artifact as
+    statement truth. It is deliberately not ``NO_MEASUREMENT``/
+    ``EMPTY_COVERAGE`` -- a complete artifact reported as empty would be
+    AGENTS.md's "absence for emptiness", a false certification rather than a
+    missing one (A-392's own rejected alternative). No new reason code is
+    minted: :class:`~assay.errors.ReasonCode` is a closed vocabulary on the
+    wire, and this wave cuts no schema.
+    """
+    # Direct attribute access, never `getattr(..., False)`: a default here
+    # would let an adapter that forgot to declare the attribute skip the
+    # guard silently, which is the exact masked default this guard exists to
+    # remove. A missing attribute is a broken adapter and says so loudly.
+    if not adapter.requires_statement_attribution:
+        return
+    if profile.statement_attributed:
+        return
+    raise AssayError(
+        f"the {adapter.name!r} adapter requires statement attribution, but "
+        f"the coverage profile it was handed reports "
+        f"statement_attributed=False -- its records carry block EXTENTS, "
+        f"which are not statement positions, so judging them directly would "
+        f"attribute function signatures, closing braces and `case` labels as "
+        f"executable code. The source-side oracle "
+        f"(LanguageAdapter.statement_blocks) never ran, or its result was "
+        f"never joined onto this profile.",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+    )
+
+
+def _refuse_line_directive_remapped(path: str, *, judged_as: str) -> NoReturn:
+    """Refuse a file whose coverage records were remapped by a ``//line``
+    directive AND that is in this lane's judged set (A-405).
+
+    **Why refusing is the only honest answer here.** ``go/token`` gives a
+    position produced by a ``//line file:line`` directive with no column a
+    zero column, and — the part that matters — the LINE NUMBER it carries is
+    the directive's, not the file's. Go's own ``TestLineDup`` witness
+    (``carve-assets/P27-recarve/linedup.out``) reports lines 100 to 105 for a
+    24-line source. ``git diff`` names PHYSICAL lines, so a changed line in
+    such a file intersects the profile's virtual line numbers by accident or
+    not at all: the file would measure 0 executable of 0 changed and the lane
+    would report a clean ``100%`` over a file nothing measured. That is
+    DESIGN-GUIDE §5's laundering gate and the north star's "0/0 is never
+    100%", reached through an artifact that is exactly what ``go test``
+    wrote.
+
+    **Why ``ERROR``/``BAD_LANE_CONFIG`` and not ``UNREADABLE_ARTIFACT``.**
+    Nothing is wrong with the artifact — it is byte-for-byte what the real
+    toolchain emits for this source, and assay parses all of it. What is
+    wrong is that the LANE asked assay to judge a generated file it
+    structurally cannot judge, and the remedy is in the lane file: a
+    generated source belongs outside ``judge.source_roots`` (or outside
+    ``judge.targets``), where assay already ignores it. Blaming the artifact
+    for a lane-config fault is precisely the misdirection
+    :func:`assay.adapters.go_modfile._refuse`'s own docstring exists to
+    prevent, and the reviewer that found this case named that same
+    docstring. No new reason code is minted: ``ReasonCode`` is a closed
+    vocabulary on the wire, and this wave cuts no schema.
+
+    Not raised for a remapped file OUTSIDE the judged set — that file is not
+    under review, its records contribute nothing, and taking a lane down for
+    it would leave every Go project carrying one generated file unable to use
+    R1 at all.
+    """
+    raise AssayError(
+        f"{path!r} carries coverage records whose positions were remapped by "
+        f"a `//line` directive (the profile reports a zero column, which "
+        f"`go/token` produces for a `//line file:line` position that names no "
+        f"column), so its recorded line numbers are the directive's and not "
+        f"this file's. {judged_as}, and assay will not judge a file whose "
+        f"measured lines cannot be matched to the lines a diff names -- that "
+        f"would report a clean percentage over nothing measured. Generated "
+        f"sources belong outside the lane's judge.source_roots (or its "
+        f"judge.targets); assay already ignores a `//line`-remapped file that "
+        f"is not in the judged set.",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.BAD_LANE_CONFIG,
+    )
 
 
 class _Attribution(Enum):
@@ -332,6 +436,7 @@ def evaluate_coverage(
     :func:`evaluate_targets`'s own identical, separately-raised guard) —
     the only two ways this function raises at all.
     """
+    _check_statement_attribution(profile, adapter)
     project_prefix = _project_prefix(repo_top, project_root)
     cov_by_repo_path = _normalized_profile_files(
         profile, adapter, repo_top=repo_top, project_prefix=project_prefix
@@ -381,6 +486,21 @@ def evaluate_coverage(
             files_missing.append(path)
             total_changed_exec += len(lines)
             continue
+
+        if file_cov.line_directive_remapped:
+            # A-405. Reached only for a file that cleared `_is_considered`
+            # above -- source-root boundary, excluded dirs, source globs and
+            # `is_test_path` -- AND has changed lines in this diff. A
+            # `//line`-remapped file the lane does not judge never gets here,
+            # which is the whole point of putting the check inside the loop
+            # rather than over the profile.
+            _refuse_line_directive_remapped(
+                path,
+                judged_as=(
+                    f"This lane judges it: {len(lines)} changed line(s) in it "
+                    f"are inside judge.source_roots"
+                ),
+            )
 
         excluded = file_cov.excluded if file_cov.excluded is not None else frozenset()
         changed_excluded = lines & excluded
@@ -652,9 +772,41 @@ def _normalized_profile_files(
     (``ERROR``/``UNREADABLE_ARTIFACT``) on a collision -- the only way this
     function raises.
     """
-    cov_by_repo_path: dict[str, FileCoverage] = {}
+    repo_path_by_raw_key = _repo_path_by_raw_key(
+        profile, adapter, repo_top=repo_top, project_prefix=project_prefix
+    )
+    return {
+        repo_path: profile.files[raw_key]
+        for raw_key, repo_path in repo_path_by_raw_key.items()
+    }
+
+
+def _repo_path_by_raw_key(
+    profile: CoverageProfile,
+    adapter: LanguageAdapter,
+    *,
+    repo_top: Path,
+    project_prefix: PurePosixPath,
+) -> dict[str, str]:
+    """The JOIN ITSELF, in one place: every raw artifact key mapped to its
+    repo-top-relative path, in *profile.files*' own iteration order.
+
+    :func:`_normalized_profile_files` inverts this to key by repository path;
+    :func:`resolve_coverage_keys` exposes it as-is for a caller that needs to
+    go the OTHER way (raw key -> a real file on disk). Both directions are the
+    same mapping, computed once here, which is the whole point: A-385/A-367
+    rule that there is exactly ONE key resolution, and a second caller
+    re-deriving ``normalize_coverage_key`` + ``project_prefix`` for itself is
+    precisely the drift this function's own docstring one level up says it
+    exists to prevent.
+
+    Raises :class:`~assay.errors.AssayError`
+    (``ERROR``/``UNREADABLE_ARTIFACT``) on a collision -- the only way this
+    function raises.
+    """
+    repo_path_by_raw_key: dict[str, str] = {}
     raw_key_by_repo_path: dict[str, str] = {}
-    for raw_key, file_cov in profile.files.items():
+    for raw_key in profile.files:
         adapter_key = adapter.normalize_coverage_key(raw_key)
         repo_path = _to_repo_relative_key(
             adapter_key, repo_top=repo_top, project_prefix=project_prefix
@@ -671,8 +823,42 @@ def _normalized_profile_files(
                 reason_code=ReasonCode.UNREADABLE_ARTIFACT,
             )
         raw_key_by_repo_path[repo_path] = raw_key
-        cov_by_repo_path[repo_path] = file_cov
-    return cov_by_repo_path
+        repo_path_by_raw_key[raw_key] = repo_path
+    return repo_path_by_raw_key
+
+
+def resolve_coverage_keys(
+    profile: CoverageProfile,
+    adapter: LanguageAdapter,
+    *,
+    repo_top: Path,
+    project_root: Path,
+) -> dict[str, str]:
+    """Every key in *profile.files*, spelled as the artifact spells it,
+    mapped to its repo-top-relative path -- the SAME resolution
+    :func:`evaluate_coverage` and :func:`evaluate_targets` judge by.
+
+    Public because :mod:`assay.runner` needs it (the P27 re-carve): the Go
+    statement-position oracle must be handed real files on disk, and
+    :func:`assay.statement_attribution.attribute_statements` is keyed by the
+    ARTIFACT's own spelling, so the runner needs both ends of exactly this
+    mapping. Exposing it is the alternative to the runner calling
+    ``adapter.normalize_coverage_key`` and re-deriving ``project_prefix``
+    itself, which would put a second, independently-maintained copy of the
+    join beside the one that decides the verdict (A-385/A-367: there is ONE
+    join). If they ever disagreed, the oracle would correct lines for one
+    file while the evaluator judged another, and nothing would say so.
+
+    Raises the identical two errors :func:`evaluate_coverage` raises:
+    ``ERROR``/``BAD_LANE_CONFIG`` when *project_root* is not contained by
+    *repo_top*, and ``ERROR``/``UNREADABLE_ARTIFACT`` on a normalized-key
+    collision. A caller reaching this before evaluation therefore meets the
+    same refusals in the same order, one step earlier.
+    """
+    project_prefix = _project_prefix(repo_top, project_root)
+    return _repo_path_by_raw_key(
+        profile, adapter, repo_top=repo_top, project_prefix=project_prefix
+    )
 
 
 def _tally_branches(
@@ -856,6 +1042,7 @@ def evaluate_targets(
     identical normalized-key collision :func:`evaluate_coverage` refuses
     (module docstring, P15).
     """
+    _check_statement_attribution(profile, adapter)
     project_prefix = _project_prefix(repo_top, project_root)
     cov_by_repo_path = _normalized_profile_files(
         profile, adapter, repo_top=repo_top, project_prefix=project_prefix
@@ -881,6 +1068,20 @@ def evaluate_targets(
         )
         repo_path = (project_prefix / rel_to_project).as_posix()
         file_cov = cov_by_repo_path.get(repo_path)
+        if file_cov is not None and file_cov.line_directive_remapped:
+            # A-405, whole-target mode's own half of the same rule. Checked
+            # BEFORE the `TARGET_NOT_MEASURED` guard below, which such a file
+            # would otherwise trip (its line sets are emptied by
+            # `attribute_statements`): "this target has zero executable
+            # lines" is true but names the wrong cause, and the remedy it
+            # implies -- write tests -- is not the remedy.
+            _refuse_line_directive_remapped(
+                repo_path,
+                judged_as=(
+                    f"This lane judges it: it is declared in judge.targets as "
+                    f"{raw_target!r}"
+                ),
+            )
         target_executable = (
             file_cov.executed | file_cov.missing
             if file_cov is not None

@@ -1,0 +1,136 @@
+# infra/db-core/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `db_core` (bound by ciu.toml [realization.db_core]): ONE realization
+# backing three LogicalServices — main_db (postgres), object_store (minio),
+# db_admin (pgadmin + adminer). DERIVED, never written here: every container/host
+# name (dstdns-<instance>-db-core-postgres, …), the compose project, the instance
+# network, the waves, the Vault edge (from the vault-stored generated secrets —
+# the v7 `requires = ["stack:infra/vault:healthy"]` is gone), the
+# `vault:secret/*` facts (each `store = "vault"` secret derives vault:secret/<path>),
+# the CONTRACT of main_db/object_store/db_admin (derived from what consumers bind:
+# endpoint `sql`, facts pg:db/dstdns, pg:role/controller, … — S5.3), and every
+# consumer's resolution. Secrets sit on the service that consumes them; the ones
+# this stack only MINTS for other stacks are `delivery = "none"`.
+
+# --- postgres (main_db) ------------------------------------------------------
+[ciu_stack.postgres_init]
+image = "alpine:latest"
+one_shot = true                      # chowns pgdata to 1000:docker (timescaledb-ha's postgres uid); wipes it when [maintenance] says so
+
+[ciu_stack.postgres]
+image = "timescale/timescaledb-ha:pg18.4-ts2.27.1"
+primary = true                       # health-bearing: the variant service of main_db, exec target, image source
+depends_on = ["postgres_init"]
+probe_user = "postgres"              # the superuser ciu's pg:* probes exec as inside this container
+# The DBA layer 01-init-users.sh creates on first start: roles + the two databases.
+# The app schema is NOT here (Decision 8: db_init owns it). The six
+# vault:secret/db/postgres/* facts derive from the `store = "vault"` secrets below
+# and are not repeated. `provides` lists the facts consumers may put in their
+# bindings' `facts` (stage 5 checks every variant of main_db provides what is bound).
+provides = [
+  "pg:db/dstdns", "pg:db/authentik",
+  "pg:role/controller", "pg:role/controller_ddl", "pg:role/workerdb", "pg:role/workerdb_ddl",
+  "pg:role/webapp", "pg:role/authentik",
+]
+endpoints.sql = { port = 5432, protocol = "tcp" }     # instance network only — published cross-host only where a binding with data reaches it (S7.4.1)
+
+[ciu_stack.postgres.settings]        # consumer data → entrypoint env (01-init-users.sh); role/database NAMES come from registry.* in the template
+superuser_db = "postgres"
+
+[ciu_stack.postgres.hostdir]
+data = ""                            # "" = ciu-generated; mounted at the image's VOLUME parent (see compose). A v7 vol-postgres-data directory must be migrated first (S6.8.4)
+
+# env delivery: the entrypoint script takes the role passwords from the environment
+# to CREATE the roles (restart-bound; ciu check lists them). The Vault paths are the
+# facts consumers ask for (`from = "vault"`) — authentik's is minted here so its
+# role exists before authentik starts.
+[ciu_stack.postgres.secrets]
+postgres_superuser_password      = { from = "generate", store = "vault", path = "postgres_superuser_password",      delivery = "env", env_name = "DB_CORE_SECRETS_POSTGRES_SUPERUSER_PASSWORD" }
+postgres_controller_password     = { from = "generate", store = "vault", path = "postgres_controller_password",     delivery = "env", env_name = "DB_CORE_SECRETS_POSTGRES_CONTROLLER_PASSWORD" }
+postgres_controller_ddl_password = { from = "generate", store = "vault", path = "postgres_controller_ddl_password", delivery = "env", env_name = "DB_CORE_SECRETS_POSTGRES_CONTROLLER_DDL_PASSWORD" }
+postgres_workerdb_password       = { from = "generate", store = "vault", path = "postgres_workerdb_password",       delivery = "env", env_name = "DB_CORE_SECRETS_POSTGRES_WORKERDB_PASSWORD" }
+postgres_webapp_password         = { from = "generate", store = "vault", path = "postgres_webapp_password",         delivery = "env", env_name = "DB_CORE_SECRETS_POSTGRES_WEBAPP_PASSWORD" }
+postgres_authentik_password      = { from = "generate", store = "vault", path = "postgres_authentik_password",      delivery = "env", env_name = "DB_CORE_SECRETS_POSTGRES_AUTHENTIK_PASSWORD" }
+postgres_workerdb_ddl_password   = { from = "generate", store = "vault", path = "postgres_workerdb_ddl_password",   delivery = "none" }   # minted for consumers only; the entrypoint never reads it
+
+# --- pgadmin + adminer (db_admin) --------------------------------------------
+[ciu_stack.pgadmin_init]
+image = "alpine:latest"
+one_shot = true                      # chowns the pgadmin data/certs hostdirs to 5050:docker
+
+[ciu_stack.pgadmin]
+image = "dpage/pgadmin4:latest"
+depends_on = ["pgadmin_init", "postgres"]
+endpoints.pgadmin = { port = 80, protocol = "http" }  # operator UI; endpoint names are stack-unique (a consumer binds db_admin.pgadmin)
+
+[ciu_stack.pgadmin.settings]
+email = "pgadmin@example.com"        # REQUIRED: override in ciu.site.toml as [realization.db_core.services.pgadmin.settings] email = "…"
+enable_tls = false
+
+[ciu_stack.pgadmin.hostdir]
+data = ""
+certs = ""
+
+# Rendered to ciu.rendered/pgadmin/pgadmin4/servers.json and …/preferences.json;
+# /pgadmin4 is mounted read-only by ciu (parent-directory mount, S6.9.1).
+# servers.json's "Host" becomes the postgres service's derived hostname (the
+# configfile template reads ciu_stack.postgres.identity.hostname, S3.5.1): the
+# bare compose alias `postgres` it named in v7 no longer resolves (qualified
+# compose keys, CIU-51).
+[ciu_stack.pgadmin.configfile.servers]
+template = "pgadmin4-server.json"
+target = "/pgadmin4/servers.json"
+[ciu_stack.pgadmin.configfile.preferences]
+template = "pgadmin4-preferences.json"
+target = "/pgadmin4/preferences.json"
+
+[ciu_stack.pgadmin.secrets]
+pgadmin_password = { from = "generate", store = "vault", path = "pgadmin_password", delivery = "env", env_name = "DB_CORE_SECRETS_PGADMIN_PASSWORD" }
+
+[ciu_stack.adminer]
+image = "adminer:latest"
+depends_on = ["postgres"]
+endpoints.adminer = { port = 8080, protocol = "http" }   # instance network only: admin tools are never exposed directly
+
+# --- minio (object_store) ----------------------------------------------------
+[ciu_stack.minio_init]
+image = "alpine:latest"
+one_shot = true                      # chowns the data hostdir to the workspace user:docker
+
+[ciu_stack.minio]
+image = "minio/minio:latest"
+depends_on = ["minio_init"]
+endpoints.s3 = { port = 9000, protocol = "http" }
+endpoints.console = { port = 9001, protocol = "http" }
+# object_store's facts: the six vault:secret/minio/* derive from the `store = "vault"`
+# secrets below; the minio:user/* facts are created by the post_compose hook and
+# declared on its entry (`provides`, `service = "minio"` — probed inside this service).
+
+[ciu_stack.minio.settings]
+root_user = "minio"                  # REQUIRED
+browser_redirect_url = ""
+
+[ciu_stack.minio.hostdir]
+data = ""
+
+[ciu_stack.minio.secrets]
+minio_root_password = { from = "generate", store = "vault", path = "minio_root_password", delivery = "env", env_name = "DB_CORE_SECRETS_MINIO_ROOT_PASSWORD" }   # the hook needs it too: see the `hook`-delivered copy below? No — one secret, one delivery: the hook reads the container's env through docker_exec, or declare a second key with delivery = "hook"
+# Per-service IAM credentials: minted into Vault for the consumers; the container
+# never sees them — the post_compose hook reads them from its context (delivery = "hook", S10.2.5) to create the users.
+minio_worker_io_access_key     = { from = "generate", store = "vault", path = "minio_worker_io_access_key",     delivery = "hook" }
+minio_worker_io_secret_key     = { from = "generate", store = "vault", path = "minio_worker_io_secret_key",     delivery = "hook" }
+minio_webapp_server_access_key = { from = "generate", store = "vault", path = "minio_webapp_server_access_key", delivery = "hook" }
+minio_webapp_server_secret_key = { from = "generate", store = "vault", path = "minio_webapp_server_secret_key", delivery = "hook" }
+minio_worker_db_access_key     = { from = "generate", store = "vault", path = "minio_worker_db_access_key",     delivery = "hook" }
+minio_worker_db_secret_key     = { from = "generate", store = "vault", path = "minio_worker_db_secret_key",     delivery = "hook" }
+
+[maintenance]                        # consumer data (top-level tables pass through to templates and hooks)
+# true = the init jobs (root) wipe the postgres/pgadmin/minio hostdirs on the next
+# `ciu up` (files are owned by the images' uids). Flip it in ciu.site.toml
+# ([realization.db_core.maintenance] clean_data_dirs = true) for one run, never here.
+clean_data_dirs = false
+
+[hooks]
+pre_compose = []
+post_compose = [
+  { run = "./post_compose_db.py", service = "minio", provides = ["minio:user/worker-io", "minio:user/webapp-server", "minio:user/worker-db"] },   # bucket + IAM users from [registry.minio.users]; identities and the hook-delivered keys from its context (ciu.hookkit)
+]

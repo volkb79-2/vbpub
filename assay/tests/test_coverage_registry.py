@@ -1,4 +1,4 @@
-"""O2 — the registry itself: exactly four formats, an unrecognised declared
+"""O2 — the registry itself: exactly five formats, an unrecognised declared
 format is refused with the SAME error class :mod:`assay.config` would raise
 (defence in depth for a caller that skips config loading), and
 :func:`assay.coverage.read_coverage_artifact` is the thin file-I/O boundary
@@ -19,14 +19,16 @@ from assay.coverage import FORMAT_REGISTRY, load_coverage_profile, read_coverage
 from assay.errors import AssayError, LaneConfigError, Outcome, ReasonCode
 
 
-def test_registry_has_exactly_the_four_formats_this_package_ships():
-    # A literal set, not `>= 4` — this is what "removing a registered
-    # format" (O1's negative) would actually change.
+def test_registry_has_exactly_the_formats_this_package_ships():
+    # A literal set, not `>= 5` — this is what "removing a registered
+    # format" (O1's negative) would actually change. `coverage-istanbul-json`
+    # joined the original four in B036.
     assert set(FORMAT_REGISTRY) == {
         "coverage-py-json",
         "lcov",
         "cobertura",
         "go-cover",
+        "coverage-istanbul-json",
     }
 
 

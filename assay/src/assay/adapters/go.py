@@ -8,6 +8,13 @@
     span-attribution statement in this file. A-235 additionally records that
     ``statement_spans`` currently has no seam through which that oracle would ever
     be invoked, because this parser leaves no unattributed line.
+
+    A-234's own tracked item — the hand-authored coverage fixtures — is
+    DISCHARGED (F008-A4): ``tests/fixtures/go/**`` is real toolchain output
+    joined against a real oracle document. The seam A-235 said was missing is
+    built too: it is :meth:`GoAdapter.statement_blocks` (A-397), a NEW hook,
+    never an overload of ``statement_spans``, which still returns ``None``
+    unconditionally and still has no caller for this adapter.
 The Go :class:`~assay.adapters.base.LanguageAdapter` -- the SECOND real
 adapter (P08), proving the boundary P05 built is genuinely additive: adding
 Go requires ZERO changes to the frozen protocol (``adapters/base.py``), the
@@ -49,10 +56,21 @@ verified empirically while authoring this package -- so there is no
 committed-coverprofile shape that could represent import-break's own
 R0-level rejection; that half of the claim is Python's alone, A-107).
 
-**No Go toolchain, anywhere (A-087).** This module never shells out, never
-imports ``subprocess``, and is proven entirely from committed text
-(``tests/fixtures/go/**``) -- this devcontainer has no Go toolchain to shell
-out to even if it wanted to (DESIGN-GUIDE §10). ``external_tools = ()``: the
+**No Go toolchain for the LEXER (A-087) -- but ``external_tools = ("go",)``
+since the P27 re-carve.** This paragraph originally said the adapter needed
+no toolchain at all, and that is still true of everything A-087 covers:
+``has_executable_code``, ``is_test_path``, ``normalize_coverage_key`` and
+the two canary injections are pure text processing over committed fixtures.
+It is NOT true of :meth:`GoAdapter.statement_blocks`, added by the P27
+re-carve: A-217 ruled that Go statement positions must come from a
+source-side oracle running the real ``cmd/cover`` segmentation
+(:mod:`assay.adapters.go_stmtpos`), because a hand-guessed rule is provably
+wrong on the ``collision-col{A,B}`` witness pair and a wrong statement
+position has no fail-closed direction. So ``external_tools`` now declares
+``("go",)``, and A-253's PATH preflight refuses a Go lane
+``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` in an environment without a
+toolchain -- which is this devcontainer, permanently and by policy
+(A-042/A-043, DESIGN-GUIDE §10). A-087 is not weakened, it is scoped: the
 narrow semantic question ``has_executable_code`` answers ("does this file
 declare a function with a real body") is answered by a small, deterministic,
 conservative lexer ported from the REASONING (not the code -- there is
@@ -145,11 +163,24 @@ srdm's ``stripModulePrefix``"), confirmed directly against
 ``covergate/main.go``'s own ``stripModulePrefix``: a Go cover profile
 names files by full import path (``srdm/internal/store/x.go``) while
 ``git diff`` names the same file relative to the repo top
-(``internal/store/x.go``); :attr:`GoAdapter.module_path` names the known,
-declared module-path segment to strip, firing only at an exact
+(``internal/store/x.go``); :attr:`GoAdapter.module_path` names the
+module-path segment to strip, firing only at an exact
 ``module_path + "/"`` path-segment boundary so a sibling module that
 merely shares the prefix's characters (``"srdm_legacy/..."``) is never
 mis-stripped.
+
+**Where that module path comes from is a decision in its own right
+(A-404, DA-8), and the answer is: the project's own ``go.mod``.** A lane
+never declares it. ``covergate``'s ``-module srdm`` flag is
+``DESIGN-GUIDE.md`` §5's defaults anti-pattern #1 by name -- a literal
+standing in for a fact that lives authoritatively in the project's layout
+-- so :meth:`GoAdapter.for_project` reads it, once per lane, from the
+nearest ``go.mod`` at or above the lane's own ``cwd``
+(:mod:`assay.adapters.go_modfile`). One Go module per lane; ``cwd`` is
+that module's root. A key outside the derived module refuses rather than
+passing through, because an unstripped key does not fail loudly on its
+own -- it matches no file, and a lane that matches no file measures 0/0
+and PASSES.
 
 **``excluded_dir_names`` is the empty set, not an invented ``vendor``/
 ``testdata`` default.** Real Go tooling does special-case both by bare
@@ -165,11 +196,15 @@ has is precisely the hazard §5 exists to forbid.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Literal, Sequence
 
+from ..errors import AssayError, Outcome, ReasonCode
 from ..mutation import MutationSite
-from .base import StatementSpan
+from .base import Remaining, StatementBlockReport, StatementSpan
+from .go_modfile import find_module_declaration
+from .go_stmtpos import derive_statement_blocks
 
 __all__ = ["GoAdapter"]
 
@@ -498,13 +533,87 @@ class GoAdapter:
     #: Python's multi-line-statement gap (A-102) -- see this module's own
     #: docstring for the confirmation against the real parser.
     requires_span_attribution: bool = False
-    external_tools: tuple[str, ...] = ()
-    #: A declared, known module-path segment a coverage artifact's own keys
-    #: carry that the diff's spelling does not (Go's own analogue of
+    #: ``True`` -- the Go coverprofile records a positional EXTENT plus a
+    #: statement CARDINALITY, never the statements' own positions, so its
+    #: records are an OVER-APPROXIMATION that must be demoted to statement
+    #: truth before any verdict is computed (A-217/A-239/A-392). The
+    #: correction is not optional and is not this adapter's to remember:
+    #: :func:`assay.evaluate.evaluate_coverage` refuses outright on a profile
+    #: whose ``statement_attributed`` is ``False`` while this is ``True``.
+    #:
+    #: Note this is the OPPOSITE axis from ``requires_span_attribution``
+    #: above, which stays ``False``: Go's format leaves no unattributed line
+    #: to rescue (every block line lands in executed-or-missing), and the
+    #: problem is precisely that it claims lines it should not.
+    requires_statement_attribution: bool = True
+    #: (B047 item 2) The statement-position oracle
+    #: (:mod:`assay.adapters.go_stmtpos`) is a real Go program run with the
+    #: real toolchain -- A-217 ruled that a hand-guessed Python
+    #: re-implementation is not an acceptable substitute, because a wrong
+    #: statement position has no fail-closed direction. Declaring `go` here
+    #: is all this adapter owes: A-253 assigns the effective-PATH preflight
+    #: itself to P34, already built and tested, so a Go lane in an
+    #: environment with no Go toolchain (this devcontainer, by policy --
+    #: A-042/A-043) refuses ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL``
+    #: before anything runs, rather than crashing or guessing.
+    external_tools: tuple[str, ...] = ("go",)
+    #: The module-path segment a coverage artifact's own keys carry that the
+    #: diff's spelling does not (Go's own analogue of
     #: :attr:`~assay.adapters.python.PythonAdapter.coverage_key_prefix`,
     #: mirroring ``covergate/main.go``'s own ``stripModulePrefix``). Empty
     #: means nothing to strip.
+    #:
+    #: **On a lane this is DERIVED, never declared** (A-404): :meth:`for_project`
+    #: reads it from the project's own ``go.mod`` and returns a copy carrying
+    #: it. Setting it directly is the library affordance a caller building
+    #: their own registry has (``tests/test_standalone.py``), and it leaves
+    #: :attr:`module_file` empty, which is the difference the refusal below
+    #: keys on.
     module_path: str = ""
+    #: The repo-top-relative path of the ``go.mod`` whose ``module`` directive
+    #: produced :attr:`module_path`, or ``""`` when the path was supplied by a
+    #: caller instead of derived. Provenance, and the thing a refusal names so
+    #: the consumer knows which file to open.
+    module_file: str = ""
+
+    def for_project(
+        self, *, repo_top: Path, project_root: Path
+    ) -> "GoAdapter":
+        """This adapter with its module path read out of the project's own
+        ``go.mod`` (A-404, ruled by DA-8).
+
+        The nearest ``go.mod`` at or above *project_root* and no higher than
+        *repo_top* is the lane's module; :mod:`assay.adapters.go_modfile`
+        parses its ``module`` directive and nothing else. **No ``go.mod`` in
+        that range is a refusal**, not a fallback to "strip nothing": B059
+        measured what the empty prefix does, and it is not a loud failure but
+        a profile whose every key resolves to a file that does not exist.
+
+        A *declared* :attr:`module_path` that DISAGREES with the derived one
+        is refused rather than given a precedence, which is A-328's own rule
+        applied here ("refuse precedence between two sources of one fact,
+        because whichever loses is config nothing reads") and the same
+        cross-check shape A-007 built for the coverage format. One that
+        agrees is simply re-derived with its provenance filled in.
+        """
+        declaration = find_module_declaration(repo_top, project_root)
+        if self.module_path and self.module_path != declaration.module_path:
+            raise AssayError(
+                f"this Go adapter was constructed with module_path "
+                f"{self.module_path!r}, but {declaration.module_file!r} "
+                f"declares `module {declaration.module_path}`. The module "
+                f"path is the project's fact, not the caller's, so the "
+                f"disagreement is refused rather than resolved by a "
+                f"precedence rule -- delete the declared value and let it be "
+                f"derived",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        return replace(
+            self,
+            module_path=declaration.module_path,
+            module_file=declaration.module_file,
+        )
 
     def is_test_path(self, rel_path: str) -> bool:
         return rel_path.endswith("_test.go")
@@ -513,13 +622,75 @@ class GoAdapter:
         return _has_top_level_func_body(text)
 
     def normalize_coverage_key(self, key: str) -> str:
+        """*key* with this module's own import-path prefix removed.
+
+        The strip fires only at an exact ``module_path + "/"`` path-segment
+        boundary, so a sibling module sharing the prefix's characters
+        (``srdm_legacy/...`` against ``srdm``) is never mis-stripped.
+
+        **When the module path was DERIVED** (:attr:`module_file` is set), a
+        key that is not under it is refused instead of passed through, and
+        A-404 (c) is why: `go test ./...` inside a module emits keys under
+        that module's import path and nothing else, so a foreign key means
+        the profile is not this lane's -- and passing it through produces a
+        path that matches no file, which surfaced as B059's misattributed
+        "the profile and the working tree are not the same revision". The
+        message names all three things a consumer needs: the key, the derived
+        module path, and the ``go.mod`` it came from.
+
+        **When it was DECLARED** by a library caller, the pass-through
+        stands: assay has no ``go.mod`` to contradict them with, so it has
+        nothing to say beyond "this is not a key I was told to strip".
+        """
         prefix = self.module_path
-        if not prefix or not key.startswith(prefix + "/"):
-            return key
-        return key[len(prefix) + 1 :]
+        if prefix and key.startswith(prefix + "/"):
+            return key[len(prefix) + 1 :]
+        if self.module_file:
+            raise AssayError(
+                f"the coverage artifact carries the key {key!r}, which is not "
+                f"under this lane's own Go module path {prefix!r} (declared "
+                f"by `module {prefix}` in {self.module_file!r}). A Go cover "
+                f"profile keys every record by import path, so a key outside "
+                f"the module was produced by a different module than the one "
+                f"the lane's `cwd` sits in -- one Go module per lane, and "
+                f"`cwd` is that module's root",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            )
+        return key
 
     def statement_spans(self, text: str) -> tuple[StatementSpan, ...] | None:
         return None
+
+    def statement_blocks(
+        self,
+        repo_top: Path,
+        rel_paths: Sequence[str],
+        *,
+        remaining: Remaining | None = None,
+    ) -> StatementBlockReport | None:
+        """Where every cover block over *rel_paths* begins its own
+        statements, derived from the SOURCE by the shipped oracle (A-397).
+
+        This is the ONE adapter method in the project that shells out, and
+        the reason is A-217's ruling: the two witnesses
+        ``carve-assets/P27/witness/collision-col{A,B}.go`` emit a
+        byte-identical coverage profile while their statements begin on
+        different lines, so no rule reading only the profile can be right on
+        both. The missing information is in the source, and the only correct
+        way to read it back out is ``cmd/cover``'s own segmentation --
+        shipped verbatim at ``assay/helpers/go/stmtpos/`` and run here with
+        the real toolchain, never re-implemented in Python.
+
+        Never returns ``None``: this adapter declares
+        :attr:`requires_statement_attribution` ``True``, so ``None`` would
+        mean "no attribution is available" for an adapter that cannot be
+        judged without it. Every failure raises instead
+        (:mod:`assay.adapters.go_stmtpos` documents each one).
+        """
+        return derive_statement_blocks(
+            repo_top, rel_paths, remaining=remaining
+        )
 
     def inject_import_break(self, text: str) -> tuple[str, str]:
         return _inject_import_break(text)

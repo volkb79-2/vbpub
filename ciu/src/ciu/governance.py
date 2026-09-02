@@ -77,6 +77,15 @@ GOVERNANCE_DEFAULTS: dict[str, Any] = {
     # (including this project's own shipped dev-tier slices, as shipped
     # today) that has no memory.low of its own.
     "mem_reservation": "256m",
+    # S15.21 — CPU quota, Compose Specification's `cpus` key (a fractional CPU
+    # count, e.g. "1.5" — hence a string sentinel, not io_weight's int `0`).
+    # "" = not set (no `cpus` key injected — the container stays uncapped,
+    # exactly as before this key existed). Unlike mem_limit/mem_reservation
+    # (always-on since governance's introduction), a nonzero default here
+    # would silently throttle every currently-uncapped governed container on
+    # upgrade with no config change on the consumer's part — explicit
+    # opt-in-only, deliberately, per D-264 PC-1.
+    "cpus": "",
     "read_iops": 0,          # 0 = derive from the host io-baseline (S15.4)
     "write_iops": 400,
     # S15.14 — proportional IO share, Docker/compose `blkio_config.weight`
@@ -256,13 +265,17 @@ def resolve_ksm_optin(configured: str) -> str:
 # NOTE: the Compose Specification's actual key is `memswap_limit` (no
 # underscore between "mem" and "swap") — this tuple lists real compose keys,
 # NOT the `governance.mem_swap_limit` config-table key name (see
-# build_injections() below, which translates between the two).
+# build_injections() below, which translates between the two). This
+# translation note does NOT apply to every entry: `cpus` (S15.21) is the
+# same string on both sides of the config-table/compose-key divide, no
+# translation needed, unlike `mem_swap_limit` -> `memswap_limit`.
 INJECTED_KEYS: tuple[str, ...] = (
     "cgroup_parent",
     "mem_limit",
     "memswap_limit",
     "mem_reservation",
     "blkio_config",
+    "cpus",
 )
 
 # Ambient override for cgroup_parent, mirroring BASELINE_PATH_ENV_VAR below.
@@ -405,6 +418,24 @@ def resolve_config(
             f"[S15.14] [<root>.governance].io_weight must be 0 (unset) or in "
             f"10..1000 (Docker's blkio weight range), got {io_weight!r}"
         )
+
+    # S15.21 — "" means "not set, inject nothing"; any other value must parse
+    # as a positive number. Docker/compose's real `cpus` value is a
+    # fractional CPU count ("1.5"), unlike io_weight's int range, so the
+    # check is "parses as float() > 0" rather than an integer range — but the
+    # rationale mirrors io_weight's own comment exactly: `docker compose up`
+    # would otherwise reject a garbage value far from where the typo was made.
+    cpus = cfg.get("cpus") or ""
+    if cpus:
+        try:
+            cpus_valid = float(cpus) > 0
+        except (TypeError, ValueError):
+            cpus_valid = False
+        if not cpus_valid:
+            raise ValueError(
+                f"[S15.21] [<root>.governance].cpus must be \"\" (unset) or a "
+                f"positive number, got {cpus!r}"
+            )
     return cfg
 
 
@@ -944,7 +975,10 @@ def build_injections(
     (injections, notes)
         ``injections`` maps service name -> the subset of
         ``cgroup_parent``/``mem_limit``/``memswap_limit``/``mem_reservation``/
-        ``blkio_config`` not already set by the author. ``blkio_config`` itself carries
+        ``cpus``/``blkio_config`` not already set by the author. ``cpus``
+        (S15.21) is omitted unless ``governance.cpus`` is explicitly
+        configured (default ``""`` = uncapped, unlike the always-on memory
+        keys). ``blkio_config`` itself carries
         whichever of ``device_read_iops``/``device_write_iops`` (device
         resolved), ``device_read_bps``/``device_write_bps`` (device resolved
         AND a nonzero cap configured, S15.15) and ``weight`` (nonzero
@@ -968,6 +1002,7 @@ def build_injections(
     read_bps = int(config.get("read_bps", 0) or 0)
     write_bps = int(config.get("write_bps", 0) or 0)
     mem_min = str(config.get("mem_min") or "")
+    cpus = str(config.get("cpus") or "")
 
     injections: dict[str, dict[str, Any]] = {}
     skipped_exempt = 0
@@ -995,6 +1030,12 @@ def build_injections(
             frag["memswap_limit"] = config["mem_swap_limit"]
         if "mem_reservation" not in author_keys:
             frag["mem_reservation"] = config["mem_reservation"]
+        # S15.21 — additive, explicit-opt-in-only (default "" = uncapped, no
+        # key injected): unlike the always-on keys above, an author who never
+        # configured governance.cpus must see no `cpus` key at all, not a
+        # nonzero estate-wide default.
+        if "cpus" not in author_keys and cpus:
+            frag["cpus"] = cpus
         blk: dict[str, Any] = {}
         if device:
             blk["device_read_iops"] = [{"path": device, "rate": read_iops}]
@@ -1038,6 +1079,7 @@ def build_injections(
         f"mem_limit={config['mem_limit']}",
         f"mem_swap_limit={config['mem_swap_limit']}",
         f"mem_reservation={config['mem_reservation']}",
+        *([f"cpus={cpus}"] if cpus else []),  # S15.21 — only present when set
         f"mem_min={mem_min or '(not declared)'}",
         f"read_iops={read_iops} ({read_note})",
         f"write_iops={write_iops}",

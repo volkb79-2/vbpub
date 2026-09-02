@@ -1,0 +1,678 @@
+# assay B036 — a JavaScript/TypeScript `LanguageAdapter` (R1) — REPORT
+
+**Branch:** `feature/assay-b036-js-adapter`
+**Base:** `main` at `62fe368f` (the commit that filed B036/B037)
+**Filing:** B036 in `nyxloom-trove/4-backlog.md`
+**Decisions recorded:** A-340 … A-346 (`nyxloom-trove/decisions.md`)
+**New filings out of this work:** B038, B039, B040
+**Rounds:** round 1 as filed; round 2 answers the adversarial review — see §6a
+**Scope:** R1 only. R2 is B037's ruling and is not touched; R3 is not wired,
+though both canary injection methods are real implementations.
+
+Nothing in this report is asserted from a diff or from analogy to another
+adapter. Every design claim was measured first, against real
+`vitest run --coverage` output produced for **both** of Vitest's coverage
+providers, and the two artifacts are committed as fixtures. Where a claim
+could only be settled by running something, the transcript is pasted below.
+
+---
+
+## 1. What shipped
+
+| file | what |
+|---|---|
+| `src/assay/coverage_parsers/coverage_istanbul_json.py` | new parser for istanbul's `coverage-final.json` |
+| `src/assay/coverage.py:118` | fifth `FORMAT_REGISTRY` entry, `coverage-istanbul-json` |
+| `src/assay/adapters/javascript.py` | new `JavaScriptAdapter`, all seven protocol methods |
+| `src/assay/cli.py:282` | `_built_in_registry` entry, `rigor=frozenset({"R1"})` |
+| `tests/fixtures/coverage/probe-js/**` | the committed Vitest driver project (13 files incl. its lockfile, no `node_modules`) |
+| `tests/fixtures/coverage/coverage-istanbul-json.vitest-v8.json` | real artifact, `@vitest/coverage-v8` |
+| `tests/fixtures/coverage/coverage-istanbul-json.vitest-istanbul.json` | real artifact, `@vitest/coverage-istanbul` |
+| `tests/fixtures/coverage/probe-js-provider-defect/**` | round 2: a second project whose ground truth needs no coverage tool, + 4 real artifacts (both providers × Vitest 3.2.4 and 4.1.11) |
+| `tests/fixtures/canary/javascript/**` | round 2: the injected canary source + its real artifacts from both providers |
+| `tests/fixtures/coverage/PROVENANCE.md` | new sections: how every artifact was produced, and the facts they witness |
+| 9 new test modules | 188 new tests (see §5) |
+| `README.md`, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md` | the new language and format documented alongside Python/Go/SQL |
+| `CHANGES.md` `[Unreleased]` → `### Added` | one entry, alongside the existing ones (untouched) |
+
+Nothing in the frozen protocol (`adapters/base.py`), the language-free core
+(`evaluate.py`), the registry (`registry.py`), the verdict model, or the
+packaged schema was modified. `judge.language` has no closed list to extend
+and the schema's `language` field is an open string, so **no schema version
+bump was needed** — checked, not assumed (`src/assay/schemas/verdict.schema.json`
+line 2285: `{"type": "string", "minLength": 1}`).
+
+Three pre-existing files changed beyond the two wiring lines, all of them
+stale-claim repairs the new format forced:
+`tests/test_coverage_registry.py` (four formats → five, a literal set by
+design), `tests/test_coverage_branch_real_fixtures.py` (its docstring's
+"these EIGHT files" now scopes itself to the coverage.py ones), and
+`tests/fixtures/coverage/PROVENANCE.md`'s own opening count.
+
+---
+
+## 2. The measurement that drove every design decision
+
+A committed, self-contained Vitest project
+(`tests/fixtures/coverage/probe-js`) was run twice — once per coverage
+provider — outside this repository, with Node `v26.5.1`, `vitest 3.2.4`,
+`@vitest/coverage-v8 3.2.4`, `@vitest/coverage-istanbul 3.2.4`. Both
+`coverage-final.json` documents are committed unedited, absolute keys and
+all. The full command list and the 12 facts they witness are in
+`tests/fixtures/coverage/PROVENANCE.md`'s own new section.
+
+The single most consequential finding: **the two producers of this one
+format do not agree about what parts of it mean.**
+
+```
+src/branchy.ts, one file, one test that calls branchy(0) only:
+
+  @vitest/coverage-istanbul   statementMap: REAL extents, several multi-line
+                              branchMap:    3 entries typed if/if/cond-expr,
+                                            one location per ARM
+                                            -> 6 arcs, 2 covered
+  @vitest/coverage-v8         statementMap: one single-line entry per
+                                            executable physical line
+                              branchMap:    4 entries all typed "branch",
+                                            ONE location each; one spans the
+                                            whole function, one starts at a
+                                            closing brace
+                                            -> 4 "arcs", 1 covered
+```
+
+Everything below follows from that.
+
+---
+
+## 3. Design decisions
+
+### 3.1 The `judge.language` string — `"javascript"` (A-340)
+
+One adapter for `.js`/`.jsx`/`.ts`/`.tsx`, matching how `"python"` and
+`"go"` do not split by dialect or extension. The load-bearing measured fact:
+one `coverage-final.json` from one `vitest run` carries `.ts` and `.tsx`
+records with identical structure and no language field anywhere — so a split
+would force a lane touching one `.ts` and one `.tsx` file to declare two
+languages for one measurement. `"typescript"` was rejected from the other
+side: it leaves plain `.js`/`.jsx` (which every React project still has)
+unnameable. It is explicitly NOT registered, and
+`test_cli_run_javascript.py::test_an_unrecognised_language_is_still_refused`
+pins that it is refused like any unknown name.
+
+### 3.2 Where the absolute-path normalization belongs — NEITHER (A-341)
+
+The brief posed this as parser-vs-`normalize_coverage_key`. Checking what
+the existing four parsers actually do says: neither.
+
+* `CoverageProfile`'s own model contract requires a parser to key files
+  "exactly as that format's artifact names it… that stays the caller's job",
+  and all four obey it — `go_cover` leaves the package-qualified import path
+  alone and `GoAdapter.module_path` strips it; `coverage_py_json` leaves its
+  key alone and `PythonAdapter.coverage_key_prefix` strips it. So the parser
+  is the wrong place by the model's own rule.
+* `normalize_coverage_key` is documented as the **language**-specific prefix
+  strip, with the universal boundary reconciliation in the core
+  (DESIGN-GUIDE §11). An absolute path is not a language fact.
+* And it already works: `evaluate._to_repo_relative_key`'s ABSOLUTE branch
+  (B006/A-145, added for real `coverage.py`'s absolute-path fallback)
+  resolves the key against `repo_top`, and leaves a key naming something
+  outside the repository untouched and therefore inert.
+
+So `JavaScriptAdapter.normalize_coverage_key` returns its key unchanged
+(`src/assay/adapters/javascript.py:315`), and a strip in either place would
+have been dead code that looked load-bearing.
+
+This is proven end-to-end rather than argued: the CLI test's lane command
+writes `$PWD/src/app.ts` as its key — the shape a real coverage tool
+produces, because assay runs the lane's command with `cwd` inside the
+relocated snapshot — and the lane PASSes. An earlier draft of that test
+hardcoded the caller's repository path instead and correctly FAILED with
+`files_missing_coverage: ["src/app.ts"]`, which is exactly the silent
+misjudgement this reconciliation prevents.
+
+### 3.3 `requires_span_attribution` — `False`, with the gap closed in the parser (A-342)
+
+Probed, per `adapters/go.py`'s own warning that its identical claim was
+"settled, not assumed" only after A-172 found the first premise wrong.
+
+* Under `@vitest/coverage-v8`, no multi-line extent exists anywhere in the
+  artifact, so `False` is trivially safe.
+* Under `@vitest/coverage-istanbul`, statement extents are real and often
+  multi-line (`format.ts`: `[13,15]`, `[24,32]`, `[33,37]`, `[34,36]`),
+  and their interior lines have no entry of their own. That is coverage.py's
+  multi-line-statement gap in a different format — so `False` is **not**
+  trivially true in general, and the initial premise would have been wrong.
+
+Three options were compared:
+
+1. `True` + a real `statement_spans` — needs a TypeScript/JSX parser written
+   in Python from scratch: the categorically larger undertaking B037's own
+   scope boundary exists to rule on, for a recovery the artifact can already
+   supply. Rejected.
+2. `False` with no expansion — silently drops every continuation line into
+   `evaluate.py`'s rule 4. That is srdm's silent-excuse direction on lines a
+   human actually edited. Rejected.
+3. **Chosen:** expand each statement's own `[start.line, end.line]` extent in
+   the parser (`coverage_istanbul_json._paint`), innermost extent winning,
+   ties resolving by MAX count. The extent is the ARTIFACT's own claim about
+   which source range a statement occupies, so this recovers exactly what
+   Python's AST walk recovers — from data, not a re-parse.
+
+   **Corrected after round-1 review (M2).** This section originally ended
+   "…and leaves no line of a measured file unattributed". That is false, and
+   measured false: 23 non-comment lines across six files in the committed
+   istanbul artifact are in neither bucket — every function signature line,
+   every function-level closing brace, and `format.ts:12`, a genuinely
+   executable `const date =` whose recorded statement starts at 13 on its
+   initialiser. They take rule 4 and leave the denominator. The real
+   guarantee, which is all `requires_span_attribution = False` needs, is that
+   **every line any statement extent covers is classified** — span
+   attribution exists to recover a multi-line construct's interior lines, and
+   the expansion already recovers precisely those. Measured value of the
+   expansion on that artifact: 29 statement start lines become 54 classified
+   lines. A-342 carries the correction; `coverage_istanbul_json.py`'s own
+   docstring and one test docstring had said it correctly all along.
+
+**Innermost-wins is load-bearing, not a refinement.** In the real
+istanbul-provider artifact, `branchy.ts`'s `if` extent `[2,4]` has count 1
+while its own never-taken `return` at `[3,3]` has count 0. A go-cover-style
+"executed wins" merge reports line 3 as covered — a false green on a line
+that provably never ran. The MAX-count tie-break is
+`istanbul-lib-coverage`'s own `getLineCoverage` rule, adopted rather than
+invented.
+
+Stated rather than hidden: a line that is only structurally part of a
+statement (a lone closing brace) inherits that statement's status and counts
+toward the denominator. That is the visible-false-failure direction, chosen
+over the silent one.
+
+### 3.4 Two honest `None`s (A-343, A-344)
+
+`excluded` is always `None`: a real `/* istanbul ignore next */` hint
+(committed as `probe-js/src/hinted.ts`) leaves the hinted statement in
+`statementMap` with a live count and produces **no `skip` marker anywhere**
+in either document. So an "ignored" line is indistinguishable from a line
+that was never code — lcov's exact situation and lcov's exact answer.
+
+`branches` is always `None`, and this is a measured refusal rather than an
+omission — the format HAS a `branchMap`, but per §2 its two producers report
+2/6 and 1/4 for the same file and the same tests. A lane declares the
+FORMAT, never the producer, so a single translation would put a number on
+the wire whose meaning depends on an undeclared fact. Filed as **B038**.
+
+### 3.5 `has_executable_code` — two cases, fail-closed (A-343)
+
+`False` only for a `.d.ts`/`.d.mts`/`.d.cts` declaration file (decided from
+the path, because TypeScript's grammar decides it; neither provider reports
+one) and for text that is empty once comments and whitespace are removed.
+Everything else is `True`.
+
+A type-only `.ts` module is deliberately NOT claimed as code-free even
+though it genuinely has none: deciding it needs real TypeScript type-erasure
+semantics, the same overreach rejected in §3.3. Under `@vitest/coverage-v8`
+it never arises (measured: `typesonly.ts` IS reported, with
+`"statementMap": {}`, so it reaches evaluation as a real record with zero
+executable lines and this method is never consulted). Under
+`@vitest/coverage-istanbul` it is absent and would be reported as missing
+coverage — the visible direction, filed as **B038**, not papered over.
+
+### 3.6 Canary injection — both appends, both verified against real Vitest (A-345)
+
+JS/TS has an executable module top level, so nyxloom's insert-after-the-
+prologue shape would port. But an ES module's imports are hoisted, so a
+trailing `throw` still fires during module evaluation before any test can
+touch an export — equally faithful to the contract, and needing none of
+Python's insertion-point logic (which here would mean parsing multi-line
+`import { … } from '…'` prologues). `adapters/go.py`'s two appends are the
+precedent.
+
+Unlike Go's, these were verified by running them. Transcripts in §4.
+
+Two constraints shaped the snippets, both real defects avoided:
+
+* these methods receive only `text`, never a path, so the same snippet is
+  appended to a `.js` file — a type annotation would be a syntax error
+  there. Hence `value = 0`: valid JavaScript, and TypeScript infers `number`
+  so `noImplicitAny` is satisfied too;
+* the canary function is `export`ed because `noUnusedLocals` flags an
+  unreferenced module-level declaration — which a never-called canary is by
+  construction — breaking the protocol's own "lint-clean" requirement.
+
+### 3.7 One bound that had to be invented (`MAX_CLASSIFIED_LINES`)
+
+Expanding extents line by line means a ~100-byte record declaring
+`"end": {"line": 999999999}` — far inside the 16 MiB read bound —
+materializes a billion entries. `coverage_istanbul_json.py:133` sets a
+fixed, document-wide ceiling of 2,000,000 classified statement lines
+(O4: "a fixed bound, never an ambient guess"), refusing
+`ERROR`/`UNREADABLE_ARTIFACT` past it, with a paired must-succeed control.
+
+Writing it surfaced that `go_cover.parse` has the identical unbounded
+expansion with no ceiling at all. Not fixed here (out of scope, and a
+different parser's behaviour change belongs in its own change) — filed as
+**B039**.
+
+---
+
+## 4. Transcripts
+
+### 4.1 The uncovered-line canary, against a real `vitest run --coverage`
+
+`JavaScriptAdapter.inject_uncovered_line` applied to the probe's
+`src/roles.ts` (26 lines after injection), then `vitest run --coverage`:
+
+```
+ Test Files  4 passed (4)
+      Tests  6 passed (6)
+
+roles.ts line->count: {7: 1, 8: 1, 9: 1, 10: 1, 11: 1, 17: 1, 18: 2,
+                       19: 1, 20: 1, 23: 1, 24: 0, 25: 0, 26: 0}
+```
+
+Line 23 is `export function _assayCanaryUnreached(value = 0) {` — reached
+(count 1) merely by the module loading. Lines 24-25 are its body and line 26
+its closing brace — count 0, executed by no test. The suite still passes,
+which is the point: a tests-only gate sails past this transform, a gate
+enforcing changed-line coverage rejects it. Exactly the R1 axis the canary
+isolates.
+
+### 4.2 The import-break canary, against a real `vitest run`
+
+`JavaScriptAdapter.inject_import_break` applied to the same module, then a
+test importing it:
+
+```
+ FAIL  src/break.test.ts [ src/break.test.ts ]
+Error: assay-canary-import-break
+ ❯ src/roles_break.ts:23:7
+     21|
+     22|
+     23| throw new Error("assay-canary-import-break")
+       |       ^
+     24|
+ ❯ src/break.test.ts:2:1
+
+ Test Files  1 failed | 4 passed (5)
+```
+
+The appended top-level `throw` fires during module evaluation, exactly as
+A-345 argues — a real transcript, not a structural claim.
+
+**Round 2: §4.1 is no longer only a transcript.** The review's fair objection
+was that a pasted transcript rots silently. The injected `roles.ts` and the
+coverage documents both providers produced for it are now committed under
+`tests/fixtures/canary/javascript/`, and a test asserts that file is
+byte-for-byte what `inject_uncovered_line` produces today — so if the snippet
+changes, the fixture and the evidence break together instead of drifting.
+§4.2 stays a transcript by necessity and not by preference: the import-break
+canary makes the run fail, and a failed Vitest run writes no coverage
+document. Go's adapter records the same constraint.
+
+### 4.3 The registered gate, round 1 — `bash tools/tester-unified-gate.sh`
+
+Invoked exactly the way `nyxloom-trove/nyxloom.toml`'s own
+`[gates.tester-unified]` invokes it (the SSOT pointer: the lane lives in
+`assay/run-gate.toml` and `run-gate.py` drives
+`tools/tester-unified-gate.sh`, which owns its own container mechanics —
+exact-OID clone, pinned build closure, detached run). Running the gate script
+directly with no argument, or against an uncommitted tree, is refused by the
+script itself; both refusals were hit and are why the report is committed one
+commit before this transcript.
+
+```
+$ cd assay && ./run-gate.py --worktree /workspaces/vbpub/.worktrees/assay-b036-js-adapter tester-unified
+run-gate: rev 23 | lane tester-unified | env built-in 'host'
+run-gate: budget 60m (advisory)
+Looking in links: /workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-wheelhouse
+Processing ./workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-wheelhouse/setuptools-84.0.0-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-requirements.txt (line 1))
+Processing ./workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-wheelhouse/wheel-0.47.0-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-requirements.txt (line 2))
+Processing ./workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-wheelhouse/setuptools_scm-10.0.5-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-requirements.txt (line 3))
+Processing ./workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-wheelhouse/packaging-26.3-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-requirements.txt (line 4))
+Processing ./workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-wheelhouse/vcs_versioning-2.2.4-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/assay-b036-js-adapter/assay/gate/distribution/build-requirements.txt (line 5))
+Installing collected packages: setuptools, packaging, wheel, vcs-versioning, setuptools-scm
+
+Successfully installed packaging-26.3 setuptools-84.0.0 setuptools-scm-10.0.5 vcs-versioning-2.2.4 wheel-0.47.0
+Processing ./tmp/tmp.MMAMvLKK0g/clone/assay
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: assay
+  Building wheel for assay (pyproject.toml): started
+  Building wheel for assay (pyproject.toml): finished with status 'done'
+  Created wheel for assay: filename=assay-2.4.3.dev20+g8aa62c62-py3-none-any.whl size=373706 sha256=a0c5d1b894519f9804dff088f1d4724418b28f28b469540743c8fe92755457c9
+  Stored in directory: /tmp/pip-ephem-wheel-cache-v6qsk1yn/wheels/24/56/03/acda65d3d756c549442d8d55bbc9de23b95dcdba84a0ef91da
+Successfully built assay
+Processing ./tmp/tmp.MMAMvLKK0g/dist/assay-2.4.3.dev20+g8aa62c62-py3-none-any.whl
+Installing collected packages: assay
+Successfully installed assay-2.4.3.dev20+g8aa62c62
+ASSAY_GATE_PHASE=wheel-installed
+.........................                                                [100%]
+25 passed, 16 deselected in 1.45s
+ASSAY_GATE_PHASE=attestation-hardened
+.............                                                            [100%]
+13 passed, 31 deselected in 19.47s
+ASSAY_GATE_PHASE=verdict-v5-accepted
+.................                                                        [100%]
+17 passed in 0.95s
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+v6 hard-cut guard passed for 6 frozen templates
+ASSAY_GATE_PHASE=verdict-v6-successors-verified
+.......................                                                  [100%]
+23 passed in 0.86s
+ASSAY_GATE_PHASE=verdict-v7-successors-verified
+tester-unified: PASS (exit 0)
+  commit: 8aa62c622afc6377b1dce2de57b9d012487685b0
+  argv: python -m pytest tests -q --ignore=tests/test_self_hosting.py --override-ini=pythonpath=
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+--- B006(a) WI-5 qualification receipt ---
+input_oid=d2ad506a66d8f2a43170bce8ebf6c034d724fae3
+qualification_baseline_oid=1bea2767444c4839da1b7c5d9f03e0e5869a7e59
+head_oid=5e007b1d427194a80a308aabc9280e158de3f52a
+outcome=PASS exit_code=0
+claim[R0]=status=PASS
+claim[R1]=status=PASS
+claim[R2]=status=PASS
+claim[R3]=status=PASS
+r2_killed_identity={"description": "Eq->NotEq", "end_byte": 52, "lineno": 2, "operator": "python:compare-swap", "path": "cmru/src/cmru/_b006a_probe.py", "replacement_sha256": "c10987bd7cf853f6ea92ddac1b6c95fa830e3aee160cc5d4ba2fea3743be1aa2", "start_byte": 50}
+r3_canary={"control_outcome": "PASS", "description": "appended never-called `def _assay_canary_unreached` (2 uncovered lines) at end of file", "expected_reason_code": "UNCOVERED_LINES", "mechanism": "uncovered-line", "observed_reason_code": "UNCOVERED_LINES", "target": "src/cmru/_b006a_probe.py", "transformed_outcome": "FAIL"}
+snapshot_policy={"selection": "repository-minus-unsafe-symlinks", "unsafe_symlink_omissions": ["topos/tests/fixtures/inspect_files/_danger/passwd_link", "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape", "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current"]}
+omission_probe={"omitted_absent": [true, true, true], "cmru_root_present": true, "topos_ordinary_present": true, "status_clean": true}
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+.......                                                                  [100%]
+7 passed in 12.78s
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+run-gate: lane 'tester-unified' exit 0
+```
+
+The exit code was read in a SEPARATE step, never off a pipe tail (LESSONS L4):
+
+```
+$ tail -3 gate.txt
+ASSAY_REGISTERED_GATE_COMPLETE=1
+run-gate: lane 'tester-unified' exit 0
+GATE_EXIT=0
+```
+
+All ten phase markers present and in order — `wheel-installed`,
+`attestation-hardened`, `verdict-v5-accepted`,
+`lane-schema-v2-successors-verified`, `verdict-v6-successors-verified`,
+`verdict-v7-successors-verified`, `self-hosted-lane-passed`,
+`topos-qualified`, `cmru-b006a-qualified`,
+`independent-self-hosting-passed` — terminated by
+`ASSAY_REGISTERED_GATE_COMPLETE=1`. The self-hosted lane ran assay's own
+3,454-test suite through the WHEEL built from the exact commit
+(`assay-2.4.3.dev20+g8aa62c62`), not a source import.
+
+For reference, the same suite run directly in the worktree:
+
+```
+$ python -m pytest tests/ -q
+3454 passed, 11 skipped, 1 warning in 374.01s (0:06:14)
+```
+
+### 4.4 The registered gate, round 2 — after the review fixes
+
+Same invocation, on the round-2 tree with all five commits in.
+
+```
+$ cd assay && ./run-gate.py --worktree /workspaces/vbpub/.worktrees/assay-b036-js-adapter tester-unified
+run-gate: rev 23 | lane tester-unified | env built-in 'host'
+run-gate: budget 60m (advisory)
+...
+Successfully installed assay-2.4.3.dev27+gd8b54de8
+ASSAY_GATE_PHASE=wheel-installed
+25 passed, 16 deselected in 1.32s
+ASSAY_GATE_PHASE=attestation-hardened
+13 passed, 31 deselected in 18.10s
+ASSAY_GATE_PHASE=verdict-v5-accepted
+17 passed in 0.89s
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+v6 hard-cut guard passed for 6 frozen templates
+ASSAY_GATE_PHASE=verdict-v6-successors-verified
+23 passed in 0.73s
+ASSAY_GATE_PHASE=verdict-v7-successors-verified
+tester-unified: PASS (exit 0)
+  commit: d8b54de8bf33470548f16a519ece6f4471b05006
+  argv: python -m pytest tests -q --ignore=tests/test_self_hosting.py --override-ini=pythonpath=
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+--- B006(a) WI-5 qualification receipt ---
+outcome=PASS exit_code=0
+claim[R0]=status=PASS
+claim[R1]=status=PASS
+claim[R2]=status=PASS
+claim[R3]=status=PASS
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+7 passed in 10.70s
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+run-gate: lane 'tester-unified' exit 0
+```
+
+(Elided only where the round-1 transcript above already shows the identical
+wheelhouse and build-closure lines; the ten phase markers, the four rigor
+claims and the receipt are verbatim.)
+
+Exit code read in a SEPARATE step, never off a pipe tail (LESSONS L4):
+
+```
+$ tail -4 gate2.txt
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+run-gate: lane 'tester-unified' exit 0
+GATE_EXIT=0
+```
+
+All ten phase markers present and in order, terminated by
+`ASSAY_REGISTERED_GATE_COMPLETE=1`. The commit under test is
+`d8b54de8` — the fifth and last round-2 commit — and the wheel
+(`assay-2.4.3.dev27+gd8b54de8`) was built from that exact OID, so the gate
+saw every fixture, test and doc change in this round. The B006(a) receipt
+still shows R0-R3 all PASS, which is the check that this change did not
+disturb assay's own self-hosting claim.
+
+For reference, the same suite run directly in the worktree beforehand:
+
+```
+$ python -m pytest tests/ -q
+3489 passed, 11 skipped, 1 warning in 323.42s (0:05:23)
+```
+
+3,454 → 3,489 is the 35 tests round 2 added, and nothing existing went red.
+
+
+---
+
+## 5. Tests
+
+9 new modules, 188 new tests (round 1: 8 modules / 153; round 2 added the
+provider-accuracy module and 35 tests across the others). Every one drives real
+code; none asserts a value this implementation computed and then copied
+back — with one deliberate exception, called out in its own row below.
+
+| module | tests | what it pins |
+|---|---|---|
+| `tests/test_coverage_parsers_coverage_istanbul_json.py` | 45 | sniffing (incl. non-collision with the other four formats), single/multi-line extents, three-level nesting, tie resolution both ways, empty statement map, both capabilities, 6 document-level + 14 record-level refusals, truncation, the size bound and its must-succeed control, unread fields ignored |
+| `tests/test_coverage_istanbul_real_fixtures.py` | 22 | every PROVENANCE fact re-derived from the two REAL artifacts: absolute keys, which files each provider measures, `.d.ts`/test-file absence, single-line vs. real extents, null end columns, the nesting witness, the ignore-hint witness, the two branch maps not being the same measurement. **Round 2** added the literal unattributed-line sets per provider (13 v8 / 23 istanbul) and the 29 start lines → 54 classified lines measurement — the pins that actually fail if `_paint` regresses to start-lines-only |
+| `tests/test_adapters_javascript_registration.py` | 12 | protocol surface as literal values, `UNSUPPORTED`, registry equivalence, all four adapters coexisting (Go included — round 2), `normalize_coverage_key` as a no-op across six key shapes (round 2), R2/R3 refusal through `cli._built_in_registry()` itself, the R1 must-succeed control, unknown-language refusal, and the exact language→rigor map this build declares |
+| `tests/test_adapters_javascript_test_path.py` | 31 | 16 test-path spellings, 15 non-test spellings incl. `latest.ts`/`respec.ts`/`my__tests__/`, and `.d.ts` not being a test path |
+| `tests/test_adapters_javascript_has_executable_code.py` | 21 | `.d.ts` decided from the path, comments-only files, 8 shapes that must stay `True` (incl. the type-only module), unterminated block comment, comment-delimiter-in-string, `.d.ts` still being adapter source |
+| `tests/test_adapters_javascript_canary_injection.py` | 15 | byte-preservation as a prefix, clean append boundary, purity/totality, both snippets' shape, no TS-only syntax, the `export` requirement, the two transforms being independent. **Round 2**: the committed canary fixture is asserted byte-for-byte equal to what the adapter produces today, and its body lines are asserted `missing` in both real artifacts — so the evidence is a test, not a transcript |
+| `tests/test_evaluate_javascript_end_to_end.py` | 15 | **round 2: parametrized over BOTH real artifacts**, rebased onto a temp repo: PASS, FAIL-with-named-lines, the floor control, denominator-equals-classified-lines (which pins the evaluation against the profile, *not* the parser — its docstring says so), rule 3b never reached, test files skipped, `.d.ts` as NoCode, an unmeasured module as a real gap, excluded directories, an out-of-repo key staying inert, capabilities on the evaluation |
+| `tests/test_coverage_istanbul_provider_accuracy.py` | 19 | **round 2, the M1 module.** Five function shapes whose never-executed lines are known without any coverage tool, measured under both providers on both Vitest majors: which lines each provider calls executed, that the v8 numbers are lies and the istanbul ones are not, that the same lines give `PASS 100.0%` under v8 and `FAIL 0.0%` under istanbul through the shipped `evaluate_coverage`, and the instance hiding inside the round-1 committed fixture. Three of its tests deliberately assert the upstream defect **still exists** — a failure there means a provider was fixed and A-346 needs revisiting, not that the test needs relaxing |
+| `tests/test_cli_run_javascript.py` | 8 | through the real CLI on a real two-commit git repo: R1 PASS, R1 FAIL naming every line of a multi-line extent, R2 refusal with a marker proving the command never ran, unknown-language refusal with the same marker, 3 malformed-artifact shapes → `ERROR`/`UNREADABLE_ARTIFACT`, and the must-distinguish `EMPTY_COVERAGE` control |
+
+---
+
+## 6. Acceptance
+
+| B036 acceptance box | how it is satisfied |
+|---|---|
+| a `coverage-istanbul-json` parser registered in `FORMAT_REGISTRY`, parsing a REAL `coverage-final.json`, not a hand-written fixture alone | `src/assay/coverage_parsers/coverage_istanbul_json.py`; registered `src/assay/coverage.py:118`; two real artifacts committed under `tests/fixtures/coverage/`, exercised by `tests/test_coverage_istanbul_real_fixtures.py` (18 tests) and by the end-to-end module. Name matches the project's own `coverage-py-json` convention, checked against all four existing keys |
+| a new adapter implementing all seven protocol methods, `generate_mutation_sites` returning `"UNSUPPORTED"` | `src/assay/adapters/javascript.py:309-341`; `UNSUPPORTED` at `:331`, pinned by `test_adapters_javascript_registration.py::test_generate_mutation_sites_is_unconditionally_unsupported` |
+| registered in `cli.py`'s `new_registry(...)` for `frozenset({"R1"})` only | `src/assay/cli.py:281-283`; pinned as an exact language→rigor map by `test_the_built_in_registry_names_exactly_the_languages_this_build_reaches` |
+| `is_test_path` excludes Vitest's conventions; `excluded_dir_names` excludes `node_modules` and build output | `javascript.py:164` (`_TEST_FILE_RE`) and `:300`. `dist` is Vite's documented default `build.outDir`, confirmed against `webapp-ui-react/vite.config.ts`'s own explicit `outDir: 'dist'`; `coverage` is Vitest's default `reportsDirectory`. 37 cases in `test_adapters_javascript_test_path.py`, plus a real-artifact check that both providers exclude all three test-naming conventions themselves |
+| `.d.ts` handled correctly by `has_executable_code` — the NoCode case | `javascript.py:171`/`:312`; witnessed by both real artifacts omitting `probe-js/src/types.d.ts` entirely, and by `test_evaluate_javascript_end_to_end.py::test_a_changed_declaration_file_is_the_nocode_case_not_a_gap` (considered=1, executable=0, `files_missing_coverage == ()`, PASS) |
+| a real end-to-end test: a `javascript` R1 lane against a real TS/TSX project reporting pass/fail | two layers. `test_evaluate_javascript_end_to_end.py` drives the real v8 artifact (only its directory prefix rebased) over the committed TS/TSX probe sources; `test_cli_run_javascript.py` drives the real CLI over a real two-commit git repo, PASS and FAIL |
+| refusal paths: unrecognised `judge.language`, malformed/truncated artifact, `javascript` at R2 | `test_cli_run_javascript.py` — `test_an_unrecognised_language_is_still_refused`, `test_a_malformed_coverage_final_json_is_an_error_not_a_pass` (3 shapes incl. truncation), `test_a_javascript_lane_declaring_r2_is_refused_before_anything_runs` (marker file proves nothing ran). Plus 20 parser-level refusals and the `EMPTY_COVERAGE` must-distinguish control |
+| `README.md`/`CONSUMERS.md`/`DESIGN-GUIDE.md` document the new language and format | README: status line + a new "JavaScript/TypeScript changed-line coverage (R1 only)" section beside SQL's. CONSUMERS: a new "JavaScript/TypeScript lanes (R1 only)" section with a pasteable lane, the Vitest config, and the three behaviours that differ from a Python lane. DESIGN-GUIDE: §5's sniff table, §10's fixture list, §11's format/language axis paragraph, a new four-adapter capability table, and the `branches`-is-`None` reasoning. All enforced by the existing `test_docs_examples_and_vocabulary.py` docs gate, which failed on this change until they were written |
+| the real registered gate run green | §4.3 |
+
+---
+
+## 6a. Round-1 adversarial review — response
+
+Review: `nyxloom-trove/reports/assay-B036-js-adapter-REVIEW.md`, verdict
+ACCEPT-conditional, three conditions. **All three are addressed, and both
+Major findings were reproduced here from scratch before anything was
+changed.** The reviewer's own verification (installing Node, regenerating both
+artifacts byte-for-byte, mutation-testing `normalize_coverage_key`) is
+gratefully noted and is not re-litigated below.
+
+### M1 — `@vitest/coverage-v8` produces false greens. Confirmed, and it is worse than reported.
+
+Reproduced independently, then extended. The review characterised the trigger
+as a **multi-line** ternary; it is not:
+
+| shape | `@vitest/coverage-v8` | `@vitest/coverage-istanbul` |
+|---|---|---|
+| multi-line ternary | **false green** (lines below it executed) | correct |
+| **one-line** ternary (`const a = v > 3 ? 10 : 20`) | **false green** | correct |
+| multi-line binary expression | correct | correct |
+| multi-line call | correct | correct |
+| multi-line object literal | correct | correct |
+
+A one-line ternary is idiomatic React code, so this is not a formatting hazard
+anyone could lint their way around. And it is not a version to upgrade past:
+**measured on Vitest 4.1.11 as well as 3.2.4** — the newest release at time of
+writing still reports lines 7-8 of the repro as executed. (Vitest 4 fixed only
+the ternary's *own* line, not the lines after it.) The istanbul provider is
+correct in both majors, so it is the provider that differs, not the version.
+
+**The ruling (A-346): option (a), and here is why (b) is not available.**
+Nothing in the artifact separates a true `s` count of 1 from a false one —
+there is no internal inconsistency to detect, and `fnMap`/`f` corroborate the
+lie, because the enclosing function really did run. The only mechanical route
+is inferring the PRODUCER from the document's shape, which is the
+declaration-versus-sniffing collapse A-007 forbids — and which would already
+have broken between the two versions measured here, since Vitest 4's v8
+provider emits multi-line statement extents where Vitest 3's emitted
+single-line ones. A shape-based discriminator written today would be silently
+wrong tomorrow while still returning an answer. So the remedy is documentary,
+and the *reason* is recorded as a decision rather than left as a doc edit.
+
+What shipped for it:
+
+- **`probe-js-provider-defect/`** — a project whose ground truth needs no
+  coverage tool (five guarded functions, one test calling each with `0`), plus
+  **four** real artifacts: both providers × both Vitest majors;
+- **`tests/test_coverage_istanbul_provider_accuracy.py`** — 19 tests that
+  re-derive the defect from those artifacts, drive it through the shipped
+  `evaluate_coverage` to show `PASS 100.0%` vs `FAIL 0.0%` on the same lines,
+  and pin the `format.ts:17-18` instance the review found inside the *existing*
+  committed fixture. **Three of them assert the bug still exists against
+  COMMITTED artifacts** — they cannot go red from an upstream fix on their
+  own, only from a fixture manually regenerated against a fixed provider
+  (B040's recheck item), and that failure is the signal to revisit A-346, not
+  a test to relax;
+- **docs flipped** — README's config block, CONSUMERS' install line and worked
+  config now say `provider: 'istanbul'`; the "prefer the v8 provider" sentence
+  is gone; a new CONSUMERS section, *"The v8 provider is not safe to gate on"*,
+  carries the reproduction, the four measured facts, and an explicit statement
+  that assay cannot detect this and does not pretend to;
+- **B040 filed** — upstream report plus the producer-declaration question it
+  shares with B038.
+
+The review's framing is accepted without qualification: this change measured
+both producers exhaustively for *shape* and never once for *accuracy*, which
+is the one property R1 rests on. That sentence is now in A-346 as the
+transferable lesson.
+
+### M2 — A-342 overclaimed, and its pin could not fail. Both confirmed.
+
+23 unattributed non-comment lines under istanbul, 13 under v8 — reproduced
+exactly. And `evaluate.py:426` does make `unclassified_lines == {}`
+unfalsifiable for a `requires_span_attribution=False` adapter.
+
+- **A-342 corrected in place**, in the A-326 round-2 style (the correction is
+  written into the row and marked, so the withdrawn claim stays visible),
+  stating the true, weaker guarantee. Report §3.3 above corrected to match.
+  `adapters/javascript.py`'s own docstring gains the same correction, since it
+  is where a reader looks first.
+- **The vacuous test is replaced by two that can fail**, and the difference
+  between them is itself the point:
+  - a *ground-truth* pin in `test_coverage_istanbul_real_fixtures.py` — the
+    literal unattributed line sets per provider, plus the 29→54 expansion
+    measurement. **Mutation-verified**: reducing `_paint` to a start-line-only
+    reduction fails it (along with three others);
+  - a denominator-consistency check in the end-to-end module. Note this one
+    does **not** pin the parser: its expectation is read from the same
+    profile, so a parser regression moves both sides together — verified, it
+    survives that same mutation. Its docstring now says so explicitly rather
+    than implying otherwise. It pins the evaluation against the profile, which
+    is a different and also worth having.
+- **The end-to-end module is parametrized over both committed artifacts**, not
+  v8 only — which is how it came to iterate over `format.ts` (an M1 instance)
+  and assert nothing that noticed.
+- **CONSUMERS gains a fourth "behaves differently" entry** telling consumers
+  that a function signature line or a lone closing brace leaves the
+  denominator, with the measured numbers and what to do about it.
+
+### Minor and nitpick findings
+
+| finding | disposition |
+|---|---|
+| canary evidence was a transcript | **Fixed with committed evidence, not a caveat.** `tests/fixtures/canary/javascript/` now holds the exact injected source plus real coverage artifacts from both providers; four new tests assert the injected file is byte-for-byte what the adapter produces *today* (so the two cannot drift) and that the canary body lines are reported `missing`. No artifact exists for `inject_import_break` and cannot: that injection makes the run fail, and a failed run writes no coverage document — Go's file records the same constraint |
+| `MAX_CLASSIFIED_LINES` test cost ~352 MB | **Fixed at the test, kept at the product value.** Boundary tests now monkeypatch the ceiling down to 12 lines, which pins the same off-by-one — and pins it *better*, since both sides (exactly-at, one-past) are now covered where only one was before. Measured peak RSS for that module: **352 MB → 76 MB**. The shipped 2,000,000 is unchanged and now carries its justification in the constant's own docstring: the budget is spent per statement *extent*, so nesting charges 3-4× source line count under istanbul, and a 300k-line monorepo lands near 1.2M — a tighter ceiling would refuse honest output, which is the A-272 false-refusal direction. A separate test pins the shipped value literally, since the others run monkeypatched |
+| no direct pin on `normalize_coverage_key` | **Fixed** — `test_normalize_coverage_key_is_a_no_op_for_every_key_shape` covers absolute, relative, `./`-prefixed, Windows-shaped, `node_modules` and empty keys, which is what kills the *inert* wrong strip the review demonstrated survives everything else |
+| `cli.py` named the wrong refusal layer | **Fixed, and the finding was understated.** Not just wording: `mutation` is a required key for an R2 lane and `operators` must be non-empty, while `MUTATION_OPERATORS_BY_LANGUAGE` has no `javascript` entry — so a config-valid `javascript` R2 lane is **not constructible at all**, and the registry refusal is unreachable except by direct call. The docstring now documents both layers, which one a real lane meets, and why the second still matters (it is what holds if B037 ever adds a `javascript:*` vocabulary ahead of an engine — the `go:*` situation today) |
+| "four adapters" test registered three | **Fixed** — `GoAdapter` added, `len(registry.entries) == 4` asserted, and the docstring notes that Go coexisting in a registry is a different fact from `_built_in_registry` reaching it |
+| gap note said A-333, now A-334 | **Fixed** in the decisions.md header note |
+| no `package-lock.json` with `probe-js` | **Fixed** — lockfiles committed for `probe-js` and for both dependency sets of `probe-js-provider-defect`, so the recipes are exactly reproducible rather than reproducible in practice (+288 KB) |
+| PROVENANCE omitted the empty-object else-arm | **Fixed** — new row, flagged for B038 |
+| the closing-brace over-approximation is defensible | Agreed, no action — the reviewer tried to construct a misleading case and could not, and innermost-wins already rescues the nested case |
+
+### What did not change
+
+The parser, the adapter's behaviour, the protocol, the core, the registry and
+the schema are all untouched by this round, exactly as the review predicted.
+Every change is a test, a fixture, a docstring, a document or a decision —
+which is the right shape for a round whose central finding is that a
+*producer* is wrong and assay reports it faithfully.
+
+## 7. What a reviewer should push on
+
+1. **§3.3's over-approximation.** A lone closing brace inside a never-executed
+   statement now counts as an uncovered changed line. That is deliberate and
+   argued (visible failure over silent excuse), but it is a real behavioural
+   choice and the opposite choice is defensible.
+2. **`has_executable_code`'s narrowness.** A type-only `.ts` module answers
+   `True`. Under the v8 provider that is unreachable; under the istanbul
+   provider it is a false failure. B038 owns it. The alternative — a
+   hand-written TypeScript type-erasure scan — was rejected on B037's own
+   scope boundary, not on effort, and that judgement is worth a second look.
+3. **`branches = None`.** The most consequential refusal here. If a reviewer
+   thinks the istanbul provider's arcs should be read today and the v8
+   provider's `branchMap` simply ignored, that is a coherent alternative
+   position — it requires deciding the producer is derivable from the
+   artifact, which A-007 forbids doing silently.
+4. **The decision-id gap (A-327…A-339).** Deliberate, to avoid colliding with
+   the in-flight `feature/assay-b018-b019-b035-v8-synergy` wave, which had
+   consumed through A-334 when the round-1 review re-checked. If that wave
+   lands with fewer, the gap stays. Reasoning is in the decisions.md header.
+5. **B039 was filed, not fixed.** `go_cover.parse` has the same unbounded
+   expansion this parser was given a ceiling for. Leaving a known
+   resource-exhaustion shape in place for one more cycle is a choice.
+6. **A-346 is a documentary mitigation, not a fix (round 2).** A consumer who
+   does not read the warning still gets false-clean verdicts. The alternative
+   — refusing artifacts identified as v8-produced — requires sniffing the
+   producer, which A-007 forbids and which the two Vitest majors already
+   demonstrate is unstable. If a reviewer thinks assay should refuse anyway,
+   that is a coherent position and it needs B038/B040's producer-declaration
+   mechanism, not a heuristic.
+7. **Three tests deliberately assert that an upstream bug still exists.** If
+   `@vitest/coverage-v8` is fixed, assay's suite goes red until someone
+   revisits A-346. That is the intent, and it is a real maintenance cost.

@@ -90,6 +90,17 @@ def _base_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _write_ciu_env(tmp_path: Path) -> None:
+    """Both of this workspace's records, as `ciu env generate` writes them.
+
+    CIU-75: `ciu.env` alone is no longer a provisioned CIU instance. The
+    identity half goes to the overlay table (which is what bootstrap seeds
+    `DOCKER_NETWORK_INTERNAL` from, and what these tests assert on); the file
+    keeps the machine facts. Without the overlay half, STEP 1 would find no
+    identity record and REGENERATE one, deriving a network name from the tmp
+    path instead of the `budget-net` this suite pins.
+    """
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
+
     body = "\n".join(
         f'export {key}="{os.environ[key]}"'
         for key in (
@@ -98,6 +109,13 @@ def _write_ciu_env(tmp_path: Path) -> None:
         )
     ) + "\n"
     (tmp_path / "ciu.env").write_text(body)
+    facts = {key: "" for key in GENERATED_FACTS_KEYS}
+    facts.update(
+        repo_root=os.environ["REPO_ROOT"],
+        physical_repo_root=os.environ["PHYSICAL_REPO_ROOT"],
+        network=os.environ["DOCKER_NETWORK_INTERNAL"],
+    )
+    write_generated_facts(tmp_path, facts)
 
 
 def _write_native_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

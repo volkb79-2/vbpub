@@ -1,0 +1,118 @@
+# applications/webapp-server/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `webapp_server` (bound by ciu.toml [realization.webapp_server]) =
+# the `webapp_server` LogicalService, fronted by the reverse proxy at
+# /api/webapp-server. D-095 still holds: ciu keeps PHYSICAL facts only (image,
+# endpoints, host dirs, secrets, bindings); every app tunable lives in the app's
+# own L0 (config.defaults.toml). DERIVED, never written here: the identity
+# (dstdns-<instance>-webapp-server-server), EVERY peer address (the bindings
+# below — the rev-2 [database]/[redis]/[consul]/[minio]/[skywalking] mapping
+# tables are gone: config.toml.j2 and the compose template read
+# ciu_stack.server.binds.<local>.* directly, S3.5.1), the vault edge and the
+# minter edges (from the secrets, S8.3), the wave, and schema-before-boot
+# (`requires = ["app_schema"]`).
+
+[ciu_stack.server]
+image = "dstdns/webapp-server:latest"   # <project.registry.namespace>/webapp-server — a literal in plain TOML; `ciu build` tags exactly this
+requires = ["app_schema"]             # ordering only: an edge to db_init.runner's completion; no data, no publication. The vault edge derives from the secrets (S8.3) and is not repeated.
+# The proxy fronts `path`; in prod3 it (tsstammtisch) is on another host than this stack (rs1002), so publish = "proxy"
+# needs host_port + allow_from (S7.4.3). 8081: controller holds 8083, webapp_ui 8082, cadvisor 8080 on that host (S6.3.2).
+endpoints.http = { port = 8080, protocol = "http", publish = "proxy", host_port = 8081, path = "/api/webapp-server", allow_from = ["host.tsstammtisch"] }
+
+# Bindings (S6.4), under this service's OWN local names. `template` delivery:
+# the resolution is bound as ciu_stack.server.binds.<local> (host / port / url /
+# path) for config.toml.j2 and the compose template. Default wait = "healthy"
+# = an ordering edge (was an init edge); wait = "none" = a resolution only,
+# read at run time (no ordering edge, S8.2). `facts` enter the target's DERIVED contract
+# (S5.3) and are probed before this wave (S8.5.2).
+[ciu_stack.server.binds.database]
+to = "main_db.sql"
+delivery = "template"                 # config.toml.j2: [database] host/port; database and user come from registry.postgresql.*
+facts = ["pg:db/dstdns", "pg:role/webapp"]
+
+[ciu_stack.server.binds.redis]
+to = "redis.redis"
+delivery = "template"                 # config.toml.j2: [redis] host/port
+
+[ciu_stack.server.binds.consul]
+to = "consul.http"
+delivery = "template"                 # config.toml.j2: [consul] address = .url
+
+[ciu_stack.server.binds.object_store]
+to = "object_store.s3"
+delivery = "template"                 # config.toml.j2: [minio] endpoint = host:port
+facts = ["minio:user/webapp-server"]  # created by db_core's post_compose hook ([registry.minio.users.webapp_server])
+
+[ciu_stack.server.binds.vault]
+to = "vault.api"
+delivery = "template"                 # config.toml.j2: the address the AppRole login fetches the runtime secrets from (authentik/bootstrap_token)
+
+[ciu_stack.server.binds.controller]
+to = "controller.http"
+wait = "none"                         # run-time only: the controller API
+delivery = "template"                 # config.toml.j2: [app] controller_url = .url
+
+[ciu_stack.server.binds.tracing]
+to = "tracing.grpc"
+wait = "none"
+delivery = "template"                 # compose: SW_AGENT_COLLECTOR_BACKEND_SERVICES = host:port for the native agent
+
+[ciu_stack.server.binds.tracing_rest]
+to = "tracing.rest"
+wait = "none"
+delivery = "template"                 # config.toml.j2: [skywalking] oap_url = .url (two bindings to one LogicalService: different endpoints, S6.4.3)
+
+[ciu_stack.server.binds.idp]
+to = "identity_provider.http"
+wait = "none"
+delivery = "template"                 # config.toml.j2: OIDC issuer = .url + "/application/o/" + authentik.oidc_slug + "/"; the JWKS URL comes from the issuer's discovery document
+
+[ciu_stack.server.binds.otel]
+to = "otel_collector.otlp_grpc"
+wait = "none"
+delivery = "template"                 # config.toml.j2: the node OTLP collector, host:port
+
+[ciu_stack.server.hostdir]
+logs = ""
+
+[ciu_stack.server.app]               # consumer data (config.toml.j2); the pubsub channel names are read from the [pubsub] user table directly
+host = "0.0.0.0"
+log_level = "INFO"
+cors_origins = "*"
+
+[ciu_stack.server.consul]            # consumer data; the address is binds.consul
+kv_path = "services/webapp-server"   # this service's KV leaf under dstdns/<landscape>/ — the consul policy names this spelling; not an identity (was `name`)
+# Base KV paths (without the /defaults leaf); the shared consul router appends
+# /defaults, /overrides and /workers/<id>/overrides.
+worker_io_kv_path = "services/worker-io/settings"
+worker_db_kv_path = "services/worker-db/settings"
+
+[ciu_stack.server.minio]             # consumer data; endpoint = binds.object_store; bucket = "<instance.project>-<instance.id>", composed in config.toml.j2 (instance-scoped)
+secure = false
+prefix = "screenshots"
+
+[ciu_stack.server.skywalking]        # consumer data; addresses = binds.tracing / binds.tracing_rest
+enabled = true
+
+# Secrets: structured sources (S10.1); `delivery` is mandatory. The AppRole pair
+# (minted by infra/vault/post_compose_vault.py — the facts on that hook entry's
+# `provides` — for [registry.vault.roles.webapp_server]) is the bootstrap
+# credential, delivered as env; the rest as files under /run/secrets/<key>
+# (mounts injected). authentik/bootstrap_token is fetched by the SERVICE at
+# runtime through this AppRole — deliberately no secret row (that would be
+# `delivery = "native"`, S10.2.3).
+[ciu_stack.server.secrets]
+vault_role_id     = { from = "vault", path = "webapp_server_vault_role_id",    delivery = "env", env_name = "WEBAPP_SERVER_VAULT_ROLE_ID" }
+vault_secret_id   = { from = "vault", path = "webapp_server_vault_secret_id",  delivery = "env", env_name = "WEBAPP_SERVER_VAULT_SECRET_ID" }
+consul_token      = { from = "vault", path = "consul_webapp_server_token",     delivery = "file" }
+postgres_password = { from = "vault", path = "postgres_webapp_password",       delivery = "file" }
+redis_password    = { from = "vault", path = "redis_password",                 delivery = "file" }
+minio_access_key  = { from = "vault", path = "minio_webapp_server_access_key", delivery = "file" }
+minio_secret_key  = { from = "vault", path = "minio_webapp_server_secret_key", delivery = "file" }
+
+[ciu_stack.server.configfile.app]    # rendered to applications/webapp-server/ciu.rendered/server/etc/webapp-server/config.toml; the PARENT directory /etc/webapp-server is mounted read-only (S6.9.1)
+template = "config.toml.j2"
+target = "/etc/webapp-server/config.toml"
+
+[hooks]
+pre_compose = []
+post_compose = []

@@ -61,7 +61,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib.resources import files
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping
+from typing import Any, ClassVar, Iterable, Mapping
 
 from .config import (
     ENFORCEMENTS,
@@ -72,8 +72,10 @@ from .config import (
 )
 from .errors import EXIT_CODES, REASON_CODES, Outcome, ReasonCode
 from .vocabulary import (
+    INGESTED_OPERATOR_RE,
     MUTATION_OPERATORS,
     MUTATION_OPERATORS_BY_LANGUAGE,
+    is_ingested_operator,
     operator_language,
 )
 
@@ -84,9 +86,12 @@ __all__ = [
     "EXCLUSION_CAPABILITIES",
     "EXIT_CODES",
     "HELPER_ROLES",
+    "JUDGE_ARTIFACT_KINDS",
+    "JUDGE_DIGEST_ALGORITHMS",
     "JUDGE_MODES",
     "KILL_ATTRIBUTIONS",
     "MUTATION_BUCKETS",
+    "MUTATION_PRODUCERS",
     "MUTATION_OPERATORS",
     "MUTATION_OPERATORS_BY_LANGUAGE",
     "LANE_RESOLVED_FIELDS",
@@ -102,6 +107,7 @@ __all__ = [
     "Evidence",
     "EvidenceDeclaration",
     "Helper",
+    "JudgeProvenance",
     "Judgment",
     "JudgmentR1",
     "JudgmentR2",
@@ -109,7 +115,9 @@ __all__ = [
     "JudgmentResolved",
     "Mutation",
     "MutantOutcome",
+    "MutationProducerTool",
     "SnapshotPolicy",
+    "SourcePosition",
     "operator_language",
     "Outcome",
     "ReasonCode",
@@ -180,7 +188,61 @@ __all__ = [
 #: dual-version verifier, no compatibility shim (A-170's rule, restated):
 #: producers emit v6 only, and `assay verify` refuses v5 exactly as it
 #: refuses v4 today.
-VERDICT_SCHEMA_VERSION = 7
+#:
+#: **v7 -> v8 (B035/A-329, with B018/A-327 riding it).** `judgment.r2` gains
+#: `mode` (required) and `targets`, mirroring `judgment.r1`'s pair. This is a
+#: BUMP and not a widening for one mechanical reason, the same one B014's
+#: 6->7 turned on: the packaged schema sets `additionalProperties: false` on
+#: the `judgment.r2` object, so a consumer holding a released v7 copy would
+#: reject any document carrying the new keys. With `r2.mode` on the wire the
+#: `judgment.resolved.base` rule becomes enforceable for an `R0,R2` lane --
+#: every SQL lane, dstdns's `cw2b_schema` by name -- which A-325 had to stop
+#: enforcing entirely to make honest whole-target R2 artifacts producible.
+#: The optional top-level `judge_provenance` (B018/A-327) is a pure widening
+#: that needed no bump of its own and rides this one rather than shipping a
+#: second. Same rule as every cut before it: no dual-version verifier, no
+#: compatibility shim -- producers emit v8, and `assay verify` refuses v7
+#: exactly as it refuses v6.
+#:
+#: **v8 -> v9 (the "producer" wave: B045, B046, B043, B041(b)).** One cut, four
+#: items, because each of them puts a new key inside an object the packaged
+#: schema closes with `additionalProperties: false` -- so any one of them alone
+#: would already have been a BUMP, and four separate bumps would be four
+#: releases' worth of consumer churn for one wave's worth of facts. What the
+#: wire gains:
+#:
+#: * `judgment.r1.coverage_producer` (B045) -- WHICH tool wrote the coverage
+#:   artifact, where one format has several producers that disagree about what
+#:   its own fields mean. Declared, never sniffed (A-007).
+#: * `judgment.r2.producer` (B046) -- `native` (assay's own engine chose the
+#:   operators, generated the sites and ran them) or `ingested` (the lane's own
+#:   argv ran a foreign mutation tool inside the private snapshot and assay
+#:   judged the report it wrote). REQUIRED, so no document is ambiguous about
+#:   which it is; the north-star's "never conflate tiers" is what makes this a
+#:   wire field. With it come `producer_tool`, `survived_uncovered`,
+#:   `discarded` and `lines_without_candidates` -- required together under
+#:   `ingested`, forbidden under `native`. Symmetrically, `jobs`,
+#:   `max_mutants`, `operators` and `equivalence_artifact` -- assay's OWN
+#:   policy -- are required under `native` and FORBIDDEN under `ingested`,
+#:   because assay chose none of them for a run it did not orchestrate and
+#:   backfilling them from the foreign tool's configuration would put that
+#:   tool's decisions on the wire under assay's name (the declared-vs-verified
+#:   line A-230a already draws for `helpers[]`).
+#: * `mutation_operator` gains an OPEN `^stryker:[A-Za-z0-9]+$` branch (B046):
+#:   a namespace assay owns, not a language. A foreign tool's mutator names are
+#:   DATA assay records, never a catalogue assay closes.
+#: * `cwd_declared` (B043) -- the lane's declared working directory. Root-level
+#:   and INDEPENDENTLY optional: deliberately NOT a member of
+#:   `LANE_RESOLVED_FIELDS`, because a lane declaring no `cwd` records none,
+#:   never `"."`.
+#: * `snapshot_policy.link_paths` (B041(b)) -- the paths this lane symlinked in
+#:   from the invoking checkout, so a verdict states plainly that its snapshot
+#:   was not purely committed objects.
+#:
+#: Same rule as every cut before it: no dual-version verifier, no compatibility
+#: shim (A-170) -- producers emit v9, and `assay verify` refuses v8 exactly as
+#: it refuses v7.
+VERDICT_SCHEMA_VERSION = 9
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
 #: distinction inside the artifact. `"unavailable"` means the coverage FORMAT
@@ -208,6 +270,20 @@ BRANCH_CAPABILITIES: tuple[str, ...] = ("reported", "unavailable")
 #: rather than absent from all of them (A-220).
 KILL_ATTRIBUTIONS: tuple[str, ...] = ("declared", "unattributed")
 
+#: (B018/A-327) the one digest algorithm a judge identity may name. Recorded in
+#: the artifact rather than assumed by the consumer: a digest whose algorithm is
+#: implied silently changes meaning the day a second one is added, and CIU V8
+#: compares this value against a digest IT resolved, from its own configuration.
+JUDGE_DIGEST_ALGORITHMS: tuple[str, ...] = ("sha256",)
+
+#: (B018/A-327) the closed set of build artifacts assay ships --
+#: `gate/distribution/build_release.py` builds exactly these two, each with its
+#: own `.sha256` sidecar. The KIND is recorded beside the digest because a
+#: release publishes both files and their digests necessarily differ; a bare hex
+#: string would leave a consumer unable to say which of the two it should be
+#: comparing against.
+JUDGE_ARTIFACT_KINDS: tuple[str, ...] = ("wheel", "zipapp")
+
 #: (P33/V5-5) the closed `helpers[].role` vocabulary -- exactly the three
 #: helper jobs that exist or are ruled (A-227): `statement-positions`
 #: (A-217's Go oracle), `mutation-sites` (SQL's parser and P29's Go helper),
@@ -217,6 +293,20 @@ HELPER_ROLES: tuple[str, ...] = (
     "statement-positions",
     "mutation-sites",
     "executable-code",
+)
+
+#: (P33/V5-5, A-223c/A-227) what a verdict must ALSO carry for each helper
+#: role to be recordable, phrased for the refusal message. `executable-code`
+#: takes either because executability gates both changed-line classification
+#: and mutation-site discovery.
+HELPER_ROLE_REQUIREMENT: Mapping[str, str] = MappingProxyType(
+    {
+        "statement-positions": "an R1 claim carrying a coverage payload",
+        "mutation-sites": "an R2 claim carrying a mutation payload",
+        "executable-code": (
+            "an R1 claim carrying coverage or an R2 claim carrying mutation"
+        ),
+    }
 )
 
 #: Where the shipped schema lives inside the installed package. Declared as
@@ -311,6 +401,39 @@ def schema_text() -> str:
 def load_schema() -> dict[str, Any]:
     """The shipped JSON Schema, parsed."""
     return json.loads(schema_text())
+
+
+def supported_helper_roles(claims: Iterable["Claim"]) -> frozenset[str]:
+    """Which :data:`HELPER_ROLES` *claims* can support a ``helpers`` entry
+    for (P33/V5-5, A-223c/A-227).
+
+    Public, and the SINGLE definition of the correspondence rule.
+    :meth:`Verdict._check_helpers` validates with it, and
+    :mod:`assay.runner` reads it when a cleanup-only failure voids the very
+    claim a helper produced and its entry has to be voided with it (B047 item
+    5). A second copy of the table in the producer would let the two
+    disagree, and the disagreement's shape is a verdict the producer built
+    and this class then refuses with a bare ``ValueError`` no caller catches
+    -- the same one-join-not-two argument A-385/A-367 make for coverage keys.
+    """
+    materialised = tuple(claims)
+    r1_judged = any(
+        claim.rigor == "R1" and claim.coverage is not None for claim in materialised
+    )
+    r2_judged = any(
+        claim.rigor == "R2" and claim.mutation is not None for claim in materialised
+    )
+    return frozenset(
+        {
+            role
+            for role, satisfied in (
+                ("statement-positions", r1_judged),
+                ("mutation-sites", r2_judged),
+                ("executable-code", r1_judged or r2_judged),
+            )
+            if satisfied
+        }
+    )
 
 
 def iso_utc(moment: datetime) -> str:
@@ -1121,10 +1244,23 @@ class MutantOutcome:
                 f"MutantOutcome.replacement_sha256 must be 64 lowercase hex "
                 f"characters, got {self.replacement_sha256!r}"
             )
-        if self.operator not in MUTATION_OPERATORS:
+        # B046 (schema v9): `is_ingested_operator` is consulted FIRST, exactly
+        # as it must be at every other prefix-equals-language site. An
+        # ingested operator name is copied verbatim out of a foreign tool's
+        # report, so it is DATA assay records rather than a catalogue assay
+        # closes -- and `operator_language("stryker:X")` answers `"stryker"`,
+        # which is a namespace and not a language, so a check that reaches
+        # this closed catalogue first would refuse every ingested mutant.
+        # Whether an ingested operator is legal for THIS document is a
+        # cross-object question (`judgment.r2.producer`) and belongs one layer
+        # up, in `Verdict._check_operator_language_agrees`.
+        if not is_ingested_operator(self.operator) and (
+            self.operator not in MUTATION_OPERATORS
+        ):
             raise ValueError(
                 f"MutantOutcome.operator must be one of "
-                f"{list(MUTATION_OPERATORS)}, got {self.operator!r}"
+                f"{list(MUTATION_OPERATORS)} or an ingested operator matching "
+                f"{INGESTED_OPERATOR_RE.pattern}, got {self.operator!r}"
             )
         if not isinstance(self.description, str) or not self.description:
             raise ValueError(
@@ -1371,6 +1507,75 @@ class Mutation:
 
 
 @dataclass(frozen=True, kw_only=True)
+class JudgeProvenance:
+    """(B018/A-327) WHICH build of assay produced this verdict.
+
+    ``assay_version`` names a version string, and any process at all can print
+    one. CIU V8's central tool resolution (proposal §11.3) verifies a
+    *download* -- it resolves a judge from ``[testing.judge]``, fetches an
+    artifact, checks its digest -- and then has nothing that binds the verdict
+    in front of it to that artifact. This object is that binding: the running
+    process identifies the build artifact it was installed FROM and records its
+    digest, so a consumer can compare it against the digest it resolved itself.
+
+    Every field is required, and :mod:`assay.provenance` returns this object or
+    a refusal reason -- never a partial one. A-051's "omitted, never null",
+    applied to an identity: half an identity is worse than none, because it
+    reads as an identity.
+    """
+
+    #: The distribution name as the installed artifact's OWN metadata declares
+    #: it, never the literal ``"assay"`` -- the point of the field is to record
+    #: what the artifact says it is, which is exactly the claim under audit.
+    name: str
+    #: The exact version, from the same distribution metadata
+    #: ``assay.__version__`` reads.
+    version: str
+    #: Which of :data:`JUDGE_ARTIFACT_KINDS` the digest identifies.
+    artifact: str
+    #: One of :data:`JUDGE_DIGEST_ALGORITHMS`.
+    digest_algorithm: str
+    #: Lowercase hex, exactly 64 characters for ``sha256``.
+    digest: str
+
+    def __post_init__(self) -> None:
+        _check_nonempty(self.name, "judge_provenance.name")
+        _check_nonempty(self.version, "judge_provenance.version")
+        if self.artifact not in JUDGE_ARTIFACT_KINDS:
+            raise ValueError(
+                f"judge_provenance.artifact must be one of "
+                f"{list(JUDGE_ARTIFACT_KINDS)}, got {self.artifact!r}"
+            )
+        if self.digest_algorithm not in JUDGE_DIGEST_ALGORITHMS:
+            raise ValueError(
+                f"judge_provenance.digest_algorithm must be one of "
+                f"{list(JUDGE_DIGEST_ALGORITHMS)}, got "
+                f"{self.digest_algorithm!r}"
+            )
+        # Lowercase is part of the contract, not a formatting preference: a
+        # consumer comparing against its own resolved digest compares strings,
+        # and two spellings of one digest would not be equal.
+        if (
+            not isinstance(self.digest, str)
+            or len(self.digest) != 64
+            or any(character not in "0123456789abcdef" for character in self.digest)
+        ):
+            raise ValueError(
+                f"judge_provenance.digest must be exactly 64 lowercase "
+                f"hexadecimal characters, got {self.digest!r}"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "version": self.version,
+            "artifact": self.artifact,
+            "digest_algorithm": self.digest_algorithm,
+            "digest": self.digest,
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
 class JudgmentResolved:
     """(P33/V5-1) What was judged, shared by every computed tier above R0.
 
@@ -1476,6 +1681,18 @@ class JudgmentR1:
     """
 
     coverage_format: str
+    #: (B045, schema v9) the DECLARED producer of the coverage artifact --
+    #: WHICH tool wrote it, where one format has several producers that
+    #: disagree about what its own fields mean (`coverage-istanbul-json`'s
+    #: `branchMap`, A-344; whether a line ran, A-346). Optional here because
+    #: it is optional in the lane file for every format but
+    #: `coverage-istanbul-json`; `None` means the lane declared none, never a
+    #: default -- B045's whole point is that a producer is a DECLARED fact and
+    #: never a sniffed one (A-007). Kept a plain string here, as
+    #: :attr:`coverage_format` beside it is: the legal set is keyed BY FORMAT
+    #: (`assay.vocabulary.COVERAGE_PRODUCERS_BY_FORMAT`) and closed by the
+    #: LOADER, which is the layer that knows both halves of the pair.
+    coverage_producer: str | None = None
     coverage_artifact: str
     fail_under: float
     allow_excluded: bool
@@ -1493,6 +1710,12 @@ class JudgmentR1:
 
     def __post_init__(self) -> None:
         _check_nonempty(self.coverage_format, "judgment.r1.coverage_format")
+        # B045: absent is legal (the lane declared none); PRESENT-and-empty is
+        # not, for `coverage_format`'s reason -- "" is a producer name nothing
+        # can be, and A-051's omitted-never-null rule makes absence the only
+        # spelling of "unknown".
+        if self.coverage_producer is not None:
+            _check_nonempty(self.coverage_producer, "judgment.r1.coverage_producer")
         _check_nonempty(self.coverage_artifact, "judgment.r1.coverage_artifact")
         if isinstance(self.fail_under, bool) or not isinstance(
             self.fail_under, (int, float)
@@ -1557,9 +1780,95 @@ class JudgmentR1:
             "mode": self.mode,
             "require_branch": self.require_branch,
         }
+        # B045: omitted, never null (A-051).
+        if self.coverage_producer is not None:
+            payload["coverage_producer"] = self.coverage_producer
         if self.targets is not None:
             payload["targets"] = list(self.targets)
         return payload
+
+
+#: (B046, schema v9) WHO computed the mutants an R2 judgment is about. Closed
+#: here, in the schema and in the loader, for `KILL_ATTRIBUTIONS`' reason: a
+#: third value would be a third trust story, and there are exactly two --
+#: assay ran the engine, or assay read a report a foreign tool wrote inside
+#: the snapshot.
+MUTATION_PRODUCERS: tuple[str, ...] = ("native", "ingested")
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourcePosition:
+    """(B046, schema v9) One position in the judged source: a project-root-
+    relative wire path and a one-based line.
+
+    Two fields rather than one ``"path:line"`` string, because a path may
+    legally contain a colon and because :class:`MutantOutcome` one class over
+    already models the same pair the same way. Sorting is by
+    ``(path, lineno)`` and is enforced by the owning field, not here -- a
+    position on its own has no order to be wrong about.
+    """
+
+    path: str
+    lineno: int
+
+    def __post_init__(self) -> None:
+        _check_wire_path(self.path, "source position path")
+        if isinstance(self.lineno, bool) or not isinstance(self.lineno, int):
+            raise ValueError(
+                f"source position lineno must be an integer, got {self.lineno!r}"
+            )
+        if self.lineno < 1:
+            raise ValueError(
+                f"source position lineno must be >= 1, got {self.lineno}"
+            )
+
+    @property
+    def sort_key(self) -> tuple[str, int]:
+        return (self.path, self.lineno)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"path": self.path, "lineno": self.lineno}
+
+
+@dataclass(frozen=True, kw_only=True)
+class MutationProducerTool:
+    """(B046, schema v9) The identity of the foreign mutation tool whose
+    report assay ingested, copied VERBATIM from that report.
+
+    **Declared by artifact, not verified.** Assay read these three strings
+    out of a file the lane's own command wrote inside the snapshot; it has no
+    independent evidence for any of them. That is exactly why this is NOT a
+    :class:`Helper` entry: ``helpers[]`` records tools assay itself invoked
+    and resolved on PATH (A-230a), and assay did not invoke Stryker. Putting
+    an ingested tool there would launder a declared fact into a verified one,
+    which is the one conflation the whole tier vocabulary exists to prevent.
+    """
+
+    #: `framework.name` from the report.
+    name: str
+    #: `framework.version` from the report.
+    version: str
+    #: the report's own `schemaVersion` -- the mutation-testing-report-schema
+    #: version its producer wrote, kept as a STRING because the upstream field
+    #: is one ("1", "1.0", "2" are all real spellings) and reinterpreting it as
+    #: a number here would be assay inventing precision the artifact does not
+    #: have.
+    report_schema_version: str
+
+    def __post_init__(self) -> None:
+        _check_nonempty(self.name, "judgment.r2.producer_tool.name")
+        _check_nonempty(self.version, "judgment.r2.producer_tool.version")
+        _check_nonempty(
+            self.report_schema_version,
+            "judgment.r2.producer_tool.report_schema_version",
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "version": self.version,
+            "report_schema_version": self.report_schema_version,
+        }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1582,14 +1891,58 @@ class JudgmentR2:
     :attr:`operators` actually declared.
     """
 
-    jobs: int
+    #: (B046, schema v9) `"native"` or `"ingested"` -- see
+    #: :data:`MUTATION_PRODUCERS`. Defaulted to `"native"` for
+    #: :attr:`mode`'s reason: it is the only producer that existed before this
+    #: field did, so it is the faithful historical value for every record
+    #: written without one. It is REQUIRED on the wire all the same (always
+    #: emitted by :meth:`to_dict`), because an optional discriminator leaves
+    #: exactly the ambiguity this field exists to end.
+    producer: str = "native"
+    #: (B046) `None` under `"native"`; required under `"ingested"`.
+    producer_tool: MutationProducerTool | None = None
+    #: (B046) The `NoCoverage` mutants -- ones no test even EXERCISED. They
+    #: count in the `survived` bucket (a mutant nothing ran is not killed), but
+    #: they are listed here as well, BY POSITION, so the worst kind of
+    #: survivor is never invisible inside a number. Required under
+    #: `"ingested"` and MAY be empty (an empty tuple is the positive statement
+    #: "the ingested path looked and found none", which is not what `None`
+    #: says); `None` -- absent -- under `"native"`, where assay's own engine
+    #: has no `NoCoverage` concept at all.
+    survived_uncovered: tuple[SourcePosition, ...] | None = None
+    #: (B046) How many mutants the report marked `CompileError`/`RuntimeError`
+    #: -- invalid mutants the native engine never emits. Excluded from the
+    #: `pct` denominator and COUNTED, because a report that could not compile
+    #: most of its own mutants measured far less than its score implies.
+    #: Required (possibly `0`) under `"ingested"`, `None` under `"native"`.
+    discarded: int | None = None
+    #: (B046) In-scope executable lines the foreign tool produced NO mutant
+    #: for. Required (possibly empty) under `"ingested"`, `None` under
+    #: `"native"`. Same empty-vs-absent rule as :attr:`survived_uncovered`.
+    lines_without_candidates: tuple[SourcePosition, ...] | None = None
+    #: **Required under `producer = "native"`, FORBIDDEN under `"ingested"`**
+    #: (B046). Assay declared no concurrency for a run it did not orchestrate;
+    #: copying the foreign tool's own setting here would put that tool's
+    #: configuration on the wire under assay's name.
+    jobs: int | None = None
     #: (P21/A-163) the declared candidate ceiling, in ``1..10_000``. Recorded
     #: because the limit terminal's whole evidence is arithmetic against it:
     #: ``candidate_count == max_mutants + 1``. Without the cap in the
     #: artifact a consumer cannot tell a legitimate refusal from a forged
-    #: one, so this is required rather than optional.
-    max_mutants: int
-    operators: tuple[str, ...]
+    #: one, so this is required rather than optional -- **under
+    #: `producer = "native"`. FORBIDDEN under `"ingested"`** for
+    #: :attr:`jobs`' reason (B046).
+    max_mutants: int | None = None
+    #: **Required under `producer = "native"`, FORBIDDEN under `"ingested"`**
+    #: (B046). An ingested lane's operators were chosen by the foreign tool's
+    #: configuration, not by assay's policy, and this object is documented as
+    #: the effective R2 POLICY -- what decided the claim. Assay's policy for
+    #: such a lane is genuinely EMPTY, and is left absent rather than
+    #: backfilled from the observed `stryker:*` set: the same
+    #: declared-vs-verified line A-230a draws for `helpers[]`. The observed
+    #: operators are still fully on the wire, one per mutant, in
+    #: `mutation.*[].operator`.
+    operators: tuple[str, ...] | None = None
     #: (P33/V5-4) whether kills in this run are attributed to a declared
     #: mechanism or merely observed. **Derived, never declared** (A-223b):
     #: ``declared`` exactly when :attr:`kill_signal_artifact` is present.
@@ -1614,6 +1967,23 @@ class JudgmentR2:
     #: command-written artifacts is what keeps A-215's no-DSN boundary
     #: exactly where it is -- assay never connects to a database.
     equivalence_artifact: str | None = None
+    #: (B035/A-329, schema v8) the scope R2 judged under, mirroring
+    #: :attr:`JudgmentR1.mode` exactly. Until v8 an ``R0,R2`` document put
+    #: NOTHING on the wire distinguishing a diff-based R2 (which must carry
+    #: `judgment.resolved.base`) from a whole-target one (which must not), so
+    #: A-325 had to stop enforcing that rule for the one lane shape that most
+    #: needs it -- every SQL lane, dstdns's `cw2b_schema` included. Defaulted
+    #: to ``"changed_lines"`` for `JudgmentR1.mode`'s reason: it is the only
+    #: mode that existed before whole-target scope, so it is the faithful
+    #: historical value.
+    mode: str = "changed_lines"
+    #: (B035/A-329) the DECLARED target set, required/non-empty/unique/sorted
+    #: iff ``mode == "whole_target"`` and forbidden otherwise -- the exact
+    #: contract :attr:`JudgmentR1.targets` already carries. Without it a
+    #: declared target that legitimately produced zero mutation sites is
+    #: indistinguishable from one that was never considered: `mutation.*[].
+    #: path` names only files that yielded a mutant.
+    targets: tuple[str, ...] | None = None
     #: (B012) The declared zero-based shard position. ``None`` with
     #: :attr:`shard_count` means the whole workload.
     shard_index: int | None = None
@@ -1621,6 +1991,168 @@ class JudgmentR2:
     shard_count: int | None = None
 
     def __post_init__(self) -> None:
+        # B046: the producer fork, checked FIRST -- every field below is
+        # either assay's own policy (legal only under `native`) or a fact
+        # derived from an ingested report (legal only under `ingested`), so
+        # nothing else here can be judged until this is known good.
+        if self.producer not in MUTATION_PRODUCERS:
+            raise ValueError(
+                f"judgment.r2.producer must be one of "
+                f"{list(MUTATION_PRODUCERS)}, got {self.producer!r}"
+            )
+        self._check_producer_fork()
+        if self.producer == "native":
+            self._check_native_policy()
+        else:
+            self._check_ingested_record()
+        if self.kill_attribution not in KILL_ATTRIBUTIONS:
+            raise ValueError(
+                f"judgment.r2.kill_attribution must be one of "
+                f"{list(KILL_ATTRIBUTIONS)}, got {self.kill_attribution!r}"
+            )
+        # A-223b: the derivation IS the contract, so the two fields cannot
+        # disagree even in a hand-built model object. `declared` with no
+        # artifact names an attribution source that does not exist;
+        # `unattributed` with one hides a source the run actually had.
+        if self.kill_signal_artifact is not None:
+            _check_nonempty(
+                self.kill_signal_artifact, "judgment.r2.kill_signal_artifact"
+            )
+            if self.kill_attribution != "declared":
+                raise ValueError(
+                    f"judgment.r2 records kill_attribution "
+                    f"{self.kill_attribution!r} beside a kill_signal_artifact "
+                    f"{self.kill_signal_artifact!r}; attribution is DERIVED "
+                    f"from that artifact's presence (A-223b), so the only "
+                    f"consistent value here is 'declared'"
+                )
+        elif self.kill_attribution == "declared":
+            raise ValueError(
+                "judgment.r2 records kill_attribution 'declared' with no "
+                "kill_signal_artifact; attribution is DERIVED from that "
+                "artifact's presence (A-223b), and a declared attribution "
+                "whose source is absent names a mechanism nothing recorded"
+            )
+        if self.equivalence_artifact is not None:
+            _check_nonempty(
+                self.equivalence_artifact, "judgment.r2.equivalence_artifact"
+            )
+        # B035/A-329: word-for-word the checks `JudgmentR1.__post_init__`
+        # already applies to its own `mode`/`targets` pair. Written out here
+        # rather than factored into a shared helper deliberately: the two
+        # objects are independent records of one lane-level scope, and a
+        # shared implementation would mean a single edit could silently
+        # weaken both halves of the agreement the layer above now checks.
+        if self.mode not in JUDGE_MODES:
+            raise ValueError(
+                f"judgment.r2.mode must be one of {list(JUDGE_MODES)}, got "
+                f"{self.mode!r}"
+            )
+        if self.mode == "whole_target":
+            if not isinstance(self.targets, tuple) or not self.targets:
+                raise ValueError(
+                    f"judgment.r2.targets must be a non-empty tuple when "
+                    f"mode is 'whole_target', got {self.targets!r}"
+                )
+            for target in self.targets:
+                _check_wire_path(target, "judgment.r2.targets entry")
+            if len(set(self.targets)) != len(self.targets):
+                raise ValueError(
+                    f"judgment.r2.targets contains a duplicate: "
+                    f"{list(self.targets)}"
+                )
+            if list(self.targets) != sorted(self.targets):
+                raise ValueError(
+                    f"judgment.r2.targets must be sorted, got "
+                    f"{list(self.targets)}"
+                )
+        elif self.targets is not None:
+            raise ValueError(
+                f"judgment.r2.targets is present ({list(self.targets)}) but "
+                f"mode is {self.mode!r}, not 'whole_target' -- targets "
+                f"describes nothing outside whole-target mode"
+            )
+        shard_specified = self.shard_index is not None or self.shard_count is not None
+        if shard_specified and (
+            self.shard_index is None
+            or self.shard_count is None
+            or isinstance(self.shard_index, bool)
+            or isinstance(self.shard_count, bool)
+            or not isinstance(self.shard_index, int)
+            or not isinstance(self.shard_count, int)
+        ):
+            raise ValueError(
+                "judgment.r2 requires integer shard_index and shard_count together"
+            )
+        if shard_specified and self.shard_count is not None:
+            if not 1 <= self.shard_count <= MAX_SHARD_COUNT:
+                raise ValueError(
+                    f"judgment.r2.shard_count must be in 1..{MAX_SHARD_COUNT}, "
+                    f"got {self.shard_count}"
+                )
+            assert self.shard_index is not None
+            if not 0 <= self.shard_index < self.shard_count:
+                raise ValueError(
+                    f"judgment.r2.shard_index {self.shard_index} is outside "
+                    f"0..{self.shard_count - 1}"
+                )
+
+    #: (B046) assay's OWN R2 policy -- the fields a native run declares and an
+    #: ingested one has nothing honest to put in.
+    _NATIVE_ONLY_FIELDS: ClassVar[tuple[str, ...]] = (
+        "jobs",
+        "max_mutants",
+        "operators",
+        "equivalence_artifact",
+    )
+    #: (B046) facts derived FROM an ingested report -- absent from a native
+    #: document, which would otherwise claim a computation that never ran.
+    _INGESTED_ONLY_FIELDS: ClassVar[tuple[str, ...]] = (
+        "producer_tool",
+        "survived_uncovered",
+        "discarded",
+        "lines_without_candidates",
+    )
+
+    def _check_producer_fork(self) -> None:
+        """(B046) Exactly one of the two field groups is populated, chosen by
+        :attr:`producer`. Written as one loop over two named tuples rather
+        than eight hand-written conditionals for `MUTATION_BUCKETS`' reason:
+        a ninth field reaching one half of the rule and not the other is the
+        precise defect shape A-228 came from.
+        """
+        if self.producer == "native":
+            present, forbidden_label = self._INGESTED_ONLY_FIELDS, "native"
+            required = self._NATIVE_ONLY_FIELDS[:-1]  # equivalence_artifact
+        else:                                         # is OPTIONAL natively
+            present, forbidden_label = self._NATIVE_ONLY_FIELDS, "ingested"
+            required = self._INGESTED_ONLY_FIELDS
+        forbidden = [name for name in present if getattr(self, name) is not None]
+        if forbidden:
+            raise ValueError(
+                f"judgment.r2 records producer {forbidden_label!r} beside "
+                f"{forbidden} -- "
+                + (
+                    "those fields describe an ingested report assay did not "
+                    "read"
+                    if forbidden_label == "native"
+                    else "assay chose none of that policy for a run it did "
+                    "not orchestrate, and copying the foreign tool's own "
+                    "settings here would put its configuration on the wire "
+                    "under assay's name (A-230a)"
+                )
+            )
+        missing = [name for name in required if getattr(self, name) is None]
+        if missing:
+            raise ValueError(
+                f"judgment.r2 records producer {forbidden_label!r} but is "
+                f"missing {missing}, which every {forbidden_label} R2 "
+                f"judgment must carry"
+            )
+
+    def _check_native_policy(self) -> None:
+        """The v8 rules, unchanged in substance, now reached only under
+        ``producer = "native"``."""
         if isinstance(self.jobs, bool) or not isinstance(self.jobs, int):
             raise ValueError(f"judgment.r2.jobs must be an integer, got {self.jobs!r}")
         if self.jobs < 1:
@@ -1658,70 +2190,77 @@ class JudgmentR2:
                 f"judgment.r2.operators contains a duplicate: "
                 f"{list(self.operators)}"
             )
-        if self.kill_attribution not in KILL_ATTRIBUTIONS:
+
+    def _check_ingested_record(self) -> None:
+        """(B046) The shape of the four fields an ingested judgment carries.
+        `_check_producer_fork` has already proved all four are present.
+        """
+        if not isinstance(self.producer_tool, MutationProducerTool):
             raise ValueError(
-                f"judgment.r2.kill_attribution must be one of "
-                f"{list(KILL_ATTRIBUTIONS)}, got {self.kill_attribution!r}"
+                f"judgment.r2.producer_tool must be a MutationProducerTool, "
+                f"got {self.producer_tool!r}"
             )
-        # A-223b: the derivation IS the contract, so the two fields cannot
-        # disagree even in a hand-built model object. `declared` with no
-        # artifact names an attribution source that does not exist;
-        # `unattributed` with one hides a source the run actually had.
-        if self.kill_signal_artifact is not None:
-            _check_nonempty(
-                self.kill_signal_artifact, "judgment.r2.kill_signal_artifact"
+        if isinstance(self.discarded, bool) or not isinstance(self.discarded, int):
+            raise ValueError(
+                f"judgment.r2.discarded must be an integer, got {self.discarded!r}"
             )
-            if self.kill_attribution != "declared":
+        if not 0 <= self.discarded <= 10_000:
+            raise ValueError(
+                f"judgment.r2.discarded must be in 0..10,000, got {self.discarded}"
+            )
+        for name in ("survived_uncovered", "lines_without_candidates"):
+            value = getattr(self, name)
+            what = f"judgment.r2.{name}"
+            if not isinstance(value, tuple):
+                raise ValueError(f"{what} must be a tuple, got {value!r}")
+            if len(value) > 10_000:
                 raise ValueError(
-                    f"judgment.r2 records kill_attribution "
-                    f"{self.kill_attribution!r} beside a kill_signal_artifact "
-                    f"{self.kill_signal_artifact!r}; attribution is DERIVED "
-                    f"from that artifact's presence (A-223b), so the only "
-                    f"consistent value here is 'declared'"
+                    f"{what} holds {len(value)} entries, over the 10,000 ceiling"
                 )
-        elif self.kill_attribution == "declared":
-            raise ValueError(
-                "judgment.r2 records kill_attribution 'declared' with no "
-                "kill_signal_artifact; attribution is DERIVED from that "
-                "artifact's presence (A-223b), and a declared attribution "
-                "whose source is absent names a mechanism nothing recorded"
-            )
-        if self.equivalence_artifact is not None:
-            _check_nonempty(
-                self.equivalence_artifact, "judgment.r2.equivalence_artifact"
-            )
-        shard_specified = self.shard_index is not None or self.shard_count is not None
-        if shard_specified and (
-            self.shard_index is None
-            or self.shard_count is None
-            or isinstance(self.shard_index, bool)
-            or isinstance(self.shard_count, bool)
-            or not isinstance(self.shard_index, int)
-            or not isinstance(self.shard_count, int)
-        ):
-            raise ValueError(
-                "judgment.r2 requires integer shard_index and shard_count together"
-            )
-        if shard_specified and self.shard_count is not None:
-            if not 1 <= self.shard_count <= MAX_SHARD_COUNT:
+            for index, item in enumerate(value):
+                if not isinstance(item, SourcePosition):
+                    raise ValueError(
+                        f"{what}[{index}] must be a SourcePosition, got {item!r}"
+                    )
+            keys = [item.sort_key for item in value]
+            if len(set(keys)) != len(keys):
+                raise ValueError(f"{what} contains a duplicate position: {keys}")
+            # Sortedness is array ORDER, which the packaged schema cannot
+            # express (draft 2020-12 has no $data and no ordering keyword), so
+            # it is owned here and, independently worded, by the raw verifier
+            # -- the same split `targets` above already lives under.
+            if keys != sorted(keys):
                 raise ValueError(
-                    f"judgment.r2.shard_count must be in 1..{MAX_SHARD_COUNT}, "
-                    f"got {self.shard_count}"
-                )
-            assert self.shard_index is not None
-            if not 0 <= self.shard_index < self.shard_count:
-                raise ValueError(
-                    f"judgment.r2.shard_index {self.shard_index} is outside "
-                    f"0..{self.shard_count - 1}"
+                    f"{what} must be ascending by (path, lineno), got {keys}"
                 )
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "jobs": self.jobs,
-            "max_mutants": self.max_mutants,
-            "operators": list(self.operators),
             "kill_attribution": self.kill_attribution,
+            # B035/A-329: always emitted, exactly as `judgment.r1.mode` is.
+            # An optional scope field would leave the r1-absent case back
+            # where B035 found it -- unable to witness its own rule -- for
+            # every producer that simply omitted it.
+            "mode": self.mode,
+            # B046: always emitted, for `mode`'s reason one line up.
+            "producer": self.producer,
         }
+        if self.producer == "native":
+            payload["jobs"] = self.jobs
+            payload["max_mutants"] = self.max_mutants
+            payload["operators"] = list(self.operators or ())
+        else:
+            assert self.producer_tool is not None  # _check_producer_fork
+            payload["producer_tool"] = self.producer_tool.to_dict()
+            payload["survived_uncovered"] = [
+                item.to_dict() for item in self.survived_uncovered or ()
+            ]
+            payload["discarded"] = self.discarded
+            payload["lines_without_candidates"] = [
+                item.to_dict() for item in self.lines_without_candidates or ()
+            ]
+        if self.targets is not None:
+            payload["targets"] = list(self.targets)
         # Omitted, never null (A-051).
         if self.kill_signal_artifact is not None:
             payload["kill_signal_artifact"] = self.kill_signal_artifact
@@ -1814,42 +2353,72 @@ class Judgment:
         # NEITHER tier compares a base, and A-223a's own "present exactly
         # when a tier that reads one is" makes the base FORBIDDEN there.
         #
-        # What the artifact can WITNESS is narrower than what is true, and
-        # this check is deliberately written to the witnessable part only:
-        # `judgment.r1.mode` is on the wire, `judgment.r2`'s scope is not
-        # (v7 gives r2 no `mode`/`targets` field of its own -- filed as
-        # B035, since adding one is a schema-version change, not a fix).
-        # Hence three cases rather than two:
+        # **B035/A-329 completes it, at schema v8.** A-325 had to write this
+        # check to the witnessable part only, and in v7 that part had a hole
+        # exactly where it mattered most: `judgment.r1.mode` was on the wire
+        # and `judgment.r2`'s scope was not, so for an `R0,R2` lane -- every
+        # SQL lane, and dstdns's `cw2b_schema` specifically -- NOTHING
+        # distinguished a diff-based R2 (which must carry a base) from a
+        # whole-target one (which must not), and neither half of the rule
+        # could be enforced. `judgment.r2.mode` now records that scope, so
+        # the check below reads the lane's mode off whichever tier witnesses
+        # it and enforces both halves for every shape:
         #
-        # * r1 present -- its `mode` IS the lane's mode, so the base is
-        #   required for `changed_lines` and forbidden for `whole_target`,
-        #   for both tiers together. This is now enforced for an R1,R2 lane
-        #   too, where the old rule wrongly demanded a base.
-        # * r1 absent, r2 present -- unwitnessable: a diff-based R2 requires
-        #   a base and a whole-target R2 forbids one, and nothing on the
-        #   wire distinguishes them. Neither is enforced; the producer
-        #   (`runner._run_prepared_lane`) decides, and B035 is what would
-        #   let this object check the producer's work.
+        # * r1 present -- its `mode` IS the lane's mode.
+        # * r1 absent, r2 present -- `r2.mode` is, and this is the case B035
+        #   existed for. A diff-based `R0,R2` verdict that omits its base is
+        #   refused again, which 2.4.1 did and 2.4.2 (A-325) could not.
         # * neither -- R3 alone never has a base.
+        #
+        # Where BOTH tiers are present their modes must AGREE, because there
+        # is only one lane scope to record: two disagreeing tiers would make
+        # "the lane's mode" ambiguous, and an ambiguous premise cannot carry
+        # a rule. The same argument applies to `targets`, which both tiers
+        # record as *the declared set* -- so they are compared too, for
+        # A-152's reason one level over (an equality no JSON Schema can
+        # express belongs to this layer and the raw verifier, not the
+        # document).
+        lane_mode: str | None = None
+        witness = ""
         if self.r1 is not None:
-            r1_compares_a_base = self.r1.mode == "changed_lines"
-            if r1_compares_a_base and self.resolved.base is None:
+            lane_mode, witness = self.r1.mode, "r1"
+            if self.r2 is not None:
+                if self.r2.mode != self.r1.mode:
+                    raise ValueError(
+                        f"judgment.r1 records mode {self.r1.mode!r} but "
+                        f"judgment.r2 records {self.r2.mode!r} -- mode is a "
+                        f"LANE-level scope that both tiers judge under, so "
+                        f"one judgment cannot hold two of them"
+                    )
+                if self.r2.targets != self.r1.targets:
+                    raise ValueError(
+                        f"judgment.r1 records targets "
+                        f"{list(self.r1.targets or ())} but judgment.r2 "
+                        f"records {list(self.r2.targets or ())} -- both "
+                        f"record the DECLARED target set of one lane, so "
+                        f"they cannot differ"
+                    )
+        elif self.r2 is not None:
+            lane_mode, witness = self.r2.mode, "r2"
+
+        if lane_mode == "changed_lines":
+            if self.resolved.base is None:
                 raise ValueError(
-                    "judgment carries r1 in changed-line mode but "
-                    "judgment.resolved records no base -- a changed-line "
-                    "judgment is scoped to a resolved comparison commit, so "
-                    "omitting it leaves the judgment unre-derivable"
+                    f"judgment carries {witness} in changed-line mode but "
+                    f"judgment.resolved records no base -- a changed-line "
+                    f"judgment is scoped to a resolved comparison commit, so "
+                    f"omitting it leaves the judgment unre-derivable"
                 )
-            if not r1_compares_a_base and self.resolved.base is not None:
+        elif self.resolved.base is not None:
+            if lane_mode == "whole_target":
                 raise ValueError(
                     f"judgment.resolved records base {self.resolved.base!r} "
-                    f"but judgment carries r1 in whole-target mode -- "
+                    f"but judgment carries {witness} in whole-target mode -- "
                     f"whole-target scope replaces the diff at EVERY tier, so "
                     f"neither R1 nor R2 resolved anything against that "
                     f"commit and recording it would imply a comparison that "
                     f"never happened"
                 )
-        elif self.r2 is None and self.resolved.base is not None:
             raise ValueError(
                 f"judgment.resolved records base {self.resolved.base!r} but "
                 f"judgment carries neither r1 nor r2 -- R3 alone never "
@@ -2328,8 +2897,28 @@ class SnapshotPolicy:
     #: bytes iff ``selection == "repository-minus-unsafe-symlinks"``;
     #: forbidden (``None``) under ``"repository"``.
     unsafe_symlink_omissions: tuple[str, ...] | None = None
+    #: (B041(b), schema v9) the declared ``[lanes.<n>.isolation] link_paths``
+    #: this lane materialised as symlinks from the INVOKING CHECKOUT into the
+    #: snapshot, immediately after ``read-tree`` and before any command ran.
+    #: Omitted (``None``), never empty (A-051): a lane that declared none
+    #: records none.
+    #:
+    #: Recorded because it is the one thing about a snapshot that is NOT bound
+    #: to the recorded commit. Everything else the snapshot holds came out of
+    #: the Git object store at ``commit``; every path listed here came out of
+    #: whatever the invoking checkout happened to contain at run time. A
+    #: verdict carrying a non-empty ``link_paths`` is therefore stating
+    #: plainly that its judgment's dependency closure is only as reproducible
+    #: as that checkout was -- which is the honest trade the feature exists to
+    #: make visible, not to hide.
+    #:
+    #: Independent of :attr:`selection`: linking content IN is orthogonal to
+    #: the unsafe-symlink omission policy, so unlike
+    #: :attr:`unsafe_symlink_omissions` there is no pairing between the two.
+    link_paths: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
+        self._check_link_paths()
         if self.selection not in SNAPSHOT_SELECTIONS:
             raise ValueError(
                 f"snapshot_policy.selection must be one of "
@@ -2374,10 +2963,50 @@ class SnapshotPolicy:
                     f"{list(omissions)}"
                 )
 
+    def _check_link_paths(self) -> None:
+        """(B041(b)) ``unsafe_symlink_omissions``' own grammar, one field
+        over: 1..64 entries, the B006a §5.3 tree-path grammar (no ``.git``
+        component), at most 4096 UTF-8 bytes each, strictly ascending by
+        those bytes. Deliberately transcribed rather than factored into a
+        shared helper: the two lists mean opposite things -- one names what
+        the snapshot LEFT OUT, the other what was linked IN -- and a shared
+        implementation would let one edit silently weaken both.
+        """
+        if self.link_paths is None:
+            return
+        if not isinstance(self.link_paths, tuple) or not (
+            1 <= len(self.link_paths) <= 64
+        ):
+            raise ValueError(
+                f"snapshot_policy.link_paths must be a tuple of 1..64 entries "
+                f"when present -- a lane declaring none records none, never an "
+                f"empty list (A-051); got {self.link_paths!r}"
+            )
+        encoded: list[bytes] = []
+        for index, path in enumerate(self.link_paths):
+            what = f"snapshot_policy.link_paths[{index}]"
+            _check_wire_path(path, what)
+            if ".git" in path.split("/"):
+                raise ValueError(f"{what} {path!r} contains a '.git' component")
+            encoded.append(path.encode("utf-8"))
+        if any(len(item) > 4096 for item in encoded):
+            raise ValueError(
+                "snapshot_policy.link_paths entries must be at most 4096 "
+                "UTF-8 bytes each"
+            )
+        for previous, current in zip(encoded, encoded[1:]):
+            if not previous < current:
+                raise ValueError(
+                    f"snapshot_policy.link_paths must be strictly ascending "
+                    f"by UTF-8 bytes, got {list(self.link_paths)}"
+                )
+
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"selection": self.selection}
         if self.unsafe_symlink_omissions is not None:
             payload["unsafe_symlink_omissions"] = list(self.unsafe_symlink_omissions)
+        if self.link_paths is not None:
+            payload["link_paths"] = list(self.link_paths)
         return payload
 
 
@@ -2400,6 +3029,13 @@ class Verdict:
     started: str
     ended: str
     assay_version: str
+    #: (B018/A-327) the producing judge's build identity -- see
+    #: :class:`JudgeProvenance`. OPTIONAL, and absent rather than partial: a
+    #: source-tree invocation has no build artifact to name, and inventing a
+    #: digest for `src/` would be exactly the laundering this field exists to
+    #: prevent. `assay run --require-judge-provenance` is how a consumer that
+    #: needs the binding turns its absence into a refusal instead of a silence.
+    judge_provenance: JudgeProvenance | None = None
     claims: tuple[Claim, ...] = ()
     evidence: tuple[Evidence, ...] = ()
     reason_code: ReasonCode | None = None
@@ -2424,6 +3060,26 @@ class Verdict:
     #: moment a lane loads.
     scope: str | None = None
     enforcement: str | None = None
+    #: (B043, schema v9) the lane's declared working directory, exactly as the
+    #: lane file spelled it -- the directory this lane's command, every R2
+    #: candidate re-execution and every R3 canary run were rooted at, resolved
+    #: against the snapshot's project root.
+    #:
+    #: **Deliberately NOT a member of** :data:`LANE_RESOLVED_FIELDS`. Every
+    #: field in that group is all-present-or-all-absent and carries a full
+    #: ``dependentRequired`` cross-matrix in the packaged schema, because each
+    #: is known the moment a lane loads and none of them has an honest
+    #: "unset". ``cwd`` does: B043's contract says the verdict records it
+    #: "absent when not declared -- absent, never ``"."``". Joining that group
+    #: would make every verdict from every lane that declares no ``cwd``
+    #: schema-invalid, which is nearly all of them.
+    #:
+    #: NOTHING ELSE RE-ROOTS (A-271, one path grammar): ``judge.coverage.
+    #: artifact``, ``equivalence_artifact``, ``source_roots``, ``targets`` and
+    #: every infrastructure fact stay project-root-relative whatever this
+    #: says, and ``environment_command`` keeps running in the INVOKING
+    #: environment's cwd because it is not the lane command.
+    cwd_declared: str | None = None
     #: (P16) the resolved judge policy behind whichever claims rendered a
     #: real computed judgment — see :class:`Judgment` and
     #: :meth:`_check_judgment_matches_claims`. Independently optional (not
@@ -2472,6 +3128,13 @@ class Verdict:
                 f"schema_version must be {VERDICT_SCHEMA_VERSION}, got "
                 f"{self.schema_version!r}"
             )
+        if self.judge_provenance is not None and not isinstance(
+            self.judge_provenance, JudgeProvenance
+        ):
+            raise ValueError(
+                f"judge_provenance must be a JudgeProvenance, got "
+                f"{self.judge_provenance!r}"
+            )
         if self.env_effective_incomplete and self.declared_rigor is None:
             raise ValueError(
                 "env_effective_incomplete requires the lane-resolved group "
@@ -2504,6 +3167,7 @@ class Verdict:
         _check_reason_code(self.outcome, self.reason_code, "verdict")
         self._check_interval_is_ordered()
         self._check_lane_resolved_group()
+        self._check_cwd_declared()
         self._check_claims_cover_declared_rigor()
         self._check_evidence_covers_declarations()
         self._check_outcome_agrees_with_rollup()
@@ -2572,26 +3236,13 @@ class Verdict:
                 "OMITS the field entirely (A-230a) rather than recording a "
                 "known-empty list nothing witnessed"
             )
-        r1_judged = any(
-            claim.rigor == "R1" and claim.coverage is not None for claim in self.claims
-        )
-        r2_judged = any(
-            claim.rigor == "R2" and claim.mutation is not None for claim in self.claims
-        )
-        requirement = {
-            "statement-positions": (r1_judged, "an R1 claim carrying a coverage payload"),
-            "mutation-sites": (r2_judged, "an R2 claim carrying a mutation payload"),
-            "executable-code": (
-                r1_judged or r2_judged,
-                "an R1 claim carrying coverage or an R2 claim carrying mutation",
-            ),
-        }
+        supported = supported_helper_roles(self.claims)
         for helper in self.helpers:
-            satisfied, what = requirement[helper.role]
-            if not satisfied:
+            if helper.role not in supported:
                 raise ValueError(
                     f"helpers records a {helper.role!r} helper ({helper.tool!r}) "
-                    f"but this verdict does not carry {what} -- a helper is "
+                    f"but this verdict does not carry "
+                    f"{HELPER_ROLE_REQUIREMENT[helper.role]} -- a helper is "
                     f"recorded because it produced a claim payload, so an entry "
                     f"with no such payload describes work that judged nothing"
                 )
@@ -2615,6 +3266,31 @@ class Verdict:
                 f"({ended.astimezone(timezone.utc).isoformat()} < "
                 f"{started.astimezone(timezone.utc).isoformat()} in UTC); a "
                 f"verdict's interval cannot run backwards"
+            )
+
+    def _check_cwd_declared(self) -> None:
+        """(B043) ``cwd_declared`` is INDEPENDENTLY optional -- it is not in
+        :data:`LANE_RESOLVED_FIELDS` and joins none of that group's
+        cross-matrix -- but it is still a fact ABOUT a lane, so it cannot
+        appear on a verdict where no lane ever resolved. Absence means the
+        lane declared no ``cwd`` and ran at the snapshot's project root; it
+        never means ``"."``, which is why ``"."`` is refused here by the wire
+        path grammar rather than accepted as a synonym.
+        """
+        if self.cwd_declared is None:
+            return
+        _check_wire_path(self.cwd_declared, "cwd_declared")
+        if ".git" in self.cwd_declared.split("/"):
+            raise ValueError(
+                f"cwd_declared {self.cwd_declared!r} contains a '.git' component"
+            )
+        if len(self.cwd_declared.encode("utf-8")) > 4096:
+            raise ValueError("cwd_declared must be at most 4096 UTF-8 bytes")
+        if self.declared_rigor is None:
+            raise ValueError(
+                f"cwd_declared is {self.cwd_declared!r} but no lane resolved; a "
+                f"declared working directory is a fact ABOUT a lane, and a "
+                f"verdict that never loaded one cannot witness it"
             )
 
     def _check_lane_resolved_group(self) -> None:
@@ -2831,14 +3507,24 @@ class Verdict:
                 for name in MUTATION_BUCKETS
                 for outcome in getattr(r2_claim.mutation, name)
             }
-            unknown_operators = sorted(observed_operators - set(judgment_r2.operators))
-            if unknown_operators:
-                raise ValueError(
-                    f"claim[R2].mutation records outcome(s) for operator(s) "
-                    f"{unknown_operators}, outside judgment.r2.operators "
-                    f"{list(judgment_r2.operators)} -- a mutant this policy "
-                    f"never selected cannot have been submitted"
+            # B046: this check binds a payload to the POLICY that selected it,
+            # and an ingested lane has no such policy -- assay selected none
+            # of the operators, so `judgment.r2.operators` is absent by
+            # construction and there is nothing here to be outside of. The
+            # equivalent binding for an ingested lane is that every observed
+            # operator sits in the ingested namespace, which
+            # `_check_operator_language_agrees` owns below.
+            if judgment_r2.operators is not None:
+                unknown_operators = sorted(
+                    observed_operators - set(judgment_r2.operators)
                 )
+                if unknown_operators:
+                    raise ValueError(
+                        f"claim[R2].mutation records outcome(s) for operator(s) "
+                        f"{unknown_operators}, outside judgment.r2.operators "
+                        f"{list(judgment_r2.operators)} -- a mutant this policy "
+                        f"never selected cannot have been submitted"
+                    )
             self._check_mutation_cardinality(r2_claim.mutation, judgment_r2)
             self._check_equivalence_pairing(r2_claim.mutation, judgment_r2)
             self._check_kill_attribution(r2_claim.mutation, judgment_r2)
@@ -2893,11 +3579,28 @@ class Verdict:
         policy never declared is already caught above, but a policy AND a
         payload that agree with each other while both disagreeing with the
         language is not.
+
+        **B046 (schema v9) splits this by producer, and the split is the whole
+        point.** Under ``producer = "ingested"`` there is no declared policy to
+        check (assay selected nothing) and the operator names are not
+        language-qualified at all -- they are copied verbatim from a foreign
+        tool's report into a namespace assay owns, so
+        ``operator_language("stryker:X")`` answers ``"stryker"``, which is not
+        and must never be compared against a language. The rule that REPLACES
+        the language check there is exact, not weaker: every recorded operator
+        must be an ingested one. The two namespaces do not mix in either
+        direction -- an ingested operator on a native document says assay's own
+        engine emitted a name it has no catalogue for, and a language operator
+        on an ingested document says assay's engine ran on a lane it never
+        touched.
         """
         language = self.judgment.resolved.language
+        if policy.producer == "ingested":
+            self._check_ingested_operators_only(policy)
+            return
         wrong = sorted(
             operator
-            for operator in policy.operators
+            for operator in policy.operators or ()
             if operator_language(operator) != language
         )
         if wrong:
@@ -2924,6 +3627,35 @@ class Verdict:
                 f"a lane whose judgment.resolved.language is {language!r} -- a "
                 f"mutant carries the operator that produced it, so a foreign "
                 f"prefix says the run applied a catalogue it does not have"
+            )
+
+    def _check_ingested_operators_only(self, policy: JudgmentR2) -> None:
+        """(B046) The ingested half of :meth:`_check_operator_language_agrees`.
+
+        ``policy.operators`` is absent by construction here (``JudgmentR2``
+        refuses it under ``producer = "ingested"``), so the only thing to bind
+        is the payload: every recorded operator must sit in the ingested
+        namespace. A ``python:``/``go:``/``sql:`` operator on an ingested
+        document would claim assay's own engine produced a mutant on a lane
+        assay never ran an engine for.
+        """
+        r2_claim = next((claim for claim in self.claims if claim.rigor == "R2"), None)
+        if r2_claim is None or r2_claim.mutation is None:
+            return
+        native = sorted(
+            {
+                outcome.operator
+                for name in MUTATION_BUCKETS
+                for outcome in getattr(r2_claim.mutation, name)
+                if not is_ingested_operator(outcome.operator)
+            }
+        )
+        if native:
+            raise ValueError(
+                f"claim[R2].mutation records outcome(s) for {native} on a lane "
+                f"whose judgment.r2.producer is 'ingested' -- assay ran no "
+                f"mutation engine here, so a mutant carrying an operator from "
+                f"assay's own closed catalogue names a run that did not happen"
             )
 
     def _check_equivalence_pairing(
@@ -2996,7 +3728,17 @@ class Verdict:
         payload may not exceed the cap it was run under, which is the
         arithmetic that makes ``max_mutants`` a real bound rather than a
         decorative record of one.
+
+        **B046: not applicable under ``producer = "ingested"``.** ``max_mutants``
+        is assay's OWN declared ceiling on its OWN discovery, and assay
+        performed no discovery for an ingested lane, so there is no cap here
+        for a count to be bound to. The ingested path bounds its report by its
+        own fixed mutant ceiling at PARSE time -- a refusal to read an
+        over-sized artifact at all, which is a stronger guarantee than an
+        after-the-fact arithmetic check on a document already accepted.
         """
+        if policy.max_mutants is None:
+            return
         if mutation.is_limit_sentinel:
             expected = policy.max_mutants + 1
             if mutation.candidate_count != expected:
@@ -3045,6 +3787,10 @@ class Verdict:
             "started": self.started,
             "ended": self.ended,
         }
+        # B018/A-327. Omitted, never null (A-051) and never partial: an
+        # unidentifiable invocation records no identity at all.
+        if self.judge_provenance is not None:
+            payload["judge_provenance"] = self.judge_provenance.to_dict()
         if self.reason_code is not None:
             payload["reason_code"] = self.reason_code.value
         if self.declared_rigor is not None:
@@ -3062,6 +3808,11 @@ class Verdict:
                 payload["env_effective_incomplete"] = True
             payload["scope"] = self.scope
             payload["enforcement"] = self.enforcement
+        # B043: emitted OUTSIDE the lane-resolved block on purpose -- it is
+        # independently optional, and `_check_cwd_declared` (not this method)
+        # is what ties it to a resolved lane. Omitted, never "." (A-051).
+        if self.cwd_declared is not None:
+            payload["cwd_declared"] = self.cwd_declared
         if self.judgment is not None:
             payload["judgment"] = self.judgment.to_dict()
         if self.snapshot_policy is not None:

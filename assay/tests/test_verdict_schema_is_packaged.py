@@ -34,7 +34,12 @@ from conftest import PROJECT_ROOT, SCHEMA_PATH, Standalone, verdict_fixture, why
 from jsonschema import Draft202012Validator
 
 from assay.verdict import SCHEMA_RESOURCE, VERDICT_SCHEMA_VERSION
-from assay.vocabulary import MUTATION_OPERATORS, MUTATION_OPERATORS_BY_LANGUAGE
+from assay.vocabulary import (
+    INGESTED_OPERATOR_RE,
+    MUTATION_OPERATORS,
+    MUTATION_OPERATORS_BY_LANGUAGE,
+    is_ingested_operator,
+)
 
 WHEEL_MEMBER = "assay/schemas/verdict.schema.json"
 
@@ -55,28 +60,54 @@ def test_the_shipped_schema_enumerates_exactly_the_vocabulary_module_declares():
     ORDER is asserted too, not just membership: `judgment.r2.operators`
     records a lane's own order-preserving selection, and the module
     docstring calls its tuple order normative for these branches.
+
+    **B046 (schema v9) adds a FOURTH branch that is deliberately not an
+    enum** -- the `^stryker:[A-Za-z0-9]+$` ingested namespace. It is
+    separated out here rather than folded in, because folding it in is
+    exactly the drift this test exists to catch: an open pattern compared
+    against a closed vocabulary would either force `MUTATION_OPERATORS` to
+    grow names no adapter implements, or quietly stop asserting anything.
+    The two halves are checked by their own rules -- the enums against
+    `MUTATION_OPERATORS_BY_LANGUAGE`, the pattern against
+    `INGESTED_OPERATOR_RE` -- and the count is pinned so a fifth branch
+    appearing in either shape fails here first.
     """
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     branches = schema["$defs"]["mutation_operator"]["oneOf"]
-    shipped = [branch["enum"] for branch in branches]
+    enum_branches = [branch for branch in branches if "enum" in branch]
+    pattern_branches = [branch for branch in branches if "pattern" in branch]
+    assert len(enum_branches) + len(pattern_branches) == len(branches)
+    assert len(pattern_branches) == 1
 
+    shipped = [branch["enum"] for branch in enum_branches]
     declared = [list(operators) for operators in MUTATION_OPERATORS_BY_LANGUAGE.values()]
     assert shipped == declared
 
-    # Every branch is single-language, so a `oneOf` really does partition the
-    # catalogue rather than merely covering it -- two branches sharing a name
-    # would make a document ambiguous under `oneOf` and reject a valid
-    # operator.
+    # B046: the ingested branch's pattern is the SAME source string
+    # `assay.vocabulary` compiles, not a hand-transcribed twin -- the schema
+    # and the predicate cannot disagree about which names are ingested.
+    assert pattern_branches[0]["pattern"] == INGESTED_OPERATOR_RE.pattern
+    # ...and it really is open where the others are closed: a name matching
+    # it is legal without appearing in any vocabulary the module ships.
+    assert is_ingested_operator("stryker:ArithmeticOperator")
+    assert "stryker:ArithmeticOperator" not in MUTATION_OPERATORS
+
+    # Every ENUM branch is single-language, so a `oneOf` really does partition
+    # the catalogue rather than merely covering it -- two branches sharing a
+    # name would make a document ambiguous under `oneOf` and reject a valid
+    # operator. The pattern branch cannot collide with them: no
+    # language-qualified name assay ships starts with the ingested namespace.
     for branch, (language, operators) in zip(
-        branches, MUTATION_OPERATORS_BY_LANGUAGE.items()
+        enum_branches, MUTATION_OPERATORS_BY_LANGUAGE.items()
     ):
         assert {name.split(":", 1)[0] for name in branch["enum"]} == {language}
         assert len(set(operators)) == len(operators)
+    assert not [name for name in MUTATION_OPERATORS if is_ingested_operator(name)]
 
     # ...and the flat tuple the model and config close against is exactly the
-    # union of what the schema ships.
+    # union of what the schema ships in its CLOSED branches.
     assert set(MUTATION_OPERATORS) == {
-        name for branch in branches for name in branch["enum"]
+        name for branch in enum_branches for name in branch["enum"]
     }
 
 
@@ -198,4 +229,4 @@ def test_load_schema_works_from_the_installed_package(standalone: Standalone):
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.split()[0] == "urn:assay:schema:verdict:7"
+    assert proc.stdout.split()[0] == "urn:assay:schema:verdict:9"

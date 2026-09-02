@@ -1,0 +1,7 @@
+# examples/minimal/web/ciu.compose.yml.j2 — ciu injects container_name, hostname,
+# networks, ciu.* labels, ports (from the endpoint) and healthcheck timing.
+services:
+  web:
+    image: {{ ciu_stack.web.image }}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:{{ ciu_stack.web.endpoints.http.port }}/"]

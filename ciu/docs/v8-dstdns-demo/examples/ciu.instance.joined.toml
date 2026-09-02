@@ -1,0 +1,62 @@
+# examples/ciu.instance.joined.toml — the INSTANCE FILE of a package WORKTREE
+# that joins the primary instance's Vault, Consul, Redis, database, identity
+# provider and observability instead of running its own. `ciu instance add --join
+# primary --services vault,consul,redis,main_db,object_store,app_schema,
+# identity_provider,tracing,otel_collector` APPENDS exactly these tables with a
+# round-trip TOML writer (S9.5.5; plain TOML makes that safe — the rev-2 Jinja
+# overlay could not be written by ciu); a hand-written file is identical.
+#
+# Operator-owned (S14.2): the worktree's OWN identity, host facts, build facts
+# and realness record are ciu-owned and live in its generated file
+# (examples/ciu.instance.generated.joined.toml), merged after this one.
+
+[ciu.instance]
+layout = "local"
+bundles = ["apps", "worker-io", "test"]   # only what this worktree develops
+label = "p146-fresh"                      # unique per git family (S14.7.2)
+
+# Two instances on one machine: the publish = "host" endpoints of this worktree's
+# own bundles would collide with the primary's — move them here (S6.3.2, S14.2):
+# [ciu.instance.host_ports]
+# "cadvisor.cadvisor.http" = 18080
+
+# Joined realizations: kind = "joined" names the reference INSTANCE (a registered
+# label, or an absolute path for non-git roots — S14.7.2) and the LogicalService
+# to borrow. The joiner's variant row names the level the reference ACTUALLY runs;
+# at `ciu up` ciu reads the reference's rendered [resolved.services.*] under the
+# reference's shared directory lock and refuses on a mismatch, then records the
+# reference's level in this instance's own record (generated file). Bindings to
+# joined services resolve to the reference's container names on the reference's
+# instance network (S7.8 step 2).
+# tracing / otel_collector / identity_provider are joined because the apps bundle
+# binds them with wait = "none" (a resolution, no edge): every binding target
+# must be selected by the bundles (S5.5.4).
+[realization]
+primary_vault   = { kind = "joined", instance = "primary", service = "vault" }
+primary_consul  = { kind = "joined", instance = "primary", service = "consul" }
+primary_redis   = { kind = "joined", instance = "primary", service = "redis" }
+primary_db      = { kind = "joined", instance = "primary", service = "main_db" }
+primary_store   = { kind = "joined", instance = "primary", service = "object_store" }
+primary_schema  = { kind = "joined", instance = "primary", service = "app_schema" }
+primary_idp     = { kind = "joined", instance = "primary", service = "identity_provider" }
+primary_tracing = { kind = "joined", instance = "primary", service = "tracing" }
+primary_otel    = { kind = "joined", instance = "primary", service = "otel_collector" }
+
+[service.vault]
+live = "primary_vault"
+[service.consul]
+live = "primary_consul"
+[service.redis]
+live = "primary_redis"
+[service.main_db]
+live = "primary_db"                       # the primary runs main_db=live (its record says so); a seeded primary would be declared `seeded = "primary_db"` here
+[service.object_store]
+live = "primary_store"
+[service.app_schema]
+live = "primary_schema"
+[service.identity_provider]
+live = "primary_idp"
+[service.tracing]
+live = "primary_tracing"
+[service.otel_collector]
+live = "primary_otel"

@@ -26,27 +26,63 @@ actually evaluates Go at any rigor level yet (DESIGN-GUIDE §6/§7: a library
 surface is not a product capability until a supported producer path reaches
 it — the whole gap the post-series review found). So a :class:`RegistryEntry`
 pairs one adapter with the CLOSED set of rigor levels THIS BUILD wires it
-into: the CLI (:mod:`assay.cli`) builds its own registry naming Python at
-``R1`` only, and no entry at all for Go, so ``judge.language = "go"`` is
-refused exactly the same way an unknown language string is — never a
-guess, never "the adapter exists so the level must work."
+into, and a language/rigor pair the build does not wire is refused exactly
+the same way an unknown language string is — never a guess, never "the
+adapter exists so the level must work."
+
+**This paragraph used to name the CLI's entries** ("naming Python at ``R1``
+only, and no entry at all for Go"). It is rewritten rather than re-stated
+because that copy went stale three times without anyone noticing: SQL was
+registered at ``R2`` (A-242), JavaScript at ``R1`` then ``{"R1","R2"}``
+(B036/B046) and Go at ``R1`` (A-394), and the sentence still said
+Python-only until Wave C's round-1 adversarial review read it. The claim
+this module actually needs does not depend on which entries exist:
+whatever :func:`assay.cli._built_in_registry` names, it is a closed
+declaration of what THIS BUILD reaches, not a list of the adapters that
+happen to exist on disk. That function is the single authority; a second
+copy of its contents here can only rot, so there no longer is one.
 
 **External-tool preflighting lives in `assay.runner`, not here (P34/A-253).**
 DESIGN-GUIDE §11 and A-013 both say a declared adapter prerequisite tool
 that is absent from ``PATH`` should render ``NO_MEASUREMENT`` rather than
 fail unpredictably mid-run. A-086 recorded this as a gap in the closed
 reason-code vocabulary, and A-087 (P08, the Go adapter) declined to close it
-there: Go ships with ``external_tools = ()``, so "no missing-tool state
-becomes reachable, so adding its reason would be decorative." That reasoning
-is still why THIS module adds no preflight machinery of its own — every
-adapter a built-in registry can advertise today (Python, Go, and P34's own
-SQL) declares ``external_tools = ()``, so no real entry here ever exercises
-one. But the check itself is no longer deferred: :func:`assay.runner.run_lane`
-raises ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` at the top of every run,
-for ANY adapter a caller resolves through this module's :func:`get_adapter` —
-general infrastructure that does not wait for a registered adapter to need
+there: Go shipped with ``external_tools = ()``, so "no missing-tool state
+becomes reachable, so adding its reason would be decorative."
+
+**A-087's premise is now false, and Wave C is what falsified it.**
+:attr:`assay.adapters.go.GoAdapter.external_tools` is ``("go",)`` (B047
+item 2), because A-217 rules out re-implementing ``cmd/cover``'s statement
+segmentation in Python and so a Go R1 lane genuinely needs a real Go
+toolchain to derive statement positions; A-394 then registered that adapter
+in :func:`assay.cli._built_in_registry` at ``{"R1"}``. So the sentence this
+paragraph used to end with — "every adapter a built-in registry can
+advertise today (Python, Go, and P34's own SQL) declares
+``external_tools = ()``, so no real entry here ever exercises one" — is
+wrong in both halves: the set is no longer Python/Go/SQL, and EVERY real Go
+lane exercises the preflight. ``assay lanes --json`` on a Go lane reports
+``external_tools: ["go"]``, and in an environment without ``go`` on ``PATH``
+(this devcontainer and the registered gate's own image, A-042/A-043) that
+lane is refused ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` before its
+command runs. The paragraph is rewritten rather than deleted because A-087's
+REASONING is the load-bearing half: it explains why the machinery lives in
+:mod:`assay.runner` instead of here, which is still true and is not what
+went stale. Only its factual premise did. (The identical paragraph in
+:func:`assay.cli._built_in_registry` was rewritten for the same reason when
+A-394 landed; this copy was missed, and Wave C's round-1 adversarial review
+found it — the A-399/A-400 shape, a true-when-written sentence quietly
+becoming false, applied to a file the wave never had cause to open.)
+
+**What has NOT changed** is that THIS module still adds no preflight
+machinery of its own, and now for a stronger reason than "nothing exercises
+it": :func:`assay.runner.run_lane` raises
+``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` at the top of every run, for
+ANY adapter a caller resolves through this module's :func:`get_adapter` —
+general infrastructure that did not wait for a registered adapter to need
 it, the same way the rest of `run_lane`'s pre-work refusals do not wait for
-a lane that exercises them.
+a lane that exercises them. Go arriving with a real prerequisite tool is the
+first proof that the general shape was the right call; a preflight bolted
+onto the registry would now have to be unbolted, or duplicated.
 """
 
 from __future__ import annotations

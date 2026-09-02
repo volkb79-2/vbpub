@@ -5,121 +5,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
-### Added
-- feat(assay): mutation progress artifacts, per-candidate budgets, and plan mode (B012)
-- feat(assay): optional lane environment preflight and current run-gate wiring example (B010/B011)
-- feat(assay): mutation resume, deterministic sharding, and shard-merge validation (B012)
-- feat(assay): infrastructure fact injection (`required-env:`/`derived:`) for isolated lanes (B013)
-
-### Changed
-- **BREAKING (lane config):** a lane declaring `judge.mode = "whole_target"` may no longer
-  declare `judge.base` — no tier reads one under whole-target scope, so it is now refused as
-  inert config, in every language and at every rigor. A whole-target R2 lane that declared a
-  base (dstdns's `cw2b_schema` is the known one) must delete that line (B033/A-325)
-- **BREAKING (lane config):** a SQL lane declaring `judge.targets` must now also declare
-  `judge.mode = "whole_target"`, exactly as every other language always had to; the
-  `declared_language != "sql"` carve-out on the vacuity guard is gone, and `targets` no longer
-  sits in the surplus exemption (B033/A-325)
-- **BREAKING (lane config):** `python:uuid-equality-swap` and `python:enum-comparison-swap` are
-  withdrawn — a lane declaring either, or an `--operators` override naming either, is refused at
-  load. The two names stay legal in a schema-v7 artifact, so verdicts already emitted by
-  2.3.0/2.4.x keep verifying; nothing produces them (B034/A-326)
-
-### Fixed
-- fix(assay): R2 whole-target mutation silently dropped a declared `judge.targets` entry that
-  failed a containment gate (excluded directory, non-matching source glob, test path) and
-  reported PASS/FAIL over the narrowed set, where R1's own resolver refuses the identical
-  shapes by name; R2 now refuses `ERROR`/`BAD_LANE_CONFIG` naming the target and the gate on
-  the diagnostics stream, and also names a target that is absent at the judged commit instead
-  of surfacing an unnamed `GIT_FAILED` (B033/A-325)
-- fix(assay): a whole-target verdict recorded `judgment.resolved.base`/`base_resolution` for a
-  comparison that never ran — whole-target R2 skips both the base check and the diff, and
-  whole-target R1 resolves no base either; both fields are now omitted. The model, `verify.py`
-  and the packaged schema are relaxed in step (a pure widening: no document that validated
-  before stops validating, and schema v7 is not bumped) (B033/A-325)
-- fix(assay): B015's two "semantic" Python operators produced a byte-identical subset of
-  `python:compare-swap`'s own sites (87 sites measured over `src/assay/**.py`, zero new), so
-  co-selecting them ran every shared mutation twice for no added coverage, inflated
-  `mutation.total`/`candidate_count`, halved the effective `--max-mutants` budget and
-  misattributed kills; the enum predicate matched any `name.attr` access rather than an enum
-  member. Both are withdrawn (B034/A-326)
-- fix(assay): constrain the optional progress artifact path and preflight argv lookup (review)
-- fix(assay): `assay plan` reported `candidate_count: 0` for every lane, unconditionally, and a
-  `mode = "whole_target"` lane failed outright naming a scratch directory that never existed;
-  `plan`'s candidate discovery now matches a real `assay run`'s candidate count and IDs
-  byte-for-byte (B030)
-- fix(assay): the R2 progress artifact wrote unconditionally into the CONSUMER's live worktree
-  (`.assay/<lane>.progress.jsonl`), so a passing R2 lane refused `NO_MEASUREMENT`/`DIRTY_TREE` on
-  its very next run; progress reporting is now opt-in and consumer-directed
-  (`assay run --progress PATH`), never written unless asked for (B031)
-- fix(assay): removed the unused, never-populated `mutation.progress_artifact` verdict field
-  (schema v7 unchanged — no released `assay verify` ever accepted a document carrying it, so no
-  existing document is invalidated by the removal); `candidate_ids` and
-  `judgment.r2.shard_index`/`shard_count` are registered in `verify.py`'s reconstruction layer,
-  closing a gap where assay's own schema-valid output failed `assay verify` (B031)
-- fix(assay): an `environment_command` preflight probe that genuinely exhausted its own timeout
-  was misreported `ERROR`/`BAD_LANE_CONFIG`, exit 2, instead of `BUDGET_EXCEEDED`/`LANE_TIMEOUT`,
-  exit 4; the probe's cap is now enforced where `execute_plan` actually reads it, and a probe
-  refusal writes a clear cause (lane, cause, declared wrapper) to stderr instead of 0 bytes (B032)
-- fix(assay): a probe-timeout refusal always named the fixed 30s preflight cap even when the
-  lane's own, tighter remaining budget was the bound that actually fired; the message now names
-  whichever bound actually applied (B032, round-2 review)
-- fix(assay): a bad `--progress` destination (an existing directory, or an empty `--progress ""`,
-  which resolves to the invoking directory) ran the whole lane and only then surfaced an unrelated
-  `ERROR`/`GIT_FAILED`; it is now refused before any repository work with the same
-  `ERROR`/`OUTPUT_WRITE_FAILED` `--verdict-json` gives for the identical mistake (B031, round-2
-  review)
-- fix(assay): snapshot manifest leaf verification now rejects a symlink standing in for a
-  declared regular-file entry, using `lstat`/`S_ISREG` instead of `Path.is_file()` (B016)
-- fix(assay): `assay run`/`assay plan` crashed with `NameError` on an `--operators`/`--shard`
-  refusal, and on any lane declaring `[lanes.<name>.infrastructure]`, from two missing imports
-  (B012/B013)
-- fix(assay): `--shard` was 1-based against the 0-based contract in config/schema/docs; a
-  sharded verdict now records the executed shard instead of the lane's static declaration (B012)
-- fix(assay): mutation shard-merge validation now verifies each candidate's assignment against
-  its claimed shard and refuses an all-empty merge, instead of trusting the caller (B012)
-- fix(assay): verdict schema placed `mutation.candidate_ids`/`progress_artifact` on the wrong
-  `$defs` entries; a populated shard verdict violated its own published schema (B012)
-- fix(assay): a routine pre-gate merge silently narrowed R1/R2's changed-line scope to
-  first-parent instead of the declared merge-base, with no record of which fired; a new
-  additive `judgment.resolved.base_resolution` field (`"merge-base"`/`"first-parent"`) makes it
-  auditable (B008)
-- fix(assay): mutation-state resume's stale-record disposition was inverted — a tampered
-  `source_sha256` (folded into the record's own filename) silently reran instead of raising, and
-  a routine `schema_version` bump (the one field NOT folded in) raised instead of silently
-  rerunning; both now correct (B021)
-- fix(assay): `env_passthrough` could silently overwrite a declared infrastructure fact at
-  runtime with no defence beyond the lane loader; `resolve_command_plan` now refuses the
-  collision itself, and a resolved infrastructure value is now bounded at 64 KiB instead of
-  failing late and opaquely at `E2BIG` on exec (B022)
-- fix(assay): an unresolvable infrastructure declaration could crash a refusal uncaught, with no
-  verdict artifact, at four independent `resolve_command_plan` call sites (the direct R0-only
-  path, the `environment_command` probe, `_run_higher_rigor_lane`'s primary resolution, and
-  `refuse_lane`'s own recording call) — all four now degrade to a real, schema-valid verdict; a
-  new additive `env_effective_incomplete` field marks the one case where `env_effective` is a
-  fallback (`lane.env` alone) rather than the real resolved environment (B025)
-- fix(assay): a mutant-induced pytest timeout crashed `execute_plan` instead of reaching
-  `BUDGET_EXCEEDED`/`LANE_TIMEOUT` — `subprocess.TimeoutExpired.stdout`/`.stderr` is `bytes` even
-  under `text=True`, the one path CPython does not text-decode for you; the SAME undecodable-bytes
-  crash was also live on the normal completion path (`default_process_runner` had no `errors=`) —
-  both now tolerantly decode instead of raising (B027)
-- fix(assay): `judge.mutation.shard_count`'s bound accidentally reused a DIFFERENT ceiling
-  (`MAX_MAX_MUTANTS`) that only happened to equal the same value; a dedicated `MAX_SHARD_COUNT`
-  decouples the two so a future change to either cannot silently drift the other (B026)
-
-### Changed
-- docs(assay): pyflakes sweep of `src/assay/` (recursive) to zero findings — four unused imports,
-  one needless `f"..."` prefix, one dead local variable, and 24 annotation-only undefined names
-  now resolved with real or `TYPE_CHECKING`-guarded imports; wiring a lint phase into the shared
-  `tester-unified` gate is deliberately deferred (cross-project Docker image change, out of scope
-  for this pass) (B024)
-- docs(assay): `judge.mutation.shard_index`/`shard_count` (lane-declared, never consumed at
-  runtime) documented explicitly as reserved-for-future-use, not wired or removed (B026)
-- docs(assay): a bad `--shard`/`--operators` refusal's three-way stderr-diagnostic asymmetry
-  (`run`+shard writes an artifact and no message; `run`+operators writes a message and no
-  artifact; `plan`'s own refusal is a third shape again) is now documented as an accepted,
-  understood tradeoff rather than left implicit (B026)
-
 <!-- Post-release housekeeping, 2026-08-18: this block is CLEARED immediately
      after a release. cmru generates the dated entry below from the commit
      range, but it does NOT clear the hand-written block that fed it -- so
@@ -129,6 +14,229 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      clearing it is part of releasing. -->
 
 <!-- cmru: release history -->
+
+## [4.1.0] - 2026-09-02
+<!-- cmru: generated -->
+<!-- cmru: source-end=1e80268181516b9a6ad83a63b8e71a5f9908c3c5 -->
+
+### Added
+- feat(assay): derive a Go lane's module path from its own go.mod (B057, A-404) (4b5e7707)
+- feat(assay): helpers[] gets its first producer, and its real-toolchain proof (B047 item 5) (77d9d6b9)
+- feat(assay): register the Go adapter at R1, and open the go-cover producer vocabulary (367bbdf5)
+- feat(assay): wire the Go statement-attribution chain end to end (c85c703a)
+- feat(assay): declare the Go helper as package data, and retract my own blocker claim (428f69e2)
+- feat(assay): keep Go block extents and correct them (A-239 items 1+3) (fe9aaf7c)
+- feat(assay): the Go statement-position oracle (B047 item 1, A-217) (271af037)
+
+### Fixed
+- fix(assay): A-407 -- drop an orphaned helper where the payload went (0fb6fb94)
+- fix(assay): BLOCKER 1 (A-405) and DA-R1 (A-406), with should-fixes 4, 5, 6, 7 (4c3e83f4)
+- fix(assay): should-fix 1 -- restore a CLI test of the unknown-language branch (bdbb2557)
+- fix(assay): should-fix 2 -- three go.mod divergences from the real parser (7cda9d11)
+- fix(assay): BLOCKER 2 -- registry.py's two stale docstring facts (4c876306)
+- fix(assay): B061 -- the statement join kept only the LAST record for a repeated block, so covered code reported as uncovered (875382d2)
+- fix(assay): F008-A4 -- the Go coverage fixtures are real toolchain output, and their expectations are the oracle's (394c6cc2)
+- fix(assay): reach the Go oracle from the shipped zipapp (A-403) (8d7f8740)
+
+### Changed
+- merge(assay): Wave C -- Go at R1, statement-granular, through the shipped zipapp (1e802681)
+- chore(assay): renumber Wave C backlog ids B053-B058 -> B055-B060 (main's B053/B054 landed first) (e7eb5241)
+- backlog(assay): file B053 (ERROR verdict messages never surfaced) + B054 (never-executed file's istanbul quirk refuses the whole verdict) (a050a467)
+
+### Documentation
+- docs(assay): Wave C review round 3 -- reviewer's report, verbatim (5091a413)
+- docs(assay): Wave C controller log -- generation 8 verified (gate run 12 PASS on 99d2a443), round 3 sent to the reviewer (7288b3dc)
+- docs(assay): correct this generation's own claim about its mutation probes (4889b742)
+- docs(assay): Wave C generation 8 -- gate run 12 PASS on 99d2a443 (e1d8128f)
+- docs(assay): Wave C generation 8 -- REPORT sections 50-53 (494c8ee2)
+- docs(assay): SF-R2-3 -- CONSUMERS' Go refusals say what a consumer sees (74c64858)
+- docs(assay): Wave C review round 2 -- reviewer's report, verbatim (71a59967)
+- docs(assay): Wave C controller log -- review round 2 NOT ACCEPT (one pre-existing blocker, fix proven), DA-R3 ruled, final fix round dispatched (12e028c7)
+- docs(assay): Wave C controller log -- fix generation verified (gate run 11), reviewer resumed for round 2 (d71e0a0e)
+- docs(assay): Wave C generation 7 -- gate run 11 PASS on 4c3e83f4 (1d464fc4)
+- docs(assay): Wave C review round 1 -- reviewer's report, verbatim (210812f6)
+- docs(assay): Wave C controller log -- review round 1 ACCEPT-conditional, DA-R1/DA-R2 ruled, fix generation dispatched (5b6f77cc)
+- docs(assay): Wave C controller log -- generation 6 verified, scope complete (F008 shipped, M6 done), reviewer dispatched (a74bc6f6)
+- docs(assay): Wave C generation 6 -- BRIEF-7, gate run 10 PASS on 3355d238 (d938ab8c)
+- docs(assay): F008-A5 -- the srdm qualification ran; F008 is shipped, M6 is done (3355d238)
+- docs(assay): Wave C controller log -- generation 5 verified (A-404 landed, F008-A3 proven), DA-9 lane shape, generation 6 dispatched (53eba55b)
+- docs(assay): Wave C generation 5 -- gate run 9 verdict for dd1e2c46 (86b4efae)
+- docs(assay): fold in main's B053, tick F008-A3, and BRIEF-6 (dd1e2c46)
+- docs(assay,srdm): B053 corroboration note, Wave C id-collision ruling, srdm pointer corrected (173eda68)
+- docs(assay): Wave C generation 5 -- A-404's record, B057 closed, B058 filed (1885d64e)
+- docs(assay): Wave C controller log -- generation 4 checkpoint verified, DA-8 ruled (derive the Go module path from go.mod) (3a95459e)
+- docs(assay): Wave C generation 4 checkpoint -- BRIEF-5, and the gate verdict for 9714361c (524dd16c)
+- docs(assay): file B057 and decision ask DA-8 -- a CLI Go lane cannot resolve its own coverage keys (854d20c3)
+- docs(assay): reword F008-A5, and record the in-image harness ruling (A-401, A-402) (2f0cd223)
+- docs(assay,srdm): Wave C controller log -- 2026-09-01 assessment, DA-4..DA-7, generation 4 rulings (237b9585)
+- docs(assay): Wave C checkpoint 4 -- gate verdict for 91b05186 (4cff97bc)
+- docs(assay): Wave C controller log -- session checkpoint, gate green on 91b05186 (ce08d077)
+- docs(assay): Wave C controller log -- goal cleared, closing out the last in-flight gate (4ad164da)
+- docs(assay): Wave C generation 3 continuation brief (BRIEF-4) (91b05186)
+- docs(assay): Wave C controller log -- checkpoint 3, gate green, DA-3 resolved (a259bc98)
+- docs(assay): Wave C checkpoint 3 -- gate verdict for c85c703a (4a326ddc)
+- docs(assay): Wave C controller log -- generation 2 implementer dispatched (055115ba)
+- docs(assay): Wave C controller log -- checkpoint 2, dispatching fresh successor (ddbcf9af)
+- docs(assay): Wave C checkpoint 2 -- gate verdict for 428f69e2 (335636b4)
+- docs(assay): Wave C controller log -- gate PASS, self-correcting the packaging call (a80832c0)
+- docs(assay): Wave C controller log -- checkpoint 1, both decision asks resolved (8fd9dd68)
+- docs(assay): Wave C checkpoint 1 -- LOG/REPORT/BRIEF, and file B053 (4408622b)
+- docs(assay): Wave C controller log -- created, implementer dispatched (205b0cd2)
+- docs(assay): Wave C dispatch plan -- the P27 re-carve, scoped to F008-A3/A4/A5 (25b1f7fb)
+- docs(assay): Wave B controller log -- Wave C pre-dispatch research dispatched (106aea3a)
+- docs(assay): Wave B controller log -- release published, deployed, dstdns notified (97d4b409)
+
+### Testing
+- test(assay): A-407's control -- a judged R1 lane KEEPS its helper (99d2a443)
+- test(assay): SF-R2-1/SF-R2-2 -- kill the two surviving A-405 mutants (ba09eb61)
+- test(assay): the Go qualification driver resolves judge provenance, as cmd_run does (9714361c)
+
+## [4.0.0] - 2026-08-31
+<!-- cmru: generated -->
+<!-- cmru: source-end=12234a9742066ed3b622af7946c74fe53e66899d -->
+
+### Added
+- feat(assay): B046 -- R2 by evidence ingestion, and javascript at R2 (d0aab6fd)
+- feat(assay): B041(b) -- isolation.link_paths, with the teardown canary (9bb52280)
+- feat(assay): B043 -- a lane-level cwd, honoured at every execution site (143e927e)
+- feat(assay)!: verdict schema v8 -> v9 -- the producer cut (B045/B046/B043/B041(b)) (af14021f)
+- feat(assay): B045 (2/2 non-schema) -- real branch arcs under a declared istanbul producer, and the type-only lexer (B038 a+b) (cc4e955f)
+- feat(assay): B045 (1/2) -- the coverage PRODUCER as a declared, per-format, closed fact (fac1b73b)
+
+### Fixed
+- fix(assay): the raw verifier's three missing ORDER checks and its unclosed producer vocabulary; file B051 (4780c4ba)
+- fix(assay): the report-schema major pin admits an unmeasured major; B037 docstring is stale (9848d5ca)
+- fix(assay): BLOCKER -- cwd x link_paths composed into a snapshot escape (52b1f86b)
+
+### Changed
+- merge(assay): Wave B -- producer wave, verdict schema v8->v9 (B045/B046/B043/B041(b)) (5692ad37)
+- backlog(assay): file B052 -- an ingested report's `source` is never checked against the snapshot's committed bytes (c1176bd0)
+
+### Documentation
+- docs(assay): Wave B controller log -- merged to main, starting release (12234a97)
+- docs(assay): B037's ruling is made -- the second copy of the stale claim, in generate_mutation_sites' own docstring (7263716f)
+- docs(assay): Wave B controller log -- fix-verification ACCEPT (d3c194be)
+- docs(assay): Wave B controller log -- fix-verification round 2 interim (168b4445)
+- docs(assay): Wave B controller log -- fix round 1 complete and green (bcc9335b)
+- docs(assay): fix round 1 -- the rewritten gate record, and REPORT section 15 (05947625)
+- docs(assay): Wave B controller log -- fix round 1 status, B051 bookkeeping gap (b62e9ec1)
+- docs(assay): Wave B controller log -- review round 1 complete verdict (58bb314b)
+- docs(assay): Wave B controller log -- review round 1, ACCEPT-conditional (85e90140)
+- docs(assay): Wave B controller log -- implementation complete, gate green (a1d1dec3)
+- docs(assay): the Wave B gate transcript (a4bf1bc3)
+- docs(assay): the Wave B report (1a783f3e)
+- docs(assay): Wave B controller log -- checkpoint 3, schema cut landed (624673db)
+- docs(assay): Wave B checkpoint 3 -- continuation brief for the post-schema-cut half (f620c97b)
+- docs(assay): Wave B controller log -- checkpoint 2, endorse required-fields fork (25d02d94)
+- docs(assay): Wave B checkpoint 2 -- continuation brief + LOG entry for cc4e955f (b1a2f0e9)
+- docs(assay): Wave B controller log -- checkpoint 1, dispatching generation 2 (a6e6ebe6)
+- docs(assay): Wave B checkpoint 1 -- continuation brief (b85d3a6e)
+- docs(assay): Wave B controller log -- report-vs-pause operating rule (c36a06a5)
+- docs(assay): Wave A shipped status + operator ruling on B/C sequencing (76de935f)
+
+### Testing
+- test(assay): W5 -- the v9 frozen drift-guard generation, and the gate wiring that demotes W4 (1577fa45)
+- test(assay): commit a REAL StrykerJS mutation-testing-report-schema artifact (B046 evidence) (384f3c0f)
+
+## [3.2.0] - 2026-08-30
+<!-- cmru: generated -->
+<!-- cmru: source-end=71ddc7d952720ea2cf1d0e2dcb56ddf2489f01e5 -->
+
+### Added
+- feat(assay): B044 -- `assay lanes --json`, a machine-readable lane inventory (04ad5688)
+
+### Fixed
+- fix(assay): list JavaScript R1 in `assay run`'s own help/docstring (64e9382a)
+- fix(assay): B039/B047-4 -- one shared classified-line ceiling for every expanding coverage parser (1eeab9db)
+
+### Changed
+- merge(assay): Wave A -- JS consumer wave (B044/B042/B041(a,c)/B039/B047-4/B048) (71ddc7d9)
+- backlog(assay): Wave A -- file B049, record A-347..A-350, tick acceptance boxes (917c1e92)
+- backlog(run-gate,ciu,assay): RG-25/RG-26 -- backport ciu CIU-72 (b)/(c) to the current gate; CIU-73 needs no code (b2884e76)
+- backlog(assay,ciu): 3.1.0 design review -- file B041-B048, resolve B037, rule the v9 producer wave; CIU-72/73 (8b196f0b)
+
+### Documentation
+- docs(assay): commit the confirming registered-gate transcript (fix commits) (70bd6775)
+- docs(assay): Wave A REPORT/LOG -- record review round 1 verdict and fixes (cfe512a8)
+- docs(assay): Wave A review round 1 -- fix 3 blockers + 6 should-fixes (efb825bc)
+- docs(assay): the gate transcript, and the REPORT's final gate section (225dd6ad)
+- docs(assay): commit the qualification transcript (renamed past *.log gitignore) (e9424676)
+- docs(assay): Wave A REPORT, and LOG entries for the housekeeping commits (8353ff25)
+- docs(assay): fix a dangling "see the qualification harness below" reference (4a70e09e)
+- docs(assay): Wave A commit LOG (4a4056b6)
+- docs(assay): B041(a)/B042/B044/B048/B049 -- README and CONSUMERS updates (5bd20c71)
+- docs(assay): PROVENANCE entries for the c8 and vite-plugin-istanbul artifacts (28b39344)
+
+### Testing
+- test(assay): B044 golden coverage for env_required/environment_command/infrastructure_facts (15e24ffa)
+- test(assay): B041(c) -- real Vitest qualification through the real assay CLI (0ea21a05)
+- test(assay): B048 -- a real `vite-plugin-istanbul` artifact proves original src/*.ts(x) keys (0fbe1261)
+- test(assay): B042 item 2 -- measure `c8`'s v8-to-istanbul remapper against the same defect probe (5e347d04)
+
+## [3.1.0] - 2026-08-30
+<!-- cmru: generated -->
+<!-- cmru: source-end=c0b0e18225935138628099d44f23e93d5f5e7f49 -->
+
+### Added
+- feat(assay): a JavaScript/TypeScript adapter, registered at R1 (B036) (26c92be9)
+- feat(assay): coverage-istanbul-json, a fifth coverage format (B036) (d019b624)
+
+### Changed
+- merge(assay): bring feature/assay-b036-js-adapter up to date with main (B018/B019/B035 v8 + B037 ruling) before landing (408c3d57)
+- backlog(assay): rule B037's native-vs-evidence-ingestion fork -- Stryker Mutator (b0bef83a)
+
+### Documentation
+- docs(assay): B036/A-346 -- fix "written to FAIL if fixed" overreach (round-2 nit) (e580de02)
+- docs(assay): B036 report -- round-2 registered gate transcript, exit 0 (B036) (3a677f95)
+- docs(assay): B036 report -- round-2 response, and commit the review it answers (B036) (d8b54de8)
+- docs(assay): rule @vitest/coverage-v8 unsafe for judged lanes (A-346, B040) (0e2f111b)
+- docs(assay): correct three overstated claims in the JS adapter's own source (B036) (14b5c47e)
+- docs(assay): correct the phase-marker count in the B036 report (371a4f7b)
+- docs(assay): record the registered gate transcript for B036 (95a83968)
+- docs(assay): B036 implementation report (8aa62c62)
+- docs(assay): document the javascript language and istanbul format (B036) (53dca7d5)
+
+### Testing
+- test(assay): pin the v8 provider defect and replace the vacuous span pin (B036) (c115a107)
+- test(assay): real fixtures for the v8 provider defect and the canary (B036) (6aa8e08b)
+- test(assay): real vitest coverage fixtures for both providers (B036) (e2395b66)
+
+## [3.0.0] - 2026-08-30
+<!-- cmru: generated -->
+<!-- cmru: source-end=b6aca39de509ab188148c149d352a74401d09fa0 -->
+
+### Added
+- feat(assay)!: drop the withdrawn operator spellings at the v8 cut (A-331) (74c89475)
+- feat(assay): judge provenance, request-supplied base, r2 judging scope (B018/B019/B035) (86ceb527)
+
+### Fixed
+- fix(assay): round-2 review remediation -- retract two false root causes, fix the diagnostic properly (A-334) (652962af)
+- fix(assay): round-1 review remediation -- M1/M2/M3 + m1..m8, N1/N3/N6 (A-332/A-333) (0fad7842)
+- fix(assay): name the dirtying paths when the self-hosted lane goes DIRTY_TREE (28d6e41d)
+
+### Changed
+- merge(assay): B018/B019/B035 -- judge provenance, request-supplied base, r2 judging scope (v7->v8) (b6aca39d)
+- backlog(assay): B036/B037 -- JS/TS language adapter for dstdns's React UI (62fe368f)
+
+### Documentation
+- docs(assay): round-3 review polish, release housekeeping, migration notes (B018/B019/B035) (feff8948)
+- docs(assay): make the report's gate invariant self-checking, not self-dating (ea6c2daa)
+- docs(assay): report section 9 -- round-2 outcome and the retractions (ba62cd54)
+- docs(assay): correct the changed-file count (91 -> 92) (c27273af)
+- docs(assay): point the report's gate invariant at the remediation commit (e8990bf5)
+- docs(assay): report section 8 -- round-1 review outcome and the re-run gate (15dea56d)
+- docs(assay): state the gate coverage as an invariant, not a hash that goes stale (6b40e3ad)
+- docs(assay): B017 recurrence 3 resolved upstream; record the second green gate (9c39e271)
+- docs(assay): state which commit the gate judged, and prove the gap is prose (0a315100)
+- docs(assay): final gate transcript at 745ac377 and complete the commit table (7515c57d)
+- docs(assay): wave report for B018/B019/B035 with the real gate transcript (ef3a6930)
+- docs(assay): B017 -- third recurrence, first inside vbpub's own worktree (97a82a1f)
+- docs(assay): record A-327..A-331 and document the v8 contract (B018/B019/B035) (b72a3c5b)
+- docs(assay): B017 -- second recurrence of the untracked CIU render-input class (45755014)
+
+### Testing
+- test(assay): prove the zipapp provenance branch against a real .pyz (B018) (745ac377)
+- test(assay): cover B018 provenance, B019 base delegation, and the v8 vocabularies (f7450b0a)
 
 ## [2.4.2] - 2026-08-26
 <!-- cmru: generated -->

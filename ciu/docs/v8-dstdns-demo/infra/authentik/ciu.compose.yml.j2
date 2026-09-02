@@ -1,0 +1,78 @@
+# infra/authentik/ciu.compose.yml.j2 — v8 notation (draft.3)
+# Injected by ciu: container_name/hostname (dstdns-<instance>-authentik-server /
+# -worker), networks, ciu.* labels, CIU_* identity env, depends_on conditions,
+# healthcheck timing (server: project.health; worker: its own health table),
+# cgroup fields (from [governance] — the former per-service mem_limit block).
+# Addresses are the template-delivered bindings (ciu_stack.server.binds.database /
+# .redis); secrets are env-delivered (${AUTHENTIK_SECRETS_*} — stack-level, one
+# compose process environment for both services); no value is ever in this file.
+# server: OIDC/OAuth2 flows, admin UI, REST API. worker: background tasks
+# (flows, emails, outpost sync).
+
+# Shared environment block (server + worker; the server ignores AUTHENTIK_WORKER__*).
+x-authentik-env: &authentik-env
+  {% for key, value in env_defaults.items() %}
+  - {{ key }}={{ value }}
+  {% endfor %}
+  - AUTHENTIK_POSTGRESQL__HOST={{ ciu_stack.server.binds.database.host }}   # template-delivered binding: Authentik's own variable names
+  - AUTHENTIK_POSTGRESQL__PORT={{ ciu_stack.server.binds.database.port }}
+  - AUTHENTIK_POSTGRESQL__NAME={{ registry.postgresql.authentik_database }}
+  - AUTHENTIK_POSTGRESQL__USER={{ registry.postgresql.users.authentik }}
+  - AUTHENTIK_POSTGRESQL__PASSWORD=${AUTHENTIK_SECRETS_POSTGRES_PASSWORD}
+  - AUTHENTIK_REDIS__HOST={{ ciu_stack.server.binds.redis.host }}
+  - AUTHENTIK_REDIS__PORT={{ ciu_stack.server.binds.redis.port }}
+  - AUTHENTIK_REDIS__DB={{ ciu_stack.server.redis.db_index }}
+  - AUTHENTIK_REDIS__PASSWORD=${AUTHENTIK_SECRETS_REDIS_PASSWORD}
+  - AUTHENTIK_SECRET_KEY=${AUTHENTIK_SECRETS_SECRET_KEY}
+  # first start: sets akadmin's password + API token
+  - AUTHENTIK_BOOTSTRAP_PASSWORD=${AUTHENTIK_SECRETS_BOOTSTRAP_PASSWORD}
+  - AUTHENTIK_BOOTSTRAP_TOKEN=${AUTHENTIK_SECRETS_BOOTSTRAP_TOKEN}
+  - AUTHENTIK_BOOTSTRAP_EMAIL={{ ciu_stack.server.settings.bootstrap_email }}
+  - AUTHENTIK_LOG_LEVEL={{ project.log_level | lower }}
+  - AUTHENTIK_WORKER__CONCURRENCY=1          # single-user deployment: one worker process
+
+services:
+  server:
+    image: {{ ciu_stack.server.image }}
+    pull_policy: always                # `:latest` is cached forever otherwise (README.md "Root cause": 15 months stale)
+    # workspace user: the hostdirs are ciu-chowned to it; the image tolerates any uid
+    user: "{{ host.user_uid }}:{{ host.user_gid }}"
+    command: server
+    environment: *authentik-env
+    volumes:
+      - {{ ciu_stack.server.hostdir.media }}:/media
+      - {{ ciu_stack.server.hostdir.certs }}:/certs
+      {% if ciu_stack.server.settings.templates_dir %}
+      - {{ ciu_stack.server.settings.templates_dir }}:/templates
+      {% endif %}
+    healthcheck:
+      # built-in liveness probe, no auth; python3 (wget is absent in this Debian image)
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:{{ ciu_stack.server.endpoints.http.port }}/-/health/live/')\" || exit 1"]
+      # interval / timeout / retries / start_period: injected from ciu_stack.server.health (S6.6.4)
+    restart: unless-stopped
+    labels:
+      - "de.vxxu.volkb79.service-container=false"   # consumer label; ownership labels (ciu.*) are injected (S4.5)
+
+  worker:
+    image: {{ ciu_stack.worker.image }}
+    pull_policy: always
+    user: "{{ host.user_uid }}:{{ host.user_gid }}"   # owns the ciu-chowned volumes; no root needed
+    command: worker
+    # The Docker socket is deliberately not mounted (outpost-in-container mode is off);
+    # operators who want managed outposts add /var/run/docker.sock:ro themselves.
+    environment: *authentik-env
+    volumes:
+      - {{ ciu_stack.server.hostdir.media }}:/media
+      - {{ ciu_stack.server.hostdir.certs }}:/certs
+      - {{ ciu_stack.worker.hostdir.blueprints }}:/blueprints/custom
+      {% if ciu_stack.server.settings.templates_dir %}
+      - {{ ciu_stack.server.settings.templates_dir }}:/templates
+      {% endif %}
+    healthcheck:
+      # `ak healthcheck` is the supported probe; `ak worker health` starts a Celery
+      # tree and never exits, leaking descendants whenever Docker times it out.
+      test: ["CMD", "ak", "healthcheck"]
+      # timing injected from ciu_stack.worker.health (60s / 30s / 5 / 300s)
+    restart: unless-stopped
+    labels:
+      - "de.vxxu.volkb79.service-container=false"

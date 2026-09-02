@@ -83,7 +83,8 @@ def tmp_git_repo(tmp_path: Path) -> Path:
     _git_ok(["config", "user.email", "t@example.com"], repo)
     _git_ok(["config", "user.name", "Test"], repo)
     (repo / ".gitignore").write_text(
-        "ciu.env\n**/.ciu/\nciu.global.toml\nciu.toml\nciu.compose.yml\n"
+        "ciu.env\nciu.global.instance.toml.j2\nciu.instance.generated.toml\n"
+        "**/.ciu/\nciu.global.toml\nciu.toml\nciu.compose.yml\n"
     )
     project = repo / "project"
     project.mkdir()
@@ -106,13 +107,18 @@ def _stack_rel() -> Path:
     return Path("stack")
 
 
-def _write_ciu_env(worktree_root: Path, *, network: str, extra: str = "") -> None:
-    """ciu.env lives at the GIT WORKTREE root (matching `worktree.add`'s own
-    existing, already-shipped placement -- S16.1's `ref.path / "ciu.env"`
-    precedent) -- NOT at the (possibly nested) CIU root."""
-    (worktree_root / "ciu.env").write_text(
-        f'export DOCKER_NETWORK_INTERNAL="{network}"\n' + extra
-    )
+def _write_ciu_env(worktree_root: Path, *, network: str, instance_id: str = "") -> None:
+    """CIU-75: the generated identity table lives in the GIT WORKTREE root's
+    `ciu.instance.generated.toml` (matching `worktree.add`'s own existing,
+    already-shipped placement -- S16.1's `ref.path` precedent) -- NOT at the
+    (possibly nested) CIU root. Named for the file it replaced, so the
+    existing 36 call sites keep reading the same way."""
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
+
+    facts = {key: "" for key in GENERATED_FACTS_KEYS}
+    facts["network"] = network
+    facts["instance_id"] = instance_id
+    write_generated_facts(worktree_root, facts)
 
 
 def _add_linked_worktree(git_root: Path, branch: str, *, base: str = "main") -> Path:
@@ -581,15 +587,35 @@ class TestResolveBudgetCandidates:
     def test_env_missing_docker_network_internal_raises(self, tmp_git_repo):
         _write_ciu_env(tmp_git_repo, network="net-primary")
         linked = _add_linked_worktree(tmp_git_repo, "linked")
-        (linked / "ciu.env").write_text('export SOME_OTHER_KEY="x"\n')
-        with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\].*DOCKER_NETWORK_INTERNAL"):
+        _write_ciu_env(linked, network="")
+        with pytest.raises(
+            worktree.WorktreeError, match=r"\[S16\.3\].*declares no instance network"
+        ):
             worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
 
     def test_env_unparseable_raises(self, tmp_git_repo):
         _write_ciu_env(tmp_git_repo, network="net-primary")
         linked = _add_linked_worktree(tmp_git_repo, "linked")
-        (linked / "ciu.env").write_text('this is not = valid "shell\n')
+        (linked / "ciu.instance.generated.toml").write_text(
+            "[ciu.instance.generated]\nnetwork = not-a-toml-value\n"
+        )
         with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\]"):
+            worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
+
+    def test_env_non_utf8_raises(self, tmp_git_repo):
+        """CIU-62 — the gap `(OSError, WorkspaceEnvError)` still left open at
+        this site. A non-UTF-8 byte raises `UnicodeDecodeError`, a SIBLING of
+        `WorkspaceEnvError` under `ValueError`, not a subclass of it; the
+        S16.3 capacity count must refuse an instance it cannot read rather
+        than crash mid-survey (and never silently undercount). CIU-75 moved
+        the source to the generated facts file and normalized the three
+        exception types at the reader; the refusal contract is unchanged."""
+        _write_ciu_env(tmp_git_repo, network="net-primary")
+        linked = _add_linked_worktree(tmp_git_repo, "linked")
+        (linked / "ciu.instance.generated.toml").write_bytes(
+            b'[ciu.instance.generated]\nnetwork = "\xff\xfe"\n'
+        )
+        with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\] could not read/parse"):
             worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
 
     def test_duplicate_network_across_candidates_raises(self, tmp_git_repo):
@@ -624,25 +650,36 @@ class TestResolveBudgetCandidates:
         with pytest.raises(worktree.WorktreeError, match=r"\[S16\.3\].*could not derive"):
             worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
 
-    def test_candidate_env_isolation_ambient_leak_does_not_apply(self, tmp_git_repo, monkeypatch):
-        """A value only present in the CALLING process's os.environ must
-        NEVER leak into a candidate's own render -- each candidate renders
-        against ONLY its own explicit ciu.env."""
-        monkeypatch.setenv("WORKTREE_TAG", "ambient-leak")
-        _write_ciu_env(tmp_git_repo, network="net-primary", extra='export WORKTREE_TAG="from-primary-env"\n')
+    def test_candidate_env_isolation_ambient_identity_never_leaks(
+        self, tmp_git_repo, monkeypatch
+    ):
+        """The CALLING process's own IDENTITY must never reach a candidate's
+        render: each candidate renders against ITS OWN generated facts.
+
+        CIU-75 narrowed what this test can honestly claim, deliberately. The
+        pre-cutover environment was the candidate's whole parsed `ciu.env` and
+        nothing else, so NO ambient variable could reach the render. The
+        overlay carries identity facts only, so the environment is now ambient
+        MINUS every CIU identity key PLUS the candidate's facts — machine
+        facts (`$USER_UID`, `$PATH`) are shared by every checkout on this host
+        anyway, and identity, the thing that actually differs, is still taken
+        exclusively from the candidate. An ambient `INSTANCE_ID` set here to a
+        third value proves exactly that."""
+        monkeypatch.setenv("INSTANCE_ID", "ambient-leak")
+        _write_ciu_env(tmp_git_repo, network="net-primary", instance_id="primary-id")
         (_ciu_root(tmp_git_repo) / "ciu.global.defaults.toml.j2").write_text(
-            '[deploy]\nproject_name = "demo"\nenvironment_tag = "$WORKTREE_TAG"\n'
+            '[deploy]\nproject_name = "demo"\nenvironment_tag = "$INSTANCE_ID"\n'
             "\n[ciu.worktree]\nmax_concurrent_instances = 3\n"
         )
         _git_ok(["add", "-A"], tmp_git_repo)
-        _git_ok(["commit", "-m", "tag from env"], tmp_git_repo)
+        _git_ok(["commit", "-m", "tag from identity"], tmp_git_repo)
         linked = _add_linked_worktree(tmp_git_repo, "linked")
-        _write_ciu_env(linked, network="net-linked", extra='export WORKTREE_TAG="from-linked-env"\n')
+        _write_ciu_env(linked, network="net-linked", instance_id="linked-id")
 
         candidates = worktree._resolve_budget_candidates(_ciu_root(tmp_git_repo), _stack_rel())
         by_network = {c.network: c for c in candidates}
-        assert by_network["net-primary"].project == "demo-from-primary-env-stack"
-        assert by_network["net-linked"].project == "demo-from-linked-env-stack"
+        assert by_network["net-primary"].project == "demo-primary-id-stack"
+        assert by_network["net-linked"].project == "demo-linked-id-stack"
 
 
 # ---------------------------------------------------------------------------

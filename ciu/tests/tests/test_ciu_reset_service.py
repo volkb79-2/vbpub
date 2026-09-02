@@ -27,16 +27,25 @@ def _base_config() -> dict:
     return {"deploy": {"project_name": "test-project", "labels": {"prefix": "dstdns"}}}
 
 
+def _write_facts(root, **facts):
+    """CIU-75: instance identity lives in the checkout's generated overlay
+    table, so a fixture that wants a checkout to look provisioned writes THAT,
+    not the legacy `ciu.env` export."""
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
+
+    payload = {key: "" for key in GENERATED_FACTS_KEYS}
+    payload.update(facts)
+    write_generated_facts(root, payload)
+
+
 @pytest.fixture(autouse=True)
 def _identity_record(tmp_path):
     """CIU-46 cutover: reset's config-less down path derives its compose
-    project from THIS checkout's ciu.env (REPO_NAME/INSTANCE_ID). The shared
-    fixture omits environment_tag, so most tests here exercise that path;
-    the record lives at tmp_path (the repo_root every call below passes)."""
-    (tmp_path / "ciu.env").write_text(
-        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n',
-        encoding="utf-8",
-    )
+    project from THIS checkout's generated overlay facts (repo_name/
+    instance_id — CIU-75 moved the source off `ciu.env`). The shared fixture
+    omits environment_tag, so most tests here exercise that path; the record
+    lives at tmp_path (the repo_root every call below passes)."""
+    _write_facts(tmp_path, repo_name="dstdns", instance_id="abc123")
 
 
 def _reset(config, stack_dir, *, repo_root=None, **kw):
@@ -384,6 +393,17 @@ class TestResetServiceValidation:
         config = {"deploy": {"project_name": "test"}}
         with pytest.raises(ValueError, match="deploy.labels.prefix"):
             _reset(config, tmp_path, assume_yes=True)
+
+    def test_requires_repo_root_even_when_naming_pair_present(self, tmp_path):
+        """CIU-71: --project-directory needs repo_root REGARDLESS of whether
+        deploy.project_name/environment_tag resolve compose_project on their
+        own -- a stack's relative paths (build.context included) must
+        resolve against the repo root every time down runs, not only on the
+        config-less identity-project path CIU-46 already guards."""
+        config = _base_config()
+        config["deploy"]["environment_tag"] = "98535c"
+        with pytest.raises(ValueError, match="CIU-71.*repo_root is required"):
+            reset_service(config, tmp_path, assume_yes=True)
 
 
 class TestResetServiceIdentityNaming:

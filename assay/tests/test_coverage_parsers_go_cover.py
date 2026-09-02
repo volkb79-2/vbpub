@@ -27,6 +27,7 @@ from __future__ import annotations
 import pytest
 
 from assay.coverage import FileCoverage, derive_branch_capability, load_coverage_profile
+from assay.coverage_parsers.model import CoverageBlock
 from assay.coverage_parsers import go_cover
 from assay.errors import AssayError, Outcome, ReasonCode
 
@@ -56,13 +57,40 @@ def test_windows_drive_letter_path_and_overlapping_blocks_normalize_correctly():
     # line 5 is claimed by block 1 (executed, count=1) AND block 2
     # (never-taken, count=0) -- executed wins, so it must NOT appear missing.
     assert profile.files["github.com/example/pkg/foo.go"] == FileCoverage(
-        executed=frozenset({3, 4, 5}), missing=frozenset({6, 7}), excluded=None
+        executed=frozenset({3, 4, 5}),
+        missing=frozenset({6, 7}),
+        excluded=None,
+        # A-239/A-390: the records are KEPT whole alongside their expansion,
+        # columns included -- these two share the boundary position `5.2`,
+        # which is exactly the pair a line-only key would fuse.
+        blocks=(
+            CoverageBlock(
+                start_line=3, start_col=10, end_line=5, end_col=2,
+                num_stmts=2, count=1,
+            ),
+            CoverageBlock(
+                start_line=5, start_col=2, end_line=7, end_col=3,
+                num_stmts=1, count=0,
+            ),
+        ),
     )
     # the Windows path itself proves the LAST-colon split: if the FIRST colon
     # (after "C") were used instead, the path would be parsed as just "C" and
     # this key would not exist at all.
     assert profile.files["C:\\Users\\dev\\project\\pkg\\bar.go"] == FileCoverage(
-        executed=frozenset({10, 11, 12}), missing=frozenset({13, 14}), excluded=None
+        executed=frozenset({10, 11, 12}),
+        missing=frozenset({13, 14}),
+        excluded=None,
+        blocks=(
+            CoverageBlock(
+                start_line=10, start_col=5, end_line=12, end_col=9,
+                num_stmts=1, count=1,
+            ),
+            CoverageBlock(
+                start_line=12, start_col=9, end_line=14, end_col=2,
+                num_stmts=1, count=0,
+            ),
+        ),
     )
 
 
@@ -76,7 +104,21 @@ def test_executed_still_wins_when_the_never_taken_block_is_parsed_first():
     )
     profile = load_coverage_profile(artifact, declared_format="go-cover")
     assert profile.files["pkg/f.go"] == FileCoverage(
-        executed=frozenset({2}), missing=frozenset({1, 3}), excluded=None
+        executed=frozenset({2}),
+        missing=frozenset({1, 3}),
+        excluded=None,
+        # Blocks are kept in ARTIFACT order, never sorted: the merge rule
+        # above is what makes the result order-independent, not the storage.
+        blocks=(
+            CoverageBlock(
+                start_line=1, start_col=1, end_line=3, end_col=1,
+                num_stmts=1, count=0,
+            ),
+            CoverageBlock(
+                start_line=2, start_col=1, end_line=2, end_col=1,
+                num_stmts=1, count=1,
+            ),
+        ),
     )
 
 
@@ -107,7 +149,15 @@ def test_a_non_go_extension_parses_identically_proving_no_language_binding():
     artifact = "mode: set\npkg/generated_from_proto.rs:1.1,1.1 1 1\n"
     profile = load_coverage_profile(artifact, declared_format="go-cover")
     assert profile.files["pkg/generated_from_proto.rs"] == FileCoverage(
-        executed=frozenset({1}), missing=frozenset(), excluded=None
+        executed=frozenset({1}),
+        missing=frozenset(),
+        excluded=None,
+        blocks=(
+            CoverageBlock(
+                start_line=1, start_col=1, end_line=1, end_col=1,
+                num_stmts=1, count=1,
+            ),
+        ),
     )
 
 
@@ -142,7 +192,7 @@ def test_missing_mode_header_raises_unreadable_artifact_when_parsed_directly():
     # module directly -- exactly what this test does, to prove `parse()`
     # itself still guards it independent of the registry's sniff cross-check.
     with pytest.raises(AssayError) as excinfo:
-        go_cover.parse("pkg/f.go:1.1,2.2 1 1\n")
+        go_cover.parse("pkg/f.go:1.1,2.2 1 1\n", producer=None)
     assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
 
 
@@ -163,3 +213,140 @@ def test_sniff_is_a_cheap_signature_check_not_a_parse():
 def test_sniff_skips_leading_blank_lines_to_find_the_first_real_line():
     assert go_cover.sniff("\n   \nmode: set\npkg/f.go:1.1,1.1 1 1\n") is True
     assert go_cover.sniff("\n   \nnot a mode line\n") is False
+
+
+# --- B039/B047 item 4: the shared classified-line ceiling -------------------
+#
+# `parse` used to expand a block's `range(start, end + 1)` with no fixed
+# bound at all -- the identical unbounded-materialization shape
+# `coverage_istanbul_json` was given a fixed ceiling for. These tests pin the
+# SAME shared `ClassifiedLineBudget` (`assay.coverage_parsers.model`) both
+# parsers now spend from, exercised through go_cover's own call site --
+# `test_coverage_parsers_coverage_istanbul_json.py`'s own boundary tests
+# prove the identical arithmetic for the sibling parser.
+
+
+def test_one_enormous_block_is_refused_rather_than_expanded():
+    """The malicious shape B039 exists for: a ~60-byte block declaring an end
+    line of 999999999 sits far inside the 16 MiB
+    ``MAX_COVERAGE_ARTIFACT_BYTES`` read bound and would otherwise
+    materialize close to a billion dict entries."""
+    artifact = "mode: set\npkg/f.go:1.1,999999999.1 1 1\n"
+    with pytest.raises(AssayError) as excinfo:
+        load_coverage_profile(artifact, declared_format="go-cover")
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert "classified lines" in str(excinfo.value)
+
+
+def test_an_ordinary_real_shaped_profile_still_parses_under_the_shared_bound():
+    """The paired must-succeed control: an ordinary profile -- the exact
+    fixture every other test in this module already proves normalizes
+    correctly -- still parses cleanly now that every block spends the SAME
+    shared budget istanbul's parser does, at the SHIPPED ceiling (not
+    monkeypatched down for this one)."""
+    profile = load_coverage_profile(
+        DRIVE_LETTER_AND_OVERLAP_ARTIFACT, declared_format="go-cover"
+    )
+    assert profile.files["github.com/example/pkg/foo.go"].executed == frozenset(
+        {3, 4, 5}
+    )
+    assert profile.files["github.com/example/pkg/foo.go"].missing == frozenset(
+        {6, 7}
+    )
+
+
+@pytest.fixture
+def tiny_bound(monkeypatch: pytest.MonkeyPatch) -> int:
+    """go_cover's own re-exported ``MAX_CLASSIFIED_LINES`` lowered to a
+    handful of lines, the same off-by-one boundary pin
+    ``test_coverage_parsers_coverage_istanbul_json.py``'s own ``tiny_bound``
+    fixture already proves for istanbul -- here through go_cover's own call
+    site, over the identical shared class."""
+    monkeypatch.setattr(go_cover, "MAX_CLASSIFIED_LINES", 6)
+    return 6
+
+
+def test_a_block_exactly_at_the_bound_still_parses(tiny_bound: int):
+    artifact = f"mode: set\npkg/f.go:1.1,{tiny_bound}.1 1 1\n"
+    profile = load_coverage_profile(artifact, declared_format="go-cover")
+    assert profile.files["pkg/f.go"].executed == frozenset(range(1, tiny_bound + 1))
+
+
+def test_a_block_one_line_past_the_bound_is_refused(tiny_bound: int):
+    artifact = f"mode: set\npkg/f.go:1.1,{tiny_bound + 1}.1 1 1\n"
+    with pytest.raises(AssayError) as excinfo:
+        load_coverage_profile(artifact, declared_format="go-cover")
+    assert "classified lines" in str(excinfo.value)
+
+
+def test_the_bound_is_spent_across_the_whole_profile_not_per_block(tiny_bound: int):
+    """A profile made of many small blocks is refused by the same counter
+    that refuses one huge block -- the bound is a PROFILE property, exactly
+    as it already is for istanbul. Neither block here would breach it
+    alone."""
+    per_block = tiny_bound // 2 + 1
+    artifact = "mode: set\n" + "".join(
+        f"pkg/f{index}.go:1.1,{per_block}.1 1 1\n" for index in range(2)
+    )
+    with pytest.raises(AssayError) as excinfo:
+        load_coverage_profile(artifact, declared_format="go-cover")
+    assert "classified lines" in str(excinfo.value)
+
+
+def test_the_shipped_bound_is_the_one_shared_documented_value():
+    """The constant lives in ONE place now (B039's own acceptance box 2):
+    go_cover's re-exported name and model's canonical one are the identical
+    object, not two literals that happen to agree today."""
+    from assay.coverage_parsers.model import MAX_CLASSIFIED_LINES as shared_ceiling
+
+    assert go_cover.MAX_CLASSIFIED_LINES is shared_ceiling
+    assert go_cover.MAX_CLASSIFIED_LINES == 2_000_000
+
+
+def test_a_backwards_single_line_block_is_an_AssayError_not_a_bare_ValueError():
+    """Adversarial review round 1, should-fix 5 -- and it is a real
+    consumer-facing crash, not a tidiness point.
+
+    ``m/x.go:5.10,5.2 1 1`` ends before it starts, but only in the COLUMN:
+    ``_parse_block``'s own ``end_line < start_line`` guard sees one line and
+    passes, so the refusal came from ``CoverageBlock.__post_init__`` as a bare
+    ``ValueError``. Nothing on the path catches that -- ``runner.
+    _run_prepared_lane`` catches ``AssayError`` and ``cli.main`` catches
+    ``AssayError`` -- so it surfaced as an uncaught traceback: NO verdict
+    document written, and the coverage reservation the runner opened never
+    closed. ``main`` accepted the same bytes.
+
+    The message must still name both positions, because "5.10 then 5.2" is
+    the only thing that tells a consumer which record to look at."""
+    with pytest.raises(AssayError) as excinfo:
+        load_coverage_profile("mode: set\nm/x.go:5.10,5.2 1 1\n", declared_format="go-cover")
+
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    message = str(excinfo.value)
+    assert "5.10" in message and "5.2" in message
+    assert "m/x.go" in message
+
+
+def test_a_line_directive_column_of_zero_is_accepted_and_flags_the_file():
+    """A-405, at the parser's own boundary. The full witness -- Go's own
+    ``TestLineDup`` corpus, run through the real toolchain -- is
+    ``tests/test_go_line_directive_witness.py``; this is the unit-level
+    statement of the same rule, beside the artifact grammar it belongs to.
+
+    The contrast with the record above is the point: a zero column is REAL
+    toolchain output and is accepted, a NEGATIVE one is corruption and is
+    refused. The bound moved by exactly one value."""
+    profile = load_coverage_profile(
+        "mode: count\nm/x.go:6.21,7.25 1 1\nm/x.go:100.0,102.1 3 25\n",
+        declared_format="go-cover",
+    )
+
+    file_cov = profile.files["m/x.go"]
+    assert file_cov.line_directive_remapped is True
+    assert file_cov.blocks is not None
+    assert {block.extent for block in file_cov.blocks} == {
+        (6, 21, 7, 25),
+        (100, 0, 102, 1),
+    }

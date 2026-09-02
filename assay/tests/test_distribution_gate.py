@@ -20,11 +20,15 @@ self-hosted lane's own emitted artifact and the wheel actually installed.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -335,9 +339,12 @@ def test_self_hosted_lane_failure_is_never_laundered_into_success(
     scratch = tmp_path / "scratch"
     scratch.mkdir()
 
+    wheel = tmp_path / "assay-9.9.9-py3-none-any.whl"
+    wheel.write_bytes(b"not really a wheel, but a real file to hash")
+
     env = {**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"}
     proc = run_bash(
-        f'run_self_hosted_lane "{worktree}" "{scratch}" "9.9.9"',
+        f'run_self_hosted_lane "{worktree}" "{scratch}" "9.9.9" "{wheel}"',
         gate_functions=gate_functions,
         env=env,
     )
@@ -349,34 +356,192 @@ def test_self_hosted_lane_failure_is_never_laundered_into_success(
 def test_self_hosted_lane_requires_the_emitted_version_to_match_the_installed_one(
     tmp_path: Path, gate_functions: Path
 ) -> None:
+    fixture = _self_hosted_lane_fixture(tmp_path, version="9.9.9")
+
+    matching = run_bash(
+        fixture.invocation(version="9.9.9"),
+        gate_functions=gate_functions,
+        env=fixture.env,
+    )
+    assert matching.returncode == 0, matching.stderr
+    assert "ASSAY_GATE_PHASE=self-hosted-lane-passed" in matching.stdout
+
+    mismatched = run_bash(
+        fixture.invocation(version="1.0.0"),
+        gate_functions=gate_functions,
+        env=fixture.env,
+    )
+    assert mismatched.returncode != 0
+    assert "ASSAY_GATE_PHASE=self-hosted-lane-passed" not in mismatched.stdout
+    assert "emitted assay_version" in mismatched.stderr
+
+
+@dataclass(frozen=True)
+class _SelfHostedLaneFixture:
+    worktree: Path
+    scratch: Path
+    wheel: Path
+    env: dict
+
+    def invocation(self, *, version: str, wheel: Path | None = None) -> str:
+        return (
+            f'run_self_hosted_lane "{self.worktree}" "{self.scratch}" '
+            f'"{version}" "{wheel or self.wheel}"'
+        )
+
+
+def _self_hosted_lane_fixture(
+    tmp_path: Path, *, version: str, digest: str | None = None
+) -> _SelfHostedLaneFixture:
+    """A stub `assay` that writes a COMPLETE self-hosted-lane verdict.
+
+    B018/A-327: the stub must now emit `judge_provenance` too, and by default
+    it emits the honest one -- the real sha256 of the wheel file this fixture
+    writes -- so `require_emitted_judge_provenance`'s positive branch is
+    exercised by a value the stub did not simply echo back from the gate.
+    *digest* overrides it to drive the refusal branch.
+
+    Note the argv position: the gate now passes `--require-judge-provenance`
+    before `--verdict-json`, so the artifact path the stub writes to is `$5`.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stub_dir = tmp_path / "stubs"
+    stub_dir.mkdir(exist_ok=True)
+    wheel = tmp_path / f"assay-{version}-py3-none-any.whl"
+    wheel.write_bytes(f"a real file to hash, for {version}".encode())
+    recorded = digest or hashlib.sha256(wheel.read_bytes()).hexdigest()
+
+    document = json.dumps(
+        {
+            "assay_version": version,
+            "judge_provenance": {
+                "name": "assay",
+                "version": version,
+                "artifact": "wheel",
+                "digest_algorithm": "sha256",
+                "digest": recorded,
+            },
+        }
+    )
+    stub_assay = stub_dir / "assay"
+    stub_assay.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s' {shlex.quote(document)} > \"$5\"\n"
+        "exit 0\n"
+    )
+    stub_assay.chmod(0o755)
+
+    worktree = tmp_path / "worktree"
+    (worktree / "assay").mkdir(parents=True, exist_ok=True)
+    scratch = tmp_path / "scratch"
+    run_venv_bin = scratch / "run-venv" / "bin"
+    run_venv_bin.mkdir(parents=True, exist_ok=True)
+    python = run_venv_bin / "python"
+    if not python.exists():
+        python.symlink_to(sys.executable)
+
+    return _SelfHostedLaneFixture(
+        worktree=worktree,
+        scratch=scratch,
+        wheel=wheel,
+        env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+    )
+
+
+def test_self_hosted_lane_binds_the_recorded_digest_to_the_installed_wheel(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    """**B018/A-327's gate-level oracle.** The gate hashes the wheel itself,
+    with `sha256sum`, on the host side; the artifact's recorded digest must
+    equal that number. Both halves are asserted here differentially: the
+    honest stub passes, and a stub recording any other digest -- a plausible
+    64-hex one, not obvious garbage -- is refused naming both values."""
+    honest = _self_hosted_lane_fixture(tmp_path / "honest", version="9.9.9")
+    good = run_bash(
+        honest.invocation(version="9.9.9"), gate_functions=gate_functions, env=honest.env
+    )
+    assert good.returncode == 0, good.stderr
+    assert "ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel" in good.stdout
+
+    forged = _self_hosted_lane_fixture(
+        tmp_path / "forged", version="9.9.9", digest="ab" * 32
+    )
+    bad = run_bash(
+        forged.invocation(version="9.9.9"), gate_functions=gate_functions, env=forged.env
+    )
+    assert bad.returncode != 0
+    assert "ASSAY_GATE_PHASE=self-hosted-lane-passed" not in bad.stdout
+    assert "the installed wheel's own sha256" in bad.stderr
+
+
+def test_self_hosted_lane_refuses_a_verdict_carrying_no_judge_identity(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    """The absence half. An installed wheel always identifies itself, so a
+    self-hosted verdict without `judge_provenance` means the lane did not run
+    the wheel this gate built -- which is the one thing self-hosting exists to
+    prove."""
     stub_dir = tmp_path / "stubs"
     stub_dir.mkdir()
     stub_assay = stub_dir / "assay"
-    stub_assay.write_text('#!/usr/bin/env bash\necho \'{"assay_version": "9.9.9"}\' > "$4"\nexit 0\n')
+    stub_assay.write_text(
+        '#!/usr/bin/env bash\nprintf \'{"assay_version": "9.9.9"}\' > "$5"\nexit 0\n'
+    )
     stub_assay.chmod(0o755)
-
     worktree = tmp_path / "worktree"
     (worktree / "assay").mkdir(parents=True)
     scratch = tmp_path / "scratch"
     run_venv_bin = scratch / "run-venv" / "bin"
     run_venv_bin.mkdir(parents=True)
     (run_venv_bin / "python").symlink_to(sys.executable)
+    wheel = tmp_path / "assay-9.9.9-py3-none-any.whl"
+    wheel.write_bytes(b"a real file to hash")
 
-    env = {**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"}
-
-    matching = run_bash(
-        f'run_self_hosted_lane "{worktree}" "{scratch}" "9.9.9"',
+    proc = run_bash(
+        f'run_self_hosted_lane "{worktree}" "{scratch}" "9.9.9" "{wheel}"',
         gate_functions=gate_functions,
-        env=env,
+        env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
     )
-    assert matching.returncode == 0, matching.stderr
-    assert "ASSAY_GATE_PHASE=self-hosted-lane-passed" in matching.stdout
+    assert proc.returncode != 0
+    assert "ASSAY_GATE_PHASE=self-hosted-lane-passed" not in proc.stdout
+    assert "emitted no judge_provenance" in proc.stderr
 
-    mismatched = run_bash(
-        f'run_self_hosted_lane "{worktree}" "{scratch}" "1.0.0"',
-        gate_functions=gate_functions,
-        env=env,
+
+def test_the_self_hosted_lane_demands_the_judge_identity_from_assay_itself(
+    tmp_path: Path, gate_functions: Path
+) -> None:
+    """The gate does not merely CHECK the recorded identity afterwards; it
+    asks for it up front, with the same flag a CIU V8 gate request would
+    pass. Asserted on the invocation the stub actually receives, never read
+    off the script's source."""
+    stub_dir = tmp_path / "stubs"
+    stub_dir.mkdir()
+    argv_log = tmp_path / "argv.log"
+    stub_assay = stub_dir / "assay"
+    stub_assay.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf \'%s\\n\' "$@" > "{argv_log}"\n'
+        'printf \'{"assay_version": "9.9.9"}\' > "$5"\n'
+        "exit 0\n"
     )
-    assert mismatched.returncode != 0
-    assert "ASSAY_GATE_PHASE=self-hosted-lane-passed" not in mismatched.stdout
-    assert "emitted assay_version" in mismatched.stderr
+    stub_assay.chmod(0o755)
+    worktree = tmp_path / "worktree"
+    (worktree / "assay").mkdir(parents=True)
+    scratch = tmp_path / "scratch"
+    (scratch / "run-venv" / "bin").mkdir(parents=True)
+    (scratch / "run-venv" / "bin" / "python").symlink_to(sys.executable)
+    wheel = tmp_path / "assay-9.9.9-py3-none-any.whl"
+    wheel.write_bytes(b"a real file to hash")
+
+    run_bash(
+        f'run_self_hosted_lane "{worktree}" "{scratch}" "9.9.9" "{wheel}"',
+        gate_functions=gate_functions,
+        env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+    )
+    assert argv_log.read_text().splitlines() == [
+        "run",
+        "tester-unified",
+        "--require-judge-provenance",
+        "--verdict-json",
+        f"{scratch}/verdict.json",
+    ]

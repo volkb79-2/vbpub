@@ -144,6 +144,108 @@ ciu worktree branches --json | jq '.branches[] | select(.category=="prunable")'
 ```
 
 
+## 5b-2. Reclaim a crashed dispatcher's Docker resources (`worktree reap`, S16.10)
+
+`branches` is the Git half of the cleanup. `ciu worktree reap` is the Docker
+half — containers, volumes and networks a crashed dispatcher or a forgotten
+teardown left running. It is the only CIU verb that deletes resources it did
+not create in the same command, so read what it will and will not touch
+before you use `-y`.
+
+**Survey first — it is a pure read.**
+
+```
+$ ciu worktree reap
+docker resource reap — owned 2, lease-expired 1, checkout-missing 1, orphaned 0, partial-cleanup 0, unattributable 1, ambiguous 0
+
+owned:
+  myrepo-a1b2c3-api  3 container(s) 2 volume(s) 1 network(s)
+      instance 'api' is registered, its checkout exists, and nothing says its claim has lapsed
+
+lease-expired:
+  myrepo-d4e5f6-api  3 container(s) 2 volume(s) 1 network(s)
+      instance 'nightly-run' s held lease expired at 2026-08-24T02:00:00Z (holder ciu@builder:d4e5f6)
+
+checkout-missing:
+  myrepo-9f8e7d-api  2 container(s) 1 volume(s) 1 network(s)
+      labelled ciu.instance=9f8e7d, claimed by no record and no registered checkout, and its own
+      ciu.repo-root label (/repo/.worktrees/crashed) names a directory that no longer exists
+
+unattributable:
+  postgres-shared  1 container(s) 1 volume(s) 0 network(s)
+      no `ciu.instance` label and no identity-form compose project name — CIU cannot prove whose
+      these resources are, so it will never remove them
+
+2 resource group(s) are provably disposable (checkout-missing=1, lease-expired=1); re-run with
+-y/--yes to reap them (add --dry-run first to see the exact commands). 1 group(s) are
+unattributable and are NEVER reaped ...
+```
+
+**See the exact commands, then run them.**
+
+```bash
+ciu worktree reap -y --dry-run          # prints, executes nothing
+ciu worktree reap -y                    # reaps the four provable categories
+ciu worktree reap -y --category orphaned  # narrow it further
+```
+
+What the categories guarantee:
+
+- **`owned` is never reaped**, and it is deliberately generous: a valid or
+  perpetual lease, *no* lease at all (a pre-lease schema-v1 record, or one
+  that explicitly released its claim), or simply a registered checkout whose
+  own `[ciu.instance.generated]` table declares that `instance_id` with no
+  record at all (its `ciu.env` before 7.7.0 — §11b). Age never
+  moves anything out of it — a year-old instance with a perpetual lease is
+  owned, and a five-minute-old one whose lease lapsed is not.
+- **`unattributable` and `ambiguous` are never reaped and cannot be
+  selected.** `--category unattributable` is a refusal (exit 2), not a
+  selection. There is no flag anywhere that forces them, because those
+  categories mean exactly that no proof of ownership exists. Your unrelated
+  compose projects on the same host land here and are safe.
+- **A surviving checkout is disposed of by `ciu clean -y` run inside it**,
+  never by a bare `docker rm`: `clean` knows the rendered config, the `vol-*`
+  host directories and the privileged removal helper. If that clean fails,
+  reap reports it and stops — it does not second-guess it.
+  **What decides that, and what it costs when the answer is no (7.7.0).** The
+  test is whether the checkout carries a `[ciu.instance.generated]` table —
+  `ciu.env`'s readability before 7.7.0 (§11b), moved because `clean` now
+  derives its network and its compose project from that table. A checkout that
+  has only the legacy export is NOT refused: it falls through to the bare
+  `docker rm` / volume / network removal, which leaves every `vol-*` hostdir on
+  disk. The reap now says so in that group's notes, naming the checkout and the
+  `ciu env generate` + `ciu clean` repair. If you have long-lived worktrees
+  created before 7.7.0, run `ciu env generate` in them once — that writes the
+  table and restores full `clean` delegation.
+- **A shared network is never torn out from under a live instance.** If any
+  container this pass did not just remove is still joined (the S16.1
+  shared-infra case), the network is left standing and the result says so.
+
+One group's failure never aborts the sweep: it becomes a `FAILED` line with
+the real error, every other targeted group is still processed, and a partial
+pass exits **1** in both `--json` and human output. The returned document is a
+re-survey of the post-state, not the plan.
+
+Automation allowlists `worktree.reap.v1` (and `worktree.lease.v1`, which it
+consults) via `ciu capabilities --json`. The reap document is separately
+versioned (`schema_version: 1`, operation `reap`, statuses
+`survey`/`dry-run`/`reaped`/`partial`), and `counts` always carries all seven
+categories including the zero-valued ones, so a consumer can key on them
+without probing.
+
+```bash
+ciu worktree reap --json | jq '.groups[] | select(.category=="lease-expired") | .key'
+```
+
+Declare ownership explicitly rather than letting a TTL decide for you:
+
+```bash
+ciu worktree lease nightly-run --extend 48h   # bounded claim
+ciu worktree lease bench-rig  --perpetual     # long-lived ON PURPOSE
+ciu worktree lease scratch    --release       # claims nothing (still never reaped)
+```
+
+
 ## 5c. Declare a cross-profile secret producer (`produced_by`, S13.6)
 
 When ONE profile's provisioning writes the Vault path another stack reads,
@@ -189,15 +291,49 @@ Docker-canonical spellings) reports status `match`→commit or
 in every document. Provenance documents are emitted at `schema_version: 2`
 — strict consumers refuse unknown members rather than guess.
 
+## 5e. Qualify a stack's `hostname:` and `internal_host` defaults (avoid the §3.6 cockpit-alias hazard)
+
+When you author your own compose template's service and your own
+`topology.services.<name>` declaration, qualify BOTH the same way
+`container_name:` already is — a bare value resolves to whichever
+same-shaped CIU instance's container Docker's resolver happens to answer
+with once a second instance joins the network. See
+[DESIGN-GUIDE.md](DESIGN-GUIDE.md)'s "Why bare `hostname:` / `internal_host`
+defaults are dangerous (CIU-48/CIU-49, §3.6 cockpit-alias-ambiguity)" section
+for why; this is the paste-able "what to write."
+
+Your own `ciu.compose.yml.j2`:
+
+```yaml
+services:
+  vault:
+    container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-vault
+    hostname: {{ deploy.project_name }}-{{ deploy.environment_tag }}-vault   # same variables as container_name:
+```
+
+Your own `ciu.global.defaults.toml.j2` (or per-stack defaults):
+
+```toml
+[topology.services.vault]
+internal_host = "{{ deploy.project_name }}-{{ deploy.environment_tag }}-vault"
+internal_port = 8200
+```
+
+A stack freshly scaffolded via `ciu init` already writes the qualified
+`hostname:` form (S19); this is the pattern to carry into any compose
+template or `topology.services` declaration you author by hand yourself,
+including ones that predate this default.
+
 ## 6. Start the selected instance, exactly (S16.6)
 
 ```console
 $ ciu worktree up pkg-under-test
 ```
 
-`up` resolves one `ready` managed record, parses **that** checkout's
-`ciu.env` by exact path, strips every inherited CIU identity/root/network key
-from the ambient environment, overlays the target's own values, and invokes
+`up` resolves one `ready` managed record, reads **that** checkout's
+`[ciu.instance.generated]` table by exact path (its `ciu.env` before 7.7.0 —
+§11b), strips every inherited CIU identity/root/network key
+from the ambient environment, overlays the target's own facts, and invokes
 CIU's existing up entry point in that root. The target's `REPO_ROOT`,
 `INSTANCE_ID`, and `DOCKER_NETWORK_INTERNAL` must match the record — a
 missing, mismatched, or not-ready instance refuses before anything starts.
@@ -239,7 +375,8 @@ $ ciu worktree exec pkg-under-test --target tester -- ./scripts/gate.sh --strict
 ```
 
 `exec --target` resolves the declared target's exact rendered stack and
-Compose project/service/network under the instance's own `ciu.env`, requires
+Compose project/service/network under the instance's own identity record
+(§11b), requires
 **exactly one already-running container** (zero or multiple refuse; `up` is
 never started implicitly), and — by default — proves that container has a
 bind mount whose host source is the selected Git worktree at a path
@@ -297,8 +434,23 @@ own `[ciu]` table — existing switches like `auto_connect_network` stay visible
   silently ship an empty-selection default.
 - Hooks see the identical snapshot as `ctx.selected_profiles` /
   `ctx.deployed_stacks`, plus `ctx.instance_id` / `ctx.network` from this
-  workspace's own `ciu.env` — read identity from ctx, never from ambient env
+  workspace's own `[ciu.instance.generated]` facts file — **not `ciu.env`,
+  since CIU-75** (§11b); read identity from ctx, never from ambient env
   (a sourced sibling checkout's `ciu.env` is the CIU-41 contamination path).
+- `ctx.instance_id` / `ctx.network` both `None` is ambiguous by itself —
+  "genuinely unmanaged, no `ciu env generate` here" and "the record exists
+  but CIU could not parse it" look identical. `ctx.identity_unreadable`
+  (CIU-80) tells them apart: `False` in the genuinely-absent case, `True`
+  only when the record is present but unreadable. A hook that needs to branch
+  differently on "unknown" versus "absent" reads this field; one that
+  doesn't care can ignore it (it defaults `False`).
+
+  CIU-75 changed **which record** that flag is about, and sharpened it: it is
+  now the generated facts file, and a path that exists and cannot be read
+  at all — a directory where the record belongs, an unreadable mode — counts
+  as unreadable. Under CIU-80 alone that case answered "absent" (`False`),
+  because the check was `ciu.env.is_file()`. **A hook that was branching on
+  `identity_unreadable` needs no change**; it just stops being lied to.
 
 ## 11. What `ciu clean` removes — and what it names (S6.4a, CIU-43)
 
@@ -326,7 +478,8 @@ lives on it) and says so twice: a `kept:` line and the final success line.
 `ciu up --dir <stack> --shipped` on a checkout whose config sets neither
 `deploy.project_name` nor `deploy.environment_tag` runs under the
 workspace-identity compose project `REPO_NAME-INSTANCE_ID-<stack>` (from
-this checkout's `ciu.env`) — and `ciu clean` derives the SAME name from the
+this checkout's `[ciu.instance.generated]` table — its `ciu.env` before
+7.7.0, see §11b) — and `ciu clean` derives the SAME name from the
 same record, so its containers, `*_default` network, and named volumes are
 removed like any other stack's:
 
@@ -345,8 +498,322 @@ every checkout of your repo (cross-checkout collisions) and invisible to
 tear the old-named objects down manually once
 (`docker compose -p <old-basename> down -v --remove-orphans`, then
 `docker network rm <old-basename>_default`), or re-up under a tagged config.
-`ciu.env` with `REPO_NAME`/`INSTANCE_ID` must exist for a config-less
-shipped `up` or `clean` to name the project — `ciu env generate` writes it.
+A `[ciu.instance.generated]` table with `repo_name`/`instance_id` must exist
+in `ciu.instance.generated.toml` for a config-less shipped `up` or `clean` to
+name the project — `ciu env generate` writes it. **Since 7.7.0 that table, not
+`ciu.env`, is what must be present**: a checkout carrying only the legacy
+export can no longer name its own project (§11b).
+
+**What clean does NOT remove, and the `--vanilla` opt-in (S6.4b, CIU-60).**
+Ordinary `ciu clean` leaves your rendered `ciu.global.toml`, your `ciu.env`,
+your `ciu.global.instance.toml.j2` and your `ciu.instance.generated.toml`
+exactly where they are — that has always been true and does not change. When
+you want a workspace back at freshly-CLONED state, ask for it explicitly:
+
+```console
+$ ciu clean --vanilla -y
+[SUCCESS] clean complete
+[INFO] --vanilla: removed ciu.global.toml, ciu.env, ciu.global.instance.toml.j2, ciu.instance.generated.toml
+```
+
+Only those four, only on an explicit `--vanilla`, and only when the teardown
+above actually succeeded (a failed clean keeps them — since 7.7.0 it is the
+`[ciu.instance.generated]` table, not `ciu.env`, that carries the identity
+your retry resolves from). Committed inputs are never touched. An
+already-absent file is fine. **Note that this deletes any hand-authored
+content in `ciu.global.instance.toml.j2`** — service profiles, a shared-infra
+join, your own sparse overrides. `ciu env generate` regenerates
+`ciu.instance.generated.toml`, not your edits.
+
+## 11a. Reading workspace identity in templates and shells (S3.1b, CIU-60)
+
+In a **template**, read identity facts from the config chain, not from `env`:
+
+```jinja
+volumes = ["{{ ciu.instance.generated.physical_repo_root }}:/repo:ro"]
+```
+
+`{{ env.PHYSICAL_REPO_ROOT }}` is the raw process environment (S3.2). If the
+shell running `ciu` once sourced a sibling checkout's `ciu.env` — a documented
+convenience — that is the path it renders, silently, into your bind mount.
+`ciu.instance.generated.*` comes from `ciu.instance.generated.toml`, which
+`ciu env generate` writes for THIS repo root; the six keys are `repo_name`,
+`instance_id`, `network`, `physical_repo_root`, `repo_root`, `public_fqdn`.
+
+**That file is CIU's, not yours.** It is rewritten in full on every
+`env generate`, so any hand edit to it is gone on the next one. Your own
+tables and comments go in `ciu.global.instance.toml.j2` next to it — CIU never
+writes that file at all, so everything in it is safe forever. (Both roles
+shared one file, `ciu.global.worktree.toml.j2`, before the split; see §21.)
+
+In a **shell**, `ciu env print` prints the existing `ciu.env` as `export`
+lines:
+
+```console
+$ eval "$(ciu env print)"
+$ echo "$DOCKER_NETWORK_INTERNAL"
+myapp-abc123-network
+```
+
+It prints; it cannot change your shell by itself (no subprocess can), which is
+why it is `print` and not `apply`/`source`. It generates nothing — if
+`ciu.env` is missing it says so and names `ciu env generate`.
+
+## 11b. Migrating off `ciu.env` as an identity source (CIU-75, ciu 7.7.0) — BREAKING
+
+**What changed.** As of **ciu 7.7.0**, the `[ciu.instance.generated]` table is
+the **only** place CIU itself reads your instance identity from — these six
+facts. (The table lived in the per-checkout overlay until the ciu-P47 split;
+its file is `ciu.instance.generated.toml` now — see §21.)
+
+| generated fact | legacy `ciu.env` / shell name | what it is |
+|---|---|---|
+| `repo_name` | `REPO_NAME` | lowercased repository name, the compose-project prefix |
+| `instance_id` | `INSTANCE_ID` | deterministic id for this checkout's path |
+| `network` | `DOCKER_NETWORK_INTERNAL` | this instance's own Docker network |
+| `physical_repo_root` | `PHYSICAL_REPO_ROOT` | host-visible repo root, for bind mounts (DooD) |
+| `repo_root` | `REPO_ROOT` | repo root as this process sees it |
+| `public_fqdn` | `PUBLIC_FQDN` | detected/configured FQDN; `""` when there is none |
+
+That mapping is the whole translation between the two records — nothing else
+in `ciu.env` is identity. Everything ELSE the file carries (`CONTAINER_UID`,
+`DOCKER_GID`, `ENV_TYPE`, `PUBLIC_IP`, `PUBLIC_TLS_*`, `PYTHON_EXECUTABLE`,
+`HOST_MDT_TMP`, …) describes the MACHINE, not the instance, and is unaffected
+by this change.
+
+Two consequences, and the second one surprises people:
+
+1. `ciu.env` is a **legacy, write-only export** for identity. `ciu env
+   generate` still writes it, identical key set and format, and no CIU code
+   path takes an identity fact from it.
+2. **Exporting an identity variable no longer overrides a run.** Every verb
+   now seeds `REPO_NAME`/`INSTANCE_ID`/`DOCKER_NETWORK_INTERNAL`/
+   `PHYSICAL_REPO_ROOT`/`REPO_ROOT`/`PUBLIC_FQDN` into its own environment
+   from the table, overwriting whatever your shell had. That is the point: a
+   shell that had `source`d a SIBLING checkout's `ciu.env` used to win, and
+   containers joined the sibling's network. If you were deliberately
+   overriding one of these six, change the record instead — `ciu env generate`
+   (which still honors a pre-set value when it is consistent with what it
+   derives) or edit the table.
+
+**What does NOT break.** Sourcing still works, byte for byte, this release:
+
+```console
+$ ciu env generate            # writes ciu.env AND ciu.instance.generated.toml
+$ source ciu.env              # still works
+$ eval "$(ciu env print)"     # the forward path — same values, quoted safely
+```
+
+You will see one new `[WARN]` deprecation notice per `ciu env generate` and
+per `ciu env`. It changes no exit code and refuses nothing. **Which stream it
+uses is a contract, not a detail:** the verb you TYPE (`ciu env generate`)
+announces on stdout, while `ciu env` and any regeneration triggered from
+inside another verb's startup announce on **stderr** — so `ciu env`'s
+`key=value` stdout stays parseable and, more importantly, `ciu check --json`'s
+document is never preceded by a warning line. If you stop maintaining
+`ciu.env` and let CIU regenerate it, `ciu check --json | jq` keeps working.
+
+**What DOES break — the pattern to look for.** Anything that treats `ciu.env`
+as an *input* rather than a *shell convenience*: parsing it, grepping a value
+out of it, or re-running `ciu env generate` and then reading the file back to
+learn what CIU decided. Those consumers now hold a copy that CIU does not
+consult, so nothing detects it going stale. Concretely:
+
+| pattern | replace with |
+|---|---|
+| `grep -oP '(?<=^INSTANCE_ID=).*' ciu.env` (or any grep/awk/sed of the file) | `eval "$(ciu env print)"; echo "$INSTANCE_ID"` — or read `[ciu.instance.generated].instance_id` from `ciu.instance.generated.toml` with a TOML parser |
+| a **Python** helper that parses `ciu.env` into a dict (a vendored `load_workspace_env`, a `dotenv`-style loader) | the `read_ciu_identity` helper below — a plain `tomllib.load` of `ciu.instance.generated.toml` — or shell out to `ciu env print` |
+| exporting `INSTANCE_ID=… ciu up` (or any of the six) to steer a run | change the record: `ciu env generate` (it still honors a consistent pre-set value). Since 7.7.0 the export is overwritten at startup, and hand-editing the generated file does not survive the next generate |
+| `ciu env generate` **then** read `ciu.env` back to discover the network / instance id | read `ciu.instance.generated.toml`, which is what CIU itself now reads; the two are written from the same in-memory values by the same command |
+| a **template** using `{{ env.PHYSICAL_REPO_ROOT }}` | `{{ ciu.instance.generated.physical_repo_root }}` — see §11a; this has been the correct form since CIU-60 and is now the only one CIU agrees with |
+| `echo 'export CIU_SERVICES_PROFILE=…' >> ciu.env` | unaffected — that key is read from the process environment, not from the file; keep sourcing, or export it directly |
+
+**Reading the facts yourself, without `ciu.env` at all.**
+`ciu.instance.generated.toml` is **plain TOML, not a template** — that is the
+point of it having its own file. Hand the whole thing to `tomllib`; there is
+nothing else in it and nothing of yours in it. (Before the ciu-P47 split the
+table lived inside the Jinja overlay, and a consumer had to slice the block out
+by hand first; if you carry that older helper, this is the version that
+replaces it.)
+
+```python
+# ciu_identity.py — the same file CIU itself reads (ciu >= 7.10.0)
+import tomllib
+from pathlib import Path
+
+HEADER = "[ciu.instance.generated]"
+
+
+def read_ciu_identity(ciu_root) -> dict[str, str]:
+    """The six facts, or {} when this checkout has never been generated.
+
+    Raises ValueError on all FIVE of the present-but-unreadable cases CIU
+    itself refuses (OS read error, non-UTF-8 byte, malformed TOML, the table
+    path occupied by a NON-table, and a non-string fact). Do not collapse
+    those into {}: "not a CIU instance" and "this instance's identity cannot
+    be determined" call for different behaviour on your side too.
+    """
+    path = Path(ciu_root) / "ciu.instance.generated.toml"
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return {}                      # never generated here — a real state
+    except OSError as exc:
+        raise ValueError(f"could not read {path}: {exc}") from exc
+
+    try:
+        document = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError(f"malformed {path}: {exc}") from exc
+
+    # Walk the dotted table path with an isinstance guard at every step, the
+    # same shape CIU's own reader uses. A bare `.get("ciu", {}).get(...)`
+    # chain leaks an AttributeError instead of the ValueError this function
+    # documents whenever a segment is occupied by a scalar — `ciu = "x"`, or
+    # `ciu.instance.generated = "x"`. Both are indeterminacy, not emptiness.
+    facts = document
+    for part in ("ciu", "instance", "generated"):
+        if not isinstance(facts, dict):
+            raise ValueError(
+                f"{path} nests {part!r} under a non-table value, so it "
+                f"carries no readable {HEADER}"
+            )
+        if part not in facts:
+            return {}                  # present but carries no table yet
+        facts = facts[part]
+    if not isinstance(facts, dict):
+        raise ValueError(
+            f"{HEADER} in {path} is {type(facts).__name__}, not a table"
+        )
+
+    for key, value in facts.items():
+        # The fourth indeterminacy case, and the easiest to skip: every
+        # generated fact is a string by construction, so a bare number here
+        # (a hand-edit, a bad writer) would otherwise flow into a compose
+        # project name or a docker label as str(int) — silently wrong instead
+        # of loudly refused. CIU's own reader refuses it; so must yours.
+        if not isinstance(value, str):
+            raise ValueError(
+                f"{HEADER}.{key} in {path} is {type(value).__name__}, "
+                "not a string"
+            )
+    return facts
+```
+
+```console
+$ python3 -c 'from ciu_identity import read_ciu_identity as r; print(r(".")["network"])'
+myapp-abc123-network
+```
+
+If you would rather not carry any parser at all, `eval "$(ciu env print)"`
+gives you the same six values under their shell names (plus the machine facts)
+and stays correct if the record ever moves again.
+
+**Known-affected consumers, from a real sweep (2026-08-31, re-audited at
+`dstdns@96fcf762`).** The primary consumer repo, `dstdns`, was swept for this
+pattern. Everything below keeps working this release; all of it should be
+re-pointed before `ciu.env` stops being written:
+
+1. **`scripts/ciu/workspace_env.py`** — a vendored stub that parses `ciu.env`
+   into a dict (`load_workspace_env` / `ensure_workspace_env`), reachable as
+   `ciu.workspace_env` only inside the test-runner container, which puts
+   `scripts/` on `PYTHONPATH` and has no real `ciu` wheel installed. This is
+   the most load-bearing one: a **second implementation** of a read CIU has
+   now moved. It should read `ciu.instance.generated.toml`'s
+   `[ciu.instance.generated]` table
+   instead — same checkout, no `ciu` import needed (see the helper above).
+   **Three importers, not one:** `scripts/config_helper.py:30` (uses
+   `DOCKER_NETWORK_INTERNAL`), `scripts/url_builder.py:18` (uses `REPO_ROOT`),
+   and `tests/smoke/test-deployment-validation.py:144-148`, whose `sys.path`
+   hack adds `scripts` but imports bare `workspace_env` — one directory too
+   shallow, so that probe has only ever raised `ModuleNotFoundError` into a
+   swallowed "Failed to read ciu.env" message. Fix that while re-pointing it.
+2. **`scripts/ciu/config_constants.py`** — the sibling stub the two live
+   importers above also depend on (`url_builder.py:17`,
+   `config_helper.py:31`, both for `GLOBAL_CONFIG_RENDERED`). Any migration of
+   (1) touches this file's package too. Note `scripts/render_template.py:20`
+   imports `STACK_CONFIG_ACTIVE` from it, which exists in neither the stub nor
+   real ciu — that module is already unimportable, and four `infra/*/start.sh`
+   scripts invoke it. Independent of CIU-75, but it is found by the same
+   sweep.
+3. **Shell: nine `source` statements across eight files, and no key
+   extraction anywhere.** `scripts/ciu-env.sh:66` is the canonical loader
+   (asserting `REPO_ROOT`/`PHYSICAL_REPO_ROOT` at `:68`; sourced in turn by
+   `scripts/devcontainer-exec.sh:28` and `scripts/admin-debug-exec.sh:26`),
+   plus `.vscode/run-ciu-render.sh:12`, `.vscode/run-ciu-render-all.sh:13`,
+   `.vscode/run-deploy.sh:16`, `.vscode/copilot-cmd.sh:53`,
+   `env-workspace-setup-generate.sh:256`, and
+   `.devcontainer/finalize.post.d/10-dstdns-ciu.sh` **twice** (`:29`, and
+   `:68` inside the `~/.bashrc` block it writes, which sources `ciu.env` into
+   every interactive shell).
+
+   **The ninth is the one to migrate first:**
+   `scripts/devcontainer-exec.sh:83-104` (`get_network_name`, called at `:148`
+   and `:183`) sources `ciu.env` *specifically to fetch*
+   `DOCKER_NETWORK_INTERNAL`, and hard-fails when the file is absent. It is
+   live code that consumes one identity fact, i.e. exactly the shape this
+   section is about — a whole-file `source` only incidentally. It is also why
+   a naive sweep misses sites: the source target is the variable `"$env_file"`,
+   not the literal `ciu.env`.
+
+   All nine keep working; `eval "$(ciu env print)"` is the forward form. Note
+   `ciu-env.sh:48-50` documents "ciu.env wins over anything already in the
+   environment" — that precedence now AGREES with CIU's own (§11b consequence
+   2), where before 7.7.0 the two could disagree.
+4. **`nyxloom-trove/handoffs/dstdns-P147-vertical-corpus-e2e.md:473`** — the
+   one grep-the-file recipe in the repo (`grep -oP
+   '(?<=^CIU_INSTANCE_ID=).*' ciu.env`), in a handoff doc rather than in
+   executable code, and *already* wrong: the key is `INSTANCE_ID`, and
+   `CIU_INSTANCE_ID` has never existed. It should read the overlay.
+5. **`.github/workflows/ciu-env-cicd-test.yml:57,80`** — `cat ciu.env` and
+   uploads it as a CI artifact. Diagnostic only, but it no longer shows what
+   CIU reads; the overlay is the file worth capturing now.
+
+**What does NOT need changing, and why it is worth knowing:** dstdns's
+templates consume all six identity keys as `$VAR`
+(`ciu.global.defaults.toml.j2:51,52,74,75,76,134,135,136,431,438…`, plus the
+`${PHYSICAL_REPO_ROOT:?…}` guards in a dozen compose templates). Those are
+resolved from the process environment CIU itself seeds from the overlay
+(§11b consequence 2), so they are not only unaffected — they are now *more*
+correct, because a stale sibling value can no longer reach them.
+
+If you maintain another consumer, the sweep that finds these is:
+
+```console
+$ git grep -nE '(grep|awk|sed|cut|open|read_text|dotenv)[^\n]*ciu\.env'
+$ git grep -nE 'ciu env generate' -A3 | grep -n 'ciu\.env'
+```
+
+**Sanity check after migrating.** Two checks, and the second is the one that
+actually proves something:
+
+```console
+$ ciu env generate
+$ rm ciu.env
+$ ciu status --json | head -3        # still names your compose projects
+$ ciu clean -y                       # still finds and removes your network
+```
+
+That one is weaker than it looks — CIU regenerates the export it no longer
+reads, so a passing run does not by itself prove where the answer came from.
+This one does:
+
+```console
+$ DOCKER_NETWORK_INTERNAL=not-my-network ciu check --json | jq -r '.[0].network // empty'
+myapp-abc123-network                 # the RECORD wins; the export did nothing
+```
+
+If either now fails — or if that second command echoes `not-my-network` back
+at you — the failure is CIU's, not yours: file it.
+
+**Finally: `.gitignore`.** Both `ciu.global.instance.toml.j2` and
+`ciu.instance.generated.toml` must be gitignored, and the second must not be
+deleted casually. It has always been declared gitignored (S3.1b), but it is now
+the only record of your instance identity. A checkout that loses it cannot name
+its own compose project, network or ownership labels until `ciu env generate`
+puts it back. `ciu clean --vanilla` removes it deliberately (that is a full
+reset); plain `ciu clean` preserves it. `ciu migration-check` reports a
+`.gitignore` missing either entry.
 
 ## 12. The implementation gate (Assay-backed, S18)
 
@@ -356,16 +823,16 @@ locally (the container part still needs the operator's four-traps recipe):
 
 ```bash
 # 1. Verify the pinned Assay artifact (fails the gate if it ever drifts)
-sha256sum -c ciu/tools/assay/assay-2.3.0.pyz.sha256
+sha256sum -c ciu/tools/assay/assay-3.2.0.pyz.sha256
 
 # 2. Inspect the declared lane (validates config, runs nothing)
-cd ciu && .venv/bin/python tools/assay/assay-2.3.0.pyz lanes --file assay.toml
+cd ciu && .venv/bin/python tools/assay/assay-3.2.0.pyz lanes --file assay.toml
 
 # 3. Run the lane; Assay snapshots the commit, runs the full suite at 100%
 #    line+branch, and judges the changed-line floor on base..HEAD (R1).
 #    The verdict goes OUTSIDE the judged tree (gitignored .assay/).
 cd ciu && mkdir -p .assay && \
-  .venv/bin/python tools/assay/assay-2.3.0.pyz run ciu \
+  .venv/bin/python tools/assay/assay-3.2.0.pyz run ciu \
     --file assay.toml --verdict-json .assay/verdict-ciu.json
 ```
 
@@ -455,10 +922,36 @@ Exit codes are S13.4's: `0` clean, `2` any static configuration error
 (including every stage below), `1` **only** a `--live` probe failure. A static
 failure short-circuits before any live probing happens.
 
+### You no longer have to remember to run it (`ciu up`'s own preflight, S13.4c)
+
+Since CIU-64, **`ciu up` runs this same static pipeline itself, by default**,
+before STEP 1 — before any hostdir, secret or container exists — and refuses
+on any ERROR-severity finding with exit `2`, exactly as it already refuses on
+an `[S7.x]` provisioning-graph failure. Nothing opts in.
+
+```console
+$ ciu up --profile core
+[INFO] Preflight: running `ciu check`'s static validation (S13.4a, CIU-64)
+...
+[INFO]   [x] hooks-preflight: fail
+[ERROR]         infra/db-core: [post_compose_db.py] registry.database is missing
+[ERROR] [S13.4a] `ciu check` found ERROR-severity finding(s) — refusing to deploy
+        before anything starts. ...
+
+$ ciu up --profile core --skip-check      # break-glass, and it says so
+[WARN] --skip-check: skipping the `ciu check` static preflight (S13.4a,
+       break-glass) — a configuration error it would have refused now surfaces
+       mid-deploy, after stacks have already started
+```
+
+You still run `ciu check` explicitly when you want the `--json` envelope, the
+`--live` probes, or a validation pass with no deploy attached.
+
 ### Teach a hook to validate its own config (`validate_config`, S9.5)
 
 Any hook may add an OPTIONAL second entry point beside its `run`. CIU calls it
-during `ciu check` and **never** during `ciu up`:
+during `ciu check` **and** during `ciu up`'s automatic preflight above — the
+same side-effect-free call; your `run()` is never invoked by either:
 
 ```python
 # infra/db-core/post_compose_db.py
@@ -468,35 +961,63 @@ def run(config: dict, ctx) -> dict:
     ...
 
 
-def validate_config(config: dict, ctx) -> list[str]:
-    """Optional preflight. Return one error string per finding; [] = OK.
+def validate_config(config: dict, ctx) -> list:
+    """Optional preflight. Return one finding per problem; [] = OK.
 
     Receives the SAME merged, guarded config and HookContext that run() gets,
     so it validates exactly what run() will consume — before any container
     exists.
     """
-    errors: list[str] = []
+    findings: list = []
     registry = config.get("registry", {})
     if "database" not in registry:
-        errors.append("registry.database is missing")
+        # A bare string is an ERROR: it blocks `ciu check` (exit 2) and
+        # refuses `ciu up`. This is the pre-CIU-65 shape and still means
+        # exactly what it always did.
+        findings.append("registry.database is missing")
     users = registry.get("postgresql", {}).get("users", {})
     for user in ("controller", "workerdb"):
         if user not in users:
-            errors.append(f"registry.postgresql.users.{user} is missing")
+            findings.append(f"registry.postgresql.users.{user} is missing")
+
+    # A (severity, message) pair lets a finding be worth knowing WITHOUT
+    # being must-block. WARN is printed as a note and blocks nothing.
+    if "readonly" not in users:
+        findings.append(
+            ("WARN", "registry.postgresql.users.readonly is absent — the "
+                     "reporting sidecar will fall back to the owner role")
+        )
 
     # Secrets appear as SecretGuard objects (S4.21): you can confirm one is
     # DECLARED by name, and you must never stringify it.
     if "admin_password" not in config.get("db_core", {}).get("secrets", {}):
-        errors.append("db_core.secrets.admin_password is not declared")
+        findings.append("db_core.secrets.admin_password is not declared")
 
-    return errors
+    return findings
 ```
 
 Rules worth knowing before you write one:
 
-- **Return `list[str]`, never a bool.** `[]` means valid. A `True`/`False`
-  return is reported as a contract violation, not read as a verdict. `None` is
-  tolerated as "no findings".
+- **Return a `list` of findings, never a bool.** `[]` means valid. A
+  `True`/`False` return is reported as a contract violation, not read as a
+  verdict. `None` is tolerated as "no findings".
+- **Each finding is a message string, or a `(severity, message)` pair**
+  (a 2-element tuple *or* list — both work). The severity vocabulary is
+  exactly **`WARN`** and **`ERROR`**, matched case- and
+  whitespace-insensitively, so `"warn"` and `" Error "` are both fine. A bare
+  string means `ERROR`. Anything else — `"warning"`, `"info"`, `"NEVER"` — is
+  REFUSED as its own ERROR finding naming the two accepted values, rather
+  than guessed at: a typo must never quietly downgrade a blocking finding.
+  (`NEVER` is excluded on purpose. It is an `ciu.exit_on` *threshold*, not
+  something a finding can be.)
+- **`ERROR` blocks, `WARN` does not.** An ERROR fails the `hooks-preflight`
+  stage: `ciu check` exits 2 and `ciu up`'s preflight refuses. A WARN is
+  recorded as a stage NOTE — it prints as `note: [WARN] …`, appears in the
+  `--json` envelope's `notes` array with the same `stack`/`hook` keys a
+  finding carries, and changes no exit code and blocks no deploy.
+  `ciu.exit_on` / `$CIU_EXIT_ON` deliberately do NOT affect this routing:
+  your machine-readable check verdict must not change with ambient shell
+  state.
 - **`ctx.secret_file(name)` raises `KeyError` for every name.** `ciu check`
   materializes nothing, so there is no store file to point at. Validate that a
   secret is *declared* (as above); if your check genuinely needs to read a
@@ -505,8 +1026,8 @@ Rules worth knowing before you write one:
 - **`ctx.wait_healthy` / `ctx.wait_tcp` are `None`** at check time. Nothing is
   running, and a preflight must not perform I/O anyway.
 - `ctx.stack_dir`, `ctx.repo_root`, `ctx.instance_id`, `ctx.network`,
-  `ctx.selected_profiles` and `ctx.deployed_stacks` are all populated exactly
-  as during a real run.
+  `ctx.identity_unreadable` (CIU-80 — see §10 above), `ctx.selected_profiles`
+  and `ctx.deployed_stacks` are all populated exactly as during a real run.
 - **No side effects.** No Docker, no network, no writes. Like S9.4's
   env-mutation rule, this is a contract CIU does not sandbox.
 - **An exception is your hook's finding, not everyone's.** If your
@@ -572,6 +1093,535 @@ Two behaviours to script against deliberately:
   `pip install 'ciu[registry]'` — with a validated table declared and the
   extra missing, `ciu check` fails loudly naming it rather than skipping.
 
-Under `--json` the check itself prints only the document, but the
-orchestrator's own `[INFO]` lines still precede it on stdout (as with
-`ciu graph --format json`); read the JSON object at the end of stdout.
+Under `--json` the check itself prints only the document, and — since
+CIU-84 — so does everything ahead of it in the orchestrator: `ciu check
+--json`'s stdout is now the JSON document and nothing else (verified with
+`json.loads` on the full captured stdout, not a substring check), so a plain
+`ciu check --json | jq` works without skipping any leading `[INFO]` lines.
+The same fix applies to `ciu graph --format json`'s orchestrator-level
+prose; `action_graph`'s own internal notes/errors are a narrower, still-open
+gap (CIU-86) — `ciu graph --format json` piped straight into `jq` can still
+see a stray line on its error/empty-graph paths, though not on the common
+"the graph rendered cleanly" path.
+
+## 15. Adopt a shipped hook template instead of hand-writing one (`ciu init --hooks`, S19.1)
+
+`ciu init` can copy a hook implementation straight out of CIU's own hook
+template library (`ciu.hook_templates`) into a stack it scaffolds, instead of
+you writing one from scratch:
+
+```console
+$ ciu init --project-name myapp --stacks db-core --hooks post_compose_db
+wrote ciu.global.defaults.toml.j2
+wrote applications/db-core/ciu.defaults.toml.j2
+wrote applications/db-core/ciu.compose.yml.j2
+wrote applications/db-core/hooks/post_compose_db.py
+```
+
+`--hooks NAME1,NAME2` copies each named template into **every** stack this
+same invocation scaffolds (here, just `db-core`), at
+`<stack_dir>/hooks/<name>.py`. Read the first line of the copy — it is a
+stamp CIU writes at copy time, not part of the template's own code:
+
+```console
+$ head -1 applications/db-core/hooks/post_compose_db.py
+# ciu-hook-template: post_compose_db.py rev=1
+```
+
+That `rev=1` is the template's `template_revision` **at the moment you
+copied it** — your own copy from here is yours to edit freely; CIU never
+touches it again. A future revision-comparison feature can read this exact
+line back to tell you when upstream has moved past the revision you copied.
+
+Two things worth knowing before you wire it up:
+
+- **The copy is inert until you declare it.** `ciu init` writes the file; it
+  does not add `[<root>.hooks].post_compose = ["./hooks/post_compose_db.py"]`
+  to your stack's `ciu.defaults.toml.j2` — add that yourself, the same way
+  any other hook is declared (S9.1).
+- **An unknown template name refuses before anything is written**, naming
+  the bad name and the available list (exit 2); so does `--hooks` given with
+  no `--stacks` to copy into. Like every other `ciu init` output file, a copy
+  is never silently overwritten — an existing `hooks/post_compose_db.py`
+  makes the whole run refuse, naming it.
+
+CIU ships one reference template today, `post_compose_db.py` — deliberately
+generic (a database-readiness wait via `ctx.wait_healthy` plus a
+`ctx.secret_file` presence check) and honest about not being a real
+PostgreSQL/MySQL/etc. bootstrap. Treat it as a starting point to copy and
+extend with your own provisioning logic.
+
+## 16. Fan a service out by `instances` instead of hand-rolling a compose loop (V8-PREP-6)
+
+Before this, a replicated service needed a hand-written compose loop AND,
+separately, a configfile section that either restated the same count or
+relied on the S5.3 base-selector mechanism to fan a single shared render
+out — two independently-maintained mechanisms that could silently disagree.
+V8-PREP-6 unifies them: declare `instances` once, and BOTH the compose
+template's own loop and the configfile's per-instance render read from the
+one CIU-resolved count.
+
+```toml
+[myapp.api]
+instances = 3    # sibling of [myapp.api.configfile.*], not inside it
+
+[myapp.api.configfile.main]
+template  = "config.toml.j2"
+target    = "/etc/api/config.toml"
+instances = 3    # REQUIRED restatement -- see the warning box below
+```
+
+The compose template reads the resolved count from `ciu.instances`, never
+from `myapp.api.instances` directly (that only works when the count is
+declared at the service level; `ciu.instances` also carries the resolved
+value when a configfile is the ONLY thing that declared it):
+
+```jinja
+services:
+{% for i in range(1, ciu.instances.api + 1) %}
+  api-{{ i }}:
+    image: {{ myapp.api.image_name }}:{{ myapp.api.image_tag }}
+    environment:
+      - API_INSTANCE=api-{{ i }}
+{% endfor %}
+```
+
+`{% for i in range(1, ciu.instances.api + 1) %}` naming `api-{{ i }}` is the
+sanctioned loop shape — 1-based, matching exactly what
+`_configfile_mount_services` already understands for the configfile side
+(S5.3/S7.5b). CIU does **not** generate compose service blocks itself: your
+own `{% for %}` loop still writes the YAML, now driven by one CIU-resolved
+count instead of a value you'd otherwise have to keep in sync by hand. A
+template that only needs to know WHETHER a service fans out (not by how
+much) checks membership: `{% if 'api' in ciu.instances %}`. A service with
+no declared `instances` anywhere (service-level or configfile-level) is
+simply absent from the mapping — never present with a value of `1`.
+
+Unlike `ciu.selected_profiles`/`ciu.deployed_stacks` (§10 above), which fail
+loudly with a Jinja `UndefinedError` when referenced outside a deployment
+render, `ciu.instances` itself is **always present** in every deployment
+render's context — an empty mapping `{}` when nothing anywhere declares a
+fan-out count, never an absent name (CIU-74). This is deliberate: `'api' in
+ciu.instances` is the sanctioned way to ask "does this service fan out at
+all", and that idiom must keep working with no `instances` declared anywhere
+— an absent name would make the membership test itself raise under CIU's
+`StrictUndefined` render environment (see the note below).
+
+> **CIU-74 (StrictUndefined):** every Jinja render in CIU raises
+> `jinja2.UndefinedError` on a reference to an undefined name, attribute, or
+> item at any depth — a mistyped leaf like `{{ deploy.environment_tg }}`
+> (missing the `_tag`) now fails the render instead of silently producing
+> `dstdns--postgres`. `ciu.instances` being always-defined-but-possibly-empty
+> is what keeps the membership idiom above legal under that same strictness.
+
+> **The configfile's `instances = 3` above is required, not decoration.** A
+> configfile that OMITS `instances` while its service declares one > 1
+> REFUSES (S7.5e) — it does not silently inherit the service-level count.
+> Before V8-PREP-6, an omitted configfile-level `instances` meant "render
+> once, let the S5.3 base-selector mechanism fan the same shared file out to
+> every replica"; silently reinterpreting that omission as "render N
+> independent times" the moment a service declares `instances` would be a
+> silent behavior change for any stack already shaped this way. Restate the
+> same value explicitly to opt into the new per-instance render (as above),
+> or don't declare `instances` on `[myapp.api]` at all if this configfile is
+> intentionally a single shared render. See
+> [SPEC.md S7.5e](SPEC.md#s7--orchestration-ciu-up)
+> and [CHANGES.md](../CHANGES.md) — the `applications/workers` test-repo
+> stack had exactly this shape and was migrated to this pattern as part of
+> landing V8-PREP-6.
+
+Declaring a service-level default and a configfile-level value that
+DISAGREE (e.g. `instances = 3` on `[myapp.api]` but `instances = 5` on its
+configfile) refuses too, naming both values — the two mechanisms can never
+silently drift apart.
+
+## 17. Migrate a hand-rolled `internal_host` override to `--shared-infra-ref-services` (S16.1a, CIU-49/CIU-52)
+
+Before CIU-52 shipped the reference-service addressing described in
+[CONFIG.md's shared-infra join example](CONFIG.md#shared-infra-join-example-s161)
+(specifically its `--shared-infra-ref-services` sub-section, S16.1a), a
+consumer joining a reference instance's shared infra could reach it —
+`--shared-infra` connects the network — but had no CIU-derived NAME to call
+its service by. The one real case on file (CIU-49) is dstdns's
+`dstdns-mstest` worktree template, which hand-types the reference vault's
+already-qualified container name straight into its own override:
+
+```toml
+internal_host = "dstdns-mstest-f2d1cb-vault"  # instance config: scoped (GUIDE 3.6)
+```
+
+That value is correct on the day someone types it and never checked again.
+If the reference instance is ever re-created under a new identity — a new
+`INSTANCE_ID`, a new network, the ordinary result of a `ciu worktree rm`
+followed by a fresh `add` — the container this string names is simply gone,
+and nothing here re-checks it: the frozen literal ships forward unchanged,
+and every worktree template copied from `dstdns-mstest` afterward carries
+the same stale name one copy-paste further from the instance it was
+actually true for.
+
+`--shared-infra-ref-services` replaces the hand-typed literal with a
+CIU-derived, re-authenticated one. Joining the same reference and addressing
+its vault by the alias `vault` (values below are illustrative — the fixture
+used to verify this example, not the mstest environment's own actual
+project/instance identity):
+
+```console
+$ ciu worktree add mstest --base main --profile core \
+    --shared-infra primary-ref \
+    --shared-infra-services api \
+    --shared-infra-ref-projects idp-dev-idp \
+    --shared-infra-ref-services vault
+worktree ready: /repo/.worktrees/mstest
+  next: cd /repo/.worktrees/mstest && ciu up
+```
+
+produces this instance's own `[topology.services.vault]` block, derived —
+never hand-typed — from the reference's live, rendered configuration:
+
+```toml
+[topology.services.vault]
+internal_host = "dstdns-aaaaaa-vault"
+internal_port = 8200
+```
+
+The exact flag grammar, the `[ciu.instance.shared_infra.ref_services.vault]`
+sub-table this is derived from, and the full derivation/authentication
+mechanism are CONFIG.md's material (cross-referenced above), not repeated
+here.
+
+> **What the migration buys you.** The hand-typed override is checked
+> exactly once — by whoever typed it, against whatever was running that
+> day. `ref_services` is re-derived at every `add`/`create`/`ensure`/`adopt`
+> that declares it, and re-authenticated against live Docker state again at
+> every `ciu up` that joins the network: CIU re-renders the reference's own
+> config, re-derives its qualified container name, and re-proves that exact
+> container is live on the reference's network before writing or trusting
+> it. A reference re-created under a new identity fails loudly at the next
+> `ciu up` (CONFIG.md's "never hand-edit the recorded `container`" note); a
+> hand-typed override instead fails silently, whenever the application next
+> happens to need that connection.
+
+This is specifically the case of naming a REFERENCE instance's service
+after joining its network (S16.1a). Qualifying a stack's OWN
+`internal_host`/`hostname:` default — no shared-infra join involved — is
+the separate case covered in §5e above.
+
+## 18. Write a stack's `build.context` (and `dockerfile`) as repo-root-relative (S8.1a, CIU-71)
+
+Every compose invocation CIU makes passes `--project-directory <repo root>`
+(S8.1a), so a relative `build.context` in a stack's compose template
+resolves against the **repo root**. This is NOT the convention CIU's other
+relative paths follow — hostdirs, `ASK_FILE` secret sources, and configfile
+schema/template paths all resolve **stack-dir-relative** (see the note
+below) — `build.context` is the deliberate exception, because a Dockerfile
+`COPY` of a repo-shared asset needs the repo root, the same way a
+consumer-repo build would. It does NOT resolve against the compose file's
+own directory, which is `docker compose`'s default when no
+`--project-directory` is given.
+
+**`dockerfile:` moves with `context:`.** Compose resolves a `build.dockerfile`
+path relative to `build.context`, not relative to `--project-directory`
+directly (the same rule `ciu dev`'s own `_build_dev_image` applies —
+`src/ciu/dev.py`'s `Path(context) / dockerfile`). Once `context` becomes
+repo-root-relative, an UNSET or bare `dockerfile: Dockerfile` now looks for
+`<repo root>/Dockerfile`, not `<stack dir>/Dockerfile` — almost never what a
+stack author wants. **Both keys need to move together.**
+
+**`ciu dev`'s `[<root>.dev].build.context`/`dockerfile` share this exact
+convention (CIU-79).** `ciu dev` runs a plain `docker build`, not `docker
+compose`, so there is no `--project-directory` flag to reach for — CIU
+resolves `context` to an absolute repo-root-relative path itself before
+building the `docker build` argv, then joins `dockerfile` onto that same
+resolved context, matching this section's rule exactly. A `[<root>.dev]`
+profile's `build.context = "."` therefore means the same thing a stack's
+`ciu.compose.yml.j2` `build.context = "."` does — the repo root, not the
+stack dir — so a stack that dual-ships both a production `build` block and
+a `[<root>.dev].build` block can write `context`/`dockerfile` identically in
+both places.
+
+> **This is a BREAKING change for `ciu dev`, not purely additive** (unlike
+> the rest of this bundle): every `[<root>.dev].build` written before
+> CIU-79 assumed `context`/`dockerfile` resolved against the STACK DIR (the
+> bug this fix closes), so a profile whose Dockerfile lives in the stack
+> directory — the common shape, since that was the only one that ever
+> worked — now fails to find it. An UNSET or bare `dockerfile: Dockerfile`
+> (or an explicit `context = "."` with no `dockerfile` override) now looks
+> for `<repo root>/Dockerfile`, not `<stack dir>/Dockerfile` — almost never
+> what a stack author wants, same as the compose-side migration note below.
+> **If you have an existing `[<root>.dev].build` block**, either move the
+> Dockerfile to the repo root, or point `dockerfile` at its real,
+> repo-root-relative location: `dockerfile = "<stack-path>/Dockerfile"`
+> (e.g. `dockerfile = "apps/api/Dockerfile"` for a stack at `apps/api/`) —
+> both keys move together, exactly as the compose-side rule above states.
+> There is no dstdns/vbpub consumer stack affected today (no shipped
+> `.j2`/fixture declares `[<root>.dev].build`), but a downstream consumer's
+> own repo may have one.
+
+Concretely, if a stack directory `infra/mock-targets/` declares:
+
+```toml
+# infra/mock-targets/ciu.defaults.toml.j2
+[mock_targets.image]
+build_context = "."
+dockerfile = "infra/mock-targets/Dockerfile"
+```
+
+and its Dockerfile `COPY`s a path relative to the **repo root**:
+
+```dockerfile
+# infra/mock-targets/Dockerfile
+COPY tests/fixtures/mock_data /data/mock_data
+```
+
+then `tests/fixtures/mock_data` MUST live at the repo root
+(`<repo>/tests/fixtures/mock_data`), not inside `infra/mock-targets/`. This
+is the natural, repo-root-relative way to write it — matching how
+`build.context` now resolves — and it is what `ciu up` actually runs
+against. Live-verified (see `nyxloom-trove/reports/ciu-P37-REPORT.md`): the
+`dockerfile:` line above is not optional — omitting it and leaving the
+compose default (`Dockerfile`, resolved against the now-repo-root context)
+fails `failed to read dockerfile: open Dockerfile: no such file or
+directory`.
+
+**`.env` also relocates.** Compose loads a bare `.env` file from the
+**project directory** (S8.1a) ONLY — it does not also check the compose
+file's own directory as a fallback. So a stack-local `.env` beside
+`ciu.compose.yml` stops being read at all once `--project-directory` points
+at the repo root: it is dropped unconditionally, whether or not a
+repo-root `.env` exists (live-verified: with a stack-local `.env` only and
+no repo-root `.env`, the variable it set came back unset post-fix, not
+"shadowed" by anything). CIU itself never depends on this (it always passes
+the compose process environment explicitly, S8.2, and never relies on
+compose's own bare-`.env` loading), so this only matters for a stack with
+its OWN stack-local `.env` a maintainer authored outside CIU's secret/config
+mechanisms — check for one before upgrading.
+
+> **If you are migrating a stack that carried a workaround for the pre-CIU-71
+> bug** (a stack-relative `build_context`, e.g. `"../.."`, in an untracked
+> `ciu.toml.j2` override, to compensate for compose resolving `.` against the
+> compose file's own directory): remove the override and go back to the
+> plain repo-root-relative form (`"."` or a repo-root-relative subpath) for
+> BOTH `build_context` AND `dockerfile` — a stack that only moved
+> `build_context` back and left `dockerfile` stack-relative (or unset,
+> defaulting to `Dockerfile`) breaks the same way the live repro did, just
+> one field over. Also check for a stack-local `.env`: if one exists beside
+> the compose file, move its values into CIU's own config/secret mechanisms
+> or into a repo-root `.env` — it will no longer be read from its old
+> location at all.
+
+This applies to BOTH the native `up` path and the `--shipped` passthrough
+(S8.6) — a maintainer's own pre-shipped `docker-compose.yml` gets the same
+`--project-directory` treatment as a CIU-rendered `ciu.compose.yml`.
+
+**Note on CIU's OTHER relative paths (S8.1a):** `build.context`/`dockerfile`
+are the ONE thing CIU deliberately makes repo-root-relative via
+`--project-directory`. Everything else CIU resolves relative to a path
+(hostdir `vol-*` directories, `ASK_FILE` secret sources, configfile
+schema/template paths) resolves **stack-dir-relative**, not repo-root-
+relative — the two conventions genuinely differ within the same stack. See
+S8.1a for the full accounting and why.
+
+## 19. `--define-root` now works (and is required, absent it, alongside ambient `REPO_ROOT`) on `ciu`'s remote/listing verbs (S1.1, CIU-54)
+
+**Affected verbs:** the `--host` branches of `render`/`up`/`down`/`health`,
+`up --layout`, `layouts`, `host-secrets`, `ssh`.
+
+Before ciu-P45, these 8 call sites resolved `repo_root` with a bare
+`Path(os.environ.get("REPO_ROOT", Path.cwd()))` — a THIRD, informal
+resolution strategy alongside `dev.resolve_repo_root` (walk-up, `dev`/
+`worktree`) and `deploy.resolve_repo_root` (explicit-or-ambient, every other
+`up`/`down`/`health`/`render`/`check`/`graph`/`clean`/`profiles` branch).
+`--define-root` was silently ignored on all 8: passing it did nothing
+locally, and on the `--host`/`ssh` branches an unconsumed `--define-root`
+even leaked into the ONE remote command string forwarded to the target
+host's own `ciu` — a local path re-parsed in a foreign context. On four of
+these verbs (`render`/`up`/`down`/`health`) this was worse than merely
+undocumented: `--define-root` was ALREADY listed in `ciu <verb> --help`'s
+general options as if it applied verb-wide, so the `--host` branch silently
+broke its own documented contract.
+
+**The fix routes all 8 sites through `deploy.resolve_repo_root`** — the SAME
+resolver each of these verbs' own local/profile-based branch already uses
+(plain `ciu up` routes into `deploy.main`, which calls
+`deploy.resolve_repo_root`), rather than `dev.resolve_repo_root`'s
+walk-up-from-cwd. This was a deliberate choice, not the only one considered:
+walk-up fits `dev`/`worktree`'s "which repo am I standing in" question, not
+these verbs' remote-push/listing shape, and adopting it here would have made
+e.g. plain `ciu up` resolve one way and `ciu up --host x` resolve a
+DIFFERENT way depending on which branch ran — a worse inconsistency than the
+one being fixed. See `docs/SPEC.md` S1.1a.
+
+> **This is a BREAKING change.** `deploy.resolve_repo_root` requires ambient
+> `REPO_ROOT` to be set (or `--define-root` given explicitly) — **there is NO
+> cwd fallback**. Previously, running one of these 8 verbs from inside a repo
+> whose `ciu.env` had never been sourced (no ambient `REPO_ROOT`) silently
+> worked, using the current directory. It now refuses: `[ERROR] REPO_ROOT not
+> set. Run 'ciu env generate' and source ciu.env.` **If you have a script or
+> habit that runs `ciu ssh`, `ciu layouts`, `ciu host-secrets`, or `ciu
+> up`/`down`/`health`/`render --host`/`--layout` without first running `ciu
+> env generate` and `eval "$(ciu env print)"` (or equivalently `source
+> ciu.env`)**, either source it first or pass `--define-root <path>`
+> explicitly. Separately, an operator who WAS already passing `--define-root`
+> on one of these 8 verbs while ambient `REPO_ROOT` disagreed will now see a
+> `[S1.1]`-tagged refusal instead of the flag being silently ignored — the
+> intended CIU-54 fix, not a regression: it now does what the flag's own name
+> says. There is no dstdns/vbpub consumer script or CI job affected today (no
+> shipped `.sh`/CI invokes any of these 8 verbs without first sourcing
+> `ciu.env`), but an interactive operator's own shell habit, or a downstream
+> consumer's own script, may be.
+
+---
+
+## 20. Move a hook's secret-shaped `[state]` value onto `persist: "secret"` (S9.4a / S3.4a, CIU-P46, ciu 7.9.0) — BREAKING
+
+**Action needed if your hook currently persists a secret-shaped value into
+`[state]`.** The archetype is a Vault bootstrap hook returning
+`{"root_token": {"value": …, "persist": "state"}}`, but the rule is general:
+any `[state]` key whose last `_`-separated component is `password`, `token`,
+`secret`, `api_key`, `credential`, `passphrase`, `private_key` or `key`,
+paired with a literal string of 8 or more characters that is not a
+`{{ … }}`/`$VAR` reference and contains no `/`.
+
+**Why.** `[state]` lives in the stack's rendered `ciu.toml`: an ordinarily
+rendered, ordinarily readable plaintext file that sits **outside every S4
+leak-prevention mechanism** — no masking, no post-render leak scan (S4.22),
+no 0440 mode (S4.10). A credential there is exposed to anything that can read
+the repo. This is F4 from `docs/CIU-V8-TESTING-GATE-PROPOSAL.md`, backported
+onto v7 ahead of the full v8 cutover.
+
+**What changed, concretely.**
+
+1. `ciu check` gained a `state-secrets` stage that REFUSES such a key
+   (`[S3.4a]`, exit 2), naming the stack and the key and never the value.
+   Because `ciu up` runs `ciu check`'s static pipeline automatically
+   (S13.4c, CIU-64), this reaches `ciu up` as well as the explicit verb.
+2. `persist: "secret"` (S9.4a) is the sanctioned channel. It writes into the
+   ordinary per-stack secret store — `<stack>/.ciu/secrets/<name>`, 0440,
+   atomic, under the stack's lock — using the exact machinery a directive
+   uses. It is for values **no directive could express**; Vault's own
+   `operator init` output is the canonical case.
+3. S4.16's Vault-token source #3 now reads
+   `<vault.stack_path>/.ciu/secrets/root_token` instead of the vault stack's
+   `[state].root_token`. **There is no fallback** — the old read path is
+   gone, deliberately: a dual read would keep the unsafe copy worth writing
+   indefinitely.
+
+**Migration, for a hook that mints the value (the normal case):**
+
+```python
+# before
+return {"root_token": {"value": token, "persist": "state"}}
+# after
+return {"root_token": {"value": token, "persist": "secret"}}
+```
+
+...and delete `root_token` from the stack's `[state]` table. Nothing else
+changes: the name is unchanged, so S4.16 source #3 keeps resolving, and
+`ciu secrets list` now shows the value's name with kind `HOOK` and locator
+`hook:<script>` (`ciu secrets reset` removes it).
+
+**Migration, for a hook that merely RE-persists an already-declared secret:**
+delete the return entry entirely. If `root_token` is declared in the stack's
+own secrets table (e.g. a dev-mode `GEN_LOCAL:demo/vault_root_token`), it is
+ALREADY materialized safely and `persist: "secret"` for that name is refused
+outright as an S4.6 uniqueness collision — one name, one writer. Point
+`[vault].token_file` (S4.16 source #2) at that store file instead. CIU's own
+`test-repo` fixture is exactly this shape and now does exactly this; see
+`test-repo/infra/vault/post_compose_vault.py` and
+`test-repo/ciu.global.defaults.toml.j2`.
+
+**Two rules `persist: "secret"` will refuse, worth knowing before you write
+the hook:** combining it with `apply_to_config` (that would inject the raw
+value into the in-memory config every later template and hook reads,
+bypassing S4.21's guard entirely — read it back with `ctx.secret_file(name)`
+instead), and a dotted path (a secret name is flat; it IS the compose secret
+name and the `/run/secrets/<name>` basename).
+
+**Also new in the same release, same area:**
+
+- `ciu check`'s `vault-presence` stage (`[S13.4d]`) refuses a stack declaring
+  `ASK_VAULT`/`GEN_TO_VAULT` with no `topology.services.vault` — previously a
+  runtime-only failure, mid-`ciu up`.
+- `ciu migration-check [--define-root PATH] [--json]` (S13.7) reports stale
+  pre-cutover artifacts in a checkout. CIU performs hard cutovers with no
+  legacy-compat shims anywhere in its normal code paths; this verb is the one
+  place that knows the version history, so a stale artifact is a named
+  finding with a remediation instead of a silent break. Run it after any CIU
+  upgrade. It exits non-zero on ANY finding; the same rules also run as
+  `ciu check`'s `migration` stage, where WARN findings only note.
+
+**Not affected: CIU-38.** Per-service Vault AppRole provisioning stays open
+and deferred, and needs none of this: AppRole credentials route through Vault
+itself (a hook mints them into Vault with its own `hvac`/HTTP calls; the
+consumer reads them back with an ordinary `ASK_VAULT` directive), which
+already works today with no new CIU mechanism.
+
+## 21. Rename the per-checkout overlay and pick up `ciu.instance.generated.toml` (S3.1b, ciu-P47, ciu 7.10.0) — BREAKING
+
+**What changed, in one sentence:** the one gitignored per-checkout file became
+two, and the one you hand-edit was renamed.
+
+| before (≤ 7.9.0) | after (7.10.0) | who owns it |
+|---|---|---|
+| `ciu.global.worktree.toml.j2` — your sparse overrides AND CIU's `[ciu.instance.generated]` table | `ciu.global.instance.toml.j2` | **you.** CIU never writes it |
+| (same file) | `ciu.instance.generated.toml` | **CIU.** Plain TOML, rewritten in full by every `ciu env generate` |
+
+**Nothing changes for a template.** `{{ ciu.instance.generated.* }}` reads
+exactly as before, from the same point in the S3.3 merge chain. This was
+weighed against adopting v8's richer `instance.*` binding now and declined on
+purpose: the binding name is not part of this change, so no stack template
+anywhere needs a single character edited.
+
+**This is a hard cutover.** CIU reads only the new names — there is no
+fallback read of `ciu.global.worktree.toml.j2` anywhere, and an existing
+checkout's copy of it stops being merged into any render the moment you
+upgrade. That is deliberate (no legacy-compat shims in normal code paths), and
+`ciu migration-check` is how you find out rather than being broken silently:
+
+```console
+$ ciu migration-check
+[WARN] retired-overlay-file: found 'ciu.global.worktree.toml.j2' at the ciu root — this filename is retired and its content is NO LONGER merged into any render
+          fix: move any hand-authored overrides from 'ciu.global.worktree.toml.j2' into 'ciu.global.instance.toml.j2' by hand, then delete 'ciu.global.worktree.toml.j2'. Its CIU-owned [ciu.instance.generated] table needs no hand-copying — `ciu env generate` rewrites those facts into 'ciu.instance.generated.toml'; copy nothing from it.
+[ERROR] migration-check: 1 finding(s)
+```
+
+**Migration, per checkout, once:**
+
+1. `ciu migration-check` — or just `ciu up`/`ciu check`, whose `migration`
+   stage runs the same rule and notes the finding.
+2. Copy your OWN content out of `ciu.global.worktree.toml.j2` into
+   `ciu.global.instance.toml.j2`: `[ciu.instance] service_profiles`, a
+   `[ciu.instance.shared_infra]` join, `[topology.services.*]` aliases, any
+   ordinary sparse global overrides. **Do not copy the
+   `[ciu.instance.generated]` table** — it is CIU's, and step 4 regenerates it.
+3. `rm ciu.global.worktree.toml.j2`.
+4. `ciu env generate` — writes `ciu.instance.generated.toml`.
+
+A checkout with nothing hand-authored in the old file (the common case: it was
+created by `ciu env generate` alone) needs only steps 3 and 4, in either order.
+
+**`.gitignore`:** `ciu init`'s canonical set now lists
+`ciu.global.instance.toml.j2` and `ciu.instance.generated.toml`, and no longer
+lists the retired name. Add both to an existing repo's `.gitignore`;
+`ciu migration-check`'s `gitignore-gaps` rule names them if you forget.
+Removing the old pattern is optional hygiene and does not affect detection —
+the retired-overlay rule asks the filesystem, not your `.gitignore`.
+
+**`ciu clean --vanilla` now removes four files**, not three: the new generated
+file joins `ciu.global.toml`, `ciu.env` and the (renamed) overlay. Both are
+artifacts of one `ciu env generate`, so removing one and keeping the other
+would leave the workspace in neither state `--vanilla` promises. Plain
+`ciu clean` still preserves all four.
+
+**If you parse the identity facts yourself**, §11b's `read_ciu_identity` helper
+is simpler now: `ciu.instance.generated.toml` is plain TOML with nothing else
+in it, so a whole-file `tomllib.load` is correct — the block-slicing an older
+helper had to do (because the surrounding overlay was a Jinja template) is no
+longer needed. Copy the current version from §11b; do not just delete the
+slicing from your own copy. The published helper now refuses **five**
+present-but-unreadable shapes rather than four (the fifth is the table path
+being occupied by a non-table — `ciu = "x"`, or
+`ciu.instance.generated = "x"`), because a whole-file parse makes those
+reachable where the old block-slice did not. A naive
+`document.get("ciu", {}).get("instance", {}).get("generated")` chain leaks a
+bare `AttributeError` on both.

@@ -1,13 +1,20 @@
 # ============================================================================
-# workers — mounted config, rendered ONCE and fanned out to every instance (S5.2)
+# workers — mounted config, rendered ONCE PER INSTANCE (V8-PREP-6 / S7.5b-e)
 # ============================================================================
-# The same rendered file is bind-mounted into worker-1, worker-2, … via the
-# overlay (S5.3 / CIU-2). Per-instance identity (which replica am I?) belongs in
-# the compose env, not here — this file is shared.
+# `[workers.worker.configfile.main]` declares `instances = 2` explicitly
+# (matching the service-level value), so this template renders TWICE — once
+# per 1-based instance index — each emitted as its own mount named
+# `worker-1`/`worker-2` (S7.5b). `instance_id` below is genuinely distinct
+# per render; before ciu-P24's migration this file was rendered ONCE and the
+# SAME content bind-mounted into every replica via the S5.3 base-selector
+# fallback, so `instance_id` would have been unavailable (single-render
+# templates never got instance_index/instance_id — only per-instance
+# configfile fan-out does).
 
 [worker]
 name = "{{ workers.worker.name }}"
 instances = {{ workers.worker.instances }}
+instance_id = "{{ instance_id }}"
 
 [queue]
 # S5.4: secret() is the only place a secret value may be embedded.

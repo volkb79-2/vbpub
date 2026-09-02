@@ -14,6 +14,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu import engine  # noqa: E402
 
 
+def _write_identity_facts(root):
+    """CIU-75: reset's config-less down path derives its compose project from
+    the checkout's generated `[ciu.instance.generated]` overlay table, not its
+    legacy `ciu.env` export."""
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
+
+    facts = {key: "" for key in GENERATED_FACTS_KEYS}
+    facts["repo_name"] = "dstdns"
+    facts["instance_id"] = "abc123"
+    write_generated_facts(root, facts)
+
+
+
 def _ok(*, stdout: str = "", stderr: str = "") -> SimpleNamespace:
     return SimpleNamespace(returncode=0, stdout=stdout, stderr=stderr)
 
@@ -60,10 +73,7 @@ def test_reset_ignores_non_directory_vol_entry(tmp_path: Path, monkeypatch: pyte
     marker = tmp_path / "vol-not-a-directory"
     marker.write_text("preserve", encoding="utf-8")
     config = {"deploy": {"project_name": "project", "labels": {"prefix": "ciu"}}}
-    (tmp_path / "ciu.env").write_text(
-        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n',
-        encoding="utf-8",
-    )
+    _write_identity_facts(tmp_path)
     monkeypatch.setattr(engine.procutil, "run_cmd", lambda *_args, **_kwargs: _ok())
     monkeypatch.setattr(
         engine,
@@ -82,10 +92,7 @@ def test_reset_with_specs_cleans_orphans_without_fallback_secret_directory(
     config = {"deploy": {"project_name": "project", "labels": {"prefix": "ciu"}}}
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / "ciu.env").write_text(
-        'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n',
-        encoding="utf-8",
-    )
+    _write_identity_facts(repo)
     events: list[str] = []
 
     def run_cmd(command, **_kwargs):
@@ -131,7 +138,9 @@ def test_compose_keyboard_interrupt_without_process_returns_interrupted(
 
     monkeypatch.setattr(engine.subprocess, "Popen", start_process)
 
-    result = engine.execute_docker_compose_with_logs([], cwd=Path("/unused"), project="test-project")
+    result = engine.execute_docker_compose_with_logs(
+        [], cwd=Path("/unused"), project="test-project", repo_root=Path("/unused")
+    )
 
     assert result["status"] == "interrupted"
     assert result["message"] == "User interrupted execution"
@@ -220,7 +229,7 @@ def test_successful_native_compose_preserves_output_and_runs_post_hook(
     monkeypatch.setattr(
         engine.hooks_runner,
         "run_hooks",
-        lambda _hooks, point, *_args: observed.append(point),
+        lambda _hooks, point, *_args, **_kw: observed.append(point),
     )
 
     result = engine.main_execution(

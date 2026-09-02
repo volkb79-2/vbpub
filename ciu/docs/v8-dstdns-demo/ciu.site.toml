@@ -1,0 +1,23 @@
+# ciu.site.toml — sparse, committed, secret-free site override (dstdns v8 DEMO)
+# Only keys that differ from ciu.toml. Tables merge, lists and scalars replace.
+# A site file may also override a STACK table by its merged path (S3.1.3) —
+# there is no per-stack override file in v8.
+
+[project]
+landscape_id = "dstdns-dev"          # per site, never in ciu.toml (two landscapes must never share one id)
+
+[project.control]
+auth_enabled = false                 # greenfield dev deploy: synthetic ADMIN, no real OIDC login; ddcli's credential secret is `enabled = "auth_enabled"`, so nothing is materialized for it here
+
+[governance]                         # this host is mixed-use: dstdns is best-effort below the devcontainer and soulmask
+enabled = true
+cgroup_parent = "dev-background.slice"
+memory_max = "2G"
+device = "/dev/vda"                  # autodetect fails from inside docker-outside-of-docker
+
+# Stack-table override through the merged view: consul's HTTP API is published
+# on this site's host (the v7/rev-2 demo did this in infra/consul-server/ciu.toml.j2).
+[realization.consul_server.services.consul.endpoints.http]
+publish = "host"
+host_port = 8500
+host_bind = "127.0.0.1"

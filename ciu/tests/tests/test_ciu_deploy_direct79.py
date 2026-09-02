@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from ciu import deploy
@@ -85,3 +86,76 @@ def test_run_expands_comma_profiles_and_defaults_to_deploy_when_no_action(monkey
     assert deploy._run(_args(profile=["edge, db", "cache", "  "]), []) == 0
     assert received_profiles == [["edge", "db", "cache"]]
     assert "No action specified; defaulting to --deploy" in capsys.readouterr().out
+
+
+def test_run_info_routes_to_stderr_under_json_output(monkeypatch, tmp_path, capsys):
+    """CIU-84's narrower unit proof: `_run`'s own top-level `info()` calls
+    ("Active service profile(s)", "No action specified") move to stderr
+    the moment `args.json_output` is set — even for actions that never reach
+    `action_check` at all, since the invariant this fix establishes is
+    "no `_run`-level prose on stdout under --json", not "only when check is
+    among the actions" (see the comment on `_run_info` in deploy.py for why
+    the broader invariant was chosen). `deploy_needs_preflight` is False
+    here (no `deploy` action), so the health-gate `_run_info` call is not
+    exercised by this test; it is a separate `_run_info` call site, not a
+    branch of the two exercised here.
+    """
+    profile = Profile(name="edge,db", config={"deploy": {}})
+    _patch_setup(monkeypatch, profile, [], tmp_path)
+    monkeypatch.setattr(deploy, "build_action_sequence", lambda _raw: [])
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *_args, **_kw: {})
+    # No explicit action -> `_run` defaults to ["deploy"], which runs the
+    # REAL preflight block (`deploy_needs_preflight`) ahead of the action
+    # dispatch loop -- `check_preflight` is stubbed alongside its siblings
+    # so ITS OWN prose (deliberately NOT gated by the outer --json, since
+    # --json is documented as meaningful only "With --check" as the
+    # explicit action, not as a deploy-preflight side effect) does not
+    # confound this test's exact-equality assertion on stdout below.
+    monkeypatch.setattr(deploy, "check_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(deploy, "vault_preflight", lambda *_args: None)
+    monkeypatch.setattr(deploy, "provisioning_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(deploy, "registry_preflight", lambda *_args: None)
+    monkeypatch.setattr(deploy, "governance_slice_preflight", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(deploy, "ensure_workspace_network", lambda **_kwargs: None)
+    monkeypatch.setattr(deploy, "action_deploy", lambda *_args, **_kwargs: 0)
+
+    assert deploy._run(_args(json_output=True), []) == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Active service profile(s)" in captured.err
+    assert "No action specified; defaulting to --deploy" in captured.err
+
+
+def test_check_json_stdout_is_exactly_one_json_document(monkeypatch, tmp_path, capsys):
+    """CIU-84's own required oracle: `ciu check --json`'s stdout parses as
+    ONE JSON document via `json.loads` on the ENTIRE captured stdout — not a
+    substring check (`"[INFO]" not in out`), which would miss a stray write
+    that is itself valid-looking text but still not part of the document, or
+    one that landed AFTER it. `json.loads` fails outright on anything else
+    sharing stdout with the document, from any source on the call path —
+    `_run`'s own prose (the two known-bad sites this package fixes) or
+    anything reachable through the REAL `action_check` this test does not
+    mock, run end to end via `deploy._run(["--check", "--json"])`, the exact
+    entry point an operator's `ciu check --json | jq` invokes.
+
+    Selection is intentionally EMPTY: nothing to check, so the run reaches
+    the document with no ERROR-severity finding, isolating this test to the
+    stdout-purity contract rather than any one config's specific validation
+    outcome (already covered elsewhere, e.g. test_ciu_deploy_actions.py).
+    """
+    profile = Profile(name="", config={"deploy": {}})
+    _patch_setup(monkeypatch, profile, [], tmp_path)
+    # Real action_check reaches `hosts_pkg.load_hosts(repo_root)`, which
+    # falls back to `Path.home()/.ciu/hosts.toml` when nothing is found at
+    # `repo_root` — stubbed so this test's outcome cannot depend on the
+    # invoking machine's own home directory.
+    monkeypatch.setattr(deploy.hosts_pkg, "load_hosts", lambda _root: {})
+
+    rc = deploy._run(_args(json_output=True), ["--check", "--json"])
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "[WARN]" not in captured.err
+    document = json.loads(captured.out)  # raises if stdout carries anything else
+    assert document["operation"] == "config-check"
+    assert document["status"] == "pass"

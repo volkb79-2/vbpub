@@ -13,7 +13,7 @@ orchestration see [CIU-DEPLOY.md](CIU-DEPLOY.md). Normative contract:
 # 1. Bootstrap the workspace env (once per machine / on reset)
 cd test-repo
 ciu env generate
-source ciu.env
+eval "$(ciu env print)"        # `source ciu.env` still works this release
 
 # 2. Render TOML only (preflight / debugging)
 ciu up --dir infra/redis-core --render-toml
@@ -47,7 +47,7 @@ common verbs are:
 
 | Verb | Purpose |
 |---|---|
-| `ciu env [generate]` | show / regenerate `ciu.env` |
+| `ciu env [generate\|print]` | show / regenerate `ciu.env` / print it as shell `export` lines |
 | `ciu render` | render global + stack config (TOML only) |
 | `ciu up [--profile N \| --dir PATH]` | render + secrets + `compose up` |
 | `ciu down` | stop containers (volumes preserved) |
@@ -66,10 +66,10 @@ selected by the active/explicit profile; it deliberately has no `--dir` flag.
 
 | Command | Relevant options |
 |---|---|
-| `ciu env generate` | `--define-root PATH` (alias: `--root-folder`) |
+| `ciu env generate` · `ciu env print` | `--define-root PATH` (alias: `--root-folder`) |
 | `ciu render` | `--profile NAME`, `--define-root PATH` |
 | `ciu up` | `--profile NAME` \| `--dir PATH` \| `--layout NAME`; `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors`, `--no-preflight`; remote: `--host NAME`, `--thin`, `--bootstrap`, `--rollback` |
-| `ciu clean` | `--profile NAME`, `-y`, `--ignore-errors` |
+| `ciu clean` | `--profile NAME`, `-y`, `--ignore-errors`, `--vanilla` (also reset `ciu.global.toml` / `ciu.env` / `ciu.global.instance.toml.j2` / `ciu.instance.generated.toml`) |
 | `ciu secrets list\|reset` | `-d PATH`; `reset` also accepts `--name N`, `-y` |
 | `ciu check` | `--profile NAME`, `--phases N,M`, `--live` (also probe live state) |
 | `ciu graph` | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
@@ -140,8 +140,10 @@ ciu up --dir <stack> --shipped    # through CIU: adds the wiring below
 `ciu up --dir <stack> --shipped` is a passthrough that **skips** the stack config requirement and
 all secret / overlay / configfile steps, but still:
 
-- loads `ciu.env` so the compose file's `${VAR}` interpolation resolves the same
-  machine facts (UID/GID, network name, physical paths) as the native path,
+- loads the workspace environment — machine facts from `ciu.env`, the six
+  identity facts seeded from `[ciu.instance.generated]` (S3.1c clause 2a) — so
+  the compose file's `${VAR}` interpolation resolves the same UID/GID, network
+  name and physical paths as the native path,
 - ensures and (in a devcontainer) attaches the workspace network [S2.8],
 - runs the DooD reachability preflight [S1.5],
 - then `docker compose -f docker-compose.yml up -d` (override the filename with
@@ -210,7 +212,7 @@ The table below is the execution order for a single-stack `ciu up --dir <stack>`
 
 | Step | What happens | Spec |
 |---|---|---|
-| 1 | Load `ciu.env`; abort on missing required keys | S2.1–S2.2 |
+| 1 | Load the workspace environment (machine facts from `ciu.env`, identity seeded from `[ciu.instance.generated]`); abort on missing required keys | S2.1–S2.2, S3.1c |
 | 2 | Render global chain: `ciu.global.defaults.toml.j2` → `ciu.global.toml.j2` → merged `ciu.global.toml` | S3.1–S3.3 |
 | 3 | Render stack: `ciu.defaults.toml.j2` → `ciu.toml.j2` → `ciu.toml` (preserving `[state]`) | S3.1–S3.4 |
 | 4 | Deep-merge global + stack config | S3.3 |
@@ -475,26 +477,42 @@ is available to `pre_*` hooks (containers do not exist yet).
 **Structured return** [S9.4]:
 
 ```python
-# test-repo/infra/vault/post_compose_vault.py
+# a production Vault bootstrap hook (SPEC §B.2a)
 def run(config: dict, ctx) -> dict:
-    token = ctx.secret_file("root_token").read_text().strip()
+    result = vault_operator_init()     # the hook's own Vault HTTP call
     return {
         "initialized": {
             "value": True,
             "apply_to_config": True,   # visible to later hooks/templates
-            "persist": "state",        # written to [state] in ciu.toml
+            "persist": "state",        # a BOOLEAN fact → [state] in ciu.toml
         },
         "root_token": {
-            "value": token,
-            "persist": "state",        # S4.16 token source #3
-        },
+            "value": result["root_token"],
+            "persist": "secret",       # → <stack>/.ciu/secrets/root_token, 0440
+        },                             #    and S4.16 token source #3
     }
 ```
 
-`persist: "state"` is the **only** persistence destination; it writes the value
-under `[state]` in `ciu.toml`. `apply_to_config` merges the value into the
-in-memory config so later hooks, configfile templates, and the compose template
-see it.
+There are exactly **two** persistence destinations, and the split matters:
+
+- `persist: "state"` writes under `[state]` in `ciu.toml` — an ordinarily
+  rendered, ordinarily readable plaintext table, so it is for **non-secret
+  facts only**. A secret-shaped key there is refused by `ciu check`'s
+  `state-secrets` stage [S3.4a].
+- `persist: "secret"` [S9.4a] writes into the stack's secret store with the
+  same machinery a directive uses (0440 file, 0700 store dir, atomic write,
+  under the stack's lock). It is for a credential a hook **mints** — one no
+  directive could have expressed in advance. `apply_to_config` alongside it is
+  a contract violation; read the value back with `ctx.secret_file(name)`.
+
+`apply_to_config` merges the value into the in-memory config so later hooks,
+configfile templates, and the compose template see it.
+
+> CIU's own `test-repo/infra/vault/post_compose_vault.py` is deliberately NOT
+> this shape: it runs Vault in DEV mode with a `GEN_LOCAL`-declared root token
+> that is already materialized by the ordinary S4 machinery, so it persists
+> only `initialized` and its token reaches later stacks through
+> `[vault].token_file` (S4.16 source #2).
 
 Hooks MUST NOT mutate `os.environ`; the v1 plain `{KEY: value}` env-update form
 is withdrawn [S9.4]. A listed hook file that does not exist aborts the run [S9.2].
@@ -517,18 +535,39 @@ def run(config: dict, ctx) -> dict:
 ## Workspace Environment (`ciu.env`) [S2]
 
 `ciu.env` is the machine identity layer — autodetected facts about this machine,
-not project configuration [S2.7]. Generate it once:
+not project configuration [S2.7]. **Since 7.7.0 it is not where CIU reads the
+six INSTANCE identity facts** (`REPO_NAME`, `INSTANCE_ID`,
+`DOCKER_NETWORK_INTERNAL`, `PHYSICAL_REPO_ROOT`, `REPO_ROOT`, `PUBLIC_FQDN`):
+those come from `[ciu.instance.generated]` and are seeded into every verb's
+environment from there, overriding whatever the shell exported [S3.1c].
+Generate it once:
 
 ```bash
 ciu env generate
-source ciu.env
+source ciu.env                 # or, without hand-writing the source call:
+eval "$(ciu env print)"
 ```
+
+`ciu env print` is read-only: it prints the ALREADY-WRITTEN `ciu.env` as
+`export KEY='value'` lines and generates nothing. It is deliberately not
+called `apply` or `source` — a subprocess cannot mutate its parent shell's
+environment, so `eval` around it is where that actually happens. If `ciu.env`
+does not exist it refuses and names `ciu env generate`.
+
+`ciu env generate` also writes the identity tuple into this checkout's
+`ciu.instance.generated.toml` under `[ciu.instance.generated]` (S3.1b /
+CIU-60), so **templates** read these facts from the merged config chain —
+`{{ ciu.instance.generated.physical_repo_root }}` — rather than from ambient
+environment. The file is CIU's alone and is rewritten in full every time; your
+own per-checkout overrides go in `ciu.global.instance.toml.j2`, which CIU never
+writes. See [CONFIG.md](CONFIG.md) for both files and the ownership rules;
+`ciu clean --vanilla` is the only command that removes them.
 
 Always-required keys [S2.2]:
 
 | Key | Detected from |
 |---|---|
-| `REPO_ROOT` | `--define-root` → `REPO_ROOT` env → walk-up to `ciu.global.defaults.toml.j2` |
+| `REPO_ROOT` | `--define-root` (wins outright) → walk-up to `ciu.global.defaults.toml.j2`, REFUSING if it disagrees with a pre-set `REPO_ROOT` → `REPO_ROOT` env (only if the walk-up finds nothing) → cwd |
 | `PHYSICAL_REPO_ROOT` | pre-set env (only if consistent with mountinfo, or mountinfo absent) → per-repo longest-prefix match of `REPO_ROOT` in `/proc/self/mountinfo` → `devcontainer.local_folder` label via `docker ps` (container-origin fallback) → native: `= REPO_ROOT` |
 | `DOCKER_NETWORK_INTERNAL` | `<repo-name>-<instance-id>-network` |
 | `CONTAINER_UID` / `CONTAINER_GID` | current user UID / `DOCKER_GID` |
@@ -547,6 +586,16 @@ when it agrees with this process's own mountinfo-derived physical root for
 `REPO_ROOT`, or when mountinfo yields no match at all (nothing to check
 against). When mountinfo yields a *different* value, CIU trusts mountinfo
 instead and prints a warning to stderr naming the ignored pre-set value.
+
+**Pre-set `REPO_ROOT` disagreement REFUSES, unlike the other keys above
+(2026-08-25, CIU-53):** the same stale-sourced-`ciu.env` scenario applies to
+`REPO_ROOT` itself, used by `ciu dev`/`ciu worktree *`. When walking up from
+cwd finds a `ciu.global.defaults.toml.j2` and a pre-set `REPO_ROOT`
+disagrees with it, CIU does not warn and proceed with the derived value the
+way it does for `PHYSICAL_REPO_ROOT` above — it REFUSES with a `[S1.1]`
+error naming both paths. `REPO_ROOT` decides which repo destructive verbs
+(`worktree rm`, `branches -y`, `clean`) operate on, so a masked default here
+is worse than a hard stop; see `docs/DESIGN-GUIDE.md`.
 
 Add to `.gitignore`:
 

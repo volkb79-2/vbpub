@@ -1,1 +1,6 @@
 controller/.env
+
+# Assay's pinned Python zipapp is an executable release artifact, not
+# Python bytecode -- carve it out of the root `*.py[codz]` ignore rule
+# (mirror of ciu/.gitignore's `!tools/assay/*.pyz`, cmru precedent).
+!tools/assay/*.pyz

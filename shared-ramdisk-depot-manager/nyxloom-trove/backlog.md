@@ -41,6 +41,64 @@ tree already has is worse than an empty one.
   understood, **treat any covergate percentage as a lower bound on what was
   examined, not a statement about the whole change** — and P14's real
   changed-line coverage is currently UNKNOWN, not 98.4%.
+  **Note 2026-09-01 (from assay Wave C, vbpub `assay/nyxloom-trove/reports/
+  assay-WAVE-C-go-REPORT.md` §17; the assay backlog entry is B058 after the
+  Wave C merge, provisionally B056 on the branch):** the mechanism is located
+  by reading `tools/covergate` itself. `Evaluate`'s `fc == nil` branch is
+  where a changed file absent from the profile goes: it becomes `NoCode`
+  (excluded from the ratio) or `Unmeasured` (counted uncovered), and the
+  only thing separating the two is `HasExecutableCode`. `gate.sh` passes
+  `-coverpkg=./...` precisely so packages do not vanish; one that vanished
+  anyway lands in `Unmeasured`, which is a listing, never a refusal. So
+  "absent because no test ran" and "absent because the profile never
+  covered the package" are indistinguishable to the gate. assay's Go
+  adapter is about to run this exact differential (`10b174a5` → `83c2ff79`)
+  inside `tester-unified-go` as its F008-A5 qualification; its classified
+  result will be pasted into that REPORT and should settle this entry's
+  "first thing to check" without srdm re-deriving it.
+  **Note 2026-09-02 (assay controller; Wave C shipped as assay-v4.1.0):**
+  that differential ran — `10b174a5` → `83c2ff79`, real `go test ./...
+  -coverpkg=./...` inside `tester-unified-go`, covergate and assay judging
+  the same profile — and the "silently skipped P14" shape does **not**
+  reproduce on that pair: assay's statement-granular result for the range
+  is 418 changed statements / 394 covered / 94.26%, reproduced exactly by
+  the wave's adversarial reviewer on the released build, with P14's files
+  present in the profile and in the judged set. The differences between the
+  two tools on that run are classified in vbpub
+  `assay/nyxloom-trove/reports/assay-WAVE-C-go-REPORT.md` (F008-A5
+  sections; the extent-expansion class is B058, and assay's own repeated-
+  record defect found by the same run is B061, fixed in 4.1.0). So the
+  identical-254/258 observation above is NOT explained by this branch on
+  THAT pair; do not carry "covergate skipped P14" forward as a fact — it
+  stays an unreproduced observation, and the `fc == nil` mechanism stays a
+  real but so-far-untriggered gap. Adopting assay here is the open A-O04
+  decision, unchanged by this note.
+- **`tools/covergate` counts every line inside a cover block's extent as
+  executable, so the floor measures more lines than Go has statements**
+  (filed 2026-09-01 from assay Wave C; the vbpub assay backlog entry of the
+  same title carries the full evidence — **B058 once the Wave C branch
+  merges**; it was provisionally B056 on `feature/assay-wave-c-go` until
+  main's own B053/B054 filings of 2026-09-02 shifted the branch's ids by two —
+  this is the srdm-side pointer). `profile.go`'s
+  `ParseCoverProfile` does `for l := start; l <= end; l++` and
+  `Executable(line)` is `Executed[line] || Missing[line]`, so function
+  signature lines, `case` labels, closing braces and statement-continuation
+  lines all count as code. The doc comment states the premise ("every line
+  in that range is executable") and the premise is false: assay's frozen
+  witnesses `carve-assets/P27/witness/collision-col{A,B}.go` are two
+  gofmt-clean files that emit BYTE-IDENTICAL cover profiles while their
+  statements begin on different lines (`{4,6}` vs `{4,5}`), so no rule that
+  reads only the profile can be right on both — statement positions must
+  come from source (assay A-217, the `cmd/cover`-derived oracle it now
+  ships as `assay/helpers/go/stmtpos`). `HasExecutableCode` is per-FILE and
+  cannot demote a line; `Evaluate` counting only ADDED lines bounds how
+  often the gap is reachable without changing its direction. Consequence
+  for this project: the 75% floor is applied to an inflated denominator
+  (extra non-statement lines inside covered blocks are "executed", inside
+  uncovered blocks "missing"), so the number is neither a floor nor a
+  ceiling on statement coverage. Not urgent on its own; it is the second
+  reason, after the entry above, to prefer adopting the shared adapter over
+  patching the copy — see the "Revisit `tools/covergate`" entry.
 - **Measure the parked hold worker's own footprint** (P04). The worker is
   charged to the class cgroup alongside the content it holds, so its
   resident size comes straight off the class floor.
@@ -153,3 +211,22 @@ tree already has is worse than an empty one.
   forcing function for the library's LanguageAdapter protocol (P90 oracle O3) —
   a design that cannot accommodate this project is not actually language-neutral.
   When that adapter lands, the choice is adopt-or-keep on the merits, not now.
+  **Note 2026-09-01:** the library is `vbpub/assay` (`judge.language =
+  "go"`, R1 changed-line coverage, statement-granular via a source-side
+  oracle; registered in the CLI as of assay Wave C on
+  `feature/assay-wave-c-go`, release pending). The adopt-or-keep question's
+  stated blocker in assay's own record (A-O04: "whether Python enters srdm's
+  toolchain/container") is void: `tester-unified-go:local` already carries
+  `/usr/bin/python3` 3.13.5 by inheritance from `golang:1.25`'s trixie base
+  (measured 2026-09-01; no pip, no ensurepip), and assay ships a
+  stdlib-only zipapp that needs exactly an interpreter and nothing else
+  (`requires-python >= 3.11`). So the adoption shape is `python3 assay.pyz
+  run <lane>` inside the same container `gate.sh` already runs, beside the
+  real `go`. What adoption would still cost srdm: one `assay.toml` lane
+  (the wave's qualification lane is the template: `cwd` at this directory,
+  `source_roots = ["internal"]`-equivalent, argv = `gate.sh:105`'s `go test`
+  line, `format = "go-cover"`, `producer = "go-test"`), a `-fail-under`
+  policy restated as `fail_under`, and accepting that the number will be
+  LOWER than covergate's for the reason in the entry above (fewer
+  non-statement lines counted). Decide on the merits after the wave's
+  F008-A5 transcript exists; nothing here is committed to.

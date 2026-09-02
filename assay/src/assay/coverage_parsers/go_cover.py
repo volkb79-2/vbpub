@@ -7,6 +7,29 @@ strict over-approximation that attributes function signatures, closing braces an
 statement continuations. A-218 closed the inclusive-versus-half-open question as
 inert; A-217 ruled option 2. This file has an explicit scope status for the
 re-carve per A-217(b). Do not re-derive the correction from this docstring.
+
+**A-234's own tracked item is now DISCHARGED (F008-A4).** The committed Go
+fixtures are real toolchain output, and every expectation read from them is
+re-derived from the oracle rather than from this module's expansion — so no
+test in the suite reads a block extent here as statement truth. The banner
+above stays because the PROSE below is still pre-oracle prose: this parser's
+line sets remain an over-approximation by design, and
+:func:`assay.statement_attribution.attribute_statements` is what corrects
+them. That separation is the point (A-239), not an omission.
+
+**B039/B047 item 4.** This module's own block-range expansion below (``for
+file_line in range(start, end + 1)``) had no bound at all until this wave: a
+single ~60-byte block line reading ``pkg/x.go:1.1,999999999.1 1 1`` sits far
+inside the 16 MiB ``MAX_COVERAGE_ARTIFACT_BYTES`` read bound and would
+materialize close to a billion dict entries — the identical shape
+:mod:`.coverage_istanbul_json` was given a fixed ceiling for precisely
+because "the shape is dangerous," while this parser's own equivalent
+expansion shipped with none. `parse` now spends
+:class:`~assay.coverage_parsers.model.ClassifiedLineBudget` (the ONE shared
+bound both expanding parsers enforce, per B039's own acceptance box 2) before
+materializing each block's range, refusing ``ERROR``/``UNREADABLE_ARTIFACT``
+past it exactly as the istanbul parser does.
+
 Go coverprofile parser (``go test -coverprofile=...``).
 
 Format: a ``mode: <mode>`` header line, then one BLOCK per subsequent line::
@@ -60,7 +83,13 @@ from __future__ import annotations
 from types import MappingProxyType
 
 from ..errors import AssayError, Outcome, ReasonCode
-from .model import CoverageProfile, FileCoverage
+from .model import (
+    ClassifiedLineBudget,
+    CoverageBlock,
+    CoverageProfile,
+    FileCoverage,
+)
+from .model import MAX_CLASSIFIED_LINES as MAX_CLASSIFIED_LINES
 
 _MODE_PREFIX = "mode:"
 
@@ -76,7 +105,12 @@ def sniff(text: str) -> bool:
     return False
 
 
-def parse(text: str) -> CoverageProfile:
+def parse(text: str, *, producer: str | None) -> CoverageProfile:
+    # `producer` is part of the uniform parser protocol (package docstring,
+    # B045) and is deliberately unread here: `go-cover` is one shape with one
+    # meaning, and the Go wave's `go-test`/`covdata` names (B047) differ in
+    # HOW the profile was collected, not in what any field means.
+    del producer
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines or not lines[0].startswith(_MODE_PREFIX):
         raise _malformed("profile has no 'mode:' header line")
@@ -85,8 +119,21 @@ def parse(text: str) -> CoverageProfile:
     # that line in the whole profile (a path can also recur across multiple
     # block lines, not only within one block's own range).
     hits_by_file: dict[str, dict[int, int]] = {}
+    blocks_by_file: dict[str, list[CoverageBlock]] = {}
+    budget = ClassifiedLineBudget(
+        format_name="go coverprofile", remaining=MAX_CLASSIFIED_LINES
+    )
     for raw_line in lines[1:]:
-        path, start, end, count = _parse_block(raw_line)
+        path, block = _parse_block(raw_line)
+        start, end, count = block.start_line, block.end_line, block.count
+        budget.spend(end - start + 1, path)
+        # A-239: the record is KEPT, whole, in addition to being expanded.
+        # The expansion below is the format's own over-approximation and is
+        # corrected by `assay.statement_attribution.attribute_statements`;
+        # keeping the extent (columns included) is what makes that correction
+        # possible, because the merge two lines down is exactly what discards
+        # the data it needs.
+        blocks_by_file.setdefault(path, []).append(block)
         hits = hits_by_file.setdefault(path, {})
         for file_line in range(start, end + 1):
             already_executed = hits.get(file_line) == 1
@@ -101,13 +148,24 @@ def parse(text: str) -> CoverageProfile:
             missing=frozenset(n for n, c in h.items() if c == 0),
             excluded=None,
             branches=None,
+            blocks=tuple(blocks_by_file[path]),
         )
         for path, h in hits_by_file.items()
     }
+    # `statement_attributed` stays False: a parser never sets it. Only the
+    # oracle-fed correction can, and a Go adapter declares
+    # `requires_statement_attribution`, so an un-corrected profile refuses in
+    # `evaluate` rather than being judged.
     return CoverageProfile(files=MappingProxyType(files))
 
 
-def _parse_block(line: str) -> tuple[str, int, int, int]:
+def _parse_block(line: str) -> tuple[str, CoverageBlock]:
+    """One record's path and its whole :class:`CoverageBlock`.
+
+    Columns are now RETAINED rather than discarded by :func:`_parse_pos`: two
+    records can share a boundary position (``28.22,29.2`` then ``29.2,31.3``),
+    and a line-only key would fuse them into one — see :class:`CoverageBlock`.
+    """
     fields = line.split()
     if len(fields) != 3:
         raise _malformed(f"want 3 fields, got {len(fields)}: {line!r}")
@@ -126,10 +184,12 @@ def _parse_block(line: str) -> tuple[str, int, int, int]:
     if "," not in spec:
         raise _malformed(f"no range in {spec!r}")
     start_spec, end_spec = spec.split(",", 1)
-    start = _parse_pos(start_spec)
-    end = _parse_pos(end_spec)
-    if end < start:
-        raise _malformed(f"block ends ({end}) before it starts ({start})")
+    start_line, start_col = _parse_pos(start_spec)
+    end_line, end_col = _parse_pos(end_spec)
+    if end_line < start_line:
+        raise _malformed(
+            f"block ends ({end_line}) before it starts ({start_line})"
+        )
 
     if not num_stmts_field.isdigit():
         raise _malformed(f"bad numStmts {num_stmts_field!r}")
@@ -140,20 +200,97 @@ def _parse_block(line: str) -> tuple[str, int, int, int]:
         raise _malformed(f"bad count {count_field!r}") from exc
     if count < 0:
         raise _malformed(f"negative count {count}")
-    return path, start, end, count
+    try:
+        block = CoverageBlock(
+            start_line=start_line,
+            start_col=start_col,
+            end_line=end_line,
+            end_col=end_col,
+            num_stmts=int(num_stmts_field),
+            count=count,
+        )
+    except ValueError as exc:
+        # `CoverageBlock.__post_init__` enforces invariants this function
+        # does NOT check for itself -- most reachably "ends before it
+        # starts" once columns are compared, which the `end_line <
+        # start_line` guard above cannot see: `m/x.go:5.10,5.2 1 1` is one
+        # line, so that guard passes and the dataclass refuses.
+        #
+        # Without this wrapper that `ValueError` escapes `parse` unchanged.
+        # `runner._run_prepared_lane` catches `AssayError` and `cli.main`
+        # catches `AssayError`, so a bare `ValueError` is an uncaught
+        # traceback: NO verdict document is written and the coverage
+        # reservation the runner opened is never closed -- the artifact-level
+        # failure mode this project exists to make impossible, produced by
+        # eleven bytes of a coverage profile. Found by adversarial review
+        # round 1 (should-fix 5); `main` accepted the same bytes.
+        #
+        # Re-raised through `_malformed` rather than caught wider: the cause
+        # really is an unreadable record, the message the dataclass composed
+        # already names both positions, and no other outcome would be honest.
+        raise _malformed(f"{exc} in record for {path!r}") from exc
+    return path, block
 
 
-def _parse_pos(spec: str) -> int:
+def _parse_pos(spec: str) -> tuple[int, int]:
+    """``<line>.<col>`` as a pair. The column used to be parsed and thrown
+    away; A-239 needs it, so it is now validated too — but NOT the same way
+    the line is, and that asymmetry is the whole point (A-405).
+
+    **Lines are 1-based; columns are ``>= 0``, and a ZERO column is real
+    output, not corruption.** ``cmd/cover`` writes
+    :class:`go/token.Position` values straight into the record, and a
+    position produced by a ``//line file:line`` directive that specifies no
+    column carries ``Column == 0`` by design. ``cmd/cover`` says so in its
+    own words, at go1.25.14
+    ``/usr/local/go/src/cmd/cover/cover.go:1055-1060``:
+
+        It is possible for positions to repeat when there is a line
+        directive that does not specify column information and the input has
+        not been passed through gofmt. See issues #27530 and #30746. Tests
+        are TestHtmlUnformatted and TestLineDup.
+
+    — which is the reason its ``dedup`` helper (``cover.go:1073-1090``)
+    exists at all. The witness is Go's own ``TestLineDup`` corpus, run
+    through the real toolchain and committed at
+    ``nyxloom-trove/carve-assets/P27-recarve/linedup.out``: nine records, six
+    of them carrying a zero column.
+
+    This parser used to refuse those bytes with "column number 0 ... is not
+    positive" — a guessed fact about ``cmd/cover``'s output that
+    ``cmd/cover`` disproves, and the exact class of defect the P27 re-carve
+    exists to remove (A-334: measure the external system; A-217: adapt, do
+    not invent). The records are ACCEPTED now, and the FILE they belong to
+    is flagged instead — see
+    :attr:`assay.coverage_parsers.model.FileCoverage.line_directive_remapped`
+    for what the flag means and A-405 for what evaluation does with it.
+
+    A NEGATIVE column stays refused: nothing in ``go/token`` produces one,
+    so it is corruption rather than a remapped position. Lines stay ``>= 1``
+    for the same reason — a ``//line`` directive's own line number must be
+    positive (Go spec, "Line directives"), so line 0 is not a state the
+    toolchain can reach either.
+    """
     if "." not in spec:
         raise _malformed(f"bad position {spec!r}")
-    line_str, _, _ = spec.partition(".")
+    line_str, _, col_str = spec.partition(".")
     try:
-        value = int(line_str)
+        line = int(line_str)
     except ValueError as exc:
         raise _malformed(f"bad line number in {spec!r}") from exc
-    if value <= 0:
-        raise _malformed(f"line number {value} in {spec!r} is not positive")
-    return value
+    if line <= 0:
+        raise _malformed(f"line number {line} in {spec!r} is not positive")
+    try:
+        col = int(col_str)
+    except ValueError as exc:
+        raise _malformed(f"bad column number in {spec!r}") from exc
+    if col < 0:
+        raise _malformed(
+            f"column number {col} in {spec!r} is negative; a `//line`-remapped "
+            f"position is 0 and is accepted, but nothing in go/token emits a "
+            f"column below that"
+        )
+    return line, col
 
 
 def _malformed(message: str) -> AssayError:

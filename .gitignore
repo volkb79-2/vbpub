@@ -203,6 +203,27 @@ ciu.global.toml
 **/ciu.compose.yml
 **/.ciu/
 **/docker-compose.yml
+# Per-worktree CIU registration metadata (ciu worktree create). Was previously
+# hidden only via a hand-added, non-portable .git/info/exclude entry — a
+# fresh clone/CI runner never had that, so this file showed up as genuinely
+# untracked dirt on every ciu-registered worktree (and, as a direct
+# consequence, caused assay's dirty_paths() to report a false DIRTY_TREE on
+# every such worktree — vbpub assay B017, 2026-08-25; dstdns carries the same
+# fix already). Tracking the ignore here instead is the portable fix.
+ciu.worktree-instance.json
+# Same B017 class, third occurrence (vbpub's own worktrees, 2026-08-29): another
+# CIU-generated per-worktree render input, same untracked-dirt/false
+# DIRTY_TREE symptom on assay's dirty_paths() check.
+#
+# ciu-P47 (2026-09-02) split and renamed that file, which silently retired this
+# mitigation for the two names that replaced it — `ciu/.gitignore` covers them
+# inside `ciu/`, but this root list is what protects vbpub's OWN worktrees. Both
+# new names added below. The retired name is KEPT alongside them: it costs
+# nothing and still suppresses a leftover copy in a checkout that has not
+# migrated yet.
+ciu.global.worktree.toml.j2
+ciu.global.instance.toml.j2
+ciu.instance.generated.toml
 
 # Spyder project settings
 .spyderproject
@@ -302,6 +323,12 @@ cmru/build/
 
 # assay / manual test
 .assay/
+
+# run-gate lane invocation history (RG-27): per-instance measured state, one
+# store per (judged worktree x project), written after every lane run. It
+# MUST be ignored — the tool refuses to write an unignored store rather than
+# leave the tree dirty for the next lane's clean-tree check.
+.run-gate/
 
 # cleanup hardening (2026-06-18)
 core

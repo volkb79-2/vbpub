@@ -108,7 +108,7 @@ class TestGuardLegacyComposeProject:
 
 
 class TestComposeUpProjectArg:
-    def _run(self, monkeypatch, tmp_path, project):
+    def _run(self, monkeypatch, tmp_path, project, *, repo_root=None):
         captured: dict = {}
 
         class FakeProc:
@@ -124,7 +124,8 @@ class TestComposeUpProjectArg:
 
         monkeypatch.setattr(engine.subprocess, "Popen", fake_popen)
         engine.execute_docker_compose_with_logs(
-            ["-f", "ciu.compose.yml"], cwd=tmp_path, project=project
+            ["-f", "ciu.compose.yml"], cwd=tmp_path, project=project,
+            repo_root=repo_root if repo_root is not None else tmp_path,
         )
         return captured["cmd"]
 
@@ -133,13 +134,30 @@ class TestComposeUpProjectArg:
         assert cmd[:4] == ["docker", "compose", "-p", "dstdns-98535c-consul-server"]
         assert cmd[-2:] == ["up", "-d"]
 
+    def test_project_directory_injected_and_resolved_to_repo_root(
+        self, monkeypatch, tmp_path
+    ):
+        """CIU-71: --project-directory is passed, and is the REPO ROOT — not
+        the stack dir (``cwd``) — so a relative build.context resolves the
+        same way every other CIU path already does."""
+        repo_root = tmp_path / "repo"
+        stack_dir = repo_root / "infra" / "mock-targets"
+        stack_dir.mkdir(parents=True)
+        cmd = self._run(
+            monkeypatch, stack_dir, "dstdns-98535c-mock-targets", repo_root=repo_root
+        )
+        assert cmd[4:6] == ["--project-directory", str(repo_root.resolve())]
+        # And NOT the stack dir -- that is exactly the pre-CIU-71 defect.
+        assert cmd[5] != str(stack_dir.resolve())
+        assert cmd[-4:] == ["-f", "ciu.compose.yml", "up", "-d"]
+
 
 
 
 class TestResetDownProjectScoping:
     """S8.7: reset's compose down is scoped when the naming pair exists."""
 
-    def _reset(self, tmp_path, monkeypatch, config):
+    def _reset(self, tmp_path, monkeypatch, config, *, repo_root=None):
         stack = tmp_path / "consul-server"
         stack.mkdir()
         (stack / "ciu.compose.yml").write_text("services: {}\n")
@@ -147,7 +165,9 @@ class TestResetDownProjectScoping:
         monkeypatch.setattr(
             engine.procutil, "run_cmd", _fake_run_cmd(stdout="", capture=calls)
         )
-        engine.reset_service(config, stack)
+        engine.reset_service(
+            config, stack, repo_root=repo_root if repo_root is not None else tmp_path
+        )
         return [c for c in calls if c[:2] == ["docker", "compose"]]
 
     def test_down_scoped_when_pair_present(self, tmp_path, monkeypatch):
@@ -158,14 +178,33 @@ class TestResetDownProjectScoping:
         down = compose_calls[0]
         assert down[2:4] == ["-p", "dstdns-98535c-consul-server"]
 
+    def test_down_project_directory_scoped_to_repo_root_when_pair_present(
+        self, tmp_path, monkeypatch
+    ):
+        """CIU-71: down's --project-directory is the repo root passed in
+        (``tmp_path``), NOT ``consul-server`` (the stack dir `down` itself
+        runs against — the pre-CIU-71 defect)."""
+        cfg = {"deploy": {"project_name": "dstdns", "environment_tag": "98535c",
+                          "labels": {"prefix": "ciu"}}}
+        compose_calls = self._reset(tmp_path, monkeypatch, cfg)
+        assert compose_calls, "expected a docker compose down call"
+        down = compose_calls[0]
+        assert down[4:6] == ["--project-directory", str(tmp_path.resolve())]
+        stack_dir = tmp_path / "consul-server"
+        assert down[5] != str(stack_dir.resolve())
+
     def test_down_identity_scoped_when_pair_absent(self, tmp_path, monkeypatch):
         """CIU-46 cutover: with the naming pair absent, reset's down derives
-        the workspace-identity project from THIS checkout's ciu.env — the same
-        name a config-less `up` passed. There is no -p-less compose call."""
-        (tmp_path / "ciu.env").write_text(
-            'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n',
-            encoding="utf-8",
-        )
+        the workspace-identity project from THIS checkout's generated overlay
+        facts — the same name a config-less `up` passed. There is no -p-less
+        compose call."""
+        from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
+
+        # CIU-75: the identity naming reads the generated overlay table.
+        facts = {key: "" for key in GENERATED_FACTS_KEYS}
+        facts["repo_name"] = "dstdns"
+        facts["instance_id"] = "abc123"
+        write_generated_facts(tmp_path, facts)
         cfg = {"deploy": {"project_name": "dstdns", "labels": {"prefix": "ciu"}}}
         stack = tmp_path / "consul-server"
         calls: list[list[str]] = []

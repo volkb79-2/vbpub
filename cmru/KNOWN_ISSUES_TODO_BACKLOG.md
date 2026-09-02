@@ -735,3 +735,223 @@ itself as evidence via `--evidence`.
   skip shape naming the resolved base.
 - Non-skip run → real campaign payload, unchanged shape.
 - Controlled wrong implementation: today's bare `exit 0` fails oracle 1.
+
+### KI-20 — `status`/`release`'s "ahead of origin" check reads the shared local `main` ref, with no way to target a different one — *open*
+**Status:** open (filed 2026-08-25, live-hit operating vbpub's own shared
+`.git` from the controller session running the ciu-P30/P31/P32 release).
+
+**Mechanism.** `cmru status --project ciu` / `cmru release --project ciu`
+silently compute their diff-since-last-tag and ahead-of-origin refusal
+against the repository's **local branch literally named `main`** —
+regardless of which worktree or ref the invoking shell is actually sitting
+on. Reproduced directly: with `vbpub`'s shared checkout's local `main`
+legitimately 2 commits ahead of `origin/main` (an unrelated, unpushed
+`fix/assay-stabilization-wave` commit sequence from a concurrent session,
+touching nothing under `ciu/`), `cmru release --project ciu` was invoked
+from a **separate, freshly created worktree checked out at a detached HEAD
+exactly equal to `origin/main`** (no divergence at all in that worktree) —
+and still refused: `[ERROR] Local main is 2 commit(s) ahead of origin/main.`
+The check consults the shared repo's `refs/heads/main`, not the worktree's
+own HEAD, not a caller-specified ref. `status`'s "no changes since last
+release" for a project with real, pushed, unreleased commits under its own
+path is the same root cause — the local diff-preview path also reads local
+`main` rather than `origin/main`.
+
+**Why it matters.** This estate's actual daily shape is many concurrent
+sessions sharing one `.git` across dozens of worktrees (`git worktree list`
+in vbpub routinely shows 60+ entries). Any one of them can legitimately
+advance the shared local `main` branch pointer for work on a completely
+different project, without ever intending to affect a `cmru status`/
+`release` run for another project that never touched those commits. Today
+there is no way to tell cmru "evaluate against this exact ref" — the only
+workarounds are waiting for the other session to push, or moving the
+shared `main` ref yourself (itself a shared, blast-radius-y operation
+affecting every other worktree of the repo, since `refs/heads/main` is one
+object-store-wide ref) just to run a release for a project the divergence
+never touched. `ciu worktree add`/`ensure` already has the right shape for
+this — `--base REF` (`src/ciu/cli.py`, `default="main", metavar="REF"`)
+accepts any git-resolvable ref, not only a local branch name — cmru has no
+equivalent.
+
+**Proposed contract.** Add an explicit override — e.g. `--ref REF` on both
+`status` and `release` — that cmru consults INSTEAD OF `refs/heads/main`
+for the ahead-of-origin refusal, the diff-since-last-tag preview, and the
+release snapshot commit. Default stays today's local `main` unchanged (no
+behavior change for the common single-session case). Accepting the literal
+`HEAD` as a value covers "whatever ref this invocation's cwd/worktree
+actually has checked out", which a caller running from an isolated worktree
+cannot express today.
+
+**Oracles.**
+- Shared checkout with local `main` diverged from `origin/main` by a commit
+  that does NOT touch the target project's path, `--ref origin/main`
+  passed → `status`/`release` proceed against `origin/main`'s tip, no false
+  refusal, no false "no changes".
+- Same setup, `--ref` omitted → today's refusal/preview behavior unchanged
+  (regression guard on the default).
+- `--ref` naming something genuinely behind `origin/main` AND touching the
+  target project's path → the refusal still fires, now against the
+  caller-named target instead of the implicit local `main`.
+
+### KI-21 — `cmru worktrees` crashes on a retained release worktree whose branch has no `/`
+
+**Status:** open (filed 2026-08-31, live-hit operating vbpub's own shared `.git` from the
+controller session running the ciu+run-gate backlog wave, while recovering a run-gate-project
+release from a build-step failure — see KI-22, filed alongside this from the same incident).
+
+**Mechanism.** `cmru worktrees` and `cmru worktrees --json` both crash:
+
+```
+Traceback (most recent call last):
+  ...
+  File "cmru/cli.py", line 1943, in main
+    purpose = workspace.branch.split("/", 2)[1]
+              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^
+IndexError: list index out of range
+```
+
+A retained release worktree's branch is named
+`cmru-release-<timestamp>-<project>-<hash>` — zero `/` characters. `split("/", 2)[1]`
+unconditionally assumes at least two segments (a `<kind>/<purpose>` shape) and indexes
+element `[1]` with no length check. Reproduced directly: a release of `run-gate-project`
+failed at the build/publish step (missing `wheel-builder:local` image, unrelated
+environment gap, not a cmru defect) and retained its worktree/branch for inspection per
+S-CLI.1; `cmru worktrees` on that same checkout crashed instead of listing it.
+
+**Why it matters.** `worktrees` is the documented way to discover what a `--resume`/`--abandon`
+should target after exactly this kind of failure — the one command an operator reaches for
+immediately after a failed release is the one that crashes, forcing a manual
+`ls .worktrees/` + branch-name guess instead (which is how the resume in this incident
+actually proceeded).
+
+**Proposed fix.** Guard the split: if `branch.split("/", 2)` has fewer than 2 elements,
+report the raw branch name as `purpose` (or a fixed placeholder) rather than indexing
+blind. Add a regression fixture: a retained worktree whose branch is a bare
+`cmru-release-...-<hash>` name (today's actual release-branch shape) must list without
+crashing, in both plain and `--json` output.
+
+### KI-22 — a release's tag is pushed before build/publish; a build failure reverts `origin/main` but leaves the tag pointing at reverted content, and it goes undetected
+
+**Status:** open (filed 2026-08-31, same incident as KI-21).
+
+**Mechanism.** The release transaction's step order is: prepare → gate → **promote
+`origin/main`** → **tag + push tag** → build → publish. When build/publish fails (this
+incident: `wheel-builder:local` image absent locally, a `docker run --rm ... wheel-builder:local`
+pull-access-denied), the transaction's own failure handler reverts `origin/main` with an
+auto-generated `revert:` commit — but does **not** delete or move the tag it already pushed
+one step earlier. The tag (e.g. `run-gate-v23.1.0`) is left pointing at the now-reverted
+commit, which remains a real ancestor of the reverted `main` (the revert adds an inverse
+commit on top; it does not rewrite history) — so `S12.2b`'s three-state classification reads
+this as the ordinary **"behind"** case (case 3: ordinary, ancestor tag, ancestor of HEAD) and
+silently skips it as "genuinely unchanged" on the next `cmru release` invocation, rather than
+recognizing it as the "ahead"-shaped half-completed-release anomaly `S12.2b` case 2 already has
+a named remedy for (`--allow-tag-ahead-of-head`). The tag therefore permanently names a commit
+with no corresponding published wheel, undetectably to a later release run — which is exactly
+the state `S12.2c` says "a hand-made tag is indistinguishable from a completed release" warns
+about, just reached by cmru's own transaction instead of an operator.
+
+**Live recovery used (not a fix, a workaround):** `git tag -d <tag> && git push origin
+:refs/tags/<tag>`, then re-run `cmru release --project <name>` fresh from the already-reverted
+`main` (confirmed byte-identical to pre-prep content via `git diff`) — this re-created the
+tag correctly once the actual root cause (missing docker image) was fixed, and the second
+attempt built, published, and promoted cleanly.
+
+**Proposed fix.** Either (a) don't push the tag until build+publish have both succeeded — move
+tag creation/push to after `publish`, so a build/publish failure has nothing to revert on the
+tag side at all; or (b) if the tag must be pushed early (some ordering reason not evaluated
+here), the failure-handler's auto-revert must also delete/move the now-orphaned tag it just
+pushed, so a subsequent release run hits a clean "nothing tagged yet" state instead of a
+silent, permanent S12.2b-case-3 false skip.
+
+**Oracles.** A release whose build/publish step fails after the tag-push (fault-injected, e.g.
+point the wheel-builder image at a nonexistent tag) must leave the repository in a state where
+a subsequent `cmru release --project <name>` either (a) proceeds to actually build/publish
+against the SAME tag (fix a), or (b) refuses/re-prepares rather than silently reporting
+"Unchanged, skipping" (fix b) — never the latter with no operator-visible signal that nothing
+was ever actually published for that tag.
+
+### KI-23 — a hand-authored pre-release CHANGES.md draft (`## [X.Y.Z] - UNRELEASED`) is silently duplicated, never folded, by `generate_release_changelog`
+
+**Status:** open (filed 2026-09-02, from `vbpub`'s own `ciu` project — 6 recurrences found and hand-fixed this session; no consumer repo involved, this is CMRU misbehaving against its own estate sibling).
+
+**Mechanism.** `generate_release_changelog` (`src/cmru/changelog.py:215-284`) inserts its
+freshly-generated `## [<heading>] - <date>` section immediately after the
+`<!-- cmru: release history -->` marker (line 273-281), pushing whatever
+content was already there — including a hand-authored pre-release draft
+section for the SAME upcoming version — further down in the file, unmerged.
+The function DOES have a collision guard for this (lines 250-261): if
+`heading` (the bare version string, e.g. `"7.11.0"`) is already present in
+`existing_versions`, it locates that section and refuses (`RuntimeError`,
+"already has a hand-authored section") unless the section already carries
+`_GENERATED_MARKER`. But `existing_versions` is populated by `_HEADING_RE`
+(line 30):
+
+```python
+_HEADING_RE = re.compile(r"^## \[([^\]]+)\] - \d{4}-\d{2}-\d{2}$", re.MULTILINE)
+```
+
+— which requires an actual `YYYY-MM-DD` date after the bracket. This
+estate's own documented convention (`ciu/CHANGES.md`'s process note,
+established 2026-08-25, "every package's own detailed prose must be folded
+into the SAME version section... not left under a separate `## [Unreleased]`
+header") is for an implementer to draft that section as `## [<version>] -
+UNRELEASED`, to be renamed + folded at release time. `_HEADING_RE` never
+matches that heading shape at all (`UNRELEASED` is not a date), so the
+collision guard never fires, `generate_release_changelog` proceeds
+obliviously, and the two sections — CMRU's terse auto-generated digest and
+the implementer's rich hand-authored prose (including the release's own
+"Adoption / Migration Notes", which the process note requires) — end up as
+two adjacent, un-merged `## [<version>]` headers, one dated, one not,
+forever, unless a human notices and manually folds them.
+
+**This is not a one-off.** Verified directly in `ciu/CHANGES.md`'s own git
+history: it recurred on **six consecutive releases** across two different
+work sessions weeks apart — `[Unreleased]` (ciu 7.5.0, 2026-08-26), then
+`[7.8.0]`, `[7.9.0]`, `[7.10.0]`, `[7.10.1]`, and `[7.11.0]` (2026-08-31
+through 2026-09-02) — despite `ciu/CHANGES.md`'s own process note
+explicitly documenting the required manual fold-in step since the very
+first recurrence. A "standing operational rule" written into a controller's
+own memory after the first two instances (ciu 7.7.0/7.7.1, per
+`vbpub/nyxloom-trove` release notes) did not stop it recurring four more
+times — the rule requires a human/agent to actively remember and check at
+release time, and across enough independent sessions, someone always
+forgets. All six were found and hand-folded in this session
+(`vbpub@dcf9c818`, `ciu` repo).
+
+**Why CMRU, not the consumer project.** `ciu/CHANGES.md`'s own file
+enforces the "fold before release" convention in prose only, because the
+folding step happens inside CMRU's own release transaction, on CMRU's own
+generated output, using CMRU's own collision-detection code — the consumer
+project has no hook into that step at all. A prose reminder in a file CMRU
+itself writes into is not a mechanism; the tool that owns the insertion
+point is the only place a real fix can live.
+
+**Proposed fix.** Either:
+(a) **Minimal, matches existing precedent**: extend the collision-check
+regex (or add a second one) to also match `## [<heading>] - UNRELEASED`
+(and arguably any non-`_GENERATED_MARKER` section under that exact bracket
+heading, regardless of suffix) and raise the SAME "already has a
+hand-authored section, CMRU refuses to overwrite it" error `generate_release_changelog`
+already raises for the dated-collision case — forcing the releaser to fold
+manually before the release can proceed, rather than silently duplicating.
+(b) **More complete, matches the estate's actual desired behavior**:
+when such a section is found, splice the generated digest directly into it
+(insert right after its own header, ahead of the hand-authored prose) and
+rewrite the header from `- UNRELEASED` to the real `- <date>`, instead of
+creating a sibling section — this is exactly the manual step every
+releaser has had to perform six times now.
+
+**Oracles.** A project's `CHANGES.md` containing a `## [<next-version>] -
+UNRELEASED` section (with real body content, no `_GENERATED_MARKER`) before
+`cmru release` runs: today, `generate_release_changelog` returns `True`
+having inserted a NEW `## [<next-version>] - <date>` section, leaving the
+`UNRELEASED` section body untouched immediately below it, split into two
+un-merged headers under one version number. Fix (a) must instead raise the
+existing `RuntimeError` (same message class as the dated-collision case),
+refusing the release until the human/agent folds the sections themselves —
+verify by asserting the exception and that the file is byte-unchanged after
+the raise. Fix (b) must instead produce a single `## [<next-version>] -
+<date>` section containing BOTH the generated digest and the hand-authored
+prose, and zero remaining `- UNRELEASED` headers anywhere in the file —
+verify with a real project fixture carrying such a section, asserting the
+post-release file has exactly one header for that version.

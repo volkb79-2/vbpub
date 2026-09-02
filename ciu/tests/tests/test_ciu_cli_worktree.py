@@ -33,6 +33,7 @@ class TestWorktreeAddDispatch:
             shared_infra,
             shared_infra_services,
             shared_infra_ref_projects,
+            shared_infra_ref_services,
         ):
             seen.update(
                 repo_root=repo_root,
@@ -43,6 +44,7 @@ class TestWorktreeAddDispatch:
                 shared_infra=shared_infra,
                 shared_infra_services=shared_infra_services,
                 shared_infra_ref_projects=shared_infra_ref_projects,
+                shared_infra_ref_services=shared_infra_ref_services,
             )
             return Path("/tmp/repo/.worktrees/mypkg")
 
@@ -69,6 +71,7 @@ class TestWorktreeAddDispatch:
             "shared_infra": None,
             "shared_infra_services": None,
             "shared_infra_ref_projects": None,
+            "shared_infra_ref_services": None,
         }
         assert "worktree ready:" in capsys.readouterr().out
 
@@ -108,11 +111,13 @@ class TestWorktreeAddSharedInfraDispatch:
             shared_infra,
             shared_infra_services,
             shared_infra_ref_projects,
+            shared_infra_ref_services,
         ):
             seen.update(
                 shared_infra=shared_infra,
                 shared_infra_services=shared_infra_services,
                 shared_infra_ref_projects=shared_infra_ref_projects,
+                shared_infra_ref_services=shared_infra_ref_services,
             )
             return Path("/tmp/repo/.worktrees/mypkg")
 
@@ -129,6 +134,8 @@ class TestWorktreeAddSharedInfraDispatch:
                 "api,worker",
                 "--shared-infra-ref-projects",
                 "idp-dev-idp,vault-dev-vault",
+                "--shared-infra-ref-services",
+                "vault,secrets=vault",
             ]
         )
         assert code == 0
@@ -136,6 +143,7 @@ class TestWorktreeAddSharedInfraDispatch:
             "shared_infra": "primary",
             "shared_infra_services": "api,worker",
             "shared_infra_ref_projects": "idp-dev-idp,vault-dev-vault",
+            "shared_infra_ref_services": "vault,secrets=vault",
         }
         assert "worktree ready:" in capsys.readouterr().out
 
@@ -152,11 +160,13 @@ class TestWorktreeAddSharedInfraDispatch:
             shared_infra,
             shared_infra_services,
             shared_infra_ref_projects,
+            shared_infra_ref_services,
         ):
             seen.update(
                 shared_infra=shared_infra,
                 shared_infra_services=shared_infra_services,
                 shared_infra_ref_projects=shared_infra_ref_projects,
+                shared_infra_ref_services=shared_infra_ref_services,
             )
             return Path("/tmp/repo/.worktrees/mypkg")
 
@@ -166,6 +176,7 @@ class TestWorktreeAddSharedInfraDispatch:
             "shared_infra": None,
             "shared_infra_services": None,
             "shared_infra_ref_projects": None,
+            "shared_infra_ref_services": None,
         }
 
     def test_partial_shared_infra_error_surfaces_as_exit_2(
@@ -176,6 +187,26 @@ class TestWorktreeAddSharedInfraDispatch:
 
         monkeypatch.setattr(wt_mod, "add", fake_add)
         assert cli._worktree(["add", "mypkg", "--shared-infra", "primary"]) == 2
+        assert "partial group" in capsys.readouterr().err
+
+    def test_ref_services_alone_reaches_the_all_or_nothing_refusal(
+        self, monkeypatch, capsys
+    ):
+        """O12 (CLI half): the new flag is OPTIONAL but not standalone — it
+        joins the existing all-or-nothing group, so supplying only it is
+        forwarded and refused, never quietly accepted as a no-op."""
+        seen = {}
+
+        def fake_add(*_a, **kw):
+            seen.update(kw)
+            raise wt_mod.WorktreeError("[S16.1] partial group")
+
+        monkeypatch.setattr(wt_mod, "add", fake_add)
+        assert cli._worktree(
+            ["add", "mypkg", "--shared-infra-ref-services", "vault"]
+        ) == 2
+        assert seen["shared_infra_ref_services"] == "vault"
+        assert seen["shared_infra"] is None
         assert "partial group" in capsys.readouterr().err
 
 
@@ -325,7 +356,12 @@ class TestCapabilitiesDispatch:
             "worktree.exec-target.v1",
             "worktree.identity.v1",
             "worktree.inspect.v1",
+            # ciu-P27: shipped together — reaping is only ever as safe as the
+            # ownership signal it consults, so a consumer that allowlists one
+            # needs the other.
+            "worktree.lease.v1",
             "worktree.lifecycle-json.v1",
+            "worktree.reap.v1",
             "worktree.up.v1",
         ]
 
@@ -389,6 +425,51 @@ class TestManagedLifecycleDispatch:
         assert cli._worktree(["adopt", "task-one", "/tmp/existing"]) == 0
         assert seen["logical_name"] == "task-one"
         assert seen["path"] == "/tmp/existing"
+
+    @pytest.mark.parametrize("verb", ["create", "ensure"])
+    def test_ref_services_flag_forwards_on_create_and_ensure(
+        self, monkeypatch, verb
+    ):
+        """O4/O9 (CLI half): registered on the shared create/ensure options
+        function, so both lifecycle spellings accept it identically."""
+        seen = {}
+
+        def fake_lifecycle(repo_root, logical_name, **kwargs):
+            seen.update(kwargs)
+            return _ready_record()
+
+        monkeypatch.setattr(wt_mod, verb, fake_lifecycle)
+        assert cli._worktree([
+            verb, "task-one", "--profile", "core",
+            "--shared-infra", "primary",
+            "--shared-infra-services", "api",
+            "--shared-infra-ref-projects", "idp-dev-idp",
+            "--shared-infra-ref-services", "secrets=vault",
+        ]) == 0
+        assert seen["shared_infra_ref_services"] == "secrets=vault"
+
+    def test_ref_services_flag_forwards_on_adopt_and_defaults_to_none(
+        self, monkeypatch
+    ):
+        seen = {}
+
+        def fake_adopt(repo_root, logical_name, path, **kwargs):
+            seen.update(kwargs)
+            return _ready_record()
+
+        monkeypatch.setattr(wt_mod, "adopt", fake_adopt)
+        assert cli._worktree([
+            "adopt", "task-one", "/tmp/existing", "--profile", "core",
+            "--shared-infra", "primary",
+            "--shared-infra-services", "api",
+            "--shared-infra-ref-projects", "idp-dev-idp",
+            "--shared-infra-ref-services", "vault",
+        ]) == 0
+        assert seen["shared_infra_ref_services"] == "vault"
+
+        seen.clear()
+        assert cli._worktree(["adopt", "task-two", "/tmp/existing"]) == 0
+        assert seen["shared_infra_ref_services"] is None
 
 
 class TestWorktreeUpExecDispatch:

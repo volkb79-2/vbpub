@@ -1,0 +1,42 @@
+# infra-global/reverse-proxy/ciu.compose.yml.j2 — v8 notation (draft.3)
+# Injected by ciu: container_name/hostname (dstdns-<instance>-reverse-proxy-nginx),
+# networks, ciu.* labels, CIU_* env, ports: (the publish = "host" https endpoint,
+# every layout), the secret mounts /run/secrets/tls_cert + tls_key (file
+# delivery), the config-DIRECTORY mount /etc/nginx/ciu (the ciu-rendered
+# nginx.conf, S6.9.1), healthcheck timing, cgroup fields. The upstreams are the
+# template-delivered bindings ciu_stack.nginx.binds.* read by nginx.conf.j2, so
+# this file carries no address at all.
+services:
+  nginx:
+    image: {{ ciu_stack.nginx.image }}
+    restart: unless-stopped
+    # non-root: nginx.conf is authored for /tmp pid/temp paths and the declared endpoint ports
+    user: "{{ host.user_uid }}:{{ host.user_gid }}"
+    command: ["nginx", "-c", "{{ ciu_stack.nginx.configfile.nginx.target }}", "-g", "daemon off;"]   # the rendered config (S6.9); the image's /etc/nginx (mime.types) stays visible
+    environment:
+      {% for key, value in env_defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - PUBLIC_FQDN={{ networks.edge.fqdn }}       # the proxy network this stack realizes (S7.9)
+      # TLS material for the https endpoint: the host-scoped secrets tls_cert / tls_key
+      # ([ciu_stack.nginx.secrets], from = "host", file delivery) — ciu injects their
+      # mounts at these paths (S10.2.1, S11.4); nginx.conf.j2 points ssl_certificate(_key) there.
+      - TLS_CERT_FILE=/run/secrets/tls_cert
+      - TLS_KEY_FILE=/run/secrets/tls_key
+    # ports: injected from [ciu_stack.nginx.endpoints] (publish = "host", S7.4.2)
+    volumes:
+      # Bind sources are HOST paths (the daemon reads them, not the devcontainer),
+      # hence host.physical_repo_root rather than the checkout's own working directory.
+      - {{ host.physical_repo_root }}/infra-global/reverse-proxy/index.html:/usr/share/nginx/html/index.html:ro
+      {% if ciu_stack.nginx.auth.enabled %}
+      - {{ ciu_stack.nginx.hostdir.auth }}:/etc/nginx/auth:ro
+      {% endif %}
+      # no nginx.conf mount: /etc/nginx/ciu is the injected config-directory mount (S6.9.1);
+      # no TLS mounts: /run/secrets/tls_cert and /run/secrets/tls_key are injected
+      # secret mounts (a template writing `secrets:` is refused, S11.3)
+    healthcheck:
+      # 127.0.0.1, not localhost: BusyBox wget resolves localhost to ::1 while nginx listens on IPv4
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:{{ ciu_stack.nginx.endpoints.http.port }}/health"]
+      # interval / timeout / retries / start_period: injected from ciu_stack.nginx.health (S6.6.4)
+    labels:
+      - "de.vxxu.volkb79.service-container=false"

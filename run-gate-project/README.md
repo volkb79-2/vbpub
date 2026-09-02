@@ -74,9 +74,16 @@ visible at the project root, carrying ALL of the mechanics. Every consumer
 (nyxloomd, cmru, Buildkite, a CLI agent, a human) runs the same file:
 
 ```
-./run-gate.py <lane>        # run one gate lane
-./run-gate.py --list        # machine-readable lane inventory (for CI fan-out)
-./run-gate.py --help        # usage(), incl. the tool revision
+./run-gate.py <lane>          # run one gate lane
+./run-gate.py <lane> --base REF   # comparison base for a lane that delegates it
+./run-gate.py doctor          # preflight: docker, slices, git, images, assay toolchains
+./run-gate.py doctor --worktree B   # … for tree B's state, not this checkout's
+./run-gate.py --check-env --worktree B   # … same redirect for the drift/toolchain report
+./run-gate.py history [LANE]  # what each lane last did + what it typically costs
+./run-gate.py history --json  #   … the same, machine-readable (this verb only)
+./run-gate.py history --worktree B   # … for tree B's store, not this checkout's
+./run-gate.py --list          # machine-readable lane inventory (for CI fan-out)
+./run-gate.py --help          # usage(), incl. the tool revision
 ```
 
 A defect fixed in the tool is fixed for every consumer at once, and the
@@ -114,7 +121,7 @@ changed-line policy, isolation snapshots) stays in `assay.toml`, and the
 
 ```toml
 [lanes.ciu]
-kind = "assay"            # run-gate wraps: env setup + pin verify + `assay run ciu`
+kind = "assay"            # run-gate wraps: env setup + pin verify + `assay run ciu --resume --progress …`
 assay_lane = "ciu"        # judgment policy lives in assay.toml — one registry each
 environment = "tester-unified"
 ```
@@ -122,6 +129,24 @@ environment = "tester-unified"
 No duplicate lane registry: `run-gate.toml` = where/how it runs,
 `assay.toml` = what counts as passing. Projects that cannot adopt assay
 declare `kind = "command"` lanes and get everything except assay's judgment.
+
+The split is kept honest by DERIVING assay facts instead of restating them.
+run-gate asks the judge (`assay lanes --json`, assay ≥ 3.2.0) two questions
+before it runs a lane: **what toolchain does this lane need from its
+environment** (RG-25 — reported by `doctor`/`--check-env` instead of
+surfacing as a mid-run `MISSING_EXTERNAL_TOOL`) and **does this lane take its
+comparison base from the gate** (RG-26 — `judge.base_source = "request"`,
+supplied with `./run-gate.py <lane> --base REF`). Neither becomes a
+`run-gate.toml` key: a second spelling of a fact `assay.toml` already owns is
+the drift this design exists to remove.
+
+Asking has a price, stated rather than hidden: those questions are answered
+INSIDE the lane's environment, so `doctor`, `--check-env`, and any assay-lane
+invocation (`--dry-run` included) start short read-only probe containers —
+one inventory probe per environment+judge, plus one batched `command -v`
+probe per environment for the fitness check. They judge nothing, write
+nothing, and never start your judged lane; a project with no
+`kind = "assay"` lane starts none of them.
 
 ### Environment mechanics the tool must own (the hard-won list)
 
@@ -147,13 +172,25 @@ the tool's reason to exist and MUST be implemented + tested:
   directory (`cd <dir> && sha256sum -c <pin>`), fail-closed; a declared
   `version` is a claim the artifact must satisfy — the lane probes
   `<assay_command> --version` and refuses mismatches (no provenance theater).
+- **Env forwarding is declared, never implicit (RG-23):** a container/exec
+  lane forwards `$CGROUP_PARENT_DEV_BACKGROUND` (the tool's own
+  infrastructure) plus exactly the environment's `forward_env` list. The
+  early hardcoded `MOCK_MODE`/`RUN_LIVE_TESTS` pair is GONE — consumers
+  relying on it must migrate (CONSUMERS.md "BREAKING CHANGE"), because its
+  absence produces a false GREEN, not an error. `--check-env` sweeps the
+  project's Python for env reads no lane forwards or requires, including
+  reads wrapped in the project's own helper functions.
 - **Clean tree:** refuse a dirty judged tree by default (assay lanes get this
   from assay; command lanes get it from the tool) — a gate over uncommitted
   state is not evidence.
 - **Effective tree:** `--worktree` doesn't just redirect checks — the lane
   EXECUTES in the selected tree (assay cd, pin verification, artifacts,
   host-lane cwd relocate; SPEC R-21). Judging checkout A while pointed at
-  worktree B is the silent false-PASS class this kills.
+  worktree B is the silent false-PASS class this kills. The READ-ONLY verbs
+  follow the same rule: `doctor`/`--check-env --worktree B` report B's git
+  identity, host-lane view, and toolchain fitness, never the invoking
+  checkout's under B's name (SPEC `R-37`, RG-30 — the last instance
+  of the read-scope hazard RG-27 closed for `history`).
 - **Run form:** detached container + wait + logs (survives terminal loss);
   the gate's exit status is the judged job's own — no wrapper/pipe masking.
   Tool-level refusals reserve exit 2 (configuration/refusal) vs 3
@@ -164,6 +201,16 @@ the tool's reason to exist and MUST be implemented + tested:
   word-splitting or executing downstream.
 - **Verdict discipline:** print WHERE the verdict artifact lives; never bury
   it in a stream a consumer might truncate.
+- **Lane cost is measured, not remembered (RG-27):** every run leaves a
+  record in a per-(judged worktree × project) `.run-gate/history.json` — a
+  `latest` slot holding the most recent invocation whatever happened to it,
+  and a bounded per-commit trend series that only trustworthy measurements
+  join (completed, clean tree, no rebase in flight, real commit). Read it
+  with `./run-gate.py history [LANE] [--worktree PATH] [--json]` — the read
+  scope follows `--worktree` exactly as the write scope does, and the answer
+  names the tree it describes. run-gate MEASURES; the
+  rigor/defer policy built on the numbers belongs to whoever reads them
+  (CONSUMERS.md "What each lane costs"; SPEC `R-36`).
 
 ### Distribution — symlink inside vbpub, copy outside
 

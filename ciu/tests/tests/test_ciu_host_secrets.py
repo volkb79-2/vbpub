@@ -15,6 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+import ciu.deploy as REAL_DEPLOY  # captured BEFORE any fixture stubs sys.modules
 from ciu.hosts import get_host, get_host_secrets
 from ciu.secrets.materialize import (
     host_secret_store,
@@ -290,6 +291,26 @@ def test_cli_list_no_secrets(cli_env, monkeypatch, capsys):
     assert "(no host secrets declared)" in capsys.readouterr().out
 
 
+def test_cli_list_accepts_define_root_with_no_ambient_repo_root(monkeypatch, capsys, tmp_path):
+    """ciu-P45 / CIU-54: `host-secrets` previously ignored --define-root
+    entirely (bare REPO_ROOT-or-cwd fallback); now it resolves via
+    `deploy.resolve_repo_root` (S1.1) like every other verb."""
+    monkeypatch.delenv("REPO_ROOT", raising=False)
+    _write_hosts(tmp_path)
+    assert _run(monkeypatch, [
+        "host-secrets", "devbox", "--list", "--define-root", str(tmp_path),
+    ]) == 0
+    out = capsys.readouterr().out
+    assert "ts_authkey  absent" in out
+
+
+def test_cli_list_refuses_when_repo_root_not_set_and_no_define_root(monkeypatch, capsys, tmp_path):
+    monkeypatch.delenv("REPO_ROOT", raising=False)
+    assert _run(monkeypatch, ["host-secrets", "devbox", "--list"]) == 2
+    err = capsys.readouterr().err
+    assert "[ERROR]" in err and "REPO_ROOT not set" in err
+
+
 def test_cli_path_prints_store_file(cli_env, monkeypatch, capsys):
     assert _run(monkeypatch, ["host-secrets", "devbox", "--path", "ts_authkey"]) == 0
     assert capsys.readouterr().out.strip() == str(host_secret_store(cli_env, "devbox", "ts_authkey"))
@@ -354,7 +375,8 @@ def test_up_host_with_secrets_does_not_materialize(cli_env, monkeypatch, capsys,
     )
     monkeypatch.setitem(
         sys.modules, "ciu.deploy",
-        SimpleNamespace(load_global_config=lambda _root: {}),
+        SimpleNamespace(load_global_config=lambda _root: {},
+                        resolve_repo_root=REAL_DEPLOY.resolve_repo_root),
     )
     monkeypatch.setattr(sys, "argv", ["ciu", "up", "--host", "devbox"])
     from ciu import cli

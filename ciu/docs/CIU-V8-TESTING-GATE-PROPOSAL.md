@@ -1,1953 +1,750 @@
-# CIU v8 Proposal — Native Testing Gate, Logical Services, and Environment Instances
+# CIU v8 Proposal — Integrated Configuration Model, Deployment Graph, and Native Testing Gate
 
-**Status:** PROPOSAL — not yet normative
-**Author:** Derived from dstdns repair-program design sessions (2026-08-22–23)
-**Supersedes (eventually):** run-gate-project standalone tool; current `[deploy.phases]` model and other config schema
-**Target:** CIU v8.0.0 (breaking; `revision` key gates config acceptance)
+**Status:** PROPOSAL — not yet normative (the normative companion is `SPEC-V8.md` 8.0.0-draft.3; the worked examples are `v8-dstdns-demo/`)
+**Author:** dstdns/vbpub joint design sessions (2026-08-22 → 2026-09-02); revision 2.x produced by the wholistic-integration pass with the operator interviewed live on every fork, hardened by two review rounds (§4.3.11); revision 3.0 produced by a fresh adversarial review of the whole design set (`CIU-V8-ADVERSARIAL-REVIEW-2026-09-02.md`, 78 findings) with the operator interviewed on ten forks (§4.3.1)
+**Supersedes:** every prior revision of this file (1.5 through 2.1); the `[deploy.phases]` hand-ordered deployment model; the `[service.<n>] type/location` registry; the `[topology.*]` hand-declared routing tables; the `.ciu/` machine-owned directory convention; `ciu.env` as a configuration source; Jinja-templated declaration files; the `routes` render binding and the `init_requires`/`uses`/`after` edge keys of revision 2.x; the secret directive string grammar; the rendered file as the instance lock
+**Target:** CIU v8.0.0 (breaking; `project.revision = 8` gates config acceptance)
 
-**Proposal revision:** 1.5
-**Updated:** 2026-08-24
----
+**Proposal revision:** 3.0
+**Updated:** 2026-09-02
 
-## 0. Why this proposal exists
+**Source documents integrated (all read in full):** this file at revision 2.1; `SPEC-V8.md` draft.2; `V8-REALIZATION-GRAPH.md`; `v8-dstdns-demo/` (65 files); ciu `docs/SPEC.md` 5.0.0 (v7, 4888 lines), `CHANGES.md` (through 7.11.0), `KNOWN_ISSUES_TODO_BACKLOG.md` (status table, CIU-72/73); `run-gate-project/SPEC.md` (R-01..R-38) and every `run-gate.toml` in the estate and in dstdns; assay `CHANGES.md` (B044 `assay lanes --json`), `src/assay/cli.py`, `runner.py`; a source-level dependency map of ciu, assay, run-gate, cmru, nyxloom and dstdns (review §2); the estate doctrine in `AGENTS.md`. Revision 2.1's own source list (dstdns decisions D-094..D-212, assay decisions through A-331, the v7 sources) stands behind the parts of this text that revision 3.0 did not change.
 
-### 0.1 The problem this solves
+**How to read this document.** **Part 1** (§4.1, §4.3a, §4.4, §4.5, §4.6, §4.11) is the proposal itself, a self-contained statement of the v8 model. **Part 2** (§4.2, §4.3, §4.7, §4.8, §4.9, §4.10) is the rationale and audit trail: the inventory of everything considered, the reasoning walked through scenario by scenario, what the two interviews decided and why, every contradiction found and how it was resolved, what was dropped, and where the proposal knows it is incomplete. Where this document and `SPEC-V8.md` differ, the SPEC is the more precise statement and this document is to be corrected.
 
-Today, testing is bolted onto deployment as an afterthought:
-
-- `run-gate.py` exists as a separate standalone script with its own config (`run-gate.toml`), duplicating environment facts that CIU already knows.
-- Test lanes reference container names that CIU derives dynamically per worktree instance, creating a fragile cross-tool resolution boundary.
-- Service realness (live vs mocked vs seeded) has no declarative home — it's implicit in which containers happen to be running.
-- `[deploy.phases]` manually declares startup ordering that should be computed from the init-dependency graph.
-- `[deploy.profiles]` conflates "which services to deploy together" (service groups) with "what topology shape" (single-host vs multi-host).
-- There's no vocabulary for rigor beyond R3, no service realness taxonomy, and no way to select test scope based on changed files.
-
-This proposal unifies all of it into one coherent model inside CIU, eliminating the cross-tool boundary entirely.
-
-Concrete pain from dstdns's repair program (2026-08-22):
-
-- SQL mutation lane debugging required five manual environment reproductions because assay swallowed subprocess output and run-gate had no provisioning capability.
-- A role-privilege regression was invisible to the schema lane because the mutation helper didn't forward `SCHEMA_GATE_PW`; the lane reported green while privilege oracles silently failed to connect.
-- `pg_dump` version mismatch (v17 client vs v18 server) caused equivalence artifacts to fail silently inside assay snapshots; surfaced only through manual archive inspection.
-- The conjunction lane bug means nyxloom-dispatched agents in worktrees may judge the main checkout instead of their attempt tree — false-green depending on whether the consumer's pointer script remembers to `cd`.
-
-### 0.2 What we lose
-
-- `run-gate.py` as a standalone adoptable script for projects that don't use CIU.
-- The clean conceptual separation between "provision infrastructure" and "invoke tests."
-
-Mitigation: `ciu gate <lane>` remains a clean public subcommand. Internal coupling doesn't force external coupling.
+**Conventions.** `S<n>` cites a section of ciu `docs/SPEC.md` 5.0.0 (v7) only in Part 2, §4.6 and §4.11; `V8-S<n>.<m>` cites a rule of `SPEC-V8.md` draft.3; `R-nn` cites a finding of the 2026-09-02 review; `CIU-<n>` / `RG-<n>` / `B<nnn>` / `D-<nnn>` / `A-<nnn>` cite the ciu, run-gate and assay backlogs and the dstdns / assay decision records; `P<n>` cites a guiding principle from §4.1.1. Examples use dstdns's real names because dstdns is the consumer whose configuration was inventoried key by key.
 
 ---
 
-## 1. Design evolution: reasoning trail
+# Part 1 — The Proposal
 
-*This section preserves the analysis that led to the final design. Do not delete.*
+## 4.1 The v8 model
 
-### 1.1 The five-axis model of testing
+### 4.1.0 What v8 is, in one paragraph
 
-Every test execution is determined by five independent dimensions:
+A ciu consumer declares **what** it needs (*LogicalServices*), **how** each need can be satisfied at each realness level (*Realizations* — ciu stacks, external systems, or another instance's services), **where** things run (*Hosts*, *Networks*, *Layouts*), and **which** bundles a deployment includes. Every consumer of a capability declares a **binding** under a local name of its own choosing and says how the resolved address is to be **delivered** to it — as environment variables, or as data its templates read — exactly the way a secret declares its delivery. From those declarations ciu **derives** everything that used to be typed by hand and drift: every container/compose/hostname identity, the resolution of every binding (same instance, joined instance, cross-host, through a proxy, over mTLS), the publication of endpoints across hosts, the deployment order (waves) and the health gates between them, the readiness of transports, the facts minted by secrets, the contract of every capability (from what is bound to it), the deploy set for a chosen realness, and the facts the testing gate needs. Every declaration file is plain TOML that any tool can read; templates exist only for the artifacts other programs consume (compose files, application config files). Every derived value is written as data into `ciu.resolved.toml`, where templates, hooks, the built-in gate (`ciu gate`, run-gate's functionality lifted into ciu while run-gate stays available standalone) and assay read it. There is one identity derivation, one lock per instance (the checkout directory), one secrets file, one judge floor, no `.ciu/` directory, no hand-ordered phases, no `ciu.env` as a source of truth, no `routes` a template pulls by provider name, and no Jinja in any declaration.
 
-| Axis | Question | Declared by | Resolved by |
-|------|----------|-------------|-------------|
-| **Environment** | Where does it execute? Which running instance? | Operator at `ciu up` time | CIU resolves from instance state |
-| **Command** | What runs? | Project config (service/stack definitions) | CIU composes |
-| **Rigor** | How well is it judged? | Intent preset or explicit flags | Assay (or future judge) |
-| **Scope** | Which subset of tests? | Selection patterns + changed files | Gate module |
-| **Realness** | Live services, mocks, or mix? | Per-service variant selection | Environment + override |
+### 4.1.1 Guiding principles (cited as P1–P11 throughout)
 
-A lane is NOT these five things collapsed into one name. A lane is the *composition result*: one environment × one command × one rigor set × one scope × one realness mapping. Each axis is independently inspectable and independently changeable.
+1. **P1 Single source of truth.** Every fact is declared in exactly one place; everything else derives or references it.
+2. **P2 Fail fast.** A wrong or missing value refuses at the earliest point it can be checked: schema → `ciu check` → deploy. Never a silent default; the only defaults are *policy* defaults — correct in the absence of information and shadowing no fact.
+3. **P3 Explicitness over magic.** Every derived value is visible in the rendered file and in `ciu check` output; nothing is built in that a file could declare (no built-in host, no built-in layout).
+4. **P4 Mechanical checkability.** Prefer shapes a program validates completely (closed vocabularies, referential integrity, graph completeness).
+5. **P5 Full preflight.** No error class that can be caught statically is discovered by a live deploy.
+6. **P6 One derivation per identity.** Container name, hostname, compose key, compose project, network name, resolution host: one function, one place, used by every tool.
+7. **P7 Minimal per-kind special-casing.** Adding a realization kind, a fact kind, or a secret source must not require carve-outs in every consumer of the shape.
+8. **P8 Declaration separate from resolution.** What is needed is declared apart from how it is satisfied; the resolution is computed and recorded.
+9. **P9 Config as data.** Templates substitute and expand data; they do not carry business logic. Layering is TOML deep-merge, not Jinja inheritance.
+10. **P10 Nothing hidden.** Machine-owned state lives in visible, gitignored files a person can `cat` and `diff`; no hidden directories, no ambient environment as a config source.
+11. **P11 Declarations are data; only artifacts are templates.** No declaration file is rendered. A machine can read, validate and rewrite every declaration; a template can only ever *consume* declarations and derived values.
 
-### 1.2 Rigor levels R0–R6
+### 4.1.2 Entity model
 
-The current R0–R3 scale measures evidence quality:
+| entity | identity | meaning | declared by | key relationships |
+|---|---|---|---|---|
+| *LogicalService* | name | A capability the system needs; its **contract** (endpoints and facts consumers may rely on) is **derived** from the bindings that target it | `ciu.toml` `[service.<n>]` | has 1..n *RealnessVariants*; referenced by *Bundles*, binding `to`, `exec_in`, `image_from`, `pki`, `vault.service`, lane `requires.healthy` |
+| *RealnessVariant* | (LogicalService, level) | Which *Realization* stands in for the LogicalService at a realness level; `mock` is a variant with no Realization | `[service.<n>].<level>` (a string, or `{ realized_by, service }`) | `realized_by` → exactly one *Realization* |
+| *Realization* | name (one namespace across kinds) | A concrete way to provide services: `ciu_stack`, `external`, `joined` | `ciu.toml` or `ciu.instance.toml` `[realization.<n>]` | contains 1..n *RealizedServices* (ciu_stack), exactly one **primary**; has 0..n *Endpoints* (external); references an *Instance* + *LogicalService* (joined) |
+| *RealizedService* | (Realization, service key) | One deployable service inside a stack: image, replicas, bindings, endpoints, secrets, config files | `ciu.stack.toml` `[ciu_stack.<svc>]` | `binds.<local>` → *LogicalServices*; `provides` → typed facts; `depends_on` → siblings; owns *Endpoints*, *Secrets*, *ConfigFiles*, *HostDirs*; has a derived *Identity* |
+| *Binding* | (consumer, local name) | A consumer's dependency on a LogicalService (optionally one endpoint), with a wait rule (`healthy`/`started`/`none`), a delivery (`env`/`template`/`none`) and the facts it relies on | `binds.<local>` on a RealizedService or a gate environment; `requires = [...]` as sugar | resolved to a *Resolution*; contributes to the target's derived contract |
+| *Resolution* (derived) | (consumer, local name) | How ciu satisfied a binding: network, host, port, URL, TLS facts, readiness prerequisites, the variables it injects | rendered `[resolved.bindings.*]` | derived from *Layout* × *Networks* × *Endpoint* × *Realization kind* |
+| *Endpoint* | (Realization, name) | A reachable port/URL with publication scope and allowed sources | `…endpoints.<e>` | `publish`; `allow_from` → *Networks*/*Hosts*; target of bindings |
+| *TypedFact* | string `kind:selector` | A provable statement about live infrastructure | in `provides` (services, hook entries, external/joined realizations), in binding `facts`; **derived** from vault-stored generated secrets | probed by ciu; provider resolved through the graph |
+| *Host* | name | A machine with one address per address-plane *Network* and a declared `fqdn` | `ciu.hosts.toml` `[hosts.<h>]` | has *Addresses*; placed in *Layouts* |
+| *Network* | name | A reachability domain: an address plane, or a proxy; transport security; optionally a *Realization* that must be up | `[network.<n>]` | `realized_by` → *Realization*; `pki` → *LogicalService* |
+| *Bundle* | name | A set of *LogicalServices* that deploy together; may include other bundles | `[bundles.<b>]` | `services`, `includes` |
+| *Layout* | name | Placement: which bundles run on which *Hosts*, over which *Networks* each host reaches the others | `[layouts.<l>]` | `hosts.<h>.bundles` → *Bundles*; `hosts.<h>.reach` → *Networks* |
+| *Instance* | `instance_id` (path hash) | One checkout's deployment; a zero-instance project (no Realizations) has none | `ciu.instance.toml` (operator) + `ciu.instance.generated.toml` (ciu) | selects *Layout*; records *RealnessVariants* per layout; declares `joined` *Realizations* |
+| *Identity* (derived) | per RealizedService/replica | `container_name`, `hostname`, `compose_key`, `compose_project`, `network` | rendered `[resolved.identities.*]` | one function (P6) |
+| *Wave* (derived) | ordinal | Realizations deployed together | rendered `[resolved] waves` | from binding edges, `depends_on`, derived edges |
+| *Environment* (gate) | name | Where a lane runs: an ephemeral image, `exec` into a Realization's variant service, or the host; may carry env-delivered bindings | `[testing.environments.<e>]` | `exec_in`/`image_from` → *LogicalService* |
+| *Lane* (gate) | name | One command, one judge invocation, or a sequence of lanes, with preconditions and caps | `[testing.lanes.<l>]` | `environment`; `requires`; `assay_lane`; `lanes` |
 
-| Level | Evidence type | What it proves |
-|-------|--------------|----------------|
-| **R0** | Exit code | Code runs without crashing |
-| **R1** | Line+branch coverage | Every changed line was executed |
-| **R2** | Mutation survival | Assertions detect behavior changes |
-| **R3** | Canary (pass-on-good / fail-on-bad) | The gate itself is trustworthy |
-| **R4** | Property/fuzz testing | Behavior holds under arbitrary inputs |
-| **R5** | Formal verification / model checking | Proven correct against specification |
-| **R6** | Production canary | Real traffic confirms expected behavior |
+Relationship summary: a *Bundle* names *LogicalServices*; the instance's realness selection maps each to one *RealnessVariant*, hence one *Realization*; the **deploy set** is the closure of those Realizations. A *Layout* places bundles on *Hosts*; *Resolutions* are derived per binding from placement and *Networks*; *Waves* are derived from bindings. A consumer never names a provider's Realization, never forms an address, and never reads a provider by name in a template — it reads its own local name.
 
-R4–R6 are proposed extensions. R4 (property-based testing) is immediately practical for DNS parsing, input validation, and protocol handling. R5 and R6 are domain-specific and expensive; they exist in the vocabulary so consumers can declare them without schema changes later.
+### 4.1.3 Files and layering
 
-**Key insight:** Rigor levels are independent flags, not a pipeline. Valid combinations include:
-- R0 alone (smoke)
-- R0,R1 (coverage)
-- R0,R2 (mutation without coverage — SQL DDL lanes)
-- R0,R3 (canary verification without mutation cost)
-- R0,R1,R2,R3 (full quality)
-- R0,R4 (property testing)
+**Declaration chain (plain TOML, no rendering — P11):** `ciu.toml` (committed, the project's declarations) → `ciu.site.toml` (committed, optional, sparse site override) → `ciu.instance.toml` (gitignored, per instance, operator-owned: layout, bundles, label, joins, host-port overrides) → `ciu.instance.generated.toml` (gitignored, ciu-owned, rewritten whole: instance identity, host facts, build facts, realness records) → **`ciu.resolved.toml`** (gitignored; the merged declarations plus every derived table under `[resolved]`, written atomically; the one machine interface). Merge semantics: scalars and lists replace, tables merge; nothing is deleted by a layer — a service, secret, binding or lane goes away with `enabled = false`.
 
-Any combination is valid if the underlying tool supports each level independently.
+**Per stack:** `ciu.stack.toml` (plain TOML; services under `[ciu_stack.<svc>]`, stack-level secrets under `[ciu_stack.secrets.<k>]`, `[hooks]`, `[governance]`, consumer tables) → re-rooted into the merged view under `realization.<R>.services.<svc>` (there is no per-stack rendered TOML and no stack-level override file: a site or instance layer overrides a stack table by its merged path, `[realization.consul_server.services.consul.endpoints.http] publish = "host"`). Artifacts: `ciu.compose.yml.j2` → `ciu.compose.yml` (identity, network, label, secret, config-file, port, `depends_on`, healthcheck timing, binding variables and governance stanzas **injected**); config-file templates → `ciu.rendered/<svc>/<mirrored target path>` mounted by parent directory (the v7 S5.3a hardening kept); `ciu.state.toml` for hook state; `ciu.secret-copy.<svc>.<key>` temp copies.
 
-### 1.3 Named intents expand to rigor sets
+**Templates** see a fixed context: `project`, `instance`, `host`, `ciu_stack` (own services with `identity`, merged `health`, resolved `endpoints`, and — per service — `binds.<local>` for template-delivered bindings), `realization` (the merged view of the deploy set, read-only), `state`, `stack_dir`, the stack's consumer tables, user tables, `registry`, `vault.paths`, and `secret()` in config-file templates only. `StrictUndefined`; no `env`; no loader.
 
-Consumers don't set rigor flags directly — they express intent:
+**Identity source.** `[ciu.instance.generated] instance_id` (shared by every host of a layout because the file travels with the push bundle); `[ciu.host.generated]` (which layout host this machine is, its hostname, roots, uids, environment type — regenerated per host); `[ciu.instance.build]`; `[ciu.instance.realness.<layout>]`. `ciu env print` exports the same facts for shells; `ciu.env` is never read.
 
-| Intent | Expands to | Purpose |
-|--------|-----------|---------|
-| `smoke` | R0 | Does it run at all? |
-| `coverage` | R0,R1 | Did I execute my changes? |
-| `quality` | R0,R1,R2 | Do assertions catch behavior changes? |
-| `trust` | R0,R3 | Is the gate itself reliable? |
-| `full` | R0,R1,R2,R3 | Everything |
-| `property` | R0,R4 | Arbitrary-input robustness |
+**Secrets.** One gitignored `ciu.secrets.toml`; **Host inventory** `ciu.hosts.toml` (gitignored; `~/.config/ciu/hosts.toml` user-global); **Registry** `ciu.instance.json`; **Gate** `ciu.gate.<lane>.json` + `ciu-gate-evidence/`; **Data** `ciu-data/`. Nothing under `.ciu/`. The gitignore list ciu verifies: `ciu.resolved.toml`, `ciu.instance.toml`, `ciu.instance.generated.toml`, `ciu.instance.json`, `ciu.compose.yml`, `ciu.state.toml`, `ciu.rendered/`, `ciu.secret-copy.*`, `ciu.secrets.toml`, `ciu.hosts.toml`, `ciu.gate.*`, `ciu.env`, `ciu-data/`, the evidence directory.
 
-Explicit `--rigor R0,R2` overrides any intent for ad-hoc use.
+**Why plain TOML everywhere (R-08).** Revision 2.x rendered every declaration through Jinja, which meant (a) no external validator, editor schema or third-party tool could read a ciu file, (b) a typo in a *declaration* surfaced as a template error, (c) ciu could not safely write into a file it also rendered (X38 moved generated facts out for exactly that reason, and then `instance add --join` wrote into the Jinja overlay anyway — R-06), and (d) stack files that read derived values (`routes`) forced a two-pass render with a recording stub (R-05). Once consumers declare bindings (§4.1.5) and secret paths reference a checked `[vault.paths]` table (§4.1.8), no declaration needs an expression: what was `{{ vault.paths.x }}` is `path = "x"`; what was a `{% for %}` generating twenty near-identical service tables is the one-line string form `live = "x"`. `ciu schema --json` then emits a JSON Schema for every declaration file from the same table-spec that drives the validator.
 
-### 1.4 Service realness taxonomy
+### 4.1.4 Identity — one derivation
 
-Two categories with different vocabularies:
-
-**Internal components** (things we build):
-
-| Level | Meaning | Use case |
-|-------|---------|----------|
-| `mock` | Monkeypatched/stubbed implementation | Enables testing around unimplemented components |
-| `live` | Real implementation running (container, process, whatever form) | Integration/e2e |
-
-**Third-party services** (things we consume but didn't build):
-
-| Level | Meaning | Use case |
-|-------|---------|----------|
-| `live` | Actual external service (Stripe API, Cloudflare DNS) | Production validation |
-| `owned-seeded` | Our own instance with known state (local BIND9, local Stripe stub) | Deterministic integration |
-| `simulated` | Dumb server over network, canned responses | Network-layer testing without real complexity |
-| `mock` | In-process mock object | Fast unit tests |
-
-**Critical insight:** mocking our own internal components enables integration testing of *other* services even when one component isn't implemented yet. The network is not the issue — the missing implementation is. A mock fills the gap.
-
-#### 1.4a Realness selection semantics (normative)
-
-Realness is resolved at `ciu up` time through a three-layer precedence:
-
-**Layer 1: Config defaults.**
+Inputs: `project.name` (committed, literal), `instance_id` (generated), the *Realization* name (registry key), the service key (stack file), and an optional replica index. Output, computed by one function and **written as data**:
 
 ```toml
-[testing.realness_defaults]
-internal = "live"                # default for all internal services
-3rd_party = "owned-seeded"       # default for all third-party services
+[resolved.identities.db_core.postgres]
+container_name  = "dstdns-98535c-db-core-postgres"      # {project}-{instance}-{realization}-{service}, `_` → `-`
+hostname        = "dstdns-98535c-db-core-postgres"
+compose_key     = "db-core-postgres"                    # qualified: no bare-alias collision on the instance network
+compose_project = "dstdns-98535c-db-core"
+network         = "dstdns-98535c-network"
+
+[resolved.identities.controller.controller]
+container_name  = "dstdns-98535c-controller"            # service == realization → the service part is omitted
 ```
 
-These are the baseline: unless overridden, every internal service runs its
-`live` variant and every third-party service runs its `owned-seeded` variant.
-Only variants actually declared in `[service.<name>]` are eligible — a service
-with only a `mock` variant cannot be selected as `live`.
+Rules: the derivation is the only place these strings are formed — templates read them (`{{ ciu_stack.postgres.identity.container_name }}`; `{{ realization.db_core.services.postgres.identity.container_name }}` from elsewhere), hooks read them from their context, the gate reads the same table. Templates may not set `container_name:`/`hostname:` (equal values tolerated and removed). **Uniqueness is checked, not structural** (R-14): the `_`→`-` mapping is injective per name but not across the concatenation (`db_core`+`postgres` and `db`+`core_postgres` collide), so stage 8 refuses a collision naming both derivations. **Ownership labels are fixed** `ciu.project`, `ciu.instance`, `ciu.realization`, `ciu.service`, `ciu.replica`, `ciu.managed-by` (R-15): `clean`, `reap` and `diagnose` enumerate by them, and no consumer setting can orphan a container; consumer labels are authored in templates. `deploy.environment_tag` and `deploy.labels.prefix` are gone. Replicas: `instances = N` yields `-1..-N` suffixes and per-replica identity rows templates iterate.
 
-**Layer 2: Per-service override in config.**
+### 4.1.5 Topology and bindings: hosts, networks, endpoints, layouts → derived resolutions
+
+Distance is never declared on a consumer or a provider; it falls out of *Layout* × *Networks* × the provider's *Endpoint* × the provider's kind. The consumer side is one concept — the **binding**:
 
 ```toml
-[testing.realness_overrides]
-payment-api = "simulated"        # always simulated regardless of defaults
-notification-service = "mock"   # always mocked
+# applications/controller/ciu.stack.toml
+[ciu_stack.controller]
+requires = ["app_schema"]                       # sugar: binds.app_schema = { to = "app_schema" } — an ordering edge, no data
+endpoints.http = { port = 8080, protocol = "http", publish = "proxy", host_port = 8083, path = "/api/controller", allow_from = ["host.tsstammtisch"] }
+
+[ciu_stack.controller.binds.database]           # local name: what the application sees
+to = "main_db.sql"                              # <LogicalService>.<endpoint>
+delivery = "env"                                # DATABASE_HOST, DATABASE_PORT, DATABASE_URL injected into the container
+env_prefix = "DATABASE"
+facts = ["pg:role/controller", "pg:db/dstdns"]  # what this consumer relies on → enters main_db's derived contract; probed before this wave
+
+[ciu_stack.controller.binds.tracing]
+to = "tracing.otlp"
+wait = "none"                                   # runtime-only: a resolution, no ordering edge
+delivery = "template"                           # {{ ciu_stack.controller.binds.tracing.url }} in the compose/config templates
 ```
 
-This lets consumers pin specific services to specific variants without
-changing the global default.
+`wait` ∈ `healthy` (default: the provider's variant service and the endpoint's owner must be healthy — completed for `one_shot` — before this service's wave) | `started` | `none`. `delivery` ∈ `env` | `template` | `none` (required when an endpoint is named; absent otherwise). A binding without an endpoint (`to = "app_schema"`) derives an edge and facts only — and therefore **never a publication**: revision 2.x's `init_requires` derived a route for every ordering dependency, and a route to an endpoint on another host published that endpoint on the provider host even when nothing read it (R-22).
 
-**Layer 3: CLI override at up time.**
+**Hosts** (`ciu.hosts.toml`): `[hosts.<h>] local, fqdn, ssh_*, addresses.<network>, secrets.<entry>, activate.*`. The `fqdn` is *declared* (R-16). No built-in host: `ciu init` writes `[hosts.localhost] local = true`.
 
-```bash
-# Override one or more services for THIS invocation:
-ciu up --group full --profile single-host --realness payment-api=live
+**Networks**: `[network.<n>] kind = address | proxy`, `realized_by`, `tls`, `pki`, `fqdn`, `description`; `instance` implicit.
 
-# Override multiple:
-ciu up --group full --profile two-host --realness payment-api=live,notification-service=mock
-```
+**Endpoints**: `endpoints.<e> = { port, protocol, publish = instance|host|proxy, host_port, host_bind, allow_from, path }`; names unique per stack. **Publication is derived**: an `instance`-published endpoint is additionally published on the provider host, bound to the network address a cross-host *resolution with data* uses; nothing is published on a single host; `publish = "host"` = always; `publish = "proxy"` = fronted by a proxy network. `ciu check --layout L` prints the publication table (R-71).
 
-CLI overrides take precedence over config overrides, which take precedence
-over defaults. The resolution is deterministic and inspectable via
-`ciu plan` (§5.6) before any container starts.
+**Bundles and layouts**: `[bundles.<b>] services, includes, compose_profiles, compose_env`; `[layouts.<l>] environment (free-form, optional), hosts.<h> = { bundles, reach }`. A layout is always explicit; a project with exactly one layout needs no `--layout` (a derivation from a singleton, reported). No built-in layout: `ciu init` writes `[layouts.local]`.
 
-**Testing intent influence on realness.**
-
-A testing intent MAY carry a realness hint that adjusts Layer 1 defaults:
+**Resolution** (`resolve(consumer, binding)`, V8-S7.8): (1) the target through the realness selection to a Realization and its endpoint; (2) `joined` → the reference's container on the reference's network; (3) `external` → the declared URL; (4) same host → container name on the instance network; (5) otherwise the first admitting network in the consumer host's `reach` — a proxy network when the endpoint is `publish = "proxy"`, an address network when both hosts have an address and `allow_from` admits; (6) transport facts from the network (TLS paths of derived certificate secrets, readiness prerequisites); (7) `url` for `http`/`https`/`udp`. Written per consumer and local name:
 
 ```toml
-[testing.intents.smoke]
-rigor = ["R0"]
-realness_hint = { internal = "mock", 3rd_party = "mock" }
-
-[testing.intents.trust]
-rigor = ["R0", "R3"]
-realness_hint = { internal = "live", 3rd_party = "live" }
+[resolved.bindings.controller.controller.database]       # consumer realization.service → local name
+service = "main_db"  realization = "db_core"  endpoint = "sql"
+network = "mesh"  host = "100.64.0.11"  port = 5432  delivery = "env"
+variables = ["DATABASE_HOST", "DATABASE_PORT"]
+requires = ["tailscale_node"]                              # derived readiness edge
+# on `local`: network = "instance"  host = "dstdns-98535c-db-core-postgres"  port = 5432
 ```
 
-The hint lowers realness toward mocking (faster, no credentials needed) or
-raises it toward live (full integration). It NEVER overrides explicit CLI
-flags or per-service config overrides — it only adjusts the *default* layer.
-If an intent's hint requests `mock` but the service has no mock variant,
-the hint is silently ignored for that service (it falls back to the config
-default).
+The consumer's compose template contains no address at all for `env` delivery, and `{{ ciu_stack.controller.binds.tracing.url }}` for template delivery — identically in every deployment shape, and identically after `main_db` is re-pointed to a managed database, a seeded image or a simulator. **Gate environments bind the same way** (`[testing.environments.tester.binds.db] to = "main_db.sql" delivery = "env" env_prefix = "TEST_DB"`), which hands the facts to a lane process as environment variables — so assay needs only its existing `required-env:` facts and never reads ciu's file (R-03). CIU's own Vault client is the pseudo-consumer `ciu` with an implicit binding to `vault`.
 
-**Resolution order summary:**
+**Remote deployment (push).** Push order is the layout's declaration order, checked against the cross-host graph. Render-on-target is unchanged: each host renders its own `ciu.resolved.toml` with its own `[ciu.host.generated]`. What travels is derived **per secret source** (§4.1.8).
 
-1. CLI `--realness <svc>=<level>` → highest precedence
-2. `[testing.realness_overrides].<svc>` → per-service pinning
-3. Intent `realness_hint` (if intent selected AND variant exists)
-4. `[testing.realness_defaults]` → type-level fallback
-5. Error if no variant exists at any level for the service
+### 4.1.6 Init graph, waves, health gate
 
-### 1.5 Why named sub-tables for realness variants
+**Edges** (all data, no phases): every binding with `wait ≠ none` → the target's variant service, the endpoint's owner, and the providers of its `facts`; `depends_on` siblings (rendered into compose with the derived condition); **derived** edges — every vault-sourced or vault-stored secret → the Vault realization; every vault path → its minter (a `from = "generate", store = "vault"` secret or a hook entry's `provides`; no minter is a static ERROR); every cross-host resolution over a network with `realized_by` → that transport on both ends; every resolution over a `tls ≠ none` network → the `pki` service. There is no `after` (a `requires` entry is the same edge, R-21) and no `uses` (a binding with `wait = "none"`).
+
+**Contract conformance** is the completeness check for providers, now computed from consumption (R-19): the contract of `main_db` is the union of endpoints bound to it (`sql`) and the `facts` of those bindings; every declared variant — `live = "db_core"`, `seeded = "db_core_seeded"` — must provide all of it (endpoints exist; facts in `provides`, hook `provides`, or derived from vault-stored secrets), whether or not it is currently selected. Nobody types a contract, and a seeded stub that forgets an endpoint fails `ciu check` before anyone selects it. Facts a provider lists that nobody binds are INFO, not a warning.
+
+**Primary and variant service, waves, gates, health** are unchanged from revision 2.1: a multi-service stack marks one `primary = true`; a variant may name which service carries the capability; Realizations deploy as units in topological waves (a Realization-level cycle is an ERROR naming the remedy); between waves ciu waits for every provider a later wave has an edge to (`gate_timeout` per service, derived from its healthcheck parameters); fact probes run at the consumer's wave inside the providing container; cross-host, reachability of the resolution is probed and the provider host's own gate is authoritative — under the supported `ciu activate apply` flow hosts run serially, which closes revision 2.1's gap 4c (R-24). **The per-Realization pipeline is now written out** (V8-S8.7, R-41): hostdirs → `pre_secrets` hooks → secrets and temp copies → `pre_compose` hooks (their `state` is visible to every later step of the same run) → config files → compose render and injection → `compose up` → `post_compose` hooks after the Realization's providers are healthy → wave gate and fact probes.
+
+### 4.1.7 Realness
+
+Levels `live`, `seeded` (prepared; `owned-seeded` renamed, R-29), `simulated`, `mock = {}`. Selection precedence is CLI > `[realness.pin]` > `[realness] default`; the per-layout record `[ciu.instance.realness.<layout>]` written at the first `ciu up` is a **constraint**, not a source (R-26): a selection that differs from it — by flag or by a changed pin — is refused until `ciu clean --vanilla`. Joins are a Realization kind declared in the plain-TOML instance file, written by `ciu instance add --join` with a round-trip writer (R-06); instance labels are unique per git family and a join names a label or an absolute path (R-27); a joined vault's token is read from the reference's store under the reference's shared lock (R-28).
+
+### 4.1.8 Secrets
+
+Declaration stays on the RealizedService (or once at stack level), with `delivery` mandatory — and the directive string grammar is replaced by **structured data** (R-30):
 
 ```toml
-# Option A (CHOSEN): level name IS the key
-[service.payment-api.live]
-base_url = "https://api.stripe.com"
+[ciu_stack.controller.secrets.postgres_password]
+from = "vault"                                  # vault | generate | ask | file | host | ephemeral
+path = "postgres_controller_password"           # a [vault.paths] key (checked) or a literal path containing '/'
+delivery = "file"                               # → /run/secrets/postgres_password
 
-[service.payment-api.mock]
-implementation = "tests/mocks/payment_mock.py"
+[ciu_stack.controller.secrets.bootstrap_token]
+from = "generate"
+store = "vault"                                 # was GEN_TO_VAULT:<path>; derives the fact vault:secret/<path>
+path = "controller_bootstrap_token"
+delivery = "env"
+env_name = "CONTROLLER_BOOTSTRAP_TOKEN"
 
-# Option B (REJECTED): array with realness field
-[[service.payment-api]]
-realness = "live"
-base_url = "https://api.stripe.com"
+[ciu_stack.postgres.secrets.workerdb_ddl_password]
+from = "generate"  store = "vault"  path = "postgres_workerdb_ddl_password"  delivery = "none"     # minted here for others
+
+[ciu_stack.exporter.secrets.consul_token]
+from = "vault"  path = "consul_docker_stats_exporter_token"  delivery = "configfile"              # only secret("consul_token") in this service's config-file templates
+
+[ciu_stack.nginx.secrets.tls_cert]
+from = "host"  entry = "tls_cert_pem"  delivery = "file"                                        # the placement host's own entry
 ```
 
-Option A wins because:
-- TOML enforces uniqueness (can't accidentally declare two `live` variants)
-- Direct key lookup: `config["service"]["payment-api"]["live"]`
-- Invalid level names are structurally obvious
-- Templates access variants cleanly: `{{ service.payment_api.live.base_url }}`
-- No iteration needed to find the right variant
+`delivery` ∈ `file` | `env` | `configfile` | `native` | `hook` (materialized for this stack's hooks only — was `consumed_by`) | `none`. `produced_by` is gone: the bundle that mints a path is derivable from the minter edge (R-31). `[vault.paths]` is a **reference table ciu reads** to resolve `path` keys, so a typo in a path name is refused with the closest candidates instead of becoming a wrong KV path (in revision 2.x the same table was "never read by ciu" and paths were Jinja-composed strings). The secret-free scan keeps v7's `/`-bearing rule (revision 2.x's character-class exemption also exempted `hunter2secret`). Values live in one `ciu.secrets.toml`, written atomically under the instance lock; `file` delivery bind-mounts temp copies; `env` delivery passes through the compose process environment, whose content is exactly enumerated; certificates for TLS networks are derived stack-level secrets satisfied by the `pki` provider's hook.
 
-### 1.6 Phases → init dependency graph
+**What travels on push is derived per source (R-32).** Local and remote differ in exactly one thing — where the store is — so the bundle carries what only the sender has: `generate`+`store = local`, `ask`, `file` values, and the target's own `host` entries; `ephemeral` values never travel (and a cross-host-shared secret cannot be ephemeral); `vault`-sourced values are fetched **by the target** when the target host has a derived resolution to the `vault` LogicalService, otherwise pre-fetched by the sender and added to the shipped store. A project with no Vault ships its whole reduced store; a project with a reachable Vault ships local-source entries only. `ciu check --layout L` prints, per host, what travels and why. This replaces both v7's fixed "target fetches" and revision 2.x's fixed "sender ships everything".
 
-Current `[deploy.phases]` manually declares startup ordering. This conflates two different graphs:
+### 4.1.9 Instances, locking, lifecycle
 
-**Init dependencies** (renamed from S13 `requires`/`provides`):
-- "I cannot START until X exists"
-- Driven by secret propagation requirements during initialization
-- Startup order is COMPUTED by topological sort of this graph — never declared
+**Every checkout is an instance** (a project with no Realizations has none — §4.1.10). `ciu instance init [--host] [--layout] [--bundles] [--label]` derives the identity (a hash of the physical path), writes the generated file, and creates `ciu.instance.toml` when absent. `ciu instance list/show/add/remove/exec/reap/lease` are the former worktree verbs (`lease` restored from v7 S16.9, R-44); `ciu instance exec --env <e>` runs in a gate environment after the **mount proof** (the container mounts *this* checkout at `workdir` — v7 S16.7's guard, restored, R-47). Budget and lease: `[ciu.instances] max_concurrent, lease_ttl_hours`; the lease holder is `ciu@<host.hostname>:<instance_id>` from the host facts (R-45).
 
-**Usage dependencies:**
-- "My functionality degrades without X but I can still run"
-- Does NOT affect startup order
-- Affects health/readiness reporting only
-- `allow_degraded_start = true` (default): after init completes, services start regardless
+**Mutex (R-42).** The lock object is the **checkout root directory** (`flock` on its descriptor): its inode is stable for the life of the checkout, so nothing ciu renders or git replaces can fork the mutex. Mutating verbs take it exclusively; the gate takes it shared for the duration of its lanes (so `up` cannot recreate a container under an `exec` lane, while several gates coexist under admission); read-only verbs take it shared while reading `ciu.resolved.toml`, which is written by temp-file and atomic rename and is therefore always complete or absent. Revision 2.x's rendered-file lock needed in-place rendering, a completion table, torn-file detection by every reader, an `fstat`/`stat` retry and "clean truncates never unlinks", and still lost the mutex to `git clean -x`; none of that exists now. Lock order: instance lock → git-common-dir registry lock → a joined reference's instance lock (shared). The store is written under the instance lock; there is no separate secrets lock and no per-stack lock. A dead holder's `flock` is released by the kernel; there is no lock-breaking verb. A filesystem that cannot `flock` a directory is refused by name rather than run unlocked.
 
-After initialization finishes, all services can start in any order. Degraded service is acceptable; missing init prerequisite is not.
+**Lifecycle.** `ciu instance init` → `ciu check` (automatic before every mutating verb) → `ciu up` → `ciu gate …` → `ciu down` / `ciu clean [--vanilla]`; `clean` disconnects ciu's own container from the instance network before removing it and refuses while a joiner is attached (R-39).
 
-### 1.7 Profiles → two distinct concepts
+### 4.1.10 The testing gate — `ciu gate` (run-gate's functionality lifted; run-gate stays standalone)
 
-Current `[deploy.profiles]` conflates two orthogonal concerns:
-
-**Service groups** — which services you want up together:
-```toml
-[deploy.groups.core]
-services = ["vault", "consul", "redis"]
-```
-
-**Deployment profiles** — topology shape:
-```toml
-[deploy.profiles.single-host]
-description = "All on one host"
-
-[deploy.profiles.three-host]
-description = "Distributed across hosts"
-```
-
-An **environment instance** = one group × one profile × a lifecycle state. Multiple instances can share the same profile (classic multi-stack). Environments are runtime facts created by `ciu up`, not static declarations.
-
-### 1.8 Topology vs service identity
-
-Three categories of deployment-dependent facts:
-
-| Category | Example | Lives in |
-|----------|---------|----------|
-| **Service identity** | port, health endpoint, image | `[service.<name>.<level>]` |
-| **Network routing** | which host, VPN vs proxy, path prefix | `[deploy.profiles.<name>]` + `[topology.*]` |
-| **Access method** | direct DNS, WireGuard IP, reverse-proxy path | Transport mechanism in topology |
-
-The service declares: *"I listen on port 8080."*
-The profile declares: *"worker-io runs on host B, reachable via WireGuard at 10.0.0.2:8080."*
-
-Switching from WireGuard to nginx reverse proxy changes topology only. Service config untouched.
-
-Cross-host external addresses (when VPN isn't used) are routing facts owned by topology, never by the service.
-
-### 1.9 Conjunction lane flag forwarding bug (run-gate finding)
-
-Fixed in `run-gate`, solution could be adopted.
-
-### 1.10 Assay integration 
-
-CIU should validate the verdict JSON against Assay’s packaged schema, preserve/pin the producing version, and treat exit status as routing—not proof. That avoids weakening evidence to “process returned zero.”
-
-CIU-specific resource governance belongs in CIU, consistent with Assay’s explicit non-goal of being an orchestrator (assay/nyxloom-trove/2-product-definition.md:460). For infrastructure-dependent lanes, however, B013 is the key Assay gap.
-
-#### 1.11 subprocess output capture (upstream ask)
-
-**RESOLVED upstream as Assay B014** (shipped in assay-v2.3.0): bounded final stdout/stderr plus truncation counts for failed/timed-out commands. CIU should NOT duplicate this — lane-command diagnostics belong in the verdict, not in CIU's orchestration log. Consumer repos must verify their pinned Assay artifact includes B014 before relying on it.
-
-#### 1.12 Higher Rigor
-
-- Assay should provide evidence contracts for higher rigor, not become a property-testing/fuzzing engine. Hypothesis, proptest, ClusterFuzzLite, AFL-style tools, and domain-specific fuzzers remain better producers.
-- The sensible boundary: specialized tools generate cases and produce structured evidence; Assay validates thresholds, binds evidence to commit/input, emits verdicts, and fails loudly. This also matches its existing non-goals and avoids reinventing mature tooling.
-- For mutation rigor specifically, finishing B012 resume/checkpointing and provable sharding is higher value than inventing an “R4.” Property/fuzzing can later enter as another evidence tier/provider contract once CIU actually needs a second judge producer.
-
-#### 1.13 Build version management (`[build]` + `ciu refresh`)
-
-The current dstdns config carries `[build] python_version = "3.14"`,
-`python_base_image`, etc. at global scope. These serve two purposes:
-(1) build inputs read by Dockerfiles/bake via Jinja2, and (2) version pinning.
-
-V8 formalizes this into a structured namespace:
-
-```toml
-[build.python]
-version = "3.14"                        # CONSTRAINT — what we accept; never auto-changed
-chosen_version = "3.14.8"              # filled by ciu refresh; the actual resolved version
-possible_version_upstream = "3.15.0"   # always written; informational even when held
-hold = false                             # true = chosen_version NOT updated; upstream still tracked
-base_image = "python:{{ build.python.version }}-slim-trixie"
-
-[build.python.libraries.pydantic]
-version = ">=2.5,<3"                   # constraint (PEP 440 range or exact pin)
-chosen_version = ""                     # resolved by ciu refresh within version constraints
-possible_version_upstream = ""
-hold = false
-
-[build.node]
-version = "22"                         # major-version constraint
-chosen_version = "22.11.0"             # frozen because hold=true
-possible_version_upstream = "24.0.0"   # still tracked so operator can see what's available
-hold = true                              # never auto-bump chosen_version
-```
-
-A new `ciu refresh` verb queries upstream registries for EVERY declared
-component and writes two fields:
-
-| Field | Written by refresh? | When held? | Purpose |
-|-------|--------------------:|-----------:|---------|
-| `version` | NEVER | NEVER changed | The human-declared constraint |
-| `chosen_version` | Yes, non-held only | NOT written (frozen) | Concrete resolved version CIU uses |
-| `possible_version_upstream` | YES, all components including held | ALWAYS written | Best available upstream match — informational |
-
-`hold = true` prevents `chosen_version` from being updated but does NOT
-prevent `possible_version_upstream` from being written. An operator holding
-a component still sees what upstream offers, enabling an informed decision
-to un-hold later.
-
-**Refresh output:**
-
-```
-ciu refresh report:
-  UPDATED: build.python 3.14.7 → 3.14.8
-  HELD: build.node held at 22.11.0; upstream available: 24.0.0
-  UNCHANGED: build.python.libraries.httpx already at ==0.27.0
-  Total: 1 updated · 1 held · 1 unchanged
-```
-
-```toml
-[build]
-min_release_age_days = 14        # default 0; prevents adopting just-released versions
-channel = "stable"               # "stable" | "pre-release" | "all"
-```
-
-Per-component `min_release_age_days` override supported.
-
-#### 1.14 User-declared namespaces (`ciu.user_tables`)
-
-Consumers currently place application-domain tables at global top level
-alongside CIU's reserved namespaces, creating collision risk.
-
-V8 introduces:
-
-```toml
-ciu.user_tables = ["authentik", "auth", "workflow", "pubsub", "load_control", "build"]
-```
-
-- Listed top-level tables are consumer-owned; CIU passes them through to
-  templates unchanged without validating shape.
-- Any top-level table NOT listed AND NOT reserved MUST be absent — unknown
-  tables are validation errors naming the key.
-- The declaration itself is validated (valid TOML bare keys, no duplicates).
-
-#### 1.15 Service identity model: stacks contain services
-
-Services are declared in a **two-level hierarchy**: a logical STACK contains
-one or more logical SERVICES. The compound key `<stack>.<service>` is the
-globally unique service identifier. This mirrors Docker Compose's own naming:
-container names become `<project>-<instance>-<stack>-<service>[-<replica>]`.
-
-**Stack-level declaration** — defines WHAT CIU does with this stack and WHERE
-to find it:
-
-```toml
-# A CIU-managed stack containing multiple services
-[service.our_db_stack]
-type = "CIU"
-location = "infra/db-core"       # filesystem path to the stack directory
-
-# A legacy compose project (no ciu config, pre-created docker-compose.yml)
-[service.legacy_stack]
-type = "COMPOSE"
-location = "/opt/my_legacy_service"
-
-# An external API consumed but never deployed here
-[service.payment-api]
-type = "EXTERNAL"
-
-# Mock/simulation files only; never deployed as containers
-[service.notification-service]
-type = "IN_PROCESS"
-```
-
-**Service-level declaration** — realness variants live INSIDE the stack,
-on each service:
-
-```toml
-# Services within a CIU-type stack
-[service.our_db_stack.postgres.live]
-port = 5432
-image = "timescale/timescaledb-ha:pg18"
-
-[service.our_db_stack.postgres.mock]
-implementation = "tests/mocks/postgres_mock.py"
-
-[service.our_db_stack.minio.live]
-port = 9000
-image = "minio/minio:latest"
-
-# Services within a COMPOSE-type stack CAN have realness variants —
-# one service might be replaced by a stub while others run live.
-[service.legacy_stack.service1]
-port = 1234                        # live: how we reach the real service
-
-[service.legacy_stack.service1.mock]
-implementation = "tests/mocks/legacy_service1_mock.py"
-
-# EXTERNAL and IN_PROCESS types have no inner stack services;
-# their realness variants sit directly on the entity:
-[service.payment-api.live]
-endpoint = "https://api.stripe.com"
-secrets = ["stripe_secret_key"]
-
-[service.payment-api.mock]
-implementation = "tests/mocks/stripe_mock.py"
-```
-
-**Type determines HOW CIU deploys the stack, not what realness variants
-its services can have. Realness is always per-service and orthogonal to
-the deployment mechanism.**
-
-| Type | Has inner services? | How CIU deploys | Realness per service |
-|------|--------------------|-----------------|---------------------|
-| `CIU` | Yes | Full pipeline (render, secrets, hooks, compose) | `live`, `mock`, `owned-seeded`, `simulated` |
-| `COMPOSE` | Yes | `docker compose up` on pre-existing file | `live`, `mock`, `simulated` |
-| `EXTERNAL` | No (entity IS the service) | Nothing deployed; connection facts only | `live`, `owned-seeded`, `simulated`, `mock` |
-| `IN_PROCESS` | No (entity IS the mock) | Nothing deployed; files referenced directly | `mock` only |
-
-**Service reference format:** always `<stack>.<service>`. This is unique
-because TOML enforces that a given stack name appears only once at the top
-level, and service names within it are unique by TOML table rules.
-
-No separate `logical_name` field is needed. If two stacks both have a
-service called `postgres`, they are naturally distinct:
-`our_db_stack.postgres` vs `other_stack.postgres`. Cross-stack references
-in groups, init_requires, and testing selection use the full compound key.
-
-
-**Problem.** Each stack directory needs per-service deployment config
-(ports, env vars, hostdirs). Currently dstdns derives a root key from the
-directory name (`infra/db-core` → `[db_core]`). This is implicit and fragile.
-
-**V8 approach:** every stack declares its services under a reserved
-top-level key `[local_stack]` in its own `ciu.defaults.toml.j2`. This is
-NOT the global service registry — it is per-stack deployment wiring:
-
-```toml
-# infra/db-core/ciu.defaults.toml.j2
-[local_stack.postgres]
-port = 5432
-image = "timescale/timescaledb-ha:pg18"
-health_endpoint = "/ready"
-
-[local_stack.minio]
-port = 9000
-image = "minio/minio:latest"
-```
-
-| Aspect | Global `[service.X]` | Stack `[local_stack.Y]` |
-|--------|----------------------|--------------------------|
-| Purpose | Logical identity + realness variants | Per-stack deployment wiring |
-| Owner | CIU global config | Stack's own ciu.defaults.toml.j2 |
-| Contains | type, location, init_requires | port, image, env, hostdir, hooks |
-| Realness | Declared here | Not present — realness is a global concern |
-
-Templates access local config as `{{ local_stack.postgres.port }}`;
-cross-stack references still use `{{ topology.services.postgres.internal_host }}`.
-
-**Mapping rules (normative):**
-
-1. The `[local_stack.<name>]` key MUST match the logical service name from
-   the global `[service.<name>]` registry exactly. This is the join key:
-   global defines WHO the service is; local_stack defines HOW to run it.
-2. One stack directory MAY declare multiple `[local_stack.*]` entries —
-   this is normal when a stack deploys several services (e.g. db-core runs
-   postgres, minio, and pgadmin).
-3. The global `location` field points to the stack directory. Renaming or
-   moving that directory requires updating only the global `location` value;
-   the stack's own `[local_stack]` content is unchanged.
-4. A `[local_stack.<name>]` entry for a service NOT declared in the global
-   registry is valid — it means "this stack deploys something only it knows
-   about." The global registry exists for cross-stack references and SSOT
-   defaults, not as a gatekeeper for what a stack may run.
-5. Hooks move from the old `[<root>.hooks]` convention to
-   `[local_stack.<svc>.hooks]`, keeping hook declarations co-located with
-   the service they configure.
-
-#### 1.17 Topology: do we need endpoints/routes?
-
-When everything runs on one internal Docker network, services reach peers
-by container hostname + port. No routing table needed.
-
-When multi-host / VPN / reverse-proxy enters, `[deploy.profiles.<name>.<host>]`
-already answers "where". "How to reach" depends on transport mode:
-
-```toml
-[topology]
-transport = "direct"             # "direct" (same network) | "wireguard" | "proxy"
-
-# Only when transport != "direct":
-[topology.hosts.host-a]
-address = "10.0.0.1"
-```
-
-Optional per-service route overrides (reverse-proxy paths):
-```toml
-[deploy.profiles.two-host.routes.api]
-path_prefix = "/api"
-```
-
-**Decision:** defer full endpoint/route modeling until a second multi-host
-consumer exists. Profile + transport covers the immediate need. Most stacks
-on an internal network never declare routes.
-
-#### 1.18 One-shot completion semantics
-
-Current `stack:<name>:healthy` probes container_name derived from basename,
-which is fragile. The exit_code==0 special case works only when no healthcheck
-exists — a healthcheck that passes before exit gives a false positive.
-
-V8 adds `one_shot = true` on phase service entries. When true, the health
-gate treats exit-0 as satisfied without Docker-health polling. Requires use
-full stack path: `requires = "stack:infra/db-init:completed"` instead of
-basename-only `stack:db-init:completed`.
-
-#### 1.19 Unified configfile fan-out + compose enumeration
-
-Currently dstdns declares separate configfile sections per replica AND
-generates compose services via manual Jinja loops. Using both mechanisms
-produces duplicate mounts.
-
-V8 unifies: root-level `instances = N` on a service drives BOTH configfile
-fan-out AND compose service enumeration. Templates iterate via a provided
-instance-loop context rather than hand-writing `{% for %}` ranges.
-
-#### 1.20 Environment variable declarations
-
-Stacks currently inject `${VAR:-fallback}` or `${VAR:?message}` directly
-into compose templates with no typed declaration of expected vars.
-
-V8 adds an inline list on each local_stack entry:
-
-```toml
-[local_stack.postgres]
-env_required = ["POSTGRES_PASSWORD_FILE", "POSTGRES_USER"]
-```
-
-CIU validates presence of every listed var before render and fails naming
-missing variables. Known machine identity keys are auto-injected into Jinja
-context as `{{ env.CONTAINER_UID }}` instead of raw Compose interpolation,
-making the source explicit.
-
----
-
-## 2. Config model
-
-### 2.1 Single source file
-
-Everything lives in `ciu.global.defaults.toml.j2` (existing name, new revision).
-
-A `revision` key gates acceptance:
-
-```toml
-revision = 8    # CIU v8 requires revision >= 8; refuses lower
-```
-
-Old configs lacking this key are refused with a clear upgrade message. Hard cutover — no compatibility shim.
-
-### 2.2 Rendering hierarchy unchanged
-
-```
-ciu.global.defaults.toml.j2     ← committed source template (repo root)
-ciu.global.toml.j2              ← optional committed override template
-ciu.global.toml                 ← rendered output (gitignored)
-```
-
-Per-stack overrides follow existing S3 merge chain.
-
-Note: We should list used files and rendering on project-level as well to make hierarchy transparent. 
-
-
-### 2.3 Testing declarations live in the same file
-
-No separate `ciu.testing.toml`. Variable substitution works uniformly across services, topology, and testing sections because they share one rendering pass.
-
-### 2.4 User table declaration
-
-See §1.14. `ciu.user_tables` lives in the global config alongside other
-`[ciu]` workspace switches.
-
-### 2.5 Rendered-config validation preflight
-
-V8 introduces a pre-render validation pass that catches silent-empty renders.
-After Jinja2 rendering but before TOML parsing, CIU checks that template
-expressions referencing a key path not present in the context produce an
-error naming the missing path — not a silently empty render. Implemented by
-wrapping Jinja2 `Undefined` to raise on attribute access; templates MUST
-reference keys that exist or use `{% if x is defined %}` explicitly.
-
-### 2.6 Registry schema enforcement — options analysis
-
-`[registry.postgresql]`, `[registry.redis.users.*]`, etc. are free-form TOML
-consumed by hooks with no CIU-level validation. A typo surfaces only at hook
-runtime.
-
-Three approaches:
-
-**Option A: JSON Schema per registry table** — standard tooling, IDE support,
-no Python dependency. Cons: JSON Schema for TOML is awkward; requires a
-schema file per table type; consumers maintain both config and schema.
-
-**Option B: Validated Pydantic models shipped with CIU** — CIU provides
-models for the five built-in provisioning kinds (PostgreSQL, Redis, MinIO,
-Consul, Vault). Hooks receive validated objects. Pros: type-safe,
-self-documenting, errors carry key paths and expected types, fail-fast at
-render time. Cons: couples CIU to specific shapes; new types require CIU
-model updates.
-
-**Option C: Consumer-declared Pydantic models (hook-side)** — hooks import
-their own models from the consumer project's library. CIU passes raw dicts;
-the hook validates on receipt. Pros: zero CIU coupling. Cons: no pre-render
-validation — typos still surface only at hook runtime.
-
-**Recommendation: Option B for well-known types, Option C for custom.**
-CIU ships models for PostgreSQL, Redis, MinIO, Consul, Vault (the five
-built-in provisioning ref kinds). These are stable enough to warrant
-first-class schemas. For anything else, hooks validate on their own. This
-gives fail-fast for the common case without making CIU responsible for
-arbitrary consumer schemas.
-
-### 2.7 `ciu config check` — full config validation with hook preflight
-
-**Problem.** Today, hook-level typos and registry shape errors surface only
-at hook runtime — after containers are already starting. The existing
-`ciu check` verb validates only the provisioning graph (requires/provides).
-It does NOT walk hooks, render configfiles, validate registry shapes, or
-exercise any of the pipeline's later steps. A consumer must run a real
-`ciu up --dry-run` to catch these, which still creates hostdirs and runs
-pre_secrets hooks.
-
-**Proposal: `ciu config check [--profile NAME] [--json]`.**
-
-A read-only, side-effect-free validation pass that walks the ENTIRE config
-pipeline in dry-run mode:
-
-| Stage | What it validates | Side effects |
-|-------|-------------------|-------------|
-| 1. Render | Jinja2 + `$VAR` expansion + TOML parse (global chain, all selected stacks) | None |
-| 2. Shape | Single root key (S3.5), reserved namespace collision (S3.7) | None |
-| 3. Secrets | Directive grammar (S4), placement (S4.1/S4.5), name uniqueness (S4.6), Vault ordering (S7.6) | None |
-| 4. Provisioning | requires/provides grammar (S13), graph lint, cycle detection | None |
-| 5. Governance | Shape checks (S15.2), cgroup parent resolution | None |
-| 6. Configfile | Template existence, target path validity, schema file existence (S5) | None |
-| 7. Registry | Built-in Pydantic model validation (§2.6 Option B); consumer models via optional `validate(config)` callable | None |
-| 8. Hooks — load | Every declared hook file exists and exports `run` or `Hook` with `run` method (S9.2) | None |
-| 9. Hooks — preflight call | Call each hook's `validate_config(config, ctx)` method if it defines one; report errors without executing `run()` | None |
-| 10. Compose render | Full compose template rendering with guarded config (S4.21) | Writes nothing; renders to memory |
-| 11. Overlay | Generate overlay in memory; leak scan (S4.22) | Writes nothing |
-| 12. Consumption | Declared-vs-consumed secret cross-check (S4.20) | None |
-
-**Key design decision: the `validate_config` hook contract.**
-
-Hooks that want preflight testing implement an OPTIONAL second entry point:
-
-```python
-# infra/db-core/post_compose_db.py
-
-def run(config: dict, ctx) -> dict:
-    """Normal execution — provisions users, databases."""
-    ...
-
-def validate_config(config: dict, ctx) -> list[str]:
-    """Optional preflight. Return list of error strings (empty = OK).
-    CIU calls this during `ciu config check` but NEVER during normal up.
-    Accesses the same merged config and context as run(), so it can
-    validate exactly what run() will consume."""
-    errors = []
-    if "database" not in config.get("registry", {}):
-        errors.append("registry.database is missing")
-    for user in ("controller", "workerdb"):
-        if user not in config.get("registry", {}).get("postgresql", {}).get("users", {}):
-            errors.append(f"registry.postgresql.users.{user} is missing")
-    return errors
-```
-
-- `validate_config` is entirely optional. Hooks that don't define it are
-  simply skipped in the hook-preflight stage (stage 9 above). No error.
-- When defined, it receives the SAME merged config and HookContext as
-  `run()`, including SecretGuard objects for secrets (which it can check
-  exist by name without accessing values).
-- It MUST NOT execute side effects (no Docker calls, no network access,
-  no file writes). CIU does not enforce this technically — it is a contract,
-  like "hooks don't mutate os.environ" — but violations would be caught
-  because `config check` runs before any container exists.
-- Return type is `list[str]`: empty = valid; non-empty = one error string
-  per finding. CIU aggregates all findings across all hooks and reports
-  them together.
-
-**Output (prose):**
-```
-ciu config check: 3 stacks, 2 profiles, 14 services
-
-  ✓ global config rendered
-  ✓ infra/db-core shape valid
-  ✓ secrets: 8 directives, all well-formed
-  ✓ provisioning: 5 refs, no cycles
-  ✓ governance: dev-background.slice resolved
-  ✓ configfiles: 2 templates found, schemas present
-  ✓ registry: postgresql validated (6 users)
-  ✓ registry: redis validated (4 ACL entries)
-  ✓ hooks: 3 files loaded, 2 define validate_config
-    ✓ db-core/post_compose_db.py: no issues
-    ✗ consul-server/post_compose_consul.py: registry.consul.acl.default_policy missing
-  ✓ compose render: 3 stacks rendered, no leaks
-
-  RESULT: FAIL (1 error)
-```
-
-**Output (`--json`):**
-```json
-{
-  "schema_version": 1,
-  "operation": "config-check",
-  "status": "fail",
-  "stages": [
-    {"stage": "render", "status": "pass"},
-    {"stage": "shape", "status": "pass", "stacks_checked": 3},
-    {"stage": "registry", "status": "fail",
-     "errors": [
-       {"hook": "consul-server/post_compose_consul.py",
-        "message": "registry.consul.acl.default_policy missing"}
-     ]}
-  ]
-}
-```
-
-Exit codes follow S10.3: 0 = all pass, 1 = findings reported, 2 = config/validation error.
-
-**Relationship to existing verbs:**
-
-| Verb | What it does | What `config check` adds |
-|------|-------------|--------------------------|
-| `ciu check` | Provisioning graph lint + optional live probe | Everything else on this table |
-| `ciu up --dry-run` | Full pipeline except compose up; still creates hostdirs, runs hooks | Zero side effects; no Docker needed |
-| `ciu provenance` | Verifies running images against commit | Orthogonal — post-deployment evidence |
-
-This verb makes `ciu up --dry-run` unnecessary as a validation tool and
-gives CIU agents / CI pipelines a safe way to verify config correctness
-without touching Docker or the filesystem beyond reading templates.
-
----
-
-## 3. Logical services and realness
-
-### 3.1 Declaration
-
-The global config declares logical stacks and their services. Each stack has
-a `type` that determines CIU behavior. Services within a stack declare
-realness variants.
-
-```toml
-# ────────────────────────────────────────────────────
-# CIU-managed stacks
-# ────────────────────────────────────────────────────
-
-[service.our_db_stack]
-type = "CIU"
-location = "infra/db-core"
-
-[service.our_db_stack.postgres.live]
-port = 5432
-image = "timescale/timescaledb-ha:pg18"
-init_requires = []                  # nothing needed before postgres starts
-provides = ["pg:db/demo", "pg:role/controller"]
-
-[service.our_db_stack.postgres.mock]
-implementation = "tests/mocks/postgres_mock.py"
-
-[service.our_db_stack.minio.live]
-port = 9000
-image = "minio/minio:latest"
-provides = ["minio:user/worker-io"]
-
-[service.our_api_stack]
-type = "CIU"
-location = "applications/api-handler"
-
-[service.our_api_stack.api.live]
-port = 8080
-health = "/health"
-init_requires = [
-    "our_db_stack.postgres",       # reference by compound key
-    "vault:secret/db/postgres/api_password",
-]
-depends_on = ["our_db_stack.redis", "payment-api"]
-allow_degraded_start = true         # default true
-
-[service.our_api_stack.api.mock]
-implementation = "tests/mocks/api_handler_mock.py"
-
-# ────────────────────────────────────────────────────
-# COMPOSE-type stacks (pre-existing docker-compose.yml)
-# ────────────────────────────────────────────────────
-
-[service.legacy_stack]
-type = "COMPOSE"
-location = "/opt/my_legacy_service"
-
-[service.legacy_stack.service1]
-port = 1234                        # live: how we reach the real service
-
-[service.legacy_stack.service1.simulated]
-image = "wiremock/wiremock:latest"
-stub_mappings = "fixtures/legacy_stubs/"
-
-# ────────────────────────────────────────────────────
-# EXTERNAL services (consumed, never deployed)
-# ────────────────────────────────────────────────────
-
-[service.payment-api]
-type = "EXTERNAL"
-
-[service.payment-api.live]
-endpoint = "https://api.stripe.com"
-secrets = ["stripe_secret_key"]
-
-[service.payment-api.mock]
-implementation = "tests/mocks/stripe_mock.py"
-
-# ────────────────────────────────────────────────────
-# IN_PROCESS services (mock files only)
-# ────────────────────────────────────────────────────
-
-[service.notification-service]
-type = "IN_PROCESS"
-
-[service.notification-service.mock]
-implementation = "tests/mocks/notification_mock.py"
-```
-
-**Key structural rules:**
-
-- Stack-level keys (`type`, `location`, `description`) sit directly under
-  `[service.<stack_name>]`.
-- Service-level realness variants are nested:
-  `[service.<stack>.<svc>.<level>]`.
-- For `EXTERNAL` and `IN_PROCESS` types there is no inner service layer —
-  realness sits directly on the entity because it doesn't live inside a stack.
-- Realness is ALWAYS per-service, regardless of stack type. A COMPOSE-type
-  stack can have one service mocked while others run live. The `type`
-  controls deployment mechanism; realness controls test posture.
-- `init_requires` and `depends_on` reference OTHER services using the full
-  compound key (`<stack>.<service>`) or external typed references
-  (`vault:secret/...`, `pg:db/...`).
-
-### 3.2 Validation rules
-
-- Every sub-table key under `[service.<stack>.<svc>]` MUST match a valid
-  realness level. Other key names are validation errors.
-- Valid realness levels:
-  - `CIU` and `COMPOSE` stacks: `live`, `mock`, `owned-seeded`, `simulated`
-    per service
-  - `EXTERNAL`: `live`, `owned-seeded`, `simulated`, `mock`
-    (declared directly on the entity)
-  - `IN_PROCESS`: `mock` (the entity IS a mock)
-- At least one variant MUST be declared per service.
-- `init_requires` references use S13 typed-reference grammar. Service-to-service
-  references use the compound `<stack>.<service>` form.
-- Secrets referenced in a variant MUST have corresponding entries in
-  `ciu.secrets.toml` or Vault paths. Missing credentials fail at
-  config-validation time when that realness level is selected.
-
-### 3.3 Secret preflight
-
-When an environment selects `payment-api = live`, CIU checks that `[payment-api] stripe_secret_key` exists in the resolved secret store before provisioning. Missing = refuse with message naming the service, variant, and expected key.
-
-Mock and simulated variants that declare no secrets skip credential resolution entirely.
-
----
-
-## 4. Deployment model
-
-### 4.1 Service groups
-
-Replace the service-selection half of old profiles:
-
-```toml
-[deploy.groups.core]
-description = "Infrastructure foundation"
-services = ["our_db_stack.postgres", "redis_stack.redis"]
-
-[deploy.groups.app]
-description = "Application layer"
-services = ["our_api_stack.api", "notification-service"]
-
-[deploy.groups.full]
-description = "Everything"
-services = ["core", "app"]       # groups can reference other groups
-```
-
-### 4.2 Deployment profiles
-
-Own topology shape exclusively:
-
-```toml
-[deploy.profiles.single-host]
-description = "All services on one dev host"
-hosts = ["localhost"]
-
-[deploy.profiles.two-host]
-description = "DB on host-a, app on host-b"
-hosts = ["host-a", "host-b"]
-
-[deploy.profiles.two-host.hosts.host-a]
-services = ["our_db_stack.postgres", "redis_stack.redis"]
-
-[deploy.profiles.two-host.hosts.host-b]
-services = ["our_api_stack.api", "notification-service"]
-
-[topology]
-mode = "wireguard"               # "wireguard" | "proxy" | "direct"
-
-[topology.hosts.host-a]
-wireguard_ip = "10.0.0.1"
-
-[topology.hosts.host-b]
-wireguard_ip = "10.0.0.2"
-```
-
-Profiles are reusable across multiple environments (multi-stack).
-
-Note: Ideally we would not write e.g. `postgres` but directly reference the service we have defined.
-Open question: Consider we want to consume a 3rd party service not live but as `owned-seeded`, we need to bring it up somewhere. If we add it to the profile it makes it not generic anymore. We could add a category `optional` or so, so if that service of type `owned-seeded` is needed, it would be started here. Also this means, every service which might need to get deployed, needs to be defined where to run in a profile, otherwise it is unknown how to handle it. Maybe we dont need `optional`, *what* is started is not decided by the profile, but what `ciu` decides which groups / services need to be started?
-
-### 4.3 Startup ordering
-
-#### 4.3.1 Frist-Time Initialization 
-
-Computed from `init_requires` graph via topological sort. Only applies during initialization phase. 
-
-#### 4.3.2 Regular start
-
-- All services may start in any order
-- Services with unmet `depends_on` report degraded health
-- `allow_degraded_start` defaults to `true`; setting it to `false` means the service refuses to start if its usage deps aren't healthy
-
-Note: to prohibit errors during start due to degredation, `ciu` should allow a safe/hinted start order for clean startup. 
-
-No phases. No manual ordering.
-
-### 4.4 Environment instances
-
-Created at runtime by operator action:
-
-```bash
-ciu up --group full --profile single-host --name dev-john
-ciu up --group app --profile two-host --name staging
-```
-
-Multiple instances can coexist (multi-stack). Each gets unique `INSTANCE_ID`, network, container prefix — existing S16 behavior.
-
-Note: If lots of groups are defined it might be useful to allow exclusion (subtract) a group/service from start like `--group full,-excluded_service`
-
-**Locking:**
-
-```bash
-ciu lock <instance-name>          # forbid ciu down
-ciu unlock <instance-name>        # allow ciu down again
-```
-
-Lock settings can also default from config:
-
-```toml
-[deploy.profiles.single-host.locks]
-down = true                       # require explicit unlock before ciu down
-clean = true                      # require unlock AND interactive confirmation
-```
-
-Production deployments carry locks in config so a fresh `ciu up --profile production-lockdown` is protected from day one.
-
-`ciu clean` always requires two interactive confirmations regardless of lock state.
-
-### 4.5 Remote execution
-
-Existing S14 remote-host transport handles deployment to remote machines. For Buildkite or CI runners:
-
-```bash
-# On buildkite agent (or via SSH to remote host)
-ciu up --group full --profile single-host --name ci-$BUILDKITE_BUILD_NUMBER
-ciu gate --intent quality --environment ci-$BUILDKITE_BUILD_NUMBER
-ciu down --name ci-$BUILDKITE_BUILD_NUMBER
-```
-
-No special mechanism needed — the agent invokes the same CLI.
-
-For remote test execution, CIU's S14 SSH transport provisions the stack on the remote host. The gate module either runs locally and connects over WireGuard/proxy, or SSHes to the remote host and executes there:
+**Posture (R-01).** The estate's tools must stay usable standalone with no hard dependencies. run-gate's implementation (`run-gate.py`, stdlib, 180 tests) is lifted into `ciu/gate/` so that `[testing]` is expressed in the entity model; run-gate itself stays maintained in parallel for adopters that want a copied script and no ciu, and is aligned with v8's file layout as a run-gate item (its exec-mode container derivation reads the v7 rendered file). Both read the same `assay.toml`. Consequences ciu owes: a **zero-instance mode** (R-51) — a project whose `ciu.toml` holds only `[project]` and `[testing]` runs `ciu gate` with no instance, no lock, no rendered file, no docker unless a lane's environment is a container, and no judge unless a lane is an assay lane; **preflights per need** (R-02) — no startup check for a binary the verb does not use.
 
 ```toml
 [testing]
-execution = "local"              # default: run here, connect to remote stack
-# execution = "remote"           # SSH to stack host and execute there
-```
+inherit = "../ciu.toml"                        # environments only, one level — the monorepo's shared tester image declared once (run-gate R-22)
+cgroup_slice = "ciu-gate.slice"
+evidence_dir = "ciu-gate-evidence"
+history = 20                                   # LaneResults kept per lane
 
-Note: Secrets for e.g. buildkite (infra 3rd party service) or hosts (for `ciu` deploy access) goes to central `ciu.secrets.toml`.
-
----
-
-## 5. Testing gate module
-
-### 5.1 Location
-
-`ciu/src/ciu/gate.py` — native CIU module.
-
-`run-gate-proejct` will be maintained as project in parallel. `ciu` gains its functionality and adapts/extends to leverage integration.
-
-### 5.2 Invocation
-
-```bash
-ciu gate --intent quality --environment my-instance-name
-ciu gate --intent smoke --scope tests/unit/test_api.py --environment none
-ciu gate --rigor R0,R2 --selection database --environment integration-test
-```
-
-### 5.3 Dynamic lane assembly algorithm
-
-Given intent + environment + changed files:
-
-1. **Resolve intent** → rigor set (e.g., `quality` → `[R0, R1, R2]`)
-2. **Match selections** → which test scopes fire based on git diff patterns
-3. **Read environment** → what's actually running, which services at which realness
-4. **Compose lanes** → for each selected scope, determine:
-   - Execution target (container from environment, or host-mode if `--environment none`)
-   - Required services and their realness levels (from environment + testing default_realness override)
-   - Rigor judgment provider (assay subprocess for now; pluggable later)
-5. **Validate feasibility** → every required capability must exist at requested level; credential preflight passes
-6. **Execute** → run composed lanes under flock serialization
-
-When a matched selection requires a realness level unavailable in the environment (e.g., integration scope needs `owned-seeded` postgres but everything is mocked):
-- **Skip with warning** (default): scope not executed; CIU reports which scopes were skipped and why
-- **Fail** (`--strict-realness`): refuse the entire gate rather than produce partial evidence
-
-Note: what would "pluggable" mean for `ciu`, what are advantages?
-
-### 5.4 Scope narrowing
-
-Selection tables map changed-file patterns to test scopes:
-
-```toml
-[testing.selection.api]
-patterns = ["src/api/**/*.py"]
-scope = ["tests/unit/test_api.py", "tests/integration/test_api_flow.py"]
-
-[testing.selection.database]
-patterns = ["src/models/**/*.py", "migrations/**/*.sql"]
-scope = ["tests/integration/test_db.py"]
-```
-
-Multiple matching selections union their scopes per lane. No pattern match → fall back to full scope for the intent's rigor set.
-
-### 5.5 Default realness preferences
-
-When the environment doesn't dictate realness for a service:
-
-```toml
-[testing]
-default_realness = {
-  internal = "live",
-  3rd_party = "owned-seeded",
-}
-```
-
-Unit tests typically override everything to `mock` via explicit `--environment none` semantics.
-
-### 5.6 Assay integration
-
-CIU is agnostic to assay's internals. Assay is invoked as a subprocess with pinned artifact, same as today. The interface is:
-
-- Input: composed argv, environment facts (env vars), isolation policy
-- Output: verdict JSON artifact at a well-known path
-- Exit code: 0 = PASS, non-zero = anything else
-
-Future: pluggable judge providers behind the same interface.
-
-### 5.7 `ciu exec` — native container command execution
-
-Today, consumer projects hand-roll wrapper scripts that shell out to `docker exec`
-to run one-off commands inside a running service container (provision a test DB,
-run a schema check, inspect state). Each wrapper duplicates container-name
-resolution, user-identity mapping, network selection, and env forwarding — the
-exact facts CIU already owns in its rendered config. This creates fragile,
-unauditable shell glue that breaks on every rename or topology change.
-
-`ciu exec` eliminates all of it:
-
-```bash
-# Run a one-off command inside a named service's container
-ciu exec test-runner "python3 -m pytest tests/schema -q"
-
-# Target a specific worktree instance by name
-ciu exec --instance ci-build-42 test-runner "psql -c '\\dt'"
-
-# Interactive shell
-ciu exec --interactive controller bash
-```
-
-**What CIU resolves automatically (never re-derived by the caller):**
-
-| Fact | Source | Why CIU owns it |
-|------|--------|----------------|
-| Container name | Rendered `[deploy.project_name]` + `[deploy.environment_tag]` + service name | Renaming or forking an instance must not break every script |
-| User identity | Service-level `exec_user` declaration or platform default | UID/GID mapping is deployment policy, not per-script boilerplate |
-| Network | Instance's resolved network from `[deploy.network_name]` | Services talk over instance-scoped networks, not host networking |
-| Environment | Filtered subset of rendered `[service.<name>.env]` + explicit `--env KEY=VALUE` overrides | Required config must come from the same source as deployment |
-| Working directory | Service-declared default or `--workdir` override | Consistent with how the service itself starts |
-
-**Design rules:**
-
-- No silent defaults: if the target service is not running, fail loudly naming
-  the instance, service, and remedy (`ciu up --group ... --name ...`).
-- No hardcoded container names anywhere in consumer code; the caller always
-  references the *logical service name*, never a Docker-resolved name.
-- Stdout/stderr stream transparently (no buffering); exit code passes through.
-- `--dry-run` prints the full docker argv with redacted env values (same RG-19
-  discipline as gate lanes).
-
-**What gets deleted from dstdns once available:**
-
-| Script | What it hand-rolls |
-|--------|-------------------|
-| `scripts/p128-assay-schema.sh` | Container name derivation, docker run, docker cp, docker exec |
-| `scripts/p129-assay-schema.sh` | Same pattern for P129 scoped coverage |
-| `scripts/schema-gate.sh` | Throwaway PG provisioning + schema apply |
-
-All three become unnecessary when CIU can natively provision a disposable PG,
-apply DDL, and expose its DSN to the test lane — which is exactly what the
-template-database proposal in §10.2 describes.
-
-### 5.7 Resource governance per lane and intent
-
-Every test lane consumes host resources: RAM (the real contention risk), CPU time
-(cgroup weights handle fair sharing without explicit limits), and I/O bandwidth.
-CIU must carry resource declarations so gates can run in parallel where memory allows,
-without degrading live/prod services sharing the same host.
-
-#### Defaults from host config
-
-CIU already resolves `cgroup_parent` via `resolve_cgroup_parent()` with no hardcoded
-fallback. Extend this to full resource governance:
-
-```toml
-# Host-level defaults — every lane inherits unless overridden
-[testing.resources.defaults]
-cgroup_parent = "dev-background.slice"
-memory = "1g"                     # hard RAM cap (mem_limit)
-memory_swap = "16g"               # combined mem+swap; swap absorbs bursts without OOM
-io_weight = 100                   # cgroup io.weight for blkio fairness
-cpu_weight = 100                  # cgroup cpu.weight for CPU scheduling fairness
-```
-
-The `memory_swap` pattern follows cmru's proven approach (`CMRU_TESTER_MEMORY = "1g"`,
-`CMRU_TESTER_MEMORY_SWAP = "16g"`): tight RAM prevents memory-pressure cascades into live
-services, while ample swap absorbs transient bursts (dependency resolution, test fixtures)
-without triggering OOM kills. CPU and I/O use cgroup weights rather than hard limits —
-weights provide proportional fair-sharing under contention without throttling when the
-host is idle.
-
-Note: we also need support for IO bandwidth and IO iops limits. probably needs `bfq` enabled in kernel?
-a parent slice might carry it, but we need to support setting it here, e.g. `riops_max`, `wiops_max`, ... 
-
-#### Per-lane overrides
-
-Lanes that need more or fewer resources declare overrides:
-
-```toml
-[testing.lanes.schema-gate]
-resources.memory = "2g"          # schema tests need more than default
-resources.io_weight = 200        # heavy DDL apply benefits from higher IO priority
-
-[testing.lanes.sql-mutation]
-resources.memory = "4g"          # multiple PG instances during mutation
-resources.io_weight = 300        # repeated schema rebuilds are IO-heavy
-resources.budget_per_candidate = "120s"
-```
-
-#### Rigor-based defaults
-
-Resource requirements correlate with rigor level. CIU should provide sensible presets:
-
-```toml
-[testing.rigor_defaults.R0]      # smoke: fast, light
-memory = "512m"
-
-[testing.rigor_defaults.R2]      # mutation: slow, may need more RAM for parallel jobs
-memory = "2g"
-jobs = 4
-
-[testing.rigor_defaults.R3]      # canary: needs live services but not extra RAM
-memory = "1g"
-```
-
-Explicit per-lane values override rigor defaults, which override host defaults.
-
-#### Gate admission policy (replacing global flock)
-
-With resource governance in place, the single-gate-at-a-time flock becomes unnecessarily
-restrictive. The rule changes from "one gate globally" to:
-
-> A gate runs if its declared memory fits within the host's available dev-tier budget,
-> AND it does not contend on shared infrastructure (same DB volume, same Redis instance).
-
-Implementation:
-- each lane declares `resources.memory`; CIU sums concurrent lanes' memory against the
-  dev-tier slice's total;
-- shared-infra detection: two lanes touching the same rendered service name cannot run
-  concurrently regardless of memory;
-- fully isolated instances (separate networks + separate volumes) run in parallel freely.
-
-This replaces `/tmp/<project>-testrunner.lock` with resource-aware admission, while
-preserving serialization for lanes that genuinely share state.
-
-#### Observability
-
-CIU logs at gate start/end: lane name, resolved cgroup_parent, memory/io/cpu weights,
-actual peak RSS (from cgroup memory.peak after exit). This builds the data needed to tune
-per-rigor defaults over time instead of guessing.
-
----
-
-## 6. What gets deleted
-
-| Artifact | Fate |
-|----------|------|
-| `run-gate-project/run-gate.py` | Absorbed into `ciu/src/ciu/gate.py` |
-| `run-gate-project/run-gate.toml` | Replaced by sections in `ciu.global.defaults.toml.j2` |
-| `run-gate-project/SPEC.md` | Superseded by this proposal's SPEC section |
-| `[deploy.phases]` | Replaced by init-dependency topological sort |
-| Old `[deploy.profiles]` (service lists) | Split into `[deploy.groups]` + `[deploy.profiles]` |
-| dstdns vendored assay pyz pinning | Moves to CIU-managed (CIU-40 de-vendor half) |
-
----
-
-## 7. Migration path
-
-### 7.1 Version gating
-
-New configs carry `revision = 8`. CIU v8 refuses configs without this key or with revision < 8. 
-Until now CIU ignores unknown keys and continues working against old configs - no breakage until consumer upgrades both sides simultaneously.
-
-### 7.2 Consumer cutover
-
-Hard cutover once ready. nyxloom, dstdns, cmru, and any other consumers update their configs and invocation patterns atomically. The `revision` marker makes accidental mixing impossible.
-
-### 7.3 Implementation phases
-
-1. **Config schema extension:** Add `[service.*]`, `[deploy.groups]`, `[testing.*]` sections alongside existing keys. Validate structure. No behavior change yet.
-2. **Gate module:** Port `run-gate` mechanics (exec-mode, mounts, pin verify, clean-tree) into `ciu/src/ciu/gate.py`. Read lanes from rendered config instead of `run-gate.toml`.
-3. **Dynamic assembly:** Implement selection pattern matching, intent expansion, realness resolution, feasibility validation.
-4. **Delete legacy:** Remove `[deploy.phases]`, old profiles format. Bump revision gate.
-5. **Consumer migration:** Update all repos' configs and AGENTS.md pointers in one coordinated wave.
-
----
-
-## 8. Full sample config
-
-```toml
-# ciu.global.defaults.toml.j2
-revision = 7
-
-[deploy]
-project_name = "demo-app"
-environment_tag = "{{ INSTANCE_ID }}"
-
-# ------------------------------------------------------------
-# BUILD VERSIONS (see §1.13)
-# ------------------------------------------------------------
-[build.python]
-version = "3.14"
-chosen_version = "3.14.8"
-possible_version_upstream = "3.15.0"
-hold = false
-min_release_age_days = 14
-
-# ------------------------------------------------------------
-# LOGICAL SERVICES
-# ------------------------------------------------------------
-
-[service.our_api_stack]
-type = "CIU"
-description = "HTTP request handler"
-
-[service.our_api_stack.api.live]
-location = "applications/api-handler"
-port = 8080
-health = "/health"
-init_requires = ["postgres:db/demo"]
-depends_on = ["redis_stack.redis", "payment-api"]
-allow_degraded_start = true
-
-[service.our_api_stack.api.mock]
-implementation = "tests/mocks/api_handler_mock.py"
-
-[service.notification-service]
-type = "IN_PROCESS"
-description = "Sends emails/SMS (not yet implemented)"
-
-[service.notification-service.mock]
-implementation = "tests/mocks/notification_mock.py"
-
-[service.our_db_stack]
-type = "CIU"
-location = "infra/db-core"
-
-[service.our_db_stack.postgres.owned-seeded]
-image = "timescale/timescaledb:pg18"
-port = 5432
-seed_data = "fixtures/seed.sql"
-
-[service.payment-api]
-type = "EXTERNAL"
-description = "External payment processor"
-
-[service.payment-api.live]
-base_url = "https://api.stripe.com"
-secrets = ["stripe_secret_key"]
-
-[service.payment-api.owned-seeded]
-location = "infra/payment-stub"
-port = 8090
-seed_data = "fixtures/payment_responses.json"
-secrets = ["payment_stub_key"]
-
-[service.payment-api.simulated]
-image = "wiremock/wiremock:latest"
-port = 8090
-stub_mappings = "fixtures/wiremock_stubs/"
-
-[service.payment-api.mock]
-implementation = "tests/mocks/payment_mock.py"
-
-[service.redis_stack]
-type = "CIU"
-location = "infra/redis-core"
-
-[service.redis_stack.redis.owned-seeded]
-image = "redis:7-alpine"
-port = 6379
-
-# ------------------------------------------------------------
-# STACK-LEVEL SERVICE WIRING (see §1.16) — in each stack's ciu.defaults.toml.j2,
-# NOT in the global file. Shown here for illustration.
-# ------------------------------------------------------------
-
-# [local_stack.postgres]
-# port = 5432
-# image = "timescale/timescaledb-ha:pg18"
-# env_required = ["POSTGRES_PASSWORD_FILE"]
-#
-# [local_stack.minio]
-# port = 9000
-# image = "minio/minio:latest"
-
-# ------------------------------------------------------------
-# SERVICE GROUPS
-# ------------------------------------------------------------
-
-[deploy.groups.core]
-description = "Infrastructure foundation"
-services = ["our_db_stack.postgres", "redis_stack.redis"]
-
-[deploy.groups.app]
-description = "Application layer"
-services = ["our_api_stack.api", "notification-service"]
-
-[deploy.groups.full]
-description = "Everything"
-services = ["core", "app"]
-
-# ------------------------------------------------------------
-# DEPLOYMENT PROFILES (topology shape)
-# ------------------------------------------------------------
-
-[deploy.profiles.single-host]
-description = "All on one host"
-hosts = ["localhost"]
-
-[deploy.profiles.two-host]
-description = "DB on host-a, app on host-b"
-hosts = ["host-a", "host-b"]
-
-[topology]
-transport = "wireguard"
-
-[topology.hosts.localhost]
-
-[topology.hosts.host-a]
-wireguard_ip = "10.0.0.1"
-
-[topology.hosts.host-b]
-wireguard_ip = "10.0.0.2"
-
-# ------------------------------------------------------------
-# TESTING POLICY
-# ------------------------------------------------------------
-
-[testing]
-default_realness = { internal = "live", 3rd_party = "owned-seeded" }
-
-[testing.intents]
-smoke    = { rigor = ["R0"] }
-coverage = { rigor = ["R0", "R1"] }
-quality  = { rigor = ["R0", "R1", "R2"] }
-trust    = { rigor = ["R0", "R3"] }
-full     = { rigor = ["R0", "R1", "R2", "R3"] }
-property = { rigor = ["R0", "R4"] }
-
-[testing.selection.api]
-patterns = ["src/api/**/*.py"]
-scope = ["tests/unit/test_api.py", "tests/integration/test_api_flow.py"]
-
-[testing.selection.database]
-patterns = ["src/models/**/*.py", "migrations/**/*.sql"]
-scope = ["tests/integration/test_db.py"]
-
-[testing.selection.payment]
-patterns = ["src/payments/**/*.py"]
-scope = ["tests/unit/test_payment.py", "tests/integration/test_payment_flow.py"]
-
-# ------------------------------------------------------------
-# SECRETS (in gitignored ciu.secrets.toml)
-# [postgres] postgres_password = "..."
-# [payment-api] stripe_secret_key = "sk_live_..."
-# [payment-api] payment_stub_key = "stub_local_..."
-# ------------------------------------------------------------
-```
-
----
-
-## 9. Invocation examples
-
-```bash
-# Fast feedback: touched src/api/routes.py
-ciu gate --intent smoke --selection api --environment none
-# → all services mocked, R0, seconds
-
-# Standard quality gate
-ciu up --group full --profile single-host --name ci-build-42
-ciu gate --intent quality --environment ci-build-42
-# → api-handler live, postgres owned-seeded, payment simulated, notification mocked
-# → R0,R1,R2
-
-# Pre-release with real payment API
-ciu up --group full --profile two-host --name staging
-ciu gate --intent full --environment staging
-# → three-host WireGuard topology, payment-api live (credential preflight)
-# → R0,R1,R2,R3
-
-# Mutation-only ad-hoc
-ciu gate --rigor R0,R2 --selection database --environment ci-build-42
-```
-
----
-
-## 10. Upstream asks filed separately
-
-These improvements benefit the ecosystem regardless of v8 adoption timeline:
-
-### 10.1 dstdns P129 — env-passthrough gap between run-gate and assay snapshots (2026-08-24)
-
-**Problem.** A scoped R1 lane (`p129_enumeration_cursor`) required a derived CIU
-instance identity (`P129_PHYSICAL_REPO_ROOT`) inside its lane command. The value
-was correctly forwarded by `run-gate.toml` into the docker exec that runs the
-assay CLI, but assay's own snapshot isolation creates a fresh ephemeral checkout
-and runs the lane command there using ONLY the variables listed in the lane's
-`env_passthrough`. Because `P129_PHYSICAL_REPO_ROOT` was absent from that list,
-the command failed with a missing-required-env error even though run-gate had
-forwarded it.
-
-**Root cause.** Two independent env-forwarding layers exist:
-
-1. run-gate → assay CLI (controlled by `[environments.*].forward_env`)
-2. assay CLI → snapshot command (controlled by lane `env_passthrough`)
-
-Neither layer is aware of the other's allow-list, so adding a variable at one
-layer does not automatically make it available to the other. This is not an
-assay bug — the snapshot isolation contract explicitly requires declared
-passthrough for reproducibility — but it is a footgun when consumers must
-coordinate two config files for one variable.
-
-**dstdns fix.** Added the variable to both lists and corrected the CIU identity
-derivation (`PROJECT_NAME = "dstdns"`, `ENVIRONMENT_TAG = sha256-prefix`).
-
-**CIU-v8 resolution.** When CIU natively owns gate invocation (§5), this class
-of bug disappears because:
-
-- CIU injects instance identity directly into the runner environment from its
-  own rendered state; no multi-layer forwarding needed.
-- The rendered `ciu.global.toml` already contains every fact a lane needs;
-  CIU-v8 should expose a structured subset of those facts to each lane command
-  as environment variables or a well-known TOML sidecar, eliminating manual
-  passthrough declarations entirely.
-- Lane commands can read their own identity from the filesystem (a
-  `.ciu-instance.json` written by CIU during stack bring-up) rather than
-  requiring hash-derived env vars threaded through multiple tools.
-
-### 10.2 SQL mutation testing — template databases and savepoint resets
-
-**Problem.** dstdns's SQL mutation lanes provision a fresh throwaway PostgreSQL
-container per invocation, apply the full DDL schema, run tests, then tear down.
-For R2 mutation testing with dozens of candidates, this means dozens of full
-schema builds — slow and IO-heavy.
-
-**Two optimization strategies:**
-
-a) **Template databases** — PostgreSQL's `CREATE DATABASE ... TEMPLATE`
-   mechanism produces a byte-level clone of a pre-built schema in milliseconds.
-   CIU could manage a "prepare step": bring up the DB container once, apply DDL,
-   mark it as a template, then per-candidate tests clone from it instead of
-   re-applying DDL.
-
-b) **Savepoint-based step resets** — within a single test session, individual
-   test cases that mutate state can wrap each step in a PostgreSQL SAVEPOINT
-   and roll back after assertion, avoiding any cross-test contamination without
-   restarting the container.
-
-**Upstream facilitation needed:**
-
-| Layer | What should provide it |
-|-------|----------------------|
-| **Assay** | Declare `judge.mutation.database_template` naming a prepare-step artifact; assay manages template creation before baseline and clones per mutant |
-| **CIU v8** | Own infrastructure provisioning: bring up DB container, execute prepare script, mark template ready; expose connection details to lanes via rendered config |
-| **run-gate / ciu gate** | Pass `TEMPLATE_DB_DSN` to lane commands so they clone instead of building from scratch |
-
-**Proposed config surface (CIU v8):**
-
-```toml
-[testing.lanes.sql-mutation]
-database_template = "workflow-core-schema"
-prepare_script = "scripts/schema-apply.sh"
-reset_strategy = "template"          # "template" | "savepoint" | "container"
-
-[testing.templates.workflow-core-schema]
-image = "timescale/timescaledb-ha:pg18"
-init_scripts = ["infra/db-init/init-scripts/*.sql"]
-ready_query = "SELECT 1 FROM schema_meta WHERE key = 'schema_ready'"
-```
-
-CIU brings up the container, applies init scripts, verifies readiness via
-`ready_query`, then marks the database as a PostgreSQL template. Each lane
-execution clones from it. Assay coordinates the clone-per-mutant lifecycle
-during R2 execution.
-
-This eliminates the need for consumer projects to hand-roll docker provisioning
-inside wrapper scripts (which is what dstdns currently does in
-`scripts/p128-assay-schema.sh` and `scripts/p129-assay-schema.sh`) and makes
-the pattern reusable across all projects with database-dependent mutation lanes.
-
-### 10.3 Secrets architecture — open design question
-
-**Current state (S4):** six directives (`ASK_VAULT`, `GEN_TO_VAULT`,
-`GEN_LOCAL`, `ASK_EXTERNAL`, `ASK_FILE`, `GEN_EPHEMERAL`) resolve secrets
-into `.ciu/secrets/<name>` store files. Vault-backed directives require a
-running Vault instance.
-
-**V8 introduces `ciu.secrets.toml`** as a sibling of the global config file.
-Its role and relationship to S4 needs explicit definition:
-
-| Deployment mode | Where secrets live | How they reach containers |
-|----------------|-------------------|--------------------------|
-| **With Vault** | Vault KV2 (S4 directives unchanged) | Materialized to `.ciu/secrets/` by CIU, mounted via overlay |
-| **Without Vault** | `ciu.secrets.toml` (gitignored) | Values read directly from this file; materialized to `.ciu/secrets/` |
-| **Mixed** | Vault for infrastructure secrets; `ciu.secrets.toml` for 3rd-party API keys, dev credentials | Both paths feed into the same `.ciu/secrets/` store |
-
-`ciu.secrets.toml` is NOT a replacement for S4 — it is an additional source.
-When Vault is available, S4 directives work unchanged. When it is not,
-`ciu.secrets.toml` fills the gap for projects that cannot run Vault.
-
-**Open questions requiring further design:**
-
-1. **Project-level secrets.** Where does a stack's own secret go?
-   Options:
-   - `<stack>/ciu.secrets.toml` (alongside ciu.defaults.toml.j2)
-   - A `[secrets]` table in `ciu.toml.j2` (the sparse override layer)
-   - Keep using S4 per-stack secret tables with `GEN_LOCAL`
-
-2. **Vault bootstrap.** The Vault service itself needs its own unlock key
-   after initialization. Currently dstdns stores this in the vault stack's
-   `[state]` table. Should v8 formalize this pattern?
-
-3. **Service-level access tokens.** For services that need a Consul token
-   or Vault AppRole credentials at runtime, the current pattern is:
-   hook provisions token → writes to Vault → service reads via ASK_VAULT.
-   In a vaultless deployment, where does this go? Options:
-   - `ciu.secrets.toml` at global level (shared across stacks)
-   - `<stack>/ciu.secrets.toml` (per-stack)
-   - Directly in compose environment (current `expose_env` escape hatch)
-
-4. **Mounting into containers.** The proposal does NOT mount
-   `ciu.secrets.toml` directly into containers — multiple services per
-   stack may need different subsets of its values. Instead, CIU reads it
-   during secret resolution and materializes individual files to
-   `.ciu/secrets/<name>`, which are then mounted selectively per service.
-
-**Status:** OPEN — needs design before v8 becomes normative. The
-`ciu.secrets.toml` file itself is non-controversial; its precedence rules,
-project-level placement, and interaction with existing S4 stores need
-resolution.
-
----
-
-## 11. Open issues from adversarial review
-
-These findings from the adversarial review remain relevant and must be
-resolved before the proposal becomes normative.
-
-### 11.1 Provenance must gate evidence (was M1)
-
-A passing R0/R1/R2 verdict without provenance verification could describe
-stale images. CIU-v8's gate module MUST either:
-
-a) Require a passing `ciu provenance --json` verdict before running R1+,
-   recording the provenance result in the test verdict JSON; or
-
-b) Run provenance inline as part of the gate pipeline and fail-closed on
-   mismatch unless `--skip-provenance` is explicitly passed.
-
-Option (b) is recommended: it prevents the "I forgot to check" failure mode.
-
-**Status:** OPEN — to be decided before normative.
-
-### 11.2 Rigor provider contracts undefined (was M2)
-
-R0–R6 are vocabulary labels but no contract defines HOW evidence is
-attached to each level. What makes a verdict R1-compliant vs R0-only?
-
-Each rigor level needs a provider interface:
-
-```python
-class RigorProvider(Protocol):
-    level: str                    # "R0", "R1", etc.
-    def execute(self, lane, environment) -> RigorEvidence
-    def validate(self, evidence: RigorEvidence) -> bool
-```
-
-Without this, "R2 mutation testing" is aspirational, not enforceable.
-
-**Status:** OPEN — to be decided before normative.
-
-### 11.3 Assay artifact pinning (was M11)
-
-Current lanes verify pinned assay artifacts by version + SHA256. V8 says
-"de-vendor" but provides no replacement mechanism. Even if CIU manages the
-assay installation, each verdict MUST record which assay version produced it.
-
-Minimum viable solution: add `judge.version` and `judge.sha256` fields to
-the verdict JSON schema. CIU records these from whatever assay binary it
-invoked. This is an Assay backlog item (verdict schema extension).
-
-**Status:** OPEN — filed as Assay upstream ask; CIU-v8 must record the
-producing judge identity in every verdict.
-
-### 11.4 Changed-file scope refinement (was M4)
-
-The current selection model uses glob patterns matched against changed
-files. For monorepos this is underspecified:
-
-```toml
-[testing.selection.api]
-patterns = ["src/api/**/*.py"]
-base_ref = "origin/main"          # default: merge-base with origin/main
-exclude_patterns = [
-    "**/__pycache__/**",
-    "*.pyc",
-    "docs/**",                     # docs changes don't trigger api tests
-]
-scope = ["tests/unit/test_api.py"]
-```
-
-Additional fields worth considering:
-- `min_changed_lines = 5` — skip scope if fewer than N lines changed (noise filter)
-- `requires_services = ["our_api_stack.api"]` — only meaningful when these services are deployed
-- Per-package roots for monorepo subprojects with independent test suites
-
-The base diff computation should use Assay's B012 changed-lines mode
-(`base..HEAD`) rather than raw file lists, so whitespace-only changes don't
-trigger full gate runs.
-
-**Status:** OPEN — refine before implementation; coordinate with Assay's
-changed-file detection (B014 bounded output tails).
-
-### 10.4 Execution manifest
-
-**Problem.** Today, gate configuration is split across two independently
-authored files (`run-gate.toml` with its `forward_env`, and `assay.toml`
-with its `env_passthrough`). Adding a variable at one layer without updating
-the other causes silent failures (dstdns P129, §10.1). More broadly, the
-facts needed to execute a lane are scattered across config layers, CLI flags,
-and runtime state — nothing captures them as a single resolved snapshot.
-
-**Proposal: CIU compiles an immutable ExecutionManifest per gate run.**
-
-The manifest contains ONLY resolved facts — no templates, no references,
-no env-var placeholders:
-
-| Field | Source |
-|-------|--------|
-| selected worktree path | S16 instance record |
-| effective project root | resolved from worktree + offset |
-| Git common dir | `git rev-parse --git-common-dir` |
-| commit / base_ref / diff scope | gate request + git merge-base |
-| container/service targets | resolved from `[deploy.groups]` + `[deploy.profiles]` |
-| network name | instance identity (S2) |
-| user / cwd / argv / timeout | service config + lane declaration |
-| resource limits | `[testing.resources]` resolution chain |
-| realness map | per-service resolved variant (§1.4a) |
-| credential handles | secret NAMES only (never values) |
-| artifact paths | output directory, verdict path, coverage file |
-| judge identity | version + SHA-256 of resolved assay/judge binary |
-| isolation policy | cgroup parent, network mode, mount exclusions |
-
-Secrets stay out of the manifest. It stores secret NAMES plus a redacted
-audit fingerprint (e.g. SHA-256 of concatenated values). CIU injects actual
-values at execution time via environment variables or mounted files.
-
-This eliminates the dual-allowlist problem because `forward_env` and
-`env_passthrough` become COMPILATION OUTPUTS of the manifest, not
-independently authored contracts. The manifest lists exactly which env vars
-the lane command needs; CIU injects them; no second tool re-filters.
-
-The manifest itself is serialized as JSON at a well-known path inside the
-test-runner container (`.ciu-execution-manifest.json`). Lane commands can
-read it to discover their own identity, endpoints, and scope without
-requiring hash-derived env vars threaded through multiple tools (§10.1
-resolution).
-
----
-
-### 10.5 Judge distribution
-
-**Problem.** Consumer repos currently vendor assay zipapps
-(`tools/assay/*.pyz`) with SHA sidecars. This couples consumer releases to
-assay releases and creates stale-pin drift.
-
-**Proposal: two-tier delivery model.**
-
-**For non-CIU consumers:** unchanged from today. Ship/install Assay as a
-normal wheel or standalone CLI artifact with explicit version/hash pin.
-No repo-vendoring required; pip install from GitHub Releases works.
-
-**For CIU consumers:** CIU owns a central judge resolution record:
-
-```toml
 [testing.judge]
-name = "assay"
-version = "==2.3.0"              # constraint, like [build.python]
-source = "github-releases"       # trusted source enum
-sha256 = "dbbcf2..."             # expected digest of the resolved artifact
-cache_dir = "~/.ciu/cache/judges"  # shared across worktrees
+version = ">=2.4"                              # required iff an assay lane exists; provenance always required
+
+[testing.environments.tester]                  # exec into a running RealizedService of THIS instance
+mode = "exec"
+exec_in = "tester"                             # a LogicalService → its variant's service; identity derived; mount proof before every lane
+forward_env = ["RUN_LIVE_TESTS"]
+
+[testing.environments.clean]                   # ephemeral container on the instance network, in the slice
+mode = "ephemeral"
+image_from = "tester"
+binds.db = { to = "main_db.sql", delivery = "env", env_prefix = "TEST_DB" }   # TEST_DB_HOST/PORT/URL for the lane process
+
+[testing.lanes.unit]
+kind = "command"
+environment = "clean"
+argv = ["pytest", "-q", "tests/unit"]
+budget = "10m"
+resources = { memory_max = "2G", memory_swap_max = "0", cpu_weight = 100, io_weight = 100 }
+
+[testing.lanes.durable_dlq]
+kind = "assay"
+environment = "tester"
+assay_lane = "durable_dlq"                     # ciu asks `assay lanes --json` for base_source/tools/env; never parses assay.toml
+requires = { realness = { main_db = "live" }, healthy = ["main_db", "vault"] }
+require_provenance = true                      # running images must match HEAD, else NOT_RUN/provenance-mismatch
+resources = { memory_max = "4G", shared = ["main_db"] }
+
+[testing.lanes.gate]
+kind = "sequence"                              # one process, one LaneResult per member — no nested `ciu gate`
+lanes = ["schema", "unit", "durable_dlq"]
+stop_on = "FAIL"
 ```
 
-At gate preparation, CIU:
-1. Resolves the version constraint against available releases
-2. Verifies SHA-256 of the downloaded/cached artifact
-3. Either mounts the verified artifact into the test-runner container,
-   OR requires a runner image already carrying the pinned judge
-4. Records both the judge digest AND the runner image digest in the
-   ExecutionManifest and verdict
+Semantics: preconditions → `NOT_RUN` with a closed reason vocabulary (`realness-mismatch`, `service-down`, `environment-down`, `environment-mismatch`, `env-missing`, `dirty-tree`, `no-headroom`, `judge-floor`, `judge-provenance`, `provenance-mismatch`); `exec` lanes run in the target's cgroup and their caps must be ≤ its governance; admission by RAM headroom within the slice; the judge floor checked once per environment image per run; `--request-base` passed exactly to lanes whose assay lane reports `base_source = "request"` (`request_base` as a ciu key is gone, R-52); every LaneResult (`ciu.gate.<lane>.json`, `schema_version: 2`, plus a pruned history under the evidence directory) records outcome, timing, resources, judge provenance, `helpers` and the provenance of every required service (R-55). Sequence lanes (R-53) replace `argv = "ciu gate a && ciu gate b"` and remove run-gate's R-25 hazard; `[testing] inherit` (R-54) keeps the vbpub monorepo's `tester-unified` environment declared once. run-gate's remaining rules — path charset (R-04), git isolation (R-19a), dual-mount guard (R-23), evidence 0600 on failure (R-26), history (R-36) — are carried by reference in V8-S16.12. CLI: `ciu gate [lanes…] [--list] [--dry-run] [--json] [--base REF] [--allow-dirty] [--check-env] [--worktree PATH] [--admission-wait D]`, `ciu gate doctor`; `validate-pointers` is `ciu check --gates`; `RUN_GATE_*` knobs become `CIU_GATE_*`.
 
-Consumer repos declare POLICY (which version, which source, trust
-constraints); CIU materializes the VERIFIED TOOL. No vendored zipapps in
-consumer repos.
+### 4.1.11 `ciu check` in v8 (runs automatically before every mutating verb)
 
-This replaces the current model where each repo pins and verifies its own
-copy. Version upgrades happen by changing one line in global config, not
-by repinning files across multiple repos.
+Fifteen stages with declared dependencies so that an early typo does not hide unrelated findings (R-71): 1 files · 2 parse (TOML + secret-free scan) · 3 schema · 4 references · 5 contracts (derived; every variant) · 6 graph · 7 topology (incl. publications, push order) · 8 identity (with the ambiguity message) · 9 secrets · 10 realness · 11 governance · 12 testing (`assay lanes --json` when a judge is reachable; inherit; sequences) · 13 hooks `--validate` · 14 registry validator · 15 live. `--layout L` prints the publication table and the bundle table; `--json` uses the one envelope (`schema_version`, `operation`, `status`, `findings[]`, `resolved`) every `--json` verb and every LaneResult share (R-49). A zero-instance project runs stages 1–3, 11, 12, 14.
 
-### 10.6 Lane realness requirements (demand-driven selection)
+### 4.1.12 CLI verbs (v8) — every v7 verb has a disposition (R-61)
 
-§1.4a defines how CIU SELECTS realness variants for deployment. This section
-defines how LANES declare what they REQUIRE. These are complementary:
+`ciu init` (scaffold, kept from v7 S19; writes the explicit host and layout — no built-ins) · `ciu instance init | list | show | add --join | remove | reap | lease | exec --env` · `ciu check` · `ciu render [--show-injected]` (the template-vs-artifact diff, R-37) · `ciu up` · `ciu dev --realization r` (v7 S5a's loop) · `ciu down` · `ciu clean [--vanilla]` · `ciu status [--live]` (absorbs `health`/`status`) · `ciu show bundles|layouts|services|realizations` (absorbs `profiles`/`layouts`) · `ciu gate …` · `ciu secrets show|reset|host|rotate-bootstrap` (absorbs `host-secrets`) · `ciu env print` · `ciu build` (v7 `bake`; stamps `org.opencontainers.image.revision` with `-dirty`, R-38) · `ciu push | activate` · `ciu ssh <host>` · `ciu provenance` · `ciu diagnose` · `ciu governance ksm|iops-baseline` · `ciu migrate [--check] [--secrets] [--hostdirs] [--config]` (absorbs `migration-check`; also the v7 hostdir relocation, R-36) · `ciu hook run` · `ciu schema --json` (absorbs `capabilities`; R-63) · `ciu doctor` · `ciu version`. Exit codes keep v7's meanings (0 ok, 1 runtime, 2 config/usage refusal, 3 environment bootstrap) plus 4 lock contention and 5 remote failure (R-48); the gate keeps its own table.
 
-- §1.4a answers: "when `ciu up` runs, which variant does each service use?"
-- This section answers: "for THIS lane to produce valid evidence, which
-  variant must each service be?"
+### 4.1.13 Migration shape (v7 → v8; `ciu migrate`, stated in V8-Appendix A)
 
-**Lanes declare capability requirements, not infrastructure recipes:**
+1. **Instance:** `ciu instance init` in every checkout; cockpit aliases switch to `eval "$(ciu env print)"`.
+2. **Declaration files** (`--config`): `.j2` declarations become plain TOML with the new names; `{% set %}` constants inlined, `{{ vault.paths.x }}` → `path = "x"`, control flow expanded once and flagged; `[deploy]` → `[project]`, `[bundles]`, `[layouts]`, `[realness]`; the retired keys of §4.5 J deleted.
+3. **Stack files:** `[ciu_stack.<svc>]`; `init_requires`/`uses`/`after` → `requires`/`binds.<local>`; `init_provides`/`[hooks.provides]` → `provides`; directives → structured secrets (the mapping table is in V8-Appendix A); `delivery` on every secret; consumer scalars into sub-tables; `primary`; `instances`.
+4. **Templates:** delete injected stanzas; `routes.X.e.*` reads → `ciu_stack.<svc>.binds.<local>.*` (or nothing, with `env` delivery); identity/host reads → `identity.*`, `instance.*`, `host.*`; config-file templates the same, `secret()` needs `delivery = "configfile"`.
+5. **Hooks:** `run(config, ctx)` → scripts on `ciu.hookkit` (`context()`, `emit()`, `wait_healthy()`, `wait_tcp()`, `secret_file()`, `--validate`); `apply_to_config` → `emit(state=…)`.
+6. **Secrets state** (`--secrets`) and **host directories** (`--hostdirs`): imported and relocated without re-minting or deleting.
+7. **Gate:** `run-gate.toml` → `[testing]` (`container_name` → `exec_in`; `memory` → `resources.memory_max`; pins → the judge floor; conjunctions → `sequence`; central config → `inherit`); `.assay/` verdicts → the evidence directory; run-gate itself stays available.
+8. **dstdns specifics:** `app_identity.*` (~45 tables + 41 copies) deleted in favour of the merged `realization.*` view; the 17 stack files that read `routes` become bindings; 13 hooks rewritten on hookkit; `tests/test_deploy_phase_ordering.py` retires with the phases.
+
+### 4.1.14 The minimal project (R-66)
 
 ```toml
-[testing.lanes.payment-flow]
-rigor = ["R0", "R2"]
-requires_realness = { database = "owned-seeded", payment-api = "simulated" }
+# ciu.toml — written by `ciu init --stack web`
+[project]
+name = "hello"
+revision = 8
+[realness]
+default = "live"
+[service.web]
+live = "web"
+[realization.web]
+kind = "ciu_stack"
+location = "web"
+[bundles.all]
+services = ["web"]
+[layouts.local]
+hosts.localhost = { bundles = ["all"], reach = ["instance"] }
+[testing.lanes.unit]
+kind = "command"
+environment = "host"
+argv = ["pytest", "-q"]
 ```
+plus `ciu.hosts.toml` (`[hosts.localhost] local = true`, gitignored, also written by `init`) and `web/ciu.stack.toml` (`[ciu_stack.web] image = "nginx:1.27"` and an endpoint). `ciu init --stack web && ciu instance init && ciu up && ciu gate unit`. A **zero-instance** project (cmru, nyxloom, the trivial vbpub adopters) is `[project]` + `[testing]` only, and `ciu gate` needs nothing else. What revision 2.x needed for the same result: nine tables, a label prefix, four health keys, a `contract`, and a hand-written gitignored hosts file in every fresh clone.
 
-CIU validates at feasibility admission:
-1. Is the required variant declared in the service's config?
-2. Does the selected environment actually run that variant?
-3. Are credentials available for that variant?
+## 4.3a Where more than one design is genuinely valid
 
-If any requirement cannot be met, the lane is assigned **NOT_RUN** with a
-reason naming the unsatisfied requirement. The lane is NEVER silently
-downgraded to a different variant — a mock-based test result presented as
-integration evidence is worse than no result.
+**A. Where machine-owned rendered artifacts live** — unchanged from revision 2.1: flat visible files next to the stack (adopted; `ciu.rendered/` is a visible nested directory, not a hidden one), or a per-instance state directory outside the repo for read-only checkouts.
 
-This means the resolution order from §1.4a gains a validation step after
-selection: lanes check their `requires_realness` against what was actually
-selected and refuse to run on mismatch.
+**B. Lock target** — resolved (R-42, interview Q2): the checkout directory descriptor. Revision 2.1's alternative table is retired; the reasoning is in §4.3.7.
+
+**C. Binding-carried credentials** — a binding could also deliver the provider's published secret under the consumer's local name (`DATABASE_PASSWORD` next to `DATABASE_HOST`), unifying endpoint and credential delivery the way service-binding specifications do. Considered and **deferred**: secrets keep their own declaration in v8.0.0 because the minter-edge model already gives every secret a provider and a delivery, and folding credentials into bindings would create a second path to the same value. Recorded in §4.10 for a later revision.
+
+## 4.4 What still needs to be built
+
+Each item names the owning tool, the shape, and why it does not exist today. `SPEC-V8.md` draft.3 is the acceptance reference for every row. Suggested checkpoints: **A** (V8-1, V8-14, V8-2, V8-11, V8-13, V8-5 — files, identity, lock, check: everything that needs no graph), **B** (V8-3, V8-4, V8-6, V8-7, V8-8, V8-16 — the model), **C** (V8-9, V8-10, V8-17, V8-18 — secrets, hooks, migration), **D** (V8-12, V8-19 — the gate and the neighbours), **E** (V8-20, V8-21, V8-22). The first dstdns stack converted is the tracer bullet before the rest.
+
+| # | mechanism | owner | shape | why it doesn't exist yet |
+|---|---|---|---|---|
+| V8-1 | **Config schema v8 + `revision = 8` gate + `ciu schema --json`** (V8-S3, S3.8.4) | ciu `config_model.py` | closed-key validators for every table in §4.5 generated from one declarative table-spec; JSON Schema emitted from the same spec | today's validator covers phases/profiles/layouts, the S3.14 registry, the worktree table and secrets; no realization/network/binding/testing tables exist |
+| V8-2 | **Instance identity source** (V8-S4.1, S14.2): `ciu instance init`, plain `ciu.instance.toml`, `ciu env print`, `ciu.env` no longer read | ciu `workspace_env.py`, `paths.py` | the generated file shipped as ciu-P47 (7.10.0); remaining: the plain instance file, the verb, and dropping `ciu.env` as an input | `ciu.env` remains the source (`paths.py:70/78`, `workspace_env.py:1167ff`) |
+| V8-3 | **Realization registry + logical services + variants + derived contract + minter resolution** (V8-S5, S8.3) | ciu new `registry.py` | `[service.*]`, `[realization.*]`; contract from bindings; conformance of every variant; minter edges | S3.14's registry is flat; nothing checks provider coverage |
+| V8-4 | **Stack file `ciu.stack.toml`: re-rooting, closed key set, merged view `services.<svc>`, site/instance overrides of stack tables** (V8-S3.6, S6) | ciu `config_model.py`, `engine.py` | parse `[ciu_stack.<svc>]`, bind under `realization.<n>.services`, expose the S3.5 contexts | one arbitrary root table per stack, no re-rooting |
+| V8-5 | **Identity derivation + resolved table + compose enforcement + fixed `ciu.*` labels** (V8-S4, S11.3–S11.4) | ciu new `identity.py`; `composefile.py` | one function with elision and the ambiguity check; `[resolved.identities]`; stage 8 | `deploy.container_name` has no stack component (CIU-66); labels under a consumer prefix |
+| V8-6 | **Topology: hosts (`fqdn`), networks, endpoints, bundles (`includes`), layouts + binding resolution + derived publication + `per_host` + TLS secrets** (V8-S7, S10.5) | ciu new `topology.py`; `hosts.py`, `deploy_pkg/layouts.py` | entities of §4.1.5; `resolve()`; layout-derived `ports:` from bindings with data only; `[resolved.bindings]`; publication table | layouts carry no networks/reach; hosts have no addresses; routes are consumer-typed |
+| V8-7 | **Init graph from bindings, derived edges, waves, gates, the S8.7 pipeline, provider-resolved probes** (V8-S8) | ciu `provisioning.py`, `deploy.py`, `deploy_pkg/phases.py` | replace `ordered_phases`; bind/depends/derived edges; `gate_timeout`; ordered pipeline with state visibility | phases are hand-declared; the pipeline order is implicit |
+| V8-8 | **Realness selection, record as constraint, joins via the plain instance file** (V8-S9) | ciu `deploy.py`, `worktree.py` | precedence resolver; record writer/refuser; `joined` kind reading the reference under a shared lock; round-trip TOML writer for `instance add` | no realness concept; S16.1 join generates `ref_services` |
+| V8-9 | **Secrets v8** (V8-S10): structured sources, `[vault.paths]` resolution, `delivery` incl. `hook`/`configfile`, one store, temp copies, derived TLS secrets, per-source push rule | ciu `secrets/materialize.py`, `composefile.py` | one store file under the instance lock; delivery axis; bundle content derivation | stores are `.ciu/secrets/<name>`; directive strings parsed by regex |
+| V8-10 | **`.ciu/` removal**: `ciu.rendered/` directory mounts, gitignore list check, KSM cache relocation, `ciu.hosts.toml`, `ciu.instance.json`, evidence dir | ciu `config_constants.py`, `composefile.py`, `governance.py`, `hosts.py` | rename targets; parent-directory mounts (v7 S5.3a kept) | `MACHINE_DIR = '.ciu'` wired through S1.6/S1.7/S4.9/S4.17/S4.26/S5.2/KSM |
+| V8-11 | **Instance lock on the checkout directory + atomic rendered file + verb classes** (V8-S14.3–S14.4) | ciu `cli.py`, `config_model.py` | `flock` on the root directory fd; exclusive/shared/lock-free classes; `--wait`; filesystem refusal | no instance-wide lock exists |
+| V8-12 | **`ciu gate`** (V8-S16; run-gate lifted): `[testing.*]` schema, zero-instance mode, `inherit`, environment bindings, `exec_in` + mount proof, `sequence` lanes, `assay lanes --json` as the only assay interface, provenance in LaneResults, history, cgroup admission, CLI, `CIU_GATE_*` | ciu new `gate/` package (from `run-gate.py`), tests lifted | §4.1.10 | run-gate re-derives identity from `ciu.global.toml`, pins by version triple, spawns nested gates for conjunctions |
+| V8-13 | **`ciu check` 15 stages with dependency-based execution, publication/bundle tables, one JSON envelope** (V8-S15, S18.4) | ciu `cli.py`, `warn_policy.py` | stage table of §4.1.11 | `ciu check` runs 13 stages serially and stops at the first ERROR |
+| V8-14 | **Plain-TOML declarations + strict template rendering for artifacts only + `--show-injected`** (V8-S3.2, S11.7) | ciu `config_model.py` | drop the TOML render sites; `StrictUndefined` for compose/config-file templates (shipped as CIU-74's fix in 7.x); the injection diff | every layer is rendered with Jinja |
+| V8-15 | **`ciu instance` verb family + `lease` + unique labels + registry record v2** (V8-S14.6–S14.7, S18) | ciu `worktree.py`, `cli.py` | rename with alias; `lease`; label uniqueness | CIU-50 open |
+| V8-16 | **Compose injection** (V8-S11): identity/network/alias/label/`CIU_*` env/binding variables/secret/port/depends_on/healthcheck-timing/config-dir/governance stanzas; template prohibitions; disabled-service pruning; replica blocks | ciu `composefile.py` | parse rendered YAML, inject, validate, re-serialize | templates hand-write everything |
+| V8-17 | **Hooks v2 + `ciu.hookkit` + `ciu hook run` + hook templates rewritten** (V8-S12) | ciu `hooks_runner.py`, new `hookkit/` | subprocess JSON context v2 with resolved bindings; outputs; `--validate`; the helper package (stdlib only) | hooks are imported Python modules |
+| V8-18 | **`ciu migrate` (config/secrets/hostdirs/gate) + `ciu init` v8 + `ciu doctor`** (V8-S19, App A) | ciu `cli.py`, new `migrate.py` | mechanical conversions with a report; explicit host/layout scaffold; environment report | `ciu init` writes v7 files; `migration-check` covers persist:secret only |
+| V8-19 | **Neighbour alignment**: run-gate reads `ciu.resolved.toml` identities when present (RG item); assay consumer repoint (`derived:` optional, `required-env:` fed by environment bindings) | run-gate-project, dstdns `assay.toml` | one RG package; consumer edit | run-gate reads `ciu.global.toml [deploy]` only |
+| V8-20 | **dstdns migration** (35 stacks, 13 hooks, templates, gate config) — `v8-dstdns-demo/` is the target shape | dstdns | per §4.1.13 | consumer work |
+| V8-21 | **SPEC v8 promotion** — `SPEC-V8.md` becomes `SPEC.md` at the v8.0.0 cut; CONFIG.md/CONSUMERS.md regenerated from the table-spec; run-gate SPEC cross-referenced, not folded (run-gate stays) | ciu docs | — | — |
+| V8-22 | **Verb dispositions**: `status`, `show`, `dev`, `ssh`, `provenance`, `governance ksm\|iops-baseline`, exit codes | ciu `cli.py` | §4.1.12 | v7 verbs with no v8 home in revision 2.x |
+
+## 4.5 Validation — every key, every level, the entire schema as v8 leaves it
+
+Columns: key | table / level | type | reason for existence | owner | example. Closed vocabularies are spelled out; keys whose values are derived are in the read-only table C; `V8-S<n>.<m>` points at the normative rule.
+
+### A. Project declarations (`ciu.toml` → `ciu.site.toml`)
+
+#### A1 `[project]` and `[ciu]` (V8-S3.4)
+
+| key | table / level | type | reason for existence | owner | example |
+|---|---|---|---|---|---|
+| `name` | `project` | name, literal | the one human-chosen identity component | consumer / identity, compose, gate | `"dstdns"` |
+| `revision` | `project` | int = 8 | refuses a v7 config against v8 ciu at parse time (P2) | consumer / parser | `8` |
+| `log_level` | `project` | `DEBUG\|INFO\|WARN\|ERROR` | verbosity | consumer / engine | `"INFO"` |
+| `landscape_id` | `project` | `^[a-z][a-z0-9-]{0,62}$`, optional | shared identity of one landscape across instances; bound as `instance.landscape_id` | consumer / templates, hooks | `"dstdns-dev"` |
+| `registry.url` / `registry.namespace` | `project.registry` | str / name | where project-built images live and how they are named | consumer / build, templates | `""` / `"dstdns"` |
+| `health.interval` / `.timeout` / `.start_period` / `.retries` | `project.health` | duration / duration / duration / int — **policy defaults** 10s / 5s / 60s / 6 | defaults merged into every service's `health`; `timeout` is the probe timeout, not the gate budget | consumer / merge, injection | `start_period = "240s"` |
+| `health.gate_timeout` | `project.health` | duration, optional | the inter-wave convergence budget when the derived default is wrong | consumer / gate | `"300s"` |
+| `compose_env.<VAR>` | `project.compose_env` | str | consumer env passed to every compose process; identity facts never belong here | consumer / compose env | `DSTDNS_TELEMETRY = "on"` |
+| `control.<flag>` | `project.control` | bool | named switches `enabled` may reference by name | consumer / filter | `enable_observability = true` |
+| `vendor_images` | `project` | list[str] | images `ciu build` pulls, never builds | consumer / build, provenance | `["hashicorp/vault"]` |
+| `standalone_root` / `require_fqdn` / `auto_connect_network` / `exit_on` / `user_tables` / `registry_validator` | `ciu` | bool / bool / bool / `WARN\|ERROR\|NEVER` / list / path | root lock; refuse a host without `fqdn`; attach the devcontainer; severity policy; consumer tables; `[registry]` validator | consumer / engine, check | `exit_on = "WARN"` |
+| `max_concurrent` / `lease_ttl_hours` | `ciu.instances` | int ≥ 1 / number > 0, both optional | budget and lease across a git family | consumer / instance verbs | `3` / `72` |
+| *(labels prefix, env defaults)* | — | — | none: ownership labels are fixed `ciu.*` (R-15); template data lives in user tables (R-13) | — | — |
+
+#### A2 `[service.<n>]` — LogicalServices (V8-S5.2, S5.3)
+
+| key | table / level | type | reason for existence | owner | example |
+|---|---|---|---|---|---|
+| `<n>` | `service` | table key `name` | the vocabulary every binding, bundle, `exec_in`, `image_from`, `pki`, `vault.service`, lane `requires.healthy` uses | consumer / everything | `[service.main_db]` |
+| `description` | `service.<n>` | str, optional | human context | consumer / humans | — |
+| `live` / `seeded` / `simulated` | `service.<n>.<level>` | str → realization, or table `{ realized_by, service }` | one variant per level; `service` says which service of a multi-service stack carries THIS capability (default: the primary) | consumer (instance file for joins) / resolver, graph, resolutions, gate | `live = { realized_by = "db_core", service = "minio" }` |
+| `mock` | `service.<n>.mock` | `{}` | an in-process double is a legal selection; no Realization, no resolution, no edge | consumer / resolver | `mock = {}` |
+| *(contract)* | — | — | **derived** from bindings (R-19): endpoints bound + `facts` declared by consumers; every variant is checked against it | ciu / stage 5 | — |
+
+#### A3 `[realization.<n>]` (V8-S5.4)
+
+| key | table / level | type | reason for existence | owner | example |
+|---|---|---|---|---|---|
+| `<n>` | `realization` | table key `name`; `hosts`/`ciu` reserved | identity component 3 | consumer (instance file for `joined`) / identity, graph | `db_core = { … }` |
+| `kind` | `realization.<n>` | `ciu_stack\|external\|joined` | selects the per-kind keys and deploy behaviour (P7) | consumer / ciu | `"ciu_stack"` |
+| `location` | `ciu_stack` | repo-relative dir, unique | binds the stack file to its name once | consumer / loader | `"infra/db-core"` |
+| `per_host` | `ciu_stack` | bool | a daemon on every host whose bundles include it; never a binding target with data | consumer / placement, edges | `true` |
+| `provides` | `external`, `joined` | list[TypedFact] | facts ciu cannot derive because it does not build the thing | consumer / conformance | `["pg:db/dstdns"]` |
+| `instance` / `service` | `joined` | label or abs path / LogicalService | which instance's which capability is joined | operator or `ciu instance add` / join | `"primary"` / `"vault"` |
+| `endpoints.<e>.url` / `.tls` / `.ca` | `external` | URL / `none\|tls\|mtls` / path | the address and transport facts of something ciu does not run | consumer / resolutions | `url = "https://api.stripe.com"` |
+| `services.<svc>.…` / `secrets.…` / `hooks` / `governance` | `realization.<n>` in `ciu.site.toml` / `ciu.instance.toml` only | as E | site/instance override of a stack table by its merged path (the one override mechanism, R-10) | operator / merge | `[realization.consul_server.services.consul.endpoints.http] publish = "host"` |
+
+#### A4 `[network.<n>]` (V8-S7.3)
+
+| key | table / level | type | reason for existence | owner | example |
+|---|---|---|---|---|---|
+| `kind` | `network.<n>` | `address\|proxy` | address plane (hosts have addresses) vs FQDN-reached proxy | consumer / resolution | `"address"` |
+| `realized_by` | `network.<n>` | realization, optional (required for `proxy`) | transport readiness: what must be up before resolutions over this network work | consumer / derived edges | `"tailscale_node"` |
+| `tls` / `pki` | `network.<n>` | `none\|tls\|mtls` / LogicalService (required when `tls ≠ none`) | transport security is a link property inherited by every resolution; whose hook issues certificates | consumer / resolutions, derived TLS secrets | `"mtls"` / `"vault"` |
+| `fqdn` | `proxy` | hostname | the public name proxied resolutions resolve to | consumer / resolutions | `"gstammtisch.dchive.de"` |
+| `description` | `network.<n>` | str, optional | what the plane is; **no semantics** | consumer / humans | `"tailscale mesh"` |
+
+#### A5 `[bundles.<b>]`, `[layouts.<l>]`, `[realness]` (V8-S7.5, S7.6, S9.2)
+
+| key | table / level | type | reason for existence | owner | example |
+|---|---|---|---|---|---|
+| `services` / `includes` | `bundles.<b>` | list[LogicalService] / list[bundle] (acyclic) | a bundle = which capabilities deploy together; `includes` composes bundles so `all` need not restate eighteen names (R-67) | consumer / deploy set | `includes = ["core", "db", "apps"]` |
+| `compose_profiles` / `compose_env.<VAR>` | `bundles.<b>` | list / str | compose-level activation and env the bundle needs; conflicts across selected bundles refuse | consumer / compose env | — |
+| `environment` | `layouts.<l>` | str, optional, free-form | bound as `instance.environment`; ciu attaches no semantics (R-69) | consumer / templates, hooks | `"prod"` |
+| `hosts.<h>.bundles` / `.reach` | `layouts.<l>.hosts.<h>` | list[bundle] / list[network] (non-empty; `instance` = this host only) | placement (order = push order); which networks reach the others, in preference order | consumer / placement, resolutions, push | `reach = ["mesh", "public"]` |
+| `default` / `pin.<logical>` | `realness` | level / level | the level used when nothing more specific selects one (required; `ciu init` writes `live`); committed per-service overrides | consumer / resolver | `probe_targets = "simulated"` |
+
+#### A6 `[vault]`, `[registry]`, `[governance]` (V8-S10.3, S3.4.6, S13)
+
+| key | table / level | type | reason for existence | owner | example |
+|---|---|---|---|---|---|
+| `service` / `token_file` | `vault` | LogicalService / path | which Vault ciu's own client talks to (replaces the stack-path heuristic); token source #2 | consumer / secrets, edges | `"vault"` |
+| `paths.<name>` | `vault.paths` | literal KV path | the **checked reference table** secret `path` keys resolve against (R-30) | consumer / secrets | `postgres_controller_password = "db/postgres/controller_password"` |
+| `postgresql.database` | `registry.postgresql` | str | the app database for `pg:schema/*` probes | consumer / probes | `"dstdns"` |
+| `<anything else>` | `registry` | table | project metadata validated only by `ciu.registry_validator` | consumer / consumer validator | — |
+| `enabled` / `cgroup_parent` / `ksm_optin` / `exempt_services` / `memory_profile.*` | `governance` | bool / slice / `builtin\|path` / list / tables | governance switches, unchanged | consumer / governance | — |
+| `memory_max` / `memory_swap_max` / `memory_high` / `memory_low` / `memory_min` / `cpu_weight` / `cpu_max` / `io_weight` / `pids_max` | `governance` (and per-stack) | the **shared resource key set** `RK` | each is the cgroup-v2 file it writes; `cpu_max` maps to compose `cpus` (CIU-90's key) | consumer / governance, gate | `memory_max = "2G"` |
+| `io_*_max` / `device` / `baseline_path` | `governance` | int / str / path | device-level I/O caps only stacks have | consumer / governance | — |
+
+#### A7 `[testing.*]` — the gate (V8-S16)
+
+| key | table / level | type | reason for existence | owner | example |
+|---|---|---|---|---|---|
+| `inherit` | `testing` | path, optional | environments of another project's `ciu.toml` merged under this one's (monorepo DRY, run-gate R-22); one level; lanes never inherit | consumer / gate | `"../ciu.toml"` |
+| `cgroup_slice` / `evidence_dir` / `history` | `testing` | str / path / int | the slice every lane runs in; where artifacts and verdicts land (gitignored); LaneResults kept per lane | consumer / gate | — |
+| `judge.version` | `testing.judge` | version floor; required iff an assay lane exists | the ONE judge pin; provenance always required | consumer / gate | `">=2.4"` |
+| `environments.<e>.mode` | `testing.environments.<e>` | `ephemeral\|exec\|host` | where a lane's process lives (`host` built-in when not declared) | consumer / gate | `"exec"` |
+| `environments.<e>.exec_in` | `exec` | LogicalService | the container to exec into, by capability; identity derived; health and **mount proof** required (R-47) | consumer / gate | `"tester"` |
+| `environments.<e>.image` / `.image_from` | `ephemeral` | str / LogicalService | what to run; `image_from` reuses a service's image | consumer / gate | `image_from = "tester"` |
+| `environments.<e>.forward_env` / `.extra_mounts` / `.workdir` / `.enabled` | `testing.environments.<e>` | list / list / path / bool | explicit allow-list of forwarded env; extra binds (dual-mount guard); where `{worktree}` lands | consumer / gate | — |
+| `environments.<e>.binds.<local>` | `testing.environments.<e>.binds` | binding with `delivery = "env"` | infrastructure facts for the lane process as variables — assay reads `required-env:`, never ciu's file (R-03) | consumer / gate | `db = { to = "main_db.sql", delivery = "env", env_prefix = "TEST_DB" }` |
+| `lanes.<l>.kind` / `.environment` / `.argv` / `.assay_lane` / `.lanes` / `.stop_on` / `.description` | `testing.lanes.<l>` | `command\|assay\|sequence` / env / list / assay lane / list[lane] / `FAIL\|never` / str | who produces the outcome; where; the command; the judge lane (invocation derived; `base_source` from `assay lanes --json`); sequence members (in-process, R-53) | consumer / gate, stage 12 | `kind = "sequence"` |
+| `lanes.<l>.clean_tree` / `.budget` / `.required_env` / `.artifacts` / `.enabled` | `testing.lanes.<l>` | bool / duration / list / list / bool | evidence integrity; wall cap; must-have env; outputs | consumer / gate | `budget = "30m"` |
+| `lanes.<l>.requires.realness` / `.healthy` | `testing.lanes.<l>.requires` | table logical → level / list[LogicalService] | preconditions from the record and the graph → `NOT_RUN/realness-mismatch` / `service-down` | consumer / gate | — |
+| `lanes.<l>.require_provenance` | `testing.lanes.<l>` | bool | running images must match `HEAD` → `NOT_RUN/provenance-mismatch` (R-55); always recorded | consumer / gate | `true` |
+| `lanes.<l>.resources.<RK>` / `.shared` | `testing.lanes.<l>.resources` | `RK` subset / list[LogicalService] | per-lane cgroup caps (admission by headroom); exclusive use of realizations | consumer / gate | — |
+| *(request_base, central lanes, container_name, pins, assay_command)* | — | — | none: derived from `assay lanes --json`; environments inherit, lanes never; `exec_in`; the judge floor; the invocation is ciu's | — | — |
+
+### B. Instance file (`ciu.instance.toml`, operator) and generated file (`ciu.instance.generated.toml`, ciu) — both gitignored, per instance (V8-S14.2)
+
+| key | table / level | type | reason for existence | owner | example |
+|---|---|---|---|---|---|
+| `layout` / `bundles` / `label` | `ciu.instance` | layout / list[bundle] / str (unique per git family) | which placement this instance deploys; default bundle selection; a human name (never an identity; the join reference, R-27) | operator or `ciu instance init/add` / `ciu up`, listings, registry | `layout = "local"` |
+| `host_ports."<realization>.<svc>.<endpoint>"` | `ciu.instance.host_ports` | int | per-instance host-port override so two instances on one machine can both publish | operator / publication | `"cadvisor.cadvisor.http" = 18080` |
+| `[realization.<n>] kind = "joined" …`, `[service.<n>] <level> = "<n>"` | instance file | see A3, A2 | joins are instance-scoped declarations, appended by `ciu instance add --join` with a round-trip writer (R-06) | operator or ciu / join | see §4.1.7 |
+| `[realization.<R>.services.<svc>.…]` | instance file | as E | per-instance override of a stack table by its merged path | operator / merge | — |
+| `generated.instance_id` | `ciu.instance.generated` | str hex | identity component 2; identical on every host of a layout | ciu / everything | `"98535c"` |
+| `host.generated.name` / `.hostname` / `.repo_root` / `.physical_repo_root` / `.env_type` / `.user_uid` / `.user_gid` / `.docker_gid` | `ciu.host.generated` | host / str / path / path / `devcontainer\|native\|github-actions` / int ×3 | host-local facts templates and hooks read as `host.*`; `hostname` is the lease holder (R-45); regenerated per host, never part of an identity | ciu / templates, hooks, engine | `env_type = "devcontainer"` |
+| `build.build_version` / `.build_time` / `.images.<name>` | `ciu.instance.build` | str / datetime / digest | what `ciu build` produced | `ciu build` / templates, provenance | — |
+| `realness.<layout>.<logical>` | `ciu.instance.realness.<layout>` | level | the durable record per layout — a **constraint** on later selections (R-26); other layouts' records stripped on push | ciu at first `up` / resolver, gate | `main_db = "seeded"` |
+| *(public_fqdn)* | — | — | none: `fqdn` is declared per host (R-16) and read as `host.fqdn` | — | — |
+
+### C. Rendered, derived, read-only (`ciu.resolved.toml` `[resolved]`) — a consumer writing any of these is refused (V8-S3.7)
+
+| key | table / level | type | reason for existence | owner | example |
+|---|---|---|---|---|---|
+| `schema_version` / `layout` / `host` / `environment` / `rendered_at` | `resolved` | int / str / str / str / datetime | lets readers refuse a shape they don't understand; what this render resolved for | ciu / assay, scripts, gate | `2` |
+| `identities.<r>.<svc>.container_name` / `.hostname` / `.compose_key` / `.compose_project` / `.network` / `.replicas[]` | `resolved.identities` | str… | the one identity derivation, materialized (P6) | ciu / templates, hooks, gate | see §4.1.4 |
+| `identities.<r>.<svc>.endpoints.<e>.port` / `.protocol` / `.publish` / `.host_port` / `.path` / `.published_on` | `resolved.identities…endpoints` | as declared + list[network] | the endpoint facts joined instances and the gate read; `published_on` = the networks the layout made ciu publish it on | ciu / joins, gate, humans | `published_on = ["mesh"]` |
+| `bindings.<consumer>.<local>.service` / `.realization` / `.endpoint` / `.network` / `.host` / `.port` / `.url` / `.path` / `.tls` / `.cert` / `.key` / `.ca` / `.requires` / `.delivery` / `.variables` | `resolved.bindings` | str… / list | how each binding was satisfied (§4.1.5); `<consumer>` = `<realization>.<svc>`, `env.<e>`, or `ciu` | ciu / templates (template delivery), injection (env delivery), probes, gate, assay `derived:` | see §4.1.5 |
+| `networks.<n>.name` / `.kind` / `.realized_by` / `.fqdn` / `.tls` | `resolved.networks` | str… | every declared network plus the implicit `instance` one | ciu / templates | `name = "dstdns-98535c-network"` |
+| `services.<logical>.level` / `.realization` / `.service` | `resolved.services` | level / realization / svc (absent for mock) | the selection actually used | ciu / gate, templates, joins | `"live"` / `"db_core"` |
+| `placement.<r>.hosts` | `resolved.placement` | list[host] | placement result | ciu / resolutions | `["gstammtisch"]` |
+| `waves` / `edges[]` / `gates.<k>.healthy` / `.completed` / `.facts` | `resolved` | list[list] / list of `{from,to,kind}` / lists | the ordering ciu used and every edge incl. derived (`kind ∈ bind\|depends\|secret→vault\|secret→minter\|network\|pki`) | ciu / `check --graph`, gate | see §4.1.6 |
+| `governance.<r>.<svc>.*` | `resolved.governance` | `RK` | effective caps per container | ciu / humans, gate | — |
+| `bundle.<host>.…` | `resolved.bundle` (with `--layout`) | table | what `ciu push` ships per host and why each store entry travels (R-32) | ciu / humans, push | — |
+
+### D. Host inventory (`ciu.hosts.toml`, gitignored; `~/.config/ciu/hosts.toml` user-global) (V8-S7.2)
+
+| key | table / level | type | reason for existence | owner | example |
+|---|---|---|---|---|---|
+| `local` | `hosts.<h>` | bool | marks this machine; no SSH facts required; no built-in `localhost` (written by `ciu init`) | operator / placement | `true` |
+| `fqdn` | `hosts.<h>` | hostname, optional | the host's declared public name (`host.fqdn`; `require_fqdn`) | operator / templates, init | `"gstammtisch.dchive.de"` |
+| `ssh_host` / `ssh_user` / `ssh_port` / `ssh_key` / `known_host` | `hosts.<h>` | str / str (`root`) / int (22) / path / str | push transport facts; `known_host` absence refused unless `CIU_SSH_INSECURE_TOFU=1` | operator / push, ssh | — |
+| `bundle_dir` / `push_mode` / `bundle_excludes` / `docker_optional` | `hosts.<h>` | str / `auto\|rsync\|scp` / list / bool | bundle mechanics | operator / push | — |
+| `activate.bootstrap` / `.apply` / `.health` / `.rollback` | `hosts.<h>.activate` | str | per-verb remote commands | operator / activate | `"ciu up --layout prod3"` |
+| `secrets.<entry>` | `hosts.<h>.secrets` | table `{ from = ask\|generate\|file, … }` | host-scoped secrets, stored under `[secrets.hosts.<h>]`, consumed through `from = "host"` | operator / hosts, secrets | `tls_cert_pem = { from = "file", path = "/etc/ssl/edge.pem" }` |
+| `addresses.<network>` | `hosts.<h>.addresses` | str | the host's address on each addressed network; the input to every cross-host resolution | operator / resolution | `mesh = "100.64.0.12"` |
+
+### E. Stack file (`<location>/ciu.stack.toml`) (V8-S6, S10.2)
+
+| key | table / level | type | reason for existence | owner | example |
+|---|---|---|---|---|---|
+| `<svc>` | `ciu_stack` | table key `name`, not `secrets` | one RealizedService; identity component 4 | consumer / identity, compose | `[ciu_stack.postgres]` |
+| `image` / `instances` / `one_shot` / `primary` / `enabled` | `ciu_stack.<svc>` | str / int ≥ 1 / bool / bool / bool or flag | the one image declaration; replica fan-out; runs-to-completion; the default variant service; conditional inclusion | consumer / compose, graph, gate | — |
+| `requires` | `ciu_stack.<svc>` | list[LogicalService] | sugar for bindings without data: an ordering edge (replaces `init_requires` on empty contracts and `after`) | consumer / graph | `["app_schema"]` |
+| `binds.<local>.to` / `.wait` / `.delivery` / `.env_prefix` / `.facts` / `.enabled` | `ciu_stack.<svc>.binds.<local>` | target / `healthy\|started\|none` / `env\|template\|none` / envname / list[TypedFact] / bool | §4.1.5: the consumer's dependency under its own name; delivered like a secret; its `facts` form the target's contract | consumer / graph, resolution, injection, templates | see §4.1.5 |
+| `provides` | `ciu_stack.<svc>` | list[TypedFact] | facts this service creates by means other than a vault-stored generated secret (replaces `init_provides`) | consumer / conformance, probes | `["pg:role/controller"]` |
+| `depends_on` / `probe_user` / `aliases` / `host_network` | `ciu_stack.<svc>` | list[sibling] / str / list / bool | intra-stack start order; the superuser probes use; extra DNS names; `network_mode: host` | consumer / compose, probes | — |
+| `health.interval` / `.timeout` / `.retries` / `.start_period` / `.gate_timeout` | `ciu_stack.<svc>.health` | durations / int | per-service healthcheck parameters (merged from `project.health`, **injected** into the rendered `healthcheck`, R-25) and the wave-gate budget | consumer / injection, gate | `start_period = "240s"` |
+| `endpoints.<e>.port` / `.protocol` / `.publish` / `.host_port` / `.host_bind` / `.allow_from` / `.path` | `ciu_stack.<svc>.endpoints.<e>` | int / `tcp\|udp\|http\|https` / `instance\|host\|proxy` / int / IP / list / str | §4.1.5; names unique per stack; publication derived from bindings with data | consumer / resolution, ports injection | `sql = { port = 5432, allow_from = ["network.mesh"] }` |
+| `hostdir.<purpose>` / `.path` / `.uid` / `.mode` / `.seed` | `ciu_stack.<svc>.hostdir.<purpose>` | str (`""` = auto) / path / int / str / path | host directories; `vol-*` legacy directories refused until migrated (R-36) | consumer / engine | `data = ""` |
+| `configfile.<n>.template` / `.target` / `.mode` / `.schema` | `ciu_stack.<svc>.configfile.<n>` | path / abs path / str / path | rendered into `ciu.rendered/<svc>/<mirrored path>`, mounted by parent directory (R-35) | consumer / injection | `template = "config.toml.j2"` |
+| `secrets.<k>.from` / `.path` / `.field` / `.store` / `.var` / `.entry` / `.length` / `.charset` / `.delivery` / `.env_name` / `.mode` / `.uid` / `.enabled` | `ciu_stack.<svc>.secrets.<k>` and `ciu_stack.secrets.<k>` | `vault\|generate\|ask\|file\|host\|ephemeral` / paths key or literal / str / `local\|vault` / envname / str / int / str / `file\|env\|configfile\|native\|hook\|none` (**required**) / envname / str / int / bool | §4.1.8; structured, checked | consumer / secrets, compose | see §4.1.8 |
+| `<consumer sub-tables>` | `ciu_stack.<svc>.<x>` | table | free-form service data; never read by ciu; not named `identity`/`health`/`endpoints`/`binds`/`hostdir`/`configfile`/`secrets` | consumer / templates | `[ciu_stack.controller.workflow]` |
+| `pre_secrets` / `pre_compose` / `post_compose` | `hooks` | lists of path or `{ run, provides, service }` | lifecycle hooks (subprocess, JSON context v2, `--validate`); `provides` on the entry names the facts the script creates (replaces `[hooks.provides.<svc>]`, R-20) | consumer / hooks_runner | `post_compose = [{ run = "post_compose_vault.py", provides = ["vault:secret/vault/controller/role_id"] }]` |
+| `*` | `governance` (stack-level) | as A6 | per-stack override | consumer / governance | — |
+| *(state)* | `<location>/ciu.state.toml` | any non-secret | hook-persisted state; visible to the same run's later steps | ciu from hook outputs / hooks, templates | `initialized = true` |
+| *(init_requires, uses, after, init_provides, `[hooks.provides]`, directive, consumed_by, produced_by)* | — | — | refused with a message naming the v8 form | — | — |
+
+### F. Secrets file (`ciu.secrets.toml`, gitignored, CIU-owned, atomic) (V8-S10.6)
+
+| key | table / level | type | reason for existence | owner | example |
+|---|---|---|---|---|---|
+| `value` / `source` / `created` | `secrets.<realization>.<svc>.<key>`, `secrets.<realization>.<key>`, `secrets.hosts.<h>.<entry>` | str / `<from>[:<path\|var\|entry>]` or `hook:<script>` / datetime | the materialized secret in one store; which source produced it | ciu / ciu, humans | `source = "generate:vault:db/postgres/admin"` |
+| `secrets.<vault realization>.<primary>.root_token` / `.unseal_keys` | same shape | str / list | Vault bootstrap state, keyed by the resolved Vault realization; a joiner reads the reference's (R-28) | vault hook via outputs / ciu | — |
+
+### G. assay lane TOML (`assay.toml`, owned by assay; never parsed by ciu)
+
+Unchanged from revision 2.1's table G in content; the two v8-facing facts are: `judge.base_source = "request"` is read by ciu **through `assay lanes --json`** (never the file), and `[lanes.<n>.infrastructure]` facts should be `required-env:<VAR>` fed by an environment's `binds` — `derived:<path>` stays supported and targets `resolved.bindings.env.<e>.<local>.*` (R-03).
+
+### H. run-gate lane TOML → v8 home (run-gate stays available; this is the mapping for adopters that move)
+
+| run-gate key / knob | v8 home | note |
+|---|---|---|
+| `schema_version` | `project.revision` | one revision gate |
+| `environments.<n>.image` / `.mode` / `.forward_env` / `.cgroup_slice` | `testing.environments.<e>.image`/`image_from`, `.mode`, `.forward_env`; `testing.cgroup_slice` | unchanged names |
+| `environments.<n>.container_name` (and R-14a derivation) | `exec_in` + derived identity + mount proof | retired |
+| central config, reserved lane names (R-22) | `[testing] inherit` (environments only) | kept as one level of inheritance |
+| `lanes.<n>.kind/environment/argv/assay_lane/description/clean_tree/budget/required_env/artifacts` | `testing.lanes.<l>.*` | unchanged; `budget` enforced |
+| conjunction lanes (`ciu gate a && …`) and R-25 | `kind = "sequence"` | in-process |
+| `lanes.<n>.assay_command`, `pins.*`, `memory` | derived invocation; `testing.judge.version`; `resources.memory_max` | — |
+| `lanes.<n>.resources.memory/memory_swap/cpu_weight/io_weight/shared` | `resources.memory_max/memory_swap_max/cpu_weight/io_weight/shared` | cgroup vocabulary |
+| history / median (R-36) | `testing.history` + `ciu gate --list` | — |
+| `RUN_GATE_*` | `CIU_GATE_*` | — |
+| `--worktree`, `--allow-dirty`, `--check-env`, `doctor`, `validate-pointers`, `--list`, `--dry-run` | `ciu gate …`, `ciu gate doctor`, `ciu check --gates` | — |
+| `.assay/verdict-<lane>.json` | `<evidence_dir>/<lane>/verdict.json` | — |
+
+### I. Environment variables ciu reads in v8
+
+`CIU_EXIT_ON`, `CIU_MAX_CONCURRENT_INSTANCES`, `CIU_SECRET_<VAR>`, `VAULT_TOKEN`, `CGROUP_PARENT_DEV_BACKGROUND`, `CIU_HOSTS_FILE`, `CIU_SSH_TRANSPORT`, `CIU_SSH_INSECURE_TOFU`, `CIU_KSM`, `CIU_GOV_BASELINE_PATH`, `CIU_SKIP_DOOD_PREFLIGHT`, `CIU_GATE_EXTRA_MOUNTS`, `CIU_GATE_MOUNT_ALIAS`, `CIU_GATE_EVIDENCE_DIR`, `CIU_GATE_CGROUPFS_ROOT`, `NO_COLOR`, `TERM`, `CIU_LOG_PREFIX_TIME_SHORT`; `HOSTNAME`, `REMOTE_CONTAINERS`, `WORKSPACE_DIR`, `GITHUB_ACTIONS`, `USER` during `instance init` only. Retired in addition to revision 2.1's list: `CIU_SKIP_DEPENDENCY_CHECK` (preflights are per need, R-02).
+
+### J. Keys retired in v8 (the full drop list is §4.8)
+
+Revision 2.1's list (`deploy.environment_tag`, `deploy.network_name`, `[deploy.phases]`, `[topology.*]`, `[service.<n>] type/location`, stack-level `requires/provides`, `<svc>.name`, `ports`, `resources`, `ciu.repo_root`, `[deploy.resources]`, `vault.stack_path`, `expose_env`, `shared_infra`, `auto_generated.*`, run-gate `pins`/`assay_command`/`memory`/`container_name`, `$VAR` in TOML, `exec_targets`, `env_required`, `[state]`) plus, retired by revision 3.0: `deploy.labels.prefix` (R-15), `deploy.env.defaults` (R-13), `[service.<n>] contract` (R-19), `init_requires` / `uses` / `after` / `init_provides` / `[hooks.provides]` (R-18, R-20, R-21), the `routes` binding and two-pass render (R-05), secret `directive` strings / `consumed_by` / `produced_by` (R-30, R-31), `request_base` (R-52), `public_fqdn` detection (R-16), `owned-seeded` (R-29), every `.j2` declaration file (R-08), the per-stack rendered `ciu.toml` and `ciu.toml.j2` override (R-09, R-10), `[ciu.instance.resolved.render] complete` and the rendered-file lock (R-42), `CIU_SKIP_DEPENDENCY_CHECK` (R-02), `facts_schema` (R-49).
+
+## 4.6 Spec/schema check
+
+**For every proposed table: does it exist, and what changes?** (`S<n>` = v7 SPEC 5.0.0; `V8-S<n>` = SPEC-V8 draft.3.)
+
+| v8 table / key | exists today as | shape / meaning / owner change |
+|---|---|---|
+| `project.revision` | `revision` (S3) | value 8 |
+| `[project]` | `[deploy]` | renamed and narrowed to identity, registry, health defaults, compose env, control flags, vendor images |
+| `[service.<n>] <level> = …`, `mock = {}` | S3.14 `[service.<n>] type/location/description` | **shape change**: variants; no `contract` (derived) |
+| `[realization.<n>] kind/location/per_host/provides/endpoints/instance/service` | S3.14 `location`; S16.1a `ref_services` | one namespace across kinds; `joined` replaces generated `ref_services` |
+| `[ciu_stack.<svc>] … binds.<local>, requires, provides, endpoints` | S3.3 `[<root>.<svc>]` with `requires/provides/name/instances/env_required/hostdir/configfile/secrets` | **root fixed, key set closed, bindings new**: `requires/provides` → bindings and `provides`; `name` derived; `endpoints`, `one_shot`, `primary`, `aliases`, `host_network`, `probe_user`, per-service `health` new |
+| secrets `from/path/store/…`, `delivery` | S4 directive strings; S4.19 `expose_env` | **shape change**: structured; mandatory delivery axis with six values |
+| `ciu.secrets.toml` | S4.9 `.ciu/secrets/<name>`; `[state]` bootstrap (S9.4) | location and shape change; per-source push rule |
+| `[network.<n>]`, derived TLS secrets, `pki:issuer/<n>` | `[topology] transport` (1.10 only) | new |
+| `[hosts.<h>]` incl. `fqdn`, `addresses`, structured host secrets | S14.3 `.ciu.hosts.toml` `[deploy.hosts]` | additive keys; file and table renamed; `public_fqdn` detection retired |
+| `[bundles.<b>] services/includes` | S7.4 `[deploy.profiles]` | **meaning change**: bundle of logical services; composition new |
+| `[layouts.<l>.hosts.<h>] reach` | S7.5c layouts | additive `reach`; mandatory; `environment` free-form |
+| `[realness] default/pin`, `[ciu.instance.realness]` | — | new; the record is a constraint |
+| `[resolved.*]` in `ciu.resolved.toml` | `[ciu.instance.generated]` precedent (S3.1b) | derived tables in an atomically written rendered file |
+| `ciu.instance.toml` / `ciu.instance.generated.toml` | `ciu.global.instance.toml.j2` + `ciu.instance.generated.toml` (7.10.0) | instance file becomes plain TOML; generated file unchanged in role |
+| `[ciu.instances] max_concurrent/lease_ttl_hours`, `ciu.instance.json` | S16.3/S16.9 `[ciu.worktree]`, `ciu.worktree-instance.json` | rename; `exec_targets` retired (gate environments) |
+| `[governance]` `RK` incl. `cpu_max` → `cpus` | S15 keys incl. `cpus` (CIU-90, 7.11.0) | rename to cgroup vocabulary |
+| `[testing.*]` incl. `inherit`, `binds`, `sequence`, `require_provenance`, `history` | run-gate `run-gate.toml` + `RUN_GATE_*` | **owner change** for adopters that move; run-gate stays |
+| `[vault] service`, `[vault.paths]` read | S4.16 `vault.stack_path` + basename heuristic; `[vault.paths]` unread | pointer by logical service; paths become a checked reference table |
+| `ciu.rendered/<svc>/…` directory mounts | S5.3a | **kept** from v7 (revision 2.x had regressed to file mounts) |
+| plain-TOML declarations, `ciu schema --json` | S3 `.j2` layers | **shape change** (P11) |
+| directory-fd instance lock | S4.26 per-stack secret locks; S16 registry locks | new; no rendered-file lock |
+| `ciu.hookkit`, hook context v2 | S9 in-process hooks | **model change** with a helper library |
+| `ciu migrate`, `ciu init` v8, `ciu doctor`, `ciu status`, `ciu show`, `ciu dev`, `ciu ssh`, `ciu provenance` | v7 verbs S19, S13.7, S7.10, S5a, S14.1, S17.2 | kept with dispositions (R-61) |
+
+**How this schema itself is validated mechanically** — unchanged in structure from revision 2.1: (1) closed-key validators generated from one declarative table-spec (now also the source of `ciu schema --json`); (2) S5.7 JSON-schema validation of rendered *application* config files, not stretched to ciu's own referential rules; (3) hook `--validate` findings with severity through `ciu.exit_on`. Plain-TOML declarations add a fourth layer for free: any external TOML validator, editor or third-party tool can check a ciu file against the emitted JSON Schema.
+
+## 4.11 Non-breaking improvements to the existing tools
+
+Status of revision 2.1's items: **N1** (auto `ciu check`, CIU-64), **N2** (severity findings, CIU-65), **N3** (`stack:*` self-satisfied, CIU-63), **N4** (`gate_timeout`, default-on gate, bounded poll, CIU-67/68), **N5** (`exec_targets` key, CIU-69), **N6** (provider-resolved probes, CIU-70, and CIU-89's override table), **N7** (`StrictUndefined`, CIU-74) — **shipped** in ciu 7.x. **N8** (container-name collision WARN, CIU-66 static half), **N9** (undocumented keys), **N10** (dead keys), **N15** (vault heuristic WARN), **N16** (`ciu render --json`), **N17** (dstdns cleanups) — still open and still safe. **N11** (single assay pin in run-gate) — superseded by RG-33's judge floor. **N12** (`--base` pass-through, RG-26) and **N14** (assay wave) — shipped. **N13** (run-gate `image_from_ciu`) — dropped: run-gate's exec derivation is replaced by V8-19's read of `ciu.resolved.toml` when present.
+
+New, safe now:
+
+| # | mechanism | tool | why it is safe | what it improves |
+|---|---|---|---|---|
+| N18 | run-gate: when a checkout carries `ciu.resolved.toml`, read `resolved.identities` for exec-mode container names; otherwise the v7 path (RG item, V8-19) | run-gate | additive lookup order | run-gate keeps working against v8 checkouts |
+| N19 | `ciu schema --json` for the v7 tables from the existing validators' key sets | ciu | read-only verb | editor completion for v7 adopters; the table-spec V8-1 needs anyway |
+| N20 | `ciu.hookkit` shipped as a v7 package with `wait_healthy`/`wait_tcp` wrappers over the existing `hooks_runner` probes, usable from in-process hooks | ciu | additive module | dstdns hooks stop hand-rolling polls before v8 |
+| N21 | run-gate: `kind = "sequence"` lanes (in-process conjunction) | run-gate | new lane kind; string conjunctions still work | removes the R-25 override hazard for adopters that stay on run-gate |
 
 ---
 
-### 10.7 NOT_RUN semantics
+# Part 2 — Design Rationale & Audit Trail
 
-The gate report must distinguish three outcomes per lane:
+## 4.2 Inventory — every mechanism and idea, tagged
 
-| Status | Meaning |
-|--------|---------|
-| **PASS** | Evidence produced and satisfied policy |
-| **FAIL** | Executed but failed; evidence shows the failure |
-| **NOT_RUN** | Selected/admissible-in-principle but not executed, with reason |
+Tags: **SHIPPED**, **PROPOSED**, **CONTRADICTED**, **SUPERSEDED**, **QUESTIONABLE**. Revision 2.1's inventory rows (A1–A16 identity, B1–B18 config model, C1–C13 graph, D1–D8 realness, E1–E12 topology, F1–F8 secrets, G1–G5 locking, H1–H9 validation, I1–I20 gate) stand as recorded there and in git history (`2347191f`); rows changed or added by revision 3.0:
 
-Mid-command failures remain FAIL or ERROR — they must never become skips.
-A command that ran and crashed IS evidence.
+| # | mechanism | source | tag | disposition |
+|---|---|---|---|---|
+| B4a | `[ciu_stack.<svc>]` root in a **Jinja** stack file; two-pass render for `routes` | rev 2.1 V8-S3.5.5 | PROPOSED, QUESTIONABLE | plain TOML; no derived value in a declaration (R-05, R-08) |
+| B17a | `{% set %}` DRY maps and `{% for %}` in declarations | dstdns; rev 2.1 §4.3.3 "data, fine" | SHIPPED, QUESTIONABLE | not needed once bindings and `[vault.paths]` references exist; expanded by `ciu migrate` (R-08) |
+| B19 | `ciu.global.instance.toml.j2` written by `instance add --join` | rev 2.1 V8-S9.5.5 vs X38 | CONTRADICTED | X41 → plain `ciu.instance.toml` |
+| B20 | `{}` disables a table | rev 2.1 V8-S3.1.2 | PROPOSED (false under deep merge) | X42 → `enabled = false` only |
+| C14 | `init_requires`/`uses`/`after` + template `routes.<X>` | rev 2.1 | PROPOSED, QUESTIONABLE | bindings (R-18) |
+| C15 | hand-typed `contract` | rev 2.1 V8-S5.2 | PROPOSED, QUESTIONABLE | derived from bindings (R-19) |
+| C16 | `[hooks.provides.<svc>]` next to `init_provides` | rev 2.1 | PROPOSED | `provides` on the hook entry (R-20) |
+| C17 | ordering-only dependency publishes an endpoint | rev 2.1 S7.4.1 + S7.8.3 | PROPOSED (hazard) | publication only from bindings with data (R-22) |
+| D9 | record in the selection precedence chain | rev 2.1 S9.3.1 vs S9.4.2 | CONTRADICTED | X43 → record as constraint |
+| E13 | `public_fqdn` from a "public"-described address | rev 2.1 S14.2 | CONTRADICTED with S7.3 | X44 → declared `fqdn` |
+| E14 | label prefix from the consumer | rev 2.1 S4.5 | PROPOSED, QUESTIONABLE | fixed `ciu.*` (R-15) |
+| F9 | directive string grammar + Jinja paths + unread `[vault.paths]` | rev 2.1 S10.1 | PROPOSED, QUESTIONABLE | structured sources (R-30) |
+| F10 | `consumed_by`, `produced_by` | rev 2.1 S10.2 | PROPOSED | `delivery = "hook"`; derived (R-31) |
+| F11 | reduced store ships every push | rev 2.1 S17.3 vs v7 S14.2 | CONTRADICTED | X45 → per-source rule |
+| G6 | rendered file as lock; in-place render; completion table; fstat retry | rev 2.1 S14.4 (operator F14) | PROPOSED, QUESTIONABLE | X46 → directory fd (interview Q2) |
+| G7 | shared gate lock for nested conjunctions | rev 2.1 X27 | PROPOSED | kept for `up ‖ gate`; nesting removed by sequence lanes |
+| H10 | 15 stages strictly serial | rev 2.1 S15.3 | PROPOSED | dependency-based (R-71) |
+| H11 | `facts_schema` vs `schema_version` | rev 2.1 | PROPOSED | one envelope (R-49) |
+| I21 | gate needs an instance even with zero stacks | rev 2.1 S14.4.1 vs S16.11 | CONTRADICTED | X47 → zero-instance mode |
+| I22 | `request_base` on ciu lanes | rev 2.1 S16.5 (own CIU-72 note) | PROPOSED, QUESTIONABLE | `assay lanes --json` only (R-52) |
+| I23 | central `[testing]` inheritance dropped | rev 2.1 §4.5 H | PROPOSED, QUESTIONABLE | `inherit` (R-54) |
+| I24 | shell-string conjunction lanes | dstdns, demo | SHIPPED (hazard) | `sequence` (R-53) |
+| I25 | provenance as a gate precondition | v7 S17.2 | SHIPPED (v7), missing in v8 | `require_provenance` (R-55) |
+| I26 | exec-target mount proof | v7 S16.7 | SHIPPED (v7), missing in v8 | restored (R-47) |
+| J1 | run-gate absorbed and frozen | rev 2.1 §4.3.2 | PROPOSED, CONTRADICTED by the standalone constraint | X48 → lifted, run-gate alive |
+| J2 | subprocess hooks without helpers | rev 2.1 X39 | PROPOSED, QUESTIONABLE | hookkit (R-40) |
+| J3 | file-level config-file mounts | rev 2.1 S6.9 vs v7 S5.3a | SHIPPED (v7) regressed | directory mounts (R-35) |
+| J4 | hostdir path change without migration | rev 2.1 S6.8 | PROPOSED (data hazard) | `ciu migrate --hostdirs` (R-36) |
+| J5 | v7 verbs without a disposition | rev 2.1 S18 | PROPOSED (gap) | R-61 |
+| J6 | built-in `localhost`/`local` | review option | PROPOSED | rejected by the operator (Q10); `ciu init` writes them |
+| J7 | binding-carried credentials | review idea | PROPOSED | deferred (§4.3a C) |
 
-NOT_RUN reasons are closed vocabulary:
+## 4.3 Elongated reasoning — the integrated design, walked through
 
-| Reason | Example |
-|--------|---------|
-| `missing-environment` | No running instance for the named environment |
-| `realness-mismatch` | Required variant not deployed (e.g. needs live Stripe but got mock) |
-| `missing-credentials` | Secret referenced by the lane's realness variant unavailable |
-| `unavailable-runner` | Test runner container/image not available |
-| `no-matched-scope` | Changed files don't match any pattern in this scope |
+### 4.3.1 What the interviews decided
 
-**Ship intents fail closed on any required NOT_RUN.** A release gate with
-a NOT_RUN lane has incomplete evidence and must not pass. Fast-feedback
-intents may surface NOT_RUN as a warning while still passing, because the
-purpose is quick iteration, not certification.
+**2026-08-30 (five rounds, revision 2.x)** — recorded in full in revision 2.1 §4.3.1 (git `2347191f`); in short: absorb run-gate (F1); identity as data (F2); network entities (F3); `joined` kind (F4); explicit layouts always; `[ciu_stack.<svc>]` root (F18/F18b); generic registry (F18c); phases dropped and waves written (F6); `delivery` mandatory (F5); cgroup keys (F7); image-baked judge floor (F8); rendered-file lock (F14 — **superseded 2026-09-02**); one endpoint shape (F11); `ciu gate` + `ciu instance`; flat rendered artifacts; overlay renamed.
 
-```toml
-[testing.intents.quality]
-rigor = ["R0", "R1", "R2"]
-not_run_policy = "fail"           # default for ship gates
+**2026-09-02 (three rounds, revision 3.0)** — the review put ten forks to the operator; every question carried a recommendation and the options not chosen are in the review §4:
 
-[testing.intents.smoke]
-rigor = ["R0"]
-not_run_policy = "warn"           # fast feedback can tolerate gaps
-```
+| fork | decided | the operator's reasoning, in short |
+|---|---|---|
+| Q1 standalone vs absorption | **lift run-gate's functionality into ciu; keep run-gate alive in parallel** | "for max synergy … possibly align with future changes in ciu v8" — the standalone constraint is satisfied by run-gate staying, and ciu owes a zero-ceremony mode |
+| Q2 lock object | **checkout directory fd** | five mechanisms and a hole vs none |
+| Q3 hook model | **subprocess + `ciu.hookkit`** | portability plus helpers |
+| Q4/Q5 `routes` | **"do we want to keep `routes` at all? … think out of the box"** → **bindings + data-only declarations** | the operator asked for the cleanest schema and accepted breaking changes for it |
+| Q6 renames | **all**: bundles, seeded, `[project]` + top-level tables, the new file names | — |
+| Q7 ceremony | **all**, with a doubt on built-ins | "not sure about implicit localhost, if it makes schema harder to understand and use if you want remote hosts as well" |
+| Q8/Q9 push secrets | question back ("is there a contradiction … there could be no vault … how is remote different from localhost?") → **derived per source + reachability** | the rule is per source, not per layout (§4.3.8a) |
+| Q10 built-ins | **none; `ciu init` writes the host and layout** | explicit, checkable, consistent with "explicit always" for layouts |
 
----
+Non-convergence: none.
 
-### 10.8 Authored config vs derived state
+### 4.3.2 The gate layer: absorb, and stay standalone
 
-To prevent ambiguity about where truth lives:
+Revision 2.1 measured the adopter population (one real environment user, eight trivial files) and concluded that absorbing run-gate cost nothing. The operator's framing on 2026-09-02 added a constraint the measurement did not weigh: the tools are meant for third parties too, and a five-line host lane must not require a Python package with three runtime dependencies, an instance, a lock and a rendered file. Two things follow. First, run-gate is not frozen: it stays the zero-install, copied-script gate for whoever wants one, reads the same `assay.toml`, and gains what makes it interoperate with v8 checkouts (V8-19, N18, N21). Second, `ciu gate` must be usable at the same cost: a project with no Realizations has no instance at all — no `ciu.instance.toml`, no generated file, no rendered file, no lock — and ciu checks for docker, assay, git and Vault only where a verb or a lane actually needs them (R-02, R-51). The synergy the operator wanted is unchanged: an `exec` environment names a LogicalService, preconditions come from the record and the graph in process, caps use the governance vocabulary and code path, the judge is one floor plus the verdict's provenance, and — new in revision 3.0 — environments carry bindings so a lane's infrastructure facts arrive as environment variables (R-03), sequences run in one process (R-53), the monorepo declares its tester image once (R-54), and every LaneResult says whether the containers it tested match `HEAD` (R-55).
 
-**Authored (SSOT):**
-- `ciu.global.defaults.toml.j2` — repository-authoritative baseline
-- `ciu.global.toml.j2` — intentional committed override
-- `<stack>/ciu.defaults.toml.j2` — stack-authoritative baseline
-- `<stack>/ciu.toml.j2` — optional stack override
+### 4.3.3 Identity, the stack-file root, and why declarations stopped being templates
 
-**Derived (never authored):**
-- `ciu.global.toml` — rendered output of the chain above
-- `.ciu-execution-manifest.json` — compiled gate plan (§10.4)
-- `.ciu/secrets/*` — materialized secret values
-- `.ciu/ciu.compose.overlay.yml` — machine-derived wiring
+Identity is unchanged from revision 2.1 (one derivation, data in the rendered file, the operator's F2) with two corrections: the injectivity claim was false and is now an honest check (R-14), and ownership labels are ciu's own namespace so that a consumer setting can never orphan a container (R-15).
 
-The ExecutionManifest is a COMPILATION of the authored config plus runtime
-facts. It is never hand-edited. Changing behavior requires changing the
-authored source, re-rendering, and re-compiling.
+The stack-file root `[ciu_stack.<svc>]` stands (F18). What changed is the file around it. Revision 2.1's own §4.3.3 had already found that Jinja was "used as a crutch" for identity assembly and replica fan-out and left it in place for data expansion. The review followed the remaining uses to their ends: `{{ vault.paths.x }}` inside directive strings (a path reference — now `path = "x"` against a checked table), `{% set %}` constants (inlined), `{% for %}` generating near-identical `[service.x]` tables (now one line each), and `{{ routes.* }}` in stack TOML (the cause of the two-pass render). With those gone, a declaration file has no expression left in it, and every argument against Jinja in declarations becomes decisive: an external validator can read the file; `ciu schema --json` can describe it; `ciu instance add` and `ciu migrate` can rewrite it round-trip; a typo is a schema finding, not a template error (P11).
 
-This distinction MUST be normative so tooling (and agents) understand that
-modifying the manifest directly is meaningless — it will be overwritten at
-the next gate preparation.
+### 4.3.4 From routes to bindings — the graph and the contract
 
----
+Revision 2.1's consumer surface was `init_requires` (edge + route), `uses` (route only), `after` (edge only), and `routes.<X>.<e>.*` reads in templates and stack TOML, with a hand-typed `contract` on every LogicalService. Walking the demo showed the costs: seventeen stack files read `routes` (hence the two-pass render); consumers wrote a mapping hop (`[ciu_stack.controller.database] host = "{{ routes.main_db.sql.host }}"` then `{{ ciu_stack.controller.database.host }}` in compose) to give their templates a stable local name — which is the local-name idea done by hand; an ordering-only `init_requires` derived a route and therefore a cross-host publication nobody used (R-22); and the contract was a copy of the provider's own `provides` list, restated on the logical table, with the vault facts derivable from directives anyway (R-19).
 
-### 10.9 Gate contracts and ownership boundaries
+The binding collapses this into the shape secrets already have: a consumer declares *what it needs* under *its own name* and *how it wants it delivered*. `to` names the capability (and optionally the endpoint); `wait` says whether the dependency orders the deploy (`healthy`, `started`) or is runtime-only (`none`, the old `uses`); `delivery` says whether ciu injects `PREFIX_HOST/PORT/URL` into the container (`env`) or binds the resolution for the templates (`template`) or nothing (`none`); `facts` says what the consumer relies on. `requires = [...]` is the sugar for bindings without data (the old `init_requires` on an empty contract, and `after`). The contract of a capability is then the union of what is bound to it — the only definition under which a check compares something a consumer actually depends on — and every declared variant is checked against it whether or not it is selected, so a seeded stub that lacks an endpoint fails `ciu check` today rather than on the first `--realness` switch. Providers still declare `provides` (facts by means other than a vault-stored generated secret) and hook entries carry their own `provides` (R-20); minter edges are derived as before. Publication now follows bindings with data only.
 
-CIU-v8 introduces four outer contracts that structure the gate lifecycle:
+What was **not** adopted: stable DNS aliases by construction (the consumer hard-codes `main_db:5432` and ciu makes it true) — it cannot express external providers on non-standard ports or cross-host published ports without a local proxy; and binding-carried credentials (§4.3a C).
 
-| Contract | Owner | Purpose |
-|----------|-------|---------|
-| **GateRequest** | CIU | What gate the operator/agent desires: intent, environment name, rigor overrides, scope overrides |
-| **ExecutionManifest** | CIU | The resolved plan: every fact needed to execute (§10.4) |
-| **LaneResult** | CIU + judge | Per-lane orchestration outcome: status, timing, embedded Assay verdict |
-| **GateReport** | CIU | Aggregate: all LaneResults, policy decision (pass/fail), resource usage summary |
+### 4.3.5 Realness, immutability, and the join
 
-Ownership boundaries:
+Unchanged in mechanism (revision 2.1 §4.3.5), corrected in three places: the record is a constraint, not a source in the precedence chain (R-26 — revision 2.1's S9.3.1 would have let a changed pin be silently overridden by the record while S9.4.2 promised an ERROR); joins name a unique label or an absolute path (R-27 — basename resolution was a third form whose meaning changed when a checkout was renamed); the joined-vault token path is written down (R-28). `owned-seeded` became `seeded`.
 
-- **CIU owns:** GateRequest schema, ExecutionManifest schema,
-  GateReport schema, and the outer envelope of LaneResult (status, timing,
-  artifact paths).
-- **Assay owns:** verdict internals inside LaneResult (coverage data,
-  mutation results, output tails). CIU embeds the verdict verbatim without
-  parsing or restructuring it.
-- **Shared protocol:** the cross-tool envelope (how CIU invokes assay and
-  receives results) carries explicit semantic versioning. Both sides
-  validate against it.
+### 4.3.6 Topology — unchanged model, two corrections
 
-These schemas initially live normatively in the CIU v8 spec. Once another
-judge or orchestrator appears, they should be extracted into a small
-versioned gate-contract package.
+The entity walk of revision 2.1 §4.3.6 (ten scenarios plus four additions) holds for bindings unchanged, because a binding with an endpoint resolves exactly as a route did. Corrections: `fqdn` is declared per host (R-16 — deriving it from a "public"-described address gave `description` the semantics S7.3 promised it would never have); a `per_host` capability may be `requires`'d but not bound with data (the old "no route to it").
 
-**Assay verdict embedding:** CIU adopts Assay's existing verdict schema as
-the embedded judge record inside LaneResult. It does NOT invent a competing
-format. If Assay extends its verdict schema (e.g. B014 output capture),
-CIU passes it through unchanged.
+### 4.3.7 Locking
 
----
+Revision 2.1's lock discussion turned on `flock` binding an inode: tracked files are replaced by git, the overlay by ciu's atomic writer, so the rendered file — rendered in place — was chosen. The review counted what that choice cost: in-place rendering (never atomic), a completion table that must be the last table of the file, torn-file detection in every reader, an `fstat`/`stat` retry after acquisition, `clean` truncating instead of unlinking, and still an undetectable fork of the mutex when `git clean -x` unlinks the file (gap 4). The checkout directory has the property the design was looking for — an inode that is stable for the life of the checkout — without any of it: the rendered file goes back to temp-file-and-rename and is always complete or absent; readers need no marker; nothing git or ciu does to files touches the lock. The operator chose it (Q2). The shared class for the gate stays for the one interleaving that matters (`up` recreating a container under an `exec` lane); the nested-gate reason for it disappeared with sequence lanes.
 
-### 10.10 Base commit from gate request, not lane config
+### 4.3.8 The gate in detail
 
-**Problem.** dstdns P128 revealed that `assay.toml` hardcodes a base commit
-in its R1 lane configuration. In a worktree-based workflow, the correct
-base depends on WHERE the gate runs (which branch, which merge-base), not
-on a static value in lane config.
+Unchanged from revision 2.1 §4.3.8 (judge floor + provenance, cgroup vocabulary, assay's role) with the revision 3.0 additions of §4.3.2. One interface to assay: `assay lanes --json` (B044, shipped in assay 4.x) yields lane names, `base_source`, `external_tools`, `argv0`, `env_required`; ciu neither parses `assay.toml` nor keeps a `request_base` key that could disagree with it (R-52). Provenance: v7's `ciu provenance` was a test-time question ("does this passing run describe the code I think it does?") that the gate can now answer per lane.
 
-**Proposal: the base ref is part of the GateRequest, not lane policy.**
+#### 4.3.8a Push secrets — the rule is per source
 
-Lane configuration declares only WHETHER changed-line judging is required:
+The operator's question back ("there could be no vault … how is remote different from localhost?") is the right frame. Local and remote differ in exactly one thing: where `ciu.secrets.toml` is. On localhost `up` has it next to it. A remote `up` runs from a bundle, so whatever only the sender knows must travel — generated local values (they must agree across hosts), asked values (there is no operator on the target), file values read on the sender. A `host` entry is read on the target by definition. A `vault` value lives in Vault, so the only question is *who fetches*: the target, if it has a derived resolution to the `vault` LogicalService (it is in the deploy set like any capability); otherwise the sender pre-fetches and ships. A project without Vault therefore ships its whole reduced store; a project whose Vault is reachable from every host ships local-source entries only. Neither v7's fixed "target fetches" nor revision 2.1's fixed "sender ships everything" covers both projects; the derived rule does, and `ciu check --layout` prints it per host so nothing travels invisibly (P3).
 
-```toml
-[testing.lanes.api-changed-lines]
-changed_line_judging = true       # "judge only lines I changed"
-# NO base_ref here — that comes from the request
-```
+### 4.3.9 Naming decisions taken without a fork
 
-The GateRequest supplies the actual base:
+`binds` / `to` / `wait` / `delivery` / `env_prefix` / `facts` for the binding keys; `from` / `store` / `path` / `var` / `entry` for secret sources; `requires.healthy` on lanes (was `requires.services`, one fewer sense of "service"); `[hosts]` (was `[deploy.hosts]`); `[resolved]` (was `[ciu.instance.resolved]`); `ciu.secret-copy.*`; `ciu.rendered/`; `schema_version` everywhere. Listed in §4.9 so they can be overturned cheaply.
 
-```bash
-ciu gate --intent coverage --environment ci-build-42 --base origin/main
-```
+### 4.3.10 Defects filed upstream during this pass
 
-CIU resolves it via `git merge-base` and writes the resolved commit into
-the ExecutionManifest. The lane reads it from there, not from its own config.
+None in ciu's v7 code — the review was of the design set. One run-gate item is filed (exec-mode container derivation must read `ciu.resolved.toml` when present, V8-19/N18); one ciu backlog pointer records the design-set revision.
 
-This makes the same lane definition reusable across branches, PRs, and
-local development without editing config per context.
+### 4.3.11 The revision 2.0 → 2.1 review rounds
+
+Recorded in revision 2.1 §4.3.11 (git `2347191f`): the locking classes, derived vault facts and minter edges, proxy networks address-free, derived TLS secrets, the generated-file split, `primary`/variant service, `mock = {}`, derived publication, `per_host`, `healthy` defined once, `exec` caps validated, the last-table completion marker (now retired with the lock), `uses` (now a binding with `wait = "none"`), `ASK_HOST` (now `from = "host"`), `ciu.state.toml`, hooks as subprocesses (now with hookkit), `request_base` (now derived), two-pass render (now retired), `_` → `-`. Every item that revision 3.0 retired is listed in §4.8 with its reason.
+
+### 4.3.12 The 2026-09-02 adversarial review (revision 2.1 → 3.0)
+
+A fresh reviewer read the design set against the v7 specification, run-gate's specification and every adopter, the backlog, and a source-level dependency map, and returned 78 findings (`CIU-V8-ADVERSARIAL-REVIEW-2026-09-02.md`): 5 blockers (R-01 the standalone constraint, R-06 the Jinja overlay written by ciu, R-26 the realness precedence contradiction, R-51 zero-stack mode needing an instance, and R-14's false structural claim counted as major), 22 major, the rest minor or notes. The operator was interviewed on the ten forks of §4.3.1. Everything accepted is in Part 1; three findings were resolved by keeping the status quo (R-33 store blast radius, R-46 the registry record's duplicated `instance_id`, R-68 the residual senses of "service"); one idea was deferred (§4.3a C). Because the accepted findings change the file set, the consumer surface (bindings), the secret grammar, the contract, the lock and the gate's posture, revision 3.0 and draft.3 are fresh texts rather than patches, and this section plus §4.7 X41–X56 are the trail from 2.1.
+
+## 4.7 Contradictions found and resolved
+
+X1–X40 are recorded in revision 2.1 §4.7 (git `2347191f`) and stand, except where a later row supersedes them (X24 by X46; X27 partially by X49; X39 by X50). New in revision 3.0:
+
+| # | contradiction (both sides, sources) | resolution | reasoning pointer |
+|---|---|---|---|
+| X41 | rev 2.1 V8-S9.5.5 (`ciu instance add --join` writes the Jinja overlay) vs X38 (CIU-owned tables left the overlay because no round-trip-safe TOML+Jinja editor exists) | plain-TOML `ciu.instance.toml`, round-trip writer | R-06, §4.3.3 |
+| X42 | rev 2.1 V8-S3.1.2 (`{}` disables a table) vs "tables merge recursively" (a merged `{}` is a no-op) | tables are never deleted by a layer; `enabled = false` | R-07 |
+| X43 | rev 2.1 V8-S9.3.1 (record precedes pin) vs V8-S9.4.2 (a changed pin is an ERROR) | the record is a constraint | R-26 |
+| X44 | rev 2.1 V8-S14.2 (`public_fqdn` = reverse DNS of the first "public"-described address) vs V8-S7.3 (`description` carries no semantics) | declared `[hosts.<h>] fqdn` | R-16 |
+| X45 | v7 S14.2 (secrets resolve on the target) vs rev 2.1 V8-S17.3 (a reduced store ships every push) vs "there could be no vault" | per-source rule with reachability | R-32, §4.3.8a |
+| X46 | operator F14 (rendered-file lock, rendered in place) vs the five mechanisms and gap 4 it forces | directory-fd lock (operator Q2) | R-42, §4.3.7 |
+| X47 | rev 2.1 V8-S16.11 (`ciu gate` needs no `ciu up` in a zero-stack project) vs V8-S3.1.4 / S14.4.1 (overlay, generated file and a rendered file to lock are required) | zero-instance mode | R-51 |
+| X48 | rev 2.1 §4.3.2 ("nobody but us") vs the operator's standalone / no-hard-dependency constraint | functionality lifted, run-gate stays | R-01, §4.3.2 |
+| X49 | rev 2.1 X27 (shared gate lock class for nested `ciu gate` conjunctions) vs sequence lanes in one process | shared lock kept for `up ‖ gate` only | R-43, R-53 |
+| X50 | rev 2.1 X39 (subprocess hooks) vs CIU-4 (a hook MUST NOT hand-roll a poll loop) with no helper | subprocess + `ciu.hookkit` | R-40 |
+| X51 | rev 2.1 V8-S1.4 ("injective, because `name` forbids `-`") vs `db_core`+`postgres` = `db`+`core_postgres` | checked uniqueness with an ambiguity message | R-14 |
+| X52 | rev 2.1 V8-S7.8.3 (a route for every `init_requires`) + S7.4.1 (publish what a route reaches) vs "explicit over magic" | publication only from bindings with data | R-22 |
+| X53 | rev 2.1 §4.1.10 ("ciu never reads assay.toml beyond lane names") vs stage 12 parsing it with `tomllib` and calling `assay lanes --json`, and `request_base` restating `base_source` | `assay lanes --json` is the only interface; `request_base` dropped | R-52 |
+| X54 | rev 2.1 V8-S6.9.1 (file-level bind of a rendered config file) vs v7 S5.3a (directory mounts because Docker creates a directory for a missing file) | directory mounts kept | R-35 |
+| X55 | rev 2.1 V8-S18.1 (exit 2 = usage, 3 = lock) vs v7 S10.3 (2 = config validation, 3 = env bootstrap) relied on by wrappers | v7 meanings + 4 lock + 5 remote | R-48 |
+| X56 | rev 2.1 §4.5 H ("no central lane config in v8") vs the vbpub monorepo's one shared `tester-unified` environment in ten files (R-22) | `[testing] inherit`, environments only | R-54 |
+
+## 4.8 What to drop
+
+Revision 2.1's drop list (§4.8, git `2347191f`) stands. Dropped by revision 3.0, each with the reason:
+
+| idea | source | why |
+|---|---|---|
+| Jinja-rendered declaration files (`*.toml.j2`) | rev 2.x | no expression is needed in a declaration once bindings and path references exist; machine-unreadable; ciu cannot write them (P11, R-08) |
+| the two-pass stack render and the `routes` render binding | rev 2.1 V8-S3.5.5, S7.8.2 | consumers read their own local names; declarations never read derived values (R-05, R-18) |
+| `init_requires`, `uses`, `after` | rev 2.1 | one concept — the binding — with `wait`; `requires` is its sugar (R-18, R-21) |
+| hand-typed `contract` | rev 2.1 V8-S5.2 | a copy of the provider's list; derived from consumption instead (R-19) |
+| `init_provides` and `[hooks.provides.<svc>]` as two spellings | rev 2.1 | `provides` on services and on hook entries (R-20) |
+| secret directive strings (`ASK_VAULT:…`, `GEN_TO_VAULT:…`, …), `consumed_by`, `produced_by` | v7 S4, rev 2.1 | structured sources checked against `[vault.paths]`; `delivery = "hook"`; producer derived (R-30, R-31) |
+| the rendered file as lock, in-place render, `[…render] complete`, fstat retry, "clean truncates" | rev 2.1 V8-S14.4 | directory-fd lock needs none of them (R-42) |
+| `request_base` on ciu lanes; `tomllib` parse of `assay.toml` | rev 2.1 | `assay lanes --json` (R-52) |
+| shell-string conjunction lanes | dstdns | `sequence` lanes (R-53) |
+| `deploy.labels.prefix` | v7, rev 2.1 | fixed `ciu.*` ownership labels (R-15) |
+| `deploy.env.defaults` | v7 | consumer data in a ciu table (R-13) |
+| `public_fqdn` detection | v7 S2.7, rev 2.1 | declared per host (R-16) |
+| `owned-seeded` | rev 2.1 | `seeded` (R-29) |
+| the per-stack rendered `ciu.toml` and the `ciu.toml.j2` stack override | rev 2.1 V8-S2.2, S3.1.3 | one resolved file; overrides through the merged path (R-09, R-10) |
+| flat `ciu.rendered.<svc>.<cfg>` file mounts | rev 2.1 V8-S6.9 | v7 S5.3a's directory mounts (R-35) |
+| `CIU_SKIP_DEPENDENCY_CHECK` and the startup docker check | rev 2.1 V8-S18.2 | preflights per need (R-02) |
+| `facts_schema` | rev 2.1 | `schema_version` in one envelope (R-49) |
+| built-in `localhost` host and `local` layout | review option | rejected by the operator; `ciu init` writes them (Q10) |
+| freezing run-gate | rev 2.1 V8-18 | run-gate stays standalone (R-01) |
+| closed `environment` vocabulary on layouts | rev 2.1 V8-S7.6 | no semantics; free-form (R-69) |
+| "unclaimed fact" WARN | rev 2.1 V8-S5.3.2 | a provider's list is not a contract; INFO (R-19) |
+
+## 4.9 Open product decisions
+
+None. Every fork surfaced by the review was put to the operator (§4.3.1) and converged. The naming decisions revision 3.0 took alone (§4.3.9) are listed so they can be overturned cheaply; none changes the model.
+
+## 4.10 Known gaps in this proposal
+
+1. **Routes for multi-endpoint providers and replicas** (rev 2.1 gap 1) — unchanged: a stateful replicated provider needs a per-replica endpoint naming rule.
+2. **`seeded` for stateful stacks** (gap 2) — the preparation workflow is a consumer concern; the hook that writes prepared credentials to Vault is named, not written.
+3. **Lock semantics on network filesystems** — the directory lock is refused by name where `flock` is unsupported (V8-S14.4.6); no fallback is offered.
+4. **Certificate issuance** (gap 4a) — delegated to the `pki` hook; the contract of `pki/<network>/<consumer>/{cert,key,ca}` is not specified.
+5. **cgroup slices inside the devcontainer** (gap 5) — the live probe before V8-12 is still owed.
+6. **Binding-carried credentials** (§4.3a C) — deferred; if adopted, a binding's `secrets = { password = "<provider secret key>" }` would deliver the provider's published secret under the consumer's prefix.
+7. **`ciu.hookkit` argument shapes** — function names and contracts are specified (V8-S12.5); signatures are the implementer's.
+8. **run-gate alignment** — V8-19/N18 is filed; until it ships, run-gate exec mode against a v8 checkout falls back to its v7 derivation and fails on the renamed file.
+9. **Migration effort** (gap 9) — `ciu migrate` is specified mechanically (V8-App A); the expansion of Jinja control flow in declarations is best-effort and reports residues; dstdns's thirteen hooks are hand work.
+10. **Scenario coverage** (gap 10) — not walked: multi-instance deployments of different projects sharing one host's mesh; Docker Desktop path semantics; the interaction of `inherit` with a project that is itself inherited from (forbidden, one level).
+11. **`allow_from` enforcement** (gap 11) — declarative; no verification beyond the consumer's own tests.
+12. **Provenance as adjudicated evidence** (gap 12) — LaneResults now carry per-service provenance; the assay-side attested-evidence contract (B004) is still assay's.
+13. **The demo's hook scripts and config-file templates** are referenced by name, not written; the demo shows the declarations and compose templates only.

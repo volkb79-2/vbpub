@@ -34,16 +34,44 @@ an absolute path and never needs to resolve one; the core (not the adapter)
 is what reconciles a source root's boundary against the filesystem
 (DESIGN-GUIDE §11: "the prefix-boundary reconciliation... is universal and
 lives in the core").
+
+**The one narrow amendment** (A-397, the P27 re-carve):
+:meth:`LanguageAdapter.statement_blocks` additionally receives ``repo_top``
+as its own named parameter. The path STRINGS it takes and returns are still
+repo-relative in exactly the spelling above — the amendment is that this one
+method, which is also the only one permitted to shell out, gets the absolute
+anchor that makes those strings readable, from the core that owns it, rather
+than resolving one itself. The pre-existing sentence "an adapter never sees
+an absolute path" was written when no method needed to read a file; it is
+restated here as "an adapter never spells a path differently from ``git
+diff``, and never resolves a root of its own", which is the invariant that
+was actually load-bearing.
+
+**The fifth and last extension** (A-404, the same re-carve's DA-8):
+:meth:`LanguageAdapter.for_project` receives ``repo_top`` and
+``project_root`` and returns the adapter to use for THAT project. It is the
+one member whose return value is another adapter, and it exists so a fact
+living in the project's own layout — Go's module path, in its ``go.mod`` —
+can be DERIVED rather than declared (DESIGN-GUIDE §5) without the core
+learning what a ``go.mod`` is. Every adapter but Go returns ``self``.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from pathlib import Path
+from types import MappingProxyType
+from typing import Callable, Literal, Mapping, Protocol, Sequence
 
 from ..mutation import MutationSite
+from ..statement_attribution import StatementBlock
 
-__all__ = ["LanguageAdapter", "StatementSpan"]
+__all__ = [
+    "HelperInvocation",
+    "LanguageAdapter",
+    "StatementBlockReport",
+    "StatementSpan",
+]
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -88,16 +116,86 @@ class StatementSpan:
             )
 
 
+#: Seconds left in the lane's own budget, sampled on demand — structurally
+#: identical to :data:`assay.git.Remaining` and deliberately re-declared here
+#: rather than imported, because :mod:`assay.adapters.base` is the frozen
+#: protocol and must not acquire a dependency on the git/process layer to
+#: state a type. A-212's rule is that ONE deadline governs a lane; an adapter
+#: that shells out samples it through this callable rather than inventing a
+#: timeout of its own.
+Remaining = Callable[[], float]
+
+
+@dataclass(frozen=True, kw_only=True)
+class HelperInvocation:
+    """Which external program actually produced a helper's answer, recorded
+    at the moment it was run (A-397).
+
+    Deliberately NOT :class:`assay.verdict.Helper`. That type is the WIRE
+    shape, validated against the verdict schema and paired with a judged
+    claim per role (``verdict.py``'s own ``_check_helpers``); this one is the
+    adapter-layer fact, and the runner is what maps one to the other. An
+    adapter importing :mod:`assay.verdict` to answer "which toolchain did I
+    just run" would invert the layering this protocol exists to keep flat:
+    ``adapters/`` never reaches the wire.
+
+    ``identity`` is a MEASURED string, never a formatted guess — the version
+    the helper itself reported at the moment it ran (A-334: a value assay
+    handed itself is not evidence about an external system). ``resolved_path``
+    is where the tool was actually found on the effective PATH, which is the
+    other half of "which toolchain": two ``go`` binaries reporting the same
+    version can still be different installations.
+    """
+
+    tool: str
+    resolved_path: str
+    identity: str
+
+    def __post_init__(self) -> None:
+        for name in ("tool", "resolved_path", "identity"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"HelperInvocation.{name} must be a non-empty string, "
+                    f"got {value!r}"
+                )
+
+
+@dataclass(frozen=True, kw_only=True)
+class StatementBlockReport:
+    """One :meth:`LanguageAdapter.statement_blocks` answer: every requested
+    path's own blocks, plus the identity of whatever produced them.
+
+    ``blocks_by_path`` is keyed by the SAME repo-relative path strings the
+    caller passed in — this protocol's path contract, unchanged. Every
+    requested path appears exactly once; an adapter that cannot derive blocks
+    for one of them raises rather than omitting it, because a silently absent
+    key would reach :func:`assay.statement_attribution.attribute_statements`
+    as "this file has no statement positions", which that function refuses on
+    anyway (A-391) but with a message naming the wrong cause.
+    """
+
+    blocks_by_path: Mapping[str, tuple[StatementBlock, ...]]
+    helper: HelperInvocation
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.blocks_by_path, MappingProxyType):
+            object.__setattr__(
+                self, "blocks_by_path", MappingProxyType(dict(self.blocks_by_path))
+            )
+
+
 class LanguageAdapter(Protocol):
     """A language's contribution to changed-line coverage evaluation, plus
     (P09) to the cause-sensitive canary and (P11) to mutant construction.
 
-    Five attributes and SEVEN methods after P11 (A-097/A-101/A-105/A-114) —
-    now DESIGN-GUIDE §11's full flat seven-capability list, reached only
-    because each of the three post-P05 extensions (:meth:`statement_spans`,
-    the ``inject_*`` pair, :meth:`generate_mutation_sites`) was added by the
-    package that first proved the need for it (A-084), never spec'd in
-    ahead of that need.
+    SIX attributes and NINE methods after the P27 re-carve
+    (A-097/A-101/A-105/A-114/A-397/A-404) — reached only because each of the
+    FIVE post-P05 extensions (:meth:`statement_spans`, the ``inject_*`` pair,
+    :meth:`generate_mutation_sites`, :attr:`requires_statement_attribution` +
+    :meth:`statement_blocks`, and now :meth:`for_project`) was added by the
+    package that first proved the need for it (A-084), never spec'd in ahead
+    of that need.
     """
 
     #: A short, stable, unique identifier — the exact string a lane's
@@ -132,11 +230,81 @@ class LanguageAdapter(Protocol):
     #: shape) is simply never reached.
     requires_span_attribution: bool
 
+    #: Declares whether this adapter's coverage format reports STATEMENT
+    #: truth on its own (``False``) or reports something coarser that must
+    #: be corrected by :meth:`statement_blocks` before any verdict is
+    #: computed from it (``True``). Go's coverprofile is the case that
+    #: exists: it records a block's positional EXTENT and a statement
+    #: CARDINALITY, never the statements' own positions, so expanding an
+    #: extent into lines attributes function signatures, closing braces and
+    #: ``case`` labels as executable code (A-217, A-239).
+    #:
+    #: Deliberately NOT the same axis as :attr:`requires_span_attribution`,
+    #: which gates :meth:`statement_spans` — that hook RESCUES lines no
+    #: bucket claimed, and is called only for unattributed lines (A-097/
+    #: A-101, frozen). This one DEMOTES lines a bucket claimed wrongly, and
+    #: applies to the whole profile before evaluation. The two gate opposite
+    #: directions and an adapter may declare either, both, or neither.
+    #:
+    #: **This is a guard, not a hint.** When ``True``,
+    #: :func:`assay.evaluate.evaluate_coverage` and
+    #: :func:`~assay.evaluate.evaluate_targets` REFUSE a profile whose
+    #: :attr:`~assay.coverage_parsers.model.CoverageProfile.
+    #: statement_attributed` is ``False`` (A-392) — an uncorrected
+    #: block-based profile is a wrong answer that looks exactly like a right
+    #: one, which is AGENTS.md's masked-default anti-pattern in its purest
+    #: form, so the correction is enforced rather than remembered.
+    requires_statement_attribution: bool
+
     #: Names of external tools this adapter shells out to (A-013), declared
     #: up front so a lane's prerequisites are checkable before anything
     #: runs. Empty for an adapter that is pure Python text/AST processing
     #: with no subprocess boundary.
     external_tools: tuple[str, ...]
+
+    def for_project(
+        self, *, repo_top: Path, project_root: Path
+    ) -> LanguageAdapter:
+        """The adapter to use for the project rooted at *project_root* inside
+        *repo_top* — the FIFTH and final deliberate post-P05 protocol
+        extension (A-404, ruled by DA-8).
+
+        Called by the core ONCE per lane, at the one point where it holds both
+        anchors and before anything reads the profile, so that every
+        downstream consumer of the adapter (the key join, the statement
+        oracle, both evaluate modes) is handed the SAME object. An adapter
+        with nothing to learn from a project's layout returns ``self``; that
+        is the answer for every adapter but Go today, and it is the reason
+        this member can exist without the core knowing what any of them do
+        with it.
+
+        **Why the protocol grew a member rather than the core growing a
+        field.** A Go coverage profile keys its records by import path, so the
+        module path is needed before a key can be joined to a diff path — and
+        it is a fact of the project's own ``go.mod``, not of the lane's argv,
+        which DESIGN-GUIDE §5 requires assay to READ rather than accept as a
+        declared literal (covergate's ``-module srdm`` is that section's own
+        anti-pattern #1). The core cannot read it: doing so would put a
+        language's file format in :mod:`assay.evaluate`, which is the one
+        thing this protocol exists to prevent. So the core hands the adapter
+        the anchors and takes back an adapter.
+
+        **Returning a NEW object, never mutating.** Every adapter in this
+        project is a frozen dataclass and the registry holds one instance per
+        language for the whole process (``cli._built_in_registry``); binding
+        by mutation would make one lane's derived value visible to the next,
+        which is the shared-singleton bug this shape exists to avoid. An
+        adapter that derives something returns ``dataclasses.replace(self,
+        ...)``; the registry's own instance is never touched.
+
+        Raises :class:`~assay.errors.AssayError` when the project's layout
+        contradicts the lane — never returns a partially-bound adapter. There
+        is no fail-closed direction to guess in: an unresolved prefix does not
+        refuse, it silently matches no file, and a lane whose coverage matches
+        nothing measures 0/0 and PASSES (DESIGN-GUIDE §5's laundering-gate
+        test, one layer down).
+        """
+        ...
 
     def is_test_path(self, rel_path: str) -> bool:
         """Is *rel_path* a test file — never obligated to cover itself?
@@ -214,6 +382,58 @@ class LanguageAdapter(Protocol):
           inconsistent ambiguity (A-100/A-101) — never naturally produced by
           a correct adapter walking correctly-nested source, so an adapter
           author does not need to guard against producing one deliberately.
+        """
+        ...
+
+    def statement_blocks(
+        self,
+        repo_top: Path,
+        rel_paths: Sequence[str],
+        *,
+        remaining: Remaining | None = None,
+    ) -> StatementBlockReport | None:
+        """Where every coverage block over *rel_paths* begins its own
+        statements — the FOURTH deliberate post-P05 protocol extension
+        (A-239 item 2, signature ruled by A-397).
+
+        *rel_paths* are repo-relative path strings, this protocol's own path
+        contract, and *repo_top* is the single absolute anchor that makes
+        them readable. **This is the one method that receives a filesystem
+        root, and deliberately so:** it is also the one method allowed to
+        shell out (that is what :attr:`external_tools` declares), and a
+        program that re-derives statement positions from SOURCE must be able
+        to read the source. The path STRINGS stay repo-relative, so the
+        adapter still never spells a path a different way from ``git diff``;
+        the anchor arrives separately, named, from the core that owns it.
+
+        *remaining* is the lane's own deadline (A-212). An adapter that
+        launches a subprocess samples it rather than inventing a timeout;
+        ``None`` stays legal only for a genuine non-lane caller, exactly as
+        it is for :func:`assay.git.run`.
+
+        Two return shapes, the convention A-101 established for
+        :meth:`statement_spans`:
+
+        * ``None`` — this adapter performs no statement attribution at all,
+          paired with :attr:`requires_statement_attribution` being ``False``.
+          Every line-based format is here: coverage.py, lcov and cobertura
+          already report statement truth, so there is nothing to correct.
+        * :class:`StatementBlockReport` — one entry per requested path, plus
+          the identity of the helper that produced it.
+
+        **Never overloads** :meth:`statement_spans`, and A-239 rejected doing
+        so explicitly: that method's contract is "called ONLY for
+        unattributed lines", frozen by A-097/A-101, which gates in the wrong
+        direction (it rescues gaps; this demotes fabrications), and its type
+        is line-only with no columns — while the whole reason this hook
+        exists is that ``28.22,29.2`` and ``29.2,31.3`` are two different
+        blocks a line-only key would fuse.
+
+        Raises :class:`~assay.errors.AssayError` rather than returning a
+        partial answer when the helper cannot run or its output cannot be
+        read. There is no safe direction to guess in: attributing lines from
+        a source the oracle could not read would publish a verdict about
+        lines that are not the lines that ran (A-391).
         """
         ...
 

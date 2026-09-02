@@ -1,23 +1,26 @@
 # =============================================================================
-# nyxloom project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
-# Shared environment facts come from the CENTRAL vbpub-root run-gate.toml
-# (nearest ancestor); judgment policy stays in the gate command itself until
-# NL-1 migrates it to assay. See run-gate-project/SPEC.md.
+# nyxloom project gate lanes -- parsed ONLY by run-gate.py (one parser, D-110).
+# Environment facts come from the CENTRAL vbpub-root run-gate.toml (nearest
+# ancestor); judgment policy lives in assay.toml [lanes.tester-unified] (R0+R1:
+# the existing pytest-cov suite, D-064-L2 changed-line floor). NL-1 landed
+# here (nyxloom-P48): judgment moved from `nyxloom.coverage_gate`
+# self-judgment to Assay's own R1 changed-line judge -- ciu/run-gate.toml is
+# the proven precedent this mirrors. See run-gate-project/SPEC.md.
 # =============================================================================
 schema_version = 1
 
 [lanes.tester-unified]
-kind = "command"
-environment = "tester-unified"   # central [environments.tester-unified]
-# Judgment (D-064-L2 changed-line coverage floor) — unchanged mechanics from
-# the pre-run-gate argv. pytest-cov (NOT `coverage run`) is load-bearing:
-# coverage run traces only the parent, measuring ~nothing of xdist workers,
-# which would false-FAIL every package at the coverage_gate step. -n auto is
-# the measured optimum on this 8-core host (~2m28s vs 4m56s serial).
-argv = ["bash", "-c", "cd {worktree}/nyxloom && PYTHONPATH=src /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-report=json:/tmp/nyxloom-cov.json && PYTHONPATH=src /opt/tester-venv/bin/python -m nyxloom.coverage_gate --base main --coverage-json /tmp/nyxloom-cov.json --source src/nyxloom"]
-# Behavior-preserving adoption: nyxloomd runs gates in fresh attempt
-# worktrees, but manual runs may carry untracked scratch. The doctrine
-# default (clean_tree = true) lands together with NL-1's assay migration,
-# where assay's own DIRTY_TREE rule takes over.
-clean_tree = false
-budget = "30m"                   # advisory; consumers may enforce
+kind = "assay"
+assay_lane = "tester-unified"        # -> assay.toml [lanes.tester-unified]
+environment = "tester-unified"       # central [environments.tester-unified]
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-4.0.0.pyz"]
+# -n auto is the measured optimum on this 8-core host (~2m28s vs 4m56s
+# serial); pytest-cov (NOT `coverage run`) is load-bearing under xdist for
+# the same reason it always was -- coverage run traces only the parent,
+# measuring ~nothing of xdist workers. Both facts now live in assay.toml's
+# argv (the judged command), not here.
+budget = "30m"                       # advisory; consumers may enforce
+
+[lanes.tester-unified.pins.assay]
+version = "4.0.0"
+sha256 = "tools/assay/assay-4.0.0.pyz.sha256"

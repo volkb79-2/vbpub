@@ -101,11 +101,16 @@ class TestActionStatusResolution:
         self, tmp_path, monkeypatch, capsys
     ):
         """Tags absent -> engine.identity_compose_project_name (CIU-46
-        workspace identity), driven by THIS checkout's ciu.env."""
+        workspace identity), driven by THIS checkout's generated overlay
+        facts."""
         (tmp_path / "apps" / "vault").mkdir(parents=True)
-        (tmp_path / "ciu.env").write_text(
-            'export REPO_NAME="dstdns"\nexport INSTANCE_ID="abc123"\n', encoding="utf-8"
-        )
+        from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
+
+        # CIU-75: the identity naming reads the generated overlay table.
+        facts = {key: "" for key in GENERATED_FACTS_KEYS}
+        facts["repo_name"] = "dstdns"
+        facts["instance_id"] = "abc123"
+        write_generated_facts(tmp_path, facts)
         profile = _profile(config={"deploy": {}})
         selection = [{"path": "apps/vault", "name": "vault", "phase_key": "phase_1"}]
         monkeypatch.setattr(deploy.diagnose, "_inspect", lambda project: [])
@@ -115,13 +120,14 @@ class TestActionStatusResolution:
 
     def test_missing_identity_record_refuses_rather_than_guesses(self, tmp_path):
         """A stack dir that EXISTS but whose project cannot be named (no
-        ciu.env, tags absent) raises -- mirrors _stack_compose_projects's own
+        generated facts, tags absent) raises -- mirrors
+        _stack_compose_projects's own
         'a teardown/report that cannot be named refuses' discipline. Not
         silently reported as an empty/healthy stack."""
         (tmp_path / "apps" / "vault").mkdir(parents=True)
         profile = _profile(config={"deploy": {}})
         selection = [{"path": "apps/vault", "name": "vault", "phase_key": "phase_1"}]
-        with pytest.raises(ValueError, match="ciu.env"):
+        with pytest.raises(ValueError, match="declares no repo_name/instance_id"):
             deploy.action_status(tmp_path, profile, selection, json_output=True)
 
 

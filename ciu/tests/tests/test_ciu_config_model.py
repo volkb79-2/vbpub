@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from jinja2 import TemplateError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -225,10 +226,48 @@ def test_render_jinja2_text_substitutes():
     assert result == "hello world"
 
 
-def test_render_jinja2_text_unknown_var_renders_empty():
-    # Jinja2 default: undefined renders as empty string
-    result = render_jinja2_text("{{ missing }}", {})
-    assert result == ""
+def test_render_jinja2_text_unknown_var_raises_strict_undefined():
+    """CIU-74: render_jinja2_text uses a StrictUndefined Environment, not the
+    library-default ``Undefined`` — a reference to an undefined top-level
+    name now raises (wrapped as jinja2.TemplateError) instead of silently
+    rendering as the empty string."""
+    with pytest.raises(TemplateError, match="missing"):
+        render_jinja2_text("{{ missing }}", {})
+
+
+def test_render_jinja2_text_leaf_typo_raises_naming_the_bad_key():
+    """CIU-74 oracle (KNOWN_ISSUES_TODO_BACKLOG.md CIU-74): the
+    dstdns--postgres repro. Before this fix, a mistyped LEAF key one level
+    into an ordinary, PRESENT ``[deploy]`` table rendered silently as the
+    empty string — only a typo one level deeper, inside a wholly-ABSENT
+    nested table, raised. It must now raise in both cases, naming the
+    missing attribute (``environment_tg``, not ``environment_tag``)."""
+    template = "{{ deploy.project_name }}-{{ deploy.environment_tg }}-postgres"
+    context = {"deploy": {"project_name": "dstdns", "environment_tag": "prod"}}
+    with pytest.raises(TemplateError, match="environment_tg"):
+        render_jinja2_text(template, context)
+
+
+def test_render_jinja2_text_leaf_typo_controlled_wrong_implementation():
+    """Sanity check for the test above: the CONTROLLED WRONG implementation
+    (the library-default ``Undefined`` via a bare ``jinja2.Template(...)``,
+    i.e. what render_jinja2_text looked like before CIU-74) must reproduce
+    the silent ``dstdns--postgres`` output the backlog entry describes — so
+    the strict test above is actually exercising the fix, not a tautology."""
+    from jinja2 import Template as LibraryDefaultTemplate
+
+    template = "{{ deploy.project_name }}-{{ deploy.environment_tg }}-postgres"
+    context = {"deploy": {"project_name": "dstdns", "environment_tag": "prod"}}
+    result = LibraryDefaultTemplate(template).render(**context)
+    assert result == "dstdns--postgres"
+
+
+def test_render_jinja2_text_keeps_trailing_newline():
+    """CIU-74: ``keep_trailing_newline=True`` — a template's own single
+    trailing newline survives the render; the Environment/Template default
+    (``keep_trailing_newline=False``) would silently strip exactly one."""
+    result = render_jinja2_text("hello {{ name }}\n", {"name": "world"})
+    assert result == "hello world\n"
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +396,7 @@ def test_render_global_chain_worktree_override_is_final_sparse_layer(tmp_path, m
         tmp_path, '[ciu]\nenv = "default"\nkeep = "project"\n'
     )
     _write_global_overrides(tmp_path, '[ciu]\nenv = "project"\n')
-    (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+    (tmp_path / "ciu.global.instance.toml.j2").write_text(
         '[ciu]\nenv = "worktree"\n', encoding="utf-8"
     )
     result = render_global_chain(tmp_path, tmp_path)
@@ -366,7 +405,7 @@ def test_render_global_chain_worktree_override_is_final_sparse_layer(tmp_path, m
 
 def test_render_global_chain_worktree_override_uses_normal_secret_scan(tmp_path):
     _write_global_defaults(tmp_path, '[ciu]\nenv = "default"\n')
-    (tmp_path / "ciu.global.worktree.toml.j2").write_text(
+    (tmp_path / "ciu.global.instance.toml.j2").write_text(
         '[service]\npassword = "literal-secret-value"\n', encoding="utf-8"
     )
     with pytest.raises(ValueError, match="hardcoded credentials"):

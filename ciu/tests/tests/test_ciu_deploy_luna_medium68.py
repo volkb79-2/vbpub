@@ -55,7 +55,7 @@ def test_provisioning_preflight_probes_only_rendered_requires(monkeypatch):
     monkeypatch.setattr(provisioning, "lint_graph", lambda stacks: [])
     probed: list[str] = []
 
-    def probe(ref, config, repo_root):
+    def probe(ref, config, repo_root, **_kw):
         probed.append(ref)
         return ProbeResult(ref=ref, satisfied=True, reason="ready")
 

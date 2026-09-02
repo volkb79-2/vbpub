@@ -1,0 +1,31 @@
+# infra/otel-aggregator/ciu.compose.yml.j2 — v8 notation (draft.3)
+# Injected by ciu: container_name/hostname (dstdns-<instance>-otel-aggregator-collector),
+# the instance network, ciu.* labels, CIU_* env, the config DIRECTORY mount
+# (/etc/otelcol from configfile.otel, S6.9.1), `ports:` from the four
+# publish = "host" endpoints, healthcheck timing, cgroup fields. The OAP address
+# is the template-delivered binding binds.tracing (wait = "none").
+services:
+  collector:
+    image: {{ ciu_stack.collector.image }}
+    pull_policy: always                      # `:latest` is otherwise pulled once and cached forever
+    command: ["--config={{ ciu_stack.collector.configfile.otel.target }}"]
+    user: "{{ host.user_uid }}:{{ host.user_gid }}"
+    environment:
+      {% for key, value in env_defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      # expanded by the collector inside its config file (env: syntax); a tcp
+      # resolution carries host + port, composed here (no url for tcp, S7.8 step 7)
+      - SKYWALKING_ENDPOINT={{ ciu_stack.collector.binds.tracing.host }}:{{ ciu_stack.collector.binds.tracing.port }}
+      - SKYWALKING_OAP_HOST={{ ciu_stack.collector.binds.tracing.host }}
+    # ports: injected by ciu from [ciu_stack.collector.endpoints] (publish = "host"/"proxy")
+    volumes:
+      - {{ ciu_stack.collector.hostdir.data }}:/var/lib/otelcol/file_storage
+      # /etc/otelcol (otel-aggregator-config.yml): the config DIRECTORY mount is injected by ciu (S6.9.1)
+    healthcheck:
+      test: ["CMD", "/otelcol-contrib", "--version"]    # distroless image: no shell, no wget/curl — the binary itself is the probe
+      # interval / timeout / retries / start_period: injected from ciu_stack.collector.health (S6.6.4)
+    restart: unless-stopped
+    labels:
+      - "de.vxxu.volkb79.stack=observability"    # consumer label: docker-stats-exporter groups by it; ownership labels (ciu.*) are injected (S4.5)
+      - "de.vxxu.volkb79.service-container=false"

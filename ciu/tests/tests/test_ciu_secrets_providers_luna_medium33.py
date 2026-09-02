@@ -10,33 +10,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu.secrets import providers  # noqa: E402
 
 
-def _rendered_vault_state(repo_root: Path, token: str) -> None:
-    state_dir = repo_root / "infra" / "vault"
-    state_dir.mkdir(parents=True)
-    (state_dir / "ciu.toml").write_text(
-        f"[state]\nroot_token = {token!r}\n", encoding="utf-8"
-    )
+def _bootstrap_store(repo_root: Path, token: str) -> None:
+    """Plant S4.16 source #3: the vault stack's hook-persisted store file (S9.4a)."""
+    store_dir = repo_root / "infra" / "vault" / ".ciu" / "secrets"
+    store_dir.mkdir(parents=True)
+    (store_dir / "root_token").write_text(token, encoding="utf-8")
 
 
-def test_malformed_vault_config_uses_local_rendered_state_fallback(
+def test_malformed_vault_config_uses_bootstrap_store_fallback(
     tmp_path: Path, monkeypatch: object
 ) -> None:
-    """A malformed optional vault config does not block local state fallback."""
+    """A malformed optional vault config does not block the source-#3 fallback."""
     monkeypatch.delenv("VAULT_TOKEN", raising=False)  # type: ignore[attr-defined]
-    _rendered_vault_state(tmp_path, "local-state-token")
+    _bootstrap_store(tmp_path, "local-store-token")
 
-    assert providers.resolve_vault_token({"vault": []}, tmp_path) == "local-state-token"
+    assert providers.resolve_vault_token({"vault": []}, tmp_path) == "local-store-token"
 
 
-def test_missing_relative_token_file_uses_local_rendered_state_fallback(
+def test_missing_relative_token_file_uses_bootstrap_store_fallback(
     tmp_path: Path, monkeypatch: object
 ) -> None:
-    """An absent configured token file falls through to local rendered state."""
+    """An absent configured token file falls through to the bootstrap store."""
     monkeypatch.delenv("VAULT_TOKEN", raising=False)  # type: ignore[attr-defined]
-    _rendered_vault_state(tmp_path, "local-state-token")
+    _bootstrap_store(tmp_path, "local-store-token")
 
     config = {"vault": {"token_file": "missing/vault-token"}}
-    assert providers.resolve_vault_token(config, tmp_path) == "local-state-token"
+    assert providers.resolve_vault_token(config, tmp_path) == "local-store-token"
 
 
 def test_successful_empty_vault_read_returns_none(monkeypatch: object) -> None:

@@ -1,0 +1,44 @@
+# infra/vault/ciu.compose.yml.j2 — v8 notation (draft.3)
+# ciu injects per service: container_name, hostname, networks (instance
+# network), ciu.* labels, CIU_* env, secrets stanzas, depends_on conditions,
+# healthcheck timing, cgroup fields. The template writes only what is genuinely
+# the stack's own.
+services:
+  init:
+    image: {{ ciu_stack.init.image }}
+    pull_policy: always
+    command: sh -c "chown -R 100:1000 /vault/data /vault/logs && chmod -R 755 /vault/data /vault/logs"
+    user: "0:0"
+    volumes:
+      - vault-data:/vault/data
+      - vault-logs:/vault/logs
+
+  vault:
+    image: {{ ciu_stack.vault.image }}
+    pull_policy: always
+    command: server
+    environment:
+      {% for key, value in env_defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - VAULT_ADDR=http://0.0.0.0:{{ ciu_stack.vault.endpoints.api.port }}
+      - VAULT_API_ADDR=http://{{ ciu_stack.vault.identity.hostname }}:{{ ciu_stack.vault.endpoints.api.port }}
+      - VAULT_LOCAL_CONFIG={"backend":{"file":{"path":"/vault/data"}},"listener":{"tcp":{"address":"0.0.0.0:{{ ciu_stack.vault.endpoints.api.port }}","tls_disable":true}},"ui":true,"disable_mlock":true}
+      - SKIP_SETCAP=true
+    volumes:
+      - vault-data:/vault/data
+      - vault-logs:/vault/logs
+    cap_add:
+      - IPC_LOCK
+    healthcheck:
+      test: ["CMD", "sh", "-c", "vault status || test $? -eq 2"]
+      # timing injected from ciu_stack.vault.health (60s / 10s / 5 / 240s)
+    restart: unless-stopped
+    labels:
+      - "de.vxxu.volkb79.service-container=false"
+
+volumes:
+  vault-data:
+    name: {{ instance.project }}-{{ instance.id }}-vault-data      # instance-scoped: two instances never share state (S11.3 requires this prefix)
+  vault-logs:
+    name: {{ instance.project }}-{{ instance.id }}-vault-logs

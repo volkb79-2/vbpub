@@ -20,7 +20,13 @@ def _result(returncode: int = 0, stdout: str = "", stderr: str = "") -> subproce
     return subprocess.CompletedProcess([], returncode, stdout, stderr)
 
 
+@pytest.mark.usefixtures("real_network_side_effects")
 class TestDevcontainerNetworkAttachment:
+    """CIU-87: this class IS the S1.9 attach behavior's coverage, so every test
+    in it opts out of the ``CIU_TEST_SUITE`` gate that suppresses that behavior
+    for the rest of the suite. Docker stays a controlled ``subprocess.run``
+    seam throughout — the opt-out reaches the product code, not the daemon."""
+
     def test_existing_attachment_does_not_issue_second_connect(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

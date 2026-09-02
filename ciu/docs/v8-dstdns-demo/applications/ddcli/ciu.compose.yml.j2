@@ -1,0 +1,45 @@
+# applications/ddcli/ciu.compose.yml.j2 — v8 notation (draft.3)
+# Injected by ciu: container_name/hostname (dstdns-<instance>-ddcli), networks,
+# ciu.* labels, CIU_* identity env, the config-directory mount (/etc/ddcli),
+# cgroup fields. No secret mount: the one secret is env-delivered. The Authentik
+# address is the template-delivered binding ciu_stack.ddcli.binds.idp.
+services:
+  ddcli:
+    image: {{ ciu_stack.ddcli.image }}
+    restart: "no"                            # ephemeral CLI tool; no healthcheck (nothing depends on it)
+    user: "{{ host.user_uid }}:{{ host.user_gid }}"
+    stdin_open: true                         # interactive — exec commands later
+    tty: true
+    command: tail -f /dev/null               # keep the container running
+    environment:
+      {% for key, value in env_defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      {% for key, value in ciu_stack.ddcli.env.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      # bootstrap pointer — all config is in the mounted TOML file (D-094: the
+      # per-key env block is gone; api/io/db targets are bindings read by config.toml.j2)
+      - DDCLI_CONFIG=/etc/ddcli/config.toml
+      {% if project.control.auth_enabled %}
+      # Service identity (D-035/D-103): the ONE field group ddcli reads from the
+      # environment (D-112). All three present together or absent together.
+      # The issuer is COMPOSED here: the binding's url + the OIDC application
+      # slug (the token endpoint is at the base; ddcli reads it from the
+      # issuer's discovery document — never concatenate).
+      - DDCLI_AUTH_ISSUER_URL={{ ciu_stack.ddcli.binds.idp.url }}/application/o/{{ authentik.oidc_slug }}/
+      - DDCLI_AUTH_CLIENT_ID={{ authentik.oidc_slug }}
+      - DDCLI_AUTH_SERVICE_USER={{ ciu_stack.ddcli.auth.service_user }}
+      # env delivery, plain ${VAR} (the fail-if-unset interpolation form is refused, S11.3):
+      # the secret's env_name guarantees the variable is present — ciu refuses to deploy
+      # without the value, so auth can never be silently disabled (S10.2.2, S11.6)
+      - DDCLI_AUTH_PASSWORD=${DDCLI_AUTH_PASSWORD}
+      {% endif %}
+      - BUILD_VERSION={{ instance.build_version }}
+      - BUILD_TIME={{ instance.build_time }}
+    volumes:
+      # examples for the demo scripts (read-only); bind sources are HOST paths
+      - {{ host.physical_repo_root }}/applications/ddcli/examples:/app/examples:ro
+    labels:
+      - "de.vxxu.volkb79.service-type=cli-tool"    # consumer labels are the template's; ownership labels (ciu.*) are injected (S4.5)
+      - "de.vxxu.volkb79.service-container=false"

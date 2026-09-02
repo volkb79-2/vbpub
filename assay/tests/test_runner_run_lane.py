@@ -1141,3 +1141,58 @@ def test_run_lane_omits_judgment_when_evaluate_r1_renders_a_payload_free_claim(
     assert verdict.claims[1].reason_code is ReasonCode.BASE_IS_HEAD
     assert verdict.claims[1].coverage is None
     assert verdict.judgment is None
+
+
+def test_run_lane_writes_a_verdict_for_a_backwards_block_instead_of_crashing(
+    git_repo: GitRepo, tmp_path: Path
+):
+    """Adversarial review round 1, should-fix 5, through the path that made
+    it a defect rather than a detail.
+
+    ``m/x.go:5.10,5.2 1 1`` used to leave ``go_cover.parse`` as a bare
+    ``ValueError``. ``_run_prepared_lane``'s ``except AssayError`` does not
+    catch that, and neither does ``cli.main``, so the run ended in an
+    uncaught traceback: no verdict document at all, and the coverage
+    reservation opened for this lane never closed. A-139/P17's rule is that a
+    refusal is an AUDITABLE DOCUMENT, never a bare exit code -- and "no
+    document at all" is further from that than any wrong reason code.
+
+    So the assertions that matter are the shape, not just the code: a
+    complete verdict with both claims present, and the reservation released
+    (the artifact path is an ordinary file afterwards, and a second run over
+    the same path is not refused as already-reserved)."""
+    base_rev, head_rev = _seed_two_commits(git_repo)
+    judge = make_r1_judge(
+        source_root_paths=(git_repo.path / "pkg",),
+        coverage_format="go-cover",
+        coverage_artifact="cov.json",
+        base=base_rev,
+    )
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=(
+            "/bin/sh",
+            "-c",
+            "printf 'mode: set\\nm/x.go:5.10,5.2 1 1\\n' > cov.json",
+        ),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert verdict.outcome is Outcome.ERROR
+    assert verdict.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert len(verdict.claims) == 2
+    assert verdict.claims[1].status is Outcome.ERROR
+    assert verdict.claims[1].reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    # Payload-free: the artifact could not be read, so there is no coverage
+    # claim to render (P16's iff-invariant), and certainly no percentage.
+    assert verdict.claims[1].coverage is None

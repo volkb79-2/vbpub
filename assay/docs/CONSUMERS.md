@@ -89,6 +89,93 @@ full shape, what the refusal looks like, and the maintenance obligation it creat
 Both values are recorded verbatim in the verdict's `snapshot_policy` object, so a reviewer can
 tell a full-repository verdict from an omission-mode one without re-running anything.
 
+## Run the lane somewhere other than the project root: `cwd` (B043)
+
+A monorepo app's own tooling — `npm run`, `go test ./...` inside a module,
+`cargo` — resolves its configuration from the directory it is invoked in, not
+from the repository top. Before schema v9 the only way to say that was a shell
+wrapper:
+
+<!-- assay-doc-example:skip reason="a one-line ANTI-pattern being argued against, not a lane; the loadable monorepo lane using cwd is in the dependency-closure section" -->
+```toml
+argv = ["bash", "-c", "cd applications/webapp-ui-react && npm test"]   # don't
+```
+
+That wrapper costs three real things. `argv[0]` becomes `bash`, so assay's
+`MISSING_EXTERNAL_TOOL` preflight checks for `bash` and never for `npm`.
+`allow_argv_append` becomes meaningless — an appended argument lands after the
+closing quote, not on the inner command. And shell quoting sits between the
+lane file and what actually ran, which `argv_effective` then records opaquely.
+
+Declare the directory instead:
+
+<!-- assay-doc-example:skip reason="the two keys under discussion, quoted on their own; the whole loadable lane using cwd is in the dependency-closure section" -->
+```toml
+[lanes.ui_unit]
+cwd = "applications/webapp-ui-react"
+argv = ["npm", "test"]
+```
+
+**The grammar.** Repository-top-relative, forward slashes, no leading `/`, no
+`..`, no `.` or `.git` component — and it must name a real directory. Anything
+else is `ERROR`/`BAD_LANE_CONFIG` at load, naming the key and the path.
+
+**The commit-bound refusal.** One further refusal happens later, at run time,
+and names the commit: `cwd` must be a directory **the resolved commit's own
+tree contains**. Assay decides that from the commit's tree, not by looking at
+the snapshot directory — so it is a statement about what you committed, and
+nothing standing in the snapshot for another reason can satisfy it. A `build/`
+or `dist/` directory your `.gitignore` covers is the usual way to hit this.
+
+Be precise about what that does and does not promise. A snapshot's *committed*
+content is exactly the commit's, but a snapshot is not only committed content:
+`link_paths` (§ "Linking a dependency closure into the snapshot", below) is a
+declared, recorded way to put working-checkout content into it as symlinks. So
+"absent from your commit" does **not** by itself mean "absent from the
+snapshot" — an untracked `deps/` that the same lane also links is present
+there, as a link into your checkout. What assay guarantees is the thing that
+actually matters for `cwd`: your command runs in a directory the commit
+contains, never in one reached through such a link, and therefore never in
+your own working tree. `cwd` and `link_paths` naming the same path is refused
+outright, at load, naming both keys — a linked path is by rule untracked and a
+`cwd` is by rule tracked, so no commit can satisfy both. A link *beneath* the
+`cwd` (`cwd = "app"` with `link_paths = ["app/node_modules"]`) is the ordinary,
+supported shape and is unaffected.
+
+**Where it applies.** The lane command, every R2 candidate re-execution and
+every R3 canary run — all of them, always the same resolved directory. There
+is no way to have one of them disagree with the others.
+
+**What it does NOT re-root.** Everything else in a lane file stays
+project-root-relative, whatever `cwd` says — one path grammar, one meaning
+per path (A-271):
+
+| stays project-root-relative | why it matters |
+|---|---|
+| `judge.coverage.artifact` | the reservation is armed before the command runs, from the project root |
+| `judge.mutation.artifact` / `equivalence_artifact` / `kill_signal_artifact` | same reservation discipline |
+| `judge.source_roots`, `judge.targets`, `judge.canary.target` | these name repository content, not a working directory |
+| `infrastructure` facts | resolved in the invoking context, before any snapshot exists |
+
+So a lane with `cwd = "applications/webapp-ui-react"` writing coverage into
+that app still declares
+`artifact = "applications/webapp-ui-react/.assay/coverage-final.json"`, with
+the prefix, even though its command writes `.assay/coverage-final.json`
+without one. That is deliberate: the two paths are read by different parties
+at different times, and giving them one grammar is what keeps a path in a
+verdict meaning the same thing wherever it appears.
+
+`environment_command` is likewise unaffected. It probes the INVOKING
+environment before any snapshot work (see [Add a lane, then gate
+it](#add-a-lane-then-gate-it)); it is not the lane command and keeps the
+invoking working directory.
+
+**In the verdict.** A lane that declares `cwd` records `cwd_declared` at the
+verdict's top level, beside `argv_declared`. A lane that declares none records
+*no key at all* — never `"."`. `assay lanes --json` exposes the same value as
+`"cwd"` (`null` when undeclared), so a gate tool can preflight the directory
+without parsing `argv`.
+
 ## A whole-target floor: a coverage gate that survives a docstring-only change
 
 Ordinary R1 judges the `base..HEAD` diff, so "fixing" a method by editing only its docstring
@@ -500,6 +587,726 @@ declared artifacts:
 Commit that `.gitignore` in the same change that adds the lane, exactly as
 for a coverage artifact above.
 
+## JavaScript/TypeScript lanes (R1, and R2 by ingestion)
+
+`judge.language = "javascript"` is a changed-line lane over
+`.js`/`.jsx`/`.ts`/`.tsx` — one language name for all four. It resolves at
+**R1** (coverage) and, since schema v9, at **R2 by evidence ingestion** — your
+own argv runs StrykerJS inside the snapshot and assay judges the report
+([below](#r2-for-javascript-by-ingesting-strykers-report-b046)). Assay still
+ships no JS/TS mutation engine, so a *native* R2 lane is still refused. **R3
+is unwired**, and a lane declaring it is refused `ERROR`/`BAD_LANE_CONFIG`
+before anything runs.
+
+### Make your test runner emit `coverage-final.json`
+
+`format = "coverage-istanbul-json"` is istanbul's own coverage-map document.
+nyc/istanbul and Jest (`--coverageReporters=json`) emit it natively; for
+Vitest, add a coverage provider and ask for the `json` reporter. Point the
+report directory at the same gitignored place your verdict goes:
+
+```bash
+npm install --save-dev @vitest/coverage-istanbul
+```
+
+**Install the istanbul provider, not the v8 one.** See
+[the provider warning](#the-v8-provider-is-not-safe-to-gate-on) below before
+reaching for `@vitest/coverage-v8`; it is faster and needs no instrumentation
+step, and it will also pass your gate on lines that never ran.
+
+```ts
+// vite.config.ts
+import { defineConfig } from 'vitest/config'
+
+export default defineConfig({
+  test: {
+    coverage: {
+      provider: 'istanbul',        // NOT 'v8' -- see the warning above
+      reporter: ['json'],          // 'json' IS coverage-final.json
+      reportsDirectory: '.assay',
+      include: ['src/**'],
+      clean: false,                // REQUIRED inside an assay snapshot -- see below
+    },
+  },
+})
+```
+
+`reporter: ['json']` writes `.assay/coverage-final.json`. Do not use
+`json-summary` (totals only, no per-file detail) or `lcov` (a different
+registry format — if you prefer it, declare `format = "lcov"` instead and
+point at `lcov.info`).
+
+**`clean: false` is REQUIRED for any lane assay judges — measured, not a
+style preference (B049).** Vitest's own default (`coverage.clean = true`)
+deletes and recreates `reportsDirectory` before writing to it. assay's own
+`safeio.reserve_output` (`runner.py:1692`) opens and holds that directory's
+own file handle *before* your lane's command runs, specifically so it can
+read the artifact back afterward without a second, race-prone directory
+walk (B006(b)); `reservation.consume()` (`runner.py:1771`) then reads through
+that SAME held handle once the command exits. A tool that deletes and
+recreates the directory — rather than writing into the one directory assay
+already opened — silently orphans that handle: it now points at an empty,
+unlinked directory, so `consume()` finds nothing, even though a fully
+populated `coverage-final.json` genuinely exists on disk at that path by the
+time your command exits. This reads as `NO_MEASUREMENT`/`EMPTY_COVERAGE` —
+"your tests produced no coverage" — for a lane that in fact ran cleanly and
+covered everything; nothing about the failure points at `coverage.clean`.
+Measured directly: an otherwise fully-covered real lane run through the real
+CLI returns `EMPTY_COVERAGE` with Vitest's default `clean: true`, and `PASS`
+with the correct 100% figure the moment `clean: false` is added and nothing
+else changes. `cleanOnRerun` (Vitest's watch-mode-only sibling) is
+irrelevant to `vitest run` and does not need setting. This is a real,
+filed gap in assay's own reservation mechanism, not a JS-specific
+requirement in principle — see **B049** for the underlying defect and why
+it is not fixed in this release.
+
+### JavaScript lanes and the dependency closure
+
+**The mechanism, confirmed in source, not assumed.** Every R1/R2/R3 snapshot
+is `git read-tree <commit>` into a fresh `tempfile.mkdtemp` (`isolation.py`):
+only TRACKED blobs exist there (A-161/A-184 — a lane judges committed
+objects, never the working tree). A gitignored `node_modules/` is therefore
+absent from the snapshot BY CONSTRUCTION, exactly as intended — this is
+correct, and "fix" it by tracking `node_modules` is not a real option.
+Python's dependency closure is a venv and Go's is `GOMODCACHE`, both
+out-of-tree, so neither adapter ever met this; JavaScript's closure is
+in-tree and gitignored, so it is the first language where the snapshot
+genuinely needs something the checkout has that the snapshot does not.
+
+**The consequence, and why it is not merely slow.** `npx vitest run
+--coverage` inside a snapshot with no `node_modules` does not fail loudly.
+`npx` FETCHES a missing package from the npm registry by default — unpinned,
+over the network, from inside an isolated snapshot nothing else in this
+project ever lets touch the network — unless `--no-install` is passed, in
+which case it fails with a clear resolution error instead. Either way,
+nothing here is what a consumer who has not read this section expects:
+either an unpinned toolchain silently substitutes for the pinned one, or the
+lane reads `NO_MEASUREMENT` for a reason that looks like "vitest is
+missing" rather than "the dependency closure was never a design consumers
+of Python/Go lanes had to think about."
+
+**`environment_command` (B010) cannot vouch for this.** It runs in the
+*invoking* environment, before any snapshot work (DESIGN-GUIDE §4) — so a
+probe like `node -e "require.resolve('vitest')"` passes in the checkout
+(where `node_modules` really is present) while the snapshot the lane's own
+command actually runs in still has nothing. Declaring one to "check Node
+is available" is fine; declaring one to vouch for the dependency closure is
+a false sense of safety.
+
+#### (a) The honest default: the image carries the cache, the snapshot rebuilds the closure OFFLINE
+
+Same doctrine as the image-baked judge (B009): the gate image carries an npm
+cache populated from the committed `package-lock.json` — either baked in at
+image build time (`npm ci --cache /opt/npm-cache --prefix <app>`, then
+discard the resulting tree) or mounted as a persistent `~/.npm/_cacache`
+provided by the environment tool (a ciu v8 `[testing.environments.<e>]
+extra_mount`, for example). The lane's own argv then starts with the
+OFFLINE install and ends with the PINNED, no-fetch runner — both flags doing
+real, distinct work: `--offline` fails loudly the instant the cache is
+missing anything (never a silent network fetch), and `--no-install` turns a
+missing `vitest` binary into a refusal instead of an `npx` fetch.
+
+A worked MONOREPO lane — a real layout, not a root-level toy: the app lives
+under `applications/webapp-ui-react/`, which is where its own `package.json`,
+`node_modules` and `vitest.config.ts` all resolve, so the lane declares that
+directory as its `cwd` (B043, schema v9 — this is what retired the old
+`bash -c "cd … && …"` wrapper) while its `artifact` path stays spelled
+relative to the PROJECT root, not the app root:
+
+```toml
+schema_version = 2
+
+[lanes.ui_unit]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+cwd = "applications/webapp-ui-react"
+argv = ["bash", "-c",
+  "npm ci --offline --no-audit --no-fund && npx --no-install vitest run --coverage"]
+env = { npm_config_cache = "/opt/npm-cache", CI = "1" }
+env_passthrough = ["PATH", "HOME"]
+budget = "15m"
+allow_argv_append = false
+
+[lanes.ui_unit.isolation]
+snapshot_selection = "repository"
+
+[lanes.ui_unit.judge]
+language = "javascript"
+source_roots = ["applications/webapp-ui-react/src"]
+fail_under = 100.0
+allow_excluded = false
+base_source = "request"
+
+[lanes.ui_unit.judge.coverage]
+format = "coverage-istanbul-json"
+artifact = "applications/webapp-ui-react/.assay/coverage-final.json"
+producer = "istanbul"
+```
+
+`producer` is **required** on a `coverage-istanbul-json` lane, and a lane that
+omits it is refused at load. That format is written by several toolchains
+that disagree about what parts of the document mean, so there is no value
+assay could imply that would be correct in every context — see
+[Declaring the coverage producer](#declaring-the-coverage-producer-b045)
+below for the full vocabulary and the refusals.
+
+A root-level app — no monorepo `cd` needed, `package.json` sits beside
+`assay.toml` — keeps the short form instead:
+`argv = ["bash", "-c", "npm ci --offline --no-audit --no-fund && npx --no-install vitest run --coverage"]`,
+with `artifact = ".assay/coverage-final.json"` (matching the `vite.config.ts`
+snippet earlier in this section).
+
+`budget` is a measurement you make, not a number this guide invents — time
+the offline install plus the real run once, in the actual gate environment,
+and set the budget from that.
+
+**R3 triples this cost, not doubles it.** A canary run is baseline PLUS two
+further runs (import-break, uncovered-line), each against its OWN fresh
+snapshot — so each one repeats the offline install from a cold `node_modules`
+inside that snapshot. Budget a `javascript` R3 lane accordingly once it is
+wired — not yet: R3 is registered only after a real-Vitest canary pair has
+run (`tests/qualification/test_javascript_real_vitest.py` proves R1 today;
+canary coverage is a later step).
+
+Gitignore what the run writes — the coverage directory, and anything your
+runner drops beside it — in the same change that adds the lane:
+
+```text
+applications/webapp-ui-react/.assay/
+```
+
+#### (b) Linking a dependency closure into the snapshot: `link_paths` (B041(b))
+
+Rebuilding the closure inside every snapshot is correct but not free, and R3
+triples the cost. `link_paths` is the declared alternative: named directories
+from the **invoking checkout** are symlinked into every snapshot the lane
+creates, immediately after `read-tree` and before any command runs.
+
+<!-- assay-doc-example:skip reason="the isolation sub-table of the worked lane above, quoted on its own to show the key; the whole loadable lane is in pattern (a)" -->
+```toml
+[lanes.ui_unit.isolation]
+snapshot_selection = "repository"
+link_paths = ["applications/webapp-ui-react/node_modules"]
+```
+
+**The trade-off, stated plainly.** Pattern (a) is still the honest default.
+A snapshot is normally built from committed objects alone, so what it holds
+is bound to the recorded commit; a linked path is not — it is whatever the
+checkout happened to hold when the lane ran. That is exactly why the verdict
+records `snapshot_policy.link_paths` (sorted, and omitted entirely when the
+lane declared none): a reviewer reading a verdict with a non-empty
+`link_paths` knows the judgment's dependency closure is only as reproducible
+as that checkout was.
+
+**The rules, each with its own refusal.**
+
+| rule | refusal when broken |
+|---|---|
+| repo-top-relative, forward-slash, no `..`, no leading `/`, no `.git` component; strictly ascending, unique, at most 64 entries; declared-but-empty is refused (omit the key instead) | `ERROR`/`BAD_LANE_CONFIG` at **load** |
+| the directory must exist in the invoking checkout | `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` at run time, naming the path |
+| the path must **not** be tracked at the resolved commit | `ERROR`/`BAD_LANE_CONFIG` — linking a tracked path would replace committed content with working-tree content |
+| the path's parent must exist in the snapshot | `ERROR`/`BAD_LANE_CONFIG` — assay never `mkdir -p`s into a snapshot |
+| the path must be ignored by a **committed** `.gitignore` | `ERROR`/`BAD_LANE_CONFIG` — see the trailing-slash trap below |
+| the lane's own `cwd` must not be the path, or lie beneath it | `ERROR`/`BAD_LANE_CONFIG` at **load**, naming both keys — a linked path is untracked and a `cwd` must be tracked, so no commit satisfies both. A link *beneath* the `cwd` is the ordinary shape and is fine |
+
+An absent directory is `MISSING_EXTERNAL_TOOL` rather than `BAD_LANE_CONFIG`
+on purpose: the same lane file is correct on a machine whose image ran the
+offline install and incorrect on one that did not, so the lane file is not
+what is wrong — a declared prerequisite the environment did not provide is.
+
+**The trailing-slash trap — read this one.** Your existing rule is almost
+certainly `node_modules/`, with a trailing slash, because that is what every
+JS project's `.gitignore` carries. **It will not work here.** Git treats a
+trailing-slash pattern as directory-only, and what assay plants is a
+*symlink*, which git does not count as a directory — so the link shows up as
+untracked content and assay refuses the lane. Drop the slash:
+
+```text
+applications/webapp-ui-react/node_modules
+```
+
+That single rule ignores both the real directory in your checkout and the
+link in the snapshot. Assay refuses at materialisation, with a message naming
+the slash and this fix, rather than letting the lane's own command be blamed
+for a `DIRTY_TREE` afterwards.
+
+**Teardown never touches your files.** Snapshot teardown removes the *link*,
+never what it points at — proven by a test that plants a real symlink to a
+real directory, puts a canary file inside it, tears the snapshot down on both
+the success and the failure path, and asserts the canary's bytes are intact.
+
+`excluded_dir_names` already excludes `node_modules` from judging, the link is
+not a tracked path so the diff never sees it, and istanbul keys under it are
+inert — so linking a closure changes what is *available* to the command, never
+what is measured.
+
+### Four things that behave differently from a Python lane
+
+**Absolute paths in the artifact are handled for you.** Istanbul keys every
+record by absolute filesystem path (`/build/agent/7/src/App.tsx`), not a
+project-relative one. Assay resolves those against the repository top itself,
+so a key naming a file inside the repository is matched against the diff
+normally and a key naming anything outside it (a dependency, a generated file
+under `node_modules`) simply never matches a changed file. There is nothing to
+configure, and no `--coverage.reportsDirectory` layout that breaks it.
+
+**`allow_excluded` has nothing to exclude.** This format carries no per-line
+exclusion field: an `/* istanbul ignore next */` or `/* v8 ignore next */`
+hint leaves no trace a parser can read, so by the time assay sees the document
+an ignored line is indistinguishable from a line that was never code.
+`exclusion_capability` is reported `"unavailable"`, and the lane's
+`allow_excluded` is never consulted. Suppressing a line therefore does not
+launder it past the floor — it just makes the line non-code, the same as a
+comment.
+
+**Some real lines are not judged at all, and which ones depends on your
+provider.** A line the artifact records no statement for falls out of both the
+numerator and the denominator — the same treatment a comment gets. Under
+`@vitest/coverage-istanbul` that includes **every function signature line,
+every function-level closing brace, and a `const x =` line whose recorded
+statement starts on its initialiser**: measured on assay's own committed
+fixture, 23 non-comment lines across six files. Under `@vitest/coverage-v8`
+only 13, all of them type declarations TypeScript erases anyway. The practical
+consequence: a diff that touches *only* a function signature can report
+`executable = 0` and PASS. This is not a coverage claim about those lines, it
+is the absence of one — assay reports what the artifact measured and never
+invents a status for a line the instrumenter did not record. If that matters
+for your gate, `judge.mode = "whole_target"` judges whole files instead of a
+diff.
+
+**`require_branch = true` is legal on this format when — and only when — you
+declare `producer = "istanbul"`.** Istanbul's `branchMap` means one thing
+under the istanbul instrumenter family (real per-arm arcs) and a different
+thing under `@vitest/coverage-v8`/`c8` (v8's own executed/unexecuted ranges),
+so the answer depends on a fact the format name does not carry. Declare the
+producer and `branch_capability` is `"reported"` with real arcs; declare no
+producer and it stays `"unavailable"`, which is a measured refusal rather
+than a gap. See **Declaring the coverage producer** below.
+
+**A type-only module is not a coverage failure.** A `.ts`/`.tsx` file whose
+top-level statements are all `import type` / `export type` /
+`export interface` / `type` / `interface` / `declare` is erased by the
+TypeScript compiler, so no instrumenter records it and it is absent from the
+artifact. assay classifies such a file as code-free rather than failing the
+lane over it. The recogniser is a narrow lexer, not a TypeScript parser:
+anything it does not recognise — a declaration split over several top-level
+lines, a `.js` file, a runtime statement sharing a line with a type — answers
+"has code", which shows up as a visible unmeasured-file failure you can act
+on rather than a file silently dropped from the judgement.
+
+### Declaring the coverage producer (B045)
+
+A coverage **format** says what SHAPE a document has. It does not say what
+WROTE it — and `coverage-istanbul-json` is written by several toolchains that
+disagree about what parts of it mean. Since schema v9 the lane declares the
+producer too, and assay records it in the verdict as
+`judgment.r1.coverage_producer`.
+
+<!-- assay-doc-example:skip reason="one table of the worked lane above, quoted on its own to show the key in isolation; the whole loadable lane is in the dependency-closure section" -->
+```toml
+[lanes.ui_unit.judge.coverage]
+format = "coverage-istanbul-json"
+artifact = "applications/webapp-ui-react/.assay/coverage-final.json"
+producer = "istanbul"
+```
+
+The vocabulary is closed **per format**. A producer name that is real for a
+different format is refused here, because the key answers "what wrote THIS
+artifact", not "is this a producer somewhere".
+
+| format | producer values | required? |
+|---|---|---|
+| `coverage-istanbul-json` | `istanbul` — the babel-plugin-istanbul family: `nyc`/`istanbul`, Jest with its default `babel` provider, `@vitest/coverage-istanbul`, `vite-plugin-istanbul`. They share one instrumenter, so they are one producer for every purpose assay has. | **yes** |
+| | `vitest-v8`, `jest-v8`, `c8` — spellable, and **refused at load by name** (see below) | |
+| `coverage-py-json` | `coverage.py` — the only producer | no |
+| `go-cover` | `go-test` — `go test -coverprofile=<file>`, the unit-test path | no |
+| | `covdata` — `go tool covdata textfmt -i=<GOCOVERDIR> -o=<file>`, over the counter data a `go build -cover` binary writes while running. The **integration** path: evidence about a real process, not a test binary. | |
+| `lcov`, `cobertura` | *no vocabulary is open yet* — declaring `producer` on one of these is refused | n/a |
+
+**Why it is REQUIRED for `coverage-istanbul-json` and optional elsewhere.** If
+an implied `istanbul` were wrong — the lane really runs
+`@vitest/coverage-v8` — nothing would fail loudly: the run would report PASS
+over lines that never executed. A default is legitimate only when it is
+correct in the absence of information, and here it is not. `coverage-py-json`
+has exactly one producer, so an omission cannot silently pick the wrong one.
+
+**`go-cover`'s two names shipped with the Go wave, and are OPTIONAL.** They
+were deliberately withheld until a build could actually run a Go lane —
+shipping a closed vocabulary nothing can produce, check or explain is exactly
+the speculative naming this project refuses. The key is optional rather than
+required because `go-test` and `covdata` **agree**: both emit `cmd/cover`'s
+own text format, from the same instrumenter, so no reading of the artifact
+depends on which one wrote it. Declare it anyway when you have the choice —
+it records how the evidence was obtained, and `covdata` evidence can cover
+code that no unit test executes, which is a materially different claim even
+when the bytes are interchangeable.
+
+#### The three producers assay refuses, and how to fix each
+
+Each of these is refused *by name*, at load, with its reason and its fix —
+never as "unknown producer", which would tell you that you had made a typo
+when in fact your coverage is unsound.
+
+| producer | why it is refused | the fix |
+|---|---|---|
+| `vitest-v8` | **Measured defect** (A-346, next section): reports never-executed lines as executed when a ternary appears earlier in the same block. Reproduces on both released Vitest majors. | `provider: 'istanbul'` in the Vitest coverage config, install `@vitest/coverage-istanbul`, declare `producer = "istanbul"` |
+| `c8` | Remaps v8 ranges the same way and **reproduces the same false greens** (measured: `tests/fixtures/coverage/probe-js-provider-defect-c8/`) | instrument with `nyc`/`istanbul` or `@vitest/coverage-istanbul` |
+| `jest-v8` | Jest's `coverageProvider: "v8"` remaps through the same layer and has **not** been measured against a committed witness — refused as *unproven*, which is a weaker ground than the two above and deliberately not blurred with them | Jest's default `coverageProvider: "babel"`, which shares istanbul's instrumenter |
+
+#### What declaring `istanbul` buys you
+
+`require_branch = true` becomes legal on a JavaScript lane. Only the istanbul
+family emits `branchMap` entries that are real **arcs** — one location and one
+count per branch ARM — which is what a branch percentage has to be computed
+from. Every other producer of the same format keeps
+`branch_capability = "unavailable"`, and that is a measured refusal rather
+than an omission: `@vitest/coverage-v8` emits one location and one count per
+branch RECORD, describing v8's own executed ranges, so a single translation
+could not be honest for both.
+
+Declaring `istanbul` also closes the **type-only module** gap. Under the
+istanbul provider a `.ts` file holding nothing but `export type` /
+`interface` declarations is absent from the artifact entirely, so a changed
+one used to read as missing coverage. See the "Four things that behave
+differently from a Python lane" section for what happens now.
+
+#### Migrating a lane written before this key existed
+
+Add one line. There are no other changes:
+
+```diff
+ [lanes.ui_unit.judge.coverage]
+ format = "coverage-istanbul-json"
+ artifact = "applications/webapp-ui-react/.assay/coverage-final.json"
++producer = "istanbul"
+```
+
+...unless your lane really was running the v8 provider, in which case the
+refusal is the point and the fix is the provider switch, not the declaration.
+Python lanes (`coverage-py-json`) need nothing.
+
+### The v8 provider is not safe to gate on
+
+**`@vitest/coverage-v8` reports lines that provably never executed as
+executed.** An assay R1 lane reading its artifact therefore PASSes on those
+lines. Use `@vitest/coverage-istanbul` for anything you gate.
+
+The trigger is a conditional (ternary) expression: every line after one, in
+the same block, is reported executed even when the block never ran. Minimal
+reproduction — the only test calls `k(0)`, which returns at line 2, so lines
+7 and 8 provably never run:
+
+```ts
+export function k(v: number): number {   // 1
+  if (v === 0) return 0                  // 2  <- k(0) returns HERE
+  const a =                              // 3
+    v > 3                                // 4
+      ? 10                               // 5
+      : 20                               // 6
+  const b = a + 2                        // 7  <- never runs
+  return b                               // 8  <- never runs
+}                                        // 9
+```
+
+```
+@vitest/coverage-v8        line 7: executed   line 8: executed   <- WRONG
+@vitest/coverage-istanbul  line 7: missing    line 8: missing    <- correct
+```
+
+Through assay, with lines 7-8 as the diff and `fail_under = 100.0`:
+`PASS 100.0%` under v8, `FAIL 0.0%` under istanbul.
+
+What was measured, so you can judge the risk for yourself:
+
+- both **Vitest 3.2.4 and 4.1.11** — this is not a version to upgrade past;
+- **one-line ternaries too** (`const a = v > 3 ? 10 : 20`), not just
+  multi-line ones;
+- `coverage.experimentalAstAwareRemapping` does **not** fix it;
+- a multi-line binary expression, a multi-line call and a multi-line object
+  literal do **not** trigger it — so you cannot avoid it by a formatting rule;
+- `@vitest/coverage-istanbul` was correct on every case measured.
+
+**assay cannot detect this for you, and does not pretend to.** Both providers
+emit the same `coverage-final.json`, and nothing in the document distinguishes
+a true execution count from a false one — there is no inconsistency to catch.
+Guessing the producer from the artifact's shape is exactly the
+declaration-versus-sniffing collapse assay refuses to make. So this is a
+choice you make in `vite.config.ts`, and the only safe one today is
+`provider: 'istanbul'`.
+
+The witness artifacts are committed under
+`tests/fixtures/coverage/probe-js-provider-defect/` (both providers, both
+Vitest majors) and re-derived by
+`tests/test_coverage_istanbul_provider_accuracy.py` on every run. The ruling
+is A-346; B040 tracks it upstream. **`nyc`/`istanbul` and Jest with its
+default `babel` coverage provider share `@vitest/coverage-istanbul`'s own
+instrumenter and are unaffected.** Jest's `coverageProvider: "v8"` was not
+independently measured this wave — treat it as unsafe until a committed
+witness says otherwise — but it is not a clean unknown: `@jest/reporters`
+depends on `v8-to-istanbul@^9.0.1`, the identical remapper package `c8`
+uses (`^9.0.0`), and both ranges resolve to the same latest `9.3.0` absent a
+pinning lockfile, so Jest's v8 provider is a strong candidate to share
+`c8`'s own measured defect below, not merely an untested unrelated
+implementation. `c8` (a separate `coverage-final.json` producer some non-Vitest
+JS/TS test runners drive directly) **was measured** (B042 item 2) and is
+**not** safe to gate on either: on the identical `probe-js-provider-defect`
+ground truth, `c8@12.0.0`'s own `v8-to-istanbul` remapping reports lines
+{9, 10, 11, 16, 17, 18} of `shapes.ts` as executed though only a `0`-only
+call path was exercised — the same conditional-expression trigger as
+`@vitest/coverage-v8`, and the same three shapes (a multi-line binary
+expression, call, and object literal) it does NOT trigger on. The exact
+false-positive set is not identical to either Vitest v8 reading (`c8`
+additionally mis-attributes the ternary's own second arm), so this is a
+sibling defect in a shared remapping idea, not evidence Jest's own v8
+integration behaves the same way. Witness:
+`tests/fixtures/coverage/probe-js-provider-defect-c8/` (the harness, with
+PROVENANCE) and
+`tests/fixtures/coverage/coverage-istanbul-json.provider-defect.c8.json`
+(the artifact), re-derived by the same test module's `C8`/`C8_FALSE_GREENS`
+cases.
+
+### What counts as a test file, and what is skipped
+
+A changed file is skipped when its name carries a `.test.`/`.spec.` segment
+(Vitest's own default `include` glob), when any path segment is `__tests__`,
+or when any path segment is `node_modules`, `dist` or `coverage`. A `.d.ts`
+declaration file with no coverage entry is treated as having no executable
+code — the expected silence, not a coverage gap. A **type-only `.ts` module**
+(only `export type`/`interface`, no runtime value) is reported by
+`@vitest/coverage-v8` with an empty statement map and judged as zero
+executable lines; under `@vitest/coverage-istanbul` it is absent from the
+artifact entirely and would be reported as missing coverage. That is the one
+respect in which the v8 provider behaves better, and it is **not** a reason to
+use it — see the provider warning below. Until B038 lands, either give such a
+module one real runtime export, or keep it out of your declared source roots.
+
+**A `.stories.tsx`, a `src/test/setup.ts`, a `vitest.setup.ts`, or a
+`*.config.*` file is not a test path by the adapter's own rule above — none
+of them carries a `.test.`/`.spec.` segment or sits under `__tests__/`.**
+Keep them out of `source_roots`, and here is precisely why: with
+`coverage.include` declared — which every worked lane in this guide does —
+Vitest synthesises an ALL-ZERO coverage record for every file the glob
+matches (except the small, fixed set below Vitest always removes
+regardless of `coverage.include`), whether or not any test ever imports it
+— measured directly, not just inferred: under a plain `coverage.include =
+['src/**']`, `.stories.tsx` and `.config.ts` files that happen to sit under
+`src/` DO appear in `coverage-final.json`, every statement at count `0`.
+**This is not Vitest's own hardcoded `coverage.exclude`** — that list covers
+only the one resolved config file actually in use, the `test.include`
+test-name glob, and declared setup files, never an arbitrary
+`*.config.*`/`*.stories.*` name. (Internals, version-scoped — re-locate
+before citing on a different release: `resolveConfig`/`vitest@4.1.11`'s own
+`chunks/coverage.*.js` computes the hardcoded list at a content-hashed
+chunk path that will differ across patch releases. This wave's own
+qualification harness and committed fixtures pin `vitest@3.2.4`; the
+BEHAVIOUR above was measured on `4.1.11` and was not separately
+re-measured on `3.2.4`.) The net effect a consumer actually has to avoid is
+the same regardless of the mechanism: a
+changed line inside one of these files is judged like ordinary source
+(the adapter's `is_test_path` does not exempt it) against a record that can
+never show anything but uncovered — fail-closed, and visible in the verdict,
+never a silent pass.
+
+### R2 for JavaScript, by ingesting Stryker's report (B046)
+
+Assay ships no JavaScript mutation engine and does not pretend to. What it
+does instead is the thing it has always done for coverage: **your lane's own
+argv runs the mutation tool inside the private snapshot, and assay judges the
+report it wrote.** Assay never invokes Stryker, and never accepts a report it
+did not watch being produced — the report is bound to the resolved commit by
+the snapshot itself, and the declared artifact is held through the same
+single-owner reservation the coverage artifact uses, so a committed or stale
+report cannot satisfy the path.
+
+```toml
+schema_version = 2
+
+[lanes.ui_mutation]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+cwd = "applications/webapp-ui-react"
+argv = ["bash", "-c",
+  "npm ci --offline --no-audit --no-fund && npx --no-install stryker run --reporters json"]
+env = { npm_config_cache = "/opt/npm-cache", CI = "1" }
+env_passthrough = ["PATH", "HOME"]
+budget = "45m"
+allow_argv_append = false
+
+[lanes.ui_mutation.isolation]
+snapshot_selection = "repository"
+
+[lanes.ui_mutation.judge]
+language = "javascript"
+source_roots = ["applications/webapp-ui-react/src"]
+base_source = "request"
+
+[lanes.ui_mutation.judge.mutation]
+format = "mutation-report-json"
+artifact = "applications/webapp-ui-react/reports/mutation/mutation.json"
+fail_under = 100.0
+```
+
+**Set `thresholds.break: null` in your Stryker config.** This is a mandate,
+not a preference. Stryker exits non-zero when the score is under ITS OWN
+thresholds, and assay reads a non-zero exit as R0's `COMMAND_FAILED` — so a
+break threshold makes Stryker's judgment pre-empt assay's, and the lane fails
+at R0 before assay ever reads the report. With `break: null` the exit status
+carries only crash information and assay judges the score.
+
+**What assay declares, and what it deliberately does not.** `judge.mutation`
+on an ingested lane takes exactly three keys: `format`, `artifact`,
+`fail_under`. `jobs`, `max_mutants`, `operators` and `equivalence_artifact`
+are **refused at load** with a message saying why: they are assay's own
+execution policy, and assay decided none of it — Stryker's config chose the
+mutators, the concurrency and the ceiling. Declaring them in two places is the
+P1 hazard; recording them in the verdict under assay's name would be worse.
+`budget_per_candidate`, `shard_index` and `shard_count` are refused for a
+related reason: they bound or partition an execution assay performs, and here
+assay executes no mutant at all.
+
+**`fail_under` must be `100.0` in this release.** A lower floor means some
+survivors are acceptable, and verdict schema v9 has no `judgment.r2` field
+that records WHICH floor was applied — so the verdict would report PASS beside
+recorded survivors with nothing in it to explain that, and `assay verify`
+(which re-derives the R2 status from the payload's own buckets) would
+correctly call the document inconsistent. A lower value is refused with that
+explanation rather than accepted and quietly ignored. Tracked as **B050**.
+
+**The status map**, each direction chosen for the visible-failure side:
+
+| Stryker status | assay | why |
+|---|---|---|
+| `Killed` | `killed` | — |
+| `Survived` | `survived` | — |
+| `NoCoverage` | `survived`, **and** listed in `judgment.r2.survived_uncovered` | a mutant no test exercised is not killed — and it is the worst kind of survivor, so it is listed by position rather than buried in a count |
+| `Timeout` | `budget_exceeded` | Stryker's per-mutant timeout IS the per-candidate budget. Never `killed`: a mutant that hung is not one the suite caught |
+| `CompileError`, `RuntimeError` | counted in `judgment.r2.discarded` | an invalid mutant assay's native engine never emits. Excluded from the score's denominator, and counted — a report that could not compile most of its mutants measured far less than its score implies |
+| `Ignored` | **refuses the lane** | see below |
+| `Pending` | **refuses the report** | pending means the run did not finish; incomplete evidence is not weaker evidence |
+
+**An `Ignored` mutant in scope refuses the lane.** Stryker marks a mutant
+`Ignored` when your own config suppressed it (`mutator.excludedMutations`, or
+a `// Stryker disable` comment). The v9 verdict has no field that can state
+that fact, and both alternatives lie: silently dropping it is how a gate gets
+made green from inside the mutation tool's own config, and folding it into
+`discarded` would report a deliberately suppressed mutant as one that failed
+to *compile*. So assay refuses, naming the mutant. Remove the suppression, or
+move the line out of the lane's declared scope.
+
+**What the verdict records.** `judgment.r2.producer = "ingested"`;
+`producer_tool` = `{name, version, report_schema_version}` copied verbatim
+from the report and **declared by artifact, not verified** — it is not a
+`helpers[]` entry, because `helpers[]` records tools assay itself invoked;
+`survived_uncovered` (untested lines, by position, deduplicated — it lists
+places, not mutants); `discarded`; `lines_without_candidates` (in-scope
+non-blank lines the tool produced no mutant for at all).
+`kill_attribution` is `"unattributed"` and cannot be anything else: a killed
+mutant here proves the foreign tool's test command failed, not that it failed
+for the reason the mutant created. Every mutant carries its operator as
+`stryker:<MutatorName>` — a namespace assay owns, so a foreign mutator name
+can never collide with a native operator.
+
+**Scope is assay's, not the tool's.** Stryker mutated whatever its config told
+it to; which mutants COUNT is decided by your lane's `mode` — under
+`changed_lines` a mutant counts iff its start line is an added line of the
+resolved diff, under `whole_target` iff its file is a declared target. Assay
+does not read Stryker's own score.
+
+**Refusals worth knowing before you hit them.** The report's `projectRoot`
+must equal the directory your command ran in (the snapshot's project root
+joined with `cwd`) — a report produced anywhere else is an artifact from
+elsewhere. Every `files` key must resolve under a declared `source_roots`
+entry. `projectRoot` itself must be present: the upstream schema makes it
+optional, assay requires it, because it is the only field saying where the
+report's relative keys are anchored. A mutant with no `replacement`, an
+unknown status, or a `schemaVersion` major assay has never seen each refuse
+with their own message. **Assay reads `mutation-testing-report-schema` major
+1** — the major the committed real artifact carries. A later major is refused
+as unproven rather than as broken: assay has no report in that shape to have
+been measured against, and reading one as if the shape had held is the
+assumption the version field exists to prevent. And a command that writes no report at all is
+`NO_MEASUREMENT`, never a pass.
+
+## Browser coverage of a UI as an R1 lane
+
+Every JavaScript lane shape above judges UNIT-level Vitest coverage. A
+Playwright/browser suite exercises the same UI a different way — through a
+real DOM, real user events, a real running build — and can be judged too,
+with no assay change: `judge.language = "javascript"` and
+`format = "coverage-istanbul-json"` are the SAME declaration either way,
+because `vite-plugin-istanbul` (built on `istanbul-lib-instrument`, the same
+instrumenter core `@vitest/coverage-istanbul` uses — verified against this
+wave's own committed lockfile,
+`tests/fixtures/coverage/probe-js-vite-plugin-istanbul/package-lock.json`:
+`vite-plugin-istanbul@9.0.1` depends on `@babel/generator`,
+`@istanbuljs/load-nyc-config`, `espree` and `istanbul-lib-instrument@^6.0.3`
+— there is no `babel-plugin-istanbul` anywhere in the tree) produces the
+identical artifact shape a Playwright run's own `window.__coverage__` dump
+already is.
+
+### The recipe
+
+All of this happens INSIDE one lane, in the snapshot — no different in kind
+from B041(a)'s offline-install pattern, just a longer pipeline:
+
+1. `npm ci --offline` (B041's own pattern — the snapshot's dependency closure
+   is rebuilt from the image-baked cache, never assumed present).
+2. `vite build --mode coverage` with `vite-plugin-istanbul` configured
+   `forceBuildInstrument: true` — REQUIRED; the plugin does not instrument a
+   production build by default (its own README: "Optional boolean to enforce
+   the plugin to add instrumentation in build mode. Defaults to false"),
+   so omitting it silently produces an uninstrumented `dist/` with no
+   coverage capability at all, not a refusal.
+3. Serve the build (`vite preview`, or the app's own nginx image) reachable
+   from wherever the browser driver runs.
+4. Drive the REAL suite against it — this project's own pattern is a
+   Python-driven Playwright suite (`pytest -m browser
+   tests/e2e/ui/<app>`) — with a fixture that reads `window.__coverage__`
+   after every test and merges the maps (`istanbul-lib-coverage`) into one
+   `coverage-final.json`.
+5. Declare the lane exactly like any other JavaScript R1 lane:
+   `format = "coverage-istanbul-json"`,
+   `source_roots = ["applications/<app>/src"]`.
+
+**Measure that the artifact's keys are the ORIGINAL `src/**/*.tsx` paths, not
+`dist/`, before trusting this pattern in your own project.**
+`vite-plugin-istanbul` instruments PRE-transform source, so a correctly
+configured build keys its coverage map by the real source path — proved here
+against a real, committed artifact
+(`tests/fixtures/coverage/coverage-istanbul-json.vite-plugin-istanbul.json`,
+`tests/fixtures/coverage/PROVENANCE.md`'s own section, and
+`tests/test_coverage_parsers_vite_plugin_istanbul_artifact.py`) rather than
+assumed from the plugin's own description. Nothing about the parser changes
+for this producer: it is the SAME `coverage-istanbul-json` format every
+Vitest artifact in this project already declares, read by the identical,
+unmodified code.
+
+`WHERE` is your environment tool's job, not assay's (DESIGN-GUIDE §4): the
+tester serving the preview build must be reachable from wherever the browser
+driver runs, and the UI needs its backend reachable too (a `requires.services`
+declaration, or an `infrastructure` fact naming the backend route, B013).
+Scope such a lane `S3`, declared — it depends on more than the snapshot
+alone.
+
+### The limit, stated once
+
+The UI CODE this lane judges is the snapshot's — fully bound to the commit,
+exactly like any other R1 lane. The API it talks to at runtime is the
+DEPLOYED image's — an unverified, declared fact about which backend was
+actually running, not something this lane's own coverage claim can attest to
+(the same gap B004 exists to close for provenance generally). Until B004
+ships verified provenance, an S3 R1 verdict from a lane shaped like this
+binds the UI's own code, not the whole system it was exercised against.
+
+A DETACHED `assay judge <artifact>` verb — judging evidence a deployed image
+produced outside any snapshot, rather than a command this lane's own
+argv ran — is the larger ask this pattern deliberately avoids needing.
+**Do not build it before B004**: it would be the first assay judgment with no
+commit binding of its own, which is exactly the class of claim this project
+exists to refuse making.
+
 ## CMRU / tester-unified integration
 
 CMRU's project `cmru.toml` owns the exact gate command. `tester-unified` should **not** bake an
@@ -524,6 +1331,121 @@ sha256 = "tools/assay/assay-<version>.pyz.sha256"
 The product owns the `assay.toml` lane and the pinned Assay artifact; `run-gate.py` owns the isolated
 execution boundary. A consumer invokes it as `./run-gate.py assay`; see run-gate's own `CONSUMERS.md`
 for orchestration mechanics.
+
+### Preflighting a gate environment with `assay lanes --json` (B044)
+
+A gate tool that owns WHERE a lane runs (`ciu`, `run-gate.py`) needs to know
+WHAT a lane needs from its environment before it launches a container for
+it — does this project even declare a `javascript` lane, and if so, does the
+chosen environment actually have Node on `PATH`? Reading `assay.toml`
+directly duplicates assay's own loader and its own registry (which rigor
+levels THIS installed build actually reaches for a language), and re-running
+`assay run` just to find out is the thing a preflight exists to avoid.
+`assay lanes --json` answers both without executing anything:
+
+```bash
+assay lanes --json --file assay.toml
+```
+
+```json
+{
+  "inventory_schema": 1,
+  "assay_version": "3.2.0",
+  "lanes": [
+    {
+      "name": "ui_unit",
+      "scope": "S1",
+      "rigor": ["R0", "R1"],
+      "enforcement": "gate",
+      "language": "javascript",
+      "rigor_reachable": ["R1"],
+      "coverage": {
+        "format": "coverage-istanbul-json",
+        "artifact": "applications/webapp-ui-react/.assay/coverage-final.json",
+        "producer": null
+      },
+      "mutation": null,
+      "canary": null,
+      "base_source": "request",
+      "external_tools": [],
+      "argv0": "bash",
+      "env_required": [],
+      "environment_command": false,
+      "infrastructure_facts": [],
+      "budget": "15m",
+      "cwd": null,
+      "link_paths": [],
+      "snapshot_selection": "repository"
+    }
+  ]
+}
+```
+
+A gate wrapper reads this the way `assay run` would, without running it:
+
+- **`rigor` vs `rigor_reachable`.** A level in `rigor` but absent from
+  `rigor_reachable` (e.g. a lane declaring `"R2"` for a `language` this
+  installed build has not wired R2 for) is a refusal `assay run` will hit
+  later; a gate that checks this first turns a mid-run `ERROR`/
+  `BAD_LANE_CONFIG` into a preflight failure with the same cause, sooner.
+  `rigor_reachable` is `[]` for a `language` this build's registry does not
+  know at all — `assay lanes --json` never raises for that, it just reports
+  an empty capability set, exactly like it never raises for a mismatched
+  `rigor`.
+- **`language` selects the toolchain the environment must provide.**
+  `"javascript"` needs `node`/`npm` on `PATH` (B041); this is a fact about
+  the LANE, read once, instead of a fact CIU's own environment table has to
+  restate per project.
+- **`base_source`** tells a gate whether it must pass `--request-base` —
+  `"request"` — or must not — `"declared"` — before it ever calls
+  `assay run`, instead of discovering the mismatch as a refusal (or as a
+  second, consumer-side spelling of the same fact, e.g.
+  `[testing.lanes.<l>] request_base = true` duplicating what the lane
+  already declared). `null` means the lane has no comparison base at all
+  (no `judge` table, `judge.mode = "whole_target"`, or neither `R1` nor
+  `R2` declared) — passing `--request-base` to one of those is refused by
+  `assay run` for the identical reason.
+- **`external_tools`** and **`argv0`** are what a `MISSING_EXTERNAL_TOOL`-
+  style preflight actually checks against the environment's `PATH`, without
+  a gate having to parse `argv` itself. Since schema v9 a lane that declares
+  [`cwd`](#run-the-lane-somewhere-other-than-the-project-root-cwd-b043) no
+  longer needs a `bash -c "cd … && …"` wrapper, so `argv0` on such a lane
+  now names the real command instead of `bash`. A lane that still carries
+  the wrapper still hides its command behind `argv0 = "bash"`, exactly as it
+  does from `assay run`'s own preflight. **In this release, `external_tools` is
+  `()` for every shipped adapter** (Python `adapters/python.py:806`, SQL
+  `adapters/sql.py:671`, Go `adapters/go.py:501`, JavaScript
+  `adapters/javascript.py:322` — none declares a nonempty tuple), so this
+  field is structurally always `[]` today, not a per-lane fact a preflight
+  can meaningfully branch on yet. A gate consumer should not build a
+  `MISSING_EXTERNAL_TOOL` preflight around this field expecting it to name
+  `node`/`npm` for a `javascript` lane — that check today has to come from
+  `language` itself (the paragraph above), not from `external_tools`.
+- **`environment_command`** is a boolean, not the probe's own argv: a gate
+  only needs to know ONE declares a probe must pass in the invoking
+  environment before snapshot work, never to re-implement or repeat it
+  (DESIGN-GUIDE §4).
+
+- **`cwd`** (B043, schema v9) is the lane's declared working directory or
+  `null` when it declared none. `null` is the honest answer for that lane,
+  not a placeholder — `"."` would be a value the file never wrote. A
+  preflight that wants to check a directory exists in the environment reads
+  this rather than parsing a `bash -c "cd …"` wrapper out of `argv`.
+- **`link_paths`** (B041(b), schema v9) is the declared
+  `[lanes.<n>.isolation] link_paths` list, `[]` when the lane declared none.
+  A non-empty list tells a gate that this lane's snapshot will NOT be purely
+  committed objects — see [Linking a dependency closure into the
+  snapshot](#linking-a-dependency-closure-into-the-snapshot-link_paths-b041b).
+
+`inventory_schema` stays `1`: it changes when an EXISTING key's meaning
+changes, never merely because a new key was added — which is why `cwd`,
+`link_paths` and `coverage.producer` becoming really declarable at v9 did not
+bump it. A consumer written against the previous release, which saw them
+always `null`/`[]`, reads real values now with no key-handling change.
+
+A lane file that fails to load exits `2` with the loader's own message on
+stderr and **no JSON on stdout** — never a partial document — exactly like
+the text form of `assay lanes`.
 
 ## Size a mutation lane before running it
 
@@ -560,8 +1482,21 @@ subset of `python:compare-swap`'s own sites — same span, same replacement — 
 declaring them alongside `compare-swap` emitted every shared site twice and
 added no coverage. A lane still naming either is now refused at load; delete
 them and keep `python:compare-swap`, which already covers `==`/`!=` swapping.
-The two names remain spellable in a schema-v7 artifact so that verdicts already
-emitted by 2.3.0/2.4.x keep verifying; nothing produces them.
+The two names remained *spellable* at schema v7 so that verdicts already
+emitted by 2.3.0/2.4.x kept verifying. **Schema v8 removes the spellings**
+(A-331), discharging A-326's own "the spellings go at the next bump" at the
+bump it named: neither name appears in the packaged schema's per-language
+`oneOf` any more, so a v8 verdict naming one fails validation. Nothing you
+need to do differs — the lane-config refusal was already in force at 2.4.2 —
+but note two consequences:
+
+- Your v7 verdicts still verify, with a **v7** `assay`. Under v8 they are
+  refused on `schema_version` alone (hard cut, A-170), which is why removing
+  the spellings costs nothing v8 had not already cost.
+- A lane file still carrying either name gets the *withdrawn* refusal naming
+  `python:compare-swap` as the replacement, **not** a bare "unknown
+  operator(s)" — the withdrawn check deliberately runs first now that the
+  catalogue no longer spells them.
 
 A candidate that exceeds this bound is recorded in `budget_exceeded`; the lane continues with other
 candidates.
@@ -583,7 +1518,7 @@ applies (for example, the command never started).
 
 ## Adopting a v2-capable release
 
-Verdict schema v7 and lane schema v2 are both hard cuts (no dual-version verifier, no
+Verdict schema v8 and lane schema v2 are both hard cuts (no dual-version verifier, no
 compatibility shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
 for why interpreting an old lane file as if it declared the new grammar would be exactly the
@@ -633,6 +1568,21 @@ mandatory positional path, contained no dump step at all, and drove `docker`
 against its *deployed* application network. None of that is visible from
 reading the script — it only surfaces when a snapshot tries to run it.
 
+### Dependency closures come from the image, never the working tree
+
+The "hermetic" rule above has one consequence specific to JavaScript/
+TypeScript: `node_modules` is gitignored, so it does not exist in ANY
+snapshot (B041) — Python's venv and Go's `GOMODCACHE` are both out-of-tree
+and never met this. The gate IMAGE carries a populated npm cache (built from
+the committed lockfile, exactly as it carries the pinned Python/Go
+toolchains), and the lane's own argv rebuilds the closure OFFLINE from that
+cache before running the pinned, `--no-install` test runner — never an
+ambient `node_modules` the image or the invoking checkout happens to have
+lying around, which would make the same lane file mean a different, unpinned
+thing depending on where it runs. See
+[JavaScript lanes and the dependency closure](#javascript-lanes-and-the-dependency-closure)
+for the worked pattern.
+
 ### Add rigor in order, not all at once
 
 `R0` → `R1` → `R2`, each green before the next. R3 requires R1 by construction.
@@ -677,9 +1627,157 @@ HEAD is itself a merge commit). The two can differ enormously: a lane judged
 right after merging main in can see its changed-line/mutation scope narrow to
 "whatever the merge itself touched" rather than the branch's own accumulated
 work, with no other signal that anything unusual happened. `base_resolution`
-is present only when `judgment.resolved.base` is (a lane with no `judge.base`
-declared has nothing to classify); a consumer that gates on "did R1/R2 see the
-whole change" should check it rather than assume `base` alone tells the story.
+is present only when `judgment.resolved.base` is (a lane with no comparison
+base to resolve has nothing to classify); a consumer that gates on "did R1/R2
+see the whole change" should check it rather than assume `base` alone tells
+the story.
+
+### Delegating the comparison base to the invoking gate request (B019)
+
+A lane that must stay portable across branches and worktrees can require
+changed-line judging without hardcoding *which* commit it judges against:
+
+<!-- assay-doc-example:skip reason="judge sub-table fragment; the surrounding consumer lane supplies schema_version and the rest of the closed lane grammar" -->
+```toml
+[lanes.unit.judge]
+language = "python"
+source_roots = ["src"]
+# `judge.base` is ABSENT. This lane's invoker owns the base identity.
+base_source = "request"
+```
+
+The invoker then supplies it per run:
+
+```bash
+assay run unit --request-base "$MERGE_TARGET" --verdict-json verdict.json
+assay plan mutate --request-base "$MERGE_TARGET"
+```
+
+`--request-base` takes a ref *or* an already-resolved commit, and either goes
+through exactly the merge-base resolution `judge.base` always used; the result
+is recorded once in `judgment.resolved.base`, with `base_resolution` beside it
+as usual. Nothing downstream can tell — or needs to tell — which owner
+supplied it.
+
+Three refusals bound this, and each names the one line to change:
+
+| situation | what happens |
+|---|---|
+| `base_source = "request"`, no `--request-base` given | `ERROR`/`BAD_LANE_CONFIG`. Never a fallback to `HEAD` or a default branch: a changed-line judgment whose base was guessed is not a changed-line judgment. |
+| `judge.base` declared **and** `--request-base` given | `ERROR`/`BAD_LANE_CONFIG`. Whichever side lost a precedence contest would be configuration nothing reads, and therefore configuration that cannot fail loudly if it is wrong. Delete one. |
+| `--request-base` given to a lane that reads no base (R0/R3 only, or `mode = "whole_target"`) | `ERROR`/`BAD_LANE_CONFIG`, for the same reason `judge.base` is refused there. |
+
+`base_source` is legal only on a lane declaring R1 and/or R2 under
+`mode = "changed_lines"` — it is a policy *about* `judge.base`, so it is legal
+exactly where `judge.base` is.
+
+#### Migrating an existing lane, and the one case that costs something
+
+A lane pinning a **frozen SHA** migrates for free: delete `base = "<sha>"`, add
+`base_source = "request"`, and have the invoker pass that same SHA. Nothing
+about what gets judged changes.
+
+The case that genuinely costs something is a lane pinning a **symbolic,
+self-updating ref** — `base = "origin/main"` is the common one, and it is what
+this estate's own `ciu/assay.toml` lane declares. Such a lane works today from
+any checkout with no orchestrator at all: `assay run ciu` just resolves
+`origin/main`. Delegating it means that same command becomes a hard refusal
+unless an invoker supplies `--request-base`, because refusal (1) above does not
+except the lane that *could* have resolved something on its own.
+
+That is the real trade and it is not free. It is the deliberate consequence of
+refusing precedence rather than picking it, so decide per lane:
+
+- **Keep `judge.base = "origin/main"`** when the lane must stay runnable by
+  hand, standalone, from a developer checkout. It simply is not a delegating
+  lane, and nothing forces it to become one.
+- **Move to `base_source = "request"`** when an orchestrator owns branch
+  awareness and every real invocation comes from it — which is the case
+  B019 exists for. Expect the standalone `assay run <lane>` invocation to stop
+  working, and give the humans a wrapper that passes `--request-base`.
+
+There is no middle setting, on purpose: a lane that declared both a default and
+a delegation would be back to a precedence rule, and one of the two would be
+config nothing reads.
+
+### `judge_provenance`: which build emitted this verdict (B018)
+
+`assay_version` is a string; any process can print one. An assay running from
+a real build artifact additionally records the artifact itself:
+
+```json
+"judge_provenance": {
+  "name": "assay",
+  "version": "2.5.0",
+  "artifact": "wheel",
+  "digest_algorithm": "sha256",
+  "digest": "2bf81187b3158a010b4f0d8712a7414779f0ee97b72251db0a072314412e82d4"
+}
+```
+
+`artifact` is `"wheel"` or `"zipapp"`; a release publishes both, with a
+`.sha256` sidecar each, and their digests necessarily differ — so the kind is
+recorded rather than left for you to guess which file to compare against. The
+digest is the artifact's own sha256: for a zipapp, the `.pyz` is hashed
+directly; for a wheel install, it is the digest the installer recorded in PEP
+610 `direct_url.json`, which is the only statement about the wheel that
+survives its own installation.
+
+**The field is optional, and its absence is meaningful.** An invocation with
+no identifiable build artifact — a source checkout, an editable install, or an
+import that shadows an installed distribution — records **no** identity rather
+than a partial or invented one, and prints the reason on stderr. If your gate
+resolves and verifies a judge binary before running it, and needs the evidence
+bound to that binary, do not merely read the field: **demand it**.
+
+```bash
+assay run unit --require-judge-provenance --verdict-json verdict.json
+```
+
+That refuses `ERROR`/`BAD_LANE_CONFIG` before any lane work if the running
+assay cannot identify itself, so you never receive evidence you cannot
+attribute. Compare `judge_provenance.digest` against the digest you verified
+on download; `judge_provenance.version` equals the top-level `assay_version`
+for any artifact assay itself produced.
+
+#### Which install shapes can be identified — read this before you demand it
+
+`--require-judge-provenance` is a hard refusal, so **how you installed assay
+decides whether your gate can use it at all.** The rule is PEP 610's: an
+artifact identity exists only where the installer recorded one, and it records
+one only for a *direct* install.
+
+| how assay got there | identified? | why |
+|---|---|---|
+| **pip**: `pip install ./assay-<v>-py3-none-any.whl` | **yes** (`wheel`) | direct file install; pip records the wheel's sha256 in `archive_info.hashes` |
+| **pip**: `pip install https://…/assay-<v>-py3-none-any.whl#sha256=…` | **yes** (`wheel`) | direct URL install; pip records the digest, and stores the URL with the `#fragment` already stripped |
+| running the `.pyz` (or `PYTHONPATH=<pyz>`) | **yes** (`zipapp`) | the archive is on disk and is hashed directly |
+| **`uv pip install` of a wheel, even from a direct URL** | **no** | measured on uv 0.12.1: it writes `direct_url.json` with `"archive_info": {}` — the record exists but carries **no digest**, so there is nothing to report |
+| **`pip install assay` / `pip install assay==2.5.0` from an index** | **no** | PEP 610 writes `direct_url.json` only for direct installs. An index install records **no** artifact identity anywhere on disk, and none can be recovered afterwards |
+| `pip install -e .`, `pip install <directory>` | no | no build artifact exists to hash |
+| a source checkout, or a `sys.path` entry shadowing an install | no | the running code is not the artifact's code (refused by name) |
+
+Note the rule is *"the installer recorded a digest"*, not *"the install was
+direct"* — the `uv` row is a direct install that still yields no identity,
+because recording the digest is the installer's choice and uv currently
+declines. If your gate demands provenance, **pin the installer as well as the
+artifact**, and verify one real install of your actual image before relying on
+it.
+
+The index-install row is the one that surprises people, and it matters
+specifically for **a CI runner image that pip-installs assay from a private
+index at image-build time**. That image is perfectly well pinned, and assay
+still cannot identify itself inside it — there is nothing on disk to identify.
+If your gate demands provenance, install the judge into the image **with pip,
+from the wheel file or its URL** (or ship the `.pyz`), not from a bare
+requirement specifier. Mounting the verified artifact into the runner works
+too. The `.pyz` is the most robust of these: it depends on no installer's
+metadata choices at all, because assay hashes the archive it is running from.
+
+Assay refuses rather than synthesising something here, and that is deliberate:
+a digest derived from the installed *files* would not equal the digest you
+verified on *download*, so it would look like an identity while being
+uncomparable — the invented fact this whole field exists to prevent (A-332).
 
 ### A green run over an empty subject is not a pass
 
@@ -751,3 +1849,297 @@ R2/R3 execution is local and isolates each unit in Git-based scratch snapshots. 
 would need an explicit artifact bundle, pinned toolchain/image digest, queue/auth contract,
 result attestation, cancellation/timeout semantics, and a way to prove the returned verdict was
 for the submitted commit. None of that is implemented or implied by the wheel/zipapp today.
+
+## Go lanes: what exists today, and what a Go lane will require
+
+**`judge.language = "go"` now resolves, at R1 only** (decision A-394).
+Registration was deliberately sequenced *after* the statement-attribution
+chain below, so a Go lane could never be runnable while the parser would
+still report block extents as statement truth. **R2 and R3 are still refused**
+`ERROR`/`BAD_LANE_CONFIG`: `generate_mutation_sites` is unconditionally
+`UNSUPPORTED`, so there is no mutation producer for a Go lane to reach.
+
+Read point 1 before you plan around this. The single most common way a Go
+lane fails is not a missing test — it is a judging environment with no Go
+toolchain, and assay will tell you so in those words rather than guessing.
+
+What is worth knowing before you plan a Go lane, because two of these will
+surprise an adopter who assumes Go behaves like Python:
+
+**1. A Go lane needs a real Go toolchain on the machine that runs `assay`,
+not only on the machine that ran the tests.** Assay normally consumes an
+artifact and never re-runs your tools. Go is the exception: `go test
+-coverprofile` records a block's byte extent plus a statement *count*, never
+the statements' own positions, so assay re-derives those positions from your
+source with a Go program it ships (`assay/helpers/go/stmtpos/`, stdlib-only,
+run with `GOPROXY=off` and no network). The adapter declares
+`external_tools = ("go",)`, so the effective-PATH preflight refuses before
+anything runs:
+
+```text
+status: NO_MEASUREMENT
+reason_code: MISSING_EXTERNAL_TOOL
+```
+
+If your gate container builds Go elsewhere and judges in a slim image, that
+slim image needs `go` too. Why assay cannot just parse the profile harder:
+[DESIGN-GUIDE §11, "Go statement positions"](DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
+
+**2. The coverage artifact and the working tree must be the same revision.**
+Assay re-runs the segmentation over your source and joins it to your profile
+on the exact block extents. If they disagree — a profile carried over from an
+earlier commit, a file edited between the test run and the judgment, a
+different toolchain — the lane refuses rather than attributing lines. What you
+see is the reason code:
+
+```console
+$ assay run unit --file assay.toml
+unit: ERROR/UNREADABLE_ARTIFACT (exit 2)
+```
+
+and the verdict document's R1 claim carries the same `ERROR` /
+`UNREADABLE_ARTIFACT` pair with no coverage payload.
+
+The refusal assay *raises* underneath that names the file and the disagreeing
+extents:
+
+```text
+go statement attribution: 'internal/x.go': the coverage profile and the
+source-side oracle disagree about which blocks exist, so they were not
+produced from the same revision of this file. 1 record(s) only in the
+profile (28.22,29.2); 0 only from the source (none)
+```
+
+The extents in it are spelled the way your `.out` file spells them, so they
+can be grepped against the artifact directly — but **that text reaches only a
+caller that invokes the evaluation layer itself**
+(`assay.evaluate.evaluate_coverage`,
+`assay.statement_attribution.attribute_statements`). `assay run` folds a
+judge-phase refusal into the R1 claim, and a verdict carries no free-text
+cause by design, so a CLI consumer gets the reason code and nothing more.
+Surfacing it is tracked as **B053** ("an `ERROR`-outcome verdict's detailed
+message is constructed but never surfaced anywhere a consumer can read it");
+it is not this wave's to fix, and the refusal itself is unaffected.
+
+The fix on your side is to regenerate the profile from the tree you are
+judging — never to relax the check, which exists because attributing anyway
+would publish a verdict about lines that are not the lines that ran.
+
+**3. A verdict from a Go lane carries `helpers[]`.** It records which
+toolchain actually derived those positions, because "which Go compiled this"
+is part of what the verdict means:
+
+```json
+"helpers": [
+  {
+    "role": "statement-positions",
+    "tool": "go",
+    "resolved_path": "/usr/local/go/bin/go",
+    "identity": "go version go1.25.14"
+  }
+]
+```
+
+`identity` is what the toolchain reported about ITSELF, from inside the
+program it compiled and ran — not a version string assay looked up. Lanes for
+every other language OMIT the key entirely: no helper ran, so nothing is
+claimed, and `helpers: []` is refused rather than written. A Go lane whose R1
+claim carries no coverage payload (an error, a refusal) also omits it — an
+entry exists because it produced a claim, so one standing beside no claim
+would describe work that judged nothing.
+
+**4. One known limit, stated so you do not discover it in a review.** An
+uncovered statement sharing a physical LINE with a covered one is still
+reported as executed — `f := func() int { return 7 }` is two counted
+statements that both genuinely begin on that line, and the line did run. This
+is line granularity's own limit, which coverage.py shares; it is not fixed by
+the oracle and is not claimed to be.
+
+**5. A second known limit: assay does not judge Go sources carrying `//line`
+directives — generated code.** Keep them out of `judge.source_roots`.
+
+A `//line file:line` directive tells the compiler to report positions as if
+they came from somewhere else, which is how `goyacc`, `peg`, `ragel` and
+similar generators point diagnostics at their own input rather than at the
+generated `.go`. `go test -coverprofile` records those remapped positions, so
+such a file's coverage records name the *directive's* line numbers, not the
+file's — Go's own `TestLineDup` fixture is 24 lines long and its profile
+reports lines 100 to 105. `git diff` names physical lines. The two cannot be
+joined, by anyone: this is not a check assay could relax.
+
+So the rule is per FILE, and it costs you nothing unless you actually judge
+one:
+
+* a `//line`-bearing file with **no changed line in the judged set** is
+  IGNORED. Its records contribute nothing and the lane proceeds normally.
+  One generated file does not take your lane down.
+* a `//line`-bearing file **inside** the judged set refuses:
+
+```console
+$ assay run unit --file assay.toml
+unit: ERROR/BAD_LANE_CONFIG (exit 2)
+```
+
+The verdict's R1 claim carries that same `ERROR` / `BAD_LANE_CONFIG` pair and
+no coverage payload. The refusal assay *raises* underneath it names the cause,
+the file and the remedy:
+
+```text
+'internal/parser/y.go' carries coverage records whose positions were remapped
+by a `//line` directive ... so its recorded line numbers are the directive's
+and not this file's. This lane judges it: 3 changed line(s) in it are inside
+judge.source_roots, and assay will not judge a file whose measured lines
+cannot be matched to the lines a diff names -- that would report a clean
+percentage over nothing measured. Generated sources belong outside the lane's
+judge.source_roots (or its judge.targets)
+```
+
+As in limit 2 above, that text is visible to a caller of the evaluation layer
+(`assay.evaluate.evaluate_coverage` / `evaluate_targets`) and **not** to an
+`assay run` consumer, who gets the reason code — B053. `BAD_LANE_CONFIG` is
+shared by several distinct causes on the Go path, so when you see it on a Go
+lane, a generated file inside `source_roots` is one of the first things to
+check.
+
+The remedy is the same thing you would do for any generated file: keep it out
+of `source_roots` (or out of `judge.targets`). What assay will not do is the
+quiet alternative — measure the file's virtual line numbers, match nothing,
+and report `0 executable of 0 changed` as a clean result. `0/0` is never
+`100%`.
+
+The witness for all of this is Go's own: `cmd/cover/cover_test.go`'s
+`lineDupContents`, run through the real toolchain and committed with its
+recipe at `nyxloom-trove/carve-assets/P27-recarve/`.
+
+**6. Installing assay into a Go gate image needs no Python packaging work.**
+The judge needs an *interpreter*, not a toolchain — assay is stdlib-only by
+design (A-005) — and a `golang:1.25`-based image already has one:
+`/usr/bin/python3` 3.13.5 on Debian trixie, against assay's own
+`requires-python = ">=3.11"`. Measured, not assumed:
+
+```console
+$ docker run --rm --network=none <your-go-gate-image> python3 --version
+Python 3.13.5
+```
+
+There is no pip and no ensurepip in that image, so the **zipapp is the
+install path**: copy `assay-<version>.pyz` in, check it against its shipped
+`.sha256` sidecar, and run it with the interpreter that is already there.
+
+```console
+$ sha256sum -c assay-<version>.pyz.sha256
+$ python3 assay-<version>.pyz run unit --file assay.toml --verdict-json verdict.json
+```
+
+The verdict records which archive judged it —
+`judge_provenance.artifact = "zipapp"` plus the archive's own sha256 — so a
+consumer can bind a verdict to the artifact that produced it without trusting
+a version string. The Go oracle ships INSIDE that archive and is staged out
+to a temporary directory when it runs (`go run .` needs a real directory and
+a zip member is not one), so nothing has to be unpacked or installed
+alongside it.
+
+**7. One Go module per lane, and the lane's project root is that module's
+root.** A Go cover profile keys records by import path
+(`example.com/svc/internal/store/x.go`) while `git diff` names the same file
+`internal/store/x.go`. Assay bridges the two by **reading your module path
+out of your own `go.mod`** — the nearest one at or above the directory
+holding your `assay.toml`, and no higher than the repository top. There is
+no lane key and no CLI flag for it, deliberately: it is your project's fact,
+not a literal for you to restate (this is `covergate`'s `-module srdm` flag,
+which DESIGN-GUIDE §5 names as an anti-pattern by example). You declare
+nothing; it just works:
+
+```console
+$ python3 assay-<version>.pyz run unit --file assay.toml --verdict-json verdict.json
+```
+
+Two consequences worth planning around:
+
+* **Put `assay.toml` at your module root.** If your repository holds several
+  modules, give each one its own lane file at its own module root rather
+  than one lane file at the top. A project root sitting *above* several
+  modules does not silently pick one — the profile's keys will not be under
+  whichever `go.mod` was found first, and the lane refuses
+  `ERROR`/`UNREADABLE_ARTIFACT` with a message naming the key, the module
+  path assay derived and the `go.mod` it came from.
+* **A project root that is in no Go module at all refuses**
+  `ERROR`/`BAD_LANE_CONFIG`, naming the paths it looked at. That is a lane
+  configuration fault, not a coverage one, and it is reported as such.
+
+**`go.work` is not supported this wave.** Nested modules never appear in
+`go test ./...`'s own output, so a workspace's other modules are simply not
+measured; a lane pointed at a workspace root surfaces as the first bullet
+above rather than as a partial measurement. If you need a workspace, run one
+lane per module.
+
+The previously-documented library workaround — building `GoAdapter(module_path=…)`
+yourself and calling `runner.run_lane` — is no longer needed for this, and a
+`module_path` you construct by hand that disagrees with your `go.mod` is now
+refused rather than given precedence.
+
+**8. A worked Go lane, and it is one that really ran.** This is the lane
+F008-A5's qualification used against `shared-ramdisk-depot-manager` (srdm) at a
+real commit range, unedited except for the base ref. Note what it does NOT
+contain: no `cwd`, no module path, and `source_roots` spelled relative to the
+lane file's own directory.
+
+```toml
+schema_version = 2
+
+[lanes.coverage]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+# Your project's own test command, verbatim. srdm's is `tools/gate.sh:105`;
+# only the -coverprofile path is assay's, because assay reserves the artifact
+# it is going to read.
+argv = ["go", "test", "./...", "-count=1", "-coverpkg=./...", "-covermode=atomic", "-coverprofile=.assay/cover.out"]
+# `default_process_runner` REPLACES the child environment, so a Go lane must
+# declare what it needs rather than inheriting it. PATH is how the toolchain
+# is found at all; GOCACHE/GOMODCACHE keep a warm build cache warm.
+env = { GOPROXY = "off", GOFLAGS = "-mod=mod", GOTOOLCHAIN = "local", GOWORK = "off" }
+env_passthrough = ["PATH", "HOME", "GOCACHE", "GOMODCACHE"]
+budget = "30m"
+allow_argv_append = false
+
+[lanes.coverage.isolation]
+snapshot_selection = "repository"
+
+[lanes.coverage.judge]
+language = "go"
+source_roots = ["internal"]     # project-relative, i.e. <module root>/internal
+fail_under = 75.0
+allow_excluded = false
+base = "<the ref your change is measured against>"
+
+[lanes.coverage.judge.coverage]
+format = "go-cover"
+artifact = ".assay/cover.out"
+producer = "go-test"
+```
+
+The file lives at `<module root>/assay.toml` — for srdm, inside
+`shared-ramdisk-depot-manager/`, not at the repository top. That is point 6
+restated as a placement rule, and it is the one thing an adopter with a
+subdirectory module gets wrong first: a lane file at the repository top makes
+the project root the repository top, `go.mod` is not there, and the lane
+refuses `BAD_LANE_CONFIG` before it judges anything.
+
+**Keep `-coverpkg=./...` if you have it.** It is what stops a package with no
+test file of its own from vanishing from the profile entirely — the
+"file-absence" failure mode, which reports a changed file as either excluded or
+wholly uncovered depending on how the tool guesses. It also means one block
+gets one record per test binary, which assay folds executed-wins (B061); a
+profile without it is smaller and measures less.
+
+**What that lane produced**, through `python3 assay-<version>.pyz run coverage`
+inside the Go gate image: `PASS`, 12 files considered, 418 executable changed
+lines, 394 covered, 94.3%, and a `helpers[]` entry naming `go version
+go1.25.14` as the toolchain that derived the statement positions. srdm's own
+`covergate` on the byte-identical profile said 684/639 — a 266-line larger
+denominator, every line of which begins no statement. Both tools agree on all
+24 statements that are genuinely uncovered; the 21 extra lines `covergate`
+names are closing braces and signatures a developer cannot make executable.
+That difference is the whole reason A-217 ruled for a source-side oracle, and
+it is what a Go consumer gains by moving.

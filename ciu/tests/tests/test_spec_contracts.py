@@ -143,6 +143,19 @@ def build_repo(tmp_path: Path, monkeypatch) -> Path:
     # S2.7: pre-set the repo-root pair so generation + reload carry the tmp paths.
     monkeypatch.setenv("REPO_ROOT", str(repo_root))
     monkeypatch.setenv("PHYSICAL_REPO_ROOT", str(repo_root))
+    # …and make the DERIVATION agree with that, which is what this fixture
+    # always claimed but never enforced. `_detect_physical_repo_root` trusts
+    # mountinfo over a pre-set value when the two disagree (S2.7 refined
+    # precedence), and inside a devcontainer mountinfo maps /tmp to a host
+    # path — so the generated record has always said "host path" while the
+    # PROCESS kept the ambient tmp path, because bootstrap's seed was
+    # skip-if-present. CIU-75 seeds identity from the record, so the two must
+    # now be reconciled here rather than papered over by that leak. Pinning
+    # mountinfo to "nothing to check against" is the honest half: the tmp repo
+    # genuinely is not a bind mount of itself.
+    import ciu.workspace_env as _we_fixture
+
+    monkeypatch.setattr(_we_fixture, "_physical_root_from_mountinfo", lambda _root: None)
     # S15.18: pin the ambient KSM override OFF so governance-enabled demo
     # flows never attempt the live-docker shim build in generate_overlay —
     # this suite's subject is not KSM, and the gate container has no daemon.
@@ -680,16 +693,30 @@ class TestConfigfile:
         """S5.3 — the configfile mounts read_only at the target via a PHYSICAL path.
 
         A dedicated DooD split: PHYSICAL_REPO_ROOT differs from REPO_ROOT. The
-        ``ciu.env`` is generated with both equal (build_repo), then we OVERRIDE
-        PHYSICAL_REPO_ROOT in the env for the run, so the overlay's mount source
-        must start with the physical prefix (S1.4). DooD preflight is skipped.
+        records are generated with both equal (build_repo), then we re-point
+        the physical root for the run, so the overlay's mount source must start
+        with the physical prefix (S1.4). DooD preflight is skipped.
+
+        CIU-75: the split is expressed in the RECORD, not in ambient. Setting
+        `PHYSICAL_REPO_ROOT` in the environment no longer has any effect on a
+        run — STEP 1 seeds the six identity facts from
+        `[ciu.instance.generated]`, overriding ambient, which is the point of
+        the cutover (a sibling checkout's exported value used to win here). A
+        real DooD workspace gets this split from `ciu env generate`'s own
+        mountinfo derivation, which writes it to exactly this table.
         """
         repo = build_repo(tmp_path, monkeypatch)
         stack = add_stack(repo, SRC_APP, "applications/app-config")
         monkeypatch.setenv("CIU_SECRET_LICENSE", "demo")
 
         physical_prefix = tmp_path / "host-view"
-        monkeypatch.setenv("PHYSICAL_REPO_ROOT", str(physical_prefix))
+        import ciu.workspace_env as _we_split
+
+        _we_split.write_generated_facts(
+            repo,
+            {**_we_split.read_generated_facts(repo),
+             "physical_repo_root": str(physical_prefix)},
+        )
         # (CIU_SKIP_DOOD_PREFLIGHT=1 from the autouse fixture.)
         run_engine(stack, monkeypatch)
 
@@ -785,15 +812,31 @@ class TestVaultBackedFlows:
         run_engine(stack, monkeypatch)
         assert store.read_text() == "rotated-out-of-band"
 
-    def test_token_source_3_vault_stack_state(self, tmp_path, monkeypatch):
-        """S4.16 — token source #3: the vault stack's ciu.toml [state].root_token.
+    def test_token_source_3_vault_stack_bootstrap_store(self, tmp_path, monkeypatch):
+        """S4.16 — token source #3: the vault stack's hook-persisted store (S9.4a).
 
-        With no VAULT_TOKEN env and no token_file, a planted vault-stack
-        ciu.toml carrying ``[state].root_token`` at ``vault.stack_path`` must
+        With no VAULT_TOKEN env and no token_file, a planted
+        ``<vault stack>/.ciu/secrets/root_token`` at ``vault.stack_path`` must
         resolve. Tested directly against ``providers.resolve_vault_token``.
         """
         repo = build_repo(tmp_path, monkeypatch)
-        # Plant the vault stack's rendered ciu.toml with a [state].root_token.
+        store = repo / "infra" / "vault" / ".ciu" / "secrets"
+        store.mkdir(parents=True, exist_ok=True)
+        (store / "root_token").write_text("s.from-store", encoding="utf-8")
+
+        config = {"vault": {"stack_path": "infra/vault"}}
+        # No VAULT_TOKEN (autouse delenv'd it), no token_file → falls to source 3.
+        assert providers_pkg.resolve_vault_token(config, repo) == "s.from-store"
+
+    def test_token_source_3_ignores_legacy_state_root_token(self, tmp_path, monkeypatch):
+        """ciu-P46/F4 — the pre-cutover `[state].root_token` read path is GONE.
+
+        A hard cutover with no dual read: a checkout still carrying the legacy
+        plaintext copy resolves nothing here, so the operator gets S4.16's
+        explicit refusal plus `ciu check`'s `state-secrets` finding rather than
+        an indefinitely load-bearing unsafe copy.
+        """
+        repo = build_repo(tmp_path, monkeypatch)
         vault_dir = repo / "infra" / "vault"
         vault_dir.mkdir(parents=True, exist_ok=True)
         (vault_dir / "ciu.toml").write_text(
@@ -801,21 +844,15 @@ class TestVaultBackedFlows:
             "[state]\ninitialized = true\nroot_token = \"s.from-state\"\n",
             encoding="utf-8",
         )
-
         config = {"vault": {"stack_path": "infra/vault"}}
-        # No VAULT_TOKEN (autouse delenv'd it), no token_file → falls to source 3.
-        assert providers_pkg.resolve_vault_token(config, repo) == "s.from-state"
+        assert providers_pkg.resolve_vault_token(config, repo) is None
 
-    def test_token_env_precedes_state(self, tmp_path, monkeypatch):
-        """S4.16 — source #1 (VAULT_TOKEN env) wins over the vault stack [state]."""
+    def test_token_env_precedes_bootstrap_store(self, tmp_path, monkeypatch):
+        """S4.16 — source #1 (VAULT_TOKEN env) wins over the bootstrap store."""
         repo = build_repo(tmp_path, monkeypatch)
-        vault_dir = repo / "infra" / "vault"
-        vault_dir.mkdir(parents=True, exist_ok=True)
-        (vault_dir / "ciu.toml").write_text(
-            "[vault_core]\nstack_name = \"vault\"\n\n"
-            "[state]\nroot_token = \"s.from-state\"\n",
-            encoding="utf-8",
-        )
+        store = repo / "infra" / "vault" / ".ciu" / "secrets"
+        store.mkdir(parents=True, exist_ok=True)
+        (store / "root_token").write_text("s.from-store", encoding="utf-8")
         monkeypatch.setenv("VAULT_TOKEN", "s.from-env")
         config = {"vault": {"stack_path": "infra/vault"}}
         assert providers_pkg.resolve_vault_token(config, repo) == "s.from-env"
@@ -1312,6 +1349,7 @@ class TestPgSchemaProbeTargetsAppDb:
             config={"registry": {"postgresql": {"database": "dstdns_demo"}}},
             repo_root=Path("/tmp"),
             docker_exec_fn=_exec,
+            stacks={"pgstack": {"provides": ["pg:schema/public_ext"]}},
         )
         assert result.satisfied is True
         assert "-d" in captured["cmd"]
@@ -1332,6 +1370,7 @@ class TestPgSchemaProbeTargetsAppDb:
             config={},
             repo_root=Path("/tmp"),
             docker_exec_fn=_exec,
+            stacks={"pgstack": {"provides": ["pg:schema/public_ext"]}},
         )
         assert result.satisfied is True
         # Without a db config, -d should NOT be injected
@@ -1344,6 +1383,7 @@ class TestPgSchemaProbeTargetsAppDb:
             config={"registry": {"postgresql": {"database": "dstdns_demo"}}},
             repo_root=Path("/tmp"),
             docker_exec_fn=lambda c, cmd: (0, "\n"),
+            stacks={"pgstack": {"provides": ["pg:schema/missing_schema"]}},
         )
         assert result.satisfied is False
 

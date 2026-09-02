@@ -98,7 +98,10 @@ def test_service_probe_returns_red_when_docker_is_unavailable(monkeypatch, tmp_p
 
     monkeypatch.setattr(procutil, "docker", missing_docker)
 
-    result = provisioning.probe_ref(ref, {}, tmp_path)
+    result = provisioning.probe_ref(
+        ref, {}, tmp_path,
+        stacks={"provider": {"provides": ["pg:db/app", "minio:user/worker"]}},
+    )
 
     assert result.satisfied is False
     assert expected in result.reason

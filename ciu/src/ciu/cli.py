@@ -28,15 +28,26 @@ Run-scoped overrides (never written back to the TOML layer):
   --log-prefix-time-short  prefix severity messages with HH:MM:SS. Interactive
                            terminals colour INFO/WARN/ERROR; pipes and logs stay plain.
 
+REPO_ROOT resolution (`dev`/`worktree` verbs, S1.1): --define-root always
+wins; else CIU derives by walking up from cwd for ciu.global.defaults.toml.j2.
+A stale ambient $REPO_ROOT (e.g. a login shell that sourced ANOTHER
+checkout's ciu.env) that disagrees with a successful derivation REFUSES
+naming both paths -- it is never silently preferred over where you are
+actually standing. Fix: unset REPO_ROOT, pass --define-root, or cd into the
+intended repo.
+
 Run `ciu <verb> --help` for the complete options and examples for one verb.
 Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
             · 3 environment/bootstrap error
 
   SCAFFOLDING
     init [--project-name NAME] [--environment-tag TAG] [--stacks A,B]
+         [--hooks NAME1,NAME2]
                                 guided repo scaffolding: writes a validated
                                 ciu.global.defaults.toml.j2, gitignore entries,
-                                and optional stack skeletons (never overwrites)
+                                and optional stack skeletons (never overwrites);
+                                --hooks copies shipped hook templates
+                                (S19.1) into every scaffolded stack
 
   ENVIRONMENT
     env                         show ciu.env key=value pairs (read-only)
@@ -59,9 +70,14 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     worktree rm LOGICAL [-y] [--json]   ciu clean, THEN remove the checkout
     worktree list [--json]      list linked checkouts
     worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
+    worktree lease LOGICAL (--extend D | --perpetual | --release) [--json]
     worktree branches [--base REF] [-y] [--json]
                                 survey local branches; -y prunes exactly the
                                 fully-merged, clean, UNMANAGED ones (S16.8)
+    worktree reap [-y] [--category C1,C2] [--dry-run] [--json]
+                                survey Docker resource groups; -y DESTROYS
+                                exactly the record/lease/label-provable ones
+                                (S16.10)
     worktree up LOGICAL         start the selected ready instance, exactly
     worktree exec LOGICAL [--target ALIAS] -- ARGV...
                                 run exact argv (no shell) in the selected root
@@ -90,6 +106,12 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     check [--profile NAME] [--live] [--json]
                                         validate the config pipeline (no deploy)
     graph [--format mermaid|dot|json]    render the dependency graph (no deploy)
+
+  MIGRATION
+    migration-check [--define-root PATH] [--json]
+                                        report stale pre-cutover artifacts in
+                                        this checkout (S13.7); exit non-zero on
+                                        ANY finding
 
   DEV-LOOP BUILDS
     bake [targets ...] [--profile NAME] [--no-cache]
@@ -131,7 +153,9 @@ ciu worktree add NAME [--base REF] [--profile P1,P2]
 ciu worktree rm LOGICAL [-y] [--force] [--json]
 ciu worktree list [--json]
 ciu worktree inspect LOGICAL [--json]
+ciu worktree lease LOGICAL (--extend DURATION | --perpetual | --release) [--json]
 ciu worktree branches [--base REF] [-y] [--json]
+ciu worktree reap [-y] [--category C1,C2] [--dry-run] [--json]
 ciu worktree up LOGICAL
 ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   Manage durable, family-scoped worktree identities. Creation and ensure do
@@ -143,10 +167,28 @@ ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   prunes exactly the fully-merged, clean ones — never age-based, never the
   mainline, the primary or invoking checkout's branch, and never a checkout
   carrying a CIU-managed instance (use `worktree rm`, which cleans first);
-  mergedness is always judged from the PRIMARY worktree (S16.8). `up` starts the selected
+  mergedness is always judged from the PRIMARY worktree (S16.8). `lease` sets
+  this instance's EXPLICIT ownership claim (S16.9): --extend DURATION (e.g.
+  24h) renews a bounded `held` lease, --perpetual declares an unbounded one,
+  --release drops the claim. It reads no Docker state, so it works on a
+  stopped instance exactly as on a running one. `reap` is the DOCKER half of
+  the same survey-then-act shape (S16.10): it sorts every Docker resource
+  group into seven closed categories and, with -y, destroys exactly the four
+  a record, a lease or a `ciu.instance` label PROVES are disposable
+  (checkout-missing, lease-expired, orphaned, partial-cleanup). Age, name
+  similarity and "no process is running" are never consulted; `unattributable`
+  and `ambiguous` groups are never destroyed and cannot be selected with
+  --category at all. A group whose checkout survives is disposed of by running
+  `ciu clean` there, never by a bare docker removal. Run it without -y (or
+  with -y --dry-run) first: that is a pure survey. `up` starts the selected
   ready instance under its OWN ciu.env; `exec` runs exact argv (no shell) in
   that root and never starts anything implicitly (S16.6). `exec --target
   ALIAS` runs inside the ONE already-running declared container (S16.7).
+
+  Every worktree verb resolves its repo root per S1.1: --define-root wins
+  outright; else CIU derives by walking up from cwd. A disagreeing ambient
+  $REPO_ROOT (e.g. a sourced sibling checkout's ciu.env) REFUSES rather than
+  silently picking either value -- see `ciu --help` and docs/DESIGN-GUIDE.md.
 """,
     "capabilities": """\
 ciu capabilities [--json]
@@ -156,9 +198,17 @@ ciu capabilities [--json]
 """,
     "env": """\
 ciu env — show ciu.env key=value pairs (read-only)
-ciu env generate [--define-root PATH] — (re)generate ciu.env from system state
+ciu env generate [--define-root PATH] — (re)generate ciu.env from system state,
+  and rewrite this checkout's CIU-owned ciu.instance.generated.toml (the
+  [ciu.instance.generated] table) so TEMPLATES read those identity facts from
+  the merged config chain instead of ambient environment (S3.1b)
+ciu env print [--define-root PATH] — print the existing ciu.env as shell
+  `export KEY='value'` lines, for: eval "$(ciu env print)"
+  It PRINTS; it cannot itself change your shell (no subprocess can), and it
+  generates nothing — run `ciu env generate` first if ciu.env is missing.
 
   --define-root PATH   override repo root (no parent walking); for `generate`
+                       and `print`
 """,
     "iops-baseline": """\
 ciu iops-baseline [--path PATH] [--runtime N] [--force]
@@ -190,10 +240,12 @@ ciu profiles
   List available host profiles. Takes no options.
 """,
     "layouts": """\
-ciu layouts
+ciu layouts [--define-root PATH]
   List declared deploy layouts ([deploy.layouts.<name>]) with their
-  environment and ordered host list (S7.5c). Takes no options; shows what is
-  DECLARED — `ciu up --layout` is the validating consumer.
+  environment and ordered host list (S7.5c). Shows what is DECLARED —
+  `ciu up --layout` is the validating consumer.
+
+  --define-root PATH override repo root (alias: --root-folder)
 """,
     "up": """\
 ciu up [--profile NAME | --dir PATH | --layout NAME] [selection/options]
@@ -201,11 +253,26 @@ ciu up --host NAME [selection...]                              # render-on-targe
 ciu up --host NAME --thin [--bootstrap | --rollback] [selection...] # docker-optional
   Render + materialise secrets + start the Docker Compose stack(s).
 
+  Actions (S10.2) — with none of these, `ciu up` runs --deploy:
+  --deploy           run each phase in order (the default action)
+  --healthcheck      run the S7.7 health gate. Combined as
+                     `--deploy --healthcheck` it gates AFTER each phase, so a
+                     later phase's `stack:<name>:healthy|completed`
+                     requirement is met before that phase starts. Since
+                     CIU-68 you rarely need to type it: the gate turns itself
+                     on whenever a selected stack declares such a requirement
+  --check            run the static config-validation pipeline (S13.4a)
+
   Profile/multi-stack mode:
   --profile NAME     deploy the named host profile (repeatable; default: active profile)
   --phases N,M       restrict to the given phase numbers
   --dry-run          render and validate, but do not call Docker
   --no-preflight     skip host/provisioning preflight checks (break-glass)
+  --skip-check       skip the `ciu check` static preflight (break-glass).
+                     `ciu up` runs it BY DEFAULT before STEP 1 (S13.4c) —
+                     side-effect-free, and it refuses on any ERROR-severity
+                     finding, including a hook's validate_config (S9.5).
+                     WARN-severity findings are printed, never blocking
   --define-root PATH override repo root (alias: --root-folder)
   -y, --yes          assume yes to prompts
   --ignore-errors    continue past a failing stack
@@ -259,6 +326,12 @@ ciu clean [--profile NAME] [--phases N,M] [-y] [--ignore-errors]
   --define-root PATH override repo root (alias: --root-folder)
   -y, --yes          assume yes to prompts
   --ignore-errors    continue past a failing stack (best-effort per stack)
+  --vanilla          ALSO remove this workspace's ciu.global.toml (rendered),
+                     ciu.env, ciu.global.instance.toml.j2 and
+                     ciu.instance.generated.toml — a full reset to
+                     freshly-cloned state. Without it they are left untouched,
+                     exactly as before. Only runs when the teardown above
+                     succeeded; a failed clean keeps them for the retry.
 """,
     "health": """\
 ciu health [--profile NAME] [--phases N,M] [--define-root PATH]
@@ -329,7 +402,10 @@ ciu dev <stack> [--profile NAME] [--no-prebuild]
   <stack>            stack directory (relative to repo root) carrying [<root>.dev]
   --profile NAME     host profile to render for (default: active profile)
   --no-prebuild      skip the prebuild steps (re-run the dev server only)
-  --define-root PATH override repo root (no parent walking)
+  --define-root PATH override repo root; wins outright over ambient REPO_ROOT.
+                     Without it CIU derives by walking up from cwd (S1.1) and
+                     REFUSES a disagreeing ambient $REPO_ROOT rather than
+                     silently picking one -- see `ciu --help`.
 """,
     "secrets": """\
 ciu secrets list [-d PATH] [--define-root PATH]
@@ -343,7 +419,7 @@ ciu secrets reset [-d PATH] [--name N] [-y] [--define-root PATH]
   -y, --yes      assume yes to prompts
 """,
     "host-secrets": """\
-ciu host-secrets <host> [--materialize | --list | --path NAME] [-y]
+ciu host-secrets <host> [--materialize | --list | --path NAME] [-y] [--define-root PATH]
   Host-scoped local secrets (S14.3a / CIU-35): ASK_EXTERNAL / GEN_LOCAL
   entries declared under [deploy.hosts.<host>.secrets], materialized under
   the project store's hosts/<host>/ namespace — resolvable BEFORE any Vault
@@ -355,6 +431,7 @@ ciu host-secrets <host> [--materialize | --list | --path NAME] [-y]
   --list          print entry names + store-file existence (never values)
   --path NAME     print the store file path for one declared entry
   -y, --yes       with --materialize, skip interactive prompts (S4.13)
+  --define-root PATH override repo root (alias: --root-folder)
 """,
     "check": """\
 ciu check [--profile NAME] [--live] [--json] [--phases N,M] [--define-root PATH]
@@ -365,11 +442,39 @@ ciu check [--profile NAME] [--live] [--json] [--phases N,M] [--define-root PATH]
   leak scan, and the declared-vs-consumed secret cross-check. Entirely in
   memory: no hostdir, no materialized secret, no rendered file, no hook run().
 
+  Three further stages run here (ciu-P46): `vault-presence` refuses a stack
+  declaring ASK_VAULT/GEN_TO_VAULT with no topology.services.vault (S13.4d),
+  `state-secrets` refuses a secret-shaped key in any `[state]` table (S3.4a),
+  and `migration` walks `ciu migration-check`'s rule registry (S13.7) — the
+  same registry the standalone verb walks, with its findings weighted as this
+  report weighs every other stage's (WARN notes, ERROR fails).
+
   --profile NAME     restrict to the named host profile (repeatable)
   --live             probe live Vault/Postgres/MinIO/Consul/Docker state too
   --json             emit the per-stage report as one versioned JSON object
   --define-root PATH override repo root (alias: --root-folder)
   --phases N,M       restrict to the given phase numbers
+""",
+    "migration-check": """\
+ciu migration-check [--define-root PATH] [--json]
+  Report artifacts in THIS checkout left behind by an older CIU (S13.7).
+
+  CIU performs hard cutovers: a renamed or removed artifact is simply gone
+  from every normal code path — no fallback reads, no legacy-compat shims.
+  This verb is the single place that knows CIU's own version history, so a
+  stale artifact produces a named finding with a remediation instead of a
+  silent break. Every rule is pattern-based (does this file/key/table exist);
+  no rule compares an installed version against anything.
+
+  It is also registered as `ciu check`'s `migration` stage, so `ciu up`'s
+  automatic static preflight (S13.4c) covers it with no extra invocation.
+
+  Exit code: 0 when there are NO findings, non-zero when there are any —
+  regardless of WARN/ERROR. This is a diagnostic, not `ciu check`'s
+  severity-gated verdict; the stage form keeps `ciu check`'s aggregation.
+
+  --define-root PATH override repo root (alias: --root-folder)
+  --json             emit one versioned JSON object (rules + findings)
 """,
     "graph": """\
 ciu graph [--format mermaid|dot|json] [--profile NAME] [--phases N,M]
@@ -382,13 +487,16 @@ ciu graph [--format mermaid|dot|json] [--profile NAME] [--phases N,M]
   --define-root PATH override repo root (alias: --root-folder)
 """,
     "ssh": """\
-ciu ssh <host> [--admin] [-- <cmd...>]
+ciu ssh <host> [--admin] [--define-root PATH] [-- <cmd...>]
   Open an interactive shell or run a command on a remote host.
   Host config is read from .ciu.hosts.toml or ~/.ciu/hosts.toml.
 
-  <host>         name of the host in the hosts inventory
-  --admin        use the admin key/user (higher-privilege access)
-  -- <cmd...>    command to run (default: interactive shell)
+  <host>              name of the host in the hosts inventory
+  --admin             use the admin key/user (higher-privilege access)
+  --define-root PATH  override repo root (alias: --root-folder); must
+                      precede `--` — anything after `--` is the remote
+                      command and is never parsed as a CIU flag
+  -- <cmd...>         command to run (default: interactive shell)
 """,
 }
 
@@ -401,6 +509,112 @@ def _print_verb_help(verb: str) -> None:
     else:
         print(f"CIU {get_cli_version()}\n")
         print(block, end="")
+
+
+def _resolve_repo_root_cli(define_root: Path | str | None, start_dir: Path) -> Path:
+    """Resolve the repo root for a CLI verb, or exit cleanly on refusal (S1.1).
+
+    ``dev.resolve_repo_root`` raises a ``[S1.1]``-tagged ``ValueError`` when an
+    ambient ``$REPO_ROOT`` genuinely disagrees with the root derived by
+    walking up from *start_dir* — this is the ONE place every `dev`/`worktree`
+    call site funnels through, so that refusal always surfaces as this
+    codebase's standard ``[ERROR] ...`` message + a non-zero exit, matching
+    every other CLI-level configuration error, never a raw traceback (O3).
+    Imported late (mirrors every existing call site) so tests that monkeypatch
+    ``dev.resolve_repo_root`` keep working unchanged.
+    """
+    from .dev import resolve_repo_root
+
+    try:
+        return resolve_repo_root(define_root, start_dir)
+    except ValueError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        raise SystemExit(2)
+
+
+def _extract_define_root(rest: list[str]) -> tuple[Path | None, list[str]]:
+    """Pull ``--define-root``/``--root-folder`` out of *rest* first, before any
+    other local parsing on one of CIU-54's 8 fixed sites (S1.1): the
+    ``--host`` branches of ``render``/``up``/``down``/``health``, ``up
+    --layout``, ``layouts``, ``host-secrets``, ``ssh``.
+
+    Consumed here, NOT left in the returned remainder. Every one of these 8
+    sites either forwards its remainder verbatim into a REMOTE argv
+    (``render``/``up``/``down``/``health --host``'s ``ssh_exec``/
+    ``_push_host`` calls, ``ssh``'s ``cmd_argv``) or hands it to a stricter
+    downstream parser (``_parse_layout_argv``'s forbidden-flag guard, whose
+    registered flags deliberately keep distinct second characters so no
+    abbreviation is ambiguous — see its own docstring, and ``_flag_given``'s,
+    on exactly this hazard). A LOCAL ``--define-root`` value names a path on
+    THIS machine; forwarding it would be nonsensical on the remote side (a
+    foreign local path re-parsed by a remote ``ciu``) and, on the layout
+    side, ``--define-root``/``--dir`` share second character 'd' — the
+    layout guard's own docstring already flags ``--d`` as "genuinely
+    ambiguous against ``--define-root PATH``". Extracting it first, with its
+    own single-purpose parser, sidesteps both: nothing survives to leak
+    remotely, and ``_parse_layout_argv`` never has to reason about an 8th
+    registered flag.
+
+    ``allow_abbrev=False`` is deliberate, not the argparse default: this
+    parser runs BEFORE each site's own flag vocabulary is known to it, so it
+    cannot verify an abbreviation is unambiguous the way a single shared
+    parser can (the way ``dev``/``worktree``/``env``/``secrets``/``check``/
+    ``graph``/plain ``up`` register ``--define-root`` directly in their OWN
+    one parser). Concretely, on ``up --layout``: ``test_up_layout_refuses_
+    every_abbreviated_forbidden_flag_*_form`` (ciu-P29) pins EVERY
+    abbreviation length of ``--dir``/``--rollback``, down to bare ``--d``/
+    ``--r``, as caught by ``_parse_layout_argv``'s forbidden-flag guard —
+    exactly the prefixes ``--define-root``/``--root-folder`` would otherwise
+    claim first. Requiring the full flag name (the ``--flag=value`` form is
+    unaffected by ``allow_abbrev`` and still works) means a short abbreviation
+    always falls through to the site's own parser unclaimed, so no existing
+    abbreviation contract anywhere in this module can regress.
+    """
+    import argparse as _ap
+
+    p = _ap.ArgumentParser(add_help=False, allow_abbrev=False)
+    p.add_argument("--define-root", "--root-folder", dest="define_root",
+                   type=Path, default=None, metavar="PATH")
+    opts, remaining = p.parse_known_args(rest)
+    return opts.define_root, remaining
+
+
+def _resolve_repo_root_deploy(define_root: Path | str | None) -> Path:
+    """Resolve repo_root for a REMOTE/push-deploy or listing CLI branch (S1.1,
+    CIU-54), or exit cleanly on refusal — the sibling of
+    ``_resolve_repo_root_cli`` above, routed through ``deploy.py``'s resolver
+    instead of ``dev.py``'s.
+
+    These 8 sites are usage siblings of `deploy.py`'s own local/profile-based
+    branches of the SAME verbs: plain ``ciu up`` (no ``--host``/``--layout``/
+    ``--dir``) already routes into ``deploy.main``, which resolves repo_root
+    via ``deploy.resolve_repo_root`` — explicit ``--define-root`` always wins
+    outright, with a disagreement-refusal against a conflicting ambient
+    ``$REPO_ROOT``; without it, ambient ``$REPO_ROOT`` is REQUIRED (no cwd
+    fallback — ``deploy.WorkspaceEnvError`` otherwise). Routing these 8 sites
+    through the SAME function keeps a verb's resolution IDENTICAL across its
+    ``--host``/``--layout`` branch and its local branch, rather than a third,
+    bespoke strategy (the bug CIU-54 fixes) or ``dev.resolve_repo_root``'s
+    walk-up-from-cwd, which would make e.g. plain ``ciu up`` resolve one way
+    and ``ciu up --host x`` resolve a DIFFERENT way depending on which
+    branch happened to run — a worse inconsistency than the one being fixed.
+    Walk-up also suits `dev`/`worktree`'s local-repo-identity question, not
+    these sites' remote-push/listing usage shape (CIU-54's own reasoning,
+    verified against the code before adopting it).
+
+    Mirrors ``_resolve_repo_root_cli``'s exit contract: a ``[S1.1]``-tagged /
+    "REPO_ROOT not set" ``ValueError`` (``deploy.WorkspaceEnvError`` is a
+    ``ValueError`` subclass) becomes ``[ERROR] ...`` + ``SystemExit(2)``,
+    never a raw traceback (O3). Imported late, matching every other call
+    site in this module.
+    """
+    from .deploy import resolve_repo_root
+
+    try:
+        return resolve_repo_root(define_root)
+    except ValueError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        raise SystemExit(2)
 
 
 def _load_remote_config(repo_root: Path) -> dict:
@@ -615,21 +829,35 @@ def _parse_layout_argv(rest: list[str]) -> tuple[str | None, list[str], list[str
 def _wants_verb_help(verb: str, rest: list[str]) -> bool:
     """True when `-h`/`--help` should print the verb's own help.
 
-    `env generate --help` is excluded so its argparse help is reachable.
+    `env generate --help` / `env print --help` are excluded so their own
+    argparse help is reachable.
     """
     if "-h" not in rest and "--help" not in rest:
         return False
-    if verb == "env" and rest and rest[0] == "generate":
+    if verb == "env" and rest and rest[0] in ("generate", "print"):
         return False
     return True
 
 
 def _env_show() -> int:
-    """Walk up from cwd to find and print ciu.env key=value pairs."""
+    """Walk up from cwd to find and print ciu.env key=value pairs.
+
+    CIU-75: this verb reads the LEGACY write-only export, which since 7.7.0 is
+    no longer what CIU itself consults for instance identity. It keeps working
+    unchanged (the file and its key set are unchanged), but every invocation
+    carries the one-release deprecation notice on STDERR — stdout stays exactly
+    the key=value stream a consumer may already be parsing.
+    """
+    from .workspace_env import LEGACY_ENV_EXPORT_WARNING
+
     current = Path.cwd()
     while True:
         candidate = current / WORKSPACE_ENV
         if candidate.exists():
+            print(
+                f"[WARN] {LEGACY_ENV_EXPORT_WARNING.format(path=candidate)}",
+                file=sys.stderr,
+            )
             for line in candidate.read_text().splitlines():
                 stripped = line.strip()
                 if stripped and not stripped.startswith("#"):
@@ -662,6 +890,85 @@ def _env_generate(rest: list[str]) -> int:
     return action_generate_env(opts.define_root, Path.cwd())
 
 
+def _shell_export_value(value: str) -> str:
+    """Always-single-quoted shell literal for *value*.
+
+    Built on `shlex.quote` (this codebase's existing shell-quoting helper), not
+    a second escaping implementation: `shlex.quote` either returns the value
+    untouched — only ever for values whose characters are all shell-inert — or
+    a fully single-quoted form with embedded quotes escaped as `'\\''`. Wrapping
+    the untouched case is therefore lossless, and it keeps every emitted line
+    in one shape (`export KEY='value'`) an operator can eyeball.
+    """
+    quoted = shlex.quote(value)
+    if quoted.startswith("'") and quoted.endswith("'"):
+        return quoted
+    return f"'{quoted}'"
+
+
+def _env_print(rest: list[str]) -> int:
+    """Handle `ciu env print [--define-root PATH]`.
+
+    Read-only: prints the ALREADY-WRITTEN ciu.env as `export KEY='value'`
+    lines and nothing else, for `eval "$(ciu env print)"`. It is deliberately
+    NOT called `apply` or `source`: a subprocess structurally cannot mutate its
+    parent shell's environment, and naming it that way would document a
+    capability that cannot exist. Nothing is (re)generated here.
+    """
+    import argparse as _ap
+    p = _ap.ArgumentParser(prog="ciu env print", add_help=True)
+    p.add_argument("--define-root", "--root-folder", dest="define_root",
+                   type=Path, default=None, metavar="PATH",
+                   help="Override repository root directory (no parent walking)")
+    opts = p.parse_args(rest)
+    from .workspace_env import (
+        WorkspaceEnvError,
+        parse_workspace_env,
+        resolve_env_root,
+    )
+    # EVERY way this can fail — an unresolvable root, an absent/unreadable/
+    # non-regular ciu.env, a malformed entry, a non-UTF-8 byte — returns a
+    # clean `[ERROR]` + exit 1. A hand-edited or mis-created ciu.env is an
+    # ordinary operator mistake, not an internal fault, so none of them
+    # deserves a traceback.
+    #
+    # `is_file()` rather than `exists()`: a DIRECTORY named ciu.env satisfies
+    # exists(), and the read then raises IsADirectoryError.
+    #
+    # The except clause follows worktree.py's `(OSError, WorkspaceEnvError)`
+    # reader but adds `UnicodeDecodeError` explicitly, because that pattern
+    # alone does NOT cover a non-UTF-8 byte: UnicodeDecodeError derives from
+    # ValueError, not OSError, so `read_text(encoding="utf-8")` escapes both
+    # arms. Named rather than folded into a bare `ValueError` so the reason
+    # it is listed separately stays visible.
+    try:
+        root = resolve_env_root(Path.cwd(), opts.define_root, GLOBAL_CONFIG_DEFAULTS)
+    except WorkspaceEnvError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+    env_file = root / WORKSPACE_ENV
+    if not env_file.is_file():
+        print(
+            f"[ERROR] No readable {WORKSPACE_ENV} at {root} — nothing to "
+            f"print. Run: ciu env generate",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        entries = parse_workspace_env(env_file)
+    except (OSError, UnicodeDecodeError, WorkspaceEnvError) as exc:
+        print(f"[ERROR] could not read {env_file}: {exc}", file=sys.stderr)
+        return 1
+    # `parse_workspace_env` returns a fully-built dict, so nothing reaches
+    # stdout unless the WHOLE file parsed. Keeping the print loop outside the
+    # try preserves that (and keeps a BrokenPipeError from `ciu env print |
+    # head` out of the error path, where it would be misreported as a
+    # ciu.env problem).
+    for key, value in entries.items():
+        print(f"export {key}={_shell_export_value(value)}")
+    return 0
+
+
 def _iops_baseline(rest: list[str]) -> int:
     """Handle `ciu iops-baseline [--path P] [--runtime N] [--force]` (S15.9)."""
     import argparse as _ap
@@ -688,7 +995,6 @@ def _ksm(rest: list[str]) -> int:
     import argparse as _ap
 
     from . import ksm as ksm_mod
-    from .dev import resolve_repo_root
     # CIU-10's reconciliation lives here (a pre-set PHYSICAL_REPO_ROOT wins only
     # when it agrees with mountinfo) — reuse it rather than re-deriving a second,
     # weaker answer to the same question.
@@ -700,7 +1006,7 @@ def _ksm(rest: list[str]) -> int:
     p.add_argument("--define-root", dest="define_root", default=None, metavar="PATH")
     opts = p.parse_args(rest)
 
-    repo_root = resolve_repo_root(opts.define_root, Path.cwd())
+    repo_root = _resolve_repo_root_cli(opts.define_root, Path.cwd())
     try:
         physical_root = _detect_physical_repo_root(repo_root)
         path = ksm_mod.build(repo_root, physical_root, force=opts.force)
@@ -755,9 +1061,8 @@ def _provenance(rest: list[str]) -> int:
         verify_running_provenance,
         warn,
     )
-    from .dev import resolve_repo_root
 
-    repo_root = resolve_repo_root(opts.define_root, Path.cwd())
+    repo_root = _resolve_repo_root_cli(opts.define_root, Path.cwd())
     try:
         config = load_global_config(repo_root)
     except Exception as exc:
@@ -919,7 +1224,6 @@ def _status(rest: list[str]) -> int:
     import argparse as _ap
 
     from .deploy import action_status, build_selection, load_global_config, resolve_profiles
-    from .dev import resolve_repo_root
 
     p = _ap.ArgumentParser(prog="ciu status", add_help=False)
     p.add_argument("--profile", action="append", default=None, metavar="NAME")
@@ -940,7 +1244,7 @@ def _status(rest: list[str]) -> int:
     else:
         cli_profiles = None
 
-    repo_root = resolve_repo_root(opts.define_root, Path.cwd())
+    repo_root = _resolve_repo_root_cli(opts.define_root, Path.cwd())
     try:
         global_cfg = load_global_config(repo_root)
         profile = resolve_profiles(global_cfg, cli_profiles)
@@ -1005,8 +1309,6 @@ def _bake(rest: list[str]) -> int:
             load_global_config,
             resolve_profiles,
         )
-        from .dev import resolve_repo_root
-
         expanded: list[str] = []
         for entry in opts.profile:
             for part in entry.split(","):
@@ -1015,7 +1317,7 @@ def _bake(rest: list[str]) -> int:
                     expanded.append(part)
         cli_profiles: list[str] | None = expanded if expanded else None
 
-        repo_root = resolve_repo_root(None, Path.cwd())
+        repo_root = _resolve_repo_root_cli(None, Path.cwd())
         try:
             global_cfg = load_global_config(repo_root)
             profile = resolve_profiles(global_cfg, cli_profiles)
@@ -1090,11 +1392,10 @@ def _worktree(rest: list[str]) -> int:
     import argparse as _ap
 
     from . import worktree as wt_mod
-    from .dev import resolve_repo_root
 
     if rest and rest[0] == "exec":
         try:
-            return _worktree_exec(rest, resolve_repo_root)
+            return _worktree_exec(rest, _resolve_repo_root_cli)
         except wt_mod.WorktreeError as exc:
             print(str(exc), file=sys.stderr)
             return 2
@@ -1114,6 +1415,8 @@ def _worktree(rest: list[str]) -> int:
                        default=None, metavar="S1,S2")
     p_add.add_argument("--shared-infra-ref-projects", dest="shared_infra_ref_projects",
                        default=None, metavar="R1,R2")
+    p_add.add_argument("--shared-infra-ref-services", dest="shared_infra_ref_services",
+                       default=None, metavar="A1,A2=S2")
     p_add.add_argument("--json", action="store_true", default=False)
 
     def add_create_options(parser) -> None:
@@ -1131,6 +1434,8 @@ def _worktree(rest: list[str]) -> int:
                             default=None, metavar="S1,S2")
         parser.add_argument("--shared-infra-ref-projects", dest="shared_infra_ref_projects",
                             default=None, metavar="R1,R2")
+        parser.add_argument("--shared-infra-ref-services", dest="shared_infra_ref_services",
+                            default=None, metavar="A1,A2=S2")
         parser.add_argument("--json", action="store_true", default=False)
 
     p_create = sub.add_parser("create", add_help=False)
@@ -1150,6 +1455,8 @@ def _worktree(rest: list[str]) -> int:
                          default=None, metavar="S1,S2")
     p_adopt.add_argument("--shared-infra-ref-projects", dest="shared_infra_ref_projects",
                          default=None, metavar="R1,R2")
+    p_adopt.add_argument("--shared-infra-ref-services", dest="shared_infra_ref_services",
+                         default=None, metavar="A1,A2=S2")
     p_adopt.add_argument("--json", action="store_true", default=False)
 
     p_rm = sub.add_parser("rm", add_help=False)
@@ -1165,6 +1472,18 @@ def _worktree(rest: list[str]) -> int:
     p_inspect.add_argument("logical_name")
     p_inspect.add_argument("--json", action="store_true", default=False)
 
+    # S16.9 — the explicit operator verb over the ownership lease. The three
+    # modes are mutually exclusive AND required: there is no "default" lease
+    # operation, because every one of them is a deliberate statement about
+    # who owns this instance's resources.
+    p_lease = sub.add_parser("lease", add_help=False)
+    p_lease.add_argument("logical_name")
+    p_lease_mode = p_lease.add_mutually_exclusive_group(required=True)
+    p_lease_mode.add_argument("--extend", default=None, metavar="DURATION")
+    p_lease_mode.add_argument("--perpetual", action="store_true", default=False)
+    p_lease_mode.add_argument("--release", action="store_true", default=False)
+    p_lease.add_argument("--json", action="store_true", default=False)
+
     p_branches = sub.add_parser("branches", add_help=False)
     p_branches.add_argument("--base", default="main", metavar="REF")
     p_branches.add_argument(
@@ -1172,6 +1491,22 @@ def _worktree(rest: list[str]) -> int:
         help="remove the fully merged, clean branches (default: survey only)",
     )
     p_branches.add_argument("--json", action="store_true", default=False)
+
+    # S16.10 — the Docker half of CIU-25. Survey-only unless -y is given, and
+    # --category can only ever NARROW what -y acts on: the two never-reaped
+    # categories are not selectable at all (worktree.resolve_reap_categories
+    # refuses them), so no flag combination reaches them.
+    p_reap = sub.add_parser("reap", add_help=False)
+    p_reap.add_argument(
+        "-y", "--yes", action="store_true", default=False,
+        help="reap the provably disposable groups (default: survey only)",
+    )
+    p_reap.add_argument("--category", default=None, metavar="C1,C2")
+    p_reap.add_argument(
+        "--dry-run", dest="dry_run", action="store_true", default=False,
+        help="with -y: print the exact commands instead of running them",
+    )
+    p_reap.add_argument("--json", action="store_true", default=False)
 
     p_up = sub.add_parser("up", add_help=False)
     p_up.add_argument("logical_name")
@@ -1182,7 +1517,7 @@ def _worktree(rest: list[str]) -> int:
 
     for parser in (
         p, p_add, p_create, p_ensure, p_adopt, p_rm, p_list, p_inspect,
-        p_up, p_branches,
+        p_lease, p_up, p_branches, p_reap,
     ):
         parser.add_argument("--define-root", dest="define_root", default=None,
                             metavar="PATH")
@@ -1190,7 +1525,7 @@ def _worktree(rest: list[str]) -> int:
 
     # The PRIMARY checkout. `git worktree` operations are repo-wide, so they run
     # from here even when the target is another checkout.
-    repo_root = resolve_repo_root(getattr(opts, "define_root", None), Path.cwd())
+    repo_root = _resolve_repo_root_cli(getattr(opts, "define_root", None), Path.cwd())
 
     try:
         def emit_record(operation: str, record) -> None:
@@ -1211,6 +1546,7 @@ def _worktree(rest: list[str]) -> int:
                 shared_infra=opts.shared_infra,
                 shared_infra_services=opts.shared_infra_services,
                 shared_infra_ref_projects=opts.shared_infra_ref_projects,
+                shared_infra_ref_services=opts.shared_infra_ref_services,
             )
             if getattr(opts, "json", False):
                 record = wt_mod.find_instance_record(repo_root, opts.name)
@@ -1233,6 +1569,7 @@ def _worktree(rest: list[str]) -> int:
                 path=opts.path, shared_infra=opts.shared_infra,
                 shared_infra_services=opts.shared_infra_services,
                 shared_infra_ref_projects=opts.shared_infra_ref_projects,
+                shared_infra_ref_services=opts.shared_infra_ref_services,
             )
             emit_record(opts.action, record)
             return 0
@@ -1243,6 +1580,7 @@ def _worktree(rest: list[str]) -> int:
                 shared_infra=opts.shared_infra,
                 shared_infra_services=opts.shared_infra_services,
                 shared_infra_ref_projects=opts.shared_infra_ref_projects,
+                shared_infra_ref_services=opts.shared_infra_ref_services,
             )
             emit_record("adopt", record)
             return 0
@@ -1274,6 +1612,28 @@ def _worktree(rest: list[str]) -> int:
                 print(f"  branch: {git['branch']}")
                 print(f"  HEAD: {git['head']}")
                 print(f"  dirty: {git['dirty']}")
+            return 0
+
+        if opts.action == "lease":
+            record = wt_mod.apply_lease(
+                repo_root, opts.logical_name, extend=opts.extend,
+                perpetual=opts.perpetual, release=opts.release,
+            )
+            if getattr(opts, "json", False):
+                print(json.dumps(
+                    wt_mod.build_instance_document("lease", record),
+                    sort_keys=True,
+                ))
+            else:
+                lease = record.lease
+                print(f"worktree lease: {record.logical_name}")
+                if lease is None:
+                    print("  lease: none (released)")
+                else:
+                    print(f"  mode: {lease.mode}")
+                    print(f"  holder: {lease.holder}")
+                    print(f"  renewed: {lease.renewed_at_utc}")
+                    print(f"  expires: {lease.expires_at_utc or 'never (perpetual)'}")
             return 0
 
         if opts.action == "up":
@@ -1333,6 +1693,53 @@ def _worktree(rest: list[str]) -> int:
                         print(f"FAILED: {f['branch']} — {f['reason']}")
             return code
 
+        if opts.action == "reap":
+            doc = wt_mod.reap_groups(
+                repo_root, yes=opts.yes, categories=opts.category,
+                dry_run=opts.dry_run,
+            )
+            # ONE exit-code decision, hoisted above the output-format branch
+            # for the same reason `branches` hoists its own (ciu-P28): a
+            # partial destructive pass must never report success in ANY output
+            # mode, and duplicating the check into both arms invites the drift
+            # straight back.
+            code = 1 if doc["status"] == "partial" else 0
+            if getattr(opts, "json", False):
+                print(json.dumps(doc, sort_keys=True))
+                return code
+            counts = doc["counts"]
+            print(
+                "docker resource reap — "
+                + ", ".join(f"{c} {counts[c]}" for c in wt_mod.REAP_CATEGORIES)
+            )
+            for category in wt_mod.REAP_CATEGORIES:
+                rows = [g for g in doc["groups"] if g["category"] == category]
+                if not rows:
+                    continue
+                print(f"\n{category}:")
+                for g in rows:
+                    print(
+                        f"  {g['key']}  {len(g['containers'])} container(s) "
+                        f"{len(g['volumes'])} volume(s) "
+                        f"{len(g['networks'])} network(s)"
+                    )
+                    print(f"      {g['reason']}")
+            for finding in doc["findings"]:
+                print(f"\nFINDING [{finding['kind']}] {finding['path']}")
+                print(f"  {finding['detail']}")
+            for entry in doc.get("plan", []):
+                print(f"\nwould reap {entry['group']} ({entry['category']}):")
+                for command in entry["commands"]:
+                    print(f"  {command}")
+            for entry in doc.get("reaped", []):
+                print(f"reaped: {entry['group']}")
+                for note in entry["notes"]:
+                    print(f"    {note}")
+            for entry in doc.get("failed", []):
+                print(f"FAILED: {entry['group']} — {entry['reason']}")
+            print(f"\n{doc['hint']}")
+            return code
+
         # Every action above returned; the only remaining action is "list"
         # (argparse's required subparsers make it one of the registered set).
         if getattr(opts, "json", False):
@@ -1385,6 +1792,8 @@ def main() -> None:
     if verb == "env":
         if rest and rest[0] == "generate":
             raise SystemExit(_env_generate(rest[1:]))
+        if rest and rest[0] == "print":
+            raise SystemExit(_env_print(rest[1:]))
         raise SystemExit(_env_show())
 
     elif verb == "iops-baseline":
@@ -1393,10 +1802,11 @@ def main() -> None:
     elif verb == "render":
         if _flag_given(rest, "--host"):
             import argparse as _ap
+            define_root, rest = _extract_define_root(rest)
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
             opts, remaining = p.parse_known_args(rest)
-            repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+            repo_root = _resolve_repo_root_deploy(define_root)
             config = _load_remote_config(repo_root)
             from .hosts import get_host
             from .transport_ssh import ssh_exec
@@ -1417,7 +1827,8 @@ def main() -> None:
     elif verb == "layouts":
         # S7.5c — pure listing of DECLARED layouts (no validation, no
         # inventory requirement); `ciu up --layout` is the validating consumer.
-        repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+        define_root, rest = _extract_define_root(rest)
+        repo_root = _resolve_repo_root_deploy(define_root)
         config = _load_remote_config(repo_root)
         from .deploy_pkg.layouts import list_layouts
         rows = list_layouts(config)
@@ -1445,6 +1856,14 @@ def main() -> None:
             # remotely and silently overrode every host's bundles. The check
             # is now argparse's own resolution rather than a hand-rolled
             # string match — see _parse_layout_argv.
+            #
+            # ciu-P45 (CIU-54): --define-root is extracted BEFORE
+            # _parse_layout_argv sees `rest` at all, rather than registered
+            # on that parser directly — --define-root and --dir share second
+            # character 'd' (see _extract_define_root's own docstring), and
+            # _parse_layout_argv's forbidden-flag set is deliberately kept to
+            # distinct second characters.
+            define_root, rest = _extract_define_root(rest)
             layout_name, remaining, forbidden = _parse_layout_argv(rest)
             if forbidden:
                 print(
@@ -1458,7 +1877,7 @@ def main() -> None:
                     file=sys.stderr,
                 )
                 raise SystemExit(2)
-            repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+            repo_root = _resolve_repo_root_deploy(define_root)
             config = _load_remote_config(repo_root)
             from .deploy_pkg.layouts import resolve_layout
             from .hosts import get_host, load_hosts
@@ -1506,13 +1925,14 @@ def main() -> None:
         elif _flag_given(rest, "--host"):
             # Remote push-deploy path
             import argparse as _ap
+            define_root, rest = _extract_define_root(rest)
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
             p.add_argument("--thin", action="store_true", default=False)
             p.add_argument("--bootstrap", action="store_true", default=False)
             p.add_argument("--rollback", action="store_true", default=False)
             opts, remaining = p.parse_known_args(rest)
-            repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+            repo_root = _resolve_repo_root_deploy(define_root)
             config = _load_remote_config(repo_root)
             from .hosts import get_host
             host_cfg = get_host(repo_root, opts.host)
@@ -1571,10 +1991,11 @@ def main() -> None:
     elif verb == "down":
         if _flag_given(rest, "--host"):
             import argparse as _ap
+            define_root, rest = _extract_define_root(rest)
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
             opts, remaining = p.parse_known_args(rest)
-            repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+            repo_root = _resolve_repo_root_deploy(define_root)
             config = _load_remote_config(repo_root)
             from .hosts import get_host
             from .transport_ssh import ssh_exec
@@ -1600,11 +2021,12 @@ def main() -> None:
         # half-closed. Same predicate, no other change to this branch.
         if _flag_given(rest, "--host"):
             import argparse as _ap
+            define_root, rest = _extract_define_root(rest)
             p = _ap.ArgumentParser(add_help=False)
             p.add_argument("--host", dest="host", default=None)
             p.add_argument("--thin", action="store_true", default=False)
             opts, remaining = p.parse_known_args(rest)
-            repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+            repo_root = _resolve_repo_root_deploy(define_root)
             config = _load_remote_config(repo_root)
             from .hosts import get_host
             host_cfg = get_host(repo_root, opts.host)
@@ -1685,7 +2107,7 @@ def main() -> None:
 
     elif verb == "dev":
         import argparse as _ap
-        from .dev import run_dev, resolve_repo_root
+        from .dev import run_dev
         p = _ap.ArgumentParser(prog="ciu dev", add_help=False)
         p.add_argument("stack", nargs="?", default=None)
         p.add_argument("--profile", default=None, metavar="NAME")
@@ -1696,7 +2118,7 @@ def main() -> None:
         if not opts.stack:
             print("ciu dev: missing <stack>. Run 'ciu dev --help'.", file=sys.stderr)
             raise SystemExit(2)
-        repo_root = resolve_repo_root(opts.define_root, Path.cwd())
+        repo_root = _resolve_repo_root_cli(opts.define_root, Path.cwd())
         raise SystemExit(run_dev(
             opts.stack,
             repo_root=repo_root,
@@ -1713,6 +2135,7 @@ def main() -> None:
         # are NEVER printed and materialization never happens implicitly inside
         # transport verbs.
         import argparse as _ap
+        define_root, rest = _extract_define_root(rest)
         p = _ap.ArgumentParser(add_help=False)
         p.add_argument("host", nargs="?", default=None)
         p.add_argument("--materialize", action="store_true", default=False)
@@ -1734,7 +2157,7 @@ def main() -> None:
                 file=sys.stderr,
             )
             raise SystemExit(2)
-        repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+        repo_root = _resolve_repo_root_deploy(define_root)
         from .hosts import get_host_secrets
         try:
             specs = get_host_secrets(repo_root, opts.host)
@@ -1784,6 +2207,15 @@ def main() -> None:
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--check"] + rest))
 
+    elif verb == "migration-check":
+        # S13.7 — the standalone entry point into the SAME rule registry
+        # `ciu check`'s `migration` stage walks. Root resolution is CIU-54's
+        # established convention for a verb with its own parser
+        # (`deploy.resolve_repo_root` via `_resolve_repo_root_deploy`), so it
+        # answers identically to `ciu check` run in the same checkout.
+        from .migration_check import main as migration_check_main
+        raise SystemExit(migration_check_main(rest))
+
     elif verb == "graph":
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--graph"] + rest))
@@ -1804,12 +2236,16 @@ def main() -> None:
         else:
             ssh_rest = rest
             cmd_argv = []
+        # --define-root is extracted from ssh_rest only (S1.1, CIU-54) —
+        # never from cmd_argv, which is the literal remote command and must
+        # pass through untouched even if it happens to contain that spelling.
+        define_root, ssh_rest = _extract_define_root(ssh_rest)
         opts = p.parse_args(ssh_rest)
         if not opts.host:
             print("ciu ssh: missing <host>. Run 'ciu ssh --help'.", file=sys.stderr)
             raise SystemExit(2)
-        # Resolve repo root from env
-        repo_root = Path(os.environ.get("REPO_ROOT", Path.cwd()))
+        # Resolve repo root (S1.1, CIU-54)
+        repo_root = _resolve_repo_root_deploy(define_root)
         config = _load_remote_config(repo_root)
         host_cfg = get_host(repo_root, opts.host, admin=opts.admin)
         interactive = len(cmd_argv) == 0

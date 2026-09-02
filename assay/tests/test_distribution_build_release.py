@@ -29,6 +29,7 @@ this session were both false, and only running it twice showed that.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -493,3 +494,121 @@ def test_the_archive_carries_no_builder_specific_paths(built):
         assert b"../../bin/assay" not in archive.read(record)
         assert any(n.endswith(".dist-info/METADATA") for n in names), names
         assert "__main__.py" in names
+
+
+def test_the_zipapps_own_sha256_is_what_identify_judge_records(built):
+    """(B018/A-327) The zipapp branch of `provenance.identify_judge`, proven
+    against a REAL `.pyz` rather than a stand-in `Distribution`.
+
+    This closes a citation that was briefly false: `provenance.py` and
+    `test_cli_provenance_and_request_base.py` both claimed the zipapp form was
+    exercised against a genuinely built artifact, while the only real-artifact
+    coverage in the suite was the WHEEL's (`test_standalone.py`). A stand-in
+    cannot show that `zipimport` really reports the archive path a running
+    `.pyz` was loaded from, which is the single fact the whole branch rests on
+    -- and it is also where the measured `zipp.Path` / `pathlib.Path` TypeError
+    lives, so a regression there would otherwise surface only in production.
+
+    The digest is recomputed from the file's own bytes, so the assertion is
+    against the artifact rather than against another copy of the code that
+    produced it.
+    """
+    artifacts = built["first"]
+    probe = (
+        "import json;"
+        "from assay import provenance;"
+        "identity, reason = provenance.identify_judge();"
+        "print(json.dumps("
+        "{'reason': reason} if identity is None else identity.to_dict()))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        env={"PYTHONPATH": str(artifacts.zipapp), "PATH": "/usr/bin:/bin"},
+        capture_output=True, text=True, timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    identity = json.loads(out.stdout)
+    assert "reason" not in identity, (
+        f"a real zipapp must identify itself, but it refused: {identity}"
+    )
+    assert identity["artifact"] == "zipapp", identity
+    assert identity["name"] == "assay", identity
+    assert identity["version"] == artifacts.version, identity
+    assert identity["digest_algorithm"] == "sha256", identity
+    assert identity["digest"] == hashlib.sha256(
+        artifacts.zipapp.read_bytes()
+    ).hexdigest(), "the recorded digest is not the .pyz's own sha256"
+
+
+#: A-403's regression guard, run against the REAL zipapp this module already
+#: builds. Every assertion below is about assay's own code reading its own
+#: artifact; no Go toolchain is involved and none is needed (A-042/A-043).
+_ORACLE_STAGING_PROBE = """\
+import json, pathlib
+from assay.adapters import go_stmtpos as go
+
+helper_dir = pathlib.Path(str(go.HELPER_DIR))
+result = {
+    "helper_dir": str(helper_dir),
+    "helper_dir_holds_a_real_file": (helper_dir / "stmtpos.go").is_file(),
+}
+with go._staged_helper(None) as staged:
+    result["staged"] = str(staged)
+    result["names"] = sorted(p.name for p in staged.iterdir())
+    result["source"] = (staged / "stmtpos.go").read_text(encoding="utf-8")
+    result["gomod"] = (staged / "go.mod").read_text(encoding="utf-8")
+    result["staged_is_a_real_directory"] = staged.is_dir()
+print(json.dumps(result))
+"""
+
+
+def test_the_zipapp_can_stage_the_go_oracle_into_a_real_directory(built):
+    """A-403, the defect this test was written from: `go run .` takes a
+    working DIRECTORY, and inside a zipapp the helper's files are zip members,
+    so `HELPER_DIR` names a path that does not exist. The adapter refused with
+    "assay's Go statement-position oracle is missing from the installation"
+    for an oracle that was in the artifact the whole time -- and the zipapp is
+    the ONLY install path into `tester-unified-go` (A-402: an inherited
+    interpreter, no pip, no ensurepip), so that refusal was every Go
+    consumer's experience.
+
+    Asserted against the real built artifact rather than a synthetic zip,
+    because the thing under test is whether the SHIPPED file can be read out
+    of the SHIPPED archive."""
+    artifacts = built["first"]
+    out = subprocess.run(
+        [sys.executable, "-c", _ORACLE_STAGING_PROBE],
+        env={"PYTHONPATH": str(artifacts.zipapp), "PATH": "/usr/bin:/bin"},
+        capture_output=True, text=True, timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    result = json.loads(out.stdout)
+
+    # Vacuity guard, and the precondition the defect needs: inside the zipapp
+    # `HELPER_DIR` really is NOT a directory on disk. If a future packaging
+    # change ever materialises it, this test stops proving anything about the
+    # staging path and must be re-pointed rather than left green.
+    assert str(artifacts.zipapp) in result["helper_dir"], result
+    assert result["helper_dir_holds_a_real_file"] is False, (
+        "the zipapp's HELPER_DIR resolved to a real file, so this test no "
+        f"longer exercises the staging path it exists for: {result}"
+    )
+
+    assert result["staged_is_a_real_directory"] is True, result
+    assert str(artifacts.zipapp) not in result["staged"], result
+    assert result["names"] == ["go.mod", "stmtpos.go"], result
+
+    source_dir = PROJECT_ROOT / "src" / "assay" / "helpers" / "go" / "stmtpos"
+    assert result["source"] == (source_dir / "stmtpos.go").read_text(encoding="utf-8")
+    assert result["gomod"] == (source_dir / "go.mod").read_text(encoding="utf-8")
+
+
+def test_the_zipapps_recorded_digest_matches_its_shipped_sidecar(built):
+    """The build writes an `<artifact>.sha256` sidecar for consumers to check,
+    and the verdict now records a digest for the same purpose. If those two
+    ever disagree, one of them is lying to whoever is checking, so they are
+    pinned to each other rather than each to the file in isolation."""
+    artifacts = built["first"]
+    sidecar = artifacts.zipapp.with_name(artifacts.zipapp.name + ".sha256")
+    recorded = sidecar.read_text(encoding="utf-8").split()[0]
+    assert recorded == hashlib.sha256(artifacts.zipapp.read_bytes()).hexdigest()

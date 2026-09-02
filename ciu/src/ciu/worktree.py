@@ -42,18 +42,35 @@ import subprocess
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from . import config_model
 from . import procutil
-from .config_constants import GLOBAL_CONFIG_WORKTREE_OVERRIDES
+from .config_constants import GLOBAL_CONFIG_INSTANCE_OVERRIDES
 from .paths import to_physical_path
+# CIU-85: the identity half of `_CIU_IDENTITY_ENV_KEYS` (below) is DERIVED
+# from this, the same canonical fact->env-name table `workspace_env.py`'s
+# own `LEGACY_IDENTITY_ENV_KEYS` derives from, rather than hand-maintained
+# as a second, independently-drifting list. `workspace_env.py` never
+# imports `worktree.py` (verified — no cycle), so this is a safe top-level
+# import, unlike the rest of this module's `workspace_env` uses, which stay
+# local/deferred by established convention.
+from .workspace_env import GENERATED_FACT_ENV_KEYS
 
 DEFAULT_WORKTREE_DIR = ".worktrees"
 WORKTREE_INSTANCE_RECORD = "ciu.worktree-instance.json"
-WORKTREE_INSTANCE_SCHEMA_VERSION = 1
+# S16.9 (CIU-25 substrate): v2 == "this record carries a `lease` field".
+# v1 records (no lease concept at all) stay readable forever and are NEVER
+# rewritten by a read; only an explicit lease mutation writes v2.
+WORKTREE_INSTANCE_SCHEMA_VERSION = 2
+WORKTREE_INSTANCE_BASE_SCHEMA_VERSION = 1
+WORKTREE_INSTANCE_SCHEMA_VERSIONS = frozenset({1, 2})
+WORKTREE_LEASE_MODES = frozenset({"held", "perpetual"})
+WORKTREE_LEASE_KEYS = frozenset(
+    {"holder", "acquired_at_utc", "renewed_at_utc", "expires_at_utc", "mode"}
+)
 WORKTREE_LIFECYCLE_STATES = frozenset(
     {"allocating", "ready", "recovery-required"}
 )
@@ -82,12 +99,57 @@ class WorktreeInfo:
 
 
 @dataclass(frozen=True)
+class WorktreeLease:
+    """S16.9 — one EXPLICIT ownership lease on a managed worktree instance.
+
+    CIU-25's whole point: staleness is never inferred from age, basename or a
+    missing process. It is DECLARED, by this record, or it is not known. The
+    two modes are the closed vocabulary :data:`WORKTREE_LEASE_MODES`:
+
+    ``held``
+        a bounded claim — ``expires_at_utc`` is REQUIRED and is the only fact
+        a future reap may treat as "the operator's claim has lapsed".
+    ``perpetual``
+        an explicit, unbounded claim — ``expires_at_utc`` is FORBIDDEN (must
+        be ``null``). A perpetual lease can never lapse; it is the operator
+        saying "this instance is long-lived on purpose", which the backlog
+        entry names as the exact case an age heuristic gets wrong.
+
+    Every timestamp is ISO-8601 with an EXPLICIT UTC offset, written in
+    :func:`_utc_stamp`'s ``...Z`` form (the same form ``created_at_utc``
+    already uses). A naive, offset-less timestamp is a refusal, never a
+    lenient local-time parse — a lease whose expiry is ambiguous by up to a
+    day is worse than no lease at all when a destructive verb reads it.
+    """
+
+    holder: str
+    acquired_at_utc: str
+    renewed_at_utc: str
+    expires_at_utc: str | None
+    mode: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "holder": self.holder,
+            "acquired_at_utc": self.acquired_at_utc,
+            "renewed_at_utc": self.renewed_at_utc,
+            "expires_at_utc": self.expires_at_utc,
+            "mode": self.mode,
+        }
+
+
+@dataclass(frozen=True)
 class WorktreeInstanceRecord:
-    """Schema-v1 durable identity for one CIU-managed linked worktree.
+    """Durable identity for one CIU-managed linked worktree (schema v1/v2).
 
     The record deliberately contains no current Git revision (derived during
     inspection) and no secret-bearing values.  It is written at the target
     CIU root, which can be below the Git worktree root in a monorepo.
+
+    ``schema_version`` is 1 until an explicit lease operation touches this
+    record; from then on it is 2 and the serialized form carries a ``lease``
+    key (``null`` after a release). A v1 record read from disk is a v1 record
+    in memory with ``lease=None`` — reading never upgrades it (S16.9).
     """
 
     logical_name: str
@@ -101,7 +163,8 @@ class WorktreeInstanceRecord:
     instance_id: str | None = None
     network: str | None = None
     recovery_status: str | None = None
-    schema_version: int = WORKTREE_INSTANCE_SCHEMA_VERSION
+    lease: WorktreeLease | None = None
+    schema_version: int = WORKTREE_INSTANCE_BASE_SCHEMA_VERSION
 
     @property
     def ciu_root(self) -> Path:
@@ -112,7 +175,7 @@ class WorktreeInstanceRecord:
         return self.ciu_root / WORKTREE_INSTANCE_RECORD
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        doc: dict[str, Any] = {
             "schema_version": self.schema_version,
             "logical_name": self.logical_name,
             "display_name": self.display_name,
@@ -128,6 +191,13 @@ class WorktreeInstanceRecord:
             },
             "recovery_status": self.recovery_status,
         }
+        # A v1 record serializes EXACTLY as it always did — no `lease` key at
+        # all. That is what makes "a read never rewrites the record" a
+        # structural property rather than a promise: there is no v2 shape to
+        # accidentally emit until a lease operation has set schema_version.
+        if self.schema_version >= 2:
+            doc["lease"] = self.lease.to_dict() if self.lease is not None else None
+        return doc
 
 
 def _validate_name(value: str, *, label: str) -> str:
@@ -139,6 +209,69 @@ def _validate_name(value: str, *, label: str) -> str:
     return value
 
 
+def _parse_utc_timestamp(value: Any, *, label: str, path: Path) -> datetime:
+    """One ISO-8601 instant that MUST carry an explicit UTC offset (S16.9).
+
+    ``datetime.fromisoformat`` happily returns a NAIVE datetime for
+    ``"2026-08-25T12:00:00"``; comparing that against an aware ``now`` raises,
+    and "fixing" it by assuming local time would make a lease expire at a
+    time nobody wrote down. So offset-less input is refused here, at the
+    parse boundary, rather than anywhere a comparison happens.
+    """
+    if not isinstance(value, str) or not value:
+        raise WorktreeError(f"[S16.9] malformed lease {label} in {path}: {value!r}")
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise WorktreeError(
+            f"[S16.9] lease {label} in {path} is not an ISO-8601 instant: "
+            f"{value!r} ({exc})"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise WorktreeError(
+            f"[S16.9] lease {label} in {path} has no UTC offset: {value!r} — "
+            "a naive timestamp is refused, never parsed as local time"
+        )
+    return parsed
+
+
+def _lease_from_dict(raw: Any, path: Path) -> WorktreeLease:
+    if not isinstance(raw, dict) or set(raw) != set(WORKTREE_LEASE_KEYS):
+        raise WorktreeError(
+            f"[S16.9] malformed lease in {path}: expected an object with keys "
+            f"{sorted(WORKTREE_LEASE_KEYS)}"
+        )
+    holder = raw["holder"]
+    if not isinstance(holder, str) or not holder:
+        raise WorktreeError(f"[S16.9] malformed lease holder in {path}: {holder!r}")
+    mode = raw["mode"]
+    if mode not in WORKTREE_LEASE_MODES:
+        raise WorktreeError(
+            f"[S16.9] unknown lease mode {mode!r} in {path}; closed vocabulary: "
+            f"{', '.join(sorted(WORKTREE_LEASE_MODES))}"
+        )
+    _parse_utc_timestamp(raw["acquired_at_utc"], label="acquired_at_utc", path=path)
+    _parse_utc_timestamp(raw["renewed_at_utc"], label="renewed_at_utc", path=path)
+    expires = raw["expires_at_utc"]
+    if mode == "held":
+        if expires is None:
+            raise WorktreeError(
+                f"[S16.9] lease mode 'held' in {path} requires expires_at_utc; "
+                "an unbounded claim must say so explicitly (mode 'perpetual')"
+            )
+        _parse_utc_timestamp(expires, label="expires_at_utc", path=path)
+    elif expires is not None:
+        raise WorktreeError(
+            f"[S16.9] lease mode 'perpetual' in {path} forbids expires_at_utc, "
+            f"got {expires!r} — a perpetual lease can never lapse"
+        )
+    return WorktreeLease(
+        holder=holder, acquired_at_utc=raw["acquired_at_utc"],
+        renewed_at_utc=raw["renewed_at_utc"], expires_at_utc=expires, mode=mode,
+    )
+
+
 def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     if not isinstance(raw, dict):
         raise WorktreeError(f"[S16] {path} must contain one JSON object")
@@ -147,17 +280,27 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         "git_worktree_path", "ciu_root_offset", "created_at_utc", "base_ref",
         "state", "runtime", "recovery_status",
     }
+    # S16.9: the key set is SCHEMA-DEPENDENT — a v2 record must carry `lease`,
+    # a v1 record must NOT. Anything else is checked against the v1 set and
+    # then rejected by the version check below.
+    declared_version = raw.get("schema_version")
+    if declared_version == 2:
+        required = required | {"lease"}
     if set(raw) != required:
         missing = sorted(required - set(raw))
         unknown = sorted(set(raw) - required)
         raise WorktreeError(
-            f"[S16] malformed {path}: missing={missing}, unknown={unknown}"
+            f"[S16] malformed {path} (schema_version {declared_version!r}): "
+            f"missing={missing}, unknown={unknown}"
         )
-    if raw["schema_version"] != WORKTREE_INSTANCE_SCHEMA_VERSION:
+    if declared_version not in WORKTREE_INSTANCE_SCHEMA_VERSIONS:
         raise WorktreeError(
             f"[S16] unsupported worktree record schema_version "
             f"{raw['schema_version']!r} in {path}"
         )
+    lease = None
+    if declared_version == 2 and raw["lease"] is not None:
+        lease = _lease_from_dict(raw["lease"], path)
     runtime = raw["runtime"]
     if not isinstance(runtime, dict) or set(runtime) != {"instance_id", "network"}:
         raise WorktreeError(f"[S16] malformed runtime identity in {path}")
@@ -196,7 +339,8 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         ciu_root_offset=offset, created_at_utc=raw["created_at_utc"],
         base_ref=raw["base_ref"], state=state,
         instance_id=runtime["instance_id"], network=runtime["network"],
-        recovery_status=recovery,
+        recovery_status=recovery, lease=lease,
+        schema_version=declared_version,
     )
 
 
@@ -230,6 +374,166 @@ def _write_instance_record(record: WorktreeInstanceRecord) -> None:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _utc_stamp(instant: datetime) -> str:
+    """The record's ONE timestamp spelling — exactly what ``created_at_utc``
+    has always been written as (``...Z``), so a lease timestamp and an
+    allocation timestamp in the same file are the same format."""
+    return instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+# ---------------------------------------------------------------------------
+# S16.9 — explicit ownership lease (CIU-25 substrate, NOT the reap verb)
+# ---------------------------------------------------------------------------
+
+
+def _host_identity() -> str:
+    """This machine's name for a lease HOLDER string.
+
+    Deliberately not a new identity mechanism: this calls
+    ``workspace_env.detect_devcontainer_name()`` (CIU-59 — factored from
+    four independently-duplicated call sites, this one included), the
+    devcontainer name when there is one, the container/host ``HOSTNAME``
+    otherwise, and records into ``ciu.env`` as ``DEVCONTAINER_NAME``. Unlike
+    the INSTANCE_ID half of the holder string, this one is deliberately
+    AMBIENT: it names the machine holding the lease right now, not the
+    workspace being leased. The trailing ``or "unknown-host"`` fallback is
+    this call site's OWN addition, not shared by the other three — a lease
+    holder string must never be empty.
+    """
+    from .workspace_env import detect_devcontainer_name
+
+    return detect_devcontainer_name() or "unknown-host"
+
+
+def lease_holder(instance_id: str) -> str:
+    """``ciu@<hostname>:<INSTANCE_ID>`` — who holds a lease (S16.9)."""
+    return f"ciu@{_host_identity()}:{instance_id}"
+
+
+def acquire_lease(
+    record: WorktreeInstanceRecord,
+    *,
+    ttl_hours: float,
+    holder: str,
+    now: datetime | None = None,
+) -> WorktreeInstanceRecord:
+    """Return *record* with a ``held`` lease acquired or RENEWED (S16.9).
+
+    A renewal preserves ``acquired_at_utc`` (when the claim first started)
+    and moves ``renewed_at_utc``/``expires_at_utc`` — losing the original
+    acquisition instant would erase the only evidence of how long an instance
+    has actually been owned.
+    """
+    if not ttl_hours > 0:
+        raise WorktreeError(
+            f"[S16.9] lease ttl must be a positive number of hours, got {ttl_hours!r}"
+        )
+    instant = now or _utc_now()
+    stamp = _utc_stamp(instant)
+    expires = _utc_stamp(instant + timedelta(hours=ttl_hours))
+    acquired = record.lease.acquired_at_utc if record.lease is not None else stamp
+    return replace(
+        record,
+        lease=WorktreeLease(
+            holder=holder, acquired_at_utc=acquired, renewed_at_utc=stamp,
+            expires_at_utc=expires, mode="held",
+        ),
+        schema_version=WORKTREE_INSTANCE_SCHEMA_VERSION,
+    )
+
+
+def make_lease_perpetual(
+    record: WorktreeInstanceRecord,
+    *,
+    holder: str,
+    now: datetime | None = None,
+) -> WorktreeInstanceRecord:
+    """Return *record* with an explicit unbounded (``perpetual``) lease."""
+    instant = now or _utc_now()
+    stamp = _utc_stamp(instant)
+    acquired = record.lease.acquired_at_utc if record.lease is not None else stamp
+    return replace(
+        record,
+        lease=WorktreeLease(
+            holder=holder, acquired_at_utc=acquired, renewed_at_utc=stamp,
+            expires_at_utc=None, mode="perpetual",
+        ),
+        schema_version=WORKTREE_INSTANCE_SCHEMA_VERSION,
+    )
+
+
+def release_lease(record: WorktreeInstanceRecord) -> WorktreeInstanceRecord:
+    """Return *record* with no lease at all (``lease: null``).
+
+    The record STAYS at schema v2: "this instance participates in leasing and
+    currently claims nothing" is a different, more informative fact than "this
+    record predates leasing entirely", and a reader must be able to tell them
+    apart.
+    """
+    return replace(
+        record, lease=None, schema_version=WORKTREE_INSTANCE_SCHEMA_VERSION
+    )
+
+
+def instance_record_path(ciu_root: Path) -> Path:
+    """The record of the checkout AT *ciu_root* — by exact path, never a
+    search that could climb to the PRIMARY checkout's record (S16)."""
+    return Path(ciu_root) / WORKTREE_INSTANCE_RECORD
+
+
+def read_own_instance_record(ciu_root: Path) -> WorktreeInstanceRecord | None:
+    """This checkout's OWN record, or ``None`` when it has none.
+
+    ``None`` is the PRIMARY / unmanaged-checkout answer and is what gates
+    every lease and ownership-label behavior in this package: a checkout with
+    no lifecycle record is not a managed worktree instance and is left
+    completely alone.
+    """
+    path = instance_record_path(ciu_root)
+    if not path.is_file():
+        return None
+    return read_instance_record(path)
+
+
+def acquire_own_lease(
+    ciu_root: Path, *, ttl_hours: float, now: datetime | None = None
+) -> WorktreeInstanceRecord | None:
+    """Acquire/renew the ``held`` lease on the checkout at *ciu_root*.
+
+    Returns ``None`` — writing nothing — when that checkout carries no
+    instance record (PRIMARY or unmanaged): `ciu up` there behaves exactly as
+    it did before this package existed.
+    """
+    record = read_own_instance_record(ciu_root)
+    if record is None:
+        return None
+    instance_id = record.instance_id or _runtime_identity(Path(ciu_root))[0]
+    updated = acquire_lease(
+        record, ttl_hours=ttl_hours, holder=lease_holder(instance_id), now=now
+    )
+    _write_instance_record(updated)
+    return updated
+
+
+def release_own_lease(ciu_root: Path) -> WorktreeInstanceRecord | None:
+    """Clear the lease on the checkout at *ciu_root* (``None`` when unmanaged).
+
+    Callers invoke this ONLY after a teardown they verified succeeded — a
+    failed clean must leave the lease exactly as it was, because the lease is
+    the evidence that something still owns those Docker resources.
+    """
+    record = read_own_instance_record(ciu_root)
+    if record is None:
+        return None
+    # Nothing claimed => nothing to clear, and in particular a v1 record is
+    # NOT dragged up to v2 by a teardown that had no lease to release.
+    if record.lease is None:
+        return record
+    updated = release_lease(record)
+    _write_instance_record(updated)
+    return updated
 
 
 def generated_worktree_name(prefix: str, feature: str, *, now: datetime | None = None) -> str:
@@ -288,18 +592,61 @@ def find_worktree(repo_root: Path, name: str) -> WorktreeInfo | None:
 
 
 @dataclass(frozen=True)
+class SharedInfraRefService:
+    """S16.1/CIU-52 — one CIU-resolved address for a service that belongs to
+    the REFERENCE instance, recorded under this (joining) instance's own local
+    alias.
+
+    Deliberately a THIRD axis, independent of both
+    :attr:`SharedInfraIntent.services` (which names THIS instance's own
+    diverging-tier containers to connect) and
+    :attr:`SharedInfraIntent.ref_projects` (which names the REFERENCE's compose
+    projects, used only for AND-combined liveness). Those two are NOT paired
+    with each other and neither can supply a reference-side service name, so
+    an alias is never inferred from either: pointing this instance's OWN copy
+    of a service at the reference's copy of it would be actively wrong.
+
+    *container* is always CIU-derived (``deploy.container_name`` applied to the
+    REFERENCE's own rendered global config) and authenticated against live
+    Docker state before it is written — never hand-typed.
+    """
+
+    alias: str
+    service: str
+    container: str
+    port: int | None = None
+
+
+@dataclass(frozen=True)
 class SharedInfraIntent:
     """S16.1/CIU-22 — a worktree's recorded intent to join a reference
     instance's shared-infra network, resolved and validated once at
     ``worktree add --shared-infra`` time and persisted verbatim into this
-    worktree's own global worktree overlay (see
+    worktree's own global instance overlay (see
     :func:`parse_shared_infra_config`,
-    :func:`connect_shared_infra_after_up`)."""
+    :func:`connect_shared_infra_after_up`).
+
+    *ref_services* (S16.1/CIU-52) is OPTIONAL and defaults to ``()``: an
+    instance that declares none behaves exactly as it did before that field
+    existed — byte-identical overlay text, and not one extra Docker call at
+    either `add` or join time.
+    """
 
     ref_path: Path
     network: str
     services: tuple[str, ...]
     ref_projects: tuple[str, ...]
+    ref_services: tuple[SharedInfraRefService, ...] = ()
+
+
+# S16.1/CIU-52 grammars. Every recorded value passes through the worktree
+# overlay, which is Jinja-rendered and `$VAR`-expanded (S3.2) and secret-
+# scanned (S3.1a) on every later read — so `$` (and `{`) must be structurally
+# impossible in an alias, a reference service key, or a derived container
+# name, rather than merely unlikely.
+_REF_SERVICE_ALIAS_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+_REF_SERVICE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
+_REF_SERVICE_CONTAINER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 def _split_unique_list(raw: str, *, label: str) -> tuple[str, ...]:
@@ -332,6 +679,103 @@ def _config_string_list(value: Any, *, label: str) -> tuple[str, ...]:
     return items
 
 
+def _parse_ref_services_arg(raw: str, *, label: str) -> tuple[tuple[str, str], ...]:
+    """S16.1/CIU-52 CLI grammar — parse ``alias[,alias=ref_service,...]`` into
+    ``(alias, reference_service)`` pairs, sorted by alias.
+
+    A bare item means "the alias equals the reference's own service key" (the
+    common case); ``alias=ref_service`` is the rename escape hatch. Splitting
+    reuses :func:`_split_unique_list`, so a blank item, an empty value and a
+    verbatim duplicate are refused with the exact wording the sibling
+    shared-infra flags already use. Alias uniqueness is then enforced on the
+    ALIAS specifically (``vault,vault=vault`` is two distinct items but one
+    alias); two different aliases MAY legitimately name the same reference
+    service.
+    """
+    pairs: dict[str, str] = {}
+    for item in _split_unique_list(raw, label=label):
+        alias, sep, service = item.partition("=")
+        if not sep:
+            service = alias
+        if not _REF_SERVICE_ALIAS_RE.fullmatch(alias):
+            raise WorktreeError(
+                f"[S16.1] {label} alias {alias!r} must match "
+                f"{_REF_SERVICE_ALIAS_RE.pattern!r}; it becomes a "
+                "[topology.services.<alias>] table key in this instance's own "
+                "configuration."
+            )
+        if not _REF_SERVICE_NAME_RE.fullmatch(service):
+            raise WorktreeError(
+                f"[S16.1] {label} reference service {service!r} (alias "
+                f"{alias!r}) must match {_REF_SERVICE_NAME_RE.pattern!r}."
+            )
+        if alias in pairs:
+            raise WorktreeError(
+                f"[S16.1] {label} contains a duplicate alias: {alias!r}"
+            )
+        pairs[alias] = service
+    return tuple(sorted(pairs.items()))
+
+
+def _config_ref_services(
+    value: Any, *, label: str
+) -> tuple[SharedInfraRefService, ...]:
+    """S16.1/CIU-52 stored-TOML grammar — a table of tables keyed by alias,
+    each ``{service, container, port?}``.
+
+    The alias is the value's identity (it becomes ``topology.services.<alias>``
+    in this instance's own config) and must be unique, which a TOML table key
+    enforces structurally — hence a table rather than a flat list. Returns a
+    deterministic tuple sorted by alias, matching the order
+    :func:`_worktree_overlay_text` writes, so the overlay round-trips exactly.
+    """
+    if not isinstance(value, dict) or not value:
+        raise WorktreeError(f"[S16.1] {label} must be a non-empty table of tables")
+    entries: list[SharedInfraRefService] = []
+    for alias in sorted(value):
+        if not _REF_SERVICE_ALIAS_RE.fullmatch(alias):
+            raise WorktreeError(
+                f"[S16.1] {label} alias {alias!r} must match "
+                f"{_REF_SERVICE_ALIAS_RE.pattern!r}"
+            )
+        raw = value[alias]
+        if not isinstance(raw, dict):
+            raise WorktreeError(f"[S16.1] {label}.{alias} must be a table")
+        required = {"service", "container"}
+        optional = {"port"}
+        missing, unknown = required - set(raw), set(raw) - (required | optional)
+        if missing or unknown:
+            raise WorktreeError(
+                f"[S16.1] malformed {label}.{alias}: "
+                f"missing={sorted(missing)}, unknown={sorted(unknown)}"
+            )
+        service = raw["service"]
+        if not isinstance(service, str) or not _REF_SERVICE_NAME_RE.fullmatch(service):
+            raise WorktreeError(
+                f"[S16.1] {label}.{alias}.service must be a string matching "
+                f"{_REF_SERVICE_NAME_RE.pattern!r}; got {service!r}"
+            )
+        container = raw["container"]
+        if not isinstance(container, str) or not _REF_SERVICE_CONTAINER_RE.fullmatch(
+            container
+        ):
+            raise WorktreeError(
+                f"[S16.1] {label}.{alias}.container must be a string matching "
+                f"{_REF_SERVICE_CONTAINER_RE.pattern!r}; got {container!r}"
+            )
+        port = raw.get("port")
+        if port is not None and (not isinstance(port, int) or isinstance(port, bool)):
+            raise WorktreeError(
+                f"[S16.1] {label}.{alias}.port must be an integer; got {port!r}"
+            )
+        entries.append(
+            SharedInfraRefService(
+                alias=alias, service=service, container=container, port=port
+            )
+        )
+    return tuple(entries)
+
+
 def parse_shared_infra_config(global_config: Mapping[str, Any]) -> SharedInfraIntent | None:
     """Read the closed S16.1 intent from the rendered worktree config layer."""
     ciu = global_config.get("ciu", {})
@@ -345,23 +789,33 @@ def parse_shared_infra_config(global_config: Mapping[str, Any]) -> SharedInfraIn
         return None
     if not isinstance(raw, dict):
         raise WorktreeError("[S16.1] [ciu.instance.shared_infra] must be a table")
+    # The shape stays CLOSED; CIU-52 widens it by exactly one OPTIONAL key.
+    # Both halves of the original message survive verbatim, so an unknown key
+    # is still named and a missing required key is still named.
     required = {"ref_path", "network", "services", "ref_projects"}
-    if set(raw) != required:
+    optional = {"ref_services"}
+    missing, unknown = required - set(raw), set(raw) - (required | optional)
+    if missing or unknown:
         raise WorktreeError(
             "[S16.1] malformed [ciu.instance.shared_infra]: "
-            f"missing={sorted(required - set(raw))}, "
-            f"unknown={sorted(set(raw) - required)}"
+            f"missing={sorted(missing)}, unknown={sorted(unknown)}"
         )
     if not isinstance(raw["ref_path"], str) or not raw["ref_path"]:
         raise WorktreeError("[S16.1] shared_infra.ref_path must be a non-empty string")
     if not isinstance(raw["network"], str) or not raw["network"]:
         raise WorktreeError("[S16.1] shared_infra.network must be a non-empty string")
+    ref_services: tuple[SharedInfraRefService, ...] = ()
+    if "ref_services" in raw:
+        ref_services = _config_ref_services(
+            raw["ref_services"], label="shared_infra.ref_services"
+        )
     return SharedInfraIntent(
         ref_path=Path(raw["ref_path"]), network=raw["network"],
         services=_config_string_list(raw["services"], label="shared_infra.services"),
         ref_projects=_config_string_list(
             raw["ref_projects"], label="shared_infra.ref_projects"
         ),
+        ref_services=ref_services,
     )
 
 
@@ -388,6 +842,33 @@ def _worktree_overlay_text(
             f"services = {json.dumps(list(shared_infra.services))}",
             f"ref_projects = {json.dumps(list(shared_infra.ref_projects))}",
         ])
+        # S16.1/CIU-52. Sub-tables of the parent intent FIRST, then the
+        # top-level [topology.*] blocks they feed — the order a human reads
+        # top-to-bottom. Emitted only when ref_services is non-empty, so an
+        # instance that declares none gets byte-identical text to before.
+        for entry in shared_infra.ref_services:
+            lines.extend([
+                "",
+                f"[ciu.instance.shared_infra.ref_services.{entry.alias}]",
+                f"service = {json.dumps(entry.service)}",
+                f"container = {json.dumps(entry.container)}",
+            ])
+            if entry.port is not None:
+                lines.append(f"port = {entry.port}")
+        if shared_infra.ref_services:
+            lines.extend([
+                "",
+                "# S16.1/CIU-52 — CIU-resolved addressing for the reference instance's shared",
+                "# services. Do not hand-edit; re-run `ciu worktree add --shared-infra ...`.",
+            ])
+            for entry in shared_infra.ref_services:
+                lines.extend([
+                    "",
+                    f"[topology.services.{entry.alias}]",
+                    f"internal_host = {json.dumps(entry.container)}",
+                ])
+                if entry.port is not None:
+                    lines.append(f"internal_port = {entry.port}")
     return "\n".join(lines) + "\n"
 
 
@@ -397,10 +878,10 @@ def _write_worktree_overlay(
     payload = _worktree_overlay_text(profile, shared_infra)
     if payload is None:
         return
-    path = ciu_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES
+    path = ciu_root / GLOBAL_CONFIG_INSTANCE_OVERRIDES
     if path.exists():
         raise WorktreeError(
-            f"[S16] refusing to overwrite existing worktree override {path}"
+            f"[S16] refusing to overwrite existing instance override {path}"
         )
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
@@ -466,17 +947,195 @@ def _check_reference_network_and_projects(network: str, ref_projects: tuple[str,
             )
 
 
+def _live_ref_service_names(network: str, service: str) -> list[str]:
+    """S16.1/CIU-52 — the NAMES of containers currently RUNNING on *network*
+    that carry ``com.docker.compose.service=<service>``.
+
+    Shared verbatim by add-time authentication and join-time re-verification:
+    same query, same failure shape, so the two can never drift into disagreeing
+    about what "live" means.
+
+    A query that cannot be ANSWERED is a loud failure, never an empty result.
+    An unreachable daemon, a missing binary and a non-zero ``docker ps`` all
+    raise — collapsing any of them into ``[]`` would turn "CIU could not
+    determine this" into "CIU determined the container is absent", which for
+    the add-time caller is a silent refusal-for-the-wrong-reason and for the
+    join-time caller would be indistinguishable from real staleness.
+    """
+    try:
+        res = procutil.docker(
+            [
+                "ps", "--no-trunc",
+                "--filter", f"network={network}",
+                "--filter", f"label=com.docker.compose.service={service}",
+                "--format", "{{.Names}}",
+            ],
+            capture=True, check=False,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        raise WorktreeError(
+            f"[S16.1] could not query reference service {service!r} on "
+            f"network {network!r}: {exc}"
+        ) from exc
+    if res.returncode != 0:
+        raise WorktreeError(
+            f"[S16.1] could not query reference service {service!r} on "
+            f"network {network!r}: "
+            f"{(res.stderr or res.stdout or '').strip()}"
+        )
+    names = {
+        name.strip()
+        for line in (res.stdout or "").splitlines()
+        for name in line.split(",")
+        if name.strip()
+    }
+    return sorted(names)
+
+
+def _authenticate_ref_services(
+    network: str, entries: tuple[SharedInfraRefService, ...], *, recorded: bool
+) -> None:
+    """S16.1/CIU-52 — prove every entry's container name is a container that
+    is ACTUALLY running, right now, on the reference's network under that
+    service label.
+
+    This is what makes the derivation trustworthy rather than merely plausible:
+    a stale recording, a reference that was re-created under a new identity, or
+    a wrong derivation all fail here instead of being written into (or acted
+    on from) this instance's own addressing. The container name itself carries
+    the reference's ``project_name``/``environment_tag``, which IS the
+    authenticating fact — so the query is deliberately NOT additionally scoped
+    by ``com.docker.compose.project``: a reference may legitimately run a
+    shared service under a project the operator never needed to declare via
+    ``--shared-infra-ref-projects`` for liveness, and scoping to those would
+    refuse a correct configuration.
+
+    *recorded* selects add-time ("resolved", nothing written yet) from
+    join-time ("recorded", already persisted) phrasing and remedy.
+    """
+    for entry in entries:
+        live = _live_ref_service_names(network, entry.service)
+        if entry.container in live:
+            continue
+        message = (
+            f"[S16.1] {'recorded' if recorded else 'resolved'} reference "
+            f"container {entry.container!r} for service {entry.service!r} "
+            f"(alias {entry.alias!r}) is not live on network {network!r} "
+            f"(found: {live}). The reference instance may be stopped, or its "
+            "identity may have changed."
+        )
+        if recorded:
+            message += (
+                " Restore it, re-run `ciu worktree add --shared-infra` to "
+                "update the recorded reference, or `ciu down` this instance."
+            )
+        raise WorktreeError(message)
+
+
+def _resolve_ref_services(
+    requested: tuple[tuple[str, str], ...],
+    *,
+    ref_ciu_root: Path,
+    ref_env: Mapping[str, str],
+    network: str,
+) -> tuple[SharedInfraRefService, ...]:
+    """S16.1/CIU-52 — derive each requested reference service's QUALIFIED
+    container name from the REFERENCE's OWN rendered global config, then
+    authenticate it against live Docker state before it is trusted.
+
+    The derivation source is the reference's own configuration and nothing
+    else — never string surgery on ``ref_projects`` (which names compose
+    projects, not services, and is not paired with anything) and never this
+    instance's own config (which would produce this instance's copy of the
+    service, the exact wrong answer).
+
+    ``write_rendered=False`` and ``environ=ref_env`` are both mandatory and
+    both load-bearing, mirroring :func:`resolve_worktree_cap` and
+    :func:`_resolve_budget_candidates`, which read another checkout's policy
+    the same way: the first keeps CIU from writing ``ciu.global.toml`` into a
+    checkout it does not own, the second keeps THIS process's ambient
+    environment (its own ``INSTANCE_ID``, ``REPO_ROOT``, ...) from leaking into
+    the reference's templates and silently producing a name that belongs to
+    neither instance.
+    """
+    if not requested:
+        return ()
+
+    # Lazy import: deploy.py imports engine, which imports worktree, so a
+    # module-level import here would cycle. Same reason as the existing lazy
+    # `from . import engine` in _candidate_project.
+    from . import deploy as deploy_mod
+
+    try:
+        ref_global = config_model.render_global_chain(
+            ref_ciu_root, ref_ciu_root, write_rendered=False, environ=ref_env,
+        )
+    except ValueError as exc:
+        raise WorktreeError(
+            f"[S16.1] could not render the shared-infra reference's own global "
+            f"configuration at {ref_ciu_root}: {exc}"
+        ) from exc
+
+    resolved: list[SharedInfraRefService] = []
+    for alias, service in requested:
+        try:
+            container = deploy_mod.container_name(ref_global, service)
+        except ValueError as exc:
+            raise WorktreeError(
+                f"[S16.1] could not resolve reference service {service!r} "
+                f"(alias {alias!r}) from {ref_ciu_root}: {exc}"
+            ) from exc
+        if not _REF_SERVICE_CONTAINER_RE.fullmatch(container):
+            raise WorktreeError(
+                f"[S16.1] reference service {service!r} (alias {alias!r}) "
+                f"derives container name {container!r}, which is not a legal "
+                f"container name ({_REF_SERVICE_CONTAINER_RE.pattern!r}); the "
+                "reference's deploy.project_name/environment_tag look wrong."
+            )
+        resolved.append(
+            SharedInfraRefService(
+                alias=alias, service=service, container=container,
+                port=_ref_service_port(ref_global, service),
+            )
+        )
+
+    _authenticate_ref_services(network, tuple(resolved), recorded=False)
+    return tuple(resolved)
+
+
+def _ref_service_port(ref_global: Mapping[str, Any], service: str) -> int | None:
+    """The reference's own declared ``topology.services.<service>.internal_port``,
+    or ``None`` when it declares none.
+
+    Never invented: an absent (or non-integer) value stays ``None`` so the
+    overlay writes no ``internal_port`` key at all, leaving any committed
+    default in the joining instance's own chain to survive the merge.
+    """
+    topology = ref_global.get("topology")
+    services = topology.get("services") if isinstance(topology, dict) else None
+    entry = services.get(service) if isinstance(services, dict) else None
+    port = entry.get("internal_port") if isinstance(entry, dict) else None
+    return port if isinstance(port, int) and not isinstance(port, bool) else None
+
+
 def _preflight_shared_infra_for_add(
     repo_root: Path,
     *,
     shared_infra: str,
     shared_infra_services: str,
     shared_infra_ref_projects: str,
+    shared_infra_ref_services: str | None = None,
 ) -> SharedInfraIntent:
     """S16.1 — resolve and validate `worktree add --shared-infra` input
     BEFORE any side effect (no git worktree, no checkout). Read-only Docker
     checks only; see the module's O1 contract."""
-    from .workspace_env import parse_workspace_env
+    from .workspace_env import (
+        GENERATED_FACTS_HEADER,
+        WorkspaceEnvError,
+        generated_facts_path,
+        identity_env_from_facts,
+        read_generated_facts,
+    )
 
     managed_ref = find_instance_record(repo_root, shared_infra)
     ref = (
@@ -490,33 +1149,61 @@ def _preflight_shared_infra_for_add(
             "what exists."
         )
 
-    ref_env_file = ref.path / _ciu_root_offset(repo_root) / "ciu.env"
-    if not ref_env_file.is_file():
-        raise WorktreeError(
-            f"[S16.1] {ref_env_file} does not exist, so CIU cannot read the "
-            "reference worktree's network. Run `ciu env generate` there first."
-        )
+    # CIU-75: the reference's network is a FACT read, so it comes from that
+    # checkout's own `[ciu.instance.generated]` facts file — the sole
+    # instance-fact source since 7.7.0 — not from its legacy `ciu.env` export.
+    ref_ciu_root = ref.path / _ciu_root_offset(repo_root)
     try:
-        ref_env = parse_workspace_env(ref_env_file)
-    except OSError as exc:
-        raise WorktreeError(f"[S16.1] could not read {ref_env_file}: {exc}") from exc
+        ref_facts = read_generated_facts(ref_ciu_root)
+    # CIU-62's three-exception lesson survives the cutover in one narrower
+    # form: read failure, non-UTF-8 byte and malformed table all arrive as
+    # WorkspaceEnvError from the reader, which normalizes them at the seam.
+    except WorkspaceEnvError as exc:
+        raise WorktreeError(f"[S16.1] could not read {ref_ciu_root}: {exc}") from exc
 
-    network = ref_env.get("DOCKER_NETWORK_INTERNAL", "")
+    network = ref_facts.get("network", "")
     if not network:
         raise WorktreeError(
-            f"[S16.1] {ref_env_file} has no DOCKER_NETWORK_INTERNAL; the "
-            "reference worktree is not a usable CIU instance."
+            f"[S16.1] {ref_ciu_root} declares no generated instance network "
+            f"(no {GENERATED_FACTS_HEADER}.network in "
+            f"{generated_facts_path(ref_ciu_root).name}), so it is not a usable CIU "
+            "instance. Run `ciu env generate` there first."
         )
+
+    # The environment the REFERENCE's own config chain renders against
+    # (`_resolve_ref_services` below): ambient MINUS every CIU identity key,
+    # PLUS the reference's own facts — the same rule `_sanitized_target_env`
+    # and `_resolve_budget_candidates` use since CIU-75. This process's own
+    # INSTANCE_ID/REPO_ROOT must never reach the reference's templates.
+    ref_env = {
+        k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS
+    }
+    ref_env.update(identity_env_from_facts(ref_facts))
 
     services = _split_unique_list(shared_infra_services, label="--shared-infra-services")
     ref_projects = _split_unique_list(
         shared_infra_ref_projects, label="--shared-infra-ref-projects"
     )
+    # Grammar first, alongside its two siblings: a malformed flag is refused
+    # before CIU asks Docker anything at all.
+    requested_ref_services: tuple[tuple[str, str], ...] = ()
+    if shared_infra_ref_services is not None:
+        requested_ref_services = _parse_ref_services_arg(
+            shared_infra_ref_services, label="--shared-infra-ref-services"
+        )
 
     _check_reference_network_and_projects(network, ref_projects)
 
+    ref_services = _resolve_ref_services(
+        requested_ref_services,
+        ref_ciu_root=ref.path / _ciu_root_offset(repo_root),
+        ref_env=ref_env,
+        network=network,
+    )
+
     return SharedInfraIntent(
-        ref_path=ref.path, network=network, services=services, ref_projects=ref_projects,
+        ref_path=ref.path, network=network, services=services,
+        ref_projects=ref_projects, ref_services=ref_services,
     )
 
 
@@ -528,14 +1215,21 @@ def _generate_env_in(worktree: Path, *, identity_only: bool = False) -> int:
     inherited value is usually caught — but the honest input here is *no* value:
     the whole point of generating is to DERIVE this checkout's identity, and an
     inherited one is another repo's answer to the same question.
+
+    CIU-85: strips the same ``_CIU_IDENTITY_ENV_KEYS`` its siblings do, via
+    that shared tuple, rather than its own separately hand-maintained
+    literal — the pre-fix copy here predated `PUBLIC_FQDN` joining the
+    identity tuple (CIU-47) and had silently fallen one key behind; an
+    ambient ``PUBLIC_FQDN`` leaking through here would have been silently
+    *adopted* as this checkout's own by `_detect_public_fqdn`'s "no
+    independently-derived value: the pre-set value stands" rule — the exact
+    cross-checkout leak CIU-47 fixed elsewhere.
     """
     import os
     import sys
 
     env = {
-        k: v for k, v in os.environ.items()
-        if k not in ("REPO_ROOT", "PHYSICAL_REPO_ROOT", "DOCKER_NETWORK_INTERNAL",
-                     "INSTANCE_ID", "REPO_NAME", "CIU_SERVICES_PROFILE")
+        k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS
     }
     argv = [sys.executable, "-m", "ciu.cli", "env", "generate"]
     if identity_only:
@@ -547,7 +1241,7 @@ def _generate_env_in(worktree: Path, *, identity_only: bool = False) -> int:
 
 
 def _clean_in(worktree: Path, *, yes: bool) -> int:
-    """Run ``ciu clean`` INSIDE *worktree*, under that worktree's own ciu.env.
+    """Run ``ciu clean`` INSIDE *worktree*, under that worktree's own identity.
 
     A subprocess, not an in-process call, and deliberately so. S1.1 requires
     ``--define-root`` to agree with ``REPO_ROOT``; this process's REPO_ROOT
@@ -559,27 +1253,49 @@ def _clean_in(worktree: Path, *, yes: bool) -> int:
     import os
     import sys
 
-    # parse_workspace_env, NOT load_workspace_env: the latter mutates THIS
-    # process's os.environ, and it locates the file via find_workspace_env,
-    # which prefers `$REPO_ROOT` over the directory it was given — so with the
-    # primary's REPO_ROOT set it would read the PRIMARY's ciu.env and we would
-    # clean the wrong instance under a convincingly-correct-looking env. Name
-    # the file explicitly; it is a fact, not something to search for.
-    from .workspace_env import parse_workspace_env
+    # CIU-75: read the target checkout's identity from its OWN
+    # `[ciu.instance.generated]` facts file by exact path — never through
+    # `find_workspace_env`-style searching, which prefers `$REPO_ROOT` over
+    # the directory it was given and would therefore answer with the PRIMARY's
+    # identity, cleaning the wrong instance under a convincingly-correct-
+    # looking env. The path is a fact, not something to search for.
+    #
+    # Only the IDENTITY keys are overlaid onto the ambient environment, where
+    # the pre-cutover code overlaid every `ciu.env` key. That is the whole
+    # delta and it is deliberate: identity is per-checkout (which is exactly
+    # why this function exists), while the rest of `ciu.env` — USER_UID,
+    # DOCKER_GID, PYTHON_EXECUTABLE, HOST_MDT_TMP — are facts about the
+    # MACHINE, identical in both checkouts and now taken live from this
+    # process rather than from a file that may predate a rebuild.
+    from .workspace_env import (
+        WorkspaceEnvError,
+        generated_facts_path,
+        read_instance_identity_env,
+    )
 
-    env_file = worktree / "ciu.env"
-    if not env_file.is_file():
+    try:
+        identity = read_instance_identity_env(worktree)
+    except WorkspaceEnvError as exc:
+        raise WorktreeError(f"[S16] could not read {worktree}: {exc}") from exc
+    if not identity:
         raise WorktreeError(
-            f"[S16] {env_file} does not exist, so CIU cannot tell which instance "
-            "to clean. Run `ciu env generate` in that worktree first — cleaning "
+            f"[S16] {generated_facts_path(worktree)} carries no "
+            "generated instance identity, so CIU cannot tell which instance to "
+            "clean. Run `ciu env generate` in that worktree first — cleaning "
             "under the PRIMARY checkout's environment would target the wrong "
             "stack."
         )
-    env = dict(os.environ)
-    try:
-        env.update(parse_workspace_env(env_file))
-    except OSError as exc:
-        raise WorktreeError(f"[S16] could not read {env_file}: {exc}") from exc
+    # CIU-85: strip THIS process's own identity keys before overlaying the
+    # target's, matching the two siblings that already do
+    # (`_sanitized_target_env`, `_resolve_budget_candidates`). Harmless in
+    # practice today — `identity` always carries all six overlay-fact keys
+    # once `not identity` above has refused an empty table, so every key in
+    # `_CIU_IDENTITY_ENV_KEYS` bar one is overwritten regardless — but
+    # `CIU_SERVICES_PROFILE` is NOT an overlay fact and was therefore never
+    # in `identity`, so without the strip the CALLER's service-profile
+    # selection leaked into the child `ciu clean`, unlike its two siblings.
+    env = {k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS}
+    env.update(identity)
 
     argv = [sys.executable, "-m", "ciu.cli", "clean"] + (["-y"] if yes else [])
     try:
@@ -683,7 +1399,7 @@ CAPABILITIES_SCHEMA_VERSION = 1
 # recovery-required instance additionally carries a closed recovery_status
 # (WORKTREE_RECOVERY_STATUSES).
 WORKTREE_JSON_OPERATIONS = frozenset({
-    "add", "adopt", "create", "ensure", "inspect", "list", "remove",
+    "add", "adopt", "create", "ensure", "inspect", "lease", "list", "remove",
 })
 WORKTREE_JSON_STATUSES = WORKTREE_LIFECYCLE_STATES | {"removed"}
 
@@ -694,6 +1410,13 @@ WORKTREE_JSON_STATUSES = WORKTREE_LIFECYCLE_STATES | {"removed"}
 # `worktree.exec-target.v1` ships in P06.
 WORKTREE_CAPABILITIES = (
     "worktree.branches.v1",
+    # S16.9/S16.10, ciu-P26 + ciu-P27: the ownership lease (record schema v2 +
+    # `ciu worktree lease`) and the Docker-resource reap survey/transaction
+    # that reads it. Advertised together because a consumer that can reap must
+    # be able to declare a lease first — reaping is only ever as safe as the
+    # ownership signal it consults.
+    "worktree.lease.v1",
+    "worktree.reap.v1",
     "worktree.identity.v1",
     "worktree.inspect.v1",
     "worktree.lifecycle-json.v1",
@@ -820,6 +1543,83 @@ def remove_document(
     if record is not None:
         doc["instance"] = record.to_dict()
     return doc
+
+
+def _lease_duration_hours(text: str) -> float:
+    """Parse one ``--extend`` duration into hours (S16.9).
+
+    Reuses the codebase's ONE duration grammar (``deploy.parse_duration_seconds``,
+    the strict form of what ``deploy._seconds`` has always accepted: ``24h``,
+    ``90m``, ``3600``) rather than inventing a second spelling. The import is
+    lazy because ``deploy`` imports this module.
+    """
+    from . import deploy as deploy_mod
+
+    try:
+        seconds = deploy_mod.parse_duration_seconds(text)
+    except ValueError as exc:
+        raise WorktreeError(f"[S16.9] invalid lease duration {text!r}: {exc}") from exc
+    if seconds <= 0:
+        raise WorktreeError(
+            f"[S16.9] lease duration must be positive, got {text!r}"
+        )
+    return seconds / 3600.0
+
+
+def apply_lease(
+    repo_root: Path,
+    logical_name: str,
+    *,
+    extend: str | None = None,
+    perpetual: bool = False,
+    release: bool = False,
+    now: datetime | None = None,
+) -> WorktreeInstanceRecord:
+    """`ciu worktree lease LOGICAL (--extend D | --perpetual | --release)`.
+
+    The explicit operator verb behind S16.9. It touches the RECORD only: it
+    runs no Docker query and does not care whether the instance is currently
+    up. Extending or releasing a claim on a stopped instance is exactly as
+    meaningful as on a running one — the lease describes ownership of the
+    instance's resources, not their current run state.
+
+    *now* mirrors `acquire_lease`/`make_lease_perpetual`'s own optional
+    override (CIU-76): absent, both fall back to real wall-clock time as
+    always; a caller (a test freezing a fixture clock) can pin the instant
+    the acquire/renew/perpetual math runs against, rather than letting it
+    silently race the real clock. `--release` ignores it — releasing a lease
+    is not time-based.
+    """
+    repo_root = Path(repo_root).resolve()
+    if sum((extend is not None, perpetual, release)) != 1:
+        raise WorktreeError(
+            "[S16.9] `ciu worktree lease` needs exactly one of --extend "
+            "DURATION, --perpetual or --release"
+        )
+    record = find_instance_record(repo_root, logical_name)
+    if record is None:
+        raise WorktreeError(
+            f"[S16.9] no managed worktree instance named {logical_name!r} under "
+            f"{repo_root}; `ciu worktree list` shows what exists."
+        )
+    if release:
+        # Unconditional, unlike the teardown-driven clear: the operator asked
+        # for "claims nothing", so the record says so even if it said so
+        # already (and a v1 record is normalized to v2 by that statement).
+        updated = release_lease(record)
+    else:
+        instance_id = record.instance_id or _runtime_identity(record.ciu_root)[0]
+        holder = lease_holder(instance_id)
+        updated = (
+            make_lease_perpetual(record, holder=holder, now=now)
+            if perpetual
+            else acquire_lease(
+                record, ttl_hours=_lease_duration_hours(str(extend)),
+                holder=holder, now=now,
+            )
+        )
+    _write_instance_record(updated)
+    return updated
 
 
 def capabilities_document() -> dict[str, Any]:
@@ -1207,28 +2007,959 @@ def prune_branches(
 
 
 # ---------------------------------------------------------------------------
+# S16.10 — Docker-resource REAP (CIU-25, docker half): survey + destroy
+# ---------------------------------------------------------------------------
+#
+# The structural twin of S16.8's branch hygiene, one layer down: a closed
+# survey that classifies EVERY Docker resource group into exactly one
+# category, and a SEPARATE `-y` pass that acts on exactly the categories a
+# fact — never a heuristic — proves safe.
+#
+# The one rule that governs every line below: **CIU destroys only what it can
+# PROVE it owns and PROVE nothing still claims.** Age, directory-basename
+# similarity and "no process is running" appear nowhere in this file, by
+# construction — the backlog entry (CIU-25) names all three as the wrong
+# answer, because a long-lived worktree is a legitimate thing and a stopped
+# instance is not an abandoned one. Ownership is DECLARED, by ciu-P26's lease
+# and `ciu.instance` label, or it is not known; and what is not known is not
+# destroyed.
+
+REAP_SCHEMA_VERSION = 1
+
+# Closed category vocabulary. Every surveyed resource group collapses into
+# exactly one member — never zero, never two (the precedence rule that makes
+# that true is :func:`_classify_reap_group`, read top to bottom):
+#   owned            — attributable to a checkout that still exists and still
+#                      claims it: a record whose lease is held/perpetual/
+#                      unconfigured, OR (no record) a REGISTERED worktree whose
+#                      own generated facts declare that instance_id. Never destroyed
+#   lease-expired    — a readable record whose `held` lease's expires_at_utc is
+#                      in the past at survey time (S16.9). The ONLY grounded
+#                      "the operator's claim has lapsed" signal there is
+#   checkout-missing — unclaimed (as `orphaned`) AND the group's own
+#                      `ciu.repo-root` label names a directory that no longer
+#                      exists. NOTE: this is a REFINEMENT of `orphaned`, not a
+#                      separate licence — a group only reaches either test once
+#                      no record and no checkout claims its id, which is what
+#                      licenses removal; the label only decides which message
+#                      the operator reads. The instance record lives INSIDE the
+#                      checkout, so a vanished checkout takes its record with
+#                      it: `ciu.repo-root` is the only durable, checkout-
+#                      EXTERNAL evidence of where an instance used to live
+#   orphaned         — resources labelled `ciu.instance=<id>` for an id that
+#                      matches NO instance record and NO registered checkout,
+#                      and whose recorded repo root does still exist (or was
+#                      never labelled)
+#   partial-cleanup  — the attributed record DECLARES state
+#                      `recovery-required`: CIU itself wrote down that this
+#                      instance's lifecycle did not complete. Deliberately
+#                      NARROWER than the original carve, which also counted "a
+#                      group with some (not all) of its resources present" —
+#                      undecidable (nothing records what "all" would be) and
+#                      catastrophic (`ciu down` preserves volumes on purpose,
+#                      so a legitimately-stopped owned instance would have
+#                      qualified). See the ciu-P27 handoff amendment
+#   unattributable   — no `ciu.instance` label AND no identity-form compose
+#                      project name: CIU cannot prove whose these are. NEVER
+#                      destroyed, under any flag combination
+#   ambiguous        — the attribution does not resolve to exactly one
+#                      TRUSTWORTHY record: more than one identity claims the
+#                      group, more than one record claims the identity, or the
+#                      one record that does is contradicted by Git. NEVER
+#                      destroyed, under any flag combination
+REAP_CATEGORIES = (
+    "owned", "lease-expired", "checkout-missing", "orphaned",
+    "partial-cleanup", "unattributable", "ambiguous",
+)
+
+# The categories `-y` may act on, and the DEFAULT set when `--category` is
+# absent (they are the same tuple on purpose: there is no category that is
+# destructible-but-off-by-default, because an operator reading `--category`'s
+# help must not have to discover a hidden extra). `owned`, `unattributable`
+# and `ambiguous` are absent STRUCTURALLY, not by policy: `--category` refuses
+# every name outside this tuple, so no flag combination can reach them.
+REAP_DESTRUCTIBLE_CATEGORIES = (
+    "checkout-missing", "lease-expired", "orphaned", "partial-cleanup",
+)
+
+# Closed document-status vocabulary: a side-effect-free survey, a `-y
+# --dry-run` plan, a fully successful pass, and a pass where at least one
+# targeted group was not disposed of (the CLI exits 1 on that last one).
+REAP_STATUSES = frozenset({"survey", "dry-run", "reaped", "partial"})
+
+_IDENTITY_NETWORK_SUFFIX = "-network"
+
+
+def _ownership_label_keys() -> tuple[str, str]:
+    """The ``(ciu.instance, ciu.repo-root)`` label keys ciu-P26 stamps on every
+    managed instance's resources. ``engine`` owns that closed vocabulary
+    (S16.9), and the import is lazy because ``engine`` imports THIS module."""
+    from . import engine as engine_mod
+
+    return (
+        engine_mod.OWNERSHIP_LABEL_INSTANCE,
+        engine_mod.OWNERSHIP_LABEL_REPO_ROOT,
+    )
+
+
+def _reap_docker_rows(args: list[str], *, what: str, fields: int) -> list[list[str]]:
+    """One read-only, tab-separated Docker enumeration.
+
+    Two failure modes, deliberately answered differently:
+
+    * **docker is ABSENT** — a CIU workspace can legitimately be local-only.
+      No Docker means no Docker resources, an empty enumeration is the honest
+      answer, and an empty survey destroys nothing.
+    * **docker is PRESENT and the query FAILED** — a refusal. A survey that
+      silently under-reports is the input to a destructive pass, and the
+      group it failed to see is exactly the one whose absence would let a
+      shared network look unused.
+
+    Every field is pulled with an explicit ``{{.Label "k"}}`` lookup rather
+    than parsed out of the comma-joined ``{{.Labels}}`` blob: a label VALUE
+    containing a comma would split that blob wrong, and a mis-parsed
+    ``ciu.instance`` is a mis-attribution — the one error class this whole
+    module exists to prevent.
+    """
+    try:
+        res = procutil.docker(args, capture=True, check=False)
+    except (FileNotFoundError, OSError):
+        return []
+    if res.returncode != 0:
+        raise WorktreeError(
+            f"[S16.10] could not enumerate {what}: "
+            f"{(res.stderr or res.stdout or '').strip()} — refusing rather than "
+            "surveying from an incomplete picture, because a group this query "
+            "failed to see is a group a destructive pass would misjudge."
+        )
+    rows: list[list[str]] = []
+    for line in (res.stdout or "").splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) != fields:
+            raise WorktreeError(
+                f"[S16.10] unparseable {what} row from docker (expected {fields} "
+                f"tab-separated fields): {line!r}"
+            )
+        rows.append(parts)
+    return rows
+
+
+@dataclass(frozen=True)
+class ReapIdentities:
+    """Everything the survey knows about WHO could own Docker resources.
+
+    ``records`` are the parsed instance records; ``findings`` are the
+    inconsistencies met on the way (never raised — see
+    :func:`survey_instance_records`); ``distrusted`` are the INSTANCE_IDs
+    whose record Git contradicts; ``checkouts``/``networks`` map every
+    registered checkout's INSTANCE_ID to its path and its identity network;
+    ``unresolved`` names checkouts that carry a record FILE whose identity
+    could not be established at all.
+    """
+
+    records: tuple[WorktreeInstanceRecord, ...]
+    findings: tuple[dict[str, str], ...]
+    distrusted: frozenset[str]
+    checkouts: dict[str, str]
+    networks: dict[str, str]
+    unresolved: tuple[str, ...]
+
+
+def _reap_record_inconsistencies(
+    record: WorktreeInstanceRecord,
+    wt: WorktreeInfo,
+    offset: Path,
+    seen_logical: dict[str, str],
+) -> list[str]:
+    """The same four cross-checks :func:`list_instance_records` RAISES on,
+    rendered as strings so a survey can report them and continue."""
+    out: list[str] = []
+    if record.git_worktree_path.resolve() != wt.path.resolve():
+        out.append(
+            f"record claims Git path {record.git_worktree_path}, but Git "
+            f"registers {wt.path}"
+        )
+    if record.ciu_root_offset != offset:
+        out.append(
+            f"record claims CIU-root offset {record.ciu_root_offset}, but this "
+            f"family derives {offset}"
+        )
+    if record.branch != wt.branch:
+        out.append(
+            f"record claims branch {record.branch!r}, but Git registers "
+            f"{wt.branch!r}"
+        )
+    if record.logical_name in seen_logical:
+        out.append(
+            f"duplicate logical worktree identity {record.logical_name!r} within "
+            f"one Git family (also claimed by {seen_logical[record.logical_name]})"
+        )
+    return out
+
+
+def survey_instance_records(repo_root: Path) -> ReapIdentities:
+    """:func:`list_instance_records` for a DESTRUCTIVE reader — never raises.
+
+    ``list_instance_records`` refuses the whole family on the first
+    inconsistency it meets (branch mismatch, offset mismatch, duplicate
+    logical identity, an unreadable file). That is exactly right for
+    ``add``/``rm``/``inspect``, which act on ONE named instance and must not
+    proceed over a contradiction. It is exactly wrong for a reap survey,
+    which is most needed precisely when something is already broken: one bad
+    record would blind the operator to every other instance on the host, and
+    "the survey crashed" is the worst possible answer to "what is safe to
+    delete?".
+
+    So this sibling collects each inconsistency as a FINDING and keeps going.
+    The findings are then load-bearing in two places, both of them in the
+    SAFE direction:
+
+    1. an inconsistent record can never license destruction — every group it
+       would have attributed classifies ``ambiguous`` instead
+       (:func:`_classify_reap_group`);
+    2. a checkout carrying a record FILE whose identity cannot be established
+       at all disarms the ``orphaned`` category outright (:func:`reap_groups`)
+       — a corrupted record on a LIVE instance must never make that
+       instance's labelled resources look unclaimed.
+
+    Identity is also derived per checkout INDEPENDENTLY of the record, from
+    that checkout's own ``[ciu.instance.generated]`` facts file by exact
+    path (:func:`_runtime_identity`,
+    never the ambient environment — the CIU-41 contamination species), so a
+    live checkout whose record was deleted is still recognised as an owner.
+    """
+    repo_root = Path(repo_root).resolve()
+    offset = _ciu_root_offset(repo_root)
+    records: list[WorktreeInstanceRecord] = []
+    findings: list[dict[str, str]] = []
+    distrusted: set[str] = set()
+    checkouts: dict[str, str] = {}
+    networks: dict[str, str] = {}
+    unresolved: list[str] = []
+    seen_logical: dict[str, str] = {}
+
+    for wt in list_worktrees(repo_root):
+        ciu_root = wt.path / offset
+        record_path = ciu_root / WORKTREE_INSTANCE_RECORD
+        record: WorktreeInstanceRecord | None = None
+        has_record_file = record_path.is_file()
+        if has_record_file:
+            try:
+                record = read_instance_record(record_path)
+            except WorktreeError as exc:
+                findings.append({
+                    "kind": "unreadable-record",
+                    "path": str(record_path),
+                    "detail": str(exc),
+                })
+            else:
+                for detail in _reap_record_inconsistencies(
+                    record, wt, offset, seen_logical
+                ):
+                    findings.append({
+                        "kind": "inconsistent-record",
+                        "path": str(record_path),
+                        "detail": detail,
+                    })
+                    if record.instance_id:
+                        distrusted.add(record.instance_id)
+                seen_logical.setdefault(record.logical_name, str(record_path))
+                records.append(record)
+
+        identity: tuple[str, str] | None = None
+        if record is not None and record.instance_id and record.network:
+            identity = (record.instance_id, record.network)
+        else:
+            # No record, or an `allocating` one with no runtime identity yet:
+            # the checkout's OWN `ciu.instance.generated.toml`
+            # is the authority (CIU-75), read by exact path. Absent/unreadable is not an error here — a checkout
+            # that never generated an environment never stamped a label.
+            try:
+                identity = _runtime_identity(ciu_root)
+            except WorktreeError:
+                identity = None
+        if identity is not None:
+            checkouts[identity[0]] = str(wt.path)
+            networks[identity[0]] = identity[1]
+        elif has_record_file:
+            # This checkout WAS a managed instance, so it may well have
+            # stamped `ciu.instance` labels — and we cannot say which id.
+            unresolved.append(str(wt.path))
+
+    findings.sort(key=lambda f: (f["kind"], f["path"], f["detail"]))
+    return ReapIdentities(
+        records=tuple(records),
+        findings=tuple(findings),
+        distrusted=frozenset(distrusted),
+        checkouts=checkouts,
+        networks=networks,
+        unresolved=tuple(unresolved),
+    )
+
+
+def _lease_is_expired(record: WorktreeInstanceRecord, instant: datetime) -> bool:
+    """True only for a ``held`` lease whose expiry has PASSED (S16.9).
+
+    Every other shape answers False, and every one of them is the safe
+    direction: no lease at all (a v1 record, or a released v2 one) means the
+    instance never participated in leasing or explicitly claims nothing —
+    neither is evidence of abandonment; ``perpetual`` can never lapse by
+    definition. An unparseable stored expiry is also False: the read path
+    already refuses such a record (:func:`_parse_utc_timestamp`), and if one
+    somehow reaches here, "I cannot read the claim" must never be rounded
+    down to "there is no claim".
+    """
+    lease = record.lease
+    if lease is None or lease.mode != "held" or lease.expires_at_utc is None:
+        return False
+    try:
+        expires = _parse_utc_timestamp(
+            lease.expires_at_utc, label="expires_at_utc", path=record.record_path
+        )
+    except WorktreeError:
+        return False
+    return expires <= instant
+
+
+def _classify_reap_group(
+    ids: set[str],
+    repo_roots: set[str],
+    *,
+    records_by_id: dict[str, WorktreeInstanceRecord],
+    duplicated_ids: set[str],
+    identities: ReapIdentities,
+    instant: datetime,
+) -> tuple[str, str]:
+    """The closed partition, as ONE ordered chain of first-match-wins rules.
+
+    Written as a single function with early returns precisely so the
+    precedence is readable top-to-bottom and a group cannot land in two
+    buckets: the first rule that fires is the answer. The order encodes two
+    policies — every un-provable attribution resolves to a NEVER-destroyed
+    category before any destructible one is considered, and among the
+    destructible ones the most operationally specific fact wins (a checkout
+    that is GONE is a more actionable truth than a lease that lapsed, and
+    `ciu clean` cannot run there either way).
+    """
+    if len(ids) > 1:
+        return "ambiguous", (
+            "more than one CIU identity claims this group ("
+            + ", ".join(sorted(ids))
+            + "); CIU will not guess which one owns it"
+        )
+    if not ids:
+        return "unattributable", (
+            "no `ciu.instance` label and no identity-form compose project name — "
+            "CIU cannot prove whose these resources are, so it will never remove "
+            "them; dispose of them by hand if you know better"
+        )
+    instance_id = next(iter(ids))
+    if instance_id in duplicated_ids:
+        return "ambiguous", (
+            f"more than one instance record claims INSTANCE_ID {instance_id!r}"
+        )
+    if instance_id in identities.distrusted:
+        return "ambiguous", (
+            f"the record claiming INSTANCE_ID {instance_id!r} is contradicted by "
+            "Git (see this document's `findings`); a record CIU cannot trust can "
+            "never license destruction"
+        )
+    record = records_by_id.get(instance_id)
+    if record is None:
+        checkout = identities.checkouts.get(instance_id)
+        if checkout is not None:
+            return "owned", (
+                f"no instance record claims {instance_id!r}, but the registered "
+                f"checkout {checkout} declares that instance_id in its own "
+                "generated identity facts — a live checkout still owns what it "
+                "created"
+            )
+        if repo_roots and not any(Path(root).is_dir() for root in repo_roots):
+            return "checkout-missing", (
+                f"labelled ciu.instance={instance_id}, claimed by no record and "
+                "no registered checkout, and its own ciu.repo-root label ("
+                + ", ".join(sorted(repo_roots))
+                + ") names a directory that is not present (deleted, or on a "
+                "currently-unavailable mount — filesystem absence cannot "
+                "distinguish the two) — `ciu clean` cannot run there right "
+                "now. The Docker resources are this verb's half; a stale Git "
+                "registration is `ciu worktree branches`' (or `git worktree "
+                "prune`'s)"
+            )
+        return "orphaned", (
+            f"labelled ciu.instance={instance_id}, which matches no instance "
+            "record and no registered checkout in this Git family"
+        )
+    if record.state == "recovery-required":
+        return "partial-cleanup", (
+            f"instance {record.logical_name!r} DECLARES state "
+            f"'recovery-required' ({record.recovery_status}) — CIU itself "
+            "recorded that this instance's lifecycle did not complete"
+        )
+    if _lease_is_expired(record, instant):
+        return "lease-expired", (
+            f"instance {record.logical_name!r}'s held lease expired at "
+            f"{record.lease.expires_at_utc if record.lease else '?'} "
+            f"(holder {record.lease.holder if record.lease else '?'})"
+        )
+    return "owned", (
+        f"instance {record.logical_name!r} is registered, its checkout exists, "
+        "and nothing says its claim has lapsed"
+    )
+
+
+def _reap_group_documents(
+    repo_root: Path, instant: datetime
+) -> tuple[list[dict[str, Any]], ReapIdentities]:
+    """Enumerate + classify every Docker resource group (the survey's core)."""
+    identities = survey_instance_records(repo_root)
+    instance_label, root_label = _ownership_label_keys()
+    ownership = f'{{{{.Label "{instance_label}"}}}}\t{{{{.Label "{root_label}"}}}}'
+
+    containers = _reap_docker_rows(
+        [
+            "ps", "-a", "--no-trunc", "--format",
+            '{{.ID}}\t{{.Names}}\t{{.Label "com.docker.compose.project"}}\t'
+            + ownership,
+        ],
+        what="containers", fields=5,
+    )
+    volumes = _reap_docker_rows(
+        [
+            "volume", "ls", "--format",
+            '{{.Name}}\t{{.Label "com.docker.compose.project"}}\t' + ownership,
+        ],
+        what="volumes", fields=4,
+    )
+    networks = _reap_docker_rows(
+        [
+            "network", "ls", "--format",
+            '{{.Name}}\t{{.Label "com.docker.compose.project"}}\t' + ownership,
+        ],
+        what="networks", fields=4,
+    )
+
+    raw: dict[str, dict[str, Any]] = {}
+
+    def bucket(key: str, project: str | None) -> dict[str, Any]:
+        return raw.setdefault(key, {
+            "key": key, "compose_project": project,
+            "containers": [], "volumes": [], "networks": [],
+            "label_ids": set(), "repo_roots": set(),
+        })
+
+    # A resource with no compose project is not a GROUP member: `ciu up`
+    # always deploys through compose, so anything compose never created is
+    # not this verb's business and is left entirely alone (never surveyed,
+    # therefore never destroyed).
+    def claim(group: dict[str, Any], inst: str, root: str) -> None:
+        if inst:
+            group["label_ids"].add(inst)
+        if root:
+            group["repo_roots"].add(root)
+
+    for cid, cname, project, inst, root in containers:
+        if not project:
+            continue
+        group = bucket(project, project)
+        group["containers"].append({"id": cid, "name": cname})
+        claim(group, inst, root)
+    for vname, project, inst, root in volumes:
+        if not project:
+            continue
+        group = bucket(project, project)
+        group["volumes"].append(vname)
+        claim(group, inst, root)
+    for nname, project, inst, root in networks:
+        if not project:
+            continue
+        group = bucket(project, project)
+        group["networks"].append(nname)
+        claim(group, inst, root)
+
+    # The IDENTITY network (S2.6 `{repo}-{id}-network`) is the one resource
+    # compose never creates: `ciu env generate` makes it and every stack
+    # declares it `external: true`, so it carries no compose project label and
+    # ciu-P26 deliberately never labels it either. It is therefore attached by
+    # NAME, and only ever to an identity CIU already knows — an unrecognised
+    # loose network on the host is not evidence of anything and is ignored.
+    network_owner = {name: iid for iid, name in identities.networks.items()}
+    for nname, project, inst, root in networks:
+        if project:
+            continue
+        owner = inst or network_owner.get(nname)
+        if not owner:
+            continue
+        attached = [
+            group for group in raw.values() if owner in group["label_ids"]
+        ]
+        if not attached:
+            attached = [bucket(nname, None)]
+            claim(attached[0], owner, root)
+        for group in attached:
+            group["networks"].append(nname)
+
+    # Identity-form project-name attribution: `{repo}-{id}-{stack}`
+    # (engine.identity_compose_project_name) for a config-less deployment,
+    # whose containers a pre-P26 `ciu up` never labelled. Derived from the
+    # identity network name, which already carries the same `{repo}-{id}`
+    # prefix, so there is no second spelling of the convention to drift.
+    prefixes = {
+        iid: net[: -len(_IDENTITY_NETWORK_SUFFIX)]
+        for iid, net in identities.networks.items()
+        if net.endswith(_IDENTITY_NETWORK_SUFFIX)
+    }
+    records_by_id: dict[str, WorktreeInstanceRecord] = {}
+    duplicated_ids: set[str] = set()
+    for record in identities.records:
+        if not record.instance_id:
+            continue
+        if record.instance_id in records_by_id:
+            duplicated_ids.add(record.instance_id)
+        records_by_id[record.instance_id] = record
+
+    documents: list[dict[str, Any]] = []
+    for group in raw.values():
+        project = group["compose_project"]
+        name_ids = {
+            iid for iid, prefix in prefixes.items()
+            if project and project.startswith(prefix + "-")
+        }
+        ids = set(group["label_ids"]) | name_ids
+        category, reason = _classify_reap_group(
+            ids, set(group["repo_roots"]), records_by_id=records_by_id,
+            duplicated_ids=duplicated_ids, identities=identities,
+            instant=instant,
+        )
+        instance_id = next(iter(ids)) if len(ids) == 1 else None
+        record = records_by_id.get(instance_id) if instance_id else None
+        documents.append({
+            "key": group["key"],
+            "compose_project": project,
+            "category": category,
+            "reason": reason,
+            "instance_id": instance_id,
+            "repo_roots": sorted(group["repo_roots"]),
+            "logical_name": record.logical_name if record is not None else None,
+            "state": record.state if record is not None else None,
+            "ciu_root": str(record.ciu_root) if record is not None else None,
+            "checkout_exists": (
+                record.ciu_root.is_dir() if record is not None else False
+            ),
+            "lease": (
+                record.lease.to_dict()
+                if record is not None and record.lease is not None else None
+            ),
+            "containers": sorted(group["containers"], key=lambda c: c["id"]),
+            "volumes": sorted(set(group["volumes"])),
+            "networks": sorted(set(group["networks"])),
+        })
+    documents.sort(key=lambda g: (g["category"], g["key"]))
+    return documents, identities
+
+
+def _reap_hint(counts: Mapping[str, int], identity_complete: bool) -> str:
+    destructible = sum(counts[c] for c in REAP_DESTRUCTIBLE_CATEGORIES)
+    if destructible:
+        hint = (
+            f"{destructible} resource group(s) are provably disposable "
+            f"({', '.join(f'{c}={counts[c]}' for c in REAP_DESTRUCTIBLE_CATEGORIES if counts[c])}); "
+            "re-run with -y/--yes to reap them (add --dry-run first to see the "
+            "exact commands)."
+        )
+    else:
+        hint = "nothing provably disposable."
+    if counts["unattributable"]:
+        hint += (
+            f" {counts['unattributable']} group(s) are unattributable and are "
+            "NEVER reaped — CIU cannot prove whose they are. Inspect one with "
+            "`docker ps -a --filter label=com.docker.compose.project=<project>` "
+            "and remove it by hand with "
+            "`docker compose -p <project> down -v` if you know it is yours."
+        )
+    if counts["ambiguous"]:
+        hint += (
+            f" {counts['ambiguous']} group(s) are ambiguous and are NEVER "
+            "reaped — see each group's `reason` (and this document's "
+            "`findings`) for the competing claims, and reconcile them first."
+        )
+    if not identity_complete:
+        hint += (
+            " At least one registered checkout carries an instance record CIU "
+            "could not read an identity from, so the `orphaned` category is "
+            "DISARMED for this run: an id that looks unclaimed might simply be "
+            "the one that could not be read."
+        )
+    return hint
+
+
+def survey_reap_groups(
+    repo_root: Path, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Build the ``ciu worktree reap`` survey document (S16.10 / CIU-25).
+
+    Side-effect-free by construction: every Docker call below is a read-only
+    enumeration, and nothing on disk is written — a v1 instance record is not
+    even re-serialized, let alone upgraded (S16.9 makes that structural).
+
+    *now* is injectable and must be timezone-aware; lease expiry is evaluated
+    against it and nothing else. Tests never call the real clock, and the
+    document carries no timestamp of its own, so two consecutive surveys of an
+    unchanged host are byte-identical.
+    """
+    repo_root = Path(repo_root).resolve()
+    instant = now or _utc_now()
+    if instant.tzinfo is None:
+        raise WorktreeError(
+            "[S16.10] the reap survey clock must be timezone-aware; a naive "
+            "instant would compare against stored UTC expiries by up to a day "
+            "of luck"
+        )
+    groups, identities = _reap_group_documents(repo_root, instant)
+    counts = {c: sum(1 for g in groups if g["category"] == c) for c in REAP_CATEGORIES}
+    identity_complete = not identities.unresolved
+    return {
+        "schema_version": REAP_SCHEMA_VERSION,
+        "operation": "reap",
+        "status": "survey",
+        "identity_complete": identity_complete,
+        "unresolved_checkouts": list(identities.unresolved),
+        "counts": counts,
+        "findings": [dict(f) for f in identities.findings],
+        "hint": _reap_hint(counts, identity_complete),
+        "groups": groups,
+    }
+
+
+def resolve_reap_categories(raw: str | None) -> tuple[str, ...]:
+    """Parse ``--category C[,C...]`` into the closed destructible set.
+
+    Every name outside :data:`REAP_DESTRUCTIBLE_CATEGORIES` is a REFUSAL,
+    including the three real-but-protected categories. That is the whole
+    safety property of this verb stated as code: ``--category unattributable``
+    and ``--category ambiguous`` do not select a protected category, they fail
+    the command, so there is no flag combination anywhere that reaches one.
+    """
+    if raw is None:
+        return REAP_DESTRUCTIBLE_CATEGORIES
+    names = tuple(dict.fromkeys(p.strip() for p in raw.split(",") if p.strip()))
+    if not names:
+        raise WorktreeError(
+            "[S16.10] --category needs at least one category name; closed "
+            f"selectable vocabulary: {', '.join(sorted(REAP_DESTRUCTIBLE_CATEGORIES))}"
+        )
+    for name in names:
+        if name in REAP_DESTRUCTIBLE_CATEGORIES:
+            continue
+        if name in REAP_CATEGORIES:
+            raise WorktreeError(
+                f"[S16.10] refusing --category {name!r}: that category is never "
+                "acted on by this verb, and there is deliberately no flag that "
+                "forces it. CIU removes a resource group only when a record, a "
+                "lease or an ownership label PROVES what it is; "
+                f"{name!r} means exactly that no such proof exists. Selectable: "
+                f"{', '.join(sorted(REAP_DESTRUCTIBLE_CATEGORIES))}."
+            )
+        raise WorktreeError(
+            f"[S16.10] unknown --category {name!r}; selectable vocabulary: "
+            f"{', '.join(sorted(REAP_DESTRUCTIBLE_CATEGORIES))}"
+        )
+    return names
+
+
+def _reap_plan(group: Mapping[str, Any]) -> list[str]:
+    """The exact remediation this group would receive, as operator commands."""
+    if _reap_uses_clean(group):
+        return [f"(cd {group['ciu_root']} && ciu clean -y)"]
+    plan: list[str] = []
+    if group["containers"]:
+        plan.append(
+            "docker rm -f " + " ".join(c["id"] for c in group["containers"])
+        )
+    if group["volumes"]:
+        plan.append("docker volume rm " + " ".join(group["volumes"]))
+    for network in group["networks"]:
+        plan.append(
+            f"docker network rm {network}  # only if no container is still joined"
+        )
+    return plan or ["# nothing to remove"]
+
+
+def _reap_uses_clean(group: Mapping[str, Any]) -> bool:
+    """True when this group's checkout can still clean itself.
+
+    `ciu clean` is authoritative: it knows the rendered config, the `vol-*`
+    hostdirs and the root-helper path a bare `docker rm` knows nothing about.
+    The ciu-P28 hotfix lesson binds this — a reap that touches a MANAGED
+    instance goes through clean-then-remove, never a bare resource deletion —
+    so the direct path below is reached ONLY when there is no checkout left to
+    run it in.
+
+    CIU-75: the readiness signal is the checkout's ``[ciu.instance.generated]``
+    facts file, NOT its ``ciu.env``. `ciu clean` derives the identity
+    network and the identity compose project from that table now, so a
+    checkout carrying only a legacy `ciu.env` can no longer clean itself and
+    answering True for one would send this reap into a `_clean_in` that must
+    refuse. Presence, not readability: a present-but-corrupt table still
+    answers True here so `_clean_in` refuses loudly, rather than this
+    predicate quietly demoting indeterminacy to a bare docker removal.
+
+    **What False actually costs, stated because it is not a refusal.** The
+    caller falls through to `docker rm -f` + volume/network removal. That
+    disposes of the docker resources and NOTHING else: no hostdir removal, no
+    root-helper path, so `vol-*` data stays on disk. `_reap_one_group` says so
+    in its notes when the checkout still exists — a reap that quietly leaves
+    data behind is worse than one that refuses, and it must not be silent.
+    """
+    from .workspace_env import has_generated_facts
+
+    ciu_root = group.get("ciu_root")
+    if not ciu_root:
+        return False
+    return has_generated_facts(Path(ciu_root))
+
+
+def _docker_reap(args: list[str], *, what: str) -> str:
+    """Run one DESTRUCTIVE docker command; return "" or the real error text."""
+    try:
+        res = procutil.docker(args, capture=True, check=False)
+    except (FileNotFoundError, OSError) as exc:
+        return f"{what}: {exc}"
+    if res.returncode != 0:
+        return f"{what}: {(res.stderr or res.stdout or '').strip()}"
+    return ""
+
+
+def _reap_network(
+    network: str, removed_ids: set[str], blocked_by: list[str]
+) -> tuple[str, str]:
+    """Remove one network, or say why it was left standing. -> (note, failure).
+
+    Two independent guards, either of which alone means "leave it":
+
+    1. any container STILL joined that this pass did not just remove — the
+       shared-infra case (S16.1), where another instance's containers hold a
+       second membership on this network. Tearing it down would break a live
+       instance that never asked to be reaped;
+    2. any OTHER surveyed group of the same identity not yet disposed of —
+       one workspace's several stacks share one identity network, and the last
+       one out turns off the light.
+    """
+    if blocked_by:
+        return (
+            f"network {network} left standing: still needed by "
+            + ", ".join(sorted(blocked_by)),
+            "",
+        )
+    if not _docker_network_exists(network):
+        return f"network {network} was already gone", ""
+    joined = _network_container_ids(network) - removed_ids
+    if joined:
+        return (
+            f"network {network} left standing: {len(joined)} container(s) from "
+            "another instance are still joined to it "
+            f"({', '.join(sorted(joined))})",
+            "",
+        )
+    failure = _docker_reap(["network", "rm", network], what=f"network rm {network}")
+    if failure:
+        return "", failure
+    return f"removed network {network}", ""
+
+
+def _reap_one_group(
+    group: Mapping[str, Any], blocked_networks_by: Mapping[str, list[str]]
+) -> tuple[list[str], str]:
+    """Dispose of exactly one group. -> (notes, failure-reason-or-"").
+
+    Strict order — containers, then volumes, then networks — and the first
+    failure ABORTS this group: a volume still attached to a container we
+    failed to remove cannot be removed either, and reporting the second,
+    derived error would bury the real one.
+    """
+    notes: list[str] = []
+    if _reap_uses_clean(group):
+        try:
+            rc = _clean_in(Path(str(group["ciu_root"])), yes=True)
+        except WorktreeError as exc:
+            return notes, f"`ciu clean` could not run in {group['ciu_root']}: {exc}"
+        if rc != 0:
+            return notes, (
+                f"`ciu clean` failed (exit {rc}) in {group['ciu_root']}; the "
+                "instance's own teardown is authoritative and CIU will not "
+                "second-guess it with a bare docker removal"
+            )
+        return [f"cleaned in {group['ciu_root']}"], ""
+
+    # CIU-75, review round 1: say so when a checkout that STILL EXISTS is being
+    # disposed of the blunt way. `_reap_uses_clean` answering False sends this
+    # group down the bare-docker path — it does not refuse — so hostdir removal
+    # and the root-helper never run and `vol-*` data stays on disk. Before the
+    # cutover that happened to a checkout with no `ciu.env`; now it happens to
+    # one with no generated table, which is a state an upgrade can produce.
+    # Silence here is the estate's own "data left on disk, nobody told" defect.
+    _reap_root = group.get("ciu_root")
+    if _reap_root and Path(str(_reap_root)).is_dir():
+        from .workspace_env import GENERATED_FACTS_HEADER
+
+        notes.append(
+            f"{_reap_root} has no {GENERATED_FACTS_HEADER} table, so `ciu clean` "
+            "could not run there: docker resources were removed directly and "
+            "hostdir/root-helper cleanup did NOT run. Run `ciu env generate` in "
+            "that checkout and `ciu clean` if vol-* data remains."
+        )
+
+    removed_ids = {c["id"] for c in group["containers"]}
+    if group["containers"]:
+        failure = _docker_reap(
+            ["rm", "-f", *sorted(removed_ids)], what="container rm",
+        )
+        if failure:
+            return notes, failure
+        notes.append(f"removed {len(removed_ids)} container(s)")
+    if group["volumes"]:
+        failure = _docker_reap(
+            ["volume", "rm", *group["volumes"]], what="volume rm",
+        )
+        if failure:
+            return notes, failure
+        notes.append(f"removed {len(group['volumes'])} volume(s)")
+    for network in group["networks"]:
+        note, failure = _reap_network(
+            network, removed_ids, blocked_networks_by.get(network, [])
+        )
+        if failure:
+            return notes, failure
+        notes.append(note)
+    return notes, ""
+
+
+def reap_groups(
+    repo_root: Path,
+    *,
+    yes: bool = False,
+    categories: str | None = None,
+    dry_run: bool = False,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Survey, and with *yes* reap exactly the provably-disposable groups.
+
+    Without *yes* this is :func:`survey_reap_groups` verbatim — no side
+    effect of any kind, the same contract ``worktree branches`` has.
+
+    With *yes*, one group's failure is never the whole sweep's: it lands in
+    ``failed`` with the real error text and every other targeted group is
+    still processed, so a document is always returned. The returned document
+    is then a RE-SURVEY of the post-state, not the pre-pass plan — what an
+    operator needs after a destructive verb is what is true NOW.
+    """
+    # Validated BEFORE anything is enumerated: `--category ambiguous` must
+    # fail as the refusal it is, not after a Docker error incidentally
+    # produced some other exit code.
+    active = resolve_reap_categories(categories)
+    survey = survey_reap_groups(repo_root, now=now)
+    if not yes:
+        return survey
+
+    targets = [g for g in survey["groups"] if g["category"] in active]
+    if dry_run:
+        survey["status"] = "dry-run"
+        survey["categories"] = list(active)
+        survey["plan"] = [
+            {"group": g["key"], "category": g["category"], "commands": _reap_plan(g)}
+            for g in targets
+        ]
+        return survey
+
+    # A network is shared by every group of one identity; a group is a blocker
+    # for it until that group has been successfully disposed of.
+    # An UNTARGETED group (an `owned` sibling stack, say) never leaves this
+    # map, so it blocks its identity network for the whole pass.
+    pending: dict[str, set[str]] = {}
+    for group in survey["groups"]:
+        for network in group["networks"]:
+            pending.setdefault(network, set()).add(group["key"])
+
+    reaped: list[dict[str, Any]] = []
+    failed: list[dict[str, str]] = []
+    for group in targets:
+        blocked = {
+            network: sorted(pending.get(network, set()) - {group["key"]})
+            for network in group["networks"]
+        }
+        if group["category"] == "orphaned" and not survey["identity_complete"]:
+            failed.append({"group": group["key"], "reason": (
+                "refusing to reap an `orphaned` group while "
+                + ", ".join(survey["unresolved_checkouts"])
+                + " carries an instance record CIU could not read an identity "
+                "from: an id that looks unclaimed may simply be the one that "
+                "could not be read. Repair or remove that record first."
+            )})
+            continue
+        try:
+            notes, failure = _reap_one_group(group, blocked)
+        except WorktreeError as exc:
+            # Nothing escapes this loop: an unexpected refusal mid-sweep must
+            # not leave every later group silently unprocessed (the ciu-P28
+            # defect shape, one layer down).
+            notes, failure = [], (
+                f"unexpected failure, remaining groups still processed: {exc}"
+            )
+        if failure:
+            failed.append({"group": group["key"], "reason": failure})
+            continue
+        for network in group["networks"]:
+            pending.get(network, set()).discard(group["key"])
+        reaped.append({"group": group["key"], "notes": notes})
+
+    fresh = survey_reap_groups(repo_root, now=now)
+    survey["groups"] = fresh["groups"]
+    survey["counts"] = fresh["counts"]
+    survey["findings"] = fresh["findings"]
+    survey["hint"] = fresh["hint"]
+    survey["identity_complete"] = fresh["identity_complete"]
+    survey["unresolved_checkouts"] = fresh["unresolved_checkouts"]
+    survey["status"] = "reaped" if not failed else "partial"
+    survey["categories"] = list(active)
+    survey["reaped"] = reaped
+    survey["failed"] = failed
+    return survey
+
+
+# ---------------------------------------------------------------------------
 # S16.6 — exact selected-worktree control (`worktree up` / `worktree exec`)
 # ---------------------------------------------------------------------------
 
 # Ambient environment keys that describe SOME CIU instance (root, identity,
 # network, profile). They are stripped from the child environment so a
 # sibling checkout's values can never contaminate the selected instance.
-_CIU_IDENTITY_ENV_KEYS = (
-    "REPO_ROOT",
-    "PHYSICAL_REPO_ROOT",
-    "DOCKER_NETWORK_INTERNAL",
-    "INSTANCE_ID",
-    "REPO_NAME",
+#
+# CIU-85: the identity half is DERIVED from `GENERATED_FACT_ENV_KEYS` (the
+# canonical fact->env-name table, `workspace_env.py`) instead of a second,
+# hand-maintained literal — the same "two lists that must agree" shape
+# CIU-75 already removed elsewhere by deriving `LEGACY_IDENTITY_ENV_KEYS`
+# from the identical table. This is also how `PUBLIC_FQDN` — one of the six
+# identity facts since CIU-47, but absent from the OLD hand-written five-plus-
+# one list here — joins BY CONSTRUCTION rather than needing to be remembered.
+# `CIU_SERVICES_PROFILE` is not a `[ciu.instance.generated]` fact (it is a CLI
+# selection, not a workspace identity value) and stays the one hand-added
+# member on top.
+_CIU_IDENTITY_ENV_KEYS = tuple(GENERATED_FACT_ENV_KEYS.values()) + (
     "CIU_SERVICES_PROFILE",
 )
 
-# The exact target ciu.env keys required to identify the selected record/root.
-_REQUIRED_TARGET_ENV_KEYS = (
-    "REPO_ROOT",
-    "PHYSICAL_REPO_ROOT",
-    "INSTANCE_ID",
-    "DOCKER_NETWORK_INTERNAL",
-    "REPO_NAME",
+# CIU-75: the exact `[ciu.instance.generated]` facts required to identify the
+# selected record/root. `public_fqdn` is deliberately NOT here — CIU derives it
+# only when the workspace declares one, so an empty value is legitimate and
+# requiring it would refuse every FQDN-less instance.
+_REQUIRED_TARGET_FACTS = (
+    "repo_root",
+    "physical_repo_root",
+    "instance_id",
+    "network",
+    "repo_name",
 )
 
 
@@ -1256,43 +2987,50 @@ def _sanitized_target_env(
     """The child environment for the selected instance (S16.6).
 
     Ambient process environment MINUS every CIU root/identity/network/profile
-    key, then overlaid with the target's OWN exact parsed ``ciu.env`` values —
-    never sourced through a shell, never inherited from a sibling. The parsed
-    values must identify the selected record/root: a missing key, or a
-    REPO_ROOT / INSTANCE_ID / network that disagrees with the record, is a
-    refusal, never an invented fallback.
+    key, then overlaid with the target's OWN ``[ciu.instance.generated]``
+    facts read by exact path (CIU-75 — ``ciu.instance.generated.toml`` is the
+    sole instance-fact source; the target's legacy ``ciu.env`` is never
+    consulted) — never
+    sourced through a shell, never inherited from a sibling. Those facts must
+    identify the selected record/root: a missing fact, or a repo_root /
+    instance_id / network that disagrees with the record, is a refusal, never
+    an invented fallback.
     """
     env = {k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS}
-    env_path = record.ciu_root / "ciu.env"
-    from .workspace_env import parse_workspace_env
+    from .workspace_env import (
+        WorkspaceEnvError,
+        generated_facts_path,
+        identity_env_from_facts,
+        read_generated_facts,
+    )
 
+    facts_path = generated_facts_path(record.ciu_root)
     try:
-        parsed = parse_workspace_env(env_path)
-    except (OSError, ValueError) as exc:
-        raise WorktreeError(f"[S16] could not parse {env_path}: {exc}") from exc
-    missing = [k for k in _REQUIRED_TARGET_ENV_KEYS if not parsed.get(k)]
+        facts = read_generated_facts(record.ciu_root)
+    except WorkspaceEnvError as exc:
+        raise WorktreeError(f"[S16] could not read {facts_path}: {exc}") from exc
+    missing = [k for k in _REQUIRED_TARGET_FACTS if not facts.get(k)]
     if missing:
         raise WorktreeError(
-            f"[S16] {env_path} lacks required identity key(s): "
+            f"[S16] {facts_path} lacks required identity fact(s): "
             f"{', '.join(missing)}"
         )
-    if Path(parsed["REPO_ROOT"]).resolve() != record.ciu_root.resolve():
+    if Path(facts["repo_root"]).resolve() != record.ciu_root.resolve():
         raise WorktreeError(
-            f"[S16] {env_path} REPO_ROOT {parsed['REPO_ROOT']!r} does not "
+            f"[S16] {facts_path} repo_root {facts['repo_root']!r} does not "
             f"match the selected instance's CIU root {record.ciu_root}"
         )
-    if parsed["INSTANCE_ID"] != record.instance_id:
+    if facts["instance_id"] != record.instance_id:
         raise WorktreeError(
-            f"[S16] {env_path} INSTANCE_ID {parsed['INSTANCE_ID']!r} does not "
-            f"match the selected record's {record.instance_id!r}"
+            f"[S16] {facts_path} instance_id {facts['instance_id']!r} does "
+            f"not match the selected record's {record.instance_id!r}"
         )
-    if parsed["DOCKER_NETWORK_INTERNAL"] != record.network:
+    if facts["network"] != record.network:
         raise WorktreeError(
-            f"[S16] {env_path} DOCKER_NETWORK_INTERNAL "
-            f"{parsed['DOCKER_NETWORK_INTERNAL']!r} does not match the "
-            f"selected record's {record.network!r}"
+            f"[S16] {facts_path} network {facts['network']!r} does not "
+            f"match the selected record's {record.network!r}"
         )
-    env.update(parsed)
+    env.update(identity_env_from_facts(facts))
     return env
 
 
@@ -1311,7 +3049,8 @@ def _run_child(
 def up_instance(repo_root: Path, logical_name: str) -> int:
     """``ciu worktree up LOGICAL`` — start the selected ready instance exactly.
 
-    Parses that instance's OWN ``ciu.env`` by exact path, builds the
+    Reads that instance's OWN ``[ciu.instance.generated]`` facts by
+    exact path, builds the
     sanitized child environment (:func:`_sanitized_target_env`), and invokes
     CIU's existing up entry point as a subprocess in the instance's CIU root —
     never in-process, so the target's own ``REPO_ROOT``/identity rule honestly.
@@ -1627,18 +3366,32 @@ def _branch_exists(repo_root: Path, branch: str) -> bool:
 
 
 def _runtime_identity(ciu_root: Path) -> tuple[str, str]:
-    from .workspace_env import parse_workspace_env
+    """The (instance_id, network) *ciu env generate* just derived for *ciu_root*.
 
-    env_path = ciu_root / "ciu.env"
+    CIU-75: read from that checkout's own ``[ciu.instance.generated]`` facts
+    file, the sole instance-fact source since 7.7.0. The legacy ``ciu.env``
+    export is written by the same generate and carries the same two values,
+    but is no longer read back by anything inside CIU.
+    """
+    from .workspace_env import (
+        WorkspaceEnvError,
+        generated_facts_path,
+        read_generated_facts,
+    )
+
+    facts_path = generated_facts_path(ciu_root)
     try:
-        values = parse_workspace_env(env_path)
-    except (OSError, ValueError) as exc:
-        raise WorktreeError(f"[S16] could not read generated runtime identity {env_path}: {exc}") from exc
-    instance_id = values.get("INSTANCE_ID", "")
-    network = values.get("DOCKER_NETWORK_INTERNAL", "")
+        facts = read_generated_facts(ciu_root)
+    except WorkspaceEnvError as exc:
+        raise WorktreeError(
+            f"[S16] could not read generated runtime identity from "
+            f"{facts_path}: {exc}"
+        ) from exc
+    instance_id = facts.get("instance_id", "")
+    network = facts.get("network", "")
     if not instance_id or not network:
         raise WorktreeError(
-            f"[S16] {env_path} lacks INSTANCE_ID or DOCKER_NETWORK_INTERNAL"
+            f"[S16] {facts_path} lacks instance_id or network"
         )
     return instance_id, network
 
@@ -1763,14 +3516,15 @@ def create(
     shared_infra: str | None = None,
     shared_infra_services: str | None = None,
     shared_infra_ref_projects: str | None = None,
+    shared_infra_ref_services: str | None = None,
 ) -> WorktreeInstanceRecord:
     """Create a new managed worktree after family-wide collision admission.
 
     Creates ``<primary-git-root>/<worktree_dir>/<display>`` off
-    *base*, then generates that checkout's own ``ciu.env`` — which is what gives
+    *base*, then generates that checkout's own identity facts — which is what gives
     it a distinct ``INSTANCE_ID``, network and container prefix (S2).
     Worktree-local configuration is persisted separately in
-    ``ciu.global.worktree.toml.j2`` and survives env regeneration and clean.
+    ``ciu.global.instance.toml.j2`` and survives env regeneration and clean.
 
     The worktree lives UNDER the repo root deliberately. A consumer whose gating
     test container bind-mounts the repo can then see it for free; a worktree in
@@ -1789,13 +3543,21 @@ def create(
     three, together with a non-empty *profile*, are an all-or-nothing group —
     partial input is a loud :class:`WorktreeError`, never silent inference
     from a compose file. The reference is fully validated (registered, its own
-    ``ciu.env`` network, every declared reference project actually running on
+    overlay-declared network, every declared reference project actually running on
     it) BEFORE any side effect; `create` records the resolved intent into the
     new worktree's own local config overlay but never joins anything itself — the actual
     ``docker network connect`` calls happen later, at ``ciu up`` time, in the
     new worktree's own process (see :func:`connect_shared_infra_after_up`).
     This instance keeps its OWN ``DOCKER_NETWORK_INTERNAL`` throughout; only
     the declared diverging services later gain a SECOND membership.
+
+    *shared_infra_ref_services* (S16.1/CIU-52) is OPTIONAL and, unlike the
+    three above, describes the REFERENCE's services rather than this
+    instance's own: ``alias[,alias=ref_service]``. For each, CIU derives the
+    reference's qualified container name from the reference's OWN rendered
+    config, authenticates it against live Docker state, and records it as this
+    instance's ``topology.services.<alias>.internal_host``. Supplying it still
+    requires the rest of the group; omitting it changes nothing.
     """
     repo_root = Path(repo_root).resolve()
     _validate_name(logical_name, label="logical name")
@@ -1809,7 +3571,11 @@ def create(
         raise WorktreeError("[S16] --branch cannot be empty")
 
     shared_infra_intent: SharedInfraIntent | None = None
-    if shared_infra is not None or shared_infra_services is not None or shared_infra_ref_projects is not None:
+    if (
+        shared_infra is not None or shared_infra_services is not None
+        or shared_infra_ref_projects is not None
+        or shared_infra_ref_services is not None
+    ):
         if not (shared_infra and shared_infra_services and shared_infra_ref_projects and profile):
             raise WorktreeError(
                 "[S16.1] --shared-infra requires --shared-infra-services, "
@@ -1822,6 +3588,7 @@ def create(
             shared_infra=shared_infra,
             shared_infra_services=shared_infra_services,
             shared_infra_ref_projects=shared_infra_ref_projects,
+            shared_infra_ref_services=shared_infra_ref_services,
         )
 
     offset = _ciu_root_offset(repo_root)
@@ -1980,12 +3747,17 @@ def adopt(
     shared_infra: str | None = None,
     shared_infra_services: str | None = None,
     shared_infra_ref_projects: str | None = None,
+    shared_infra_ref_services: str | None = None,
 ) -> WorktreeInstanceRecord:
     """Explicitly take ownership of one registered, unmanaged linked checkout."""
     repo_root = Path(repo_root).resolve()
     _validate_name(logical_name, label="logical name")
     shared_infra_intent: SharedInfraIntent | None = None
-    if shared_infra is not None or shared_infra_services is not None or shared_infra_ref_projects is not None:
+    if (
+        shared_infra is not None or shared_infra_services is not None
+        or shared_infra_ref_projects is not None
+        or shared_infra_ref_services is not None
+    ):
         if not (shared_infra and shared_infra_services and shared_infra_ref_projects and profile):
             raise WorktreeError(
                 "[S16.1] adopt shared-infra options and --profile are all-or-nothing"
@@ -1994,6 +3766,7 @@ def adopt(
             repo_root, shared_infra=shared_infra,
             shared_infra_services=shared_infra_services,
             shared_infra_ref_projects=shared_infra_ref_projects,
+            shared_infra_ref_services=shared_infra_ref_services,
         )
     with _allocation_lock(repo_root):
         if find_instance_record(repo_root, logical_name) is not None:
@@ -2018,12 +3791,12 @@ def adopt(
             base_ref=head.stdout.strip(), state="allocating",
         )
         _write_instance_record(record)
-        if (record.ciu_root / GLOBAL_CONFIG_WORKTREE_OVERRIDES).exists() and (
+        if (record.ciu_root / GLOBAL_CONFIG_INSTANCE_OVERRIDES).exists() and (
             profile or shared_infra_intent is not None
         ):
             _mark_recovery(record, "env-generation-failed")
             raise WorktreeError(
-                f"[S16] {record.ciu_root} already has a worktree override; "
+                f"[S16] {record.ciu_root} already has an instance override; "
                 "refusing to replace it with adopt flags"
             )
         _write_worktree_overlay(record.ciu_root, profile, shared_infra_intent)
@@ -2074,6 +3847,15 @@ def remove(
             "retry, or pass --force to remove anyway (leftovers become your "
             "problem)."
         )
+
+    # S16.9 — ON SUCCESS ONLY. The lease is the evidence that something still
+    # owns this instance's Docker resources, so it is cleared exactly when the
+    # clean that removed them SUCCEEDED (rc == 0). A failed clean reaching here
+    # means --force was passed: the checkout is about to be destroyed with
+    # resources possibly still standing, which is precisely when the ownership
+    # record must NOT be erased.
+    if rc == 0:
+        release_own_lease(ciu_root)
 
     res = _git(["worktree", "remove", str(wt.path)] + (["--force"] if force else []),
                repo_root)
@@ -2169,17 +3951,24 @@ def connect_shared_infra_after_up(
 
     1. Re-resolve *intent.ref_path* against the CURRENT ``git worktree list``
        (the reference may have been removed since `add`); re-read its
-       explicit ``ciu.env``; require its ``DOCKER_NETWORK_INTERNAL`` still
+       explicit ``[ciu.instance.generated]`` facts; require their
+       ``network`` still
        equal *intent.network* (catches a stale recording); refuse any
        declared reference project equal to *compose_project* (a reference
        must belong to the OTHER instance); then re-run the same AND-combined
        reference-liveness check `add` used, so a reference stopped between
        verbs is caught here too.
-    2. For every declared service, require at least one RUNNING container in
+    2. (S16.1/CIU-52) For every recorded *intent.ref_services* entry, re-run
+       the SAME live-name query `add` authenticated the derivation with and
+       require the recorded container to still be present under that service
+       label on the reference network — an `add`-time record is write-once, so
+       a reference re-created under a new identity is caught here rather than
+       silently addressed. A no-op when none is declared.
+    3. For every declared service, require at least one RUNNING container in
        *compose_project* carrying that service's label — a previously joined
        child masquerading as live infra never satisfies this because it
        carries its OWN project's label, not the reference's.
-    3. Only once every precondition above holds does this snapshot the
+    4. Only once every precondition above holds does this snapshot the
        reference network's membership and connect each declared-service
        container ABSENT from that snapshot. On every NON-ZERO connect result,
        re-inspect the network for that SAME container ID (Docker STATE, never
@@ -2192,7 +3981,7 @@ def connect_shared_infra_after_up(
     Never runs ``docker compose down`` on failure: this instance's own stack
     stays up, on its own network, observably not joined.
     """
-    from .workspace_env import parse_workspace_env
+    from .workspace_env import WorkspaceEnvError, read_generated_facts
 
     ref = find_worktree(repo_root, str(intent.ref_path))
     if ref is None:
@@ -2203,18 +3992,19 @@ def connect_shared_infra_after_up(
             "recorded reference, or `ciu down` this instance."
         )
 
-    ref_env_file = ref.path / _ciu_root_offset(repo_root) / "ciu.env"
-    if not ref_env_file.is_file():
-        raise WorktreeError(
-            f"[S16.1] {ref_env_file} does not exist; the shared-infra reference "
-            "is not a usable CIU instance any more."
-        )
+    # CIU-75: the reference's CURRENT network is a fact read, so it comes from
+    # that checkout's own `[ciu.instance.generated]` facts file.
+    ref_ciu_root = ref.path / _ciu_root_offset(repo_root)
     try:
-        ref_env = parse_workspace_env(ref_env_file)
-    except OSError as exc:
-        raise WorktreeError(f"[S16.1] could not read {ref_env_file}: {exc}") from exc
+        ref_facts = read_generated_facts(ref_ciu_root)
+    # CIU-62's three distinct failures — the read (`OSError`), a non-UTF-8 byte
+    # (`UnicodeDecodeError`) and a malformed table — still all refuse; the
+    # reader normalizes them to `WorkspaceEnvError` at the seam so no call site
+    # has to re-derive that the last two are sibling `ValueError` subclasses.
+    except WorkspaceEnvError as exc:
+        raise WorktreeError(f"[S16.1] could not read {ref_ciu_root}: {exc}") from exc
 
-    current_network = ref_env.get("DOCKER_NETWORK_INTERNAL", "")
+    current_network = ref_facts.get("network", "")
     if not current_network or current_network != intent.network:
         raise WorktreeError(
             f"[S16.1] shared-infra reference network changed (recorded "
@@ -2232,6 +4022,15 @@ def connect_shared_infra_after_up(
             )
 
     _check_reference_network_and_projects(intent.network, intent.ref_projects)
+
+    # S16.1/CIU-52: every recorded reference-service address is re-proven
+    # against live Docker state HERE, still inside the every-precondition-
+    # before-any-side-effect region — a container name resolved at `add` time
+    # is a write-once record, and the reference may have been re-created under
+    # a new identity since. A no-op (and zero Docker calls) when none is
+    # declared. Nothing has been connected yet, so a refusal here has nothing
+    # to roll back.
+    _authenticate_ref_services(intent.network, intent.ref_services, recorded=True)
 
     targets: list[tuple[str, str]] = []
     for service in intent.services:
@@ -2340,6 +4139,33 @@ _MAX_CONCURRENT_ENV = "CIU_MAX_CONCURRENT_WORKTREES"
 _MAX_CONCURRENT_DECIMAL_RE = re.compile(r"^[1-9][0-9]*$")
 _BUDGET_LOCK_NAME = "ciu-worktree-budget.lock"
 
+# The CLOSED key vocabulary of `[ciu.worktree]`. An unknown key here has
+# always been a hard refusal rather than a silent ignore, and stays one:
+# a misspelled capacity or lease policy that quietly does nothing is exactly
+# the "defaults are hazards" shape this estate refuses. `exec_targets`
+# (S16.7's per-alias grammar, validated separately by
+# `resolve_exec_targets_config`/`parse_exec_targets`) is a member of this
+# same table too (CIU-69) — its own contents are NOT re-validated here, only
+# its presence as a top-level key is accepted rather than refused.
+WORKTREE_TABLE_KEYS = frozenset(
+    {"max_concurrent_instances", "lease_ttl_hours", "exec_targets"}
+)
+
+
+def _validate_worktree_table(raw: Any) -> None:
+    """Shape + closed-key check for one `[ciu.worktree]` table (S16.3/S16.9)."""
+    if not isinstance(raw, Mapping):
+        raise WorktreeError(
+            f"[S16.3] [ciu.worktree] must be a table, got "
+            f"{type(raw).__name__}: {raw!r}"
+        )
+    unknown = set(raw) - set(WORKTREE_TABLE_KEYS)
+    if unknown:
+        raise WorktreeError(
+            f"[S16.3] unknown key(s) in [ciu.worktree]: "
+            f"{', '.join(sorted(unknown))}"
+        )
+
 
 def primary_worktree_root(repo_root: Path) -> Path:
     """The registered PRIMARY **Git** worktree of *repo_root*'s family (S16.3).
@@ -2436,17 +4262,7 @@ def resolve_max_concurrent_instances(
     """
     file_value: int | None = None
     if raw is not None:
-        if not isinstance(raw, Mapping):
-            raise WorktreeError(
-                f"[S16.3] [ciu.worktree] must be a table, got "
-                f"{type(raw).__name__}: {raw!r}"
-            )
-        unknown = set(raw) - {"max_concurrent_instances"}
-        if unknown:
-            raise WorktreeError(
-                f"[S16.3] unknown key(s) in [ciu.worktree]: "
-                f"{', '.join(sorted(unknown))}"
-            )
+        _validate_worktree_table(raw)
         if "max_concurrent_instances" in raw:
             value = raw["max_concurrent_instances"]
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -2485,20 +4301,61 @@ def resolve_worktree_cap(repo_root: Path) -> int | None:
     moment it tries to enumerate worktrees for a non-``None`` cap it cannot
     actually honour.
     """
+    return resolve_max_concurrent_instances(_primary_worktree_table(repo_root))
+
+
+def _primary_worktree_table(repo_root: Path) -> Any:
+    """The PRIMARY CIU root's raw ``[ciu.worktree]`` table, or ``None``.
+
+    One reader for the whole table, shared by the capacity cap (S16.3) and
+    the lease TTL (S16.9), so the two policies can never disagree about WHICH
+    checkout's configuration is authoritative.
+    """
     repo_root = Path(repo_root).resolve()
-    raw: Any = None
-    if _git(["rev-parse", "--show-toplevel"], repo_root).returncode == 0:
-        root = primary_ciu_root(repo_root)
-        try:
-            root_global = config_model.render_global_chain(
-                root, root, write_rendered=False
-            )
-        except ValueError as exc:
-            if not str(exc).startswith("[ERROR] No global configuration found."):
-                raise
-            root_global = {}
-        raw = root_global.get("ciu", {}).get("worktree")
-    return resolve_max_concurrent_instances(raw)
+    if _git(["rev-parse", "--show-toplevel"], repo_root).returncode != 0:
+        return None
+    root = primary_ciu_root(repo_root)
+    try:
+        root_global = config_model.render_global_chain(
+            root, root, write_rendered=False
+        )
+    except ValueError as exc:
+        if not str(exc).startswith("[ERROR] No global configuration found."):
+            raise
+        root_global = {}
+    return root_global.get("ciu", {}).get("worktree")
+
+
+def resolve_lease_ttl_hours(raw: Mapping[str, Any] | None) -> float | None:
+    """S16.9 — the declared ``[ciu.worktree].lease_ttl_hours``, or ``None``.
+
+    ``None`` (the key absent) means NO lease is ever acquired by ``ciu up``
+    for this project. That absence is the whole additive-safety story: a
+    consumer who configures nothing keeps exactly today's behavior and takes
+    on zero new expiry risk for anything already running. There is
+    deliberately no non-zero default — a default TTL would start silently
+    expiring leases on instances whose operators never opted in.
+    """
+    if raw is None:
+        return None
+    _validate_worktree_table(raw)
+    if "lease_ttl_hours" not in raw:
+        return None
+    value = raw["lease_ttl_hours"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+        raise WorktreeError(
+            "[S16.9] [ciu.worktree] lease_ttl_hours must be a positive "
+            f"number of hours, got {value!r}"
+        )
+    return float(value)
+
+
+def resolve_worktree_lease_ttl(repo_root: Path) -> float | None:
+    """S16.9 — this family's lease TTL, from the PRIMARY CIU root's own
+    ``[ciu.worktree]`` table (same authority as the capacity cap). There is
+    no ambient override: a lease's lifetime is a repository policy, not
+    something a single shell can quietly shorten for one `ciu up`."""
+    return resolve_lease_ttl_hours(_primary_worktree_table(repo_root))
 
 
 @dataclass(frozen=True)
@@ -2525,13 +4382,31 @@ def _resolve_budget_candidates(
 ) -> list[_BudgetCandidate]:
     """S16.3 — pre-lock candidate resolution: translate every git-registered
     worktree into its OWN CIU-root/stack/network/compose-project identity,
-    rendered against that candidate's OWN explicit ``ciu.env`` — never the
-    caller's ambient environment. A candidate whose stack is genuinely
-    absent on its checked-out branch is skipped (logged, not an error);
-    everything else that cannot be resolved truthfully is a loud ``[S16.3]``
-    failure, never evidence of an inactive instance.
+    rendered against that candidate's OWN explicit
+    ``[ciu.instance.generated]`` facts — never the caller's ambient
+    IDENTITY. A candidate whose stack is genuinely absent on its checked-out
+    branch is skipped (logged, not an error); everything else that cannot be
+    resolved truthfully is a loud ``[S16.3]`` failure, never evidence of an
+    inactive instance.
+
+    CIU-75 changed the render environment's SHAPE along with its source, and
+    the change is deliberate. The pre-cutover code passed the candidate's
+    parsed ``ciu.env`` and NOTHING else, so a candidate template referencing
+    any non-identity variable (``$USER_UID``, ``$DOCKER_GID``) got it from
+    that file. The generated facts file carries identity facts only, so the environment is
+    now the ambient process environment MINUS every CIU identity key, PLUS the
+    candidate's own facts — the same rule :func:`_sanitized_target_env` uses.
+    Identity still comes exclusively from the candidate (which is the property
+    this function exists to hold); machine facts, which are identical in every
+    checkout on this host, come live from this process instead of from a file
+    that may predate a rebuild.
     """
-    from .workspace_env import WorkspaceEnvError, parse_workspace_env
+    from .workspace_env import (
+        WorkspaceEnvError,
+        generated_facts_path,
+        identity_env_from_facts,
+        read_generated_facts,
+    )
 
     offset = _ciu_root_offset(repo_root)
 
@@ -2549,23 +4424,31 @@ def _resolve_budget_candidates(
             )
             continue
 
-        env_file = entry.path / "ciu.env"
-        if not env_file.is_file():
+        facts_path = generated_facts_path(entry.path)
+        try:
+            candidate_facts = read_generated_facts(entry.path)
+        # CIU-62: the read (`OSError`), a non-UTF-8 byte (`UnicodeDecodeError`,
+        # a ValueError SIBLING of WorkspaceEnvError rather than a subclass) and
+        # a malformed table are three distinct failures; the reader normalizes
+        # all three to WorkspaceEnvError so covering them here is one name.
+        except WorkspaceEnvError as exc:
+            raise WorktreeError(
+                f"[S16.3] could not read/parse {facts_path}: {exc}"
+            ) from exc
+        if not candidate_facts:
             # A raw git worktree, never registered as a CIU instance.
             continue
-        try:
-            candidate_env = parse_workspace_env(env_file)
-        except (OSError, WorkspaceEnvError) as exc:
-            raise WorktreeError(
-                f"[S16.3] could not read/parse {env_file}: {exc}"
-            ) from exc
-        network = candidate_env.get("DOCKER_NETWORK_INTERNAL", "")
+        network = candidate_facts.get("network", "")
         if not network:
             raise WorktreeError(
-                f"[S16.3] {env_file} has no DOCKER_NETWORK_INTERNAL; "
+                f"[S16.3] {facts_path} declares no instance network; "
                 f"{entry.path} looks like a registered CIU instance whose "
                 "deployment state cannot be truthfully counted."
             )
+        candidate_env = {
+            k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS
+        }
+        candidate_env.update(identity_env_from_facts(candidate_facts))
         if network in network_owners:
             raise WorktreeError(
                 f"[S16.3] DOCKER_NETWORK_INTERNAL {network!r} is registered "

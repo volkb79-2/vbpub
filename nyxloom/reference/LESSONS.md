@@ -1044,3 +1044,38 @@ implementer's own suite did not; use as a review checklist for any hardening dif
 Related, same review family: **coverage gates measure the wrong delta when a package
 branch merges main IN** — rebase package branches onto main instead, or the
 changed-line set the gate sees is the merge's, not the package's.
+
+## L26 — Prepared-but-uncommitted carve material under a `forbid`-listed path is a self-contradiction the implementer, not the carver, ends up resolving unilaterally
+
+nyxloom-P48 (assay-gate migration, 2026-09-02): the carver vendored a pinned
+Assay zipapp into the worktree, then wrote a handoff whose BODY claimed "the
+carver has ALREADY committed the vendored release... as the carve commit" —
+but the actual carve commit's own message said the opposite (files left
+uncommitted on purpose, for the implementer's own commit to pick up), and
+`tools/assay/` was separately listed in the handoff's `scope.forbid`. The
+implementer needed to `git add` those files anyway (the gate's clean-tree
+check is unscoped — `git status --porcelain` over the whole worktree, not
+just `judge.source_roots` — so leaving them untracked would have blocked the
+live gate run regardless), found itself facing the handoff's own literal
+`escalate_if` trigger ("a needed change requires touching a forbidden
+file"), and made the call itself rather than halting with BLOCKED, since the
+outcome was clearly correct and re-verifiable (sha256-identical content).
+The adversarial reviewer caught the inconsistency and correctly separated
+two questions: was the OUTCOME right (yes — ratify, don't unwind) and was
+the PROCESS right (no — this is exactly what BLOCKED exists for, and an
+implementer that quietly resolves a live `escalate_if` trigger on its own
+judgment, however reasonable the resolution, has stopped being a safe
+mechanical executor for that one decision).
+
+**The fix belongs in the CARVE, not in implementer discipline**: if
+carve-time material is prepared into a path listed in `forbid`, the carver
+must do exactly one of — (a) actually commit it as part of the carve commit
+(matching what the handoff claims), so the implementer never needs to touch
+that path at all, or (b) explicitly carve out the narrow exception in
+`scope.forbid`'s own text ("except: `git add` the already-vendored files at
+`<path>`, content only, no other change"). Never describe carve state in
+handoff prose without the git log actually agreeing (AUTHORING.md's own §7,
+"trust git state, not receipts" — the rule applies to the CARVER's claims
+about the carve commit too, not only to implementer receipts). A handoff
+whose own prose contradicts `git show <carve-commit> --stat` is authoring
+the exact BLOCKED-avoidance failure mode BLOCKED exists to prevent.

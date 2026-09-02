@@ -1,0 +1,31 @@
+# infra/redis-core/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `redis_core` (bound by ciu.toml [realization.redis_core]) = the
+# `redis` LogicalService. Consumers bind redis.redis (controller, the workers,
+# webapp_server, test_runner, the gate's `clean` environment) and never this
+# stack by name. DERIVED, never written here: the identity
+# (dstdns-<instance>-redis-core-redis), the network, the wave, every consumer's
+# resolution (REDIS_HOST/REDIS_PORT injected on THEIR side), the Vault edge, and
+# the fact vault:secret/redis/password — it derives from the `store = "vault"`
+# secret below (S10.1.2) and is not repeated in a `provides` list. The v7
+# `requires = ["stack:infra/vault:healthy"]` is gone: the same secret derives
+# the secret→vault edge (S8.3).
+
+[ciu_stack.redis]
+image = "redis:8-alpine"
+endpoints.redis = { port = 6379, protocol = "tcp" }   # instance network; published on a host address only where a cross-host binding with data reaches it (S7.4.1)
+[ciu_stack.redis.hostdir]
+data = ""                            # "" = ciu-generated host path
+# env delivery kept: redis-server takes --requirepass as an argument; ciu check
+# stage 9 lists it as restart-bound. The minted value is what every consumer's
+# `from = "vault", path = "redis_password"` reads — their minter edge points here (S8.3).
+[ciu_stack.redis.secrets]
+redis_password = { from = "generate", store = "vault", path = "redis_password", delivery = "env", env_name = "REDIS_CORE_SECRETS_REDIS_PASSWORD" }
+
+[hooks]
+pre_compose = []
+# ACL users from [registry.redis.users] (usernames + literal channel/key
+# permissions), cross-checked against the [pubsub]/[queue_keys] user tables — all
+# in the hook's context (S12.2), as are this container's identity and the
+# env-delivered password. A plain string entry: ACL users are no TypedFact kind
+# (S5.6), so there is nothing to declare in `provides`.
+post_compose = ["./post_compose_redis.py"]

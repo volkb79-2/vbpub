@@ -76,6 +76,207 @@ failing safe, and because the warning text is the teaching moment for
 reusing another instance's infra (per-service selective join with validation),
 not whole-instance network inheritance.
 
+## Why `dev`/`worktree` refuse an ambient REPO_ROOT that disagrees with the derived root (CIU-53)
+
+The section above closes the masked-default hazard for the identity tuple
+`env generate` writes. `REPO_ROOT` itself carries the SAME hazard one level
+up, for a DIFFERENT check: `dev.resolve_repo_root` (consumed by `ciu dev` and
+every `ciu worktree *` verb) decides which repo a command operates on in the
+first place, before any identity is derived or read. The documented
+convenience pattern — a login shell sourcing a checkout's `ciu.env` — means an
+operator's or agent's shell can carry ANOTHER checkout's `REPO_ROOT` while
+they stand inside a completely different, real CIU repo. The pre-fix
+resolver checked that ambient value before even `--define-root`, so it
+silently outranked both an explicit flag AND a successful derivation from
+where the invocation actually happened — this is exactly how an operator
+standing in one repo, with no `--define-root`, had a `ciu worktree list`
+answered with an unrelated sibling checkout's worktrees.
+
+The fix reorders and extends the S2.7 refined-precedence pattern
+(`_compute_network_name` above): `--define-root` always wins outright (no
+consistency check — an explicit flag is not second-guessed); otherwise CIU
+derives by walking up from cwd for `ciu.global.defaults.toml.j2`. Where
+`env generate`'s identity tuple WARNS on a mismatch and proceeds with the
+derived value (the value is about to be freshly written to `ciu.env` anyway),
+`resolve_repo_root` REFUSES instead: it feeds destructive verbs directly
+(`worktree rm`, `branches -y`, `clean`) in the SAME invocation, with no
+freshly-generated file downstream to correct a wrong guess. Silently picking
+either value — the ambient one (today's bug) or the derived one (a new,
+different surprise for an operator who set `REPO_ROOT` on purpose for a
+legitimate reason) — trades one masked default for another. A hard stop
+naming both paths and three remedies (unset `REPO_ROOT`, pass
+`--define-root` explicitly, or `cd` into the intended repo) is the only
+response that never silently operates on the wrong repo. Only when the
+walk-up finds NOTHING at all — cwd is not inside any CIU repo, so there is no
+derived answer to disagree with — does CIU fall back to ambient `REPO_ROOT`,
+unchanged from today: this is the one case where trusting an already-sourced
+`ciu.env` from an unrelated location is a reasonable convenience rather than
+a masked default, since there is no different, correct answer being hidden.
+
+## Why identity facts moved into a real, gitignored FILE — not a Jinja global (CIU-60)
+
+The two sections above close the ambient-trust hazard for the values
+`env generate` DERIVES and for the resolver that decides WHICH repo a verb
+operates on. This one closes it for the facts a TEMPLATE consumes about the
+workspace that was already discovered — the last leg of the same question an
+operator asked directly: *should the `env` / `ciu.global.defaults.toml.j2`
+usage be reconsidered for every `ciu` verb?*
+
+The gap was real and asymmetric. Hooks stopped trusting ambient environment in
+S9.3: a hook receives `ctx.instance_id`/`ctx.network` read from THIS
+workspace's own record by exact path — `ciu.env` at the time, the
+`[ciu.instance.generated]` facts file since CIU-75 (see the section below). Jinja template rendering never got
+that treatment — S3.2's `env` context is still raw `os.environ`. So the exact
+scenario CIU-41 and CIU-53 were filed over (a login shell that once sourced a
+sibling checkout's `ciu.env`, which is a *documented* convenience) renders a
+template's `{{ env.PHYSICAL_REPO_ROOT }}` as the OTHER checkout's host path —
+silently, into a bind mount, with no error anywhere.
+
+The obvious fix was to inject the facts into the render context as fresh Jinja
+globals (`ciu.physical_repo_root` and friends, computed per render). That was
+proposed and **rejected**, correctly: it manufactures a variable that appears
+from nowhere, backed by no file, that an operator cannot inspect, diff, or
+`cat` — the "magically available var" hazard this whole line of work exists to
+remove. Trading an ambient value for an invisible one is not a fix; it just
+moves where the surprise lives.
+
+What shipped instead reuses a mechanism that was already there, already
+gitignored, already merged into every render, and already proven out by CIU-52
+for a different field: the per-checkout overlay (then named
+`ciu.global.worktree.toml.j2`). `ciu env generate` upserted one CIU-owned table
+into it, `[ciu.instance.generated]`, carrying the same six values it just
+wrote to `ciu.env`, from the same in-memory tuple. Templates then read them
+the way they read every other config value, through the ordinary merge chain,
+with no new context-building code anywhere. Three properties fall out of that
+choice rather than having to be engineered:
+
+- **Every value is backed by a file.** `cat ciu.instance.generated.toml` shows
+  exactly what CIU derived for this checkout. A wrong render is now diffable.
+- **The primary checkout is covered for free.** `render_global_chain` reads
+  this file unconditionally by exact path, with no S16 instance-record gating,
+  so the write side does not gate either — which matters, because the main
+  workspace is where the operator was standing when they hit the bug, and a
+  worktree-only fix would have left exactly that case broken.
+- **`ciu clean` already preserves it** (S3.1b), so the facts survive a
+  teardown; a full reset is the explicit `--vanilla` opt-in.
+
+The rendered `ciu.global.toml` was considered as the destination and rejected
+on a mechanical fact, not taste: it has no state preservation. Only a stack's
+own `ciu.toml` preserves a `[state]` table across re-render (S3.4); the global
+rendered file is regenerated whole from its source layers on nearly every
+verb, so anything written directly into it that is not re-derived identically
+every time is silently lost. `ciu.global.toml.j2` was rejected because it is
+committed — writing machine-specific host paths into a tracked file is how one
+developer's mount path reaches everybody.
+
+The write was a **surgical text replace of that one table**, not a
+`tomllib` parse plus a `tomli_w` dump of the whole file. A full round-trip
+would carry every VALUE across correctly and destroy every comment and every
+hand-chosen bit of formatting on the way — in a file S3.1b explicitly invites
+operators to edit. Owning exactly the bytes between the table's own header and
+the next table (minus the trailing comment run that belongs to that next
+table) was what let CIU rewrite its facts on every single `env generate`
+without ever touching a line a human wrote.
+
+## Why that mechanism was then deleted rather than hardened (ciu-P47)
+
+Everything above is true of the design as it shipped, and the surgical replace
+did its job. It was still the wrong shape, for a reason that has nothing to do
+with whether the implementation was correct: **it existed only because two
+owners shared one file.** A byte-level scan for a table header, a scan for the
+next table, and a walk back over the trailing comment run are three chances to
+be subtly wrong about a file whose contents CIU does not control — and the
+docstring had to carry a known, accepted limit (a line reading exactly
+`[ciu.instance.generated]` inside a multi-line string elsewhere in the file
+would be mistaken for the header).
+
+ciu-P47 removed the shared ownership instead of hardening the scan. The
+CIU-owned facts moved to `ciu.instance.generated.toml`, a file nothing but CIU
+ever writes, so the writer became a full-file rewrite with no preservation
+logic at all, and the operator's own file — renamed
+`ciu.global.instance.toml.j2` in the same change, because every checkout is an
+instance and not every checkout is a git worktree — gained a stronger
+guarantee than the surgical replace could give it: CIU has no writer for it.
+
+The general lesson, which outlives this file pair: when a mechanism exists to
+make two owners safe in one place, ask whether the two owners have to be in one
+place. Splitting is usually cheaper than the machinery for sharing, and it
+converts a property you have to keep proving into one that is true by
+construction.
+
+## Why the SECOND record then had to become the ONLY one read (CIU-75)
+
+CIU-60 above left two records of the same six facts: `ciu.env`, which CIU
+itself read, and the generated table, which templates read. Written together
+from one in-memory tuple, so they agree at birth — and nothing anywhere
+noticed when they later disagreed. That is the shape this codebase keeps
+finding: not a wrong value, but two places a value can come from and no rule
+about which wins.
+
+The v8 proposal's F2 fork settled it in the direction the estate already
+argues for — a real file, in this repo root, that you can `cat` — and CIU-75
+backported it: **the table is the only record CIU reads instance identity
+from**, and `ciu.env` becomes an export nobody inside CIU consults for
+identity. `ciu env generate` keeps writing it, unchanged, because a shell
+`source`ing it is a legitimate consumer and breaking every one of those on the
+same day would be gratuitous.
+
+Two design choices in that cutover are worth the ink, because both look
+arbitrary until you try the alternative.
+
+**The reader is a direct parse of CIU's own record, not a config render.**
+The obvious implementation is "render the merged chain and read
+`ciu.instance.generated`". It fails on its own terms, and the reasons survive
+ciu-P47's file split unchanged: six of the twelve call sites read a checkout
+that is NOT this process's repo root (a shared-infra reference, a budget
+candidate, a reap group) whose committed chain may legitimately be absent or
+broken; and the record is merged last, so its own bytes ARE the merged value —
+a render could only agree with it.
+
+What DID change is how that "readable with no context at all" property is
+obtained. At CIU-75 the facts were a table inside the operator's own Jinja
+overlay, so the reader had to *slice* to CIU's own block before parsing — a
+Jinja `{% if %}` or a bare `$VAR` an operator wrote elsewhere in that file
+would otherwise have broken the identity read, and the consumer helper
+published in `docs/CONSUMERS.md` §11b had to do the same slicing for the same
+reason. ciu-P47 removed the cause instead of the symptom: the facts live in
+`ciu.instance.generated.toml`, which is plain TOML, has no operator content in
+it and is not a template, so both readers are now an ordinary whole-file
+`tomllib` parse and the slicing is gone from both. See "Why that mechanism was
+then deleted rather than hardened" above for why the shared file was split
+rather than the slicing hardened.
+
+**Moving the twelve reads was not the cutover — the process environment was.**
+The first implementation migrated all twelve call sites, documented the
+boundary, and was still wrong end-to-end: STEP 1 of every verb seeded
+`os.environ` from `ciu.env` and seeded it *skip-if-present*, so an inherited
+value was never displaced. Around 26 internal sites read those keys straight
+from ambient, and so does every `$VAR` in a rendered config — the shipped
+`network_name = "$DOCKER_NETWORK_INTERNAL"` among them. The documented
+convenience of a login shell sourcing a sibling checkout's `ciu.env`
+therefore still won a real render, and containers would have joined the
+sibling's network: CIU-41's hazard, surviving in the one place a per-site
+migration cannot reach. The fix seeds the six facts from the table
+**unconditionally** — override, never skip-if-present, because skip-if-present
+only helps in the case that does not bite.
+
+That override is a deliberate behaviour break: exporting `INSTANCE_ID` no
+longer steers a run. It has to be. "The record is authoritative *unless* your
+shell disagrees" is not an authority; it is the two-records problem again with
+extra steps. The way to change identity is to change the record —
+`ciu env generate`, which still honors a pre-set value when it *agrees* with
+what it derives (S2.7's refined precedence), or the table itself.
+
+The lesson generalizes past this feature: **a cutover is complete when the
+old source cannot influence the answer, not when every direct read has been
+rewritten.** The direct reads were the visible half. The process environment
+was the half that carried the bug, and it was invisible to an oracle that
+drove the migrated functions directly — and to every other test in the suite,
+because `tests/conftest.py` scrubs ambient identity before each one. Proving a
+cutover therefore needs an oracle of a different kind from the one that proves
+each site: a real verb, a hostile ambient value, and an assertion about what
+the render actually saw.
+
 ## Why templates see `ciu.*` selection facts but nothing is persisted (CIU-44)
 
 A feature flag like reverse-proxy's "enable the MCP proxy if pwmcp is
@@ -122,7 +323,8 @@ survived a printed `clean complete`. Three shapes were considered:
 2. **Keep the basename fallback, computed and passed as `-p`** — up/clean
    agree by construction, but the cross-checkout collision class survives.
 3. **Derive the name from workspace identity** (`REPO_NAME-INSTANCE_ID-stack`
-   from THIS checkout's `ciu.env`, exact-path parsed) — adopted. Unique per
+   from THIS checkout's own record, exact-path read — `ciu.env` then, the
+   generated table since CIU-75) — adopted. Unique per
    checkout AND per stack; up and clean call the same function; a checkout
    that cannot produce the name refuses loudly instead of inventing one.
 
@@ -133,6 +335,47 @@ their old-named objects until migrated once by hand (CONSUMERS.md §11); the
 S8.7 migration guard still catches the collision on the next tagged `up`.
 The S16.1 shared-infra join refusal fell out as dead code — it existed
 because the fallback's name was unknowable, and now nothing is.
+
+## Why bare `hostname:` / `internal_host` defaults are dangerous (CIU-48/CIU-49, §3.6 cockpit-alias-ambiguity)
+
+Docker independently registers **two** network-resolvable DNS aliases for a
+container: the compose service KEY (always, automatically — CIU-51, a
+separate, v8-scale item this section does NOT eliminate) and whatever value a
+`hostname:` line sets. Both are looked up the same way by anything on the
+network. When two CIU-deployed instances of the *same stack shape* coexist on
+a shared/joined network — the exact `ciu worktree` + `--shared-infra`
+scenario S16.1 exists to support — a **bare** value on either axis (a
+`hostname:` literally set to the plain service name, or an
+`internal_host` config default rendering the plain service name) resolves to
+*whichever* instance's container Docker's resolver happens to answer with:
+non-deterministic from the caller's perspective, and silent — no error, no
+warning, just occasionally the wrong instance's data. This is the §3.6
+cockpit-alias-ambiguity hazard (matching the dstdns filing's own term), named
+here so a reader can find the same term in `KNOWN_ISSUES_TODO_BACKLOG.md`'s
+CIU-48/CIU-49 history.
+
+```
+# before — bare, ambiguous once a second instance joins the network
+hostname: vault
+
+# after — qualified with the SAME identity facts container_name() already
+# uses, unique per (project, environment_tag) pair
+hostname: {{ deploy.project_name }}-{{ deploy.environment_tag }}-vault
+```
+
+Both `hostname:` (a compose template's own declared value, CIU-48) and
+`topology.services.<name>.internal_host` (an application-config default,
+CIU-49) are values CIU's render layer already has the qualifying identity
+facts (`deploy.project_name`/`deploy.environment_tag`) to derive uniformly —
+exactly the facts `container_name()` (`src/ciu/deploy.py:138-151`) already
+uses, so qualifying them is not a new derivation, only reusing the existing
+one instead of leaving the field bare. **What this does NOT cover:** Compose's
+automatic bare service-key alias is a mechanism Compose itself creates with
+no documented per-network suppression (CIU-51) — nothing in this package
+removes it. Qualifying `hostname:`/`internal_host` closes the two
+consumer-controllable value defaults; the service-key alias remains available
+regardless (so intra-stack bare-name reachability is not lost), and closing
+it fully is out of scope here.
 
 ## Why provenance declares vendor images by reference, not digest (CIU-39)
 
@@ -217,8 +460,9 @@ PRIMARY checkout, so a naive `cd <worktree> && ciu up` would argue about which
 instance is real, and could act on the wrong one.
 
 Both `worktree up` and `worktree exec` therefore build the child environment
-from the SELECTED instance's own `ciu.env`, by exact path, after stripping
-every CIU identity key from the ambient environment. The selected value must
+from the SELECTED instance's own facts, read by exact path (`ciu.env` before
+CIU-75, `[ciu.instance.generated]` since), after stripping every CIU identity
+key from the ambient environment. The selected value must
 agree with the durable record (`REPO_ROOT` = the record's CIU root, and the
 record's `INSTANCE_ID`/network) — a mismatch refuses rather than running with
 a mixed identity. This is the same "derive or read, never invent" rule as

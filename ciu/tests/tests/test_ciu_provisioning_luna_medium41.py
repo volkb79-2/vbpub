@@ -19,11 +19,14 @@ def test_probe_ref_pg_accepts_successful_docker_query(monkeypatch, tmp_path):
 
     def docker(argv, **kwargs):
         seen.append((argv, kwargs))
-        return SimpleNamespace(returncode=0, stdout=" 1\n")
+        return SimpleNamespace(returncode=0, stdout=" 1\n", stderr="")
 
     monkeypatch.setattr(procutil, "docker", docker)
 
-    result = provisioning.probe_ref("pg:db/app", {}, tmp_path)
+    result = provisioning.probe_ref(
+        "pg:db/app", {}, tmp_path,
+        stacks={"postgres": {"provides": ["pg:db/app"]}},
+    )
 
     assert result.satisfied is True
     assert seen[0][0][:3] == ["exec", "postgres", "psql"]
@@ -36,11 +39,14 @@ def test_probe_ref_minio_accepts_successful_docker_result(monkeypatch, tmp_path)
 
     def docker(argv, **kwargs):
         seen.append((argv, kwargs))
-        return SimpleNamespace(returncode=0, stdout="user info\n")
+        return SimpleNamespace(returncode=0, stdout="user info\n", stderr="")
 
     monkeypatch.setattr(procutil, "docker", docker)
 
-    result = provisioning.probe_ref("minio:user/worker", {}, tmp_path)
+    result = provisioning.probe_ref(
+        "minio:user/worker", {}, tmp_path,
+        stacks={"minio": {"provides": ["minio:user/worker"]}},
+    )
 
     assert result.satisfied is True
     assert seen[0][0] == [

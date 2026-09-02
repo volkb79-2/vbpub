@@ -45,7 +45,7 @@ milestones:
   target_product_version: 1
   features:
   - F008
-  status: planned
+  status: done
 - id: M7
   title: New computed methods
   target_product_version: 1
@@ -120,9 +120,25 @@ before the first language is qualified) in order to design schema v5 once for
 SQL and Go together instead of twice; A-248 had moved release ahead of the
 second language.
 
-## M6 — Go, honestly (PLANNED)
+## M6 — Go, honestly (DONE, 2026-09-02)
 
-**Delivers F008's three absent criteria, as the P27 re-carve through P32.**
+**Delivered F008's three absent criteria, as the P27 re-carve — carried by one
+wave (Wave C) across six generations rather than the planned P27→P32 chain.**
+F008 is `shipped`: A3 (statement granularity, proven through the shipped CLI
+against the real toolchain), A4 (the fixtures are real toolchain output and
+their expectations are the oracle's), A5 (qualified on srdm's own tree at
+`10b174a5..83c2ff79`, against its own `covergate`, with every disagreement
+classified). Both named blockers below were handled inside the re-carve exactly
+as this section required; the record of how is `reports/assay-WAVE-C-go-*`.
+
+Two findings worth carrying out of it, because neither was predicted here:
+`assay run` could not judge ANY real Go module until the module path was
+derived from `go.mod` (B059/A-404), and the statement join dropped all but the
+last record of a repeated block, which only a `-coverpkg=./...` profile from a
+real multi-package project exposes (B061). Both were found by running the thing
+rather than by reading it.
+
+The original plan, kept for the record:
 
 Go still comes after SQL, by A-219, and now after ship as well. Two named
 blockers must be handled inside the re-carve, and both are already documented

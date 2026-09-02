@@ -1760,6 +1760,130 @@ regression in this mechanism.
 (the black-box symptom, found first, from a different worktree),
 `dstdns/nyxloom-trove/decisions.md` D-193, `dstdns@08b789f5` (the shipped fix).
 
+**Recurrence 2026-08-29 (dstdns P138 code review), priority evidence — same
+mechanism, second filename, same one-line fix.** `run-gate assay`/`assay-dlq`
+false-refused `NO_MEASUREMENT/DIRTY_TREE` on `ciu.global.worktree.toml.j2`, a
+different CIU-generated per-worktree render input than `ciu.worktree-instance.json`
+above, same untracked-outside-committed-`.gitignore` shape. Confirmed the file
+is genuinely absent from `.gitignore` before fixing. Fixed identically:
+`dstdns@5c8c14c6` adds the line to dstdns's committed `.gitignore`. No new
+mechanism, no assay-side change needed — filed here as the anticipated
+recurrence this entry's own closing note called for ("if the symptom recurs,
+re-verify... most likely cause is a stale/different commit, not a
+regression"). Worth CIU's own attention (not filed there, dstdns provenance
+only): every new CIU-generated per-worktree render-input filename repeats
+this exact gap until it's added to the ignore file by hand, one file at a
+time, after someone hits it.
+
+**Recurrence 3, 2026-08-30 (assay B018/B019/B035 wave, in VBPUB'S OWN
+worktree) — the first occurrence outside dstdns, and it reds assay's own
+registered gate.** `tools/tester-unified-gate.sh`'s self-hosted lane refused
+`NO_MEASUREMENT/DIRTY_TREE` in
+`/workspaces/vbpub/.worktrees/assay-v8-synergy-wave` with a tree that
+`git status --porcelain` reported as completely clean — including the gate's
+own newly added post-lane status diagnostic, which printed nothing. The file
+is `ciu.worktree-instance.json`, i.e. **recurrence 1's original filename**,
+excluded by `/workspaces/vbpub/.git/info/exclude:18` (`/ciu.worktree-instance.json`)
+and by nothing committed; `git check-ignore -v` names that source directly,
+and `git ls-files --others --exclude-per-directory=.gitignore` — assay's own
+query — lists it. `vbpub/.gitignore` does carry `ciu.env` (line 163) but not
+this one.
+
+Two things this recurrence establishes that the first two did not:
+
+1. **The fix is per-REPOSITORY, and vbpub never got it.** `dstdns@08b789f5`
+   and `dstdns@5c8c14c6` fixed dstdns's committed `.gitignore`. vbpub's was
+   never touched, so the identical gap sat unnoticed here until a wave
+   happened to run the registered gate from a ciu-created worktree. **Both**
+   filenames are present and unignored in this worktree, and the second is in
+   a worse state than the first: `ciu.global.worktree.toml.j2` (recurrence
+   2's filename) is excluded by NOTHING — not the committed `.gitignore`, not
+   `.git/info/exclude` — so it shows as a plain `??` in ordinary `git status`,
+   where `ciu.worktree-instance.json` stays hidden.
+
+   **CORRECTED after round-1 review (m1).** This paragraph originally went on
+   to say the `.j2` "reds the gate's own pre-flight (`assay has uncommitted
+   changes`) before assay is ever reached". That is **wrong**, and it was a
+   reconstruction rather than a measurement. The pre-flight is pathspec-limited
+   — `git -C "$worktree" status --porcelain=v1 -- assay` — and the `.j2` sits
+   at the worktree ROOT, outside `assay/`, so it never reaches it. Re-measured
+   with the file restored:
+
+   ```
+   plain status:                 ?? ciu.global.worktree.toml.j2
+   pre-flight query (-- assay):  (empty)      <- NOT tripped
+   assay's own dirty query:      ciu.global.worktree.toml.j2
+   ```
+
+   The pre-flight failure actually seen during this wave came from an
+   uncommitted edit to `tools/tester-unified-gate.sh`, which IS under `assay/`,
+   and was misattributed to this file. **Both files red the LANE via
+   `git.dirty_paths`; neither reaches the shell pre-flight.** The operational
+   conclusion (move both aside) is unchanged. The diagnosis is not, and a
+   recurrence entry whose entire value is an accurate diagnosis must not carry
+   a plausible-sounding wrong one into a fourth occurrence.
+
+   The two-line fix (both names in
+   vbpub's committed `.gitignore`, alongside the `ciu.env` line already
+   there) is NOT taken in this wave: `.gitignore` at the vbpub root is
+   outside this branch's assay subtree and belongs to whoever owns the estate
+   root, and the brief scoping this wave excludes it. Flagged for the
+   reviewer/controller as a two-line follow-up rather than done unilaterally.
+2. **This entry's own "if the symptom recurs, re-verify against the current
+   `.gitignore`" instruction is now three-for-three**, and each time the
+   answer has been the same missing line. The per-file, after-someone-hits-it
+   loop that recurrence 2 flagged for CIU's attention is not hypothetical
+   anymore — it has now cost three separate investigations across two repos,
+   the third of which presented as an unexplained gate failure in a wave that
+   had nothing to do with git ignore rules.
+
+Workaround used to get a real gate run in this wave (recurrence 1's, verified
+again): move the file out, run the gate, move it back. Assay-side behaviour is
+correct and unchanged — A-177's refusal to honour `.git/info/exclude` is the
+whole point, and a fix that made assay honour it would reopen the hole that
+rule exists to close.
+
+**RESOLVED 2026-08-30, same day, upstream and not by this wave.**
+`vbpub@8caf1c24` "fix(vbpub): gitignore CIU per-worktree render artifacts
+(B017, third recurrence)" adds BOTH `ciu.worktree-instance.json` and
+`ciu.global.worktree.toml.j2` to vbpub's committed `.gitignore`, with a
+comment naming this recurrence and the two dstdns precedents — i.e. the exact
+two-line fix the note above flagged rather than took. vbpub now carries what
+dstdns has carried since `dstdns@08b789f5`/`dstdns@5c8c14c6`. The assay branch
+that found it (`feature/assay-b018-b019-b035-v8-synergy`) predates that commit
+and therefore does not contain it; a merge in either direction picks it up.
+
+Two refinements to the report above, recorded so the entry is not overstated:
+
+* ~~**The files are TRANSIENT, not permanent dirt.** A ciu invocation observed
+  at 01:38 regenerated this worktree's `ciu.env` and removed both render
+  inputs outright.~~ **RETRACTED after round-2 review (R2-M3). No ciu ran.**
+  That was the round-1 REVIEWER moving both files aside to get a gate run and
+  restoring them afterwards — their review's own appendix says so in as many
+  words, in a document already read by the time this bullet was written. The
+  01:38 `ciu.env` mtime is their `cp` restoring the file, not a regeneration:
+  the content is byte-identical to the original, which a regeneration would
+  not be, and the file dates from worktree creation (23:07:10) otherwise.
+  There is no independent evidence of a ciu process anywhere — the claim was
+  inferred from one mtime.
+
+  **This retraction matters because the claim was load-bearing, not
+  decorative.** It converted a three-times-recurring, reproducible false
+  `DIRTY_TREE` into an "intermittent" one and softened the warning to a future
+  reader from *will* hit this to *may*. **Restore the strong reading: on a
+  ciu-created worktree whose repository lacks the committed `.gitignore`
+  entries, this reproduces every time.**
+* **The mechanism itself was directly observed, twice**, and is untouched by
+  the retraction above: `git check-ignore -v` named
+  `/workspaces/vbpub/.git/info/exclude:18` as the only rule hiding the file,
+  and `git ls-files --others --exclude-per-directory=.gitignore` — assay's own
+  query — listed it while `git status --porcelain` reported nothing.
+
+This entry's standing instruction is unchanged for a FOURTH occurrence: any new
+CIU-generated per-worktree filename repeats the gap until it is added to the
+committed ignore file. That is now three filenames across two repositories,
+each found the same expensive way.
+
 ---
 
 ## B018 — CIU V8 preparation: judge provenance in every verdict
@@ -1779,15 +1903,49 @@ CIU V8 depends on this to bind LaneResult evidence to the verified judge it
 resolved from `[testing.judge]`; without it, central tool resolution can verify
 a download but cannot prove which binary emitted the verdict.
 
+**Status:** **FIXED 2026-08-30 (A-327, extended by A-332)**, on branch
+`feature/assay-b018-b019-b035-v8-synergy`, unmerged and unreleased at the time
+of writing — it ships in the next release, and this line deliberately names no
+version until one exists. `judge_provenance` is an optional top-level verdict
+object that is **absent-or-complete, never partial**; `assay run
+--require-judge-provenance` turns an unidentifiable invocation into an
+`ERROR`/`BAD_LANE_CONFIG` refusal before any work runs. The identification
+logic was designed against four real invocations (wheel install, zipapp,
+bare source checkout, and an installed distribution shadowed by a source tree
+on `sys.path`), not against a reading of the `importlib.metadata` docs — the
+shadow guard exists because measurement found that a resolvable distribution
+does not prove the running code came from it.
+
 ### Acceptance
 
-- [ ] verdict schema/model records judge name, version, digest algorithm, and
-      digest;
-- [ ] distribution invocation records the installed artifact's actual SHA-256;
-- [ ] unidentifiable invocation fails loudly rather than emitting a partial
-      identity;
-- [ ] existing v7 consumers tolerate the optional fields before V8 requires
-      them.
+- [x] verdict schema/model records judge name, version, digest algorithm, and
+      digest — plus `artifact` (`wheel`/`zipapp`), which names *which* release
+      file the digest is of; all five required when the object is present.
+      Registered in all three layers in one commit (model `verdict.py:1406`,
+      raw verifier `verify.py:1059`/`:1327`, packaged schema `$defs`), closing
+      the A-323 class where a field lived in two layers for a whole release;
+- [x] distribution invocation records the installed artifact's actual SHA-256
+      — proven three ways, two outside pytest: against a built wheel
+      (`test_standalone.py`), against a built `.pyz`
+      (`test_distribution_build_release.py`), and by the registered gate
+      itself, which `sha256sum`s the wheel host-side and compares
+      (`ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel`);
+- [x] unidentifiable invocation fails loudly rather than emitting a partial
+      identity — the field is omitted entirely (A-051 "omitted, never null"),
+      the reason goes to the diagnostics stream, and
+      `--require-judge-provenance` makes it fatal for callers that require
+      attributable evidence. Every refusal path is covered explicitly, not
+      just the happy one;
+- [~] existing v7 consumers tolerate the optional fields before V8 requires
+      them — **NOT MET, and it cannot be, because B035's hard cut ships in the
+      same release.** The field is genuinely optional and additive in v7 terms,
+      which is what made it safe to add without a bump of its own; but a v7
+      consumer handed one of these verdicts refuses the whole document on
+      `schema_version` (A-170) long before it reaches `judge_provenance`. This
+      criterion assumed B018 would land in a v7 release ahead of the V8 cut,
+      and the wave batched them together instead. Annotated rather than ticked
+      (see the wave report §2 and the review's N1); the consumer-facing
+      consequence is documented in `docs/CONSUMERS.md`.
 
 ## B019 — CIU V8 preparation: gate-request-supplied comparison base
 
@@ -1805,13 +1963,37 @@ configuration refusal, never a fallback to HEAD or another invented value.
 This keeps static lane policy portable across branches/worktrees while letting
 CIU V8 own branch-aware orchestration and execution manifests.
 
+**Status:** **FIXED 2026-08-30 (A-328)**, on branch
+`feature/assay-b018-b019-b035-v8-synergy`, unmerged and unreleased at the time
+of writing — it ships in the next release, and this line deliberately names no
+version until one exists. A lane declares `judge.base_source = "request"`; the
+invoking gate supplies `assay run|plan --request-base REF`. The design decision
+worth reading is that **precedence was refused rather than picked**: with both
+present, whichever side lost would be config nothing reads, which is A-062's
+named defect class, so declaring both is refused at load. Validated against
+CIU §10.10 as written, and dstdns's five `judge.base` lanes migrate by deleting
+one line. The one estate lane that pays a real cost is `ciu/assay.toml:49`
+(`base = "origin/main"`) — see the migration note in `docs/CONSUMERS.md`.
+
 ### Acceptance
 
-- [ ] lanes can distinguish declared local base versus requested base policy;
-- [ ] request-provided refs resolve through the same merge-base contract as
-      `judge.base`;
-- [ ] absent request base for a required changed-line lane refuses loudly;
-- [ ] verdicts continue to record the effective resolved base exactly once.
+- [x] lanes can distinguish declared local base versus requested base policy —
+      `judge.base_source`, a closed two-value vocabulary
+      (`{"declared", "request"}`, default `"declared"`), `config.py:243`;
+- [x] request-provided refs resolve through the same merge-base contract as
+      `judge.base` — it is a second *source* for one argument, not a second
+      code path: both land in `runner._resolve_declared_base` and record
+      `base_resolution` identically. Verified end-to-end by the reviewer
+      against a real two-commit repo through the installed wheel;
+- [x] absent request base for a required changed-line lane refuses loudly —
+      one of three named `LaneConfigError` → `ERROR`/`BAD_LANE_CONFIG`
+      refusals, all resolved in `runner.resolve_base_declaration`
+      (`runner.py:2018`) and called once above the dispatch, so `run` and
+      `plan` cannot drift in what they accept. No fallback to `HEAD` or a
+      default branch (A-018, at the request boundary);
+- [x] verdicts continue to record the effective resolved base exactly once —
+      `judgment.resolved.base`, unchanged in shape; the request-supplied value
+      reaches it through the same single write.
 
 ## B020 — CIU V8 preparation: SQL mutation template/reset hooks (design first)
 
@@ -3046,7 +3228,16 @@ which is itself a governed, A-numbered decision per A-112/A-114/A-220/A-221.
 ## B035 — an `R0,R2` whole-target verdict cannot witness its own judging scope, so the `base` rule is unenforceable there
 
 **Filed 2026-08-26 from B033's own fix (A-325).**
-**Status:** open. Not a live defect — a gap in what the artifact can prove.
+**Status:** **FIXED 2026-08-30 (A-329)**, on branch
+`feature/assay-b018-b019-b035-v8-synergy`, unmerged and unreleased at the time
+of writing — it ships in the next release, and this line deliberately names no
+version until one exists. This is the wave's one **v7 → v8 schema cut**: it was
+batched alone as the version-bumping item precisely because it is the break,
+and B018/B019 rode with it because they are additive/config-only. `judgment.r2`
+now carries `mode` (required) and `targets` (optional), so the exemption A-325
+had to carve out for an `r1`-absent document is gone and the base rule is
+enforced for every shape — including the `R0,R2` one it most needed and least
+covered.
 **Priority note (round-2 review of the B033 wave):** this is not a neutral
 deferral. A-325 had to STOP enforcing the old `base` rule for `R0,R2`
 documents to make honest whole-target R2 artifacts verifiable at all, so a
@@ -3093,9 +3284,2740 @@ alongside whatever else needs one, not force one on its own.
 
 ### Acceptance
 
-- [ ] `judgment.r2` records the mode it judged under, and the declared
-      target set when that mode is `whole_target`;
-- [ ] the model, `verify.py` and the schema enforce the `base` rule for an
-      `R0,R2` lane, not only for lanes declaring R1;
-- [ ] `carve-assets/W2`'s frozen schema copy and acceptance suite move with
-      the bump.
+- [x] `judgment.r2` records the mode it judged under, and the declared
+      target set when that mode is `whole_target` — `verdict.py:1727`/`:1734`,
+      mirroring `judgment.r1`;
+- [x] the model, `verify.py` and the schema enforce the `base` rule for an
+      `R0,R2` lane, not only for lanes declaring R1 — enforced in all three
+      layers per A-182, against an r1-else-r2 witness, with the raw verifier's
+      wording deliberately unlike the model's so a copy-paste stub cannot
+      satisfy both;
+- [x] `carve-assets/W2`'s frozen schema copy and acceptance suite move with
+      the bump — **as a NEW frozen generation, not an edit to W2**: W2 stays
+      frozen at v7 (that is the convention W1→W2 established), and
+      `carve-assets/W4/` carries the v8 schema copy, a 40-node acceptance
+      suite, six migrated templates and a `MANIFEST.md`. W4 rather than W3
+      because `W3/` was already taken; the `W<n>` names are wave identities,
+      not schema versions (A-330).
+
+---
+
+## B036 — a JavaScript/TypeScript `LanguageAdapter` for changed-line coverage (R1), first consumer dstdns's React UI
+
+**Status: IMPLEMENTED 2026-08-30 on `feature/assay-b036-js-adapter`; awaiting
+adversarial review and merge.** Decisions A-340..A-345; report at
+`nyxloom-trove/reports/assay-B036-js-adapter-REPORT.md`. Two follow-ups filed
+out of it — **B038** (branch arcs and the type-only-module gap, both blocked
+on whether a lane may declare its coverage PRODUCER) and **B039** (an
+unbounded line expansion of the same shape in the pre-existing `go-cover`
+parser). Every acceptance box below is ticked with its own file:line evidence
+in the report's acceptance table.
+
+**Filed 2026-08-30.** dstdns's new UI (`applications/webapp-ui-react` —
+React 19 + Vite 6 + TypeScript 5.8, test runner Vitest 3.2, no coverage
+provider installed yet, no assay lane declared yet) currently has zero
+changed-line coverage discipline: `docs/spec-react-ui-e2e.md` explicitly
+scopes coverage as non-gating for the Playwright e2e suite it's extending,
+and there is no gate at all for the Vitest unit/component layer. This is
+greenfield, not a repair — no existing lane breaks, nothing regresses.
+
+This must land as a genuinely general adapter, parallel to Python/Go/SQL —
+dstdns is the first consumer, the same relationship SQL had to B001. Nothing
+in this item is dstdns-specific; a lane declaring `judge.language =
+"javascript"` must work for any JS/TS project assay is pointed at.
+
+### Why this is a small, low-risk item — checked, not assumed
+
+`assay.coverage`'s own module contract (`src/assay/coverage.py`'s docstring)
+states plainly: **coverage format is declared data, not language
+knowledge** — `judge.coverage.format` selects a parser from
+`FORMAT_REGISTRY`, and the registry already holds four parsers for formats
+spanning multiple languages (`cobertura`, `lcov`, `go_cover`,
+`coverage_py_json`). Adding a fifth format is a self-contained parser
+module under `coverage_parsers/`, not a redesign of the fail-under/branch
+math, which is already format-agnostic.
+
+The registry/rigor-wiring precedent (`src/assay/registry.py`,
+`RegistryEntry.rigor`) already supports registering an adapter for a
+STRICT SUBSET of R1/R2/R3 — this is exactly how Python itself first shipped
+(R1 only, per `registry.py`'s own docstring, before P18/P19 added R2/R3
+later) and exactly how SQL ships today (R2 only, `cli.py:265`). The single
+wiring point is `src/assay/cli.py:261-265`'s `new_registry(...)` call. This
+item follows the Python-at-R1-only precedent exactly: register the new
+adapter for `frozenset({"R1"})` only. R2 (mutation) and wiring R3 into the
+registry are explicitly deferred — R2 to **B037** (filed alongside this
+item, design-first, same shape as B020), R3 as a natural, low-risk
+fast-follow once R1 has shipped and the canary injection methods are
+proven, not part of this item's acceptance.
+
+**No schema-version bump is needed.** Because R2 is not being registered for
+this language at all, `MUTATION_OPERATORS_BY_LANGUAGE`
+(`src/assay/vocabulary.py`) needs no new entry (not even an empty one, unlike
+Go's — Go registers no rigor level either, but P29 already reserved its
+future R2 namespace; this item can defer that same reservation to B037
+rather than pre-committing an empty vocabulary now). `judge.language` itself
+has no closed hardcoded list to extend — `assay.config` never validates a
+language name against a fixed set; `registry.get_adapter` is the sole
+point of truth, and an unregistered name is already refused there
+(`registry.py`'s own documented O2 guarantee). This item touches no verdict
+field, no `Judgment`/`JudgmentR1`/`JudgmentR2` shape, and no packaged schema.
+
+### Required design decisions before implementation
+
+1. **The `judge.language` string.** Recommend `"javascript"` as the umbrella
+   name covering `.js`/`.jsx`/`.ts`/`.tsx` — matching how `"python"` and
+   `"go"` don't split by dialect/runtime, and matching how most polyglot
+   coverage/lint tooling groups the whole family under one label. This is a
+   real, effectively-permanent naming choice (schema strings are consumer-
+   facing) — record it as a decisions.md entry with reasoning, don't just
+   pick it silently.
+2. **`normalize_coverage_key`'s actual job for this format.** Istanbul's
+   `coverage-final.json` keys its per-file map by **absolute filesystem
+   path**, not a repo-relative or package-qualified one — a different shape
+   of mismatch than Go's package-qualified import path (`go_cover.py`'s own
+   precedent for "the artifact's own path spelling differs from git-diff
+   spelling"). Read `coverage_parsers/go_cover.py` and `coverage.py`'s own
+   docstring on the universal-boundary/language-specific-strip split before
+   deciding whether the absolute-to-repo-relative conversion belongs in the
+   new parser (matching how each existing parser already normalizes its own
+   artifact's path spelling) or in `normalize_coverage_key` — check where
+   the existing four parsers actually do this today rather than assuming.
+3. **Whether `requires_span_attribution` is really `False` for this
+   adapter.** Unlike `coverage-py-json` (line-granular, needing Python's own
+   AST-based span-widening for unattributed lines), Istanbul's coverage map
+   already reports statement/branch/function extents directly. Verify this
+   holds for real Vitest+`@vitest/coverage-v8` output (the provider isn't
+   even installed in `webapp-ui-react` yet — you'll need to add
+   `@vitest/coverage-v8` as a devDependency and configure
+   `test.coverage.reporter: ['json']` in `vite.config.ts` to produce a real
+   artifact to test against) before committing to `False` the way Go's own
+   file warns its `False` claim was **"settled, not assumed"** only after a
+   real probe (A-172/A-217) — don't skip that step here.
+4. **Canary injection shape for JS/TS** (`inject_import_break` /
+   `inject_uncovered_line`, needed regardless of R3 registration timing
+   since the Protocol requires real implementations, not stubs, for every
+   adapter). JS/TS has an executable module top level like Python — a
+   top-level `throw new Error(...)` is the direct analogue of Python's bare
+   `raise`; a never-called top-level function covers the uncovered-line
+   half. Should be mechanical, but confirm against `adapters/python.py`'s
+   and `adapters/go.py`'s own implementations for the exact contract
+   (placement after leading imports, description string conventions).
+
+### Acceptance
+
+- [x] a new `coverage-istanbul-json` (or equivalently named — match the
+      naming decision above) parser registered in `FORMAT_REGISTRY`, parsing
+      a real `coverage-final.json` produced by a real `vitest run --coverage`
+      against `webapp-ui-react` (or an equivalent minimal fixture project),
+      not a hand-written fixture alone;
+- [x] a new adapter (`adapters/javascript.py` or matching the naming
+      decision) implementing all seven `LanguageAdapter` protocol methods,
+      `generate_mutation_sites` returning `"UNSUPPORTED"` (Go's own
+      precedent — legal to spell, not yet backed);
+- [x] registered in `cli.py`'s `new_registry(...)` for `frozenset({"R1"})`
+      only;
+- [x] `is_test_path` correctly excludes Vitest's own conventions
+      (`*.test.ts(x)`, `*.spec.ts(x)`, `__tests__/`) and `excluded_dir_names`
+      excludes `node_modules` and build output dirs at minimum;
+- [x] `.d.ts` type-only declaration files are handled correctly by
+      `has_executable_code` (they contain no executable code at all — the
+      NoCode case, not a coverage gap);
+- [x] a real end-to-end test: a lane declaring `judge.language =
+      "javascript"`, `R1` only, against a real (fixture or `webapp-ui-react`
+      itself) TS/TSX project, correctly reports changed-line coverage
+      pass/fail:
+- [x] refusal paths covered explicitly: an unrecognised `judge.language`
+      value, a malformed/truncated `coverage-final.json`, a `judge.language
+      = "javascript"` lane declaring `R2` (must refuse — not registered for
+      this build);
+- [x] `README.md`/`CONSUMERS.md`/`DESIGN-GUIDE.md` document the new language
+      and format the same way Python/Go/SQL already are;
+- [x] the real registered gate (`tools/tester-unified-gate.sh`), not just
+      `pytest tests/`, run green before this is called done.
+
+---
+
+## B037 — JavaScript/TypeScript mutation rigor (R2): design first, do not implement against this entry directly
+
+> **RESOLVED 2026-08-31 by B046** (Wave B, assay-4.0.0 / schema v9). B037's
+> three open decisions were answered by B046's ratified design and are now
+> implemented: the lane's own argv runs StrykerJS inside the private snapshot
+> and assay ingests the report (neither "shell out" nor "accept a
+> CIU-supplied report"); non-repudiation rests on the snapshot's commit
+> binding plus four named refusals; and the foreign tool's mutator taxonomy
+> is DATA under a `stryker:` namespace assay owns, never a mapping onto
+> assay's closed catalogue. `javascript` now registers at `{"R1", "R2"}`
+> through the ingested path only — `generate_mutation_sites` is still
+> unconditionally `"UNSUPPORTED"`, which is what MAKES it the ingested path.
+> Decisions: A-375–A-383, plus A-360/A-361/A-362 from the schema cut.
+
+**Filed 2026-08-30, alongside B036.** Same shape as B020: a scope boundary
+and required decisions, not a dispatchable implementation brief.
+
+> **RESOLVED 2026-08-30 (operator ruling; design review
+> `reports/assay-3.1-js-adapter-design-review-2026-08-30.md` §5) — the three
+> open decisions below are answered by B046, the dispatchable entry:** the
+> LANE's own argv runs Stryker inside the private snapshot (neither a shell-out
+> by assay nor a CIU-supplied report — R1's own shape), assay reads the
+> mutation-testing-report-schema JSON through a FORMAT-keyed mutation registry
+> (`judge.mutation.format = "mutation-report-json"` + `artifact`), commit
+> binding is the snapshot exactly as for a coverage artifact, statuses map onto
+> assay's buckets with `survived_uncovered` and `discarded` kept visible and
+> `stryker:<mutator>` admitted as a namespace, `judgment.r2.producer =
+> "ingested"` with the producer's identity copied from the report (not
+> `helpers[]` — assay did not run it), and yes: this is the precedent for every
+> R2 producer assay has no native engine for. The `decisions.md` rows land with
+> B046's implementation.
+
+### Scope boundary
+
+Every existing R2 producer (Python, SQL) is **native** — assay parses and
+mutates the source text itself, in-process, in Python. Doing the same for
+JS/TS/JSX means either shelling out to a real JS/TS parser anyway (assay has
+none of its own) or hand-writing a TS/JSX-aware AST layer in Python from
+scratch — a categorically larger undertaking than Python's own native
+operators (which mutate Python's own AST from within Python) or SQL's
+(a purpose-built lexer for one narrow grammar, `sql_lex.py`). This is
+plausibly the same class of overreach `ciu/docs/CIU-V8-TESTING-GATE-
+PROPOSAL.md` §1.12 already warns against for R4/property-testing generally:
+"specialized tools generate cases and produce structured evidence; Assay
+validates thresholds, binds evidence to commit/input, emits verdicts and
+fails loudly" — never reinventing mature tooling that already exists.
+
+**RULING (operator-delegated product decision, 2026-08-30): evidence-ingestion,
+via Stryker Mutator. The native-vs-ingestion fork is resolved; the three
+decisions below it are NOT — this item stays design-first for those.**
+Reasoning: (1) assay's own charter, restated explicitly in this project's
+docs, is a judge that validates and binds evidence — it has never owned a
+parser for any language it judges beyond what's needed to locate mutation
+sites, and Python/SQL's native operators stay cheap only because Python's own
+`ast` module and one narrow SQL grammar are small, stable surfaces assay
+already has to touch anyway for other reasons. A TS/JSX-aware mutation engine
+has neither property: it is a real, ongoing static-analysis project (grammar
+evolution, JSX/TSX surface, type-directed mutants) that would make assay
+responsible for tracking TypeScript's own language evolution, categorically
+outside what B036 needed to add JS/TS coverage support. (2) This project
+already committed to the evidence-ingestion shape for exactly this
+complexity tier — CIU proposal §1.12's "specialized tools generate cases...
+Assay validates, binds, fails loudly" was written for R4/fuzzing, but the
+reasoning transfers without modification to R2 for a language assay has no
+native tooling for; there is no principled reason to reinvent for JS what
+the project already declined to reinvent for property-testing. (3) Stryker
+is the correct specific choice, not merely "an" external tool: first-party
+Vitest runner support (the test runner B036 already standardized on),
+mature/widely-adopted (lower supply-chain risk than a niche alternative),
+and a structured per-mutant JSON report that maps onto assay's own
+Killed/Survived/NoCoverage/Timeout taxonomy without inventing new buckets.
+**What this ruling does NOT settle, and an implementer must not treat as
+answered:** whether assay shells out to Stryker directly or expects a
+CIU-orchestrated caller to supply Stryker's report as input (a real design
+question given CIU's own gate-preparation model); the exact non-repudiation
+binding (commit, judge provenance, anti-"exit-status-as-proof") Stryker's
+output needs before assay will trust it; and whether this sets a precedent
+other future non-native R2/R4 producers should follow or is JS-specific.
+Record the actual answers as decisions.md entries when this is implemented,
+the same way every other design call in this backlog is recorded — this
+ruling closes the architectural fork, not the implementation.
+
+### Required design decisions before implementation
+
+- ~~native (hand-rolled, matching every existing R2 producer) vs.
+  evidence-ingestion (Stryker or equivalent, a new pattern for assay) —
+  the central ruling this item exists to force~~ **RESOLVED above:
+  evidence-ingestion via Stryker Mutator.**
+- how a foreign tool's report is bound to a verdict
+  with the same non-repudiation properties assay's own native producers
+  have today (commit binding, judge provenance per B018, no "process
+  returned zero" weakening — CIU proposal §1.10's own standing objection to
+  trusting exit status as proof applies here with double force for a
+  THIRD-PARTY process's exit status);
+- operator vocabulary: does a foreign tool's mutator taxonomy map cleanly
+  onto assay's own `mutation.*` bucket model (survived/killed/equivalent/
+  budget_exceeded), or does it need its own schema shape;
+- relationship to B018 (judge provenance) now that evidence-ingestion is
+  the ruled direction — whose identity is recorded, assay's or Stryker's,
+  or both.
+
+### Acceptance
+
+- [x] the central native-vs-evidence-ingestion fork is ruled (above:
+      evidence-ingestion via Stryker Mutator) — this is a scope/direction
+      decision, not an implementation, and does not by itself authorize
+      code;
+- [x] the three remaining design decisions above are written up and
+      reviewed against every relevant standing constraint — written up in
+      B046 (2026-08-30) against A-161/A-007/A-230a/the north-star's tier
+      rule; B046's adversarial review is the review;
+- [x] no implementation lands until those three are recorded — recorded in
+      B046; the `decisions.md` rows are part of B046's own acceptance.
+
+---
+
+## B038 — `coverage-istanbul-json`: real branch arcs, and the type-only-module gap, once a producer can be declared
+
+> **RESOLVED 2026-08-31 by B045** (Wave B, assay-4.0.0 / schema v9). Both
+> halves shipped once the producer became declarable.
+> **(a)** real branch arcs under `producer = "istanbul"` — decided as
+> **A-356** (arcs key per-ARM with an entry-line fallback, departing from
+> `istanbul-lib-coverage`'s entry-only reduction because real output writes
+> lineless implicit-`else` arms) and **A-357** (an unrecognised `branchMap`
+> entry type REFUSES the artifact rather than degrading silently).
+> **(b)** the type-only-module gap — decided as **A-358** (the lexer's exact
+> scope, its all-or-nothing rule, and its stated limitation; anything it does
+> not recognise answers "has code", fail-closed).
+
+**Filed 2026-08-30 by B036's own implementation, from measured evidence.**
+Two consequences of one root cause: `coverage-final.json` is a format with
+several producers that DISAGREE about the meaning of parts of it, and a lane
+declares the format, never the producer.
+
+### (a) branch arcs are reported `unavailable`, and should not have to be
+
+`coverage_parsers/coverage_istanbul_json.py` returns `branches=None`
+unconditionally (A-344). Measured on one source file
+(`tests/fixtures/coverage/probe-js/src/branchy.ts`, two `if`s and a ternary,
+one test):
+
+- `@vitest/coverage-istanbul` — three `branchMap` entries typed
+  `if`/`if`/`cond-expr`, one location per ARM, one count per arm:
+  **6 arcs, 2 covered**;
+- `@vitest/coverage-v8` — four entries all typed `"branch"`, each with
+  exactly ONE location and ONE count, describing v8's own executed/unexecuted
+  RANGES (one spans the whole function, another begins at a closing brace):
+  **4 "arcs", 1 covered**.
+
+Both artifacts are committed. A single translation cannot be honest for both,
+so `None` was chosen over a number whose meaning depends on an undeclared
+fact. The consequence for consumers: `require_branch = true` refuses on a
+JavaScript lane today.
+
+### (b) a type-only `.ts` module is a false failure under one provider
+
+`JavaScriptAdapter.has_executable_code` answers `True` for a module holding
+only `export type`/`interface` (A-343), because deciding otherwise needs real
+TypeScript type-erasure semantics. Under `@vitest/coverage-v8` this never
+surfaces — such a module IS reported, with an empty `statementMap`, so the
+method is never consulted (measured: `probe-js/src/typesonly.ts`). Under
+`@vitest/coverage-istanbul` the module is absent from the artifact entirely,
+so a changed type-only module is reported as missing coverage.
+
+### The decision this item exists to force
+
+Should a lane be able to declare its PRODUCER (a `judge.coverage.provider`
+key, a second registry format key such as `coverage-istanbul-json-v8`, or a
+derivation from the artifact's own shape), and if so which mechanism? Both
+halves above dissolve the moment the producer is a declared fact rather than
+an inferred one; neither can be fixed honestly while it is not. Deriving the
+producer by sniffing (e.g. "every `branchMap` entry is typed `"branch"` with
+one location") is the obvious shortcut and is exactly the
+declaration-versus-sniffing collapse `coverage.py`'s own module docstring
+forbids (A-007) — it must be argued explicitly if it is chosen, not slid in.
+
+> **RULED 2026-08-30 → B045** (operator ruling, design review
+> `reports/assay-3.1-js-adapter-design-review-2026-08-30.md` §5): a
+> `judge.coverage.producer` key, declared per lane from a closed PER-FORMAT
+> vocabulary and recorded in the verdict as `judgment.r1.coverage_producer`
+> (schema v9, one bundled cut). Sniffing rejected; a second format name
+> rejected (it would bind a trust property to a format). (a) real arcs under
+> `producer = "istanbul"` and (b) the narrow fail-closed type-only lexer are
+> B045's acceptance; this item closes when B045 ships.
+
+### Acceptance
+
+- [ ] a recorded decision on how (or whether) a producer becomes a declared
+      fact, argued against A-007;
+- [ ] if declared: real `BranchCoverage` for the arc-bearing producer, with
+      the `FileCoverage` cross-bucket invariants holding on both committed
+      real artifacts, and `branch_capability` still `"unavailable"` for a
+      producer whose `branchMap` is not arcs;
+- [ ] if declared: the type-only-module case decided for the
+      istanbul-provider path without a hand-written TypeScript parser;
+- [ ] `README.md`/`CONSUMERS.md`'s current "leave `require_branch` unset on a
+      JavaScript lane" guidance updated in step.
+
+---
+
+## B039 — `go_cover.parse` expands a block's line range with no fixed bound
+
+**Filed 2026-08-30 by B036's own implementation, in passing.** Noticed while
+writing the equivalent expansion for `coverage-istanbul-json`, which was
+given a bound (`MAX_CLASSIFIED_LINES`, O4's "a fixed bound, never an ambient
+guess") precisely because the shape is dangerous.
+
+> **2026-08-30:** scheduled as B047 item 4 (Go wave prep) and pulled forward
+> into Wave A (`WAVE-PROMPT-2026-08-30-js-consumer-producer.md` step 4).
+> Acceptance box 2 is answered: ONE shared place, `coverage_parsers/model.py`,
+> used by both expanding parsers.
+
+`coverage_parsers/go_cover.py`'s `parse` runs
+`for file_line in range(start, end + 1)` over every block, with `start`/`end`
+read straight from the artifact and validated only for positivity and
+ordering (`_parse_pos`, `_parse_block`). A single ~50-byte block line reading
+`pkg/x.go:1.1,999999999.1 1 1` sits far inside the 16 MiB
+`MAX_COVERAGE_ARTIFACT_BYTES` read bound and materializes a billion dict
+entries.
+
+This is a resource-exhaustion shape, not a correctness one, and it is behind
+a lane that must already declare `go-cover` as its format — but assay's own
+threat model treats a coverage artifact as potentially adversarial input in
+the same breath as `FileCoverage`'s three independent arrays (P15/A-067
+finding 4), so "the input is trusted" is not the answer this project gives
+elsewhere.
+
+### Acceptance
+
+- [x] a fixed, documented ceiling on total classified lines per artifact in
+      `go_cover.parse`, refusing `ERROR`/`UNREADABLE_ARTIFACT` past it, with
+      a paired must-succeed control proving an ordinary profile still parses
+      — `go_cover.py:230-232` (`budget.spend` before the range expansion),
+      `tests/test_coverage_parsers_go_cover.py`
+      `test_one_enormous_block_is_refused_rather_than_expanded` +
+      `test_an_ordinary_real_shaped_profile_still_parses_under_the_shared_bound`
+      (2026-08-30, Wave A);
+- [x] check whether the bound belongs in ONE shared place rather than once
+      per expanding parser (`coverage_istanbul_json` has its own today) —
+      moved to `coverage_parsers/model.py:MAX_CLASSIFIED_LINES` +
+      `ClassifiedLineBudget` (2026-08-30, Wave A); both parsers re-export the
+      name into their own module namespace so each module's own
+      `monkeypatch.setattr(<module>, "MAX_CLASSIFIED_LINES", ...)` test
+      idiom keeps working —
+      `test_coverage_parsers_go_cover.py::test_the_shipped_bound_is_the_one_shared_documented_value`
+      pins object identity, not merely equal values. See A-348.
+
+---
+
+## B040 — `@vitest/coverage-v8` reports never-executed lines as executed, and assay cannot detect it
+
+> **(b) RESOLVED 2026-08-31 by B045** (Wave B, assay-4.0.0 / schema v9),
+> decided as **A-353**: the three v8-remapping producers are SPELLABLE so the
+> refusal can name them, and are refused at LOAD by name, before any lane
+> runs — with the three grounds kept deliberately distinct rather than
+> blurred (`vitest-v8` and `c8` refused on MEASURED evidence, `jest-v8`
+> refused as unmeasured-and-therefore-unproven). "That is not a known
+> producer" is a much weaker message than "that producer is known, measured,
+> and unsound; here is the fix", and the loader now emits the second.
+
+**Filed 2026-08-30 by B036's round-1 adversarial review, reproduced and ruled
+on as A-346 before filing.** The ruling (documentation names
+`@vitest/coverage-istanbul` as the only judged-safe Vitest provider) is
+shipped and is a mitigation, not a fix. This item owns the two things the
+ruling deliberately did not do.
+
+### The defect, measured
+
+Ground truth needs no coverage tool here: five functions, each guarded by
+`if (v === 0) return 0` on its second line, one test calling each with `0`.
+Every line below a guard provably never runs.
+`tests/fixtures/coverage/probe-js-provider-defect` is that project; four real
+artifacts are committed (both providers × Vitest 3.2.4 and 4.1.11).
+
+`@vitest/coverage-v8` reports lines below the guard as **executed** whenever a
+conditional (ternary) expression appears earlier in the same block. Through
+the shipped `evaluate_coverage`, with those lines as the diff and
+`fail_under = 100.0`: **PASS at 100.0%** under v8, **FAIL at 0.0%** under
+istanbul.
+
+Four facts, each measured, that make this more than a caveat:
+
+- reproduces on **both** currently-released Vitest majors — no version to pin
+  past;
+- a **one-line** ternary triggers it, not just a multi-line one — no
+  formatting rule avoids it;
+- `coverage.experimentalAstAwareRemapping = true` does **not** fix it;
+- a multi-line binary expression, call and object literal are all correct in
+  the same artifact from the same provider — so unsound records are not
+  structurally distinguishable from sound ones.
+
+`@vitest/coverage-istanbul` is correct on every case measured, as are
+nyc/istanbul and Jest, which share its instrumenter.
+
+### (a) report it upstream
+
+Not yet done. The minimal reproduction is
+`probe-js-provider-defect/src/shapes.ts` plus its one test; the two committed
+v8 artifacts are the evidence. Worth checking first whether it is already
+filed against `ast-v8-to-istanbul` (the remapping layer, which is where the
+defect most likely lives — v8's own range data is not obviously wrong; the
+mapping of ranges onto statement lines is).
+
+### (b) the standing question this shares with B038
+
+Should a lane be able to declare its coverage PRODUCER? B038 wants it for
+branch arcs. This item wants it for a much sharper reason: with a declared
+producer, assay could refuse a `coverage-istanbul-json` lane that names the v8
+provider outright, instead of relying on a consumer having read a warning.
+Without one, assay cannot tell the two apart — and **must not try**: nothing
+in the document separates a true `s` count from a false one (`fnMap`/`f`
+corroborate the lie, because the enclosing function really did run), so the
+only mechanical route is inferring the producer from the artifact's shape,
+which is the declaration-versus-sniffing collapse A-007 forbids and which
+would already have broken between the two versions measured here (Vitest 4's
+v8 provider emits multi-line extents where Vitest 3's emitted single-line
+ones).
+
+### Acceptance
+
+- [ ] the defect reported upstream (or an existing report found and linked),
+      with the committed reproduction;
+- [ ] `test_coverage_istanbul_provider_accuracy.py`'s defect-witness tests
+      re-checked against any newer provider release — they read four
+      COMMITTED fixtures and cannot go red on their own, so this is a manual
+      step: regenerate `probe-js-provider-defect`'s v8 fixtures against the
+      new release and re-run; **if that makes them FAIL, the defect is
+      fixed**, and that is this item's completion signal, not a test to
+      relax;
+- [ ] if a producer becomes declarable (B038): a `javascript` lane declaring
+      the v8 provider is refused by name, and A-346's documentary mitigation
+      is downgraded to a note about older configurations.
+
+> **2026-08-30 — the producer question is RULED: B045.** Operator decision
+> (design review, `reports/assay-3.1-js-adapter-design-review-2026-08-30.md`
+> §5): a lane declares `judge.coverage.producer`, the verdict records it, and
+> the v8 provider is refused by name at load. (a) above stays this item's own;
+> (b) is discharged by B045's acceptance.
+
+---
+
+## B041 — a JavaScript lane's dependency closure (`node_modules`) is absent from the committed-object snapshot: the offline-install pattern, `isolation.link_paths`, and a real-`vitest` qualification
+
+**Filed 2026-08-30 from the 3.1.0 design review**
+(`reports/assay-3.1-js-adapter-design-review-2026-08-30.md` §3 G1).
+**Operator ruling 2026-08-30: BOTH halves — (a) the documented offline-install
+pattern with a real-`vitest` qualification, AND (b) a declared
+`[lanes.<n>.isolation] link_paths` feature — with detailed consumer usage
+documentation.** (a) and the docs ship on the current schema; (b) records
+itself in the verdict and therefore rides the v9 cut (B045's wave).
+
+### Mechanism, confirmed in source — not assumed
+
+- `isolation.py:577` materialises every R1/R2/R3 snapshot with
+  `git read-tree <commit>` into `tempfile.mkdtemp(dir=scratch_root,
+  prefix="assay-p22-snap-")` (`isolation.py:492`). Only tracked blobs exist
+  there; a gitignored `node_modules/` is absent by construction (A-161/A-184:
+  committed objects, never the working tree). This is correct and must stay.
+- The lane command runs with `cwd=snapshot.project_root` (`runner.py:1754`).
+- `tests/test_cli_run_javascript.py:88,131`: the end-to-end lane's argv is
+  `/bin/sh -c "cat > coverage-final.json <<EOF …"` — the producer is a test
+  double (A-334's own definition). The real Vitest artifacts (`probe-js`,
+  `probe-js-provider-defect`) were produced OUTSIDE assay (REPORT §2). **No
+  real `vitest` has ever run inside an assay snapshot.**
+- The first consumer's runner image ships Node
+  (`dstdns/tools/test-runner/Dockerfile:17-43`) and `npm ci`s into the
+  bind-mounted checkout at gate time; inside the snapshot there is no
+  `node_modules`, so `npx vitest run --coverage` does not fail loudly — `npx`
+  FETCHES a missing package from the registry (unpinned, network) unless
+  `--no-install` is passed, and then fails with a resolution error. Either way
+  no artifact lands at the declared path: `NO_MEASUREMENT` at best, an
+  unpinned toolchain at worst.
+- `environment_command` (B010) cannot vouch for the closure: it runs in the
+  INVOKING environment before any snapshot work (DESIGN-GUIDE §4), so
+  `node -e "require.resolve('vitest')"` succeeds in the checkout while the
+  snapshot has nothing.
+- Why this is new: Python's closure is a venv and Go's is `GOMODCACHE`, both
+  out-of-tree, so neither adapter ever met an in-tree closure. R3 triples the
+  cost (baseline + two canary runs, each a fresh snapshot).
+
+### (a) The honest default: closures come from the image; the snapshot rebuilds the in-tree closure OFFLINE from the committed lockfile
+
+Same doctrine as the image-baked judge (B009): the gate image carries an npm
+cache populated from the committed `package-lock.json` (at image build:
+`npm ci --cache /opt/npm-cache --prefix <app>` then discard the tree, or a
+persistent `~/.npm/_cacache` provided by the environment — ciu v8
+`[testing.environments.<e>] extra_mounts`, CIU-73; on the current gate,
+`RUN_GATE_EXTRA_MOUNTS` for ephemeral lanes or the runner stack's own
+image/volume for exec lanes — run-gate `CONSUMERS.md`, with RG-25/RG-26 as
+the run-gate-side backports of CIU-72). The lane's argv starts
+with the offline install, then the pinned runner:
+
+```toml
+[lanes.ui_unit]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["bash", "-c",
+  "npm ci --offline --no-audit --no-fund --prefix applications/webapp-ui-react && npx --no-install --prefix applications/webapp-ui-react vitest run --coverage --root applications/webapp-ui-react"]
+env = { npm_config_cache = "/opt/npm-cache", CI = "1" }
+env_passthrough = ["PATH", "HOME"]
+budget = "15m"
+allow_argv_append = false
+
+[lanes.ui_unit.isolation]
+snapshot_selection = "repository"
+
+[lanes.ui_unit.judge]
+language = "javascript"
+source_roots = ["applications/webapp-ui-react/src"]
+fail_under = 100.0
+allow_excluded = false
+base_source = "request"
+
+[lanes.ui_unit.judge.coverage]
+format = "coverage-istanbul-json"
+artifact = "applications/webapp-ui-react/.assay/coverage-final.json"
+```
+
+Properties: `--offline` fails loudly when the cache lacks anything (no silent
+network); `--no-install` makes a missing runner a refusal, never a fetch; the
+lockfile is committed, so the closure is reproducible modulo the image, which
+`judge_provenance`/the ciu image pin already identify. The `bash -c` wrapper
+goes away with B043 (`cwd`). Budget is the consumer's measurement (the docs
+say to measure it, not a number).
+
+### (b) The declared speed path: `[lanes.<n>.isolation] link_paths`
+
+```toml
+[lanes.ui_unit.isolation]
+snapshot_selection = "repository"
+link_paths = ["applications/webapp-ui-react/node_modules"]
+```
+
+Contract, each rule with its refusal:
+1. every entry is a repo-relative forward-slash path with no `..`, no leading
+   `/`, resolving to a DIRECTORY in the invoking checkout — absent →
+   `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` naming the path (the closest
+   existing meaning: a declared prerequisite the environment did not
+   provide; a dedicated code may ride v9 if the carve prefers one);
+2. the entry must NOT be a tracked path at the resolved commit
+   (`git ls-tree` lookup): linking a tracked path would silently replace
+   committed content with working-tree content — `ERROR`/`BAD_LANE_CONFIG`;
+3. materialised as a symlink `snapshot/<path> -> <checkout>/<path>`
+   immediately after `read-tree` (`isolation.py:577`), before any command,
+   for every snapshot the lane creates (R3 canary snapshots included);
+4. the symlink is created only if `<path>`'s parent exists in the snapshot
+   (tracked), else refused as (2) — never `mkdir -p` into the snapshot;
+5. recorded in the verdict as `snapshot_policy.link_paths` (sorted), so a
+   verdict states plainly that its snapshot was not purely committed
+   objects — **schema v9**, registered in `verify.py` too (the third place,
+   per the 2.4.0 lesson);
+6. snapshot teardown must remove the LINK, never its target — the
+   destructive failure to pin: a test plants a canary file in the target and
+   proves it survives teardown; a wrong implementation using a following
+   `rmtree` deletes the consumer's `node_modules`.
+
+`excluded_dir_names` already excludes `node_modules` from judging, the link is
+not a tracked path so the diff never sees it, and istanbul keys under it are
+inert (A-341). `dirty_paths()` on the checkout is unaffected (snapshot-side).
+Trade-off stated in the docs: faster, but the closure is whatever the checkout
+holds — the honest default is (a).
+
+### (c) Qualification: a real `vitest` inside a real snapshot
+
+`tester-unified` deliberately has no Node (DESIGN-GUIDE §10), so this cannot
+be a registered-gate test. It is a **qualification harness** in the P25 shape:
+`tests/qualification/test_javascript_real_vitest.py`, skipped unless
+`ASSAY_NODE_QUALIFICATION=1` and `node`/`npm` are on PATH, which builds an
+npm cache from `tests/fixtures/coverage/probe-js/package-lock.json`, drives a
+lane of shape (a) through the real CLI in a two-commit git fixture, and asserts
+the PASS/FAIL verdict pair. Its transcript is pasted into the wave REPORT
+(A-335: run the thing production runs, the way production runs it), and the
+first dstdns lane's real verdict is the live qualification. The gate-runnable
+tests own the `link_paths` mechanics with a fake directory (rules 1–6).
+
+### Consumer-side actions (dstdns) — kept here so they are not lost
+
+See the review report §7: provider + jsdom/testing-library install,
+`vitest/config` import, `reportsDirectory: '.assay'` under the app, gitignore,
+the baked npm cache in `tools/test-runner`, the `ui_unit` lane, and the one
+type-only module (`src/auth/types.ts`, B038(b)).
+
+### Acceptance
+
+**Wave A discharges (a)+(c) only** (`WAVE-PROMPT-2026-08-30-js-consumer-
+producer.md`'s own explicit split — this item's acceptance boxes were
+written assuming one implementer might do (a)+(b) together; the wave prompt
+supersedes that for THIS wave). (b) `link_paths` remains open for Wave B.
+
+- [x] `docs/CONSUMERS.md`: a new section "JavaScript lanes and the dependency
+      closure" carrying the mechanism, pattern (a) with the worked monorepo
+      lane above, the image-side cache recipe, the `npx` fetch hazard and
+      `--no-install`, the `environment_command` caveat, and the R3 cost —
+      landed 2026-08-30. Pattern (b) is a ONE-PARAGRAPH PREVIEW marked
+      "Wave B, schema v9" per the wave prompt's own instruction, not the
+      full purity-trade-off write-up this box originally asked for (that
+      lands with the real implementation in Wave B); README's JS section
+      links to it (both directions, B042 item 5);
+- [x] the qualification harness in (c) exists, is skipped in the registered
+      gate with a named reason, and its transcript (PASS and FAIL runs) is in
+      the wave REPORT — `tests/qualification/test_javascript_real_vitest.py`
+      (2026-08-30); `pytestmark = pytest.mark.skipif(...)` names the reason
+      (`ASSAY_NODE_QUALIFICATION=1` + node/npm on PATH; tester-unified has no
+      Node, DESIGN-GUIDE §10); both transcripts are in
+      `reports/assay-WAVE-A-js-consumer-REPORT.md`. Running it for real
+      surfaced a genuine, previously-unknown defect (B049/A-347: Vitest's
+      default `coverage.clean = true` orphans assay's own coverage-artifact
+      reservation) — not anticipated by this item's own text, and the kind
+      of finding only a real run (not a heredoc) can surface;
+- [x] `link_paths` implemented per rules 1–6 with a gate-runnable test per
+      rule, including the teardown-preserves-target canary — **Wave B,
+      2026-08-31**. `IsolationConfig.link_paths` + grammar/bound/order checks;
+      `SnapshotRepository._plant_link_paths`, called from `_build` AFTER
+      `_verify` (A-370) so the committed-objects-only proof stays true of
+      exactly the committed objects, and so BOTH materialisation entry points
+      (`materialize` and `materialize_replacement`, an R2 mutant's own) carry
+      the link structurally. `tests/test_isolation_link_paths.py`, 32 nodes.
+      Rule 6 is proven EMPIRICALLY (A-373), never by "stdlib `rmtree` unlinks
+      symlinks": a real symlink to a real directory outside the snapshot, a
+      canary file inside it, and the canary's BYTES asserted after teardown on
+      the success path, on `_materialize`'s exception path, and against
+      `_remove_owned_tree` directly. **A FIFTH refusal the contract does not
+      list** was needed (A-371): a link must be covered by a COMMITTED
+      `.gitignore`, or the runner's own dirt check reports it as `DIRTY_TREE`
+      after the lane's command — blaming the command for something the lane
+      declared. And a MEASURED finding (A-372): a trailing-slash rule
+      (`node_modules/`) does NOT cover the link, because git treats such a
+      pattern as directory-only and does not count a symlink as a directory;
+- [x] `snapshot_policy.link_paths` in the schema, the dataclass and
+      `verify.py`; the frozen drift-guard asset updated at the v9 cut —
+      landed with the cut (`af14021f`/`1577fa45`); `_verdict_snapshot_policy`
+      populates it here (omitted, never empty — A-051);
+- [x] `assay lanes --json` (B044) exposes `link_paths` — now emits the real
+      declared list; `inventory_schema` stays `1`, since it changes when an
+      EXISTING key's meaning changes, never because a key gained real values;
+- [ ] R3 for `javascript` wired in `cli.py`'s registry ONLY after the
+      qualification harness has run a real canary pair, never before — NOT
+      done this wave (out of scope per the wave prompt's own "NOT IN SCOPE"
+      list: "registering javascript at R2 or R3"); the qualification harness
+      shipped this wave proves R1 only, so this box's own precondition is
+      not yet met regardless.
+
+---
+
+## B042 — JavaScript consumer documentation: the worked lane is not a monorepo lane, "Jest is unaffected" is an overclaim, and support files are not test paths
+
+**Filed 2026-08-30 from the 3.1.0 design review (§3 G2/G3, §6).** Docs only;
+ships on the current schema. Every item below names its file:line and its
+replacement so the change is mechanical.
+
+1. **Worked lane (`docs/CONSUMERS.md:543-571`).** `argv = ["npm", "run",
+   "test:coverage"]` runs at the repository root, where the first consumer has
+   no `package.json`, while `source_roots = ["applications/webapp-ui/src"]`
+   names a monorepo app; Vitest's `reportsDirectory` resolves against the
+   app root, so `artifact = ".assay/coverage-final.json"` is the wrong path
+   for that layout. Replace with B041's worked lane (offline install +
+   `--no-install` runner + `applications/<app>/.assay/coverage-final.json`),
+   and say in one sentence that a root-level app keeps the short form. Once
+   B043 lands, show `cwd = "applications/webapp-ui-react"` instead of the
+   `bash -c` wrapper.
+2. **Jest scope (`README.md:191`, `docs/CONSUMERS.md:676-678`).** "nyc/istanbul
+   and Jest are unaffected" is true only of Jest's default `coverageProvider:
+   "babel"`. Jest `coverageProvider: "v8"` and `c8` write the same
+   `coverage-final.json` through v8-to-istanbul remapping and were NOT
+   measured. Replace with: "`nyc`/`istanbul` and Jest with its default
+   `babel` coverage provider share `@vitest/coverage-istanbul`'s instrumenter
+   and are unaffected. Jest's `coverageProvider: "v8"` and `c8` remap v8
+   ranges the same way the defective provider does and have not been
+   measured — treat them as unsafe until a committed witness says otherwise."
+   If the implementer can reproduce the `probe-js-provider-defect` project
+   under `c8` cheaply, commit the artifact and state the result instead.
+3. **Support files (`docs/CONSUMERS.md:680-693`).** Add: `*.stories.tsx`,
+   `src/test/setup.ts`, `vitest.setup.ts` and `*.config.*` are NOT test paths
+   by the adapter's rule (Vitest's own `include` glob is the citation), and
+   Vitest's default `coverage.exclude` drops config files from the artifact,
+   so a changed one under a declared source root is reported as uncovered
+   (fail-closed, visible). Keep them out of `source_roots`.
+4. **`README.md:169-178` snippet.** Say `vitest/config` (not `vite`) is the
+   `defineConfig` import that accepts a `test:` block; the CONSUMERS snippet
+   already does.
+5. **Cross-links.** README's JS section → B041's new CONSUMERS section;
+   CONSUMERS "Practices" gains "Dependency closures come from the image,
+   never the working tree" as a one-paragraph rule (B041 (a)).
+
+### Acceptance
+
+- [x] items 1–5 landed with the exact wording or better, each checked
+      against the current files (line numbers above are 3.1.0's) — item 1
+      discharged by B041(a)'s new CONSUMERS section (the old worked lane at
+      the cited lines is replaced, monorepo-shaped, offline-pattern
+      example); item 2 landed in `README.md`/`docs/CONSUMERS.md`'s v8-
+      provider warnings, WITH a real, measured `c8` result (2026-08-30) —
+      not left "untested": `tests/fixtures/coverage/probe-js-provider-
+      defect-c8/`, `coverage-istanbul-json.provider-defect.c8.json`,
+      `test_coverage_istanbul_provider_accuracy.py`'s `C8`/
+      `C8_FALSE_GREENS` cases; item 3 landed as `docs/CONSUMERS.md`'s new
+      "support files" paragraph, corrected past the backlog's own assumed
+      mechanism (measured: it is `coverage.include`'s zero-coverage
+      synthesis for a matched-but-unimported file, never a
+      `*.config.*`/`*.stories.*` exclude glob — Vitest's own hardcoded
+      excludes cover only its resolved config file, the test-name glob and
+      declared setup files); item 4 landed in `README.md`'s snippet comment;
+      item 5 landed both directions (README → CONSUMERS' new section;
+      CONSUMERS "Practices" gained "Dependency closures come from the
+      image, never the working tree");
+- [x] no doc still says the two Vitest providers are interchangeable or that
+      Jest is unconditionally unaffected (grep for "Jest" in README/CONSUMERS/
+      DESIGN-GUIDE/the parser docstring) — re-grepped 2026-08-30 after every
+      edit above; every remaining "Jest" mention is scoped to its default
+      `babel` provider, and `src/assay/coverage_parsers/coverage_istanbul_json.py`'s
+      own module docstring (the one hit outside README/CONSUMERS) corrected
+      to match.
+
+---
+
+## B043 — a lane-level `cwd`: the command's working directory as a declared, recorded fact
+
+**Filed 2026-08-30 from the 3.1.0 design review (§3 G2).** Schema v9 (the
+verdict must witness it) — rides B045's wave.
+
+### Problem
+
+The lane key set is closed (`config.py:139-155`) and has no working-directory
+key; every command runs at the snapshot root (`runner.py:1754`). A monorepo
+app's package script (`npm run …`, `go test ./...` inside a module, `cargo`)
+therefore needs `argv = ["bash", "-c", "cd applications/x && …"]` — dstdns's
+`run-gate.toml` already carries eleven such wrappers. The wrapper (1) hides the
+real `argv[0]` from the `MISSING_EXTERNAL_TOOL` preflight (it checks `bash`,
+not `npm`), (2) makes `allow_argv_append` meaningless for the inner command,
+(3) puts shell quoting between the lane file and what ran, which
+`argv_effective` then records opaquely.
+
+### Contract
+
+- `cwd = "applications/webapp-ui-react"` — repo-relative, forward-slash, no
+  `..`, no leading `/`, must resolve to a tracked DIRECTORY at the resolved
+  commit (so it exists in every snapshot) — otherwise `ERROR`/`BAD_LANE_CONFIG`
+  at load, naming the path and the commit. Symlink components are refused
+  through the existing P22 containment gates.
+- Applied as `cwd=snapshot.project_root / cwd` for the lane command and for
+  every re-execution (R2 candidates, R3 canaries) — one place, so
+  `resolve_command_plan` and the mutation executor cannot disagree.
+- **Nothing else re-roots.** `judge.coverage.artifact`, `equivalence_artifact`,
+  `infrastructure` facts, `source_roots`, `targets` stay project-root-relative
+  (one path grammar, A-271). The docs say so in the key's own paragraph.
+- Recorded in the verdict as `cwd_declared` beside `argv_declared` (absent
+  when not declared — absent, never `"."`), registered in `verify.py`.
+- `environment_command` keeps running in the invoking environment's cwd; it
+  is not the lane command.
+
+### Acceptance
+
+**SHIPPED 2026-08-31 (Wave B, assay-4.0.0 / schema v9).**
+
+- [x] loader accepts/refuses per the contract with a test per refusal —
+      `config._load_lane_cwd`; `tests/test_config_lane_cwd.py` (19 nodes).
+      One deviation from the contract's wording, recorded as A-368: the
+      "tracked at the resolved commit" half CANNOT be checked at load (there
+      is no resolved commit when `assay.toml` is read), so it is checked by
+      `runner._execute_snapshot_unit` against the materialised snapshot,
+      where the commit is known and is named in the message. The loader
+      checks the grammar, containment after symlink collapse, and that the
+      path is a directory in the invoking checkout;
+- [x] the command, every R2 candidate execution and every R3 canary run use
+      the same resolved cwd (one test each, proven by a command that writes
+      `$PWD` to its artifact) — `tests/test_runner_lane_cwd.py`, where the
+      oracle is a real `/bin/sh` command appending its own `$PWD` to a log
+      outside the snapshot. Stronger than "one test each": there is ONE join,
+      on the resolved `CommandPlan` inside `execute_plan` (A-367), so the
+      four sites agree structurally rather than by four tests happening to
+      pass. Two negative controls: a lane with no `cwd` runs at the project
+      root, and the `environment_command` probe keeps the invoking cwd;
+- [x] schema/dataclass/`verify.py` carry `cwd_declared`; drift-guard updated —
+      landed with the cut (`af14021f`/`1577fa45`); `assemble_verdict` (the
+      single verdict construction site) populates it here;
+- [x] CONSUMERS' JS worked lane and the SQL lane example use `cwd` where the
+      wrapper was; `assay lanes --json` (B044) exposes it — the JS worked
+      monorepo lane now declares `cwd` instead of its `bash -c "cd … && …"`
+      wrapper, and there is a new section for the key with a TABLE of what
+      does not re-root. **The SQL example had no wrapper to retire** (its
+      argv is `["scripts/schema-gate.sh"]`, already project-root-relative),
+      so nothing there changed; `lanes --json` emits the real value.
+
+---
+
+## B044 — `assay lanes --json`: a machine-readable lane inventory for gate tools
+
+**Filed 2026-08-30 from the 3.1.0 design review (§4).** No schema coupling;
+ships on the current schema. Companion to ciu CIU-72 (v8 gate) AND run-gate
+RG-25/RG-26 (the current gate — both consume this verb, so it is the
+prerequisite for the v7-era backports as much as for v8).
+
+### Problem
+
+`assay lanes` prints text (`cli.py:125-140`, dispatch at `cli.py:255`). CIU v8
+(SPEC S16, S15.3 stage 12) deliberately reads `assay.toml` for lane names
+only, so the gate cannot know that a `javascript` lane needs Node in its
+environment, that a future Go lane needs the statement-position helper on
+PATH, or that a lane delegates its base — the consumer restates the last one
+as `[testing.lanes.<l>] request_base = true`, a second spelling of one fact
+(the proposal's own P1). Asking the judge is not reading the file.
+
+### Contract
+
+`assay lanes --json [--file PATH]` writes one JSON document to stdout:
+
+```json
+{"inventory_schema": 1, "assay_version": "3.2.0", "lanes": [
+  {"name": "ui_unit", "scope": "S1", "rigor": ["R0","R1"], "enforcement": "gate",
+   "language": "javascript", "rigor_reachable": ["R1"],
+   "coverage": {"format": "coverage-istanbul-json", "artifact": "applications/webapp-ui-react/.assay/coverage-final.json", "producer": null},
+   "mutation": null, "canary": null,
+   "base_source": "request", "external_tools": [], "argv0": "bash",
+   "env_required": [], "environment_command": false, "infrastructure_facts": [],
+   "budget": "15m", "cwd": null, "link_paths": [], "snapshot_selection": "repository"}]}
+```
+
+- every field has ONE producer: the loaded `Lane`/`JudgeConfig` and the
+  registry entry (`rigor_reachable` = the levels THIS build wires for the
+  language, `registry.py`); nothing is re-derived from the TOML text;
+- `external_tools` = the adapter's declared tuple, plus (after B047) the Go
+  helper; `argv0` lets a gate preflight the real first token;
+- a lane file that fails to load → exit 2 with the loader's message and NO
+  partial document; `--json` never emits both text and JSON;
+- `inventory_schema` is bumped only when a key changes meaning; adding keys
+  (B043 `cwd`, B041 `link_paths`, B045 `producer`) is additive.
+
+### Acceptance
+
+- [x] golden JSON for every fixture lane file under `tests/fixtures/lanes/`
+      (or the existing lane fixtures), including a `javascript`, a `sql` and
+      a delegating lane — `tests/test_cli_lanes_json.py` (2026-08-30, Wave
+      A): `test_an_r0_only_lane`, `test_a_python_r1_lane_with_a_declared_base`,
+      `test_a_javascript_r1_lane_that_delegates_its_base`,
+      `test_a_sql_r2_lane`, plus a standalone
+      `test_a_lane_delegating_its_base_records_base_source_request` reusing
+      B019's own `_delegating_r1_lane()` pattern;
+- [x] a refusal test (bad lane file → exit 2, empty stdout) —
+      `test_a_lane_file_that_fails_to_load_exits_two_with_no_json_on_stdout`,
+      `test_a_missing_lane_file_exits_two_with_no_json_on_stdout`;
+- [x] CONSUMERS "CMRU / tester-unified integration" shows a gate consuming
+      it — `docs/CONSUMERS.md#preflighting-a-gate-environment-with-assay-lanes---json-b044`
+      added (2026-08-30, Wave A), showing the exact document shape and how a
+      gate reads `rigor`/`rigor_reachable`, `language`, `base_source`,
+      `external_tools`/`argv0`, `environment_command`.
+- [ ] (split out 2026-08-30, Wave A review round 1 — was incorrectly folded
+      into the box above as done) the ciu handoff note itself: CIU-72,
+      already filed in ciu's own backlog by the design review that filed
+      this item, still needs to be WORKED, not just filed — out of scope
+      here (Wave A touches `assay/**` only); flagging for the controller/ciu
+      owner to cross-reference the exact key names in the box above when
+      CIU-72 is worked.
+
+---
+
+## B045 — declare the coverage PRODUCER: `judge.coverage.producer`, recorded in the verdict (schema v9); closes B038(a)(b) and B040(b)
+
+**Filed 2026-08-30 from the 3.1.0 design review (§4 D1). Operator ruling
+2026-08-30: one bundled v9 cut with B046/B043/B041(b) — assay 4.0.0.** This
+is the decision B038 and B040 exist to force, argued against A-007 as they
+require: a producer becomes a **declared** fact, never a sniffed one.
+
+### Why a declaration and not a per-producer format
+
+`coverage-istanbul-json` is one format with several producers that disagree
+about (i) what `branchMap` means (A-344) and (ii) whether a line ran (A-346).
+Registering `coverage-istanbul-json-v8` as a second FORMAT would bind a
+trust property to a format name — and the same document from nyc, Jest-babel
+and `@vitest/coverage-istanbul` would then need three names for one shape.
+The producer is a fact about the lane's toolchain, like `judge.language`; it
+belongs beside the format, and the verdict must witness it (the B035 lesson:
+a judgment that cannot state its own inputs cannot be verified).
+
+### Contract
+
+- `[lanes.<n>.judge.coverage] producer = "<name>"`, a closed vocabulary PER
+  FORMAT, kept in `vocabulary.py` beside the operators:
+  - `coverage-istanbul-json`: `istanbul` (babel-plugin-istanbul family:
+    nyc/istanbul, Jest `babel`, `@vitest/coverage-istanbul`,
+    `vite-plugin-istanbul`), `vitest-v8` (**refused at load by name, A-346**),
+    `jest-v8`, `c8` (**refused until a committed witness clears them**, B042
+    item 2). REQUIRED for this format — its producers disagree, so no
+    implied value is correct in every context (DESIGN-GUIDE §5).
+  - `coverage-py-json`: `coverage.py` — optional, the only producer; if
+    present must equal it.
+  - `lcov`, `cobertura`: optional; vocabulary opened by the first consumer
+    that needs one (no speculative names — §5).
+  - `go-cover`: `go-test` | `covdata` — declared by the Go wave (B047), same key.
+- Verdict: `judgment.r1.coverage_producer` (string, present iff declared;
+  absent never `null`), registered in `verify.py`; schema `const` 8 → 9.
+- **B038(a) — real branch arcs under `producer = "istanbul"`.** The parser
+  gains a producer-aware branch path: `branchMap` entries typed
+  `if`/`cond-expr`/`switch`/`binary-expr`/`default-arg` with N locations and
+  N counts become `BranchCoverage.by_line` arcs keyed by each arm's
+  `start.line` (istanbul-lib-coverage's own reduction), with the
+  `FileCoverage` cross-bucket invariants checked on BOTH committed real
+  artifacts; any other producer keeps `branches=None` and
+  `branch_capability = "unavailable"`. `require_branch = true` becomes legal
+  on an istanbul-producer lane.
+- **B038(b) — type-only modules under `istanbul`.** Absent-from-artifact
+  changed `.ts`/`.tsx` files are offered to a NARROW, fail-closed lexer
+  (Go's `has_executable_code` discipline, A-104): after comment masking, a
+  file whose every top-level statement begins with `import type`,
+  `export type`, `export interface`, `type `, `interface `, `declare ` and
+  contains no other top-level token is NoCode; any construct the lexer does
+  not recognise answers `True`. No TypeScript parser; measured against
+  `probe-js/src/typesonly.ts` and a control with one runtime export.
+- **B040(b)**: the `vitest-v8` refusal message names A-346 and the fix
+  (`provider: 'istanbul'`); A-346's documentary warning is downgraded to a
+  note about lanes written before this key existed.
+
+### Migration (4.0.0 notes)
+
+Every existing `coverage-istanbul-json` lane must add `producer = "istanbul"`
+(there are none in the estate yet — dstdns has no JS lane); Python lanes
+need nothing. v8 verdicts are refused by `assay verify` at v9 exactly as v7
+were at v8.
+
+### Acceptance
+
+**SHIPPED 2026-08-31 (Wave B, assay-4.0.0 / schema v9).**
+
+- [x] vocabulary, loader refusals (unknown name; name not in the format's
+      set; `vitest-v8`/`jest-v8`/`c8` by name with their reasons; missing on
+      istanbul-json), each with a test — `assay/vocabulary.py`
+      (`COVERAGE_PRODUCERS_BY_FORMAT`, `COVERAGE_PRODUCER_REQUIRED_FORMATS`,
+      `REFUSED_COVERAGE_PRODUCERS`), `config._load_coverage_producer`,
+      `tests/test_config_coverage_producer.py`. Refusal-by-name is tested
+      BEFORE catalogue membership (A-352), so a consumer who declared the
+      unsound provider is told what is wrong with it and how to fix it;
+- [x] `judgment.r1.coverage_producer` in schema/dataclass/`verify.py`;
+      drift-guard v9 asset; migration notes in CHANGES.md — landed with the
+      cut (`af14021f`/`1577fa45`), and wired at `runner.py`'s `JudgmentR1`
+      construction in the same commit so the field is never
+      declared-but-never-populated;
+- [x] branch arcs under `istanbul` on both committed real artifacts, with
+      the A-265 detail-over-metadata discipline and uniqueness/disjointness
+      validation before aggregation; `unavailable` for every other producer —
+      `coverage_parsers/coverage_istanbul_json.py` (commit `cc4e955f`);
+      A-355 widened every parser's `parse` to take the producer keyword-only
+      with NO default, so a caller that forgets it fails loudly rather than
+      losing arcs silently;
+- [x] the type-only lexer with its fail-closed controls —
+      `adapters/javascript.py`; scoped exactly to B045's list and answering
+      "has code" for anything it does not recognise (A-358);
+- [x] README/CONSUMERS/DESIGN-GUIDE §11 updated: "leave `require_branch`
+      unset" guidance replaced; B038 and B040 (b) marked resolved by this
+      item — both marked above; B038(a) = A-356/A-357, B038(b) = A-358,
+      B040(b) = A-353.
+
+---
+
+## B046 — R2 by evidence ingestion: `judge.mutation.format = "mutation-report-json"`, the lane's own argv runs the mutation tool inside the snapshot (resolves B037; schema v9)
+
+**Filed 2026-08-30 from the 3.1.0 design review (§4 D2). Operator ruling
+2026-08-30: RATIFIED — B037's three open decisions are resolved as below;
+this entry is dispatchable in the v9 wave. Record the rulings as
+`decisions.md` entries when implemented.**
+
+### The shape: make ingested R2 look exactly like R1
+
+R1 already ingests foreign evidence: the lane's argv runs a coverage tool
+inside the snapshot, the tool writes an artifact at a declared path, assay
+reads it through a FORMAT-keyed registry and computes the judgment. Ingested
+R2 is the same sentence with "mutation" substituted:
+
+```toml
+[lanes.ui_mutation]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+cwd = "applications/webapp-ui-react"                      # B043
+argv = ["bash", "-c", "npm ci --offline --no-audit --no-fund && npx --no-install stryker run --reporters json"]
+env = { npm_config_cache = "/opt/npm-cache", CI = "1" }
+env_passthrough = ["PATH", "HOME"]
+budget = "45m"
+allow_argv_append = false
+
+[lanes.ui_mutation.isolation]
+snapshot_selection = "repository"
+
+[lanes.ui_mutation.judge]
+language = "javascript"
+source_roots = ["applications/webapp-ui-react/src"]
+base_source = "request"
+
+[lanes.ui_mutation.judge.mutation]
+format = "mutation-report-json"                            # mutation-testing-report-schema (Stryker's json reporter)
+artifact = "applications/webapp-ui-react/reports/mutation/mutation.json"
+fail_under = 100.0                                         # killed / (killed + survived), over changed lines
+```
+
+This answers B037's open questions without a new trust boundary:
+
+1. **"Shell out, or accept a CIU-supplied report?" — neither.** The lane's
+   argv runs Stryker in the private snapshot (A-161), so the report is bound
+   to the resolved commit by construction, exactly as `coverage-final.json`
+   is today. CIU orchestrates WHERE (the environment, the npm cache); assay
+   never invokes Stryker itself and never accepts a report it did not watch
+   being produced.
+2. **Non-repudiation.** (i) commit binding = snapshot; (ii) exit status is
+   not proof: Stryker exits non-zero when the score is under ITS thresholds —
+   the docs mandate `thresholds: { break: null }` so the exit status carries
+   only crash information and assay judges the score; a non-zero exit is
+   still R0's `COMMAND_FAILED`; (iii) the report's `projectRoot` must equal
+   the snapshot root and every `files` key must resolve under a declared
+   source root — otherwise `ERROR`/`UNREADABLE_ARTIFACT` ("an artifact from
+   elsewhere"); (iv) `schemaVersion` is pinned to the major the committed
+   real fixture carries; a `Pending` mutant anywhere refuses the whole
+   report (incomplete evidence is not evidence); (v) the report is read once,
+   bounded by `MAX_COVERAGE_ARTIFACT_BYTES`'s sibling and a fixed mutant
+   ceiling.
+3. **Vocabulary.** Status map, each direction chosen for the visible-failure
+   side: `Killed → killed`; `Survived → survived`; `NoCoverage → survived`
+   (recorded separately as `survived_uncovered` — the worst kind, never
+   hidden inside the survived count); `Timeout → budget_exceeded`
+   (Stryker's per-mutant timeout IS the per-candidate budget);
+   `CompileError`/`RuntimeError → discarded` (an invalid mutant the native
+   engine never emits; excluded from the denominator, counted);
+   `Ignored → excluded` (the tool's own ignore, counted, never laundered as a
+   kill); `Pending → refuse`. `equivalent` stays 0 and `kill_attribution =
+   "unattributed"` (no equivalence detection; `equivalence_artifact` stays
+   SQL-only). Operators: a foreign tool's mutator names are DATA, not assay's
+   closed list — each recorded mutant carries `operator = "stryker:<mutatorName>"`,
+   admitted by a namespace pattern branch in the schema's `mutation_operator`
+   (`^stryker:[A-Za-z0-9]+$`), and `judge.mutation.operators` is REFUSED on an
+   ingested lane (Stryker's config declares mutators; two declarations would
+   be the P1 hazard).
+4. **Provenance and the B018 relationship.** `judge_provenance` stays assay's.
+   The producer's identity is copied from the report — `judgment.r2.producer
+   = "ingested"`, `judgment.r2.producer_tool = {name, version,
+   report_schema_version}` from `framework`/`schemaVersion` — declared-by-
+   artifact, not verified, and said so in DESIGN-GUIDE. `helpers[]` is NOT
+   used: it records tools assay itself invoked (A-230a), and assay did not
+   run Stryker. Native lanes record `producer = "native"`. A verdict thereby
+   distinguishes Tier-1-computed-natively from Tier-1-computed-over-ingested-
+   evidence, which the north-star's "never conflate tiers" requires.
+5. **Precedent.** Yes — this is the general shape for any R2 producer assay
+   has no native engine for: a format-keyed MUTATION registry
+   (`mutation_parsers/`, parallel to `coverage_parsers/`) keyed by the
+   report format, not the tool; Stryker.NET/Stryker4s emit the same schema
+   and would need no code. Go's or Python's tools join only when they emit
+   a registered format.
+
+### Judgment
+
+Scope is assay's computation, not the tool's: under `changed_lines`, a mutant
+counts iff its `location.start.line` (file key resolved to repo-relative) is
+an added line of the diff; under `whole_target`, iff its file is a declared
+target. A changed executable line with NO mutant is recorded
+(`lines_without_candidates`) and, with zero candidates in scope overall,
+renders `INCONCLUSIVE`/`NO_MUTANTS` exactly as native R2 does. `pct =
+killed / (killed + survived)`; `fail_under` compares against it;
+`survived_uncovered` is listed with file:line so a consumer sees the untested
+mutant, not a number.
+
+### Acceptance
+
+**SHIPPED 2026-08-31 (Wave B, assay-4.0.0 / schema v9).** One deviation,
+filed rather than fudged: `fail_under` is honoured at `100.0` only — see
+**B050** and A-380.
+
+- [x] a REAL Stryker report from `tests/fixtures/coverage/probe-js` (Stryker
+      + `@stryker-mutator/vitest-runner`, versions and lockfile committed
+      under `PROVENANCE.md`) is the primary fixture (A-334); synthetic
+      reports cover every status, `Pending`, a foreign `projectRoot`, a key
+      outside the source roots, and an over-ceiling mutant count —
+      `tests/fixtures/mutation/mutation-report-json.probe-js-stryker.json`
+      (StrykerJS 10.0.0, 109 mutants over 6 files) drives every happy-path
+      node in `tests/test_runner_ingested_r2.py`, and each refusal node
+      mutates ONE field of that same real document rather than hand-building
+      a synthetic one;
+- [x] `mutation_parsers/mutation_report_json.py` + registry + loader keys
+      (`format`, `artifact`, `fail_under`; `operators`/`jobs`/`max_mutants`/
+      `equivalence_artifact` refused on an ingested lane with reasons) —
+      `src/assay/mutation_parsers/{__init__,model,mutation_report_json}.py`;
+      the registry lives in the package rather than in `assay.mutation` to
+      keep the `config -> mutation -> config` cycle closed (A-376);
+      `config._load_ingested_mutation` carries the refusals, each naming WHY
+      rather than merely that the key is not allowed;
+- [x] `judgment.r2.producer`/`producer_tool`/`survived_uncovered`/
+      `discarded`/`lines_without_candidates` in schema, dataclass, `verify.py`
+      (re-derivation of `pct` and buckets from the payload), drift-guard v9 —
+      schema/dataclass/drift-guard landed with the cut (`af14021f`/`1577fa45`);
+      the `verify.py` half landed here as
+      `_check_ingested_r2_agrees_with_its_payload`, which closes a real hole:
+      every PRE-EXISTING raw R2 check is guarded on `judgment.r2.operators`
+      and therefore SKIPPED on an ingested document rather than passing. The
+      score itself is re-derived by the existing `_check_r2_rederivation`
+      through `judge_mutation`, which an ingested claim goes through unchanged
+      (A-379) — one owner, not two that could disagree;
+- [x] `cli.py` registers `javascript` at `{"R1", "R2"}` ONLY through the
+      ingested path (`generate_mutation_sites` stays `UNSUPPORTED`; the
+      runner selects native vs ingested by `judge.mutation.format` presence) —
+      and a NATIVE javascript R2 lane is still not constructible, because it
+      would have to declare non-empty `operators` and no `javascript` operator
+      catalogue exists; the 340-374 docstring is rewritten to say which of its
+      two guards now carries that guarantee;
+- [x] CONSUMERS: worked lane, the `thresholds.break: null` mandate, the
+      status map table, what the verdict records; DESIGN-GUIDE §11 "Mutation
+      is source-oriented" gains the ingested paragraph and the tier
+      statement; B037 marked RESOLVED by this item; decisions recorded —
+      CONSUMERS §"R2 for JavaScript, by ingesting Stryker's report (B046)"
+      (its worked lane is a LOADABLE example, verified by the docs guard);
+      DESIGN-GUIDE §11's new "Ingested R2" paragraphs; decisions A-375–A-383.
+
+---
+
+## B047 — Go wave preparation: helper distribution and identity, `helpers[]` in the gate envelope, the shared line-expansion bound (B039), the `covdata` producer
+
+**Filed 2026-08-30 from the 3.1.0 design review (§4 D4/D8).** Not a package:
+scope additions for the P27 re-carve (A-217/A-239), so the carve does not
+discover them. Each item names what is already ruled and what is not.
+
+1. **Helper distribution (NOT ruled by A-239, which settled the seam).** Two
+   candidates, decide in the carve with a probe: (a) ship the
+   statement-position oracle's Go source inside the wheel
+   (`assay/helpers/go/stmtpos/`) and invoke `go run <path>` — the source is
+   then covered by `judge_provenance`, and `helpers[].identity` is
+   `go version …`; stdlib-only source needs no module download (`GOFLAGS=-mod=mod`,
+   `GOPROXY=off` proven in the probe); compile latency measured against
+   `tester-unified-go`'s warm `GOCACHE`. (b) a separately built binary in the
+   environment image — a second artifact to pin, which ciu v8's
+   `[testing.judge]` floor does not cover. Recommend (a).
+2. **`external_tools = ("go",)`** on the Go adapter → the existing
+   `MISSING_EXTERNAL_TOOL` preflight (A-253) covers it; `assay lanes --json`
+   (B044) exposes it so CIU-72 can check the environment.
+3. **`judge.coverage.producer` for `go-cover`** (B045's key): `go-test`
+   (`go test -coverprofile`) | `covdata` (`go tool covdata textfmt` over the
+   `GOCOVERDIR` binary data of `go build -cover` binaries — the integration-
+   test path, an S3 lane). Same format; document both and their producer names.
+4. **B039** — fold the per-artifact classified-line ceiling into ONE shared
+   bound in `coverage_parsers/model.py`, used by `go_cover` and
+   `coverage_istanbul_json`; B039's own acceptance is discharged there.
+5. **Gate envelope** — CIU-72: the LaneResult copies `helpers[]` verbatim;
+   nothing on assay's side beyond documenting that `helpers` is the
+   reproducibility record for a Go verdict.
+6. **Fixtures** — A-234's stale hand-authored profiles regenerate against
+   `tester-unified-go` as already tracked.
+
+### Acceptance
+
+- [ ] the P27 re-carve cites items 1–6 explicitly (carve reviewer checks);
+- [x] item 4 landed (may ride the v9 wave or the Go wave — whichever is
+      first) — landed in Wave A instead, ahead of both: see B039's own
+      acceptance boxes.
+- [x] item 1 landed, option (a) as recommended — `assay/helpers/go/stmtpos/`
+      ships inside the wheel AND the zipapp; `GOPROXY=off`/`GOFLAGS=-mod=mod`
+      are forced on every invocation. One correction to the item's own text:
+      "invoke `go run <path>`" is not enough on its own, because the zipapp
+      has no path to give it — the source is staged out of the archive to a
+      real directory first (A-403).
+- [x] item 2 landed (Wave C generation 2) — `external_tools = ("go",)`.
+- [x] item 3 landed (Wave C generation 3, A-398) — `go-test` | `covdata`,
+      both documented, the key optional for this format.
+- [x] item 5 landed (Wave C generation 4) — and it was MORE than the
+      documentation item filed here. `Verdict.helpers` had no producer at
+      all: P33 validated the array and nothing populated it. A Go R1 lane now
+      emits a real entry, `assemble_verdict` refuses a helper with no
+      correspondingly-judged claim, `_replace_highest_higher_rigor_claim_with_git_failed`
+      drops one whose claim it voids, and the correspondence rule has one
+      definition (`verdict.supported_helper_roles`) read by both sides.
+      Proven end to end against the real toolchain by
+      `tests/qualification/test_go_r1_real.py` (A-395: never a mock).
+- [ ] item 6 (fixture regeneration, F008-A4) — still owed; blocked with
+      F008-A5 behind **B059**.
+
+---
+
+## B048 — browser (Playwright) coverage of a React UI as an R1 lane: `vite-plugin-istanbul` inside the lane, and where the S3 binding stops
+
+**Filed 2026-08-30 from the 3.1.0 design review (§4 D6).** Documents a path
+that needs NO assay change today, and names the one thing that must not be
+built before B004.
+
+### The path
+
+Inside one lane (the snapshot): `npm ci --offline`; `vite build --mode
+coverage` with `vite-plugin-istanbul` (babel-plugin-istanbul — the same
+instrumenter as `@vitest/coverage-istanbul`, `producer = "istanbul"` under
+B045); serve the build (`vite preview` or the app's nginx) on the instance
+network; run the Python-driven Playwright suite (`pytest -m browser
+tests/e2e/ui/webapp-ui-react`) against it, with a fixture that dumps
+`window.__coverage__` after every test and merges the maps
+(`istanbul-lib-coverage`) into one `coverage-final.json`; the lane declares
+`format = "coverage-istanbul-json"`, `source_roots = ["applications/webapp-ui-react/src"]`.
+The implementer must measure that the artifact's keys are the ORIGINAL
+`src/**/*.tsx` paths (the plugin instruments pre-transform sources), never
+`dist/`.
+
+WHERE is ciu's: the tester serving the preview must be reachable from the
+browser service, and the UI needs the instance's backend
+(`requires.services = ["webapp_server", "browser_service"]`); the backend
+route reaches the lane as an `infrastructure` fact (B013 `derived:` → v8
+`ciu.instance.resolved.routes…`). Scope `S3`, declared.
+
+### The limit, stated once
+
+The UI code judged is the snapshot's (fully bound). The API it talks to is the
+deployed image's — an unverified declared fact, exactly A-O12/B004's subject.
+Until B004 ships verified provenance, an S3 R1 verdict from this lane binds
+the UI, not the system. A detached `assay judge <artifact>` verb (judging
+evidence produced by a deployed image, outside any snapshot) is the larger
+ask this pattern avoids; **do not build it before B004** — it would be the
+first assay judgment with no commit binding of its own.
+
+### Acceptance
+
+- [x] a CONSUMERS section "Browser coverage of a UI as an R1 lane" with the
+      recipe above and the limit paragraph verbatim in spirit — landed
+      2026-08-30;
+- [x] a small committed `vite-plugin-istanbul` artifact (produced outside
+      assay like `probe-js`, `PROVENANCE.md` entry) proving the keys and the
+      parser path, plus a parser test over it — real `vite build`
+      (`forceBuildInstrument: true`) executed in real jsdom, node `v26.5.1`/
+      `vite` `8.2.2`/`vite-plugin-istanbul` `9.0.1`:
+      `tests/fixtures/coverage/probe-js-vite-plugin-istanbul/`,
+      `tests/fixtures/coverage/coverage-istanbul-json.vite-plugin-istanbul.json`,
+      `tests/fixtures/coverage/PROVENANCE.md`'s new section,
+      `tests/test_coverage_parsers_vite_plugin_istanbul_artifact.py` (3
+      tests: keys are `src/*.ts`, never `dist/`; the real bundle reports
+      genuine partial coverage — `subtract`'s untaken branch, not a
+      trivially-all-green fixture; the existing parser needed no change);
+- [ ] the consumer-side `__coverage__` dump fixture is dstdns's package, listed
+      in the review report §7 — not this repo's work, unchanged.
+
+---
+
+## B049 — a coverage/mutation tool that deletes-and-recreates its own output directory silently orphans assay's held reservation, reading `EMPTY_COVERAGE` over a genuinely complete artifact
+
+**Filed 2026-08-30, Wave A (B041(c)'s real-`vitest` qualification harness) — the
+first time a real external coverage tool has run inside an assay snapshot.**
+Not JS-specific in mechanism (`safeio.reserve_output`/`consume` is
+language-free core), but JS-specific in *discovery*: Python's `coverage.py`
+writes its report file directly, with no directory-delete step, so nothing in
+this project's existing test suite (all pre-B041 R1/R2 lanes, real or
+heredoc'd) ever exercised this path. A-334's own lesson, one layer further:
+even a REAL run through the REAL CLI does not prove a claim about behaviour a
+test double never triggered.
+
+### The mechanism, measured
+
+`runner.py:1692` (`safeio.reserve_output(..., create_missing_parents=True)`,
+threaded from B006(b)) opens (and, for a fresh snapshot, creates) the coverage
+artifact's PARENT DIRECTORY once, before the lane's own command runs, and
+holds that directory's own file descriptor (`OutputReservation._parent_fd`,
+`safeio.py:212`) for the lane's whole execution. `runner.py:1771`
+(`reservation.consume()`) reads the artifact AFTER the command exits by
+opening the declared basename relative to that SAME held descriptor
+(`safeio.py:319`, `os.open(basename, dir_fd=parent_fd)`).
+
+If the lane's own tool deletes and recreates that directory (`rm -rf
+reportsDirectory && mkdir reportsDirectory && write coverage-final.json` —
+Vitest's own default `coverage.clean = true`, `coverageConfigDefaults` in
+`vitest@4.1.11`'s own `chunks/defaults.*.js`) rather than writing into the ONE
+directory assay already opened, the held `parent_fd` is left pointing at an
+orphaned, now-empty directory inode. `consume()`'s lookup then raises
+`FileNotFoundError` on the `os.open(basename, dir_fd=parent_fd)` at
+`safeio.py:318-319`, which `consume()` returns as `None`
+(`safeio.py:320-321`, `except FileNotFoundError: return None`), and the
+caller reads that as "the command never produced an artifact" — reaching
+`parse_coverage_artifact` (`coverage.py:161`), which raises
+`NO_MEASUREMENT`/`EMPTY_COVERAGE` for a `None` read (`coverage.py:179-187`).
+**The message that actually ships asserts a checkable falsehood**:
+`coverage.py:181-184` says "the lane's command exited without writing the
+declared artifact at all … there is nothing here to have failed to read" —
+demonstrably false here, over a complete, correctly-keyed 678-byte artifact
+that really existed on disk at the declared path the whole time (proved by
+the parallel `cp` below). **A fix needs no new schema const or reason code**:
+`coverage.py:171-173` already reserves `ERROR`/`UNREADABLE_ARTIFACT` for "an
+object that exists but cannot be trusted (… or a race the caller's own
+reservation already detected)" — this IS that race; the enum value this
+class of failure belongs under already exists in the frozen v8 schema, it is
+simply not the one raised here.
+
+(Corrected 2026-08-30, Wave A review round 1: the mechanism paragraph above
+originally miscited `safeio.py:339` — that line is `if not chunk: break`
+inside the read loop, reachable only past a successful `os.open`, not the
+`None` return — and `check_empty_coverage`/`coverage.py:313`, which is never
+reached because that function takes an already-parsed `CoverageProfile` that
+never exists on this path. Both corrected above against the code as it
+stands.)
+
+**Isolated by direct A/B measurement, real `assay run`, real Vitest, nothing
+mocked** (a two-commit git fixture, `npm ci --offline` against a warm cache,
+`npx --no-install vitest run --coverage`, `fail_under = 100.0`, a fully
+covered diff):
+
+| `vitest.config.ts` | `assay run` result |
+|---|---|
+| `coverage.clean` unset (Vitest's own default, `true`) | `NO_MEASUREMENT`/`EMPTY_COVERAGE`, exit 3 |
+| `coverage.clean = false`, nothing else changed | `PASS`, `pct: 100.0`, `covered: 1`, `executable: 1` |
+
+A parallel `cp .assay/coverage-final.json /tmp/…` appended to the SAME lane
+command, executed immediately after the real `vitest run` step and BEFORE
+assay's own post-command read, proves the artifact was genuinely complete and
+correctly keyed on disk at the declared path the whole time — the reservation
+mechanism failed to find something that was really there, not a case of the
+tool truly writing nothing.
+
+### Why this is filed, not fixed, in Wave A
+
+`safeio.py`/`runner.py` are core, language-free evaluation machinery shared by
+every adapter (Python R1/R2/R3, SQL R2, JavaScript R1) and every future one.
+(Corrected 2026-08-30, Wave A review round 1: the wave prompt's own NOT-IN-
+SCOPE list, `WAVE-PROMPT-2026-08-30-js-consumer-producer.md` lines 115-121,
+does not in fact name "core-mechanism changes" as excluded — it forbids
+verdict/schema/`verify.py`/drift-guard changes, R2/R3 registration,
+`cwd`/`link_paths`/`producer`, and Go changes, and none of those is what a
+B049 fix would touch. The prior wording overstated what the prompt actually
+excludes; this fix is filed rather than implemented because it is a real
+design call outside the wave's own ENUMERATED scope list, not because the
+prompt forbids core-mechanism changes as a category.) The right fix is a
+real design call this backlog entry is not the place to make unilaterally —
+candidates:
+
+1. Re-open the parent chain by NAME at `consume()` time instead of holding a
+   directory descriptor across the whole command execution — loses the
+   TOCTOU protection `arm()`'s pre-command unlink currently buys against a
+   symlink swapped in mid-run, unless re-derived some other way.
+2. Detect a recreated directory (compare the parent's own inode/device
+   identity, not just the basename's) and raise a NAMED, distinguishable
+   reason (`UNREADABLE_ARTIFACT`/something naming "your tool replaced its own
+   output directory") instead of the current silent fold into
+   `EMPTY_COVERAGE` — cheaper than (1), still leaves the underlying tools
+   working around it via `clean = false`, but stops the failure from reading
+   as "you produced no coverage" when the true cause is diagnosable.
+3. Document only (today's mitigation, shipped this wave): every JS lane's
+   `vitest.config.ts` declares `coverage.clean = false`. Costs nothing in
+   code, but is silent about whether OTHER external tools (a future adapter,
+   or a consumer's own coverage wrapper) share Vitest's "clean the output
+   directory first" convention — a common enough pattern that it should not
+   be assumed unique to Vitest.
+4. **(Added 2026-08-30, Wave A review round 1)** A specific, name-free
+   implementation of (2): `os.fstat(parent_fd).st_nlink == 0` on the ALREADY
+   HELD descriptor, checked at `consume()` time, needs no by-name `stat` and
+   so no new TOCTOU surface (unlike (1) and a naive reading of (2)); a
+   deleted-and-recreated directory always leaves the OLD inode at `nlink=0`
+   even though a NEW inode now answers to the same path (verified: held fd
+   `nlink=0 ino=17860260` vs. the recreated directory `ino=17860261`). It
+   raises the SAME `ERROR`/`UNREADABLE_ARTIFACT` `coverage.py:171-173`
+   already reserves for this — no schema/enum change. Round-1 review
+   prototyped and ran it (against a scratch copy, not this branch): a
+   15-line pure-Python `rmtree`+`mkdir` fake reproduces the defect with no
+   JS/Vitest involved (the regression test option (1)/(2)'s own acceptance
+   box below asks for), and the full suite passed with zero regressions.
+   **Blast radius wider than this entry's own title states**: the identical
+   `None`-means-nothing-was-written fold also sits at `runner.py:1714` (SQL
+   R2's `equivalence_artifact`) and `mutation.py:1167`, where an absent read
+   is classified `crashed` (`mutation.py:1129`) and rolls up to
+   `ERROR`/`EXEC_FAILED` (`mutation.py:1808`) — a directory-recreating dump
+   step in a SQL lane's own tooling would report every mutant as CRASHED for
+   a command that ran perfectly, not just `EMPTY_COVERAGE` for a JS lane.
+   Not yet implemented on this branch; a maintainer ruling and a real
+   implementer round (with its own review) are still needed before this
+   lands, per this project's own standing practice for core-machinery
+   changes — see decision ask in
+   `nyxloom-trove/reports/assay-WAVE-A-js-consumer-REPORT.md` §14.
+
+### Acceptance
+
+- [ ] a product ruling among the four options above (or a fifth), recorded
+      as a decision;
+- [ ] if (1), (2) or (4): a regression test that plants a directory-recreating
+      fake tool (no real Vitest needed to prove the CORE mechanism) and
+      asserts the new, non-silent behaviour;
+- [ ] CONSUMERS' `clean: false` note (added this wave) updated to match
+      whatever ships — either it stays required with the same reason, or it
+      becomes optional with the new diagnostic named instead.
+
+---
+
+## B050 — an ingested R2 lane cannot declare a mutation-score floor below 100: `judgment.r2` has no field recording WHICH floor was applied
+
+**Filed 2026-08-31 from Wave B (B046's implementation), with evidence.
+Refused loudly rather than half-implemented — the gap is a WIRE field, so the
+fix belongs to the next schema cut, not to a patch release.**
+
+### The problem
+
+B046's contract says `judge.mutation.fail_under` "compares against" the
+ingested mutation score `pct = killed / (killed + survived)`. The lane key
+ships (required, validated, in the worked example) but **this build honours
+only `100.0`**, and any other value is refused at load naming this entry.
+
+The reason is a wire gap, not an implementation shortcut.
+`JudgmentR2`'s own docstring states the property that makes R2 auditable:
+
+> an independent consumer can already re-derive the R2 claim's *status* from
+> `Mutation`'s own bucket fields alone (`judge_mutation`'s mapping needs no
+> external policy input)
+
+`judgment.r1` carries `fail_under`, so an R1 PASS is explicable from the
+document. `judgment.r2` carries no such field — under v8 it needed none,
+because native R2 fails on any survivor at all. A lane judging at 90 would
+therefore emit `PASS` beside recorded survivors with **nothing in the document
+explaining it**, and `verify.py`'s `_check_r2_rederivation` — which reuses
+`judge_mutation` — would correctly report the verdict as inconsistent. The
+verdict would be un-auditable by exactly the tool that exists to audit it.
+
+Three options were weighed at implementation time (A-380). Dropping the key
+leaves B046's own acceptance unmet and the documented worked lane unloadable.
+Accepting the key and ignoring it is inert config that cannot fail loudly when
+it is wrong (AGENTS.md 4.2a's own test). The third — ship the key, honour its
+one currently-expressible value, refuse the rest with the reason — is what
+landed.
+
+### Evidence
+
+- `src/assay/config.py` `_load_ingested_mutation`: the refusal, naming this
+  entry.
+- `tests/test_config_ingested_mutation.py::test_a_sub_hundred_fail_under_is_refused_naming_the_wire_gap`.
+- `src/assay/mutation.py` `judge_mutation`: the `fail_under` parameter was
+  written and then removed; the docstring records why.
+- `src/assay/schemas/verdict.schema.json` `$defs.judgment_r2.properties`: no
+  floor field, in v9 as in v8.
+
+### The fix, when a schema cut next opens
+
+Add `judgment.r2.fail_under` (number, 0..100), **required under
+`producer = "ingested"` and forbidden under `"native"`** — the producer fork
+A-360 already established is exactly the right shape for it, since native R2
+genuinely has no floor to record. Then:
+
+1. `judge_mutation` takes the floor (the parameter that was removed) and the
+   `survived` branch consults `mutation_pct` — already implemented and tested
+   in `assay.mutation`, so this is a re-wiring, not new arithmetic;
+2. `verify._check_r2_rederivation` reads the floor FROM the document, which is
+   what keeps the re-derivation total rather than partial;
+3. the load-time refusal in `_load_ingested_mutation` is deleted, and the
+   range check (`0.0..100.0`) is all that remains.
+
+### Acceptance
+
+- [ ] `judgment.r2.fail_under` in the schema, the dataclass and `verify.py`
+      (the 2.4.0 lesson: three places), forked on `producer`, with the frozen
+      drift-guard asset updated at that cut;
+- [ ] `judge_mutation` honours it and `verify.py` re-derives the R2 status
+      from the document alone — proven by a verdict that PASSes with recorded
+      survivors and verifies clean, which is exactly the document this build
+      cannot produce;
+- [ ] the load-time refusal deleted, and
+      `test_a_sub_hundred_fail_under_is_refused_naming_the_wire_gap` replaced
+      by its positive counterpart;
+- [ ] CONSUMERS' ingested-R2 section drops the "must be 100.0" paragraph.
+
+---
+
+## B051 — `judgment.r2.discarded` is accepted on the producer's word alone: never derived, never cross-checked, and a materially false value rides the wire uncontradicted
+
+**Filed 2026-08-31 from Wave B fix round 1, with evidence. FILE, DO NOT BUILD
+— what "derived" would even mean here is a real product question, not an
+implementation shortcut.**
+
+> **Numbering note.** The controller's fix-round brief asked for this to be
+> filed as **B052**, citing "the same file-don't-build pattern as
+> B049/B050/B051". There is no B051: `main` carries entries through B049 and
+> this wave filed B050, so B051 is the genuinely next free identifier —
+> verified against this file and against `git show main:.../4-backlog.md`
+> before choosing. Filing it as B052 would have left a permanent phantom gap
+> at B051 that a later reader would go looking for. Filed as **B051**, and
+> called out here and in the wave REPORT so the controller can see the
+> substitution rather than discover it.
+
+### The problem
+
+Every other fact an ingested `judgment.r2` carries is re-derived from the
+payload the same document holds. `survived_uncovered` must name positions the
+`survived` bucket actually records; `lines_without_candidates` must not name a
+line a recorded mutant starts on; `survived_uncovered` must be a subset of
+`survived`, never of the whole payload; the mutation SCORE is re-derived
+through `judge_mutation` (A-379). That is what makes an ingested R2 claim
+auditable from the artifact rather than believed.
+
+`discarded` is the exception. It is checked for **presence and
+non-negativity** and for nothing else:
+
+```
+src/assay/verify.py:964-974   # `_check_ingested_r2_agrees_with_its_payload`
+    discarded = r2.get("discarded")
+    if isinstance(discarded, bool) or not isinstance(discarded, int): ...
+    elif discarded < 0: ...
+```
+
+The schema's own bounds (`integer`, `0..10000`) say the same thing one layer
+up, so the raw layer adds no independent statement about this field at all.
+
+**Reproduced:** an adversarial reviewer edited a real ingested verdict's
+`judgment.r2.discarded` to `9999` — a count larger than the whole report's
+109 mutants, and ~9999 more invalid mutants than the run actually had — and
+`verify_document` accepted it with no failures. The document says "assay
+measured much less than this score implies" in the strongest possible terms
+and nothing contradicts it; equally, a run that really did discard most of its
+mutants could report `0` and be believed.
+
+This is not exploitable into a false GREEN — `discarded` is excluded from the
+pct denominator, so it cannot move a claim's status. It is a **credibility**
+defect: the field exists precisely so a consumer can see that a report which
+could not compile most of its own mutants has measured far less than its score
+suggests, and a value nothing checks cannot carry that.
+
+### Why this is not fixable in Wave B
+
+Because there is no derivation available, and inventing one would be worse
+than the gap.
+
+Assay sees the mutants the report LISTS. `discarded` counts mutants the report
+describes as `CompileError`/`RuntimeError` — and in
+`mutation-testing-report-schema` those mutants ARE listed, with those statuses,
+so a count is derivable *for reports shaped like the committed fixture*. What
+is NOT derivable is the thing the field is actually for: whether the foreign
+tool discarded mutants it never listed at all. Stryker does not reveal why a
+mutant was dropped before reporting, and a tool that dropped 900 candidates
+silently emits a document indistinguishable from one that generated 109. So a
+re-derivation would check the easy half, report agreement, and leave the half
+that matters exactly as unchecked as it is now — while LOOKING like the field
+had been audited. A green bar that says "checked" about the wrong half is
+worse than one that says nothing.
+
+The real question is a product call: does `discarded` mean "invalid mutants
+this report listed" (derivable, and then it should be derived and the field
+made redundant on the wire) or "invalid mutants the tool encountered"
+(not derivable from any artifact assay receives, and then it should be
+explicitly marked declared-not-verified, the way `producer_tool` already is
+under A-230a/A-361)? Those are different fields with the same name, and the
+v9 schema description — "how many mutants the ingested report marked
+CompileError or RuntimeError" — reads as the first while the field's stated
+PURPOSE reads as the second.
+
+### Evidence
+
+- `src/assay/verify.py:964-974` — the whole of the check.
+- `src/assay/schemas/verdict.schema.json` `$defs.judgment_r2.properties.discarded`
+  — `integer`, `minimum: 0`, `maximum: 10000`; the raw layer restates exactly
+  this and adds nothing.
+- `src/assay/verdict.py` `JudgmentR2.__post_init__` — `0..10_000`, same range,
+  no payload cross-check.
+- `tests/test_verify_ingested_r2.py::test_a_negative_discarded_count_is_caught`
+  — the ONLY negative test the field has, and it tests the range.
+- The committed real artifact
+  (`tests/fixtures/mutation/mutation-report-json.probe-js-stryker.json`) has
+  **zero** `CompileError`/`RuntimeError` mutants, so `discarded` is `0` in
+  every document this project has ever produced — the field has no non-trivial
+  witness anywhere.
+
+### The fix, once the meaning is ruled
+
+1. **Rule which field it is** — record the ruling as an A-row. "Listed" and
+   "encountered" are different contracts and only one of them is checkable.
+2. If **listed**: derive it in `assay.mutation.ingest_mutation_report` from the
+   report's own statuses, re-derive it in
+   `verify._check_ingested_r2_agrees_with_its_payload` against the payload the
+   way the other three facts are, and refuse a document whose `discarded`
+   disagrees.
+3. If **encountered**: it is declared-not-verified evidence and must say so —
+   the schema description gains that phrase in the words `producer_tool`'s
+   already uses, DESIGN-GUIDE §11's tier paragraph names it beside
+   `producer_tool`, and CONSUMERS says plainly that assay records this number
+   and does not check it.
+4. Either way, commit a real report carrying a non-zero `discarded` (a
+   deliberately uncompilable mutant is easy to produce with Stryker) so the
+   field finally has a witness.
+
+### Acceptance
+
+- [ ] the "listed vs encountered" ruling recorded as an A-row, naming which
+      alternative was rejected and why;
+- [ ] under **listed**: `discarded` re-derived from the payload in `verify.py`
+      beside the other three re-derivations, with a test that mutates it on a
+      REAL document and asserts a NAMED failure (the `9999` reproduction above
+      is the test to write);
+- [ ] under **encountered**: the declared-not-verified statement in the schema
+      description, DESIGN-GUIDE §11 and CONSUMERS, and a test asserting the
+      schema description says so — the same three-place discipline
+      `producer_tool` already carries;
+- [ ] a committed real report with a non-zero `discarded`, and a frozen
+      W-generation document carrying it, so the field has a witness at all.
+
+---
+
+## B052 — an ingested report's embedded `source` is never compared against the snapshot's own committed bytes: assay derives every mutant position from text it takes entirely on the tool's word
+
+**Filed 2026-08-31 during Wave B fix round 1, on the controller's request.
+FILE, DO NOT BUILD — the check is easy and what a MISMATCH MEANS is not.**
+
+> **Numbering note.** B051 is the `discarded` finding. This entry was filed
+> second and takes the next free identifier. See B051's own numbering note for
+> why the fix-round brief's "B052" ended up applied to neither item in the
+> order it expected.
+
+### The problem
+
+`mutation-testing-report-schema` embeds, for every measured file, the full
+`source` text the tool read. Assay **requires** it and leans on it hard:
+
+- `mutation_parsers/mutation_report_json.py:170-186` refuses a file record
+  with no `source` string, then builds `_line_byte_offsets(source)` and
+  `len(source.encode("utf-8"))` from it — so **every mutant's byte span is
+  derived from this text**;
+- `mutation.py:2150-2160` (`lines_without_candidates`) walks the same text
+  line by line, and its docstring says so plainly: *"Lines come from the
+  report's OWN `source` text, not from the snapshot: that is the text the tool
+  actually read, so a line number here means the same thing the tool's own
+  line numbers mean."*
+
+That reasoning is correct as far as it goes — and it is exactly why nothing
+checks the text. Assay already holds the snapshot's own committed blobs for
+those same paths (`isolation.SnapshotRepository.read_regular_file`), and never
+compares the two. A report whose `source` differs from the commit's bytes —
+in whitespace, in whole functions, in file identity — is ingested and judged
+without a word.
+
+B046's non-repudiation items already ask for `projectRoot` to match the
+directory the command ran in, and for every `files` key to resolve under a
+declared `source_root`. Those establish that the report is **about this
+checkout**. They do not establish that it is about **this commit's content**,
+which is the stronger property assay's own committed-object snapshot exists to
+make checkable, and the only one that closes "an artifact from an earlier
+state of the same tree".
+
+### Why this is not implementable without a ruling first
+
+The comparison is trivial. Its VERDICT is not, and shipping the check with the
+wrong terminal would be worse than the gap.
+
+A mismatch has at least four causes with genuinely different correct
+responses:
+
+1. **a stale report** — the tool ran before the last edit. `ERROR`, and the
+   consumer should re-run. Almost certainly what a mismatch usually is;
+2. **a tool that rewrites sources in flight** — transpilation, a formatter in
+   the test command, Stryker's own instrumentation writing back. Here the
+   report is *honest about what was mutated* and the snapshot is *honest about
+   what was committed*, and refusing would break lanes that are working
+   correctly. This is not hypothetical for a JS/TS toolchain;
+3. **a genuinely foreign report** — the non-repudiation case, which should
+   refuse loudly;
+4. **line-ending or trailing-newline normalisation** — a mismatch in bytes
+   that is not a mismatch in meaning, and a byte-equality check would refuse a
+   correct lane on a `.gitattributes` setting.
+
+(2) and (4) are why "compare and refuse" cannot simply be written. A check
+that cannot distinguish them either refuses honest lanes or is downgraded to a
+warning nobody reads — and `judgment` has no field for "the evidence text
+differed from the commit", so today there is nowhere to *record* the fact
+short of refusing.
+
+This is the same shape as B051: the code is a morning's work and the contract
+is the actual question.
+
+### Evidence
+
+- `src/assay/mutation_parsers/mutation_report_json.py:170-186` — `source`
+  required; byte offsets and file length derived from it; no snapshot read.
+- `src/assay/mutation.py:2150-2160` — `lines_without_candidates` walks the
+  report's own text, with the docstring stating the choice explicitly.
+- `src/assay/isolation.py` `SnapshotRepository.read_regular_file` — the
+  committed bytes ARE available at ingestion time, from the same snapshot the
+  lane's command ran in. Nothing calls it from the ingest path.
+- `src/assay/runner.py` `_ingest_r2_report` — the whole ingest path; the only
+  snapshot facts it uses are `project_root` (via `resolve_run_cwd`) and the
+  commit identity.
+- Wave B REPORT §13 ("What I did NOT do, and why") — the implementer flagged
+  this at the end of the wave and deliberately did not file it, wanting a
+  reviewer's opinion on whether it was worth filing. The reviewer's answer,
+  relayed by the controller, is that it is.
+
+### The fix, once the meaning is ruled
+
+1. **Rule what a mismatch MEANS**, as an A-row, naming which of the four
+   causes above the terminal is claiming. The likely shape is a third
+   non-repudiation tier: identity (does the report describe this project),
+   anchoring (do the paths resolve), and *content* (is the text the commit's).
+2. Read the committed blob for each measured path through
+   `read_regular_file`, inside the baseline snapshot's own `with` block where
+   `_ingest_r2_report` already runs.
+3. Compare under a **stated** normalisation — decide explicitly whether line
+   endings and a trailing newline are in or out, and test both ways round.
+4. Give the mismatch a terminal and a message naming the file, or a wire field
+   if the ruling is "record, do not refuse" — in which case it is a schema
+   field and belongs to the next cut, exactly as B050 does.
+
+### Acceptance
+
+- [ ] the mismatch ruling recorded as an A-row, naming the rejected
+      alternatives (refuse-always / warn / record-on-the-wire) and why;
+- [ ] the committed bytes read from the snapshot at ingest time and compared
+      under a documented normalisation, with a test that mutates ONE file's
+      `source` in the REAL committed Stryker fixture and asserts a NAMED
+      failure — and a companion test proving a byte-identical report still
+      passes, so the check is not vacuous;
+- [ ] a test for the transpiled/rewritten-source case (2), asserting whatever
+      the ruling says should happen to it — this is the case that decides
+      whether the feature is safe to ship at all;
+- [ ] CONSUMERS' ingested-R2 refusal list gains the new refusal, in the same
+      "what assay checks about your report" paragraph as `projectRoot`;
+- [ ] if the ruling is "record, do not refuse": the wire field in schema,
+      dataclass and `verify.py` (three places), at the next schema cut.
+
+## B053 — an `ERROR`-outcome verdict's detailed message is constructed but never surfaced anywhere a consumer can read it — not stdout, not stderr, not the verdict JSON
+
+**Filed 2026-09-02, dstdns's first `javascript` lane adoption (assay-4.0.0,
+`[lanes.ui_unit]`).** Found diagnosing a real `BAD_LANE_CONFIG` refusal that
+took ~30 tool calls and reading `runner.py`/`isolation.py`/`cli.py` source to
+root-cause, entirely because the actual reason was never visible anywhere a
+consumer normally looks.
+
+### The mechanism, measured
+
+`cli.py`'s `_cmd_run` → `_run_reserved` has exactly ONE `except AssayError as
+exc:` block that prints the detail (`cli.py:672`, `print(f"assay:
+{exc.outcome}/{exc.reason_code}: {exc}", file=err)`) — it wraps ONLY
+`_resolve_declared_adapters(lane)` (`cli.py:650-651`). Every failure that
+happens LATER, inside `runner.run_lane` itself (the entire snapshot
+construction, materialization, and command-execution path), does not go
+through this handler. Concretely: `isolation.py:754`'s `_plant_link_paths`
+raises `_bad_lane_config(...)` → `LaneConfigError` with a genuinely detailed,
+actionable message (mine named the exact file, the exact git status line,
+and even prescribed the fix — "a trailing slash does not work here"). That
+exception propagates up through `_run_prepared_lane` →
+`_run_higher_rigor_lane` → `run_lane` and becomes a verdict via a path that
+constructs a `Claim`/`Verdict` carrying only `outcome=ERROR,
+reason_code=BAD_LANE_CONFIG` — no free-text field. `_print_run_summary`
+(`cli.py:721-729`, the ONLY thing printed for a lane that didn't hit the one
+wrapped call) prints exactly three lines: `{lane}: {outcome}/{reason_code}
+(exit {code})`, `commit:`, `argv:`. Nothing else. The verdict JSON
+(`--verdict-json`) has no message field either — confirmed by reading the
+emitted artifact directly; `claims[].reason_code` is the only trace.
+
+**Reproduced the gap directly**: `docker exec`-ing `assay run` inside the
+real `test-runner` container, capturing stdout and stderr SEPARATELY,
+produced the identical three-line summary on stdout and only KSM-shim noise
+on stderr — confirmed empirically, not inferred from source alone. Recovering
+the actual message required monkeypatching `AssayError.__init__` in a Python
+REPL to print a stack trace at construction time, then reading off the
+`message` argument by hand.
+
+> **Note 2026-09-02 (assay controller) — second, independent reproduction,
+> PRIORITY EVIDENCE.** Wave C generation 4 hit exactly this on the Go path
+> the same day, before this entry existed: `python3 <pyz> run unit …` inside
+> `tester-unified-go:local` printed only `unit: ERROR/UNREADABLE_ARTIFACT
+> (exit 2)` plus the `commit:`/`argv:` lines, and the actual message (a
+> module-path mismatch misreported as "the profile and the working tree are
+> not the same revision") had to be recovered by probing the library
+> directly. Transcript: `reports/assay-WAVE-C-go-REPORT.md` §26 and the
+> Wave C backlog entry "`go` is registered at R1, but no Go lane reachable
+> through the shipped CLI can resolve its own coverage keys" (B059 after the
+> Wave C merge; provisionally B057 on `feature/assay-wave-c-go`). Two
+> languages, two consumers, one day. Disposition: NOT folded into Wave C
+> (its scope is Go; this is the CLI's error surface) — paired with B049 for
+> the post-Wave-C consumer-diagnostics patch wave, where the narrower
+> stderr option below is the natural first cut and the verdict-JSON option
+> waits for the next schema cut.
+
+### Why assay owns it
+
+This is not one lane's config being wrong — it's every `ERROR`-outcome path
+that does not flow through `cli.py`'s single wrapped call, and the number of
+such paths (isolation, snapshot verification, coverage parsing, and likely
+others yet unexercised) is large and will only grow. A consumer with a
+correctly-installed, correctly-invoked assay has no way to learn WHY their
+lane failed short of reading assay's own source — which defeats the point of
+a `reason_code` taxonomy that is specific enough to have named ~15 distinct
+values (per `errors.py`) if none of them come with the concrete fact that
+produced them.
+
+### Proposed contract
+
+Every `ERROR`/`WARN`-outcome `AssayError` that becomes part of a verdict
+should have SOMEWHERE to carry its message through to the consumer — options,
+not pre-decided:
+- a `detail`/`message` field on the verdict schema itself (schema-bump-timed,
+  matches how `judgment.r1.coverage_producer` etc. already carry per-claim
+  detail);
+- OR: widen `_cmd_run`'s exception handling so EVERY `AssayError` raised
+  anywhere in the `run` command's call graph — not just the one call this
+  handler happens to wrap — reaches the same `print(f"assay:
+  {exc.outcome}/{exc.reason_code}: {exc}", file=err)` line, with `refuse_lane`
+  still building the structured verdict exactly as it does now. This is the
+  narrower fix: it changes where an existing, already-well-written message
+  goes, not what gets computed.
+
+### Behavioral oracles
+
+- A lane declaration that trips `isolation.py`'s link_paths-uncleanliness
+  refusal (or any other `BAD_LANE_CONFIG`/`UNREADABLE_ARTIFACT` raised
+  anywhere past `_resolve_declared_adapters`) must print its constructed
+  `AssayError` message to stderr (or carry it in the verdict JSON), not just
+  the bare `reason_code`.
+- Controlled wrong implementation: reverting the fix reproduces today's
+  three-line-only summary on a case known to raise a detailed message deeper
+  in `run_lane`.
+
+> **Note 2026-09-02 (assay controller, Wave C review round 2 → ruling
+> DA-R3).** The Wave C reviewer met the same gap from the Go side — a
+> judge-phase refusal's text (a stale profile, a `//line`-remapped file in
+> the judged set) reaches only a library caller, the CLI shows the reason
+> code — and proposed a third option beside the two above: route
+> judge-phase refusal text to the existing `diagnostics` stream that
+> `environment_command` already uses (near `runner.py:365` at 4.1.0; no
+> wire change, no schema field). Ruled DA-R3: Wave C changed only the
+> docs (`docs/CONSUMERS.md` now says exactly what a consumer sees and names
+> this entry); the `diagnostics` route is recorded here as the candidate
+> mechanism for the consumer-diagnostics patch wave, alongside the stderr
+> option above; a v10 verdict field is NOT taken. Shipped state at
+> assay-v4.1.0: unchanged. Records: `reports/assay-WAVE-C-go-CONTROLLER-LOG.md`
+> (round-2 entry) and `reports/assay-WAVE-C-go-REVIEW-round2.md`.
+
+## B054 — a NEVER-EXECUTED file matching `coverage.include` can make `@vitest/coverage-istanbul` emit a self-contradictory `branchMap`, and `UNREADABLE_ARTIFACT` refuses the WHOLE verdict rather than isolating the one file — defeating `changed_lines` mode's cost-scoping promise
+
+**Filed 2026-09-02, dstdns's first `javascript` lane adoption
+(assay-4.0.0). Related to B038/A-357** (an unrecognised `branchMap` entry
+type REFUSES the artifact rather than degrading silently) but a DIFFERENT
+failure shape: not an unrecognised TYPE, an internally INCONSISTENT record
+for a recognised one, on a file with zero relation to anything being judged.
+
+### The mechanism, measured
+
+`applications/webapp-ui-react/src/api/queries/analytics.ts` (dstdns) has
+never been executed by any test — it is matched by `vitest.config.ts`'s
+`coverage.include: ['src/**']` glob but no `test.include` entry imports it.
+`@vitest/coverage-istanbul` (v3.2.7) still statically instruments and
+reports on it (Vitest's own "report files with zero tests as 0%, not
+absent" feature), and for this specific file produced a `coverage-final.json`
+record whose `branchMap` names an arc at line 215 that appears in NEITHER
+`.executed` NOR `.missing` — assay's own coverage-istanbul parser refuses:
+`AssayError("istanbul coverage JSON: record for
+'.../src/api/queries/analytics.ts': its 'branchMap' arcs contradict its own
+'statementMap'/'s' line classification -- FileCoverage.branches has line(s)
+[215] that are in neither .executed nor .missing", reason_code=
+BAD_LANE_CONFIG)` — actually surfaces as the LANE's overall
+`UNREADABLE_ARTIFACT` (raised via `runner.py`'s coverage-parsing path, same
+`ERROR` outcome class). Line 215 is an ordinary braceless single-statement
+`if` (`if (params.taskId) query['task_id'] = params.taskId`) — a pattern that
+recurs ~173 times across this one project's `src/` tree by grep, so it is not
+one file's peculiarity.
+
+**R0 passed** (the command ran, the tests that DO exist passed) — this is
+purely an R1 coverage-artifact-parsing failure, and it happens on a file with
+ZERO overlap with any changed line in the diff being judged
+(`mode = "changed_lines"`).
+
+**Workaround applied at dstdns** (not a fix, recorded so it doesn't read as
+silent): scoped `coverage.include` down to exactly the three source files the
+project's existing tests actually execute, matching the file's own
+"enumerated, not a glob" convention for `test.include`. This sidesteps the
+quirk by never statically-instrumenting untested files at all, at the cost of
+not tracking coverage for anything outside that set until real tests land for
+it.
+
+### Why this is worth a separate item from B038/A-357
+
+A-357's ruling (refuse on an unrecognised `branchMap` entry TYPE) is a
+reasonable fail-closed default for a genuinely ambiguous producer-format
+question. This case is different in a way that matters for `changed_lines`
+mode specifically: the file that broke the whole verdict was **never
+executed and never part of the judged diff** — `changed_lines` mode's entire
+value proposition is that a large, partially-tested codebase can adopt
+coverage gating incrementally, paying cost only for what changes. A
+static-only, never-executed file's own instrumentation quirk currently costs
+every OTHER file's real, correctly-produced coverage data the whole verdict —
+the opposite of that scoping promise, and a real adoption blocker for any
+consumer whose `coverage.include` is broader than their current test surface
+(which is the common, expected shape during incremental rollout, not an edge
+case).
+
+### Proposed contract (not pre-decided; two shapes, carver's call)
+
+1. **Isolate the refusal to the offending file** when `mode = "changed_lines"`
+   and the file is not part of the judged diff: treat it as
+   `NO_MEASUREMENT` for that file alone (consistent with how an absent
+   type-only module is already handled per B038(b)/A-358), not as a
+   verdict-wide `UNREADABLE_ARTIFACT`. A file that IS part of the diff and
+   hits this would still need to refuse — there is no honest number to report
+   for it.
+2. **OR: narrow scope, document the constraint** — if isolating per-file is
+   too large a change, `docs/CONSUMERS.md`'s JavaScript-lanes section should
+   say explicitly that `coverage.include` should track the TESTED surface,
+   not the full source tree, until B054-class artifacts are handled more
+   gracefully — the opposite of what the existing guidance currently implies
+   (a broad `src/**` include as the standard shape).
+
+### Behavioral oracles
+
+- A `coverage.include` glob matching a never-executed file whose static
+  instrumentation produces a self-contradictory `branchMap`, alongside other
+  files with clean, correct coverage data and a fully-covered changed-lines
+  diff → today: `UNREADABLE_ARTIFACT`, verdict-wide. Whatever the ruling: the
+  fix must make this case at minimum name WHICH file broke it (already true)
+  and, if shape 1 is chosen, PASS on the strength of the changed-lines diff
+  actually being fully covered.
+- Controlled wrong implementation: a fix that silently drops the offending
+  file's data without recording anything in the verdict would defeat the
+  audit trail A-357 exists to preserve — any fix must keep the file
+  nameable, not merely stop refusing.
+
+---
+
+## B055 — an uncovered Go statement sharing a physical LINE with a covered one is still laundered into `executed`; the statement-position oracle does not fix it, and cannot at line granularity
+
+> **Renumbering note, 2026-09-02.** Every id this Wave C branch filed was
+> shifted up by two: **B053→B055, B054→B056, B055→B057, B056→B058,
+> B057→B059, B058→B060**. Main's `a050a467` (2026-09-02, from dstdns's first
+> JavaScript lane adoption on assay 4.0.0) had already filed a *different*
+> B053 and B054, and main's ids win — the estate's precedent is the ciu
+> CIU-55 shift. The rewrite covered all 108 references in 25 tracked files,
+> historical briefs and logs included, because an id that silently resolves
+> to a different entry is worse than an edited record. Next free id after
+> this wave: **B061**. `decisions.md` is unaffected; the A-393/A-396/A-401/
+> A-404 rows that cite these entries were rewritten in place.
+
+**Filed 2026-08-31, Wave C (the P27 re-carve), with a frozen witness and a
+test that asserts the unfixed behaviour.** Recorded as decision **A-393**.
+
+### What happens
+
+`carve-assets/P27/witness/lit.go` line 4 is `f := func() int { return 7 }`.
+The real profile (`coverage-lit.out`) carries two records over it:
+
+```text
+example.invalid/lit/lit.go:3.14,4.18 1 1    <- the assignment, executed
+example.invalid/lit/lit.go:4.18,4.30 1 0    <- the func literal's body, NOT executed
+```
+
+Both counted statements genuinely begin on line 4. Executed-wins promotes the
+line, so the uncovered statement is invisible: `executed` contains 4 and
+`missing` is empty.
+
+A-217's source-side oracle (B047 item 1) does **not** change this, and this
+entry exists so that is on the record rather than discovered later as a
+surprise. What the oracle *does* fix on this file is the fabrication — line 3,
+the `func H() int {` signature, was reported executable by the shipped
+`range(start, end + 1)` expansion and is not code at all.
+
+### Why it is not simply a defect to fix
+
+`carve-assets/P27/BLOCKED-grammar.md` §3 already names this precisely: it is
+"line granularity's own limit — `coverage.py` shares it", unlike the comment
+and closing-brace cases, which are specific to block extent and ARE fixed. A
+verdict's wire schema speaks in line numbers; distinguishing two statements on
+one line needs a column-granular claim, which is a schema cut. So this is a
+**known and documented boundary of the R1 claim**, not an open bug — filed so
+that a future reader who notices it does not re-derive the analysis, and so
+that any future proposal to fix it is costed honestly as a schema cut.
+
+### Exposure, stated plainly
+
+The direction is toward false PASS: a genuinely untested func literal, or any
+second statement sharing a line with a covered one, is counted as covered.
+In real gofmt-clean Go the shape is uncommon (a func literal inline in an
+assignment, a `switch` case body on the `case` line, `x := 1; y := 2`), and
+`coverage.py` lanes have carried the identical limit since P06 without
+incident — but "uncommon" is not "absent", and the honest statement is that a
+Go R1 line claim is statement-granular **to the line**, not to the statement.
+
+### The fix, if it is ever ruled worth it
+
+1. Rule, as an A-row, whether a Go R1 claim should be able to express
+   "this line contains an uncovered statement" at all — the alternatives are
+   leaving it as documented (today's answer), a per-line partial marker, or
+   full column granularity.
+2. If ruled yes: a wire field, in schema + dataclass + `verify.py` (the three
+   places), at the next schema cut — never a producer-side upgrade (A-138/A-170).
+3. `assay.statement_attribution.attribute_statements` already has the data it
+   would need: it holds each block's own `count` and `stmt_lines` before the
+   executed-wins union collapses them, so the fix is a representation
+   question, not a measurement one.
+
+### Acceptance
+
+- [ ] the ruling recorded as an A-row, naming the three alternatives above;
+- [ ] if ruled to fix: the wire field in all three places, plus a test over
+      the REAL committed `coverage-lit.out` asserting line 4 reports the
+      uncovered statement — and a companion test proving an ordinary
+      single-statement line does NOT, so the marker is not vacuous;
+- [ ] CONSUMERS' Go section states the limit either way, in the same
+      paragraph that describes what a Go R1 line claim means;
+- [ ] `test_lit_go_drops_the_fabricated_signature_but_still_launders_line_four`
+      updated (it asserts today's behaviour deliberately, so it MUST go red
+      when this is fixed).
+
+---
+
+## B056 — `test_verdict_schema_is_packaged.py`'s docstring states a measurement that no longer holds: the `package-data` stanza it defends is inert, so its named negative is currently unreachable
+
+**Filed 2026-08-31, Wave C, as a side finding while packaging the Go helper.**
+Recorded as decision **A-396**. Not fixed here: the fix is a real call, not a
+typo repair.
+
+### What the test says
+
+`tests/test_verdict_schema_is_packaged.py`'s module docstring names its
+negative — *"the schema is not declared as package data, so it exists in the
+source tree and vanishes on install"* — and then states a measurement:
+
+> Measured in the gate image while writing this: with
+> `[tool.setuptools.package-data]` the wheel carries
+> `assay/schemas/verdict.schema.json`; without it the wheel carries only
+> `assay/__init__.py`, `assay/cli.py`, `assay/config.py`, `assay/errors.py` and
+> `assay/verdict.py`. **Both sides are real.**
+
+### What is true now
+
+Both sides are NOT real any more. Built from the current tree with the entire
+`[tool.setuptools.package-data]` stanza deleted, the wheel still carries
+`assay/schemas/verdict.schema.json` — and 47 members in total, not five.
+`setuptools_scm` installs a git file finder, and setuptools'
+`include_package_data` defaults to true under pyproject metadata, so every
+GIT-TRACKED file under the package directory ships regardless of the stanza.
+
+So the test's stated negative cannot currently be produced by the change it
+names. The test still PASSES, and what it asserts (the schema is in the wheel,
+and resolves from inside the venv) is still worth asserting — but it can no
+longer fail for the reason it says it exists to catch. That is AGENTS.md's
+"a check is only as strong as what it actually compares": the message states a
+conclusion about package-data that the comparison no longer tests.
+
+### Why it is not obvious which way to fix it
+
+1. **Correct the docstring only.** Cheapest and honest, but leaves a test whose
+   stated purpose no longer has a reachable failure mode.
+2. **Make the negative reachable again** — assert the outcome under a build
+   with the git finder disabled (a tree without `.git`, which is exactly the
+   build `[tool.setuptools_scm]`'s own `fallback_version` anticipates). This
+   restores a real two-sided check and would cover `A-029` properly, but adds a
+   second wheel build to the suite.
+3. **Drop the package-data declarations** as genuinely inert and rely on the
+   git finder. Rejected on sight for the schema (A-029 is a consumer-facing
+   guarantee and should not rest on git tracking), but naming it here so the
+   next reader does not have to re-derive why.
+
+Whichever is chosen applies identically to `tests/test_go_helper_is_packaged.py`,
+whose docstring already states the corrected position and asserts the OUTCOME
+rather than the mechanism — so it is unaffected either way, and is the shape
+option 1 would move the sibling toward.
+
+### Acceptance
+
+- [ ] the ruling recorded as an A-row naming the three options above;
+- [ ] `test_verdict_schema_is_packaged.py`'s docstring no longer states a
+      measurement that a re-run would refute;
+- [ ] if option 2: a build with the git file finder unavailable, asserting the
+      schema is ABSENT without the stanza and PRESENT with it — the two-sided
+      check the docstring currently claims;
+- [ ] whatever is decided, the same treatment applied to the Go helper's own
+      packaging test, so the two do not drift apart again.
+
+---
+
+## B057 — the Go canary and union tests now prove their subject against a DOWNGRADED adapter: `requires_statement_attribution=False`, because a real Go lane needs a toolchain the gate image does not have
+
+**Filed 2026-08-31, Wave C, while wiring A-392's guard.** Not a defect in the
+shipped code — the shipped `GoAdapter` declares `True` — but a real, tracked
+gap between what those tests exercise and what a consumer runs.
+
+**RESOLVED 2026-09-02 (Wave C generation 6), all three boxes.** F008-A4's
+fixture regeneration removed both shortcuts rather than documenting either:
+no Go test in the suite now judges a downgraded adapter or an uncorrected
+profile. The narrative below is kept as filed — it is the reasoning that
+selected the fix, and its "why it is filed rather than fixed here" paragraph
+is exactly what F008-A4 went on to do.
+
+### What happened
+
+`GoAdapter.requires_statement_attribution = True` makes
+`evaluate_coverage`/`evaluate_targets` refuse an uncorrected block profile
+(A-392), and the correction is a real Go subprocess (A-217: a Python
+re-implementation of `cmd/cover`'s segmentation is not an acceptable
+substitute). Thirteen pre-existing tests then went red, all of them Go tests
+that judge committed, pre-generated coverprofiles with **no toolchain**
+(A-042/A-087/A-107 — this devcontainer has none, and `tester-unified:local`,
+which runs the registered gate, has none either).
+
+Two different shortcuts were taken, and they are not equally cheap:
+
+1. **`tests/conftest.py::as_pre_oracle_attributed`** — used by
+   `test_adapters_go_union_fidelity.py`, `test_adapters_go_python_equivalence.py`
+   and `test_adapters_go_registration.py`. It sets the flag and leaves the line
+   sets untouched. For the two files whose profiles are HAND-BUILT line sets
+   this is exact: those sets are already statement-granular, and the flag
+   merely says so. For `test_adapters_go_union_fidelity.py`, whose profiles are
+   parsed from the committed `hello.out`, the sets are the naive expansion
+   A-234 already records as stale.
+2. **`tests/test_canary_go_pipeline.py::_PreOracleGoAdapter`** — a subclass of
+   the real adapter with the declaration flipped to `False`. Everything the
+   file tests (cause-sensitivity, the four INCONCLUSIVE causes, the real
+   `inject_uncovered_line`, the real union) is unaffected; what is lost is that
+   no Go canary is proven statement-granular anywhere.
+
+### Why it is filed rather than fixed here
+
+Fixing (1) properly IS F008-A4 (fixture regeneration, wave item 3): the correct
+new expectations depend on running the oracle over `hello.go`/`greet.go`
+through `tester-unified-go:local` and re-deriving every asserted set. A-234's
+own warning applies exactly — swapping in a real profile before the
+expectations are re-derived replaces a wrong profile with a real one still read
+as statement truth, which is the conflation A-O19 exists to remove.
+
+Fixing (2) needs a decision this entry does not pre-empt: either the canary Go
+tests grow a canned oracle (the profile-derived blocks would have to be threaded
+through `canary.run_go_canary`, which reads its artifacts itself), or the file
+splits into a logic half on the double and a real half that runs only where a
+Go toolchain exists — which the registered gate image does not provide.
+
+### Acceptance
+
+- [x] `test_adapters_go_union_fidelity.py`'s expectations re-derived from the
+      real oracle, and `as_pre_oracle_attributed` dropped from that file
+      (F008-A4). **Landed 2026-09-02 (Wave C generation 6).**
+      `tests/fixtures/go/hello/hello.out` is now real `go test -coverprofile`
+      output for the committed source bytes (`32.32,34.2 1 1` /
+      `38.35,40.2 1 0`), and the module joins it against
+      `carve-assets/P27-recarve/fixture-oracle.json` — the real oracle's
+      output over the same bytes — with the production
+      `attribute_statements`. The asserted sets went from `{29,30}`/`{36,37}`
+      to `{33}`/`{39}`: 2 executable lines, not 4. A named control test
+      asserts the naive expansion of the SAME real profile is
+      `{32,33,34}`/`{38,39,40}`, which is the concrete form of A-234's
+      warning — regenerating the bytes alone would have made the module
+      assert three wrong lines instead of two. Provenance, the raw run and
+      the per-fixture derivation table: `P27-recarve/PROVENANCE.md`.
+      `as_pre_oracle_attributed` is gone; the remaining hand-built-line-set
+      callers use `conftest.as_statement_attributed`, which now REFUSES a
+      multi-line block extent instead of trusting the caller.
+- [x] a decision recorded on the canary shortcut, and `_PreOracleGoAdapter`
+      either removed or reduced to the half that genuinely needs it.
+      **REMOVED 2026-09-02, same change — the shortcut fell out rather than
+      needing the decision this entry anticipated.** The controller's DA-9
+      (`vbpub@53eba55b`) said to close this box only if F008-A4's
+      regeneration made it fall out, and it did: `greet_control.out` and
+      `greet_transformed.out` are now real toolchain output, and
+      `test_canary_go_pipeline.py` corrects each with the real oracle
+      document before `run_go_canary` sees it. A genuinely
+      statement-attributed profile satisfies A-392's guard, so the SHIPPED
+      `GoAdapter` — `requires_statement_attribution=True`, no override of
+      any declaration — judges these fixtures directly. Neither option this
+      entry laid out was needed: no canned oracle threaded through
+      `run_go_canary` (which still reads its own artifacts), no file split.
+      The canary is now proven cause-sensitive at statement granularity
+      (`{36,37}` missing, not `{35,36,37,38}`), which is precisely what the
+      double could not prove.
+- [x] whichever survives, a test that goes RED if the shipped adapter's
+      `requires_statement_attribution` is ever flipped to `False` — so the
+      double can never quietly become the product. **Landed 2026-09-01
+      (Wave C generation 4):**
+      `test_adapters_go_registration.py::test_the_adapter_the_REGISTRY_hands_a_lane_is_the_undowngraded_one`
+      asserts it of the object a real lane RESOLVES, not merely of
+      `GoAdapter()`, and uses `type(...) is GoAdapter` rather than
+      `isinstance` — deliberately, because `_PreOracleGoAdapter` is a
+      subclass and would satisfy `isinstance` while carrying the flipped
+      declaration. The other two boxes stay open and both still depend on
+      F008-A4, which is now blocked behind **B059**.
+
+---
+
+## B058 — srdm's `covergate` classifies a cover block's whole extent as executable, so its own coverage floor measures more lines than Go has statements
+
+**Filed 2026-08-31, Wave C, while reading `covergate` for F008-A5's
+qualification.** Not an assay defect and not a blocker for this wave — assay's
+side is fixed. Filed because the qualification is about to compare the two,
+and because the finding has a consequence for srdm's own gate that srdm
+cannot see from inside itself.
+
+### What was found
+
+`shared-ramdisk-depot-manager/tools/covergate/profile.go`'s
+`ParseCoverProfile` expands every profile record across its whole line range:
+
+```go
+for l := start; l <= end; l++ {
+    if count > 0 { fc.Executed[l] = true; delete(fc.Missing, l); continue }
+    if !fc.Executed[l] { fc.Missing[l] = true }
+}
+```
+
+and `FileCoverage.Executable(line)` is `Executed[line] || Missing[line]`. So a
+line is "code" iff it falls inside some block's extent. Function signature
+lines, `case` labels, closing braces and statement-continuation lines are all
+inside a block extent and are all counted. The doc comment states the premise
+outright: "a block spans a range of lines and every line in that range is
+executable."
+
+**This is byte-for-byte the rule assay removed in this wave**, and A-217's
+impossibility proof applies to it unchanged: `carve-assets/P27/witness/
+collision-colA.go` and `collision-colB.go` are gofmt-clean, compile under the
+pinned toolchain, emit **byte-identical** cover profiles, and have statements
+beginning on different lines (`{4,6}` vs `{4,5}`). Any rule that is a
+function of the profile alone must answer both identically; the two correct
+answers differ; so covergate is wrong on at least one of them. A-217 already
+recorded this in passing ("covergate shares the inclusive convention") — what
+is new here is that it is now confirmed in covergate's shipped source rather
+than inferred, and that the consequence for srdm's own gate is spelled out.
+
+### Why it matters to srdm specifically
+
+`tools/gate.sh` runs `covergate -fail-under ${SRDM_COVERAGE_FLOOR:-75}` over
+`-source internal`. The denominator is changed lines the profile "deems
+executable", which over-counts. The direction is not uniformly lenient, which
+is the part worth care:
+
+* A change that adds a **tested** function inflates both numerator and
+  denominator (its signature and braces land in an executed block), which
+  drifts the ratio TOWARD 100% and makes the floor easier to clear than it
+  reads.
+* A change that adds an **untested** function inflates the denominator only,
+  which makes the floor HARDER to clear than it reads — and the lines it
+  names as uncovered include braces and signatures a developer cannot write
+  a test for, so the remedy the output implies does not exist.
+
+Two mitigations exist and neither closes it: `HasExecutableCode`
+(`hascode.go`) excludes a file declaring no function bodies, but that is
+per-FILE and cannot demote a signature line inside a file that does have
+functions; and `Evaluate` considers only ADDED lines, which bounds how often
+the difference is reachable without changing its direction.
+
+### The second, separate hazard the same reading surfaced
+
+`Evaluate`'s `fc == nil` branch splits a changed source file absent from the
+profile into `NoCode` (excluded from the ratio) and `Unmeasured` (counted
+uncovered), distinguished only by `HasExecutableCode`. Project memory records
+covergate "silently skipping a package (P14)" in a past run; this is where
+such a skip lands. `Unmeasured` is surfaced in the report but is a listing,
+not a refusal, so a package lost by a `-coverpkg` or build-tag problem is
+reported in the same breath as a package that genuinely lacks tests. **Any
+assay-vs-covergate disagreement must be classified as extent-expansion or as
+file-absence before either side is called wrong** — they are different
+questions and averaging them would produce a conclusion about neither.
+
+### What is NOT claimed
+
+No covergate run was performed. This is a reading of covergate's committed
+source, which is legitimate evidence about its ALGORITHM but is not a
+measurement of its OUTPUT on any particular commit. F008-A5's qualification is
+what produces that, and it is still owed.
+
+### Acceptance
+
+- [ ] F008-A5's qualification run, with the disagreement classified per the
+      split above rather than reported as a single number;
+- [ ] the finding relayed to srdm against its own backlog (cross-repo
+      convention: a finding about a TOOL is filed in that tool's backlog, not
+      worked around locally), with the two directions of drift named — a
+      "coverage floor" that is easier to clear on tested code and harder on
+      untested code is not the policy `-fail-under 75` reads as;
+- [ ] a decision on whether assay should ever CONSUME a covergate verdict
+      (today it does not, and this finding is a reason to keep it that way
+      unless the two are bound at statement granularity, which A-208 always
+      intended and A-217 explains is the only binding that is not circular).
+
+## B059 — `go` is registered at R1, but no Go lane reachable through the shipped CLI can resolve its own coverage keys
+
+**Filed 2026-09-01, Wave C generation 4, MEASURED end to end inside
+`tester-unified-go:local` (A-334) rather than reasoned about.** This is a
+BLOCKER for F008-A3/A5 and it carries an open decision ask (REPORT §"Decision
+asks", DA-8): the fix is a product/design fork with three defensible shapes,
+so it is filed rather than improvised.
+
+### What was found
+
+A Go cover profile keys every record by the package's **import path**:
+
+```text
+mode: atomic
+example.invalid/harness/internal/calc/calc.go:5.24,7.2 1 1
+example.invalid/harness/internal/calc/calc.go:10.29,12.2 1 1
+```
+
+while `git diff` names the same file `internal/calc/calc.go`. Stripping that
+module-path prefix is exactly what `GoAdapter.module_path` exists for
+(`adapters/go.py`, mirroring `covergate/main.go`'s own `stripModulePrefix`) —
+and **nothing can set it through the CLI.** `cli._built_in_registry`
+constructs `GoAdapter()`, whose `module_path` defaults to `""`, meaning "no
+strip"; `_KNOWN_JUDGE_FIELDS` (`config.py:243`) has no key for it and
+`assay run` has no flag for it. The only callers that set it anywhere in the
+tree are unit tests and `tests/test_standalone.py:1745`, a consumer building
+its OWN registry through the library API.
+
+Measured, in-image, on the real toolchain, with the shipped zipapp
+(`assay-4.0.1.dev26+g8d7f8740`, `judge_provenance.artifact = "zipapp"`):
+
+```text
+$ python3 <pyz> run unit --file /work/fixture/assay.toml --verdict-json /work/verdict.json
+unit: ERROR/UNREADABLE_ARTIFACT (exit 2)
+  commit: b7d3bb56c0dbce5135e2fa81bea89774cb2ad98a
+  argv: go test ./... -count=1 -coverpkg=./... -covermode=atomic -coverprofile=.assay/cover.out
+ASSAY_EXIT=2
+```
+
+and the mechanism, probed directly through the same zipapp in the same image:
+
+```text
+adapter.module_path = ''
+raw keys            = ['example.invalid/harness/internal/calc/calc.go']
+resolved            = {'example.invalid/harness/internal/calc/calc.go': 'example.invalid/harness/internal/calc/calc.go'}
+  exists(example.invalid/harness/internal/calc/calc.go) = False
+REFUSAL outcome     = ERROR
+REFUSAL reason_code = UNREADABLE_ARTIFACT
+REFUSAL message     = the coverage artifact carries block extents for
+  'example.invalid/harness/internal/calc/calc.go', but that file does not
+  exist at /work/fixture/example.invalid/harness/internal/calc/calc.go --
+  the profile and the working tree are not the same revision, so its blocks
+  cannot be resolved to statement positions
+
+with module_path set= {'example.invalid/harness/internal/calc/calc.go': 'internal/calc/calc.go'}
+helper identity     = go version go1.25.14
+helper tool/path    = go /usr/local/go/bin/go
+  internal/calc/calc.go: extent 5.24,7.2 numStmts=1 stmt_lines=[6]
+  internal/calc/calc.go: extent 10.29,12.2 numStmts=1 stmt_lines=[11]
+```
+
+The second half is the control, and it matters twice over: it shows the
+defect is ONLY the missing declaration — with `module_path` supplied,
+everything downstream works, the real `go1.25.14` oracle runs, and the
+statement lines come back as `{6}` and `{11}`, the two `return` lines, rather
+than the naive `{5,6,7}`/`{10,11,12}` that would include both signatures and
+both closing braces.
+
+### Why no fixture layout avoids it
+
+A package's import path is `<module path>/<dir relative to module root>`, and
+its profile key is that plus the file's basename. For the key to equal the
+repo-relative path, the module path would have to be empty, which `go.mod`
+does not permit. So this is not a property of an awkward fixture: **every**
+real Go module hits it. srdm hits it too — DA-6's prescribed lane
+(`cwd = "shared-ramdisk-depot-manager"`, `source_roots =
+["shared-ramdisk-depot-manager/internal"]`) would resolve srdm's own
+`srdm/internal/...` keys to
+`shared-ramdisk-depot-manager/srdm/internal/...`, which is under no source
+root and matches no file.
+
+### The second defect, which is separable and smaller
+
+The refusal names the **wrong cause**. "the profile and the working tree are
+not the same revision" is a staleness finding; the actual condition is an
+unstripped module prefix, and a consumer following that message would go
+looking at their commits. `derive_statement_blocks`' own input validation
+cannot tell the two apart today because by the time it runs, the key has
+already been through a no-op `normalize_coverage_key`.
+
+### What is NOT claimed
+
+That any particular fix is right. Three shapes are defensible and they are
+laid out in REPORT §"Decision asks" (DA-8): a declared lane key, derivation
+from the repository's own `go.mod`, or a registry that builds adapters per
+lane. §4.2a's DERIVE-then-READ preference and A-007's own precedent point at
+derivation; the architectural seam for it does not exist, and inventing one
+would be a protocol change on top of A-397's.
+
+### Acceptance
+
+- [x] DA-8 ruled, and the ruling recorded as a decision row. **Ruled by the
+      controller at `vbpub@3a95459e` — derive from the snapshot's own
+      `go.mod`, no declared key, the registry untouched — and recorded as
+      **A-404** (Wave C generation 5), which carries the member's name, exact
+      signature and the rejected alternatives.**
+- [x] a Go R1 lane run through `assay run` (the shipped CLI, not a
+      library-built registry) on a real Go module, producing a
+      statement-granular PASS and a paired FAIL that names the uncovered
+      line. **`tests/qualification/test_go_r1_real.py` now drives
+      `python3 <pyz> run unit --file … --verdict-json …` inside
+      `tester-unified-go:local`; every assertion survived the move from the
+      library driver unchanged. REPORT §35 has the transcript.**
+- [x] the misattributed refusal message either fixed or explicitly kept,
+      with the reason recorded. **FIXED, per A-404 (e): a profile key not
+      under the derived module path now refuses naming the key, the module
+      path and the `go.mod` it came from. The staleness message survives for
+      its actual subject — a key that IS under the module and still names no
+      file — which is recorded in `go_stmtpos._derive`'s own comment.**
+- [x] F008-A5's srdm run, which cannot start until this is closed. **RAN
+      2026-09-02 (Wave C generation 6), on the corrected lane shape REPORT §37
+      derived and DA-9 accepted: the lane file inside
+      `shared-ramdisk-depot-manager/`, `source_roots = ["internal"]`, no
+      `cwd`.** A synthetic two-commit repository built inside the container
+      from `git archive 10b174a5|83c2ff79 shared-ramdisk-depot-manager`, base
+      = commit 1, srdm's own `gate.sh:105` argv. The derivation is what made
+      it possible at all: `srdm/internal/...` keys stripped by the module path
+      read from srdm's own `go.mod`, with nothing declared anywhere.
+      `assay run` → PASS, 12 files, 418 executable, 394 covered, 94.3%,
+      `helpers[{role: statement-positions, identity: "go version go1.25.14"}]`,
+      `judge_provenance.artifact: "zipapp"`. Transcript and the classified
+      table: REPORT §41.
+
+---
+
+## B060 — `build_release.py` leaves a `zipapp-staging/` directory beside `--outdir` and never removes it, which can turn the project's own gate red
+
+**Filed 2026-09-02, Wave C generation 5, on the controller's ruling at
+`vbpub@3a95459e`.** Observed by generation 4 while building the in-image
+consumer harness (BRIEF-5 §3) and left unfiled as "a one-line property of a
+builder this wave did not otherwise touch"; the controller's disagreement is
+on cost, not substance — an unfiled hazard that can turn assay's own gate red
+is what the backlog is for.
+
+`gate/distribution/build_release.py` writes its staging tree to
+`zipapp-staging/` NEXT TO the directory named by `--outdir`, and never
+removes it. The natural invocation for building from inside the repository,
+`--outdir assay/dist`, therefore leaves `assay/zipapp-staging/` behind. That
+path is not gitignored, so the next run of the self-hosted gate lane sees an
+untracked directory in the tree it is judging and refuses
+`NO_MEASUREMENT`/`DIRTY_TREE` — correctly, and for a cause that has nothing
+to do with the change under judgment. The workaround is to pass an `--outdir`
+outside the worktree, which is what this wave's harness and its qualification
+module both do; that is a workaround, not a fix, and it is invisible to
+anyone who builds the release the obvious way.
+
+Three shapes are defensible and this entry does not pick one: remove the
+staging tree on success (a `finally`, or build it under a
+`TemporaryDirectory`); place it INSIDE `--outdir` so a caller who directs
+output outside the tree gets both; or gitignore the path and document that
+the builder leaves it. The first is the only one that also cleans up after a
+consumer who never reads this entry.
+
+### Acceptance
+
+- [ ] a build with `--outdir <repo>/assay/dist` leaves no untracked path in
+      the worktree;
+- [ ] a test that would go RED if a future edit reintroduced one, asserting
+      the OUTCOME (the tree is clean after a build) rather than the mechanism.
+
+---
+
+## B061 — the statement-position join kept only the LAST record for a repeated block, so `-coverpkg=./...` profiles reported covered code as uncovered
+
+**Filed 2026-09-02, Wave C generation 6, FOUND by F008-A5's srdm qualification
+— which is what that criterion exists for.** Fixed in the same change; this
+entry is the record, not a request.
+
+### What was found
+
+`go test -coverpkg=./...` instruments every package into **every** test binary,
+and `go test` concatenates each binary's own profile section into one file. So
+one block gets one record per test binary, and only the binary that actually
+executed it carries a non-zero count. srdm's real profile is 68 761 lines and
+carries **20 records for every block**:
+
+```text
+srdm/internal/power/wings.go:59.22,65.3 1 0
+srdm/internal/power/wings.go:59.22,65.3 1 0
+srdm/internal/power/wings.go:59.22,65.3 1 1      <- the binary that ran it
+srdm/internal/power/wings.go:59.22,65.3 1 0
+... (sixteen more zeros)
+```
+
+`coverage_parsers/go_cover.py::parse` folds these correctly at LINE
+granularity — its `hits` map is explicitly executed-wins across every record in
+the whole profile — and keeps every record, unmerged, in `FileCoverage.blocks`
+(A-239, deliberately: the merge is what discards the column data the
+correction needs).
+
+`statement_attribution.attribute_statements` then did
+
+```python
+parsed_extents = {block.extent: block for block in file_cov.blocks}
+```
+
+which keeps whichever record came **last**, and read `parsed.count` off it. For
+`wings.go:59.22,65.3` the last record is `0`, so a block the toolchain reports
+as executed was attributed to `missing`. The function's own comment claimed
+"applied AFTER the loop so block order cannot matter" — true of distinct
+blocks, false of repeated records for one block, and that is exactly the case
+it never saw.
+
+### Why it was invisible until now
+
+**Every frozen P27 witness has exactly one record per block.** They are
+single-file, single-package probes; nothing in the corpus, in the regenerated
+F008-A4 fixtures, or in the two-package qualification fixture produces a
+repeated extent. The first profile in this project's history with repeated
+records is srdm's, and it exposed the defect on the first run.
+
+### The measurement
+
+Same checkout, same commit range, and — for the control — the byte-identical
+profile file:
+
+| | changed executable lines | covered | verdict |
+|---|---|---|---|
+| covergate | 684 | 639 (93.4%) | PASS at its own 75% floor |
+| assay, defective | 418 | 163 (39.0%) | FAIL/`UNCOVERED_LINES`, 255 lines named |
+| assay, fixed | 418 | see REPORT | — |
+
+The 255-vs-45 gap was not extent-expansion and not file-absence; it was this.
+Classifying before naming a side is what caught it: the extent-expansion
+hypothesis predicts assay's denominator is SMALLER (it is) and its covered
+RATIO similar (it was not), and that second half is the discrepancy that did
+not fit.
+
+### The fix
+
+Fold repeated records for one extent executed-wins **before** anything reads a
+count — the same rule the parser already applies one layer down, so the
+correction can no longer downgrade a line the uncorrected profile called
+executed. That invariant is now asserted directly, in addition to the
+srdm-shaped repetition being asserted in three orders (a fix handling only
+"the non-zero record comes first" passes one of them).
+
+### Acceptance
+
+- [x] repeated records for one extent fold executed-wins, in any order
+      (`test_statement_attribution_go_witnesses.py::test_repeated_records_for_one_block_fold_executed_wins_not_last_wins`);
+- [x] the correction can never downgrade a line the parser called executed,
+      asserted as the property
+      (`…::test_the_correction_can_never_downgrade_a_line_the_parser_called_executed`);
+- [x] an extent all of whose records are zero stays missing — the fold must
+      not launder an uncovered block (same test, final stanza);
+- [x] re-run F008-A5's qualification on the fixed build and record the
+      classified table against covergate (REPORT).
+
+## B065 — progress events carry no time and no outcome, so a caller cannot compute rate, ETA or stall from the file alone
+
+**Filed 2026-09-02 by the vbpub controller on main, from the operator's ask to
+make "progress artifact a caller polls + re-attachable runs + unbounded
+budget by convention" the default pattern for assay and run-gate.
+Complements B064 (filed on the Wave D branch: phase-level events for R0/R1
+and per-attempt events for canary); ids allocated on main — the branch
+re-checks main before allocating.**
+
+### What was measured
+
+`--progress` (B031/A-320) writes `run`, `baseline`, `shard`, `resume` and
+one event per candidate, each carrying `candidate_index` / `candidate_total`
+and the candidate's identity (`_progress_event`, `mutation.py:755-780`), but
+**no timestamp, no elapsed time, and no outcome bucket**. A monitor tailing
+the file can count, but it cannot tell 30 candidates in 3 minutes from 30 in
+3 hours, cannot extrapolate an ETA without its own clock from the first event
+it happened to see, and cannot distinguish "slow" from "stalled" except by
+the file's mtime. run-gate RG-36 (stall detection + ETA disclosure) is
+blocked on exactly this.
+
+### Proposed change (additive to the progress stream only — not the verdict, no schema cut)
+
+- every event gains `emitted_at` (UTC, ISO 8601) and `elapsed_s` (monotonic
+  seconds since the `run` header);
+- each completed-candidate event carries its `outcome_bucket` (the same
+  vocabulary the verdict uses) and the candidate's own wall time;
+- the `run` header carries `candidate_total`, `budget_s` and
+  `budget_per_candidate_s` so the reader knows the bounds without the lane
+  file;
+- a terminal `end` event carries the bucket counts, so a reader can tell a
+  finished run from a dead one without the verdict.
+
+### Acceptance
+
+- [ ] a reader with ONLY the progress file computes rate, ETA and
+      last-event age; the numbers agree with the verdict's counts and the
+      run's measured wall time (real run, not a fixture);
+- [ ] `assay verify` is unaffected (the stream is not evidence);
+- [ ] CONSUMERS' progress paragraph names the fields.
+
+## B066 — the state location is derived from `project_root`; there is no way to keep resume state outside an ephemeral worktree
+
+**Filed 2026-09-02 (same ask). Pairs with run-gate RG-38.**
+
+### What was measured
+
+`mutation_state_record_path` (`mutation.py:797-806`) fixes the records under
+`<project_root>/.assay/mutation-state/`; `--resume` reads and writes there
+and nowhere else. A persistent worktree resumes across retries; a fresh
+worktree per run (cmru's release transaction, dstdns Mode-B instances) never
+does, so `--resume` is inert exactly where budget-capped retries happen most.
+Candidate ids fold in the file's exact bytes, span, replacement and operator,
+so a shared store is safe by construction: a record matches or is ignored
+(and a contradictory record already fails the lane `UNREADABLE_ARTIFACT`).
+
+### Proposed change
+
+`assay run … --state-dir PATH` (default: today's path, unchanged), validated
+the way `--progress` is (`validate_progress_destination`'s shape: outside the
+repository or git-ignored; a directory, created on demand). Mutation records
+move under it; once B007 (multi-target canary) and F015/R4 (red-first) land,
+their per-target / per-attempt records use the same root. Verify and refusal
+semantics unchanged. A run-gate consumer can then bind-mount a durable
+per-repo directory at that path (RG-38).
+
+### Acceptance
+
+- [ ] two runs of one commit from two different worktrees with the same
+      `--state-dir`: the second resumes (`event: resume`, `resumed_total`
+      > 0); a source edit between them re-executes the touched file's
+      candidates;
+- [ ] a `--state-dir` inside the judged tree and not git-ignored refuses
+      before any work, naming the reason (the DIRTY_TREE it would cause).
+
+## B067 — `budget` is the only liveness bound a lane has; "unbounded by convention" needs per-unit bounds first
+
+**Filed 2026-09-02 (same ask). A product decision for the operator or the
+next wave, not a fix.**
+
+### What was measured
+
+`budget` is required (`config.py:1226`) and enforced lane-wide
+(`LANE_TIMEOUT`, DA-D10/DA-R9/DA-R13 this wave); `judge.mutation.budget_per_candidate`
+is optional. There is no way to say "no total bound; every unit is bounded and
+liveness is judged from the progress file", which is the pattern dstdns
+adopted for its own long runs on 2026-09-02 and the operator asked to make
+the default here. Guessing a total (dstdns `sql-mutation` 90m → 120m, still
+short) is the failure mode.
+
+### Proposed change
+
+Allow `budget = "unbounded"` ONLY when every unit of the lane's work carries
+its own bound: R2 requires `budget_per_candidate`; R3 (and R4 when it lands)
+require the per-attempt bound B007's design (A-432) declares; an R0/R1 lane
+is ONE command, whose only bound IS `budget`, so `unbounded` is refused there
+by name. The lane-wide deadline machinery is untouched for a numeric budget.
+Stall detection stays with the caller (run-gate RG-36): assay cannot judge
+its own stall, and a hung unit is already caught by its unit bound.
+
+### Acceptance
+
+- [ ] `unbounded` with a missing unit bound refuses at load naming the unit;
+- [ ] an unbounded R2 lane with `budget_per_candidate` runs to completion
+      with no `LANE_TIMEOUT` path reachable (measured on a real lane);
+- [ ] CONSUMERS' worked mutation lane shows the recommended shape:
+      `budget = "unbounded"` + `budget_per_candidate` + run-gate
+      `stall_timeout`.
+
+## B068 — `assay run` (R0/R1 mock/coverage target) hard-fails `GIT_FAILED` in a Mode-B linked worktree, unconditionally of `clean_tree`
+
+**Filed 2026-09-02 (dstdns controller session, P152 real-fault-harness-restart-matrix,
+found while confirming a Mode-B git-access fix — dstdns D-322/D-325/D-326).**
+
+### What's wrong
+
+`assay-4.0.0.pyz run mock --file assay.toml --verdict-json .assay/verdict-mock.json
+--resume --progress .assay/progress-mock.jsonl`, invoked inside a dstdns
+Mode-B worktree's own dedicated `test-runner` container (that worktree's
+subtree mounted at `/workspaces/dstdns`, main checkout's `.git` never
+mounted — dstdns RG-34), fails outright before any judgment work starts:
+
+```
+assay: ERROR/GIT_FAILED: git rev-parse --absolute-git-dir failed resolving
+/workspaces/dstdns/.worktrees/p152-real-fault-harness-restart-matrix (128):
+fatal: not a git repository: /workspaces/dstdns/.git/worktrees/p152-real-fault-harness-restart-matrix
+```
+
+Root cause matches the class already documented nearby in this file
+(`git.py`'s `_resolve_repo()`, `git rev-parse --absolute-git-dir` anchoring
+for a LINKED worktree resolving to the private per-worktree dir under the
+MAIN repo's `.git/worktrees/<name>/`): in a Mode-B container, that main-repo
+path is never mounted at all — not "resolves to the wrong exclude file" (the
+neighboring dirty-tree entry above) but "does not exist as a git repository,
+full stop." **The lane's own `clean_tree = false` does not help** — the
+`git rev-parse` call runs unconditionally before any dirty-tree logic would
+even be reached, so there is no existing config lever to route around it.
+
+### A useful discriminator
+
+The SAME `assay-4.0.0.pyz` binary, in the SAME Mode-B mounting setup (a
+sibling worktree's own dedicated container), running the R2 `sql-mutation`
+lane, does NOT hit this — it has been running for 9+ hours making steady
+progress. Whatever code path R0/R1's `mock` target takes through
+`_resolve_repo()` differs from R2's, in a way worth tracing directly rather
+than assuming (not yet source-confirmed against `assay/git.py`).
+
+### Impact
+
+Blocks R0/R1 evidence entirely for any package validated via a Mode-B
+`ciu worktree` instance (dstdns's now-standard per-package isolation
+pattern) — not a P152-specific defect. dstdns's own mitigation: the
+`merge-p` pipeline already re-runs every gate from `main` (Mode-A, full git
+access) post-merge regardless of branch-time numbers, so this does not block
+merging — but it means Mode-B branch-time gates currently give ZERO R0/R1
+signal, only R2, until this is fixed.
+
+### Proposed fix
+
+Source-confirm exactly which of `_resolve_repo()`'s callers R0/R1 reaches
+that R2 doesn't, then either (a) make `_resolve_repo()` tolerate a
+`GIT_FAILED` linked-worktree resolution the same way some other path
+apparently already does, or (b) if git resolution is genuinely required for
+R0/R1's own semantics, surface a clear `ERROR/GIT_FAILED` with a suggestion
+(e.g. "run outside a linked worktree, or from the worktree's main checkout")
+rather than a bare `fatal:` git stderr passthrough.
+
+### Acceptance
+
+- [ ] `assay run <R0-or-R1-lane>` inside a genuine linked-worktree Mode-B
+      container (main repo's `.git` not mounted) either succeeds or fails
+      with a clear, actionable `ERROR/GIT_FAILED` message naming the
+      resolution gap, not a raw git stderr passthrough;
+- [ ] a regression test pins the R0/R1-vs-R2 discriminator above so it
+      cannot silently regress back to today's split behavior unexplained.

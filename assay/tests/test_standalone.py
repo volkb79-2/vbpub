@@ -170,7 +170,7 @@ def test_a_real_pass_matches_the_documented_r0_pass_shape(
     assert why_invalid(validator, real) == [], "the real artifact is not schema-valid"
 
     expected = runner_verdict_fixture("r0_pass")
-    volatile = {"assay_version", "commit", "started", "ended"}
+    volatile = {"assay_version", "commit", "started", "ended", "judge_provenance"}
     assert {k: v for k, v in real.items() if k not in volatile} == {
         k: v for k, v in expected.items() if k not in volatile
     }
@@ -338,7 +338,7 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     argv = [sys.executable, "-m", "pytest", "tests", "-q", "--cov=pkg",
             "--cov-report=json:cov.json"]
     expected = {
-        "schema_version": 7,
+        "schema_version": 9,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": "PASS",
@@ -427,8 +427,74 @@ def test_a_real_r1_lane_passes_through_the_installed_wheel(
     # `test_a_real_pass_matches_the_documented_r0_pass_shape` already owns
     # it. Asserting it twice would make a SECOND test red outside the gate
     # image for a reason that has nothing to do with R1.
-    volatile = {"assay_version", "started", "ended"}
+    # B018/A-327: `judge_provenance` joins the volatile set for exactly the
+    # reason `assay_version` is in it -- its digest is a fact of THIS build,
+    # which a hand-written fixture cannot state. It is not merely excused
+    # here: `test_the_installed_wheels_own_sha256_is_what_the_verdict_records`
+    # below pins it against the wheel file itself.
+    volatile = {"assay_version", "started", "ended", "judge_provenance"}
     assert {k: v for k, v in real.items() if k not in volatile} == expected
+
+
+# --- B018/A-327: the judge identity a REAL wheel install records ------------
+
+
+def test_the_installed_wheels_own_sha256_is_what_the_verdict_records(
+    standalone: Standalone, git_repo: GitRepo
+):
+    """**B018's central claim, measured rather than asserted.** A verdict must
+    bind itself to the build artifact that produced it, so CIU V8 can compare
+    what it verified on download against what actually emitted the evidence.
+
+    The wheel file is still on disk here only because this fixture built it;
+    the RUNNING assay cannot see it -- installation consumes the archive.
+    What it reads instead is PEP 610's `direct_url.json`, which `pip` wrote
+    into the `.dist-info` at install time. This test is the proof that the two
+    are the same number: `hashlib.sha256` over the wheel's bytes, compared
+    against what the installed console script printed into its own artifact,
+    with nothing in between.
+    """
+    lane_toml = _r0_lane_toml(["/bin/sh", "-c", "exit 0"])
+    lane_file = _write_lane_file(git_repo.path, lane_toml)
+    git_repo.commit_all("add r0-pass lane for the provenance proof")
+
+    proc = _run_assay(standalone, lane_file)
+    assert proc.returncode == 0, proc.stderr
+    real = json.loads(proc.stdout)
+
+    wheel_digest = hashlib.sha256(standalone.wheel.read_bytes()).hexdigest()
+    assert real["judge_provenance"] == {
+        "name": "assay",
+        "version": real["assay_version"],
+        "artifact": "wheel",
+        "digest_algorithm": "sha256",
+        "digest": wheel_digest,
+    }
+    # An identified invocation says NOTHING on stderr about provenance -- the
+    # loud notice belongs to the unidentifiable case only, which is what a
+    # source-tree run gets (`test_cli_run.py`'s own assertions).
+    assert "judge_provenance" not in proc.stderr
+
+
+def test_require_judge_provenance_is_satisfied_by_a_real_wheel_install(
+    standalone: Standalone, git_repo: GitRepo
+):
+    """The flag a gate that binds evidence to a verified judge passes. On this
+    installation it must be a no-op, not a refusal -- the negative half (a
+    source tree, where it refuses) is `test_cli_provenance.py`'s."""
+    lane_toml = _r0_lane_toml(["/bin/sh", "-c", "exit 0"])
+    lane_file = _write_lane_file(git_repo.path, lane_toml)
+    git_repo.commit_all("add r0-pass lane for the require-provenance proof")
+
+    proc = standalone.run(
+        "assay", "run", "package",
+        "--file", str(lane_file),
+        "--require-judge-provenance",
+        "--verdict-json", "-",
+    )
+    assert proc.returncode == 0, proc.stderr
+    document = json.loads(proc.stdout)
+    assert document["judge_provenance"]["artifact"] == "wheel"
 
 
 # --- O4 (P18 work item 7): a real R2 lane through the installed wheel --------
@@ -576,7 +642,7 @@ def _expected_r2_artifact(
     mutation payload must emit."""
     argv = ["/bin/sh", "-c", script]
     document = {
-        "schema_version": 7,
+        "schema_version": 9,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -635,6 +701,17 @@ def _expected_r2_artifact(
                 # P33/V5-4: derived from the absence of
                 # `kill_signal_artifact`, which `config` refuses until P34.
                 "kill_attribution": "unattributed",
+                # B035/A-329: every R2 lane in this module is changed-line
+                # scoped (each declares `judge.base` and no `judge.mode`), so
+                # the installed wheel records that scope -- and it is what
+                # makes the `base` these same documents carry checkable.
+                "mode": "changed_lines",
+                # B046/schema v9: every R2 lane in this module runs assay's
+                # OWN mutation engine through the installed wheel, so the
+                # wheel records `native` -- and this assertion is one of the
+                # few places that pins the producer against a REAL run rather
+                # than a hand-built model object.
+                "producer": "native",
             },
         }
     return document
@@ -647,6 +724,10 @@ def _assert_complete(real: dict, expected: dict) -> None:
     # the dedicated runner tests and schema tests, not duplicated here.
     volatile = {
         "assay_version",
+        # B018/A-327: same class as `assay_version` -- a per-build fact no
+        # fixture can state. Pinned for real in
+        # `test_the_installed_wheels_own_sha256_is_what_the_verdict_records`.
+        "judge_provenance",
         "started",
         "ended",
         "result_stdout_tail",
@@ -1045,7 +1126,7 @@ def _expected_r3_artifact(
     argv = ["/bin/sh", "-c", script]
     env = {"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 7,
+        "schema_version": 9,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,
@@ -1398,7 +1479,7 @@ def _r1_r3_expected(
     ]
     env = {"PYTHONDONTWRITEBYTECODE": "1"}
     document = {
-        "schema_version": 7,
+        "schema_version": 9,
         "lane": "package",
         "commit": git_repo.head(),
         "outcome": outcome,

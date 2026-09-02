@@ -65,9 +65,20 @@ from typing import Any, Iterable, Mapping
 
 from .coverage import FORMAT_REGISTRY
 from .errors import LaneConfigError
+# (B046) The ingested-mutation format registry, imported at module level for
+# `FORMAT_REGISTRY`'s own reason (A-068): `judge.mutation.format` is closed
+# against the registry's own keys, never a second hardcoded list. The package
+# imports only `assay.errors` and `assay.vocabulary`, both leaves, so this
+# does not open the `config -> mutation -> config` cycle that would exist if
+# the registry lived in `assay.mutation`.
+from .mutation_parsers import MUTATION_FORMAT_REGISTRY
 from .vocabulary import (
+    COVERAGE_PRODUCERS_BY_FORMAT,
+    COVERAGE_PRODUCER_REQUIRED_FORMATS,
     MUTATION_OPERATORS,
     MUTATION_OPERATORS_BY_LANGUAGE,
+    REFUSED_COVERAGE_PRODUCERS,
+    STATEMENT_ATTRIBUTABLE_FORMATS_BY_LANGUAGE,
     WITHDRAWN_MUTATION_OPERATORS,
     operator_language,
 )
@@ -78,6 +89,7 @@ __all__ = [
     "ENFORCEMENTS",
     "EvidenceConfig",
     "IsolationConfig",
+    "JUDGE_BASE_SOURCES",
     "JUDGE_FIELDS_BY_RIGOR",
     "JUDGE_MODES",
     "JudgeConfig",
@@ -152,6 +164,8 @@ _OPTIONAL_LANE_FIELDS: tuple[str, ...] = (
     "env_required",
     "environment_command",
     "infrastructure",
+    # (B043, schema v9) the lane command's declared working directory.
+    "cwd",
 )
 
 INFRASTRUCTURE_SOURCES: frozenset[str] = frozenset({"required-env", "derived"})
@@ -175,7 +189,20 @@ SNAPSHOT_SELECTIONS: frozenset[str] = frozenset(
     {"repository", "repository-minus-unsafe-symlinks"}
 )
 
-_ISOLATION_FIELDS: tuple[str, ...] = ("snapshot_selection", "unsafe_symlink_omissions")
+_ISOLATION_FIELDS: tuple[str, ...] = (
+    "snapshot_selection",
+    "unsafe_symlink_omissions",
+    # (B041(b), schema v9) paths symlinked IN from the invoking checkout.
+    "link_paths",
+)
+
+#: (B041(b)) The bound on a declared `link_paths` list, deliberately equal to
+#: `MAX_UNSAFE_SYMLINK_OMISSIONS` and deliberately declared separately. The
+#: two lists mean OPPOSITE things -- one names what the snapshot left out,
+#: the other what was linked in -- and a shared constant would make one bound
+#: change silently move the other (A-366's own transcription reasoning, one
+#: constant over).
+MAX_LINK_PATHS = 64
 
 #: (§3.2) "contains 1 through 64 strings. Empty omission mode is refused; use
 #: `\"repository\"` instead." A cap, never derived from a measured repository
@@ -223,10 +250,23 @@ _KNOWN_JUDGE_FIELDS: tuple[str, ...] = (
     "mutation",
     "canary",
     "base",
+    "base_source",
     "mode",
     "targets",
     "require_branch",
 )
+
+#: (B019/A-328) who owns the comparison commit a changed-line lane judges
+#: against. ``"declared"`` -- the default, and the only behaviour that existed
+#: before this key -- means ``judge.base`` is a fact of the lane file.
+#: ``"request"`` means the lane requires changed-line judging but DELEGATES the
+#: base identity to whatever gate request invokes it (``assay run
+#: --request-base``), so one static lane declaration stays correct across every
+#: branch and worktree while the orchestrator owns branch awareness. The two
+#: are mutually exclusive: a lane declaring ``"request"`` may not also declare
+#: ``judge.base``, and a run may not supply ``--request-base`` to a lane that
+#: did not delegate.
+JUDGE_BASE_SOURCES: frozenset[str] = frozenset({"declared", "request"})
 
 #: (wave-1 §5, A-260) the closed `judge.mode` vocabulary. Absent means
 #: `"changed_lines"` -- the only mode that existed before this wave -- so
@@ -236,7 +276,14 @@ _KNOWN_JUDGE_FIELDS: tuple[str, ...] = (
 #: (:mod:`assay.runner`'s `evaluate_r1`).
 JUDGE_MODES: frozenset[str] = frozenset({"changed_lines", "whole_target"})
 
+#: The two fields every `[judge.coverage]` table must declare.
 _COVERAGE_FIELDS: tuple[str, ...] = ("format", "artifact")
+
+#: (B045, schema v9) `producer` -- the toolchain that WRITES the artifact --
+#: is a THIRD key, listed separately because it is required for some formats
+#: and refused for others, so it cannot join the flat required tuple above.
+#: See :data:`assay.vocabulary.COVERAGE_PRODUCERS_BY_FORMAT`.
+_COVERAGE_OPTIONAL_FIELDS: tuple[str, ...] = ("producer",)
 
 # A duration is one or more <number><unit> segments in descending order, e.g.
 # "5m", "90s", "1h30m". A bare number is REFUSED: unit-less is ambiguous, and
@@ -271,21 +318,48 @@ def parse_duration(text: str) -> float:
 
 @dataclass(frozen=True)
 class CoverageConfig:
-    """``[lanes.X.judge.coverage]`` — the declared format and artifact path."""
+    """``[lanes.X.judge.coverage]`` — the declared format, artifact path and
+    (B045, schema v9) the declared PRODUCER.
+
+    ``producer`` is ``None`` exactly when the file omitted it, never a
+    filled-in default: for ``coverage-istanbul-json`` the loader REFUSES the
+    omission outright (its producers disagree, so no implied value is correct
+    -- DESIGN-GUIDE §5), and for every other format ``None`` is a real,
+    meaningful "not declared" that the verdict records by ABSENCE.
+    """
 
     format: str
     artifact: str
+    producer: str | None = None
 
     def as_declared(self) -> dict[str, Any]:
-        return {"format": self.format, "artifact": self.artifact}
+        declared: dict[str, Any] = {
+            "format": self.format,
+            "artifact": self.artifact,
+        }
+        # Omitted, never null (A-051) -- `as_declared` must compare equal to
+        # tomllib's own parse of the table.
+        if self.producer is not None:
+            declared["producer"] = self.producer
+        return declared
 
 
+#: The fields a NATIVE R2 lane must declare -- assay's own execution policy.
+#: Required on a native lane and REFUSED on an ingested one (B046/A-360):
+#: assay chose none of them for a run it did not orchestrate.
 _MUTATION_FIELDS: tuple[str, ...] = ("jobs", "max_mutants", "operators")
 _MUTATION_OPTIONAL_FIELDS: tuple[str, ...] = (
     "budget_per_candidate",
     "shard_index",
     "shard_count",
 )
+
+#: (B046) The fields an INGESTED R2 lane declares: which report FORMAT the
+#: lane's own argv will write, WHERE it writes it, and the score floor assay
+#: judges it against. `format`'s PRESENCE is the discriminator -- the runner
+#: selects native vs ingested by exactly this, never by the lane's language
+#: and never by sniffing the artifact.
+_MUTATION_INGESTED_FIELDS: tuple[str, ...] = ("format", "artifact", "fail_under")
 
 #: (P33/A-227/A-230b, narrowed P34/W4) the two v6 artifact fields, legal
 #: ONLY on a ``judge.language = "sql"`` lane. Named separately from
@@ -338,13 +412,40 @@ class MutationConfig:
     loader is the first reader of its actual shape.
     """
 
-    jobs: int
+    #: **Required on a NATIVE lane, `None` on an ingested one** (B046). The
+    #: three fields below are assay's own execution policy; an ingested lane
+    #: declared none of it, because Stryker's own configuration chose the
+    #: mutators, the concurrency and the ceiling. They are refused at LOAD
+    #: with their own message, and independently forbidden on the WIRE by
+    #: `JudgmentR2` -- two layers, two diagnostics, because a verdict-layer
+    #: refusal is not a thing a consumer editing `assay.toml` ever sees.
+    jobs: int | None = None
     #: (P21/A-163) the declared candidate ceiling, in ``1..10_000``.
     #: ``jobs`` bounds CONCURRENCY; this bounds total work and memory, which
     #: concurrency never did (A-160's own "jobs bounds workers, not total
-    #: executions").
-    max_mutants: int
-    operators: tuple[str, ...]
+    #: executions"). `None` on an ingested lane -- see :attr:`jobs`.
+    max_mutants: int | None = None
+    operators: tuple[str, ...] | None = None
+    #: (B046) The ingested report FORMAT, a
+    #: :data:`assay.mutation_parsers.MUTATION_FORMAT_REGISTRY` key, or `None`
+    #: on a native lane. **This field's PRESENCE is the discriminator**: the
+    #: runner selects the ingested path by `format is not None` and by
+    #: nothing else -- never by the lane's language (any language whose tool
+    #: emits a registered format may use it) and never by sniffing the
+    #: artifact (A-007).
+    format: str | None = None
+    #: (B046) Where the lane's own argv writes that report, project-relative
+    #: like every other declared artifact path. Required with
+    #: :attr:`format`, `None` without it. **Project-root-relative even on a
+    #: lane declaring `cwd`** (A-369/A-271: one path grammar).
+    artifact: str | None = None
+    #: (B046) The mutation-score floor an ingested lane is judged against:
+    #: `killed / (killed + survived)`, in percent. Required with
+    #: :attr:`format` and never defaulted -- a floor assay invented would be
+    #: a policy assay chose while looking like one the lane declared
+    #: (DESIGN-GUIDE §5). Native R2 has no such field and needs none: it
+    #: fails on any survivor at all.
+    fail_under: float | None = None
     #: (B012) Optional per-candidate wall-clock bound. ``None`` preserves the
     #: existing lane-wide-only behavior; a declared value bounds each mutant's
     #: command independently without changing the lane deadline.
@@ -381,11 +482,31 @@ class MutationConfig:
     #: See the B026 N-5 note on ``shard_index`` above -- identically inert.
     shard_count: int | None = None
 
+    @property
+    def is_ingested(self) -> bool:
+        """(B046) Whether this lane's R2 evidence is INGESTED rather than
+        computed by assay's own engine.
+
+        Derived from :attr:`format`'s presence -- the one discriminator --
+        rather than stored, so no artifact can exist in which the flag and the
+        fields disagree (A-036's own deriving-removes-the-disagreement rule).
+        """
+        return self.format is not None
+
     def as_declared(self) -> dict[str, Any]:
+        if self.is_ingested:
+            payload = {
+                "format": self.format,
+                "artifact": self.artifact,
+                "fail_under": self.fail_under,
+            }
+            if self.kill_signal_artifact is not None:
+                payload["kill_signal_artifact"] = self.kill_signal_artifact
+            return payload
         payload: dict[str, Any] = {
             "jobs": self.jobs,
             "max_mutants": self.max_mutants,
-            "operators": list(self.operators),
+            "operators": list(self.operators or ()),
         }
         # (P34/W4) Declared value or omitted, never null (A-051) -- present
         # only for the SQL lane that actually named it.
@@ -493,6 +614,12 @@ class JudgeConfig:
     #: the file omits it, which means `false`. Legal only on a lane
     #: declaring R1.
     require_branch: bool | None = None
+    #: (B019/A-328) the declared `judge.base_source`, verbatim -- `None` when
+    #: the file omits it, which means `"declared"`. Stored as declared, never
+    #: defaulted here, exactly as `mode` is: the loader records what the file
+    #: said and `runner.resolve_base_declaration` resolves the effective
+    #: policy at exactly one named place.
+    base_source: str | None = None
 
     def as_declared(self) -> dict[str, Any]:
         declared: dict[str, Any] = {}
@@ -512,6 +639,8 @@ class JudgeConfig:
             declared["canary"] = self.canary.as_declared()
         if self.base is not None:
             declared["base"] = self.base
+        if self.base_source is not None:
+            declared["base_source"] = self.base_source
         if self.mode is not None:
             declared["mode"] = self.mode
         if self.targets is not None:
@@ -590,9 +719,27 @@ class IsolationConfig:
 
     snapshot_selection: str
     unsafe_symlink_omissions: tuple[str, ...]
+    #: (B041(b), schema v9) Repo-top-relative directories symlinked from the
+    #: INVOKING CHECKOUT into every snapshot this lane creates, immediately
+    #: after ``read-tree`` and before any command runs. Empty -- the only
+    #: value that existed before v9 -- means the snapshot is purely committed
+    #: objects.
+    #:
+    #: Defaulted, unlike this class's other two fields, and for a reason that
+    #: does not apply to them: ``unsafe_symlink_omissions`` has two meanings
+    #: for "empty" (``repository`` mode's *derived* empty and an omission
+    #: mode's *refused* empty), which is why it may not default. ``link_paths``
+    #: has exactly one -- nothing was linked -- so a default cannot collapse
+    #: two states here.
+    #:
+    #: **Independent of ``snapshot_selection``** (A-366): linking content IN
+    #: is orthogonal to the unsafe-symlink omission policy, and a lane may
+    #: declare this under either selection.
+    link_paths: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         where = "IsolationConfig"
+        self._check_link_paths(where)
         if (
             not isinstance(self.snapshot_selection, str)
             or self.snapshot_selection not in SNAPSHOT_SELECTIONS
@@ -635,10 +782,52 @@ class IsolationConfig:
                     f"not silently sort a declared list"
                 )
 
+    def _check_link_paths(self, where: str) -> None:
+        """(B041(b) rule 1, the SPELLING half) -- the grammar, the bound and
+        the strict ascending order.
+
+        EXISTENCE is deliberately not checked here, and that is the one place
+        this key departs from `cwd` beside it. B041(b)'s own contract makes an
+        absent link path ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` -- "a
+        declared prerequisite the environment did not provide" -- not
+        ``BAD_LANE_CONFIG``, because the whole point of the key is that the
+        directory is built by the ENVIRONMENT (an image-baked ``npm ci``, a
+        mounted cache) rather than committed. The same lane file is correct on
+        a machine that has run the install and incorrect on one that has not,
+        so the lane file is not what is wrong, and refusing it at load would
+        misname the fault. :mod:`assay.isolation` checks existence at
+        materialisation, where the environment is actually in view.
+        """
+        if not isinstance(self.link_paths, tuple):
+            raise LaneConfigError(
+                f"{where}: 'link_paths' must be a tuple, got {self.link_paths!r}"
+            )
+        if len(self.link_paths) > MAX_LINK_PATHS:
+            raise LaneConfigError(
+                f"{where}: 'link_paths' declares {len(self.link_paths)} "
+                f"entries, exceeding the ceiling of {MAX_LINK_PATHS}"
+            )
+        encoded: list[bytes] = []
+        for index, item in enumerate(self.link_paths):
+            validated = _validate_omission_path(
+                item, where=where, field=f"link_paths[{index}]"
+            )
+            encoded.append(validated.encode("utf-8"))
+        for previous, current in zip(encoded, encoded[1:]):
+            if not previous < current:
+                raise LaneConfigError(
+                    f"{where}: 'link_paths' must be strictly ascending by the "
+                    f"UTF-8 bytes of the canonical spelling, got "
+                    f"{list(self.link_paths)}; the loader does not silently "
+                    f"sort a declared list"
+                )
+
     def as_declared(self) -> dict[str, Any]:
         declared: dict[str, Any] = {"snapshot_selection": self.snapshot_selection}
         if self.unsafe_symlink_omissions:
             declared["unsafe_symlink_omissions"] = list(self.unsafe_symlink_omissions)
+        if self.link_paths:
+            declared["link_paths"] = list(self.link_paths)
         return declared
 
 
@@ -682,6 +871,20 @@ class Lane:
     #: (B013) Declared infrastructure facts, resolved in the invoking context
     #: before snapshot execution and injected into the isolated command.
     infrastructure: Mapping[str, str] | None = None
+    #: (B043, schema v9) The lane command's declared working directory,
+    #: repository-top-relative, forward-slash. ``None`` -- the only value that
+    #: existed before v9 -- means every command of this lane runs at the
+    #: snapshot's project root, and the verdict then records NO
+    #: ``cwd_declared`` at all (absent, never ``"."``).
+    #:
+    #: **Nothing else re-roots** (A-271, one path grammar):
+    #: ``judge.coverage.artifact``, ``judge.mutation.equivalence_artifact``/
+    #: ``kill_signal_artifact``/``artifact``, ``source_roots``, ``targets``
+    #: and every ``infrastructure`` fact stay project-root-relative whatever
+    #: this says. ``environment_command`` is likewise unaffected: it is a
+    #: probe of the INVOKING environment (B010/DESIGN-GUIDE §4), not the lane
+    #: command, and keeps running in the invoking cwd.
+    cwd: str | None = None
 
     def as_declared(self) -> dict[str, Any]:
         """Reconstruct the TOML table this lane was loaded from.
@@ -707,6 +910,8 @@ class Lane:
             declared["environment_command"] = list(self.environment_command)
         if self.infrastructure is not None:
             declared["infrastructure"] = dict(self.infrastructure)
+        if self.cwd is not None:
+            declared["cwd"] = self.cwd
         if self.judge is not None:
             declared["judge"] = self.judge.as_declared()
         if self.where is not None:
@@ -1067,6 +1272,13 @@ def _load_lane(
 
     isolation = _load_isolation_for_lane(table.get("isolation"), rigor, where)
 
+    cwd = _load_lane_cwd(table.get("cwd"), where, project_root)
+    # (B043 x B041(b), fix round 1) The two keys are individually valid and
+    # were individually checked; this is the check on the PAIR, and it needs
+    # neither a resolved commit nor snapshot machinery -- both facts are on
+    # the same `Lane` the moment they are read.
+    _check_cwd_is_not_under_a_link_path(cwd, isolation, where)
+
     return Lane(
         name=name,
         scope=scope,
@@ -1084,7 +1296,116 @@ def _load_lane(
         judge=judge,
         where=None if where_table is None else MappingProxyType(dict(where_table)),
         isolation=isolation,
+        cwd=cwd,
     )
+
+
+def _load_lane_cwd(value: Any, where: str, project_root: Path) -> str | None:
+    """``cwd`` (B043) -- the lane command's declared working directory, or
+    ``None`` when the file omitted the key.
+
+    Three checks, each refusing a genuinely different thing:
+
+    1. the SPELLING -- :func:`_validate_omission_path`'s own grammar, shared
+       verbatim with ``unsafe_symlink_omissions`` rather than re-derived
+       (repo-relative, forward-slash, no empty/``.``/``..``/``.git``
+       component, no backslash or NUL, never absolute). ``..`` is what makes
+       this more than cosmetic: a lane whose cwd escapes the project would
+       run its command outside the snapshot the verdict names;
+    2. CONTAINMENT after symlink collapse -- exactly
+       :func:`_validate_artifact_path`'s check one field over. The grammar
+       above cannot see a symlink, so the two are complementary, not
+       redundant;
+    3. that it names a real DIRECTORY in the INVOKING checkout. This is the
+       load-time half of the contract's "must resolve to a tracked directory
+       at the resolved commit": at load there is no resolved commit yet
+       (base resolution happens per-run, well after ``assay.toml`` is read),
+       so the commit-bound half is checked by :mod:`assay.runner` against the
+       materialised snapshot, where the commit IS known and can be named in
+       the message. A typo is caught here, at the earliest moment the fact
+       exists; a path that is present-but-untracked is caught there, at the
+       earliest moment ITS fact exists. Neither check can stand in for the
+       other, and a lane file that passes this one and fails that one is a
+       real, reportable state (an ignored build directory, say).
+    """
+    if value is None:
+        return None
+    cwd = _validate_omission_path(value, where=where, field="cwd")
+    resolved = (project_root / cwd).resolve()
+    if not resolved.is_relative_to(project_root.resolve()):
+        raise LaneConfigError(
+            f"{where}: 'cwd' {cwd!r} resolves to {resolved}, which is not "
+            f"contained beneath the project root {project_root} (via a "
+            f"symlink) -- a lane must not be able to run its command outside "
+            f"the project it declares"
+        )
+    if not resolved.is_dir():
+        raise LaneConfigError(
+            f"{where}: 'cwd' {cwd!r} is not a directory in the checkout at "
+            f"{project_root}; the lane command's working directory must "
+            f"exist, and (because every command runs inside a snapshot built "
+            f"from committed objects) must be tracked at the commit the run "
+            f"resolves -- which assay.runner re-checks against the "
+            f"materialised snapshot, where the commit is known"
+        )
+    return cwd
+
+
+def _check_cwd_is_not_under_a_link_path(
+    cwd: str | None, isolation: IsolationConfig | None, where: str
+) -> None:
+    """(B043 x B041(b), fix round 1) Refuse a lane whose ``cwd`` IS, or lies
+    beneath, one of its own ``isolation.link_paths`` entries.
+
+    **This combination is never satisfiable, so refusing it is exact rather
+    than merely cautious.** A ``link_paths`` entry must be UNTRACKED at the
+    resolved commit -- :meth:`assay.isolation.SnapshotRepository._plant_link_paths`
+    rule 2 refuses to link a tracked path, because doing so would replace
+    committed content with whatever the invoking checkout holds. A ``cwd``
+    must be a TRACKED DIRECTORY at that same commit. A tracked directory's
+    ancestors are themselves tracked directories, so no lane can satisfy both
+    rules about the same path: whichever way the run goes, one of the two
+    keys is wrong, and it is better to say so while a human is editing the
+    file than to discover it per-run.
+
+    **What it actually prevented.** Shipped, the two keys COMPOSED into a
+    snapshot escape. ``_plant_link_paths`` plants its symlinks after
+    ``_verify`` (A-370), and the runner's commit-bound ``cwd`` check was a
+    filesystem test -- which followed the freshly planted link back into the
+    invoking checkout and accepted an untracked directory as committed. The
+    lane's command then ran in the consumer's REAL working tree and wrote
+    there for real. :func:`assay.runner._execute_snapshot_unit` now decides
+    that question from the commit's own manifest and is the authoritative,
+    commit-bound refusal; this one is the cheap, early, better-diagnosed
+    half, in the layer that can name the file being edited.
+
+    The comparison is between the two DECLARED SPELLINGS. ``link_paths`` is
+    repo-top-relative and ``cwd`` is project-relative (A-145), which coincide
+    for the ordinary single-project repository and can differ under a
+    ``project_prefix``. That makes this check deliberately approximate in
+    exactly one direction -- it can refuse a same-named pair that a prefix
+    would have kept apart -- and never the other: the runner's manifest check
+    is prefix-exact and catches everything this one lets past. An approximate
+    refusal that names both keys is the right trade for a defense-in-depth
+    layer; it would be the wrong trade for the only layer.
+    """
+    if cwd is None or isolation is None or not isolation.link_paths:
+        return
+    linked = set(isolation.link_paths)
+    parts = cwd.split("/")
+    for index in range(1, len(parts) + 1):
+        ancestor = "/".join(parts[:index])
+        if ancestor in linked:
+            raise LaneConfigError(
+                f"{where}: 'cwd' {cwd!r} is at or beneath "
+                f"'isolation.link_paths' entry {ancestor!r}. A linked path is "
+                f"by rule NOT tracked at the resolved commit, and a lane's "
+                f"working directory by rule IS -- so no commit can satisfy "
+                f"both, and a run that appeared to would be running the "
+                f"command through the link, in the invoking checkout rather "
+                f"than in the snapshot. Point 'cwd' at a committed directory, "
+                f"or stop linking the one it names"
+            )
 
 
 def _load_isolation_for_lane(
@@ -1134,6 +1455,22 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
             f"{where}: 'isolation.snapshot_selection' must be one of "
             f"{sorted(SNAPSHOT_SELECTIONS)}, got {selection!r}"
         )
+    # (B041(b)/A-366) Read BEFORE the selection fork and passed to both
+    # branches: `link_paths` is independent of `snapshot_selection`, and
+    # reading it inside one branch is how a key silently becomes legal under
+    # only one selection.
+    link_paths: tuple[str, ...] = ()
+    if "link_paths" in value:
+        link_paths = tuple(
+            _as_str_list(value["link_paths"], where, "isolation.link_paths")
+        )
+        if not link_paths:
+            raise LaneConfigError(
+                f"{where}: 'isolation.link_paths' is declared but empty; omit "
+                f"the key instead -- an empty list and an absent one would "
+                f"otherwise be two spellings of the same fact, and the verdict "
+                f"records this by ABSENCE (A-051)"
+            )
     has_omissions = "unsafe_symlink_omissions" in value
     if selection == "repository":
         if has_omissions:
@@ -1141,7 +1478,11 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
                 f"{where}: 'isolation.unsafe_symlink_omissions' is forbidden "
                 f"under snapshot_selection = 'repository'"
             )
-        return IsolationConfig(snapshot_selection=selection, unsafe_symlink_omissions=())
+        return IsolationConfig(
+            snapshot_selection=selection,
+            unsafe_symlink_omissions=(),
+            link_paths=link_paths,
+        )
     if not has_omissions:
         raise LaneConfigError(
             f"{where}: missing required field "
@@ -1151,7 +1492,11 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
     omissions = _as_str_list(
         value["unsafe_symlink_omissions"], where, "isolation.unsafe_symlink_omissions"
     )
-    return IsolationConfig(snapshot_selection=selection, unsafe_symlink_omissions=tuple(omissions))
+    return IsolationConfig(
+        snapshot_selection=selection,
+        unsafe_symlink_omissions=tuple(omissions),
+        link_paths=link_paths,
+    )
 
 
 def _load_targets(value: Any, where: str) -> tuple[str, ...]:
@@ -1295,6 +1640,47 @@ def _load_judge(
             f"{list(rigor)} does not include R1"
         )
 
+    # B019/A-328. `base_source` is optional and, like `require_branch`, is
+    # not folded into any `JUDGE_FIELDS_BY_RIGOR` tuple -- it is a policy ABOUT
+    # `base`, so it is legal exactly where `base` is: on a changed-line lane
+    # declaring R1 and/or R2. Every other placement is inert config and is
+    # refused by name here rather than by the generic surplus message below,
+    # which would say the rigor "reads none of judge.{base_source}" and send
+    # the operator looking for the wrong mistake.
+    base_source = None
+    if "base_source" in table:
+        base_source = _as_str(table["base_source"], where, "judge.base_source")
+        if base_source not in JUDGE_BASE_SOURCES:
+            raise LaneConfigError(
+                f"{where}: 'judge.base_source' must be one of "
+                f"{sorted(JUDGE_BASE_SOURCES)}, got {base_source!r}"
+            )
+        if not (r1_declared or r2_declared):
+            raise LaneConfigError(
+                f"{where}: declares 'judge.base_source' but rigor "
+                f"{list(rigor)} includes neither R1 nor R2 -- no tier here "
+                f"reads a comparison commit, so naming who supplies one is "
+                f"inert config"
+            )
+        if effective_mode == "whole_target":
+            raise LaneConfigError(
+                f"{where}: declares 'judge.base_source' under judge.mode = "
+                f"'whole_target' -- whole-target scope replaces the diff at "
+                f"every tier, so no tier reads a comparison commit and "
+                f"delegating one to the gate request declares nothing "
+                f"(A-325's own rule for 'judge.base', which this key is a "
+                f"policy about)"
+            )
+        if base_source == "request" and "base" in table:
+            raise LaneConfigError(
+                f"{where}: declares BOTH 'judge.base' and judge.base_source = "
+                f"'request'. Exactly one comparison base can be read, so "
+                f"whichever loses is inert config that cannot fail loudly if "
+                f"it is wrong (A-062). Delete 'judge.base' to let the invoking "
+                f"gate request supply it with --request-base, or delete "
+                f"'judge.base_source' to keep the lane's own declared base."
+            )
+
     targets_declared = "targets" in table
     if targets_declared and effective_mode != "whole_target":
         raise LaneConfigError(
@@ -1330,6 +1716,15 @@ def _load_judge(
         # rather than guarded by a membership check that could never be
         # false, which would be an unreachable branch, not a real guard.
         required.append("targets")
+    elif base_source == "request":
+        # B019/A-328: the lane still REQUIRES changed-line judging; what it
+        # has delegated is only the identity of the commit. `base` therefore
+        # leaves `required` here -- the same move `whole_target` makes above,
+        # for the mirror-image reason -- and the explicit both-declared
+        # refusal above (not the generic surplus message) is what catches a
+        # lane that delegates and hardcodes at once.
+        if "base" in required:
+            required.remove("base")
     required = tuple(required)
 
     for field in required:
@@ -1373,7 +1768,11 @@ def _load_judge(
         # the exemption is not merely unnecessary but wrong: `targets` is a
         # member of `required` in the one mode that reads it, so exempting it
         # could only ever hide a declaration nothing reads.
-        - {"attestation_dir", "evidence", "mode", "require_branch"}
+        # B019/A-328: `base_source` joins `mode`/`require_branch` here for
+        # their reason exactly -- it is optional in every rigor that reads it,
+        # so it can never be a member of `required`, and its own placement
+        # rules are enforced by name above rather than by this message.
+        - {"attestation_dir", "evidence", "mode", "require_branch", "base_source"}
     )
     if surplus:
         raise LaneConfigError(
@@ -1420,7 +1819,7 @@ def _load_judge(
 
     coverage = None
     if "coverage" in table:
-        coverage = _load_coverage(table["coverage"], where, project_root)
+        coverage = _load_coverage(table["coverage"], where, language, project_root)
 
     mutation = None
     if "mutation" in table:
@@ -1461,6 +1860,7 @@ def _load_judge(
         mutation=mutation,
         canary=canary,
         base=base,
+        base_source=base_source,
         mode=mode,
         targets=targets,
         require_branch=require_branch,
@@ -1624,16 +2024,19 @@ def _validate_artifact_path(value: Any, where: str, project_root: Path, field: s
     return artifact
 
 
-def _load_coverage(value: Any, where: str, project_root: Path) -> CoverageConfig:
+def _load_coverage(
+    value: Any, where: str, language: str | None, project_root: Path
+) -> CoverageConfig:
     if not isinstance(value, dict):
         raise LaneConfigError(
             f"{where}: 'judge.coverage' must be a table, got {_type_name(value)}"
         )
-    unknown = sorted(set(value) - set(_COVERAGE_FIELDS))
+    known = (*_COVERAGE_FIELDS, *_COVERAGE_OPTIONAL_FIELDS)
+    unknown = sorted(set(value) - set(known))
     if unknown:
         raise LaneConfigError(
             f"{where}: unknown judge.coverage key(s): {', '.join(unknown)}; "
-            f"expected only: {', '.join(_COVERAGE_FIELDS)}"
+            f"expected only: {', '.join(known)}"
         )
     for field in _COVERAGE_FIELDS:
         if field not in value:
@@ -1655,7 +2058,115 @@ def _load_coverage(value: Any, where: str, project_root: Path) -> CoverageConfig
             f"parser registry knows; declared formats: "
             f"{sorted(FORMAT_REGISTRY)}"
         )
-    return CoverageConfig(format=fmt, artifact=artifact)
+    # (A-406, DA-R1) A language whose adapter is judged from block extents may
+    # only declare a format that CARRIES them. Checked AFTER format-registry
+    # membership so an unknown format is still reported as unknown -- naming
+    # the language would misdirect a plain typo -- and BEFORE the producer,
+    # because a producer name is only meaningful once the format is one this
+    # lane may use at all.
+    #
+    # WHY AT LOAD, and not where the profile is parsed. `judge.language` and
+    # `judge.coverage.format` are independent by design, so a Go lane
+    # declaring `format = "lcov"` is a file assay used to ACCEPT: the profile
+    # then arrived with no block extents, `runner` marked it
+    # statement-attributed vacuously, and A-392's guard -- the whole point of
+    # which is to make skipping the oracle impossible -- waved it through with
+    # no oracle and no `helpers` entry. lcov converted from a Go coverprofile
+    # carries exactly the naive block expansion A-392 exists to refuse, so the
+    # verdict would have been wrong in the direction that looks right.
+    # Refusing here means the lane never runs at all, which is the earliest
+    # and cheapest place the fault is knowable: it is a property of the file,
+    # not of any artifact.
+    attributable = STATEMENT_ATTRIBUTABLE_FORMATS_BY_LANGUAGE.get(language or "")
+    if attributable is not None and fmt not in attributable:
+        readable = ", ".join(
+            f"{name!r} (producers: {', '.join(COVERAGE_PRODUCERS_BY_FORMAT[name])})"
+            if name in COVERAGE_PRODUCERS_BY_FORMAT
+            else repr(name)
+            for name in sorted(attributable)
+        )
+        raise LaneConfigError(
+            f"{where}: judge.language = {language!r} is judged from the block "
+            f"extents its coverage records carry -- its executable lines are "
+            f"derived from the source by a statement-position oracle, never "
+            f"read off the artifact -- but 'judge.coverage.format' is "
+            f"{fmt!r}, which carries no block extents. A format like {fmt!r} "
+            f"produced from a {language} coverage profile by a converter "
+            f"reports each block's whole extent as executable lines, counting "
+            f"function signatures, closing braces and `case` labels as code, "
+            f"and assay would have no way to tell that from statement truth. "
+            f"Declare instead: {readable}"
+        )
+    producer = _load_coverage_producer(value, where, fmt)
+    return CoverageConfig(format=fmt, artifact=artifact, producer=producer)
+
+
+def _load_coverage_producer(
+    value: Mapping[str, Any], where: str, fmt: str
+) -> str | None:
+    """``judge.coverage.producer`` (B045) -- the declared, closed, PER-FORMAT
+    producer name, or ``None`` when the format allows the omission and the
+    file took it.
+
+    The refusal order is deliberate and is the whole point of the key. A name
+    this build KNOWS but refuses (``vitest-v8``, ``jest-v8``, ``c8``) is
+    tested BEFORE catalogue membership, exactly as
+    ``WITHDRAWN_MUTATION_OPERATORS`` already is one field over: a consumer who
+    declared the unsound Vitest provider must be told what is wrong with it
+    and how to fix it, not merely that the string is not in a list.
+    """
+    open_vocabulary = COVERAGE_PRODUCERS_BY_FORMAT.get(fmt)
+    declared = value.get("producer")
+
+    if declared is None:
+        if fmt in COVERAGE_PRODUCER_REQUIRED_FORMATS:
+            assert open_vocabulary is not None
+            allowed = [
+                name
+                for name in open_vocabulary
+                if name not in REFUSED_COVERAGE_PRODUCERS
+            ]
+            raise LaneConfigError(
+                f"{where}: missing required field 'judge.coverage.producer'; "
+                f"format {fmt!r} is written by several producers that "
+                f"DISAGREE about what its contents mean (A-344: what "
+                f"`branchMap` is; A-346: whether a line ran), so there is no "
+                f"value assay could imply that is correct in every context. "
+                f"Declare one of: {allowed}"
+            )
+        return None
+
+    producer = _as_str(declared, where, "judge.coverage.producer")
+    if not producer:
+        raise LaneConfigError(f"{where}: 'judge.coverage.producer' is empty")
+
+    if open_vocabulary is None:
+        raise LaneConfigError(
+            f"{where}: 'judge.coverage.producer' {producer!r} is declared for "
+            f"format {fmt!r}, which has no open producer vocabulary; assay "
+            f"does not accept a producer name it cannot check or explain "
+            f"(DESIGN-GUIDE §5 -- no speculative names). Formats with an open "
+            f"vocabulary: {sorted(COVERAGE_PRODUCERS_BY_FORMAT)}"
+        )
+
+    if producer in REFUSED_COVERAGE_PRODUCERS and producer in open_vocabulary:
+        raise LaneConfigError(
+            f"{where}: 'judge.coverage.producer' {producer!r} is a known "
+            f"producer of {fmt!r} that assay REFUSES to gate on: "
+            f"{REFUSED_COVERAGE_PRODUCERS[producer]}"
+        )
+
+    if producer not in open_vocabulary:
+        allowed = [
+            name for name in open_vocabulary if name not in REFUSED_COVERAGE_PRODUCERS
+        ]
+        raise LaneConfigError(
+            f"{where}: 'judge.coverage.producer' {producer!r} is not a "
+            f"producer of format {fmt!r}; the vocabulary is closed per "
+            f"format, and {fmt!r} accepts: {allowed}"
+        )
+
+    return producer
 
 
 def _load_mutation(
@@ -1690,17 +2201,35 @@ def _load_mutation(
         - set(_MUTATION_FIELDS)
         - set(_MUTATION_OPTIONAL_FIELDS)
         - set(_MUTATION_SQL_ONLY_FIELDS)
+        - set(_MUTATION_INGESTED_FIELDS)
     )
+    if unknown:
+        raise LaneConfigError(
+            f"{where}: unknown judge.mutation key(s): {', '.join(unknown)}; "
+            f"expected only: {', '.join((*_MUTATION_FIELDS, *_MUTATION_OPTIONAL_FIELDS, *_MUTATION_SQL_ONLY_FIELDS, *_MUTATION_INGESTED_FIELDS))}"
+        )
+    # (B046) The producer fork, decided BEFORE any per-field validation. The
+    # discriminator is `format`'s presence and nothing else -- not the lane's
+    # language (any language whose tool emits a registered format may ingest)
+    # and not the artifact's content (A-007).
+    if "format" in value:
+        return _load_ingested_mutation(value, where, language, project_root)
+    for field in _MUTATION_INGESTED_FIELDS[1:]:
+        if field in value:
+            raise LaneConfigError(
+                f"{where}: 'judge.mutation.{field}' requires "
+                f"'judge.mutation.format'; it describes an INGESTED mutation "
+                f"report -- where the lane's own argv runs a foreign mutation "
+                f"tool inside the snapshot and assay judges what it wrote -- "
+                f"and without a declared format assay has no parser to read "
+                f"that report with. Declare format = "
+                f"{sorted(MUTATION_FORMAT_REGISTRY)[0]!r}, or drop this key"
+            )
     for field in _MUTATION_FIELDS:
         if field not in value:
             raise LaneConfigError(
                 f"{where}: missing required field 'judge.mutation.{field}'"
             )
-    if unknown:
-        raise LaneConfigError(
-            f"{where}: unknown judge.mutation key(s): {', '.join(unknown)}; "
-            f"expected only: {', '.join((*_MUTATION_FIELDS, *_MUTATION_OPTIONAL_FIELDS, *_MUTATION_SQL_ONLY_FIELDS))}"
-        )
     jobs = value["jobs"]
     if isinstance(jobs, bool) or not isinstance(jobs, int):
         raise LaneConfigError(
@@ -1753,23 +2282,13 @@ def _load_mutation(
         and language is not None
         and operator_language(operator) != language
     )
-    # B034/A-326 round 2: what these two messages OFFER is not the same set as
-    # what the catalogue SPELLS. A withdrawn operator stays in
-    # `MUTATION_OPERATORS` so a v7 artifact naming it still verifies, but
-    # suggesting it to a consumer who just mistyped an operator name would
-    # walk them straight into a second refusal one line later. The
-    # suggestion lists are therefore the DECLARABLE set, the membership
-    # checks above and below stay the spellable one.
-    declarable_for_language = tuple(
-        operator
-        for operator in MUTATION_OPERATORS_BY_LANGUAGE.get(language or "", ())
-        if operator not in WITHDRAWN_MUTATION_OPERATORS
-    )
-    declarable = tuple(
-        operator
-        for operator in MUTATION_OPERATORS
-        if operator not in WITHDRAWN_MUTATION_OPERATORS
-    )
+    # (A-331) Under v7 the catalogue still SPELLED the two withdrawn
+    # operators, so these suggestion lists had to filter them back out.
+    # At the v8 cut the spellings are gone from the catalogue itself, so
+    # declarable == spellable and the filter would be dead code -- deleted
+    # rather than left standing as a no-op that reads like a live guard.
+    declarable_for_language = MUTATION_OPERATORS_BY_LANGUAGE.get(language or "", ())
+    declarable = MUTATION_OPERATORS
     if foreign:
         raise LaneConfigError(
             f"{where}: 'judge.mutation.operators' names {', '.join(foreign)}, "
@@ -1777,19 +2296,16 @@ def _load_mutation(
             f"judge.language = {language!r}, and its operators are: "
             f"{', '.join(declarable_for_language)}"
         )
-    unknown_operators = sorted(set(operators) - set(MUTATION_OPERATORS))
-    if unknown_operators:
-        raise LaneConfigError(
-            f"{where}: 'judge.mutation.operators' names unknown operator(s): "
-            f"{', '.join(unknown_operators)}; known operators: "
-            f"{', '.join(declarable)}"
-        )
-    # B034/A-326: withdrawn operators are still SPELLABLE in a v7 artifact
-    # (see `vocabulary.WITHDRAWN_MUTATION_OPERATORS` for why the spelling
-    # outlives the behaviour), so they are neither "unknown" nor foreign --
-    # and they must still be refused here, loudly and by name. Selecting
-    # them silently would leave a lane declaring mutation coverage that no
-    # adapter can produce, which is this project's own named defect class.
+    # B034/A-326/A-331: the withdrawn check now runs BEFORE the unknown
+    # check, and the order is load-bearing rather than cosmetic. Under v7
+    # these two names were still in `MUTATION_OPERATORS`, so "unknown" could
+    # not fire on them and either order read the same. At the v8 cut the
+    # spellings are gone from the catalogue, so a lane file that still
+    # carries one is now literally an unknown operator -- and answering a
+    # consumer's stale-but-once-legal `python:enum-comparison-swap` with a
+    # bare "unknown operator(s)" would misname the defect and hide the one
+    # thing they need to be told, which is WHY it went away and what covers
+    # it instead.
     withdrawn = sorted(set(operators) & WITHDRAWN_MUTATION_OPERATORS)
     if withdrawn:
         raise LaneConfigError(
@@ -1799,6 +2315,13 @@ def _load_mutation(
             f"same byte span with the same replacement, so declaring both "
             f"emitted each shared site twice and added no coverage. Delete "
             f"them; python:compare-swap already covers ==/!= swapping"
+        )
+    unknown_operators = sorted(set(operators) - set(MUTATION_OPERATORS))
+    if unknown_operators:
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.operators' names unknown operator(s): "
+            f"{', '.join(unknown_operators)}; known operators: "
+            f"{', '.join(declarable)}"
         )
     # (P34/W4) `equivalence_artifact` is REQUIRED on a sql lane -- the
     # carve's single most consequential config decision (§4.3): without it,
@@ -1882,6 +2405,142 @@ def _load_mutation(
         budget_per_candidate=budget_per_candidate,
         shard_index=shard_index,
         shard_count=shard_count,
+    )
+
+
+def _load_ingested_mutation(
+    value: Mapping[str, Any], where: str, language: str | None, project_root: Path
+) -> MutationConfig:
+    """``judge.mutation`` on an INGESTED lane (B046): the lane's own argv runs
+    a foreign mutation tool inside the private snapshot, and assay judges the
+    report it wrote.
+
+    **The refusals here are a SECOND layer, not the only one.** The verdict
+    model independently forbids ``jobs``/``max_mutants``/``operators``/
+    ``equivalence_artifact`` on an ingested ``judgment.r2`` (A-360), and both
+    layers are deliberate: the model's refusal protects a document a consumer
+    reads back, and this one is what a human editing ``assay.toml`` actually
+    sees. A verdict-layer ValueError is not a loader diagnostic, and telling
+    someone "your artifact is invalid" when what they need is "assay ran none
+    of this, so it declares none of it" is the weaker of the two messages.
+    """
+    declared_format = _as_str(value["format"], where, "judge.mutation.format")
+    if declared_format not in MUTATION_FORMAT_REGISTRY:
+        # A-068 one tier over: cross-checked against the parser registry's own
+        # keys, never a second hardcoded list.
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.format' {declared_format!r} is not a "
+            f"mutation-report format the parser registry knows; declared "
+            f"formats: {sorted(MUTATION_FORMAT_REGISTRY)}"
+        )
+
+    native_only = sorted(
+        set(value) & (set(_MUTATION_FIELDS) | {"equivalence_artifact"})
+    )
+    if native_only:
+        raise LaneConfigError(
+            f"{where}: judge.mutation key(s) {', '.join(native_only)} are "
+            f"forbidden on an INGESTED lane (one declaring "
+            f"judge.mutation.format). They are assay's OWN R2 policy, and "
+            f"assay decided none of it here: the mutation tool your argv runs "
+            f"chose its own mutators, its own concurrency and its own "
+            f"ceiling, and its equivalence story is its own. Declaring them "
+            f"would put that tool's configuration on the wire under assay's "
+            f"name -- so the verdict leaves judgment.r2.{native_only[0]} "
+            f"ABSENT rather than backfilled. The operators the tool actually "
+            f"applied are still recorded, one per mutant, in "
+            f"mutation.*[].operator"
+        )
+    orchestration_only = sorted(
+        set(value) & {"budget_per_candidate", "shard_index", "shard_count"}
+    )
+    if orchestration_only:
+        raise LaneConfigError(
+            f"{where}: judge.mutation key(s) "
+            f"{', '.join(orchestration_only)} are forbidden on an INGESTED "
+            f"lane: they bound or partition an execution assay performs, and "
+            f"on this lane assay executes no mutant at all -- it reads a "
+            f"report the lane's own command already produced. Bound the run "
+            f"with the lane's own `budget`, and configure the mutation tool's "
+            f"own timeout in its own config"
+        )
+
+    for field in ("artifact", "fail_under"):
+        if field not in value:
+            raise LaneConfigError(
+                f"{where}: missing required field 'judge.mutation.{field}' "
+                f"(required once judge.mutation.format is declared)"
+            )
+    artifact = _validate_artifact_path(
+        value["artifact"], where, project_root, "judge.mutation.artifact"
+    )
+    fail_under = _as_float(value["fail_under"], where, "judge.mutation.fail_under")
+    if not 0.0 <= fail_under <= 100.0:
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.fail_under' must be in 0.0..100.0, got "
+            f"{fail_under}"
+        )
+    if fail_under != 100.0:
+        # (A-380/B050) The one place this build cannot yet do what B046's
+        # contract describes, refused LOUDLY rather than half-implemented.
+        #
+        # A mutation-score floor below 100 means "some survivors are
+        # acceptable" -- and the v9 verdict has NO judgment.r2 field that can
+        # record which floor was applied. A lane judging at 90 would therefore
+        # emit a PASS beside recorded survivors with nothing in the document
+        # explaining it, and that breaks the single property judgment.r2
+        # exists to protect: that an independent consumer can re-derive the R2
+        # claim's STATUS from the payload's own buckets, with no external
+        # policy input. `verify.py`'s own re-derivation would (correctly) call
+        # such a document inconsistent.
+        #
+        # Accepting the key and silently ignoring it would be worse than
+        # either alternative -- inert config that cannot fail loudly when it
+        # is wrong (AGENTS.md 4.2a) -- and dropping the key would leave the
+        # documented worked lane unloadable. So: declarable, honoured at
+        # exactly its one currently-expressible value, and the message names
+        # the field a later schema cut needs.
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.fail_under' is {fail_under}, but this "
+            f"build can only honour 100.0 on an ingested lane. A lower floor "
+            f"means some surviving mutants are acceptable, and verdict schema "
+            f"v9 has no judgment.r2 field that records WHICH floor was "
+            f"applied -- so the verdict would report PASS beside recorded "
+            f"survivors with nothing in it to explain that, and an "
+            f"independent consumer re-deriving the R2 status from the payload "
+            f"(which is exactly what `assay verify` does) would call the "
+            f"document inconsistent. Declare 100.0, or track B050 for the "
+            f"wire field a lower floor needs"
+        )
+    kill_signal_artifact: str | None = None
+    if "kill_signal_artifact" in value:
+        # Reachable only on a sql lane -- the reserved-key check above already
+        # refused it for every other language -- and a sql lane cannot be
+        # ingested today anyway (`equivalence_artifact` is required there and
+        # forbidden here). Validated rather than assumed absent, so the shape
+        # stays honest if a future sql-emitting mutation tool registers a
+        # format.
+        kill_signal_artifact = _validate_artifact_path(
+            value["kill_signal_artifact"],
+            where,
+            project_root,
+            "judge.mutation.kill_signal_artifact",
+        )
+    if language == "sql":
+        raise LaneConfigError(
+            f"{where}: judge.language = 'sql' requires "
+            f"'judge.mutation.equivalence_artifact' (without it a mutant that "
+            f"never actually mutated would be recorded 'survived'), and that "
+            f"key is forbidden on an ingested lane -- so a sql lane cannot "
+            f"ingest a mutation report in this build. No registered format is "
+            f"emitted by a sql mutation tool today, so this combination "
+            f"names no real toolchain"
+        )
+    return MutationConfig(
+        format=declared_format,
+        artifact=artifact,
+        fail_under=fail_under,
+        kill_signal_artifact=kill_signal_artifact,
     )
 
 

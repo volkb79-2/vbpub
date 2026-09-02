@@ -1,0 +1,5 @@
+# examples/minimal/ciu.hosts.toml — written by `ciu init` (gitignored). The one
+# host the `local` layout places bundles on. Remote hosts are more [hosts.<h>]
+# rows with ssh_* facts and addresses (see ../../ciu.hosts.toml).
+[hosts.localhost]
+local = true

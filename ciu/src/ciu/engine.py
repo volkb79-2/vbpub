@@ -80,7 +80,8 @@ from .workspace_env import (  # P8 contract — relied on exactly, never edited 
     bootstrap_workspace_env,
     enforce_standalone_root,
     ensure_workspace_network,
-    parse_workspace_env,
+    generated_facts_path,
+    read_generated_facts,
     resolve_env_root,
     validate_required_certs,
 )
@@ -700,13 +701,21 @@ def reset_service(
     """Reset one stack to a fresh state (S6.4); raises RuntimeError on hard failure.
 
     Steps:
-      1. ``docker compose down -v`` (with the overlay ``-f`` when it exists).
+      1. ``docker compose down -v`` (with the overlay ``-f`` when it exists),
+         scoped by ``-p`` AND ``--project-directory`` (CIU-71) so a relative
+         path in an overlay resolves the same way ``up`` resolved it.
       2. Remove ``<stack>/vol-*`` directories — resolved against the STACK DIR,
          never the process cwd (B14 / S6.4).
       3. Remove rendered ``ciu.compose.yml`` + ``ciu.toml`` + ``.ciu/rendered/``
          + the overlay.
       4. Orphan cleanup via the anchored label filter
          ``<prefix>.component=<service>`` (docker ps label equality, S6.4).
+
+    *repo_root* is optional at the type level (kept for the ValueError below
+    to name it explicitly) but effectively REQUIRED at runtime: every real
+    caller (``main_execution``'s reset step, ``deploy.py``'s reset path)
+    already resolves and passes it, and step 1's ``--project-directory``
+    raises loudly rather than silently omitting the flag when it is absent.
 
     Secret store files are KEPT unless *remove_secrets* (S4.25), in which case
     materialize.reset_secrets semantics apply (rm the stack/project store files).
@@ -725,6 +734,7 @@ def reset_service(
     print(f"[INFO] Resetting service: {service_name} (project: {project_name})", flush=True)
 
     overlay_path = stack_dir / MACHINE_DIR / OVERLAY_NAME
+    ownership_path = stack_dir / MACHINE_DIR / OWNERSHIP_OVERLAY_NAME
 
     # Step 1: docker compose down -v --remove-orphans (with overlay args when
     # present). --remove-orphans tears down one-shot init/sidecar containers
@@ -750,9 +760,29 @@ def reset_service(
                 "compose project; set both tags or pass repo_root."
             )
         compose_project = identity_compose_project_name(Path(repo_root), stack_dir)
-    down_cmd = ["docker", "compose", "-p", compose_project, "-f", CIU_COMPOSE_OUTPUT]
+    # CIU-71: --project-directory is required unconditionally, independent of
+    # which branch above resolved compose_project — down's relative paths
+    # (e.g. a build.context restated by an overlay) must resolve against the
+    # same repo root `up` used, not this compose file's own directory.
+    if repo_root is None:
+        raise ValueError(
+            "[CIU-71] repo_root is required to invoke docker compose with "
+            "--project-directory (a stack's relative paths, build.context "
+            "included, must resolve against the repo root, not this compose "
+            "file's own directory); pass repo_root."
+        )
+    down_cmd = [
+        "docker", "compose", "-p", compose_project,
+        "--project-directory", str(Path(repo_root).resolve()),
+        "-f", CIU_COMPOSE_OUTPUT,
+    ]
     if overlay_path.exists():
         down_cmd += ["-f", f"{MACHINE_DIR}/{OVERLAY_NAME}"]
+    # S16.9: the same file set `up` composed with, so `down` addresses exactly
+    # the project `up` created (a fragment silently dropped here would leave
+    # compose reasoning about a different merged model than the one running).
+    if ownership_path.exists():
+        down_cmd += ["-f", f"{MACHINE_DIR}/{OWNERSHIP_OVERLAY_NAME}"]
     down_cmd += ["down", "-v", "--remove-orphans"]
     try:
         result = procutil.run_cmd(down_cmd, check=False)
@@ -782,6 +812,7 @@ def reset_service(
         stack_dir / CIU_COMPOSE_OUTPUT,
         stack_dir / STACK_CONFIG_RENDERED,
         overlay_path,
+        ownership_path,
     ]
     removed = 0
     for f in targets:
@@ -921,38 +952,33 @@ def compose_project_name(config: dict, stack_dir: Path) -> str:
 def identity_compose_project_name(repo_root: Path, stack_dir: Path) -> str:
     """Workspace-identity compose project for config-less deployments (CIU-46).
 
-    ``{REPO_NAME}-{INSTANCE_ID}-{stack_basename}``, derived from THIS
-    workspace's own ``ciu.env`` parsed by EXACT path (the S2.7 authority —
-    never the ambient process environment, which a shell that sourced another
-    checkout's record would contaminate). Unique per workspace AND per stack,
-    so config-less shipped stacks can neither collide across checkouts (the
-    withdrawn basename "legacy" fallback's hazard) nor escape clean's S6.4a
-    enumeration: up and clean call this same function, so they name a
-    project identically by construction.
+    ``{repo_name}-{instance_id}-{stack_basename}``, derived from THIS
+    workspace's own ``[ciu.instance.generated]`` facts file read by EXACT
+    path (CIU-75: the sole instance-fact source — never the legacy ``ciu.env``
+    export, and never the ambient process environment, which a shell that
+    sourced another checkout's record would contaminate). Unique per workspace
+    AND per stack, so config-less shipped stacks can neither collide across
+    checkouts (the withdrawn basename "legacy" fallback's hazard) nor escape
+    clean's S6.4a enumeration: up and clean call this same function, so they
+    name a project identically by construction.
 
-    Raises ValueError naming the record when ``ciu.env`` is missing or lacks
-    the identity keys — a deployment that cannot be NAMED must not start,
-    and a teardown that cannot be named must refuse rather than skip
+    Raises ValueError naming the generated facts file when the facts are
+    missing or lack the identity keys — a deployment that cannot be NAMED must
+    not start, and a teardown that cannot be named must refuse rather than skip
     (defaults-are-hazards: no invented basename stands in for identity).
     The composed name is normalized exactly like docker compose's own
     project-name rule (lowercase, ``[a-z0-9_-]`` only) and must still start
     with an alphanumeric, else ValueError.
     """
-    env_path = Path(repo_root) / "ciu.env"
-    if not env_path.is_file():
-        raise ValueError(
-            "[S8.7] no ciu.env at {root} — run `ciu env generate` first; "
-            "the workspace-identity compose project is derived from its "
-            "REPO_NAME/INSTANCE_ID".format(root=env_path)
-        )
-    values = parse_workspace_env(env_path)
-    repo_name = values.get("REPO_NAME", "")
-    instance_id = values.get("INSTANCE_ID", "")
+    facts_path = generated_facts_path(repo_root)
+    values = read_generated_facts(Path(repo_root))
+    repo_name = values.get("repo_name", "")
+    instance_id = values.get("instance_id", "")
     if not repo_name or not instance_id:
         raise ValueError(
-            "[S8.7] ciu.env at {root} lacks REPO_NAME/INSTANCE_ID — regenerate "
-            "it with `ciu env generate`; the workspace-identity compose "
-            "project is derived from them".format(root=env_path)
+            "[S8.7] {root} declares no repo_name/instance_id — run `ciu env "
+            "generate` first; the workspace-identity compose project is "
+            "derived from them".format(root=facts_path)
         )
     name = re.sub(
         r"[^a-z0-9_-]",
@@ -1044,9 +1070,10 @@ def guard_legacy_compose_project(stack_dir: Path, expected_project: str) -> None
 
 def execute_docker_compose_with_logs(
     file_args: list[str], *, cwd: Path, env: Optional[dict] = None,
-    project: str,
+    project: str, repo_root: Path,
 ) -> dict:
-    """Run ``docker compose -p <project> <file_args> up -d`` with live streaming.
+    """Run ``docker compose -p <project> --project-directory <repo_root>
+    <file_args> up -d`` with live streaming.
 
     *project* (S8.7) is REQUIRED and passed as ``-p`` so compose
     reconciliation is always instance-scoped and always enumerable by clean
@@ -1054,11 +1081,26 @@ def execute_docker_compose_with_logs(
     the withdrawn optional-None form let docker derive the cwd basename,
     which collided across checkouts and escaped every teardown pass.
 
+    *repo_root* (CIU-71) is REQUIRED and passed as ``--project-directory`` so
+    a stack's ``build.context``/``dockerfile`` resolve against the REPO
+    ROOT — a deliberate EXCEPTION to how CIU resolves its other relative
+    paths (hostdirs, ``ASK_FILE`` secret sources, configfile schema/template
+    paths all resolve stack-dir-relative, never repo-root-relative), made
+    because a Dockerfile ``COPY`` of a repo-shared asset needs the repo
+    root, not the compose file's own directory (docker compose's default
+    absent this flag). Without it, a stack whose Dockerfile ``COPY``s a
+    repo-root-relative path fails at build time with a path-not-found error
+    the operator has no reason to associate with CIU's invocation.
+
     Returns ``{'status': 'success'|'error'|'interrupted', 'message', 'stdout'}``.
     """
     result = {"status": "success", "message": "", "stdout": ""}
     print("[INFO] Executing docker compose up...", flush=True)
-    cmd = ["docker", "compose", "-p", project, *file_args, "up", "-d"]
+    cmd = [
+        "docker", "compose", "-p", project,
+        "--project-directory", str(Path(repo_root).resolve()),
+        *file_args, "up", "-d",
+    ]
 
     proc = None
     try:
@@ -1131,6 +1173,144 @@ def _build_image_revisions(compose_yaml_text: str) -> dict[str, str]:
         if revision:
             revisions[str(name)] = revision
     return revisions
+
+
+# ---------------------------------------------------------------------------
+# S16.9 (CIU-25 substrate) — ownership labels + instance lease on `ciu up`
+# ---------------------------------------------------------------------------
+
+# A SECOND, separately named compose fragment rather than more keys inside
+# ciu.compose.overlay.yml. The overlay is composefile.py's artifact and is
+# omitted entirely when a stack has no secrets/configfiles/governance/image
+# revisions to wire (composefile.generate_overlay returns None) — ownership
+# labels must be stamped on EVERY managed instance's resources, including the
+# plainest possible stack, so they cannot ride on a file that may not exist.
+# Keeping them separate also keeps the attribution honest in `docker inspect`:
+# one file, one purpose.
+OWNERSHIP_OVERLAY_NAME = "ciu.compose.ownership.yml"
+
+# The label pair a future `ciu worktree reap` (CIU-25 / ciu-P27) reads to
+# attribute a container, volume or network to a checkout. Closed vocabulary.
+OWNERSHIP_LABEL_INSTANCE = "ciu.instance"
+OWNERSHIP_LABEL_REPO_ROOT = "ciu.repo-root"
+
+
+def workspace_ownership_labels(repo_root: Path) -> dict[str, str] | None:
+    """The S16.9 ownership label pair for THIS checkout, or ``None``.
+
+    ``None`` — meaning "stamp nothing, behave exactly as before" — for any
+    checkout that is not a MANAGED worktree instance, i.e. that carries no
+    ``ciu.worktree-instance.json``. A PRIMARY checkout's resources are
+    deliberately left unlabeled by this package: labels are the input to a
+    future destructive verb, and widening what that verb can see to include
+    the primary workspace is a decision that needs its own package, not a
+    side effect of this one.
+
+    Both values are read from THIS workspace's OWN
+    ``ciu.instance.generated.toml`` by EXACT PATH (CIU-75) — never
+    from the legacy ``ciu.env`` export, and never from the ambient process
+    environment, which a shell that sourced a sibling checkout's ciu.env
+    carries (the CIU-41 species of contamination). Mislabeling here would be
+    worse than not labeling: it would attribute one instance's containers to
+    another checkout's root.
+    """
+    if not (repo_root / worktree.WORKTREE_INSTANCE_RECORD).is_file():
+        return None
+    facts_path = generated_facts_path(repo_root)
+    values = read_generated_facts(repo_root)
+    instance_id = values.get("instance_id", "")
+    physical_root = values.get("physical_repo_root", "")
+    if not instance_id or not physical_root:
+        raise ValueError(
+            f"[S16.9] {facts_path} lacks instance_id/physical_repo_root — "
+            "this managed worktree instance cannot label the resources it "
+            "creates. Run `ciu env generate` in this checkout."
+        )
+    return {
+        OWNERSHIP_LABEL_INSTANCE: instance_id,
+        OWNERSHIP_LABEL_REPO_ROOT: physical_root,
+    }
+
+
+def _labelable_top_level(doc: dict, key: str) -> list[str]:
+    """Top-level ``volumes:``/``networks:`` entries compose actually CREATES.
+
+    An ``external: true`` entry is declared, not created — it exists before
+    this project and outlives it, so `ciu up` has nothing to claim there and
+    compose rejects extra keys on it anyway. The workspace network is exactly
+    such an entry (S2.6): it is created by ``ciu env generate``, not by up.
+    """
+    block = doc.get(key)
+    if not isinstance(block, dict):
+        return []
+    names = []
+    for name, body in block.items():
+        if isinstance(body, dict) and body.get("external"):
+            continue
+        names.append(str(name))
+    return names
+
+
+def write_ownership_overlay(
+    stack_dir: Path, compose_yaml_text: str, labels: dict[str, str]
+) -> Path | None:
+    """Write the S16.9 ownership fragment for one stack; ``None`` if nothing
+    to label.
+
+    Emitted on the ENGINE side and merged by compose as an extra ``-f``, so
+    composefile.py's overlay generation is untouched. Labels use the LIST
+    form (``- k=v``) the shipped compose templates already use, so the base
+    file and this fragment are the same shape for compose's merge.
+    """
+    import yaml as _yaml
+
+    doc = _yaml.safe_load(compose_yaml_text) or {}
+    if not isinstance(doc, dict):
+        return None
+    entries = [f"{key}={value}" for key, value in sorted(labels.items())]
+    services = doc.get("services")
+    fragment: dict[str, Any] = {}
+    if isinstance(services, dict) and services:
+        fragment["services"] = {
+            str(name): {"labels": list(entries)} for name in services
+        }
+    for key in ("volumes", "networks"):
+        names = _labelable_top_level(doc, key)
+        if names:
+            fragment[key] = {name: {"labels": list(entries)} for name in names}
+    if not fragment:
+        return None
+
+    path = Path(stack_dir) / MACHINE_DIR / OWNERSHIP_OVERLAY_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = _yaml.safe_dump(fragment, sort_keys=False, default_flow_style=False)
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(text, encoding="utf-8")
+    os.replace(tmp_path, path)
+    return path
+
+
+def acquire_instance_lease(repo_root: Path) -> Any:
+    """S16.9 — acquire/renew this instance's ``held`` lease before `up` runs.
+
+    Two independent gates, both of which must pass, and either of which alone
+    means "do nothing at all":
+
+    1. ``[ciu.worktree].lease_ttl_hours`` is configured (no default — see
+       :func:`worktree.resolve_lease_ttl_hours`);
+    2. this checkout is a MANAGED worktree instance (it has a lifecycle
+       record). A PRIMARY/unmanaged checkout never acquires a lease.
+
+    Deliberately BEFORE the compose invocation, not after it: a run that
+    crashes halfway has still created containers, and the ownership claim
+    over them must already be on disk. Claiming slightly too early is
+    recoverable (`ciu clean` clears it); claiming too late is the orphaned-
+    resource hole CIU-25 exists to close.
+    """
+    ttl_hours = worktree.resolve_worktree_lease_ttl(repo_root)
+    if ttl_hours is None:
+        return None
+    return worktree.acquire_own_lease(repo_root, ttl_hours=ttl_hours)
 
 
 # ===========================================================================
@@ -1336,15 +1516,53 @@ def main_execution(
         # S3.12 / CIU-44: identity + selection facts on the hook context, so
         # ciu-conforming hooks read them from ctx instead of re-parsing the
         # identity record or trusting ambient environment state.
+        #
+        # CIU-62: this is the REAL-RUN twin of deploy.py's `_workspace_identity`
+        # (the `ciu check` preflight builds the same two HookContext fields),
+        # and it carried the identical gap. The read fails three unrelated ways
+        # — `OSError` (the read), `UnicodeDecodeError` (a non-UTF-8 byte) and a
+        # malformed table — and before CIU-62 a non-UTF-8 record escaped here
+        # and crashed `ciu up` at STEP 12 with a raw traceback. CIU-75 moved
+        # the SOURCE to the `[ciu.instance.generated]` table (its own file
+        # since ciu-P47) and the
+        # reader now normalizes all three to `WorkspaceEnvError`, so one name
+        # covers what three used to. The degradation it falls back to is
+        # deliberately unchanged: `{}`, so `ctx.instance_id` / `ctx.network`
+        # are None exactly as during a run outside a provisioned workspace.
+        # Both preflight and real run must answer this question the same way,
+        # or a hook's `validate_config` would see an identity its own `run()`
+        # will not.
+        _facts_path = generated_facts_path(repo_root)
         _hook_identity: dict = {}
+        _hook_identity_unreadable = False
         try:
-            _env_path = repo_root / "ciu.env"
-            if _env_path.is_file():
-                from .workspace_env import parse_workspace_env as _parse_env
-
-                _hook_identity = _parse_env(_env_path)
-        except (WorkspaceEnvError, OSError):
+            _hook_identity = read_generated_facts(repo_root)
+        except WorkspaceEnvError as _identity_exc:
+            # CIU-62 review ruling — the twin of deploy._workspace_identity's
+            # own warning, and it must stay a PAIR with it. The `{}`
+            # degradation is deliberate (preflight and real run must answer
+            # the identity question identically), but silence made it
+            # indistinguishable from a genuinely unmanaged workspace: a hook
+            # reading `ctx.instance_id is None` had no way to tell "genuinely
+            # unmanaged" from "corrupt, swallowed". CIU-80: both sites now
+            # additionally set `ctx.identity_unreadable = True` here, so a hook
+            # can branch on the distinction itself, not just read a log line.
+            # CIU-75 note: CIU-80's own version of this guard was
+            # `if _env_path.is_file()`, which called a DIRECTORY where the
+            # record belongs "absent" and so left the flag False on a path that
+            # plainly exists and cannot be read. The reader draws the line now
+            # — it returns `{}` only for a genuinely absent overlay or one with
+            # no generated table, and raises for every present-but-unreadable
+            # form — so the flag is true exactly when CIU-80 says it should be.
+            print(
+                f"[WARN] [S3.12] could not read workspace identity from "
+                f"{_facts_path}: {_identity_exc}. Hook context identity "
+                "(instance_id, network) will be None for this run — repair "
+                "with `ciu env generate`",
+                flush=True,
+            )
             _hook_identity = {}
+            _hook_identity_unreadable = True
 
         ctx = hooks_runner.HookContext(
             point="", stack_dir=working_dir, repo_root=repo_root, secret_file=_secret_file,
@@ -1356,8 +1574,12 @@ def main_execution(
                 tuple(ciu_context.get("deployed_stacks") or [])
                 if ciu_context else None
             ),
-            instance_id=_hook_identity.get("INSTANCE_ID"),
-            network=_hook_identity.get("DOCKER_NETWORK_INTERNAL"),
+            # CIU-75's renamed fact keys + CIU-80's flag. Its twin is
+            # deploy._check_hooks_for_stack's HookContext; the two must stay
+            # identical in BOTH halves (S3.12/CIU-44 pairing).
+            instance_id=_hook_identity.get("instance_id"),
+            network=_hook_identity.get("network"),
+            identity_unreadable=_hook_identity_unreadable,
         )
 
         # S9.3 / CIU-4: readiness helpers on the hook context so service-touching
@@ -1410,6 +1632,13 @@ def main_execution(
         def _hooks_for(point: str) -> list:
             return list(merged.get(root_key, {}).get("hooks", {}).get(point, []))
 
+        # S9.4a — every name this stack declares via an S4.1 directive. A
+        # `persist:'secret'` return colliding with one of these is refused
+        # (S4.6's uniqueness rule, now spanning both channels that can produce
+        # a store file). Computed from the SAME `specs` Step 5 discovered, so
+        # the two channels can never disagree about what is declared.
+        declared_secret_names = frozenset(spec.name for spec in specs)
+
         # ---- Step 9: pre_secrets hooks (S9) ----
         if skip_hooks:
             print("[STEP 9/17] --skip-hooks: skipping pre_secrets hooks", flush=True)
@@ -1418,7 +1647,10 @@ def main_execution(
             if pre_secrets:
                 print(f"[STEP 9/17] Running {len(pre_secrets)} pre_secrets hook(s)...", flush=True)
                 ctx.point = "pre_secrets"
-                hooks_runner.run_hooks(pre_secrets, "pre_secrets", merged, ctx, stack_toml_path)
+                hooks_runner.run_hooks(
+                    pre_secrets, "pre_secrets", merged, ctx, stack_toml_path,
+                    declared_secret_names=declared_secret_names,
+                )
 
         # ---- Step 10: secrets (S4) ----
         materialized: dict = {}
@@ -1433,8 +1665,9 @@ def main_execution(
                 if token is None:
                     raise VaultError(
                         "[S4.16] vault-backed secrets are declared but no Vault token "
-                        "resolved (VAULT_TOKEN env, vault.token_file, or the vault stack's "
-                        "[state].root_token). Aborting before any container starts."
+                        "resolved (VAULT_TOKEN env, vault.token_file, or the vault "
+                        "stack's hook-persisted 'root_token' secret store file, "
+                        "S9.4a). Aborting before any container starts."
                     )
                 vault = VaultKV2(addr, token)
             materialized = secret_materialize.materialize(
@@ -1456,7 +1689,10 @@ def main_execution(
             if pre_compose:
                 print(f"[STEP 11/17] Running {len(pre_compose)} pre_compose hook(s)...", flush=True)
                 ctx.point = "pre_compose"
-                hooks_runner.run_hooks(pre_compose, "pre_compose", merged, ctx, stack_toml_path)
+                hooks_runner.run_hooks(
+                    pre_compose, "pre_compose", merged, ctx, stack_toml_path,
+                    declared_secret_names=declared_secret_names,
+                )
 
         # ---- Step 12: configfiles (S5) ----
         print("[STEP 12/17] Rendering configfiles...", flush=True)
@@ -1543,6 +1779,26 @@ def main_execution(
         if overlay_path is not None and overlay_path.exists():
             composefile.leak_scan(overlay_path.read_text(encoding="utf-8"), materialized)
 
+        # S16.9 (CIU-25 substrate): ownership labels for a MANAGED worktree
+        # instance only. Written next to the overlay, merged as a separate
+        # `-f` below, and removed by reset_service alongside every other
+        # generated artifact.
+        ownership_labels = workspace_ownership_labels(repo_root)
+        ownership_path = (
+            write_ownership_overlay(working_dir, rendered_compose, ownership_labels)
+            if ownership_labels is not None
+            else None
+        )
+        if ownership_path is not None:
+            print(
+                f"[INFO] [S16.9] ownership labels: "
+                f"{OWNERSHIP_LABEL_INSTANCE}={ownership_labels[OWNERSHIP_LABEL_INSTANCE]}",
+                flush=True,
+            )
+            composefile.leak_scan(
+                ownership_path.read_text(encoding="utf-8"), materialized
+            )
+
         # ---- Step 16: compose up (S8.1) ----
         if dry_run:
             print("[STEP 16/17] --dry-run: skipping docker compose up", flush=True)
@@ -1552,6 +1808,12 @@ def main_execution(
                 specs, materialized, compose_profiles=compose_profiles
             )
             file_args = composefile.compose_file_args(working_dir, overlay_path)
+            if ownership_path is not None:
+                file_args += ["-f", f"{MACHINE_DIR}/{OWNERSHIP_OVERLAY_NAME}"]
+            # S16.9: claim ownership BEFORE anything is created (see
+            # acquire_instance_lease). A no-op unless lease_ttl_hours is
+            # configured AND this checkout is a managed instance.
+            acquire_instance_lease(repo_root)
             project = compose_project_name(global_config, working_dir)
             guard_legacy_compose_project(working_dir, project)
             # S16.3/CIU-24 — resolve the primary-worktree policy only for an
@@ -1573,7 +1835,8 @@ def main_execution(
                     working_dir.relative_to(repo_root),
                 ):
                     docker_result = execute_docker_compose_with_logs(
-                        file_args, cwd=working_dir, env=compose_env, project=project
+                        file_args, cwd=working_dir, env=compose_env, project=project,
+                        repo_root=repo_root,
                     )
             except worktree.WorktreeError as exc:
                 raise ComposeError(str(exc)) from exc
@@ -1611,7 +1874,10 @@ def main_execution(
             if post_compose:
                 print(f"[STEP 17/17] Running {len(post_compose)} post_compose hook(s)...", flush=True)
                 ctx.point = "post_compose"
-                hooks_runner.run_hooks(post_compose, "post_compose", merged, ctx, stack_toml_path)
+                hooks_runner.run_hooks(
+                    post_compose, "post_compose", merged, ctx, stack_toml_path,
+                    declared_secret_names=declared_secret_names,
+                )
 
         result["config"] = composefile.redact_config(merged, specs)
         return result
@@ -1732,7 +1998,7 @@ def run_shipped(
         )
         if dry_run:
             print("[SHIPPED 3/4] --dry-run: skipping docker compose up", flush=True)
-            print(f"[SHIPPED 4/4] would run: docker compose -f {compose_file} up -d", flush=True)
+            print(f"[SHIPPED 4/4] would run: docker compose --project-directory {repo_root} -f {compose_file} up -d", flush=True)
             return result
 
         print(f"[SHIPPED 3/4] Starting shipped stack (docker compose -f {compose_file} up -d)...", flush=True)
@@ -1760,6 +2026,14 @@ def run_shipped(
         # Same S16.3 boundary as the native path: only a genuine Compose start
         # reads the primary-worktree policy.  ``--dry-run`` returned above.
         worktree_cap = worktree.resolve_worktree_cap(repo_root)
+        # S16.9 — same claim-before-creation rule as the native path. A shipped
+        # stack's containers are exactly as orphanable as a rendered one's, and
+        # the lease is a pure record write with no generated artifact, so there
+        # is no reason for the two paths to differ here. (The OWNERSHIP LABELS
+        # deliberately do NOT follow: they are a generated compose fragment,
+        # and `clean` skips `reset_service` for a shipped stack — see S16.9's
+        # "Still open".)
+        acquire_instance_lease(repo_root)
         # S16.3/CIU-24 — same budget-slot wiring as main_execution's native
         # path (see the comment there): wraps ONLY the real Compose start.
         try:
@@ -1770,7 +2044,7 @@ def run_shipped(
             ):
                 docker_result = execute_docker_compose_with_logs(
                     ["-f", compose_file], cwd=working_dir, env=compose_env,
-                    project=shipped_project,
+                    project=shipped_project, repo_root=repo_root,
                 )
         except worktree.WorktreeError as exc:
             raise ComposeError(str(exc)) from exc
@@ -1889,15 +2163,24 @@ def secrets_command(args: argparse.Namespace) -> int:
     finally:
         os.chdir(original_cwd)
 
+    # S9.4a — a hook-persisted secret has no directive to discover, so it is
+    # enumerated from the stack's own provenance sidecar and appended to the
+    # directive rows. Without this it would be INVISIBLE to `ciu secrets list`
+    # while sitting in the very same store dir, and `ciu secrets reset` would
+    # skip exactly the values that have no other way of being reached.
+    hook_rows = secret_materialize.hook_secret_rows(
+        working_dir, (s.name for s in specs)
+    )
+
     if args.action == "list":
         rows = secret_materialize.list_secrets(specs, working_dir, repo_root)
-        _print_secret_table(rows)
+        _print_secret_table(rows + hook_rows)
         return 0
 
     # reset
     selected = [args.name] if args.name else None
     if selected:
-        known = {s.name for s in specs}
+        known = {s.name for s in specs} | {row["name"] for row in hook_rows}
         if args.name not in known:
             print(f"[ERROR] no such secret '{args.name}' in this stack", flush=True)
             return 2
@@ -1908,6 +2191,7 @@ def secrets_command(args: argparse.Namespace) -> int:
             print("[INFO] Aborted.", flush=True)
             return 0
     deleted = secret_materialize.reset_secrets(working_dir, repo_root, specs, names=selected)
+    deleted += secret_materialize.reset_hook_secrets(working_dir, names=selected)
     if deleted:
         for d in deleted:
             print(f"[INFO] Removed: {d}", flush=True)

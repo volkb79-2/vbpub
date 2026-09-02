@@ -227,8 +227,12 @@ class SpanAdapter:
     source_globs: tuple[str, ...] = ("*.zzz",)
     excluded_dir_names: frozenset[str] = frozenset()
     requires_span_attribution: bool = True
+    requires_statement_attribution: bool = False
     external_tools: tuple[str, ...] = ()
     spans: tuple[StatementSpan, ...] | None = ()
+
+    def for_project(self, *, repo_top: Path, project_root: Path) -> "SpanAdapter":
+        return self
 
     def is_test_path(self, rel_path: str) -> bool:
         return False

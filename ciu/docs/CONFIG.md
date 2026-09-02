@@ -13,14 +13,18 @@ conflict, SPEC wins.
 │  Autodetected facts about THIS machine. Never project config.   │
 │  Keys: REPO_ROOT, PHYSICAL_REPO_ROOT, DOCKER_GID,              │
 │        CONTAINER_UID, DOCKER_NETWORK_INTERNAL, ENV_TYPE, …     │
+│  7.7.0: the six INSTANCE-identity keys here are seeded from     │
+│  [ciu.instance.generated] (S3.1c), not read from this file.     │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 2 — Project config      (*.toml.j2 templates)           │
 │  Committed, human-authored TOML templates; rendered each run.   │
 │  Global: ciu.global.defaults.toml.j2 + ciu.global.toml.j2      │
 │  Per-stack: ciu.defaults.toml.j2 + ciu.toml.j2                 │
 ├─────────────────────────────────────────────────────────────────┤
-│  Layer 3 — Worktree config    (ciu.global.worktree.toml.j2)    │
-│  Gitignored sparse overrides for one managed checkout.          │
+│  Layer 3 — Instance config    (ciu.global.instance.toml.j2     │
+│                                + ciu.instance.generated.toml)  │
+│  Gitignored, per-checkout. The .j2 is YOURS (sparse overrides); │
+│  the .toml is CIU's (generated identity facts), merged last.    │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 4 — Container delivery  (overlay + configfile mounts)    │
 │  Machine-derived wiring: secret-file paths + configfile mounts. │
@@ -69,9 +73,10 @@ generated."
 |---|---|---|
 | `ciu.global.defaults.toml.j2` | Committed (repo-root marker, S1.1) | Canonical global defaults; used as-is if no override exists |
 | `ciu.global.toml.j2` | **Committed, OPTIONAL** | Global sparse override; **not auto-created** (S3.1a) — author only the keys that differ from defaults; absent = defaults apply alone |
-| `ciu.global.worktree.toml.j2` | **Gitignored, OPTIONAL** | Sparse worktree-local override, merged last; created initially by managed lifecycle options and then operator-editable; preserved by clean/env regeneration (S3.1b/S16) |
+| `ciu.global.instance.toml.j2` | **Gitignored, OPTIONAL** | Sparse per-checkout override; created initially by managed lifecycle options and then operator-editable; preserved by clean/env regeneration (S3.1b/S16). **CIU never writes it after that** — since ciu-P47 it holds nothing CIU owns, so nothing in it can be clobbered. Removed only by `ciu clean --vanilla`. Was `ciu.global.worktree.toml.j2` before ciu-P47 (hard cutover; `ciu migration-check` reports a leftover) |
+| `ciu.instance.generated.toml` | Gitignored, generated | CIU-OWNED identity facts, `[ciu.instance.generated]` (CIU-60). Plain TOML, never a template; rewritten in full by every `ciu env generate`; merged LAST in the chain. Hand edits do not survive. Removed only by `ciu clean --vanilla` |
 | `ciu.global.toml` | Gitignored, rendered | Runtime global config; read by profile-based CIU verbs |
-| `ciu.env` | Gitignored, generated | Machine-identity env (S2); written by `ciu env generate` |
+| `ciu.env` | Gitignored, generated | Machine-identity env (S2); written by `ciu env generate`. **Since 7.7.0 CIU reads no INSTANCE identity from it** — that comes from `[ciu.instance.generated]` above (S3.1c); this file still carries the machine facts and is what a shell `source`s |
 | `<stack>/ciu.defaults.toml.j2` | Committed (stack marker) | Stack defaults |
 | `<stack>/ciu.toml.j2` | **Committed, OPTIONAL** | Stack sparse override; **not auto-created** (S3.1a, CIU-8) — author only the keys that differ from defaults; absent = defaults apply alone |
 | `<stack>/ciu.toml` | Gitignored, rendered | Runtime stack config; `[state]` preserved across re-renders |
@@ -90,8 +95,8 @@ project's `.gitignore`. The only compose-shaped file that stays **committed** is
 a hand-written `docker-compose.yml` (S1.8/S8.5).
 
 **Merge chain** [S3.3]: global defaults → committed global overrides →
-(intermediate committed globals, nearest-last) → root worktree-local override →
-stack defaults → stack overrides. Deep merge is
+(intermediate committed globals, nearest-last) → root instance override →
+root generated identity facts → stack defaults → stack overrides. Deep merge is
 key-level; scalars and lists **replace** (no list concatenation).
 
 **Render pipeline** per template [S3.2]:
@@ -130,8 +135,20 @@ host = "{{ vault.internal_host }}"
 Outside deployment renders the `ciu` key is absent, so a stray `ciu.*`
 reference fails immediately (Jinja UndefinedError) — never silently empty.
 Hooks receive the same facts as `ctx.selected_profiles` /
-`ctx.deployed_stacks` plus `ctx.instance_id` / `ctx.network` (S9.3). Nothing
-is written to `ciu.env` and nothing is exported to the compose env.
+`ctx.deployed_stacks` plus `ctx.instance_id` / `ctx.network` (S9.3) and
+`ctx.identity_unreadable` (S9.3, CIU-80 — `True` only when this checkout's
+identity RECORD is present but unreadable, distinct from the genuinely-absent
+workspace, which leaves it `False`). **Since ciu 7.7.0 that record is the
+`[ciu.instance.generated]` table — carried by `ciu.instance.generated.toml`
+since ciu-P47 — not `ciu.env`** (CIU-75 / S3.1c): `ctx.instance_id` and
+`ctx.network` are read
+from it, and `identity_unreadable` is about it. A hook that branches on the
+flag needs no change — but if you were reasoning about *which file* CIU had
+failed to read, it is that one. The four ways it can be unreadable are an OS
+read error (a directory where the file belongs included), a non-UTF-8 byte,
+malformed TOML, and a non-string fact; a missing file, or a file with no such
+table, is the ABSENT case and leaves the flag `False`. Nothing is written to
+either record from a hook, and nothing is exported to the compose env.
 
 ---
 
@@ -168,13 +185,67 @@ though top-level reserved namespaces (S3.7) still apply.
 Test-repo: `test-repo/ciu.global.defaults.toml.j2` — sets `require_certs = false`
 and `auto_connect_network = false` for demo portability.
 
-### `[ciu.worktree]` — repository-wide instance capacity [S16.3]
+### `[ciu].user_tables` — declared consumer-owned global tables [S3.13]
+
+**V8-PREP-1 groundwork (additive; opt-in).** A consumer MAY declare which
+top-level global-config tables are its own, so CIU can flag an unexpected
+future collision immediately rather than silently merging it:
+
+```toml
+[ciu]
+user_tables = ["authentik", "auth", "workflow", "pubsub", "load_control"]
+```
+
+- Absence is legal and is a **complete no-op** — a config that never
+  declares `ciu.user_tables` sees zero behavior change, no matter what
+  top-level tables it has.
+- Once declared, every top-level key in the FINAL merged global config
+  (after the committed chain and the instance overlay, same timing as
+  `[deploy].landscape_id`, S3.11) must be either one of CIU's own
+  `RESERVED_GLOBAL_TABLES` (`ciu`, `deploy`, `topology`, `vault`,
+  `registry`, `governance`, `service`, `auto_generated`,
+  `infrastructure` — the tables CIU itself reads at global scope today;
+  `infrastructure` backs `[infrastructure].public_fqdn`, S2.7/CIU-47) or a
+  name listed in `ciu.user_tables`. An unlisted table is a configuration
+  error naming every offending key.
+- Each declared name must be a bare-key-safe string (`^[A-Za-z0-9_-]+$`),
+  unique within the list, and must not repeat one of CIU's own
+  `RESERVED_GLOBAL_TABLES` names (that would be redundant/misleading —
+  CIU already reserves those).
+- This is **not** the same set as the S3.7 `RESERVED_GLOBAL_NAMESPACES`
+  used to reject a STACK's root key — that set is intentionally broader and
+  defensive; `RESERVED_GLOBAL_TABLES` answers a narrower question ("what
+  does CIU itself actually read here today").
+- This is the additive groundwork step only. The eventual V8 breaking
+  step (deferred) is defaulting `ciu.user_tables` to empty, so every
+  undeclared top-level table becomes an error even without an explicit
+  opt-in.
+
+### `[ciu.worktree]` — repository-wide instance capacity and lease policy [S16.3/S16.7/S16.9]
 
 | Key | Default | Spec | Example |
 |---|---|---|---|
 | `max_concurrent_instances` | absent (no cap) | S16.3 | `3` — refuse a 4th simultaneous `ciu worktree` deployment |
+| `lease_ttl_hours` | absent (**no lease at all**) | S16.9 | `24` — `ciu up` claims a 24-hour `held` lease on this instance |
+| `exec_targets` | absent (no declared targets) | S16.7 | see [S16.7](SPEC.md#s167--declared-worktree-container-targets-exec---target) — per-alias sub-tables, own four-key grammar |
 
-Read from ONLY the PRIMARY *Git* worktree's own CIU configuration root — see
+`lease_ttl_hours` is a positive number of hours. **Absent means no lease is
+ever acquired — not "some default TTL".** A consumer who configures nothing
+keeps exactly the pre-S16.9 behavior and takes on zero new expiry risk for
+anything already running; a default here would start silently expiring leases
+on instances whose operators never opted in. When it IS set, `ciu up` acquires
+or renews a `held` lease on any checkout carrying a worktree-instance record
+(a PRIMARY/unmanaged checkout never leases), `ciu clean`/`ciu worktree rm`
+clear it on success only, and `ciu worktree lease LOGICAL (--extend DURATION |
+--perpetual | --release)` is the explicit operator verb. There is deliberately
+no ambient override: a lease's lifetime is repository policy. See
+[S16.9](SPEC.md#s169--ownership-lease-and-resource-labels-ciu-25-substrate)
+for the record schema (v2), the `held`/`perpetual` expiry rule, and the
+`ciu.instance`/`ciu.repo-root` ownership labels `ciu up` stamps on the
+resources it creates.
+
+These keys share ONE closed table: an unknown key in `[ciu.worktree]` is a hard
+refusal, never a silent ignore. Read from ONLY the PRIMARY *Git* worktree's own CIU configuration root — see
 [S16.3](SPEC.md#s163--worktree-instance-concurrency-budget-ciu-24) for the
 full precedence, the git-root-to-CIU-root offset, and why this is
 deliberately not a `[governance]` value. `CIU_MAX_CONCURRENT_WORKTREES` is a
@@ -198,7 +269,7 @@ Subsections:
 | Section | Purpose | Spec |
 |---|---|---|
 | `[deploy.labels]` | Container label prefix for orphan cleanup | S6.4 |
-| `[deploy.health]` | Health gate timings (`interval`, `timeout`, `retries`, `start_period`); `timeout` is the default, overridable per phase-service via `health_timeout` (see below) | S7.7 |
+| `[deploy.health]` | Docker `HEALTHCHECK` timings (`interval`, `timeout`, `retries`, `start_period`) — `timeout` is ONE probe attempt's duration — plus `gate_timeout`, the S7.7 gate's OVERALL wait budget for a container to reach `healthy` (CIU-67). Two different questions, two keys; `gate_timeout` is overridable per phase-service via `health_timeout` (see below) | S7.7 |
 | `[deploy.env.defaults]` | Env injected into every service (TZ, PYTHONUNBUFFERED…) | S5.5 |
 | `[deploy.env.shared]` | Machine facts exposed to templates (CONTAINER_UID, DOCKER_GID, repo roots) | S2.6, S2.7 |
 | `[deploy.control]` | Named boolean flags for phase `enabled` fields | S7.2 |
@@ -224,8 +295,12 @@ within one shared poll loop, so a slow-but-legitimate service's override does
 not force every other container in the same call to wait behind it, and a
 short override on a genuinely broken service is not masked behind a slower
 service's ceiling — the broken one fails at its own, shorter deadline. A
-selection where no entry sets `health_timeout` is unaffected: every container
-shares `[deploy.health].timeout`, exactly as before this key existed. Worked
+selection where no entry sets `health_timeout` falls back to
+`[deploy.health].gate_timeout` if declared, and otherwise to a budget DERIVED
+from each container's own healthcheck (`start_period + retries × interval`).
+It does NOT fall back to `[deploy.health].timeout`: that key is one probe
+attempt's duration, and reading it as a gate budget gave a container with a
+240s `start_period` a 5s budget (CIU-67). Worked
 example — a slow identity provider next to fast worker stacks:
 
 ```toml
@@ -238,6 +313,43 @@ path = "applications/worker"
 health_timeout = "5s"     # workers should be healthy almost immediately;
                           # a broken worker should fail fast, not hide
                           # behind Authentik's 240s ceiling
+```
+
+`[deploy.health].gate_timeout` (CIU-67, [S7.7]) is the same budget one level
+up: it applies to every container in the selection that declares no
+`health_timeout` of its own. Declare it when you want one explicit ceiling
+instead of the per-container derivation — never by copying `timeout`, which
+answers a different question:
+
+```toml
+[deploy.health]
+interval     = "10s"
+timeout      = "5s"      # ONE probe attempt (the Docker HEALTHCHECK field)
+retries      = 3
+start_period = "30s"
+gate_timeout = "600s"    # how long the S7.7 gate waits for `healthy` overall
+```
+
+Omit `gate_timeout` entirely and each container's budget is derived from its
+own rendered healthcheck (`start_period + retries × interval`), which is
+usually the better answer — it is already tuned per service.
+
+Optional `one_shot = true` (ciu-P23, V8-PREP-5, [S7.2]) DECLARES that a
+service is a run-to-completion stack (e.g. a migration/db-init container)
+whose successful **clean exit** — not a Docker healthcheck — is the correct
+completion signal. It is a strict boolean and defaults to `false`. This key
+is declaration + shape validation only: it does **not** change the health
+gate's own polling loop above (a larger, future change once a real caller
+needs that behavior). Its one live consumer today is the `requires`/
+`provides` provisioning probe (`stack:<path>:completed`, see below) — when
+another stack's `requires` references a `one_shot = true` stack via
+`:healthy` instead of `:completed`, `ciu up`/`ciu check --live` prints a
+`[WARN]` suggesting the switch:
+
+```toml
+[[deploy.phases.phase_1.services]]
+path = "infra/db-init"
+one_shot = true    # a migration container that exits 0 when done
 ```
 
 `landscape_id` is **opt-in** [S3.11]: a consumer MAY declare it as the shared
@@ -359,7 +471,8 @@ strict consumers refuse unknown members.
 
 ```toml
 [vault]
-stack_path = "infra/vault"    # path to the vault stack (for [state] token lookup)
+stack_path = "infra/vault"    # path to the vault stack (for S4.16 source-#3 lookup)
+# token_file = ".ciu/secrets/demo/vault_root_token"   # S4.16 source #2 (optional)
 
 [vault.paths]
 redis_password = "demo/redis_password"   # KV2 path; referenced in directives
@@ -367,18 +480,71 @@ redis_password = "demo/redis_password"   # KV2 path; referenced in directives
 
 Test-repo: `test-repo/ciu.global.defaults.toml.j2` — `[vault]` and `[vault.paths]`.
 
+#### What CIU natively does with Vault, vs. what hooks do (clarified 2026-08-27)
+
+Three separate declarations together constitute "the vault" for a project —
+there is no single table that says it — and it's worth being explicit about
+which is which, and about the narrower boundary underneath all three:
+
+| Declaration | Answers | Read by |
+|---|---|---|
+| `[vault].stack_path` | Where's the vault *stack*, for the source-#3 token lookup? | Token resolution (S4.16) |
+| `[vault].token_file` | An explicit file holding the token (source #2) | Token resolution (S4.16) |
+| `[vault.paths]` | Which KV2 path does secret name X live at? | `GEN_TO_VAULT`/`ASK_VAULT` directive resolution |
+| `[topology.services.vault]` | What's the network *address* to actually connect to? | S4.16's address resolution |
+
+**CIU's own native code (`src/ciu/secrets/providers.py`'s `VaultKV2`) does
+exactly one thing: KV2 read/write against a given address, using a given
+token.** It has no concept of "this container is running real Vault" beyond
+that — no init, no unseal, no policy/mount/AppRole provisioning. Those are
+entirely a project-authored `post_compose_vault.py`-style hook (using
+`hvac` or the raw Vault HTTP API), invoked through CIU's generic
+`post_compose_*` hook mechanism — the same mechanism any stack's hook uses,
+not a Vault-specific code path. The hook persists Vault's own bootstrap
+credentials (`root_token`/`unseal_key`) through the generic
+`persist: "secret"` primitive (S9.4a) — a general "hook remembers a secret"
+channel, not a Vault-aware one; S4.16's source #3 simply looks for the
+well-known name `root_token` in that stack's store.
+
+> **Changed in 7.9.0 (ciu-P46, BREAKING).** Those credentials used to be
+> persisted through `persist: "state"` into the stack's plaintext `[state]`
+> table, and source #3 read them back from there. That table sits outside
+> every S4 leak-prevention mechanism — no masking, no post-render leak scan,
+> no 0440 mode — so the copy was a real exposure. `[state]` now REFUSES a
+> secret-shaped key outright (S3.4a, enforced by `ciu check`), source #3
+> reads the secret store instead, and there is deliberately no fallback.
+> `[state]` keeps carrying the non-secret `initialized` boolean.
+
+So the boundary is: **CIU natively speaks KV2-over-a-known-address; every
+other fact about what makes that address "actually Vault" — that it needs
+initializing, that it needs unsealing, that a mount exists at a given path
+— lives entirely in project-authored hook code.** Nothing in CIU's own
+source asserts "the vault container is Vault" as a special case; it's
+special only insofar as a project's own hooks choose to treat it that way.
+
 ### `[topology.services.<name>]` — service addressing [S4.16, S7.4]
 
 Used by CIU to reach Vault and (informatively) by other tooling:
 
 ```toml
 [topology.services.vault]
-internal_host = "ciudemo-dev-vault"
+internal_host = "ciudemo-dev-vault"   # project="ciudemo", environment_tag="dev", service="vault"
 internal_port = 8200
 ```
 
 `topology_overrides` in a host profile deep-merges over this for cross-host
 addressing [S7.4].
+
+**`internal_host` values SHOULD be qualified**, not a bare service name:
+`{{ deploy.project_name }}-{{ deploy.environment_tag }}-<service>` — the same
+derivation `container_name()` (`src/ciu/deploy.py:138-151`) already computes
+for every deployment. A bare value (`internal_host = "vault"`) is ambiguous
+the moment a second same-shaped CIU instance shares the network — see
+[DESIGN-GUIDE.md](DESIGN-GUIDE.md)'s "Why bare `hostname:` / `internal_host`
+defaults are dangerous (CIU-48/CIU-49, §3.6 cockpit-alias-ambiguity)" section
+for why. CIU has no default of its own for this key (S4.16/S7.4 is entirely
+consumer-declared) — the worked example above already demonstrates the
+qualified shape; the annotation makes explicit which segment is which.
 
 ### `[registry.*]` — service bootstrap registries
 
@@ -452,6 +618,54 @@ the check stays side-effect-free; a missing file, an import-time exception, a
 missing `validate_registry`, or a non-list return are each reported as a
 finding rather than aborting the run.
 
+### `[service.<name>]` — global service identity registry [S3.14, S3.15]
+
+**V8-PREP-3 narrowed groundwork (additive; opt-in).** Declares WHAT a stack
+is and WHERE to find it — the identity half of the V8 two-level
+`stack.service` hierarchy
+([CIU-V8-TESTING-GATE-PROPOSAL.md §1.15/§3.1](CIU-V8-TESTING-GATE-PROPOSAL.md)).
+
+```toml
+[service.our_db_stack]
+type = "CIU"                        # CIU | COMPOSE | EXTERNAL | IN_PROCESS
+location = "infra/db-core"          # repo-relative dir; must contain ciu.defaults.toml.j2
+description = "Postgres + minio core infra"
+
+[service.payment-api]
+type = "EXTERNAL"                   # consumed, never deployed by this repo
+description = "Stripe payment gateway"
+```
+
+| Key | Required | Constraint |
+|---|---|---|
+| `type` | Yes | one of `CIU` \| `COMPOSE` \| `EXTERNAL` \| `IN_PROCESS` |
+| `location` | `CIU`/`COMPOSE` only | repo-relative directory; `CIU` requires `ciu.defaults.toml.j2` inside it, `COMPOSE` requires `docker-compose.yml`. **FORBIDDEN** (a configuration error, not silently ignored) for `EXTERNAL`/`IN_PROCESS` |
+| `description` | No | free-form string |
+
+- Absence of `[service.*]` entirely (or an empty table) is a **complete
+  no-op** — zero behavior change, the same additive contract as
+  `ciu.user_tables` (S3.13) and `[deploy].landscape_id` (S3.11).
+- Any key other than `type`/`location`/`description` at `[service.<name>]`
+  scope — including a nested table, which is exactly the shape the
+  deferred per-service **realness** layer would take
+  (`[service.<stack>.<svc>.<level>]`: `live`/`mock`/`owned-seeded`/
+  `simulated`, proposal §3.2) — is REJECTED naming the stack and the
+  offending key. This is deliberate: accepting-and-ignoring that layer now
+  would leave the real V8 rewrite unable to define it safely later without
+  a silent-acceptance migration trap.
+- `ciu check` cross-checks a non-empty registry against what the
+  currently-selected profile/phase actually deploys, in both directions,
+  and WARNS — never fails, never exit 2 — on either a registered-but-
+  undeployed entry or a deployed-but-unregistered stack (S3.15). This is
+  advisory: per the V8 proposal's own §1.16 mapping rule 1, an entry with
+  no live consumer, or a live stack with no registry entry, are both
+  legitimate transitional states while a repo migrates toward the full V8
+  model, not defects.
+- **Not shipped** (the eventual V8 breaking step, still deferred): the
+  per-service realness sub-table layer itself, `[local_stack]`-to-registry
+  join-key enforcement (V8-PREP-4's mapping rule 1), and topology/group
+  references by compound `<stack>.<service>` key.
+
 ---
 
 ## Stack Configuration Sections
@@ -460,6 +674,30 @@ finding rather than aborting the run.
 
 Exactly one non-reserved top-level key per stack config. Example root keys:
 `redis_core`, `db_core`, `vault_core`, `app_config`.
+
+**`local_stack` — a recognized, preferred root key name (V8-PREP-4
+groundwork).** A stack MAY name its root table `[local_stack]` instead of a
+directory-derived name:
+
+```toml
+[local_stack]
+port = 5432
+image = "timescale/timescaledb-ha:pg18"
+```
+
+This is purely additive and opt-in: `local_stack` is deliberately absent
+from both S3.7's `RESERVED_GLOBAL_NAMESPACES` (membership there would make
+it *forbidden*, the opposite of "preferred") and S3.13's
+`RESERVED_GLOBAL_TABLES` (it is a stack-scope name, not a global one). A
+stack that renames its root table to `local_stack` needs no other change —
+every downstream consumer of the stack root key (secret discovery, hooks,
+configfile mounts, governance) already takes it as an opaque parameter. A
+stack that keeps its existing directory-derived root key is completely
+unaffected; its own name still hits the S3.7 collision check unchanged.
+This is the additive groundwork step only — the eventual V8 breaking step
+(deferred) is making `local_stack` the ONLY accepted root key and
+relocating hooks to `[local_stack.<svc>.hooks]` (no per-service
+`[local_stack.<svc>]` wiring or hook relocation ships here).
 
 #### `requires` and `provides` — provisioning dependencies [S13]
 
@@ -482,13 +720,40 @@ requires = [
   "pg:role/authentik",
   "pg:schema/authentik",
   "vault:secret/db/postgres/authentik_password",
-  "stack:db-init:healthy",      # one-shot exited-0 containers count as satisfied
+  "stack:db-init:healthy",      # DEPRECATED for a one_shot stack -- see below
 ]
 ```
 
 Both lists are **optional**. A stack that declares neither is unaffected.
 CIU runs a static lint (graph completeness, cycle detection) once up-front,
 and live-probes each phase's requirements just before that phase deploys.
+
+**`provides_container` — when the basename guess is wrong (CIU-89).** A
+`pg:`/`minio:` probe execs into the container of the stack that `provides`
+the ref, resolved by default from the providing stack's own declared
+directory basename (e.g. `db_core` → container `...-db_core`). That guess is
+wrong for a multi-service stack whose directory basename isn't itself one of
+its own compose service keys — e.g. a stack dir `infra/db-core` that runs
+Postgres in a service keyed `postgres`, alongside sibling services like
+`pgadmin`/`minio`. Declare an optional sibling table, keyed by the exact
+`provides` ref string, to override just that one ref:
+
+```toml
+[db_core]
+provides = ["pg:db/dstdns", "pg:role/controller"]
+provides_container = { "pg:db/dstdns" = "postgres" }   # literal compose service key
+```
+
+A ref present in `provides` but absent from `provides_container` is
+unaffected — falls through to the basename guess unchanged. Every
+`provides_container` key MUST already be one of this same stack's own
+`provides` entries (an override for an undeclared ref refuses at validation,
+SPEC [S13.2](SPEC.md#s132--typed-reference-grammar), not silently ignored),
+every value must be a non-empty string, and **every key must itself be a
+`pg:` or `minio:` ref** — a `vault:`/`consul:`/`stack:` key also refuses,
+because the probe container resolver that reads `provides_container` is
+never reached for those kinds; the override would sit there looking live
+while nothing ever consulted it.
 
 **Reference grammar** — valid forms:
 
@@ -501,6 +766,42 @@ and live-probes each phase's requirements just before that phase deploys.
 | `minio:user/<name>` | `minio:user/worker-io` |
 | `consul:token/<svc>` | `consul:token/myapp` |
 | `stack:<name>:healthy` | `stack:db-init:healthy` |
+| `stack:<name>:completed` | `stack:db-init:completed` |
+
+Either `stack:` selector MAY be a bare name or a repo-relative path
+containing `/` (ciu-P23, V8-PREP-5): a slash-bearing selector (e.g.
+`stack:infra/db-init:completed`) is resolved against the declared stack
+paths in `deploy.phases.*.services[].path`/`deploy.profiles.*.stacks[]`. A
+selector that matches no declared path is left unresolved (a typo still
+fails as "container not found," never silently reinterpreted); a bare
+selector's resolution is unchanged either way.
+
+**`:healthy` vs `:completed` — one-shot / run-to-completion stacks.** A
+service whose phase entry declares `one_shot = true` (see
+`[[deploy.phases.phase_N.services]]` above) is a run-to-completion stack
+(e.g. a DB migration container): the correct completion signal is a clean
+exit, not a Docker healthcheck. Reference it with `:completed`, not
+`:healthy` — `:healthy`'s own exit-0-no-healthcheck fallback still works
+(unchanged) but is now deprecated and prints a `[WARN]`, and — unlike
+`:completed` — it can be fooled by a healthcheck that reports `healthy`
+before the container exits. `ciu up`/`ciu check --live` also warns
+automatically whenever a `:healthy` ref targets a stack that declares
+`one_shot = true`, even before you notice the deprecation warning yourself.
+Worked example — a DB migration container another stack must wait on:
+
+```toml
+# infra/db-init/ciu.defaults.toml.j2
+[[deploy.phases.phase_1.services]]
+path = "infra/db-init"
+one_shot = true
+
+[db_init]
+provides = ["stack:infra/db-init:completed"]
+
+# applications/worker/ciu.defaults.toml.j2
+[worker]
+requires = ["stack:infra/db-init:completed"]   # NOT :healthy -- db-init exits, it never "runs"
+```
 
 ### `[<root>.env]` — stack-scoped env [S3.6]
 
@@ -518,6 +819,7 @@ opt-in:
 [app.governance]
 enabled = true
 cgroup_parent = "dev-background.slice"
+cpus = "2"              # CPU quota -- OPT-IN, default "" (uncapped); see below
 ksm_optin = "builtin"  # CIU builds/caches its shipped universal shim
 exempt_services = ["vault"]
 
@@ -538,6 +840,17 @@ the rest of governance; `wrapper` is for a measured static-binary case and
 re-states the verified image entrypoint. See [SPEC S15.11](SPEC.md#s1511--ksm-opt-in-injection-ksm_optin),
 [S15.19](SPEC.md#s1519--per-service-memory-policy-governancememory_profile),
 and [S15.20](SPEC.md#s1520--the-exec-wrapper-ksm--wrapper) for the constraints.
+
+`cpus` (default `""` = unset/uncapped, CIU-90) declares a CPU quota — a
+fractional CPU count, e.g. `"1.5"` — injected as compose's own `cpus` key for
+every non-exempt service that hasn't set one itself (S15.3 author
+precedence). **Unlike `mem_limit`/`mem_reservation`, there is no nonzero
+default**: leaving it unset means the service stays exactly as uncapped as
+it was before this key existed — an already-governed stack that wants a
+quota (memory/IO capped, CPU previously unbounded) must opt in explicitly.
+`""` or a positive number are the only valid values — `0`, a negative value,
+or a non-numeric string all refuse at render time. See
+[SPEC S15.21](SPEC.md#s1521--cpu-quota-cpus-ciu-90-ciu-p49).
 
 ### `[<root>.hooks]` — hook points [S9.1]
 
@@ -576,10 +889,11 @@ data = { path = "", seed = "seed-dir", uid = 1000, mode = "0750" }   # seed [S6.
 
 ```toml
 [app_config.app.configfile.main]
-template = "config.toml.j2"           # relative to stack dir
-target   = "/etc/app/config.toml"     # absolute path in container
-mode     = "0440"                     # optional; default 0440
-schema   = "config.schema.json"       # optional; JSON Schema for the rendered config [S5.7]
+template  = "config.toml.j2"          # relative to stack dir
+target    = "/etc/app/config.toml"    # absolute path in container
+mode      = "0440"                    # optional; default 0440
+instances = 3                         # optional; positive int — S7.5b/S7.5d
+schema    = "config.schema.json"      # optional; JSON Schema for the rendered config [S5.7]
 ```
 
 Optional `schema` [S5.7]: a JSON Schema (Draft 2020-12) **relative to the
@@ -595,10 +909,114 @@ Validation runs on the **up/dev path** (engine step 12, where configfiles
 render); `ciu render` renders TOML configs only and does not run configfile
 validation.
 
-### `[state]` — persisted hook state [S3.4, S9.4]
+Optional `instances` [S7.5b]: a positive integer. When present,
+`render_configfiles` renders the template N times (1-based) and emits N
+mounts named `<name>-<index>`/`<service>-<index>`, each with `instance_index`/
+`instance_id` in its render context. Omitted (or `1`) behaves as a single
+render, unchanged.
+
+#### `[<root>.<service>] instances = N` — unified fan-out default [S7.5d/S7.5e, V8-PREP-6]
+
+```toml
+[app_config.app]
+instances = 3    # drives ciu.instances AND validates agreement with any
+                  # configfile-level `instances` under this service
+
+[app_config.app.configfile.main]
+template  = "config.toml.j2"
+target    = "/etc/app/config.toml"
+instances = 3     # REQUIRED restatement if this configfile wants to opt
+                   # into per-instance rendering — see the S7.5e box below
+```
+
+A service MAY declare `instances = N` as a sibling of its `configfile`
+table (not inside it). It does two things: (1) any configfile under the
+service that ALSO declares its own `instances` must AGREE with this value —
+a disagreement refuses, naming the service, the configfile, and both
+values; (2) it makes the service a key in the compose template's
+`ciu.instances` context (see the worked example in
+[CONSUMERS.md §16](CONSUMERS.md#16-fan-a-service-out-by-instances-instead-of-hand-rolling-a-compose-loop-v8-prep-6)),
+so the compose template's own replica loop reads ONE CIU-resolved count
+instead of a hand-maintained value.
+
+> **S7.5e — this is NOT a silent default.** A configfile that OMITS its own
+> `instances` key while the service declares one > 1 REFUSES — it does not
+> quietly inherit the service value. Before this key existed, an omitted
+> configfile-level `instances` meant "single shared render, fanned out by
+> the S5.3 base-selector mechanism" — silently reinterpreting that as "N
+> independent renders" the moment a service declares `instances` would be a
+> silent behavior change on upgrade for any existing stack shaped this way.
+> Restate the same value explicitly on the configfile to opt in, or don't
+> declare a service-level value if the configfile is intentionally a single
+> shared render. See [SPEC.md S7.5e](SPEC.md#s7--orchestration-ciu-up) for the full rule and
+> [CHANGES.md](../CHANGES.md) for the migration this forced on the
+> `applications/workers` test-repo demo.
+
+#### `[<root>.<service>] env_required = [...]` — declared required env vars [S8.2a, V8-PREP-7]
+
+```toml
+[app_config.app]
+env_required = ["DATABASE_URL", "API_TOKEN"]   # every entry: ^[A-Za-z_][A-Za-z0-9_]*$
+```
+
+A service MAY declare `env_required` as a sibling of its `configfile`
+table. Each entry is a valid shell/env variable name; a non-list, an
+empty-string entry, an invalid-charset entry, or a duplicate within the
+same service's list all raise a tagged error naming the service and the
+exact bad value. Declaring nothing anywhere is a complete no-op — no
+existing config is affected.
+
+The check itself validates presence in the **actual environment `docker
+compose` will see** — the dict `compose_process_env` builds internally,
+which is `os.environ` + `PWD` + `COMPOSE_PROFILES` + every secret's
+`expose_env` value (S8.2), taken AFTER secret materialization and
+immediately before the compose invocation. Missing variables across every
+service declaring `env_required` are collected into ONE error naming every
+`service.VARIABLE` pair — never a stop on the first miss.
+
+> **Not a new way to read an env var.** `{{ env.* }}` in a compose or
+> configfile template already receives the full process environment today,
+> with or without this key — `env_required` adds a CHECK, not a second
+> access mechanism. A template MAY reference a variable via `{{ env.* }}`
+> whether or not it is also listed in `env_required`; declaring it here
+> only makes CIU refuse loudly, naming the variable, before compose ever
+> starts, instead of letting `docker compose` fail (or silently start with
+> an empty/default value) further downstream. It also does **not** change
+> `${VAR:-fallback}`/`${VAR:?msg}` interpolation inside compose templates —
+> withdrawing that is a separate, breaking item tracked for the real V8
+> gate.
+>
+> A template can already rely on the machine-identity keys in the
+> [`ciu.env` Key Provenance Table](#ciuenv-key-provenance-table-s27) below
+> (`REPO_ROOT`, `PHYSICAL_REPO_ROOT`, `DOCKER_NETWORK_INTERNAL`,
+> `CONTAINER_UID`, `DOCKER_GID`, `REPO_NAME`, `INSTANCE_ID`, `PUBLIC_FQDN`)
+> via `{{ env.* }}` without declaring them in `env_required` — they are
+> always present by construction once `ciu.env` is sourced.
+>
+> **Not yet wired to `ciu up`.** `compose_process_env` (the function this
+> check lives in) gains optional `config`/`root_key` parameters that
+> activate the check above when both are given; CIU's own `ciu up` call
+> site does not pass them yet (a one-line change deferred to the real V8
+> cutover — see [SPEC.md S8.2a](SPEC.md#s8--compose-execution)). A
+> malformed `env_required` declaration is caught by direct/library use of
+> `compose_process_env` today; the presence check is exercised the same
+> way until that wiring lands.
+
+### `[state]` — persisted hook state [S3.4, S3.4a, S9.4]
 
 Written by hooks via `persist: "state"`. Preserved across re-renders; destroyed
 with `--reset`. Not human-edited.
+
+**Non-secret facts only.** A secret-shaped key here is an ERROR (S3.4a):
+`ciu check`'s `state-secrets` stage refuses any key whose last
+`_`-separated component is `password`/`token`/`secret`/`api_key`/
+`credential`/`passphrase`/`private_key`/`key` paired with a literal string of
+8+ characters that is not a `{{ … }}`/`$VAR` reference or a `/`-bearing path.
+This file is ordinarily rendered and ordinarily readable — it is not masked,
+not leak-scanned, and not mode-0440. Use `persist: "secret"` (S9.4a) for a
+value a hook mints, or an S4.1 secrets-table directive for one a directive can
+express. Booleans, counters, timestamps and short/referenced/path-shaped
+strings are unaffected.
 
 ---
 
@@ -656,7 +1074,7 @@ as a configuration error even when nothing else would check it. Undeclared
 
 | Key | Always required | Detection (when not pre-set) |
 |---|---|---|
-| `REPO_ROOT` | Yes | `--define-root` → `REPO_ROOT` env → walk-up to `ciu.global.defaults.toml.j2` [S1.1] |
+| `REPO_ROOT` | Yes | `--define-root` (always wins outright) → walk-up to `ciu.global.defaults.toml.j2`, REFUSING if a successful walk-up disagrees with a pre-set `REPO_ROOT` → `REPO_ROOT` env (only when the walk-up finds nothing) → cwd [S1.1, CIU-53] |
 | `PHYSICAL_REPO_ROOT` | Yes | env override (only if consistent with mountinfo, or mountinfo absent) → per-repo longest-prefix match of `REPO_ROOT` in `/proc/self/mountinfo` → `devcontainer.local_folder` label via `docker ps` (container-origin fallback); native host: `= REPO_ROOT` [S1.3, S1.4] |
 | `DOCKER_NETWORK_INTERNAL` | Yes | `<repo-name>-<instance-id>-network` (hash of physical path) |
 | `CONTAINER_UID` | Yes | Current user UID |
@@ -669,8 +1087,8 @@ as a configuration error even when nothing else would check it. Undeclared
 | `PUBLIC_TLS_KEY_PEM` | Conditional (S2.3, S2.4) | Operator-provided path; validated as-given |
 `CIU_SERVICES_PROFILE` remains an ambient compatibility input for direct CIU
 invocations, but managed worktrees persist their selection as
-`ciu.instance.service_profiles` in `ciu.global.worktree.toml.j2`. Shared-infra
-intent also lives only in that worktree-local configuration layer, never in
+`ciu.instance.service_profiles` in `ciu.global.instance.toml.j2`. Shared-infra
+intent also lives only in that per-checkout configuration layer, never in
 generated `ciu.env`.
 
 All numeric values (`CONTAINER_UID`, `DOCKER_GID`, etc.) are validated as
@@ -691,6 +1109,13 @@ refined precedence instead of "pre-set always wins":
   ambient value is adopted only when equal, else the derived value is
   written and a warning names the ignored one (with the `--shared-infra`
   remedy for the network).
+- **`REPO_ROOT`** (2026-08-25, CIU-53) is the one exception that REFUSES
+  instead of warning-and-proceeding: `dev.resolve_repo_root` (consumed by
+  `ciu dev`/`ciu worktree *`) derives by walking up from cwd, and when that
+  derivation succeeds, a disagreeing pre-set `REPO_ROOT` is a hard error
+  naming both values rather than a warning — this value selects WHICH repo
+  destructive verbs (`worktree rm`, `branches -y`, `clean`) operate on, so a
+  masked default here is worse than a stop. See `docs/DESIGN-GUIDE.md`.
 - **`PUBLIC_FQDN`** (CIU-47): during generation the value is derived from
   THIS workspace's own inputs (config entry, else reverse DNS of the
   detected IP); an ambient value is adopted only when equal, or when
@@ -701,10 +1126,70 @@ refined precedence instead of "pre-set always wins":
 Every other key in this table keeps the simple "pre-set env always wins"
 rule.
 
+### CIU-owned identity facts: `[ciu.instance.generated]` [S3.1b / CIU-60]
+
+`ciu env generate` derives this workspace's identity tuple, writes it to
+`ciu.env` for shells, and — from the same in-memory values, in the same
+invocation — writes it to `ciu.instance.generated.toml`. Since
+7.7.0 that table is the record CIU itself reads (S3.1c): templates read it
+through the merged config chain, hooks get it on their context, and every
+verb seeds its own process environment from it.
+
+The whole file, as CIU writes it:
+
+```toml
+# CIU-owned (S3.1b) — GENERATED. Rewritten in full by every
+# `ciu env generate`; hand edits are silently overwritten.
+# Gitignored, machine-specific, and regenerable: never commit it.
+# Put YOUR own per-checkout overrides in ciu.global.instance.toml.j2,
+# which CIU never writes.
+
+[ciu.instance.generated]
+repo_name = "dstdns"
+instance_id = "98535c"
+network = "dstdns-98535c-network"
+physical_repo_root = "/home/dev/checkouts/dstdns"
+repo_root = "/workspaces/dstdns"
+public_fqdn = "dev.example.test"
+```
+
+That is the whole mechanism by which a TEMPLATE reaches these facts — through
+the ordinary merged config chain, like any other value:
+
+```jinja
+{# in any stack template #}
+volumes = ["{{ ciu.instance.generated.physical_repo_root }}:/repo:ro"]
+```
+
+Use these instead of `{{ env.PHYSICAL_REPO_ROOT }}` and friends. The `env`
+context is the raw process environment (S3.2): a shell that once sourced a
+sibling checkout's `ciu.env` carries THAT checkout's paths, and a template
+reading `env.*` silently renders them. `ciu.instance.generated.*` comes from a
+file in this repo root, written for this repo root, that you can `cat`.
+
+Two rules, and since ciu-P47 they are enforced by the filesystem rather than
+by careful writing:
+
+- **CIU owns every byte of `ciu.instance.generated.toml`** and rewrites the
+  whole file on every `env generate`, so a hand edit anywhere in it does not
+  survive. There is nothing of yours in it to lose.
+- **CIU never writes `ciu.global.instance.toml.j2` at all** after the managed
+  lifecycle command that may create it. Your comments, spacing, key ordering
+  and tables are safe there because no CIU code path opens that file for
+  writing — not because a careful text-replace works around them.
+
+  (Before ciu-P47 both roles shared one file, and the second rule had to be
+  bought with a surgical text replace of exactly the CIU-owned span. That
+  mechanism is gone.)
+
+Removing them is `ciu clean --vanilla`; ordinary `ciu clean` preserves both.
+
 ### Shared-infra join example [S16.1]
 
-Managed worktree configuration has this closed CIU-owned shape; other ordinary
-global keys may be added as sparse local overrides:
+Managed worktree configuration has this closed CIU-owned shape, in
+`ciu.global.instance.toml.j2`; other ordinary global keys live in the same
+file. (The `[ciu.instance.generated]` table above does NOT — since ciu-P47 it
+has its own file.)
 
 ```toml
 [ciu.instance]
@@ -713,9 +1198,28 @@ service_profiles = ["core", "db"]
 [ciu.instance.shared_infra]
 ref_path = "/repo/.worktrees/primary-ref"
 network = "repo-ab12cd-network"
-services = ["api", "worker"]
-ref_projects = ["idp-dev-idp", "vault-dev-vault"]
+services = ["api", "worker"]              # THIS instance's own containers
+ref_projects = ["idp-dev-idp", "vault-dev-vault"]   # the REFERENCE's projects
+
+# OPTIONAL (S16.1a/CIU-52) — one sub-table per local alias.
+[ciu.instance.shared_infra.ref_services.vault]
+service = "vault"                         # the REFERENCE's service key
+container = "dstdns-98535c-vault"         # CIU-derived and authenticated
+port = 8200
+
+# ... and the block CIU emits from it, in the same file:
+[topology.services.vault]
+internal_host = "dstdns-98535c-vault"
+internal_port = 8200
 ```
+
+> **`services` and `ref_projects` are about two different instances and are
+> NOT paired.** `services` names the containers *this* (joining) instance
+> starts and wants attached to the reference network; `ref_projects` names
+> *the reference's* Compose projects, used only to prove the reference is
+> live. They may differ in length and have no index correspondence — so
+> neither can name a reference-side service. That is what `ref_services`
+> (below) is for; never infer one from the other.
 
 ```console
 # Reference instance already up, on network repo-ab12cd-network, with the
@@ -724,13 +1228,14 @@ $ ciu worktree create pkg-under-test --prefix myapp --feature pkg-under-test \
     --profile core,db \
     --shared-infra primary \
     --shared-infra-services api,worker \
-    --shared-infra-ref-projects idp-dev-idp,vault-dev-vault
+    --shared-infra-ref-projects idp-dev-idp,vault-dev-vault \
+    --shared-infra-ref-services vault
 worktree ready: /repo/.worktrees/myapp-20260817_123456-pkg-under-test
   CIU root: /repo/.worktrees/myapp-20260817_123456-pkg-under-test
   next: ciu worktree up pkg-under-test
 ```
 
-The new checkout's `ciu.global.worktree.toml.j2` carries the service-profile
+The new checkout's `ciu.global.instance.toml.j2` carries the service-profile
 and closed `[ciu.instance.shared_infra]` intent. `ciu up` there deploys
 `pkg-under-test`'s OWN `api`/`worker`
 containers on its OWN network exactly as any worktree would, then — only
@@ -738,6 +1243,37 @@ after that succeeds — connects `api` and `worker` to `repo-ab12cd-network`
 too, so they can reach the reference instance's `idp`/`vault`. Every other
 container in `pkg-under-test` (anything not named in
 `--shared-infra-services`) stays on its own network only.
+
+#### `--shared-infra-ref-services` — addressing the reference's services [S16.1a]
+
+Joining a network gets you reachability; it does not give you a NAME to reach
+the reference's service by. `--shared-infra-ref-services ALIAS[,ALIAS=SERVICE]`
+supplies that name. It is optional, but not standalone — supplying it without
+the rest of the shared-infra group is a refusal.
+
+For each item CIU renders the REFERENCE's own global config (read-only, under
+the reference's own environment — this process's ambient environment minus
+every CIU identity key, plus the reference's own facts from its
+`[ciu.instance.generated]` table, S3.1c clause 7; its `ciu.env` before 7.7.0),
+derives the reference's qualified container name with the same
+`container_name()` derivation used everywhere else, **proves that container is
+actually running on the reference's network right now**, and only then records
+it — both as the `ref_services` sub-table above and as this instance's own
+`[topology.services.<alias>]` block. Because that block is an ordinary
+`topology.services` declaration, existing consumers (including CIU's own Vault
+addressing, S4.16) read it with no new mechanism, and because the worktree
+overlay merges last it overrides a committed bare default while leaving an
+`internal_port` the reference does not declare to survive from that default.
+
+- Bare item (`vault`) — the alias equals the reference's service key.
+- Rename form (`secrets=vault`) — address the reference's `vault` as
+  `topology.services.secrets` locally. Two aliases may share one service.
+- `internal_port` is written only when the reference itself declares one; CIU
+  never invents a port.
+- Never hand-edit the recorded `container`. It is re-verified against live
+  Docker at every `ciu up`, so a reference re-created under a new identity
+  fails loudly there rather than being silently addressed; re-run
+  `ciu worktree add --shared-infra ...` to refresh it.
 
 ### Machine-facing worktree facts [S16.4]
 
@@ -752,7 +1288,9 @@ facts under `git`, and a closed `operation`/`status` vocabulary
 --json` reads it but the JSON documents themselves are never written into
 `ciu.env` or the overlay. Control verbs `ciu worktree up LOGICAL` and `ciu
 worktree exec LOGICAL -- ARGV...` act on one exact selected instance under
-its own `ciu.env` ([SPEC S16.6](SPEC.md#s166--exact-selected-worktree-control-worktree-up--worktree-exec)).
+its own identity — its `[ciu.instance.generated]` facts overlaid on an ambient
+environment stripped of every CIU identity key (S3.1c clause 7; its `ciu.env`
+before 7.7.0) ([SPEC S16.6](SPEC.md#s166--exact-selected-worktree-control-worktree-up--worktree-exec)).
 
 ---
 

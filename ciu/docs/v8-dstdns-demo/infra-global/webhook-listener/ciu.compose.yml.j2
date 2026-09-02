@@ -1,0 +1,28 @@
+# infra-global/webhook-listener/ciu.compose.yml.j2 — v8 notation (draft.3)
+# Injected by ciu: container_name/hostname (dstdns-<instance>-webhook-listener-webhook),
+# networks, ciu.* labels, CIU_* identity env, ports (the publish = "host"
+# endpoint, S7.4.2), healthcheck timing, cgroup fields. hooks.yml is baked into
+# the image; the two service secrets are env-delivered (no mounts), the hook's
+# GitHub token never reaches this container.
+services:
+  webhook:
+    image: {{ ciu_stack.webhook.image }}
+    restart: unless-stopped
+    user: "{{ host.user_uid }}:{{ host.user_gid }}"
+    command: ["-verbose", "-hooks", "/etc/webhook/hooks.yml", "-hotreload"]
+    environment:
+      {% for key, value in env_defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - WEBHOOK_SECRET=${WEBHOOK_LISTENER_SECRETS_WEBHOOK_SECRET}       # env-delivered secrets, plain ${VAR} (S10.2.2, S11.6)
+      - WEBHOOK_GIT_PAT=${WEBHOOK_LISTENER_SECRETS_WEBHOOK_GIT_PAT}
+      - GIT_USERNAME={{ ciu_stack.webhook.git.git_username }}
+      - GIT_REPO_NAME={{ ciu_stack.webhook.git.git_repo_name }}
+    # ports: injected by ciu from [ciu_stack.webhook.endpoints] (publish = "host" — every layout, S7.4.2)
+    volumes:
+      - {{ ciu_stack.webhook.hostdir.data }}:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:{{ ciu_stack.webhook.endpoints.http.port }}/"]
+      # interval / timeout / retries / start_period: injected from ciu_stack.webhook.health (S6.6.4)
+    labels:
+      - "de.vxxu.volkb79.service-container=false"    # consumer labels are the template's; ownership labels (ciu.*) are injected (S4.5)

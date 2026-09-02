@@ -120,3 +120,15 @@ generated machine/runtime facts; `ciu.worktree-instance.json` owns durable
 logical/Git identity and lifecycle state. The instance record may report
 non-secret feature presence but must not duplicate the overlay as an independent
 configuration authority.
+
+> **Amended 2026-09-02 (ciu-P47).** The ownership principle above is unchanged
+> and was in fact strengthened; two names in it moved. The per-checkout overlay
+> is now `ciu.global.instance.toml.j2` ("instance", because every checkout is
+> one — a hard rename with no fallback read, reported by
+> `ciu migration-check`), and the CIU-owned `[ciu.instance.generated]` identity
+> facts CIU-60 later added to that file now live in their own
+> `ciu.instance.generated.toml`. That split is the ownership rule taken
+> literally: the overlay owns durable local configuration and CIU never writes
+> it; the generated file owns instance identity and only CIU writes it. Merge
+> order is unchanged (committed defaults → committed project override →
+> instance override → generated facts → rendered `ciu.global.toml`).

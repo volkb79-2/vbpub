@@ -18,13 +18,17 @@ VaultKV2                                : KV2 read/write client (S4.15)
 from __future__ import annotations
 
 import json
-import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
-from ciu.config_constants import STACK_CONFIG_RENDERED
+#: S4.16 source #3 / S9.4a — the well-known name a Vault-bootstrap hook
+#: persists its root token under, in the local vault stack's own secret store.
+#: The NAME is unchanged from the pre-ciu-P46 ``[state].root_token`` era on
+#: purpose: only the storage location moved, so an operator's mental model of
+#: "the vault stack records its root token" survives the cutover intact.
+VAULT_BOOTSTRAP_SECRET = "root_token"
 
 
 class VaultError(RuntimeError):
@@ -87,12 +91,23 @@ def resolve_vault_token(config: dict[str, Any], repo_root: Path) -> str | None:
          resolve against *repo_root*). An existing-but-unreadable file is a
          hard error (VaultError) — silently skipping it would mask a
          misconfiguration.
-      3. The local Vault stack's rendered ``ciu.toml``: top-level
-         ``[state].root_token``. The stack directory comes from
+      3. The local Vault stack's **secret store**: the hook-persisted
+         (S9.4a, ``persist: 'secret'``) file named ``root_token`` under
+         ``<vault stack>/.ciu/secrets/``. The stack directory comes from
          ``config['vault']['stack_path']`` (default ``"infra/vault"``),
-         resolved against *repo_root*. When that ``ciu.toml`` does not exist,
-         this source yields nothing (the vault stack may simply not be
-         deployed yet).
+         resolved against *repo_root*. When that file does not exist, this
+         source yields nothing (the vault stack may simply not be deployed
+         yet) — the same "falls through" semantics an absent ``token_file``
+         already has.
+
+    ciu-P46 (F4) made source #3 a HARD CUTOVER: it previously read
+    ``[state].root_token`` out of the vault stack's rendered ``ciu.toml``, a
+    plaintext, ordinarily-readable, unmasked, un-leak-scanned file sitting
+    outside every S4 leak-prevention mechanism. That read path is GONE — there
+    is deliberately no fallback to ``[state]``, because a fallback would keep
+    the unsafe copy alive (and worth writing) forever. Operators find stale
+    ``[state]`` copies through ``ciu check``'s ``state-secrets`` stage and
+    ``ciu migration-check``, not through a silent dual read here.
 
     Returns
     -------
@@ -140,23 +155,25 @@ def resolve_vault_token(config: dict[str, Any], repo_root: Path) -> str | None:
             if token:
                 return token
 
-    # (3) local vault stack ciu.toml [state].root_token
+    # (3) local vault stack's hook-persisted secret store (S9.4a)
+    from ciu.secrets.materialize import hook_secret_store
+
     stack_path = vault_cfg.get("stack_path") or "infra/vault"
-    stack_toml = repo_root / stack_path / STACK_CONFIG_RENDERED
-    if stack_toml.is_file():
-        try:
-            with stack_toml.open("rb") as fh:
-                doc = tomllib.load(fh)
-        except (OSError, tomllib.TOMLDecodeError) as exc:
-            raise VaultError(
-                f"[S4.16] could not read Vault stack state from '{stack_toml}': "
-                f"{exc}"
-            ) from exc
-        state = doc.get("state", {})
-        if isinstance(state, dict):
-            root_token = state.get("root_token")
-            if root_token:
-                return str(root_token)
+    store_file = hook_secret_store(repo_root / stack_path, VAULT_BOOTSTRAP_SECRET)
+    try:
+        text = store_file.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        # Not bootstrapped here (yet) — this source simply yields nothing.
+        pass
+    except (OSError, UnicodeDecodeError) as exc:
+        raise VaultError(
+            f"[S4.16] Vault bootstrap secret '{store_file}' exists but could "
+            f"not be read: {exc}"
+        ) from exc
+    else:
+        token = text.strip()
+        if token:
+            return token
 
     return None
 

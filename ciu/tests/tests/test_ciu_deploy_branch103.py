@@ -231,5 +231,11 @@ def test_check_reuses_rendered_selection_from_prior_deploy(monkeypatch, tmp_path
     monkeypatch.setattr(deploy, "action_deploy", lambda *args, **kwargs: trace.append(("deploy", kwargs["rendered"])) or 0)
     monkeypatch.setattr(deploy, "action_check", lambda *args, **kwargs: trace.append(("check", args[3])) or 0)
 
+    # CIU-64: the SAME rendered selection now also feeds `ciu up`'s own
+    # automatic `ciu check` preflight, which runs before any action — so the
+    # explicit `--check` action still reuses the one render, and the render
+    # still happens exactly once for all three consumers.
     assert deploy.main(["--deploy", "--check"]) == 0
-    assert trace == ["render", ("deploy", rendered), ("check", rendered)]
+    assert trace == [
+        "render", ("check", rendered), ("deploy", rendered), ("check", rendered)
+    ]

@@ -36,22 +36,27 @@ def test_probe_ref_unavailable_docker_is_unsatisfied(monkeypatch, tmp_path, ref)
 
     monkeypatch.setattr(procutil, "docker", unavailable_docker)
 
-    result = provisioning.probe_ref(ref, {}, tmp_path)
+    result = provisioning.probe_ref(
+        ref, {}, tmp_path,
+        stacks={"provider": {"provides": ["pg:db/app", "minio:user/worker"]}},
+    )
 
     assert result.satisfied is False
     assert "docker not available" in result.reason
 
 
 @pytest.mark.parametrize(
-    "ref, default_name",
+    "ref, stacks, fallback_name",
     [
-        ("pg:db/app", "postgres"),
-        ("minio:user/worker", "minio"),
-        ("stack:db:healthy", "db"),
+        # CIU-70: `pg:`/`minio:` fall back to the PROVIDING STACK's path (via
+        # `_stack_container_name`), never to a literal `postgres`/`minio`.
+        ("pg:db/app", {"pgstack": {"provides": ["pg:db/app"]}}, "pgstack"),
+        ("minio:user/worker", {"obj": {"provides": ["minio:user/worker"]}}, "obj"),
+        ("stack:db:healthy", None, "db"),
     ],
 )
-def test_probe_ref_uses_service_default_when_container_name_cannot_be_built(
-    monkeypatch, tmp_path, ref, default_name
+def test_probe_ref_falls_back_to_the_selector_when_container_name_cannot_be_built(
+    monkeypatch, tmp_path, ref, stacks, fallback_name
 ):
     from ciu import deploy
 
@@ -69,7 +74,8 @@ def test_probe_ref_uses_service_default_when_container_name_cannot_be_built(
     result = provisioning.probe_ref(
         ref, {"project": {"name": "broken"}}, tmp_path,
         docker_exec_fn=injected_docker_exec,
+        stacks=stacks,
     )
 
     assert result.satisfied is False
-    assert seen and seen[0][0] == default_name
+    assert seen and seen[0][0] == fallback_name

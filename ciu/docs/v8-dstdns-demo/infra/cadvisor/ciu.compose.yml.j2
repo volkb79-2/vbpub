@@ -1,0 +1,29 @@
+# infra/cadvisor/ciu.compose.yml.j2 — v8 notation (draft.3)
+# Injected by ciu: container_name/hostname (dstdns-<instance>-cadvisor), the
+# instance network, ciu.* labels, CIU_* env, `ports:` from the endpoint
+# (publish = "host"), healthcheck timing, cgroup fields. When enable_observability
+# is off the service is removed from the rendered file (S6.7) — no guard here.
+services:
+  cadvisor:
+    image: {{ ciu_stack.cadvisor.image }}
+    privileged: true                         # host-level access by design (contrast: docker-stats-exporter runs unprivileged)
+    environment:
+      {% for key, value in env_defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    # ports: injected by ciu from [ciu_stack.cadvisor.endpoints] (publish = "host"/"proxy")
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:{{ ciu_stack.cadvisor.endpoints.http.port }}/healthz"]
+      # interval / timeout / retries / start_period: injected from ciu_stack.cadvisor.health (S6.6.4)
+    restart: unless-stopped
+    labels:
+      - "de.vxxu.volkb79.stack=observability"    # consumer label: docker-stats-exporter groups by it; ownership labels (ciu.*) are injected (S4.5)
+      - "de.vxxu.volkb79.service-container=false"

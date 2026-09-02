@@ -133,6 +133,15 @@ proves construction, not acceptance** — any NEW `docker` argv shape needs one
 live acceptance probe (a `--` placed after `docker exec`'s CONTAINER positional
 is executed AS the in-container command: exit 127).
 
+**Every assay lane resumes and reports progress (operator directive
+2026-09-02; run-gate `R-38`, RG-33).** `assay run` is always invoked with
+`--resume --progress .assay/progress-<lane>.jsonl` — run-gate appends them to
+every `kind = "assay"` lane, and a gate that calls `assay run` directly (assay's
+own) passes them itself. Both are no-ops on an R0/R1 lane; on a mutation lane
+they are what lets a budget-capped retry continue instead of restarting from
+mutant #1. Resume state and the progress stream live under the git-ignored
+`.assay/`, never in the judged tree. The judge must be assay >= 2.4.1.
+
 ## Consuming assay from inside vbpub (estate-wide, 2026-08-27)
 
 A project living in this monorepo (cmru, ciu, anything under `scripts/`)

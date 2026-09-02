@@ -1,0 +1,40 @@
+# applications/controller/ciu.compose.yml.j2 — v8 notation (draft.3)
+# Injected by ciu: container_name/hostname (dstdns-<instance>-controller), networks,
+# ciu.* labels, CIU_* identity env, POSTGRES_HOST/PORT and REDIS_HOST/PORT (the
+# env-delivered bindings), the config-directory and secret mounts, healthcheck
+# timing, cgroup fields. The template writes only what is genuinely the stack's own.
+services:
+  controller:
+    image: {{ ciu_stack.controller.image }}
+    restart: "no"                            # fail-fast for development
+    user: "{{ host.user_uid }}:{{ host.user_gid }}"
+    environment:
+      {% for key, value in env_defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - BUILD_VERSION={{ instance.build_version }}
+      - BUILD_TIME={{ instance.build_time }}
+      - CONTROLLER_CONFIG_FILE=/etc/controller/config.toml
+      - DSTDNS_LANDSCAPE_ID={{ instance.landscape_id }}
+      - DSTDNS_INSTANCE_ID={{ ciu_stack.controller.identity.container_name }}
+      - DSTDNS_SERVICE_PROFILE=default
+      - CONTROLLER_BOOTSTRAP_TOKEN=${CONTROLLER_BOOTSTRAP_TOKEN}          # env-delivered secret
+      - CONTROLLER_VAULT_ROLE_ID=${CONTROLLER_VAULT_ROLE_ID}
+      - CONTROLLER_VAULT_SECRET_ID=${CONTROLLER_VAULT_SECRET_ID}
+      - CONTROLLER_SECRETS_POSTGRES_PASSWORD_FILE=/run/secrets/postgres_password   # file delivery (mount injected)
+      - CONTROLLER_SECRETS_REDIS_PASSWORD_FILE=/run/secrets/redis_password
+      - CONTROLLER_CONSUL_TOKEN_FILE=/run/secrets/consul_token
+      - CONTROLLER_SECRETS_INTERNAL_DLQ_TOKEN_FILE=/run/secrets/internal_dlq_token
+      - SW_AGENT_COLLECTOR_BACKEND_SERVICES={{ ciu_stack.controller.binds.tracing.host }}:{{ ciu_stack.controller.binds.tracing.port }}   # template-delivered binding
+      - SW_AGENT_DISABLE_PLUGINS=sw_asyncpg
+      # POSTGRES_HOST / POSTGRES_PORT / REDIS_HOST / REDIS_PORT are INJECTED (binds.database,
+      # binds.redis — env delivery); a template that writes them is refused (S11.3).
+    volumes:
+      - {{ ciu_stack.controller.hostdir.logs }}:/app/logs
+      - {{ ciu_stack.controller.hostdir.cache }}:/app/cache
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:{{ ciu_stack.controller.endpoints.http.port }}/health').read()"]
+      # interval / timeout / retries / start_period: injected from ciu_stack.controller.health (S6.6.4)
+    labels:
+      - "de.vxxu.volkb79.service-type=api"    # consumer labels are the template's; ownership labels (ciu.*) are injected (S4.5)
+      - "de.vxxu.volkb79.service-container=false"

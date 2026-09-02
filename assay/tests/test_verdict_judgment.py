@@ -447,10 +447,22 @@ def test_judgment_r2_untouched_form_builds():
         "max_mutants": 50,
         "operators": ["python:compare-swap", "python:boolop-swap"],
         "kill_attribution": "unattributed",
+        # B035/A-329: `mode` is ALWAYS on the wire, exactly as
+        # `judgment.r1.mode` is, and defaults to the only scope that existed
+        # before whole-target judging.
+        "mode": "changed_lines",
+        # B046/schema v9: `producer` is on the wire for `mode`'s reason and
+        # defaults to `"native"` for the same one -- it is the only producer
+        # that existed before the field did, so it is the faithful historical
+        # value for a record built without one, exactly as this construction
+        # (which names no producer) is.
+        "producer": "native",
     }
-    # The two P34-reserved paths are OMITTED, never nulled (A-051/A-230b).
+    # The two P34-reserved paths are OMITTED, never nulled (A-051/A-230b) --
+    # and so is `targets`, which describes nothing outside whole-target mode.
     assert "kill_signal_artifact" not in r2.to_dict()
     assert "equivalence_artifact" not in r2.to_dict()
+    assert "targets" not in r2.to_dict()
 
 
 def test_judgment_r2_kill_attribution_and_its_artifact_cannot_disagree():
@@ -621,31 +633,99 @@ def test_judgment_forbids_a_base_when_r1_judges_whole_targets():
                 jobs=1,
                 max_mutants=50,
                 operators=("python:compare-swap",),
+                mode="whole_target",
+                targets=("pkg/mod.py",),
                 **BASE_R2_POLICY,
             ),
         )
 
 
-def test_judgment_leaves_an_r2_only_base_unconstrained():
-    """B033/A-325 + B035: a diff-based R2 requires a base and a whole-target
-    R2 forbids one, and v7 puts nothing on the wire that tells them apart
-    when no `r1` is present. So the model constrains NEITHER direction here
-    rather than asserting a rule the document cannot witness -- which is how
-    the old rule came to reject honest whole-target artifacts."""
-    r2 = JudgmentR2(
+def _r2_only(mode: str, targets: tuple[str, ...] | None = None) -> JudgmentR2:
+    return JudgmentR2(
         jobs=1,
         max_mutants=50,
         operators=("python:compare-swap",),
+        mode=mode,
+        targets=targets,
         **BASE_R2_POLICY,
     )
 
-    with_base = Judgment(resolved=JudgmentResolved(**BASE_RESOLVED), r2=r2)
-    without_base = Judgment(
-        resolved=JudgmentResolved(language="python", source_roots=("src",)), r2=r2
-    )
 
-    assert with_base.resolved.base is not None
-    assert without_base.resolved.base is None
+def test_judgment_requires_a_base_for_a_changed_line_r2_only_lane():
+    """**B035/A-329, the gap this wave exists to close.** v7 gave
+    `judgment.r2` no `mode`, so for an `R0,R2` lane -- every SQL lane, and
+    dstdns's `cw2b_schema` by name -- nothing on the wire distinguished a
+    diff-based R2 from a whole-target one, and A-325 had to constrain
+    NEITHER direction. `r2.mode` now witnesses the lane's scope, so a
+    diff-based R2 that omits the base it was scoped against is refused
+    again, which 2.4.1 did and 2.4.2 could not."""
+    with pytest.raises(ValueError, match="carries r2 in changed-line mode"):
+        Judgment(
+            resolved=JudgmentResolved(language="python", source_roots=("src",)),
+            r2=_r2_only("changed_lines"),
+        )
+    kept = Judgment(resolved=JudgmentResolved(**BASE_RESOLVED), r2=_r2_only("changed_lines"))
+    assert kept.resolved.base is not None
+
+
+def test_judgment_forbids_a_base_for_a_whole_target_r2_only_lane():
+    """The other half of the same closure: a whole-target R2 reads no
+    comparison commit at any tier, so recording one claims a comparison that
+    never ran. The honest whole-target artifact A-325 made producible stays
+    producible -- it is only the base-bearing one that is now refused."""
+    with pytest.raises(ValueError, match="carries r2 in whole-target mode"):
+        Judgment(
+            resolved=JudgmentResolved(**BASE_RESOLVED),
+            r2=_r2_only("whole_target", ("pkg/mod.py",)),
+        )
+    honest = Judgment(
+        resolved=JudgmentResolved(language="python", source_roots=("src",)),
+        r2=_r2_only("whole_target", ("pkg/mod.py",)),
+    )
+    assert honest.resolved.base is None
+    assert honest.r2 is not None and honest.r2.targets == ("pkg/mod.py",)
+
+
+def test_judgment_refuses_two_tiers_that_disagree_about_the_lane_mode():
+    """B035/A-329: `mode` is a LANE-level scope, so one judgment records one
+    of them. Two disagreeing tiers would make "the lane's mode" ambiguous,
+    and the base rule above cannot rest on an ambiguous premise."""
+    with pytest.raises(ValueError, match="mode is a\n?.*LANE-level scope"):
+        Judgment(
+            resolved=JudgmentResolved(**BASE_RESOLVED),
+            r1=JudgmentR1(**BASE_R1_POLICY),
+            r2=_r2_only("whole_target", ("pkg/mod.py",)),
+        )
+
+
+def test_judgment_refuses_two_tiers_that_disagree_about_the_target_set():
+    """Same argument, applied to the other half of the pair: both tiers
+    record *the declared target set* of one lane, so they cannot differ.
+    Not expressible in draft 2020-12 (no `$data`), which is why it lives
+    here and in `verify.py` rather than in the packaged schema (A-182)."""
+    with pytest.raises(ValueError, match="record the DECLARED target set"):
+        Judgment(
+            resolved=JudgmentResolved(language="python", source_roots=("src",)),
+            r1=JudgmentR1(
+                **{**BASE_R1_POLICY, "mode": "whole_target", "targets": ("pkg/a.py",)}
+            ),
+            r2=_r2_only("whole_target", ("pkg/b.py",)),
+        )
+
+
+def test_judgment_r2_targets_obey_judgment_r1s_own_pairing_rules():
+    """B035/A-329 mirrors `JudgmentR1`'s contract exactly, so the same four
+    refusals hold one tier over."""
+    with pytest.raises(ValueError, match="judgment.r2.mode must be one of"):
+        _r2_only("diffed")
+    with pytest.raises(ValueError, match="judgment.r2.targets must be a non-empty"):
+        _r2_only("whole_target")
+    with pytest.raises(ValueError, match="judgment.r2.targets contains a duplicate"):
+        _r2_only("whole_target", ("pkg/a.py", "pkg/a.py"))
+    with pytest.raises(ValueError, match="judgment.r2.targets must be sorted"):
+        _r2_only("whole_target", ("pkg/b.py", "pkg/a.py"))
+    with pytest.raises(ValueError, match="targets describes nothing outside"):
+        _r2_only("changed_lines", ("pkg/a.py",))
 
 
 def test_judgment_forbids_a_base_when_only_r3_is_present():

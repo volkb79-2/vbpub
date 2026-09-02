@@ -1,0 +1,33 @@
+# infra-global/github-runner-webhook/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `github_runner_webhook` (bound by ciu.toml [realization.github_runner_webhook])
+# = the `github_runner_webhook` LogicalService: ONE service `webhook` (almir/webhook).
+# The v7 stack also carried a second `github-runner` service; that is the
+# `github_runner` realization's job and is not duplicated here (its runner_token
+# secret and work hostdir went with it). DERIVED, never written here: the identity
+# (dstdns-<instance>-github-runner-webhook-webhook), the network, the host-published
+# port (publish = "host": `ports:` injected in every layout, S7.4.2), and the
+# public FQDN the hook registers (host.fqdn — declared per host in ciu.hosts.toml,
+# never detected).
+
+[ciu_stack.webhook]
+image = "almir/webhook:latest"
+endpoints.http = { port = 9000, protocol = "http", publish = "host", host_port = 9001 }   # GitHub delivers to the host port; 9001 because webhook_listener holds 9000 on the same host (global-services bundle, S6.3.2)
+[ciu_stack.webhook.hostdir]
+data = ""
+[ciu_stack.webhook.settings]
+repository_url = ""                  # REQUIRED: set per site by the merged path ([realization.github_runner_webhook.services.webhook.settings] in ciu.site.toml, S3.1.3)
+[ciu_stack.webhook.git]
+git_username = ""
+git_repo_name = ""
+# `ask` sources (S10.1): CIU_SECRET_<var> in ciu's environment, else the store,
+# else a prompt; env delivery (restart-bound, listed by ciu check stage 9).
+[ciu_stack.webhook.secrets]
+webhook_secret  = { from = "ask", var = "WEBHOOK_SECRET",  delivery = "env", env_name = "GITHUB_RUNNER_WEBHOOK_SECRETS_WEBHOOK_SECRET" }
+webhook_git_pat = { from = "ask", var = "WEBHOOK_GIT_PAT", delivery = "env", env_name = "GITHUB_RUNNER_WEBHOOK_SECRETS_WEBHOOK_GIT_PAT" }
+
+[hooks]
+# registers the webhook with GitHub: payload URL = host.fqdn + the http endpoint's
+# host_port (both in the hook context, S12.2), the shared secret from ctx.secrets
+# (env-delivered secrets are in the context too)
+pre_compose = ["./pre_compose_hook.py"]
+post_compose = []

@@ -1,0 +1,51 @@
+# infra/db-core-seeded/ciu.stack.toml — v8 notation (plain TOML, draft.3; new stack: no v7 original)
+# Realization `db_core_seeded`: the `seeded` variant of main_db AND app_schema
+# ([service.main_db] seeded = "db_core_seeded", [service.app_schema] seeded =
+# "db_core_seeded"; selected with `ciu up --realness main_db=seeded`, then
+# recorded per layout in the generated file — a constraint on later selections,
+# S9.4). seeded (S9.1): a prepared image this project owns, with the roles, the
+# application schema and test fixtures baked in at image-build time. Its pg:*
+# contract facts therefore hold BY CONSTRUCTION: `provides` declares them — no
+# one-shot job, no entrypoint init script. The vault:secret/* facts of the
+# contract are different: a seeded image cannot satisfy them by construction (a
+# Vault fact means the value IS in Vault), and no `store = "vault"` secret exists
+# here to derive them — so the post_compose hook writes the image's baked
+# credentials to Vault and provides them (the hook entry's `provides`, S6.10).
+# Consumers change nothing: a binding to main_db.sql resolves to this container
+# exactly as it would to db_core, and ciu check stage 5 proves this variant
+# provides every endpoint and fact consumers bind (S5.3.2); app_schema's contract
+# is [] so depending on it here means "this service is healthy" (S5.3.4). Lanes
+# declaring `requires.realness = { main_db = "live" }` refuse this variant.
+
+[ciu_stack.postgres]
+image = "dstdns/db-core-seeded:latest"   # <project.registry.namespace>/db-core-seeded — a literal in plain TOML; `ciu build` tags exactly this
+probe_user = "postgres"              # the superuser ciu's pg:* probes exec as inside this container (S5.6.2)
+# Ordering only (S6.4.4): the hook needs Vault up and unsealed, and nothing here
+# derives that edge (no vault-sourced secret) — so it is declared. The hook
+# reaches Vault the way ciu does (S7.8.7) with the bootstrap token from the store.
+requires = ["vault"]
+provides = [                         # the pg:* half of main_db's DERIVED contract: baked in, holds by construction (S9.1)
+  "pg:db/dstdns", "pg:db/authentik",
+  "pg:role/controller", "pg:role/controller_ddl", "pg:role/workerdb", "pg:role/workerdb_ddl",
+  "pg:role/webapp", "pg:role/authentik",
+]
+endpoints.sql = { port = 5432, protocol = "tcp" }
+
+[ciu_stack.postgres.hostdir]
+data = ""                            # instance-scoped working copy: the image restores its baked snapshot into an empty PGDATA on first start
+
+[hooks]
+pre_compose = []
+# A seeded image cannot satisfy Vault facts by construction: the credentials are
+# baked into the image, but a vault:secret/* fact says the value is in Vault.
+# The hook writes the image's baked credentials to Vault (the way authentik's
+# hook mints vault:secret/ddcli/service_password); its `provides` lists them,
+# attributed to the primary (postgres, the only service) and probed there before
+# the next wave (S8.5.2).
+post_compose = [
+  { run = "./post_compose_seed_vault.py", provides = [   # the vault:secret/* half of main_db's DERIVED contract
+    "vault:secret/db/postgres/controller_password", "vault:secret/db/postgres/controller_ddl_password",
+    "vault:secret/db/postgres/workerdb_password", "vault:secret/db/postgres/workerdb_ddl_password",
+    "vault:secret/db/postgres/webapp_password", "vault:secret/db/postgres/authentik_password",
+  ] },
+]

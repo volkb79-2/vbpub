@@ -1,0 +1,120 @@
+# infra-global/reverse-proxy/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `reverse_proxy` (bound by ciu.toml [realization.reverse_proxy]),
+# service `nginx` → dstdns-<instance>-reverse-proxy-nginx. It REALIZES
+# [network.edge] (kind = "proxy", fqdn): a consumer whose host lists `edge` in
+# its reach resolves a publish = "proxy" endpoint THROUGH it as
+# https://<fqdn><path> (S7.8 step 5; the port is this stack's host-published
+# https endpoint). Its own upstreams are ordinary BINDINGS (below) and the paths
+# it fronts are the providers' endpoint `path`s — the v7 copies of topology and
+# app identity are gone. DERIVED too: the identity, the network attachment, the
+# cross-host resolutions (on prod3 nginx@tsstammtisch reaches controller@rs1002
+# over mesh: host = rs1002's mesh address, port = the endpoint's host_port —
+# which is exactly what publishes those endpoints on rs1002, S7.4.1), and the
+# minter edge behind the cmru tokens once they are enabled (S8.3 — no
+# `requires` on consul needed). Shape change vs v7 (infra-P24/D-006 "HTTP-only
+# behind the on-host tls-edge"): here the proxy owns the host-published https
+# endpoint and terminates TLS itself, so the traefik labels and the
+# ingress_public network are retired. nginx.conf.j2 is a config file rendered
+# by ciu (S6.9), not by a hook: it reads the bindings, the endpoints and
+# networks.edge.fqdn from the compose context (S3.5.1).
+
+[ciu_stack.nginx]
+image = "nginx:alpine"
+endpoints.http  = { port = 8080, protocol = "http" }                                     # app router; instance network
+endpoints.https = { port = 443,  protocol = "https", publish = "host", host_port = 443 } # public ingress: the edge network's front door (S7.8 step 5 reads its host_port; ciu check stage 7 requires it)
+# TLS material for `https`: HOST-scoped secrets consumed through from = "host" —
+# see [ciu_stack.nginx.secrets] below.
+
+# The fronted backends: bindings with wait = "none" — runtime-only dependencies
+# (the proxy is in the last wave anyway and nginx tolerates an upstream that is
+# not up yet), so a resolution and no ordering edge (S8.2) — and template
+# delivery (D18): nginx.conf.j2 reads ciu_stack.nginx.binds.<backend>.host / .port
+# for the upstream and .path for the location prefix (the provider's endpoint
+# `path`), one spelling in every layout. Same host → the provider's container
+# name on the instance network; cross-host → the provider host's address on the
+# first admitting network in reach + the endpoint's host_port (S7.8). `url`
+# carries no path for direct resolutions (S7.8 step 7).
+[ciu_stack.nginx.binds.controller]
+to = "controller.http"
+wait = "none"
+delivery = "template"
+[ciu_stack.nginx.binds.webapp_server]
+to = "webapp_server.http"
+wait = "none"
+delivery = "template"
+[ciu_stack.nginx.binds.webapp_ui]
+to = "webapp_ui.http"
+wait = "none"
+delivery = "template"
+[ciu_stack.nginx.binds.identity_provider]
+to = "identity_provider.http"
+wait = "none"
+delivery = "template"
+# Optional management UIs (flags below, all off) join as further bindings when
+# switched on: tracing.ui, registry.ui, browser_service.mcp, vault.api (db_admin
+# declares no endpoint in the demo yet); their former proxy-side paths
+# (/skywalking-ui, /registry-ui, /pgadmin, /vault-ui, /vault-api, /pwmcp-mcp)
+# live on those endpoints' `path`. Not declared while off: a binding target
+# outside the selected bundles is an ERROR (S5.5.4).
+
+[ciu_stack.nginx.hostdir]
+auth = ""
+
+[ciu_stack.nginx.auth]
+enabled = false
+auth_file = "/etc/nginx/auth/.htpasswd"
+
+[ciu_stack.nginx.features]
+enable_skywalking = false
+enable_registry = false
+enable_pgadmin = false
+enable_vault = false
+enable_pwmcp_mcp = false
+enable_authentik = true
+# CMRU deployment-control bootstrap fallback (SPEC H §4/§5): bearer-gated
+# GET-only paths for freshly-enrolled hosts to fetch desired state before they
+# join the tailnet. true only on the host serving as the enrollment endpoint —
+# flip it together with `enabled` on the two secrets below. (The v7 Jinja flag
+# that gated the flag, the consul dependency and the secrets at once is expanded
+# to its shipped value, false: plain TOML has no conditionals.)
+enable_cmru_bootstrap_fallback = false
+
+[ciu_stack.nginx.cmru_bootstrap]     # non-secret tuning (nginx zone cmru_bootstrap; denials go to error_log)
+rate_limit_rps = 10
+rate_limit_burst = 20
+
+# TLS material for `https` is HOST-scoped (S10.4): ciu.hosts.toml declares
+# [hosts.<h>.secrets] tls_cert_pem / tls_key_pem ({ from = "ask" } on the edge
+# host, { from = "file" } on localhost), materialized on the ciu host before the
+# push into [secrets.hosts.<h>.*] and pushed only to that host. This stack
+# CONSUMES them through from = "host", entry = "<entry>" (S10.1) with file
+# delivery: ciu mounts them at /run/secrets/tls_cert and /run/secrets/tls_key
+# (S10.2.1, S11.4) and nginx.conf.j2 points ssl_certificate / ssl_certificate_key
+# there. ciu check refuses a layout that places this stack on a host without
+# both entries (S10.1.3).
+[ciu_stack.nginx.secrets]
+tls_cert = { from = "host", entry = "tls_cert_pem", delivery = "file" }
+tls_key  = { from = "host", entry = "tls_key_pem",  delivery = "file" }
+# cmru bootstrap fallback, enabled = false: neither materialized nor delivered,
+# no edge, no fact (S10.2). bearer_token: short-lived bearer the enrolling host
+# presents (rotated by post_compose_consul.py, 24 h max). consul_viewer_token:
+# pre-minted viewer ACL SecretID forwarded to Consul so ACL enforcement still
+# applies behind the proxy. configfile delivery: nginx.conf.j2 inlines them via
+# secret("bearer_token") behind a features.enable_cmru_bootstrap_fallback guard
+# (S10.2.6 — the rendered file then becomes a 0400 secret-bearing artifact);
+# once enabled, the minter edge onto consul_server derives from the vault path (S8.3).
+bearer_token        = { from = "vault", path = "consul_cmru_bootstrap_bearer_token", delivery = "configfile", enabled = false }
+consul_viewer_token = { from = "vault", path = "consul_cmru_viewer_token",           delivery = "configfile", enabled = false }
+
+# Rendered to ciu.rendered/nginx/etc/nginx/ciu/nginx.conf; the PARENT directory
+# /etc/nginx/ciu is mounted read-only (S6.9.1) — deliberately a subdirectory:
+# mounting /etc/nginx itself would hide the image's mime.types, so the compose
+# command starts nginx with -c on the rendered file. (The v7 hook that rendered
+# nginx.conf and copied etc-nginx/ is gone.)
+[ciu_stack.nginx.configfile.nginx]
+template = "nginx.conf.j2"
+target = "/etc/nginx/ciu/nginx.conf"
+
+[hooks]
+pre_compose = []
+post_compose = []

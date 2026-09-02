@@ -4,8 +4,9 @@ Templates render with a ``ciu`` mapping (``selected_profiles``,
 ``deployed_stacks``) whenever the invocation has selection facts; outside a
 deployment render the key is OMITTED so ``ciu.*`` references fail loudly
 (Jinja UndefinedError) instead of silently seeing an empty selection. Hooks
-receive the same facts (plus this workspace's identity from its own ciu.env)
-on the HookContext — no ambient-environment trust, no ciu.env persistence.
+receive the same facts (plus this workspace's identity from its own generated
+overlay table) on the HookContext — no ambient-environment trust, no ciu.env
+persistence.
 """
 
 from __future__ import annotations
@@ -112,6 +113,31 @@ def test_render_compose_exposes_selection(tmp_path):
     assert 'profiles: "core,apps"' in rendered
 
 
+def test_render_compose_ciu_instances_membership_check_with_no_fanout(tmp_path):
+    """CIU-74 / S7.5b: the sanctioned ``'api' in ciu.instances`` fan-out
+    membership test must keep working when *nothing* declares an
+    ``instances`` count — ``_CTX`` here carries no ``instances`` key at all,
+    exactly the "no fan-out anywhere" case the backlog entry is about.
+    Proves the always-present-empty-``{}``-mapping fix, not merely the
+    StrictUndefined switch: StrictUndefined ALONE (with no context-assembly
+    fix) would make this same membership test raise ``UndefinedError``
+    instead of evaluating to False.
+    """
+    template = tmp_path / "ciu.compose.yml.j2"
+    template.write_text(
+        "services:\n"
+        "  app:\n"
+        "    image: busybox\n"
+        "    labels:\n"
+        "      fans_out: \"{{ 'api' in ciu.instances }}\"\n",
+        encoding="utf-8",
+    )
+
+    rendered = composefile.render_compose(template, {}, ciu_context=dict(_CTX))
+
+    assert 'fans_out: "False"' in rendered
+
+
 def test_global_chain_exposes_selection_to_defaults(tmp_path):
     (tmp_path / GLOBAL_DEFAULTS).write_text(
         'flag = {{ "true" if \'infra/core\' in ciu.deployed_stacks else "false" }}\n',
@@ -124,6 +150,26 @@ def test_global_chain_exposes_selection_to_defaults(tmp_path):
 
     # `flag = true` renders unquoted → tomllib parses it as a TOML boolean.
     assert merged["flag"] is True
+
+
+def test_global_chain_ciu_instances_membership_check_with_no_fanout(tmp_path):
+    """CIU-74 / S7.5b, TOML-layer side: the same always-present-empty-``{}``
+    fix applies to ``config_model._make_render_context`` (used by
+    ``render_global_chain``/``render_stack`` for TOML templates), not just
+    ``composefile.render_compose`` — a global/stack TOML template checking
+    ``'x' in ciu.instances`` with no fan-out declared anywhere must render,
+    not raise.
+    """
+    (tmp_path / GLOBAL_DEFAULTS).write_text(
+        "fans_out = {{ \"true\" if 'api' in ciu.instances else \"false\" }}\n",
+        encoding="utf-8",
+    )
+
+    merged = config_model.render_global_chain(
+        tmp_path, tmp_path, ciu_context=dict(_CTX)
+    )
+
+    assert merged["fans_out"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +300,8 @@ def test_engine_threads_selection_into_configfiles_and_hooks(
     assert 'selected_profiles = "core,apps"' in body
     assert 'deployed_stacks = "infra/core;applications/app-config"' in body
     assert 'ctx_profiles = "core,apps"' in body
-    # identity comes from THIS workspace's own ciu.env (exact path), not ambient
+    # identity comes from THIS workspace's own generated overlay facts (exact
+    # path), not ambient
     assert "ctx_network" in body
 
 
@@ -272,6 +319,9 @@ def test_hookcontext_identity_fields_default_none():
     assert ctx.deployed_stacks is None
     assert ctx.instance_id is None
     assert ctx.network is None
+    # CIU-80: additive field, defaults False in bare/unit construction too —
+    # a hook author who never sets it sees the same "no signal" it always had.
+    assert ctx.identity_unreadable is False
 
 # ---------------------------------------------------------------------------
 # Review repairs — B1: the config's own [ciu] table survives in template scope
@@ -321,31 +371,184 @@ def test_compose_render_also_merges_ciu_table(tmp_path):
     assert 'PROFILES: "core"' in rendered
 
 
-def test_engine_identity_read_survives_unreadable_ciu_env(
+def test_engine_identity_read_survives_unreadable_overlay(
     tmp_path, monkeypatch
 ):
-    """An unreadable ciu.env degrades ctx identity to None — the deploy
-    proceeds; the OSError branch of the S3.12 wiring is exercised."""
-    import os
-
+    """An unreadable overlay degrades ctx identity to None — the deploy
+    proceeds; the read-failure branch of the S3.12 wiring is exercised."""
     monkeypatch.setenv("CIU_SECRET_LICENSE", "demo")
     repo_root = _build_repo(tmp_path, monkeypatch)
     stack = _add_stack(repo_root)
 
     # Skip ONLY the step-1 bootstrap (it legitimately needs the record and
-    # already ran in _build_repo); make the file unreadable for the ENGINE's
-    # own S3.12 identity read: stat still succeeds so is_file() passes, but
-    # open() raises PermissionError(OSError).
+    # already ran in _build_repo). Pre-CIU-75 this test made the FILE
+    # unreadable (stat succeeds, open() raises PermissionError); the reader is
+    # now the seam that normalizes OSError, UnicodeDecodeError and malformed
+    # TOML into one WorkspaceEnvError, so the failure is injected there.
     monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **_kw: None)
-    env_path = repo_root / "ciu.env"
-    env_path.chmod(0o000)
-    try:
-        result = engine.main_execution(
-            stack, dry_run=True, yes=True, ciu_context=dict(_CTX)
-        )
-    finally:
-        env_path.chmod(0o644)  # let tmp cleanup work regardless of runner uid
+    # CIU-75: the overlay is ALSO a config-chain layer, so corrupting the FILE
+    # now fails the render long before step 12 — a strictly louder outcome, and
+    # not the arc under test. Make the S3.12 identity READ itself fail, which
+    # is exactly the condition this handler exists for.
+    monkeypatch.setattr(
+        engine, "read_generated_facts",
+        lambda _root: (_ for _ in ()).throw(
+            engine.WorkspaceEnvError("[S3.1c] could not read ...: denied")
+        ),
+    )
+    result = engine.main_execution(
+        stack, dry_run=True, yes=True, ciu_context=dict(_CTX)
+    )
     assert result["status"] == "success"
+
+
+def _identity_probe_stack(repo_root: Path, marker: Path) -> Path:
+    """A stack whose pre_secrets hook writes the ctx identity it was given.
+
+    The strong oracle for the arcs below: it proves not only that no traceback
+    escaped, but WHAT the hook was told — the documented `{}` degradation, the
+    same answer `deploy._workspace_identity` gives the `ciu check` preflight.
+    The marker also carries `ctx.identity_unreadable` (CIU-80) — the field
+    that lets a hook tell "genuinely unmanaged" from "record exists, CIU
+    could not parse it" apart, which `instance_id`/`network` alone cannot.
+    """
+    stack = _add_stack(repo_root)
+    (stack / "identity_probe.py").write_text(
+        "def run(config, ctx):\n"
+        f"    open({str(marker)!r}, 'w').write(\n"
+        "        f'{ctx.instance_id!r}|{ctx.network!r}|{ctx.identity_unreadable!r}'\n"
+        "    )\n"
+        "    return {}\n",
+        encoding="utf-8",
+    )
+    defaults = stack / "ciu.defaults.toml.j2"
+    defaults.write_text(
+        defaults.read_text(encoding="utf-8").replace(
+            "[app_config.hooks]",
+            '[app_config.hooks]\npre_secrets = ["identity_probe.py"]\n',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    return stack
+
+
+@pytest.mark.parametrize(
+    "kind, payload",
+    [
+        # The two causes `read_generated_facts` normalizes into one
+        # WorkspaceEnvError at the seam (their file-level forms are proven
+        # against the reader itself in test_ciu_workspace_env.py).
+        ("non-UTF-8 byte", "[S3.1c] could not read ...: 'utf-8' codec"),
+        ("malformed entry", "[S3.1c] ... has a malformed table"),
+    ],
+)
+def test_engine_identity_read_survives_an_unparseable_identity_record(
+    tmp_path, monkeypatch, capsys, kind, payload
+):
+    """CIU-62 — the real-run twin of `deploy._workspace_identity`.
+
+    `except (WorkspaceEnvError, OSError)` here caught neither a non-UTF-8 byte
+    nor... well, it caught the malformed entry, but not the byte: a non-UTF-8
+    record escaped this handler and crashed `ciu up` at the S3.12 identity
+    read with a raw traceback, where the sibling `ciu check` path degraded
+    cleanly. Both are now handled, and both degrade the SAME way — a preflight
+    that saw an identity its own real run would not is exactly the divergence
+    S3.12/CIU-44 exists to prevent. CIU-75 moved the SOURCE to the overlay's
+    generated table and normalized all three exception types at the reader;
+    the degradation contract is unchanged.
+    """
+    monkeypatch.setenv("CIU_SECRET_LICENSE", "demo")
+    repo_root = _build_repo(tmp_path, monkeypatch)
+    marker = tmp_path / f"identity-{kind.split()[0]}.txt"
+    stack = _identity_probe_stack(repo_root, marker)
+
+    # Skip ONLY step 1's bootstrap (it legitimately needs a valid record and
+    # already ran in _build_repo); the ENGINE's own S3.12 read is the arc
+    # under test, and it reads the file below by exact path.
+    monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **_kw: None)
+    # CIU-75: the S3.12 read is the arc under test; corrupting the overlay FILE
+    # would fail the config-chain render first (a louder, different outcome).
+    monkeypatch.setattr(
+        engine, "read_generated_facts",
+        lambda _root: (_ for _ in ()).throw(engine.WorkspaceEnvError(payload)),
+    )
+
+    result = engine.main_execution(
+        stack, dry_run=True, yes=True, ciu_context=dict(_CTX)
+    )
+
+    assert result["status"] == "success", f"a {kind} must not abort the run"
+    assert marker.read_text(encoding="utf-8") == "None|None|True", (
+        "the hook must be told the documented 'no identity', never a "
+        "half-parsed or fabricated one — and (CIU-80) that this is the "
+        "PRESENT-but-unreadable state (identity_unreadable=True), not the "
+        "legitimate-absent one"
+    )
+    # CIU-62 review ruling: the degradation stays, the SILENCE does not.
+    # Without this the estate's own default test — "if this default is wrong,
+    # does anything fail loudly?" — answers no, and a hook seeing
+    # instance_id=None cannot distinguish "unmanaged" from "corrupt, swallowed".
+    out = capsys.readouterr().out
+    assert "[WARN] [S3.12] could not read workspace identity" in out
+    assert "ciu.instance.generated.toml" in out
+    assert payload in out, "the warning must name the underlying cause"
+    assert "ciu env generate" in out, "the warning must name the repair"
+
+
+def test_identity_unreadable_agrees_between_check_preflight_and_real_run(
+    tmp_path, monkeypatch, capsys
+):
+    """CIU-80's MANDATORY pairing requirement: `deploy._workspace_identity`
+    (the `ciu check` preflight's HookContext) and `engine.main_execution`'s
+    STEP-12 real-run read must set `identity_unreadable` IDENTICALLY on the
+    SAME unreadable identity record — a hook's `validate_config` must never
+    see an identity state its own `run()` would not (the exact divergence
+    S3.12 / CIU-44 / CIU-62 exist to prevent).
+
+    CIU-75 re-pointed the fixture, deliberately keeping this test END-TO-END
+    rather than monkeypatching either side: the corruption must be one the
+    config-chain render TOLERATES (the overlay is also a chain layer now, so
+    malformed TOML would fail the run long before STEP 12) while the identity
+    READER rejects it. A non-string fact is exactly that — valid TOML, merges
+    fine, and `read_generated_facts` refuses it because a number flowing into
+    a compose project name or a docker label as `str(int)` would be silently
+    wrong rather than loudly refused. So both sides here are still driven by
+    ONE real file, which is the whole point of a pairing oracle.
+    """
+    from ciu import deploy
+
+    monkeypatch.setenv("CIU_SECRET_LICENSE", "demo")
+    repo_root = _build_repo(tmp_path, monkeypatch)
+    marker = tmp_path / "identity-pairing.txt"
+    stack = _identity_probe_stack(repo_root, marker)
+
+    monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **_kw: None)
+    (repo_root / "ciu.instance.generated.toml").write_text(
+        "[ciu.instance.generated]\ninstance_id = 7\n", encoding="utf-8"
+    )
+
+    # ---- real-run side: engine.main_execution's STEP-12 identity read ----
+    result = engine.main_execution(stack, dry_run=True, yes=True, ciu_context=dict(_CTX))
+    assert result["status"] == "success"
+    real_run_probe = marker.read_text(encoding="utf-8")
+    capsys.readouterr()  # drain the real-run's own [WARN], not under test here
+
+    # ---- preflight side: deploy._workspace_identity, the ciu check twin ----
+    identity, identity_unreadable = deploy._workspace_identity(repo_root)
+    capsys.readouterr()  # drain deploy's own stderr [WARN]
+
+    assert identity == {}
+    assert real_run_probe == f"None|None|{identity_unreadable!r}", (
+        "the real run's ctx.identity_unreadable must equal the preflight's "
+        "own read on the identical ciu.env — a divergence here means a "
+        "validate_config preflight would certify a config against an "
+        "identity state its own run() would not agree with"
+    )
+    assert identity_unreadable is True, (
+        "both sides must land on PRESENT-but-unreadable, not the legitimate-"
+        "absent state, for this malformed-entry fixture"
+    )
 
 
 from ciu.hooks_runner import HookContext  # noqa: E402

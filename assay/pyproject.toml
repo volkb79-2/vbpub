@@ -44,7 +44,32 @@ where = ["src"]
 # `assay/__init__.py`. tests/test_verdict_schema_is_packaged.py proves both
 # sides.
 [tool.setuptools.package-data]
-assay = ["schemas/*.json"]
+# The Go statement-position oracle (B047 item 1, A-217) ships as SOURCE inside
+# the wheel and is invoked with `go run` -- B047's recommended option (a) over
+# option (b), a separately built binary, because the source is then covered by
+# `judge_provenance` and needs no second artifact to pin.
+#
+# MEASURED, not assumed (A-396): these patterns are currently INERT. Built with
+# this whole stanza deleted, the wheel still carries
+# `assay/helpers/go/stmtpos/{stmtpos.go,go.mod}` AND
+# `assay/schemas/verdict.schema.json`, because `setuptools_scm` (below)
+# installs a git file finder and setuptools' `include_package_data` defaults to
+# true under pyproject metadata, so every GIT-TRACKED file under the package
+# directory ships already.
+#
+# They are declared anyway, for the one scenario this project's own config
+# anticipates: `[tool.setuptools_scm]` sets `fallback_version`, which is
+# reachable only when git metadata is absent -- and in that build the file
+# finder returns nothing and package data is the only thing left declaring
+# what ships. Declaring it also makes wheel contents a stated fact rather than
+# a consequence of git tracking. What actually PROVES the helper ships, under
+# whichever mechanism, is `tests/test_go_helper_is_packaged.py`, which reads
+# the built wheel's own namelist.
+assay = [
+    "schemas/*.json",
+    "helpers/go/stmtpos/*.go",
+    "helpers/go/stmtpos/go.mod",
+]
 
 # Version is derived from git tags by setuptools-scm (no clock, no manual bump),
 # matching the estate's other wheel projects. `root = ".."` because the git root

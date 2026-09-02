@@ -1445,7 +1445,10 @@ def test_action_clean_preserves_worktree_durable_inputs(monkeypatch, tmp_path):
     profile.config = config
     durable = {
         "ciu.env": 'export INSTANCE_ID="abc123"\n',
-        "ciu.global.worktree.toml.j2": "[ciu.instance]\nservice_profiles = [\"core\"]\n",
+        "ciu.global.instance.toml.j2": "[ciu.instance]\nservice_profiles = [\"core\"]\n",
+        "ciu.instance.generated.toml": (
+            '[ciu.instance.generated]\ninstance_id = "abc123"\n'
+        ),
         "ciu.worktree-instance.json": '{"schema_version": 1}\n',
     }
     for name, body in durable.items():
@@ -1582,6 +1585,17 @@ import os  # noqa: E402
 import textwrap  # noqa: E402
 
 from ciu import provisioning  # noqa: E402
+
+
+def _write_identity_facts(root, **facts):
+    """CIU-75: `ciu check`'s S3.12 identity comes from the checkout's generated
+    `[ciu.instance.generated]` overlay table, not its legacy `ciu.env`."""
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
+
+    payload = {key: "" for key in GENERATED_FACTS_KEYS}
+    payload.update(facts)
+    write_generated_facts(root, payload)
+
 
 
 _CHECK_GLOBAL: dict = {"deploy": {"project_name": "p", "environment_tag": "t"}}
@@ -2018,6 +2032,180 @@ def test_check_stage9_aggregates_validate_config_findings(tmp_path, capsys):
     assert {f["hook"] for f in findings} == {"h.py"}
 
 
+# --- CIU-65: validate_config findings carry a severity ---------------------
+#
+# Oracle: a hook author can report something worth knowing WITHOUT also
+# making it must-block. ERROR keeps today's meaning exactly (a bare string is
+# an ERROR, unchanged), WARN routes to a stage NOTE, and an unrecognized
+# severity is refused rather than guessed at in EITHER direction.
+
+
+def _severity_stack(tmp_path, body: str) -> dict:
+    _write(tmp_path / "infra/app/h.py", f"""\
+        def run(config, ctx):
+            raise AssertionError("run() must not execute")
+
+        def validate_config(config, ctx):
+{body}
+    """)
+    return {"infra/app": _hook_stack(tmp_path, "infra/app", {"post_compose": ["h.py"]})}
+
+
+def test_check_stage9_bare_string_finding_is_still_an_error(tmp_path, capsys):
+    """CIU-65 backward compatibility, pinned: the pre-CIU-65 shape must not
+    change weight. A hook that says nothing about severity still BLOCKS."""
+    rendered = _severity_stack(tmp_path, '            return ["old style finding"]')
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    stage = _stage(doc, "hooks-preflight")
+    assert stage["status"] == "fail"
+    assert [f["message"] for f in stage["findings"]] == ["old style finding"]
+    assert stage["notes"] == []
+
+
+def test_check_stage9_warn_severity_does_not_fail_the_stage(tmp_path, capsys):
+    """CIU-65's whole point: a WARN is recorded, visible, and blocks nothing."""
+    rendered = _severity_stack(
+        tmp_path, '            return [("WARN", "readonly role is absent")]'
+    )
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0
+    stage = _stage(doc, "hooks-preflight")
+    assert stage["status"] == "pass"
+    assert stage["findings"] == []
+    assert [n["message"] for n in stage["notes"]] == ["[WARN] readonly role is absent"]
+    # A WARN names its hook exactly as an ERROR does, or the two tiers would
+    # carry different provenance for the same kind of finding.
+    assert stage["notes"][0]["hook"] == "h.py"
+    assert stage["notes"][0]["stack"] == "infra/app"
+
+
+def test_check_stage9_error_severity_pair_fails_like_a_bare_string(tmp_path, capsys):
+    rendered = _severity_stack(
+        tmp_path, '            return [("ERROR", "registry.database is missing")]'
+    )
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    stage = _stage(doc, "hooks-preflight")
+    assert [f["message"] for f in stage["findings"]] == ["registry.database is missing"]
+    assert stage["notes"] == []
+
+
+def test_check_stage9_severity_is_case_and_whitespace_insensitive(tmp_path, capsys):
+    """The documented normalization — `str(v).strip().upper()`, the same one
+    S10.7's ciu.exit_on already applies to this exact vocabulary."""
+    rendered = _severity_stack(tmp_path, """\
+            return [
+                ("warn", "lowercase warn"),
+                (" Error ", "padded mixed-case error"),
+            ]""")
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    stage = _stage(doc, "hooks-preflight")
+    assert [f["message"] for f in stage["findings"]] == ["padded mixed-case error"]
+    assert [n["message"] for n in stage["notes"]] == ["[WARN] lowercase warn"]
+
+
+def test_check_stage9_a_two_element_list_is_a_severity_pair_too(tmp_path, capsys):
+    """Documented on purpose: a hook assembling findings from JSON or a
+    comprehension produces lists, and refusing those would be a trap with no
+    safety value."""
+    rendered = _severity_stack(
+        tmp_path, '            return [["WARN", "from a list, not a tuple"]]'
+    )
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0
+    assert [n["message"] for n in _stage(doc, "hooks-preflight")["notes"]] == [
+        "[WARN] from a list, not a tuple"
+    ]
+
+
+def test_check_stage9_unknown_severity_is_refused_not_guessed(tmp_path, capsys):
+    """The masked-default guard. `"warning"` is a plausible typo for WARN;
+    silently reading it AS a warn would downgrade a blocking finding, and the
+    run that does so looks identical to a healthy one. It fails loudly and
+    names the vocabulary instead."""
+    rendered = _severity_stack(
+        tmp_path, '            return [("warning", "typo\'d severity")]'
+    )
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    stage = _stage(doc, "hooks-preflight")
+    assert stage["status"] == "fail"
+    message = stage["findings"][0]["message"]
+    assert "'warning'" in message
+    assert "WARN or ERROR" in message
+    assert stage["notes"] == []
+
+
+def test_check_stage9_never_is_not_a_finding_severity(tmp_path, capsys):
+    """NEVER is in S10.7's exit_on vocabulary but is a THRESHOLD, not a
+    property a finding can have — so the finding vocabulary is deliberately
+    the SUBSET, and NEVER is refused like any other unknown value."""
+    rendered = _severity_stack(
+        tmp_path, '            return [("NEVER", "not a finding severity")]'
+    )
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    assert "'NEVER'" in _stage(doc, "hooks-preflight")["findings"][0]["message"]
+
+
+def test_check_stage9_wrong_length_sequence_stays_a_fail_closed_error(tmp_path, capsys):
+    """A 3-tuple is not a severity pair. It falls through to the pre-CIU-65
+    treatment — str(item) as an ERROR — so an odd return keeps failing closed
+    rather than becoming newly acceptable."""
+    rendered = _severity_stack(
+        tmp_path, '            return [("WARN", "a", "b")]'
+    )
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    stage = _stage(doc, "hooks-preflight")
+    assert stage["notes"] == []
+    assert "'WARN'" in stage["findings"][0]["message"]
+
+
+def test_check_stage9_non_list_return_names_both_accepted_shapes(tmp_path, capsys):
+    """The contract-violation message has to describe what IS accepted now,
+    not the pre-CIU-65 'list of error strings'."""
+    rendered = _severity_stack(tmp_path, "            return True")
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 2
+    message = _stage(doc, "hooks-preflight")["findings"][0]["message"]
+    assert "validate_config returned bool" in message
+    assert "(severity, message)" in message
+    assert "WARN or ERROR" in message
+
+
+def test_classify_hook_finding_unit_contract():
+    """The classifier's own table, independent of the check pipeline."""
+    assert deploy.classify_hook_finding("bare") == ("ERROR", "bare")
+    assert deploy.classify_hook_finding(("WARN", "w")) == ("WARN", "w")
+    assert deploy.classify_hook_finding(["error", "e"]) == ("ERROR", "e")
+    # Non-string members are stringified, not rejected.
+    assert deploy.classify_hook_finding(("WARN", 7)) == ("WARN", "7")
+    assert deploy.classify_hook_finding(17) == ("ERROR", "17")
+    with pytest.raises(ValueError, match="WARN or ERROR"):
+        deploy.classify_hook_finding(("nope", "m"))
+
+
 def test_check_stage9_skips_hooks_without_validate_config(tmp_path, capsys):
     _write(tmp_path / "infra/app/h.py", "def run(config, ctx):\n    return {}\n")
     rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_secrets": ["h.py"]})}
@@ -2164,20 +2352,27 @@ def test_check_suppresses_bytecode_writes_while_importing_hooks(tmp_path):
     _write(tmp_path / "infra/app/h.py", "def run(config, ctx):\n    return {}\n")
     rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
 
+    # CIU-78: restore must be compared against the AMBIENT value, not a
+    # hardcoded False — assay.toml's own declared gate environment sets
+    # PYTHONDONTWRITEBYTECODE=1, so sys.dont_write_bytecode starts True in
+    # the real gate.
+    ambient = sys.dont_write_bytecode
     before = _tree_snapshot(tmp_path)
     assert deploy.action_check(tmp_path, _check_profile(), [{"path": "infra/app"}], rendered) == 0
     assert _tree_snapshot(tmp_path) == before
-    assert sys.dont_write_bytecode is False  # restored
+    assert sys.dont_write_bytecode is ambient  # restored to whatever it was
 
 
 def test_check_restores_the_bytecode_flag_after_a_failed_import(tmp_path, capsys):
     _write(tmp_path / "infra/app/h.py", "raise RuntimeError('nope')\n")
     rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
 
+    # CIU-78: see note above — restore must match the ambient value.
+    ambient = sys.dont_write_bytecode
     rc, _doc = _run_check_json(tmp_path, rendered, capsys)
 
     assert rc == 2
-    assert sys.dont_write_bytecode is False
+    assert sys.dont_write_bytecode is ambient
 
 
 def test_check_ignores_malformed_hook_declarations(tmp_path, capsys):
@@ -2196,9 +2391,7 @@ def test_check_ignores_malformed_hook_declarations(tmp_path, capsys):
 
 def test_check_hook_context_mirrors_a_real_run_minus_secret_files(tmp_path, capsys):
     """The preflight ctx carries S3.12/CIU-41 identity + selection facts."""
-    (tmp_path / "ciu.env").write_text(
-        "INSTANCE_ID=inst-7\nDOCKER_NETWORK_INTERNAL=net-7\n", encoding="utf-8"
-    )
+    _write_identity_facts(tmp_path, instance_id="inst-7", network="net-7")
     _write(tmp_path / "infra/app/h.py", """\
         def run(config, ctx):
             return {}
@@ -2226,11 +2419,13 @@ def test_check_hook_context_mirrors_a_real_run_minus_secret_files(tmp_path, caps
     assert rc == 0, _stage(doc, "hooks-preflight")["findings"]
 
 
-def test_check_identity_survives_an_unreadable_ciu_env(tmp_path, monkeypatch, capsys):
-    (tmp_path / "ciu.env").write_text("INSTANCE_ID=x\n", encoding="utf-8")
+def test_check_identity_survives_an_unreadable_overlay(tmp_path, monkeypatch, capsys):
+    _write_identity_facts(tmp_path, instance_id="x")
     monkeypatch.setattr(
-        deploy, "parse_workspace_env",
-        lambda _p: (_ for _ in ()).throw(OSError("permission denied")),
+        deploy, "read_generated_facts",
+        lambda _p: (_ for _ in ()).throw(
+            deploy.WorkspaceEnvError("[S3.1c] could not read ...: permission denied")
+        ),
     )
     _write(tmp_path / "infra/app/h.py", """\
         def run(config, ctx):
@@ -2244,6 +2439,125 @@ def test_check_identity_survives_an_unreadable_ciu_env(tmp_path, monkeypatch, ca
     rc, doc = _run_check_json(tmp_path, rendered, capsys)
 
     assert rc == 0, _stage(doc, "hooks-preflight")["findings"]
+
+
+def test_check_identity_survives_a_non_utf8_record(tmp_path, capsys):
+    """CIU-62 — a non-UTF-8 byte is `UnicodeDecodeError`, which is a
+    `ValueError` subclass and therefore caught by NEITHER `OSError` nor
+    `WorkspaceEnvError` (its sibling `ValueError` subclass). Before the fix
+    this escaped `_workspace_identity` and crashed `ciu check` with a raw
+    traceback; the documented contract is "absent or unreadable yields {}",
+    i.e. the hook context's identity fields stay None. Written with a REAL
+    undecodable file rather than a monkeypatched raiser, so it proves the
+    exception type the shipped reader actually produces. CIU-75 moved the
+    source to the generated facts table, ciu-P47 to its own file."""
+    (tmp_path / "ciu.instance.generated.toml").write_bytes(
+        b'[ciu.instance.generated]\ninstance_id = "\xff\xfe"\n'
+    )
+    _write(tmp_path / "infra/app/h.py", """\
+        def run(config, ctx):
+            return {}
+
+        def validate_config(config, ctx):
+            return [] if ctx.instance_id is None else [f"leaked {ctx.instance_id}"]
+    """)
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0, _stage(doc, "hooks-preflight")["findings"]
+
+
+def test_check_identity_survives_a_malformed_ciu_env_entry(tmp_path, capsys):
+    """CIU-62 sibling of the above: a malformed entry raises
+    `WorkspaceEnvError`, the OTHER `ValueError` subclass — also degrades to
+    the documented {}."""
+    (tmp_path / "ciu.env").write_text('this is not = valid "shell\n', encoding="utf-8")
+    _write(tmp_path / "infra/app/h.py", """\
+        def run(config, ctx):
+            return {}
+
+        def validate_config(config, ctx):
+            return [] if ctx.instance_id is None else [f"leaked {ctx.instance_id}"]
+    """)
+    rendered = {"infra/app": _hook_stack(tmp_path, "infra/app", {"pre_compose": ["h.py"]})}
+
+    rc, doc = _run_check_json(tmp_path, rendered, capsys)
+
+    assert rc == 0, _stage(doc, "hooks-preflight")["findings"]
+
+
+@pytest.mark.parametrize(
+    "kind, payload",
+    [
+        ("non-UTF-8 byte", b'[ciu.instance.generated]\ninstance_id = "\xff\xfe"\n'),
+        ("malformed table", b"[ciu.instance.generated]\ninstance_id = bare\n"),
+        # OSError, via a directory where a file is expected. CIU-75 changed
+        # this case's verdict on purpose: `ciu.env`'s `is_file()` guard folded
+        # a DIRECTORY into "absent, stay silent", which is the estate's
+        # absence-for-emptiness anti-pattern — a path that exists and cannot be
+        # read is indeterminate, and now says so.
+        ("unreadable path", None),
+    ],
+)
+def test_workspace_identity_degradation_warns_on_stderr(tmp_path, capsys, kind, payload):
+    """CIU-62 review ruling: the `{}` degradation stays, the SILENCE does not.
+
+    Two oracles, and the second is the load-bearing one:
+
+    1. the degradation is ANNOUNCED — without this, the estate's own default
+       test ("if this default is wrong, does anything fail loudly?") answers
+       no, and a hook reading `ctx.instance_id is None` cannot tell a
+       genuinely unmanaged workspace from a corrupt `ciu.env` swallowed;
+    2. it is announced on STDERR, never stdout. `warn()` prints to stdout,
+       and under `ciu check --json` (S13.4a) the versioned JSON document is
+       the ONLY thing that path may put on stdout — a `[WARN]` line ahead of
+       it breaks every machine consumer's parse. Using `warn()` here is a
+       real regression that this assertion is what catches.
+    """
+    env_path = tmp_path / "ciu.instance.generated.toml"
+    if payload is None:
+        env_path.mkdir()
+    else:
+        env_path.write_bytes(payload)
+
+    identity, identity_unreadable = deploy._workspace_identity(tmp_path)
+
+    assert identity == {}
+    captured = capsys.readouterr()
+    # CIU-75 x CIU-80: all THREE parametrized cases — including the directory,
+    # which CIU-80's `is_file()` guard used to route down the silent
+    # "absent" branch with the flag False — are present-but-unreadable, so all
+    # three warn and all three set the flag. The legitimate ABSENT state keeps
+    # its own test (`test_workspace_identity_absent_record_stays_silent`),
+    # which is where `identity_unreadable is False` is now asserted.
+    assert "[WARN] [S3.12] could not read workspace identity" in captured.err
+    assert "ciu env generate" in captured.err, "the warning must name the repair"
+    assert captured.out == "", (
+        "nothing may reach stdout here — `ciu check --json` puts only the "
+        "JSON document there (S13.4a)"
+    )
+    # CIU-80: PRESENT-but-unreadable sets the flag True, distinguishing this
+    # state from the legitimate-absent one, which
+    # `test_workspace_identity_absent_record_stays_silent` asserts.
+    assert identity_unreadable is True
+
+
+def test_workspace_identity_absent_record_stays_silent(tmp_path, capsys):
+    """CIU-62's legitimate state, constructed (AGENTS.md: a refusal/warning
+    whose condition also matches an ordinary state gets switched off). A
+    checkout where `ciu env generate` was never run genuinely HAS no identity;
+    that must stay silent, and only that."""
+    assert not (tmp_path / "ciu.instance.generated.toml").exists()
+
+    identity, identity_unreadable = deploy._workspace_identity(tmp_path)
+
+    assert identity == {}
+    # CIU-80's own pairing oracle, at the state its flag exists to keep apart
+    # from the three unreadable ones above: absent is NOT unreadable.
+    assert identity_unreadable is False
+    captured = capsys.readouterr()
+    assert captured.err == "" and captured.out == ""
 
 
 def test_check_secret_file_callback_refuses_every_name(tmp_path):
@@ -2381,6 +2695,189 @@ def test_check_stage12_counts_the_hook_consumption_marker(tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
+# O2/O3 — `[service.*]` identity registry consistency lint (S3.15, ciu-P22)
+# ---------------------------------------------------------------------------
+
+
+def _service_check(repo_root, config, selection, capsys, **kwargs):
+    """Run `action_check` in JSON mode against a hand-built config's
+    `[service.*]` table and *selection* — decoupled from `rendered`
+    (this lint reads only `profile.config['service']` and `selection`'s
+    paths, per S3.15), returning ``(rc, document)``.
+    """
+    profile = _check_profile(config)
+    rc = deploy.action_check(repo_root, profile, selection, {}, json_output=True, **kwargs)
+    return rc, json.loads(capsys.readouterr().out)
+
+
+def test_service_registry_lint_absent_registry_stage_not_entered(tmp_path, capsys):
+    """O3: absent `[service.*]` -> the lint code path is not entered at all."""
+    config = {"deploy": dict(_CHECK_GLOBAL["deploy"])}
+    rc, doc = _service_check(tmp_path, config, [{"path": "infra/app"}], capsys)
+
+    assert rc == 0
+    stage = _stage(doc, "service-registry")
+    assert stage["status"] == "pass"
+    assert stage["notes"] == []
+    assert stage["findings"] == []
+
+
+def test_service_registry_lint_empty_registry_is_a_no_op(tmp_path, capsys):
+    config = {"deploy": dict(_CHECK_GLOBAL["deploy"]), "service": {}}
+    rc, doc = _service_check(tmp_path, config, [{"path": "infra/app"}], capsys)
+
+    assert rc == 0
+    assert _stage(doc, "service-registry")["notes"] == []
+
+
+def test_service_registry_lint_registered_entry_not_deployed_warns(tmp_path, capsys):
+    """Isolates direction 1 only: a SECOND, consistent registry entry
+    ('consistent' / 'infra/other') absorbs the one deployed path so it
+    cannot also trigger direction 2 ("deployed but unregistered") —
+    proving direction 1 fires independently of direction 2."""
+    config = {
+        "deploy": dict(_CHECK_GLOBAL["deploy"]),
+        "service": {
+            "our_db_stack": {"type": "CIU", "location": "infra/db-core"},
+            "consistent": {"type": "CIU", "location": "infra/other"},
+        },
+    }
+    rc, doc = _service_check(tmp_path, config, [{"path": "infra/other"}], capsys)
+
+    assert rc == 0
+    stage = _stage(doc, "service-registry")
+    assert stage["status"] == "pass"
+    assert stage["findings"] == []
+    assert len(stage["notes"]) == 1
+    message = stage["notes"][0]["message"]
+    assert "[WARN]" in message
+    assert "our_db_stack" in message
+    assert "infra/db-core" in message
+    assert "consistent" not in message
+
+
+def test_service_registry_lint_deployed_stack_not_registered_warns(tmp_path, capsys):
+    config = {
+        "deploy": dict(_CHECK_GLOBAL["deploy"]),
+        "service": {"our_db_stack": {"type": "CIU", "location": "infra/db-core"}},
+    }
+    rc, doc = _service_check(
+        tmp_path, config,
+        [{"path": "infra/db-core"}, {"path": "infra/unregistered"}],
+        capsys,
+    )
+
+    assert rc == 0
+    stage = _stage(doc, "service-registry")
+    assert stage["findings"] == []
+    assert len(stage["notes"]) == 1
+    message = stage["notes"][0]["message"]
+    assert "[WARN]" in message
+    assert "infra/unregistered" in message
+
+
+def test_service_registry_lint_consistent_registry_and_deployment_no_warn(tmp_path, capsys):
+    config = {
+        "deploy": dict(_CHECK_GLOBAL["deploy"]),
+        "service": {"our_db_stack": {"type": "CIU", "location": "infra/db-core"}},
+    }
+    rc, doc = _service_check(tmp_path, config, [{"path": "infra/db-core"}], capsys)
+
+    assert rc == 0
+    stage = _stage(doc, "service-registry")
+    assert stage["status"] == "pass"
+    assert stage["notes"] == []
+
+
+def test_service_registry_lint_both_directions_independently(tmp_path, capsys):
+    """Negative guard (O3): both directions must be checked and asserted
+    independently, not merely 'some [WARN] substring appeared somewhere in
+    stdout'."""
+    config = {
+        "deploy": dict(_CHECK_GLOBAL["deploy"]),
+        "service": {
+            "our_db_stack": {"type": "CIU", "location": "infra/db-core"},
+            "orphan_registration": {"type": "CIU", "location": "infra/never-deployed"},
+        },
+    }
+    rc, doc = _service_check(
+        tmp_path, config,
+        [{"path": "infra/db-core"}, {"path": "infra/unregistered"}],
+        capsys,
+    )
+
+    assert rc == 0
+    stage = _stage(doc, "service-registry")
+    assert stage["findings"] == []
+    messages = [n["message"] for n in stage["notes"]]
+    assert len(messages) == 2
+    assert any(
+        "orphan_registration" in m and "infra/never-deployed" in m for m in messages
+    )
+    assert any("infra/unregistered" in m for m in messages)
+    # The consistent pair (our_db_stack / infra/db-core) must NOT appear in
+    # either warning — proving this is a genuine two-directional diff, not
+    # "every registered location and every deployed path, unconditionally".
+    assert not any("our_db_stack" in m for m in messages)
+    assert not any("infra/db-core" in m for m in messages)
+
+
+def test_service_registry_lint_never_fails_the_check(tmp_path, capsys):
+    """O2 negative: never a refusal, never exit 2, even with two orphaned
+    registrations and two unregistered deployments at once."""
+    config = {
+        "deploy": dict(_CHECK_GLOBAL["deploy"]),
+        "service": {
+            "orphan_a": {"type": "CIU", "location": "infra/orphan-a"},
+            "orphan_b": {"type": "EXTERNAL"},
+        },
+    }
+    rc, doc = _service_check(
+        tmp_path, config,
+        [{"path": "infra/unregistered_a"}, {"path": "infra/unregistered_b"}],
+        capsys,
+    )
+
+    assert rc == 0
+    assert doc["status"] == "pass"
+    assert _stage(doc, "service-registry")["status"] == "pass"
+
+
+def test_service_registry_lint_external_entry_without_location_never_warns(tmp_path, capsys):
+    """EXTERNAL/IN_PROCESS entries have no `location` (S3.14 forbids it) —
+    they must never participate in the "registered but not deployed"
+    direction, since they were never eligible to be deployed at all."""
+    config = {
+        "deploy": dict(_CHECK_GLOBAL["deploy"]),
+        "service": {"payment_api": {"type": "EXTERNAL"}},
+    }
+    rc, doc = _service_check(tmp_path, config, [{"path": "infra/app"}], capsys)
+
+    assert rc == 0
+    stage = _stage(doc, "service-registry")
+    # Only the "deployed but unregistered" direction fires for infra/app;
+    # payment_api (no location) never appears in it.
+    assert len(stage["notes"]) == 1
+    assert "payment_api" not in stage["notes"][0]["message"]
+    assert "infra/app" in stage["notes"][0]["message"]
+
+
+def test_service_registry_lint_prose_output_carries_the_warn_tag(tmp_path, capsys):
+    config = {
+        "deploy": dict(_CHECK_GLOBAL["deploy"]),
+        "service": {"our_db_stack": {"type": "CIU", "location": "infra/db-core"}},
+    }
+    profile = _check_profile(config)
+
+    rc = deploy.action_check(tmp_path, profile, [{"path": "infra/other"}], {})
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "[WARN]" in out
+    assert "our_db_stack" in out
+
+
+# ---------------------------------------------------------------------------
 # O4 — CLI surface, JSON envelope, exit-code discipline
 # ---------------------------------------------------------------------------
 
@@ -2445,7 +2942,7 @@ def test_check_json_reports_the_live_probe_verdict_separately(tmp_path, capsys, 
     """--live is the ONLY exit-1 class, so it is not a stage in the envelope."""
     monkeypatch.setattr(
         "ciu.provisioning.probe_ref",
-        lambda ref, _c, _r: provisioning.ProbeResult(ref, False, "absent"),
+        lambda ref, _c, _r, **_kw: provisioning.ProbeResult(ref, False, "absent"),
     )
     rendered = {
         "infra/db": _min_stack(tmp_path, "infra/db", {"provides": ["pg:db/app"]},
@@ -2464,7 +2961,7 @@ def test_check_json_reports_the_live_probe_verdict_separately(tmp_path, capsys, 
 def test_check_json_records_a_passing_live_probe(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(
         "ciu.provisioning.probe_ref",
-        lambda ref, _c, _r: provisioning.ProbeResult(ref, True, "ok"),
+        lambda ref, _c, _r, **_kw: provisioning.ProbeResult(ref, True, "ok"),
     )
     rendered = {
         "infra/db": _min_stack(tmp_path, "infra/db", {"provides": ["pg:db/app"]},

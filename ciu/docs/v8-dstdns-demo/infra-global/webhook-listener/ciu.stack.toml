@@ -1,0 +1,35 @@
+# infra-global/webhook-listener/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `webhook_listener` (bound by ciu.toml [realization.webhook_listener])
+# = the `webhook_listener` LogicalService: one service `webhook` (project-built
+# image; receives GitHub push events and triggers actions). DERIVED, never
+# written here: the identity (dstdns-<instance>-webhook-listener-webhook), the
+# host publication of the http endpoint (publish = "host": `ports:` injected in
+# every layout, S7.4.2), and the payload URL the pre_compose hook registers with
+# GitHub — it reads host.fqdn and the endpoint's host_port from its context
+# (S12.2); the rev-2 [public] fqdn copy is gone. No bindings: this stack reads
+# nobody's address.
+
+[ciu_stack.webhook]
+image = "dstdns/webhook-listener:latest"   # <project.registry.namespace>/webhook-listener — a literal in plain TOML; `ciu build` tags exactly this
+endpoints.http = { port = 9000, protocol = "http", publish = "host", host_port = 9000 }   # GitHub delivers to the host port
+[ciu_stack.webhook.hostdir]
+data = ""                            # "" = ciu-generated: <physical_repo_root>/ciu-data/webhook_listener/webhook/data (S6.8)
+[ciu_stack.webhook.git]              # consumer data (compose env)
+git_username = ""
+git_repo_name = ""
+# Structured sources (S10.1): `ask` reads CIU_SECRET_<var> from ciu's own
+# environment, else the store, else prompts. env delivery = the compose process
+# environment, referenced as ${env_name} in the template (restart-bound; ciu
+# check lists these).
+[ciu_stack.webhook.secrets]
+webhook_secret  = { from = "ask", var = "WEBHOOK_SECRET",  delivery = "env", env_name = "WEBHOOK_LISTENER_SECRETS_WEBHOOK_SECRET" }
+webhook_git_pat = { from = "ask", var = "WEBHOOK_GIT_PAT", delivery = "env", env_name = "WEBHOOK_LISTENER_SECRETS_WEBHOOK_GIT_PAT" }
+
+# Read by pre_compose_hook.py from its context (delivery = "hook", S10.2.5) to
+# register the webhook with GitHub — handed to the hook, delivered to no container.
+[ciu_stack.secrets]
+github_api_token = { from = "ask", var = "GITHUB_API_TOKEN", delivery = "hook" }
+
+[hooks]
+pre_compose = ["./pre_compose_hook.py"]
+post_compose = []

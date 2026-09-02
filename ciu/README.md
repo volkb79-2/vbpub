@@ -7,8 +7,8 @@ console entrypoint, **`ciu`**, a flat verb dispatcher:
 - identity and evidence: `ciu version`, `ciu provenance [--json]`
 - **Cross-profile secret producers are declarable** (`produced_by`, S13.6): an ASK_VAULT directive names the profile whose deployment provisions its Vault path, so a partial selection refuses upfront naming producer + path + remedies instead of failing mid-deploy with only the path.
 - **Honest provenance for mixed fleets** (`[deploy.provenance] vendor_images`, S17.5): declare third-party image references; running pins report `vendor-pinned`, drifted pins report `mismatch`, and `verified-match` becomes reachable on all-vendor deployments (provenance JSON at schema_version 2).
-- **Guided repo scaffolding** (`ciu init`, S19): generates a validated global defaults template, gitignore entries, and optional stack skeletons — templates ship inside the wheel, existing files are never overwritten.
-- managed instances: `ciu worktree create|adopt|ensure|rm|list|inspect|up|exec|branches` (`add` remains shorthand) — `branches` surveys local branches against a base, proves which are fully merged and safe to remove, and prunes exactly those on `-y` (never age-based; the mainline and the primary checkout's branch are never candidates)
+- **Guided repo scaffolding** (`ciu init`, S19): generates a validated global defaults template, gitignore entries, and optional stack skeletons — templates ship inside the wheel, existing files are never overwritten. `--hooks NAME1,NAME2` (S19.1) additionally copies shipped, revision-stamped hook templates into every scaffolded stack.
+- managed instances: `ciu worktree create|adopt|ensure|rm|list|inspect|up|exec|lease|branches|reap` (`add` remains shorthand) — `branches` surveys local branches against a base, proves which are fully merged and safe to remove, and prunes exactly those on `-y` (never age-based; the mainline and the primary checkout's branch are never candidates); `reap` is the same survey-then-act shape for DOCKER resources — it sorts every resource group into seven closed categories and on `-y` destroys exactly the four that a record, a lease or a `ciu.instance` label proves are disposable, never the unattributable or ambiguous ones (which no flag can select), and disposes of a surviving checkout by running `ciu clean` there rather than by a bare docker removal
 - machine interfaces: `ciu capabilities [--json]` — a versioned, closed capability allowlist
 - single stack: `ciu up --dir <stack>`, `ciu render`, `ciu dev <stack>`
 - multi-stack / multi-host: `ciu up`, `ciu down`, `ciu clean`, `ciu health` (by host profile)
@@ -60,29 +60,29 @@ touches a hand-written `docker-compose.yml`. An admin who has never heard of CIU
 can still `docker compose up` the committed file; the CIU path is additive.
 
 `ciu up --dir <stack> --shipped` runs the pre-shipped `docker-compose.yml` *through* CIU — loading
-`ciu.env`, ensuring/attaching the workspace network, and running the DooD
+the workspace identity, ensuring/attaching the workspace network, and running the DooD
 reachability preflight first — so even the "plain" path gains consistent
 machine-identity env interpolation and network wiring that bare `docker compose`
 lacks (see [docs/CIU.md](docs/CIU.md)). A shipped stack deployed without
 `deploy.project_name`/`environment_tag` runs under the **workspace-identity
-compose project** (`REPO_NAME-INSTANCE_ID-stack`, derived from this
-checkout's `ciu.env`) — unique per checkout, and the exact name `ciu clean`
+compose project** (`repo_name-instance_id-stack`, derived from this
+checkout's own generated identity facts) — unique per checkout, and the exact name `ciu clean`
 enumerates, so a config-less stack still tears down to zero objects (S8.7/S6.4a).
 
 ## Why CIU over a plain `docker-compose.yml`
 
 1. **Real secrets, never in the file.** Six directives (Vault read, generate-to-Vault, generate-local, ask-external, ask-file, ephemeral; S4.2) resolve secrets, write them as `0440` files, and mount them at `/run/secrets/<name>`. Three layers guarantee values never reach the YAML or logs: stringify-guards (S4.21), a post-render plaintext scan (S4.22), and redacted `--print-context` (S4.23).
 2. **Secure-by-default first run.** `GEN_LOCAL`/`GEN_TO_VAULT` mint a strong random secret on first run and reuse it forever — the file *is* the state, idempotent (S4.11). Clone, run, get unique credentials; no default-password footgun.
-3. **One template adapts to every host.** Compose and app-config files are Jinja2-rendered against layered TOML + machine facts (UID/GID, docker group, network name, physical paths, FQDN/TLS) **and the deployment selection** (`ciu.selected_profiles` / `ciu.deployed_stacks`, S3.12) so a stack can derive "is upstream X deployed" instead of hardcoding it. Admins tune TOML overrides (S3.3), not the maintainer's compose.
-4. **DooD / path correctness for free.** CIU computes physical bind paths so a stack runs identically in a devcontainer, native host, and CI (S1.9). A hand-written `./vol-data` mount silently breaks under docker-outside-of-docker.
+3. **One template adapts to every host.** Compose and app-config files are Jinja2-rendered against layered TOML + machine facts (UID/GID, docker group, network name, physical paths, FQDN/TLS) **and the deployment selection** (`ciu.selected_profiles` / `ciu.deployed_stacks`, S3.12) so a stack can derive "is upstream X deployed" instead of hardcoding it. Admins tune TOML overrides (S3.3), not the maintainer's compose. Every render uses Jinja's `StrictUndefined` (S3.2): a mistyped or missing reference at any depth — `{{ deploy.environment_tg }}` where you meant `environment_tag` — fails the render naming the bad reference, instead of silently producing a wrong compose/config file (e.g. a container misnamed `dstdns--postgres`).
+4. **DooD / path correctness for free.** CIU computes physical bind paths so a stack runs identically in a devcontainer, native host, and CI (S1.9). A hand-written `./vol-data` mount silently breaks under docker-outside-of-docker. Every compose invocation also passes `--project-directory <repo root>` (S8.1a) so a stack's `build.context`/`dockerfile` resolve repo-root-relative — a deliberate exception to CIU's usual stack-dir-relative convention (hostdirs, secrets, configfile paths), made because a Dockerfile `COPY` of a repo-shared asset needs the repo root, not the compose file's own directory (`docker compose`'s default). `ciu dev` (S5a) shares the same repo-root-relative `build.context`/`dockerfile` convention (CIU-79) — it runs a plain `docker build` with no `--project-directory` equivalent, so CIU resolves `context` itself before invoking it.
 5. **Hostdir provisioning & ownership.** Pre-creates volume dirs with correct owner/mode, can seed initial content, and fixes ownership via a helper container even when the operator isn't root (S6.3/S6.5/S6.6) — no chown-init-container boilerplate. Fixed-UID images (postgres 999) just work.
 6. **Multi-stack / multi-host orchestration.** `ciu up` runs stacks in numeric phase order, gates on health (`starting` ≠ healthy, S7.7), and supports host profiles with `topology_overrides` for cross-host addressing (S7.4/S7.5a).
-7. **Fail-fast before anything starts.** A static validation catalog (S11) and a typed exit-code contract (S10.3) catch errors pre-launch; a vault-backed stack aborts if no token resolves (S7.6).
+7. **Fail-fast before anything starts.** A static validation catalog (S11) and a typed exit-code contract (S10.3) catch errors pre-launch; a vault-backed stack aborts if no token resolves (S7.6). **`ciu up` runs `ciu check`'s full static pipeline itself, by default** (S13.4c) — before STEP 1, before any hostdir, secret or container exists — and refuses on any ERROR-severity finding, including one from a stack's own `validate_config` hook. You no longer have to remember to run `ciu check` first. `--skip-check` is the break-glass escape and announces itself. A hook finding can now be a `("WARN", "…")` pair instead of a bare error string (S9.5): WARN findings are printed and do **not** block, so "worth knowing" and "must block" are finally different things.
 8. **Readable live diagnostics without corrupting logs.** Add `--log-prefix-time-short` to
    any CIU invocation for `HH:MM:SS [INFO]`/`[WARN]`/`[ERROR]` output. Severity is coloured
    on an interactive terminal only; redirected logs stay plain text.
 8. **App config as mounted files, with composite secrets.** Configfile mounts (S5) render a full app config — including DSNs that embed credentials via `secret()` (S5.4) — and mount it read-only, replacing sprawling `APP__*` env blocks.
-9. **Declarative bootstrap hooks + clean lifecycle.** Three structured hook points (S9) handle things like "unseal Vault, persist its root token to `[state]`, hand it to later stacks." `ciu up --dir <stack> --reset` tears down one stack's containers, volumes, and rendered outputs (S6.4); `ciu clean` does the same for a profile selection — and removes the identity-scoped networks too (S6.4a), keeping nothing silently: a main-workspace clean names its deliberate keep, an instance clean leaves zero objects behind or fails.
+9. **Declarative bootstrap hooks + clean lifecycle.** Three structured hook points (S9) handle things like "unseal Vault, persist its minted root token into the stack's secret store with `persist:'secret'` (S9.4a), hand it to later stacks" — non-secret facts go to `[state]`, credentials never do (S3.4a). `ciu up --dir <stack> --reset` tears down one stack's containers, volumes, and rendered outputs (S6.4); `ciu clean` does the same for a profile selection — and removes the identity-scoped networks too (S6.4a), keeping nothing silently: a main-workspace clean names its deliberate keep, an instance clean leaves zero objects behind or fails.
 
 ## When *not* to use `ciu`
 
@@ -115,16 +115,36 @@ my-stack/
 
 At the repo root: `ciu.global.defaults.toml.j2` (committed, the root marker),
 `ciu.global.toml.j2` (committed, OPTIONAL sparse override — not auto-created),
-`ciu.global.worktree.toml.j2` (gitignored sparse per-worktree override), the
-rendered `ciu.global.toml` (gitignored), `ciu.env` (gitignored generated machine
-identity), and, for managed linked checkouts, `ciu.worktree-instance.json`
-(gitignored durable identity/lifecycle state).
+`ciu.global.instance.toml.j2` (gitignored sparse per-checkout override, yours
+to edit — CIU never writes it), `ciu.instance.generated.toml` (gitignored,
+CIU-owned identity facts, rewritten in full by every `ciu env generate`), the
+rendered `ciu.global.toml` (gitignored), `ciu.env` (gitignored **legacy
+write-only** machine-identity export — see below), and, for managed linked
+checkouts, `ciu.worktree-instance.json` (gitignored durable
+identity/lifecycle state).
+
+**Where instance identity lives (7.7.0, BREAKING).** `ciu env generate` writes
+its six identity facts — `repo_name`, `instance_id`, `network`,
+`physical_repo_root`, `repo_root`, `public_fqdn` — into
+`ciu.instance.generated.toml`'s `[ciu.instance.generated]` table, and that
+table is now the **only** record CIU itself reads them from. `ciu.env` is
+still written, with the identical key set, so a shell can `source` it; no
+identity fact is read back from it. Every verb also **seeds those six
+variables into its own environment from the table, overwriting whatever your
+shell exported** — that is what stops a sibling checkout's sourced `ciu.env`
+from steering this one, and it means `ciu env generate` (or the table itself),
+not an `export`, is how identity changes. The machine facts `ciu.env` also
+carries (`CONTAINER_UID`, `DOCKER_GID`, `ENV_TYPE`, `PUBLIC_TLS_*`, …) are
+unaffected. If you have tooling that PARSES `ciu.env` (rather than sourcing
+it), see
+[docs/CONSUMERS.md §11b](docs/CONSUMERS.md) for the migration, and
+[docs/SPEC.md S3.1c](docs/SPEC.md) for why the source of truth moved.
 
 Automation surfaces are versioned and closed: `ciu worktree
 inspect|list|rm --json` (and the lifecycle verbs with `--json`) emit one
 `schema_version: 1` document with a closed `operation`/`status` vocabulary and
 freshly derived Git facts — never inferred from a name or stale record —
-`ciu worktree up` starts one selected instance under its own `ciu.env`,
+`ciu worktree up` starts one selected instance under its own identity,
 `ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...` runs exact argv
 (no shell) in that root or inside its declared already-running container
 target (S16.7). `ciu capabilities --json` lists the shipped machine
@@ -146,7 +166,8 @@ Full reference: [docs/CONFIG.md](docs/CONFIG.md#file-roles-and-layering-s31s33).
 
 ```bash
 pip install -e .                 # install (see docs/README.md for build/wheel)
-ciu env generate --define-root <repo>           # detect machine facts → ciu.env (S2.8)
+ciu env generate --define-root <repo>           # detect machine facts → identity table + ciu.env (S2.8)
+eval "$(ciu env print)"                          # export them into THIS shell (S3.1c)
 ciu up --dir <repo>/<stack>                      # render + run one stack
 ciu up --profile <host-profile>                  # orchestrate many
 ciu up --layout <name>                           # push a named host→bundles plan (S7.5c)
@@ -155,6 +176,32 @@ ciu host-secrets <host> --materialize            # pre-Vault local secrets per h
 ```
 
 `ciu --help` and `ciu <verb> --help` list the public commands and their options.
+
+## Optional extras
+
+The base install above covers everything `ciu` does out of the box. Three
+extras add a runtime dependency each, only for the specific feature that
+needs it; without `schema` or `registry` installed, that feature fails
+loudly at the point of use with this same `pip install` remedy — nothing
+else is affected. `ssh` is different by design (S14.5): its feature has a
+working default (the subprocess `ssh`/`rsync` transport), so without the
+extra it degrades silently to that default rather than failing — see the
+`ssh` row below. This table is an upfront index so you can decide proactively instead of
+discovering each extra reactively, one at a time (see `docs/CONFIG.md` and
+`docs/CONSUMERS.md` for the full per-feature documentation of each). Version
+floors are pinned once, in [`pyproject.toml`](pyproject.toml)'s
+`[project.optional-dependencies]` — the source of truth; not repeated here so
+this table cannot drift out of sync with it.
+
+| Extra | Install | Package | Unlocks |
+|---|---|---|---|
+| `ssh` | `pip install 'ciu[ssh]'` | `paramiko` | The optional paramiko transport for `ciu ssh` / `ciu up --host` (`CIU_SSH_TRANSPORT=paramiko`, S14.5) — the default subprocess `ssh`/`rsync` transport needs no extra install. |
+| `schema` | `pip install 'ciu[schema]'` | `jsonschema` | JSON Schema validation of a `[<root>.<service>.configfile.<name>]` block's optional `schema = "..."` key, on the up/dev render path (S5.7). |
+| `registry` | `pip install 'ciu[registry]'` | `pydantic` | `ciu check`'s stage 7 validation of `[registry.postgresql].database` and `[registry.consul].token_vault_path` (S13.4b). |
+
+The dev-only `test` extra (pytest plus the same jsonschema/pydantic pins, for
+CIU's own test suite) is not listed here — it exists for CIU's own
+contributors, not for consumers.
 
 ## Release: portable CMRU project contract
 
@@ -183,7 +230,7 @@ venv result is not a release signal.
 
 The gate runs CIU's suite inside `tester-unified` and is **judged by the
 released Assay CLI** — a hash-pinned, vendored zipapp
-(`tools/assay/assay-2.3.0.pyz` + `.sha256`, verified by `sha256sum -c` before
+(`tools/assay/assay-3.2.0.pyz` + `.sha256`, verified by `sha256sum -c` before
 every run and invoked explicitly; Assay source is never imported). The lane
 (`assay.toml`) executes the full suite under pytest-cov (whole-source 100%
 line+branch) inside Assay's isolated snapshot, and Assay itself judges the
@@ -280,7 +327,7 @@ alternatives overlap with individual pillars:
 | Secret directives (`ASK_VAULT:`, `GEN_*`) | vals (`ref+vault://`), gomplate Vault, Vault Agent, SOPS | `vals` is the canonical inline-reference tool. |
 | Pre/post hooks | Compose lifecycle hooks, Kamal hooks, Ansible, Taskfile/Make | Standard. |
 | Multi-stack phased orchestration + health + registry auth | Kamal, Coolify, Dokploy, CapRover, Swarm, Nomad | Battle-tested incumbents. |
-| Workspace env autodetect (`ciu.env`) | direnv, Compose `env_file`, `.env` conventions | Standard. |
+| Workspace identity autodetect (`[ciu.instance.generated]`, exported as `ciu.env`) | direnv, Compose `env_file`, `.env` conventions | Standard. |
 | Define once, target compose + k8s + cloud | Score (CNCF, score-compose) | The standard portable-workload abstraction. |
 
 CIU's edge is the *combination*, tuned for the devcontainer/DooD workflow with
@@ -306,7 +353,7 @@ python3 -m pip show ciu
 # For dstdns test execution:
 
 cd /workspaces/dstdns
-source ciu.env
+eval "$(ciu env print)"     # or the legacy `source ciu.env` (deprecated, 7.7.0)
 
 printf '%s\n' "$REPO_ROOT" "$PHYSICAL_REPO_ROOT"
 ciu version

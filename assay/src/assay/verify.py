@@ -99,6 +99,7 @@ from .verdict import (
     Evidence,
     EvidenceDeclaration,
     Helper,
+    JudgeProvenance,
     Judgment,
     JudgmentR1,
     JudgmentR2,
@@ -106,10 +107,13 @@ from .verdict import (
     JudgmentResolved,
     MutantOutcome,
     Mutation,
+    MutationProducerTool,
     Outcome,
     ReasonCode,
     SnapshotPolicy,
+    SourcePosition,
     Verdict,
+    is_ingested_operator,
     operator_language,
     rollup,
 )
@@ -246,6 +250,104 @@ _SNAPSHOT_SELECTIONS: frozenset[str] = frozenset(
     {"repository", "repository-minus-unsafe-symlinks"}
 )
 
+#: (B046, schema v9) ``judgment.r2.producer``'s closed vocabulary, transcribed
+#: by hand for :data:`_SNAPSHOT_SELECTIONS`' own reason -- the raw layer reads
+#: strings and never imports the model's vocabulary to compare them.
+#:
+#: **This is a closed SET rather than the two bare ``== "ingested"`` string
+#: comparisons that shipped.** Those compared for equality and treated
+#: everything else as native, so `"Ingested"`, `"INGESTED"` or `"ingsted"`
+#: routed silently to the native branch and SKIPPED every ingested check --
+#: and a skipped check is indistinguishable from a satisfied one at a green
+#: bar. The schema layer catches the misspelling end to end, so this was never
+#: exploitable; it was a layer-independence violation, which is a defect in
+#: the property the raw layer exists to have. A value outside this set is a
+#: failure named by :func:`_check_r2_producer_vocabulary`, and every other
+#: reader of the field declines to branch at all rather than guess.
+_R2_PRODUCERS: frozenset[str] = frozenset({"native", "ingested"})
+
+
+def _validated_r2_producer(r2: object) -> str | None:
+    """*r2*'s ``producer`` when it is in the closed set, else ``None``.
+
+    ``None`` means "do not branch": either there is no ``judgment.r2`` to read
+    or its producer is outside the vocabulary, and in the second case
+    :func:`_check_r2_producer_vocabulary` has already recorded the failure.
+    Callers must not fall back to the native rule on ``None`` -- silently
+    applying one producer's rule to an unrecognised producer is the exact
+    behaviour this helper exists to end.
+    """
+    if not isinstance(r2, dict):
+        return None
+    producer = r2.get("producer")
+    return producer if producer in _R2_PRODUCERS else None
+
+
+def _check_r2_producer_vocabulary(document: dict, failures: list[str]) -> None:
+    """(B046, fix round 1) ``judgment.r2.producer`` is one of a closed set.
+
+    Enforced exactly the way :func:`_check_snapshot_policy` enforces
+    ``selection``: name the offending value, name the legal set, and let every
+    other check in this module stop branching on an unvalidated string.
+    """
+    judgment = document.get("judgment")
+    if not isinstance(judgment, dict):
+        return
+    r2 = judgment.get("r2")
+    if not isinstance(r2, dict):
+        return
+    producer = r2.get("producer")
+    if producer not in _R2_PRODUCERS:
+        failures.append(
+            f"judgment.r2.producer {producer!r} is not one of "
+            f"{sorted(_R2_PRODUCERS)}; the producer selects which set of R2 "
+            f"rules applies, so an unrecognised spelling would silently skip "
+            f"one set rather than fail"
+        )
+
+
+def _positions_are_ascending(
+    values: object, what: str, failures: list[str]
+) -> None:
+    """(B046, fix round 1) One ``source_position`` array is strictly ascending
+    by ``(path, lineno)``.
+
+    Array ORDER is not expressible in draft 2020-12, so the packaged schema's
+    own descriptions of ``survived_uncovered`` and ``lines_without_candidates``
+    say it "is checked by the model and the raw verifier". The model half was
+    real (``JudgmentR2.__post_init__``); the raw half was NOT -- the only
+    ordering check this module had was ``unsafe_symlink_omissions``'. Three
+    shipped v9 field descriptions therefore promised two witnesses and had
+    one, which is the state three-place registration exists to prevent, so the
+    missing witness is built rather than the promise walked back.
+
+    Deliberately NOT shared with :func:`_check_snapshot_policy`'s own
+    byte-ascending loop: that one orders repo paths by UTF-8 bytes, this one
+    orders (path, line) pairs, and the two are different orders over different
+    things. A shared helper would let one edit silently weaken both -- the
+    reasoning A-366 already applies to these lists' grammars one layer up.
+    """
+    if not isinstance(values, list):
+        return
+    keys: list[tuple[str, int]] = []
+    for position in values:
+        if not isinstance(position, dict):
+            return
+        path = position.get("path")
+        lineno = position.get("lineno")
+        if not isinstance(path, str) or isinstance(lineno, bool):
+            return
+        if not isinstance(lineno, int):
+            return
+        keys.append((path, lineno))
+    for previous, current in zip(keys, keys[1:]):
+        if not previous < current:
+            failures.append(
+                f"{what} must be strictly ascending by (path, lineno); "
+                f"{previous} is not before {current}"
+            )
+            return
+
 
 def _check_snapshot_policy(document: dict, failures: list[str]) -> None:
     """(B006(a)/A-269, §5.1/§5.3) ``snapshot_policy`` is present iff
@@ -283,6 +385,35 @@ def _check_snapshot_policy(document: dict, failures: list[str]) -> None:
             f"{sorted(_SNAPSHOT_SELECTIONS)}"
         )
         return
+    # (B041(b)/A-366, order check added in fix round 1) Checked BEFORE the
+    # selection fork, for A-366's own reason: `link_paths` is independent of
+    # `selection`, and a check placed inside one branch is a check that
+    # silently applies under only one selection -- which, under `repository`,
+    # is exactly where the early `return` below would have dropped it.
+    #
+    # The shipped schema's description of this field says its order "is checked
+    # by the model and the raw verifier". The model half was real; this is the
+    # raw half, which did not exist -- see `_positions_are_ascending`.
+    link_paths = policy.get("link_paths")
+    if isinstance(link_paths, list):
+        encoded_links: list[bytes] = []
+        for index, path in enumerate(link_paths):
+            if not isinstance(path, str) or not path:
+                failures.append(
+                    f"snapshot_policy.link_paths[{index}] must be a non-empty "
+                    f"string"
+                )
+                encoded_links = []
+                break
+            encoded_links.append(path.encode("utf-8"))
+        for previous, current in zip(encoded_links, encoded_links[1:]):
+            if not previous < current:
+                failures.append(
+                    "snapshot_policy.link_paths must be strictly ascending by "
+                    "UTF-8 bytes"
+                )
+                break
+
     omissions = policy.get("unsafe_symlink_omissions")
     if selection == "repository":
         if omissions is not None:
@@ -606,13 +737,38 @@ def _check_resolved_language_owns_every_operator(
     if not isinstance(language, str):
         return
     r2 = judgment.get("r2")
+    # (B046, schema v9) The PRODUCER decides which of two exact rules applies,
+    # and this is the RAW half of the fork the model states independently in
+    # `Verdict._check_operator_language_agrees`. Before v9 there was one rule;
+    # applying it unchanged would refuse every ingested mutant, because
+    # `operator_language("stryker:X")` answers `"stryker"` -- a NAMESPACE assay
+    # owns, never a language, and no language is named `stryker`.
+    #
+    # The ingested branch is not merely "skip the check": it is the exact
+    # mirror. A native document naming an INGESTED operator is refused just as
+    # firmly as an ingested one naming a native operator, so neither producer
+    # can borrow the other's vocabulary.
+    #
+    # The fork is taken on the VALIDATED producer (fix round 1). A bare
+    # `== "ingested"` treated every other spelling as native and skipped the
+    # ingested rules entirely; here an unrecognised producer takes NEITHER
+    # branch, because there is no honest rule to apply to a producer this
+    # layer does not recognise. `_check_r2_producer_vocabulary` is what says
+    # so out loud.
+    if isinstance(r2, dict) and _validated_r2_producer(r2) is None:
+        return
+    ingested = _validated_r2_producer(r2) == "ingested"
     declared = r2.get("operators") if isinstance(r2, dict) else None
     if isinstance(declared, list):
+        # `operators` is FORBIDDEN on an ingested document (A-360) and the
+        # schema already refuses it there, so this branch is native-only in
+        # practice; the guard keeps that true rather than assuming it.
         foreign = sorted(
             {
                 operator
                 for operator in declared
                 if isinstance(operator, str)
+                and not is_ingested_operator(operator)
                 and operator_language(operator) != language
             }
         )
@@ -629,12 +785,34 @@ def _check_resolved_language_owns_every_operator(
         (item for item in claims if isinstance(item, dict) and item.get("rigor") == "R2"),
         None,
     )
+    operators = [
+        entry["operator"]
+        for _, entry in _mutant_entries(_mutation_of(r2_claim))
+        if isinstance(entry.get("operator"), str)
+    ]
+    if ingested:
+        native = sorted(
+            {
+                operator
+                for operator in operators
+                if not is_ingested_operator(operator)
+            }
+        )
+        if native:
+            failures.append(
+                f"the R2 mutation payload records mutants produced by "
+                f"{native} while judgment.r2.producer is 'ingested'; an "
+                f"ingested run reports the foreign tool's own namespaced "
+                f"mutator names, and assay's native catalogue names a "
+                f"catalogue that run never used"
+            )
+        return
     applied = sorted(
         {
-            entry["operator"]
-            for _, entry in _mutant_entries(_mutation_of(r2_claim))
-            if isinstance(entry.get("operator"), str)
-            and operator_language(entry["operator"]) != language
+            operator
+            for operator in operators
+            if is_ingested_operator(operator)
+            or operator_language(operator) != language
         }
     )
     if applied:
@@ -645,11 +823,171 @@ def _check_resolved_language_owns_every_operator(
         )
 
 
+def _check_ingested_r2_agrees_with_its_payload(
+    document: dict, failures: list[str]
+) -> None:
+    """(B046) Re-derive an INGESTED ``judgment.r2``'s three derived facts from
+    the R2 mutation payload, at the RAW layer.
+
+    **This closes a real hole rather than adding belt-and-braces.** Before
+    B046 the raw layer said NOTHING about an ingested document: every existing
+    R2 check in this module is guarded by an ``isinstance`` test on
+    ``judgment.r2.operators`` or by the resolved-language rule, and on an
+    ingested document ``operators`` is absent by contract (A-360) -- so those
+    checks SKIP rather than pass. A skipped check and a satisfied one look
+    identical from a green bar, and an ingested document was reaching the
+    reconstruction stage having been checked by nothing at all.
+
+    Four independent re-derivations, each from the payload alone:
+
+    1. every ``survived_uncovered`` position is a position the ``survived``
+       bucket actually records. An entry that is not describes a mutant the
+       document does not contain -- which is how a report could claim to have
+       surfaced untested lines it never had;
+    2. no ``lines_without_candidates`` position is a line a recorded mutant
+       starts on. The field means "the tool produced NO mutant here", and a
+       line with a mutant on it contradicts that in the same document;
+    3. ``survived_uncovered`` is a SUBSET of ``survived``, never of the whole
+       payload: a ``NoCoverage`` mutant maps to ``survived`` and to nothing
+       else, so an entry matching a killed mutant's position would be
+       laundering a kill into the worst-survivor list;
+    4. ``discarded`` is a count of mutants deliberately NOT in the payload, so
+       it must not be contradicted by the arithmetic ``Mutation`` already
+       enforces -- checked here as "present and non-negative", the only part
+       of it a document can be wrong about on its own.
+
+    The MUTATION SCORE itself (``killed / (killed + survived)``) is re-derived
+    by :func:`_check_r2_rederivation` through
+    :func:`assay.mutation.judge_mutation`, which an ingested claim goes
+    through unchanged (A-379) -- so the status of an ingested R2 claim is
+    checkable from its buckets with no external policy input, exactly as a
+    native one's is. That is why this function does not re-derive it a second
+    time: one owner, not two that could disagree.
+    """
+    judgment = document.get("judgment")
+    if not isinstance(judgment, dict):
+        return
+    r2 = judgment.get("r2")
+    # The VALIDATED producer (fix round 1): an unrecognised spelling routed
+    # here too, and skipped every re-derivation below in exactly the silence
+    # this function was written to end.
+    if _validated_r2_producer(r2) != "ingested":
+        return
+    assert isinstance(r2, dict)
+
+    claims = document.get("claims")
+    r2_claim = (
+        next(
+            (
+                item
+                for item in claims
+                if isinstance(item, dict) and item.get("rigor") == "R2"
+            ),
+            None,
+        )
+        if isinstance(claims, list)
+        else None
+    )
+    payload = _mutation_of(r2_claim)
+    if payload is None:
+        failures.append(
+            "judgment.r2 records producer 'ingested' but the R2 claim carries "
+            "no mutation payload; the ingested facts beside it describe a "
+            "payload that is not in this document"
+        )
+        return
+
+    survived: set[tuple[str, int]] = set()
+    every: set[tuple[str, int]] = set()
+    for bucket, entry in _mutant_entries(payload):
+        path = entry.get("path")
+        lineno = entry.get("lineno")
+        if not isinstance(path, str) or not isinstance(lineno, int):
+            continue
+        every.add((path, lineno))
+        if bucket == "survived":
+            survived.add((path, lineno))
+
+    for label, expected, message in (
+        (
+            "survived_uncovered",
+            survived,
+            "is not a position the payload's own 'survived' bucket records; a "
+            "NoCoverage mutant maps to 'survived' and to nothing else, so this "
+            "entry describes a mutant this document does not contain",
+        ),
+    ):
+        positions = r2.get(label)
+        if not isinstance(positions, list):
+            failures.append(
+                f"judgment.r2.{label} is required on an ingested judgment "
+                f"(possibly empty) and is absent or not an array"
+            )
+            continue
+        _positions_are_ascending(positions, f"judgment.r2.{label}", failures)
+        for position in positions:
+            if not isinstance(position, dict):
+                continue
+            pair = (position.get("path"), position.get("lineno"))
+            if not isinstance(pair[0], str) or not isinstance(pair[1], int):
+                continue
+            if pair not in expected:
+                failures.append(
+                    f"judgment.r2.{label} names {pair[0]}:{pair[1]}, which "
+                    f"{message}"
+                )
+
+    without = r2.get("lines_without_candidates")
+    if not isinstance(without, list):
+        failures.append(
+            "judgment.r2.lines_without_candidates is required on an ingested "
+            "judgment (possibly empty) and is absent or not an array"
+        )
+    else:
+        _positions_are_ascending(
+            without, "judgment.r2.lines_without_candidates", failures
+        )
+        for position in without:
+            if not isinstance(position, dict):
+                continue
+            pair = (position.get("path"), position.get("lineno"))
+            if not isinstance(pair[0], str) or not isinstance(pair[1], int):
+                continue
+            if pair in every:
+                failures.append(
+                    f"judgment.r2.lines_without_candidates names "
+                    f"{pair[0]}:{pair[1]}, but the R2 payload records a mutant "
+                    f"starting on that exact line; a line cannot both have no "
+                    f"candidate and carry one"
+                )
+
+    discarded = r2.get("discarded")
+    if isinstance(discarded, bool) or not isinstance(discarded, int):
+        failures.append(
+            f"judgment.r2.discarded is required on an ingested judgment and "
+            f"must be an integer, got {discarded!r}"
+        )
+    elif discarded < 0:
+        failures.append(
+            f"judgment.r2.discarded is {discarded}; a count of invalid mutants "
+            f"cannot be negative"
+        )
+
+    tool = r2.get("producer_tool")
+    if not isinstance(tool, dict):
+        failures.append(
+            "judgment.r2 records producer 'ingested' with no producer_tool; a "
+            "verdict resting on a foreign tool's word must name the tool "
+            "(A-230a/A-361 -- declared by artifact, and said so)"
+        )
+
+
 def _check_base_matches_the_tiers_present(judgment: dict, failures: list[str]) -> None:
     """(P33/A-223a/A-227, widened by wave-1 §6/A-260, CORRECTED by
-    B033/A-325) ``judgment.resolved.base`` is required IF ``r1`` is present
-    with ``mode == "changed_lines"``, forbidden IF ``r1`` is present with
-    ``mode == "whole_target"``, and forbidden when neither tier is present.
+    B033/A-325, COMPLETED by B035/A-329) ``judgment.resolved.base`` is
+    required when the lane's own mode -- witnessed by ``r1`` if present, else
+    by ``r2`` -- is ``"changed_lines"``, forbidden when it is
+    ``"whole_target"``, and forbidden when neither tier is present at all.
 
     The old rule made ``r2`` alone force a base. That was false as soon as
     ``whole_file_r2`` shipped: ``mode`` is a LANE-level scope, so a
@@ -658,46 +996,60 @@ def _check_base_matches_the_tiers_present(judgment: dict, failures: list[str]) -
     whole-target R2 artifact could not be produced at all -- the producer
     had to record a base nothing compared against.
 
-    Where ``r1`` is present its ``mode`` witnesses the LANE's mode, so both
-    halves are enforceable for both tiers. Where ``r1`` is absent and ``r2``
-    present, v7 puts nothing on the wire that distinguishes a diff-based R2
-    from a whole-target one (``judgment.r2`` has no ``mode``/``targets``
-    field), so neither half is enforceable and neither is claimed -- see
-    B035. Asserting a rule this document cannot witness is how a verifier
-    starts rejecting honest artifacts, which is the defect being fixed here,
-    not one to re-introduce facing the other way.
+    **B035/A-329, at schema v8:** the exemption A-325 had to carve out for an
+    ``r1``-absent document is GONE. ``judgment.r2.mode`` now witnesses the
+    lane's scope whenever ``r1`` does not, so both halves are enforceable for
+    every shape -- including the ``R0,R2`` one this rule most needed and
+    least covered (every SQL lane; dstdns's ``cw2b_schema`` by name). Where
+    both tiers are present their modes must agree, since one judgment records
+    one lane scope; a document holding two would make "the lane's mode"
+    ambiguous, and an ambiguous premise cannot carry the rule below.
 
     The producer cannot reach the forbidden half for an ordinary
     ``changed_lines`` lane -- A-062 refuses ``judge.base`` on an ``R0,R3``
-    lane as inert config, and the loader now does the same for every
-    whole-target lane -- but this verifier exists for FOREIGN documents,
-    which is exactly the population that can.
+    lane as inert config, and the loader does the same for every whole-target
+    lane -- but this verifier exists for FOREIGN documents, which is exactly
+    the population that can.
     """
     resolved = judgment.get("resolved")
     if not isinstance(resolved, dict):
         return
     r1 = judgment.get("r1")
+    r2 = judgment.get("r2")
     has_base = "base" in resolved
-    if isinstance(r1, dict):
-        if r1.get("mode") == "changed_lines" and not has_base:
+    if isinstance(r1, dict) and isinstance(r2, dict):
+        if r1.get("mode") != r2.get("mode"):
             failures.append(
-                "judgment.resolved omits base while judgment records r1 in "
-                "changed-line mode, which judges a diff against a resolved "
-                "comparison commit"
+                f"judgment.r1 declares mode {r1.get('mode')!r} while "
+                f"judgment.r2 declares {r2.get('mode')!r}; one judgment "
+                f"records one lane's scope and both tiers judge under it"
             )
-        if r1.get("mode") == "whole_target" and has_base:
+        if r1.get("targets") != r2.get("targets"):
             failures.append(
-                "judgment.resolved records a base although judgment records "
-                "r1 in whole-target mode; whole-target scope replaces the "
-                "diff at every tier, so no tier here reads a comparison "
+                "judgment.r1 and judgment.r2 declare different target sets, "
+                "though both name the DECLARED targets of the same lane"
+            )
+    witness = r1 if isinstance(r1, dict) else r2
+    if not isinstance(witness, dict):
+        if has_base:
+            failures.append(
+                "judgment.resolved records a base although judgment carries "
+                "neither r1 nor r2; no tier present here reads a comparison "
                 "commit"
             )
         return
-    if "r2" not in judgment and has_base:
+    which = "r1" if witness is r1 else "r2"
+    if witness.get("mode") == "changed_lines" and not has_base:
         failures.append(
-            "judgment.resolved records a base although judgment carries "
-            "neither r1 nor r2; no tier present here reads a comparison "
-            "commit"
+            f"judgment.resolved omits base while judgment records {which} in "
+            f"changed-line mode, which judges a diff against a resolved "
+            f"comparison commit"
+        )
+    if witness.get("mode") == "whole_target" and has_base:
+        failures.append(
+            f"judgment.resolved records a base although judgment records "
+            f"{which} in whole-target mode; whole-target scope replaces the "
+            f"diff at every tier, so no tier here reads a comparison commit"
         )
 
 
@@ -1040,6 +1392,24 @@ def _reject_unknown_keys(raw: dict, built: dict, what: str) -> None:
         raise ValueError(f"unknown {what} field(s): {unknown}")
 
 
+def _reconstruct_judge_provenance(raw: dict) -> JudgeProvenance:
+    """(B018/A-327) The judge identity, rebuilt from raw JSON.
+
+    Every field is a plain ``raw[...]`` lookup rather than ``raw.get(...)``:
+    the object has no optional half, so a missing key must raise here instead
+    of producing a `JudgeProvenance` with a hole in it.
+    """
+    identity = JudgeProvenance(
+        name=raw["name"],
+        version=raw["version"],
+        artifact=raw["artifact"],
+        digest_algorithm=raw["digest_algorithm"],
+        digest=raw["digest"],
+    )
+    _reject_unknown_keys(raw, identity.to_dict(), "judge_provenance")
+    return identity
+
+
 def _reconstruct_coverage(raw: dict) -> Coverage:
     coverage = Coverage(
         covered=raw["covered"],
@@ -1083,6 +1453,12 @@ def _reconstruct_judgment_resolved(raw: dict) -> JudgmentResolved:
 def _reconstruct_judgment_r1(raw: dict) -> JudgmentR1:
     r1 = JudgmentR1(
         coverage_format=raw["coverage_format"],
+        # B045/A-323's lesson: REGISTERED in the same commit the dataclass and
+        # the schema gain it. A field this function does not read is a field
+        # `_reject_unknown_keys` below refuses, on a document the packaged
+        # schema accepted cleanly -- which is exactly how `candidate_ids` and
+        # `shard_index`/`shard_count` each shipped broken for a release.
+        coverage_producer=raw.get("coverage_producer"),
         coverage_artifact=raw["coverage_artifact"],
         fail_under=raw["fail_under"],
         allow_excluded=raw["allow_excluded"],
@@ -1094,6 +1470,42 @@ def _reconstruct_judgment_r1(raw: dict) -> JudgmentR1:
     return r1
 
 
+def _reconstruct_producer_tool(raw: dict) -> MutationProducerTool:
+    """(B046) The ingested tool's identity, reconstructed from the raw
+    document rather than trusted (A-182/A-317) -- including its own unknown-key
+    refusal, because ``additionalProperties: false`` on the schema's
+    ``mutation_producer_tool`` and ``_reject_unknown_keys`` here are two
+    independent gates and a nested object needs both exactly as the top level
+    does.
+    """
+    tool = MutationProducerTool(
+        name=raw["name"],
+        version=raw["version"],
+        report_schema_version=raw["report_schema_version"],
+    )
+    _reject_unknown_keys(raw, tool.to_dict(), "judgment.r2.producer_tool")
+    return tool
+
+
+def _reconstruct_source_positions(
+    raw: dict, key: str
+) -> tuple[SourcePosition, ...] | None:
+    """(B046) One of ``judgment.r2``'s two position lists, or ``None`` when the
+    key is absent. An EMPTY list is preserved as an empty tuple, never folded
+    into ``None``: absent means "this producer does not compute that at all"
+    (a native judgment), empty means "the ingested path looked and found none",
+    and collapsing the two would delete the distinction the fields exist for.
+    """
+    if key not in raw:
+        return None
+    positions = []
+    for item in raw[key]:
+        position = SourcePosition(path=item["path"], lineno=item["lineno"])
+        _reject_unknown_keys(item, position.to_dict(), f"judgment.r2.{key} entry")
+        positions.append(position)
+    return tuple(positions)
+
+
 def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
     # B031/A-323: `shard_index`/`shard_count` are REGISTERED here. They were
     # not, from `7a4f6333` (which added them to the dataclass and the schema)
@@ -1103,13 +1515,39 @@ def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
     # cleanly. Found by driving a real sharded run through the installed CLI
     # while verifying B031's own `mutation.candidate_ids` fix, not by reading
     # the diff -- the identical near-miss shape, one block over.
+    # B046 (schema v9): `jobs`/`max_mutants`/`operators` are no longer
+    # unconditionally present -- they are assay's OWN policy and exist only
+    # under `producer = "native"`. Read with `.get` and let `JudgmentR2`'s own
+    # producer fork decide whether their absence is legal, rather than
+    # deciding it twice in two layers that could drift apart.
+    operators = raw.get("operators")
     r2 = JudgmentR2(
-        jobs=raw["jobs"],
-        max_mutants=raw["max_mutants"],
-        operators=tuple(raw["operators"]),
+        producer=raw["producer"],
+        producer_tool=(
+            _reconstruct_producer_tool(raw["producer_tool"])
+            if "producer_tool" in raw
+            else None
+        ),
+        survived_uncovered=_reconstruct_source_positions(
+            raw, "survived_uncovered"
+        ),
+        discarded=raw.get("discarded"),
+        lines_without_candidates=_reconstruct_source_positions(
+            raw, "lines_without_candidates"
+        ),
+        jobs=raw.get("jobs"),
+        max_mutants=raw.get("max_mutants"),
+        operators=None if operators is None else tuple(operators),
         kill_attribution=raw["kill_attribution"],
         kill_signal_artifact=raw.get("kill_signal_artifact"),
         equivalence_artifact=raw.get("equivalence_artifact"),
+        # B035/A-329: registered in the SAME commit the dataclass and the
+        # schema gain them, which is the whole of A-323's lesson. `mode` is a
+        # required key at v8 (`raw["mode"]`, never `raw.get`) exactly as
+        # `_reconstruct_judgment_r1` reads r1's; `targets` is conditional and
+        # so is read the same way r1's is.
+        mode=raw["mode"],
+        targets=tuple(raw["targets"]) if "targets" in raw else None,
         shard_index=raw.get("shard_index"),
         shard_count=raw.get("shard_count"),
     )
@@ -1213,6 +1651,9 @@ def _reconstruct_snapshot_policy(raw: dict) -> SnapshotPolicy:
             if "unsafe_symlink_omissions" in raw
             else None
         ),
+        # B041(b)/A-323's lesson again: registered in the same commit the
+        # dataclass and the schema gain it.
+        link_paths=tuple(raw["link_paths"]) if "link_paths" in raw else None,
     )
     _reject_unknown_keys(raw, policy.to_dict(), "snapshot_policy")
     return policy
@@ -1276,6 +1717,25 @@ def _reconstruct_verdict(document: dict) -> Verdict:
             lane_kwargs["env_effective_incomplete"] = True
 
     judgment_kwargs: dict[str, Any] = {}
+    # B043 (schema v9): `cwd_declared` is registered OUTSIDE the
+    # `lane_resolved` block above, because it is independently optional and
+    # not a member of `LANE_RESOLVED_FIELDS` -- reading it inside that block
+    # would silently drop it from any document the block does not run for,
+    # and `_reject_unknown_keys` at the end of this function would then refuse
+    # a document the packaged schema accepted. `Verdict._check_cwd_declared`
+    # owns the rule that it still requires a resolved lane.
+    if "cwd_declared" in document:
+        judgment_kwargs["cwd_declared"] = document["cwd_declared"]
+    # B018/A-327. REGISTERED here in the same commit that adds it to the
+    # dataclass, the schema and the producer -- B031/A-323's lesson exactly:
+    # `shard_index`/`shard_count` sat in the model and the schema for a whole
+    # release while this layer rejected them, so assay's own schema-valid
+    # output failed `assay verify`. `_reject_unknown_keys` below is what makes
+    # that failure mode certain rather than possible.
+    if "judge_provenance" in document:
+        judgment_kwargs["judge_provenance"] = _reconstruct_judge_provenance(
+            document["judge_provenance"]
+        )
     if "judgment" in document:
         judgment_kwargs["judgment"] = _reconstruct_judgment(document["judgment"])
     if "helpers" in document:
@@ -1693,7 +2153,9 @@ def verify_document(document: Any) -> list[str]:
     _check_outcome_agrees_with_rollup(document, outcome, failures)
     _check_judgment_matches_claims(document, failures)
     _check_snapshot_policy(document, failures)
+    _check_r2_producer_vocabulary(document, failures)
     _check_mutation_payload_shapes(document, failures)
+    _check_ingested_r2_agrees_with_its_payload(document, failures)
     _check_a_judged_status_carries_its_own_payload(document, failures)
     _check_helpers_have_a_judged_claim(document, failures)
 

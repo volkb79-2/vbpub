@@ -125,15 +125,25 @@ class FakeDocker:
 
 @pytest.fixture(autouse=True)
 def _clean_ambient_identity(monkeypatch):
-    """This devcontainer sources a checkout's ciu.env; scrub its identity."""
+    """This devcontainer sources a checkout's legacy ciu.env export; scrub the
+    identity it leaks into this process."""
     for key in ("REPO_ROOT", "REPO_NAME", "INSTANCE_ID", "DOCKER_NETWORK_INTERNAL"):
         monkeypatch.delenv(key, raising=False)
 
 
+def _write_facts(root, **facts):
+    """CIU-75: instance identity lives in the checkout's generated overlay
+    table, so a fixture that wants a checkout to look provisioned writes THAT,
+    not the legacy `ciu.env` export."""
+    from ciu.workspace_env import GENERATED_FACTS_KEYS, write_generated_facts
+
+    payload = {key: "" for key in GENERATED_FACTS_KEYS}
+    payload.update(facts)
+    write_generated_facts(root, payload)
+
+
 def _instance_repo(tmp_path: Path) -> Path:
-    (tmp_path / "ciu.env").write_text(
-        'export DOCKER_NETWORK_INTERNAL="proj-abc123-network"\n', encoding="utf-8"
-    )
+    _write_facts(tmp_path, network="proj-abc123-network")
     (tmp_path / "ciu.worktree-instance.json").write_text(
         '{"schema_version": 1}\n', encoding="utf-8"
     )
@@ -142,9 +152,7 @@ def _instance_repo(tmp_path: Path) -> Path:
 
 
 def _main_repo(tmp_path: Path) -> Path:
-    (tmp_path / "ciu.env").write_text(
-        'export DOCKER_NETWORK_INTERNAL="proj-abc123-network"\n', encoding="utf-8"
-    )
+    _write_facts(tmp_path, network="proj-abc123-network")
     (tmp_path / "apps" / "vault").mkdir(parents=True)
     return tmp_path
 
@@ -503,21 +511,75 @@ def test_concurrent_teardown_between_exists_and_inspect_is_skipped(monkeypatch, 
     assert fake.networks == {"proj-abc123-network": []} or len(fake.networks) <= 1
 
 
-def test_identity_env_parse_failure_reads_as_no_network(monkeypatch, tmp_path, capsys):
-    """An UNPARSEABLE ciu.env names no removable network — and says nothing."""
-    (tmp_path / "ciu.env").write_text("this line is not an assignment\n", encoding="utf-8")
+def _clean_with_identity_env(monkeypatch, tmp_path, sel=None):
+    """Shared arrangement for the three CIU-62 identity-env arcs below."""
     (tmp_path / "ciu.worktree-instance.json").write_text("{}\n", encoding="utf-8")
     (tmp_path / "apps" / "vault").mkdir(parents=True)
-    repo_root = tmp_path
+    sel = sel or [{"path": "apps/vault"}]
     fake = FakeDocker(networks={})
     monkeypatch.setattr(deploy.procutil, "docker", fake)
-    sel = [{"path": "apps/vault"}]
     monkeypatch.setattr(deploy, "render_selected_stacks",
                         lambda *a, **k: {e["path"]: {} for e in sel})
     monkeypatch.setattr(deploy.engine, "reset_service", lambda *a, **k: None)
     monkeypatch.setattr(deploy, "_matching_containers", lambda *a, **k: [])
+    return deploy.action_clean(tmp_path, _profile(), sel, ignore_errors=True)
 
-    assert deploy.action_clean(repo_root, _profile(), sel, ignore_errors=True) == 0
+
+def test_identity_env_parse_failure_is_indeterminate_not_no_network(
+    monkeypatch, tmp_path, capsys
+):
+    """CIU-62 — REVERSED contract (this test previously asserted the opposite).
+
+    An UNPARSEABLE generated table used to read as "there is no identity
+    network",
+    which is the estate's absence-for-emptiness anti-pattern with a live
+    consequence: the instance's own network is then neither removed nor
+    enumerated as a survivor, so `ciu clean` announces the S6.4a zero-objects
+    invariant as satisfied over a network it never even resolved. An
+    unresolvable identity network is now reported and fails the clean, the
+    same treatment its sibling volume/network/container enumerations already
+    give indeterminacy.
+    """
+    (tmp_path / "ciu.instance.generated.toml").write_text(
+        "[ciu.instance.generated]\nnetwork = not-a-toml-value\n", encoding="utf-8"
+    )
+
+    rc = _clean_with_identity_env(monkeypatch, tmp_path)
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "workspace identity network unresolvable (S6.4a)" in out
+    assert "ciu.instance.generated.toml" in out
+
+
+def test_identity_env_non_utf8_is_indeterminate_too(monkeypatch, tmp_path, capsys):
+    """CIU-62 — the byte-level half. `UnicodeDecodeError` is a `ValueError`
+    subclass and a SIBLING of `WorkspaceEnvError`; the pre-fix
+    `except WorkspaceEnvError` caught neither it nor `OSError`, so a
+    non-UTF-8 record escaped `action_clean` as a raw traceback rather than
+    either of its two defined outcomes. CIU-75 moved the source to the
+    generated facts file and normalized all three types at the reader."""
+    (tmp_path / "ciu.instance.generated.toml").write_bytes(
+        b'[ciu.instance.generated]\nnetwork = "\xff\xfe"\n'
+    )
+
+    rc = _clean_with_identity_env(monkeypatch, tmp_path)
+
+    assert rc == 1
+    assert "workspace identity network unresolvable (S6.4a)" in capsys.readouterr().out
+
+
+def test_identity_env_absent_still_reads_as_no_network(monkeypatch, tmp_path, capsys):
+    """CIU-62's legitimate state, constructed: a checkout where `ciu env
+    generate` was never run genuinely HAS no identity network. That arc must
+    stay green — a refusal whose condition also matches an ordinary state is
+    a superset refusal, and gets switched off."""
+    assert not (tmp_path / "ciu.instance.generated.toml").exists()
+
+    rc = _clean_with_identity_env(monkeypatch, tmp_path)
+
+    assert rc == 0
+    assert "workspace identity network unresolvable" not in capsys.readouterr().out
 
 
 def test_stack_projects_skip_missing_dirs():
@@ -541,7 +603,7 @@ def test_volume_enumeration_daemon_failure_fails_clean(monkeypatch, tmp_path, ca
 
 def test_main_workspace_kept_network_already_gone_stays_green(monkeypatch, tmp_path, capsys):
     repo_root = _main_repo(tmp_path)
-    fake = FakeDocker(networks={}, )  # identity net named in ciu.env but absent
+    fake = FakeDocker(networks={}, )  # identity net named in the overlay but absent
     rc = _run_clean(monkeypatch, repo_root, fake)
     assert rc == 0
     out = capsys.readouterr().out

@@ -1,0 +1,35 @@
+# infra/mock-targets/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `mock_targets` (bound by ciu.toml [realization.mock_targets]): the
+# `simulated` variant of the `probe_targets` LogicalService — deterministic DNS +
+# HTTP servers the workers probe in tests. Selected per instance (`ciu up
+# --realness probe_targets=simulated`, then recorded per layout in the generated
+# file, S9.4); consumers bind probe_targets.dns / probe_targets.http identically
+# whether the realization is this stack or the real internet
+# ([realization.internet], kind external). DERIVED: the container/host names
+# (dstdns-<instance>-mock-targets-dns and -http), the instance network, every
+# consumer's resolution (udp://<host>:<port> for dns, http://<host>:<port> for http — S7.8 step 7).
+
+[ciu_stack.dns]                      # UDP DNS server (dnslib) answering from fixture data
+primary = true                       # the health-bearing service for the realization (contract []: its health stands for probe_targets, S5.3.4)
+image = "dstdns/mock-targets:latest" # <project.registry.namespace>/mock-targets — a literal in plain TOML; built by the compose template from [mock_image]
+endpoints.dns = { port = 5353, protocol = "udp" }   # publish = "instance"; host publishing for local debugging is a ciu.site.toml override through the merged view ([realization.mock_targets.services.dns.endpoints.dns] publish = "host", host_port = …), never here
+[ciu_stack.dns.env]                  # consumer data → the container's environment (the compose template loops over it)
+MOCK_DNS_HOST = "0.0.0.0"            # bind address inside the container
+
+[ciu_stack.http]                     # HTTP server (aiohttp): fixture pages + security-test paths
+image = "dstdns/mock-targets:latest"
+endpoints.http = { port = 8880, protocol = "http" }
+[ciu_stack.http.env]
+MOCK_HTTP_HOST = "0.0.0.0"
+
+[mock_image]                         # consumer data (passed through to the templates): the ONE Dockerfile both services are built from
+dockerfile = "tests/_harness/mock_targets/Dockerfile"
+context = "."                        # repo root, so the Dockerfile can COPY tests/ and libs/
+# python_base_image is not restated: the compose template reads the global [build]
+# user table (build.mock_python_base_image) directly — one source, no copy (S3.5.1).
+
+[hooks]
+pre_compose = []
+post_compose = []
+
+# No [state] table: hook-persisted state lives in <location>/ciu.state.toml (S6.10); a [state] table in a stack file is an ERROR.

@@ -1,0 +1,185 @@
+# infra/db-core/ciu.compose.yml.j2 — v8 notation (draft.3)
+# ciu injects per service: container_name, hostname, networks (the instance
+# network — the init jobs are pinned to it too, so compose never auto-creates a
+# `<project>_default` bridge), ciu.* labels, CIU_* env, depends_on conditions
+# (from depends_on/one_shot), the pgadmin config-directory mount, healthcheck
+# timing, cgroup fields. Bind-mount sources use host.physical_repo_root: the
+# HOST-visible checkout path (the daemon runs on the host — Docker-outside-Docker
+# in the devcontainer). Role and database NAMES are read from registry.* directly
+# (templates see it, S3.5.1); the rev-2 settings copies are gone.
+services:
+  postgres_init:
+    image: {{ ciu_stack.postgres_init.image }}
+    pull_policy: always                # `:latest` is otherwise pulled once and cached forever
+    user: "root:root"                  # must chown
+    environment:
+      - CLEAN_DATA_DIR={{ 'true' if maintenance.clean_data_dirs else 'false' }}
+    # the wipe also removes dotfiles, which `*` does not match
+    command: >
+      sh -c "
+      if [ \"$$CLEAN_DATA_DIR\" = 'true' ]; then
+        echo '[CLEAN] Removing existing PostgreSQL data directory...' &&
+        rm -rf /home/postgres/pgdata/* /home/postgres/pgdata/.[!.]* 2>/dev/null || true &&
+        exit 0
+      fi &&
+      mkdir -p /home/postgres/pgdata &&
+      chown -R 1000:{{ host.docker_gid }} /home/postgres/pgdata &&
+      chmod -R 775 /home/postgres/pgdata &&
+      echo 'PostgreSQL data directory initialized (1000:docker, group-writable)'
+      "
+    volumes:
+      - {{ ciu_stack.postgres.hostdir.data }}:/home/postgres/pgdata
+
+  postgres:
+    image: {{ ciu_stack.postgres.image }}
+    user: "1000:{{ host.docker_gid }}"   # timescaledb-ha (Ubuntu-based) runs postgres as uid 1000
+    environment:
+      {% for key, value in env_defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      # superuser
+      - POSTGRES_USER={{ registry.postgresql.superuser }}
+      - POSTGRES_PASSWORD=${DB_CORE_SECRETS_POSTGRES_SUPERUSER_PASSWORD}
+      - POSTGRES_DB={{ ciu_stack.postgres.settings.superuser_db }}
+      # 01-init-users.sh: DBA layer (roles + databases); passwords are env-delivered secrets
+      - DATABASE_NAME={{ registry.postgresql.database }}
+      - DATABASE_USER_CONTROLLER={{ registry.postgresql.users.controller }}
+      - DATABASE_USER_CONTROLLER_DDL={{ registry.postgresql.users.controller_ddl }}
+      - DATABASE_USER_WORKERDB={{ registry.postgresql.users.workerdb }}
+      - DATABASE_USER_WEBAPP={{ registry.postgresql.users.webapp }}
+      - POSTGRES_CONTROLLER_USER={{ registry.postgresql.users.controller }}
+      - POSTGRES_CONTROLLER_PASSWORD=${DB_CORE_SECRETS_POSTGRES_CONTROLLER_PASSWORD}
+      - POSTGRES_CONTROLLER_DDL_PASSWORD=${DB_CORE_SECRETS_POSTGRES_CONTROLLER_DDL_PASSWORD}
+      - POSTGRES_CONTROLLER_DB={{ registry.postgresql.database }}
+      - POSTGRES_WORKERDB_USER={{ registry.postgresql.users.workerdb }}
+      - POSTGRES_WORKERDB_PASSWORD=${DB_CORE_SECRETS_POSTGRES_WORKERDB_PASSWORD}
+      - POSTGRES_WEBAPP_USER={{ registry.postgresql.users.webapp }}
+      - POSTGRES_WEBAPP_PASSWORD=${DB_CORE_SECRETS_POSTGRES_WEBAPP_PASSWORD}
+      - POSTGRES_AUTHENTIK_PASSWORD=${DB_CORE_SECRETS_POSTGRES_AUTHENTIK_PASSWORD}
+      - AUTHENTIK_DATABASE={{ registry.postgresql.authentik_database }}
+    volumes:
+      # Mount the image's VOLUME parent (/home/postgres/pgdata), NOT the nested PGDATA
+      # (/home/postgres/pgdata/data): the entrypoint then creates PGDATA itself (0700,
+      # uid 1000) and runs /docker-entrypoint-initdb.d on first start. Mounting PGDATA
+      # directly would make it "find existing data" and skip the init scripts.
+      - {{ ciu_stack.postgres.hostdir.data }}:/home/postgres/pgdata
+      - {{ host.physical_repo_root }}/infra/db-core/init-scripts:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # accepting connections ≠ roles/databases ready: consumers wait on the facts
+      # their bindings list (pg:* probes, S8.5.2), not on this check alone
+      test: ["CMD-SHELL", "pg_isready -h localhost -U {{ registry.postgresql.superuser }}"]
+      # timing injected from ciu_stack.postgres.health (S6.6.4)
+    restart: unless-stopped
+    labels:
+      - "de.vxxu.volkb79.service-container=false"
+
+  pgadmin_init:
+    image: {{ ciu_stack.pgadmin_init.image }}
+    pull_policy: always
+    user: "root:root"
+    environment:
+      - CLEAN_DATA_DIR={{ 'true' if maintenance.clean_data_dirs else 'false' }}
+    command: >
+      sh -c "
+      if [ \"$$CLEAN_DATA_DIR\" = 'true' ]; then
+        echo '[CLEAN] Removing existing pgAdmin data...' &&
+        rm -rf /data/* /data/.* /certs/* /certs/.* 2>/dev/null || true &&
+        exit 0
+      fi &&
+      mkdir -p /data /certs &&
+      chown -R 5050:{{ host.docker_gid }} /data /certs &&
+      chmod -R 775 /data &&
+      echo 'pgAdmin directories initialized (5050:docker, group-writable)'
+      "
+    volumes:
+      - {{ ciu_stack.pgadmin.hostdir.data }}:/data
+      {% if ciu_stack.pgadmin.settings.enable_tls %}
+      # server.cert / server.key are placed here by the operator (the v7 copy from the
+      # shell-env PUBLIC_TLS_*_PEM paths has no v8 source: env is not a render input)
+      - {{ ciu_stack.pgadmin.hostdir.certs }}:/certs
+      {% endif %}
+
+  pgadmin:
+    image: {{ ciu_stack.pgadmin.image }}
+    pull_policy: always
+    user: "5050:{{ host.docker_gid }}"   # the image's pgadmin uid + docker group
+    environment:
+      {% for key, value in env_defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - PGADMIN_DEFAULT_EMAIL={{ ciu_stack.pgadmin.settings.email }}
+      - PGADMIN_DEFAULT_PASSWORD=${DB_CORE_SECRETS_PGADMIN_PASSWORD}
+      - PGADMIN_DISABLE_POSTFIX=true
+      {% if ciu_stack.pgadmin.settings.enable_tls %}
+      - PGADMIN_ENABLE_TLS=True
+      - PGADMIN_SERVER_MODE=True
+      {% endif %}
+    volumes:
+      - {{ ciu_stack.pgadmin.hostdir.data }}:/var/lib/pgadmin
+      # /pgadmin4 (servers.json, preferences.json): the config DIRECTORY mount is injected by ciu (S6.9.1)
+      {% if ciu_stack.pgadmin.settings.enable_tls %}
+      - {{ ciu_stack.pgadmin.hostdir.certs }}/server.cert:/certs/server.cert:ro
+      - {{ ciu_stack.pgadmin.hostdir.certs }}/server.key:/certs/server.key:ro
+      {% endif %}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:{{ ciu_stack.pgadmin.endpoints.pgadmin.port }}/misc/ping"]
+    restart: unless-stopped
+    labels:
+      - "de.vxxu.volkb79.service-container=false"
+
+  adminer:
+    image: {{ ciu_stack.adminer.image }}
+    pull_policy: always
+    user: "{{ host.user_uid }}:{{ host.user_gid }}"
+    environment:
+      {% for key, value in env_defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - ADMINER_DESIGN=dracula
+      - ADMINER_DEFAULT_SERVER={{ ciu_stack.postgres.identity.hostname }}   # own sibling: derived identity, not a binding
+    healthcheck:
+      test: ["CMD", "php", "-r", "if(file_get_contents('http://127.0.0.1:{{ ciu_stack.adminer.endpoints.adminer.port }}')!==false){exit(0);}exit(1);"]
+    restart: unless-stopped
+    labels:
+      - "de.vxxu.volkb79.service-container=false"
+
+  minio_init:
+    image: {{ ciu_stack.minio_init.image }}
+    pull_policy: always
+    user: "root:root"
+    environment:
+      - CLEAN_DATA_DIR={{ 'true' if maintenance.clean_data_dirs else 'false' }}
+    command: >
+      sh -c "
+      if [ \"$$CLEAN_DATA_DIR\" = 'true' ]; then
+        echo '[CLEAN] Removing existing MinIO data...' &&
+        rm -rf /data/* /data/.* 2>/dev/null || true &&
+        exit 0
+      fi &&
+      rm -rf /data/.minio.sys/tmp/* &&
+      chown -R {{ host.user_uid }}:{{ host.docker_gid }} /data &&
+      chmod -R 775 /data &&
+      echo 'MinIO data directory initialized ({{ host.user_uid }}:docker, group-writable)'
+      "
+    volumes:
+      - {{ ciu_stack.minio.hostdir.data }}:/data
+
+  minio:
+    image: {{ ciu_stack.minio.image }}
+    pull_policy: always
+    user: "{{ host.user_uid }}:{{ host.user_gid }}"
+    command: server /data --console-address ":{{ ciu_stack.minio.endpoints.console.port }}"
+    environment:
+      {% for key, value in env_defaults.items() %}
+      - {{ key }}={{ value }}
+      {% endfor %}
+      - MINIO_ROOT_USER={{ ciu_stack.minio.settings.root_user }}
+      - MINIO_ROOT_PASSWORD=${DB_CORE_SECRETS_MINIO_ROOT_PASSWORD}
+      - MINIO_BROWSER_REDIRECT_URL={{ ciu_stack.minio.settings.browser_redirect_url }}
+    volumes:
+      - {{ ciu_stack.minio.hostdir.data }}:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+    restart: unless-stopped
+    labels:
+      - "de.vxxu.volkb79.service-container=false"

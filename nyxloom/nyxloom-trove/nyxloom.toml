@@ -76,11 +76,19 @@ architecture = "docs/ARCHITECTURE.md"
 # `nyxloom-gates.slice` literal was intended for a future PROD instance
 # outside this repo, not for dev gates here. Its measured IO/CPU policy
 # (infra/slices/) travels with that prod deployment.
-# Judgment is unchanged (D-064-L2 changed-line floor; pytest-cov under xdist
-# — WHY lives next to the lane: ./run-gate.toml). NL-1 migrates judgment to
-# assay (pinned pyz), retiring coverage_gate self-judgment.
+# SSOT pointer (D-110/D-111): all test definitions live in
+# nyxloom/run-gate.toml; this entry owns only scheduling policy.
+# run-gate resolves the slice from $CGROUP_PARENT_DEV_BACKGROUND,
+# dual-mounts the repo, and runs the pinned assay lane
+# (assay.toml [lanes.tester-unified]) in tester-unified. NL-1 landed
+# 2026-09-02 (nyxloom-P48): judgment moved off `nyxloom.coverage_gate`.
 argv = ["bash", "-c", "cd {worktree}/nyxloom && ./run-gate.py --worktree {worktree} tester-unified"]
 phase = "implementation"
+# "assay-verdict" is NOT listed: it isn't a supported value in the asserts
+# schema enum yet (src/nyxloom/schemas/nyxloom-config.schema.json) -- adding
+# it there is a separate future schema change, not this package. Omitted
+# deliberately, not forgotten.
+asserts = ["tests-pass", "changed-line-coverage", "canary-verified"]
 timeout_seconds = 1800
 environment = "tester-unified"
 

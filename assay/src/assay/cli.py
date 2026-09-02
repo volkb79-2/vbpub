@@ -14,16 +14,28 @@ Three subcommands ship so far:
   append attempted without the lane's ``allow_argv_append`` is refused before
   the process starts (A-095, via :mod:`assay.runner`).
 
-  This build evaluates **R0, R1, R2 and R3 for Python, and R2 for SQL**
-  (P19 closes sol finding 1 in full for Python; P34/W6 adds SQL at R2
-  only): ``_built_in_registry`` is the CLI's own closed capability
-  declaration (work item 2, widened by every rigor-wiring package since)
-  — Python is registered at R1, R2 and R3, SQL at R2 only, and nothing
-  else, so a lane declaring ``judge.language`` as anything but
-  ``"python"``/``"sql"``, a SQL lane declaring R1 or R3, or a rigor level
-  for a language this registry does not know at all (Go, at any level —
-  P22), is refused (``ERROR``/``BAD_LANE_CONFIG``) before the lane's
-  command ever runs. A declared R3 lane's own canary run happens in
+  This build evaluates **R0, R1, R2 and R3 for Python, R2 for SQL, and R1
+  for JavaScript/TypeScript and Go** (P19 closes sol finding 1 in full for
+  Python; P34/W6 adds SQL at R2 only; B036 adds JavaScript at R1 only; the
+  P27 re-carve adds Go at R1 only, A-394):
+  ``_built_in_registry`` is the CLI's own closed capability declaration
+  (work item 2, widened by every rigor-wiring package since) — Python is
+  registered at R1, R2 and R3, SQL at R2 only, JavaScript at R1 and R2
+  (B046, the INGESTED path only), Go at R1 only (A-394, the P27 re-carve),
+  and nothing else, so a lane declaring
+  ``judge.language`` as anything but
+  ``"python"``/``"sql"``/``"javascript"``/``"go"``, a SQL lane declaring R1
+  or R3, a JavaScript lane declaring R3, a Go lane declaring R2 or R3, or a
+  rigor level for a
+  language this registry does not know at all, is refused
+  (``ERROR``/``BAD_LANE_CONFIG``) before the lane's command ever runs.
+  (This sentence said "JavaScript at R1 only" and "a JavaScript or Go lane
+  declaring R2 or R3" until the round-1 fix round; B046 had admitted
+  ``javascript`` at R2 and this copy was not updated. Corrected here for the
+  same reason ``registry.py``'s two paragraphs were: the fact is
+  :func:`_built_in_registry`'s, and every restatement of it has now gone
+  stale at least once.) A
+  declared R3 lane's own canary run happens in
   an independently-owned scratch copy of the consumer's repository
   (:func:`assay.canary.run_isolated_canary`, via
   :func:`assay.runner.run_lane`) — the consumer's real worktree is never
@@ -58,8 +70,20 @@ from collections import Counter
 from typing import Any, Sequence, TextIO
 
 from . import __version__
-from . import attestation, diff, git, isolation, measurability, mutation, registry, runner
+from . import (
+    attestation,
+    diff,
+    git,
+    isolation,
+    measurability,
+    mutation,
+    provenance,
+    registry,
+    runner,
+)
 from .adapters.base import LanguageAdapter
+from .adapters.go import GoAdapter
+from .adapters.javascript import JavaScriptAdapter
 from .adapters.python import PythonAdapter
 from .adapters.sql import SqlAdapter
 from .config import Lane, LaneFile, find_lane_file, load_lane_file, parse_duration
@@ -70,6 +94,36 @@ from .vocabulary import MUTATION_OPERATORS, WITHDRAWN_MUTATION_OPERATORS
 from .verify import build_verify_parser, cmd_verify
 
 __all__ = ["build_parser", "main"]
+
+
+def _add_request_base_argument(subparser: argparse.ArgumentParser) -> None:
+    """(B019/A-328) ``--request-base``, on both verbs that resolve one.
+
+    Named for its OWNER, not for the value: ``--base`` would read as an
+    override of ``judge.base`` and this is not one -- it is the other side of
+    a lane's own ``judge.base_source = "request"`` declaration, and supplying
+    it to a lane that did not delegate is a refusal, never a precedence
+    contest. ``run`` and ``plan`` both take it because ``plan`` performs the
+    identical merge-base resolution before discovering candidates, and a plan
+    that silently scoped itself differently from the run it predicts would be
+    worse than no plan.
+    """
+    subparser.add_argument(
+        "--request-base",
+        default=None,
+        metavar="REF",
+        help=(
+            "the comparison base THIS gate request judges against: a ref or "
+            "an already-resolved commit, resolved through the same merge-base "
+            "contract judge.base uses and recorded in the verdict as "
+            "judgment.resolved.base (B019). Required by a lane declaring "
+            "judge.base_source = 'request', which requires changed-line "
+            "judging but delegates the base identity to its invoker; refused "
+            "on any other lane, because one of the two declarations would "
+            "then be inert. Its absence on a delegating lane is a refusal, "
+            "never a fallback to HEAD."
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -98,6 +152,20 @@ def build_parser() -> argparse.ArgumentParser:
             "current directory"
         ),
     )
+    lanes.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "write one machine-readable inventory document to stdout instead "
+            "of the human-readable listing (B044): every declared lane's "
+            "scope/rigor/enforcement, the coverage/mutation/canary shape, "
+            "which rigor levels THIS build actually reaches for its "
+            "language, and the facts a gate tool needs to preflight an "
+            "environment without re-parsing assay.toml itself. Runs nothing, "
+            "exactly like the text form; a lane file that fails to load "
+            "exits 2 with no JSON on stdout."
+        ),
+    )
 
     run = subparsers.add_parser(
         "run",
@@ -107,7 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
             "appended after a literal `--`, if the lane permits it) and emit "
             "a verdict. Runs the command once; does not discover, select, "
             "order or retry anything. This build evaluates R0, Python R1, "
-            "Python R2, Python R3, and SQL R2."
+            "Python R2, Python R3, JavaScript R1, Go R1, and SQL R2."
         ),
     )
     run.add_argument("lane", help="the lane name to run, as declared in assay.toml")
@@ -124,6 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--resume", action="store_true")
     run.add_argument("--operators", default=None)
     run.add_argument("--shard", default=None, metavar="INDEX/COUNT")
+    _add_request_base_argument(run)
 
     plan = subparsers.add_parser(
         "plan",
@@ -138,6 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("lane", help="the mutation lane name to inspect")
     plan.add_argument("--operators", default=None)
     plan.add_argument("--shard", default=None, metavar="INDEX/COUNT")
+    _add_request_base_argument(plan)
     plan.add_argument(
         "--file",
         type=Path,
@@ -174,6 +244,20 @@ def build_parser() -> argparse.ArgumentParser:
             "NO_MEASUREMENT/DIRTY_TREE. Ignored by a lane that declares no R2."
         ),
     )
+    run.add_argument(
+        "--require-judge-provenance",
+        action="store_true",
+        help=(
+            "refuse, before any work, unless this assay can identify the "
+            "build artifact it was installed from and record its sha256 in "
+            "the verdict as judge_provenance (B018). Without this flag an "
+            "unidentifiable invocation -- a source checkout, an editable "
+            "install -- still runs, emits no judge_provenance at all, and "
+            "says so on stderr; assay never invents a digest either way. A "
+            "gate that binds its evidence to a verified judge binary passes "
+            "this flag."
+        ),
+    )
 
     build_verify_parser(subparsers)
 
@@ -196,7 +280,11 @@ def main(
     args = build_parser().parse_args(cli_argv)
     try:
         if args.command == "lanes":
-            _render_lanes(_resolve_lane_file(args.file), out)
+            lane_file = _resolve_lane_file(args.file)
+            if args.json:
+                _render_lanes_json(lane_file, out)
+            else:
+                _render_lanes(lane_file, out)
         elif args.command == "run":
             return _cmd_run(args, appended, out, err)
         elif args.command == "plan":
@@ -240,12 +328,69 @@ def _built_in_registry() -> registry.Registry:
     Python is registered at R1, R2 AND R3 and nothing else: adding ``"R3"``
     to this ONE existing entry's ``rigor`` set is the whole registry change
     a Python R3 CLI pipeline needs (P18's own carried-in note, one level
-    further) -- Go (``adapters/go.py`` ships, DESIGN-GUIDE §10/§11's
-    fixture-based proof) has no producer path wired in at any rigor level
-    yet (P22). Naming a capability this build does not actually reach is
+    further). Naming a capability this build does not actually reach is
     exactly the failure the whole v1.1 repair series exists to remove one
     level up (the post-series review's own finding 1) -- this is that
     discipline applied to the registry itself.
+
+    **The sentence above used to continue "-- Go has no producer path wired
+    in at any rigor level yet (P22)". That is no longer true, and A-394 is
+    why: ``go`` IS registered, at** ``{"R1"}`` **only.** The paragraph is
+    rewritten rather than deleted because the SEQUENCING is the load-bearing
+    half of that ruling, and a later reader who sees only the finished entry
+    would not recover it. Registering Go was never gated on "someone got
+    around to it"; it was gated on a chain that had to land FIRST, because
+    :mod:`assay.coverage_parsers.go_cover` used to expand a cover block's
+    whole extent into lines and call the result statement truth -- the
+    conflation A-217's impossibility proof (two gofmt-clean files, one
+    byte-identical profile, different statement lines) rules out
+    unconditionally. A ``go`` entry added at ANY earlier point in Wave C
+    would have made that reachable through this very function, which is the
+    most expensive shape the A-334/A-335 honesty failure takes: a wrong
+    verdict a consumer can reach by declaring a supported language. The
+    chain, in the order it had to land:
+    :attr:`~assay.adapters.base.LanguageAdapter.requires_statement_attribution`,
+    the :meth:`~assay.adapters.base.LanguageAdapter.statement_blocks` hook
+    (A-397), the :func:`assay.evaluate` refusal that makes the flag bite
+    (A-392), and ``external_tools = ("go",)`` (B047 item 2). Only then this
+    entry.
+
+    **What this entry does NOT promise, and why that is not a gap.** A Go
+    lane needs a real Go toolchain: the statement-position oracle is a Go
+    program (A-217 -- a Python re-implementation of ``cmd/cover``'s
+    segmentation is explicitly not an acceptable substitute), so an
+    environment without ``go`` on PATH gets
+    ``NO_MEASUREMENT``/``MISSING_EXTERNAL_TOOL`` from A-253's preflight in
+    :func:`assay.runner.run_lane`, BEFORE the lane's command runs. That is
+    the property that makes this entry safe everywhere rather than only
+    where a toolchain happens to exist: a Go lane is either audited against
+    real statement positions or cleanly refused, and there is no third state
+    in which it is silently wrong. This devcontainer and the registered
+    gate's own image (``tester-unified``) both have no Go and both take the
+    refusal -- see ``tests/qualification/`` for where the real-toolchain
+    proof lives instead (DESIGN-GUIDE §10's pattern).
+
+    **R2 and R3 stay unregistered for Go**, which the Wave C prompt's own
+    NOT-IN-SCOPE list forbids changing:
+    :meth:`~assay.adapters.go.GoAdapter.generate_mutation_sites` is
+    unconditionally ``"UNSUPPORTED"``, so an R2 entry would advertise a
+    producer path that does not exist -- the failure this docstring's first
+    paragraph is about. Both refusals are asserted as controls in
+    ``tests/test_cli_run.py``
+    (``test_run_refuses_go_at_r2_the_language_is_registered_r1_only`` and its
+    R3 sibling), alongside the R1 test that now inverts.
+
+    **What those two controls do NOT cover, corrected in the round-1 fix
+    round.** This paragraph used to continue that a rigor level "for a
+    language this registry does not know at all" was asserted as a control
+    there too. It was, by the same two Go tests -- until A-394 registered
+    ``go`` and they silently became registered-at-another-rigor tests, so no
+    CLI-level test exercised the unknown-language branch at all. The
+    adversarial round-1 review found it; one of the two is now
+    ``test_run_refuses_a_language_this_registry_does_not_know_at_all``, which
+    declares ``rust`` and asserts ``rust`` really is absent from the registry
+    so it cannot drift the same way. The unit-level control is
+    ``test_registry.py::test_an_unregistered_language_is_refused_not_defaulted``.
 
     **P34/W6: SQL is registered at R2 ONLY** (A-242's own sentence,
     ``SqlAdapter``'s own module docstring). That single fact is what makes
@@ -257,12 +402,76 @@ def _built_in_registry() -> registry.Registry:
     it. Route (i) (§4.1) needs no ``external_tools`` entry, so this is the
     entire wiring change -- no preflight, no new config surface, one more
     entry in this one registry.
+
+    **B036: JavaScript/TypeScript is registered at R1 ONLY**, following
+    Python's own first-ship shape rather than SQL's. R2 is not registered
+    because no JS/TS mutation engine exists to reach -- whether it should be
+    native or should ingest an external producer's evidence is the ruling
+    **B037** exists to force (:meth:`~assay.adapters.javascript.
+    JavaScriptAdapter.generate_mutation_sites` is unconditionally
+    ``"UNSUPPORTED"`` until then). R3 is not registered either: the two
+    canary injection methods are real implementations rather than stubs, but
+    a producer path is a separate claim from a method existing
+    (DESIGN-GUIDE §7), and wiring one is a fast-follow, not part of B036.
+
+    **B046 (schema v9) RESOLVED B037, and ``javascript`` is now registered at
+    ``{"R1", "R2"}`` -- through the INGESTED path only.** The paragraph above
+    stands as history; what changed is which of its two options was taken.
+    Neither: assay ships no JS/TS mutation engine and still does not.
+    :meth:`~assay.adapters.javascript.JavaScriptAdapter.generate_mutation_sites`
+    is STILL unconditionally ``"UNSUPPORTED"``, and that is not an oversight
+    left standing -- it is what makes this the ingested path. The lane's own
+    argv runs StrykerJS inside the private snapshot, exactly as it already
+    runs Vitest for R1, and assay judges the
+    ``mutation-testing-report-schema`` document it wrote.
+
+    **The runner selects native vs ingested by ``judge.mutation.format``'s
+    presence, and by nothing else** -- not by the language and not by the
+    artifact's content (A-007). So this registry entry says only "a
+    ``javascript`` lane may declare R2 at all"; WHICH R2 it gets is the lane
+    file's own declaration.
+
+    **Which layer refuses a NATIVE ``javascript`` R2 lane** -- still refused,
+    and still by the FIRST of two independent guards:
+
+    1. :mod:`assay.config` at load time. A native R2 lane must declare a
+       non-empty ``judge.mutation.operators``, while
+       :data:`assay.vocabulary.MUTATION_OPERATORS_BY_LANGUAGE` has no
+       ``javascript`` entry at all -- so every operator such a lane could
+       spell is FOREIGN to it, and the foreign-operator guard refuses
+       ``BAD_LANE_CONFIG`` naming the language. A config-valid NATIVE
+       ``javascript`` R2 lane is therefore still not constructible. An
+       INGESTED one declares no operators at all (they are forbidden there,
+       A-360), so it never meets this guard -- which is precisely why
+       registering ``{"R1", "R2"}`` here does not reopen the native path.
+    2. :func:`assay.registry.get_adapter` and this entry's own ``rigor``
+       frozenset, which since B046 admits R2 and so no longer refuses on this
+       axis. The guarantee that a native JS R2 lane cannot run now rests on
+       (1) plus ``generate_mutation_sites`` returning ``"UNSUPPORTED"``,
+       which :func:`assay.mutation.run_mutation` renders as
+       ``INCONCLUSIVE``/``MUTATION_UNSUPPORTED`` -- a stated absence of
+       capability, never a PASS.
+
+    R3 is still NOT registered for ``javascript``: the two canary injection
+    methods are real implementations, but a producer path is a separate claim
+    from a method existing (DESIGN-GUIDE §7), and B041(c)'s qualification
+    harness has proven R1 only -- a real canary PAIR has never run.
     """
     return registry.new_registry(
         registry.RegistryEntry(
             adapter=PythonAdapter(), rigor=frozenset({"R1", "R2", "R3"})
         ),
         registry.RegistryEntry(adapter=SqlAdapter(), rigor=frozenset({"R2"})),
+        # (B046) R2 admitted for the INGESTED path only -- see this
+        # function's docstring for why that is a property of the lane's own
+        # `judge.mutation.format` declaration rather than of this frozenset.
+        registry.RegistryEntry(
+            adapter=JavaScriptAdapter(), rigor=frozenset({"R1", "R2"})
+        ),
+        # (A-394, Wave C) R1 ONLY, and deliberately the LAST thing this wave
+        # landed -- see this function's docstring for why the ordering is
+        # load-bearing rather than tidy.
+        registry.RegistryEntry(adapter=GoAdapter(), rigor=frozenset({"R1"})),
     )
 
 
@@ -324,13 +533,14 @@ def _cmd_run(
     lane: Lane = lane_file.lane(args.lane)
     if getattr(args, "operators", None):
         requested = tuple(part.strip() for part in args.operators.split(",") if part.strip())
-        unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
-        if unknown or not requested:
-            raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
         # B034/A-326: the same refusal `config._load_mutation` gives a
         # DECLARED withdrawn operator. `--operators` is an override of that
         # declaration, so it has to close the same door -- otherwise the
         # withdrawal is enforced only for lanes that spell it in TOML.
+        # (A-331) And it runs BEFORE the unknown check for the same reason
+        # the loader's does: at the v8 cut these names left the catalogue,
+        # so "unknown" would now swallow them and answer a stale-but-once-
+        # legal spelling with the least useful of the two messages.
         withdrawn = tuple(
             name for name in requested if name in WITHDRAWN_MUTATION_OPERATORS
         )
@@ -341,6 +551,9 @@ def _cmd_run(
                 f"python:compare-swap at the same span with the same "
                 f"replacement"
             )
+        unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
+        if unknown or not requested:
+            raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
         mutation_config = replace(
             lane.judge.mutation, operators=requested
         )
@@ -428,6 +641,27 @@ def _run_reserved(
     # `deadline=None` to run_lane; the exact sequence below is the contract:
     # lane/output already reserved -> deadline -> HEAD -> attestation ->
     # adapter -> command -> emit once.
+    # B018/A-327: resolved ONCE, here, before the lane deadline even starts.
+    # Identity is a fact of this process, not of the run, and a consumer that
+    # demanded the binding must learn it is unavailable before assay spends a
+    # budget producing evidence that consumer would refuse anyway.
+    judge_provenance, unidentified = provenance.identify_judge()
+    if unidentified is not None:
+        if getattr(args, "require_judge_provenance", False):
+            raise LaneConfigError(
+                f"--require-judge-provenance: this assay cannot identify the "
+                f"build artifact it is running from, so no verdict it emits "
+                f"could be bound to a verified judge -- {unidentified}"
+            )
+        # Loud, never silent (B018's own acceptance criterion): the absence is
+        # announced on the diagnostics stream every time, because a consumer
+        # reading only the artifact would otherwise find a field that is
+        # simply not there, with nothing saying why.
+        print(
+            f"assay: no judge_provenance recorded -- {unidentified}; pass "
+            f"--require-judge-provenance to refuse instead of proceeding",
+            file=err,
+        )
     deadline = runner.LaneDeadline.start(
         budget_seconds=lane.budget_seconds, monotonic=time.monotonic
     )
@@ -472,6 +706,7 @@ def _run_reserved(
                 infrastructure_source=infrastructure_source,
                 infrastructure_environment=infrastructure_environment,
                 assay_version=__version__,
+                judge_provenance=judge_provenance,
                 evidence=_timed_out_evidence(declared_evidence, exc),
                 declared_evidence=declared_evidence,
             )
@@ -504,6 +739,7 @@ def _run_reserved(
             infrastructure_source=infrastructure_source,
             infrastructure_environment=infrastructure_environment,
             assay_version=__version__,
+            judge_provenance=judge_provenance,
             evidence=evidence,
             declared_evidence=declared_evidence,
         )
@@ -516,6 +752,7 @@ def _run_reserved(
             project_root=lane_file.project_root,
             adapter=adapter,
             assay_version=__version__,
+            judge_provenance=judge_provenance,
             argv_append=appended,
             evidence=evidence,
             declared_evidence=declared_evidence,
@@ -533,6 +770,10 @@ def _run_reserved(
                 if (progress_arg := getattr(args, "progress", None)) is not None
                 else None
             ),
+            # B019/A-328: the gate request's own comparison base, threaded
+            # verbatim. `run_lane` decides whether this lane delegated to it,
+            # and refuses every disagreement -- the CLI does not adjudicate.
+            request_base=getattr(args, "request_base", None),
             # B032/A-322: where the `environment_command` probe's refusal
             # message goes. `run_lane` returns a Verdict and carries no
             # free-text field for a cause (A-138/A-170), so B010's "refuse
@@ -579,18 +820,27 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
     if adapter is None:
         raise LaneConfigError(f"lane {lane.name!r} resolves no mutation adapter")
 
+    # B019/A-328: decided once, before any snapshot -- exactly where
+    # `run_lane` decides it, and by the same function, so `plan` refuses a
+    # delegating lane with no --request-base (and a non-delegating lane with
+    # one) on identical terms rather than discovering the mismatch mid-walk.
+    base_declaration = runner.resolve_base_declaration(
+        lane, getattr(args, "request_base", None)
+    )
+
     operators = lane.judge.mutation.operators
     shard_index: int | None = None
     shard_count: int | None = None
     if args.operators:
         requested = tuple(part.strip() for part in args.operators.split(",") if part.strip())
-        unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
-        if unknown or not requested:
-            raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
         # B034/A-326: the same refusal `config._load_mutation` gives a
         # DECLARED withdrawn operator. `--operators` is an override of that
         # declaration, so it has to close the same door -- otherwise the
         # withdrawal is enforced only for lanes that spell it in TOML.
+        # (A-331) And it runs BEFORE the unknown check for the same reason
+        # the loader's does: at the v8 cut these names left the catalogue,
+        # so "unknown" would now swallow them and answer a stale-but-once-
+        # legal spelling with the least useful of the two messages.
         withdrawn = tuple(
             name for name in requested if name in WITHDRAWN_MUTATION_OPERATORS
         )
@@ -601,6 +851,9 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
                 f"python:compare-swap at the same span with the same "
                 f"replacement"
             )
+        unknown = tuple(name for name in requested if name not in MUTATION_OPERATORS)
+        if unknown or not requested:
+            raise LaneConfigError(f"unknown mutation operators: {', '.join(unknown)}")
         operators = requested
     if args.shard:
         try:
@@ -652,14 +905,14 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO) -> int:
             # must be compared against here are the ones the lane actually
             # declares.
             source_root_paths = lane.judge.source_root_paths
-            resolved_base = (
-                runner._resolve_declared_base(
-                    lane_file.project_root,
-                    lane.judge.base,
-                    remaining=deadline.remaining,
-                )
-                if lane.judge.base is not None
-                else None
+            # B019/A-328: the identical declaration `run` resolves, through
+            # the identical helper -- `plan` predicts a run, so a plan scoped
+            # against a different base than the run it predicts would be
+            # worse than emitting none.
+            resolved_base = runner._resolve_declared_base(
+                lane_file.project_root,
+                base_declaration,
+                remaining=deadline.remaining,
             )
             if lane.judge.mode == "whole_target":
                 targets = runner._mutation_targets_whole(
@@ -776,6 +1029,143 @@ def _render_lanes(lane_file: LaneFile, out: TextIO) -> None:
                 f"(relative to {lane_file.project_root})",
                 file=out,
             )
+
+
+#: (B044) The document's own top-level version. Bumped ONLY when an existing
+#: key's MEANING changes -- adding a key (B043's `cwd`, B041's `link_paths`,
+#: B045's `coverage.producer`, all `null`/`[]` here since this build does not
+#: implement them yet) is additive and does not move this number, exactly as
+#: `LANE_FILE_NAME`'s own `schema_version` distinguishes a meaning change from
+#: an addition (A-thread in `config.py`).
+LANE_INVENTORY_SCHEMA_VERSION = 1
+
+
+def _render_lanes_json(lane_file: LaneFile, out: TextIO) -> None:
+    """B044 -- ``assay lanes --json``: one machine-readable inventory
+    document, so a gate tool (CIU stage 12, CIU-72) can learn what a project
+    declared without re-parsing ``assay.toml`` itself and without asking the
+    judge to run anything.
+
+    **Every field has exactly one producer** -- the loaded ``Lane``/
+    ``JudgeConfig`` (this process's own :mod:`assay.config` parse) or this
+    build's own closed registry (:func:`_built_in_registry`, the identical
+    object ``assay run`` resolves an adapter through) -- nothing here
+    re-derives a fact from the raw TOML text a second, independent way.
+    ``rigor_reachable``/``external_tools`` come from the registry entry (or
+    are empty when the declared language is not registered at all -- an
+    absent capability, not a refusal: unlike ``assay run``, this subcommand
+    never raises for a rigor level or language this build cannot reach, so a
+    gate can compare ``rigor`` against ``rigor_reachable`` itself instead of
+    discovering the mismatch only when a real run refuses). Like the text
+    form above, this renders nothing that would let a lane's declared argv
+    run, and writes no verdict artifact (A-054).
+
+    ``base_source`` resolves ``JudgeConfig.base_source``'s own documented
+    absent-means-``"declared"`` default (A-328) rather than passing the raw
+    ``None`` through -- the one place this function derives instead of
+    reads, and it derives only the ALREADY-established meaning of that
+    field's own absence, never a new one (A-347 records why: the whole point
+    of this inventory is to let a gate tell "this lane owns its base" apart
+    from "this lane delegates it" without reimplementing A-328 itself,
+    which is exactly the four-copies divergence this project exists to
+    close one layer up). It is ``null`` where the lane has no base concept
+    at all -- no ``judge`` table, ``judge.mode == "whole_target"``, or
+    neither R1 nor R2 declared -- mirroring :mod:`assay.config`'s own load
+    time refusal of ``base_source`` in exactly those three shapes.
+
+    A lane file that fails to load raises before this function is ever
+    called (:func:`_resolve_lane_file` runs first in :func:`main`), so the
+    existing ``except AssayError`` in :func:`main` already gives this
+    subcommand its required exit 2 with an empty stdout and no partial JSON
+    -- nothing below needs its own try/except for that.
+    """
+    built_in = _built_in_registry()
+    document = {
+        "inventory_schema": LANE_INVENTORY_SCHEMA_VERSION,
+        "assay_version": __version__,
+        "lanes": [
+            _lane_inventory_entry(lane, built_in)
+            for lane in lane_file.lanes.values()
+        ],
+    }
+    print(json.dumps(document, indent=2, sort_keys=True), file=out)
+
+
+def _lane_inventory_entry(lane: Lane, built_in: registry.Registry) -> dict[str, Any]:
+    """One lane's own entry in :func:`_render_lanes_json`'s document."""
+    judge = lane.judge
+    language = judge.language if judge is not None else None
+    entry = built_in.entries.get(language) if language is not None else None
+    rigor_reachable = sorted(entry.rigor) if entry is not None else []
+    external_tools = list(entry.adapter.external_tools) if entry is not None else []
+
+    coverage: dict[str, Any] | None = None
+    if judge is not None and judge.coverage is not None:
+        coverage = {
+            "format": judge.coverage.format,
+            "artifact": judge.coverage.artifact,
+            # (B045/schema v9) the DECLARED producer, or `null` when the
+            # format allows the omission and the lane took it. Wave A shipped
+            # this key as an unconditional `null` placeholder so a v9-aware
+            # consumer's key set would not have to branch on which assay
+            # version produced the document; Wave B wires it to the real
+            # declared value. The key's MEANING is unchanged ("the declared
+            # producer, or null"), so `inventory_schema` does not move
+            # (A-349's own stability rule).
+            "producer": judge.coverage.producer,
+        }
+
+    mutation = (
+        judge.mutation.as_declared()
+        if judge is not None and judge.mutation is not None
+        else None
+    )
+    canary = (
+        judge.canary.as_declared()
+        if judge is not None and judge.canary is not None
+        else None
+    )
+
+    base_source: str | None = None
+    if (
+        judge is not None
+        and judge.mode != "whole_target"
+        and ("R1" in lane.rigor or "R2" in lane.rigor)
+    ):
+        base_source = judge.base_source or "declared"
+
+    return {
+        "name": lane.name,
+        "scope": lane.scope,
+        "rigor": list(lane.rigor),
+        "enforcement": lane.enforcement,
+        "language": language,
+        "rigor_reachable": rigor_reachable,
+        "coverage": coverage,
+        "mutation": mutation,
+        "canary": canary,
+        "base_source": base_source,
+        "external_tools": external_tools,
+        "argv0": lane.argv[0],
+        "env_required": list(lane.env_required),
+        "environment_command": lane.environment_command is not None,
+        "infrastructure_facts": sorted(lane.infrastructure)
+        if lane.infrastructure
+        else [],
+        "budget": lane.budget,
+        # (B043/schema v9) the declared working directory, or `null` when the
+        # lane declared none. `null` is the honest answer for that lane, not
+        # a placeholder: `"."` would be a value the file never wrote.
+        "cwd": lane.cwd,
+        # (B041(b)/schema v9) the declared link_paths, `[]` when the lane
+        # declared none. A non-empty list tells a gate that this lane's
+        # snapshot will NOT be purely committed objects, and that the listed
+        # directories must exist in the environment before the lane runs.
+        "link_paths": list(lane.isolation.link_paths) if lane.isolation else [],
+        "snapshot_selection": (
+            lane.isolation.snapshot_selection if lane.isolation is not None else None
+        ),
+    }
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised as a subprocess

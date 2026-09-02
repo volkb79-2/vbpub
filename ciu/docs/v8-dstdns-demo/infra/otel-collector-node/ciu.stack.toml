@@ -1,0 +1,64 @@
+# infra/otel-collector-node/ciu.stack.toml — v8 notation (plain TOML, draft.3)
+# Realization `otel_collector_node` (bound by ciu.toml [realization.otel_collector_node])
+# = the `otel_collector` LogicalService: the per-node telemetry agent. Producers
+# bind otel_collector.otlp_grpc / .otlp_http (webapp_server, docker_stats_exporter,
+# both wait = "none"); this stack binds the aggregator the same way. DERIVED,
+# never written here: the identity (dstdns-<instance>-otel-collector-node-collector),
+# the network, the aggregator address (the binding below — was a hard-coded
+# "otel-aggregator:4317"), the config-DIRECTORY mount, the host-port publication.
+# Deliberately NO ordering edge on otel_aggregator (the original declared no
+# dependency either): the address is read when the first batch is exported and
+# the file_storage sending queue absorbs an aggregator that is still starting —
+# hence wait = "none": a resolution, never an edge (S6.4, S8.2).
+
+[ciu_stack.collector]
+image = "otel/opentelemetry-collector-contrib:latest"
+[ciu_stack.collector.endpoints]     # host ports differ from the container ports so this and the aggregator can share a host (S6.3.2); ports: are injected (S7.4.2)
+otlp_grpc = { port = 4317,  protocol = "tcp",  publish = "host", host_port = 4319 }    # OTLP gRPC receiver
+otlp_http = { port = 4318,  protocol = "http", publish = "host", host_port = 4320 }    # OTLP HTTP receiver
+metrics   = { port = 8888,  protocol = "http", publish = "host", host_port = 8889 }    # Prometheus metrics
+health    = { port = 13133, protocol = "http", publish = "host", host_port = 13134 }   # health_check extension
+
+# The one binding. Template delivery because the exporter wants a composed
+# "host:port" string (D18): the compose template reads
+# ciu_stack.collector.binds.aggregator.host / .port (S7.8.2) — one spelling in
+# every layout; on prod3 both stacks sit on rs1002, so it resolves to the
+# aggregator's container name on the instance network (S7.8 step 4).
+[ciu_stack.collector.binds.aggregator]
+to = "otel_aggregator.otlp_grpc"
+wait = "none"
+delivery = "template"
+
+[ciu_stack.collector.receivers]      # consumer data: documents the static pipeline config (otel-collector-config.yml)
+otlp_grpc = true
+otlp_http = true
+prometheus = false
+
+[ciu_stack.collector.processors]
+batch_size = 8192
+batch_timeout = "200ms"
+memory_limit_mib = 512
+
+[ciu_stack.collector.exporters]
+aggregator_enabled = true
+# no aggregator_endpoint key: a declaration file holds no address (plain TOML;
+# the binding above is the only source, I7)
+
+[ciu_stack.collector.file_storage]   # persistent sending queue; `directory` also renders the volume target in the compose template (one source)
+enabled = true
+directory = "/var/lib/otelcol/file_storage"
+timeout = "10s"
+
+[ciu_stack.collector.hostdir]
+data = ""                            # "" = ciu-generated host path (<physical_repo_root>/ciu-data/otel_collector_node/collector/data, S6.8)
+
+# Rendered to ciu.rendered/collector/etc/otelcol/otel-collector-config.yml; the
+# PARENT directory /etc/otelcol is mounted read-only (S6.9.1). Static YAML: its
+# env: references are the collector's own expansion, not Jinja.
+[ciu_stack.collector.configfile.otel]
+template = "otel-collector-config.yml"
+target = "/etc/otelcol/otel-collector-config.yml"
+
+[hooks]
+pre_compose = []
+post_compose = []

@@ -9,15 +9,111 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
-_Nothing yet._
-
 <!-- Post-release housekeeping (assay CHANGES.md precedent): this block is
      CLEARED immediately after a release. cmru generates the dated entry
      below from the commit range but does NOT clear this hand-written block
      itself — leaving content here would republish shipped work as
-     "unreleased" on the next cycle. -->
+     "unreleased" on the next cycle. Recurred on run-gate-project as of
+     2026-09-01 (rev 24/25/27/28/29/30 content had survived three releases,
+     23.1.0/23.2.0/23.2.1; then again the SAME cycle, since cutting
+     23.2.2 to ship RG-31's own fix — confirming this really is a manual
+     per-release step, not something cmru will ever do for you); cleared
+     both times. -->
 
 <!-- cmru: release history -->
+
+## [23.3.0] - 2026-09-02
+<!-- cmru: generated -->
+<!-- cmru: source-end=b36c6925d1d8ff8bf6fd4b74de8a5bd9f3855dbe -->
+
+### Fixed
+- fix(run-gate): RG-33 -- every assay lane runs with --resume and --progress, judge floor refused by name (rev 33, R-38) (0a4862db)
+  - Hand-authored detail (folded in post-release, the standing rule): every
+    `kind = "assay"` lane is now invoked with `--resume --progress
+    .assay/progress-<assay_lane>.jsonl`, unconditionally, on every runner.
+    Measured cause: dstdns's `sql-mutation` lane re-tested the first of four
+    target files from mutant #1 on three budget-capped retries because the
+    argv never carried `--resume`. Both flags are no-ops on a lane without R2
+    (assay's own contract), so R0/R1 lanes are unchanged; an R2 lane resumes
+    from `.assay/mutation-state/` on retry and streams progress beside its
+    verdict under the git-ignored `.assay/`.
+  - **Consumer note (breaking for very old pins):** the flags need a judge
+    that knows them — assay **>= 2.4.1**. A pin declaring an older `version`
+    is refused at argv construction by name (lane, pin, version, floor,
+    remedy); a pin without a declared version reaches the judge and fails
+    loudly there. Re-pin before adopting rev 33 (in this estate only `cmru`
+    was below the floor, at 2.3.0; re-pinned to 4.1.0 in `b36c6925`).
+
+### Documentation
+- docs(run-gate): RG-34 — schema lane argv doesn't template {worktree} into its own script path (eeda67ce)
+- docs(run-gate): RG-33 — assay mutation lanes never pass --resume, retries restart from scratch (a04c95c2)
+- docs(run-gate): RG-32 — pins.assay.budget is silently inert, real value lives in the consumer's assay.toml (8be4c6b9)
+
+## [23.2.2] - 2026-09-01
+<!-- cmru: generated -->
+<!-- cmru: source-end=fad40555fb0f8125315f3811a8dcd95bea6db9c3 -->
+
+### Fixed
+- fix(run-gate): RG-31 -- assay_toolchain_findings routes --worktree through resolve_worktree_scope (rev 32) (0efd062e)
+
+## [23.2.1] - 2026-08-31
+<!-- cmru: generated -->
+<!-- cmru: source-end=fe09688572dc7d744ba81b6b471eb4908599ffa6 -->
+
+### Fixed
+- fix(run-gate): RG-30 -- doctor/--check-env honor --worktree (rev 31) (89ca96ba)
+
+### Changed
+- backlog(run-gate): file RG-31 -- assay_toolchain_findings bypasses RG-30's validated worktree resolution (da535655)
+
+### Documentation
+- docs(run-gate): RG-30 FIXED + run-gate-P04 LOG/REPORT (60512539)
+
+## [23.2.0] - 2026-08-31
+<!-- cmru: generated -->
+<!-- cmru: source-end=7c47a70710eac58697641d9ee2444a1ea0db8af3 -->
+
+### Added
+- feat(run-gate): RG-27 -- lane invocation history + the `history` query verb (rev 30) (1687b60d)
+
+### Fixed
+- fix(run-gate): RG-27 round-2 review -- B1 history read scope, B2 at-most-once flush, S1/S2 (0e6d0ea4)
+- fix(run-gate): RG-27 -- record inline in main(), and cover the wiring in-process (afcdb39f)
+
+### Changed
+- backlog(run-gate): file RG-30 -- doctor/--check-env ignore --worktree, same pattern RG-27 just closed for history (5df35ce4)
+
+### Documentation
+- docs(run-gate): RG-27 -- P03 LOG/REPORT carry the real round-2 gate verdict (56d98572)
+- docs(run-gate): RG-27 FIXED + run-gate-P03 LOG/REPORT (dbaccfe1)
+
+### Testing
+- test(run-gate): RG-27 -- in-process cover for the B1/S1 main() dispatch branches (dc3b1490)
+
+## [23.1.0] - 2026-08-31
+<!-- cmru: generated -->
+<!-- cmru: source-end=1f47601c1b69a3503c4d94caca3ca90c373f8e0b -->
+
+### Added
+- feat(run-gate): RG-26 -- --base REF reaches a delegating assay lane as --request-base (7b30bc49)
+- feat(run-gate): RG-25 -- doctor/--check-env preflight assay-lane toolchain fitness (9a403da3)
+- feat(run-gate): RG-21 -- doctor names the linked-worktree host-lane git view (9adf11fc)
+
+### Fixed
+- fix(cmru,run-gate): RG-29 -- cmru/run-gate.toml's assay pin still named the vanished 2.2.0 sidecar (0ad5372d)
+- fix(run-gate): P02 review round -- batch the fitness probe (B2), tell the truth about what dry-run and doctor start (B1/B3) (2f266885)
+- fix(run-gate): RG-23 -- declare the env-forward breaking change and widen the drift sweep (c55f5748)
+- fix(run-gate): RG-24 -- exec-mode container names resolve from the judged worktree (bd1a3f85)
+
+### Changed
+- backlog(ciu,run-gate): file CIU-75 -- backport v8 F2 identity source (breaking, ciu 7.6); retriage CIU-55 -> RG-27 -- gate invocation history + query verb (a78a0046)
+- backlog(run-gate,ciu,assay): RG-25/RG-26 -- backport ciu CIU-72 (b)/(c) to the current gate; CIU-73 needs no code (b2884e76)
+- backlog(ciu,run-gate): file CIU-71 -- build-context project-directory gap; RG-24 -- exec-mode container resolution is repo-scoped not worktree-scoped (92ae1917)
+
+### Documentation
+- docs(run-gate): usage() names the doctor/--check-env checks this bundle added (08783d09)
+- docs(run-gate): P02 bundle LOG + REPORT (RG-21/23/24/25/26) (e8a6a34b)
+- docs(assay): file the 2.1.0->2.3.0 review-gap audit and its backlog (B030-B034, RG-23) (142143a4)
 
 ## [23.0.0] - 2026-08-24
 <!-- cmru: generated -->

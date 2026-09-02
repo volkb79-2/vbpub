@@ -611,6 +611,10 @@ def make_lane(
     judge: "JudgeConfig | None" = None,
     isolation: "IsolationConfig | None" = _ISOLATION_UNSET,  # type: ignore[assignment]
     infrastructure: Mapping[str, str] | None = None,
+    #: (B043) the lane's declared working directory. Defaults to `None` --
+    #: absent, the only value that existed before v9 -- so every test written
+    #: before this key is unchanged.
+    cwd: str | None = None,
 ) -> Lane:
     if isolation is _ISOLATION_UNSET:
         # (B006a/A-269 WI-2) `run_lane` now enforces the SAME R0/R1+
@@ -643,6 +647,7 @@ def make_lane(
         where=None,
         isolation=isolation,
         infrastructure=None if infrastructure is None else MappingProxyType(dict(infrastructure)),
+        cwd=cwd,
     )
 
 
@@ -792,10 +797,21 @@ class FakeAdapter:
     source_globs: tuple[str, ...] = ("*.zzz",)
     excluded_dir_names: frozenset[str] = frozenset({"vendor"})
     requires_span_attribution: bool = False
+    # (A-397) Every adapter declares this; `evaluate` reads it directly with
+    # no getattr default, precisely so a fake that forgets it fails loudly
+    # rather than silently skipping A-392's guard.
+    requires_statement_attribution: bool = False
     external_tools: tuple[str, ...] = ()
     key_prefix: str = ""
     test_marker: str = "_test.zzz"
     no_code_marker: str = "NO-CODE"
+
+    def for_project(self, *, repo_top: Path, project_root: Path) -> "FakeAdapter":
+        """``self`` (A-404). This fake has no project-layout fact to learn --
+        ``key_prefix`` is handed to it by whichever test constructed it, which
+        is the point: it stands in for a real adapter's strip WITHOUT standing
+        in for where a real adapter gets the value."""
+        return self
 
     def is_test_path(self, rel_path: str) -> bool:
         return self.test_marker in rel_path
@@ -805,6 +821,96 @@ class FakeAdapter:
 
     def normalize_coverage_key(self, key: str) -> str:
         return key.removeprefix(self.key_prefix) if self.key_prefix else key
+
+
+def as_statement_attributed(profile):
+    """*profile* marked ``statement_attributed`` **because its line sets
+    already are statement truth**, refusing loudly when they are not.
+
+    :class:`~assay.adapters.go.GoAdapter` declares
+    ``requires_statement_attribution=True``, so ``evaluate_coverage`` refuses
+    an uncorrected block profile (A-392). Some Go tests do not judge a parsed
+    coverprofile at all: they hand-build ``FileCoverage`` line sets directly,
+    or parse a profile whose every block is a SINGLE line. Both are already
+    statement-granular, and this marks them as such rather than correcting
+    anything.
+
+    **The invariant is checked, not asserted in prose.** A block whose extent
+    spans one line contains only statements on that line, so its expansion
+    equals its statement set -- that is the whole reason this helper is safe.
+    A multi-line extent has no such guarantee (A-217: the profile does not
+    carry the statements' own positions), so this refuses it. That is what
+    stops this helper from quietly becoming the pre-oracle shortcut it
+    replaced.
+
+    A test judging a REAL, multi-line-block coverprofile drives the real
+    correction instead, through
+    :func:`assay.statement_attribution.attribute_statements` with real oracle
+    blocks -- see :func:`load_go_statement_oracle` and its two committed
+    documents, ``tests/test_statement_attribution_go_witnesses.py`` (the
+    frozen P27 witnesses), ``tests/test_adapters_go_union_fidelity.py`` and
+    ``tests/test_canary_go_pipeline.py`` (the regenerated fixtures, F008-A4),
+    and ``tests/test_runner_statement_attribution_wiring.py`` (the runner
+    seam).
+
+    Renamed from ``as_pre_oracle_attributed`` when F008-A4 landed: every
+    remaining caller is the exact case B057 always described as exact, and
+    the old name promised a staleness that no longer exists anywhere.
+    """
+    from assay.coverage_parsers.model import CoverageProfile
+
+    for path, file_cov in profile.files.items():
+        for block in file_cov.blocks or ():
+            assert block.start_line == block.end_line, (
+                f"{path}: block {block.start_line}.{block.start_col},"
+                f"{block.end_line}.{block.end_col} spans more than one line, "
+                f"so its naive expansion is NOT statement truth -- correct it "
+                f"with assay.statement_attribution.attribute_statements and a "
+                f"real oracle document instead of marking it attributed"
+            )
+    return CoverageProfile(files=profile.files, statement_attributed=True)
+
+
+def load_go_statement_oracle(path):
+    """The committed statement-position oracle document at *path*, as
+    ``{basename: (StatementBlock, ...)}``.
+
+    Two such documents exist, both under
+    ``nyxloom-trove/carve-assets/P27-recarve/`` with their own provenance:
+    ``stmtpos-witness-oracle.json`` (the carver-frozen P27 witnesses) and
+    ``fixture-oracle.json`` (assay's own regenerated Go fixtures, F008-A4).
+    Both are real output of ``assay/helpers/go/stmtpos/`` run inside
+    ``tester-unified-go:local`` -- never authored by a test (A-334) -- which
+    is what lets the suite drive the REAL correction with no Go toolchain
+    present (A-042/A-087).
+
+    One loader rather than one per module: three call sites reading the same
+    shape is exactly where a copied parser drifts.
+    """
+    import json
+    from pathlib import Path
+
+    from assay.statement_attribution import StatementBlock
+
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    assert document["schema"] == 1, (
+        f"{path} declares oracle schema {document['schema']!r}, which this "
+        f"loader was not written against"
+    )
+    return {
+        Path(entry["path"]).name: tuple(
+            StatementBlock(
+                start_line=block["start_line"],
+                start_col=block["start_col"],
+                end_line=block["end_line"],
+                end_col=block["end_col"],
+                num_stmts=block["num_stmts"],
+                stmt_lines=tuple(block["stmt_lines"]),
+            )
+            for block in entry["blocks"]
+        )
+        for entry in document["files"]
+    }
 
 
 def write_coverage_json(path: Path, files: Mapping[str, Mapping[str, list]]) -> None:
