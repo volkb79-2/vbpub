@@ -21,6 +21,23 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.10.1] - 2026-09-02
+<!-- cmru: generated -->
+<!-- cmru: source-end=eceeaa939650b67952721b64d08ca8b52f3ce316 -->
+
+### Fixed
+- fix(ciu): ciu-P48 review fix pass -- B1 (teardown disconnected networks it never joined) + B2 (hollow import-time pin) + 4 accuracy corrections (2e2b425b)
+- fix(ciu): ciu-P48 -- CIU-87 test suite no longer leaks Docker networks into its host (0fc4efc4)
+
+### Changed
+- merge(ciu): ciu-P48 -- CIU-87 test-suite Docker network leak fix (eceeaa93)
+- backlog(ciu): file CIU-88 -- asserts enum carries unsupported "assay-verdict" (526dc1fe)
+
+### Documentation
+- docs(ciu): ciu-P48 -- REPORT addendum for the review fix pass (cd7776c6)
+- docs(ciu): ciu-P48 -- LOG addendum for the review fix pass (6697ec63)
+- docs(ciu): ciu-P48 -- LOG/REPORT for the CIU-87 network-leak package (8735363d)
+
 ## [7.10.0] - 2026-09-02
 <!-- cmru: generated -->
 <!-- cmru: source-end=42c018ea4301b0871fad955ee3912a8e81c18cce -->
