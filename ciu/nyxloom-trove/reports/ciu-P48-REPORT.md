@@ -211,4 +211,213 @@ behavior anywhere.
 | Hash | Subject |
 |---|---|
 | `0fc4efc4` | `fix(ciu): ciu-P48 -- CIU-87 test suite no longer leaks Docker networks into its host` |
-| *(this pair)* | `docs(ciu): ciu-P48 -- LOG/REPORT` |
+| `8735363d` | `docs(ciu): ciu-P48 -- LOG/REPORT for the CIU-87 network-leak package` |
+
+---
+
+# ciu-P48 — REPORT addendum: review-fix pass (round 1)
+
+Reviewer verdict: **ACCEPT-conditional** — mechanism, oracle, file-source
+correction, all 8 judgment calls and the merge-onto-current-main story
+confirmed; 12-mutation sweep caught 11/12. Two blockers (B1, B2) and four
+accuracy items. All addressed. Still **not merged**.
+
+## A1. The real gate — verbatim verdict, after the fix pass
+
+```
+./run-gate.py ciu --worktree /workspaces/vbpub/.claude/worktrees/agent-a3b063efd8bd93e86
+```
+
+Run twice this pass. The first attempt was **refused, correctly**, and is
+reported rather than hidden:
+
+```
+run-gate: refusing to judge a dirty tree: /workspaces/vbpub/.claude/worktrees/agent-a3b063efd8bd93e86 has 1 uncommitted change(s) (first: ' M ciu/nyxloom-trove/reports/ciu-P48-LOG.md') — commit or pass --allow-dirty
+```
+
+(exit 2, not a lane failure — the LOG addendum was still unstaged.
+`--allow-dirty` was not used.) After committing, at `6697ec63`:
+
+```
+run-gate: admission: lane 'ciu' declares no resources.memory — not memory-accounted (shared-infra rules still apply)
+run-gate: rev 32 | lane ciu | env [environments.tester-unified] in central /workspaces/vbpub/.claude/worktrees/agent-a3b063efd8bd93e86/run-gate.toml | slice dev-background.slice ($CGROUP_PARENT_DEV_BACKGROUND)
+run-gate: ephemeral env (nothing declared)
+run-gate: budget 30m (advisory)
+assay-3.2.0.pyz: OK
+ciu: PASS (exit 0)
+  commit: 6697ec634bfeab5ee78a1d19a7e9115c21f1f094
+  argv: /opt/tester-venv/bin/python run-ciu-tests.py
+run-gate: verdict artifact: /workspaces/vbpub/.claude/worktrees/agent-a3b063efd8bd93e86/ciu/.assay/verdict-ciu.json
+run-gate: lane 'ciu' exit 0
+```
+
+Verdict artifact:
+
+```json
+{"rigor": "R0", "status": "PASS", "verified_by_assay": true}
+{"rigor": "R1", "status": "PASS", "verified_by_assay": true,
+ "coverage": {"pct": 100.0, "executable": 7, "covered": 7,
+              "branches_total": 4, "branches_covered": 4,
+              "missing_lines": {}, "excluded_lines": {}}}
+"judgment": {"r1": {"mode": "changed_lines", "fail_under": 100.0,
+                    "require_branch": true, "allow_excluded": false}}
+```
+
+Verdict read in a separate step from the run both times, off the redirected
+log and the artifact — never a piped tail. Suite **3547 → 3551**.
+
+## A2. B1 — teardown issued real disconnects for networks it never joined
+
+The blocker, and the one that most deserved to be caught: the fixture written
+to keep a test off a shared host's Docker state was itself reaching into it.
+
+`wrap_ensure` was observation-gated from the start. `wrap_connect` was not —
+bare `finally: self.joined.append(name)`, recording every name the product was
+*asked* to connect. `release()` then sent each to the real daemon through the
+import-time-captured `subprocess.run`, so a boundary test that mocked
+`subprocess.run` completely and merely *named* a network still produced a live
+`docker network disconnect -f`. No harm had occurred only because the
+fabricated names in those tests do not collide with anything live.
+
+**Fixed** by giving membership the same before/after discipline via a new
+`network_has_container(name, container)` predicate. A mocked seam creates no
+attachment (nothing registered); a co-tenant's pre-existing attachment was
+there before the call (nothing registered). Two further corrections fell out:
+the cockpit name is now resolved **once at fixture setup**, before a test body
+can rewrite `DEVCONTAINER_NAME`/`HOSTNAME` — previously the probe would have
+asked about a fictional cockpit while teardown disconnected the real one — and
+the fixture `yield`s the tracker so a test can assert on the ledger teardown
+is about to act on.
+
+**Pinned by 3 new tests**, measured against the restored defect:
+
+| Mutation | Tests that fail |
+|---|---|
+| `joined` registered unconditionally (the B1 defect) | `test_tracker_registers_a_join_only_when_a_membership_really_appeared`, `test_tracker_ignores_a_membership_that_predates_the_call`, `test_a_mocked_seam_join_leaves_the_teardown_ledger_empty` |
+
+The third is the reviewer's own reproduction inverted: it drives the **real**
+autouse fixture with the gate off and the whole Docker seam mocked, and
+asserts the ledger stays empty.
+
+Control row 2 was re-run after the fix (18 → 18): the observation-gated ledger
+still cleans up the joins that really happen, so the tightening removed a
+false positive without removing the capability.
+
+## A3. B2 — the import-time gate assignment was pinned by nothing
+
+The reviewer deleted `os.environ[CIU_TEST_SUITE_ENV] = "1"` and all 24 tests
+stayed green: the autouse fixture writes the same variable, masking every
+in-process assertion. I built two mechanisms deliberately and then wrote tests
+that could not distinguish them.
+
+**Fixed** by `test_conftest_raises_the_gate_at_import_not_only_per_test`,
+which runs a child interpreter that pops the variable, puts `tests/` on
+`sys.path`, imports `conftest`, and prints it back. No fixture runs there.
+
+| Mutation | Tests that fail |
+|---|---|
+| Import-time assignment deleted, autouse fixture kept | `test_conftest_raises_the_gate_at_import_not_only_per_test` — **and only that one** |
+
+Both misleading docstrings were rewritten to state what they pin *and what
+they cannot see*, each naming the test that covers the other half.
+
+## A4. Corrected mutation table (supersedes §3's)
+
+Every row measured, not predicted:
+
+| Mutation | Tests that fail | Host effect |
+|---|---|---|
+| Gate disarmed (conftest raises `"0"`) | 4 — `test_the_suite_declares_the_gate_for_every_test`, `test_gate_suppresses_network_create_and_cockpit_attach`, `test_gate_reaches_a_spawned_ciu_subprocess`, `test_conftest_raises_the_gate_at_import_not_only_per_test` | none — the fixture catches it |
+| Import-time assignment deleted only | 1 — the import-time test, alone | none |
+| Gate disarmed **and** fixture disarmed | a 5th — `test_the_teardown_net_is_armed_for_every_test` | **+4 networks** |
+| `joined` unconditional (B1) | 3 — see §A2 | a real `disconnect -f` on a network no test created |
+
+§3's original row ("Gate reverted → 3 tests fail, including
+`test_gate_reaches_a_spawned_ciu_subprocess`") was **stated imprecisely**. It
+described *my* mutation (conftest raising `"0"`), under which that test does
+fail; the reviewer's mutation (deleting the import-time line) is a different
+one, under which it did not. The table above names both mutations separately.
+
+## A5. Corrected oracle numbers (supersede §2's)
+
+Re-measured this pass, each after a `docker network create`/`rm` probe
+confirmed the pool could still produce the effect:
+
+| # | Configuration | before → after | leaked |
+|---|---|---|---|
+| 1 | Both fixes OFF (control) | **18 → 22** | **+4** — `repo-48473e`, `repo-e3e94f`, `test-repo-1c9480`, `test-repo-adb5a9` |
+| 2 | Gate OFF, teardown fixture ON | 18 → 18 | 0 — all 4 released for real |
+| 3 | Both ON — run 1 | 18 → 18 | 0, identical name set |
+| 4 | Both ON — run 2 | 18 → 18 | 0, identical name set |
+
+`^(test-)?repo-` count **0 → 0 → 0** across both fixed runs.
+
+**§2's `+6` was wrong.** That control window overlapped a concurrent
+co-tenant's own ciu suite run, whose networks come from the same `repo-*`
+generator and were therefore indistinguishable in a name-set diff. `+4`
+matches the reviewer's independent measurement and the Step-1 attribution
+(4 creates, 2 joined, 2 reaped by the test's own `ciu clean`).
+
+**Lesson, alongside the exhausted-pool one in §2:** a name-set diff does not
+isolate a measurement from a co-tenant whose names come from the same
+generator. A leak-rate measurement on a shared daemon needs a **quiet
+window** as well as a diff. This is not hypothetical — during this pass the
+host again gained a network from elsewhere between two of my own steps
+(17 → 18).
+
+## A6. The "co-tenant's networks" claim is withdrawn — they were mine
+
+§2 said the two surviving `repo-*` networks were "another session's concurrent
+leak, left untouched — which is itself the surgical-teardown contract
+holding." That was wrong, and self-flattering in a report that was
+simultaneously praising the fixture for leaving co-tenant networks alone.
+
+`repo-4176ba-network` and `repo-d060db-network` were created **0.5 s apart**
+(`04:59:16.594` and `04:59:17.107`) — the signature of
+`test_ciu_identity_cutover_ciu75.py`'s own network pair — and both held only
+`dstdns-devcontainer-vb`. They were this package's own residue from a control
+run, not cleaned before "0 leaked" was written.
+
+Both were inspected (zero workload containers) and removed.
+**`^(test-)?repo-` on this host is now 0.** Corrected in the backlog too.
+
+## A7. Prior art — §5's judgment call 1 was overstated
+
+"No existing convention" is too strong. `CIU_SKIP_DOOD_PREFLIGHT`
+(`src/ciu/engine.py:897-899`) is documented in-source as skippable "for
+tests", uses the same exact `== "1"` match, and is already listed in
+`docs/SPEC.md:1911` beside `CIU_ADOPT_LEGACY_PROJECT` and
+`CIU_SSH_INSECURE_TOFU`. **`CIU_TEST_SUITE` is the third member of an
+established house pattern, not a new mechanism.** S2.8a now cross-references
+that family so the next person does not rediscover it.
+
+A hookable test seam also existed and I missed it:
+`tests/tests/test_spec_contracts.py:111-118`, a file-level autouse fixture
+no-opping `ensure_workspace_network`. It is in-process only, so it would not
+have covered the `ciu`-subprocess paths the env var does — the mechanism
+choice stands, but for that reason, not for "no precedent existed."
+
+My original search was for `monkeypatch`/fixture *shapes* in the test tree;
+the precedent was an env-var read in **product** code, which that search could
+not have found.
+
+## A8. Also fixed
+
+`KNOWN_ISSUES_TODO_BACKLOG.md` — blank line before `## Compact resolved index`
+(MD022).
+
+## A9. Untouched, per the reviewer's "do not touch"
+
+Gate design and placement relative to S1.9, the empty-name refusal, the
+exact-`"1"` match, capture-at-import teardown, the yield-fixture failure-path
+guarantee, the opt-out fixture, the docs, and the base revision (still not
+rebased onto current `main`; the reviewer confirmed the merge is clean bar a
+trivial 2-section `CHANGES.md` conflict).
+
+## A10. Commits added this pass
+
+| Hash | Subject |
+|---|---|
+| `2e2b425b` | `fix(ciu): ciu-P48 review fix pass -- B1 … + B2 … + 4 accuracy corrections` |
+| `6697ec63` | `docs(ciu): ciu-P48 -- LOG addendum for the review fix pass` (gate ran here: **PASS**) |
+| *(this)* | `docs(ciu): ciu-P48 -- REPORT addendum for the review fix pass` |
