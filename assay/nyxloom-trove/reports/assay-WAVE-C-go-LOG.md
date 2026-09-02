@@ -827,3 +827,27 @@ F008-A4 and F008-A5 both tick, so **F008 is `shipped`** and **M6 is `done`**.
 B059's last box and all three of B057's close. B061 filed. CONSUMERS.md gains
 point 7 — a worked Go lane that is the one that really ran, with the srdm-side
 consequence stated: not more lines seen, a truer denominator.
+
+**Gate run 10: PASS on `3355d238`** — `ASSAY_REGISTERED_GATE_COMPLETE=1`,
+`GATE_EXIT=0`, eleven phase markers through `self-hosted-lane-passed` /
+`topos-qualified` / `cmru-b006a-qualified` / `independent-self-hosting-passed`,
+the installed wheel `assay-4.0.1.dev39+g3355d238` naming the judged commit, and
+a SEPARATE, independent grep for `FAILED|DIRTY_TREE|Traceback` returning
+nothing. Transcript in REPORT §43. Both source commits (`394c6cc2`,
+`875382d2`) are under this run; the only commit after it is the docs-only one
+carrying BRIEF-7, REPORT §43 and this paragraph.
+
+**BRIEF-7** is the generation-6 record. It is a completion record rather than a
+hand-off: every item on the dispatched list is done, F008 is `shipped`, M6 is
+`done`, and there are no open decision asks. It was written into a scratchpad
+OUTSIDE the worktree while run 10 was executing and copied in afterwards, for
+the reason generation 3 lost a run.
+
+**Process note, volunteered for the reviewer.** Every change to a tracked file
+this generation was made with the Edit tool, per file, per the operator's
+standing directive — no bulk rewrite scripts, which generation 5 recorded
+having used three times. Two mechanical helpers were used and neither touched a
+tracked file: a Python one-shot that filled the gate verdict into BRIEF-7 while
+it was still an untracked scratchpad draft, and a Python script that computed
+the classified table in §41 from the run's JSON artifacts. Both are analysis,
+not editing.

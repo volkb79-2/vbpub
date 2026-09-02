@@ -1898,3 +1898,62 @@ runs of srdm's own argv in the same checkout differ in `cmd/srdm` block counts.
 It is outside `internal/`, outside both tools' scope, and belongs to srdm; it
 is noted here only because a reviewer re-running the harness will see it and
 should know it was seen.
+
+## 43. Gate — run 10, PASS on commit `3355d238`
+
+Commanded from `/workspaces/vbpub`, output to a log OUTSIDE the worktree with
+the caller appending its own marker, verdict read in a SEPARATE step:
+
+```sh
+bash assay/tools/tester-unified-gate.sh /workspaces/vbpub/.worktrees/assay-wave-c-go
+```
+
+```text
+$ grep -E "ASSAY_REGISTERED_GATE_COMPLETE|GATE_EXIT=" gate-run10.log
+ASSAY_REGISTERED_GATE_COMPLETE=1
+GATE_EXIT=0
+
+$ grep "ASSAY_GATE_PHASE" gate-run10.log
+ASSAY_GATE_PHASE=wheel-installed
+ASSAY_GATE_PHASE=attestation-hardened
+ASSAY_GATE_PHASE=verdict-v5-accepted
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified
+ASSAY_GATE_PHASE=verdict-v9-successors-verified
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+
+$ grep -nE "FAILED|DIRTY_TREE|Traceback" gate-run10.log
+(no hits)
+
+$ tail -6 gate-run10.log
+  Created wheel for assay: filename=assay-4.0.1.dev39+g3355d238-py3-none-any.whl …
+Successfully installed assay-4.0.1.dev39+g3355d238
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+.......                                                                  [100%]
+7 passed in 11.39s
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+GATE_EXIT=0
+```
+
+Eleven phases, and the installed wheel `assay-4.0.1.dev39+g3355d238` names the
+judged commit itself — the check that the gate measured this tree and not a
+stale build. Devcontainer full suite on the F008-A4 tree: **3905 passed, 18
+skipped** (from 3902/18); B061's three tests landed after that count and are
+covered by run 10.
+
+**The wrapper-vs-job trap did not fire, and it was still read separately.** The
+harness's completion notification reported "exit code 0" — which is the
+WRAPPER's status, always 0 here, since the subshell's last statement is the
+`echo` that appends the marker. It happened to agree with `GATE_EXIT=0`. Nine
+instances across five generations, five agreeing; the discipline is cheap and
+this sentence can only say which was true because the marker was read on its
+own.
+
+**The only commit after run 10 is docs-only** — BRIEF-7, this section and the
+LOG's gate paragraph. No source, test, packaging, vocabulary, fixture or
+decision-file change.
