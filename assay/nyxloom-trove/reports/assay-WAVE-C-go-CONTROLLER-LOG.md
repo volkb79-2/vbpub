@@ -1007,3 +1007,85 @@ principles don't already resolve.
   the `verdict.py` diff question, the srdm residue; round 2 of the
   3-round cap; "on ACCEPT state it unambiguously — the controller merges
   on your word."
+
+- **2026-09-02 (review round 2: NOT ACCEPT — one blocker, pre-existing,
+  with a proven 12-line fix; DA-R3 ruled; final fix round dispatched)** —
+  The reviewer (~32 min, 119 calls) re-ran every round-1 probe verbatim
+  against `1d464fc4`: BLOCKER 1 (A-405), BLOCKER 2, DA-R1 (A-406) and
+  should-fixes 1–7 all check out; it re-ran the gate on the tip itself
+  (PASS, 12 phase markers), the suite (3939 passed, 18 skipped — the
+  implementer's "11 skipped" is not reproducible, the passed count is
+  exact), the Go qualification (5/5), and **rebuilt its srdm F008-A5
+  harness against the tip: 418/394/94.26% holds exactly**, so REPORT
+  §48's judgement call was right. It also conceded its own `cover.go`
+  line citation was wrong (the implementer's 1055-1060 is right) and
+  found the implementer had fixed a fourth `go.mod` divergence and a
+  third stale docstring it had missed. `verdict.py`'s +51/−17 confirmed
+  as the behaviour-preserving extraction of `supported_helper_roles`;
+  `schema_version` still 9 in every real verdict; both drift guards
+  passed in its own gate run. Review file: scratchpad
+  `assay-WAVE-C-go-REVIEW-round2.md` (374 lines).
+
+  **BLOCKER R2-1.** Any Go R1 lane whose judge refuses AFTER the oracle
+  has run — a stale profile refused inside `attribute_statements`, or
+  A-405's own refusal for a flagged file with judged lines — reports
+  assay's `helpers[]` WIRING instead of the refusal and writes NO
+  verdict artifact: `runner.py:997` records the `statement-positions`
+  helper the instant the oracle returns; the judge's refusal then voids
+  the R1 payload; `assemble_verdict` (`runner.py:1493`) refuses because
+  no claim supports the helper role; `run_lane` never returns. Five
+  in-image lanes measured: the DA-R2 ignore semantics (A) work, the
+  ruled refusal (B) is correct but unreachable through the CLI, and the
+  pre-existing stale-profile refusal CONSUMERS.md has documented since
+  generation 5 (E) is masked the same way. **Not a regression from the
+  fix round** — the reviewer nearly reported it as one and disproved it
+  against `875382d2`; it is a wave defect its round-1 probes missed, and
+  A-405 gave it a second, ruled path. **Prescription proven, not
+  proposed**: after `claims += (r1_claim,)` (`runner.py:2769`), when
+  `r1_claim.coverage is None`, drop the helpers whose role
+  `supported_helper_roles((r1_claim,))` no longer supports — the same
+  move `_replace_highest_higher_rigor_claim_with_git_failed` already
+  makes — so `assemble_verdict`'s guard stays a wiring assertion; built
+  in a scratch worktree, zipapp rebuilt, all five scenarios then behave
+  as ruled with verdicts written, suite 3939/18 identical. **Controller
+  ruling: apply exactly that**, plus the scenario-E regression test at
+  the runner level with a `FakeAdapter` whose `statement_blocks` report
+  disagrees with the profile (no toolchain needed, so the registered
+  gate exercises it) AND the in-image scenario B/E through the shipped
+  zipapp in the qualification module. A-405's message text stays as
+  ruled; the defect was that it never reached a verdict at all.
+
+  **Should-fixes, all applied:** SF-R2-1 — `test_go_line_directive_
+  witness.py:322` is HOLLOW (its `/repo` fixture does not exist, so the
+  whole-target refusal fires first and the test passes on the wrong
+  refusal; mutation M-B2 removing the whole-target A-405 branch leaves
+  all 69 tests green) — materialise the target on a `tmp_path` repo and
+  assert on the message text; SF-R2-2 — the runner's remapped-file
+  filter is a second guard no test distinguishes (mutation M-F survives)
+  — assert the oracle is NOT asked about a flagged path; SF-R2-3 —
+  CONSUMERS.md:1953-1968 and :1888-1897 print refusal text "as what you
+  will see" when an `assay run` consumer sees `unit: ERROR/
+  BAD_LANE_CONFIG (exit 2)` and nothing more (the reviewer's control:
+  a judge-phase `AssayError`'s text reaches no surface) — rewrite both
+  blocks as "the refusal assay raises (visible to a library caller; the
+  CLI shows the reason code — see B053)".
+
+  **DA-R3 ruled: (a) now, (b) in the patch wave.** Judge-phase refusal
+  text not reaching the consumer is main's B053 (dstdns's finding of
+  the same day) seen from the Go side; the controller already paired
+  B053 with B049 for the post-Wave-C consumer-diagnostics patch wave.
+  The reviewer's option (b) — route judge-phase refusal text to the
+  existing `diagnostics` stream `environment_command` already uses
+  (`runner.py:365`, no wire change) — is recorded here as the candidate
+  mechanism for that wave alongside B053's stderr option; option (c),
+  a v10 field, is not taken. Wave C changes only the docs (SF-R2-3).
+  Added to main's B053 as a note after the merge, not now.
+
+  **Fix generation (8) dispatched** — fresh Opus, same worktree/branch,
+  tip `1d464fc4`, seeded with the round-2 file and this entry: commit
+  the round-2 review verbatim → R2-1 per §3.4 + both regression tests →
+  SF-R2-1 → SF-R2-2 → SF-R2-3 → LOG/REPORT/CHANGES → gate → return.
+  Decisions: **A-407** for R2-1 (the orphaned-helper rule and where it
+  lives), citing this entry; next backlog id **B062**. Then the SAME
+  reviewer for **round 3 — the cap**: if round 3 is not ACCEPT, the
+  controller pauses for the operator rather than dispatching a fourth.
