@@ -892,6 +892,127 @@ def test_validate_stack_provisioning_provides_container_absent_key_still_reports
     assert "pg:db/nope" in msg
 
 
+def test_validate_stack_provisioning_provides_containing_a_nested_list_raises_valueerror_not_typeerror():
+    """Adversarial-review blocker fix: `provides = [["pg:db/app"]]` is a list
+    entry that is ITSELF a list -- `isinstance(x, list)` is true but the
+    entry is unhashable, so building a `set()` of "the list entries" without
+    filtering to strings first raised an uncaught `TypeError` that escaped
+    every `except ValueError` handler in the call chain (engine.py's
+    exit-code mapping only catches ValueError -> 2). On `main`, and after
+    this fix, the SAME malformed config produces a clean ValueError -- this
+    pins that the crash is gone AND that the pre-existing, already-correct
+    'provides[0] must be a string' message survives intact."""
+    import pytest
+    config = {
+        "mystack": {
+            "provides": [["pg:db/app"]],
+            "provides_container": {"pg:db/app": "postgres"},
+        }
+    }
+    with pytest.raises(ValueError) as exc_info:
+        validate_stack_provisioning(config, source="test")
+    msg = str(exc_info.value)
+    assert "'provides[0]' must be a string, got list" in msg
+
+
+def test_validate_stack_provisioning_provides_containing_a_nested_list_maps_to_exit_2_via_engine():
+    """The full CLI-facing consequence of the blocker: `engine._exit_code_for`
+    only maps `ValueError` -> 2; an uncaught `TypeError` would fall through
+    to a different (wrong) exit code. Drives the SAME malformed config
+    through the real mapping function, not just the raise type."""
+    from ciu import engine
+
+    config = {
+        "mystack": {
+            "provides": [["pg:db/app"]],
+            "provides_container": {"pg:db/app": "postgres"},
+        }
+    }
+    try:
+        validate_stack_provisioning(config, source="test")
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert engine._exit_code_for(exc) == 2
+
+
+# ---------------------------------------------------------------------------
+# validate_stack_provisioning — provides_container kind restriction
+# (adversarial ciu-P49 review, "strongly recommended" #1): the ONLY consumer
+# of provides_container, _resolve_probe_container, is reached exclusively
+# from _probe_pg/_probe_minio -- a vault:/consul:/stack: key would sit there
+# looking live while nothing ever consults it.
+# ---------------------------------------------------------------------------
+
+
+def test_validate_stack_provisioning_accepts_minio_kind_override():
+    config = {
+        "mystack": {
+            "provides": ["minio:user/worker"],
+            "provides_container": {"minio:user/worker": "minio"},
+        }
+    }
+    validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_rejects_vault_kind_override():
+    import pytest
+    config = {
+        "mystack": {
+            "provides": ["vault:secret/db/pass"],
+            "provides_container": {"vault:secret/db/pass": "vault"},
+        }
+    }
+    with pytest.raises(
+        ValueError, match=r"\[S13\.2\].*provides_container.*'vault:secret/db/pass'.*kind 'vault'"
+    ):
+        validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_rejects_consul_kind_override():
+    import pytest
+    config = {
+        "mystack": {
+            "provides": ["consul:token/myapp"],
+            "provides_container": {"consul:token/myapp": "consul"},
+        }
+    }
+    with pytest.raises(ValueError, match=r"\[S13\.2\].*kind 'consul'"):
+        validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_rejects_stack_kind_override():
+    import pytest
+    config = {
+        "mystack": {
+            "provides": ["stack:db-init:healthy"],
+            "provides_container": {"stack:db-init:healthy": "db-init"},
+        }
+    }
+    with pytest.raises(ValueError, match=r"\[S13\.2\].*kind 'stack'"):
+        validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_provides_container_key_that_is_itself_a_malformed_ref_does_not_double_report_or_crash():
+    """A provides_container key equal to a malformed `provides` entry (itself
+    already reported by the requires/provides loop) must not ALSO explode
+    trying to run the new kind-restriction check through parse_ref -- the
+    malformed-ref violation is reported once, by the pre-existing loop."""
+    config = {
+        "mystack": {
+            "provides": ["bad-ref"],
+            "provides_container": {"bad-ref": "x"},
+        }
+    }
+    import pytest
+    with pytest.raises(ValueError) as exc_info:
+        validate_stack_provisioning(config, source="test")
+    msg = str(exc_info.value)
+    assert "Malformed provisioning ref 'bad-ref'" in msg
+    # Not double-reported as a provides_container-key-not-in-provides finding
+    # (it IS in provides -- this exercises the kind-check's own guard).
+    assert msg.count("bad-ref") == msg.count("Malformed provisioning ref 'bad-ref'")
+
+
 # ---------------------------------------------------------------------------
 # deploy.provisioning_preflight — with stubs
 # ---------------------------------------------------------------------------

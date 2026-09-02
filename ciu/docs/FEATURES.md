@@ -265,7 +265,10 @@ ciu up --host core1 --dir infra/vault    # second run: TOFU env unset, key now p
   `postgres_primary`, and two Postgres services in one deployment all probe
   correctly. Nothing declares the ref → the probe says exactly that instead of
   reporting a missing role; a container that is absent or stopped is reported as
-  `NOT checked`, never as "the role does not exist".
+  `NOT checked`, never as "the role does not exist". The default resolution is a
+  basename guess, not a guarantee — a multi-service stack whose directory name
+  isn't itself one of its own compose service keys needs the
+  `provides_container` override (S13.2, CIU-89) to name the real key.
 - **`pg:schema` probes the application database (S13.2).** `information_schema.schemata`
   is per-database; `pg:schema/<name>` connects with `psql -d <registry.postgresql.database>`,
   not the default `postgres` db. Set `registry.postgresql.database` in your global config.

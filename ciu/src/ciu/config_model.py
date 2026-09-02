@@ -1230,12 +1230,20 @@ def validate_stack_provisioning(stack_config: dict, source: str = "<unknown>") -
     - requires and provides, if present, are lists of strings
     - each string matches the typed-ref grammar
     - provides_container (CIU-89), if present, is a table whose keys are each
-      an exact string already in this stack's own `provides` list, and whose
-      values are non-empty strings (S13.2)
+      an exact string already in this stack's own `provides` list AND of
+      kind `pg`/`minio` (the only kinds `_resolve_probe_container` is ever
+      reached for), and whose values are non-empty strings (S13.2)
 
     Raises ValueError listing ALL violations (never partial).
     Source is used in error messages.
     """
+    # Local import: `provisioning.py` never imports this module (confirmed),
+    # so this is safe at module scope too, but kept function-local to match
+    # this file's existing convention for a cross-module reach used by only
+    # one function here (see `validate_declared_features`'s own docstring on
+    # why its imports are function-local).
+    from . import provisioning as provisioning_pkg
+
     violations: list[str] = []
     root_key = validate_stack_shape(stack_config)
     root_section = stack_config[root_key]
@@ -1282,9 +1290,24 @@ def validate_stack_provisioning(stack_config: dict, source: str = "<unknown>") -
                 f"{type(provides_container).__name__}"
             )
         else:
-            declared_provides = root_section.get("provides")
+            # Adversarial review fix: `val` from the requires/provides loop
+            # above is not reused here on purpose. A `provides` entry that is
+            # itself a list (e.g. `provides = [["pg:db/x"]]`) is `isinstance
+            # ..., list` but unhashable — `set(declared_provides)` on it
+            # raised an uncaught `TypeError` that escaped every `except
+            # ValueError` handler in the call chain (engine.py's exit-code
+            # mapping only catches ValueError -> 2), silently changing the
+            # CLI's exit code from a clean 2 to 1 for a config `main` already
+            # reports as a normal, well-worded [S13.2]/requires-provides
+            # violation. Filtering to strings only is safe: a non-string
+            # `provides` entry is already reported by the loop above, and a
+            # `provides_container` key can never legitimately equal one
+            # anyway (TOML keys are always strings).
+            provides_list = root_section.get("provides")
             declared_provides = (
-                set(declared_provides) if isinstance(declared_provides, list) else set()
+                {p for p in provides_list if isinstance(p, str)}
+                if isinstance(provides_list, list)
+                else set()
             )
             for key, value in provides_container.items():
                 if not isinstance(key, str) or key not in declared_provides:
@@ -1297,6 +1320,29 @@ def validate_stack_provisioning(stack_config: dict, source: str = "<unknown>") -
                     violations.append(
                         f"[S13.2] [{source}] 'provides_container[{key!r}]' must be a "
                         f"non-empty string, got {value!r}"
+                    )
+                # Adversarial review fix: `_resolve_probe_container` (the
+                # ONLY consumer of `provides_container`) is reached only from
+                # `_probe_pg`/`_probe_minio` — an entry keyed to a
+                # vault:/consul:/stack: ref is accepted here and then
+                # silently never consulted by anything, exactly the
+                # "looking live while never being consulted" failure this
+                # validation exists to prevent for an undeclared ref. `key`
+                # is already confirmed to be a string equal to a `provides`
+                # entry above; if that entry is itself malformed (fails
+                # `parse_ref`), the requires/provides loop above already
+                # reports it — don't double-report, just skip the kind gate
+                # for it.
+                try:
+                    ref_kind = provisioning_pkg.parse_ref(key).kind
+                except ValueError:
+                    continue
+                if ref_kind not in ("pg", "minio"):
+                    violations.append(
+                        f"[S13.2] [{source}] 'provides_container' key {key!r} has kind "
+                        f"{ref_kind!r} — provides_container only applies to pg:/minio: "
+                        "refs; _resolve_probe_container is never consulted for any "
+                        "other ref kind"
                     )
 
     if violations:

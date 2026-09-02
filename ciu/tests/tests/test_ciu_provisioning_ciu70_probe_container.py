@@ -460,3 +460,61 @@ def test_ciu89_config_model_rejects_an_override_for_an_undeclared_ref():
     }
     with pytest.raises(ValueError, match=r"\[S13\.2\]"):
         config_model.validate_stack_provisioning(stack_cfg, source="infra/foo-core")
+
+
+def test_ciu89_real_toml_round_trip_through_validation_graph_and_resolution():
+    """Permanent regression pin (adversarial ciu-P49 review, "should-fix"):
+    an actual `tomllib`-parsed `ciu.toml`-shaped document, run through the
+    REAL production chain end to end — `validate_stack_provisioning` ->
+    `deploy.provisioning_graph` -> `_resolve_probe_container` — not the
+    hand-built dict fixtures the other CIU-89 tests use for speed and to
+    avoid CIU-91's own test-repo/-sharing race (deliberately NOT using
+    test-repo/ here either, for the same reason).
+
+    Mirrors the real dstdns db-core shape: `infra/db-core`'s directory
+    basename ("db-core") is not itself a compose service key -- Postgres is
+    keyed `postgres` -- while a SIBLING ref in the same `provides` list has
+    no override and must still resolve via the basename guess, unaffected."""
+    import tomllib
+
+    from ciu import config_model
+
+    toml_text = '''
+[db_core]
+provides = ["pg:db/dstdns", "pg:role/controller"]
+provides_container = { "pg:db/dstdns" = "postgres" }
+'''
+    stack_cfg = tomllib.loads(toml_text)
+
+    # Step 1: the real validator, unmocked -- must pass cleanly.
+    config_model.validate_stack_provisioning(stack_cfg, source="infra/db-core")
+
+    # Step 2: the real graph builder deploy.provisioning_graph consumes at
+    # `ciu up`, from a `rendered` map shaped exactly like the real pipeline
+    # hands it (repo-relative path -> the parsed stack TOML).
+    rendered = {"infra/db-core": stack_cfg}
+    graph = deploy.provisioning_graph(rendered)
+    assert graph["infra/db-core"]["provides_container"] == {"pg:db/dstdns": "postgres"}
+
+    config = {
+        "deploy": {
+            "project_name": "p",
+            "environment_tag": "t",
+            "profiles": {"default": {"stacks": ["infra/db-core"]}},
+        }
+    }
+
+    # Step 3: the real resolver. Overridden ref -> the literal service key.
+    cname, unresolved = provisioning._resolve_probe_container(
+        "pg:db/dstdns", config, graph
+    )
+    assert unresolved is None
+    assert cname == "p-t-postgres"
+
+    # Un-overridden sibling in the SAME provides list -> unaffected, still
+    # the basename guess (declared path's final segment).
+    cname, unresolved = provisioning._resolve_probe_container(
+        "pg:role/controller", config, graph
+    )
+    assert unresolved is None
+    assert cname == "p-t-db-core"

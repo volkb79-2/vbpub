@@ -749,7 +749,11 @@ unaffected — falls through to the basename guess unchanged. Every
 `provides_container` key MUST already be one of this same stack's own
 `provides` entries (an override for an undeclared ref refuses at validation,
 SPEC [S13.2](SPEC.md#s132--typed-reference-grammar), not silently ignored),
-and every value must be a non-empty string.
+every value must be a non-empty string, and **every key must itself be a
+`pg:` or `minio:` ref** — a `vault:`/`consul:`/`stack:` key also refuses,
+because the probe container resolver that reads `provides_container` is
+never reached for those kinds; the override would sit there looking live
+while nothing ever consulted it.
 
 **Reference grammar** — valid forms:
 

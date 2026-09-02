@@ -2114,7 +2114,12 @@ today's byte-identical basename-guess behavior; a stack that declares no
 S13.2: every `provides_container` key MUST already be a string in that same
 stack's own `provides` list (an override for a ref the stack doesn't provide
 is a configuration error, not silently ignored — S3 "defaults are hazards"),
-and every value MUST be a non-empty string.
+every value MUST be a non-empty string, and **every key MUST be a `pg:` or
+`minio:` ref** — `_resolve_probe_container` is reached only from `_probe_pg`/
+`_probe_minio`, so a `vault:`/`consul:`/`stack:` key would be accepted and
+then silently never consulted by anything, the exact same "looking live
+while never being consulted" failure the undeclared-ref check above exists
+to prevent.
 
 **`pg:`/`minio:` failure reasons distinguish absence from unreachability
 (CIU-70, ciu-P40).** `psql -tAc` exits **0** for a query that ran and matched
