@@ -584,6 +584,30 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   then it protects nothing. With a host lane declared and a plain checkout,
   the same check records `[OK]`, so a reader can tell it ran.
 
+- `R-30b` **Unprefixed script path in a container command lane (RG-34).**
+  `doctor` emits ONE `[WARN]` per `kind = "command"` lane on a NON-host
+  environment whose `argv[0]` is a relative path containing `/` and not
+  starting with `{worktree}` — naming the lane, the element, the fix
+  (`"{worktree}/<path>"`) and the mechanism: a container that mounts only
+  the judged worktree (a Mode-B instance's own runner, not the shared one)
+  has nothing at the bare repo root the `--workdir` names, so the argv dies
+  with `No such file or directory` there while working under a full-repo
+  mount. Measured on dstdns P152: `[lanes.schema] argv =
+  ["scripts/schema-gate.sh", "{worktree}"]` — the ARGUMENT templated, the
+  script path not — `lane 'schema' exit 127` against a dedicated-container
+  worktree, 100% reproducible, while the sibling `p128-schema-lineage` lane
+  (`["bash", "{worktree}/scripts/p128-assay-schema.sh"]`) was correct.
+  A **warning, never a refusal**, and it does not change doctor's exit code:
+  the same argv is CORRECT under a full-repo mount, and which mount a lane
+  gets is not visible to run-gate statically — a refusal would break working
+  consumers to prevent a hazard that may not apply to them. run-gate does
+  not rewrite argv either: the fix is one edit in the consumer's own config,
+  and a tool that silently rewrote a declared command would be a worse
+  defect than the one it patched. The check reads the DECLARATION only, so
+  it still answers for a lane whose environment failed to resolve. With at
+  least one container command lane and nothing to flag it records one
+  `[OK]`, so a reader can tell it ran (`R-30a`'s precedent).
+
 - `R-31` **Wheel as second artifact (RG-14):** the script stays PRIMARY —
   fresh clone, zero installs, `./run-gate.py --list` unchanged is the design
   win and must never regress. A wheel wraps the SAME bytes for

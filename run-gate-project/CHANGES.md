@@ -34,6 +34,23 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     `assay-p129-enumeration-cursor`). No vbpub-estate `run-gate.toml`
     declares the key.
 
+### Added
+- **RG-34 — `doctor` names an unprefixed script path in a container command
+  lane (rev 34, SPEC `R-30b`).** One `[WARN]` per `kind = "command"` lane on
+  a non-host environment whose `argv[0]` is a relative path containing `/`
+  and not starting with `{worktree}`, naming the lane, the element, the fix
+  (`"{worktree}/<path>"`) and the mechanism: a container that mounts only the
+  judged worktree (a Mode-B instance's own runner) has nothing at the bare
+  repo root the `--workdir` names, so the argv dies with `No such file or
+  directory` there while working under a full-repo mount. Measured on dstdns
+  P152 — `argv = ["scripts/schema-gate.sh", "{worktree}"]`, the argument
+  templated and the script path not, `lane 'schema' exit 127`, 100%
+  reproducible. A warning, never a refusal, and it does not change doctor's
+  exit code: the same argv is correct under a full-repo mount, and run-gate
+  cannot see statically which mount a lane will get. run-gate does not
+  rewrite argv — the fix is one edit in the consumer's config. No
+  vbpub-estate lane trips it (swept at release).
+
 ### Fixed
 - **RG-35 — a lane's container is found again after its client dies (rev 34,
   SPEC `R-39`).** A container lane runs detached and is removed by an

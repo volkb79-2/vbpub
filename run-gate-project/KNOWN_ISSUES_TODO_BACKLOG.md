@@ -51,6 +51,7 @@ SPEC §9.
 | RG-31 | `assay_toolchain_findings()`'s own `resolve_repo_and_worktree` call (the toolchain-fitness probe shared by `doctor` check 5 and `--check-env`) still takes the RAW `worktree_override` string, not RG-30's new validated `resolve_worktree_scope()` — so a bad `--worktree` combined with an assay lane present degrades safely (a `[SKIP]` on that check, no false-`[OK]`) but with a MISLEADING reason string (blames "an assay older than 3.2.0" rather than naming the real `--worktree` problem, which `doctor` check 3 already reported correctly two checks earlier in the same report) | Low | FIXED 2026-09-01 (rev 32) — routed through `resolve_worktree_scope()`, the same validated resolver check 3 and `--check-env` already use; a bad override now raises the identical `GateError` and the existing per-lane `except GateError` SKIP handler reports the real cause, never a guess about assay's version. New regression test `test_bad_worktree_skip_names_the_real_problem_not_assay_version` asserts the SKIP line repeats check 3's own "not a directory" cause and never says "older than 3.2.0". `./run-gate.py selftest --allow-dirty` green: 395 passed, 2 skipped, diff-coverage 0/0 = 100.0% (pre-commit run), exit 0 |
 | RG-32 | `[lanes.*.pins.*].budget` is silently inert — run-gate never read it, the governing value is the target `assay.toml`'s own `[lanes.<assay_lane>] budget`, and the key sits one nesting level below a REAL lane-level `budget` that reads identically (misread three times in one dstdns session) | Major | FIXED 2026-09-02 (rev 34, SPEC `R-08a`) — **BREAKING**: refused at load by name with the owner and the remedy; pin tables now validate their keys (`sha256`, `version`, nothing else); migration is one deletion, in CHANGES |
 | RG-33 | `kind = "assay"` mutation lanes never receive `--resume` (or `--progress`), so a budget-capped retry re-tests every mutant from #1 — dstdns `sql-mutation`, three 120-minute retries spent on the first of four target files, `.assay/mutation-state/` never written | Major | FIXED 2026-09-02 (rev 33, SPEC `R-38`) — every assay-kind invocation now carries `--resume --progress .assay/progress-<assay_lane>.jsonl` unconditionally (no-ops without R2, per assay's own contract); a pin declaring a judge older than 2.4.1 refuses by name at argv construction; five new tests in `TestResumeAndProgressAlways` including the executed host-runner argv and the dry-run docker argv line; assay's own gate script mirrors it in the assay wave |
+| RG-34 | a `kind = "command"` container lane whose `argv[0]` is a bare relative script path resolves against the container's `--workdir`, so it dies with `exit 127` in any container that mounts only the judged worktree (dstdns P152's `schema` lane, 100% reproducible) while working under the shared full-repo mount | Major | FIXED 2026-09-02 (rev 34, SPEC `R-30b`) — run-gate's half: `doctor` names the lane, the element, the fix and the mechanism; a WARNING, never a refusal, and run-gate never rewrites a consumer's argv. The argv edit itself is dstdns-side |
 | RG-35 | a lane's container outlives a dead run-gate client (`docker run -d` … `rm -f` in a `finally` the client never reaches), but nothing re-attaches: exit status, evidence and history are lost and the next invocation starts a DUPLICATE container for the same lane — the one-gate rule broken by the tool | Major | FIXED 2026-09-02 (rev 34, SPEC `R-39`) — `.run-gate/inflight/<lane>.json`, automatic re-attach/collect/report-lost, `--fresh` escape, commit mismatch refused |
 | RG-36 | the only liveness bound for a long assay lane is a GUESSED total `budget` (advisory here, hard in assay); rev 33's progress file makes rate/ETA/stall observable but run-gate reads none of it | Major | OPEN 2026-09-02 — periodic `progress <lane>: i/N, rate, ETA` disclosure + optional `stall_timeout` (stop only when running AND silent for that long, never on total elapsed); exact timing needs assay B065 |
 | RG-37 | exec-mode container derivation (`run-gate.py` `resolve_container_name`, R-14a) reads `deploy.project_name` + `deploy.environment_tag` (fallback `deploy.network_name`) from the consumer's rendered `ciu.global.toml`; a CIU v8 checkout (SPEC-V8 draft.3, ciu CIU-92) renders `ciu.resolved.toml` instead, with identities as data under `[resolved.identities.<realization>.<service>] container_name`, and has no `deploy` table — every dstdns exec lane would fail container resolution the day dstdns moves to v8, while the operator decided (2026-09-02) that run-gate STAYS maintained in parallel with `ciu gate` and is "aligned with future changes in ciu v8" | Major | OPEN 2026-09-02 — filed from the v8 design review (ciu `docs/CIU-V8-ADVERSARIAL-REVIEW-2026-09-02.md` R-01, proposal §4.4 V8-19 / §4.11 N18): additive lookup order — when `ciu.resolved.toml` exists in the judged checkout, resolve `environments.<n>.container_name` (or a new `exec_in = "<realization>.<service>"` key) through `resolved.identities`, otherwise keep the v7 path; `kind = "sequence"` in-process conjunction lanes (N21) are the second alignment item |
@@ -2171,11 +2172,52 @@ lane's schema sub-lane against a dedicated container since
       test-runner container mounts only that worktree's own subtree (not
       the full repo root) — verified via a real Mode-B dedicated-container
       run, not just main's shared-container case;
-- [ ] Every other `kind = "command"` lane's argv is swept for the same
-      unprefixed-script-path pattern;
-- [ ] A regression test (or `doctor`/`validate-pointers`-style static check)
+      — **dstdns-side**: the argv lives in dstdns's `run-gate.toml`, and
+      run-gate deliberately does not rewrite a consumer's declared command.
+- [x] Every other `kind = "command"` lane's argv is swept for the same
+      unprefixed-script-path pattern — for the vbpub estate, and by
+      `doctor` from now on for every consumer;
+- [x] A regression test (or `doctor`/`validate-pointers`-style static check)
       catches a lane argv whose first element lacks `{worktree}` when its
       environment is `test-runner` and it takes a `--worktree` argument.
+
+### Status — FIXED 2026-09-02 (rev 34, SPEC `R-30b`) — run-gate's half
+
+Ruling RW-8: **`doctor` warns; run-gate does not rewrite argv.** The argv fix
+itself is the consumer's (dstdns P152), and it is one edit; a tool that
+silently rewrote a declared command would be a worse defect than the one it
+patched. A refusal was rejected too: the same argv is CORRECT under a
+full-repo mount, and which mount a lane gets is not visible to run-gate
+statically — a check that broke working consumers to prevent a hazard that
+may not apply to them would be switched off, and then it protects nothing
+(`R-30a`'s own reasoning).
+
+`doctor` now emits ONE `[WARN]` per `kind = "command"` lane on a NON-host
+environment whose `argv[0]` is a relative path containing `/` and not
+starting with `{worktree}`:
+
+```
+run-gate: doctor: [WARN] lane 'schema' argv[0] (RG-34): 'scripts/schema-gate.sh'
+is a RELATIVE path, resolved against the container's --workdir instead of the
+judged tree — declare it '{worktree}/scripts/schema-gate.sh'. A container that
+mounts ONLY the judged worktree (a Mode-B instance's own runner, not the
+shared one) has nothing at the bare repo root --workdir names, so this argv
+dies there with 'No such file or directory' while working under a full-repo
+mount. A warning, not a refusal: which mount the lane gets is not visible to
+run-gate statically
+```
+
+It reads the DECLARATION only, so it still answers for a lane whose
+environment failed to resolve, and with at least one container command lane
+and nothing to flag it records one `[OK]` so a reader can tell it ran.
+Doctor's exit code is unchanged by it. Six tests in
+`TestDoctorNamesUnprefixedScriptPaths`, including the three shapes that must
+NOT warn (`{worktree}`-anchored, absolute, bare command name) and the two
+lane kinds outside the check (host lanes, whose cwd is the effective project
+dir; assay lanes, which have no argv of their own).
+
+**Estate sweep, 2026-09-02** (`tomllib` over every `*/run-gate.toml` in
+vbpub, not `grep`): no vbpub lane trips the check.
 
 ### Source
 

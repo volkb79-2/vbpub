@@ -6332,6 +6332,82 @@ class TestInflightRecordDecisions:
         assert "refusing to guess" in err
 
 
+class TestDoctorNamesUnprefixedScriptPaths:
+    """RG-34 / R-30b. dstdns P152, 2026-09-02: `[lanes.schema] argv =
+    ["scripts/schema-gate.sh", "{worktree}"]` — the ARGUMENT templated, the
+    script path not. Invisible against the SHARED test-runner (it mounts the
+    whole repo root at the --workdir), 100% fatal against a Mode-B
+    instance's own runner, which mounts only its worktree and has nothing at
+    that path: `lane 'schema' exit 127`. doctor names it; run-gate does not
+    rewrite argv, and does not refuse — the same argv is correct under a
+    full-repo mount, which run-gate cannot see statically."""
+
+    def _cfg(self, argv0: str, environment: str = "tester-unified",
+             kind: str = "command") -> str:
+        body = ('assay_lane = "gate"\n            '
+                'assay_command = ["./a.pyz"]' if kind == "assay"
+                else f'argv = ["{argv0}", "{{worktree}}"]')
+        return f"""\
+            schema_version = 1
+            [environments.tester-unified]
+            image = "tester-unified:local"
+            [lanes.schema]
+            kind = "{kind}"
+            environment = "{environment}"
+            {body}
+            clean_tree = false
+        """
+
+    def _doctor(self, tmp_path, monkeypatch, cfg, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        code = run_gate.main(["doctor"])
+        return code, capsys.readouterr().out
+
+    def test_a_relative_script_path_is_named_with_its_fix(
+            self, tmp_path, monkeypatch, capsys):
+        code, out = self._doctor(tmp_path, monkeypatch,
+                                 self._cfg("scripts/schema-gate.sh"), capsys)
+        assert "[WARN] lane 'schema' argv[0] (RG-34)" in out
+        assert "'scripts/schema-gate.sh' is a RELATIVE path" in out
+        assert "declare it '{worktree}/scripts/schema-gate.sh'" in out
+        assert "nothing at the bare repo root --workdir names" in out
+        assert code == 0          # a warning never changes doctor's verdict
+        assert ", 0 failure(s)" in out
+
+    @pytest.mark.parametrize("argv0", [
+        "{worktree}/scripts/schema-gate.sh",   # the sibling lane's correct form
+        "/usr/local/bin/gate.sh",              # absolute: nothing to anchor
+        "bash",                                # a bare command name: $PATH
+    ])
+    def test_a_correct_argv0_records_ok_so_a_reader_can_tell_it_ran(
+            self, tmp_path, monkeypatch, capsys, argv0):
+        code, out = self._doctor(tmp_path, monkeypatch, self._cfg(argv0),
+                                 capsys)
+        assert "[OK] lane argv[0] (RG-34): 1 container command lane(s)" in out
+        assert "argv[0] (RG-34)" not in out.replace(
+            "[OK] lane argv[0] (RG-34)", "")
+        assert code == 0
+
+    def test_a_host_lane_is_not_checked(self, tmp_path, monkeypatch, capsys):
+        """The hazard is a container --workdir. A host lane runs with cwd =
+        the effective project dir, where a relative path is correct — and a
+        warning that fires where it cannot bite gets switched off."""
+        code, out = self._doctor(
+            tmp_path, monkeypatch,
+            self._cfg("scripts/schema-gate.sh", environment="host"), capsys)
+        assert "RG-34" not in out
+
+    def test_an_assay_lane_is_not_checked(self, tmp_path, monkeypatch, capsys):
+        """An assay lane has no argv of its own — run-gate builds the inner
+        command, `cd`-ing to the effective project dir first (R-21)."""
+        code, out = self._doctor(tmp_path, monkeypatch,
+                                 self._cfg("", kind="assay"), capsys)
+        assert "RG-34" not in out
+
+
 class TestPinKeysAreValidated:
     """RG-32 / R-04. `[lanes.<n>.pins.<p>].budget` looked exactly like the
     real, load-bearing lane-level `budget` one nesting level up and was dead

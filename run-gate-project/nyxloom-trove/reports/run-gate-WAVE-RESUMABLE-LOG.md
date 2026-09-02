@@ -166,3 +166,28 @@ one-deletion migration; CONSUMERS lane-schema pin block; backlog index row
 
 Measured: `-k PinKeys` → 4 passed in 1.69 s; full file 451 passed, 2 skipped
 in 66.47 s.
+
+## E7 — RG-34 (rev 34, SPEC R-30b), 2026-09-02
+
+Ruling RW-8: doctor warns, run-gate does not rewrite argv, and does not
+refuse (the same argv is correct under a full-repo mount). New doctor check
+"2b", reading the DECLARATION only so it still answers for a lane whose
+environment failed to resolve; one `[OK]` when there is at least one
+container command lane and nothing to flag (R-30a's "so a reader can tell
+it ran"). Six tests, including the three non-warning shapes and the two lane
+kinds outside the check.
+
+Estate sweep with `tomllib` (not grep) over every `*/run-gate.toml` in
+vbpub: **no vbpub lane trips it**. dstdns's `schema` lane does; that edit is
+dstdns's own.
+
+Measured: `-k DoctorNamesUnprefixed` → 6 passed in 1.74 s.
+
+Wave note recorded here because it cost a round: **`./run-gate.py selftest`
+on a DIRTY tree reports a misleading diff-coverage number.**
+`tools/coverage_gate.py` takes its changed-line numbers from `git diff
+base..HEAD` (committed) but coverage.json from the file on disk, so any
+uncommitted edit shifts the two apart and lines that ARE covered are
+reported uncovered (RG-32's round: `175/177 (98.9%)` dirty →
+`153/153 (100.0%)` on the same code once committed). The verdict that counts
+is the one taken with a clean tree, after the commit.
