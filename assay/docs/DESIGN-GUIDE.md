@@ -605,12 +605,33 @@ that declares no R1 never becomes a claim at all, and announcing it would be
 a line with no document behind it. Where one error refuses two levels — an R2
 orchestration fault also refuses R3 — it is announced at the first only.
 
-**What still prints nothing, and why.** A refusal that no `AssayError`
-carries — `DIRTY_TREE`, `HEAD_CHANGED`, `MISSING_EXTERNAL_TOOL`, the
-`env_required`/`--shard` refusals — has no message to copy. Minting one here
-would be inventing text at the point of refusal rather than at the point of
-knowledge, which §5's defaults doctrine rules out; those codes already say
-the whole of what happened.
+**The emitter's contract is a MESSAGE, not an exception (DA-R3/A-414).** The
+first landing of this rule left five sites out — `DIRTY_TREE` (twice),
+`HEAD_CHANGED`, `MISSING_EXTERNAL_TOOL`, the `env_required` refusal and the
+bad-`--shard` refusal — because each called `refuse_lane`/`refuse_all` with a
+bare `(status, reason_code)` literal and there was no `AssayError` whose
+message could be copied. That reasoning was backwards. Every one of those
+sites *holds the fact* at the moment it refuses: the offending paths from
+`git.dirty_paths`, the two disagreeing revisions, the tool that is not on
+`PATH`, the unset variable, the spec the operator typed. Composing the
+sentence there is composing it at the point of knowledge, which is what §5
+asks for; the thing §5 forbids is inventing text somewhere the fact is *not*
+known. Each of the five now builds an `AssayError` for the message and hands
+it to the same emitter, so **every refusal reachable through `assay run`
+prints exactly one line, without qualification.**
+
+**A line about a refusal the verdict does not carry is worse than silence
+(DA-R4/A-414).** One early-R2 refusal is decided before the lane's own
+command outcome is known: the baseline declared an `equivalence_artifact` and
+did not write it (A-279). If the command then FAILED, claim assembly discards
+that early claim in favour of the command's own — so announcing at the point
+the early claim is built printed a sentence a consumer could not reconcile
+with the document in its hand. The announcement is deferred to the point
+where the surviving claim is CHOSEN. Deferred for that one site only: every
+other early-R2 refusal is decided inside the `result.outcome is PASS` guard
+and cannot be superseded, so no general deferred-print buffer exists — a
+buffer would make "announced exactly once" a property of a mechanism instead
+of a property of each site.
 
 The per-claim `detail` field (DA-D2 (c)) is a separate, later decision: it
 puts this text ON the wire, which is a schema change and belongs to a cut.

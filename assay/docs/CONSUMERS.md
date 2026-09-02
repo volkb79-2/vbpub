@@ -1680,9 +1680,29 @@ layer's own message, **byte for byte**. It is diagnostic text, not a wire
 field: do not parse it, and do not gate on it. Gate on the exit code and the
 document; read the line when you need to know why.
 
-Refusals that no `AssayError` carries — a dirty work tree, a moved `HEAD`, a
-missing external tool — print no such line, because there is no message to
-copy; their `reason_code` already says the whole of what happened.
+**There is no exception to "exactly one line".** A first cut of this feature
+left five refusals silent — a dirty work tree (on both the snapshot and the
+direct-R0 path), a moved `HEAD`, a missing external tool, an unset
+`env_required` variable, and a malformed `--shard` — because those sites
+refuse from a literal `(status, reason_code)` and had no message to copy.
+They now compose one where the fact is known, so all five name it:
+
+```
+assay: NO_MEASUREMENT/DIRTY_TREE: 2 uncommitted file(s) in /repo -- a higher-rigor lane measures the RESOLVED COMMIT from a snapshot, so an uncommitted change is invisible to it. Commit or stash, then re-run. Affected: src/a.py, notes.md
+assay: NO_MEASUREMENT/HEAD_CHANGED: HEAD moved between the resolution of the commit under judgment and the start of this lane: the verdict would be labelled 1a2b... but /repo is now at 9f8e... Re-run against the current HEAD.
+assay: NO_MEASUREMENT/MISSING_EXTERNAL_TOOL: the 'go' adapter needs the external tool 'go', which is not on PATH in this environment -- install it, or run the lane where it is available. Declared tools: go
+assay: ERROR/BAD_LANE_CONFIG: lane 'unit' declares env_required ['DATABASE_URL'] which is not set in the invoking environment -- assay refuses to run a lane whose declared inputs are absent rather than measure it with them missing. Set DATABASE_URL, or drop it from 'env_required'.
+assay: ERROR/BAD_LANE_CONFIG: --shard 'one-of-two' is not a shard spec: it must be INDEX/COUNT with zero-based integers and 0 <= INDEX < COUNT (for example --shard 0/4).
+```
+
+The complement of that rule also holds, and matters more: **a refusal whose
+claim the verdict does not carry prints no line.** One R2 refusal — a
+baseline that declared a `judge.mutation.equivalence_artifact` and did not
+write it — is decided before the lane's own command outcome is known, and if
+that command then fails, the document's R2 claim is `FAIL`/`COMMAND_FAILED`
+and the equivalence refusal is discarded. Its line is discarded with it. Every
+line you see on stderr corresponds to a refusal that is in the document beside
+it.
 
 ### Your existing CI script probably cannot be the lane command
 

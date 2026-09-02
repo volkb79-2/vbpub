@@ -295,3 +295,65 @@ command belongs in the worktree (the tool's default cwd); the only thing that
 belongs in `/workspaces/vbpub` is the gate launch.** The same `cd` also made
 `git log --oneline -1` report main's tip, which is how it was noticed that
 `main` had moved to `9b0bca62` — see the id re-check in BRIEF-2 §8.
+
+## Generation 3
+
+Next-free-id re-check before allocating, run from the worktree against
+`main` (which had moved again, to `ba741c3b`, the controller's own log entry
+— assay's ledgers untouched):
+
+```
+$ git show main:assay/nyxloom-trove/decisions.md | grep -o '^| A-[0-9]*' | tail -1
+| A-407
+$ git show main:assay/nyxloom-trove/4-backlog.md  | grep -o '^## B[0-9]*'  | tail -1
+## B061
+```
+
+Generation 2 allocated through A-413, so **A-414** is this generation's first
+free row; no new backlog entry filed at this commit.
+
+### 8. `fix(assay): the last six silent refusals speak, and a superseded one stops (B053, A-414)`
+
+- Items: **B053 follow-ups**, rulings **DA-R3** and **DA-R4** (the controller's
+  rulings on generation 2's decision asks 1 and 2).
+- **DA-R3.** Six refusal sites that called `refuse_lane`/`refuse_all` with a
+  bare `(status, reason_code)` literal now compose their sentence where the
+  fact is known and hand it to the SAME `announce_refusal`:
+  `src/assay/runner.py:3792` (`DIRTY_TREE`, snapshot path),
+  `:3806` (`HEAD_CHANGED`), `:4056` (`MISSING_EXTERNAL_TOOL`),
+  `:4219` (`env_required`), `:4284` (bad `--shard`),
+  `:4369` (`DIRTY_TREE`, direct-R0 path). An `AssayError` is built at each
+  purely to carry the message through the one emitter — no new exception
+  type, no new reason code, no wire change.
+- **DA-R4.** The `equivalence_artifact` early-R2 refusal (A-279) is no longer
+  announced where its claim is built. `runner.py:2855` records it in a new
+  `r2_deferred_early_error` local; `runner.py:3194-3200` announces it only in
+  the `elif r2_early_claim is not None` branch — the point where the early
+  claim actually SURVIVES into the document. Deferred for that one site only;
+  no general buffer (every other early-R2 refusal is set inside the
+  `result.outcome is Outcome.PASS` guard and cannot be superseded).
+- **The DA-R4 defect was reproduced before it was fixed**, through the
+  installed CLI on a real SQL R2 lane (`equivalence_artifact` is a `sql`-only
+  key, P34/W4) whose command exits 7 without writing the declared artifact:
+
+  ```
+  assay: ERROR/EXEC_FAILED: the baseline declared judge.mutation.equivalence_artifact
+    '.assay/schema-dump.sql' but its own command did not write it -- ...
+  ...
+  "claims": [ {"reason_code": "COMMAND_FAILED", "rigor": "R0", ...},
+              {"reason_code": "COMMAND_FAILED", "rigor": "R2", ...} ]
+  ```
+
+  The line and the document disagreed, which is exactly DA-R4's objection.
+- **Red-first**, run in the worktree with only the test file added and no
+  source change: **7 failed / 10 passed**. The 10 are generation 2's 9 plus
+  the new DA-R4 control (an early refusal that SURVIVES was already announced
+  correctly — that one must pass on both sides or the pair proves nothing).
+  Every failure was `assert 0 == 1` on the refusal-line count, or
+  `assert not True` on the superseded line. With the fix: **17 passed**.
+- Changed: `src/assay/runner.py`, `tests/test_refusal_announcement.py`,
+  `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `CHANGES.md`,
+  `nyxloom-trove/decisions.md` (A-414), `nyxloom-trove/4-backlog.md` (B053
+  resolution addendum; the "known limit" paragraph struck through, not
+  deleted, because A-409 still cites it).
+- No `verdict.py` / `verify.py` / schema / drift-guard file touched; no `!`.

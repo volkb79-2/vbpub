@@ -29,6 +29,19 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   library caller passes its own `diagnostics=` stream to
   `runner.run_lane` and assay writes nothing to the process's stderr. No wire
   change — the document is exactly as closed as it was. (B053, A-409)
+- **"Exactly one line" now holds for EVERY refusal reachable through `assay
+  run`, with no exceptions.** Six refusal sites still printed nothing because
+  they refused from a bare `(status, reason_code)` literal with no message to
+  copy: a dirty work tree (on the snapshot path and on the direct-R0 path), a
+  moved `HEAD`, a missing external tool, an unset `env_required` variable and
+  a malformed `--shard`. Each now composes its sentence where the fact is
+  known — the uncommitted paths, the two disagreeing revisions, the tool that
+  is not on `PATH`, the variable, the spec you typed — and emits it through
+  the same one emitter. Conversely, a refusal whose claim the verdict
+  DISCARDS no longer prints: a baseline that declared a
+  `judge.mutation.equivalence_artifact` and did not write it is announced
+  only if that refusal really becomes the document's R2 claim, not when the
+  lane's own command failed and superseded it. (B053, A-414)
 - An istanbul coverage record whose `branchMap` contradicts its own
   `statementMap`/`s` line classification is now a defect of THAT FILE, not of
   the whole verdict. `@vitest/coverage-istanbul` statically instruments every

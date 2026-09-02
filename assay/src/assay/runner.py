@@ -2820,6 +2820,11 @@ def _run_prepared_lane(
         added: diff.AddedLines | None = None
         targets: tuple[mutation.MutationTarget, ...] | None = None
         r2_early_claim: Claim | None = None
+        # (B053/DA-R4) The refusal behind `r2_early_claim` when -- and only
+        # when -- that claim was built before the lane's own command outcome
+        # was known, so its announcement can be deferred to the point where
+        # the surviving claim is chosen. `None` on every other path.
+        r2_deferred_early_error: AssayError | None = None
         # (B046) Filled inside this `with` block on an ingested lane, read
         # after it. Declared here beside `r2_early_claim` for its reason: both
         # carry a decision made while the snapshot was alive out to the claim
@@ -2833,7 +2838,21 @@ def _run_prepared_lane(
             # mutant. Set HERE, before diff/target resolution below, so that
             # work is skipped entirely rather than merely discarded (the
             # `r2_early_claim is None` guard on that block).
-            announce_refusal(unit.equivalence_error, diagnostics=diagnostics)
+            #
+            # (B053/DA-R4) NOT announced here. This is the one early-R2
+            # refusal decided BEFORE the lane's own command outcome is known,
+            # and if that command failed the claim assembly below discards
+            # this claim in favour of `build_mutation_claim(result, None)` --
+            # so announcing it here prints a sentence about a refusal the
+            # verdict does not carry, which a consumer cannot reconcile with
+            # the document in its hand. The announcement is deferred to the
+            # point where the final R2 claim is CHOSEN (see
+            # `r2_deferred_early_error` at the `elif r2_early_claim is not
+            # None` branch). Deferred for THIS site only -- no general buffer:
+            # every other early-R2 refusal below is set inside the
+            # `result.outcome is Outcome.PASS` guard and therefore cannot be
+            # superseded.
+            r2_deferred_early_error = unit.equivalence_error
             r2_early_claim = Claim(
                 rigor="R2",
                 source="computed",
@@ -3173,6 +3192,12 @@ def _run_prepared_lane(
         if result.outcome is not Outcome.PASS:
             claims += (mutation.build_mutation_claim(result, None),)
         elif r2_early_claim is not None:
+            # (B053/DA-R4) The early claim SURVIVED into the document, so the
+            # deferred refusal above is now a refusal the verdict really
+            # carries and owes its one line. Announced exactly once, here,
+            # because this branch is reached exactly once.
+            if r2_deferred_early_error is not None:
+                announce_refusal(r2_deferred_early_error, diagnostics=diagnostics)
             claims += (r2_early_claim,)
         elif r2_ingested:
             # (B046) The read already happened inside the snapshot's own
@@ -3755,9 +3780,40 @@ def _run_higher_rigor_lane(
             clock=clock,
         )
 
-    if git.dirty_paths(repo, remaining=deadline.remaining):
+    # (B053/DA-R3) Both guards compose their sentence HERE, where the fact is
+    # known -- which files are uncommitted, which two revisions disagree --
+    # and hand it to the ONE emitter. Before DA-R3 these two called
+    # `refuse_all` with a bare `(status, reason_code)` literal, so the
+    # operator got `NO_MEASUREMENT/DIRTY_TREE` and nothing else: the emitter's
+    # contract is a MESSAGE, and a refusal site that has the fact and does
+    # not compose it is the same defect B053 filed one layer down.
+    dirty = git.dirty_paths(repo, remaining=deadline.remaining)
+    if dirty:
+        announce_refusal(
+            AssayError(
+                f"{len(dirty)} uncommitted file(s) in {repo} -- a higher-rigor "
+                f"lane measures the RESOLVED COMMIT from a snapshot, so an "
+                f"uncommitted change is invisible to it. Commit or stash, then "
+                f"re-run. Affected: {', '.join(dirty)}",
+                outcome=Outcome.NO_MEASUREMENT,
+                reason_code=ReasonCode.DIRTY_TREE,
+            ),
+            diagnostics=diagnostics,
+        )
         return refuse_all(Outcome.NO_MEASUREMENT, ReasonCode.DIRTY_TREE)
-    if git.head_rev(repo, remaining=deadline.remaining) != commit:
+    observed_head = git.head_rev(repo, remaining=deadline.remaining)
+    if observed_head != commit:
+        announce_refusal(
+            AssayError(
+                f"HEAD moved between the resolution of the commit under "
+                f"judgment and the start of this lane: the verdict would be "
+                f"labelled {commit} but {repo} is now at {observed_head}. "
+                f"Re-run against the current HEAD.",
+                outcome=Outcome.NO_MEASUREMENT,
+                reason_code=ReasonCode.HEAD_CHANGED,
+            ),
+            diagnostics=diagnostics,
+        )
         return refuse_all(Outcome.NO_MEASUREMENT, ReasonCode.HEAD_CHANGED)
 
     outcome_holder: list[_PreparedOutcome] = []
@@ -3993,6 +4049,22 @@ def run_lane(
     if adapter is not None:
         for tool in adapter.external_tools:
             if shutil.which(tool) is None:
+                # (B053/DA-R3) WHICH tool is the only actionable fact in this
+                # refusal and it is known exactly here; the bare
+                # `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` pair the document
+                # carries names none of the adapter's tools.
+                announce_refusal(
+                    AssayError(
+                        f"the {adapter.name!r} adapter needs the external tool "
+                        f"{tool!r}, which is not on PATH in this environment "
+                        f"-- install it, or run the lane where it is "
+                        f"available. Declared tools: "
+                        f"{', '.join(adapter.external_tools)}",
+                        outcome=Outcome.NO_MEASUREMENT,
+                        reason_code=ReasonCode.MISSING_EXTERNAL_TOOL,
+                    ),
+                    diagnostics=diagnostics,
+                )
                 return refuse_lane(
                     lane,
                     commit=commit,
@@ -4140,6 +4212,26 @@ def run_lane(
         if name not in (os.environ if passthrough_source is None else passthrough_source)
     ]
     if missing_required:
+        # (B053/DA-R3) The variable names are the fact, and they are known
+        # only here -- `ERROR`/`BAD_LANE_CONFIG` is shared with a dozen
+        # unrelated causes, so without this line the operator cannot tell an
+        # unset environment variable from a malformed lane file.
+        announce_refusal(
+            AssayError(
+                f"lane {lane.name!r} declares env_required "
+                f"{missing_required} which "
+                f"{'is' if len(missing_required) == 1 else 'are'} not set in "
+                f"the invoking environment -- assay refuses to run a lane "
+                f"whose declared inputs are absent rather than measure it "
+                f"with them missing. Set "
+                f"{', '.join(missing_required)}, or drop "
+                f"{'it' if len(missing_required) == 1 else 'them'} from "
+                f"'env_required'.",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            ),
+            diagnostics=diagnostics,
+        )
         return refuse_lane(
             lane,
             commit=commit,
@@ -4185,6 +4277,20 @@ def run_lane(
             # artifact exactly like the `missing_required` refusal just
             # above, never an uncaught exception that reaches `main()` with
             # nothing to write.
+            #
+            # (B053/DA-R3) The spec the operator actually typed is echoed
+            # back: `ERROR`/`BAD_LANE_CONFIG` alone gives them nothing to
+            # correct, and the offending string is known only here.
+            announce_refusal(
+                AssayError(
+                    f"--shard {shard!r} is not a shard spec: it must be "
+                    f"INDEX/COUNT with zero-based integers and "
+                    f"0 <= INDEX < COUNT (for example --shard 0/4).",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.BAD_LANE_CONFIG,
+                ),
+                diagnostics=diagnostics,
+            )
             return refuse_lane(
                 lane,
                 commit=commit,
@@ -4253,7 +4359,24 @@ def run_lane(
         git.repo_top(repo, remaining=deadline.remaining), project_root
     )
 
-    if git.dirty_paths(repo, remaining=deadline.remaining):
+    direct_dirty = git.dirty_paths(repo, remaining=deadline.remaining)
+    if direct_dirty:
+        # (B053/DA-R3) The direct-R0 path's own copy of the tree guard
+        # (A-189: an R0-only lane never enters the snapshot state machine),
+        # and it owes the same sentence the higher-rigor one does. The
+        # difference is only in WHY the dirt matters: this path measures the
+        # live tree and records `commit` as the identity of what it measured.
+        announce_refusal(
+            AssayError(
+                f"{len(direct_dirty)} uncommitted file(s) in {repo} -- the "
+                f"verdict would be labelled with commit {commit} while the "
+                f"tree that ran is not that commit. Commit or stash, then "
+                f"re-run. Affected: {', '.join(direct_dirty)}",
+                outcome=Outcome.NO_MEASUREMENT,
+                reason_code=ReasonCode.DIRTY_TREE,
+            ),
+            diagnostics=diagnostics,
+        )
         return refuse_lane(
             lane,
             commit=commit,

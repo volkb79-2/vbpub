@@ -369,3 +369,338 @@ def test_a_library_caller_that_names_no_stream_still_gets_a_verdict_and_no_outpu
 
     assert verdict.outcome is Outcome.ERROR, verdict
     assert real_stderr.getvalue() == "", real_stderr.getvalue()
+
+
+# --- DA-R3: the five refusals that used to carry no message at all ----------
+#
+# Generation 2 landed the emitter and reported (decision ask 1) that five
+# refusal sites call `refuse_lane`/`refuse_all` with a bare
+# `(status, reason_code)` literal and therefore printed nothing. The
+# controller ruled DA-R3: the emitter's contract is a MESSAGE, not an
+# exception, so each of those sites composes its sentence where the fact is
+# known -- the offending paths, the two commits, the missing tool, the
+# missing variable, the shard spec -- and goes through the same emitter.
+# "Every refusal reachable through `assay run` prints exactly one line" then
+# holds without qualification.
+
+
+def _r0_lane(*, env_required: tuple[str, ...] = ()) -> str:
+    required = json.dumps(list(env_required))
+    passthrough = json.dumps(["PATH", *env_required])
+    return f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", "exit 0"]
+env = {{}}
+env_passthrough = {passthrough}
+env_required = {required}
+budget = "1m"
+allow_argv_append = false
+"""
+
+
+def test_a_dirty_tree_names_the_uncommitted_files_on_a_higher_rigor_lane(
+    git_repo: GitRepo,
+):
+    """DA-R3, site 1 of 5: ``_run_higher_rigor_lane``'s pre-snapshot tree
+    guard. A snapshot lane measures the RESOLVED COMMIT, so an uncommitted
+    file is invisible to it -- and before DA-R3 the operator was told only
+    ``NO_MEASUREMENT/DIRTY_TREE`` with no hint of which file."""
+    base_rev = _seed_python_project(git_repo)
+    path = git_repo.write("assay.toml", _r1_lane_writing("{}", base=base_rev))
+    git_repo.commit_all("add assay.toml")
+    # Untracked, and deliberately NOT under `src/` -- this is the whole-repo
+    # guard, not `measurability.check_dirty_tree`'s source-root-scoped one.
+    git_repo.write("stray-note.txt", "uncommitted\n")
+
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        ["run", "package", "--file", str(path), "--verdict-json", "-"],
+        stdout=out,
+        stderr=err,
+    )
+
+    assert code == Outcome.NO_MEASUREMENT.exit_code, err.getvalue()
+    lines = _refusal_lines(err.getvalue())
+    assert len(lines) == 1, err.getvalue()
+    assert lines[0].startswith("assay: NO_MEASUREMENT/DIRTY_TREE: "), lines
+    assert "stray-note.txt" in lines[0], lines
+
+
+def test_a_dirty_tree_names_the_uncommitted_files_on_a_direct_r0_lane(
+    git_repo: GitRepo,
+):
+    """DA-R3, site 2 of 5: the SAME refusal on the direct-R0 path, which has
+    its own guard and its own `refuse_lane` call (A-189: an R0-only lane
+    never enters the snapshot state machine)."""
+    git_repo.write("src/mod.py", "def f():\n    return 1\n")
+    path = git_repo.write("assay.toml", _r0_lane())
+    git_repo.commit_all("add lane")
+    git_repo.write("stray-note.txt", "uncommitted\n")
+
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        ["run", "package", "--file", str(path), "--verdict-json", "-"],
+        stdout=out,
+        stderr=err,
+    )
+
+    assert code == Outcome.NO_MEASUREMENT.exit_code, err.getvalue()
+    lines = _refusal_lines(err.getvalue())
+    assert len(lines) == 1, err.getvalue()
+    assert lines[0].startswith("assay: NO_MEASUREMENT/DIRTY_TREE: "), lines
+    assert "stray-note.txt" in lines[0], lines
+
+
+def test_a_head_that_moved_names_both_commits(git_repo: GitRepo):
+    """DA-R3, site 3 of 5: ``HEAD_CHANGED``.
+
+    Driven through :func:`assay.runner.run_lane` rather than the CLI because
+    the CLI resolves *commit* from ``HEAD`` itself -- the disagreement this
+    guard exists to catch is a caller's, and a library caller is the only
+    one that can state it deterministically. The line must name BOTH revisions,
+    because "HEAD changed" without the two values does not say which way.
+    """
+    git_repo.write(".gitignore", "cov.json\n")
+    git_repo.write("pkg/mod.zzz", "BASE\n")
+    base_rev = git_repo.commit_all("add pkg base")
+    git_repo.write("pkg/mod.zzz", "BASE\nLINE2\n")
+    head_rev = git_repo.commit_all("add pkg head")
+
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
+    lane = make_lane(rigor=("R0", "R1"), judge=judge)
+    diagnostics = io.StringIO()
+
+    verdict = runner.run_lane(
+        lane,
+        # The caller says the tree is at `base_rev`; git says `head_rev`.
+        commit=base_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        diagnostics=diagnostics,
+    )
+
+    assert verdict.outcome is Outcome.NO_MEASUREMENT, verdict
+    lines = _refusal_lines(diagnostics.getvalue())
+    assert len(lines) == 1, diagnostics.getvalue()
+    assert lines[0].startswith("assay: NO_MEASUREMENT/HEAD_CHANGED: "), lines
+    assert base_rev in lines[0] and head_rev in lines[0], lines
+
+
+def test_a_missing_external_tool_names_the_tool(git_repo: GitRepo):
+    """DA-R3, site 4 of 5: ``MISSING_EXTERNAL_TOOL``.
+
+    The adapter declares a tool that is not on ``PATH``. Which tool is the
+    only actionable fact in the whole refusal, and it was the one thing the
+    operator could not see.
+    """
+    git_repo.write("pkg/mod.zzz", "BASE\n")
+    base_rev = git_repo.commit_all("add pkg base")
+    git_repo.write("pkg/mod.zzz", "BASE\nLINE2\n")
+    head_rev = git_repo.commit_all("add pkg head")
+
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
+    lane = make_lane(rigor=("R0", "R1"), judge=judge)
+    diagnostics = io.StringIO()
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=FakeAdapter(external_tools=("assay-no-such-tool-b053",)),
+        assay_version="0.1.0",
+        diagnostics=diagnostics,
+    )
+
+    assert verdict.outcome is Outcome.NO_MEASUREMENT, verdict
+    lines = _refusal_lines(diagnostics.getvalue())
+    assert len(lines) == 1, diagnostics.getvalue()
+    assert lines[0].startswith(
+        "assay: NO_MEASUREMENT/MISSING_EXTERNAL_TOOL: "
+    ), lines
+    assert "assay-no-such-tool-b053" in lines[0], lines
+
+
+def test_a_missing_required_env_var_names_the_variable(git_repo: GitRepo):
+    """DA-R3, site 5a of 5: the ``env_required`` refusal.
+
+    Distinct from the infrastructure-env refusal generation 2 already
+    covered: this one is `lane.env_required` against the passthrough source,
+    decided before any Git work at all, and it shared the generic
+    ``ERROR``/``BAD_LANE_CONFIG`` terminal with a dozen unrelated causes.
+    """
+    git_repo.write("src/mod.py", "def f():\n    return 1\n")
+    path = git_repo.write(
+        "assay.toml", _r0_lane(env_required=("ASSAY_B053_NO_SUCH_VAR",))
+    )
+    git_repo.commit_all("add lane")
+
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        ["run", "package", "--file", str(path), "--verdict-json", "-"],
+        stdout=out,
+        stderr=err,
+    )
+
+    assert code == Outcome.ERROR.exit_code, err.getvalue()
+    lines = _refusal_lines(err.getvalue())
+    assert len(lines) == 1, err.getvalue()
+    assert lines[0].startswith("assay: ERROR/BAD_LANE_CONFIG: "), lines
+    assert "ASSAY_B053_NO_SUCH_VAR" in lines[0], lines
+    assert "env_required" in lines[0], lines
+
+
+def test_a_malformed_shard_names_the_spec_it_could_not_parse(git_repo: GitRepo):
+    """DA-R3, site 5b of 5: the bad-``--shard`` refusal.
+
+    The spec the operator typed is the fact; without it the refusal is
+    ``ERROR``/``BAD_LANE_CONFIG`` with nothing to correct.
+    """
+    git_repo.write("src/mod.py", "def f():\n    return 1\n")
+    path = git_repo.write("assay.toml", _r0_lane())
+    git_repo.commit_all("add lane")
+
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        [
+            "run",
+            "package",
+            "--file",
+            str(path),
+            "--shard",
+            "one-of-two",
+            "--verdict-json",
+            "-",
+        ],
+        stdout=out,
+        stderr=err,
+    )
+
+    assert code == Outcome.ERROR.exit_code, err.getvalue()
+    lines = _refusal_lines(err.getvalue())
+    assert len(lines) == 1, err.getvalue()
+    assert lines[0].startswith("assay: ERROR/BAD_LANE_CONFIG: "), lines
+    assert "one-of-two" in lines[0], lines
+    assert "--shard" in lines[0], lines
+
+
+# --- DA-R4: an announcement whose claim never reaches the verdict -----------
+
+
+def _equivalence_r2_lane(*, base: str, command: str) -> str:
+    """A SQL R2 lane declaring an ``equivalence_artifact`` its own command
+    never writes (A-279) -- the one early-R2 refusal decided BEFORE the
+    lane's own command outcome is known, and therefore the only one that can
+    be superseded. ``equivalence_artifact`` is a ``sql``-only key (P34/W4),
+    so this lane is genuinely SQL rather than a Python lane with a SQL field.
+    """
+    return f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", {json.dumps(command)}]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "2m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "sql"
+source_roots = ["db"]
+base = "{base}"
+
+[lanes.package.judge.mutation]
+jobs = 1
+max_mutants = 5
+operators = ["sql:drop-check"]
+equivalence_artifact = ".assay/schema-dump.sql"
+"""
+
+
+def _seed_r2_project(git_repo: GitRepo) -> str:
+    git_repo.write(".gitignore", ".assay/\n")
+    git_repo.write("db/schema.sql", "create table a (id int);\n")
+    base_rev = git_repo.commit_all("add schema.sql")
+    git_repo.write(
+        "db/schema.sql",
+        "create table a (id int);\n"
+        "create table b (id int check (id > 0));\n",
+    )
+    git_repo.commit_all("add table b")
+    return base_rev
+
+
+def test_a_surviving_early_r2_refusal_is_announced_once(git_repo: GitRepo):
+    """The control for the test below: when the lane's own command PASSES,
+    the early R2 refusal IS the R2 claim, so its sentence belongs on the
+    stream."""
+    base_rev = _seed_r2_project(git_repo)
+    path = git_repo.write(
+        "assay.toml", _equivalence_r2_lane(base=base_rev, command="exit 0")
+    )
+    git_repo.commit_all("add assay.toml")
+
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        ["run", "package", "--file", str(path), "--verdict-json", "-"],
+        stdout=out,
+        stderr=err,
+    )
+
+    assert code != 0, err.getvalue()
+    document = json.loads(out.getvalue())
+    r2 = [claim for claim in document["claims"] if claim["rigor"] == "R2"]
+    assert r2 and r2[0]["reason_code"] == "EXEC_FAILED", document
+    lines = _refusal_lines(err.getvalue())
+    assert len(lines) == 1, err.getvalue()
+    assert "equivalence_artifact" in lines[0], lines
+
+
+def test_an_early_r2_refusal_the_verdict_discards_is_never_announced(
+    git_repo: GitRepo,
+):
+    """DA-R4. The lane's own command FAILS, so ``_run_prepared_lane`` builds
+    the R2 claim from the command result and throws the early claim away.
+
+    A line about a refusal that never reaches the verdict cannot be
+    reconciled with the document a consumer is holding, so the announcement
+    is deferred to the point where the final claim is CHOSEN, not made where
+    the early claim is built. No general buffer: only this one site defers,
+    because only this one site is decided before the command outcome is
+    known.
+    """
+    base_rev = _seed_r2_project(git_repo)
+    path = git_repo.write(
+        "assay.toml", _equivalence_r2_lane(base=base_rev, command="exit 7")
+    )
+    git_repo.commit_all("add assay.toml")
+
+    out, err = io.StringIO(), io.StringIO()
+    code = main(
+        ["run", "package", "--file", str(path), "--verdict-json", "-"],
+        stdout=out,
+        stderr=err,
+    )
+
+    assert code != 0, err.getvalue()
+    document = json.loads(out.getvalue())
+    r2 = [claim for claim in document["claims"] if claim["rigor"] == "R2"]
+    assert r2, document
+    # The equivalence refusal is NOT the claim the document carries: the
+    # command's own failure is.
+    assert r2[0]["reason_code"] == "COMMAND_FAILED", document
+    lines = _refusal_lines(err.getvalue())
+    assert not any("equivalence_artifact" in line for line in lines), lines

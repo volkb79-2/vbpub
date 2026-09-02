@@ -5243,10 +5243,46 @@ Both non-wire halves are done; half (c) (a per-claim `detail` field) is phase
   done here. Nothing under `verdict.py`/`verify.py`/`src/assay/schemas/` was
   touched.
 
-**Known limit, recorded rather than papered over:** a refusal that no
-`AssayError` carries (`DIRTY_TREE`, `HEAD_CHANGED`, `MISSING_EXTERNAL_TOOL`,
-the `env_required` and `--shard` refusals) prints no line — there is no
-message to copy. See A-409 and the Wave D REPORT's decision asks.
+**~~Known limit, recorded rather than papered over:~~ CLOSED by DA-R3/A-414
+(below).** A refusal that no `AssayError` carries (`DIRTY_TREE`,
+`HEAD_CHANGED`, `MISSING_EXTERNAL_TOOL`, the `env_required` and `--shard`
+refusals) printed no line, on the reading that there was no message to copy.
+The controller ruled that backwards: the emitter's contract is a message, not
+an exception, and each of those sites holds the fact when it refuses.
+
+### Resolution addendum — the last six refusals, and one that must NOT print (DA-R3 + DA-R4 → A-414)
+
+- [x] **Every refusal reachable through `assay run` prints exactly one line,
+  without qualification.** All six previously-silent sites compose their
+  sentence where the fact is known and go through the SAME emitter:
+  `src/assay/runner.py:3792` (`DIRTY_TREE`, snapshot path — names the
+  uncommitted paths from `git.dirty_paths`), `:3806` (`HEAD_CHANGED` — names
+  both revisions), `:4056` (`MISSING_EXTERNAL_TOOL` — names the tool and the
+  adapter's whole declared list), `:4219` (`env_required` — names the unset
+  variables and the remedy), `:4284` (bad `--shard` — echoes the spec and
+  gives the form), `:4369` (`DIRTY_TREE`, direct-R0 path). Each builds an
+  `AssayError` purely to carry the message; no new exception type.
+- [x] **The counting test is extended to all six.** `tests/
+  test_refusal_announcement.py` gains one end-to-end test per site, each
+  asserting `len(refusal_lines) == 1` AND that the line names the fact
+  (`stray-note.txt`, both revisions, `assay-no-such-tool-b053`,
+  `ASSAY_B053_NO_SUCH_VAR`, `one-of-two`). Four go through the installed CLI
+  (`assay.cli.main`); `HEAD_CHANGED` and `MISSING_EXTERNAL_TOOL` go through
+  `runner.run_lane` directly, because the CLI resolves `commit` from `HEAD`
+  itself and the adapter is chosen by the lane's declared language — the
+  disagreement each guard exists to catch is a caller's, not an operator's.
+- [x] **A refusal the verdict discards prints nothing (DA-R4).** The
+  `equivalence_artifact` early-R2 refusal (A-279) is recorded at
+  `src/assay/runner.py:2855` and announced only at `:3194-3200`, the branch
+  where the early claim SURVIVES into the document. Two tests, a matched
+  pair: the command exits 0 → the claim is `ERROR`/`EXEC_FAILED` and the line
+  is printed once; the command exits 7 → the claim is `FAIL`/`COMMAND_FAILED`
+  and no line mentions the equivalence artifact. No general deferred-print
+  buffer: only this one site is decided before the command outcome is known.
+- [x] **Red-first.** 7 failed / 10 passed against the pre-fix tip
+  `10d9390d`; 17 passed with the fix. Every failure was `assert 0 == 1` on
+  the refusal-line count (or, for DA-R4, `assert not True` on the superseded
+  line), never a setup error.
 
 ## B054 — a NEVER-EXECUTED file matching `coverage.include` can make `@vitest/coverage-istanbul` emit a self-contradictory `branchMap`, and `UNREADABLE_ARTIFACT` refuses the WHOLE verdict rather than isolating the one file — defeating `changed_lines` mode's cost-scoping promise
 

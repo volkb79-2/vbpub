@@ -673,3 +673,133 @@ BRIEF-2 §3-§5 carries the seams for all three, with two corrections to
 BRIEF-1's own numbers that generation 3 should not re-derive.
 
 Phase 2 and phase 3 are untouched. No `!` commit marker exists on the branch.
+
+---
+
+# Generation 3
+
+The controller ruled generation 2's four decision asks as **DA-R3..DA-R6**
+(controller log `ba741c3b`). This generation's first item is the two that
+reopen B053.
+
+## B053 follow-ups — DA-R3 and DA-R4 → A-414
+
+**Rulings applied.** DA-R3: the emitter's contract is a MESSAGE, not an
+exception; the five (six, counting both `DIRTY_TREE` sites) refusal sites
+that carried a bare `(status, reason_code)` compose their message where the
+fact is known and go through the same emitter, and "every refusal reachable
+through `assay run` prints exactly one line" holds without qualification.
+DA-R4: an announcement about a refusal the verdict does not carry is not
+correct as landed; defer that ONE site to where the final claim is chosen; no
+general buffer.
+
+### Acceptance, with file:line evidence
+
+| box | evidence |
+|---|---|
+| `DIRTY_TREE`, snapshot path, names the uncommitted paths | `src/assay/runner.py:3782-3803` — `dirty = git.dirty_paths(...)` is bound, and the message carries `', '.join(dirty)`; test `test_a_dirty_tree_names_the_uncommitted_files_on_a_higher_rigor_lane` |
+| `HEAD_CHANGED` names BOTH revisions | `src/assay/runner.py:3804-3817` — `observed_head` bound and both it and `commit` interpolated; test `test_a_head_that_moved_names_both_commits` |
+| `MISSING_EXTERNAL_TOOL` names the tool | `src/assay/runner.py:4050-4069` — names `tool`, `adapter.name` and the whole declared list; test `test_a_missing_external_tool_names_the_tool` |
+| `env_required` names the variables | `src/assay/runner.py:4213-4235` — `missing_required` interpolated twice (the list, then the set-these remedy); test `test_a_missing_required_env_var_names_the_variable` |
+| bad `--shard` echoes the spec | `src/assay/runner.py:4278-4296` — `--shard {shard!r}` plus the INDEX/COUNT form; test `test_a_malformed_shard_names_the_spec_it_could_not_parse` |
+| `DIRTY_TREE`, direct-R0 path | `src/assay/runner.py:4359-4380` — its own message, distinct from the snapshot path's because the reason the dirt matters differs (the live tree is labelled with `commit`); test `test_a_dirty_tree_names_the_uncommitted_files_on_a_direct_r0_lane` |
+| one emitter, not six spellings | every one of the six calls `runner.announce_refusal` (`src/assay/runner.py:307`); the format lives in exactly one `print` |
+| exactly ONE line per refusal | every new test asserts `len(_refusal_lines(...)) == 1`, not `>= 1` |
+| DA-R4: the superseded refusal is silent | `src/assay/runner.py:2851-2856` records `r2_deferred_early_error` and does NOT announce; `:3194-3200` announces only inside `elif r2_early_claim is not None` |
+| DA-R4: the surviving refusal still speaks | `test_a_surviving_early_r2_refusal_is_announced_once` — the matched control, which passes on BOTH sides of the change |
+| no wire change | `git show --stat` on the commit: nothing under `verdict.py`, `verify.py`, `src/assay/schemas/` or the drift-guard carve-assets |
+
+### Transcript — the DA-R4 defect, measured before it was fixed
+
+`equivalence_artifact` is a `sql`-only key (P34/W4), so the reproduction is a
+real SQL R2 lane, built in a scratch repository and driven through
+`assay.cli.main` at the pre-fix tip `10d9390d`:
+
+```
+$ python -c "from assay.cli import main; ...  ['run','package','--file',...,'--verdict-json','-']"
+assay: ERROR/EXEC_FAILED: the baseline declared judge.mutation.equivalence_artifact
+  '.assay/schema-dump.sql' but its own command did not write it -- R2 needs the
+  baseline's own bytes to prove any mutant equivalent, so no mutant can even be
+  attempted
+{ ... "claims": [
+    {"reason_code": "COMMAND_FAILED", "rigor": "R0", "source": "computed",
+     "status": "FAIL", "verified_by_assay": true},
+    {"reason_code": "COMMAND_FAILED", "rigor": "R2", "source": "computed",
+     "status": "FAIL", "verified_by_assay": true} ], ... }
+```
+
+The stderr line names a refusal (`ERROR`/`EXEC_FAILED`) that appears nowhere
+in the document — the exact irreconcilability DA-R4 names. The lane's command
+was `exit 7`; with `exit 0` the same lane produces `ERROR`/`EXEC_FAILED` as
+its R2 claim and the line is correct, which is why the two tests are a
+matched pair rather than a single negative.
+
+### Transcript — red-first
+
+Run in the worktree with ONLY `tests/test_refusal_announcement.py` modified
+and no source change (so the "pre-fix tree" is the branch tip `10d9390d`
+itself; no scratch worktree was needed):
+
+```
+$ python -m pytest tests/test_refusal_announcement.py -q -p no:randomly
+FAILED ... ::test_a_dirty_tree_names_the_uncommitted_files_on_a_higher_rigor_lane
+FAILED ... ::test_a_dirty_tree_names_the_uncommitted_files_on_a_direct_r0_lane
+FAILED ... ::test_a_head_that_moved_names_both_commits
+FAILED ... ::test_a_missing_external_tool_names_the_tool
+FAILED ... ::test_a_missing_required_env_var_names_the_variable
+FAILED ... ::test_a_malformed_shard_names_the_spec_it_could_not_parse
+FAILED ... ::test_an_early_r2_refusal_the_verdict_discards_is_never_announced
+7 failed, 10 passed
+```
+
+Every DA-R3 failure was `assert 0 == 1` — zero refusal lines where one was
+required — and the DA-R4 failure was `assert not True` over the list
+`["assay: ERROR/EXEC_FAILED: the baseline declared
+judge.mutation.equivalence_artifact ..."]`. With the fix: **17 passed**.
+
+The 10 that passed at the pre-fix tip are generation 2's 9 plus
+`test_a_surviving_early_r2_refusal_is_announced_once`, which is a CONTROL: it
+must pass on both sides, or the DA-R4 pair would prove only that the
+announcement was deleted rather than deferred.
+
+### Docs disposition
+
+| file | change |
+|---|---|
+| `docs/CONSUMERS.md` | the "which refusals carry no line" paragraph is replaced by "There is no exception to 'exactly one line'", with all five real messages quoted verbatim, plus the complement DA-R4 establishes: a refusal whose claim the verdict discards prints nothing, so every line on stderr corresponds to a refusal in the document beside it |
+| `docs/DESIGN-GUIDE.md` | the §6 B053 section's "What still prints nothing, and why" is replaced by two subsections — "The emitter's contract is a MESSAGE, not an exception (DA-R3/A-414)", which states plainly that A-409's §5 reasoning was backwards (§5 forbids inventing a value that is not known, not writing down one that is), and "A line about a refusal the verdict does not carry is worse than silence (DA-R4/A-414)" |
+| `CHANGES.md` | one Fixed bullet (B053, A-414) |
+| `nyxloom-trove/4-backlog.md` | B053's "Known limit" paragraph struck through (not deleted — A-409 still cites it) and a "Resolution addendum" block with four ticked boxes |
+
+### What a reviewer should push on
+
+- **Are all six really reachable, and did I pick the right entry point for
+  each?** Four go through `assay.cli.main`; `HEAD_CHANGED` and
+  `MISSING_EXTERNAL_TOOL` go through `runner.run_lane` directly, because the
+  CLI resolves `commit` from `HEAD` itself (so the two can never disagree
+  under it) and chooses the adapter from the lane's declared language. If R-1
+  can construct a CLI-level reproduction of either, the test should move.
+- **The DA-R4 deferral is one site, by hand.** There is no mechanism
+  preventing a FUTURE early-R2 refusal from being added outside the
+  `result.outcome is Outcome.PASS` guard and announced eagerly. The guard
+  against that is the comment at `runner.py:2845-2857` and this REPORT, not
+  a type. A reviewer may reasonably ask for the eager sites to be inverted
+  too, at the cost DA-R4 declined.
+- **`env_required` vs. the infrastructure refusal.** Both are
+  `ERROR`/`BAD_LANE_CONFIG`, and generation 2 already covered the
+  infrastructure one. Check they do not double-print on a lane that trips
+  both — they cannot (the infrastructure refusal happens during plan
+  resolution, which the `env_required` refusal precedes and returns from),
+  but that ordering is worth confirming.
+- **Message wording is not a wire contract** — none of these six strings is
+  parsed by any test beyond the fact it names (a path, a revision, a tool, a
+  variable, a spec). That is deliberate: DA-D2 (c)'s `detail` field, in phase
+  2, is where this text becomes something a consumer may see structurally.
+
+### What I did NOT do, and why
+
+- **No new reason code for any of the six.** A-138/A-170 keep the enumeration
+  closed; the sentence was what was missing, not the code.
+- **No general deferred-print buffer** — DA-R4 explicitly forbids it, and
+  only one site can be superseded.
+- **No wire `detail` field** (DA-D2 (c)) — phase 2.
