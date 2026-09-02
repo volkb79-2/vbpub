@@ -184,7 +184,7 @@ suite on the same tree: `3902 passed, 18 skipped`, `PYTEST_EXIT=0` (from
 with no Go here). Go qualification, run separately with
 `ASSAY_GO_QUALIFICATION=1`: `5 passed`, `PYTEST_EXIT=0`.
 
-**Run 9: PASS on `<tip>`** — the renumbering (`e7eb5241`) and the
+**Run 9: PASS on `dd1e2c46`** — the renumbering (`e7eb5241`) and the
 B053 fold-in + F008-A3 tick landed after run 8, and the renumbering touches
 source comments and nine test modules, so it was re-gated rather than
 assumed inert. Transcript in REPORT §39.

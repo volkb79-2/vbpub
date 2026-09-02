@@ -687,7 +687,7 @@ would be worse than none. The end state is verified by `git grep -n -E
 '\bB05[34]\b'` hitting only this entry and that note, and the diff was read
 before committing.
 
-## `PENDING2` — docs(assay): fold in main's B053, tick F008-A3, and BRIEF-6
+## `dd1e2c46` — docs(assay): fold in main's B053, tick F008-A3, and BRIEF-6
 
 Three things the renumbering surfaced or unblocked.
 
@@ -722,3 +722,20 @@ parses is a convention invented for one sentence.
 OUTSIDE the worktree while gate run 8 was executing and copied in afterwards
 — generation 3 lost a run to an untracked brief file, and the self-hosted
 lane is right to refuse `DIRTY_TREE`.
+
+**Gate run 9: PASS on `dd1e2c46`** — `ASSAY_REGISTERED_GATE_COMPLETE=1`,
+`GATE_EXIT=0`, twelve phase markers through `independent-self-hosting-passed`,
+verdict read in a separate step and a second, independent grep for
+`FAILED|DIRTY_TREE|Traceback|ERROR` returning nothing. Transcript in REPORT
+§39. Run 9 was not optional: the renumbering rewrote three source comments and
+nine test modules, and "mechanical" is a claim about a regex, not a property
+of one.
+
+**One thing the renumbering could not rewrite: commit SUBJECTS.** Three on
+this branch still carry pre-shift ids — `docs(assay): Wave C checkpoint 1 …
+file B053`, `docs(assay): file B057 and decision ask DA-8 …`, and
+`docs(assay): Wave C generation 5 -- A-404's record, B057 closed, B058 filed`.
+History is immutable and rewriting it to tidy a reference would be a far worse
+trade than an explained mismatch. Read them against the map in the
+`e7eb5241` entry above: those three mean B055, B059, and "B059 closed, B060
+filed" respectively.

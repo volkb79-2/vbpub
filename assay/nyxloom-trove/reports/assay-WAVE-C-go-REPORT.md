@@ -1598,3 +1598,77 @@ convention invented for a single sentence.
 
 The backlog boxes that WERE discharged are ticked in `4-backlog.md` (B059's
 first three) and nothing else was touched.
+
+## 39. Gate — run 8 PASS on `1885d64e`, run 9 PASS on `dd1e2c46`
+
+Command, from `/workspaces/vbpub`, both times:
+
+```sh
+bash assay/tools/tester-unified-gate.sh /workspaces/vbpub/.worktrees/assay-wave-c-go
+```
+
+**Run 8, on `1885d64e`** — the DA-8 implementation plus its LOG/REPORT:
+
+```text
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=wheel-installed
+ASSAY_GATE_PHASE=attestation-hardened
+ASSAY_GATE_PHASE=verdict-v5-accepted
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified
+ASSAY_GATE_PHASE=verdict-v9-successors-verified
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+GATE_EXIT=0
+```
+
+Verdict read in a SEPARATE step, as always, and a second, independent grep
+for `FAILED|DIRTY_TREE|Traceback|ERROR` over the same log returned nothing.
+
+**Run 9, on `dd1e2c46`** — and it was not optional. The id renumbering
+(`e7eb5241`) is described as mechanical, but "mechanical" is a claim about a
+rewrite that touched **three source comments and nine test modules**, and a
+word-boundary regex over 25 files is exactly the kind of change that is
+obviously safe right up until it is not. Re-gating cost 13 minutes and
+removes the need to take my own word for it.
+
+```text
+ASSAY_GATE_PHASE=wheel-installed
+ASSAY_GATE_PHASE=attestation-hardened
+ASSAY_GATE_PHASE=verdict-v5-accepted
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified
+ASSAY_GATE_PHASE=verdict-v9-successors-verified
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_REGISTERED_GATE_COMPLETE=1
+GATE_EXIT=0
+```
+
+Same separate-step read, same independent grep.
+
+**Devcontainer full suite** on the same tree, twice (once before the docs and
+CLI-help edits, once after): `3902 passed, 18 skipped`, `PYTEST_EXIT=0`, up
+from the inherited `3860 passed, 16 skipped`. The 42 new tests are 24 for the
+`go.mod` directive parser, 11 for the adapter's binding and refusals, 5 for
+the core seam, and 2 in-image refusal proofs — and those last two are the two
+extra SKIPS, which is correct: no Go exists in this devcontainer or in
+`tester-unified`.
+
+**Go qualification**, run separately because neither gate image can host it
+(DA-3/A-402): `ASSAY_GO_QUALIFICATION=1`, `5 passed`, `PYTEST_EXIT=0`, 28.6s,
+against the real `go1.25.14` inside `tester-unified-go:local`.
+
+**The wrapper-vs-job trap did not fire this generation.** Every background
+job's completion notification agreed with its own appended marker — eight
+instances across four generations, four of them agreeing. The markers were
+read separately anyway, in their own step, which is the only reason this
+sentence can say which was true rather than assuming it.
