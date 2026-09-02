@@ -1260,3 +1260,48 @@ seconds of launch. Load stayed 5.1–7.4.
   allocated this generation** and no backlog entry was needed. `main`'s last
   decision row is still `A-407`; the branch's own high-water mark is
   **A-434**, allocated in entry 26, so the next free A-id is **A-435**.
+
+## Generation 9 (fresh Opus, seeded by BRIEF-8; DA-R22..DA-R24 in the prompt)
+
+### 29. `test(assay): a local tripwire for the gate harnesses' contract pins (B069, A-435)`
+
+- **DA-R24's item 0, landed before B050 exactly as the ruling sequences it** —
+  B007 will replace a `carve-assets/W6/expected/` template the same harnesses
+  read, so the tripwire has to exist first.
+- New `tests/test_gate_harness_version_pins.py` (4 tests), new backlog entry
+  **B069** (filed RESOLVED, with the measurement and the rejected gate phase),
+  new decision row **A-435**, and a `### Testing` bullet under CHANGES.md
+  `[Unreleased]` — the section did not exist under `[Unreleased]` yet; every
+  shipped release has one, so it was added rather than folded elsewhere.
+- **The scanner is a pure function over text, which is what makes red-first
+  expressible with no checkout.** `scan_pins(text, path=…)` /
+  `stale_pins(text, path=…, schema_version=…, generation=…)` are called three
+  ways: over the real `gate/python/*.py` (must be empty), over a fixture copy
+  of the pre-cut harness lines (must report both families), and — as the
+  REPORT's measurement, not a committed test — over the genuine
+  `b2fd09f3^:gate/python/qualify_topos.py`, where it reports **all three** real
+  stale pins that cost generation 8 two gate runs: `:92` `W5`, `:848` and
+  `:905` `schema_version != 9`.
+- **Both real-tree tests assert the FOUND set is non-empty before asserting the
+  stale set is empty.** A text-scanning test's characteristic failure mode is
+  the pattern rotting off its subject and passing vacuously; asserting the
+  scanner still finds something is the control that makes the green mean
+  anything.
+- Two families are deliberately not scanned and both have their own regression
+  test: the lane-file `schema_version = 2` inside a TOML template string
+  (`qualify_cmru_b006a.py:116`, `qualify_dstdns_sql.py:923` — `LANE_SCHEMA_VERSION`
+  is a separate contract that stays 2 across this cut) and prose references to
+  frozen earlier generations (`qualify_topos.py:71`, `:811`). `P25` is a
+  carve-asset directory but not a `W<n>` generation, and the test proves it is
+  not read as generation 25.
+- Local, serial, targeted: `nice -n 19 ionice -c 3 python -m pytest
+  tests/test_gate_harness_version_pins.py -q` → **4 passed** in 0.41s. **No
+  gate run this commit** — it adds one local test file and three record files,
+  touches no `src/` and no wire shape, and the gate-verified commit stays
+  `b2fd09f3`; the gate runs on the first commit that changes product code
+  (B050).
+- Ids re-checked against `main` immediately before allocating, as the rules
+  require: `git show main:assay/nyxloom-trove/4-backlog.md | grep -o '^## B[0-9]*'
+  | tail -1` → **B068** (so **B069** was free and is now taken);
+  `main` is still at `A-407`, the branch at `A-434`, so **A-435** was free and
+  is now taken. Next free: **A-436** / **B070**, re-check before use.

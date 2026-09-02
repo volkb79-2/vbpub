@@ -256,6 +256,20 @@ and `coverage.missing_branch_lines` are still read by those names.
   asserts the OUTCOME, and the declaration is kept for the git-metadata-absent
   build. (B056, A-412)
 
+### Testing
+
+- **The gate-only qualification harnesses' contract pins now fail in the
+  ORDINARY suite.** `gate/python/*.py` runs only inside `tester-unified:local`,
+  so a harness still pinned to the previous `VERDICT_SCHEMA_VERSION` — or
+  reading a frozen earlier `carve-assets/W<n>` generation — used to be
+  discovered by a ~25-minute red gate run (it was, twice, during this cut).
+  `tests/test_gate_harness_version_pins.py` scans the harness text and asserts
+  each pin names the current contract. The pins themselves are unchanged and
+  deliberate: advancing one stays a conscious edit. The lane-file
+  `schema_version` (a separate contract, still `2`) and prose references to
+  frozen earlier generations are explicitly out of scope, with their own
+  regression tests. (B069, A-435)
+
 <!-- Post-release housekeeping, 2026-08-18: this block is CLEARED immediately
      after a release. cmru generates the dated entry below from the commit
      range, but it does NOT clear the hand-written block that fed it -- so

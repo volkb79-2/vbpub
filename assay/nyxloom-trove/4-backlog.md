@@ -6449,3 +6449,84 @@ B007's A-row must say so in one sentence; nothing here widens B007's scope.
       multi-target canary and re-runs only the unattempted targets;
 - [ ] the measured claims above are re-checked, not inherited, at the time of
       building.
+
+---
+
+## B069 — the gate-only harnesses' contract pins are invisible to the local suite, so a stale pin costs a 25-minute red gate
+
+**Filed 2026-09-02** by Wave D generation 9, on the controller's **DA-R24**,
+from the two red gate runs generation 8 paid during the v10 cut.
+**RESOLVED at filing** by A-435 (`tests/test_gate_harness_version_pins.py`);
+the entry stays for the measurement and for the rule it records.
+
+### The measurement
+
+`pytest tests -q` is green on this branch **with twenty tests skipped**, and
+those twenty are exactly the harnesses that drive a real produced artifact
+inside `tester-unified:local`. Every consumer of a wire shape under
+`gate/python/` is therefore invisible to a local run. Generation 8's v10 cut
+went red twice for nothing else:
+
+* `gate/python/qualify_topos.py:92` pinned
+  `carve-assets / "W5" / "expected"` after W6 became the newest drift-guard
+  generation;
+* `gate/python/qualify_topos.py:848` and `:905` pinned
+  `.get("schema_version") != 9` after `VERDICT_SCHEMA_VERSION` became 10.
+
+Each cost one ~25-minute run. Both are one grep away from being known in five
+seconds, and neither was, because nothing in the ordinary suite reads the
+harness text at all.
+
+### Why the pins themselves are RIGHT, and stay
+
+The harnesses pin deliberately. A glob or a "whatever is newest" lookup would
+let a schema cut or a carve-asset generation advance without a conscious edit,
+which is precisely the drift the `carve-assets/*/MANIFEST.md` freeze rule and
+the P25 harness's own header exist to prevent (**DA-R24**). Advancing a pin is
+supposed to be a decision someone makes. What was missing is not a looser pin;
+it is a **red that fires locally when the decision was forgotten**.
+
+### Rejected: a new gate phase
+
+A grep phase inside `tools/tester-unified-gate.sh` would move the red run five
+seconds earlier inside the same 25-minute container, still after the wheel
+build, and would add a twelfth phase to a script every edit of which must
+itself be gated (BRIEF-7 §3.1(f): generation 6's three-token edit to it went
+red). **DA-R24 rules: no new gate phase.**
+
+### What landed instead
+
+One local test, collected by the ordinary suite, that scans `gate/python/*.py`
+for two pin families and asserts each names the current contract:
+
+* a verdict-document `schema_version` compared to an integer literal, against
+  `assay.verdict.VERDICT_SCHEMA_VERSION`;
+* a `carve-assets` / `W<n>` path CONSTRUCTION, against the newest `W<n>`
+  directory under `nyxloom-trove/carve-assets/`.
+
+Two families are deliberately out of scope, and the test says so in its own
+text: the lane-file form `schema_version = 2` inside a TOML template string
+(`LANE_SCHEMA_VERSION` is a separate contract on its own version line, and
+folding them together would demand a lane bump per verdict bump), and PROSE
+references to frozen earlier generations (a docstring narrating
+`carve-assets/W4/test_acceptance_v8.py` is correct — only a harness that READS
+a stale generation is stale).
+
+### Acceptance
+
+- [x] a test under `tests/` scans `gate/python/*.py` and fails on a pin that
+      names anything but the current `VERDICT_SCHEMA_VERSION`
+      (`tests/test_gate_harness_version_pins.py`,
+      `test_gate_harnesses_pin_the_current_verdict_schema_version`);
+- [x] the same test fails on a `carve-assets/W<n>` construction that is not the
+      newest generation
+      (`test_gate_harnesses_pin_the_newest_carve_asset_generation`);
+- [x] the red is expressible without a checkout: the scanner run over a fixture
+      copy of the pre-cut harness text reports both
+      (`test_the_scanner_reports_a_pre_cut_harness_as_stale`), and run over the
+      real `b2fd09f3^:gate/python/qualify_topos.py` it reports all three real
+      stale pins (:92 W5, :848 and :905 schema 9);
+- [x] the lane `schema_version` and prose references are proven NOT matched
+      (`test_the_scanner_ignores_the_lane_schema_version_and_prose`);
+- [x] a scanner whose pattern rots to zero matches FAILS rather than passes
+      (both real-tree tests assert `found` is non-empty first).
