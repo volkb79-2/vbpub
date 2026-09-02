@@ -5,6 +5,13 @@ lane declarations look like per project type. Companion to `README.md`
 (design authority) and **`SPEC.md` (normative contract)**. BUILT as of P01
 (2026-08-22); first adopter nyxloom.
 
+Two sibling guides answer the questions this file does not: **`LANE-AUTHORING.md`**
+(what makes a lane good — which tools belong in run-gate, in assay, or inside
+the suite; determinism, exit-code truth, budgets, per-language recipes, the
+best-practice checklist and the open TODOs) and **`REMOTE-LANES-BUILDKITE.md`**
+(enrolling a remote host as a Buildkite agent, triggering and collecting from
+this host, the image on remote hosts, and the ciu/run-gate/assay seams).
+
 ## The adoption steps (any project)
 
 1. **Get the script.**
