@@ -5016,3 +5016,168 @@ is the actual question.
       "what assay checks about your report" paragraph as `projectRoot`;
 - [ ] if the ruling is "record, do not refuse": the wire field in schema,
       dataclass and `verify.py` (three places), at the next schema cut.
+
+## B053 — an `ERROR`-outcome verdict's detailed message is constructed but never surfaced anywhere a consumer can read it — not stdout, not stderr, not the verdict JSON
+
+**Filed 2026-09-02, dstdns's first `javascript` lane adoption (assay-4.0.0,
+`[lanes.ui_unit]`).** Found diagnosing a real `BAD_LANE_CONFIG` refusal that
+took ~30 tool calls and reading `runner.py`/`isolation.py`/`cli.py` source to
+root-cause, entirely because the actual reason was never visible anywhere a
+consumer normally looks.
+
+### The mechanism, measured
+
+`cli.py`'s `_cmd_run` → `_run_reserved` has exactly ONE `except AssayError as
+exc:` block that prints the detail (`cli.py:672`, `print(f"assay:
+{exc.outcome}/{exc.reason_code}: {exc}", file=err)`) — it wraps ONLY
+`_resolve_declared_adapters(lane)` (`cli.py:650-651`). Every failure that
+happens LATER, inside `runner.run_lane` itself (the entire snapshot
+construction, materialization, and command-execution path), does not go
+through this handler. Concretely: `isolation.py:754`'s `_plant_link_paths`
+raises `_bad_lane_config(...)` → `LaneConfigError` with a genuinely detailed,
+actionable message (mine named the exact file, the exact git status line,
+and even prescribed the fix — "a trailing slash does not work here"). That
+exception propagates up through `_run_prepared_lane` →
+`_run_higher_rigor_lane` → `run_lane` and becomes a verdict via a path that
+constructs a `Claim`/`Verdict` carrying only `outcome=ERROR,
+reason_code=BAD_LANE_CONFIG` — no free-text field. `_print_run_summary`
+(`cli.py:721-729`, the ONLY thing printed for a lane that didn't hit the one
+wrapped call) prints exactly three lines: `{lane}: {outcome}/{reason_code}
+(exit {code})`, `commit:`, `argv:`. Nothing else. The verdict JSON
+(`--verdict-json`) has no message field either — confirmed by reading the
+emitted artifact directly; `claims[].reason_code` is the only trace.
+
+**Reproduced the gap directly**: `docker exec`-ing `assay run` inside the
+real `test-runner` container, capturing stdout and stderr SEPARATELY,
+produced the identical three-line summary on stdout and only KSM-shim noise
+on stderr — confirmed empirically, not inferred from source alone. Recovering
+the actual message required monkeypatching `AssayError.__init__` in a Python
+REPL to print a stack trace at construction time, then reading off the
+`message` argument by hand.
+
+### Why assay owns it
+
+This is not one lane's config being wrong — it's every `ERROR`-outcome path
+that does not flow through `cli.py`'s single wrapped call, and the number of
+such paths (isolation, snapshot verification, coverage parsing, and likely
+others yet unexercised) is large and will only grow. A consumer with a
+correctly-installed, correctly-invoked assay has no way to learn WHY their
+lane failed short of reading assay's own source — which defeats the point of
+a `reason_code` taxonomy that is specific enough to have named ~15 distinct
+values (per `errors.py`) if none of them come with the concrete fact that
+produced them.
+
+### Proposed contract
+
+Every `ERROR`/`WARN`-outcome `AssayError` that becomes part of a verdict
+should have SOMEWHERE to carry its message through to the consumer — options,
+not pre-decided:
+- a `detail`/`message` field on the verdict schema itself (schema-bump-timed,
+  matches how `judgment.r1.coverage_producer` etc. already carry per-claim
+  detail);
+- OR: widen `_cmd_run`'s exception handling so EVERY `AssayError` raised
+  anywhere in the `run` command's call graph — not just the one call this
+  handler happens to wrap — reaches the same `print(f"assay:
+  {exc.outcome}/{exc.reason_code}: {exc}", file=err)` line, with `refuse_lane`
+  still building the structured verdict exactly as it does now. This is the
+  narrower fix: it changes where an existing, already-well-written message
+  goes, not what gets computed.
+
+### Behavioral oracles
+
+- A lane declaration that trips `isolation.py`'s link_paths-uncleanliness
+  refusal (or any other `BAD_LANE_CONFIG`/`UNREADABLE_ARTIFACT` raised
+  anywhere past `_resolve_declared_adapters`) must print its constructed
+  `AssayError` message to stderr (or carry it in the verdict JSON), not just
+  the bare `reason_code`.
+- Controlled wrong implementation: reverting the fix reproduces today's
+  three-line-only summary on a case known to raise a detailed message deeper
+  in `run_lane`.
+
+## B054 — a NEVER-EXECUTED file matching `coverage.include` can make `@vitest/coverage-istanbul` emit a self-contradictory `branchMap`, and `UNREADABLE_ARTIFACT` refuses the WHOLE verdict rather than isolating the one file — defeating `changed_lines` mode's cost-scoping promise
+
+**Filed 2026-09-02, dstdns's first `javascript` lane adoption
+(assay-4.0.0). Related to B038/A-357** (an unrecognised `branchMap` entry
+type REFUSES the artifact rather than degrading silently) but a DIFFERENT
+failure shape: not an unrecognised TYPE, an internally INCONSISTENT record
+for a recognised one, on a file with zero relation to anything being judged.
+
+### The mechanism, measured
+
+`applications/webapp-ui-react/src/api/queries/analytics.ts` (dstdns) has
+never been executed by any test — it is matched by `vitest.config.ts`'s
+`coverage.include: ['src/**']` glob but no `test.include` entry imports it.
+`@vitest/coverage-istanbul` (v3.2.7) still statically instruments and
+reports on it (Vitest's own "report files with zero tests as 0%, not
+absent" feature), and for this specific file produced a `coverage-final.json`
+record whose `branchMap` names an arc at line 215 that appears in NEITHER
+`.executed` NOR `.missing` — assay's own coverage-istanbul parser refuses:
+`AssayError("istanbul coverage JSON: record for
+'.../src/api/queries/analytics.ts': its 'branchMap' arcs contradict its own
+'statementMap'/'s' line classification -- FileCoverage.branches has line(s)
+[215] that are in neither .executed nor .missing", reason_code=
+BAD_LANE_CONFIG)` — actually surfaces as the LANE's overall
+`UNREADABLE_ARTIFACT` (raised via `runner.py`'s coverage-parsing path, same
+`ERROR` outcome class). Line 215 is an ordinary braceless single-statement
+`if` (`if (params.taskId) query['task_id'] = params.taskId`) — a pattern that
+recurs ~173 times across this one project's `src/` tree by grep, so it is not
+one file's peculiarity.
+
+**R0 passed** (the command ran, the tests that DO exist passed) — this is
+purely an R1 coverage-artifact-parsing failure, and it happens on a file with
+ZERO overlap with any changed line in the diff being judged
+(`mode = "changed_lines"`).
+
+**Workaround applied at dstdns** (not a fix, recorded so it doesn't read as
+silent): scoped `coverage.include` down to exactly the three source files the
+project's existing tests actually execute, matching the file's own
+"enumerated, not a glob" convention for `test.include`. This sidesteps the
+quirk by never statically-instrumenting untested files at all, at the cost of
+not tracking coverage for anything outside that set until real tests land for
+it.
+
+### Why this is worth a separate item from B038/A-357
+
+A-357's ruling (refuse on an unrecognised `branchMap` entry TYPE) is a
+reasonable fail-closed default for a genuinely ambiguous producer-format
+question. This case is different in a way that matters for `changed_lines`
+mode specifically: the file that broke the whole verdict was **never
+executed and never part of the judged diff** — `changed_lines` mode's entire
+value proposition is that a large, partially-tested codebase can adopt
+coverage gating incrementally, paying cost only for what changes. A
+static-only, never-executed file's own instrumentation quirk currently costs
+every OTHER file's real, correctly-produced coverage data the whole verdict —
+the opposite of that scoping promise, and a real adoption blocker for any
+consumer whose `coverage.include` is broader than their current test surface
+(which is the common, expected shape during incremental rollout, not an edge
+case).
+
+### Proposed contract (not pre-decided; two shapes, carver's call)
+
+1. **Isolate the refusal to the offending file** when `mode = "changed_lines"`
+   and the file is not part of the judged diff: treat it as
+   `NO_MEASUREMENT` for that file alone (consistent with how an absent
+   type-only module is already handled per B038(b)/A-358), not as a
+   verdict-wide `UNREADABLE_ARTIFACT`. A file that IS part of the diff and
+   hits this would still need to refuse — there is no honest number to report
+   for it.
+2. **OR: narrow scope, document the constraint** — if isolating per-file is
+   too large a change, `docs/CONSUMERS.md`'s JavaScript-lanes section should
+   say explicitly that `coverage.include` should track the TESTED surface,
+   not the full source tree, until B054-class artifacts are handled more
+   gracefully — the opposite of what the existing guidance currently implies
+   (a broad `src/**` include as the standard shape).
+
+### Behavioral oracles
+
+- A `coverage.include` glob matching a never-executed file whose static
+  instrumentation produces a self-contradictory `branchMap`, alongside other
+  files with clean, correct coverage data and a fully-covered changed-lines
+  diff → today: `UNREADABLE_ARTIFACT`, verdict-wide. Whatever the ruling: the
+  fix must make this case at minimum name WHICH file broke it (already true)
+  and, if shape 1 is chosen, PASS on the strength of the changed-lines diff
+  actually being fully covered.
+- Controlled wrong implementation: a fix that silently drops the offending
+  file's data without recording anything in the verdict would defeat the
+  audit trail A-357 exists to preserve — any fix must keep the file
+  nameable, not merely stop refusing.
