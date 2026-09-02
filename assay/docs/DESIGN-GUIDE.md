@@ -674,6 +674,41 @@ consumer asks for and that the north star says is not part of the judgment.
 The file stays nameable in three places instead: the diagnostics line, the
 refusal message when it IS judged, and the field itself.
 
+### A lane that runs out of time still produces a document (B028/A-415)
+
+`LaneDeadline.remaining()` raises `BUDGET_EXCEEDED`/`LANE_TIMEOUT` the moment
+the lane-wide budget is spent, and it is the ONE seam every timing check in
+this codebase reads through — about sixteen call sites across `runner.py`,
+`mutation.py` and `canary.py`. A raise from any of them used to escape
+uncaught on the direct-R0 dispatch, so a lane whose command simply outlived
+`budget_seconds` exited 4 with **nothing written to a reserved
+`--verdict-json`**: assay said "you ran out of time" on stderr and handed the
+consumer no document saying it. That is the same defect B025 fixed for a
+narrower cause, and P17's rule — every post-HEAD-resolution terminal path
+emits a complete artifact — covers both.
+
+**One outer catch per dispatch entry point, never one per call site.** The
+sixteen timing checks are a moving target; the two entry points are not. A
+wrapper per call site is a rule every future timing check has to remember,
+and the ones added since B025 was written did not. `_run_higher_rigor_lane`
+already had its boundary (a single `try` spanning base resolution, the
+scratch root and the whole snapshot block) and was measured correct before
+anything was changed; the direct-R0 tail now has the matching one.
+
+**What exists at the moment of the timeout is the design question**, and the
+answer is: whatever the command left. If the command already ran, its result
+is real evidence — argv, timing, output tails — and the verdict keeps it,
+carrying the refusing pair as the R0 claim. If the deadline expired before it
+ran, there is no result to assemble from and `refuse_lane` builds the
+complete refusal artifact exactly as every other pre-work refusal does.
+
+**A timeout is never relabelled.** When cleanup after a completed run fails,
+A-193/A-194 replace the highest higher-rigor claim with `ERROR`/`GIT_FAILED`.
+If that cleanup failed *because the lane ran out of time*, `GIT_FAILED` names
+a Git failure that did not happen and buries the one actionable fact. The
+cleanup-failure path is unchanged in shape and now carries the refusing
+error's own pair. Every other cause keeps `GIT_FAILED`.
+
 ### Mutation resume and sharding (B012)
 
 Mutation state lives outside each ephemeral replacement snapshot. One bounded

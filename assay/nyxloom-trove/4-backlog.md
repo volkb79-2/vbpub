@@ -2701,14 +2701,53 @@ not been done yet.
 
 ### Acceptance
 
-- [ ] a decision recorded on where the outer catch boundary belongs (one
+- [x] a decision recorded on where the outer catch boundary belongs (one
       per higher-rigor entry point vs. per call site);
-- [ ] a lane-wide `LANE_TIMEOUT` (measured via a real, short `budget_seconds`
+- [x] a lane-wide `LANE_TIMEOUT` (measured via a real, short `budget_seconds`
       and a genuinely slow command) writes a real, schema-valid verdict
       artifact to a reserved `--verdict-json`, driven through the installed
       CLI;
-- [ ] a test proving the fix is shown red against pre-fix code (matching
+- [x] a test proving the fix is shown red against pre-fix code (matching
       B025's own red-first discipline).
+
+### Resolution — RESOLVED, Wave D phase 1 (DA-D10 → A-415)
+
+- [x] **The boundary decision, recorded as A-415:** ONE outer catch per
+      dispatch entry point, never one per `deadline.remaining()` call site.
+      The entry's own argument is upheld by measurement — `remaining()` is
+      read from ~16 sites across `runner.py`, `mutation.py` and `canary.py`,
+      several added after B025, and none of them wrapped themselves.
+- [x] **Measured before anything was changed** (at `21bdf19d`, through
+      `assay.cli.main`, `budget = "1s"` and `argv = ["/bin/sh","-c","sleep
+      30"]`, no stubbed clock): the HIGHER-RIGOR entry point was **already
+      correct** — its single outer `try` (`src/assay/runner.py:3819`) spans
+      base resolution, the scratch root and the whole snapshot block, and
+      its `except AssayError` returns a refusal verdict. The DIRECT-R0 path
+      exited 4 with the reserved `--verdict-json` never created. The entry's
+      2026-08-25 measurement is therefore half stale, and only half the fix
+      it asks for was needed.
+- [x] **The direct-R0 boundary:** `src/assay/runner.py:4465-4551`, spanning
+      `execute_plan` and the post-command dirt/HEAD guard, with that guard
+      extracted verbatim into `_finish_direct_r0_lane`
+      (`src/assay/runner.py:4552`). A `result_holder` answers the entry's own
+      "what state exists at the moment of the timeout": a command that ran
+      contributes its result (argv, timing, output tails) and the refusing
+      pair becomes the R0 claim; nothing to assemble from goes through
+      `refuse_lane`.
+- [x] **Never masks the timeout.**
+      `_replace_highest_higher_rigor_claim_with_git_failed`
+      (`src/assay/runner.py:3609`) takes the pair as keyword parameters
+      defaulting to A-193/A-194's `ERROR`/`GIT_FAILED`, and the higher-rigor
+      handler (`src/assay/runner.py:3916`) passes the refusing error's own
+      pair for a `LANE_TIMEOUT`. Test:
+      `test_a_cleanup_that_failed_because_time_ran_out_says_so`, with
+      `test_a_cleanup_that_failed_for_any_other_reason_still_says_git_failed`
+      as the control that A-193/A-194's rule is narrowed, not replaced.
+- [x] **Schema-valid, not merely well-keyed:**
+      `test_the_timed_out_verdict_is_one_assay_verify_accepts` runs
+      `assay verify` over the written document on BOTH dispatch paths.
+- [x] **Red-first:** 3 failed / 4 passed against `21bdf19d`; 7 passed with
+      the fix. `tests/test_lane_timeout_writes_a_verdict.py`.
 
 ---
 

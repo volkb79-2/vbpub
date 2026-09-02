@@ -357,3 +357,45 @@ free row; no new backlog entry filed at this commit.
   resolution addendum; the "known limit" paragraph struck through, not
   deleted, because A-409 still cites it).
 - No `verdict.py` / `verify.py` / schema / drift-guard file touched; no `!`.
+
+### 9. `fix(assay): a lane that runs out of time writes its verdict, and a timeout is never called GIT_FAILED (B028, A-415)`
+
+- Item: **B028**, ruling **DA-D10**.
+- **Measured before anything was changed** (at `21bdf19d`, through
+  `assay.cli.main`, `budget = "1s"`, `argv = ["/bin/sh","-c","sleep 30"]`,
+  no stubbed clock), and the measurement CORRECTS the entry's 2026-08-25 one:
+
+  | dispatch | reserved `--verdict-json` | exit |
+  |---|---|---|
+  | higher-rigor (`R0`+`R1`) | **written**, `assay verify` accepts it | 4 |
+  | direct R0 (`R0` only) | **never created** | 4 |
+
+  So `_run_higher_rigor_lane`'s single outer `try` (`runner.py:3819`) was
+  already the boundary DA-D10 asks for, and only the direct-R0 half of the
+  ruling was outstanding. BRIEF-2 §3 guessed the catch belonged beside
+  `runner.py:3776`; reading that handler showed it was already correct, and
+  that its real gap was the OPPOSITE one (below).
+- **The direct-R0 boundary:** `src/assay/runner.py:4465-4551`, spanning
+  `execute_plan` and the post-command dirt/HEAD guard. That guard moved
+  verbatim into a new `_finish_direct_r0_lane` (`runner.py:4552`) so that
+  sixty lines of A-175/A-178 reasoning did not have to be re-indented into a
+  `try`; nothing in it changed but its address.
+- **Never masks the timeout.**
+  `_replace_highest_higher_rigor_claim_with_git_failed` (`runner.py:3609`)
+  gained `status`/`reason_code` keyword parameters defaulting to
+  A-193/A-194's `ERROR`/`GIT_FAILED`; `_run_higher_rigor_lane`'s existing
+  `except AssayError` (`runner.py:3916`) passes the refusing error's own pair
+  when it is a `LANE_TIMEOUT`. Cleanup after a completed run that failed
+  because the lane ran out of time is a timeout, not a Git failure.
+- **Red-first:** `tests/test_lane_timeout_writes_a_verdict.py` against
+  `21bdf19d` — **3 failed / 4 passed**; with the fix, **7 passed**. The four
+  pre-fix passes are deliberate controls: the two higher-rigor regression
+  guards (already correct) and the `GIT_FAILED` control that proves
+  A-193/A-194's rule is narrowed rather than replaced.
+- Broader regression sweep, `-k "r0 or runner or cli_run or timeout or
+  budget"`: **535 passed, 1 skipped** in 127.80s.
+- Changed: `src/assay/runner.py`,
+  `tests/test_lane_timeout_writes_a_verdict.py` (new), `docs/CONSUMERS.md`,
+  `docs/DESIGN-GUIDE.md`, `CHANGES.md`, `nyxloom-trove/decisions.md`
+  (A-415), `nyxloom-trove/4-backlog.md` (B028 acceptance ticked, RESOLVED).
+- No `verdict.py` / `verify.py` / schema / drift-guard file touched; no `!`.

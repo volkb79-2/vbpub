@@ -42,6 +42,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `judge.mutation.equivalence_artifact` and did not write it is announced
   only if that refusal really becomes the document's R2 claim, not when the
   lane's own command failed and superseded it. (B053, A-414)
+- A lane that runs out of its `budget` now writes its verdict. An R0-only
+  lane whose command outlived `budget_seconds` used to exit 4 with the
+  reserved `--verdict-json` never created: the lane-wide deadline expires,
+  the very next timing check raises, and the raise escaped uncaught past the
+  CLI — so a gate that archives the document had nothing to archive for
+  exactly the runs most worth looking at. One outer catch on the direct-R0
+  dispatch (the higher-rigor dispatch already had its own, verified by
+  measurement rather than assumed) turns it into a complete,
+  `assay verify`-clean `BUDGET_EXCEEDED`/`LANE_TIMEOUT` document that keeps
+  the run's own argv, timing and output tails. A timeout during snapshot
+  cleanup after a completed run is also no longer relabelled
+  `ERROR`/`GIT_FAILED`: a lane that ran out of time is told so. (B028, A-415)
 - An istanbul coverage record whose `branchMap` contradicts its own
   `statementMap`/`s` line classification is now a defect of THAT FILE, not of
   the whole verdict. `@vitest/coverage-istanbul` statically instruments every

@@ -1704,6 +1704,17 @@ and the equivalence refusal is discarded. Its line is discarded with it. Every
 line you see on stderr corresponds to a refusal that is in the document beside
 it.
 
+**A lane that runs out of its budget writes its verdict too.** Until 4.2.0, a
+lane whose command outlived `budget` exited 4 with your reserved
+`--verdict-json` never written — so a gate that archives the document had
+nothing to archive for exactly the runs most worth looking at. It is now
+always written, on both dispatch paths, and `assay verify` accepts it: the
+outcome is `BUDGET_EXCEEDED`, the reason code `LANE_TIMEOUT`, and the run's
+own `argv`, timing and output tails are in it. If the timeout struck during
+snapshot cleanup after the work had finished, the affected claim says
+`BUDGET_EXCEEDED`/`LANE_TIMEOUT` and not `ERROR`/`GIT_FAILED` — a lane that
+ran out of time is told so, never given a Git failure that did not happen.
+
 ### Your existing CI script probably cannot be the lane command
 
 A lane command runs inside an **ephemeral snapshot of a commit**, not your

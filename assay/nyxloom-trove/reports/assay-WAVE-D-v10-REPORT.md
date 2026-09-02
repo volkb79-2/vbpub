@@ -803,3 +803,114 @@ announcement was deleted rather than deferred.
 - **No general deferred-print buffer** — DA-R4 explicitly forbids it, and
   only one site can be superseded.
 - **No wire `detail` field** (DA-D2 (c)) — phase 2.
+
+## B028 — a lane-wide `LANE_TIMEOUT` writes no verdict artifact (DA-D10 → A-415)
+
+**Ruling applied.** One outer catch per higher-rigor entry point and one for
+direct R0's own loop; the lane-wide `LANE_TIMEOUT` becomes the refusal claim
+the existing refuse path already builds; the reserved `--verdict-json` is
+WRITTEN; cleanup of a half-built snapshot is attempted and its failure
+recorded via the existing cleanup-failure path, never masking the timeout;
+tested red-first through the installed CLI with `budget_seconds = 1` and a
+real slow command.
+
+### The measurement that shaped the fix — and corrects the entry
+
+B028 was filed 2026-08-25 on the finding that "a plain `sleep 30` against a
+1s budget … exits non-zero with no verdict artifact". Re-measured at
+`21bdf19d` through `assay.cli.main`, with a real budget and a real slow
+command and no stubbed clock:
+
+| dispatch | lane | reserved `--verdict-json` | exit |
+|---|---|---|---|
+| `_run_higher_rigor_lane` | `rigor = ["R0","R1"]` | **written**; `assay verify` exit 0; `outcome = BUDGET_EXCEEDED`, `reason_code = LANE_TIMEOUT`, R0 **and** R1 claims present | 4 |
+| direct R0 (A-189) | `rigor = ["R0"]` | **never created** | 4 |
+
+```
+$ python -c "from assay.cli import main; ... ['run','package','--file',...,'--verdict-json','<path>']"
+assay: BUDGET_EXCEEDED/LANE_TIMEOUT: the lane-wide deadline expired
+REAL_EXIT=4
+ls: cannot access '<path>': No such file or directory
+```
+
+So half of what B028 describes was fixed at some point between the filing and
+this wave — `_run_higher_rigor_lane`'s single outer `try`
+(`src/assay/runner.py:3819`) already spans base resolution, the scratch root
+and the whole snapshot block, and its `except AssayError` already returns a
+refusal verdict. **That is why the fix adds exactly one boundary and not
+two**, and why the two higher-rigor tests in this module are labelled
+regression guards rather than red-first proofs: a reviewer cannot otherwise
+tell "already covered" from "untested".
+
+### Acceptance, with file:line evidence
+
+| box | evidence |
+|---|---|
+| a decision on where the boundary belongs | A-415, naming the per-call-site alternative and the measured reason it loses (~16 `remaining()` reads across three modules, several added after B025, none self-wrapped) |
+| direct-R0 boundary, one catch | `src/assay/runner.py:4465-4551` — one `try` spanning `execute_plan` and the post-command guard; `except AssayError` at `:4512` |
+| the post-command guard is unchanged, only moved | `src/assay/runner.py:4552` `_finish_direct_r0_lane`, carrying A-175/A-178's comment block and both terminals verbatim |
+| the command's own evidence survives the timeout | `result_holder` at `src/assay/runner.py:4489`; the `assemble_verdict` branch passes `result=result_holder[0]`, so argv, timing and output tails are in the document |
+| nothing to assemble from → the existing refuse path | the `refuse_lane` branch at the end of the same handler, identical in shape to this function's other pre-work refusals |
+| reserved `--verdict-json` WRITTEN, through the installed CLI | `test_a_direct_r0_lane_that_runs_out_of_time_still_writes_its_verdict` asserts `destination.exists()` after `main([...,"--verdict-json",str(destination)])` |
+| the artifact is schema-valid | `test_the_timed_out_verdict_is_one_assay_verify_accepts`, parametrised over BOTH dispatch paths, asserts `main(["verify", …]) == 0` |
+| never masks the timeout | `src/assay/runner.py:3609` (the pair is now a parameter, defaulting to A-193/A-194's) and `:3916` (the `LANE_TIMEOUT` branch); tests `test_a_cleanup_that_failed_because_time_ran_out_says_so` and its `GIT_FAILED` control |
+| B053's one line still appears exactly once | `test_the_refusal_names_the_deadline_on_the_diagnostics_stream` — the new catch is a new conversion site, and it announces once, not twice |
+| no wire change | nothing under `verdict.py`, `verify.py`, `src/assay/schemas/` or the drift-guard |
+
+### Transcript — red-first
+
+```
+$ python -m pytest tests/test_lane_timeout_writes_a_verdict.py -q -p no:randomly
+FAILED ... ::test_a_direct_r0_lane_that_runs_out_of_time_still_writes_its_verdict
+FAILED ... ::test_the_timed_out_verdict_is_one_assay_verify_accepts[rigor0]
+FAILED ... ::test_a_cleanup_that_failed_because_time_ran_out_says_so
+3 failed, 4 passed
+```
+
+with the fix, **7 passed**. The four pre-fix passes are controls that must
+pass on both sides: the two higher-rigor regression guards, the B053
+one-line check, and the `GIT_FAILED` control. The `LANE_TIMEOUT` cleanup
+failure showed exactly the masking DA-D10 forbids:
+
+```
+E  AssertionError: Claim(rigor='R1', ..., status=<Outcome.ERROR>, reason_code=<ReasonCode.GIT_FAILED>)
+```
+
+Broader sweep after the fix, `-k "r0 or runner or cli_run or timeout or
+budget"`: **535 passed, 1 skipped in 127.80s**.
+
+### The one test double, and why A-334 does not reach it
+
+`_factory_raising_on_exit` is a `scratch_root_factory` whose teardown raises.
+It stands in for no external system: it is assay's own seam, and it exists
+because the state DA-D10 names — cleanup failed *after* the lane's work
+completed — cannot be steered into deterministically by any real budget. The
+claim under test is assay's own disposition rule (which pair the replaced
+claim carries), not any tool's behaviour, which is precisely the line A-334
+draws.
+
+### What a reviewer should push on
+
+- **Is the direct-R0 boundary wide enough?** It starts at `execute_plan` and
+  ends at the last `assemble_verdict`. Everything BEFORE it (evidence, HEAD,
+  the pre-run dirt guard, plan resolution) reads `deadline.remaining` too. A
+  timeout there still escapes. That is deliberate — those sites precede any
+  command and every one of them already has its own refusal terminal — but a
+  reviewer should try to construct a budget tight enough to expire inside
+  `git.repo_top` and see what happens.
+- **`mutation.py` and `canary.py`'s `remaining()` reads** are inside
+  `_run_higher_rigor_lane`'s boundary and were not separately proven here. A
+  mutation lane with a 1s budget is worth running.
+- **The `LANE_TIMEOUT` narrowing is by reason code, not by outcome.** A
+  future `BUDGET_EXCEEDED` carrying some other code would still be laundered
+  to `GIT_FAILED`. `BUDGET_EXCEEDED`'s reason-code set is currently
+  `{LANE_TIMEOUT}` alone, so the two are equivalent today; if that set ever
+  widens the check should widen with it.
+
+### What I did NOT do, and why
+
+- **No per-call-site wrappers** — DA-D10 and the entry both reject them.
+- **No new reason code and no schema change** — the `BUDGET_EXCEEDED`/
+  `LANE_TIMEOUT` pair already exists and already renders.
+- **No fake clock anywhere in the CLI tests** — DA-D10 asks for a real
+  `budget_seconds` and a genuinely slow command.

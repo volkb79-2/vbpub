@@ -3607,7 +3607,11 @@ def _build_judgment_r2(
 
 
 def _replace_highest_higher_rigor_claim_with_git_failed(
-    lane: Lane, outcome: _PreparedOutcome
+    lane: Lane,
+    outcome: _PreparedOutcome,
+    *,
+    status: Outcome = Outcome.ERROR,
+    reason_code: ReasonCode = ReasonCode.GIT_FAILED,
 ) -> _PreparedOutcome:
     """A-193/A-194's "outer scratch cleanup alone fails" rule: replace the
     HIGHEST declared higher-rigor claim (R3 if declared, else R2, else R1)
@@ -3639,15 +3643,27 @@ def _replace_highest_higher_rigor_claim_with_git_failed(
     copy of the table here -- a copy would let the two disagree, and the
     disagreement's shape is a verdict this function built and the schema
     then refuses with an uncaught ``ValueError``.
+
+    **(B028/DA-D10) The pair is a parameter, defaulting to the A-193/A-194
+    one.** ``ERROR``/``GIT_FAILED`` describes a Git operation that failed;
+    when the cleanup failed because the LANE-WIDE DEADLINE expired
+    (:meth:`LaneDeadline.remaining` raises ``BUDGET_EXCEEDED``/
+    ``LANE_TIMEOUT`` from any of ~16 timing checks, several of which run
+    inside snapshot teardown) that is a false cause, and it hides the one
+    fact the operator needs to act on: the lane ran out of time. DA-D10's
+    words are "cleanup ... is attempted and its failure is recorded via the
+    existing cleanup-failure path (never masks the timeout)" — so the path
+    is this one, unchanged in shape, carrying the refusing error's own pair.
+    Every caller that is not the timeout keeps the default.
     """
     target = next(level for level in ("R3", "R2", "R1") if level in lane.rigor)
     new_claims = tuple(
         Claim(
             rigor=target,
             source="computed",
-            status=Outcome.ERROR,
+            status=status,
             verified_by_assay=True,
-            reason_code=ReasonCode.GIT_FAILED,
+            reason_code=reason_code,
         )
         if claim.rigor == target
         else claim
@@ -3890,9 +3906,24 @@ def _run_higher_rigor_lane(
         # document does not carry.
         announce_refusal(exc, diagnostics=diagnostics)
         if outcome_holder:
-            outcome = _replace_highest_higher_rigor_claim_with_git_failed(
-                lane, outcome_holder[0]
-            )
+            # (B028/DA-D10) The lane's own work COMPLETED and only the outer
+            # cleanup then failed -- A-193/A-194's rule -- but if it failed
+            # because the lane-wide deadline expired, `ERROR`/`GIT_FAILED`
+            # names a Git failure that never happened and buries the
+            # timeout. The refusing error's own pair is carried instead. This
+            # is the ONE outer catch for this entry point, as DA-D10
+            # requires: no second handler was added beside it.
+            if exc.reason_code is ReasonCode.LANE_TIMEOUT:
+                outcome = _replace_highest_higher_rigor_claim_with_git_failed(
+                    lane,
+                    outcome_holder[0],
+                    status=exc.outcome,
+                    reason_code=exc.reason_code,
+                )
+            else:
+                outcome = _replace_highest_higher_rigor_claim_with_git_failed(
+                    lane, outcome_holder[0]
+                )
         else:
             return refuse_all(exc.outcome, exc.reason_code)
     except OSError:
@@ -4431,13 +4462,115 @@ def run_lane(
             declared_evidence=declared_evidence,
             clock=clock,
         )
-    result = execute_plan(
-        plan,
-        cwd=project_root,
-        timeout=deadline.remaining(),
-        process_runner=process_runner,
-        clock=clock,
-    )
+    # (B028/DA-D10) THE ONE OUTER CATCH FOR DIRECT R0.
+    #
+    # `LaneDeadline.remaining()` raises `BUDGET_EXCEEDED`/`LANE_TIMEOUT` the
+    # instant the lane-wide budget is spent, and this tail reads it three
+    # times: once for the command's own timeout, then twice more in the
+    # post-command dirt/HEAD guard below. The command's own overrun is
+    # already converted into a `CommandResult` by `execute_command`, so the
+    # crash B028 measured was the NEXT read -- `git.dirty_paths(...,
+    # remaining=deadline.remaining)` -- raising uncaught past `main()`, which
+    # exited 4 having written NOTHING to the reserved `--verdict-json`.
+    #
+    # One catch around the whole tail, not one per `remaining()` call: DA-D10
+    # says so explicitly, and the reason is that the sixteen timing checks in
+    # this codebase are a moving target while the two dispatch entry points
+    # are not. A wrapper per call site is a rule every future timing check
+    # must remember; a boundary is a rule the code enforces.
+    #
+    # `result_holder` is the state question the entry's own "why this needs a
+    # design pass" section raises: what exists at the moment of the timeout.
+    # If the command already ran, its result is real evidence -- the argv,
+    # the timing, the output tails -- and the verdict keeps it, carrying the
+    # refusing pair as the R0 claim. If it did not, there is no result to
+    # assemble from and `refuse_lane` builds the complete refusal artifact,
+    # exactly as this function's other pre-work refusals do.
+    result_holder: list[CommandResult] = []
+    try:
+        result = execute_plan(
+            plan,
+            cwd=project_root,
+            timeout=deadline.remaining(),
+            process_runner=process_runner,
+            clock=clock,
+        )
+        result_holder.append(result)
+        return _finish_direct_r0_lane(
+            lane,
+            commit=commit,
+            repo=repo,
+            result=result,
+            pre_run_head=pre_run_head,
+            deadline=deadline,
+            assay_version=assay_version,
+            judge_provenance=judge_provenance,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
+            clock=clock,
+        )
+    except AssayError as exc:
+        announce_refusal(exc, diagnostics=diagnostics)
+        if result_holder:
+            return assemble_verdict(
+                lane=lane,
+                commit=commit,
+                result=result_holder[0],
+                claims=(
+                    Claim(
+                        rigor="R0",
+                        source="computed",
+                        status=exc.outcome,
+                        verified_by_assay=True,
+                        reason_code=exc.reason_code,
+                    ),
+                ),
+                assay_version=assay_version,
+                judge_provenance=judge_provenance,
+                evidence=evidence,
+                declared_evidence=declared_evidence,
+                ended=iso_utc(clock()),
+            )
+        return refuse_lane(
+            lane,
+            commit=commit,
+            status=exc.outcome,
+            reason_code=exc.reason_code,
+            argv_append=argv_append,
+            passthrough_source=passthrough_source,
+            project_prefix=direct_prefix,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
+            assay_version=assay_version,
+            judge_provenance=judge_provenance,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
+            clock=clock,
+        )
+
+
+def _finish_direct_r0_lane(
+    lane: Lane,
+    *,
+    commit: str,
+    repo: Path,
+    result: CommandResult,
+    pre_run_head: str,
+    deadline: LaneDeadline,
+    assay_version: str,
+    judge_provenance: JudgeProvenance | None,
+    evidence: tuple[Evidence, ...],
+    declared_evidence: tuple[EvidenceDeclaration, ...],
+    clock: Clock,
+) -> Verdict:
+    """The direct-R0 path's post-command work, extracted verbatim so that
+    B028's one outer catch can span it without indenting sixty lines of
+    A-175/A-178 reasoning into a ``try``.
+
+    Nothing here changed with B028 except its address: the post-run dirt/HEAD
+    guard, its precedence rule and its two terminals are exactly what
+    :func:`run_lane` executed inline before.
+    """
     r0_claim = build_r0_claim(result)
 
     # A-175: post-command dirt precedes the final claim. The pre-run guard
