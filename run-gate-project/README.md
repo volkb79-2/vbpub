@@ -121,7 +121,7 @@ changed-line policy, isolation snapshots) stays in `assay.toml`, and the
 
 ```toml
 [lanes.ciu]
-kind = "assay"            # run-gate wraps: env setup + pin verify + `assay run ciu`
+kind = "assay"            # run-gate wraps: env setup + pin verify + `assay run ciu --resume --progress …`
 assay_lane = "ciu"        # judgment policy lives in assay.toml — one registry each
 environment = "tester-unified"
 ```

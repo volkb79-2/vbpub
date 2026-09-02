@@ -49,6 +49,7 @@ SPEC §9.
 | RG-27 | run-gate has no persisted per-lane-per-commit invocation history and no query verb — a controller deciding sync-vs-async/defer rigor has no data; retriaged from ciu CIU-55 (2026-08-25) to run-gate, which is the layer with direct invocation visibility in the current (pre-v8) architecture | Enhancement | FIXED 2026-08-31 (rev 30, run-gate-P03) — `history [LANE] [--json]` verb; store `<project>/.run-gate/history.json`, per (judged worktree × project) |
 | RG-30 | `doctor` and `--check-env` both pass `None` to `resolve_repo_and_worktree` (`run-gate.py:1789`, `:2068`) instead of the caller's `--worktree` value, so `doctor --worktree B` silently reports the INVOKING tree's answers, not B's — including RG-21's worktree-specific host-lane git-view WARN, which is exactly the per-tree answer that can legitimately differ | Medium | FIXED 2026-08-31 (rev 31, run-gate-P04) — new shared `resolve_worktree_scope()` (validates a real git worktree, refuses by name otherwise); `doctor`'s per-tree checks (git identity, RG-21 warning, mountinfo) and the shared `assay_toolchain_findings()` probe's `cd` target (used by both `doctor` and `--check-env`) now resolve/relocate under `--worktree`, disclosed in the report; `--check-env`'s env-drift scan follows it too and refuses upfront on a bad override (no per-check ledger to degrade into). SPEC `R-37` (`R-37a`/`R-37b`/`R-37c`). `./run-gate.py selftest` green: 394 passed, 2 skipped, diff-coverage 22/22 = 100.0%, exit 0 (commit `929be064`) |
 | RG-31 | `assay_toolchain_findings()`'s own `resolve_repo_and_worktree` call (the toolchain-fitness probe shared by `doctor` check 5 and `--check-env`) still takes the RAW `worktree_override` string, not RG-30's new validated `resolve_worktree_scope()` — so a bad `--worktree` combined with an assay lane present degrades safely (a `[SKIP]` on that check, no false-`[OK]`) but with a MISLEADING reason string (blames "an assay older than 3.2.0" rather than naming the real `--worktree` problem, which `doctor` check 3 already reported correctly two checks earlier in the same report) | Low | FIXED 2026-09-01 (rev 32) — routed through `resolve_worktree_scope()`, the same validated resolver check 3 and `--check-env` already use; a bad override now raises the identical `GateError` and the existing per-lane `except GateError` SKIP handler reports the real cause, never a guess about assay's version. New regression test `test_bad_worktree_skip_names_the_real_problem_not_assay_version` asserts the SKIP line repeats check 3's own "not a directory" cause and never says "older than 3.2.0". `./run-gate.py selftest --allow-dirty` green: 395 passed, 2 skipped, diff-coverage 0/0 = 100.0% (pre-commit run), exit 0 |
+| RG-33 | `kind = "assay"` mutation lanes never receive `--resume` (or `--progress`), so a budget-capped retry re-tests every mutant from #1 — dstdns `sql-mutation`, three 120-minute retries spent on the first of four target files, `.assay/mutation-state/` never written | Major | FIXED 2026-09-02 (rev 33, SPEC `R-38`) — every assay-kind invocation now carries `--resume --progress .assay/progress-<assay_lane>.jsonl` unconditionally (no-ops without R2, per assay's own contract); a pin declaring a judge older than 2.4.1 refuses by name at argv construction; five new tests in `TestResumeAndProgressAlways` including the executed host-runner argv and the dry-run docker argv line; assay's own gate script mirrors it in the assay wave |
 
 ---
 
@@ -2033,6 +2034,30 @@ CONSUMERS.md's own guidance to keep it off the tracked/judged tree.
 `dstdns` P165 (`nyxloom-trove/decisions.md` D-318/D-319), discovered while
 investigating why its `sql-mutation` retry needed a full budget window
 without finishing even one of its four target files.
+
+### Status — FIXED 2026-09-02 (rev 33, SPEC `R-38`)
+
+Operator directive the same day (vbpub session): "all assay lanes make use of
+`resume` and `progress`". Landed as `build_assay_inner` appending `--resume
+--progress .assay/progress-<assay_lane>.jsonl` to EVERY assay-kind
+invocation — unconditionally rather than rigor-gated, because assay ignores
+both on a lane without R2 (its `--progress` help says so, and resume state
+is only touched by the mutation sweep), so the proposal's "whose target
+declares R2" condition would have been a second reading of an assay-owned
+fact for no behavioural gain. Acceptance: (1) DONE — five tests in
+`TestResumeAndProgressAlways`, including the executed argv on the host
+runner (RG-28's echo judge) and the dry-run docker argv line; (2) and (3)
+are assay's contract, not run-gate's, and are proven in assay's own suite
+(`tests/test_mutation_resume_sharding.py`,
+`tests/test_mutation_progress_budget_plan.py`; the candidate id folds in the
+file's exact bytes, so an edited file re-executes every candidate touching
+it) — run-gate's suite has no R2 lane and a two-attempt R2 run here would be
+a copy of that suite. Judge floor: `--resume` is assay 2.4.0, `--progress`
+2.4.1; a pin declaring an older `version` now refuses by name at argv
+construction (cmru was the only estate consumer below it, at 2.3.0 —
+re-pinned in the same package). Not fixed on the assay side: assay's OWN
+gate (`assay/tools/tester-unified-gate.sh`) invokes `assay run` directly,
+not through run-gate — routed to the running assay wave to mirror.
 
 ## RG-34 — `schema` lane's argv doesn't template `{worktree}` into its own script path, breaking any Mode-B worktree with a dedicated (non-shared) test-runner container
 

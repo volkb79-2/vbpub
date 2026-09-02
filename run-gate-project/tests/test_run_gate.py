@@ -349,7 +349,7 @@ BAD_CONFIGS = {
         assay_lane = "x"
         assay_command = ["assay"]
         [lanes.a.pins.assay]
-        version = "2.1.0"
+        version = "3.1.0"
     """,
     "pin_version_not_string": """\
         schema_version = 1
@@ -470,7 +470,7 @@ class TestConfigValidation:
             assay_command = ["./tools/assay.pyz"]
             clean_tree = false
             [lanes.assay-shared.pins.assay]
-            version = "2.1.0"
+            version = "3.1.0"
             sha256 = "tools/assay.pyz.sha256"
         """))
         commit_all(repo, "central assay lane")
@@ -498,7 +498,7 @@ class TestConfigValidation:
             assay_command = ["./tools/assay.pyz"]
             clean_tree = false
             [lanes.pinned.pins.assay]
-            version = "2.2.0"
+            version = "3.2.0"
             sha256 = "tools/assay.pyz.sha256"
         """)
         proj = make_project(repo, cfg)
@@ -700,17 +700,17 @@ class TestArgvConstruction:
             assay_lane = "ciu"
             environment = "tester-unified"
             assay_command = ["/opt/tester-venv/bin/python",
-                             "tools/assay/assay-2.1.0.pyz"]
+                             "tools/assay/assay-3.1.0.pyz"]
 
             [lanes.ciu.pins.assay]
-            version = "2.1.0"
-            sha256 = "tools/assay/assay-2.1.0.pyz.sha256"
+            version = "3.1.0"
+            sha256 = "tools/assay/assay-3.1.0.pyz.sha256"
         """)
         # Load-time sidecar existence is checked for project lanes too; the
         # docker shim only records argv, so a placeholder suffices.
-        sidecar = proj / "tools/assay/assay-2.1.0.pyz.sha256"
+        sidecar = proj / "tools/assay/assay-3.1.0.pyz.sha256"
         sidecar.parent.mkdir(parents=True, exist_ok=True)
-        sidecar.write_text("0" * 64 + "  assay-2.1.0.pyz\n")
+        sidecar.write_text("0" * 64 + "  assay-3.1.0.pyz\n")
         commit_all(repo, "vendor sidecar")
         log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
@@ -719,12 +719,12 @@ class TestArgvConstruction:
         assert proc.returncode == 0, proc.stderr
         inner = lane_runs(log)[0][-1]
         # pin verified FROM the pin's own directory, bare filename (P07 trap)
-        assert f"(cd {proj}/tools/assay && sha256sum -c assay-2.1.0.pyz.sha256)" \
+        assert f"(cd {proj}/tools/assay && sha256sum -c assay-3.1.0.pyz.sha256)" \
             in inner
         assert f"cd {proj}" in inner          # assay runs from the PROJECT dir
         assert "mkdir -p .assay" in inner
         assert "--file assay.toml --verdict-json .assay/verdict-ciu.json" in inner
-        assert "/opt/tester-venv/bin/python tools/assay/assay-2.1.0.pyz run ciu" \
+        assert "/opt/tester-venv/bin/python tools/assay/assay-3.1.0.pyz run ciu" \
             in inner
         assert f"verdict artifact: {proj}/.assay/verdict-ciu.json" in proc.stdout
 
@@ -892,11 +892,11 @@ class TestEffectiveTreeExecution:
         assay_lane = "ciu"
         environment = "tester-unified"
         assay_command = ["/opt/tester-venv/bin/python",
-                         "tools/assay/assay-2.1.0.pyz"]
+                         "tools/assay/assay-3.1.0.pyz"]
 
         [lanes.ciu.pins.assay]
-        version = "2.1.0"
-        sha256 = "tools/assay/assay-2.1.0.pyz.sha256"
+        version = "3.1.0"
+        sha256 = "tools/assay/assay-3.1.0.pyz.sha256"
     """
 
     def _repo_with_worktree(self, tmp_path, config: str | None = None):
@@ -905,9 +905,9 @@ class TestEffectiveTreeExecution:
         # The pin sidecar must exist in the JUDGED tree (load-time existence
         # check is symmetric for project lanes now); content is irrelevant —
         # the docker shim only records the assembled command.
-        sidecar = proj / "tools/assay/assay-2.1.0.pyz.sha256"
+        sidecar = proj / "tools/assay/assay-3.1.0.pyz.sha256"
         sidecar.parent.mkdir(parents=True, exist_ok=True)
-        sidecar.write_text("0" * 64 + "  assay-2.1.0.pyz\n")
+        sidecar.write_text("0" * 64 + "  assay-3.1.0.pyz\n")
         commit_all(repo, "vendor sidecar")
         wt = tmp_path / "w1"
         git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
@@ -924,7 +924,7 @@ class TestEffectiveTreeExecution:
         # cd target AND pin verification relocated INTO the selected tree…
         assert f"cd {wt}/proj" in inner
         assert f"(cd {wt}/proj/tools/assay && " \
-            f"sha256sum -c assay-2.1.0.pyz.sha256)" in inner
+            f"sha256sum -c assay-3.1.0.pyz.sha256)" in inner
         # …and the invocation checkout appears NOWHERE in the judged command
         # (controlled wrong implementation: pre-RG-15 built this exact string)
         assert str(proj) not in inner
@@ -1725,14 +1725,14 @@ class TestPinVersionVerify:
                 "pins": {"assay": pin}}
 
     def test_declared_version_probed_in_lane(self):
-        inner = run_gate.build_assay_inner(self._lane("2.1.0"), Path("/proj"))
+        inner = run_gate.build_assay_inner(self._lane("3.1.0"), Path("/proj"))
         assert "./tools/assay/assay.pyz --version" in inner
-        assert '[ "$tok" = 2.1.0 ]' in inner and "version mismatch" in inner
+        assert '[ "$tok" = 3.1.0 ]' in inner and "version mismatch" in inner
 
     def test_prefix_version_never_matches_longer_reported(self, tmp_path):
-        """Review fix: the old substring glob let declared '2.1' pass for a
-        reported '2.11.0' — a claim the artifact never made."""
-        proc = self._run_inner(tmp_path, "2.1", "assay 2.11.0")
+        """Review fix: the old substring glob let declared '3.1' pass for a
+        reported '3.11.0' — a claim the artifact never made."""
+        proc = self._run_inner(tmp_path, "3.1", "assay 3.11.0")
         assert proc.returncode != 0
         assert "version mismatch" in proc.stderr
 
@@ -1762,19 +1762,19 @@ class TestPinVersionVerify:
         return proc
 
     def test_mismatched_version_refuses_naming_both_values(self, tmp_path):
-        proc = self._run_inner(tmp_path, "2.1.0", "assay 9.9.9")
+        proc = self._run_inner(tmp_path, "3.1.0", "assay 9.9.9")
         assert proc.returncode != 0
         assert "version mismatch" in proc.stderr
-        assert "2.1.0" in proc.stderr and "9.9.9" in proc.stderr
+        assert "3.1.0" in proc.stderr and "9.9.9" in proc.stderr
 
     def test_matching_version_runs_silently(self, tmp_path):
-        proc = self._run_inner(tmp_path, "2.1.0", "assay 2.1.0")
+        proc = self._run_inner(tmp_path, "3.1.0", "assay 3.1.0")
         assert proc.returncode == 0, proc.stderr
 
     def test_punctuated_report_still_matches(self, tmp_path):
-        """Trailing punctuation (v2.1.0,) or a leading bracket must not
+        """Trailing punctuation (v3.1.0,) or a leading bracket must not
         break the whole-token match."""
-        proc = self._run_inner(tmp_path, "2.1.0", "(assay) reports: v2.1.0, ok")
+        proc = self._run_inner(tmp_path, "3.1.0", "(assay) reports: v3.1.0, ok")
         assert proc.returncode == 0, proc.stderr
 
     def test_empty_version_declaration_rejected(self, tmp_path):
@@ -5915,3 +5915,129 @@ class TestHistoryReadScopeInProcess:
         assert run_gate.main(args) == 2
         assert "--json is honored by the `history` verb only" \
             in capsys.readouterr().err
+
+
+class TestResumeAndProgressAlways:
+    """RG-33 (R-38): every `kind = "assay"` lane is invoked with `--resume`
+    and `--progress .assay/progress-<assay_lane>.jsonl`, unconditionally.
+    Measured on dstdns's `sql-mutation` lane (2026-09-02): three
+    budget-capped retries, each restarting file 1 from mutant #1, because
+    the constructed argv never carried `--resume` and no
+    `.assay/mutation-state/` was ever written. What assay DOES with the two
+    flags (no-op without R2; resume keyed by the file's exact bytes) is
+    assay's contract and is proven in assay's own suite
+    (`tests/test_mutation_resume_sharding.py`,
+    `tests/test_mutation_progress_budget_plan.py`); these tests prove only
+    that run-gate hands them over, in the executed argv, on every runner.
+    Controlled wrong implementation (the pre-fix builder) reddens all five.
+    """
+
+    _LANE = {"assay_lane": "sql_mutation",
+             "assay_command": ["./tools/assay/assay.pyz"], "pins": {}}
+
+    def test_inner_carries_both_flags_after_the_verdict(self):
+        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"))
+        assert ("run sql_mutation --file assay.toml "
+                "--verdict-json .assay/verdict-sql_mutation.json "
+                "--resume --progress .assay/progress-sql_mutation.jsonl") in inner
+
+    def test_request_base_still_comes_last(self):
+        """RG-26's flag keeps its position: appended only for a delegating
+        lane, after everything the lane always gets."""
+        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"),
+                                           request_base="deadbeef")
+        assert ("--progress .assay/progress-sql_mutation.jsonl "
+                "--request-base deadbeef") in inner
+
+    def test_progress_lands_in_the_directory_the_inner_creates(self):
+        """The progress file lives beside the verdict under `.assay/` — the
+        directory `mkdir -p .assay` creates one step earlier and every
+        adopter git-ignores (R-32). A progress file anywhere in the judged
+        tree would make assay refuse NO_MEASUREMENT/DIRTY_TREE on the lane's
+        NEXT run, so the location is not a style choice."""
+        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"))
+        assert inner.index("mkdir -p .assay") < inner.index(
+            "--progress .assay/progress-sql_mutation.jsonl")
+        assert "--progress .assay/" in inner and "--progress /" not in inner
+
+    def test_the_executed_judge_receives_both_flags(
+            self, tmp_path, monkeypatch, capfd):
+        """RG-28's echo oracle: the judge prints the argv it was EXECUTED
+        with, so this is the real handover, not the builder's string."""
+        cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
+                                     'environment = "host"', 1)
+        TestComparisonBasePassthrough._project(self, tmp_path, monkeypatch, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, """\
+            #!/bin/sh
+            case "$*" in
+              *"lanes --json"*) echo '{"inventory_schema": 1, "lanes": [
+                  {"name": "ui_unit", "base_source": "request",
+                   "external_tools": [], "argv0": null, "language": null}]}' ;;
+              *) echo "JUDGE-ARGV: $*" ;;
+            esac
+            exit 0
+        """)
+        assert run_gate.main(["ui-unit", "--base", "deadbeef"]) == 0
+        out = capfd.readouterr().out
+        assert ("JUDGE-ARGV: run ui_unit --file assay.toml "
+                "--verdict-json .assay/verdict-ui_unit.json "
+                "--resume --progress .assay/progress-ui_unit.jsonl "
+                "--request-base deadbeef") in out
+
+    def test_dry_run_docker_argv_discloses_both_flags(
+            self, tmp_path, monkeypatch, capsys):
+        """R-05: the printed container argv is the one that would run."""
+        TestComparisonBasePassthrough._project(self, tmp_path, monkeypatch)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        TestComparisonBasePassthrough._judge(monkeypatch, "request")
+        assert run_gate.main(["ui-unit", "--base", "deadbeef",
+                              "--dry-run"]) == 0
+        argv_line = _docker_argv_line(capsys.readouterr().out)
+        assert "--resume --progress .assay/progress-ui_unit.jsonl" in argv_line
+        assert lane_runs(log) == []
+
+    # --- the judge floor (R-38, last bullet) --------------------------------
+
+    def _pinned(self, version):
+        pin = {"sha256": "tools/assay/assay.pyz.sha256"}
+        if version is not None:
+            pin["version"] = version
+        return {**self._LANE, "pins": {"assay": pin}}
+
+    def test_a_pin_below_the_floor_refuses_by_name_before_anything_runs(self):
+        """cmru's real state when this landed: assay 2.3.0 pinned, which
+        knows neither flag. Refused at construction with lane, pin, declared
+        version, floor and remedy — never inside the container under
+        assay's own `unrecognized arguments` line."""
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.build_assay_inner(self._pinned("2.3.0"), Path("/proj"))
+        msg = str(exc.value)
+        assert "lane 'sql_mutation': pin 'assay' declares assay 2.3.0" in msg
+        assert "below 2.4.1" in msg and "--resume" in msg and "--progress" in msg
+        assert "re-pin the judge to >= 2.4.1" in msg
+
+    @pytest.mark.parametrize("declared", ["2.4.1", "v2.4.1", "3.2.0", "4.1.0"])
+    def test_a_pin_at_or_above_the_floor_carries_the_flags(self, declared):
+        inner = run_gate.build_assay_inner(self._pinned(declared), Path("/proj"))
+        assert "--resume --progress .assay/progress-sql_mutation.jsonl" in inner
+
+    def test_a_short_claim_below_the_floor_still_refuses(self):
+        """`2.4` is a claim of the 2.4 line; the tuple order says it is
+        below 2.4.1, and the message names what was declared verbatim."""
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.build_assay_inner(self._pinned("2.4"), Path("/proj"))
+        assert "declares assay 2.4," in str(exc.value)
+
+    @pytest.mark.parametrize("declared", [None, "", "latest", "4.1.0rc1"])
+    def test_no_comparable_claim_is_not_held_to_the_floor(self, declared):
+        """No declared version, or one that is not dotted integers, is no
+        claim; the flags still go, and an old judge fails loudly by itself."""
+        inner = run_gate.build_assay_inner(self._pinned(declared), Path("/proj"))
+        assert "--resume --progress" in inner
+
+    @pytest.mark.parametrize("declared, expected", [
+        ("2.4.1", (2, 4, 1)), ("v4.1.0", (4, 1, 0)), ("3.1", (3, 1)),
+        ("", None), ("latest", None), ("4.1.0rc1", None), ("v", None)])
+    def test_declared_version_tuple(self, declared, expected):
+        assert run_gate.declared_version_tuple(declared) == expected

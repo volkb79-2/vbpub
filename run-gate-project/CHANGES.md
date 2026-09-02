@@ -9,6 +9,22 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
+### Fixed
+- **RG-33 (rev 33, SPEC `R-38`) — every `kind = "assay"` lane is now invoked
+  with `--resume --progress .assay/progress-<assay_lane>.jsonl`,
+  unconditionally, on every runner.** Measured cause: dstdns's `sql-mutation`
+  lane re-tested the first of four target files from mutant #1 on three
+  budget-capped retries because the argv never carried `--resume`. Both flags
+  are no-ops on a lane without R2 (assay's own contract), so R0/R1 lanes are
+  unchanged; an R2 lane now resumes from `.assay/mutation-state/` on retry
+  and streams progress beside its verdict under the git-ignored `.assay/`.
+- **Consumer note (breaking for very old pins):** the flags need a judge that
+  knows them — assay **>= 2.4.1**. A pin declaring an older `version` is
+  refused at argv construction by name (lane, pin, version, floor, remedy);
+  a pin without a declared version reaches the judge and fails loudly there.
+  Re-pin before adopting rev 33 (in this estate only `cmru` was below the
+  floor, at 2.3.0).
+
 <!-- Post-release housekeeping (assay CHANGES.md precedent): this block is
      CLEARED immediately after a release. cmru generates the dated entry
      below from the commit range but does NOT clear this hand-written block

@@ -235,7 +235,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   <effective project dir>` first (R-21), then per pin `(cd <pin's parent dir>
   && sha256sum -c <bare filename>)` — verification FROM the pin file's own
   directory — then `mkdir -p .assay`, then `<assay_command> run <assay_lane>
-  --file assay.toml --verdict-json .assay/verdict-<assay_lane>.json`.
+  --file assay.toml --verdict-json .assay/verdict-<assay_lane>.json --resume
+  --progress .assay/progress-<assay_lane>.jsonl` (the two trailing flags
+  unconditionally, `R-38`), then `--request-base REF` only for a delegating
+  lane (`R-35`).
 - `R-17` **Run form + status:** `docker logs -f` streams; `docker wait`
   supplies the exit code, which IS the tool's exit code (no masking); an
   unreadable exit status → hard error ("refusing to guess"), never 0.
@@ -784,6 +787,40 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     directory, exit 3 not a git work tree, carrying git's own line) rather
     than silently scanning nothing under a nonexistent tree's name — the
     same refuse-loud shape `R-36i` uses for `history`'s read side.
+
+- `R-38` **Every assay lane resumes and reports progress (RG-33).** The
+  assay-kind inner command carries `--resume --progress
+  .assay/progress-<assay_lane>.jsonl` on EVERY invocation, on every runner
+  (container, exec, host), live and dry. Measured cause: dstdns's
+  `sql-mutation` lane (2026-09-02) spent three 120-minute retries re-testing
+  the first of four target files from mutant #1 because the argv never
+  carried `--resume` and `.assay/mutation-state/` had never been written.
+  - **Unconditional, not rigor-gated.** assay ignores both flags on a lane
+    that declares no R2 (its own `--progress` help says so; resume state is
+    only read or written by the mutation sweep), so on an R0/R1 lane they
+    cost nothing, and a lane that later gains R2 resumes from its first
+    retry without a run-gate change. Deriving "has R2" from the inventory
+    was rejected: a second reading of an assay-owned fact for no behavioural
+    gain (`R-35`'s own rule).
+  - **Resume never masks a change.** A candidate's id folds in the mutated
+    file's exact source bytes, span, replacement and operator; an edited
+    file re-executes every candidate touching it (assay CONSUMERS §"Resume
+    and shard a long mutation lane"). run-gate adds no policy of its own.
+  - **Location.** Both artifacts live beside the verdict under `.assay/` —
+    the directory the inner creates one step earlier and every adopter
+    git-ignores (`R-32`) — because a progress file anywhere in the judged
+    tree makes assay refuse `NO_MEASUREMENT`/`DIRTY_TREE` on that lane's
+    NEXT run. The verdict does not name either path (assay's contract),
+    `artifacts = [".assay/progress-<lane>.jsonl"]` is how a consumer has it
+    printed after every run (`R-08`).
+  - **Judge floor, refused by name.** `--resume` shipped in assay 2.4.0 and
+    `--progress` in 2.4.1. A pin whose declared `version` is below **2.4.1**
+    refuses at argv construction — exit 2, naming the lane, the pin, the
+    declared version, the floor and the remedy (re-pin the judge) — rather
+    than failing inside the container by argparse under a message run-gate
+    never wrote. A pin that declares no version is not checked (there is no
+    claim to hold it to); an older judge then fails the lane loudly with
+    assay's own `unrecognized arguments` line, never silently.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 
