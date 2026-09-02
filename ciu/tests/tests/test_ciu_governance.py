@@ -148,6 +148,36 @@ class TestResolveConfig:
         with pytest.raises(ValueError, match=r"\[S15\.14\].*io_weight"):
             gov.resolve_config({"enabled": True, "io_weight": 1001})
 
+    # -- S15.21 (CIU-90) — cpus default + validation -------------------------
+
+    def test_cpus_defaults_to_unset(self) -> None:
+        cfg = gov.resolve_config(None)
+        assert cfg["cpus"] == ""
+
+    def test_cpus_empty_string_is_valid_unset(self) -> None:
+        cfg = gov.resolve_config({"enabled": True, "cpus": ""})
+        assert cfg["cpus"] == ""
+
+    def test_cpus_positive_integer_string_is_valid(self) -> None:
+        cfg = gov.resolve_config({"enabled": True, "cpus": "2"})
+        assert cfg["cpus"] == "2"
+
+    def test_cpus_fractional_string_is_valid(self) -> None:
+        cfg = gov.resolve_config({"enabled": True, "cpus": "1.5"})
+        assert cfg["cpus"] == "1.5"
+
+    def test_cpus_zero_raises_s15_21(self) -> None:
+        with pytest.raises(ValueError, match=r"\[S15\.21\].*cpus"):
+            gov.resolve_config({"enabled": True, "cpus": "0"})
+
+    def test_cpus_negative_raises_s15_21(self) -> None:
+        with pytest.raises(ValueError, match=r"\[S15\.21\].*cpus"):
+            gov.resolve_config({"enabled": True, "cpus": "-1"})
+
+    def test_cpus_non_numeric_raises_s15_21(self) -> None:
+        with pytest.raises(ValueError, match=r"\[S15\.21\].*cpus"):
+            gov.resolve_config({"enabled": True, "cpus": "lots"})
+
 
 # ---------------------------------------------------------------------------
 # S15.10 — resolve_stack_governance (global-default merge layer, CIU-13)
@@ -836,6 +866,33 @@ class TestBuildInjections:
         cfg = self._cfg(read_bps=1_000_000, write_bps=500_000)
         injections, _ = gov.build_injections({"redis": {"image": "redis"}}, cfg)
         assert "blkio_config" not in injections["redis"]  # io_weight also 0 here
+
+    # -- S15.21 (CIU-90) — cpus injection, explicit-opt-in-only --------------
+
+    def test_cpus_unset_injects_no_cpus_key(self) -> None:
+        """Regression guard (CIU-90's whole point): governance.cpus left at
+        its default ("") must NOT inject a `cpus` key — uncapped stays
+        uncapped, unlike every other always-on governance key."""
+        cfg = self._cfg(device="/dev/vda")
+        injections, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
+        assert "cpus" not in injections["redis"]
+        assert not any(n.startswith("cpus=") for n in notes)
+
+    def test_cpus_configured_injects_the_key(self) -> None:
+        cfg = self._cfg(device="/dev/vda", cpus="2")
+        injections, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
+        assert injections["redis"]["cpus"] == "2"
+        assert any("cpus=2" in n for n in notes)
+
+    def test_cpus_author_set_key_is_left_untouched(self) -> None:
+        """S15.3 — per-key precedence, same rule already tested for the other
+        four keys: the author's own `cpus:` compose key always wins."""
+        cfg = self._cfg(device="/dev/vda", cpus="2")
+        block = {"image": "redis", "cpus": "4"}
+        injections, _ = gov.build_injections({"redis": block}, cfg)
+        assert "cpus" not in injections["redis"]
+        # the rest of governance still applies to this service
+        assert injections["redis"]["cgroup_parent"] == "dev-background.slice"
 
     # -- S15.16 — mem_min is visible in notes but never injected -------------
 

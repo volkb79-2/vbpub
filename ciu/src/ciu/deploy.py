@@ -639,7 +639,14 @@ def provisioning_graph(rendered: dict[str, dict]) -> dict[str, dict]:
         requires = root_section.get("requires", [])
         provides = root_section.get("provides", [])
         if requires or provides:
-            graph[rel] = {"requires": requires, "provides": provides}
+            # CIU-89: threaded through so _resolve_probe_container can read a
+            # per-ref override straight off this graph; absent -> {} (byte-
+            # identical to before this key existed).
+            graph[rel] = {
+                "requires": requires,
+                "provides": provides,
+                "provides_container": root_section.get("provides_container", {}),
+            }
     return graph
 
 
@@ -764,7 +771,11 @@ def provisioning_preflight(
             # Reject malformed typed refs early (spec §2 grammar). ValueError
             # propagates → exit 2 via engine._exit_code_for.
             config_model.validate_stack_provisioning(stack_cfg, source=rel)
-            stacks[rel] = {"requires": requires, "provides": provides}
+            stacks[rel] = {
+                "requires": requires,
+                "provides": provides,
+                "provides_container": root_section.get("provides_container", {}),
+            }
 
     if not stacks:
         return  # no stack uses requires/provides — skip entirely
@@ -3145,7 +3156,15 @@ def action_check(
             except ValueError as exc:
                 report.fail("provisioning", str(exc), stack=rel)
             else:
-                stacks[rel] = {"requires": requires, "provides": provides}
+                # CIU-89: `ciu check --live` probes off THIS dict (below), not
+                # provisioning_graph() — the override must be threaded through
+                # here too, or `--live` alone would still resolve the wrong
+                # container even after the fix.
+                stacks[rel] = {
+                    "requires": requires,
+                    "provides": provides,
+                    "provides_container": root_section.get("provides_container", {}),
+                }
 
         _check_stack_config(
             rel=rel,
@@ -3310,6 +3329,13 @@ def action_graph(
         except ValueError as exc:
             error(str(exc))
             return 2
+        # NOTE: deliberately NOT threading `provides_container` (CIU-89) into
+        # this dict — unlike provisioning_graph()/action_check()'s own
+        # `stacks` dicts, THIS one is echoed verbatim into `--graph --fmt
+        # json`'s public "stacks" key (render_graph()); `--graph` never
+        # resolves a probe container, so there is nothing here for
+        # provides_container to affect, and adding it would be an unasked-for
+        # shape change to an external tooling contract.
         stacks[rel] = {"requires": requires, "provides": provides}
 
     if not stacks:

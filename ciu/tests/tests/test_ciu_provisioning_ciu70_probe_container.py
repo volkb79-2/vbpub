@@ -337,8 +337,8 @@ def test_provisioning_graph_covers_every_rendered_stack():
     })
 
     assert graph == {
-        "infra/pg": {"requires": [], "provides": ["pg:role/api"]},
-        "apps/api": {"requires": ["pg:role/api"], "provides": []},
+        "infra/pg": {"requires": [], "provides": ["pg:role/api"], "provides_container": {}},
+        "apps/api": {"requires": ["pg:role/api"], "provides": [], "provides_container": {}},
     }
 
 
@@ -384,3 +384,79 @@ def test_per_phase_preflight_resolves_a_provider_from_an_earlier_phase(monkeypat
     )
 
     assert [argv[1] for argv in argvs] == ["dstdns-dev-pg"]
+
+
+# ---------------------------------------------------------------------------
+# 5. CIU-89 — multi-service stacks: `provides_container` override
+#
+# The gap CIU-70's OWN resolution strategy reintroduced: a stack directory
+# whose basename is NOT itself a compose service key (e.g. `infra/db-core`
+# running Postgres in a service keyed `postgres`, alongside five siblings).
+# `_stack_container_name`'s basename guess resolves `db-core`, which is never
+# a real container. `provides_container` is the escape hatch — see
+# `provisioning.py::_resolve_probe_container` and `config_model.py::
+# validate_stack_provisioning` (S13.2).
+# ---------------------------------------------------------------------------
+
+
+_CIU89_MULTI_SERVICE_CONFIG = {
+    "deploy": {
+        "project_name": "dstdns",
+        "environment_tag": "dev",
+        "profiles": {"default": {"stacks": ["infra/foo-core"]}},
+    }
+}
+
+
+def test_ciu89_multi_service_stack_without_override_is_still_wrong():
+    """The controlled wrong implementation from the CIU-89 backlog entry: a
+    stack dir `infra/foo-core` provides `pg:db/bar` at the stack level, but
+    its compose file keys the Postgres service `postgres`, not `foo-core`.
+    Without provides_container this still resolves to the WRONG container
+    (today's unchanged behavior) — pinned here as a regression guard, the
+    same way the CIU-70 fixture above pins its own before-state."""
+    seen, _exec = _recording_exec(0, "1\n")
+    graph = {"infra/foo-core": {"provides": ["pg:db/bar"]}}
+
+    result = provisioning.probe_ref(
+        "pg:db/bar", _CIU89_MULTI_SERVICE_CONFIG, Path("/tmp"),
+        docker_exec_fn=_exec, stacks=graph,
+    )
+
+    assert result.satisfied is True  # the exec fake answers 0 regardless of target
+    assert [c for c, _ in seen] == ["dstdns-dev-foo-core"]  # WRONG — no such container in reality
+
+
+def test_ciu89_provides_container_override_resolves_the_real_service():
+    """Add `provides_container = {"pg:db/bar": "postgres"}` to the same
+    fixture stack: resolution now targets the REAL service key."""
+    seen, _exec = _recording_exec(0, "1\n")
+    graph = {
+        "infra/foo-core": {
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/bar": "postgres"},
+        }
+    }
+
+    result = provisioning.probe_ref(
+        "pg:db/bar", _CIU89_MULTI_SERVICE_CONFIG, Path("/tmp"),
+        docker_exec_fn=_exec, stacks=graph,
+    )
+
+    assert result.satisfied is True
+    assert [c for c, _ in seen] == ["dstdns-dev-postgres"]
+
+
+def test_ciu89_config_model_rejects_an_override_for_an_undeclared_ref():
+    """`provides_container` for a ref the stack doesn't even `provide` is a
+    config error (S13.2) — never silently accepted, never silently ignored."""
+    from ciu import config_model
+
+    stack_cfg = {
+        "foo_core": {
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/nonexistent": "postgres"},
+        }
+    }
+    with pytest.raises(ValueError, match=r"\[S13\.2\]"):
+        config_model.validate_stack_provisioning(stack_cfg, source="infra/foo-core")

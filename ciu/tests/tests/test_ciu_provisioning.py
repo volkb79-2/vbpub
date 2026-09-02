@@ -801,6 +801,98 @@ def test_validate_stack_provisioning_collects_all_violations():
 
 
 # ---------------------------------------------------------------------------
+# validate_stack_provisioning — provides_container (CIU-89, S13.2)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_stack_provisioning_passes_valid_provides_container():
+    config = {
+        "mystack": {
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/bar": "postgres"},
+        }
+    }
+    validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_absent_provides_container_is_a_no_op():
+    config = {"mystack": {"provides": ["pg:db/bar"]}}
+    validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_rejects_provides_container_not_a_table():
+    import pytest
+    config = {
+        "mystack": {
+            "provides": ["pg:db/bar"],
+            "provides_container": ["pg:db/bar", "postgres"],
+        }
+    }
+    with pytest.raises(ValueError, match=r"\[S13\.2\].*provides_container.*must be a table"):
+        validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_rejects_provides_container_key_not_in_provides():
+    """CIU-89's own loud-refusal precedent: an override for a ref the stack
+    doesn't even declare in `provides` is a config error, not silently
+    accepted or silently ignored."""
+    import pytest
+    config = {
+        "mystack": {
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/other": "postgres"},
+        }
+    }
+    with pytest.raises(
+        ValueError, match=r"\[S13\.2\].*provides_container.*'pg:db/other'.*not in"
+    ):
+        validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_rejects_provides_container_empty_value():
+    import pytest
+    config = {
+        "mystack": {
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/bar": ""},
+        }
+    }
+    with pytest.raises(ValueError, match=r"\[S13\.2\].*provides_container.*non-empty string"):
+        validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_rejects_provides_container_non_string_value():
+    import pytest
+    config = {
+        "mystack": {
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/bar": 5},
+        }
+    }
+    with pytest.raises(ValueError, match=r"\[S13\.2\].*provides_container.*non-empty string"):
+        validate_stack_provisioning(config, source="test")
+
+
+def test_validate_stack_provisioning_provides_container_absent_key_still_reports_other_violations():
+    """`provides_container` violations are collected alongside requires/
+    provides violations in the SAME raise -- 'list ALL violations, never
+    partial' (same pattern the existing collects-all-violations test pins)."""
+    import pytest
+    config = {
+        "mystack": {
+            "requires": ["bad-ref"],
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/nope": "x"},
+        }
+    }
+    with pytest.raises(ValueError) as exc_info:
+        validate_stack_provisioning(config, source="test")
+    msg = str(exc_info.value)
+    assert "bad-ref" in msg
+    assert "pg:db/nope" in msg
+
+
+# ---------------------------------------------------------------------------
 # deploy.provisioning_preflight — with stubs
 # ---------------------------------------------------------------------------
 
@@ -1017,6 +1109,45 @@ def test_action_check_live_mode_uses_probe(monkeypatch):
     rc = deploy.action_check(Path("/tmp"), profile, selection, rendered, live=True)
     assert rc == 0
     assert "pg:db/mydb" in probed_refs
+
+
+def test_action_check_live_mode_threads_provides_container_to_probe_ref(monkeypatch):
+    """CIU-89: `ciu check --live` resolves probes off action_check's OWN
+    `stacks` dict (deploy.py, not provisioning_graph()) — a separate feed
+    path from `ciu up`'s per-phase probing, so it needs the override threaded
+    through independently or `--live` alone would still guess wrong."""
+    from ciu import deploy, provisioning as prov_mod
+    from ciu.deploy_pkg.profiles import Profile
+
+    config = {"deploy": {"project_name": "p", "environment_tag": "t"}}
+    profile = Profile(name=None, phase_keys=None, config=config)
+    selection = [
+        {"path": "infra/foo-core", "service": {"path": "infra/foo-core", "enabled": True}},
+        {"path": "apps/backend", "service": {"path": "apps/backend", "enabled": True}},
+    ]
+    rendered = {
+        "infra/foo-core": {
+            "foo_core": {
+                "provides": ["pg:db/bar"],
+                "provides_container": {"pg:db/bar": "postgres"},
+            }
+        },
+        "apps/backend": {
+            "backend": {"requires": ["pg:db/bar"], "provides": []},
+        },
+    }
+
+    captured_stacks = {}
+
+    def fake_probe_ref(ref, config, repo_root, **kwargs):
+        captured_stacks.update(kwargs.get("stacks") or {})
+        return ProbeResult(ref=ref, satisfied=True, reason="ok")
+
+    monkeypatch.setattr(prov_mod, "probe_ref", fake_probe_ref)
+
+    rc = deploy.action_check(Path("/tmp"), profile, selection, rendered, live=True)
+    assert rc == 0
+    assert captured_stacks["infra/foo-core"]["provides_container"] == {"pg:db/bar": "postgres"}
 
 
 def test_action_check_live_mode_fails_on_unsatisfied(monkeypatch):
@@ -1568,6 +1699,119 @@ def test_stack_container_name_no_config_no_match_falls_back_to_selector():
     # container_name; the KeyError/ValueError fallback returns the selector
     # unchanged -- same fallback contract _probe_stack always had.
     assert provisioning._stack_container_name({}, "db-init") == "db-init"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_probe_container / provides_container override (CIU-89)
+#
+# Fixture shape mirrors the real dstdns bug: a stack directory
+# ("infra/foo-core") whose OWN basename ("foo-core") is not a compose service
+# key it declares -- the multi-service stack case _stack_container_name's
+# basename guess cannot express.
+# ---------------------------------------------------------------------------
+
+_CIU89_CONFIG = {
+    "deploy": {
+        "project_name": "p",
+        "environment_tag": "t",
+        "phases": {"phase_1": {"services": [{"path": "infra/foo-core"}]}},
+    }
+}
+
+
+def test_resolve_probe_container_without_override_uses_basename_guess():
+    """Regression guard, pinned exactly as the backlog entry's own
+    'controlled wrong implementation' describes it: without
+    provides_container, resolution is unchanged and WRONG for a stack whose
+    directory basename isn't its own service key."""
+    stacks = {"infra/foo-core": {"requires": [], "provides": ["pg:db/bar"]}}
+    cname, unresolved = provisioning._resolve_probe_container("pg:db/bar", _CIU89_CONFIG, stacks)
+    assert unresolved is None
+    assert cname == "p-t-foo-core"  # container_name(config, "foo-core") -- WRONG
+
+
+def test_resolve_probe_container_with_override_uses_declared_service_key():
+    stacks = {
+        "infra/foo-core": {
+            "requires": [],
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/bar": "postgres"},
+        }
+    }
+    cname, unresolved = provisioning._resolve_probe_container("pg:db/bar", _CIU89_CONFIG, stacks)
+    assert unresolved is None
+    assert cname == "p-t-postgres"  # container_name(config, "postgres") -- CORRECT
+
+
+def test_resolve_probe_container_override_absent_for_this_ref_falls_through():
+    """A provides_container table that overrides a DIFFERENT ref of the same
+    stack leaves this ref on the basename guess, unaffected."""
+    stacks = {
+        "infra/foo-core": {
+            "requires": [],
+            "provides": ["pg:db/bar", "pg:role/controller"],
+            "provides_container": {"pg:role/controller": "postgres"},
+        }
+    }
+    cname, unresolved = provisioning._resolve_probe_container("pg:db/bar", _CIU89_CONFIG, stacks)
+    assert unresolved is None
+    assert cname == "p-t-foo-core"
+
+
+def test_resolve_probe_container_slash_free_selector_byte_identical():
+    """A single-`/`-free stack path (existing convention) is unaffected by
+    this package either way -- no override declared."""
+    stacks = {"redis-core": {"requires": [], "provides": ["pg:db/bar"]}}
+    cname, unresolved = provisioning._resolve_probe_container("pg:db/bar", _CIU89_CONFIG, stacks)
+    assert unresolved is None
+    assert cname == "p-t-redis-core"
+
+
+def test_probe_ref_pg_honors_provides_container_override_end_to_end():
+    """End-to-end through probe_ref/_probe_pg: the override actually changes
+    which container docker_exec_fn is invoked against, not just what
+    _resolve_probe_container alone returns."""
+    captured = {}
+
+    def docker_exec_fn(container, cmd):
+        captured["container"] = container
+        return (0, "1\n")
+
+    stacks = {
+        "infra/foo-core": {
+            "requires": [],
+            "provides": ["pg:db/bar"],
+            "provides_container": {"pg:db/bar": "postgres"},
+        }
+    }
+    result = probe_ref(
+        "pg:db/bar",
+        config=_CIU89_CONFIG,
+        repo_root=Path("/tmp"),
+        docker_exec_fn=docker_exec_fn,
+        stacks=stacks,
+    )
+    assert result.satisfied is True
+    assert captured["container"] == "p-t-postgres"
+
+
+def test_probe_ref_pg_without_override_still_uses_basename_guess_end_to_end():
+    captured = {}
+
+    def docker_exec_fn(container, cmd):
+        captured["container"] = container
+        return (0, "1\n")
+
+    stacks = {"infra/foo-core": {"requires": [], "provides": ["pg:db/bar"]}}
+    result = probe_ref(
+        "pg:db/bar",
+        config=_CIU89_CONFIG,
+        repo_root=Path("/tmp"),
+        docker_exec_fn=docker_exec_fn,
+        stacks=stacks,
+    )
+    assert result.satisfied is True
+    assert captured["container"] == "p-t-foo-core"
 
 
 def test_one_shot_stack_service_no_deploy_table():

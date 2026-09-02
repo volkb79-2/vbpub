@@ -1229,6 +1229,9 @@ def validate_stack_provisioning(stack_config: dict, source: str = "<unknown>") -
     Checks that:
     - requires and provides, if present, are lists of strings
     - each string matches the typed-ref grammar
+    - provides_container (CIU-89), if present, is a table whose keys are each
+      an exact string already in this stack's own `provides` list, and whose
+      values are non-empty strings (S13.2)
 
     Raises ValueError listing ALL violations (never partial).
     Source is used in error messages.
@@ -1260,6 +1263,41 @@ def validate_stack_provisioning(stack_config: dict, source: str = "<unknown>") -
                 validate_provisioning_ref(item)
             except ValueError as exc:
                 violations.append(str(exc))
+
+    # CIU-89 (S13.2): `provides_container` is a sibling override table, keyed
+    # by an exact `provides` ref string, that names the LITERAL compose
+    # service key `_resolve_probe_container` should use for that one ref
+    # instead of guessing it from the providing stack's own path basename.
+    # An entry for a ref the stack doesn't even declare in `provides` is a
+    # config error, not silently ignored (S3 "defaults are hazards" —
+    # accepting it would let a typo'd/stale override sit there looking live
+    # while never actually being consulted, since _resolve_probe_container
+    # only ever looks it up BY a ref that already resolved through
+    # provider_index()).
+    provides_container = root_section.get("provides_container")
+    if provides_container is not None:
+        if not isinstance(provides_container, dict):
+            violations.append(
+                f"[S13.2] [{source}] 'provides_container' must be a table, got "
+                f"{type(provides_container).__name__}"
+            )
+        else:
+            declared_provides = root_section.get("provides")
+            declared_provides = (
+                set(declared_provides) if isinstance(declared_provides, list) else set()
+            )
+            for key, value in provides_container.items():
+                if not isinstance(key, str) or key not in declared_provides:
+                    violations.append(
+                        f"[S13.2] [{source}] 'provides_container' key {key!r} is not "
+                        "in this stack's own 'provides' list"
+                    )
+                    continue
+                if not isinstance(value, str) or not value:
+                    violations.append(
+                        f"[S13.2] [{source}] 'provides_container[{key!r}]' must be a "
+                        f"non-empty string, got {value!r}"
+                    )
 
     if violations:
         raise ValueError(

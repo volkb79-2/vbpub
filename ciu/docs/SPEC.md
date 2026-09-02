@@ -2077,6 +2077,9 @@ probe against a container that does not exist. Resolution rules:
   final segment → `{project}-{env_tag}-<segment>`; see the slash-bearing
   selector note below). Two declared paths sharing a final segment therefore
   still collapse onto one container name — that is CIU-66, unchanged here.
+  **This basename guess is a DEFAULT, not a guarantee** — see
+  `provides_container` immediately below for the escape hatch when it's
+  wrong.
 - **No stack provides the ref** → not satisfied, with that as the reason
   (`no stack provides '<ref>' — cannot resolve a container to probe`). It is
   never a literal-service-key guess. The static lint (S13.3) normally
@@ -2086,6 +2089,32 @@ probe against a container that does not exist. Resolution rules:
 - The requires/provides graph a probe resolves against spans **every**
   rendered stack in the run, not just the phase currently being probed —
   the provider of a cross-phase ref is in an earlier phase by construction.
+
+**`provides_container` — override the basename guess (CIU-89, ciu-P49).** The
+basename guess above is false BY CONSTRUCTION for a multi-service stack whose
+directory basename is not itself one of its own compose service keys (e.g. a
+stack dir `infra/db-core` that runs Postgres in a service keyed `postgres`
+alongside five sibling services — no container named `...-db-core` is ever
+created). A stack MAY declare an optional sibling table, keyed by the exact
+`provides` ref string it overrides:
+
+```toml
+[db_core]
+provides = ["pg:db/dstdns", "pg:role/controller"]
+provides_container = { "pg:db/dstdns" = "postgres" }
+```
+
+When present for the ref being probed, the named value is the LITERAL
+compose service key passed straight to the container-name builder INSTEAD of
+the basename guess, for that one ref only — `pg:role/controller` in the
+example above still resolves via the basename guess, unaffected. A ref
+present in `provides` but absent from `provides_container` falls through to
+today's byte-identical basename-guess behavior; a stack that declares no
+`provides_container` table at all is completely unaffected. Validated at
+S13.2: every `provides_container` key MUST already be a string in that same
+stack's own `provides` list (an override for a ref the stack doesn't provide
+is a configuration error, not silently ignored — S3 "defaults are hazards"),
+and every value MUST be a non-empty string.
 
 **`pg:`/`minio:` failure reasons distinguish absence from unreachability
 (CIU-70, ciu-P40).** `psql -tAc` exits **0** for a query that ran and matched
@@ -2770,6 +2799,7 @@ mem_limit = "1g"                # default per service
 mem_swap_limit = "17g"          # Docker's own combined mem+swap total, NOT swap alone
                                  # (17g here = 1g mem_limit + 16g swap headroom)
 mem_reservation = "256m"        # memory.low — ancestor-chain caveat, see S15.16 WARNING
+cpus = ""                       # "" = unset/uncapped (S15.21); else a positive number, e.g. "1.5"
 read_iops = 0                   # 0 = derive (S15.4); explicit nonzero value wins
 write_iops = 400
 io_weight = 0                   # 0 = not set (S15.14); else 10..1000
@@ -2813,6 +2843,7 @@ keys injected):
 | `mem_limit` | `governance.mem_limit` |
 | `memswap_limit` | `governance.mem_swap_limit` — the Compose Specification's actual key has no underscore between "mem" and "swap" (Docker's own combined mem+swap total, not swap alone, so "1g RAM + 16g swap" is `mem_swap_limit = "17g"` in the config table); without this key Docker's stock default applies instead (2x `mem_limit`) |
 | `mem_reservation` | `governance.mem_reservation` |
+| `cpus` | `governance.cpus` — OMITTED entirely (not injected as `""`) unless explicitly configured; see S15.21 |
 | `blkio_config` | `device_read_iops`/`device_write_iops` (device resolves, S15.5), plus `device_read_bps`/`device_write_bps` when `read_bps`/`write_bps` are nonzero (S15.15), plus `weight` when `io_weight` is nonzero (S15.14, independent of device resolution) — the whole key is omitted only when NONE of those apply |
 
 **Precedence: the stack author's rendered compose always wins.** For each
@@ -2820,13 +2851,13 @@ service, the overlay generator parses that service's block in the
 already-rendered `ciu.compose.yml` text (`compose_yaml_text`, already
 available to `generate_overlay` — S8.1's rationale for a separate overlay
 applies identically here: this is machine-derived wiring, not a template
-mutation) and skips any of the five keys above **already present on that
+mutation) and skips any of the six keys above **already present on that
 service**. Precedence is per **top-level compose key**, not a deep merge of
 `blkio_config`'s sub-fields — an author who sets `blkio_config` at all (even
 partially) fully owns that key for that service; governance will not merge
-into it. A service with every one of the five keys already author-set
-receives no governance fragment at all (and does not count toward
-`services_injected` in the S15.7 log line).
+into it. A service with every one of the six keys either already author-set
+or (for `cpus`) not configured receives no governance fragment at all (and
+does not count toward `services_injected` in the S15.7 log line).
 
 This mirrors S4.17/S8.1's separate-overlay rationale: the rendered
 `ciu.compose.yml` remains byte-exact stack-author output; all governance
@@ -3433,6 +3464,38 @@ driver, and CIU functions with or without such a companion either way.
 
 Skipped entirely under `--no-preflight`, same as S15.12 (they share one
 function and one break-glass flag).
+
+### S15.21 — CPU quota (`cpus`, CIU-90, ciu-P49)
+
+`cpus` (default `""` = not set) declares the container's CPU quota on
+Docker/compose's own `cpus` key — a fractional CPU count (`"1.5"` = one and a
+half CPUs), injected as-is, no translation (unlike `mem_swap_limit` →
+`memswap_limit`). When set, the overlay injects `cpus = <value>` into every
+non-exempt service that hasn't set its own `cpus` (S15.3 author precedence,
+same as every other governance key).
+
+**Default is unset/uncapped, deliberately — not a nonzero cap.** Unlike
+`mem_limit`/`mem_reservation` (real defaults since governance's
+introduction), a CPU cap has never had a default here, and this package does
+not give it one: an invented nonzero estate-wide default would silently
+throttle every currently-uncapped governed container the moment this shipped,
+with no config change on the consumer's part — exactly the "defaults are
+hazards" failure shape AGENTS.md warns against. A stack that wants a quota
+(the D-264 PC-1 case this key was filed for — a `worker-io` stack governance
+capped on memory/IO but left CPU-unbounded) sets `governance.cpus = "2"`
+explicitly; every other stack's behavior is byte-identical before and after
+this key exists.
+
+`resolve_config` validates: `""` (unset) or a value that parses as a
+positive number (`float(cpus) > 0`) — `0`, a negative value, or a non-numeric
+string all raise `[S15.21]`, naming the bad value. This mirrors `io_weight`'s
+own S15.14 reasoning: `docker compose up` would otherwise reject a garbage
+`cpus` value far from where the typo was made.
+
+**Verification.** `docker inspect --format '{{.HostConfig.NanoCpus}}'
+<container>` on a governed container with `governance.cpus = "2"` configured
+reports `2000000000` (Docker's internal `NanoCpus` = `cpus * 1e9`); `0` means
+no quota is applied, matching the unset default.
 
 ---
 
