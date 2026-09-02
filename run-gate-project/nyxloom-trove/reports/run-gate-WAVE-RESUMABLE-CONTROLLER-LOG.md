@@ -178,3 +178,35 @@ controller's entries from the implementer's return onward; wave records
     the review's probes already express it, selftest on the committed tip
     only, one live two-client probe under the host rule, records appended
     (LOG/REPORT), no push. Reviewer round 2 on its tip (round cap 3).
+
+- **2026-09-02 (session limit — fix implementer checkpointed at
+  `e87007cc`; RW-20..RW-22; NO successor dispatched yet)** — Operator:
+  "we approach the session limit, don't start new work, make sure you can
+  resume running agents." The fix implementer cut at a green gate: RW-14
+  (`73f2bb14`, follow-never-hijack, `R-39e`), RW-13 (`074ae074`, move-not-
+  delete clause, impact re-measured at 13 of 29 dstdns lanes, four
+  `clean_tree` moves), RW-16 (`3f157a3e`, `{{.Id}}` + "No such object" as
+  the only gone signal), coverage tests (`450b3e22`), LOG + BRIEF-1
+  (`e87007cc`). Selftest on `450b3e22`: `505 passed, 2 skipped`,
+  `diff-coverage OK: 342/342`, `lane 'selftest' exit 0`
+  (`selftest-fix-rw16b.log`, read separately). B2's red-first proven against
+  `be7d94b3`. **Remaining: RW-15, RW-17, RW-18, RW-19, and the live
+  two-client probe** — seams in
+  `run-gate-WAVE-RESUMABLE-BRIEF-1.md` on the branch. The successor is a
+  FRESH implementer seeded with BRIEF-1 + RW-13..RW-22, dispatched when the
+  operator says work may start again; then reviewer round 2.
+  - **RW-20 (ask 1 — live owner, container already gone): bounded
+    re-poll, then refuse.** Re-read the record and the owner's liveness up
+    to three times over about one second before refusing by pid; the race
+    is the owner's own `rm -f` → `clear_inflight_record` window, so the
+    second read normally finds no record and the run proceeds fresh. A
+    refusal that names a finished run is worse than a one-second wait.
+  - **RW-21 (ask 2 — the follower's early `docker wait`): confirmed.** One
+    extra docker client for the lane's duration is the price of a follower
+    that reports the true exit code after the owner's `rm -f`; `R-39e`
+    states it as the reason.
+  - **RW-22 (ask 3 — an impostor container left running): confirmed as
+    shipped; file RG-44** ("`doctor` names a container wearing a run-gate
+    lane name that no inflight record owns") for the next run-gate package,
+    together with RG-41..43, after the 23.4.0 merge. run-gate never removes
+    what it did not start.
