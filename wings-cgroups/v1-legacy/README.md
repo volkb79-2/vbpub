@@ -117,3 +117,69 @@ Deploying the result: [`SETUP.md`](SETUP.md).
 - [ ] Upstream PRs submitted — deliberately not yet (see `pr/`); fork not created
       (`FORK_REPO` in `patchstack/stack.conf` is still a placeholder). `pr/README.md`
       lists the review exposure to close before submitting.
+
+## Measured: what actually threatens Soulmask responsiveness
+
+The recurring question — "does 3rd-party host IO hurt a Soulmask server even
+though it does ~0 IO of its own?" — went through two real corrections under
+live measurement on `gstammtisch` (2026-08-28). Recorded here so nobody
+re-derives it from scratch or repeats the two failed experiment attempts.
+
+**First theory (wrong): continuous refault-driven lag.** Cumulative
+`/proc/<pid>/io` and `memory.stat` counters over one server's ~21h uptime
+showed large numbers (`pgmajfault=878141`, `workingset_refault_file=1691466`)
+that looked like a continuous phenomenon. Refuted by a live ~35s trace with
+`scripts/gstammtisch-guide/files/usr/local/sbin/soulmask-monitor.py --no-rcon`:
+`rfz/s=0/s rfd/s=0/s rff/s=0/s` on every sample. The cumulative counters were
+dominated by startup and periodic save/backup events, not a continuous
+phenomenon — the existing `memory.min`/zswap/tmpfs-bypass tuning already
+prevents refault-driven lag; there is nothing to add there.
+
+**Second theory (proven correct): fsync/fdatasync latency inflates under real
+3rd-party disk contention.** `strace -f -p <pid> -T -tt -y -e
+trace=fsync,fdatasync` (needs `--pid=host --cap-add=SYS_PTRACE`, no
+`--privileged`/`-m` — ptrace only needs the shared PID namespace) showed
+Soulmask uses a SQLite-like rollback-journal database (`world.db`/
+`world.db-journal`, `account.db`/`account.db-journal`) that fsyncs the
+journal continuously during real gameplay (bursts every ~150ms while
+something is happening, not just at the save-interval boundary), plus a
+periodic `WS.log` log-flush `fdatasync` roughly every 5 seconds. With a real
+ext4-backed `fio --rw=randwrite --bs=4k --iodepth=32 --direct=1` load running
+(99.12% device utilization, confirmed via fio's own "Disk stats" output;
+`vda`/`dm-0`), the periodic `WS.log` `fdatasync` latency went from a steady
+**~1.5–2.8ms** baseline to **16.9ms, then 12.0ms, then 48.1ms** within ~10
+seconds of the load starting — a clean, precisely-timed 15–30x latency
+inflation on Soulmask's own fsync-family calls, caused by real 3rd-party disk
+contention. Two failed attempts preceded this clean result, kept here so
+they aren't repeated: a wrong fio Docker Hub image tag first generated no
+real load at all; and writing the synthetic load to `/tmp` produced an
+impossible 1032MiB/s, because **`/tmp` on this host is tmpfs** (RAM-backed) —
+use an ext4-backed path (e.g. `/var/lib/docker`) for a real disk-contention
+test.
+
+**What already protects against this, and what doesn't:** `wings.slice`'s
+`io.bfq.weight=default 800` (from `IOWeight=7800`, see the compression table
+in [`../../modern-debian-tools-python-debug/host-setup/CGROUP-NOTES.md`](../../modern-debian-tools-python-debug/host-setup/CGROUP-NOTES.md#1-ioweight-is-rescaled--ratios-above-100-are-not-what-you-wrote))
+already outranks `dev-background.slice`'s weight of 10 under BFQ contention,
+for free, no wiring needed — real protection today. It governs block-layer
+contention only, though, not the fsync-latency-under-saturation mechanism
+directly measured above; `io.cost`'s device-wide latency QoS target (compiled
+in on this kernel, not turned on) would address the measured mechanism more
+directly than a static weight — see CGROUP-NOTES.md's
+[io.cost vs BFQ](../../modern-debian-tools-python-debug/host-setup/CGROUP-NOTES.md#iocost-vs-bfq--an-option-this-host-doesnt-use-yet)
+section for what turning it on would require. `io.latency` (the more directly
+matching controller for "declare Soulmask's target latency") is **not
+compiled into this kernel** (`CONFIG_BLK_CGROUP_IOLATENCY` unset) — a
+kernel-rebuild question, not a config one.
+
+**Considered and rejected:** `eatmydata` (an `LD_PRELOAD` no-op for
+`fsync`/`fdatasync`/`sync`) applied to WSServer, to hide the measured latency
+inflation entirely. Rejected on durability grounds — it would make Soulmask's
+periodic `fsync`/`fdatasync` calls lie about durability, and a crash or power
+loss between a no-op'd "fsync" and the real underlying page-cache writeback
+could lose the most recent save/journal state entirely. If some of the traced
+fsync calls turn out to target genuinely non-critical files (not
+`world.db`/`world.db-journal`/`account.db`), a narrowly-scoped application to
+just those specific paths could be reconsidered — but that needs identifying
+exactly which files via `strace -y` (decorates each fd with its target)
+first, not applied broadly to the whole process. Not investigated further.

@@ -118,6 +118,18 @@ slice properly as transient. The only consequence meanwhile is that 0004's
 orphan GC skips it (the GC guard is `Transient=yes`, deliberately, so it never
 touches admin-owned slices). Nothing to do.
 
+### 4. fsync/fdatasync latency inflates under real 3rd-party disk contention (2026-08-28)
+
+Measured, not inferred: a genuine ext4-backed `fio --rw=randwrite` load at
+99% device utilization pushed `WS.log`'s periodic `fdatasync` from a ~1.5–2.8ms
+baseline to 16.9/12.0/48.1ms within ~10s. `wings.slice`'s `io.bfq.weight=800`
+already outranks `dev-background.slice`'s 10 under BFQ contention, for free —
+but that governs block-layer queueing contention, not this fsync-latency
+mechanism directly. Full measurement, the two failed-experiment lessons, and
+what a real fix (`io.cost`'s device-wide latency QoS, not compiled-in
+`io.latency`) would require: [`wings-cgroups/v1-legacy/README.md`](../../wings-cgroups/v1-legacy/README.md#measured-what-actually-threatens-soulmask-responsiveness)
+(source of record — don't duplicate here).
+
 ## State assumed at start (verified 2026-07-17)
 
 - Wings `wings-local:1.13.1-cgroup.1` running from
