@@ -621,7 +621,9 @@ def _write_hook_manifest(stack_dir: Path, table: Mapping[str, str]) -> None:
             os.fsync(fh.fileno())
         os.chmod(tmp_path, 0o600)
         os.replace(tmp_path, path)
-    except BaseException:  # pragma: no cover - defensive, mirrors _write_store_file
+    except BaseException:
+        # Same cleanup contract as _write_store_file: a failed write must not
+        # leave a stray .tmp-hookman-* file behind in the secret store dir.
         with contextlib.suppress(FileNotFoundError):
             tmp_path.unlink()
         raise

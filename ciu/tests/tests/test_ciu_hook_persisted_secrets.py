@@ -301,6 +301,33 @@ def test_read_hook_manifest_ignores_a_non_table_secrets_key(tmp_path: Path) -> N
     assert mz.read_hook_manifest(stack) == {}
 
 
+def test_a_failed_sidecar_write_leaves_no_temp_file_behind(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The sidecar writer honours _write_store_file's own cleanup contract.
+
+    A stray `.tmp-hookman-*` left in the secret store dir would be an
+    undeleted artifact inside the one directory S4.9/S4.10 exist to keep
+    tidy and tightly-permissioned.
+    """
+    import tomli_w
+
+    stack = tmp_path / "s"
+    stack.mkdir()
+    store_dir = mz.stack_store(stack)
+    store_dir.mkdir(parents=True)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("disk gone")
+
+    monkeypatch.setattr(tomli_w, "dump", _boom)
+
+    with pytest.raises(RuntimeError, match="disk gone"):
+        mz.write_hook_secret(stack, "root_token", SECRET_VALUE, source="hook:/x.py")
+
+    assert [p.name for p in store_dir.iterdir() if p.name.startswith(".tmp-")] == []
+
+
 def test_reset_hook_secrets_removes_the_file_and_its_row(tmp_path: Path) -> None:
     stack = tmp_path / "s"
     stack.mkdir()
