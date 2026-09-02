@@ -349,6 +349,45 @@ def announce_refusal(exc: AssayError, *, diagnostics: "TextIO | None") -> None:
     )
 
 
+def _announce_contradictory_branch_records(
+    profile: CoverageProfile, *, diagnostics: "TextIO | None"
+) -> None:
+    """(B054/A-410) Name every file whose coverage record contradicts itself
+    about its own branch arcs — "never silently", in DA-D3's own words.
+
+    The parser isolates such a record instead of refusing the whole artifact
+    (see :func:`assay.coverage_parsers.coverage_istanbul_json._contradictory_branch_lines`),
+    and :mod:`assay.evaluate` refuses by name if the file turns out to be in
+    the judged set. The file that is NOT judged is the one this function
+    exists for: it is skipped, its arc data is incomplete, and without a line
+    here that would be invisible.
+
+    **Why every such file and not only the skipped ones.** "Skipped" means
+    "no line in the judged set", and the judged set is resolved inside
+    :mod:`assay.evaluate` against the diff, source roots, globs and test-path
+    rules — asking for it here would mean re-deriving that join, which
+    A-385/A-367 rule against, or threading a stream into a module that is
+    deliberately pure. Naming every defective record is a superset of what
+    DA-D3 requires and invents nothing: a judged one is named here AND
+    refused by name, which is one line more, never one fact less.
+    """
+    if diagnostics is None:
+        return
+    for path in sorted(profile.files):
+        lines = profile.files[path].contradictory_branch_lines
+        if not lines:
+            continue
+        print(
+            f"assay: coverage record for {path!r} contradicts itself at "
+            f"line(s) {sorted(lines)}: a branch arc is recorded on a line "
+            f"the same record does not classify as executed or missing. "
+            f"Those arcs were dropped. This file's branch data is "
+            f"incomplete; if this lane judges it, the lane refuses rather "
+            f"than report a number over it.",
+            file=diagnostics,
+        )
+
+
 def _report_probe_refusal(
     lane: Lane,
     probe_result: "CommandResult",
@@ -1225,6 +1264,7 @@ def evaluate_r1(
                 producer=judge.coverage.producer,
             )
         coverage.check_empty_coverage(profile)
+        _announce_contradictory_branch_records(profile, diagnostics=diagnostics)
 
         if effective_require_branch and derive_branch_capability(profile) == "unavailable":
             raise AssayError(

@@ -222,6 +222,11 @@ def attribute_statements(
                 excluded=file_cov.excluded,
                 branches=file_cov.branches,
                 blocks=file_cov.blocks,
+                # (B054/A-410) Carried, not re-derived: it is metadata about
+                # arcs the PARSER already dropped, so there is nothing left
+                # here to derive it from. A rebuild that forgot it would
+                # silently launder a defective record into a clean one.
+                contradictory_branch_lines=file_cov.contradictory_branch_lines,
             )
             continue
 
@@ -336,6 +341,9 @@ def attribute_statements(
             excluded=file_cov.excluded,
             branches=file_cov.branches,
             blocks=file_cov.blocks,
+            # (B054/A-410) See the sibling rebuild above: carried, never
+            # re-derived.
+            contradictory_branch_lines=file_cov.contradictory_branch_lines,
         )
 
     return CoverageProfile(
