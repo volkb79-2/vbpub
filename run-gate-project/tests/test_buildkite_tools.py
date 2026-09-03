@@ -220,6 +220,16 @@ def test_pipeline_refuses_a_duplicate_lane_name(tmp_path):
     assert "selftest" in res.stderr
 
 
+def test_pipeline_names_a_repeated_unknown_lane_once(tmp_path):
+    """N7: `RUN_GATE_LANES="nope nope"` used to list `nope` twice, reading like
+    two different mistakes; duplicates are judged over every requested name."""
+    _stub_project(tmp_path / "proj")
+    res = _run(PIPELINE_SH, "proj", cwd=tmp_path,
+               env={"RUN_GATE_QUEUE": "q1", "RUN_GATE_LANES": "nope nope"})
+    assert res.returncode == 2
+    assert res.stderr.count("nope") == 1
+
+
 def test_pipeline_does_not_glob_the_lane_selection(tmp_path):
     """N5: `RUN_GATE_LANES='*'` used to expand against the working directory,
     so a FILE called `selftest` could enter the selection as a lane."""
@@ -317,7 +327,8 @@ def test_pipeline_never_reads_run_gate_toml():
 
 
 # ---------------------------------------------------------------------------
-# seam 4 — tools/buildkite/bk-lane.sh (--dry-run only; no network, ever)
+# seam 4 — tools/buildkite/bk-lane.sh, dry-run half (no network, ever; the
+# live half, with curl stubbed on PATH, follows further down)
 # ---------------------------------------------------------------------------
 
 TOKEN = "bkua-secret-do-not-print"
@@ -384,6 +395,12 @@ for a in "$@"; do
 done
 printf '%s\\n' "$*" >> "$FAKE_CALLS"
 if [ -n "$out" ]; then
+  # A download. FAKE_DL_FAIL makes it fail the way curl really does — a
+  # non-zero exit and no file — which is a 404, a 5xx or the stall bound.
+  if [ -n "${FAKE_DL_FAIL-}" ]; then
+    echo "curl: (22) The requested URL returned error: 404" >&2
+    exit 22
+  fi
   printf '%s' "${FAKE_BODY-artifact-bytes}" > "$out"
   exit 0
 fi
@@ -787,6 +804,53 @@ def test_bk_collect_refuses_an_escaping_artifact_path_with_exit_2(
     assert res.returncode == 2, (res.stdout, res.stderr)
     assert "refusing artifact path" in res.stderr
     assert list(tmp_path.glob("**/x")) == []
+
+
+def test_bk_collect_exits_2_when_a_download_fails(stub_bin, token_file,
+                                                  tmp_path):
+    """SF1 / mutation M13: a failed download used to propagate curl's own exit
+    22 — outside the documented set — and `curl … || true` would have made
+    `collect` report success. It is a refusal, and nothing is claimed."""
+    dest = tmp_path / "inbox"
+    res = _bk_live(
+        stub_bin, "collect", "7", str(dest), token_file=token_file,
+        build={"number": 7, "state": "passed", "commit": "abc123"},
+        artifacts=[{"path": ".assay/verdict.json",
+                    "download_url": "https://example.invalid/dl/1"}],
+        FAKE_DL_FAIL="yes")
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert "downloading artifact '.assay/verdict.json' failed" in res.stderr
+    assert "collected" not in res.stdout
+    assert not (dest / "abc123" / ".assay" / "verdict.json").exists()
+
+
+def test_bk_collect_exits_2_when_the_destination_cannot_be_created(
+        stub_bin, token_file, tmp_path):
+    """SF1's other half: mkdir's exit 1 is the code reserved for "the build did
+    not pass", which `collect` never reports at all."""
+    blocked = tmp_path / "inbox"
+    blocked.write_text("a file sits where the directory must go\n")
+    res = _bk_live(stub_bin, "collect", "7", str(blocked), token_file=token_file,
+                   build={"number": 7, "state": "passed", "commit": "abc123"},
+                   artifacts=[])
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert "cannot create" in res.stderr
+
+
+@pytest.mark.parametrize("number", ["abc", "1.2", "../../x"])
+def test_bk_run_refuses_a_non_numeric_build_number_from_the_response(
+        stub_bin, token_file, git_repo, number):
+    """N1 / mutation M14: E5-R7's letter is `[0-9]+` on the build number the
+    create response hands back. The looser path-component charset kept
+    `../../x` out but let `abc` and `1.2` straight into the poll URL."""
+    root, _ = git_repo
+    res = _bk_live(stub_bin, "run", "lint", token_file=token_file, cwd=root,
+                   build={"number": number, "state": "passed",
+                          "commit": "abc123"})
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert "build number '%s'" % number in res.stderr
+    # the POST happened; no poll was ever attempted with that number
+    assert len(res.curl_calls) == 1
 
 
 def test_bk_collect_refuses_a_malformed_artifact_listing_with_exit_2(

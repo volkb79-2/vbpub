@@ -167,6 +167,7 @@ else
     selected=""
     unknown=""
     duplicate=""
+    seen=""
     for want in $requested; do
         found=""
         for have in $available; do
@@ -175,14 +176,18 @@ else
                 break
             fi
         done
-        case " $selected " in
+        # Duplicates are judged over EVERY requested name, not just the ones
+        # that resolved: "nope nope" is one unknown name asked for twice, and
+        # listing it twice in the refusal reads like two different mistakes.
+        case " $seen " in
             *" $want "*) duplicate="$duplicate $want" ;;
+            *) seen="$seen $want"
+               if [ -n "$found" ]; then
+                   selected="$selected $want"
+               else
+                   unknown="$unknown $want"
+               fi ;;
         esac
-        if [ -n "$found" ]; then
-            selected="$selected $want"
-        else
-            unknown="$unknown $want"
-        fi
     done
     if [ -n "$unknown" ]; then
         die "RUN_GATE_LANES names lane(s)$unknown that '$project/run-gate.py --list' does not show; it shows:$available"

@@ -12,9 +12,10 @@ were re-read from the vendor docs on 2026-09-03 and are what
 `tools/buildkite/bk-lane.sh` actually calls.
 
 The two seams that need no remote host — the pipeline generator (§3) and the
-trigger/collector (§4) — are now written and tested without a network (both
-`--dry-run` and, for the collector, its live code path against a stubbed
-`curl`). **No build has ever been created against the real API and no artifact
+trigger/collector (§4) — are now written and tested without a network: both
+`--dry-run` and the live code path of every `bk-lane.sh` verb (`run`'s seven
+terminal states, its wait budget, and `collect`'s downloads and refusals)
+against a stubbed `curl`. **No build has ever been created against the real API and no artifact
 downloaded from it** (§6). The artifacts contract, seam 1, is still just docs.
 
 The decision this implements is **D-110.4** (dstdns decisions, 2026-08-20):
@@ -140,18 +141,25 @@ steps:
     agents:
       queue: "gate-<host-a>"
     command: |
-      run-gate-project/tools/buildkite/pipeline.sh run-gate-project > pipeline.yml
-      buildkite-agent pipeline upload pipeline.yml
+      run-gate-project/tools/buildkite/pipeline.sh run-gate-project > "${TMPDIR:-/tmp}/pipeline.yml" &&
+      buildkite-agent pipeline upload "${TMPDIR:-/tmp}/pipeline.yml"
 ```
 
 Three things about those lines, each of which was wrong in an earlier draft:
 
-- **Generate to a file, then upload the file.** `buildkite-agent` runs a
-  command with `bash -e -c` and *not* `-o pipefail`, so `pipeline.sh | upload`
-  would discard the generator's exit status: its exit 2 — the refusal contract
-  this whole section rests on — would be swallowed and the pipeline would
-  upload whatever reached the pipe. Two statements, no pipe, no subtlety: a
-  refusal fails the step.
+- **Generate to a file, then upload the file — and put that file outside the
+  checkout.** `buildkite-agent` runs a command with `bash -e -c` and *not*
+  `-o pipefail`, so `pipeline.sh | upload` would discard the generator's exit
+  status: its exit 2 — the refusal contract this whole section rests on —
+  would be swallowed and the pipeline would upload whatever reached the pipe.
+  Two statements joined by `&&`, no pipe, no subtlety: a refusal fails the
+  step. The file goes to `${TMPDIR:-/tmp}` rather than the checkout root
+  because `git status --porcelain` — what run-gate's `check_clean_tree` and
+  its dirty-run detection both read — reports untracked files, so a stray
+  `pipeline.yml` in the checkout would fail every `clean_tree` lane on that
+  host and mark every run dirty in the RG-27 trend series. The agent's default
+  `git-clean-flags` (`-ffxdq`) happens to sweep it today; a custom clean flag
+  or checkout hook (§2 already sets `hooks-path`) would not.
 - **The upload step names a LITERAL queue**, the enrollment host's. The
   generator job has to run *somewhere*, and with no `agents:` it lands on an
   arbitrary agent — or on none, sitting in `scheduled` forever, if the default
@@ -317,7 +325,7 @@ bk-lane.sh --help
 | `BK_PIPELINE` | **yes** | pipeline slug; no default |
 | `BK_TOKEN_FILE` | no | default `~/.config/buildkite/api-token`; **must be mode 0600 or the script refuses** (exit 2, naming the mode it found) |
 | `BK_POLL_SECONDS` | no | poll interval for `run`, default 30 |
-| `BK_MAX_WAIT_MINUTES` | no | `run` only: how long to keep polling, default 300 (the §3 step's own timeout). Exceeded → **exit 3**, naming the build number and last state. The budget counts the time the script spends *sleeping between polls*; **every request is separately bounded** — API reads (create, poll, status, artifact listing) by total time, `--connect-timeout 10 --max-time 120`, and artifact downloads by stall instead, `--connect-timeout 10 --speed-time 60 --speed-limit 1024` — so the true wall-clock bound is `BK_MAX_WAIT_MINUTES` plus at most one 120 s request per poll and nothing can hang the caller. Without the budget, a build parked in `scheduled` (a mistyped `BK_QUEUE` is the way in — no queue is validated against a live agent) spins a `GET` forever |
+| `BK_MAX_WAIT_MINUTES` | no | `run` only: how long to keep polling, default 300 (the §3 step's own timeout). Exceeded → **exit 3**, naming the build number and last state. The budget counts the time the script spends *sleeping between polls*; **every request is separately bounded** — API reads (create, poll, status, artifact listing) by total time, `--connect-timeout 10 --max-time 120`, and artifact downloads by stall instead, `--connect-timeout 10 --speed-time 60 --speed-limit 1024` — and the budget is compared *before* each sleep, so the true wall-clock bound is `BK_MAX_WAIT_MINUTES` + one `BK_POLL_SECONDS` + one 120 s request: a long poll interval overshoots the budget by up to one interval (`BK_MAX_WAIT_MINUTES=1 BK_POLL_SECONDS=600` sleeps the full 600 s before giving up), which is the honest bound, and nothing can hang the caller. Without the budget, a build parked in `scheduled` (a mistyped `BK_QUEUE` is the way in — no queue is validated against a live agent) spins a `GET` forever |
 | `BK_QUEUE` | no | `run` only: sent as `env.RUN_GATE_QUEUE` in the create-build body beside `RUN_GATE_LANES`. A build's env overrides the pipeline's (§3), so this moves ONE run to another host's queue with no pipeline edit; unset, the key is not sent at all and the pipeline's default queue stands |
 
 Dependencies are `bash`, `coreutils`, `git`, `curl` and `python3` (stdlib

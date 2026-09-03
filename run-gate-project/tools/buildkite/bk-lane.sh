@@ -33,9 +33,11 @@
 #                   can pick that build up later (§4.4). The budget counts the
 #                   time this script spends SLEEPING between polls; every API
 #                   request is separately capped at 120 s (downloads are
-#                   bounded by stall instead), so the true wall-clock bound is
-#                   BK_MAX_WAIT_MINUTES plus at most one 120 s request per
-#                   poll — nothing here can hang indefinitely.
+#                   bounded by stall instead). The budget is compared BEFORE
+#                   each sleep, so the true wall-clock bound is
+#                   BK_MAX_WAIT_MINUTES + one BK_POLL_SECONDS + one 120 s
+#                   request — a long poll interval overshoots the budget by up
+#                   to one interval, by design; nothing hangs indefinitely.
 #   BK_QUEUE        optional — `run` only: sent as env.RUN_GATE_QUEUE in the
 #                   create-build body, which overrides the pipeline's own
 #                   env.RUN_GATE_QUEUE for that build (a build's env wins over
@@ -80,8 +82,8 @@ TERMINAL_STATES="passed failed canceled blocked skipped not_run waiting_failed"
 #
 # The two kinds of request are bounded differently on purpose:
 #   API calls (create, poll, status, artifact listing) are small JSON reads —
-#     a total cap is right, and the true wall-clock bound becomes
-#     BK_MAX_WAIT_MINUTES plus at most one 120 s request per poll.
+#     a total cap is right, and it is what keeps the wall-clock bound finite
+#     (see BK_MAX_WAIT_MINUTES above for the exact bound).
 #   Artifact downloads are of unknown size — a total cap would fail a large,
 #     healthy transfer, so they are bounded by STALL instead: under 1 KiB/s
 #     for 60 s and curl gives up. A wedged download still cannot hang, and a
@@ -309,7 +311,10 @@ print(json.dumps({
     if ! number=$(curl "${post[@]}" | json_field number); then
         die "creating the build did not yield a usable 'number' (see the message above)"
     fi
-    check_path_component "$number" "build number"
+    # A build number is DIGITS — `check_number`, the same guard the verbs apply
+    # to an operator-supplied number. The looser path-component charset kept
+    # `../../x` out but let `abc` and `1.2` straight into the poll URL.
+    check_number "$number"
     printf 'build %s for %s (branch %s), lanes: %s\n' "$number" "$commit" "$branch" "$lanes"
 
     local state waited=0 budget=$((max_wait_minutes * 60))
@@ -369,7 +374,10 @@ do_collect() {
     commit=$(api_field "$API/$number" commit)
     check_path_component "$commit" "the build's commit"
     local dest="$dir/$commit"
-    mkdir -p "$dest"
+    # Every failure below is a refusal (2). Without these, `set -e` propagated
+    # curl's own 22 and mkdir's 1 — and 1 is the code reserved for "the build
+    # did not pass", which `collect` never reports at all.
+    mkdir -p "$dest" || die "cannot create '$dest'"
 
     local listing pairs
     if ! listing=$(curl -fsS "${CURL_API_BOUNDS[@]}" "$API/$number/artifacts" -H "$AUTH_HEADER"); then
@@ -407,8 +415,10 @@ for a in doc:
         case "/$path/" in
             */../*) die "refusing artifact path '$path': a '..' component would write outside $dest" ;;
         esac
-        mkdir -p "$dest/$(dirname "$path")"
-        curl -fsSL "${CURL_DOWNLOAD_BOUNDS[@]}" "$url" -H "$AUTH_HEADER" -o "$dest/$path"
+        mkdir -p "$dest/$(dirname "$path")" \
+            || die "cannot create the directory for artifact '$path' under $dest"
+        curl -fsSL "${CURL_DOWNLOAD_BOUNDS[@]}" "$url" -H "$AUTH_HEADER" -o "$dest/$path" \
+            || die "downloading artifact '$path' failed (curl gave up: HTTP error, or the stall bound tripped)"
         printf '%s\n' "$dest/$path"
         count=$((count + 1))
     done <<EOF
