@@ -338,5 +338,4 @@ Not merged and not claimed "ready to merge" -- that determination is a fresh
 adversarial reviewer's, per doctrine. This package's implementer role stops
 here.
 
-Final commit range: `ac61f7d9..<this REPORT's own commit hash, filled in by
-a follow-up commit per the self-hash rule>`.
+Final commit range: `ac61f7d9..ba2e09c2`.
