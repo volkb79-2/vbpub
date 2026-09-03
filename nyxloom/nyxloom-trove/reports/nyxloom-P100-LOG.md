@@ -306,3 +306,5 @@ pass.
 All 6 Work items are complete; all 7 oracles (O1-O7) pass with real,
 independently-read evidence. Not merged (controller's step, per doctrine)
 -- this package's own implementer role stops here.
+
+This final LOG + REPORT update committed as `6e27a6f5`.
