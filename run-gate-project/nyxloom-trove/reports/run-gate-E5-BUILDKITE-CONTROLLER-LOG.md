@@ -167,3 +167,31 @@ dstdns D-110.4. Rulings here are E5-Rn.
   Round 2 (same reviewer) on `ef8396df`: every round-1 demonstration
   re-run, the docs-truth table, a fresh hollow-test hunt on the PATH-stub
   harness. After ACCEPT: merge `--no-ff` to main, no release.
+
+- **2026-09-03 (reviewer round 2: ACCEPT — 0 BLOCKER, 1 SHOULD-FIX, 7 NIT;
+  E5-R17..E5-R19; one final commit, then merge)** — Report `10dced36`.
+  Every round-1 finding re-tested, not re-read, all fixed; the hollow-test
+  hunt was mechanical this time: 18 mutations on scratch copies of both
+  scripts, 16 killed, the 2 survivors being exactly SF1 (a failed download
+  silently ignored, M13) and N1 (build number from the create response
+  guarded with the path charset, M14). Re-verified: scope exact, `run-gate.py`
+  untouched, §3 step shape with the third glob against three real projects,
+  the `set -- ${positional[@]+…}` idiom does not word-split, token never
+  printed, zero socket syscalls under strace for all three dry-run verbs,
+  curl bound semantics against `man curl`, shellcheck style-clean, 66/66 in
+  declared and random order, 485 collected by the selftest lane.
+  - **E5-R17 (SF1 + N1): fold, do not file.** `collect`'s mkdir and download
+    failures exit 2 through `die` (three `|| die`s) with the `FAKE_DL_FAIL`
+    stub test that kills M13; the build number goes through `check_number`
+    (`[0-9]+`, E5-R7's letter) with the test that kills M14. The exit-code
+    contract's "every path" claim becomes true.
+  - **E5-R18 (N3):** the §3 snippet writes to `"${TMPDIR:-/tmp}/pipeline.yml"`,
+    never the checkout root.
+  - **E5-R19 (N2/N5/N6/N7): all four one-liners taken now** (doc and code
+    must agree on the wall-clock bound). N4 fixed by the controller on
+    main: LANE-AUTHORING §5 quotes `.assay/**/*`, the glob the generator
+    emits.
+  - After the final commit: the controller reads its diff, checks the test
+    count and shellcheck, then merges `--no-ff` to main — no release; the
+    CHANGES `[Unreleased]` line for the Buildkite tools is folded after
+    23.4.0 merges (append-conflict avoidance).

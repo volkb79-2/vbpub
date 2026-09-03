@@ -286,7 +286,7 @@ What a remote lane needs from its author is exactly what a local one needs
 plus two things: **artifacts declared AND kept under `.assay/`** (the
 pipeline generator cannot read a lane's `artifacts` — `--list` does not
 carry them, by the no-second-parser rule — so its upload globs are fixed:
-`<project>/.assay/**`, `<project>/.assay/*` and
+`<project>/.assay/**/*`, `<project>/.assay/*` and
 `<project>/.run-gate/history.json`; a declared artifact anywhere else, such
 as `run-gate-project/selftest`'s `coverage.json`, does not travel back until
 RG-45 exposes `artifacts` through `--list --json`), and **a budget that
