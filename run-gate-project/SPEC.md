@@ -976,8 +976,24 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     evidence on failure, `docker rm -f`, record cleared in the SAME `finally`
     that removes the container, artifacts disclosed. History records the run
     ONCE, with the outcome from the real exit code and the duration measured
-    from the CONTAINER's `started_epoch` — not from the seconds this client
-    happened to be attached. A run whose container is gone is recorded
+    from the CONTAINER, not from the seconds this client happened to be
+    attached.
+    - **Which container clock, by path.** A RE-ATTACH measures `now −
+      started_epoch`: the client is watching the container finish, so its own
+      clock is the container's. A COLLECT does not — the container exited at
+      some arbitrary earlier moment and the idle gap since is not part of the
+      run — so it takes `FinishedAt − StartedAt` from the same `docker
+      inspect` that answered the state question, no extra call. Left as `now
+      − started_epoch` it charged one overnight collect with the whole night
+      (`duration_seconds: 10800.028` for a container that had exited three
+      hours earlier), inside the median/min/max series `R-27` exists to make
+      trustworthy. Docker's stamps are hand-parsed: NANOSECOND fractions, and
+      the year-1 zero value `0001-01-01T00:00:00Z` that means "never set" (a
+      RUNNING container's `FinishedAt` is exactly that). Either stamp
+      missing, unparsable or zero, or a finish before its start → the
+      record's own `started_at` answers, as before; a duration is never
+      invented from half a pair.
+    A run whose container is gone is recorded
     `aborted`, never a pass; a container that disappears mid-collect leaves
     `docker wait` unreadable, which is already an exit-3 refusal, never a
     pass.

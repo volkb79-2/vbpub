@@ -6,6 +6,7 @@ Every argv assertion compares the LIST, never a joined string.
 """
 
 import atexit
+import calendar
 import fcntl
 import json
 import os
@@ -1196,7 +1197,12 @@ def test_no_stdlib_violations():
     allowed = {"argparse", "os", "re", "shlex", "shutil", "subprocess", "sys",
                "time", "tomllib", "pathlib", "fcntl",  # fcntl: stdlib, Linux-only (RG-20 locks)
                "ast",   # ast: RG-23 helper-wrapped env reads in --check-env
-               "json"}  # json: RG-25 `assay lanes --json` inventory
+               "json",  # json: RG-25 `assay lanes --json` inventory
+               # calendar: RW-17 turns docker's RFC3339 stamps into a UTC
+               # epoch (`calendar.timegm`) for a collected run's duration.
+               # stdlib, and the only alternative was `datetime`, a bigger
+               # import for the same one call.
+               "calendar"}
     assert set(imports) <= allowed, f"non-stdlib/unplanned imports: {imports}"
 
 
@@ -6085,9 +6091,15 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
           inspect)
             name="$3"
             [ -f "$S/$name" ] || {{ echo "Error: No such object: $name" >&2; exit 1; }}
-            read status code id < "$S/$name"
-            [ -n "$id" ] || id="sha256:fakeid-$name"
-            printf '%s|%s|2026-09-02T12:00:00Z|%s\\n' "$status" "$code" "$id"
+            read status code id started < "$S/$name"
+            case "$id" in ""|"-") id="sha256:fakeid-$name" ;; esac
+            # RW-17: the container's OWN clock. A fourth state field lets a
+            # test set `StartedAt`; the default is one hour before the fixed
+            # `FinishedAt`, so a COLLECTED run's duration is 3600s however
+            # long ago the test planted the record.
+            case "$started" in "") started="2026-09-02T11:00:00Z" ;; esac
+            printf '%s|%s|2026-09-02T12:00:00Z|%s|%s\\n' \\
+                   "$status" "$code" "$started" "$id"
             ;;
           logs)
             # Real `docker logs` REPLAYS the container's whole log from its
@@ -6110,7 +6122,7 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
             ;;
           wait)
             [ -f "$S/$1" ] || {{ echo "Error: No such container" >&2; exit 1; }}
-            read status code < "$S/$1"
+            read status code rest < "$S/$1"
             printf '%s\\n' "$code"
             ;;
           rm)
@@ -6182,7 +6194,7 @@ def plant_inflight(proj: Path, repo: Path, state: Path | None, *,
                    lane: str = "suite", container: str = "run-gate-planted",
                    status: str | None = "running", code: int = 0,
                    commit: str | None = "HEAD", state_id: str = "",
-                   **over) -> Path:
+                   state_started: str = "", **over) -> Path:
     """Write an inflight record for `lane`, optionally giving the stateful
     shim a container to match it. `commit="HEAD"` means the repo's real HEAD
     (the matching case); anything else is used verbatim."""
@@ -6202,8 +6214,11 @@ def plant_inflight(proj: Path, repo: Path, state: Path | None, *,
     path.write_text(json.dumps(payload))
     if state is not None and status is not None:
         # A third field lets a test give the LIVE container an id that is not
-        # the recorded one — the name-reuse case (S2).
-        (state / container).write_text(f"{status} {code} {state_id}\n")
+        # the recorded one — the name-reuse case (S2); a fourth sets the
+        # container's own `StartedAt` (RW-17). `-` means "the default id",
+        # so the fourth field stays reachable without inventing an id.
+        (state / container).write_text(
+            f"{status} {code} {state_id or '-'} {state_started}\n")
     return path
 
 
@@ -6337,7 +6352,32 @@ class TestInflightRecordDecisions:
         assert "logs preserved at" in out
         assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
         # RW-3: the collected run joins history ONCE, with its real outcome.
+        # "ONCE" is the half hollow test 3 never asserted — a second `latest`
+        # write or a second series entry is exactly how review B2's two-client
+        # defect stayed invisible, so the COUNT is asserted, not just the code.
         assert lane_slot(proj)["latest"]["exit_code"] == 7
+        assert len(lane_slot(proj)["history"]) == 1
+        # RW-17 (review S4): the duration is the CONTAINER's own
+        # `FinishedAt - StartedAt` (12:00:00Z - 11:00:00Z = 3600s), not
+        # `now - started_at` — this record was planted 754 s ago, and the
+        # idle gap between a container's exit and its collect is not part of
+        # the run. One overnight collect used to poison RG-27's trend series.
+        assert lane_slot(proj)["latest"]["duration_seconds"] == 3600.0
+        assert lane_slot(proj)["history"][0]["duration_seconds"] == 3600.0
+
+    def test_a_collect_whose_container_clock_is_unreadable_falls_back(
+            self, tmp_path, monkeypatch, capsys):
+        """RW-17's fallback. `0001-01-01T00:00:00Z` is docker's "never set",
+        not a time in year 1: reading it would make every duration a
+        two-thousand-year negative number. With either stamp missing the
+        record's own `started_at` answers, exactly as it did before."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
+        plant_inflight(proj, repo, state, status="exited", code=0,
+                       state_started="0001-01-01T00:00:00Z")
+        assert run_gate.main(["suite"]) == 0
+        measured = lane_slot(proj)["latest"]["duration_seconds"]
+        assert 754 <= measured < 900, measured   # `now - started_epoch`
 
     def test_a_running_container_is_re_attached_not_re_run(
             self, tmp_path, monkeypatch, capfd):
@@ -6623,6 +6663,60 @@ class TestInflightRecordDecisions:
         err = capsys.readouterr().err
         assert "could not read the state of container run-gate-planted" in err
         assert "refusing to guess" in err
+
+
+class TestDockerTimestamps:
+    """RW-17. `docker inspect` prints RFC3339 with NANOSECOND fractions and,
+    for a stamp it never set, the year-1 zero value. Both are why this is
+    hand-parsed: the first is outside what the stdlib parsers accept across
+    the versions this launcher must run on, and the second is not a time."""
+
+    def test_a_nanosecond_fraction_parses_to_the_second_it_names(self):
+        whole = run_gate.parse_docker_timestamp("2026-09-02T12:00:00Z")
+        nanos = run_gate.parse_docker_timestamp("2026-09-02T12:00:00.123456789Z")
+        assert whole == calendar.timegm((2026, 9, 2, 12, 0, 0, 0, 1, 0))
+        assert nanos is not None and 0.123 < nanos - whole < 0.124
+
+    def test_dockers_zero_value_is_not_a_time(self):
+        """A RUNNING container's `FinishedAt` is exactly this. Read as year 1
+        it would make every duration a two-thousand-year negative number."""
+        assert run_gate.parse_docker_timestamp("0001-01-01T00:00:00Z") is None
+
+    def test_an_offset_is_converted_to_utc_not_ignored(self):
+        utc = run_gate.parse_docker_timestamp("2026-09-02T12:00:00Z")
+        assert run_gate.parse_docker_timestamp("2026-09-02T14:00:00+02:00") == utc
+        assert run_gate.parse_docker_timestamp("2026-09-02T10:00:00-0200") == utc
+
+    @pytest.mark.parametrize("stamp", [
+        None, 17, "", "not a stamp", "2026-09-02", "2026-09-02T12:00:00",
+        "2026-13-02T12:00:00Z",
+    ])
+    def test_anything_that_is_not_a_stamp_is_no_answer(self, stamp):
+        """None is a real answer, not a swallowed error: the caller falls
+        back to the record's own `started_at` rather than inventing a
+        duration from something that is not a time."""
+        assert run_gate.parse_docker_timestamp(stamp) is None
+
+    def test_a_collect_never_takes_a_duration_from_half_a_pair(self, tmp_path):
+        """Either stamp missing means the container's clock is unusable —
+        `FinishedAt` alone is a point, not an interval."""
+        record = {"lane": "suite"}
+        assert run_gate.adopt_container_duration(
+            record, {"started_at": "2026-09-02T11:00:00Z",
+                     "finished_at": "0001-01-01T00:00:00Z"}) is False
+        # …and a finish BEFORE the start is a clock nobody should trust.
+        assert run_gate.adopt_container_duration(
+            record, {"started_at": "2026-09-02T12:00:00Z",
+                     "finished_at": "2026-09-02T11:00:00Z"}) is False
+        assert "_duration_seconds" not in record
+        assert run_gate.adopt_container_duration(
+            record, {"started_at": "2026-09-02T11:00:00Z",
+                     "finished_at": "2026-09-02T12:00:30.5Z"}) is True
+        assert record["_duration_seconds"] == 3630.5
+        # A follower records nothing at all, so there is no record to fill.
+        assert run_gate.adopt_container_duration(
+            None, {"started_at": "2026-09-02T11:00:00Z",
+                   "finished_at": "2026-09-02T12:00:00Z"}) is False
 
 
 class FakeClock:

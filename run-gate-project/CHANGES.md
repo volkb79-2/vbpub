@@ -162,7 +162,14 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     never re-attaches to, or removes, a container it cannot identify.
   - History records a re-attached or collected run ONCE, with the duration
     measured from the container's start rather than from the seconds the
-    client was attached.
+    client was attached. A RE-ATTACHED run measures `now − started`, because
+    the client is watching the container finish; a COLLECTED one takes
+    `FinishedAt − StartedAt` from the same `docker inspect` that answered
+    the state question, so the idle time between a container's exit and the
+    collect never joins the trend series (an overnight collect used to
+    record three hours for a run that took minutes). If either stamp is
+    missing or is docker's `0001-01-01T00:00:00Z` "never set" value, the
+    record's own `started_at` answers as before.
   - **New flag `--fresh`** (run path, ephemeral container lanes only —
     refused by name on host lanes, exec lanes and every verb). `--dry-run`
     discloses an inflight record and changes nothing.
