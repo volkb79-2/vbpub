@@ -31,9 +31,9 @@
 #                   300 (the §3 step's own timeout). Exceeded -> exit 3 naming
 #                   the build number and the last state, so `status`/`collect`
 #                   can pick that build up later (§4.4). The budget counts the
-#                   time this script spends SLEEPING between polls; every
-#                   request is separately bounded (--connect-timeout 10
-#                   --max-time 120), so the true wall-clock bound is
+#                   time this script spends SLEEPING between polls; every API
+#                   request is separately capped at 120 s (downloads are
+#                   bounded by stall instead), so the true wall-clock bound is
 #                   BK_MAX_WAIT_MINUTES plus at most one 120 s request per
 #                   poll — nothing here can hang indefinitely.
 #   BK_QUEUE        optional — `run` only: sent as env.RUN_GATE_QUEUE in the
@@ -76,11 +76,18 @@ TERMINAL_STATES="passed failed canceled blocked skipped not_run waiting_failed"
 # Every curl invocation is bounded, so a hung connection cannot hang the
 # caller: the wait budget (BK_MAX_WAIT_MINUTES) counts only the time spent
 # SLEEPING between polls, so without these a single stuck request would make
-# the real wall-clock bound unbounded. With them the true bound is
-# BK_MAX_WAIT_MINUTES plus at most one 120 s request per poll.
-# The same cap applies to artifact downloads: a transfer that needs more than
-# 120 s fails rather than being waited on — see §4.3.
-CURL_BOUNDS=(--connect-timeout 10 --max-time 120)
+# the real wall-clock bound unbounded.
+#
+# The two kinds of request are bounded differently on purpose:
+#   API calls (create, poll, status, artifact listing) are small JSON reads —
+#     a total cap is right, and the true wall-clock bound becomes
+#     BK_MAX_WAIT_MINUTES plus at most one 120 s request per poll.
+#   Artifact downloads are of unknown size — a total cap would fail a large,
+#     healthy transfer, so they are bounded by STALL instead: under 1 KiB/s
+#     for 60 s and curl gives up. A wedged download still cannot hang, and a
+#     slow-but-moving one still finishes.
+CURL_API_BOUNDS=(--connect-timeout 10 --max-time 120)
+CURL_DOWNLOAD_BOUNDS=(--connect-timeout 10 --speed-time 60 --speed-limit 1024)
 
 usage() {
     cat <<'EOF'
@@ -102,7 +109,8 @@ usage: bk-lane.sh [--dry-run] run <lane>...
 environment: BK_ORG and BK_PIPELINE are required; BK_TOKEN_FILE defaults to
 ~/.config/buildkite/api-token and must be mode 0600; BK_POLL_SECONDS
 defaults to 30; BK_MAX_WAIT_MINUTES defaults to 300 and counts sleep time,
-with every request separately bounded to 120 s; BK_QUEUE, if set, is
+with every API request capped at 120 s and every artifact download bounded by
+stall (under 1 KiB/s for 60 s) rather than by total time; BK_QUEUE, if set, is
 sent as env.RUN_GATE_QUEUE in the create-build body and overrides the
 pipeline's queue for that build.
 
@@ -211,7 +219,7 @@ print(doc[key])
 
 api_field() {   # $1 = url, $2 = key -> the field's value on stdout, or die
     local value
-    if ! value=$(curl -fsS "${CURL_BOUNDS[@]}" "$1" -H "$AUTH_HEADER" | json_field "$2"); then
+    if ! value=$(curl -fsS "${CURL_API_BOUNDS[@]}" "$1" -H "$AUTH_HEADER" | json_field "$2"); then
         die "GET $1 did not yield a usable '$2' (see the message above)"
     fi
     printf '%s\n' "$value"
@@ -281,7 +289,7 @@ print(json.dumps({
     "env": build_env,
 }, sort_keys=True))')
 
-    local post=(-fsS "${CURL_BOUNDS[@]}" -X POST "$API" -H "$AUTH_HEADER"
+    local post=(-fsS "${CURL_API_BOUNDS[@]}" -X POST "$API" -H "$AUTH_HEADER"
                 -H "Content-Type: application/json" -d "$body")
 
     if [ "$DRY_RUN" = yes ]; then
@@ -293,7 +301,7 @@ print(json.dumps({
         show_curl "${post[@]}"
         printf 'then poll every %ss, for at most %s minutes, until the state is terminal (%s):\n' \
             "$poll_seconds" "$max_wait_minutes" "$TERMINAL_STATES"
-        show_curl -fsS "${CURL_BOUNDS[@]}" "$API/<build-number>" -H "$AUTH_HEADER"
+        show_curl -fsS "${CURL_API_BOUNDS[@]}" "$API/<build-number>" -H "$AUTH_HEADER"
         return 0
     fi
 
@@ -330,7 +338,7 @@ do_status() {
     shift
     [ "$#" -eq 0 ] || die "status takes exactly one argument (the build number); it does not know what to do with: $*"
     if [ "$DRY_RUN" = yes ]; then
-        show_curl -fsS "${CURL_BOUNDS[@]}" "$API/$number" -H "$AUTH_HEADER"
+        show_curl -fsS "${CURL_API_BOUNDS[@]}" "$API/$number" -H "$AUTH_HEADER"
         return 0
     fi
     api_field "$API/$number" state
@@ -346,11 +354,11 @@ do_collect() {
 
     if [ "$DRY_RUN" = yes ]; then
         printf 'would read the build to learn its commit:\n'
-        show_curl -fsS "${CURL_BOUNDS[@]}" "$API/$number" -H "$AUTH_HEADER"
+        show_curl -fsS "${CURL_API_BOUNDS[@]}" "$API/$number" -H "$AUTH_HEADER"
         printf 'would list the artifacts of build %s:\n' "$number"
-        show_curl -fsS "${CURL_BOUNDS[@]}" "$API/$number/artifacts" -H "$AUTH_HEADER"
+        show_curl -fsS "${CURL_API_BOUNDS[@]}" "$API/$number/artifacts" -H "$AUTH_HEADER"
         printf 'then, for each artifact in that listing, into %s/<commit>/<path>:\n' "$dir"
-        show_curl -fsSL "${CURL_BOUNDS[@]}" "<artifact download_url>" -H "$AUTH_HEADER" -o "$dir/<commit>/<artifact path>"
+        show_curl -fsSL "${CURL_DOWNLOAD_BOUNDS[@]}" "<artifact download_url>" -H "$AUTH_HEADER" -o "$dir/<commit>/<artifact path>"
         return 0
     fi
 
@@ -364,7 +372,7 @@ do_collect() {
     mkdir -p "$dest"
 
     local listing pairs
-    if ! listing=$(curl -fsS "${CURL_BOUNDS[@]}" "$API/$number/artifacts" -H "$AUTH_HEADER"); then
+    if ! listing=$(curl -fsS "${CURL_API_BOUNDS[@]}" "$API/$number/artifacts" -H "$AUTH_HEADER"); then
         die "GET $API/$number/artifacts failed"
     fi
     # python does the JSON only; every refusal below is the shell's, so it is a
@@ -400,7 +408,7 @@ for a in doc:
             */../*) die "refusing artifact path '$path': a '..' component would write outside $dest" ;;
         esac
         mkdir -p "$dest/$(dirname "$path")"
-        curl -fsSL "${CURL_BOUNDS[@]}" "$url" -H "$AUTH_HEADER" -o "$dest/$path"
+        curl -fsSL "${CURL_DOWNLOAD_BOUNDS[@]}" "$url" -H "$AUTH_HEADER" -o "$dest/$path"
         printf '%s\n' "$dest/$path"
         count=$((count + 1))
     done <<EOF

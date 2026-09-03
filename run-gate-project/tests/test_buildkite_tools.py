@@ -324,9 +324,12 @@ TOKEN = "bkua-secret-do-not-print"
 API = "https://api.buildkite.com/v2/organizations/acme/pipelines/vbpub/builds"
 # Every request is bounded so a hung connection cannot hang the caller: the
 # wait budget counts only sleep time, so these are what make the wall-clock
-# bound finite (E5-R14).
-BOUNDS = "'--connect-timeout' '10' '--max-time' '120'"
-GET = "curl '-fsS' " + BOUNDS
+# bound finite (E5-R14). The two kinds are bounded differently (E5-R16): API
+# reads by TOTAL time, artifact downloads by STALL — a total cap would fail a
+# large healthy transfer.
+API_BOUNDS = "'--connect-timeout' '10' '--max-time' '120'"
+DOWNLOAD_BOUNDS = "'--connect-timeout' '10' '--speed-time' '60' '--speed-limit' '1024'"
+GET = "curl '-fsS' " + API_BOUNDS
 
 
 @pytest.fixture
@@ -488,10 +491,12 @@ def test_bk_run_refuses_an_unquotable_bk_queue(token_file, git_repo):
 
 
 def test_every_dry_run_curl_line_is_bounded(token_file, git_repo, tmp_path):
-    """E5-R14: the wait budget counts sleep time only, so an unbounded request
-    would make the real wall-clock bound infinite. Every printed invocation —
-    create, poll, status, artifact listing, artifact download — carries both
-    flags, and so does every real one (they come from one array)."""
+    """E5-R14/E5-R16: the wait budget counts sleep time only, so an unbounded
+    request would make the real wall-clock bound infinite. Every printed
+    invocation is bounded, and the two kinds differently: the five API reads by
+    total time, the artifact download by stall — with NO --max-time, which
+    would fail a large healthy transfer. Real calls come from the same two
+    arrays, so the printed lines cannot drift from them."""
     root, _ = git_repo
     runs = [_bk("--dry-run", "run", "lint", token_file=token_file, cwd=root),
             _bk("--dry-run", "status", "7", token_file=token_file),
@@ -501,8 +506,15 @@ def test_every_dry_run_curl_line_is_bounded(token_file, git_repo, tmp_path):
         assert res.returncode == 0, res.stderr
         lines += [ln for ln in res.stdout.splitlines() if ln.startswith("curl ")]
     assert len(lines) == 6      # run: create + poll; status: 1; collect: 3
-    for line in lines:
-        assert BOUNDS in line, line
+    downloads = [ln for ln in lines if "'-o'" in ln]
+    api = [ln for ln in lines if "'-o'" not in ln]
+    assert len(downloads) == 1 and len(api) == 5
+    for line in api:
+        assert API_BOUNDS in line, line
+        assert "--speed-time" not in line, line
+    for line in downloads:
+        assert DOWNLOAD_BOUNDS in line, line
+        assert "--max-time" not in line, line
 
 
 def test_bk_run_dry_run_honours_the_poll_interval(token_file, git_repo):

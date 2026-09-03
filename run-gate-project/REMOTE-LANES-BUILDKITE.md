@@ -317,7 +317,7 @@ bk-lane.sh --help
 | `BK_PIPELINE` | **yes** | pipeline slug; no default |
 | `BK_TOKEN_FILE` | no | default `~/.config/buildkite/api-token`; **must be mode 0600 or the script refuses** (exit 2, naming the mode it found) |
 | `BK_POLL_SECONDS` | no | poll interval for `run`, default 30 |
-| `BK_MAX_WAIT_MINUTES` | no | `run` only: how long to keep polling, default 300 (the §3 step's own timeout). Exceeded → **exit 3**, naming the build number and last state. The budget counts the time the script spends *sleeping between polls*; **every request is separately bounded** (`--connect-timeout 10 --max-time 120`, on every invocation including the artifact downloads), so the true wall-clock bound is `BK_MAX_WAIT_MINUTES` plus at most one 120 s request per poll and nothing can hang the caller. Without the budget, a build parked in `scheduled` (a mistyped `BK_QUEUE` is the way in — no queue is validated against a live agent) spins a `GET` forever |
+| `BK_MAX_WAIT_MINUTES` | no | `run` only: how long to keep polling, default 300 (the §3 step's own timeout). Exceeded → **exit 3**, naming the build number and last state. The budget counts the time the script spends *sleeping between polls*; **every request is separately bounded** — API reads (create, poll, status, artifact listing) by total time, `--connect-timeout 10 --max-time 120`, and artifact downloads by stall instead, `--connect-timeout 10 --speed-time 60 --speed-limit 1024` — so the true wall-clock bound is `BK_MAX_WAIT_MINUTES` plus at most one 120 s request per poll and nothing can hang the caller. Without the budget, a build parked in `scheduled` (a mistyped `BK_QUEUE` is the way in — no queue is validated against a live agent) spins a `GET` forever |
 | `BK_QUEUE` | no | `run` only: sent as `env.RUN_GATE_QUEUE` in the create-build body beside `RUN_GATE_LANES`. A build's env overrides the pipeline's (§3), so this moves ONE run to another host's queue with no pipeline edit; unset, the key is not sent at all and the pipeline's default queue stands |
 
 Dependencies are `bash`, `coreutils`, `git`, `curl` and `python3` (stdlib
@@ -364,10 +364,11 @@ them is to be verified on the first live build**, since it depends on how
 Buildkite's zglob treats `**`, which is why `.assay/*` is emitted alongside
 `.assay/**/*`. An artifact a lane declares outside those prefixes does not come
 back at all (§3) — `LANE-AUTHORING.md` §5 is the rule that keeps them inside.
-Each download is bounded like every other request (`--max-time 120`), so a
-single artifact that needs longer than two minutes to transfer fails the
-collect rather than being waited on; if that ever bites, the cap is one array
-at the top of the script. Handing the verdict onward is
+A download is bounded by **stall, not by total time** (`--speed-time 60
+--speed-limit 1024`, and deliberately no `--max-time`): a transfer moving at
+under 1 KiB/s for a minute fails, while a large evidence directory that keeps
+moving finishes however long it takes — a total cap would have failed exactly
+the artifacts most worth collecting. Handing the verdict onward is
 still a manual step and is deliberately NOT in the script: run-gate's history
 store for the lane, a `.assay-inbox/`-style drop for dstdns (the pattern its
 release notifications already use), or assay's Tier 3 ledger for fuzz findings.
