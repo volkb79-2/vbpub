@@ -75,13 +75,28 @@ grows into a policy engine or an LLM harness.
 | Tier | assay's role | Determinism | Examples |
 |---|---|---|---|
 | **1 — COMPUTED** | derives the verdict itself, in-process | full | R0–R3: coverage, canary, mutation, serial/parallel parity, fail-before/pass-after |
-| **2 — ADJUDICATED** | **invokes** a declared third-party tool and applies a **declared threshold** to its structured output | deterministic *given the tool* | SAST, SBOM/vulnerability, license, DAST, accessibility budget, visual regression |
+| **2 — ADJUDICATED** | **invokes, or consumes the declared structured output of,** a declared third-party tool, and applies that tool's own decision | deterministic *given the tool* | SAST, SBOM/vulnerability, license, DAST, accessibility budget, visual regression, image provenance (B004) |
 | **3 — ATTESTED** | ledgers evidence produced entirely elsewhere: validates shape, binds to commit, checks staleness — **never verifies** | none, and the artifact says so | adversarial review, production replay, ClusterFuzzLite findings |
 
 Tier 2 does not violate §0: the judgement is the *tool's*, and assay's
-contribution is a declared threshold, which is deterministic. The hazard to
-watch is a missing or crashed scanner — that must be `ERROR` or
+contribution is either a declared threshold or a declared mapping from the
+tool's own closed vocabulary to an outcome — both deterministic. The hazard
+to watch is a missing or crashed scanner — that must be `ERROR` or
 `NO_MEASUREMENT`, **never** `PASS`.
+
+**"Invokes" is not the only Tier-2 shape, and B004's adjudicator is the
+reason this table says "or consumes" now.** A-030 forbids assay orchestrating
+infrastructure, and at S3/S4 assay runs *inside* a container where the tool
+that would need invoking (`ciu`, talking to the docker socket) is not even
+reachable. So B004's `judge.evidence[].source = "adjudicated"` entry never
+invokes anything: the caller's own harness runs `ciu provenance --json`
+*before* the lane starts and writes its output to a declared path
+(`judge.adjudication_dir`); assay reads that ALREADY-PRODUCED document,
+parses it against ciu's closed schema, and renders ciu's own decision — never
+assay's — as the Tier-2 evidence entry. The judgement is still the tool's
+either way, which is what keeps this Tier-2, not Tier-1: assay is not
+deciding whether the images matched, only relaying and binding-to-commit a
+decision `ciu` already made.
 
 Tier 3 exists because the alternative is worse than it looks. TESTING-
 METHODOLOGY is explicit that *"a runner cannot infer intent"* and that *"review
@@ -107,9 +122,14 @@ What makes an attestation more than a rubber stamp — all of it mechanical:
 The lane declares Tier-3 input under HOW, not as another rigor level (A-209):
 `judge.attestation_dir` names one contained project-relative input directory
 and `judge.evidence` is the ordered closed list of `(source,key)` identities.
-The two fields are both present or both absent and no location is derived. This
-pair is legal even on R0-only because external evidence and computed rigor are
-separate axes; it does not make R0 consume coverage/mutation/canary policy.
+Tier 2's `judge.adjudication_dir` (B004) is the same shape, one field over,
+for `source = "adjudicated"` entries: PER-SOURCE, not a single toggle —
+`attestation_dir` is present iff `judge.evidence` declares at least one
+`source = "attested"` entry, `adjudication_dir` iff it declares at least one
+`source = "adjudicated"` entry, and a lane may declare both dirs, one, or
+neither. No location is ever derived. Every pair is legal even on R0-only
+because external evidence and computed rigor are separate axes; declaring
+either does not make R0 consume coverage/mutation/canary policy.
 
 Asynchronous `PENDING` evidence is deferred until claim-level enforcement is
 designed. It is not a seventh outcome hidden inside an evidence entry.
@@ -824,8 +844,12 @@ declared but rendered no judgement"* cannot look like *"adversarial-review was
 never declared"*, and no external review is forced into a fictitious R3 slot.
 The attested branch records `producer`, `attested_commit`, and `reviewed_paths`
 when an attestation was obtained, while always recording
-`verified_by_assay: false`. The adjudicated sibling shape is reserved in v2;
-the first real integration adds its payload and registry behavior.
+`verified_by_assay: false`. The `"adjudicated"` source value was reserved in
+v2 (A-034/A-078); B004 (v10) is the first real integration, and it adds a
+REGISTRY (`assay.adjudication.ADJUDICATORS`), not a payload — `Evidence`'s
+adjudicated branch has no payload slot at all (`producer`/`attested_commit`/
+`reviewed_paths` are refused on it), so ciu's own decision is relayed as
+`(status, reason_code)` alone, always with `verified_by_assay: false`.
 
 ### Transparency of what actually ran
 

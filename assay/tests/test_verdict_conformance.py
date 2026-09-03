@@ -203,17 +203,20 @@ ALL_PAIRS: frozenset[tuple[str, str]] = frozenset(
 #: producer-reachable (a byte-identical copy of P22's own carver-owned
 #: artifact lives in the ordinary fixture set below) and is REMOVED from this
 #: set rather than left excluded.
-#: **Wave D / schema v10 adds two, and both are RESERVED rather than
-#: unreachable-by-nature** -- the ``MISSING_EXTERNAL_TOOL`` pattern
-#: (A-013/A-086/A-144): a code lands in the bump the project is already
-#: paying and its producer renders it later, for free. Each carries the same
-#: recorded obligation the entries above discharged, and this audit turns red
-#: the moment a producer exists and no fixture does:
+#: **Wave D / schema v10 added two, RESERVED rather than unreachable-by-
+#: nature** -- the ``MISSING_EXTERNAL_TOOL`` pattern (A-013/A-086/A-144): a
+#: code lands in the bump the project is already paying and its producer
+#: renders it later, for free. Each carries the same recorded obligation the
+#: entries above discharged, and this audit turns red the moment a producer
+#: exists and no fixture does.
 #:
-#: * ``NO_MEASUREMENT``/``PROVENANCE_UNVERIFIED`` (B004/A-430) — the
-#:   adjudicated image-provenance producer lands LATER IN THIS SAME WAVE
-#:   (W2-W7 of the B004 carve). The moment it does, its fixture joins the
-#:   ordinary set below and this entry is REMOVED.
+#: **``NO_MEASUREMENT``/``PROVENANCE_UNVERIFIED`` (B004/A-430) is REMOVED
+#: from this set, its obligation now discharged.** The adjudicated
+#: image-provenance producer (``src/assay/adjudication.py``, wired in
+#: ``cli.py``'s ``_run_reserved``) landed in this same wave; its fixture,
+#: ``evidence_adjudicated_unverified.json``, joins the ordinary set below.
+#: The remaining reserved pair:
+#:
 #: * ``FAIL``/``RED_FIRST_UNPROVEN`` (F015/A-433/A-434) — the R4 red-first
 #:   producer is PHASE 3. Only the wire shape lands at the v10 cut, which is
 #:   why W6's drift-guard corpus pins an R4 verdict while no fixture here can
@@ -221,7 +224,6 @@ ALL_PAIRS: frozenset[tuple[str, str]] = frozenset(
 EXCLUDED_ENTIRELY: frozenset[tuple[str, str]] = frozenset(
     {
         ("ERROR", "OUTPUT_WRITE_FAILED"),
-        ("NO_MEASUREMENT", "PROVENANCE_UNVERIFIED"),
         ("FAIL", "RED_FIRST_UNPROVEN"),
     }
 )

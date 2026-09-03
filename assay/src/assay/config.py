@@ -73,6 +73,7 @@ from .errors import LaneConfigError
 # the registry lived in `assay.mutation`.
 from .mutation_parsers import MUTATION_FORMAT_REGISTRY
 from .vocabulary import (
+    ADJUDICATED_EVIDENCE_KEYS,
     COVERAGE_PRODUCERS_BY_FORMAT,
     COVERAGE_PRODUCER_REQUIRED_FORMATS,
     MUTATION_OPERATORS,
@@ -110,13 +111,22 @@ __all__ = [
 #: P26/A-209-A-210. Duplicated verbatim from :mod:`assay.attestation` (which
 #: repeats it at its own public boundary) rather than imported: config.py and
 #: attestation.py stay independent readers of the same closed grammar, and
-#: neither trusts the other to have already validated it.
+#: neither trusts the other to have already validated it. B004/A-430 reuses
+#: the identical bounds for `judge.adjudication_dir` -- one grammar, shared by
+#: BOTH `judge.*_dir` fields within this module (see
+#: :func:`_validate_evidence_dir`), duplicated a third time only across the
+#: MODULE boundary into :mod:`assay.attestation`/:mod:`assay.adjudication`.
 MAX_ATTESTATION_DIR_BYTES = 4096
 MAX_ATTESTATION_DIR_COMPONENTS = 128
 MIN_EVIDENCE_DECLARATIONS = 1
 MAX_EVIDENCE_DECLARATIONS = 64
 _EVIDENCE_FIELDS: tuple[str, ...] = ("source", "key")
-_EVIDENCE_SOURCES: frozenset[str] = frozenset({"attested"})
+#: B004/A-430: widened from `{"attested"}` to include `"adjudicated"`.
+#: Exported PUBLICLY (no leading underscore) so `tests/
+#: test_docs_examples_and_vocabulary.py` (W7) can derive a documentation
+#: vocabulary from it, the same shape A-270 check 2 already uses for
+#: `SNAPSHOT_SELECTIONS`/`JUDGE_MODES`/`RIGOR_LEVELS`/`FORMAT_REGISTRY`.
+EVIDENCE_SOURCES: frozenset[str] = frozenset({"attested", "adjudicated"})
 _EVIDENCE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _ATTESTATION_DIR_CONTROL: frozenset[str] = frozenset(
     chr(c) for c in range(0x20)
@@ -635,12 +645,16 @@ class CanaryConfig:
 
 @dataclass(frozen=True)
 class EvidenceConfig:
-    """``judge.evidence[]`` (P26/A-209) -- one declared Tier-3 identity.
+    """``judge.evidence[]`` (P26/A-209, widened B004/A-430) -- one declared
+    Tier-3 (``"attested"``) or Tier-2 (``"adjudicated"``) identity.
 
-    Exactly ``source``/``key``; ``source`` is closed to ``"attested"`` (the
-    adjudicated sibling has no loader, A-085). Reproduces the parsed TOML
-    entry exactly via :meth:`as_declared`, the same mechanical no-invented-
-    default proof :meth:`Lane.as_declared` already gives the rest of the file.
+    Exactly ``source``/``key``; ``source`` is one of :data:`EVIDENCE_SOURCES`.
+    Up to v9 the only declarable value was ``"attested"`` (the adjudicated
+    sibling had no loader, A-085) -- B004 gives it one
+    (:func:`assay.adjudication.load_adjudicated_evidence`). Reproduces the
+    parsed TOML entry exactly via :meth:`as_declared`, the same mechanical
+    no-invented-default proof :meth:`Lane.as_declared` already gives the rest
+    of the file.
     """
 
     source: str
@@ -679,11 +693,17 @@ class JudgeConfig:
     #: check_base_is_head`), never guessed here. Required, never defaulted
     #: to "main" or another assumed ref (A-018's own "no invented values").
     base: str | None
-    #: (P26/A-209) Tier-3 evidence's HOW pair -- both ``None`` or both
-    #: present, on ANY canonical R0-led rigor sequence including R0-only.
-    #: Separate from computed rigor (§3): declaring these two never satisfies
-    #: nor requires a computed ``judge`` field.
+    #: (P26/A-209, widened B004/A-430 to a PER-SOURCE rule) Tier-3
+    #: ``attestation_dir`` is present iff `evidence` declares at least one
+    #: `source="attested"` entry; Tier-2 `adjudication_dir` is present iff it
+    #: declares at least one `source="adjudicated"` entry. A lane may declare
+    #: both dirs, one, or neither. Separate from computed rigor (§3):
+    #: declaring these never satisfies nor requires a computed ``judge``
+    #: field.
     attestation_dir: str | None = None
+    #: (B004/A-430) Tier-2's directory, the `adjudication_dir` half of the
+    #: pair above.
+    adjudication_dir: str | None = None
     evidence: tuple[EvidenceConfig, ...] | None = None
     #: (wave-1 §5, A-260) the declared R1 mode, verbatim -- `None` when the
     #: file omits `judge.mode`, which means `"changed_lines"`. Never
@@ -733,6 +753,8 @@ class JudgeConfig:
             declared["require_branch"] = self.require_branch
         if self.attestation_dir is not None:
             declared["attestation_dir"] = self.attestation_dir
+        if self.adjudication_dir is not None:
+            declared["adjudication_dir"] = self.adjudication_dir
         if self.evidence is not None:
             declared["evidence"] = [item.as_declared() for item in self.evidence]
         return declared
@@ -1686,11 +1708,15 @@ def _load_judge(
             f"{where}: 'judge' must be a table, got {_type_name(table)}"
         )
 
-    unknown = sorted(set(table) - set(_KNOWN_JUDGE_FIELDS) - {"attestation_dir", "evidence"})
+    unknown = sorted(
+        set(table)
+        - set(_KNOWN_JUDGE_FIELDS)
+        - {"attestation_dir", "adjudication_dir", "evidence"}
+    )
     if unknown:
         raise LaneConfigError(
             f"{where}: unknown judge key(s): {', '.join(unknown)}; expected only: "
-            f"{', '.join((*_KNOWN_JUDGE_FIELDS, 'attestation_dir', 'evidence'))}"
+            f"{', '.join((*_KNOWN_JUDGE_FIELDS, 'attestation_dir', 'adjudication_dir', 'evidence'))}"
         )
 
     # wave-1 §5, A-260: `mode`/`targets` and §4/A-259's `require_branch` are
@@ -1827,15 +1853,41 @@ def _load_judge(
                 f"field 'judge.{field}'{hint}"
             )
 
-    # P26/A-209: Tier-3 evidence's HOW pair is a separate axis from computed
-    # rigor -- both present or both absent, on ANY rigor sequence including
-    # R0-only, and never itself counted toward `required`/`surplus` below.
+    # P26/A-209, widened B004/A-430 to a PER-SOURCE rule. Up to v9 the only
+    # declarable `judge.evidence[].source` was `"attested"`, so
+    # `has_attestation_dir == has_evidence` and "both present or both absent"
+    # said the same thing. Now that `"adjudicated"` is also declarable, the
+    # HOW pair is separate per source: `judge.attestation_dir` present iff
+    # `judge.evidence` declares at least one `source = "attested"` entry;
+    # `judge.adjudication_dir` present iff it declares at least one
+    # `source = "adjudicated"` entry. A lane may declare both dirs, one, or
+    # neither -- never counted toward `required`/`surplus` below, and every
+    # lane file that loaded under the OLD rule loads byte-identically under
+    # this one (an all-attested `judge.evidence` satisfies both new checks
+    # exactly as it satisfied the old single check).
+    #
+    # `evidence_items` is parsed HERE, once, rather than only at the
+    # assignment point below, so this rule can inspect actual declared
+    # sources rather than merely the array's presence; the assignment point
+    # below reuses this same parse instead of a second one.
+    evidence_items = (
+        _load_evidence(table["evidence"], where) if "evidence" in table else ()
+    )
     has_attestation_dir = "attestation_dir" in table
-    has_evidence = "evidence" in table
-    if has_attestation_dir != has_evidence:
+    has_adjudication_dir = "adjudication_dir" in table
+    has_attested_entry = any(item.source == "attested" for item in evidence_items)
+    has_adjudicated_entry = any(item.source == "adjudicated" for item in evidence_items)
+    if has_attestation_dir != has_attested_entry:
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' and 'judge.evidence' must "
-            f"both be present or both be absent"
+            f"{where}: 'judge.attestation_dir' must be present if, and only "
+            f"if, 'judge.evidence' declares at least one source='attested' "
+            f"entry"
+        )
+    if has_adjudication_dir != has_adjudicated_entry:
+        raise LaneConfigError(
+            f"{where}: 'judge.adjudication_dir' must be present if, and only "
+            f"if, 'judge.evidence' declares at least one source='adjudicated' "
+            f"entry"
         )
 
     # A-062 (controller ruling, overriding this package's first reading).
@@ -1864,7 +1916,14 @@ def _load_judge(
         # their reason exactly -- it is optional in every rigor that reads it,
         # so it can never be a member of `required`, and its own placement
         # rules are enforced by name above rather than by this message.
-        - {"attestation_dir", "evidence", "mode", "require_branch", "base_source"}
+        - {
+            "attestation_dir",
+            "adjudication_dir",
+            "evidence",
+            "mode",
+            "require_branch",
+            "base_source",
+        }
     )
     if surplus:
         raise LaneConfigError(
@@ -1937,10 +1996,20 @@ def _load_judge(
         targets = _load_targets(table["targets"], where)
 
     attestation_dir = None
-    evidence = None
     if has_attestation_dir:
-        attestation_dir = _validate_attestation_dir(table["attestation_dir"], where)
-        evidence = _load_evidence(table["evidence"], where)
+        attestation_dir = _validate_evidence_dir(
+            table["attestation_dir"], where, "attestation_dir"
+        )
+    adjudication_dir = None
+    if has_adjudication_dir:
+        adjudication_dir = _validate_evidence_dir(
+            table["adjudication_dir"], where, "adjudication_dir"
+        )
+    # `evidence_items` was already parsed above (per-source pairing rule);
+    # reused here rather than parsed a second time. Non-empty iff the lane
+    # declared `judge.evidence` at all (`_load_evidence` refuses an empty
+    # array), so this matches the old `evidence = None` default exactly.
+    evidence = evidence_items if evidence_items else None
 
     return JudgeConfig(
         language=language,
@@ -1957,46 +2026,56 @@ def _load_judge(
         targets=targets,
         require_branch=require_branch,
         attestation_dir=attestation_dir,
+        adjudication_dir=adjudication_dir,
         evidence=evidence,
     )
 
 
-def _validate_attestation_dir(value: Any, where: str) -> str:
-    """The closed ``judge.attestation_dir`` grammar (P26/A-210): canonical,
+def _validate_evidence_dir(value: Any, where: str, field_name: str) -> str:
+    """The closed ``judge.attestation_dir``/``judge.adjudication_dir`` grammar
+    (P26/A-210; B004/A-430 generalises it to a second field over the SAME
+    grammar rather than a second copy WITHIN this module): canonical,
     nonempty, project-relative POSIX spelling, 1..4,096 UTF-8 bytes and at
     most 128 nonempty components; not absolute; no ``.``/``..``/repeated
     slash/trailing slash/NUL/control character (U+0000..U+001F, U+007F).
     Existence is not required at load time -- runtime descriptor traversal
     owns absence and symlink/type facts (:func:`assay.safeio.read_bounded_input`).
+
+    *field_name* is ``"attestation_dir"`` or ``"adjudication_dir"``, used only
+    to name the offending field in every message -- this module and
+    :mod:`assay.attestation`/:mod:`assay.adjudication` stay independent
+    readers of the same grammar (see the constants' own comment above), so
+    this is NOT shared across that module boundary, only within this one.
     """
+    label = f"judge.{field_name}"
     if not isinstance(value, str) or not value:
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' must be a non-empty string, "
+            f"{where}: '{label}' must be a non-empty string, "
             f"got {_type_name(value)}"
         )
     try:
         encoded = value.encode("utf-8")
     except UnicodeEncodeError as exc:
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' {value!r} cannot be encoded as "
+            f"{where}: '{label}' {value!r} cannot be encoded as "
             f"UTF-8: {exc}"
         ) from exc
     if not (1 <= len(encoded) <= MAX_ATTESTATION_DIR_BYTES):
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' must be 1..{MAX_ATTESTATION_DIR_BYTES} "
+            f"{where}: '{label}' must be 1..{MAX_ATTESTATION_DIR_BYTES} "
             f"UTF-8 bytes, got {len(encoded)}"
         )
     if value.startswith("/"):
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' {value!r} must not be absolute"
+            f"{where}: '{label}' {value!r} must not be absolute"
         )
     if any(ch in _ATTESTATION_DIR_CONTROL for ch in value):
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' {value!r} contains a control character"
+            f"{where}: '{label}' {value!r} contains a control character"
         )
     if PurePosixPath(value).as_posix() != value:
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' {value!r} is not canonical POSIX "
+            f"{where}: '{label}' {value!r} is not canonical POSIX "
             f"spelling (no repeated slash, trailing slash, or '.' component)"
         )
     parts = value.split("/")
@@ -2008,21 +2087,29 @@ def _validate_attestation_dir(value: Any, where: str) -> str:
         # root. ".assay/attestations" is unaffected: a leading-dot FILENAME is
         # not a "." component.
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' {value!r} contains a "
+            f"{where}: '{label}' {value!r} contains a "
             f"'.' or '..' component"
         )
     if len(parts) > MAX_ATTESTATION_DIR_COMPONENTS:
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' {value!r} has more than "
+            f"{where}: '{label}' {value!r} has more than "
             f"{MAX_ATTESTATION_DIR_COMPONENTS} components"
         )
     return value
 
 
 def _load_evidence(value: Any, where: str) -> tuple[EvidenceConfig, ...]:
-    """The closed ``judge.evidence`` grammar (P26/A-209): 1..64 entries,
-    input order preserved, exactly the inline keys ``source``/``key``, only
-    ``source="attested"`` supported, and no duplicate ``(source, key)``.
+    """The closed ``judge.evidence`` grammar (P26/A-209, widened B004/A-430):
+    1..64 entries, input order preserved, exactly the inline keys
+    ``source``/``key``, ``source`` one of :data:`EVIDENCE_SOURCES`
+    (``"attested"`` or ``"adjudicated"``), and no duplicate ``(source, key)``.
+    An ``"adjudicated"`` entry's ``key`` is additionally checked against
+    :data:`assay.vocabulary.ADJUDICATED_EVIDENCE_KEYS` -- the closed set of
+    REGISTERED adjudicators (:data:`assay.adjudication.ADJUDICATORS`) --
+    because unlike an attested key (free-form; absence of the file it names
+    is a runtime ``MISSING_ATTESTATION``, not a load-time error), an
+    adjudicated key selects which PARSER runs, and an unregistered one can
+    never be dispatched.
     """
     if not isinstance(value, list):
         raise LaneConfigError(
@@ -2054,16 +2141,22 @@ def _load_evidence(value: Any, where: str) -> tuple[EvidenceConfig, ...]:
                     f"{where}: missing required field 'judge.evidence[{index}].{field}'"
                 )
         source = _as_str(entry["source"], where, f"judge.evidence[{index}].source")
-        if source not in _EVIDENCE_SOURCES:
+        if source not in EVIDENCE_SOURCES:
             raise LaneConfigError(
                 f"{where}: 'judge.evidence[{index}].source' must be one of "
-                f"{sorted(_EVIDENCE_SOURCES)}, got {source!r}"
+                f"{sorted(EVIDENCE_SOURCES)}, got {source!r}"
             )
         key = _as_str(entry["key"], where, f"judge.evidence[{index}].key")
         if not _EVIDENCE_KEY_RE.fullmatch(key):
             raise LaneConfigError(
                 f"{where}: 'judge.evidence[{index}].key' {key!r} does not match "
                 f"the closed grammar {_EVIDENCE_KEY_RE.pattern!r}"
+            )
+        if source == "adjudicated" and key not in ADJUDICATED_EVIDENCE_KEYS:
+            raise LaneConfigError(
+                f"{where}: 'judge.evidence[{index}].key' {key!r} is not a "
+                f"registered adjudicator; expected one of "
+                f"{sorted(ADJUDICATED_EVIDENCE_KEYS)}"
             )
         identity = (source, key)
         if identity in seen:

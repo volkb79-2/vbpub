@@ -552,8 +552,14 @@ all-in-one platform:
   to function.
 - **Tier 2 (adjudicated) evidence** is how assay integrates with SAST, SBOM,
   DAST, accessibility, or visual-regression tools without becoming one: it
-  invokes a declared tool and applies a declared threshold to its
-  structured output, nothing more opinionated than that.
+  invokes, or consumes the declared structured output of, a declared
+  third-party tool, and applies that tool's own decision — nothing more
+  opinionated than that. B004's image-provenance adjudicator is the shipped
+  example of the second shape: assay never invokes `ciu` itself (A-030;
+  at S3/S4 the docker socket the invocation would need is not even reachable
+  from inside the lane's own container), so it reads `ciu provenance --json`'s
+  declared output instead. See [CONSUMERS.md's "Adjudicated image
+  provenance"](docs/CONSUMERS.md#migration-notes-v9--v10) section.
 
 ## Contributing / development process
 

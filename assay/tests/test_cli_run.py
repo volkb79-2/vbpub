@@ -1585,3 +1585,181 @@ evidence = [
     # ...and neither successor ever started
     assert adapter_calls == [], "no adapter may be resolved after batch expiry"
     assert not sentinel_file.exists(), "the lane command must never have run"
+
+
+# --- B004/A-430: a lane declaring BOTH attested and adjudicated evidence -----
+
+
+def test_an_interleaved_attested_adjudicated_lane_merges_evidence_in_declared_order(
+    git_repo: GitRepo,
+):
+    """Carve review F4's own required proof: `[attested, adjudicated,
+    attested]`, INTERLEAVED, so concatenating the two loaders' own outputs
+    (rather than merging back by declared identity) would put the adjudicated
+    entry first or last instead of in the middle -- this is the shape that
+    catches that bug.
+    """
+    lane_text = """\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", "exit 0"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "5m"
+allow_argv_append = false
+
+[lanes.package.judge]
+attestation_dir = ".assay/attestations"
+adjudication_dir = "artifacts/adjudicated"
+evidence = [
+  {source="attested",key="alpha"},
+  {source="adjudicated",key="image-provenance"},
+  {source="attested",key="omega"},
+]
+"""
+    git_repo.write(".gitignore", ".assay/\nartifacts/\nverdict.json\n")
+    git_repo.write("src/reviewed/child.py", "old\n")
+    path = _write_and_commit_lane(git_repo, lane_text)
+    head = git_repo.head()
+
+    attestations = git_repo.path / ".assay/attestations"
+    attestations.mkdir(parents=True, exist_ok=True)
+    for key in ("alpha", "omega"):
+        (attestations / f"{key}.json").write_text(
+            json.dumps(
+                {
+                    "producer": "human:alice",
+                    "attested_commit": head,
+                    "reviewed_paths": ["src/reviewed"],
+                }
+            ),
+            encoding="utf-8",
+        )
+    adjudicated = git_repo.path / "artifacts" / "adjudicated"
+    adjudicated.mkdir(parents=True, exist_ok=True)
+    (adjudicated / "image-provenance.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "instance": "test",
+                "commit_under_test": head,
+                "tree_state": "clean",
+                "containers": [],
+                "overall": "verified-match",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    destination = git_repo.path / "verdict.json"
+    code, _, _ = run(
+        ["run", "package", "--file", str(path), "--verdict-json", str(destination)]
+    )
+
+    assert code == 0
+    document = json.loads(destination.read_text(encoding="utf-8"))
+    assert verify_document(document) == []
+    assert document["outcome"] == "PASS"
+    assert [item["key"] for item in document["evidence"]] == [
+        "alpha",
+        "image-provenance",
+        "omega",
+    ]
+    assert [item["source"] for item in document["evidence"]] == [
+        "attested",
+        "adjudicated",
+        "attested",
+    ]
+    for item in document["evidence"]:
+        assert item["status"] == "PASS"
+        assert item["verified_by_assay"] is False
+
+
+def test_an_adjudication_timeout_after_a_completed_attestation_pass_is_atomic(
+    git_repo: GitRepo, monkeypatch: pytest.MonkeyPatch
+):
+    """Carve review F4(d): the evidence deadline is atomic across the TWO
+    sequential loaders. The attested pass genuinely resolves (a real
+    attestation file, real git verification) before the adjudicated pass
+    expires; the whole point of the test is that the already-resolved
+    attested result is DISCARDED, not partially reported, and every declared
+    identity from BOTH sources renders the same payload-free
+    `BUDGET_EXCEEDED`/`LANE_TIMEOUT` pair -- `_run_reserved`'s own except
+    branch, exercised at the SECOND loader rather than the first.
+    """
+    sentinel_file = git_repo.path.parent / "command-really-ran"
+    lane_text = f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", "touch {sentinel_file}"]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "5m"
+allow_argv_append = false
+
+[lanes.package.judge]
+attestation_dir = ".assay/attestations"
+adjudication_dir = "artifacts/adjudicated"
+evidence = [
+  {{source="attested",key="alpha"}},
+  {{source="adjudicated",key="image-provenance"}},
+]
+"""
+    git_repo.write(".gitignore", ".assay/\nartifacts/\nverdict.json\n")
+    git_repo.write("src/reviewed/child.py", "old\n")
+    path = _write_and_commit_lane(git_repo, lane_text)
+    head = git_repo.head()
+    attestations = git_repo.path / ".assay/attestations"
+    attestations.mkdir(parents=True, exist_ok=True)
+    (attestations / "alpha.json").write_text(
+        json.dumps(
+            {
+                "producer": "human:alice",
+                "attested_commit": head,
+                "reviewed_paths": ["src/reviewed"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    timeout = AssayError(
+        "lane budget exhausted inside the adjudicated evidence batch",
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+    )
+
+    def expire(*args, **kwargs):
+        raise timeout
+
+    monkeypatch.setattr(cli_module.adjudication, "load_adjudicated_evidence", expire)
+
+    destination = git_repo.path / "verdict.json"
+    code, _, _ = run(
+        ["run", "package", "--file", str(path), "--verdict-json", str(destination)]
+    )
+
+    assert code == 4, "the budget terminal, not a PASS built from the attested half"
+    document = json.loads(destination.read_text(encoding="utf-8"))
+    assert verify_document(document) == [], "the artifact must still be complete v4"
+    assert (document["outcome"], document["reason_code"]) == (
+        "BUDGET_EXCEEDED",
+        "LANE_TIMEOUT",
+    )
+    assert [item["key"] for item in document["evidence"]] == ["alpha", "image-provenance"]
+    for item in document["evidence"]:
+        assert (item["status"], item["reason_code"]) == (
+            "BUDGET_EXCEEDED",
+            "LANE_TIMEOUT",
+        )
+        # payload-free, and specifically NOT the real attested result the
+        # first loader actually computed -- it must be discarded, not kept.
+        assert "producer" not in item and "attested_commit" not in item
+    assert not sentinel_file.exists(), "the lane command must never have run"

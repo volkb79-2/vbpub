@@ -247,3 +247,57 @@ kill_signal_artifact = ".assay/kill-signal.txt"
     assert judge.mutation.equivalence_artifact == ".assay/schema-dump.sql"
     assert judge.mutation.kill_signal_artifact == ".assay/kill-signal.txt"
     assert lane.as_declared() == lane_table(text)
+
+
+# --- B004/A-430: adjudicated (Tier-2) evidence, the per-source HOW pair -------
+
+
+def test_an_adjudicated_only_lane_loads_with_no_attestation_dir_at_all(project: Project):
+    text = R0_LANE + (
+        "\n[lanes.package.judge]\n"
+        'adjudication_dir = "artifacts/adjudicated"\n'
+        "\n[[lanes.package.judge.evidence]]\n"
+        'source = "adjudicated"\n'
+        'key = "image-provenance"\n'
+    )
+    path = project.write(text)
+
+    lane = load_lane_file(path).lane("package")
+
+    judge = lane.judge
+    assert judge is not None
+    assert judge.attestation_dir is None
+    assert judge.adjudication_dir == "artifacts/adjudicated"
+    assert tuple((item.source, item.key) for item in judge.evidence) == (
+        ("adjudicated", "image-provenance"),
+    )
+    assert lane.as_declared() == lane_table(text)
+
+
+def test_a_lane_declaring_both_attested_and_adjudicated_evidence_loads_with_both_dirs(
+    project: Project,
+):
+    text = R0_LANE + (
+        "\n[lanes.package.judge]\n"
+        'attestation_dir = "attestations"\n'
+        'adjudication_dir = "artifacts/adjudicated"\n'
+        "\n[[lanes.package.judge.evidence]]\n"
+        'source = "attested"\n'
+        'key = "review"\n'
+        "\n[[lanes.package.judge.evidence]]\n"
+        'source = "adjudicated"\n'
+        'key = "image-provenance"\n'
+    )
+    path = project.write(text)
+
+    lane = load_lane_file(path).lane("package")
+
+    judge = lane.judge
+    assert judge is not None
+    assert judge.attestation_dir == "attestations"
+    assert judge.adjudication_dir == "artifacts/adjudicated"
+    assert tuple((item.source, item.key) for item in judge.evidence) == (
+        ("attested", "review"),
+        ("adjudicated", "image-provenance"),
+    )
+    assert lane.as_declared() == lane_table(text)

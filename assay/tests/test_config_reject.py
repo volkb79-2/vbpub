@@ -276,3 +276,72 @@ def test_every_rejection_is_error_bad_lane_config(project: Project):
             load_lane_file(path)
         assert excinfo.value.outcome is Outcome.ERROR
         assert excinfo.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+
+
+# --- B004/A-430: the per-source pairing rule, and the unknown-adjudicator-key -
+# --- refusal reachable from a real, well-formed, otherwise-loadable file -----
+
+
+def test_an_adjudicated_entry_with_no_adjudication_dir_is_refused(project: Project):
+    text = R0_LANE + (
+        "\n[lanes.package.judge]\n"
+        "\n[[lanes.package.judge.evidence]]\n"
+        'source = "adjudicated"\n'
+        'key = "image-provenance"\n'
+    )
+    with pytest.raises(LaneConfigError) as excinfo:
+        load_lane_file(project.write(text))
+    assert excinfo.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert "adjudication_dir" in str(excinfo.value)
+
+
+def test_an_adjudication_dir_with_no_adjudicated_entry_is_refused(project: Project):
+    # An attested-only `evidence` array with `adjudication_dir` ALSO declared
+    # -- the mirror image of the pre-existing "attestation_dir without an
+    # attested entry" shape, one field over.
+    text = R0_LANE + (
+        "\n[lanes.package.judge]\n"
+        'adjudication_dir = "artifacts/adjudicated"\n'
+        "\n[[lanes.package.judge.evidence]]\n"
+        'source = "attested"\n'
+        'key = "review"\n'
+    )
+    with pytest.raises(LaneConfigError) as excinfo:
+        load_lane_file(project.write(text))
+    assert excinfo.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert "adjudication_dir" in str(excinfo.value)
+
+
+def test_an_unregistered_adjudicator_key_is_refused_from_a_real_loadable_file(
+    project: Project,
+):
+    # Carve §3.2's own reachability requirement: "any assay.toml containing
+    # source = 'adjudicated', key = 'no-such-adjudicator' is a well-formed,
+    # fully loadable file that reaches it" -- proven here through the real
+    # loader, not only through `assay.adjudication`'s own unit tests.
+    text = R0_LANE + (
+        "\n[lanes.package.judge]\n"
+        'adjudication_dir = "artifacts/adjudicated"\n'
+        "\n[[lanes.package.judge.evidence]]\n"
+        'source = "adjudicated"\n'
+        'key = "no-such-adjudicator"\n'
+    )
+    with pytest.raises(LaneConfigError) as excinfo:
+        load_lane_file(project.write(text))
+    assert excinfo.value.reason_code is ReasonCode.BAD_LANE_CONFIG
+    assert "no-such-adjudicator" in str(excinfo.value)
+
+
+def test_adjudication_dir_is_refused_the_same_grammar_as_attestation_dir(project: Project):
+    # Same closed directory grammar, same refusal, the OTHER field --
+    # `_validate_evidence_dir`'s generalisation must not have loosened it.
+    text = R0_LANE + (
+        "\n[lanes.package.judge]\n"
+        'adjudication_dir = "../outside"\n'
+        "\n[[lanes.package.judge.evidence]]\n"
+        'source = "adjudicated"\n'
+        'key = "image-provenance"\n'
+    )
+    with pytest.raises(LaneConfigError) as excinfo:
+        load_lane_file(project.write(text))
+    assert excinfo.value.reason_code is ReasonCode.BAD_LANE_CONFIG

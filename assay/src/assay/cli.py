@@ -71,6 +71,7 @@ from typing import Any, Sequence, TextIO
 
 from . import __version__
 from . import (
+    adjudication,
     attestation,
     diff,
     git,
@@ -811,26 +812,65 @@ def _run_reserved(
             _print_run_summary(verdict, out)
         return verdict.exit_code
 
-    # No declaration means no loader call. Otherwise attestation_dir exists
-    # by config invariant; the loader reads live project-contained input and
-    # compares exact committed Git objects before adapter/command work.
+    # No declaration means no loader call. Otherwise each declared source's
+    # own directory exists by config invariant (B004/A-430's PER-SOURCE
+    # pairing rule -- up to v9 there was only one source, so one loader call
+    # sufficed; from v10 a lane may declare `attested`, `adjudicated`, or
+    # both). `attestation.load_attested_evidence` refuses any declaration
+    # whose source is not `"attested"` (A-085), and
+    # `adjudication.load_adjudicated_evidence` is its Tier-2 mirror image --
+    # neither loader handles the other's identities -- so a mixed lane needs
+    # ONE call to EACH loader, over its own subset, with the two result
+    # tuples merged back into the lane's full DECLARED order:
+    # `runner._require_evidence_bound_to_lane` requires the final `evidence`
+    # tuple to equal `declared_evidence`'s identities as an ORDERED LIST
+    # (list equality, not set membership), which an interleaved declaration
+    # like `[attested, adjudicated, attested]` would not get from simply
+    # concatenating the two loaders' own outputs.
+    attested_declared = tuple(
+        item for item in declared_evidence if item.source == "attested"
+    )
+    adjudicated_declared = tuple(
+        item for item in declared_evidence if item.source == "adjudicated"
+    )
     if declared_evidence:
         try:
-            evidence = attestation.load_attested_evidence(
-                lane_file.project_root,
-                head=commit,
-                declared=declared_evidence,
-                project_root=lane_file.project_root,
-                attestation_dir=lane.judge.attestation_dir,
-                remaining=deadline.remaining,
+            attested_evidence = (
+                attestation.load_attested_evidence(
+                    lane_file.project_root,
+                    head=commit,
+                    declared=attested_declared,
+                    project_root=lane_file.project_root,
+                    attestation_dir=lane.judge.attestation_dir,
+                    remaining=deadline.remaining,
+                )
+                if attested_declared
+                else ()
+            )
+            adjudicated_evidence = (
+                adjudication.load_adjudicated_evidence(
+                    lane_file.project_root,
+                    head=commit,
+                    declared=adjudicated_declared,
+                    adjudication_dir=lane.judge.adjudication_dir,
+                    remaining=deadline.remaining,
+                )
+                if adjudicated_declared
+                else ()
             )
         except AssayError as exc:
             if exc.reason_code is not ReasonCode.LANE_TIMEOUT:
                 raise
-            # A-213: the attestation deadline is atomic. No adapter or
-            # command ever launches; every declared rigor claim AND every
-            # declared evidence identity becomes the SAME payload-free
-            # BUDGET_EXCEEDED/LANE_TIMEOUT pair.
+            # A-213, generalised across TWO SEQUENTIAL loaders (B004): the
+            # evidence deadline is atomic regardless of WHICH loader's Git
+            # calls or file reads exhausted it -- whichever already ran
+            # (including a first loader's already-loaded results, silently
+            # discarded rather than partially reported) is superseded, and
+            # every declared identity from BOTH sources becomes the SAME
+            # payload-free BUDGET_EXCEEDED/LANE_TIMEOUT pair, in declared
+            # order (`_timed_out_evidence` is already source-agnostic: it
+            # copies `item.source` from the declaration, not from either
+            # loader's result).
             # (B053/A-439) Same order, same reason, as the sibling above.
             detail = runner.announce_refusal(exc, diagnostics=err)
             verdict = runner.refuse_lane(
@@ -852,6 +892,17 @@ def _run_reserved(
             if args.verdict_json != "-":
                 _print_run_summary(verdict, out)
             return verdict.exit_code
+        else:
+            # Merge back into the lane's own declared order -- see the
+            # comment above this block for why concatenation alone is not
+            # enough once a lane interleaves sources.
+            by_identity = {
+                item.identity: item
+                for item in (*attested_evidence, *adjudicated_evidence)
+            }
+            evidence = tuple(
+                by_identity[item.identity] for item in declared_evidence
+            )
     else:
         evidence = ()
 

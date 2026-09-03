@@ -1466,9 +1466,11 @@ The UI CODE this lane judges is the snapshot's — fully bound to the commit,
 exactly like any other R1 lane. The API it talks to at runtime is the
 DEPLOYED image's — an unverified, declared fact about which backend was
 actually running, not something this lane's own coverage claim can attest to
-(the same gap B004 exists to close for provenance generally). Until B004
-ships verified provenance, an S3 R1 verdict from a lane shaped like this
-binds the UI's own code, not the whole system it was exercised against.
+(the same gap B004's adjudicated `judge.evidence` closes for provenance
+generally — see ["Adjudicated image provenance"](#migration-notes-v9--v10)).
+Unless this lane ALSO declares that evidence, an S3 R1 verdict from a lane
+shaped like this binds the UI's own code, not the whole system it was
+exercised against.
 
 A DETACHED `assay judge <artifact>` verb — judging evidence a deployed image
 produced outside any snapshot, rather than a command this lane's own
@@ -1859,25 +1861,28 @@ never parses it. The closed `(outcome, reason_code)` pair remains the only
 machine-readable statement in the document; a gate that pattern-matches
 `detail` is reading diagnosis as policy.
 
-### Reserved on the wire, producer pending: adjudicated image provenance (B004)
+### Adjudicated image provenance, live in this release (B004)
 
-`PROVENANCE_UNVERIFIED` joins the `NO_MEASUREMENT` reason-code set and
-`RED_FIRST_UNPROVEN` joins the `FAIL` set at this cut. **Both are RESERVED**
-— the `MISSING_EXTERNAL_TOOL` pattern this project has used since A-013 — and
-are rendered by their own producers in a later release. **If you keep your own
-copy of the reason-code vocabulary, add both members now**; a consumer that
-enumerates the codes and refuses the unknown will otherwise break on the
-release that starts producing them.
+`PROVENANCE_UNVERIFIED` joins the `NO_MEASUREMENT` reason-code set at this
+cut, exactly as earlier notes on this page said it would — and, as of THIS
+release, it has a producer: `judge.evidence[].source = "adjudicated"` is
+declarable, and `assay run` reads and adjudicates the document it names.
+`RED_FIRST_UNPROVEN` (`FAIL` set, F015/M7) remains **RESERVED**, unrelated to
+B004 and still rendered by no producer in this release — the
+`MISSING_EXTERNAL_TOOL` pattern this project has used since A-013. If you kept
+your own copy of the reason-code vocabulary against an earlier note on this
+page, no further action is needed for `PROVENANCE_UNVERIFIED`: it was already
+in that copy.
 
-One narrowing lands with them and is worth checking against any evidence you
-declare today: `evidence[].source = "adjudicated"` now implies
-`verified_by_assay: false` in **both** the model and the JSON Schema. Up to v9
-the adjudicated branch left that an unconstrained boolean, so a Tier-2 result
-could ship `true` and be legal in both layers, reading as computed.
+One narrowing landed with the reservation and is still worth checking against
+any evidence you declare: `evidence[].source = "adjudicated"` implies
+`verified_by_assay: false` in **both** the model and the JSON Schema. Before
+this bump the adjudicated branch left that an unconstrained boolean, so a
+Tier-2 result could ship `true` and be legal in both layers, reading as
+computed — assay never upgrades ciu's own judgement to "assay verified this".
 
-The lane shape the producer will take is **designed and not yet available** —
-do not write it into a lane file against this release, which refuses
-`source = "adjudicated"` at load:
+**Declare it like this** — the shape is exactly what earlier notes on this
+page sketched, now real:
 
 ```
 [lanes.<name>.judge]
@@ -1885,19 +1890,67 @@ adjudication_dir = "artifacts/adjudicated"
 evidence = [{ source = "adjudicated", key = "image-provenance" }]
 ```
 
-The document it will read is produced by your own harness, on the host, before
-the container starts:
+`adjudication_dir` follows the identical grammar `attestation_dir` already
+uses (project-relative POSIX, no `.`/`..`, ≤4096 UTF-8 bytes). A lane may
+declare `attestation_dir`/attested evidence, `adjudication_dir`/adjudicated
+evidence, or both — each pair is independent (declare one only if you use
+it).
+
+The document is produced by your own harness, on the host, **before** the
+container starts, and read exactly once from
+`<adjudication_dir>/image-provenance.json`:
 
 ```sh
-ciu provenance --json > "$PROJECT/artifacts/adjudicated/image-provenance.json" || true
+rm -f "$PROJECT/artifacts/adjudicated/image-provenance.json"
+ciu provenance --json > "$PROJECT/artifacts/adjudicated/image-provenance.json.tmp" || true
+[ -s "$PROJECT/artifacts/adjudicated/image-provenance.json.tmp" ] &&
+  mv "$PROJECT/artifacts/adjudicated/image-provenance.json.tmp" \
+     "$PROJECT/artifacts/adjudicated/image-provenance.json"
 ```
 
-**The `|| true` is load-bearing.** `ciu provenance --json` exits **2** on
+**Both the delete-first line and the `|| true` are load-bearing, for
+different reasons.** `ciu provenance --json` exits **2** on
 `overall: "mismatch"` while still writing a complete, valid document to
-stdout. The document, never the exit code, is the evidence — a mismatch is
-what assay reads as `NO_MEASUREMENT`/`PROVENANCE_UNVERIFIED`, which says assay
-could not establish WHICH artifact the tests ran against. That is the absence
-of a measurement, not a failed one: it must never read as "the code is bad".
+stdout — `|| true` is what lets that document reach assay at all; without it
+your shell (under `set -e`, or a harness that checks the exit code) would
+never write the file assay is meant to read. The delete-first-then-rename is
+what keeps a producer FAILURE honest: with a single fixed output path and no
+delete, a step that stops running entirely (a conditional that skips it, a
+refactor that drops it, `ciu` missing from the image) silently leaves
+**yesterday's** document in place, which assay would then read as if it were
+fresh — exactly the "reads as checked when nothing was checked" state this
+capability exists to prevent. With the delete-first pattern, a producer that
+does not run at all leaves an ABSENT document, which assay reads as an
+honest `NO_MEASUREMENT`/`PROVENANCE_UNVERIFIED` (the document was never
+produced) rather than a stale PASS or a stale non-green reading.
+
+**What assay checks, and what it deliberately does not.** The document must
+be a JSON object with `schema_version` the integer `1` or `2` (assay accepts
+either — ciu 6.0.3 emitted `1`, ciu 7.10.1 emits `2`, and the two are
+structurally identical wherever both have been measured) and `overall` one of
+ciu's six closed values. `overall == "verified-match"` additionally requires
+`commit_under_test` to be a lowercase-hex prefix (8-40 characters) of the
+commit assay resolved as HEAD for this run — a document from any other
+commit, or with no legible commit at all, does not attest to THIS run.
+**assay asserts nothing about `containers`, `status`, `labelled_revision`,
+`image`, or `tree_state`** — those are ciu's own decision inputs, retained in
+full in the document your harness already keeps, not re-validated or
+re-interpreted by assay (ciu decides; assay adjudicates ciu's decision). All
+five non-green `overall` values — `mismatch`, `not-verified-dirty`,
+`not-verified-unknown`, `not-verified-no-evidence`, `refused-no-identity` —
+render the SAME `NO_MEASUREMENT`/`PROVENANCE_UNVERIFIED`, which says assay
+could not establish WHICH artifact the tests ran against. That is the
+absence of a measurement, not a failed one: it must never read as "the code
+is bad", and it does not by itself fail your gate — `NO_MEASUREMENT` outranks
+`FAIL` in the rollup, so it still blocks an overall `PASS`, but the artifact's
+own words say "unverified", never "wrong".
+
+**There is no freshness bound beyond the commit check.** ciu's document
+carries no timestamp or run id, so a `verified-match` document captured at
+commit X remains satisfying for every later run at X. Capture it as close to
+your container start as your harness allows, and expect the commit check
+(rather than staleness) to be what fires in ordinary operation on a repo with
+concurrent committers.
 
 ## Practices that prevent the failures we actually hit
 
