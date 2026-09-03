@@ -27,41 +27,57 @@
 # guidance: "adopt R2 deliberately... expand only after observing real
 # runs"). Fold it back into [lanes.gate] once real coverage closes the gap.
 #
-# environment = "bare-host", deliberately, every lane (run-gate RG-43): as
-# of rev 36, plain "host" is a CONTAINER default (DEFAULT_HOST_IMAGE), not
-# bare execution — and that image has no pytest/assay reachable for this
-# devcontainer's UID outside the interactive shell's own pre-activated
-# venv (measured live: `/usr/local/bin/python3 -m pytest` -> "No module
-# named pytest" inside a fresh `docker run` of the same image). Every lane
-# here needs the invoking devcontainer's real environment (venv, pip-
-# installed test tooling, and r1-privileged-commit's own nested Docker
-# access), same reasoning run-gate-project's own selftest lane already
-# documents (SPEC.md R-42) for the identical trap. RG-43's own estate-wide
-# sweep of every other `environment = "host"` lane this flip affects has
-# not happened yet — this file is that sweep's first, scoped instance.
+# environment = "tester-unified", deliberately, every lane (run-gate RG-43):
+# as of rev 36, plain "host" is a CONTAINER default (DEFAULT_HOST_IMAGE),
+# not bare execution, and that image has no pytest at all. tester-unified
+# (the shared [environments.tester-unified] in the repo-root run-gate.toml
+# — already built, already what every vbpub-internal project's own lanes
+# use) DOES carry test tooling, but in its own dedicated venv at
+# /opt/tester-venv/, not on the default PATH/python3 — every argv below
+# that needs pytest/pip/assay says so explicitly
+# (/opt/tester-venv/bin/python3, matching assay/docs/INTERNAL-CONSUMERS.md's
+# own documented mechanism for exactly this). A first pass at this fix
+# used environment = "bare-host" instead (running directly on the invoking
+# devcontainer shell) -- that worked, but gives up the isolation the whole
+# run-gate/tester-unified architecture exists to provide, for no reason
+# once the real venv path is used correctly; corrected the same day.
+# RG-43's own estate-wide sweep of every other `environment = "host"` lane
+# this flip affects has not happened yet -- this file is that sweep's
+# first, scoped instance.
 # =============================================================================
 schema_version = 1
 
 [lanes.r0-r1]
 kind = "command"
-environment = "bare-host"
+environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "cd {worktree}/scripts/debian-install-v2 && python3 -m compileall -q debian_install_v2 && PYTHONPATH=. python3 -m pytest debian_install_v2/tests -q --cov=debian_install_v2 --cov-branch --cov-report=term-missing",
+    "cd {worktree}/scripts/debian-install-v2 && python3 -m compileall -q debian_install_v2 && PYTHONPATH=. /opt/tester-venv/bin/python3 -m pytest debian_install_v2/tests -q --cov=debian_install_v2 --cov-branch --cov-report=term-missing",
 ]
 clean_tree = false
 budget = "5m"
 
-# Mutation testing via a live, worktree-installed assay (never a pinned
-# zipapp for an in-repo consumer — assay/docs/INTERNAL-CONSUMERS.md). The
-# judge policy (source roots, operators, budget) lives in this project's own
-# assay.toml [lanes.r2]; this lane just installs and invokes it.
+# Mutation testing via a live worktree assay (never a pinned zipapp for an
+# in-repo consumer — assay/docs/INTERNAL-CONSUMERS.md). PYTHONPATH straight
+# at assay/src, not `pip install -e assay`: /opt/tester-venv's
+# site-packages is root-owned (read-only for the tester user this
+# container runs as), and INTERNAL-CONSUMERS.md's own documented mechanism
+# text (`pip install -e assay`) turns out not to actually be exercisable
+# against this image as shipped — `--user` fails too (a real venv without
+# system-site-packages has no user site at all). Verified equivalent: even
+# `pip install -e` never gave assay a real installed-distribution identity
+# either (assay's own "no judge_provenance recorded... imported ... outside
+# the installed distribution" notice already fired on every run this
+# session regardless of install mechanism) — so this isn't a regression,
+# just skipping a step that wasn't doing anything `pip install -e` alone
+# doesn't already concede. The judge policy (source roots, operators,
+# budget) lives in this project's own assay.toml [lanes.r2].
 [lanes.r2]
 kind = "command"
-environment = "bare-host"
+environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "cd {worktree} && pip install -q -e assay && cd {worktree}/scripts/debian-install-v2 && mkdir -p .assay && exec assay run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
+    "export PYTHONPATH={worktree}/assay/src && cd {worktree}/scripts/debian-install-v2 && mkdir -p .assay && exec /opt/tester-venv/bin/python3 -m assay.cli run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
 ]
 clean_tree = false
 budget = "30m"
@@ -69,22 +85,24 @@ artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
 
 # Proves the gate REJECTS known-bad code — each canary breaks exactly one
 # contract a named test claims to assert, and that test must go red.
+# tools/canary-run.sh's own `python_bin="${DEBIAN_INSTALL_V2_PYTHON:-python3}"`
+# already anticipated needing a different interpreter per environment.
 [lanes.r3]
 kind = "command"
-environment = "bare-host"
+environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "cd {worktree}/scripts/debian-install-v2 && exec tools/canary-run.sh",
+    "cd {worktree}/scripts/debian-install-v2 && DEBIAN_INSTALL_V2_PYTHON=/opt/tester-venv/bin/python3 exec tools/canary-run.sh",
 ]
 clean_tree = false
 budget = "5m"
 
 [lanes.fake-integration]
 kind = "command"
-environment = "bare-host"
+environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "cd {worktree}/scripts/debian-install-v2 && PYTHONPATH=. python3 -m pytest debian_install_v2/tests/test_fake_integration.py -q",
+    "cd {worktree}/scripts/debian-install-v2 && PYTHONPATH=. /opt/tester-venv/bin/python3 -m pytest debian_install_v2/tests/test_fake_integration.py -q",
 ]
 clean_tree = false
 budget = "3m"
@@ -94,6 +112,11 @@ budget = "3m"
 # --privileged container — see scripts/debian-install-v2/testing/README.md.
 # Skip this lane in any environment without Docker access; it is not part
 # of any aggregate lane and nothing else here depends on it passing.
+# bare-host, not tester-unified: this script itself launches ANOTHER nested
+# --privileged docker container (its own Dockerfile under testing/) and
+# runs pytest INSIDE that one via `docker exec` -- the same docker-socket
+# access [lanes.gate] needs and tester-unified doesn't have wired up. No
+# python/pytest is needed in the OUTER lane at all, only docker itself.
 [lanes.r1-privileged-commit]
 kind = "command"
 environment = "bare-host"
@@ -110,10 +133,16 @@ budget = "10m"
 # are deliberately NOT part of this aggregate — see the file header.
 [lanes.gate]
 kind = "command"
+# bare-host, not tester-unified: this lane's whole job is launching OTHER
+# lanes' containers (each sub-lane below runs in tester-unified on its
+# own), which needs docker-socket access tester-unified doesn't have wired
+# up (nested docker-in-docker) -- matches the reference shape (cmru's own
+# [lanes.gate] uses a non-isolated environment for its orchestrator lane
+# for the identical reason). No python/pytest needed here at all.
 environment = "bare-host"
 argv = [
     "bash", "-c",
-    "./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r3",
+    "cd {worktree}/scripts/debian-install-v2 && ./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r3",
 ]
 clean_tree = false
 budget = "1h"
