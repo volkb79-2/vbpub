@@ -376,6 +376,96 @@ and `coverage.missing_branch_lines` are still read by those names.
 
 <!-- cmru: release history -->
 
+## [5.0.0] - 2026-09-03
+<!-- cmru: generated -->
+<!-- cmru: source-end=d761838df269c6ce8d8bb2bb9d1ee12c963e3065 -->
+
+### Added
+- feat(assay): B004, the whole carve -- adjudicated image provenance (A-442) (d9fc22eb)
+- feat(assay): a canary declares SEVERAL probes, in order, with a stated aggregation (B007, A-440) (d30b313b)
+- feat(assay): a refusal's own sentence reaches the wire -- claim.detail's producers (B053, A-439) (d0e212e2)
+- feat(assay): non-repudiation tier three -- an ingested report's source must be the commit's own bytes (B052, A-438) (83c31f18)
+- feat(assay): judgment.r2.fail_under becomes a floor that is TAKEN (B050, A-436) (962211cd)
+- feat(assay)!: verdict schema v9 -> v10 -- the integrity cut (B050/B053/B004/B007/F015) (b2fd09f3)
+- feat(assay): the gate's own assay run carries --resume --progress (A-429); phase-2 design rows A-427/A-428; file B064 (f254b702)
+
+### Fixed
+- fix(assay): adjudication.py's json.loads catches RecursionError too (R-2 round-2 finding) (f0126b35)
+- fix(assay): verify.py checks the budget_exhausted bookkeeping member (R-2 SF-1) (78a786fc)
+- fix(assay): the last silent terminal in runner.py announces (DA-R15/SF-6, A-426) (b69a9248)
+- fix(assay): bound the LANE_TIMEOUT commit-label read by a documented grace (DA-R13, A-425) (ba2f1133)
+- fix(assay): R-1 round 1's fix package -- both blockers and all five should-fixes (A-418..A-424) (8895ffbf)
+- fix(assay): the registered gate lints its own source, from its own hash-bound closure (B024, A-417) (7c9e8dd1)
+- fix(assay): the canary side-run resolves infrastructure; B029's premise corrected by measurement (B029, A-416) (81228b25)
+- fix(assay): a lane that runs out of time writes its verdict, and a timeout is never called GIT_FAILED (B028, A-415) (dd8f4d2c)
+- fix(assay): the last six silent refusals speak, and a superseded one stops (B053, A-414) (21bdf19d)
+- fix(assay): the release builder writes nothing outside --outdir; three rulings recorded (B060, B056, B055, B009) (c80b3452)
+- fix(assay): a self-contradictory istanbul branchMap is one file's defect, not the verdict's (B054, A-410) (c37ca3fb)
+- fix(assay): every refusal says WHY, once, through one emitter (B053 a+b, A-409) (440d5da9)
+- fix(assay): a replaced output directory is named, not read as EMPTY_COVERAGE (B049, A-408) (3b2b8e62)
+
+### Changed
+- merge(assay): Wave D -- verdict schema v9 -> v10, image-provenance adjudicator (B004); 5.0.0 (d761838d)
+- backlog(assay): B068 -- R0/R1 lane GIT_FAILED in a linked-worktree container whose main .git is not mounted (dstdns-filed); wave plan carries it (f6d3a858)
+- backlog(run-gate,assay): the progress/re-attach/unbounded-budget pattern as estate default -- RG-35..RG-37, B065..B067 (b57b2d12)
+- backlog(assay): B063 -- three test modules git -C PROJECT_ROOT.parent, so the suite cannot run from a copy (e3ae8ada)
+- backlog(assay): B024's gate wiring is blocked -- measured, nothing landed (DA-D15) (93188912)
+
+### Documentation
+- docs(assay): Wave D R-2 round 2 -- ACCEPT, RecursionError blocker found+fixed (f0126b35) (cfc2ec2c)
+- docs(assay): generation 13 verified -- B004 complete, Wave D implementation DONE, DA-R34, R-2 round 2 dispatched (23fe2c98)
+- docs(assay): Wave D generation 13 -- B004 complete, gate GREEN on `d9fc22eb` (0c6863ff)
+- docs(assay): correct DA-R33 routing -- SF-1 landed by R-2 itself (78a786fc), N-1 append-only via A-443, real generation 13 now messaged (b8ea728a)
+- docs(assay): R-2 round 1 ACCEPT-conditional -- DA-R32 (SF-1) / DA-R33 (N-1), routed into generation 13 (4969bbc6)
+- docs(assay): Wave D R-2 round 1 review -- ACCEPT-conditional, SF-1 filed (2128e464)
+- docs(assay): generation 12 returned -- B007 + migration notes gate-green, DA-R30/DA-R31 ruled (2cadd57a)
+- docs(assay): Wave D generation 12 checkpoint -- B007 + migration notes gate-green, BRIEF-12 (a4528144)
+- docs(assay): the v9 -> v10 migration notes, and the anchors that now resolve (A-441) (fd489620)
+- docs(assay): Wave D generation 11 checkpointed at 97907425 -- B053 verified green; DA-R28 reorders B007 -> migration notes -> B004; generation 12 dispatched (aa3b7b8e)
+- docs(assay): Wave D generation 11 checkpoint -- B053 producers gate-green, BRIEF-11 (97907425)
+- docs(assay,run-gate): limits reset -- three implementers dispatched in parallel (assay gen 11, run-gate fix successor, E-5 Buildkite seams) (c4cdd5e9)
+- docs(assay): Wave D generation 10 checkpointed at 9de276bd -- B051 + B052 verified gate-green; no successor dispatched (session limit) (8e0425f1)
+- docs(assay): Wave D generation 10 checkpoint -- B051 + B052 gate-green, BRIEF-10 (9de276bd)
+- docs(run-gate): LANE-AUTHORING.md + REMOTE-LANES-BUILDKITE.md -- sibling guides to CONSUMERS; E-5 (remote/async lanes) recorded in the post-v10 wave plan (780f9a98)
+- docs(assay): judgment.r2.discarded is DECLARED, NOT VERIFIED (B051, A-437) (5b2730b6)
+- docs(assay): Wave D generation 9 returned -- B069 + B050 verified green, B051 blocked; DA-R25..R27; generation 10 dispatched (850a45fe)
+- docs(assay): Wave D generation 9 checkpoint -- B069 + B050 gate-green, B051 BLOCKED, BRIEF-9 (1b127356)
+- docs(assay): Wave D generation 8 returned -- the v10 cut b2fd09f3 verified green; DA-R22..R24; generation 9 dispatched (9d664b3a)
+- docs(assay): Wave D generation 8 checkpoint -- the v10 cut is green, BRIEF-8 (af1df91d)
+- docs(run-gate,assay): run-gate resumable-gate wave dispatched (E-1: RG-35/36/32/34 -> 23.4.0); operator rulings D1-D7 accepted, F015 leaves Wave D (DA-R21) (dc6e88c4)
+- docs(run-gate,assay): RG-37/RG-38 id swap -- resume-state durability is RG-38, RG-37 is the ciu v8 session's container-derivation row (05e123d3)
+- docs(assay,run-gate): wave plan after v10 -- the progress/re-attach/unbounded-budget pattern folded in, sequencing E-1..E-4, decisions D1..D7 (8f2f939f)
+- docs(assay): A-434 -- DA-R18 amends A-433, RED_FIRST_UNPROVEN is a judged FAIL (4538bd66)
+- docs(assay): Wave D controller log -- generation 7 verified (design complete, B007 measured), DA-R18..DA-R20, generation 8 dispatched for the v10 cut (48c48599)
+- docs(assay): Wave D generation 7 checkpoint -- A-430..A-433, B007 measured, BRIEF-7 (0016d6cf)
+- docs(assay): the last three phase-2 design rows -- B004, B007 (measured), F015/R4 (A-430..A-433) (26b38cc4)
+- docs(assay): Wave D controller log -- generation 6 verified (gate-green on bfb55e3f), DA-R16 F015 = R4, DA-R17 B007 measured first, generation 7 dispatched (6917423d)
+- docs(assay): Wave D generation 6 checkpoint -- A-425/A-426/A-429 gate-green on bfb55e3f, BRIEF-6 (ed287d73)
+- docs(assay): Wave D controller log -- operator directive on resume/progress handled estate-wide, two items routed to the branch (13df60ec)
+- docs(assay): Wave D controller log -- R-1 round 2 ACCEPT-conditional on e3ae8ada, DA-R15 (SF-6 rides with A-425) (72eabede)
+- docs(assay): Wave D controller log -- generation 5 verified (fix package gate-green on e3ae8ada), DA-R13/DA-R14, R-1 round 2, generation 6 (4f2ca8e7)
+- docs(assay): Wave D generation 5 checkpoint -- R-1's fix package landed and gate-green on e3ae8ada, BRIEF-5 (fb8d03f5)
+- docs(assay): R-1 round 1's FINAL report, verbatim (839 lines, superseding the 756-line interim) (e44c1056)
+- docs(assay): Wave D controller log -- generation 4 verified (B024 gate-green on 7c9e8dd1), DA-R12, generation 5 dispatched (c35baa9e)
+- docs(assay): Wave D generation 4 checkpoint -- B024 landed and gate-green on 7c9e8dd1, R-1 round 1 filed, ciu assets re-captured, BRIEF-4 (efbab2bb)
+- docs(assay): Wave D controller log -- R-1 round 1 NOT ACCEPT, rulings DA-R8..DA-R11, fix package routed (c5692c4c)
+- docs(assay): Wave D controller log -- second escalation, paused probes killed to stop swap-out (c23a4558)
+- docs(assay): Wave D controller log -- load incident escalation, reviewer probes serialized (2268cae4)
+- docs(assay): Wave D -- host-load incident recorded, serial-test/one-gate rule added to the wave prompt (92af352f)
+- docs(assay): Wave D controller log -- phase 1 complete (gate PASS on 93188912), DA-R7 ruled (B024 lint closure), R-1 and generation 4 dispatched (72bc041f)
+- docs(assay): Wave D generation 3 checkpoint -- phase 1 complete, BRIEF-3, green gate on 93188912 (b90ca598)
+- docs(assay): Wave D controller log -- generation 2 verified (7/10 phase-1 items, gate PASS on c80b3452), DA-R3..DA-R6 ruled, generation 3 dispatched (ba741c3b)
+- docs(assay): Wave D generation 2 checkpoint -- BRIEF-2 and the green gate on c80b3452 (10d9390d)
+- docs(assay): Wave D controller log -- generation 1 verified (B049/A-408, gate PASS on 299d18a0), DA-R1/DA-R2 ruled, generation 2 dispatched (602e1930)
+- docs(assay): record the green registered gate on 299d18a0 (36ac802c)
+- docs(assay): Wave D generation 1 checkpoint -- BRIEF-1 and the gate log (299d18a0)
+- docs(assay): Wave D dispatched -- wave prompt (16 rulings, 3 phases, one v10 cut) and controller log (a4a865da)
+- docs(assay): Wave C closed -- controller log final entry, DA-R3 note on B053, srdm P14 note (0556d309)
+
+### Testing
+- test(assay): a local tripwire for the gate harnesses' contract pins (B069, A-435) (61b8d836)
+- test(assay): the gate's assay stubs read --verdict-json from argv, not $5 (A-429 follow-up) (bfb55e3f)
+
 ## [4.1.0] - 2026-09-02
 <!-- cmru: generated -->
 <!-- cmru: source-end=1e80268181516b9a6ad83a63b8e71a5f9908c3c5 -->
