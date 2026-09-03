@@ -8204,7 +8204,10 @@ class TestInflightRecordStore:
             idir.chmod(0o700)
         assert "could not clear" in capsys.readouterr().err
 
-    @pytest.mark.parametrize("body", ["not json", "[]", '{"lane": "suite"}'])
+    @pytest.mark.parametrize("body", [
+        "not json", "[]", '{"lane": "suite"}',
+        json.dumps({"schema": run_gate.INFLIGHT_SCHEMA, "lane": "suite"}),
+    ])
     def test_a_record_without_a_container_is_no_record(self, tmp_path, body):
         path = tmp_path / "rec.json"
         path.write_text(body)
