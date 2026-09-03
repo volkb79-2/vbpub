@@ -7017,12 +7017,46 @@ class TestInflightRecordDecisions:
         out = capsys.readouterr().out
         assert "run-gate: progress mutation: candidate 41/172" in out
 
+    def test_a_recorded_null_progress_falls_back_to_the_config(
+            self, tmp_path, monkeypatch, capsys):
+        """Review round 2, N-a. PRESENCE of the key used to decide, so a
+        record whose `progress` is present-but-`null` silently disabled the
+        stall watch on every re-attach and follow. Only a COMMAND lane's
+        record writes that `null` today and a command lane cannot declare
+        `stall_timeout`, so it is unreachable in production — but it is
+        reachable the instant a lane's `kind` changes between two
+        invocations, and it fails SILENT, which is the shape R-40 exists to
+        end. A record that names no path falls back to the config."""
+        repo, proj, log, state = self._fixture(
+            tmp_path, monkeypatch, config=self.ASSAY_ARTIFACT_LANE)
+        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
+        write_progress(proj / ".assay" / "progress-cw2b_schema.jsonl",
+                       candidate(41))
+        plant_inflight(proj, repo, state, lane="mutation", status="running",
+                       progress=None)
+        (state / ".hang").write_text("")
+        stop = threading.Event()
+
+        def release():
+            stop.wait(1.0)
+            (state / ".hang").unlink(missing_ok=True)
+
+        releaser = threading.Thread(target=release, daemon=True)
+        releaser.start()
+        try:
+            assert run_gate.main(["mutation"]) == 0
+        finally:
+            stop.set()
+            releaser.join(timeout=10)
+        assert "run-gate: progress mutation: candidate 41/172" in \
+            capsys.readouterr().out
+
     def test_a_pre_rev_34_record_without_the_keys_falls_back_to_the_config(
             self, tmp_path, monkeypatch, capsys):
-        """PRESENCE of the key is the authority test, not truthiness: a
-        record written before rev 34 named no artifacts at all and must
-        still get the config's answer, while a COMMAND lane's recorded
-        `null` correctly discloses no verdict."""
+        """A record written before rev 34 named no artifacts at all and must
+        still get the config's answer. Since N-a a recorded `null` is the
+        same answer — "this record names no path" — rather than "there is no
+        path"."""
         repo, proj, log, state = self._fixture(
             tmp_path, monkeypatch, config=self.ASSAY_ARTIFACT_LANE)
         record = plant_inflight(proj, repo, state, lane="mutation",
@@ -7874,6 +7908,21 @@ class TestOwnerLivenessAndFollowEdges:
 
     def test_no_such_process_is_not_an_answer(self):
         assert run_gate.process_start_ticks(2 ** 22 + 1) is None
+
+    def test_a_single_repoll_still_reports_the_owner_it_was_given(
+            self, tmp_path, monkeypatch):
+        """Review round 2, N-b. `OWNER_RACE_REPOLLS` counts the CALLER's read
+        as the first, so at a tuned value of 1 the loop body never runs — and
+        an `owner` initialised to `None` then reported "the owner exited
+        without clearing" about an owner nobody had re-checked. Correct at
+        the shipped 3; a trap for whoever tunes the constant."""
+        repo, proj = make_history_repo(tmp_path, SIMPLE_LANE)
+        pending = json.loads(
+            plant_inflight(proj, repo, None, **live_owner_fields())
+            .read_text())
+        monkeypatch.setattr(run_gate, "OWNER_RACE_REPOLLS", 1)
+        assert run_gate.repoll_owner_race(proj, "suite", pending) == \
+            (pending, os.getpid())
 
     def test_a_record_from_another_pid_namespace_reads_as_ALIVE_not_dead(self):
         """RW-29 (review round 2, G3). `boot_id` is host-GLOBAL — identical in

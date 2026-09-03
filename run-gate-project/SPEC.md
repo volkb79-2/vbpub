@@ -1030,9 +1030,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       declared (`verdict`, `progress`), not the ones this invocation's
       config would construct: they are what THAT run was told to write, and
       the live config is not the authority for a run already in flight.
-      Presence of the key is the test, so a record written before rev 34
-      falls back to the config and a command lane's recorded `null`
-      correctly discloses no verdict.
+      A record that NAMES no path — the key absent, or the `null` a command
+      lane's record writes — falls back to the config, which for a command
+      lane still discloses no verdict and arms no watch. Presence of the key
+      used to be the test; a `null` then suppressed the artifact and, worse,
+      SILENTLY disabled the stall watch of a lane whose `kind` had changed
+      between two invocations.
   - **`R-39d` Where it does not apply.** `--dry-run` DISCLOSES a record and
     names what a live run would do with it, and changes nothing — it does
     not attach, collect, clear or remove. The disclosure resolves HEAD and
@@ -1209,9 +1212,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       (`R-39a`'s `progress`), not the one this invocation's config would
       construct: it is the file that run was told to write, and a lane
       retargeted between the two invocations would otherwise be judged by
-      the silence of a file nobody was ever going to append to. Presence of
-      the key decides, so a record written before rev 34 falls back to the
-      config.
+      the silence of a file nobody was ever going to append to. A record
+      that names no path there — absent, or `null` — falls back to the
+      config, so neither a pre-rev-34 record nor a lane that has just become
+      an assay lane loses its watch in silence.
   - **`R-40d` Coarse now, exact later, same code.** assay's events carry no
     timestamp today, so the rate is measured against run-gate's OWN clock
     from the first event it observed and advancement is the file's mtime.
