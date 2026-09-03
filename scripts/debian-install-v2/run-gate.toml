@@ -12,12 +12,25 @@
 # --commit/partx/mkswap path needs root + a container to test at all.
 # Neither fake-integration nor r1-privileged-commit is part of [lanes.gate];
 # run them by explicit name.
+#
+# environment = "bare-host", deliberately, every lane (run-gate RG-43): as
+# of rev 36, plain "host" is a CONTAINER default (DEFAULT_HOST_IMAGE), not
+# bare execution — and that image has no pytest/assay reachable for this
+# devcontainer's UID outside the interactive shell's own pre-activated
+# venv (measured live: `/usr/local/bin/python3 -m pytest` -> "No module
+# named pytest" inside a fresh `docker run` of the same image). Every lane
+# here needs the invoking devcontainer's real environment (venv, pip-
+# installed test tooling, and r1-privileged-commit's own nested Docker
+# access), same reasoning run-gate-project's own selftest lane already
+# documents (SPEC.md R-42) for the identical trap. RG-43's own estate-wide
+# sweep of every other `environment = "host"` lane this flip affects has
+# not happened yet — this file is that sweep's first, scoped instance.
 # =============================================================================
 schema_version = 1
 
 [lanes.r0-r1]
 kind = "command"
-environment = "host"
+environment = "bare-host"
 argv = [
     "bash", "-c",
     "cd {worktree}/scripts/debian-install-v2 && python3 -m compileall -q debian_install_v2 && PYTHONPATH=. python3 -m pytest debian_install_v2/tests -q --cov=debian_install_v2 --cov-branch --cov-report=term-missing",
@@ -31,7 +44,7 @@ budget = "5m"
 # assay.toml [lanes.r2]; this lane just installs and invokes it.
 [lanes.r2]
 kind = "command"
-environment = "host"
+environment = "bare-host"
 argv = [
     "bash", "-c",
     "cd {worktree} && pip install -q -e assay && cd {worktree}/scripts/debian-install-v2 && mkdir -p .assay && exec assay run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
@@ -44,7 +57,7 @@ artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
 # contract a named test claims to assert, and that test must go red.
 [lanes.r3]
 kind = "command"
-environment = "host"
+environment = "bare-host"
 argv = [
     "bash", "-c",
     "cd {worktree}/scripts/debian-install-v2 && exec tools/canary-run.sh",
@@ -54,7 +67,7 @@ budget = "5m"
 
 [lanes.fake-integration]
 kind = "command"
-environment = "host"
+environment = "bare-host"
 argv = [
     "bash", "-c",
     "cd {worktree}/scripts/debian-install-v2 && PYTHONPATH=. python3 -m pytest debian_install_v2/tests/test_fake_integration.py -q",
@@ -69,7 +82,7 @@ budget = "3m"
 # of any aggregate lane and nothing else here depends on it passing.
 [lanes.r1-privileged-commit]
 kind = "command"
-environment = "host"
+environment = "bare-host"
 argv = [
     "bash", "{worktree}/scripts/debian-install-v2/testing/run-privileged-tests.sh",
 ]
@@ -83,7 +96,7 @@ budget = "10m"
 # deliberately NOT part of this aggregate — see the file header.
 [lanes.gate]
 kind = "command"
-environment = "host"
+environment = "bare-host"
 argv = [
     "bash", "-c",
     "./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r2 && ./run-gate.py --worktree {worktree} r3",
