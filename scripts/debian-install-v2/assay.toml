@@ -10,7 +10,7 @@ enforcement = "gate"
 argv = ["python3", "-m", "pytest", "debian_install_v2/tests", "-q"]
 env = { PYTHONPATH = ".", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-budget = "20m"
+budget = "35m"
 allow_argv_append = false
 
 # This is a monorepo lane: assay's snapshot walks the whole resolved commit,
