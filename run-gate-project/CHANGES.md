@@ -143,6 +143,12 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     all three stay with the owner, so the run is still recorded exactly once.
     `--fresh` against a live owner is refused by pid; run-gate never removes
     another client's container. A DEAD owner is adopted exactly as above.
+    The one state where a live owner's container is ALREADY gone is the
+    owner's own `rm -f` → clear-the-record window, microseconds wide, so the
+    decision is re-read three times over about a second before any refusal:
+    normally the record has gone by the second read and this client simply
+    runs fresh, because a refusal naming a pid whose run has finished is
+    worse than a one-second wait. Bounded, never a wait loop.
   - **"Gone" is exactly one thing, and the name is not the identity.** Only
     `No such object` / `No such container` on `docker inspect`'s stderr
     means the container is gone; every other inspect failure (an unreachable

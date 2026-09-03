@@ -1015,14 +1015,28 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       issued BEFORE the log stream and runs concurrently with it, because the
       owner removes the container within milliseconds of its exit and a wait
       issued after that removal would answer "No such container" — a
-      follower reporting exit 3 on a lane it just watched pass.
+      follower reporting exit 3 on a lane it just watched pass. The price is
+      one EXTRA docker client held open for the lane's whole duration, and
+      it is accepted deliberately: the alternative loses the follower's exit
+      code on every clean finish, which is every run that matters.
     - **Owner alive, `--fresh`** → REFUSED (exit 2), naming the pid.
       run-gate never removes another client's container; `--fresh` is an
       escape from a container nobody is watching.
-    - **Owner alive, container already gone** → refused (exit 2) naming the
-      pid, record untouched: the owner is inside its own `finally` and owns
-      that outcome; a second `aborted` written from here would be a second
-      result for one run.
+    - **Owner alive, container already gone** → the decision is RE-READ
+      first, `OWNER_RACE_REPOLLS = 3` times in all (the first read included)
+      at `OWNER_RACE_PAUSE_SECONDS = 0.5` apart, ~1 s in total. The two
+      facts can only both hold inside the owner's own `docker rm -f` →
+      `clear_inflight_record` window, which is microseconds wide, so the
+      second read normally finds NO RECORD: this client then says so and
+      runs fresh, because a refusal naming a pid whose run is already over
+      is worse than a one-second wait. If the record vanished → run fresh.
+      If the owner died meanwhile → the ordinary gone-container path
+      (`aborted`, cleared, fresh). Only if the owner is STILL alive after
+      the full window is it refused (exit 2) naming the pid, record
+      untouched: the owner owns that outcome, and a second `aborted` written
+      from here would be a second result for one run. Bounded, never a wait
+      loop — an owner genuinely wedged between those two statements must
+      still produce the refusal.
     - **Owner dead** (or a record from before rev 34, which names no owner)
       → `R-39b` unchanged: re-attach, collect, report-and-clear, or refuse on
       a commit mismatch. "After its client dies" is now literally what the

@@ -6220,6 +6220,22 @@ def live_owner_fields() -> dict:
             "boot_id": run_gate.boot_id()}
 
 
+def _no_op_sleep(monkeypatch, then=None) -> list[float]:
+    """Record RW-20's re-poll pauses instead of taking them, optionally
+    running `then` in the gap — which is where the OWNER's own cleanup would
+    land in the race this bounds. Returns the list of requested durations, so
+    a test can assert the re-poll is BOUNDED and not a wait loop."""
+    seen: list[float] = []
+
+    def _sleep(seconds):
+        seen.append(seconds)
+        if then is not None:
+            then()
+
+    monkeypatch.setattr(run_gate.time, "sleep", _sleep)
+    return seen
+
+
 def _wait_for(predicate, what: str, timeout: float = 30.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -6393,6 +6409,7 @@ class TestInflightRecordDecisions:
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         record = plant_inflight(proj, repo, state, status=None,
                                 **live_owner_fields())
+        sleeps = _no_op_sleep(monkeypatch)
         assert run_gate.main(["suite"]) == 2
         err = capsys.readouterr().err
         assert f"owned by a live client (pid {os.getpid()}" in err
@@ -6402,6 +6419,52 @@ class TestInflightRecordDecisions:
         # this client did not start and cannot report on.
         assert "is gone" not in json.dumps(read_store(proj))
         assert record.exists()
+        # RW-20: the refusal is reached only AFTER the bounded re-poll, and
+        # the re-poll is bounded — three reads in all, not a wait loop.
+        assert len(sleeps) == run_gate.OWNER_RACE_REPOLLS - 1
+        assert sleeps == [run_gate.OWNER_RACE_PAUSE_SECONDS] * len(sleeps)
+
+    def test_a_live_owner_whose_record_clears_mid_decision_runs_fresh(
+            self, tmp_path, monkeypatch, capsys):
+        """RW-20. A live owner AND a gone container can only both be true
+        inside the owner's own `docker rm -f` -> `clear_inflight_record`
+        window. Refusing there names a pid whose run is already finished, so
+        the decision is re-read first; the second read finds no record."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, status=None,
+                                **live_owner_fields())
+        _no_op_sleep(monkeypatch, then=lambda: record.unlink(missing_ok=True))
+        assert run_gate.main(["suite"]) == 0
+        out = capsys.readouterr().out
+        assert ("whose live owner cleared the record while this client was "
+                "deciding") in out
+        assert "owned by a live client" not in out
+        # Nothing was recorded FOR the owner's run: it reported its own.
+        assert "aborted" not in json.dumps(read_store(proj))
+        assert len(lane_runs(log)) == 1        # ran fresh, exactly once
+
+    def test_an_owner_that_dies_mid_decision_takes_the_lost_container_path(
+            self, tmp_path, monkeypatch, capsys):
+        """The other way the race resolves: the record is still there but its
+        owner is gone, i.e. a client that died between `rm -f` and clearing.
+        That is the ordinary lost-container case and must be recorded as
+        `aborted`, not refused by a pid that no longer exists."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, status=None,
+                                **live_owner_fields())
+
+        def _owner_dies():
+            payload = json.loads(record.read_text())
+            payload["owner_start"] = 1     # the pid was recycled / is gone
+            record.write_text(json.dumps(payload))
+
+        _no_op_sleep(monkeypatch, then=_owner_dies)
+        assert run_gate.main(["suite"]) == 0
+        out = capsys.readouterr().out
+        assert "recording that run as aborted" in out
+        assert "owned by a live client" not in out
+        assert len(lane_runs(log)) == 1
+        assert not record.exists()
 
     @pytest.mark.parametrize("over, why", [
         ({"owner_start": 1}, "the pid was recycled onto another process"),
