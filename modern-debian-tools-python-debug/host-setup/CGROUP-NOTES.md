@@ -334,6 +334,101 @@ that RAM is taken from every other tier, including production.
 
 ---
 
+## `vm.swappiness` — common settings, and how to tell if the current one is right
+
+**Host-global only — there is no per-cgroup knob in cgroup v2** (confirmed
+both by `ls /sys/fs/cgroup/**/memory.swappiness` finding nothing, and by
+`MEASUREMENTS.md` M5's own note: *"There is no per-cgroup swappiness in
+cgroup v2"*). It also does **not** distinguish anonymous pages from shmem —
+both sit on the same swap-backed side of the ledger. Raising it doesn't
+protect anon specifically; it makes the kernel more willing to reclaim the
+whole combined anon+shmem pool earlier, in exchange for holding file-backed
+page cache (executables, `.so`s, Docker layers) longer. It is a *balance*
+knob between two pools, not a size knob on either one.
+
+### Settings actually in use across this estate, and why each one is what it is
+
+| Value | Where | Rationale |
+|---|---|---|
+| **100** | gstammtisch prod game host, staged (`gstammtisch-guide/files/etc/sysctl.d/99-gstammtisch-memory.conf`) | With zswap fronting swap, an anon reclaim costs ~3–5 µs (decompress from RAM) — cheap. The design *wants* cold anon pushed into that pool early so file cache (Docker layers, the game binary's own `.text`, build cache) stays resident, because a **file** refault always costs a real disk read. The game itself is protected from memory pressure by cgroup `memory.min`, deliberately *not* by lowering swappiness — see `MEMORY-ARCHITECTURE.md` §4 and `MEASUREMENTS.md` M5. |
+| **50** | `debian-install-v2`'s generic `vm_swappiness` tool default (`debian_install_v2/README.md`, `templates.py`) | A conservative baseline for hosts where the zswap-cheap-anon argument hasn't been validated — "anon pages stay the precious tier even with zswap making reclaim cheap." Same tool's own docs point at gstammtisch's `100` as the validated zswap-aware alternative, and `5`–`10` as the opposite extreme (below). |
+| **5–10** | Same README, documented for "latency-sensitive workloads (databases) that want almost no anon reclaim regardless of swap cost" | **This is a generic, non-zswap-aware heuristic — be skeptical of it on a zswap-fronted host.** It optimizes for "never touch anon," which is exactly the tradeoff M5's reasoning argues *against* once zswap makes that reclaim cheap: going low protects anon by evicting file pages (code!) instead, which is the expensive direction here. Relevant to the schema-gate-pg question directly, since "postgres wants low swappiness" is the same generic advice — it's not automatically right on this specific host's architecture (see the applied answer below). |
+| **80 / 60 / 10** | Plain RAM-size heuristic (`docs/SWAP_CONFIGURATIONS.md`, `debian-install/setup-swap.sh`): ≤2 GB→80, ≥16 GB→10, else→60 | A different, non-zswap-aware design entirely: treats swapping as uniformly costly and to be minimized as RAM grows. Doesn't reason about a compressed-pool tier at all — inapplicable to this host's actual architecture, listed here only because it exists elsewhere in the estate and could otherwise look like conflicting guidance. |
+| **30** | Superseded (`GAMINGHOST-SWAP-1.md`) | The earlier doc's own value, explicitly called **"backwards"** in the `SWAP-2` rewrite: it would hoard cold anon in *uncompressed* RAM at the expense of evicting useful file cache. Historical record only — do not reintroduce. |
+
+**Live discrepancy on this host, verified this session:** `/proc/sys/vm/swappiness`
+currently reads **`10`** (re-checked live; `plan-host-resource-governance.md`
+§1.1's own earlier snapshot recorded `5` — the live value has drifted since,
+but is still nowhere near the intended `100`). The staged `100` in
+`99-gstammtisch-memory.conf` has never actually been applied — nothing under
+`/etc/sysctl.d` persists it, matching that plan doc's explicit, deliberate
+decision (§7 item 4) to persist it **only after** the oversubscription caps
+land, not opportunistically. Net effect right now: this host is
+accidentally running close to the generic "protect anon at all costs" `5`–`10`
+regime, the opposite of the zswap-aware design it's actually built for.
+
+### The tool/metric that tells you if a given setting is right
+
+Not a single number — a **refault-source split**, already worked out in
+`MEASUREMENTS.md` M5 (titled, verbatim, "is swappiness=100 right?" — the
+recipe generalizes to any value):
+
+```bash
+# Global:
+grep -E 'workingset_refault_file|workingset_refault_anon|pswpin|pswpout' /proc/vmstat
+sleep 60
+grep -E 'workingset_refault_file|workingset_refault_anon|pswpin|pswpout' /proc/vmstat
+# per cgroup: grep -E '^(zswpin|zswpout|workingset_refault_(anon|file)) ' <cg>/memory.stat
+
+# Is anyone actually stalling on it? (refaults tell you WHAT is being
+# reclaimed; PSI tells you whether it's causing pain)
+cat /proc/pressure/memory
+```
+
+| Observation | Meaning | Action |
+|---|---|---|
+| `workingset_refault_file` ≈ 0, anon reclaim mostly served by `zswpin`, `pswpin` ≈ 0 | Cache is big enough, and anon reclaim is absorbed by the cheap (zswap) path | Current setting is right — leave it |
+| `workingset_refault_file` sustained ≫ 0 (and PSI shows real pressure) | Kernel is dropping needed **file** pages — code, not data | Raising swappiness further is already near-maxed-out territory (200 ceiling) — protect the cache by capping the anon hogs instead, not by tuning this knob |
+| `pswpin`/`pswpout` (real disk swap, not `zswpin`/`zswpout`) sustained ≫ 0 | The "cold" anon tail isn't actually cold, or a floor (`memory.min`) is too low | Fix floors/writeback policy, not swappiness |
+
+The asymmetry to keep in mind on a zswap host: an anon refault served by
+`zswpin` costs microseconds; a **file** refault always costs a real disk
+read (ms). That's why the recipe treats `workingset_refault_file` as the
+alarm signal and `zswpin`/`pswpin` as expected background noise.
+
+### Applying it to this host, right now (measured live this session)
+
+Against the pasted snapshot (`MemTotal` 16.0G, `MemFree` 385M, `buff/cache`
+3.49G, `avail` 3.08G, swap 70.6G total / 52.2G free / 18.5G used) — same
+host, checked live in this session:
+
+- `vm.swappiness` = **10** (confirms the drift noted above).
+- Two independent samples (15 s and 60 s windows) both showed
+  **`workingset_refault_file` sustained around 120–165/s** — not a blip, the
+  same order of magnitude both times.
+- But the ground-truth costly-path counters stayed low: real disk `pswpin`
+  ≈ 0.4–0.7/s, and `/proc/pressure/memory` read `avg10=0.02 avg60=0.03
+  avg300=0.00` — essentially zero stall time.
+- Per the decision table: sustained file refaults with **no** accompanying
+  PSI pressure or disk swap-in doesn't match either alarm row cleanly — it
+  reads as "the cache is being churned but is currently absorbing it without
+  pain," closer to the top row (setting is fine, don't shrink the cache)
+  than the second (cache too small). **Honest caveat:** this sample was
+  taken while another agent was concurrently building/deploying the new
+  `schema-gate-pg` stack on this same host — exactly the kind of activity
+  that produces file-cache churn on its own, so this is a *busy* sample, not
+  a quiet baseline. Re-run the same 60 s `/proc/vmstat` delta during an idle
+  window before treating 120–165/s as steady-state.
+- Bottom line on "do we need the 3.5G page cache": nothing measured here
+  says it's excess. The refault rate under load says real work is landing on
+  it; PSI says it's coping. Shrinking it (via a lower swappiness, which
+  would also fight the zswap-aware design intent above) is not supported by
+  this evidence — if anything, today's live `swappiness=10` is already
+  biased toward protecting anon over cache, the opposite of what the host's
+  own design (`100`) calls for.
+
+---
+
 ## io.cost vs BFQ — an option this host doesn't use (yet)
 
 `io.latency` (the block-cgroup controller that would let a slice declare "keep
