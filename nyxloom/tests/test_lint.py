@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 import textwrap
 from pathlib import Path
 
@@ -586,6 +587,65 @@ class TestL9InfraMutex:
         assert len(l9_errors) > 0
 
 
+def _l10_project_root(tmp_path: Path, extra_toml: str, subdir: str = "l10-repo") -> Path:
+    """A real on-disk project (mirrors conftest.sample_project's own
+    git-init+add+commit shape -- NOT `_write_config_project`'s plain-files
+    one, further below in this file) with `extra_toml` appended to
+    SAMPLE_PROJECT_TOML under `.nyxloom/project.toml`. Caller calls
+    ProjectConfig.load(root) itself (never dataclasses.replace) -- each of
+    O1/O3/O4 needs a DIFFERENT [lint.l10] table on disk, so this builds a
+    fresh root per call rather than reusing the `sample_project` fixture
+    instance directly (NL-3 carve review B1)."""
+    from conftest import SAMPLE_PROJECT_TOML
+    root = tmp_path / subdir
+    (root / ".nyxloom").mkdir(parents=True)
+    (root / "handoff").mkdir()
+    (root / ".nyxloom" / "project.toml").write_text(SAMPLE_PROJECT_TOML + extra_toml)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "init"], cwd=root, check=True)
+    return root
+
+
+def _handoff_text_at_token_count(tokens: int) -> str:
+    """Handoff content (same shape as TestL10Size's own existing fixtures
+    above) whose L10 token estimate (len(full_text)//4, lint.py's own
+    formula) is EXACTLY `tokens` -- pads the body filler to hit the target
+    byte length precisely, so boundary assertions (`> N` vs `>= N`) are
+    unambiguous rather than merely far-from-boundary."""
+    template = """---
+schema_version: 1
+id: demo-P01-test
+project: demo
+title: Test
+tier: flash-high
+input_revision: "0000000"
+source: {{kind: review}}
+scope: {{touch: ["src/test.py"]}}
+oracles:
+  - id: O1
+    observable: "pass"
+    negative: "fail"
+    gate: pytest-q
+gates: [pytest-q]
+escalate_if: ["trigger"]
+---
+
+{body}
+BLOCKED: marker.
+worktree branch out of scope read first context to read
+"""
+    target_len = tokens * 4
+    base_len = len(template.format(body=""))
+    body_len = target_len - base_len
+    assert body_len >= 0, f"tokens={tokens} too small for template overhead ({base_len} chars)"
+    text = template.format(body="x" * body_len)
+    assert len(text) // 4 == tokens
+    return text
+
+
 class TestL10Size:
     """Test L10: size limits."""
 
@@ -656,6 +716,112 @@ worktree branch out of scope read first context to read
         findings = lint.lint_file(path, sample_project)
         l10_errors = [f for f in findings if f.rule == "L10"]
         assert any(f.severity == "error" for f in l10_errors)
+
+    def test_o1_partial_override_reaches_load_and_pins_new_boundary(self, tmp_path):
+        """O1: a REAL ProjectConfig.load() (not dataclasses.replace) on a
+        project whose .nyxloom/project.toml has [lint.l10] error_tokens =
+        25000 (warn_tokens absent) produces cfg.l10.error_tokens == 25000
+        and cfg.l10.warn_tokens == 10000 (untouched default); a handoff at
+        exactly the new boundary (25000 tokens) is WARNING not ERROR, and
+        one token over (25001) IS ERROR. Proves the override reaches the
+        instance .load() returns, a partial override leaves the other
+        field at its default, and the exact strict `>` boundary survives
+        parameterization."""
+        root = _l10_project_root(tmp_path, "\n[lint.l10]\nerror_tokens = 25000\n")
+        cfg = config.ProjectConfig.load(root)
+        assert cfg.l10.error_tokens == 25000
+        assert cfg.l10.warn_tokens == 10000
+
+        at_boundary = tmp_path / "at-boundary.md"
+        at_boundary.write_text(_handoff_text_at_token_count(25000))
+        findings = lint.lint_file(at_boundary, cfg)
+        l10 = [f for f in findings if f.rule == "L10"]
+        assert any(f.severity == "warning" for f in l10)
+        assert not any(f.severity == "error" for f in l10)
+
+        over_boundary = tmp_path / "over-boundary.md"
+        over_boundary.write_text(_handoff_text_at_token_count(25001))
+        findings2 = lint.lint_file(over_boundary, cfg)
+        l10_2 = [f for f in findings2 if f.rule == "L10"]
+        assert any(f.severity == "error" for f in l10_2)
+
+    def test_default_thresholds_boundary_values(self, sample_project, tmp_path):
+        """O2 addendum: pins today's strict `>` boundary as part of the
+        frozen contract, not an implementation detail free to drift once
+        the literals become variables -- a handoff at exactly 10000
+        tokens is not flagged at all, and one at exactly 18000 tokens is
+        WARNING, not ERROR, against the plain (no-override) default
+        config."""
+        at_warn = tmp_path / "at-warn.md"
+        at_warn.write_text(_handoff_text_at_token_count(10000))
+        findings = lint.lint_file(at_warn, sample_project)
+        assert not any(f.rule == "L10" for f in findings)
+
+        at_error = tmp_path / "at-error.md"
+        at_error.write_text(_handoff_text_at_token_count(18000))
+        findings2 = lint.lint_file(at_error, sample_project)
+        l10 = [f for f in findings2 if f.rule == "L10"]
+        assert any(f.severity == "warning" for f in l10)
+        assert not any(f.severity == "error" for f in l10)
+
+    def test_o3_malformed_warn_greater_than_error_raises(self, tmp_path):
+        """O3, case 1: warn_tokens > error_tokens raises ValueError at
+        load time, before any handoff is linted."""
+        root = _l10_project_root(
+            tmp_path, "\n[lint.l10]\nwarn_tokens = 20000\nerror_tokens = 10000\n")
+        with pytest.raises(ValueError):
+            config.ProjectConfig.load(root)
+
+    def test_o3_malformed_warn_equals_error_raises(self, tmp_path):
+        """O3, case 2 (the finding that failed the first carve draft): the
+        validation is warn_tokens >= error_tokens, not strict `>`, so
+        EQUALITY is also malformed -- a different boundary than
+        _check_l10's own strict `>` comparison (Work item 2/3 state this
+        explicitly; do not confuse the two)."""
+        root = _l10_project_root(
+            tmp_path, "\n[lint.l10]\nwarn_tokens = 10000\nerror_tokens = 10000\n")
+        with pytest.raises(ValueError):
+            config.ProjectConfig.load(root)
+
+    def test_o3_malformed_non_positive_raises(self, tmp_path):
+        """O3, case 3: a non-positive value raises ValueError at load
+        time."""
+        root = _l10_project_root(
+            tmp_path, "\n[lint.l10]\nerror_tokens = -5\n")
+        with pytest.raises(ValueError):
+            config.ProjectConfig.load(root)
+
+    def test_o4_lowered_thresholds_apply_symmetrically(self, tmp_path):
+        """O4: a full override LOWERING both thresholds below the
+        tool-wide defaults (warn_tokens=500, error_tokens=1000) lints a
+        ~700-token handoff (far under the OLD 10000/18000 defaults, but
+        between the NEW tighter numbers) as L10 WARNING -- same code path
+        as the raising case in O1, no special-cased direction."""
+        root = _l10_project_root(
+            tmp_path, "\n[lint.l10]\nwarn_tokens = 500\nerror_tokens = 1000\n")
+        cfg = config.ProjectConfig.load(root)
+        assert cfg.l10.warn_tokens == 500
+        assert cfg.l10.error_tokens == 1000
+
+        handoff = tmp_path / "lowered.md"
+        handoff.write_text(_handoff_text_at_token_count(700))
+        findings = lint.lint_file(handoff, cfg)
+        l10 = [f for f in findings if f.rule == "L10"]
+        assert any(f.severity == "warning" for f in l10)
+        assert not any(f.severity == "error" for f in l10)
+
+    def test_o5_schema_accepts_partial_l10_override(self, tmp_path):
+        """O5: nyxloom lint's own config-schema check (CFG1 /
+        lint.lint_config) run against a nyxloom.toml declaring ONLY
+        [lint.l10] error_tokens = 25000 (the same partial-override shape
+        O1 uses) produces no schema-validation finding -- proves
+        warn_tokens/error_tokens were NOT marked required, and lint/l10's
+        additionalProperties:false doesn't reject the legal partial
+        shape."""
+        root = _l10_project_root(tmp_path, "\n[lint.l10]\nerror_tokens = 25000\n")
+        cfg = config.ProjectConfig.load(root)
+        findings = lint.lint_config(cfg)
+        assert not any(f.rule == "CFG1" for f in findings)
 
 
 class TestL11BodySections:
@@ -968,7 +1134,7 @@ class TestGoldenCorpus:
             ("demo-P18-path.md", "L7", True),
             ("demo-P19-intro.md", "L8", True),
             ("demo-P20-infra.md", "L9", True),
-            ("demo-P21-huge.md", "L10", False),  # L10 warning becomes error over 12k
+            ("demo-P21-huge.md", "L10", False),  # L10 warning becomes error over 18k
             ("demo-P22-missing.md", "L11", True),
             ("demo-P23-blocked.md", "L12", True),
         ],

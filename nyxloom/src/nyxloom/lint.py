@@ -65,8 +65,11 @@ L8  error   escalate_if entries containing introspective phrasing
             flagged 'non-mechanical escalation trigger (P51)'.
 L9  error   if any scope.touch glob/path matches cfg.infra_globs, the
             effective mutexes (fm.effective_mutexes()) must include 'stack'.
-L10 warning body+frontmatter token estimate (len(text)//4) over 10000 ->
-            warning; over 18000 -> error. Message includes the estimate.
+L10 warning body+frontmatter token estimate (len(text)//4) over
+            cfg.l10.warn_tokens -> warning; over cfg.l10.error_tokens ->
+            error. Message includes the estimate. Per-project-configurable
+            via `[lint.l10]` in nyxloom.toml (NL-3); defaults to 10000/18000
+            when absent.
 L11 error   body must contain (case-insens.) a worktree path mention
             ('worktree'), a branch name ('branch'), an out-of-scope/forbid
             mention ('out of scope' or 'forbid'), and a context section
@@ -203,7 +206,7 @@ def lint_file(path: Path, cfg: ProjectConfig) -> list[LintFinding]:
     _check_l9(findings, path, fm, cfg)
 
     # L10: Size limits
-    _check_l10(findings, path, full_text)
+    _check_l10(findings, path, full_text, cfg)
 
     # L11: Body contains required sections
     _check_l11(findings, path, body)
@@ -1076,19 +1079,26 @@ def _check_l9(findings: list[LintFinding], path: Path, fm, cfg: ProjectConfig) -
 
 
 # ----- L10 -----
-def _check_l10(findings: list[LintFinding], path: Path, full_text: str) -> None:
-    """Check: size limits."""
+def _check_l10(findings: list[LintFinding], path: Path, full_text: str,
+                cfg: ProjectConfig) -> None:
+    """Check: size limits. Thresholds are per-project-configurable via
+    cfg.l10 (NL-3; `[lint.l10]` in nyxloom.toml, defaulting to 10000/18000
+    -- see config.L10Config). Strict `>` on both branches: a handoff at
+    exactly warn_tokens or exactly error_tokens is NOT flagged/escalated at
+    that tier -- this boundary behavior is part of the frozen contract, not
+    an implementation detail free to drift now that the literals are
+    variables."""
     tokens = len(full_text) // 4
     message = f"handoff size {tokens} tokens"
 
-    if tokens > 18000:
+    if tokens > cfg.l10.error_tokens:
         findings.append(LintFinding(
             rule="L10",
             severity="error",
             message=message,
             path=str(path)
         ))
-    elif tokens > 10000:
+    elif tokens > cfg.l10.warn_tokens:
         findings.append(LintFinding(
             rule="L10",
             severity="warning",
