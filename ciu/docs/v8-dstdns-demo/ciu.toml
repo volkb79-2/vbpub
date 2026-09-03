@@ -1,0 +1,705 @@
+# ciu.toml — dstdns in CIU v8 notation (DEMO; SPEC-V8 draft.5 — per-file "draft.3" headers name the draft that introduced the notation, see README)
+# =============================================================================
+# Plain TOML, committed, the project's declarations. Layering (deep-merge,
+# no rendering anywhere in this chain — P11 "declarations are data"):
+#   ciu.toml → ciu.site.toml (sparse, committed) → ciu.instance.toml (operator,
+#   per checkout, gitignored) → ciu.instance.generated.toml (ciu-owned facts)
+#   → ciu.resolved.toml (rendered: everything merged + the derived [resolved.*]
+#   tables; atomic; the machine interface for templates, hooks, the gate, assay)
+#
+# Reading order for a newcomer: [project] → [service.*] (WHAT) → [realization]
+# (HOW) → [network.*] / [bundles] / [layouts] (WHERE) → [testing].
+# Nothing in this file names a container, a hostname, a phase, a route or a
+# contract: those are DERIVED (see examples/ciu.resolved.toml.example).
+# `ciu schema --json` describes this file; any TOML validator can check it.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# [project] — deployment-wide facts. No environment_tag (the instance id is the
+# identity), no network_name (derived), no environment (a layout property), no
+# label prefix (ownership labels are ciu.* — consumer labels live in templates).
+# -----------------------------------------------------------------------------
+[project]
+name = "dstdns"
+revision = 8
+log_level = "INFO"
+# landscape_id is deliberately absent here: it is declared per site in
+# ciu.site.toml (two landscapes sharing one id would read each other's Consul
+# overrides). Optional in the schema (S3.4.1); dstdns's own registry validator
+# (scripts/registry_check.py, stage 14) refuses a missing value.
+# No vendor-image list (draft.4, S3.4.3): an image is project-built iff its service declares `build` (S6.2); every other image is pulled.
+
+[project.registry]
+url = ""                 # image registry for project-built images; "" = local daemon
+namespace = "dstdns"     # project-built images are <namespace>/<name>:<tag>
+
+[project.health]         # merged into every [ciu_stack.<svc>.health]; ciu INJECTS them into healthcheck: (S6.6.4)
+interval = "10s"
+timeout = "5s"           # one HEALTHCHECK attempt — NOT the gate budget
+retries = 6
+start_period = "240s"    # slow first boots on this host's storage (authentik migrations)
+# gate_timeout (the inter-wave convergence budget) is derived per service:
+# start_period + interval * retries + 30s, unless a service declares its own.
+
+[project.compose_env]    # CONSUMER env passed to every compose process (S11.6); identity facts never belong here
+DSTDNS_TELEMETRY = "on"
+
+[project.control]
+enable_observability = true
+enable_admin_ui = true
+auth_enabled = true      # real OIDC login (Authentik); a secret's or binding's `enabled` may name this flag (S10.2, S6.4) — which is why it is not in a user table
+
+# -----------------------------------------------------------------------------
+# [service.<n>] — WHAT dstdns needs (LogicalServices). One line per realness
+# level: `live = "<realization>"`, or a table when the realization backs several
+# capabilities (`service` names the variant service). There is no `contract`
+# key: the contract of a service is DERIVED from what consumers bind to it
+# (endpoints in `binds.<x>.to`, facts in `binds.<x>.facts`), and ciu check
+# stage 5 proves that EVERY declared variant provides it.
+# -----------------------------------------------------------------------------
+[service.vault]
+description = "secrets backend; AppRole credentials are minted by its post_compose hook"
+live = "vault"
+
+[service.consul]
+description = "service discovery + ACL-scoped KV config plane"
+live = "consul_server"
+
+[service.redis]
+live = "redis_core"
+
+[service.main_db]
+description = "TimescaleDB: application DB + roles (DBA layer)"
+live = "db_core"
+seeded = "db_core_seeded"                       # prepared image with schema + fixtures baked in (tests)
+
+[service.object_store]
+live = { realized_by = "db_core", service = "minio" }     # one realization may back several services; `service` names which of its services carries THIS capability (health, endpoints, exec target)
+
+[service.db_admin]
+description = "pgAdmin + Adminer (operator UIs)"
+live = { realized_by = "db_core", service = "pgadmin" }
+
+[service.app_schema]
+description = "one-shot application schema init (controller_ddl); depending on it = its completion"
+live = "db_init"
+seeded = "db_core_seeded"                       # the seeded image already carries the schema
+
+[service.identity_provider]
+description = "Authentik OIDC/RBAC; mints ddcli's service password in its hook"
+live = "authentik"
+
+[service.mesh_node]
+description = "Tailscale node — the mesh network's transport daemon"
+live = "tailscale_node"
+
+[service.browser_service]
+description = "pwmcp Playwright-as-a-Service (browser gate for UI tests)"
+live = "pwmcp"
+
+[service.probe_targets]
+description = "DNS/HTTP targets the workers probe"
+live = "internet"                               # external: the real internet
+simulated = "mock_targets"                      # the mock DNS/HTTP stack
+
+[service.controller]
+live = "controller"
+
+[service.webapp_server]
+live = "webapp_server"
+
+[service.webapp_ui]
+live = "webapp_ui_react"
+
+[service.worker_io]
+live = "worker_io"
+
+[service.worker_db]
+live = "worker_db"
+
+[service.ddcli]
+live = "ddcli"
+
+[service.reverse_proxy]
+live = "reverse_proxy"
+
+[service.tracing]
+description = "SkyWalking OAP/UI/BanyanDB (+ its own Postgres)"
+live = "skywalking"
+
+[service.otel_aggregator]
+live = "otel_aggregator"
+
+[service.otel_collector]
+live = "otel_collector_node"
+
+[service.docker_stats_exporter]
+live = "docker_stats_exporter"
+
+[service.cadvisor]
+live = "cadvisor"
+
+[service.registry]
+live = "registry_lightweight"
+
+[service.github_runner]
+live = "github_runner"
+
+[service.github_runner_webhook]
+live = "github_runner_webhook"
+
+[service.webhook_listener]
+live = "webhook_listener"
+
+[service.tester]
+description = "persistent test-runner container the gate execs into"
+live = "test_runner"
+
+# -----------------------------------------------------------------------------
+# [realization] — HOW. One namespace across kinds; the name is identity
+# component 3 ({project}-{instance}-{realization}-{service}, service omitted
+# when it equals the realization name). A ciu_stack's file never states this
+# name; `location` binds it exactly once (the stack file is <location>/ciu.stack.toml).
+# -----------------------------------------------------------------------------
+[realization]
+vault                 = { kind = "ciu_stack", location = "infra/vault" }
+consul_server         = { kind = "ciu_stack", location = "infra/consul-server" }
+redis_core            = { kind = "ciu_stack", location = "infra/redis-core" }
+db_core               = { kind = "ciu_stack", location = "infra/db-core" }
+db_core_seeded        = { kind = "ciu_stack", location = "infra/db-core-seeded" }
+db_init               = { kind = "ciu_stack", location = "infra/db-init" }
+authentik             = { kind = "ciu_stack", location = "infra/authentik" }
+tailscale_node        = { kind = "ciu_stack", location = "infra/tailscale-node", per_host = true }   # transport daemon: deployed on EVERY host of a layout that reaches it; never a binding target with data (S7.6.5)
+pwmcp                 = { kind = "ciu_stack", location = "infra/pwmcp" }
+mock_targets          = { kind = "ciu_stack", location = "infra/mock-targets" }
+cadvisor              = { kind = "ciu_stack", location = "infra/cadvisor" }
+otel_aggregator       = { kind = "ciu_stack", location = "infra/otel-aggregator" }
+otel_collector_node   = { kind = "ciu_stack", location = "infra/otel-collector-node" }
+docker_stats_exporter = { kind = "ciu_stack", location = "infra/docker-stats-exporter" }
+controller            = { kind = "ciu_stack", location = "applications/controller" }
+webapp_server         = { kind = "ciu_stack", location = "applications/webapp-server" }
+webapp_ui_react       = { kind = "ciu_stack", location = "applications/webapp-ui-react" }
+worker_io             = { kind = "ciu_stack", location = "applications/worker-io" }
+worker_db             = { kind = "ciu_stack", location = "applications/worker-db" }
+ddcli                 = { kind = "ciu_stack", location = "applications/ddcli" }
+reverse_proxy         = { kind = "ciu_stack", location = "infra-global/reverse-proxy" }
+skywalking            = { kind = "ciu_stack", location = "infra-global/skywalking" }
+registry_lightweight  = { kind = "ciu_stack", location = "infra-global/registry-lightweight" }
+github_runner         = { kind = "ciu_stack", location = "infra-global/github-runner" }
+github_runner_webhook = { kind = "ciu_stack", location = "infra-global/github-runner-webhook" }
+webhook_listener      = { kind = "ciu_stack", location = "infra-global/webhook-listener" }
+test_runner           = { kind = "ciu_stack", location = "tools/test-runner" }
+
+[realization.internet]      # external: nothing to bring up; endpoints are what consumers bind to
+kind = "external"
+provides = []
+[realization.internet.endpoints]
+dns  = { url = "udp://1.1.1.1:53" }
+http = { url = "https://example.org" }
+
+# -----------------------------------------------------------------------------
+# Realness. Selection: `ciu up --realness` > [realness.pin] > `default`; the
+# instance's per-layout record ([ciu.instance.realness.<layout>], generated
+# file) is a CONSTRAINT — a selection that differs from it is refused until
+# `ciu clean --vanilla` (S9.4.2).
+# -----------------------------------------------------------------------------
+[realness]
+default = "live"                                # one default level for every service
+pin = {}                                        # nothing pinned in the committed config; instances select
+
+# -----------------------------------------------------------------------------
+# [network.<n>] — reachability domains. `instance` (the per-instance compose
+# network, name derived) is implicit. Transport readiness and TLS are network
+# properties inherited by every binding resolved over the network.
+# -----------------------------------------------------------------------------
+[network.mesh]
+kind = "address"                     # an address plane: every host on it carries an address in ciu.hosts.toml
+description = "tailscale mesh"       # free text; ciu attaches no semantics to the wording (S7.3)
+realized_by = "mesh_node"            # a LogicalService (S7.3): its selected variant service (tailscale_node.tailscale) must be healthy on both ends of every cross-host resolution over mesh
+
+[network.public]
+kind = "address"
+description = "public internet"
+# No `tls` here: the reverse proxy terminates public TLS with its HOST-scoped
+# certificate (from = "host" secrets, S10.4). A network-level tls/mtls means
+# ciu-MANAGED TLS between services (derived tls_* secrets + a pki provider, S10.5).
+
+[network.edge]
+kind = "proxy"                       # address-free: hosts carry no address on it; resolving through it yields `fqdn` (S7.3.3)
+realized_by = "reverse_proxy"        # the LogicalService (S7.3); its variant service is reverse_proxy.nginx
+fqdn = "gstammtisch.dchive.de"       # a dns_name (S1.4); bindings resolved over `edge` read https://<fqdn><endpoint.path>
+
+# -----------------------------------------------------------------------------
+# Bundles — WHICH logical services travel together. Realizations follow from
+# the realness selection; the deploy set is the closure. `includes` composes
+# bundles (recursively, to any depth; a cycle is an ERROR — S7.5) so `all` does not restate eighteen names.
+# -----------------------------------------------------------------------------
+[bundles]
+mesh            = { services = ["mesh_node"] }
+core            = { services = ["vault", "consul", "redis"] }
+db              = { services = ["main_db", "object_store", "db_admin", "app_schema"] }
+identity        = { services = ["identity_provider"] }
+observability   = { services = ["otel_aggregator", "otel_collector", "docker_stats_exporter", "tracing", "cadvisor"] }
+apps            = { services = ["controller", "webapp_server", "webapp_ui"] }
+worker-io       = { services = ["worker_io"] }
+worker-db       = { services = ["worker_db"] }
+edge            = { services = ["reverse_proxy"] }
+global-services = { services = ["registry", "github_runner", "github_runner_webhook", "webhook_listener"] }
+admin           = { services = ["browser_service", "ddcli"] }
+test            = { services = ["probe_targets", "browser_service", "tester"] }
+all             = { includes = ["core", "db", "identity", "observability", "apps", "worker-io", "worker-db", "edge"], services = [] }
+
+# -----------------------------------------------------------------------------
+# Layouts — WHERE. Always explicit, even for one host (no built-in `local`:
+# `ciu init` writes this table). Host declaration order = push order (ciu check
+# verifies it against the cross-host graph). `reach` = networks this host may
+# use to reach the others, in preference order. Hosts are declared once in
+# ciu.hosts.toml and reused by every layout. `environment` is a free-form label
+# bound as instance.environment; ciu attaches no semantics.
+# -----------------------------------------------------------------------------
+[layouts.local]
+environment = "dev"
+description = "one machine (devcontainer or laptop): everything on the instance network"
+hosts.localhost = { bundles = ["all", "test"], reach = ["instance"] }
+
+[layouts.prod3]
+environment = "prod"
+description = "three netcup hosts over the tailscale mesh; public ingress on the edge host"
+hosts.gstammtisch  = { bundles = ["mesh", "core", "db", "identity", "worker-db"],   reach = ["mesh"] }
+hosts.rs1002       = { bundles = ["mesh", "apps", "worker-io", "observability"],    reach = ["mesh"] }
+hosts.tsstammtisch = { bundles = ["mesh", "edge", "global-services"],               reach = ["mesh", "public"] }
+
+[layouts.staging2]
+environment = "staging"
+description = "same host inventory, two hosts, different bundles: db + apps together, edge separate"
+hosts.gstammtisch  = { bundles = ["mesh", "core", "db", "identity", "apps", "worker-io", "worker-db"], reach = ["mesh"] }
+hosts.tsstammtisch = { bundles = ["mesh", "edge", "observability"],                                    reach = ["mesh", "public"] }
+
+# An mTLS-over-public layout needs only an address network with tls = "mtls" and
+# a pki provider (its hook provides pki:issuer/public_mtls, S10.5); every host
+# in its `reach` needs an address on it in ciu.hosts.toml ([hosts.<h>.addresses]
+# public_mtls = "…", S7.6.4). Nothing changes in any stack file — the
+# tls_cert/tls_key/tls_ca secrets and the pki edges are derived:
+#   [network.public_mtls]
+#   kind = "address"
+#   description = "public internet, ciu-managed mTLS"
+#   tls = "mtls"
+#   pki = "vault"
+#   [layouts.mtls-public]
+#   environment = "prod"
+#   hosts.gstammtisch = { bundles = ["core", "db"], reach = ["public_mtls"] }
+#   hosts.rs1002      = { bundles = ["apps"],       reach = ["public_mtls"] }
+
+# -----------------------------------------------------------------------------
+# Vault pointer + the KV path reference table. Secrets say `path = "<key>"`;
+# ciu resolves the key HERE (a typo is refused with the closest candidates,
+# S10.1.5). A literal path (containing '/') is also accepted on a secret.
+# -----------------------------------------------------------------------------
+[vault]
+service = "vault"                    # the LogicalService ciu's own Vault client binds to
+
+[vault.paths]                        # one spelling per KV path; READ by ciu (draft.3), never written to
+postgres_superuser_password = "db/postgres/superuser_password"
+postgres_controller_password = "db/postgres/controller_password"
+postgres_controller_ddl_password = "db/postgres/controller_ddl_password"
+postgres_workerdb_password = "db/postgres/workerdb_password"
+postgres_workerdb_ddl_password = "db/postgres/workerdb_ddl_password"
+postgres_webapp_password = "db/postgres/webapp_password"
+postgres_authentik_password = "db/postgres/authentik_password"
+redis_password = "redis/password"
+minio_root_password = "minio/root_password"
+minio_worker_io_access_key = "minio/worker_io/access_key"
+minio_worker_io_secret_key = "minio/worker_io/secret_key"
+minio_webapp_server_access_key = "minio/webapp_server/access_key"
+minio_webapp_server_secret_key = "minio/webapp_server/secret_key"
+minio_worker_db_access_key = "minio/worker_db/access_key"
+minio_worker_db_secret_key = "minio/worker_db/secret_key"
+pgadmin_password = "pgadmin/password"
+skywalking_postgres_password = "skywalking/postgres_password"
+controller_bootstrap_token = "controller/bootstrap_token"
+internal_dlq_token = "internal/internal_dlq_token"
+consul_controller_token = "consul/controller/token"
+consul_webapp_server_token = "consul/webapp-server/token"
+consul_worker_io_token = "consul/worker-io/token"
+consul_worker_db_token = "consul/worker-db/token"
+consul_docker_stats_exporter_token = "consul/docker-stats-exporter/token"
+consul_mgmt_token = "consul/mgmt/token"
+consul_cmru_controller_token = "consul/cmru/controller/token"
+consul_cmru_viewer_token = "consul/cmru/viewer/token"
+consul_cmru_bootstrap_bearer_token = "consul/cmru/bootstrap-bearer-token"
+controller_vault_role_id = "vault/controller/role_id"
+controller_vault_secret_id = "vault/controller/secret_id"
+webapp_server_vault_role_id = "vault/webapp-server/role_id"
+webapp_server_vault_secret_id = "vault/webapp-server/secret_id"
+authentik_secret_key = "authentik/secret_key"
+authentik_redis_password = "authentik/redis_password"
+authentik_bootstrap_token = "authentik/bootstrap_token"
+authentik_bootstrap_password = "authentik/bootstrap_password"
+authentik_oidc_client_secret = "authentik/oidc/client_secret"
+ddcli_service_password = "ddcli/service_password"
+
+# -----------------------------------------------------------------------------
+# [registry.*] — project metadata (free-form except the ciu-read keys),
+# validated by scripts/registry_check.py (ciu.registry_validator). Plain data:
+# the v7 Jinja `{% set pubsub %}` / `queue_keys` maps became the literal
+# channel names below and the [pubsub] / [queue_keys] user tables (one spelling
+# each; the redis hook reads both from its context and cross-checks them).
+# -----------------------------------------------------------------------------
+[registry.postgresql]
+database = "dstdns"                  # ciu-read: target of pg:schema/* probes
+authentik_database = "authentik"
+superuser = "postgres"
+
+[registry.postgresql.users]
+controller = "controller"
+controller_ddl = "controller_ddl"
+workerdb = "workerdb"
+workerdb_ddl = "workerdb_ddl"
+webapp = "webapp"
+authentik = "authentik"
+
+[registry.minio.users]
+worker_io     = { name = "worker-io",     access_key_secret = "minio_worker_io_access_key",     secret_key_secret = "minio_worker_io_secret_key" }
+webapp_server = { name = "webapp-server", access_key_secret = "minio_webapp_server_access_key", secret_key_secret = "minio_webapp_server_secret_key" }
+worker_db     = { name = "worker-db",     access_key_secret = "minio_worker_db_access_key",     secret_key_secret = "minio_worker_db_secret_key" }
+
+[registry.vault.roles.controller]
+service = "controller"
+paths = ["db/postgres/controller_password", "redis/password", "consul/controller/token", "internal/internal_dlq_token"]
+runtime_paths = ["authentik/bootstrap_token"]
+
+[registry.vault.roles.webapp_server]
+service = "webapp_server"
+paths = ["db/postgres/webapp_password", "redis/password", "consul/webapp-server/token", "minio/webapp_server/access_key", "minio/webapp_server/secret_key"]
+runtime_paths = ["authentik/bootstrap_token"]
+
+[registry.redis.acl]
+enabled = true
+default_user = "default"
+
+[registry.redis.users.controller]
+username = "controller"
+permissions = ["+@read", "+@write", "+@pubsub", "~dstdns:jobs:queue:worker-io", "~dstdns:jobs:queue:worker-db", "~dstdns:notifications:queue:pending", "&dstdns:pubsub:status", "&dstdns:pubsub:events", "&dstdns:pubsub:workers:heartbeat", "&dstdns:pubsub:jobs:progress", "&dstdns:pubsub:jobs:completed"]
+[registry.redis.users.worker_io]
+username = "worker-io"
+permissions = ["+@read", "+@write", "+@pubsub", "~dstdns:jobs:queue:worker-io", "~dstdns:results:queue:pending", "&dstdns:pubsub:workers:heartbeat", "&dstdns:pubsub:jobs:progress", "&dstdns:pubsub:jobs:completed"]
+[registry.redis.users.worker_db]
+username = "worker-db"
+permissions = ["+@read", "+@write", "+@pubsub", "~dstdns:jobs:queue:worker-db", "~dstdns:results:queue:pending", "~dstdns:notifications:queue:pending", "&dstdns:pubsub:workers:heartbeat", "&dstdns:pubsub:jobs:progress", "&dstdns:pubsub:jobs:completed"]
+[registry.redis.users.webapp_server]
+username = "webapp-server"
+permissions = ["+@read", "+@pubsub", "&dstdns:pubsub:status", "&dstdns:pubsub:events", "&dstdns:pubsub:workers:heartbeat", "&dstdns:pubsub:host:stats", "&dstdns:pubsub:container:stats", "&dstdns:pubsub:jobs:progress", "&dstdns:pubsub:jobs:completed", "&dstdns:pubsub:ui:state"]
+[registry.redis.users.docker_stats_exporter]
+username = "docker-stats-exporter"
+permissions = ["+@pubsub", "&dstdns:pubsub:host:stats", "&dstdns:pubsub:container:stats"]
+
+[registry.consul.acl]
+enabled = true
+default_policy = "deny"
+down_policy = "extend-cache"
+enable_token_persistence = true
+# Policy rules are Consul HCL (consumer data). __LANDSCAPE_ID__ is substituted by
+# post_compose_consul.py from project.landscape_id — the ONE landscape id.
+[registry.consul.policies.management]
+name = "dstdns-management"
+rules = """
+key_prefix "services/" { policy = "write" }
+key_prefix "" { policy = "read" }
+session_prefix "" { policy = "write" }
+"""
+[registry.consul.policies.controller]
+name = "dstdns-controller"
+rules = """
+key_prefix "dstdns/__LANDSCAPE_ID__/services/" { policy = "read" }
+key_prefix "dstdns/__LANDSCAPE_ID__/services/controller/" { policy = "write" }
+key_prefix "dstdns/__LANDSCAPE_ID__/services/webapp-server/overrides/" { policy = "write" }
+key_prefix "dstdns/__LANDSCAPE_ID__/services/worker-io/overrides/" { policy = "write" }
+key_prefix "dstdns/__LANDSCAPE_ID__/services/worker-db/overrides/" { policy = "write" }
+key_prefix "dstdns/__LANDSCAPE_ID__/services/docker-stats-exporter/overrides/" { policy = "write" }
+"""
+[registry.consul.policies.webapp_server]
+name = "dstdns-webapp-server"
+rules = """
+key_prefix "dstdns/__LANDSCAPE_ID__/services/" { policy = "read" }
+key_prefix "dstdns/__LANDSCAPE_ID__/services/webapp-server/" { policy = "write" }
+key_prefix "dstdns/__LANDSCAPE_ID__/services/controller/overrides/" { policy = "write" }
+key_prefix "dstdns/__LANDSCAPE_ID__/services/worker-io/overrides/" { policy = "write" }
+key_prefix "dstdns/__LANDSCAPE_ID__/services/worker-db/overrides/" { policy = "write" }
+key_prefix "dstdns/__LANDSCAPE_ID__/services/docker-stats-exporter/overrides/" { policy = "write" }
+"""
+[registry.consul.policies.worker_io]
+name = "dstdns-worker-io"
+rules = """
+key_prefix "dstdns/__LANDSCAPE_ID__/services/worker-io/" { policy = "write" }
+"""
+[registry.consul.policies.worker_db]
+name = "dstdns-worker-db"
+rules = """
+key_prefix "dstdns/__LANDSCAPE_ID__/services/worker-db/" { policy = "write" }
+"""
+[registry.consul.policies.docker_stats_exporter]
+name = "dstdns-docker-stats-exporter"
+rules = """
+key_prefix "dstdns/__LANDSCAPE_ID__/services/docker-stats-exporter/" { policy = "write" }
+"""
+[registry.consul.policies.cmru_node]
+name = "dstdns-cmru-node"
+rules = """
+key_prefix "cmru/landscapes/__LANDSCAPE_ID__/" { policy = "read" }
+"""
+[registry.consul.policies.cmru_controller]
+name = "dstdns-cmru-controller"
+rules = """
+key_prefix "cmru/landscapes/__LANDSCAPE_ID__/" { policy = "write" }
+"""
+[registry.consul.policies.cmru_viewer]
+name = "dstdns-cmru-viewer"
+rules = """
+key_prefix "cmru/landscapes/__LANDSCAPE_ID__/" { policy = "read" }
+"""
+
+[registry.consul.deploy]
+kv_root = "cmru/landscapes"
+[registry.consul.deploy.auto_config]
+enabled = false
+jwt_issuer = "dstdns-enrollment"
+jwks_url = ""
+static_pubkey_vault_path = "consul/enrollment/jwt-pubkey"
+node_id_claim = "node_id"
+
+# -----------------------------------------------------------------------------
+# [governance] — stack cgroup policy (cgroup-v2 key names). The gate's lanes
+# use the same vocabulary and code path.
+# -----------------------------------------------------------------------------
+[governance]
+enabled = false                      # switched on per site in ciu.site.toml
+cgroup_parent = ""                   # "" = $CGROUP_PARENT_DEV_BACKGROUND
+ksm_optin = "builtin"
+memory_max = "1G"
+memory_swap_max = "0"
+memory_low = "256M"
+cpu_weight = 100
+io_weight = 100
+device = ""                          # "" = autodetect
+
+# -----------------------------------------------------------------------------
+# [testing] — the gate (run-gate's functionality lifted into ciu; run-gate itself
+# stays available). Environments name LogicalServices, lanes name assay lanes,
+# preconditions read the instance's resolved facts. dstdns is NOT a zero-instance
+# project (it has realizations), so `ciu gate` needs the instance up for exec
+# lanes; host lanes and the sequence run against it.
+# -----------------------------------------------------------------------------
+[testing]
+cgroup_slice = "ciu-gate.slice"
+evidence_dir = "ciu-gate-evidence"
+history = 20
+
+[testing.judge]
+version = ">=4.1"                    # FLOOR; the tester image installs the newest release satisfying it. Required because assay lanes exist; ciu 8.0.0 refuses a floor below its own minimum 4.1.0 (`assay lanes --json`, `--resume`, `--progress <path>`, S16.3).
+# judge provenance is ALWAYS required (ciu passes --require-judge-provenance; there is no opt-out key, S16.3.2)
+
+[testing.environments.tester]
+mode = "exec"
+exec_in = "tester"                   # container from tester's derived identity; must be healthy; mount proof before every lane (S16.4.3)
+forward_env = ["RUN_LIVE_TESTS", "SCHEMA_GATE_PG_IMAGE"]
+# The environment owns a lane's dependency closure (S16.4.4): assay's snapshot
+# holds committed objects only, so [testing.lanes.ui-unit]'s assay lane rebuilds
+# node_modules OFFLINE (`npm ci --offline`) out of this cache, populated at image
+# build from the committed package-lock.json (or provided by the host).
+extra_mounts = ["/var/cache/dstdns/npm:/opt/npm-cache"]
+# No `binds` here: the tester container already carries its own service's
+# env-delivered bindings (tools/test-runner/ciu.stack.toml: POSTGRES_*, REDIS_*,
+# CONTROLLER_*, WEBAPP_SERVER_*), and `docker exec` inherits the container env.
+
+[testing.environments.clean]         # an ephemeral container on the instance network for lanes that must not see the tester's state
+mode = "ephemeral"
+image_from = "tester"                # the tester's image, declared once (S16.4)
+forward_env = ["SCHEMA_GATE_PG_DUMP"]   # the cw2b_schema assay lane requires it (S16.4.5: the lane's available env = forward_env ∪ binding variables ∪ CIU_*)
+binds.db = { to = "main_db.sql", delivery = "env", env_prefix = "POSTGRES" }   # POSTGRES_HOST / POSTGRES_PORT for the lane process — assay reads them as required-env facts
+binds.redis = { to = "redis.redis", delivery = "env", env_prefix = "REDIS" }
+
+[testing.environments.host]
+mode = "host"
+
+[testing.lanes.unit]
+kind = "command"
+environment = "tester"
+argv = ["bash", "-c", "cd {worktree} && MOCK_MODE=true pytest tests/unit tests/harness tests/contract tests/config tests/security libs/common/tests applications/ddcli/tests -q"]
+clean_tree = false
+budget = "30m"
+resources = { memory_max = "3G", cpu_weight = 100 }
+
+[testing.lanes.schema]
+kind = "command"
+environment = "tester"
+description = "throwaway PG + schema tests"
+argv = ["scripts/schema-gate.sh", "{worktree}"]
+required_env = ["SCHEMA_GATE_PG_IMAGE"]
+clean_tree = false
+budget = "90m"
+resources = { memory_max = "4G", shared = ["main_db"] }
+
+[testing.lanes.assay-dlq]
+kind = "assay"
+environment = "tester"
+assay_lane = "durable_dlq"
+clean_tree = false
+budget = "15m"
+requires = { healthy = ["redis"] }
+
+[testing.lanes.sql-mutation]
+kind = "assay"
+environment = "clean"                # runs in the ephemeral container: POSTGRES_HOST/PORT arrive through the environment's binds
+assay_lane = "cw2b_schema"
+clean_tree = false
+budget = "90m"
+requires = { realness = { main_db = "live" }, healthy = ["main_db", "app_schema"] }
+require_provenance = true            # the schema under test must be the checkout's: running images ≠ HEAD → NOT_RUN/provenance-mismatch (S16.5.6)
+resources = { memory_max = "4G", shared = ["main_db"] }
+
+[testing.lanes.p129-enumeration-cursor]
+kind = "assay"
+environment = "tester"
+assay_lane = "p129_enumeration_cursor"      # its assay lane declares judge.base_source = "request" — ciu learns that from `assay lanes --json` and passes --request-base (S16.5.5); no ciu key restates it
+required_env = ["SCHEMA_GATE_PG_IMAGE"]
+clean_tree = false
+budget = "10m"
+
+[testing.lanes.release]
+kind = "command"
+environment = "tester"
+description = "live-stack integration / observability / e2e / infra"
+argv = ["bash", "-c", "cd {worktree} && pytest -m 'integration or observability or e2e or infra' -q"]
+required_env = ["RUN_LIVE_TESTS"]
+clean_tree = false
+budget = "60m"
+requires = { realness = { main_db = "live", probe_targets = "simulated" }, healthy = ["controller", "webapp_server", "worker_io", "probe_targets"] }
+require_provenance = true
+
+[testing.lanes.ui]
+kind = "command"
+environment = "tester"
+argv = ["bash", "-c", "cd {worktree}/applications/webapp-ui-react && npm run typecheck && cd {worktree} && export PWMCP_REQUIRED=1 && pytest -m browser tests/e2e/ui/webapp-ui-react -q"]
+required_env = ["RUN_LIVE_TESTS"]
+clean_tree = false
+budget = "60m"
+requires = { healthy = ["webapp_ui", "browser_service"] }
+
+[testing.lanes.ui-unit]                      # a language-bound assay lane (javascript, R1; assay B041)
+kind = "assay"
+environment = "tester"                       # needs node/npm on PATH and the npm cache mount above → stage 12 checks external_tools/argv0 via `assay lanes --json`
+assay_lane = "ui_unit"                       # assay.toml: `npm ci --offline` out of /opt/npm-cache, then `npx --no-install vitest run --coverage`
+clean_tree = false
+budget = "15m"
+resources = { memory_max = "2G" }
+
+[testing.lanes.gate]
+kind = "sequence"                            # ONE process, one LaneResult per member and one for the sequence (S16.5.4); no nested `ciu gate`
+description = "the implementation-gate conjunction; every consumer runs exactly this"
+lanes = ["schema", "unit", "assay-dlq"]
+stop_on = "FAIL"
+
+# -----------------------------------------------------------------------------
+# [ciu] — tool policy; [ciu.instances] — budget / lease (one closed key set).
+# No exec-target table in v8: `ciu instance exec --env tester -- <cmd>` runs in a
+# gate environment ([testing.environments.tester], S14.6.3, S16.4).
+# -----------------------------------------------------------------------------
+[ciu]
+standalone_root = true
+require_fqdn = false
+exit_on = "WARN"
+auto_connect_network = true
+user_tables = ["authentik", "build", "env_defaults", "load_control", "pubsub", "queue_keys", "workflow"]
+registry_validator = "scripts/registry_check.py"
+
+[ciu.instances]
+max_concurrent = 3
+
+# -----------------------------------------------------------------------------
+# Consumer user tables (declared in ciu.user_tables; ciu passes them through to
+# templates and hooks). env_defaults replaces the v7/rev-2 [deploy.env.defaults]:
+# template data ciu attaches no semantics to belongs to the consumer (R-13).
+# -----------------------------------------------------------------------------
+[env_defaults]
+TZ = "UTC"
+PYTHONUNBUFFERED = "1"
+LANG = "en_US.UTF-8"
+
+[build]
+python_version = "3.14"
+python_base_image = "python:3.14-slim-trixie"
+mock_python_base_image = "python:3.14-slim"
+devcontainer_image = "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest"
+
+[authentik]
+oidc_slug = "dstdns-ui"
+# The rev-2 `[auth] enabled` user-table switch is now `project.control.auth_enabled` (see [project.control]).
+
+[workflow]
+work_stream_key = "dstdns:streams:workflow:work"
+work_consumer_group = "workflow-workers-io"
+work_stream_key_db = "dstdns:streams:workflow:work:db"
+work_consumer_group_db = "workflow-workers-db"
+cancel_cache_key = "dstdns:workflow:cancelled_runs"
+result_stream_key = "dstdns:streams:workflow:results"
+result_consumer_group = "workflow-result-processors"
+dispatch_batch_size = 20
+dispatch_claim_lease_seconds = 30
+attempt_deadline_seconds = 60
+max_attempts = 3
+result_ack_timeout_ms = 30000
+retention_safety_margin = 0
+max_in_flight = 200
+admission_window = 10
+max_work_units_per_tick = 4
+min_domains_per_work_unit = 1
+max_domains_per_work_unit = 1
+enumeration_batch_size = 200
+max_rows_per_admission_txn = 5000
+max_ready_work_units_per_stage = 40
+max_ready_work_units_per_run = 200
+max_active_attempts_per_run = 100
+max_active_attempts_per_resource_class = 500
+max_active_attempts_global = 1000
+breaker_failure_threshold = 5
+breaker_window_seconds = 60
+breaker_cooldown_seconds = 300
+breaker_probe_size = 1
+dispatch_startup_stagger_s = 5
+dispatch_poll_interval_s = 1.0
+reconcile_startup_stagger_s = 15
+reconcile_sweep_interval_s = 5.0
+retention_startup_stagger_s = 30
+retention_poll_interval_s = 60.0
+admission_startup_stagger_s = 20
+admission_tick_interval_s = 2.0
+consumer_block_ms = 5000
+consumer_error_backoff_s = 1
+
+[load_control]
+dns_concurrency = 50
+http_concurrency = 20
+content_concurrency = 10
+db_concurrency = 5
+dns_interval_ms = 10
+http_interval_ms = 50
+enable_adaptive_rate = true
+latency_target_ms = 100
+latency_max_ms = 500
+
+[pubsub]
+status = "dstdns:pubsub:status"
+events = "dstdns:pubsub:events"
+config = "dstdns:pubsub:config"
+worker_heartbeats = "dstdns:pubsub:workers:heartbeat"
+host_stats = "dstdns:pubsub:host:stats"
+container_stats = "dstdns:pubsub:container:stats"
+job_progress = "dstdns:pubsub:jobs:progress"
+job_completed = "dstdns:pubsub:jobs:completed"
+ui_state = "dstdns:pubsub:ui:state"
+
+[queue_keys]
+results = "dstdns:results:queue:pending"
+notifications = "dstdns:notifications:queue:pending"
+worker_io_jobs = "dstdns:jobs:queue:worker-io"
+worker_db_jobs = "dstdns:jobs:queue:worker-db"

@@ -92,3 +92,55 @@ Asked: adopt both (recommended); keep rev 3.0 push; releases without receipts. *
 4. Direct cgroup writes instead of Docker's adapter (T-22's stronger form) — read-back makes the gap visible first.
 5. The reviewer's demand for a machine-executable conformance fixture of the demo: the resolved example is now derived by rule, but the executable fixture is V8-13's job.
 6. Everything in the proposal §4.10.
+
+---
+
+## 6 Round 2 — the delta audit of draft.4 (2026-09-03, later)
+
+**Input:** `CIU-V8-THIRD-PARTY-REVIEW-ROUND2-2026-09-03.md` (same reviewer; disposition audit of T-01..T-35: 14 landed, 13 landed-but-incomplete, 8 landed-and-broke-another-rule; new findings T2-01..T2-10: 4 BLOCKER, 6 MAJOR; a demo re-derivation). Verdict: "materially better than draft.3, still not implementable as written." **Output:** `SPEC-V8.md` 8.0.0-**draft.5** (every changed rule in Appendix D §D.2), proposal **rev 3.2** (§4.3.14, §4.7 X73–X84, §4.8, §4.10 items 18–22, §4.11 N22), the demo corrected, this section.
+
+**Verdict on the verdict.** Accepted. All ten findings hold, and every disposition-audit row that was not "landed" produced a change. Two remarks did not hold as stated: Appendix B's minimal `ciu.toml` was valid TOML (`location = "web"` appears once; the T-06 remark about a repeated key was wrong), and the demo's eleven `build` tables are by design — the twelfth service shares an image, and the reviewer's underlying point, that draft.4 could not express a shared project-built image, was right and is fixed under T2-05. No finding reopened an operator decision: T2-08 is a cost of the in-checkout posture whose fix stays inside it.
+
+### 6.1 New findings
+
+| id | sev | disposition | what changed (spec rule) | reasoning |
+|---|---|---|---|---|
+| T2-01 | BLOCKER | A | S17.4.3, S17.4.4, S17.5, S8.5.3, S8.5.4, S3.7.3, S18 | The whole-file digest included `rendered_at` and `[ciu.host.generated]`, so the validity test could never pass across hosts, and once weakened it would have accepted a receipt from before a reset. The receipt now has a canonical **subject** (instance, layout, host, selection, release or plan digest, `activation_id` minted by `activate apply`), and container incarnations, one-shot exits and per-fact observations in the body; validity compares subjects and requires the consumer's own activation id; a required remote fact without a valid receipt entry is an ERROR by default — `--allow-assumed` replaces `--require-receipts` as the explicit escape. Signing stays out (operator, §3 D). |
+| T2-02 | BLOCKER | A | S8.5.5, S5.3.6, S5.2 | The two conjuncts were unsatisfiable for one-shots; acceptance is a partition. The WARN for an empty-contract seeded/simulated selection was no acceptance choice — it is an ERROR unless `verify` or the variant's `unchecked = true` is declared (the reviewer's spelling). |
+| T2-03 | BLOCKER | A | S3.4.7, S6.10, S5.4, S16.8, S18, S8.5.4, S19, S15.3 stage 12, S3.8.5 | All eight mismatches confirmed and closed; S3.8.5 makes a conformance test generated from the schema definition part of the definition, so the class fails the build. The proposal's stale spellings were fixed in the same change. |
+| T2-04 | BLOCKER | A′ | S6.10, S8.7 step 2, S12.2 | The reviewer's minimal rule (`pre_secrets` consumes nothing) would block the real bootstrap case — a deploy-time registration token fetched with a file- or ask-sourced credential — and a `bootstrap_inputs` phase would be a second vocabulary for the same thing. The phase/source matrix is stated instead: `pre_secrets` entries may list `file`, `ask`, `host` and local `generate` keys, materialized for them ahead of step 3, nothing else; a static check, no new phase. |
+| T2-05 | MAJOR | A | S17.3.1, S17.3.3, S17.3.6, S17.4.1, S7.2, S6.2, S3.4.3 | Closure: every non-ignored file under a placed stack plus declared hook `inputs` (the reviewer's "declared inputs" option — "manifest every tracked file under a declared root" would ship unrelated files). Images: registry digest or `docker save` archive, verified on the target; `--images none` recorded and refused at apply. `candidate` pointer, `--release`, CIU-owned `current`/`previous` switch, rollback refusal without `previous`, host `rollback` command withdrawn. Shared image tag: one `build` per reference, other services share it. Push-time materialization of local `generate`/`ask` values (the T-09 audit row). |
+| T2-06 | MAJOR | A | S6.3, S6.3.2, S7.4.7, S7.8 4a, S8.5.2a | `listen` declared on host-network endpoints; claims canonicalized (`0.0.0.0` = every IPv4 address; `::` conservatively every address of both families — `bindv6only` is not inspected); a resolution is admitted only where the consumer can reach that address; a live TCP probe before the dependents' wave. |
+| T2-07 | MAJOR | A′ | S16.6.1, S16.6.4, S16.6.5, S16.5.7, S16.9.4, S16.7.2, S16.4, S16.10 | The capacity object is the lock: the slice's cgroup directory (host-visible, exists iff the slice does) with a ledger keyed by the cgroup path. For exec targets a different resolution than the reviewer's container-cgroup ledger: an exec target is used by one lane at a time (its stack-directory lock — run-gate RG-39's rule lifted, and the operator's design answer A), so container capacity needs no ledger and "two 3 G lanes in one 4 G tester" cannot arise. Per-run directories with `run_id`, a `last` pointer, pruning of complete runs only, `--resume` so assay finds its progress. |
+| T2-08 | MAJOR | A | S4.1.1, S4.1.2, S4.5.1, S4.5.3, S14.8.2, S18 | A 128-bit `owner_id` generated at init, stored in the generated file (it travels with pushed bundles), stamped as `ciu.owner`; ownership and adoption compare it; `--move` requires it; adoption without it only when the daemon proves the path; `ciu instance adopt --owner` for the lost-and-moved case. Accepted as the author's call: it does not reopen §2.1 — the token lives in the checkout and no identity changes. |
+| T2-09 | MAJOR | A | S13.3, S13.3.2 | Verified by computation: the ceiling form round-trips all 10 000 weights, nearest rounding fails 4999 of them. `memory_max = "max"` with finite swap writes `memory.swap.max` directly (the `memory_high` path) rather than refusing the combination. Enforceable-cap mismatches abort; weights and soft limits WARN. |
+| T2-10 | MAJOR | A | S2.4.2, S2.4.3, S10.2.6 | Every file against every store value; only the values `secret()` actually requested for that service are authorized in that file, and the count of omitted authorized matches is printed. |
+
+### 6.2 Disposition-audit rows that were incomplete or broke a rule
+
+| row | fix |
+|---|---|
+| T-06 | S18 `init` synopsis (`--image`, `--service`, `--test-argv`); Appendix B needed no change. |
+| T-08, T-19, T-32, T-33 | proposal rev 3.2: judge floor `>=4.1`, the S14.4.3 lock order, `[ciu] inherit`, `api = "ciu/lane-result"`. |
+| T-09 | S17.3.2 push-time materialization. |
+| T-10, T-26 | T2-06. |
+| T-11 | S14.8 backup/restore contract. |
+| T-12 | S15.3 stage 12 compares with S16.4.5's available environment. |
+| T-15 | T2-02. |
+| T-16 | T2-01. |
+| T-17, T-18 | T2-08. |
+| T-21 | T2-07. |
+| T-22 | T2-09. |
+| T-23 | `env_allow` in S6.10's closed `[hooks]` set; T2-04. |
+| T-25, T-29 | T2-05. |
+| T-28 | `secret_lint_allow` in S3.4.7; T2-10. |
+| T-31 | `external-missing`/`external-down` in S16.8. |
+
+### 6.3 Demo re-derivation
+The reviewer's waves, resolutions and socket-claim table agree with the example. The one discrepancy — the fact row in `[resolved.gates.3]` — was a rule gap, not an example error: draft.4 S8.5.2 named only binding `facts`; draft.5 states that minter and pki facts are gate facts too (a consumer would otherwise fail at secret materialization, one step later and with a worse message), which makes the example row correct by rule. `bundle_dir` is now a parent directory (`/opt/ciu`), the three `rollback = "ciu down"` lines went with the key, the stale `realized_by = "tailscale_node"` comment names the LogicalService, `ciu.toml`'s "one level" comment on bundle includes is corrected, the receipt shape in the resolved example shows the subject, and the README records the header-notation convention (D32–D37).
+
+### 6.4 Design answers folded in the same draft
+**A** — canonical lock keys and `ciu lease` (S14.4.7–S14.4.8, S16.5.7, S14.7.1, S18). **B** — `[ciu] inherit` (S3.1.5, S3.4.7, S16.2.1, S16.11.1) and the shared tester as a per-project two-file stack over the shared Dockerfile directory (S5.4, S6.2); the handoff note's "shared `location`" was withdrawn once the text showed rendered artifacts and the lock live in the stack directory (proposal X83).
+
+### 6.5 Still open after this round
+Items 1–6 of §5 stand. Added: exec parallelism unsupported by design; admission per uid; `plan_digest` requires byte-identical files; image archives are whole tarballs; the monorepo's consumer work (proposal §4.10 items 18–22). A targeted round-3 review of the rules draft.5 introduced (S17.4.3, S17.3.6, S16.6.1, S16.9.4, S3.1.5, S14.4.8, S4.5.3) is the recommended next review, scoped to Appendix D §D.2.
