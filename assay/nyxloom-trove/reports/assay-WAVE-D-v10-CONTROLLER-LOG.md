@@ -756,3 +756,46 @@ precedent for shape and discipline.
   implementer (no containers); the one-container rule is in every prompt.
   R-2 is dispatched on generation 11's tip when all four items are
   gate-green. Next ids A-439 / B071.
+
+- **2026-09-03 (generation 11 checkpointed at `97907425` — B053 producers
+  gate-green; B004 measured as a full carve; DA-R28/DA-R29; generation 12
+  dispatched)** — Verified from `gate-gen11a.log` in a separate step:
+  `GATE_EXIT=0` once, one `ASSAY_REGISTERED_GATE_COMPLETE=1`, zero
+  `FAILED|DIRTY_TREE|Traceback`, wheel `assay-4.1.1.dev38+gd0e212e2`, the
+  v10 successor phase present; still exactly one `!` commit; tree clean;
+  full suite 4103 passed / 20 skipped. `d0e212e2` B053 (A-439):
+  `announce_refusal` RETURNS the bounded sentence (`verdict.RefusalDetail`
+  / `refusal_detail`) and ~17 conversion sites plus `cli.py` pass it into
+  the `Claim`, so A-428's byte copy is structural; twelve tests, five
+  end-to-end off the produced document incl. a real over-bound truncation.
+  Three hand-written verdict fixtures broke on the wire change and now
+  carry `<SOURCE_ROOT>`/`<HEAD12>` placeholders filled from facts the test
+  created — the lesson that a wire change can break fixtures no `gate/`
+  grep finds is in BRIEF-11 §3(b). **Finding accepted: BRIEF-10 §4.2
+  understated B004.** `src/assay/` has no image-provenance adjudicator at
+  all (`provenance.py` is B018's judge provenance); on the wire are only the
+  reason code and the `adjudicated ⇒ verified_by_assay is False` narrowing;
+  A-430 (3)'s `{1,2}` `schema_version` parser, (4)'s `judge.adjudication_dir`
+  + adjudicated-evidence lane surface, the mismatch mapping, every producer,
+  and the carve's W2–W7 remain. The conformance tripwire stays armed until
+  a producer exists — correct.
+  - **DA-R28 — reorder: B007 → CONSUMERS migration notes → B004.** The
+    wave is low priority (DA-R21) and B004 is a multi-generation carve; the
+    two remaining small items close every other obligation first. The
+    migration-notes section is written with B004's shape as "reserved on
+    the wire, producer pending" and amended when B004 lands (the heading
+    spelling must match the four in-doc anchors `#migration-notes-v9--v10`).
+    B004 then runs in its own generation(s) as the LAST item. If the
+    operator wants 5.0.0 sooner, B004's producer moves to E-2 by one
+    ruling, with the tripwire still armed and A-430's wire half shipping as
+    a reserved code — the DA-R21 precedent — and the branch is never left
+    mid-item. Not decided now; generation 12 proceeds with B004 in scope.
+  - **DA-R29 — process note accepted.** Heredoc appends of purely NEW text
+    (a new test section, LOG entries, an A-row, a new BRIEF) are not the
+    pattern rewrites the standing order forbids; edits to existing content
+    stay Edit-tool only. No change to the orders.
+  - **Generation 12 dispatched** (fresh Opus, BRIEF-11 seed, DA-R1..R29):
+    B007 loop (A-432; DA-R19/DA-R20; the one authorised W6 edit; own gate
+    run) → migration notes → B004 carve begins (A-430/A-431, generation 4's
+    re-captured ciu assets, read the REPORT section first). Next ids
+    A-440 / B071.
