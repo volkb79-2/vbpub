@@ -443,6 +443,28 @@
         }
       },
       "description": "Managed per-entry backlog (docs/backlog-entries-spec.md). Omitting the section entirely means the project does not use entries: every BLG2/BLG3 lint rule is silent."
+    },
+    "lint": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "NL-3: per-project overrides of nyxloom lint's own rule thresholds. Omitting the section entirely means the project uses lint's tool-wide defaults.",
+      "properties": {
+        "l10": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Override for L10's handoff-size thresholds (src/nyxloom/lint.py's _check_l10). Either key may be omitted -- a partial override leaves the other at its tool-wide default (10000 warn / 18000 error). ProjectConfig.load additionally enforces warn_tokens < error_tokens and both > 0 at load time, failing loudly on a malformed table.",
+          "properties": {
+            "warn_tokens": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            },
+            "error_tokens": {
+              "type": "integer",
+              "exclusiveMinimum": 0
+            }
+          }
+        }
+      }
     }
   }
 }
