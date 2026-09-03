@@ -571,3 +571,41 @@ controller's entries from the implementer's return onward; wave records
     `__revision__ = 34`), then merges second with its own bump renumbered
     34→35, verified by one more fresh selftest at that point before
     calling it done.
+
+- **2026-09-03 (RW-37 fix landed, gate independently re-verified —
+  RW-38: the fix itself shipped an incomplete diff)** — The successor
+  dispatched to finish and commit RW-37 returned with a code-complete,
+  red-first-verified diff (`0f866432`) and a claim of two new passing
+  tests, but no full-gate number in its own commit message. Ran
+  `./run-gate.py selftest` myself, in a separate step, on the committed
+  tip: **NOT green** — `555 passed, 2 skipped` /
+  `diff-coverage FAIL: 495/496 (99.8% < 100.0% floor)`, one uncovered
+  changed line, `run-gate.py:1259` (`rw37-selftest.log`, read separately).
+  Read the diff directly (`git diff a5b2834a HEAD -- run-gate.py`):
+  RW-37's fix adds exactly 11 lines (1219–1229, the new schema-absent
+  branch) and touches nothing else — line 1259 (`if not
+  data.get("container"): return None`, pre-existing, just renumbered)
+  was never itself changed. The diff-coverage floor here is measured
+  against the whole wave's diff to `run-gate.py`, not the last commit
+  alone, so this was a real, newly-opened gap: the ONLY test that used
+  to reach 1259 was the parametrized `'{"lane": "suite"}'` case in
+  `test_a_record_without_a_container_is_no_record` (schema absent,
+  container absent) — which RW-37's own new branch now intercepts
+  earlier, returning at line 1229 instead. No remaining test exercised
+  the case of a record with a PRESENT, matching schema and no
+  container, which is the only way left to reach 1258–1259.
+  **RW-38: add that missing case** — appended
+  `json.dumps({"schema": run_gate.INFLIGHT_SCHEMA, "lane": "suite"})` to
+  the same parametrize list (`d274bc73`, `tests/test_run_gate.py` only).
+  Re-ran `./run-gate.py selftest` on the committed tip: **GREEN** —
+  `556 passed, 2 skipped` / `diff-coverage OK: 496/496 = 100.0%` /
+  `exit 0` (`rw37-selftest-final.log`, read separately). Tree clean at
+  `d274bc73`. This closes RW-37 for real; no round 4 needed (a coverage
+  gap on the fix's own diff, caught and closed by the controller, not a
+  design defect the round-3 reviewer would need to re-examine).
+  **Wave implementation is now complete and gate-GREEN. Proceeding to
+  the merge sequence**: renumber the wave's own RG-39→RG-40 and
+  RG-40→RG-41 backlog rows (real collision with main's own RG-39,
+  documented above and in the resume memory) BEFORE merging, then
+  merge `--no-ff`, push, `cmru release --project run-gate-project
+  --set-version 23.4.0`.
