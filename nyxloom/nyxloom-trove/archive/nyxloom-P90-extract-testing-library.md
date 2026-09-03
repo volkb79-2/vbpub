@@ -1,3 +1,17 @@
+SUPERSEDED 2026-09-02, closed by nyxloom-P98 (not dispatched). This proposal
+would have extracted nyxloom's `coverage_gate.py`/`mutation_gate.py`/
+`gate_canary.py` cluster into a standalone testing/rigor library so other
+projects could consume it without adopting nyxloom -- exactly the capability
+the estate's separately-built Assay tool (see this proposal's own §Naming,
+which floated "assay" as the library's name) now provides directly. Rather
+than build that library, nyxloom-P98 deletes the toolkit modules outright
+(nyxloom-trove/reports/ASSAY-NYXLOOM-REORIENTATION-2026-08-17.md's "Deletion
+inventory and Assay transfer check") and retires GA1/GA4's canary-based
+gate-trustworthiness verification in favor of Assay's own R2/R3 mechanisms.
+Archived verbatim below for its diagnostic value (the four-way
+`coverage_gate.py` duplication evidence, the LanguageAdapter design) even
+though its "extract a library" conclusion is moot.
+
 ---
 schema_version: 1
 id: nyxloom-P90-extract-testing-library

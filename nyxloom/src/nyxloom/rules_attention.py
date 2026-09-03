@@ -1,12 +1,16 @@
-"""Attention and cadence rules (CR-06a): module contract items 6, 7 and 16.
+"""Attention rules (CR-06a): module contract items 6 and 7.
 
-What these three have in common is that they claim NOTHING. They are the
-planner's reporting and maintenance surface: the progress ratchet and the
-spec-health signals raise a flag for a human, and the gate-verify cadence runs
-a subprocess probe. None of them starts an agent turn, so none of them
-contends for the single carve slot -- which is precisely what the arbiter now
-makes visible, where the monolith left it to a reader noticing which locals a
+What these two have in common is that they claim NOTHING. They are the
+planner's reporting surface: the progress ratchet and the spec-health signals
+raise a flag for a human. Neither starts an agent turn, so neither contends
+for the single carve slot -- which is precisely what the arbiter now makes
+visible, where the monolith left it to a reader noticing which locals a
 branch did and did not mention.
+
+nyxloom-P98 (2026-09-02) retired this module's third rule, the GA4
+gate-verify-cadence-overdue probe (module contract item 16) -- superseded by
+Assay's own R2/R3 mechanisms once a project declares assay/run-gate lanes
+(see `nyxloom-trove/decisions.md`).
 
 DEDUP IS THE DESIGN HERE, not an optimisation. Every SpecAttention branch is
 gated on an "already open in the recent window" flag the daemon computes,
@@ -21,7 +25,7 @@ this module never reads an event log.
 from __future__ import annotations
 
 from .planning import PlanContext, RuleEmitter
-from .reconcile import SpecAttention, VerifyGate
+from .reconcile import SpecAttention
 
 
 def progress_ratchet(ctx: PlanContext, emit: RuleEmitter) -> None:
@@ -77,42 +81,3 @@ def spec_health(ctx: PlanContext, emit: RuleEmitter) -> None:
     # blocked_underspecified_already_open -- see module contract item 7)
     if not inp.blocked_underspecified_already_open and inp.blocked_underspecified_count >= 3:
         emit(SpecAttention(reason='blocked-underspecified', detail=None))
-
-
-def gate_verify(ctx: PlanContext, emit: RuleEmitter) -> None:
-    """Contract item 16 (GA4 2026-07-25): the periodic gate re-verification
-    probe -- re-run GA1's `nyxloom gate verify` canary check to confirm the
-    project's declared gate STILL rejects a known-bad commit. A gate can
-    quietly stop discriminating (a lint exclusion widens, a test gets skipped)
-    with nothing else in the planner noticing.
-
-    OUTSIDE THE CARVE MUTEX, DELIBERATELY, and this rule claims no resource at
-    all so that is now a structural fact rather than an omission a reader has
-    to spot. A gate verify runs a subprocess against a few disposable canary
-    commits: it needs no LLM frontier route, no carve budget and no agent
-    turn, so it is not a carve sibling. Making it contend for the carve slot
-    would mean a busy carve queue silently suppresses the one probe that
-    notices a gate has stopped rejecting -- the failure this cadence exists to
-    catch. It therefore never consults carve_in_flight /
-    frontier_route_available / budget_allows either; only project_paused gates
-    it, because a paused project starts no new process of any kind (the same
-    invariant contract item 14 closed for carving).
-
-    Fires when policy.gate_verify_interval_days > 0 (opt-in; 0 disables, the
-    safety default) AND days_since_gate_verify is None (never run -- turning
-    the knob on is itself the request for a first pass) or >= that interval.
-    The daemon executes it on a background thread and is idempotent while one
-    is already in flight for the project, so replanning the identical
-    VerifyGate every pass until the drain step appends GATE_VERIFY_RECORDED is
-    harmless, not a runaway.
-    """
-    inp = ctx.inp
-    gate_verify_interval = inp.cfg.policy.gate_verify_interval_days
-    if gate_verify_interval > 0:
-        if inp.project_paused:
-            emit.note("gate-verify", None, "paused")
-        else:
-            gv_age = inp.days_since_gate_verify
-            if gv_age is None or gv_age >= gate_verify_interval:
-                emit(VerifyGate(project=inp.cfg.project_id))
-                emit.note("gate-verify", None, "fire")

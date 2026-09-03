@@ -9,9 +9,17 @@
 # artifact. tester-unified supplies the environment; the pinned zipapp
 # (tools/assay/assay-4.0.0.pyz, sha256-verified) is the Assay CLI boundary --
 # Assay source is never imported, and `python -m nyxloom.coverage_gate` no
-# longer runs from the gate (the module itself stays: `mutation_gate.py`
-# still imports its helpers, and it remains the toolkit nyxloom OFFERS other
-# projects per STANDARD.md -- unrelated call sites, out of this package).
+# longer runs from the gate.
+#
+# nyxloom-P98 (2026-09-02): coverage_gate.py, mutation_gate.py's gate-judgment
+# half, and gate_canary.py are deleted outright, not merely unused from this
+# lane -- neither module was ever imported as a library by any project,
+# including nyxloom itself, and nyxloom's own [gates.tester-unified] has run
+# entirely through this Assay-backed lane since NL-1. mutation_gate.py's pure
+# mutant-generation engine (Mutant/generate_mutants) survives as
+# src/nyxloom/mutants.py, imported only by tools/remote_mutation_audit.py --
+# not something this lane exercises or any other project consumes as a
+# toolkit.
 #
 # require_branch = false: nyxloom's suite does not measure branch coverage
 # today (no --cov-branch, no [tool.coverage] config) -- this migration swaps

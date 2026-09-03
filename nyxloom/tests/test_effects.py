@@ -149,7 +149,6 @@ class TestThisRepo:
             "mark-stalled": reconcile.MarkStalled(task_id="t1", attempt_id="a1"),
             "spec-attention": reconcile.SpecAttention(reason="ratchet"),
             "provider-pause": reconcile.ProviderPause(route_id="r1"),
-            "verify-gate": reconcile.VerifyGate(project="demo"),
             "post-merge-gate": reconcile.RunPostMergeGate(task_id="t1"),
             "launch-review": reconcile.LaunchReview(wave_id="w1",
                                                     task_ids=["t1"]),
