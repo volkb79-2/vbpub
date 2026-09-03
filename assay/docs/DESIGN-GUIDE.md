@@ -75,13 +75,28 @@ grows into a policy engine or an LLM harness.
 | Tier | assay's role | Determinism | Examples |
 |---|---|---|---|
 | **1 — COMPUTED** | derives the verdict itself, in-process | full | R0–R3: coverage, canary, mutation, serial/parallel parity, fail-before/pass-after |
-| **2 — ADJUDICATED** | **invokes** a declared third-party tool and applies a **declared threshold** to its structured output | deterministic *given the tool* | SAST, SBOM/vulnerability, license, DAST, accessibility budget, visual regression |
+| **2 — ADJUDICATED** | **invokes, or consumes the declared structured output of,** a declared third-party tool, and applies that tool's own decision | deterministic *given the tool* | SAST, SBOM/vulnerability, license, DAST, accessibility budget, visual regression, image provenance (B004) |
 | **3 — ATTESTED** | ledgers evidence produced entirely elsewhere: validates shape, binds to commit, checks staleness — **never verifies** | none, and the artifact says so | adversarial review, production replay, ClusterFuzzLite findings |
 
 Tier 2 does not violate §0: the judgement is the *tool's*, and assay's
-contribution is a declared threshold, which is deterministic. The hazard to
-watch is a missing or crashed scanner — that must be `ERROR` or
+contribution is either a declared threshold or a declared mapping from the
+tool's own closed vocabulary to an outcome — both deterministic. The hazard
+to watch is a missing or crashed scanner — that must be `ERROR` or
 `NO_MEASUREMENT`, **never** `PASS`.
+
+**"Invokes" is not the only Tier-2 shape, and B004's adjudicator is the
+reason this table says "or consumes" now.** A-030 forbids assay orchestrating
+infrastructure, and at S3/S4 assay runs *inside* a container where the tool
+that would need invoking (`ciu`, talking to the docker socket) is not even
+reachable. So B004's `judge.evidence[].source = "adjudicated"` entry never
+invokes anything: the caller's own harness runs `ciu provenance --json`
+*before* the lane starts and writes its output to a declared path
+(`judge.adjudication_dir`); assay reads that ALREADY-PRODUCED document,
+parses it against ciu's closed schema, and renders ciu's own decision — never
+assay's — as the Tier-2 evidence entry. The judgement is still the tool's
+either way, which is what keeps this Tier-2, not Tier-1: assay is not
+deciding whether the images matched, only relaying and binding-to-commit a
+decision `ciu` already made.
 
 Tier 3 exists because the alternative is worse than it looks. TESTING-
 METHODOLOGY is explicit that *"a runner cannot infer intent"* and that *"review
@@ -107,9 +122,14 @@ What makes an attestation more than a rubber stamp — all of it mechanical:
 The lane declares Tier-3 input under HOW, not as another rigor level (A-209):
 `judge.attestation_dir` names one contained project-relative input directory
 and `judge.evidence` is the ordered closed list of `(source,key)` identities.
-The two fields are both present or both absent and no location is derived. This
-pair is legal even on R0-only because external evidence and computed rigor are
-separate axes; it does not make R0 consume coverage/mutation/canary policy.
+Tier 2's `judge.adjudication_dir` (B004) is the same shape, one field over,
+for `source = "adjudicated"` entries: PER-SOURCE, not a single toggle —
+`attestation_dir` is present iff `judge.evidence` declares at least one
+`source = "attested"` entry, `adjudication_dir` iff it declares at least one
+`source = "adjudicated"` entry, and a lane may declare both dirs, one, or
+neither. No location is ever derived. Every pair is legal even on R0-only
+because external evidence and computed rigor are separate axes; declaring
+either does not make R0 consume coverage/mutation/canary policy.
 
 Asynchronous `PENDING` evidence is deferred until claim-level enforcement is
 designed. It is not a seventh outcome hidden inside an evidence entry.
@@ -383,11 +403,39 @@ must stop and ask, never invent one:
 | Outcome | `reason_code` |
 |---|---|
 | `PASS` | the key is **omitted**, not null. A pass has no cause to name. |
-| `FAIL` | `UNCOVERED_LINES`, `UNCOVERED_BRANCHES`, `EXCLUDED_LINES`, `UNCLASSIFIED_LINES`, `MUTANTS_SURVIVED`, `CANARY_SURVIVED`, `COMMAND_FAILED` |
+| `FAIL` | `UNCOVERED_LINES`, `UNCOVERED_BRANCHES`, `EXCLUDED_LINES`, `UNCLASSIFIED_LINES`, `MUTANTS_SURVIVED`, `CANARY_SURVIVED`, `COMMAND_FAILED`, `RED_FIRST_UNPROVEN` |
 | `ERROR` | `GIT_FAILED`, `UNREADABLE_ARTIFACT`, `FORMAT_MISMATCH`, `BAD_LANE_CONFIG`, `EXEC_FAILED`, `OUTPUT_WRITE_FAILED`, `MUTATION_DISCOVERY_FAILED` |
-| `NO_MEASUREMENT` | `DIRTY_TREE`, `HEAD_CHANGED`, `BASE_IS_HEAD`, `EMPTY_COVERAGE`, `BRANCH_UNAVAILABLE`, `TARGET_NOT_MEASURED`, `MISSING_ATTESTATION`, `STALE_ATTESTATION`, `MISSING_EXTERNAL_TOOL` |
+| `NO_MEASUREMENT` | `DIRTY_TREE`, `HEAD_CHANGED`, `BASE_IS_HEAD`, `EMPTY_COVERAGE`, `BRANCH_UNAVAILABLE`, `TARGET_NOT_MEASURED`, `MISSING_ATTESTATION`, `STALE_ATTESTATION`, `MISSING_EXTERNAL_TOOL`, `PROVENANCE_UNVERIFIED` |
 | `BUDGET_EXCEEDED` | `LANE_TIMEOUT`, `MUTANT_LIMIT_EXCEEDED`, `SNAPSHOT_LIMIT_EXCEEDED` |
 | `INCONCLUSIVE` | `NO_MUTANTS`, `MUTATION_UNSUPPORTED`, `CANARY_INCONCLUSIVE`, `ALL_MUTANTS_EQUIVALENT` |
+
+**Two codes join the table at schema v10 (Wave D), and both are RESERVED —
+the pattern `MISSING_EXTERNAL_TOOL` set (A-013/A-086/A-144): a code lands in
+the bump the project is already paying and its producer renders it later, for
+free, rather than costing a second cut of its own.**
+
+- **`NO_MEASUREMENT`/`PROVENANCE_UNVERIFIED`** (B004/A-276/A-430) — assay
+  could not establish WHICH artifact the lane's tests ran against: the
+  adjudicated image-provenance document is absent, unreadable, carries an
+  unaccepted `schema_version`, or reports a mismatch. Payload-free; the
+  discriminating detail lives in the input document and in the claim's
+  `detail`. **A mismatch is `NO_MEASUREMENT` and never `FAIL`**: it says the
+  measurement's subject is unknown, not that the code is bad, and a `FAIL`
+  would let a consumer read "the code is bad" off a deployment fact.
+- **`FAIL`/`RED_FIRST_UNPROVEN`** (F015/M7, A-433 as amended by A-434 under
+  DA-R18) — the R4 red-first (`fail-before/pass-after`) claim's judged
+  refusal: assay materialised both commits and ran the declared tests on
+  both, and the property did not hold. Either the test PASSED at the broken
+  commit (it does not discriminate the fix) or it did not PASS at HEAD; WHICH
+  is read off the claim's two recorded outcomes and its `detail`. It is a
+  judged **`FAIL`**, not a `NO_MEASUREMENT`, because both runs completed and
+  assay therefore measured something — `CANARY_SURVIVED` one rung down.
+  Deliberately not `COMMAND_FAILED`: that is R0's statement about the LANE's
+  declared command, R3 likewise maps neither of its own two runs onto it, and
+  on a claim whose before-run is *expected* to fail a bare `COMMAND_FAILED`
+  could not say which side failed. Every failure of the MECHANISM itself
+  (snapshot, overlay, deadline, unreadable output) keeps the code its own
+  substrate already raises.
 
 **(B026 N-4, decided 2026-08-25) A refusal's diagnosis is `reason_code`
 alone — never a free-text field — and that is deliberate, not an
@@ -416,6 +464,43 @@ every member is a real, previously-decided fact, and `BAD_LANE_CONFIG`
 already says enough to know which lane-declaration class of problem this
 is even without the free-text string a `LaneConfigError` would have
 carried.
+
+**(B053/DA-D2, schema v10 — this is now PARTLY superseded, and the part that
+changed is exactly the part B026 N-4 called a real API commitment rather than
+a quick fix.)** Wave D pays both commitments, deliberately and in one cut:
+
+- the CLI prints ONE stderr line `assay: {outcome}/{reason_code}: {message}`
+  through a single handler at the `run` command's boundary, and the same text
+  goes to the library `diagnostics` stream, so a library caller gets it
+  without stderr (phase 1);
+- the same text is byte-copied onto the refusing claim as **`claim.detail`**
+  (A-428), bounded at 2048 UTF-8 bytes with B014's truncation convention
+  (`detail_dropped_bytes`), present on NON-PASS claims only.
+
+**How the byte copy is guaranteed structurally, not by convention (A-439).**
+`announce_refusal` RETURNS the bounded sentence it just printed, and the
+conversion site passes that value straight into the `Claim` it is building —
+one expression, one site, one reading of `str(exc)`. A site that wanted the
+line and the field to disagree would have to compose the message twice on
+purpose. The two sites that cannot take the return value directly — the
+deferred equivalence-artifact refusal, whose announcement happens later, and
+the R3 claim an R2 orchestration fault also refuses, which must not print a
+second line — call `verdict.refusal_detail(str(exc))`, which is literally the
+expression `announce_refusal` evaluates, on the same error object.
+`refuse_lane` takes the value as one `RefusalDetail` rather than as a text/
+count pair, because a truncated sentence with no count and a count with no
+sentence are both documents the model refuses: one value cannot be
+half-threaded through a call chain.
+
+What did NOT change, and must not be read as changed: **`detail` is
+DECLARED, NOT VERIFIED** (A-230a, `producer_tool`'s own words). Assay copies
+that text and never parses it; the model and `assay verify` check the
+presence rule and the byte bound and never the content. The closed
+`(status, reason_code)` pair remains the ONLY machine-readable statement in
+the document (A-138/A-170), and a consumer that pattern-matches `detail` is
+reading diagnosis as policy. A structured detail was rejected for precisely
+that reason: `reason_code` is already the structured surface, and a second
+one would re-open the vocabulary A-138/A-170 shut.
 
 ### Bounded command-output tails
 
@@ -533,6 +618,182 @@ regression even for a path Git status could not report. Untracked caller residue
 such as `__pycache__/` is not part of the commit and therefore never enters the
 snapshot.
 
+### A replaced output directory is named, not folded into EMPTY_COVERAGE
+
+**(B049/A-408.)** P20's held-parent-descriptor discipline above buys the
+TOCTOU cover that a re-open by name cannot, and it has one blind spot: a
+tool that does `rm -rf <dir> && mkdir <dir> && write <artifact>` — Vitest's
+own default `coverage.clean = true`, and a common build-step convention far
+beyond it — writes a complete artifact into a *different* inode that merely
+answers to the same path. The held descriptor still refers to the orphaned
+original, so `consume()`'s basename lookup raises `FileNotFoundError` and
+returns `None`. Every caller reads that `None` as the truthful absence
+above: `NO_MEASUREMENT`/`EMPTY_COVERAGE` for a coverage read, a `crashed`
+mutant for `mutation.py`'s absent read. Both messages then assert a
+checkable falsehood over an artifact that was complete on disk at the
+declared path the whole time — the exact "a check is only as strong as what
+it actually compares" shape AGENTS.md names, one layer down: the *absence*
+being reported is real, but the *conclusion drawn from it* is not.
+
+The fix is one `fstat` on a descriptor the reservation already owns:
+`st_nlink == 0` is the exact, name-free witness that this directory inode
+has been unlinked while an open descriptor keeps it alive. It is checked at
+`consume()` time, so it costs nothing during the command and, unlike a
+re-open by name, adds **no new TOCTOU surface at all** — which is why it,
+rather than B049's option (1), is what ships. The refusal is
+`ERROR`/`UNREADABLE_ARTIFACT`, a value the frozen schema already reserves
+for "an object that exists but cannot be trusted … or a race the caller's
+own reservation already detected": no new reason code, no schema change
+(A-138/A-170).
+
+Because the check lives in `OutputReservation.consume` itself, every
+reserved artifact inherits it by construction — the coverage read, the SQL
+R2 `equivalence_artifact`, the ingested mutation report, and `mutation.py`'s
+per-mutant equivalence and kill-signal reads. Rejected alternatives, from
+B049's own list: re-opening the parent chain by name (loses the P20 cover
+this module exists to provide), and documenting the constraint only (which
+says nothing about tools other than Vitest that share the convention). The
+`clean: false` guidance stays in README/CONSUMERS as a *recommendation* —
+it keeps the lane on the fast path — but forgetting it is now diagnosable
+rather than silently mis-diagnosed.
+
+### Every refusal says WHY, exactly once, through one emitter (B053/A-409)
+
+The closed `(outcome, reason_code)` vocabulary is a wire contract and stays
+one (A-138/A-170): a consumer switches on it without parsing prose, and no
+free-text field is added to the document for this. But every layer that
+refuses already *composes* a sentence — which artifact, which declaration,
+which target — and that sentence was thrown away at the moment the
+`AssayError` became a refusal `Claim` or `Verdict`. The operator was left
+with `ERROR`/`BAD_LANE_CONFIG` and a guess.
+
+`runner.announce_refusal(exc, *, diagnostics)` is the one emitter. It writes
+exactly `assay: {outcome}/{reason_code}: {message}` and nothing else, to the
+caller's own `diagnostics` stream — the same stream `environment_command`'s
+probe refusal (A-322) and B033's whole-target note already use. `assay.cli`
+passes its own stderr, so the CLI gets the line for free; a library caller
+passes its own stream and assay never touches the process's stderr.
+
+**Why one emitter called at ~15 conversion sites, and not one `try` at the
+CLI boundary.** The obvious shape — wrap the `run` command in a handler and
+print whatever escapes — cannot see the defect. `assay.runner` converts an
+`AssayError` into a refusal claim or verdict at ~15 places and RETURNS a
+document; almost nothing propagates to the CLI. A boundary handler would
+therefore print for the handful of structural errors that DO escape (which
+already printed, from `cli.py`'s own two prints) and stay silent for exactly
+the refusals B053 filed. Both of those CLI prints are now calls to the same
+emitter, because two spellings of one line is how the two drift apart.
+
+**Exactly once.** The call belongs where the error becomes a claim or a
+verdict, not where it is caught and stored: a coverage-read failure on a lane
+that declares no R1 never becomes a claim at all, and announcing it would be
+a line with no document behind it. Where one error refuses two levels — an R2
+orchestration fault also refuses R3 — it is announced at the first only.
+
+**The emitter's contract is a MESSAGE, not an exception (DA-R3/A-414).** The
+first landing of this rule left five sites out — `DIRTY_TREE` (twice),
+`HEAD_CHANGED`, `MISSING_EXTERNAL_TOOL`, the `env_required` refusal and the
+bad-`--shard` refusal — because each called `refuse_lane`/`refuse_all` with a
+bare `(status, reason_code)` literal and there was no `AssayError` whose
+message could be copied. That reasoning was backwards. Every one of those
+sites *holds the fact* at the moment it refuses: the offending paths from
+`git.dirty_paths`, the two disagreeing revisions, the tool that is not on
+`PATH`, the unset variable, the spec the operator typed. Composing the
+sentence there is composing it at the point of knowledge, which is what §5
+asks for; the thing §5 forbids is inventing text somewhere the fact is *not*
+known. Each of the five now builds an `AssayError` for the message and hands
+it to the same emitter, so **every refusal reachable through `assay run`
+prints exactly one line, without qualification.**
+
+**A line about a refusal the verdict does not carry is worse than silence
+(DA-R4/A-414).** One early-R2 refusal is decided before the lane's own
+command outcome is known: the baseline declared an `equivalence_artifact` and
+did not write it (A-279). If the command then FAILED, claim assembly discards
+that early claim in favour of the command's own — so announcing at the point
+the early claim is built printed a sentence a consumer could not reconcile
+with the document in its hand. The announcement is deferred to the point
+where the surviving claim is CHOSEN. Deferred for that one site only: every
+other early-R2 refusal is decided inside the `result.outcome is PASS` guard
+and cannot be superseded, so no general deferred-print buffer exists — a
+buffer would make "announced exactly once" a property of a mechanism instead
+of a property of each site.
+
+The per-claim `detail` field (DA-D2 (c)) is a separate, later decision: it
+puts this text ON the wire, which is a schema change and belongs to a cut.
+
+### A self-contradictory coverage record is one FILE's defect (B054/A-410)
+
+A-405 established the rule for a Go file whose `//line` directive makes its
+recorded positions virtual: refuse it if the lane judges it, ignore it if the
+lane does not, because code outside the judged set is invisible to the
+verdict by construction. B054 is the same rule reached from JavaScript.
+
+`@vitest/coverage-istanbul` statically instruments every file a
+`coverage.include` glob matches, including files no test imports, and for an
+ordinary braceless single-statement `if` it can write a `branchMap` arc on a
+line the same record's `statementMap`/`s` never classifies. Refusing the
+whole artifact for that made ONE never-executed file cost every other file's
+correct data — the exact inverse of what `changed_lines` mode promises a
+consumer adopting coverage incrementally.
+
+**Where the fix could NOT follow A-405, and what that forced.**
+`line_directive_remapped` is a DERIVED property: it reads `blocks`, which
+every rebuild carries, so a stored flag could never disagree with its
+records. A contradicting arc has no such anchor — the arc must be dropped
+(`FileCoverage` refuses construction otherwise) and once dropped there is
+nothing left to derive from. So `contradictory_branch_lines` is STORED, and
+the two rebuild sites in `statement_attribution` carry it explicitly, with a
+comment saying why a rebuild that forgot it would launder a defective record
+into a clean one. The rejected alternative was a `(profile, defects)` parser
+return: it changes the signature every format's parser shares in order to
+carry a fact only one format can produce.
+
+**`branches` stays a `BranchCoverage`, never `None`, even when every arc was
+dropped.** `None` means "this FORMAT cannot express arcs at all" (A-008).
+Saying that about an istanbul artifact would be false, and would silently
+change the profile's branch capability.
+
+**No wire field.** The not-judged set is invisible by construction, so an
+`excluded_files` list on the verdict would put a fact on the wire that no
+consumer asks for and that the north star says is not part of the judgment.
+The file stays nameable in three places instead: the diagnostics line, the
+refusal message when it IS judged, and the field itself.
+
+### A lane that runs out of time still produces a document (B028/A-415)
+
+`LaneDeadline.remaining()` raises `BUDGET_EXCEEDED`/`LANE_TIMEOUT` the moment
+the lane-wide budget is spent, and it is the ONE seam every timing check in
+this codebase reads through — about sixteen call sites across `runner.py`,
+`mutation.py` and `canary.py`. A raise from any of them used to escape
+uncaught on the direct-R0 dispatch, so a lane whose command simply outlived
+`budget_seconds` exited 4 with **nothing written to a reserved
+`--verdict-json`**: assay said "you ran out of time" on stderr and handed the
+consumer no document saying it. That is the same defect B025 fixed for a
+narrower cause, and P17's rule — every post-HEAD-resolution terminal path
+emits a complete artifact — covers both.
+
+**One outer catch per dispatch entry point, never one per call site.** The
+sixteen timing checks are a moving target; the two entry points are not. A
+wrapper per call site is a rule every future timing check has to remember,
+and the ones added since B025 was written did not. `_run_higher_rigor_lane`
+already had its boundary (a single `try` spanning base resolution, the
+scratch root and the whole snapshot block) and was measured correct before
+anything was changed; the direct-R0 tail now has the matching one.
+
+**What exists at the moment of the timeout is the design question**, and the
+answer is: whatever the command left. If the command already ran, its result
+is real evidence — argv, timing, output tails — and the verdict keeps it,
+carrying the refusing pair as the R0 claim. If the deadline expired before it
+ran, there is no result to assemble from and `refuse_lane` builds the
+complete refusal artifact exactly as every other pre-work refusal does.
+
+**A timeout is never relabelled.** When cleanup after a completed run fails,
+A-193/A-194 replace the highest higher-rigor claim with `ERROR`/`GIT_FAILED`.
+If that cleanup failed *because the lane ran out of time*, `GIT_FAILED` names
+a Git failure that did not happen and buries the one actionable fact. The
+cleanup-failure path is unchanged in shape and now carries the refusing
+error's own pair. Every other cause keeps `GIT_FAILED`.
+
 ### Mutation resume and sharding (B012)
 
 Mutation state lives outside each ephemeral replacement snapshot. One bounded
@@ -583,8 +844,12 @@ declared but rendered no judgement"* cannot look like *"adversarial-review was
 never declared"*, and no external review is forced into a fictitious R3 slot.
 The attested branch records `producer`, `attested_commit`, and `reviewed_paths`
 when an attestation was obtained, while always recording
-`verified_by_assay: false`. The adjudicated sibling shape is reserved in v2;
-the first real integration adds its payload and registry behavior.
+`verified_by_assay: false`. The `"adjudicated"` source value was reserved in
+v2 (A-034/A-078); B004 (v10) is the first real integration, and it adds a
+REGISTRY (`assay.adjudication.ADJUDICATORS`), not a payload — `Evidence`'s
+adjudicated branch has no payload slot at all (`producer`/`attested_commit`/
+`reviewed_paths` are refused on it), so ciu's own decision is relayed as
+`(status, reason_code)` alone, always with `verified_by_assay: false`.
 
 ### Transparency of what actually ran
 
@@ -1669,6 +1934,40 @@ exactly as `coverage-final.json` is (A-161), and the declared artifact is held
 through the same single-owner reservation, so a committed or stale report
 cannot satisfy the path.
 
+**Three non-repudiation tiers, and the third is the one that binds the
+evidence to the commit** (B046 for the first two, B052/DA-D5 for the third).
+*Identity*: the report's `projectRoot` must equal the directory the lane's
+command ran in. *Anchoring*: every `files` key must resolve under a declared
+source root, inside this snapshot. *Content*: for every measured file, the
+committed blob is read back through `SnapshotRepository.read_regular_file` —
+the same prepared commit the command ran against — and compared with the
+`source` the report embeds. The first two say the report is about this
+checkout; only the third says it is about this **commit's content**, which is
+the property Assay's own committed-object snapshot exists to make checkable
+and the only one that closes "an artifact from an earlier state of the same
+tree".
+
+It earns its place because Assay does not quote that text, it **computes from
+it**: every mutant's byte span comes from `_line_byte_offsets(source)` and
+`lines_without_candidates` walks it line by line, so a report about different
+text yields positions spelled with this commit's paths and wrong about this
+commit's files. The comparison's normalisation is STATED, because what a
+comparison folds away is what it has decided not to be evidence about: line
+endings folded to `\n`, one trailing newline ignored, everything else
+byte-exact. A mismatch is `ERROR`/`UNREADABLE_ARTIFACT` naming the file and
+the three causes (stale / rewritten-in-flight / foreign) with the one remedy.
+**Rejected:** a warning (a fact nobody reads — AGENTS §4.2a's inert-config
+rule one layer up); an opt-out key (the lane switching off the check that
+judges it); recording the mismatch on the wire (it would archive, under
+Assay's name, a document Assay has already decided not to trust — and there
+is no field for "the evidence text was not the commit's" precisely because
+there is no verdict in which that text is still evidence). **The
+rewritten-in-flight case is refused deliberately, not collaterally**: mutants
+applied to transpiled or reformatted text carry that text's line numbers, and
+a formatter writing back into the tree would trip `DIRTY_TREE` on the next run
+anyway, so this is consistent with what Assay already does one layer up rather
+than a new severity.
+
 **Scope stays Assay's computation, never the tool's.** The foreign tool
 mutated whatever its own configuration told it to; which of those mutants
 COUNTS is decided by Assay's own rule — under `changed_lines` a mutant counts
@@ -1688,7 +1987,32 @@ configuration on the wire under Assay's name, the same declared-versus-verified
 conflation A-230a keeps `helpers[]` clean of. The producer's own identity is
 recorded in `judgment.r2.producer_tool`, copied verbatim from the report and
 documented as **declared by artifact, not verified** — it is not a `helpers[]`
-entry, because `helpers[]` records tools Assay itself invoked. The operators
+entry, because `helpers[]` records tools Assay itself invoked.
+
+**`judgment.r2.discarded` stands beside `producer_tool` in exactly that tier,
+and this is a ruling rather than an omission** (B051, DA-D4 as completed by
+DA-R26). Assay *derives* the count at ingest — it lists the report's own
+`CompileError`/`RuntimeError` mutants, DA-D4's `listed` semantics, never
+`encountered` — and `assay verify` then asserts only that the wire value is an
+integer and non-negative. No re-derivation is available to it, because under
+those same semantics a discarded mutant is outside the document it would have
+to be derived from: it is in no mutation bucket, it is in neither
+`candidate_count` nor `total` (which `Mutation`'s arithmetic requires to be
+equal outside the limit sentinel), and its line is absent from
+`lines_without_candidates` because the tool *did* produce a candidate there.
+A truthful document with 900 discarded mutants is byte-indistinguishable from
+a truthful one with 0, so every upper bound that would refuse an inflated
+count would equally refuse the honest high-discard report the field exists to
+surface. Saying "checked" about the half that is easy, while the half that
+matters stays unchecked, is worse than saying nothing — so the document says
+nothing, out loud, in three places. The field carries no judgment weight while
+it is unverified: it is a COUNT beside the payload, never enters the mutation
+buckets, so the score's denominator is unaffected by construction. **B070** is
+the v11 candidate that would put the missing quantity on the wire and turn
+this into a difference the raw layer can take; it would have been free before
+5.0.0 shipped and is a schema bump after.
+
+The operators
 the tool actually applied are not lost by any of this: they are on the wire,
 one per mutant, namespaced under a prefix Assay owns (`stryker:<mutatorName>`,
 admitted by an open pattern branch beside the three closed per-language enums)
@@ -1983,10 +2307,21 @@ time against the vocabulary its own module owns: `coverage.format` against
 `assay.coverage.FORMAT_REGISTRY` (A-068), `mutation.operators` against
 `assay.mutation.MUTATION_OPERATORS`, and `canary.mechanism` against
 `assay.canary.CANARY_MECHANISMS` (P19). `canary` declares exactly one
-`mechanism` and one project-relative `target`, never a plural list — one R3
-claim is one mechanism execution, because the verdict contract carries a
-single canary payload (v3 and planned v4 alike) and collapsing several results into it would report a judgement
-nobody made. **A declared `uncovered-line` canary only ever reaches its own
+`mechanism` and then **exactly one of** a project-relative `target` or the
+ORDERED `targets` list (1..8, duplicates refused) with its CLOSED
+`aggregation` (`"any"`/`"all"`) — B007/A-432, schema v10, additive:
+`LANE_SCHEMA_VERSION` stays 2 and a lane that declared `target` loads
+byte-unchanged. Through v9 only the singular spelling existed, because the
+verdict contract carried a single canary payload and collapsing several
+results into it would have reported a judgement nobody made; v10 keeps that
+rule PER PROBE and lifts the claim to an ordered ARRAY of them, one
+`canary.attempts[]` entry per declared target, so nothing is collapsed. The
+`aggregation` is required once more than one probe is named and forbidden
+when one is — with a single probe `any` and `all` denote the same function,
+so recording one would record a policy the lane never stated, and its
+absence is the checkable statement. The bound of 8 is MEASURED (~2.76 s of
+materialisation per target, against the smallest documented lane budget),
+not chosen. **A declared `uncovered-line` canary only ever reaches its own
 expected reason on a lane that also declares R1** (A-150): `UNCOVERED_LINES`
 comes from the R1 evaluation and from nowhere else, so an R0+R3 lane can
 report that mechanism as having survived and never as having been caught.
@@ -2178,13 +2513,39 @@ opens. Feeding the verifier's own line into `pip install --no-index
 sha256 against the bytes it actually opens, so verification and installation
 are bound to the same artifact by construction rather than by discipline.
 
-**Two venvs, not one.** `build-venv` gets the hash-checked five-wheel closure
-and nothing else; `run-venv` gets the built wheel installed with `--no-index
---no-deps` and nothing else. The build closure never leaks into the runtime
-venv's `sys.path`, so "zero runtime dependencies" is checked against the
-*installed* artifact (`importlib.metadata.requires("assay")`, extras aside)
-rather than merely asserted from the pinned `dependencies = []` in
-`pyproject.toml`.
+**Two venvs for the wheel, not one.** `build-venv` gets the hash-checked
+five-wheel closure and nothing else; `run-venv` gets the built wheel installed
+with `--no-index --no-deps` and nothing else. The build closure never leaks
+into the runtime venv's `sys.path`, so "zero runtime dependencies" is checked
+against the *installed* artifact (`importlib.metadata.requires("assay")`,
+extras aside) rather than merely asserted from the pinned `dependencies = []`
+in `pyproject.toml`.
+
+**And a third for the linter (B024/A-417).** The gate lints its own source: a
+phase after the suite runs `pyflakes` over the private clone's `src/assay` and
+emits `ASSAY_GATE_PHASE=pyflakes-clean`. The obvious place to put a linter is
+one of the two venvs that already exist, and both are wrong. `run-venv` would
+add a package to the environment whose whole job is to show that the installed
+artifact needs nothing; `build-venv` would add a sixth wheel to a closure whose
+five-pin assertion is a claim about *what can enter the wheel* — the assertion
+would still pass, while quietly meaning less. So the linter gets `lint-venv`,
+built from its own one-wheel wheelhouse
+(`gate/distribution/lint-{requirements.txt,wheelhouse/,wheelhouse-manifest.json}`)
+installed the same way the build closure is, `--no-index --require-hashes`.
+pyflakes was fetched once on a networked host and committed; it is pure Python
+with no dependencies, so that closure is one 63 KB file and needs no platform
+matrix. The gate's network-disabled ingress is unchanged.
+
+Two smaller choices in the same phase, for the same reason the wheel is built
+from a clone: it lints the **private exact-OID clone**, so a gitignored stray
+`.py` in the caller's worktree can neither redden the phase nor launder it;
+and it runs **after** the suite, because a linter that reddens the gate before
+the tests have spoken buys a five-second answer at the cost of the one the
+reviewer needs. The rule set is pyflakes' whole rule set, which is exactly the
+F-rule set other tools re-implement — undefined names, unused imports and
+locals, redefinitions, placeholder-free f-strings — so there is no rule
+selection to configure and none to drift. Scope is `src/assay`; `tests/` is
+excluded on a recorded measurement (B062), not on taste.
 
 ## 15. Real Python-project qualification harness (P25)
 

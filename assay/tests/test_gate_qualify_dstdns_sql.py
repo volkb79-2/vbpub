@@ -532,9 +532,13 @@ def test_compare_with_witness_refuses_a_corrupted_mutation_bucket() -> None:
         )
 
 
-def test_witness_file_is_valid_json_with_the_v8_schema_version() -> None:
+def test_witness_file_is_valid_json_with_the_current_schema_version() -> None:
+    # The W3 witness is the ONE carve asset that is deliberately not frozen:
+    # `qualify_dstdns_sql.py` regenerates it end to end and compares it with
+    # `==`, so it tracks the CURRENT schema and is migrated by every cut. Its
+    # filename still says `v6`; that is a wave identity, not a schema version.
     document = json.loads(_WITNESS_PATH.read_text(encoding="utf-8"))
-    assert document["schema_version"] == 9
+    assert document["schema_version"] == 10
     # B035/A-329: the witness is an `R0,R2` document -- the exact shape whose
     # `base` rule was unenforceable until `judgment.r2` could say which scope
     # it judged under. It carries a base, so it must say `changed_lines`.

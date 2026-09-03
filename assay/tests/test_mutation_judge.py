@@ -110,6 +110,148 @@ def test_survived_alone_is_fail_mutants_survived():
     assert judge_mutation(baseline, mutation) == (Outcome.FAIL, ReasonCode.MUTANTS_SURVIVED)
 
 
+# --- B050/A-427/DA-R22: the floor, and the default that changes nothing -----
+
+
+def _mutant(lineno: int) -> "object":
+    from assay.verdict import MutantOutcome
+
+    return MutantOutcome(
+        path="pkg/mod.py",
+        lineno=lineno,
+        start_byte=lineno * 10,
+        end_byte=lineno * 10 + 1,
+        replacement_sha256=_SHA_LTE,
+        operator="python:compare-swap",
+        description="Lt->LtE",
+    )
+
+
+def _nine_killed_one_survived():
+    """A 90.0% mutation score: nine killed, one survived, nothing else."""
+    from assay.verdict import Mutation
+
+    return Mutation(
+        candidate_count=10,
+        total=10,
+        killed=tuple(_mutant(index) for index in range(1, 10)),
+        survived=(_mutant(10),),
+    )
+
+
+def test_the_default_floor_is_100_so_any_survivor_is_still_fail():
+    """The regression witness: omitting `fail_under` is the v9 behaviour.
+
+    Every native call site omits it, and `judgment.r2` FORBIDS a native
+    document from recording one, so this is the only branch a native lane can
+    reach with survivors -- byte-identical to the pre-B050 outcome.
+    """
+    mutation = _nine_killed_one_survived()
+    baseline = _baseline(Outcome.PASS, None)
+    assert judge_mutation(baseline, mutation) == (Outcome.FAIL, ReasonCode.MUTANTS_SURVIVED)
+    assert judge_mutation(baseline, mutation, fail_under=100.0) == (
+        Outcome.FAIL,
+        ReasonCode.MUTANTS_SURVIVED,
+    )
+
+
+def test_a_met_floor_falls_through_the_survived_branch_to_pass():
+    """DA-R22: FAIL/MUTANTS_SURVIVED iff `mutation_pct` is BELOW the floor."""
+    from assay.mutation import mutation_pct
+
+    mutation = _nine_killed_one_survived()
+    baseline = _baseline(Outcome.PASS, None)
+    assert mutation_pct(mutation) == 90.0
+    assert judge_mutation(baseline, mutation, fail_under=90.0) == (Outcome.PASS, None)
+
+
+def test_the_comparison_is_strict_so_a_floor_one_notch_higher_fails():
+    """90.0 < 90.5, so the same payload refuses; the boundary is `<`, not `<=`."""
+    mutation = _nine_killed_one_survived()
+    baseline = _baseline(Outcome.PASS, None)
+    assert judge_mutation(baseline, mutation, fail_under=90.5) == (
+        Outcome.FAIL,
+        ReasonCode.MUTANTS_SURVIVED,
+    )
+
+
+def test_the_floor_is_consulted_only_after_crashed_and_budget_exceeded():
+    """Precedence is untouched: a met floor cannot launder either terminal.
+
+    `crashed` and `budget_exceeded` say the experiment did not finish, so no
+    score computed from it means anything -- which is exactly why
+    `mutation_pct`'s denominator excludes them, and why they rank above the
+    branch the floor lives on.
+    """
+    from assay.verdict import Mutation
+
+    baseline = _baseline(Outcome.PASS, None)
+    crashed = Mutation(
+        candidate_count=11,
+        total=11,
+        killed=tuple(_mutant(index) for index in range(1, 10)),
+        survived=(_mutant(10),),
+        crashed=(_mutant(11),),
+    )
+    assert judge_mutation(baseline, crashed, fail_under=0.0) == (
+        Outcome.ERROR,
+        ReasonCode.EXEC_FAILED,
+    )
+    exceeded = Mutation(
+        candidate_count=11,
+        total=11,
+        killed=tuple(_mutant(index) for index in range(1, 10)),
+        survived=(_mutant(10),),
+        budget_exceeded=(_mutant(11),),
+    )
+    assert judge_mutation(baseline, exceeded, fail_under=0.0) == (
+        Outcome.BUDGET_EXCEEDED,
+        ReasonCode.LANE_TIMEOUT,
+    )
+
+
+def test_a_met_floor_beside_equivalents_does_not_become_all_equivalent():
+    """A-223d's guard is `killed + survived == 0`, and B050 states it.
+
+    At a floor of 0.0 a payload with survivors and no kills now falls THROUGH
+    the survived branch. Before B050, `survived` was known empty here and the
+    terminal's condition could be written as half of itself; if it still were,
+    this payload would be reported "all mutants were equivalent" while
+    carrying a recorded survivor -- false about the payload it names.
+    """
+    from assay.verdict import Mutation
+
+    baseline = _baseline(Outcome.PASS, None)
+    mutation = Mutation(
+        candidate_count=3,
+        total=3,
+        survived=(_mutant(1),),
+        equivalent=(_mutant(2), _mutant(3)),
+    )
+    assert judge_mutation(baseline, mutation, fail_under=0.0) == (Outcome.PASS, None)
+    # ...and with no survivor at all it IS the equivalence terminal, unchanged.
+    inert = Mutation(
+        candidate_count=2, total=2, equivalent=(_mutant(2), _mutant(3))
+    )
+    assert judge_mutation(baseline, inert, fail_under=0.0) == (
+        Outcome.INCONCLUSIVE,
+        ReasonCode.ALL_MUTANTS_EQUIVALENT,
+    )
+
+
+def test_build_mutation_claim_threads_the_floor_to_the_judge():
+    mutation = _nine_killed_one_survived()
+    baseline = _baseline(Outcome.PASS, None)
+    from assay.mutation import build_mutation_claim
+
+    assert build_mutation_claim(baseline, mutation).status is Outcome.FAIL
+    met = build_mutation_claim(baseline, mutation, fail_under=90.0)
+    assert (met.status, met.reason_code) == (Outcome.PASS, None)
+    # The payload is carried verbatim either way: the floor decides the
+    # STATUS, never what the document records about the run.
+    assert met.mutation is mutation
+
+
 def test_every_bucket_empty_with_a_positive_total_is_pass():
     from assay.verdict import Mutation
 

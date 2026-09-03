@@ -272,8 +272,10 @@ def test_every_declared_code_is_exercised_by_the_accept_half():
     # the thing that makes an accidental vocabulary addition a red test.
     # P33/A-223d adds the 27th: ALL_MUTANTS_EQUIVALENT. wave-1 §4/§5/§6
     # (A-258/A-259/A-260) adds three more: UNCOVERED_BRANCHES,
-    # BRANCH_UNAVAILABLE, TARGET_NOT_MEASURED -- 30.
-    assert len(VALID_PAIRS) == len(ReasonCode) == 30
+    # BRANCH_UNAVAILABLE, TARGET_NOT_MEASURED -- 30. Wave D's v10 cut adds
+    # the last two: PROVENANCE_UNVERIFIED (B004/A-430, NO_MEASUREMENT) and
+    # RED_FIRST_UNPROVEN (F015/A-433 as amended by A-434, FAIL) -- 32.
+    assert len(VALID_PAIRS) == len(ReasonCode) == 32
 
 
 # --- a code valid for a DIFFERENT outcome is rejected -------------------------
@@ -294,7 +296,7 @@ def test_a_code_belonging_to_another_outcome_is_rejected(
 
 def test_the_cross_matrix_is_not_empty():
     assert len(CROSS_PAIRS) == len(NON_PASS) * len(ReasonCode) - len(VALID_PAIRS)
-    assert len(CROSS_PAIRS) == 5 * 30 - 30
+    assert len(CROSS_PAIRS) == 5 * 32 - 32
 
 
 @pytest.mark.parametrize("outcome", [o.value for o in NON_PASS])

@@ -326,7 +326,13 @@ def test_write_lane_refuses_an_unknown_lane_schema_version(tmp_path: Path) -> No
 #: for the same reason a third time: W4's v8 documents are now history, and a
 #: v9 verifier refuses them, so reading one here would test the harness
 #: against a contract the product no longer emits.
-P25_V9_EXPECTED_ROOT = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W5" / "expected"
+#: Wave D (the v10 integrity cut) moves it a fourth time, to W6's v10
+#: siblings, for the same reason a fourth time. This constant follows
+#: `qualify_topos._EXPECTED_ROOT` and must never lag it: the harness's own
+#: `normalize_artifact` now refuses anything that is not `schema_version: 10`,
+#: so a stale root here would fail loudly rather than silently -- but it would
+#: fail in this consumer instead of in the thing under test.
+P25_V10_EXPECTED_ROOT = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W6" / "expected"
 
 #: (B018/A-327) The harness now REQUIRES a judge identity, because the
 #: qualification it drives runs an installed wheel, which always has one. The
@@ -345,7 +351,7 @@ _A_COMPLETE_JUDGE_IDENTITY = {
 
 def _pass_template_actual() -> tuple[dict, dict[str, object]]:
     template = json.loads(
-        (P25_V9_EXPECTED_ROOT / "p25-pass-v9-template.json").read_text()
+        (P25_V10_EXPECTED_ROOT / "p25-pass-v10-template.json").read_text()
     )
     actual = json.loads(json.dumps(template))
     actual["judge_provenance"] = dict(_A_COMPLETE_JUDGE_IDENTITY)

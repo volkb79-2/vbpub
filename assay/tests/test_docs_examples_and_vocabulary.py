@@ -37,6 +37,7 @@ import pytest
 
 from assay.cli import _built_in_registry
 from assay.config import (
+    EVIDENCE_SOURCES,
     JUDGE_BASE_SOURCES,
     JUDGE_MODES,
     LANE_SCHEMA_VERSION,
@@ -414,6 +415,33 @@ def test_every_reason_code_is_documented():
     assert not missing, f"undocumented reason_code(s): {missing}"
 
 
+def test_every_evidence_source_is_documented():
+    """(B004/A-430) A pre-existing gap the carve itself named: check (2)
+    covered four vocabularies (later five, with reason codes) but never
+    `judge.evidence[].source` -- a closed public vocabulary a consumer TYPES,
+    exactly the shape mandate 2 exists for, that happened to have only one
+    member (`"attested"`) until this release. B004 makes the gap concrete by
+    adding a second value (`"adjudicated"`), so it is closed here rather than
+    left for a future addition to trip over again.
+
+    Each value is asserted as a QUOTED/backticked literal, not merely a bare
+    word -- `attested` and `adjudicated` are specific enough that an
+    accidental-prose false pass is unlikely, but the stronger check costs
+    nothing and matches this module's own established bar
+    (`judge_provenance.artifact`'s check, above).
+    """
+    assert EVIDENCE_SOURCES, "EVIDENCE_SOURCES must not be empty"
+    docs = _docs_text()
+    missing = _missing_from(EVIDENCE_SOURCES, docs)
+    assert not missing, f"undocumented judge.evidence[].source value(s): {missing}"
+    assert "judge.evidence" in docs, "the judge.evidence FIELD is undocumented"
+    for source in EVIDENCE_SOURCES:
+        assert f'"{source}"' in docs or f"`{source}`" in docs, (
+            f"judge.evidence[].source value {source!r} is never documented as "
+            f"a literal value"
+        )
+
+
 #: (P34/A-287) The sixth derived vocabulary. `judge.mutation.operators` is a
 #: closed public vocabulary a consumer types, and `MUTATION_OPERATORS` (all
 #: 14 names across python/go/sql) is NOT the right required set: the
@@ -537,6 +565,11 @@ def test_derived_vocabularies_are_not_accidentally_identical_placeholders():
     assert JUDGE_BASE_SOURCES != SNAPSHOT_SELECTIONS
     assert set(JUDGE_ARTIFACT_KINDS) != JUDGE_BASE_SOURCES
     assert set(JUDGE_ARTIFACT_KINDS) != JUDGE_MODES
+    assert EVIDENCE_SOURCES != JUDGE_MODES
+    assert EVIDENCE_SOURCES != SNAPSHOT_SELECTIONS
+    assert EVIDENCE_SOURCES != set(RIGOR_LEVELS)
+    assert EVIDENCE_SOURCES != JUDGE_BASE_SOURCES
+    assert EVIDENCE_SOURCES != set(JUDGE_ARTIFACT_KINDS)
 
 
 # --- (3) DESIGN-GUIDE anchor resolution --------------------------------------

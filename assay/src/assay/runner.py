@@ -119,6 +119,7 @@ from .evaluate import evaluate_coverage, evaluate_targets, resolve_coverage_keys
 from .statement_attribution import attribute_statements
 from .output import VerdictOutput
 from .verdict import (
+    CanaryAttempt,
     CanaryResult,
     Claim,
     Coverage,
@@ -131,9 +132,11 @@ from .verdict import (
     JudgmentR2,
     JudgmentR3,
     JudgmentResolved,
+    RefusalDetail,
     SnapshotPolicy,
     Verdict,
     iso_utc,
+    refusal_detail,
     rollup,
     supported_helper_roles,
 )
@@ -145,6 +148,7 @@ __all__ = [
     "MonotonicClock",
     "ProcessRunner",
     "ScratchRootFactory",
+    "announce_refusal",
     "assemble_verdict",
     "build_r0_claim",
     "default_process_runner",
@@ -303,6 +307,163 @@ def _probe_refusal_terminal(
     return Outcome.ERROR, ReasonCode.BAD_LANE_CONFIG
 
 
+def announce_refusal(
+    exc: AssayError, *, diagnostics: "TextIO | None"
+) -> RefusalDetail | None:
+    """(B053/DA-D2 (a)+(b), DA-R1) The ONE emitter for the one line every
+    refusal owes a human: ``assay: {outcome}/{reason_code}: {message}``.
+
+    B053's finding was that an :class:`~assay.errors.AssayError`'s *message*
+    -- the sentence that says WHICH file, WHICH target, WHICH declaration --
+    is discarded the moment the error becomes a refusal
+    :class:`~assay.verdict.Claim` or :class:`~assay.verdict.Verdict`: the
+    document carries the closed ``(status, reason_code)`` pair and nothing
+    else (A-138/A-170 keep it that way), so a consumer reads
+    ``ERROR``/``BAD_LANE_CONFIG`` and has to guess.
+
+    **Why one emitter called at every conversion site, and not one ``try``
+    at the CLI boundary.** :mod:`assay.cli` never sees most refusals. This
+    module converts an ``AssayError`` into a refusal claim or a refusal
+    verdict at ~15 places and RETURNS a document; nothing propagates. A
+    handler wrapped around the ``run`` command would therefore print for the
+    handful of errors that escape and stay silent for exactly the ones B053
+    filed. The rejected alternative is recorded as A-409.
+
+    **Exactly once.** The call belongs at the point where the error becomes
+    a claim or a verdict, and where one error feeds two claims (an R2
+    orchestration fault also refuses R3, :func:`_run_prepared_lane`) it is
+    announced at the first of them only.
+
+    *diagnostics* is the stream the caller already threads for
+    :func:`_report_probe_refusal` (A-322) and B033's whole-target note --
+    :mod:`assay.cli` passes its own ``stderr``, so the CLI gets the line for
+    free (half (a)) and a library caller gets it on its own stream without
+    stderr (half (b)). ``None`` means the caller asked for no diagnosis and
+    is not an error.
+
+    The text is byte-identical to what :mod:`assay.cli` has always printed
+    for the errors that DID reach it, which is why both of that module's
+    prints are refactored onto this function: two spellings of one line is
+    how the two drift apart.
+
+    **(B053/DA-D2 (c), A-428, A-439) It also RETURNS that sentence, bounded**
+    -- the :class:`~assay.verdict.RefusalDetail` the conversion site puts on
+    the refusal :class:`~assay.verdict.Claim` it is about to build. The
+    return value is what makes the wire's ``detail`` a byte COPY rather than
+    a second composition: the announced line and the archived document read
+    the same ``str(exc)``, in one expression, at one site. A site that builds
+    a refusal claim without one has to go out of its way not to have it.
+
+    The detail is returned **whether or not anything was printed**. A caller
+    that passed ``diagnostics=None`` asked for no diagnosis on ITS stream; it
+    did not ask for a document that cannot say why it refused. ``None`` comes
+    back only for an error whose message is empty -- A-428's "no refusal
+    produced text".
+    """
+    if diagnostics is not None:
+        print(
+            f"assay: {exc.outcome.value}/{exc.reason_code.value}: {exc}",
+            file=diagnostics,
+        )
+    return refusal_detail(str(exc))
+
+
+def post_command_refusal(
+    reason_code: ReasonCode,
+    *,
+    where: Path,
+    recorded_commit: str,
+    dirty: tuple[str, ...] = (),
+    observed_head: str | None = None,
+) -> AssayError:
+    """(B053/DA-R8) Compose the sentence the POST-command dirt/HEAD guard owes,
+    where the facts are known, for :func:`announce_refusal` to emit.
+
+    **Why this is not the pre-run guard's sentence.** The pre-run guards
+    (``runner.py`` direct-R0 and higher-rigor, both announced since DA-R3) say
+    "commit or stash, then re-run", and that is the right remedy there: the
+    operator left the dirt before the lane started, so the operator can remove
+    it. This guard fires AFTER the lane's own command ran on a tree assay had
+    already observed clean at ``recorded_commit``. The dirt -- or the new
+    commit -- is therefore the COMMAND's, not the operator's, and "commit or
+    stash" is a remedy that cannot work: the next run reproduces it. R-1's
+    round-1 BLOCKER 1 measured this as the ``DIRTY_TREE`` an operator is least
+    able to explain, precisely because they ran it on a tree they knew was
+    clean.
+
+    So the sentence blames the command, names the paths (or the two
+    revisions), and prescribes the remedy that applies: stop the command
+    writing into the working tree, or stop it committing.
+
+    A-175/A-178 are why the guard exists at all: a command that dirties the
+    tree makes the measured tree something other than ``recorded_commit``, and
+    a command that COMMITS leaves a clean tree while making the verdict's
+    commit label untrue.
+    """
+    if reason_code is ReasonCode.DIRTY_TREE:
+        return AssayError(
+            f"the lane's own command left {len(dirty)} uncommitted file(s) in "
+            f"{where} -- assay observed that tree CLEAN at "
+            f"{recorded_commit} immediately before starting the command, so "
+            f"this dirt is the command's own output and re-running after a "
+            f"commit or a stash reproduces it. Point the command's output at "
+            f"the artifact path the lane declares (assay reserves it for "
+            f"exactly this), or at a gitignored path, so what assay measured "
+            f"stays the commit it judges. Affected: {', '.join(dirty)}",
+            outcome=Outcome.NO_MEASUREMENT,
+            reason_code=ReasonCode.DIRTY_TREE,
+        )
+    return AssayError(
+        f"the lane's own command moved HEAD in {where} from "
+        f"{recorded_commit} to {observed_head} -- assay judges the commit it "
+        f"resolved BEFORE the command ran, never one the command created "
+        f"while it ran, so the verdict would name a commit that is no longer "
+        f"what this repository is at. Remove the commit step from the lane's "
+        f"command.",
+        outcome=Outcome.NO_MEASUREMENT,
+        reason_code=ReasonCode.HEAD_CHANGED,
+    )
+
+
+def _announce_contradictory_branch_records(
+    profile: CoverageProfile, *, diagnostics: "TextIO | None"
+) -> None:
+    """(B054/A-410) Name every file whose coverage record contradicts itself
+    about its own branch arcs — "never silently", in DA-D3's own words.
+
+    The parser isolates such a record instead of refusing the whole artifact
+    (see :func:`assay.coverage_parsers.coverage_istanbul_json._contradictory_branch_lines`),
+    and :mod:`assay.evaluate` refuses by name if the file turns out to be in
+    the judged set. The file that is NOT judged is the one this function
+    exists for: it is skipped, its arc data is incomplete, and without a line
+    here that would be invisible.
+
+    **Why every such file and not only the skipped ones.** "Skipped" means
+    "no line in the judged set", and the judged set is resolved inside
+    :mod:`assay.evaluate` against the diff, source roots, globs and test-path
+    rules — asking for it here would mean re-deriving that join, which
+    A-385/A-367 rule against, or threading a stream into a module that is
+    deliberately pure. Naming every defective record is a superset of what
+    DA-D3 requires and invents nothing: a judged one is named here AND
+    refused by name, which is one line more, never one fact less.
+    """
+    if diagnostics is None:
+        return
+    for path in sorted(profile.files):
+        lines = profile.files[path].contradictory_branch_lines
+        if not lines:
+            continue
+        print(
+            f"assay: coverage record for {path!r} contradicts itself at "
+            f"line(s) {sorted(lines)}: a branch arc is recorded on a line "
+            f"the same record does not classify as executed or missing. "
+            f"Those arcs were dropped. This file's branch data is "
+            f"incomplete; if this lane judges it, the lane refuses rather "
+            f"than report a number over it.",
+            file=diagnostics,
+        )
+
+
 def _report_probe_refusal(
     lane: Lane,
     probe_result: "CommandResult",
@@ -311,7 +472,7 @@ def _report_probe_refusal(
     reason_code: ReasonCode,
     diagnostics: "TextIO | None",
     probe_timeout: float = PROBE_BUDGET_SECONDS,
-) -> None:
+) -> RefusalDetail | None:
     """B010's own stated deliverable, finally shipped (B032/A-322).
 
     B010 asked, verbatim, for a refusal that says "this lane's declared
@@ -322,13 +483,22 @@ def _report_probe_refusal(
     which never executed -- so a consumer got neither the raw error B010
     complained about nor the clear message B010 asked for.
 
-    The verdict artifact stays exactly as closed as it was: no free-text
-    field is added to it (A-138/A-170). The diagnosis goes to the caller's
-    own stream, which is where :mod:`assay.cli` already prints every other
-    typed refusal it catches.
+    The verdict's MACHINE-READABLE surface stays exactly as closed as it was:
+    the ``(status, reason_code)`` pair is still the only thing a consumer may
+    branch on (A-138/A-170), and no code reads this sentence back.
+
+    **(B053/DA-D2(c), A-428, A-439) The sentence is now also RETURNED**, so
+    the caller can put it on the refusal claim it is about to build as
+    ``claim.detail``. That is not a widening of the closed vocabulary: it is
+    the same diagnosis this function has always written to the stream,
+    declared-not-verified, carried in the artifact for the consumer that
+    archives the document and no longer has the stream.
+
+    It is composed and returned **even when *diagnostics* is ``None``**. A
+    caller that wants no line on its stream still wants a document that says
+    why it refused, and the early return this function used to take made the
+    two inseparable.
     """
-    if diagnostics is None:
-        return
     wrapper = shlex.join(lane.environment_command or ())
     if reason_code is ReasonCode.LANE_TIMEOUT:
         # NOT B010's message: a probe that never finished proved nothing
@@ -347,7 +517,12 @@ def _report_probe_refusal(
             f"budget), so the lane's own command never started"
         )
     else:
-        detail = {
+        # (A-439) Named `cause_detail`, not `detail`: `detail` now means one
+        # specific thing in this module -- the bounded copy of a refusal's
+        # whole sentence -- and a second meaning for the same word inside the
+        # function that produces one is how a later reader wires up the wrong
+        # value.
+        cause_detail = {
             ReasonCode.EXEC_FAILED: "the probe command could not be executed",
             ReasonCode.COMMAND_FAILED: (
                 f"the probe exited {probe_result.returncode}"
@@ -357,19 +532,36 @@ def _report_probe_refusal(
         }.get(probe_result.reason_code, "the probe did not pass")
         cause = (
             f"its declared environment does not match the invoking one "
-            f"({detail}), so the lane's own command never started"
+            f"({cause_detail}), so the lane's own command never started"
         )
-    print(
-        f"assay: {status.value}/{reason_code.value}: lane {lane.name!r}: "
-        f"{cause}. Run via the declared wrapper: {wrapper}",
-        file=diagnostics,
+    # (B053/DA-R8, SF-3) Through the ONE emitter, not a second spelling of
+    # its format string. The two were byte-compatible, which is exactly how
+    # two spellings of one line drift apart -- `announce_refusal`'s own
+    # docstring names that hazard as the reason `cli.py`'s prints were
+    # refactored onto it, and this print predated that pass.
+    detail = announce_refusal(
+        AssayError(
+            f"lane {lane.name!r}: {cause}. "
+            f"Run via the declared wrapper: {wrapper}",
+            outcome=status,
+            reason_code=reason_code,
+        ),
+        diagnostics=diagnostics,
     )
-    for label, tail in (
-        ("stderr", probe_result.stderr_tail),
-        ("stdout", probe_result.stdout_tail),
-    ):
-        if tail:
-            print(f"  probe {label}: {tail.rstrip()}", file=diagnostics)
+    # The probe's own output stays as INDENTED context lines below the one
+    # line, never folded into it: B033's whole-target site already uses this
+    # shape, and a tail inside the emitter's message would break the
+    # one-refusal-one-line contract the counting tests assert. It stays out
+    # of `detail` for the same reason (A-439): the wire carries the ONE
+    # line's message, never the context lines under it.
+    if diagnostics is not None:
+        for label, tail in (
+            ("stderr", probe_result.stderr_tail),
+            ("stdout", probe_result.stdout_tail),
+        ):
+            if tail:
+                print(f"  probe {label}: {tail.rstrip()}", file=diagnostics)
+    return detail
 
 
 def _decode_timeout_stream(raw: str | bytes | None) -> str | None:
@@ -747,6 +939,8 @@ def execute_command(
     cwd: Path,
     passthrough_source: Mapping[str, str] | None = None,
     project_prefix: PurePosixPath | None = None,
+    infrastructure_source: Path | None = None,
+    infrastructure_environment: Mapping[str, str] | None = None,
     process_runner: ProcessRunner = default_process_runner,
     clock: Clock = _utc_now,
 ) -> CommandResult:
@@ -756,15 +950,26 @@ def execute_command(
     Ordering, all before anything launches:
 
     1. :func:`resolve_command_plan` -- pure, but CAN raise
-       :class:`~assay.errors.AssayError` since B013: this function accepts no
-       *infrastructure_source*/*infrastructure_environment* of its own, so a
-       lane declaring any infrastructure fact reaches :func:`resolve_command_plan`
-       with neither -- a ``derived:`` fact always raises here regardless of
-       whether it is actually resolvable elsewhere (B029, filed rather than
-       fixed: this function's only caller, :mod:`assay.canary`'s R3 side-run,
-       catches the raise and reports a misattributed ``ERROR``/
-       ``BAD_LANE_CONFIG`` R3 claim rather than crashing, but the claim's own
-       cause is wrong on a lane whose infrastructure resolves everywhere else).
+       :class:`~assay.errors.AssayError` since B013. **(B029/DA-R6)** This
+       function now accepts *infrastructure_source* and
+       *infrastructure_environment* and forwards both, so a lane declaring a
+       ``derived:`` fact resolves it here exactly as the lane's main command
+       does. Until this change it accepted neither, and this docstring said
+       so: a ``derived:`` fact raised regardless of whether it was actually
+       resolvable elsewhere.
+
+       **What that defect was, and was not.** B029 predicted a misattributed
+       ``ERROR``/``BAD_LANE_CONFIG`` R3 claim on the SHIPPED canary path.
+       Measured through the installed CLI on a real R3 lane with a resolvable
+       ``derived:`` fact (Wave D, DA-R6), it does not reproduce: the shipped
+       path is :func:`assay.canary.run_isolated_canary`, which receives an
+       already-executed ``unit.result`` from the snapshot-unit machinery --
+       which DOES resolve infrastructure -- and never reaches this function
+       at all. The R3 claim was ``PASS``, and a suite asserting the fact's
+       value from ``os.environ`` passed inside the canary's own control half.
+       The defect was therefore confined to the LEGACY standalone
+       :func:`assay.canary.run_python_canary` path, which is public API and
+       is what this parameter pair fixes.
     2. the append-permission gate (A-095): if *argv_append* is non-empty and
        ``lane.allow_argv_append`` is false, this returns
        ``ERROR``/``EXEC_FAILED`` WITHOUT calling *process_runner* at all --
@@ -783,6 +988,8 @@ def execute_command(
     plan = resolve_command_plan(
         lane, argv_append=argv_append, passthrough_source=passthrough_source,
         project_prefix=project_prefix,
+        infrastructure_source=infrastructure_source,
+        infrastructure_environment=infrastructure_environment,
     )
     return execute_plan(
         plan,
@@ -1075,6 +1282,7 @@ def evaluate_r1(
     profile: CoverageProfile | None = None,
     remaining: git.Remaining | None = None,
     on_helper_invoked: Callable[[HelperInvocation], None] | None = None,
+    diagnostics: "TextIO | None" = None,
 ) -> Claim:
     """The R1 step (A-090, A-094): P02's two measurability guards, then
     P03's ``EMPTY_COVERAGE`` guard, short-circuiting on the first that trips
@@ -1178,6 +1386,7 @@ def evaluate_r1(
                 producer=judge.coverage.producer,
             )
         coverage.check_empty_coverage(profile)
+        _announce_contradictory_branch_records(profile, diagnostics=diagnostics)
 
         if effective_require_branch and derive_branch_capability(profile) == "unavailable":
             raise AssayError(
@@ -1275,12 +1484,22 @@ def evaluate_r1(
                 read_source_text=read_source_text,
             )
     except AssayError as exc:
+        # (B053/A-409) The message this claim is about to drop -- which file,
+        # which key collision, which adapter could not bind -- goes to the
+        # caller's diagnostics stream before it is lost. `diagnostics`
+        # defaults to `None`, so :mod:`assay.canary`'s two internal
+        # `evaluate_r1` calls stay silent: a variant's R1 refusal is a step
+        # inside the canary mechanism, not the lane's own refusal, and
+        # announcing it would attribute the variant's cause to the lane.
+        detail = announce_refusal(exc, diagnostics=diagnostics)
         return Claim(
             rigor="R1",
             source="computed",
             status=exc.outcome,
             verified_by_assay=True,
             reason_code=exc.reason_code,
+            detail=detail.text if detail else None,
+            detail_dropped_bytes=detail.dropped_bytes if detail else None,
         )
 
     return Claim(
@@ -1597,6 +1816,7 @@ def refuse_lane(
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     clock: Clock = _utc_now,
+    detail: RefusalDetail | None = None,
 ) -> Verdict:
     """Refuse the WHOLE invocation before the lane's own command ever
     starts (work items 3/5): the command's own :class:`CommandPlan` is
@@ -1683,6 +1903,7 @@ def refuse_lane(
         evidence=evidence,
         declared_evidence=declared_evidence,
         clock=clock,
+        detail=detail,
     )
 
 
@@ -1699,6 +1920,7 @@ def _refuse_lane_with_plan(
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     clock: Clock = _utc_now,
     env_effective_incomplete: bool = False,
+    detail: RefusalDetail | None = None,
 ) -> Verdict:
     """The identical shape :func:`refuse_lane` builds, given an
     ALREADY-RESOLVED *plan* (P23/A-193): the higher-rigor path resolves its
@@ -1710,6 +1932,16 @@ def _refuse_lane_with_plan(
     *plan* is the degraded fallback built when infrastructure resolution
     itself failed -- always `False` for every OTHER caller, whose *plan* is
     always a real, fully-resolved one.
+
+    *detail* (B053/A-428, A-439) is the refusing error's own sentence,
+    already bounded by :func:`~assay.verdict.refusal_detail` -- normally the
+    value :func:`announce_refusal` returned to the caller for the SAME error
+    whose ``status``/``reason_code`` it is passing here. It goes onto EVERY
+    declared level's claim, for the reason this function renders the same
+    pair on every level: one root cause stopped the whole run, so one
+    sentence explains every tier. It stays ``None`` for the callers that
+    refuse from a decided ``(status, reason_code)`` with no refusing error
+    behind it -- A-428's "absent when no refusal produced text".
     """
     started = clock()
     ended = clock()
@@ -1721,6 +1953,8 @@ def _refuse_lane_with_plan(
             status=status,
             verified_by_assay=True,
             reason_code=reason_code,
+            detail=detail.text if detail else None,
+            detail_dropped_bytes=detail.dropped_bytes if detail else None,
         )
         for level in rigor_levels
     )
@@ -1977,6 +2211,13 @@ class SnapshotUnitResult:
     post_reason: ReasonCode | None
     profile: CoverageProfile | None
     profile_error: AssayError | None
+    #: (B053/DA-R8) The FACTS behind ``post_reason``, carried out beside it for
+    #: exactly the reason *profile_error* is: the refusal is composed where the
+    #: fact is known and announced where the diagnostics stream is in scope,
+    #: and this producer has the fact while :func:`_run_prepared_lane` has the
+    #: stream. Empty/``None`` whenever ``post_reason`` is ``None``.
+    post_dirty: tuple[str, ...] = ()
+    post_observed_head: str | None = None
     baseline_equivalence: bytes | None = None
     equivalence_error: AssayError | None = None
     #: (B046) The raw bytes of an INGESTED mutation report, read through the
@@ -2227,11 +2468,19 @@ def _execute_snapshot_unit(
         clock=clock,
     )
 
+    # (B053/DA-R8) One `dirty_paths` call and `head_rev` ONLY on the clean
+    # branch -- the A-178 observation order is unchanged. What changed is that
+    # both facts are KEPT instead of evaluated for truthiness and dropped, so
+    # `_run_prepared_lane` can say which paths, or which two revisions.
     post_reason: ReasonCode | None = None
-    if git.dirty_paths(snapshot.root, remaining=deadline.remaining):
+    post_dirty = git.dirty_paths(snapshot.root, remaining=deadline.remaining)
+    post_observed_head: str | None = None
+    if post_dirty:
         post_reason = ReasonCode.DIRTY_TREE
-    elif git.head_rev(snapshot.root, remaining=deadline.remaining) != snapshot.commit:
-        post_reason = ReasonCode.HEAD_CHANGED
+    else:
+        post_observed_head = git.head_rev(snapshot.root, remaining=deadline.remaining)
+        if post_observed_head != snapshot.commit:
+            post_reason = ReasonCode.HEAD_CHANGED
 
     profile: CoverageProfile | None = None
     profile_error: AssayError | None = None
@@ -2304,6 +2553,8 @@ def _execute_snapshot_unit(
     return SnapshotUnitResult(
         result=result,
         post_reason=post_reason,
+        post_dirty=post_dirty,
+        post_observed_head=post_observed_head,
         profile=profile,
         profile_error=profile_error,
         baseline_equivalence=baseline_equivalence,
@@ -2697,9 +2948,28 @@ def _run_prepared_lane(
         r0_claim = build_r0_claim(result)
 
         if unit.post_reason is not None:
+            # (B053/DA-R8) Say WHY, once, before the claims are built --
+            # `diagnostics` is in scope here and is not in
+            # `_execute_snapshot_unit`, which is why the facts travel on
+            # `SnapshotUnitResult` rather than the sentence.
+            post_detail = announce_refusal(
+                post_command_refusal(
+                    unit.post_reason,
+                    where=baseline_snapshot.root,
+                    recorded_commit=baseline_snapshot.commit,
+                    dirty=unit.post_dirty,
+                    observed_head=unit.post_observed_head,
+                ),
+                diagnostics=diagnostics,
+            )
             # A-195, mirroring P20's own direct-path claim precedence: the
             # REAL R0 claim stands; every OTHER declared level becomes the
             # unchanged payload-free pair.
+            #
+            # (B053/A-439) Payload-free, but no longer sentence-free: ONE
+            # refusal genuinely refuses every declared level above R0, and
+            # the same sentence explains each of them. The R0 claim keeps
+            # none -- it is the real measurement, not a refusal.
             claims = tuple(
                 r0_claim
                 if level == "R0"
@@ -2709,6 +2979,10 @@ def _run_prepared_lane(
                     status=Outcome.NO_MEASUREMENT,
                     verified_by_assay=True,
                     reason_code=unit.post_reason,
+                    detail=post_detail.text if post_detail else None,
+                    detail_dropped_bytes=(
+                        post_detail.dropped_bytes if post_detail else None
+                    ),
                 )
                 for level in rigor_levels
             )
@@ -2725,6 +2999,11 @@ def _run_prepared_lane(
         added: diff.AddedLines | None = None
         targets: tuple[mutation.MutationTarget, ...] | None = None
         r2_early_claim: Claim | None = None
+        # (B053/DA-R4) The refusal behind `r2_early_claim` when -- and only
+        # when -- that claim was built before the lane's own command outcome
+        # was known, so its announcement can be deferred to the point where
+        # the surviving claim is chosen. `None` on every other path.
+        r2_deferred_early_error: AssayError | None = None
         # (B046) Filled inside this `with` block on an ingested lane, read
         # after it. Declared here beside `r2_early_claim` for its reason: both
         # carry a decision made while the snapshot was alive out to the claim
@@ -2738,16 +3017,52 @@ def _run_prepared_lane(
             # mutant. Set HERE, before diff/target resolution below, so that
             # work is skipped entirely rather than merely discarded (the
             # `r2_early_claim is None` guard on that block).
+            #
+            # (B053/DA-R4) NOT announced here. This is the one early-R2
+            # refusal decided BEFORE the lane's own command outcome is known,
+            # and if that command failed the claim assembly below discards
+            # this claim in favour of `build_mutation_claim(result, None)` --
+            # so announcing it here prints a sentence about a refusal the
+            # verdict does not carry, which a consumer cannot reconcile with
+            # the document in its hand. The announcement is deferred to the
+            # point where the final R2 claim is CHOSEN (see
+            # `r2_deferred_early_error` at the `elif r2_early_claim is not
+            # None` branch). Deferred for THIS site only -- no general buffer:
+            # every other early-R2 refusal below is set inside the
+            # `result.outcome is Outcome.PASS` guard and therefore cannot be
+            # superseded.
+            r2_deferred_early_error = unit.equivalence_error
+            # (B053/A-439) The one site whose `detail` cannot come from
+            # `announce_refusal`'s return, because the announcement is
+            # deferred and this claim may be discarded before it happens. It
+            # comes from `refusal_detail(str(exc))` -- which is literally the
+            # expression `announce_refusal` evaluates, on this same error --
+            # so the byte copy holds either way: if this claim survives, the
+            # deferred announcement prints the same `str(exc)` this line
+            # bounded.
+            equivalence_detail = refusal_detail(str(unit.equivalence_error))
             r2_early_claim = Claim(
                 rigor="R2",
                 source="computed",
                 status=unit.equivalence_error.outcome,
                 verified_by_assay=True,
                 reason_code=unit.equivalence_error.reason_code,
+                detail=equivalence_detail.text if equivalence_detail else None,
+                detail_dropped_bytes=(
+                    equivalence_detail.dropped_bytes if equivalence_detail else None
+                ),
             )
 
         if r1_declared:
             if unit.profile_error is not None:
+                # (B053/A-409) Announced HERE and not where the error was
+                # caught (`_read_prepared_artifacts`): on a lane that does
+                # not declare R1 the coverage read's failure never becomes a
+                # claim at all, and announcing a refusal the verdict does not
+                # carry would be a line with no document behind it.
+                profile_detail = announce_refusal(
+                    unit.profile_error, diagnostics=diagnostics
+                )
                 claims += (
                     Claim(
                         rigor="R1",
@@ -2755,6 +3070,10 @@ def _run_prepared_lane(
                         status=unit.profile_error.outcome,
                         verified_by_assay=True,
                         reason_code=unit.profile_error.reason_code,
+                        detail=profile_detail.text if profile_detail else None,
+                        detail_dropped_bytes=(
+                            profile_detail.dropped_bytes if profile_detail else None
+                        ),
                     ),
                 )
             else:
@@ -2772,6 +3091,7 @@ def _run_prepared_lane(
                     base=resolved_base,
                     adapter=adapter,
                     profile=unit.profile,
+                    diagnostics=diagnostics,
                     on_base_resolved=resolved_base_holder.append,
                     on_added_resolved=added_holder.append,
                     remaining=deadline.remaining,
@@ -2922,12 +3242,17 @@ def _run_prepared_lane(
                     )
                     added = diff.parse_added_lines(diff_text)
                 except AssayError as exc:
+                    detail = announce_refusal(exc, diagnostics=diagnostics)
                     r2_early_claim = Claim(
                         rigor="R2",
                         source="computed",
                         status=exc.outcome,
                         verified_by_assay=True,
                         reason_code=exc.reason_code,
+                        detail=detail.text if detail else None,
+                        detail_dropped_bytes=(
+                            detail.dropped_bytes if detail else None
+                        ),
                     )
             if r2_ingested:
                 # (B046) The ingested path needs the lane's relocated source
@@ -2970,18 +3295,35 @@ def _run_prepared_lane(
                     # this, a whole-target R2 refusal is a bare
                     # `BAD_LANE_CONFIG` and the consumer has to guess which
                     # of N declared targets it names.
+                    #
+                    # (B053/A-409) That line is now the ONE emitter's line,
+                    # so B033's diagnosis and every other refusal's are the
+                    # same sentence in the same format. The lane and the
+                    # step stay -- as a SECOND, indented context line, never
+                    # a second copy of the message, which is how two
+                    # spellings of one refusal drift apart.
+                    detail = announce_refusal(exc, diagnostics=diagnostics)
                     if diagnostics is not None:
                         print(
-                            f"assay: lane {lane.name}: R2 whole-target "
-                            f"resolution refused: {exc}",
+                            f"  in lane {lane.name!r}, resolving R2 "
+                            f"whole-target mutation targets",
                             file=diagnostics,
                         )
+                    # (B053/A-439) The wire carries the ONE line's message,
+                    # not the indented context line below it: `detail` is a
+                    # copy of the refusal's own sentence, and the lane/step
+                    # context is already on the document as `lane` and the
+                    # claim's own `rigor`.
                     r2_early_claim = Claim(
                         rigor="R2",
                         source="computed",
                         status=exc.outcome,
                         verified_by_assay=True,
                         reason_code=exc.reason_code,
+                        detail=detail.text if detail else None,
+                        detail_dropped_bytes=(
+                            detail.dropped_bytes if detail else None
+                        ),
                     )
             elif added is not None:
                 relocated_lane_r2 = _relocate_source_roots(
@@ -2999,12 +3341,17 @@ def _run_prepared_lane(
                         source_root_paths=relocated_lane_r2.judge.source_root_paths,
                     )
                 except AssayError as exc:
+                    detail = announce_refusal(exc, diagnostics=diagnostics)
                     r2_early_claim = Claim(
                         rigor="R2",
                         source="computed",
                         status=exc.outcome,
                         verified_by_assay=True,
                         reason_code=exc.reason_code,
+                        detail=detail.text if detail else None,
+                        detail_dropped_bytes=(
+                            detail.dropped_bytes if detail else None
+                        ),
                     )
 
             # (B046) The ingested read happens HERE, inside the `with`, and
@@ -3034,6 +3381,8 @@ def _run_prepared_lane(
                             relocated_lane=relocated_lane_r2,
                             plan=plan,
                             snapshot=baseline_snapshot,
+                            prepared=prepared,
+                            deadline=deadline,
                             added=added,
                             project_prefix=project_prefix,
                         )
@@ -3060,11 +3409,24 @@ def _run_prepared_lane(
         if result.outcome is not Outcome.PASS:
             claims += (mutation.build_mutation_claim(result, None),)
         elif r2_early_claim is not None:
+            # (B053/DA-R4) The early claim SURVIVED into the document, so the
+            # deferred refusal above is now a refusal the verdict really
+            # carries and owes its one line. Announced exactly once, here,
+            # because this branch is reached exactly once.
+            if r2_deferred_early_error is not None:
+                announce_refusal(r2_deferred_early_error, diagnostics=diagnostics)
             claims += (r2_early_claim,)
         elif r2_ingested:
             # (B046) The read already happened inside the snapshot's own
             # `with` block above; this is only the JUDGMENT.
             if ingested_r2_error is not None:
+                # (B053/A-409) Both producers of this error land here -- the
+                # unread/absent report (`unit.mutation_report_error`) and
+                # `ingest_mutation_report`'s own refusal -- so one call
+                # announces both, exactly once.
+                ingested_detail = announce_refusal(
+                    ingested_r2_error, diagnostics=diagnostics
+                )
                 claims += (
                     Claim(
                         rigor="R2",
@@ -3072,16 +3434,32 @@ def _run_prepared_lane(
                         status=ingested_r2_error.outcome,
                         verified_by_assay=True,
                         reason_code=ingested_r2_error.reason_code,
+                        detail=ingested_detail.text if ingested_detail else None,
+                        detail_dropped_bytes=(
+                            ingested_detail.dropped_bytes if ingested_detail else None
+                        ),
                     ),
                 )
             else:
                 assert ingested_r2 is not None
-                # (A-379) No `fail_under` fork: an ingested R2 claim is judged
-                # by the SAME `judge_mutation` a native one is, so an
-                # independent consumer can still re-derive its status from the
-                # payload's buckets alone -- which is what `verify.py`'s own
-                # `_check_r2_rederivation` does, using this same function.
-                r2_claim = mutation.build_mutation_claim(result, ingested_r2.mutation)
+                assert lane.judge is not None and lane.judge.mutation is not None
+                # (B050/A-427, superseding A-379's no-fork note) An ingested
+                # R2 claim is still judged by the SAME `judge_mutation` a
+                # native one is -- same precedence, same terminals -- but it
+                # now supplies the FLOOR it declared. That floor is written
+                # onto the wire by `_build_ingested_judgment_r2` from this
+                # same `lane.judge.mutation.fail_under`, so the document
+                # records exactly the number that judged it, and
+                # `verify.py`'s `_check_r2_rederivation` re-derives the
+                # status by reading that number back and calling this same
+                # function. The v9 property survives the change: the status
+                # is still derivable with no external policy input, because
+                # the policy is now IN the artifact.
+                r2_claim = mutation.build_mutation_claim(
+                    result,
+                    ingested_r2.mutation,
+                    fail_under=lane.judge.mutation.fail_under,
+                )
                 claims += (r2_claim,)
                 if r2_claim.mutation is not None:
                     judgment_r2 = _build_ingested_judgment_r2(lane, ingested_r2)
@@ -3126,6 +3504,10 @@ def _run_prepared_lane(
                     shard_count=shard_count,
                 )
             except AssayError as exc:
+                # (B053/A-409) Announced once, here. The SAME error also
+                # refuses R3 below (`r2_orchestration_fault`), and a second
+                # announcement there would report one fault twice.
+                r2_fault_detail = announce_refusal(exc, diagnostics=diagnostics)
                 r2_orchestration_fault = exc
                 claims += (
                     Claim(
@@ -3134,6 +3516,10 @@ def _run_prepared_lane(
                         status=exc.outcome,
                         verified_by_assay=True,
                         reason_code=exc.reason_code,
+                        detail=r2_fault_detail.text if r2_fault_detail else None,
+                        detail_dropped_bytes=(
+                            r2_fault_detail.dropped_bytes if r2_fault_detail else None
+                        ),
                     ),
                 )
             else:
@@ -3154,6 +3540,15 @@ def _run_prepared_lane(
     judgment_r3: JudgmentR3 | None = None
     if r3_declared and r2_orchestration_fault is not None:
         # No canary unit is started at all: the lane already stopped.
+        #
+        # (B053/A-439) ONE error, TWO claims, and A-428 puts `detail` on the
+        # claim rather than the verdict for exactly this shape: both the R2
+        # claim above and this R3 claim carry the same sentence, because the
+        # same fault refused both tiers. The ANNOUNCEMENT still happens once,
+        # at the R2 site (a second line would report one fault twice) -- so
+        # this copy is taken from `refusal_detail(str(exc))` directly, the
+        # same expression the announcement evaluated on this same error.
+        r3_fault_detail = refusal_detail(str(r2_orchestration_fault))
         claims += (
             Claim(
                 rigor="R3",
@@ -3161,6 +3556,10 @@ def _run_prepared_lane(
                 status=r2_orchestration_fault.outcome,
                 verified_by_assay=True,
                 reason_code=r2_orchestration_fault.reason_code,
+                detail=r3_fault_detail.text if r3_fault_detail else None,
+                detail_dropped_bytes=(
+                    r3_fault_detail.dropped_bytes if r3_fault_detail else None
+                ),
             ),
         )
         ended = iso_utc(clock())
@@ -3169,40 +3568,60 @@ def _run_prepared_lane(
         # its own module level, so a module-level import here would close a
         # genuine cycle -- the identical reasoning `assay.mutation`'s own
         # module docstring already gives for `execute_plan`.
-        from .canary import build_canary_claim, run_isolated_canary
+        from .canary import build_canary_claim, run_isolated_canaries
 
         canary_cfg = lane.judge.canary
+        # B007/A-432: the ONE ordered list either declared spelling denotes,
+        # resolved here and never re-derived downstream. A lane that declared
+        # the singular `target` yields a one-element list and an ABSENT
+        # aggregation, so its rendered judgment is byte-unchanged.
+        canary_targets = canary_cfg.declared_targets
+        canary_aggregation = canary_cfg.aggregation
+        r3_judgment = JudgmentR3(
+            mechanism=canary_cfg.mechanism,
+            targets=canary_targets,
+            aggregation=canary_aggregation,
+        )
         if result.outcome is not Outcome.PASS:
-            canary_result = CanaryResult(
+            canary_result = _broken_control_canary(
                 mechanism=canary_cfg.mechanism,
-                target=canary_cfg.target,
+                targets=canary_targets,
+                control_outcome=result.outcome,
                 description=(
                     "the lane's baseline command did not PASS -- a canary "
                     "control cannot be a known-good half of a failing lane"
                 ),
-                control_outcome=result.outcome,
             )
-            claims += (build_canary_claim(canary_result),)
-            judgment_r3 = JudgmentR3(mechanism=canary_cfg.mechanism, target=canary_cfg.target)
+            claims += (
+                build_canary_claim(
+                    canary_result, aggregation=canary_aggregation
+                ),
+            )
+            judgment_r3 = r3_judgment
         elif canary_cfg.mechanism == "uncovered-line" and next(
             claim for claim in claims if claim.rigor == "R1"
         ).status is not Outcome.PASS:
             r1_status = next(claim for claim in claims if claim.rigor == "R1").status
-            canary_result = CanaryResult(
+            canary_result = _broken_control_canary(
                 mechanism=canary_cfg.mechanism,
-                target=canary_cfg.target,
+                targets=canary_targets,
+                control_outcome=r1_status,
                 description=(
                     "the lane's baseline R1 coverage measurement did not "
                     "PASS -- an uncovered-line canary control has no "
                     "known-good coverage baseline"
                 ),
-                control_outcome=r1_status,
             )
-            claims += (build_canary_claim(canary_result),)
-            judgment_r3 = JudgmentR3(mechanism=canary_cfg.mechanism, target=canary_cfg.target)
+            claims += (
+                build_canary_claim(
+                    canary_result, aggregation=canary_aggregation
+                ),
+            )
+            judgment_r3 = r3_judgment
         else:
+            terminal: AssayError | None = None
             try:
-                canary_result = run_isolated_canary(
+                canary_result, terminal = run_isolated_canaries(
                     lane,
                     prepared=prepared,
                     plan=plan,
@@ -3210,12 +3629,14 @@ def _run_prepared_lane(
                     project_root=project_root,
                     resolved_base=resolved_base,
                     mechanism=canary_cfg.mechanism,
-                    target=canary_cfg.target,
+                    targets=canary_targets,
+                    aggregation=canary_aggregation,
                     adapter=adapter,
                     process_runner=process_runner,
                     clock=clock,
                 )
             except AssayError as exc:
+                detail = announce_refusal(exc, diagnostics=diagnostics)
                 claims += (
                     Claim(
                         rigor="R3",
@@ -3223,13 +3644,43 @@ def _run_prepared_lane(
                         status=exc.outcome,
                         verified_by_assay=True,
                         reason_code=exc.reason_code,
+                        detail=detail.text if detail else None,
+                        detail_dropped_bytes=(
+                            detail.dropped_bytes if detail else None
+                        ),
                     ),
                 )
             else:
-                claims += (build_canary_claim(canary_result),)
-                judgment_r3 = JudgmentR3(
-                    mechanism=canary_cfg.mechanism, target=canary_cfg.target
-                )
+                if terminal is None:
+                    claims += (
+                        build_canary_claim(
+                            canary_result, aggregation=canary_aggregation
+                        ),
+                    )
+                else:
+                    # A-432: budget exhaustion stays its OWN terminal --
+                    # `BUDGET_EXCEEDED`/`LANE_TIMEOUT`, never folded into the
+                    # aggregation -- and the untried targets stay visible in
+                    # the payload it carries. `Claim`'s own R3 rule already
+                    # permits a payload here (only a judged status REQUIRES
+                    # one), and `verify.py` re-derives the aggregation for
+                    # JUDGED statuses only, for exactly this reason.
+                    detail = announce_refusal(terminal, diagnostics=diagnostics)
+                    claims += (
+                        Claim(
+                            rigor="R3",
+                            source="computed",
+                            status=terminal.outcome,
+                            verified_by_assay=True,
+                            reason_code=terminal.reason_code,
+                            detail=detail.text if detail else None,
+                            detail_dropped_bytes=(
+                                detail.dropped_bytes if detail else None
+                            ),
+                            canary=canary_result,
+                        ),
+                    )
+                judgment_r3 = r3_judgment
         ended = iso_utc(clock())
 
     judgment: Judgment | None = None
@@ -3266,6 +3717,50 @@ def _run_prepared_lane(
         ended=ended,
         helpers=tuple(helpers_seen),
     )
+
+
+def _broken_control_canary(
+    *,
+    mechanism: str,
+    targets: tuple[str, ...],
+    control_outcome: Outcome,
+    description: str,
+) -> CanaryResult:
+    """(P19, generalised by B007/A-432) the R3 payload for a lane whose own
+    baseline is not a known-good control.
+
+    No probe is materialised at all here: the lane already told us the
+    control half fails, which :func:`assay.canary.judge_attempt` renders
+    ``INCONCLUSIVE``/``CANARY_INCONCLUSIVE`` -- and an ``INCONCLUSIVE``
+    attempt is TERMINAL in both aggregation modes (A-432). So the FIRST
+    declared target carries the baseline's own outcome and every later one
+    is recorded ``not_attempted``/``earlier_target_terminal``, which is both
+    the true bookkeeping and exactly what ``verify.py`` re-derives. Recording
+    the broken control against every target instead would assert N control
+    runs that never happened; truncating ``judgment.r3.targets`` to the
+    first would hide what the lane declared.
+    """
+    skipped = (
+        f"attempt 0 ({targets[0]}) was INCONCLUSIVE -- the lane's own "
+        f"baseline is not a known-good control, which ends the claim in "
+        f"both aggregation modes"
+    )
+    attempts: tuple[CanaryAttempt, ...] = (
+        CanaryAttempt(
+            target=targets[0],
+            description=description,
+            control_outcome=control_outcome,
+        ),
+    ) + tuple(
+        CanaryAttempt(
+            target=target,
+            description=skipped,
+            disposition="not_attempted",
+            not_attempted_reason="earlier_target_terminal",
+        )
+        for target in targets[1:]
+    )
+    return CanaryResult(mechanism=mechanism, attempts=attempts)
 
 
 def _build_judgment_resolved(
@@ -3309,6 +3804,8 @@ def _ingest_r2_report(
     relocated_lane: Lane,
     plan: CommandPlan,
     snapshot: "isolation.Snapshot",
+    prepared: "isolation.SnapshotRepository",
+    deadline: LaneDeadline,
     added: diff.AddedLines | None,
     project_prefix: PurePosixPath,
 ) -> "mutation.IngestedMutationResult":
@@ -3323,6 +3820,18 @@ def _ingest_r2_report(
     naming the member at fault. This is
     :func:`assay.coverage.parse_coverage_artifact`'s own three-way split one
     rigor tier up, and it is the same split for the same reason.
+
+    *prepared* is the SnapshotRepository this very block materialised
+    *baseline_snapshot* from, threaded in for B052/DA-D5's content tier:
+    :func:`assay.mutation.ingest_mutation_report` reads each measured file's
+    committed blob back through
+    :meth:`~assay.isolation.SnapshotRepository.read_regular_file` and compares
+    it with the report's embedded ``source``. It is the repository and not the
+    snapshot's on-disk tree deliberately, and for the reason the handoff
+    already gave :func:`_read_prepared_source_text`: the committed OBJECT is
+    what the verdict is about, and a file read off the materialised checkout
+    could have been rewritten by the lane's own command between then and now
+    -- which is one of the three causes this check exists to name.
     """
     try:
         text = raw.decode("utf-8")
@@ -3366,6 +3875,8 @@ def _ingest_r2_report(
         mode=lane.judge.mode or "changed_lines",
         added=added,
         targets=declared_targets,
+        repository=prepared,
+        read_timeout=deadline.remaining(),
     )
 
 
@@ -3395,6 +3906,11 @@ def _build_ingested_judgment_r2(
         survived_uncovered=ingested.survived_uncovered,
         discarded=ingested.discarded,
         lines_without_candidates=ingested.lines_without_candidates,
+        # B050/A-427 (schema v10): the floor the ingested judgment applied,
+        # read from the lane rather than assumed to be 100.0 -- which is the
+        # whole point of the field. It is REQUIRED under `ingested` and
+        # FORBIDDEN under `native`, because a native R2 has no floor at all.
+        fail_under=lane.judge.mutation.fail_under,
         kill_attribution="unattributed",
         mode=lane.judge.mode or "changed_lines",
         targets=lane.judge.targets if lane.judge.mode == "whole_target" else None,
@@ -3459,7 +3975,12 @@ def _build_judgment_r2(
 
 
 def _replace_highest_higher_rigor_claim_with_git_failed(
-    lane: Lane, outcome: _PreparedOutcome
+    lane: Lane,
+    outcome: _PreparedOutcome,
+    *,
+    status: Outcome = Outcome.ERROR,
+    reason_code: ReasonCode = ReasonCode.GIT_FAILED,
+    detail: RefusalDetail | None = None,
 ) -> _PreparedOutcome:
     """A-193/A-194's "outer scratch cleanup alone fails" rule: replace the
     HIGHEST declared higher-rigor claim (R3 if declared, else R2, else R1)
@@ -3491,15 +4012,37 @@ def _replace_highest_higher_rigor_claim_with_git_failed(
     copy of the table here -- a copy would let the two disagree, and the
     disagreement's shape is a verdict this function built and the schema
     then refuses with an uncaught ``ValueError``.
+
+    **(B028/DA-D10) The pair is a parameter, defaulting to the A-193/A-194
+    one.** ``ERROR``/``GIT_FAILED`` describes a Git operation that failed;
+    when the cleanup failed because the LANE-WIDE DEADLINE expired
+    (:meth:`LaneDeadline.remaining` raises ``BUDGET_EXCEEDED``/
+    ``LANE_TIMEOUT`` from any of ~16 timing checks, several of which run
+    inside snapshot teardown) that is a false cause, and it hides the one
+    fact the operator needs to act on: the lane ran out of time. DA-D10's
+    words are "cleanup ... is attempted and its failure is recorded via the
+    existing cleanup-failure path (never masks the timeout)" — so the path
+    is this one, unchanged in shape, carrying the refusing error's own pair.
+    Every caller that is not the timeout keeps the default.
+
+    *detail* (B053/A-428, A-439): payload-free is not the same as
+    sentence-free. Each of the three callers announced a refusal
+    -- ``AssayError``, ``OSError``, ``RuntimeError`` -- and each now hands
+    :func:`announce_refusal`'s own return here, so the claim that REPLACED a
+    real one says which cleanup failed and how, instead of leaving the
+    operator with ``ERROR``/``GIT_FAILED`` and a guess. That was B053's
+    original complaint, one rung further in.
     """
     target = next(level for level in ("R3", "R2", "R1") if level in lane.rigor)
     new_claims = tuple(
         Claim(
             rigor=target,
             source="computed",
-            status=Outcome.ERROR,
+            status=status,
             verified_by_assay=True,
-            reason_code=ReasonCode.GIT_FAILED,
+            reason_code=reason_code,
+            detail=detail.text if detail else None,
+            detail_dropped_bytes=detail.dropped_bytes if detail else None,
         )
         if claim.rigor == target
         else claim
@@ -3599,11 +4142,13 @@ def _run_higher_rigor_lane(
         # call hits this identical failure and falls back to a degraded
         # plan (`env_effective_incomplete=True`, see its own docstring)
         # instead of raising again from inside the refusal path itself.
+        infra_detail = announce_refusal(exc, diagnostics=diagnostics)
         return refuse_lane(
             lane,
             commit=commit,
             status=exc.outcome,
             reason_code=exc.reason_code,
+            detail=infra_detail,
             argv_append=argv_append,
             passthrough_source=passthrough_source,
             project_prefix=project_prefix,
@@ -3617,7 +4162,12 @@ def _run_higher_rigor_lane(
         )
     rigor_levels = tuple(lane.rigor)
 
-    def refuse_all(status: Outcome, reason_code: ReasonCode) -> Verdict:
+    def refuse_all(
+        status: Outcome,
+        reason_code: ReasonCode,
+        *,
+        detail: RefusalDetail | None = None,
+    ) -> Verdict:
         return _refuse_lane_with_plan(
             lane,
             commit=commit,
@@ -3629,12 +4179,50 @@ def _run_higher_rigor_lane(
             evidence=evidence,
             declared_evidence=declared_evidence,
             clock=clock,
+            detail=detail,
         )
 
-    if git.dirty_paths(repo, remaining=deadline.remaining):
-        return refuse_all(Outcome.NO_MEASUREMENT, ReasonCode.DIRTY_TREE)
-    if git.head_rev(repo, remaining=deadline.remaining) != commit:
-        return refuse_all(Outcome.NO_MEASUREMENT, ReasonCode.HEAD_CHANGED)
+    # (B053/DA-R3) Both guards compose their sentence HERE, where the fact is
+    # known -- which files are uncommitted, which two revisions disagree --
+    # and hand it to the ONE emitter. Before DA-R3 these two called
+    # `refuse_all` with a bare `(status, reason_code)` literal, so the
+    # operator got `NO_MEASUREMENT/DIRTY_TREE` and nothing else: the emitter's
+    # contract is a MESSAGE, and a refusal site that has the fact and does
+    # not compose it is the same defect B053 filed one layer down.
+    dirty = git.dirty_paths(repo, remaining=deadline.remaining)
+    if dirty:
+        dirty_detail = announce_refusal(
+            AssayError(
+                f"{len(dirty)} uncommitted file(s) in {repo} -- a higher-rigor "
+                f"lane measures the RESOLVED COMMIT from a snapshot, so an "
+                f"uncommitted change is invisible to it. Commit or stash, then "
+                f"re-run. Affected: {', '.join(dirty)}",
+                outcome=Outcome.NO_MEASUREMENT,
+                reason_code=ReasonCode.DIRTY_TREE,
+            ),
+            diagnostics=diagnostics,
+        )
+        return refuse_all(
+            Outcome.NO_MEASUREMENT, ReasonCode.DIRTY_TREE, detail=dirty_detail
+        )
+    observed_head = git.head_rev(repo, remaining=deadline.remaining)
+    if observed_head != commit:
+        head_changed_detail = announce_refusal(
+            AssayError(
+                f"HEAD moved between the resolution of the commit under "
+                f"judgment and the start of this lane: the verdict would be "
+                f"labelled {commit} but {repo} is now at {observed_head}. "
+                f"Re-run against the current HEAD.",
+                outcome=Outcome.NO_MEASUREMENT,
+                reason_code=ReasonCode.HEAD_CHANGED,
+            ),
+            diagnostics=diagnostics,
+        )
+        return refuse_all(
+            Outcome.NO_MEASUREMENT,
+            ReasonCode.HEAD_CHANGED,
+            detail=head_changed_detail,
+        )
 
     outcome_holder: list[_PreparedOutcome] = []
     try:
@@ -3704,27 +4292,83 @@ def _run_higher_rigor_lane(
                     )
                 )
     except AssayError as exc:
+        # (B053/A-409) Announced on BOTH branches: the error refuses the
+        # whole lane on one and replaces the highest higher-rigor claim with
+        # GIT_FAILED on the other, and both are refusals whose message the
+        # document does not carry.
+        cleanup_detail = announce_refusal(exc, diagnostics=diagnostics)
+        if outcome_holder:
+            # (B028/DA-D10) The lane's own work COMPLETED and only the outer
+            # cleanup then failed -- A-193/A-194's rule -- but if it failed
+            # because the lane-wide deadline expired, `ERROR`/`GIT_FAILED`
+            # names a Git failure that never happened and buries the
+            # timeout. The refusing error's own pair is carried instead. This
+            # is the ONE outer catch for this entry point, as DA-D10
+            # requires: no second handler was added beside it.
+            if exc.reason_code is ReasonCode.LANE_TIMEOUT:
+                outcome = _replace_highest_higher_rigor_claim_with_git_failed(
+                    lane,
+                    outcome_holder[0],
+                    status=exc.outcome,
+                    reason_code=exc.reason_code,
+                    detail=cleanup_detail,
+                )
+            else:
+                outcome = _replace_highest_higher_rigor_claim_with_git_failed(
+                    lane, outcome_holder[0], detail=cleanup_detail
+                )
+        else:
+            return refuse_all(exc.outcome, exc.reason_code, detail=cleanup_detail)
+    except OSError as exc:
+        # (B053/DA-R8, SF-2) The third bare, silent refusal R-1 found: an
+        # `OSError` with a perfectly good `str()` became
+        # `ERROR`/`GIT_FAILED` with no sentence at all. It is not one of
+        # DA-R3's five sites, so nothing before this covered it -- but the
+        # rule is the same one: a refusal site that HAS the fact and does not
+        # compose it leaves the operator with a two-word pair and a guess.
+        os_detail = announce_refusal(
+            AssayError(
+                f"snapshot preparation or cleanup failed: {exc}",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.GIT_FAILED,
+            ),
+            diagnostics=diagnostics,
+        )
         if outcome_holder:
             outcome = _replace_highest_higher_rigor_claim_with_git_failed(
-                lane, outcome_holder[0]
+                lane, outcome_holder[0], detail=os_detail
             )
         else:
-            return refuse_all(exc.outcome, exc.reason_code)
-    except OSError:
-        if outcome_holder:
-            outcome = _replace_highest_higher_rigor_claim_with_git_failed(
-                lane, outcome_holder[0]
+            return refuse_all(
+                Outcome.ERROR, ReasonCode.GIT_FAILED, detail=os_detail
             )
-        else:
-            return refuse_all(Outcome.ERROR, ReasonCode.GIT_FAILED)
-    except RuntimeError:
+    except RuntimeError as exc:
         # `prepare_snapshot`'s own programmer-error leak detection. Only a
         # cleanup-time occurrence (after a normal result already exists) is
         # this module's problem; anything else is a genuine bug and must
         # propagate rather than be laundered into a claim.
+        #
+        # (B053/DA-R15, SF-6) When it IS laundered into a claim, it owes the
+        # same sentence the `OSError` branch four lines up owes (A-421): this
+        # was the last terminal in this module that replaced a claim with
+        # `ERROR`/`GIT_FAILED` and said nothing, so `CHANGES.md`'s "with no
+        # exceptions" was one site short of true. The announcement belongs
+        # ONLY on this side of the fork -- the `raise` below re-raises a
+        # genuine bug to the caller with its traceback intact, and a refusal
+        # line printed beside a propagating programmer error would describe a
+        # verdict that was never written.
         if outcome_holder:
+            leak_detail = announce_refusal(
+                AssayError(
+                    f"the lane's own work completed, but snapshot cleanup "
+                    f"detected leaked state: {exc}",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.GIT_FAILED,
+                ),
+                diagnostics=diagnostics,
+            )
             outcome = _replace_highest_higher_rigor_claim_with_git_failed(
-                lane, outcome_holder[0]
+                lane, outcome_holder[0], detail=leak_detail
             )
         else:
             raise
@@ -3864,11 +4508,28 @@ def run_lane(
     if adapter is not None:
         for tool in adapter.external_tools:
             if shutil.which(tool) is None:
+                # (B053/DA-R3) WHICH tool is the only actionable fact in this
+                # refusal and it is known exactly here; the bare
+                # `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` pair the document
+                # carries names none of the adapter's tools.
+                tool_detail = announce_refusal(
+                    AssayError(
+                        f"the {adapter.name!r} adapter needs the external tool "
+                        f"{tool!r}, which is not on PATH in this environment "
+                        f"-- install it, or run the lane where it is "
+                        f"available. Declared tools: "
+                        f"{', '.join(adapter.external_tools)}",
+                        outcome=Outcome.NO_MEASUREMENT,
+                        reason_code=ReasonCode.MISSING_EXTERNAL_TOOL,
+                    ),
+                    diagnostics=diagnostics,
+                )
                 return refuse_lane(
                     lane,
                     commit=commit,
                     status=Outcome.NO_MEASUREMENT,
                     reason_code=ReasonCode.MISSING_EXTERNAL_TOOL,
+                    detail=tool_detail,
                     argv_append=argv_append,
                     passthrough_source=passthrough_source,
                     infrastructure_source=infrastructure_source,
@@ -3915,11 +4576,13 @@ def run_lane(
             # is -- `project_prefix` stays `None`, matching the
             # MISSING_EXTERNAL_TOOL refusal just above, which resolves no
             # repository identity at this point either.
+            probe_infra_detail = announce_refusal(exc, diagnostics=diagnostics)
             return refuse_lane(
                 lane,
                 commit=commit,
                 status=exc.outcome,
                 reason_code=exc.reason_code,
+                detail=probe_infra_detail,
                 argv_append=argv_append,
                 passthrough_source=passthrough_source,
                 infrastructure_source=infrastructure_source,
@@ -3957,7 +4620,7 @@ def run_lane(
         )
         if probe_result.outcome is not Outcome.PASS:
             probe_status, probe_reason = _probe_refusal_terminal(probe_result)
-            _report_probe_refusal(
+            probe_detail = _report_probe_refusal(
                 lane,
                 probe_result,
                 status=probe_status,
@@ -3970,6 +4633,7 @@ def run_lane(
                 commit=commit,
                 status=probe_status,
                 reason_code=probe_reason,
+                detail=probe_detail,
                 argv_append=argv_append,
                 passthrough_source=passthrough_source,
                 infrastructure_source=infrastructure_source,
@@ -4010,11 +4674,32 @@ def run_lane(
         if name not in (os.environ if passthrough_source is None else passthrough_source)
     ]
     if missing_required:
+        # (B053/DA-R3) The variable names are the fact, and they are known
+        # only here -- `ERROR`/`BAD_LANE_CONFIG` is shared with a dozen
+        # unrelated causes, so without this line the operator cannot tell an
+        # unset environment variable from a malformed lane file.
+        env_required_detail = announce_refusal(
+            AssayError(
+                f"lane {lane.name!r} declares env_required "
+                f"{missing_required} which "
+                f"{'is' if len(missing_required) == 1 else 'are'} not set in "
+                f"the invoking environment -- assay refuses to run a lane "
+                f"whose declared inputs are absent rather than measure it "
+                f"with them missing. Set "
+                f"{', '.join(missing_required)}, or drop "
+                f"{'it' if len(missing_required) == 1 else 'them'} from "
+                f"'env_required'.",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            ),
+            diagnostics=diagnostics,
+        )
         return refuse_lane(
             lane,
             commit=commit,
             status=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
+            detail=env_required_detail,
             argv_append=argv_append,
             passthrough_source=passthrough_source,
             infrastructure_source=infrastructure_source,
@@ -4055,11 +4740,26 @@ def run_lane(
             # artifact exactly like the `missing_required` refusal just
             # above, never an uncaught exception that reaches `main()` with
             # nothing to write.
+            #
+            # (B053/DA-R3) The spec the operator actually typed is echoed
+            # back: `ERROR`/`BAD_LANE_CONFIG` alone gives them nothing to
+            # correct, and the offending string is known only here.
+            shard_detail = announce_refusal(
+                AssayError(
+                    f"--shard {shard!r} is not a shard spec: it must be "
+                    f"INDEX/COUNT with zero-based integers and "
+                    f"0 <= INDEX < COUNT (for example --shard 0/4).",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.BAD_LANE_CONFIG,
+                ),
+                diagnostics=diagnostics,
+            )
             return refuse_lane(
                 lane,
                 commit=commit,
                 status=Outcome.ERROR,
                 reason_code=ReasonCode.BAD_LANE_CONFIG,
+                detail=shard_detail,
                 argv_append=argv_append,
                 passthrough_source=passthrough_source,
                 infrastructure_source=infrastructure_source,
@@ -4123,12 +4823,30 @@ def run_lane(
         git.repo_top(repo, remaining=deadline.remaining), project_root
     )
 
-    if git.dirty_paths(repo, remaining=deadline.remaining):
+    direct_dirty = git.dirty_paths(repo, remaining=deadline.remaining)
+    if direct_dirty:
+        # (B053/DA-R3) The direct-R0 path's own copy of the tree guard
+        # (A-189: an R0-only lane never enters the snapshot state machine),
+        # and it owes the same sentence the higher-rigor one does. The
+        # difference is only in WHY the dirt matters: this path measures the
+        # live tree and records `commit` as the identity of what it measured.
+        direct_dirty_detail = announce_refusal(
+            AssayError(
+                f"{len(direct_dirty)} uncommitted file(s) in {repo} -- the "
+                f"verdict would be labelled with commit {commit} while the "
+                f"tree that ran is not that commit. Commit or stash, then "
+                f"re-run. Affected: {', '.join(direct_dirty)}",
+                outcome=Outcome.NO_MEASUREMENT,
+                reason_code=ReasonCode.DIRTY_TREE,
+            ),
+            diagnostics=diagnostics,
+        )
         return refuse_lane(
             lane,
             commit=commit,
             status=Outcome.NO_MEASUREMENT,
             reason_code=ReasonCode.DIRTY_TREE,
+            detail=direct_dirty_detail,
             argv_append=argv_append,
             passthrough_source=passthrough_source,
             project_prefix=direct_prefix,
@@ -4161,11 +4879,13 @@ def run_lane(
         # `docs/CONSUMERS.md`'s own B013 example lane declares `rigor =
         # ["R0"]`, so this is not a rare corner of the dispatch -- it is the
         # documented shape for the feature.
+        direct_infra_detail = announce_refusal(exc, diagnostics=diagnostics)
         return refuse_lane(
             lane,
             commit=commit,
             status=exc.outcome,
             reason_code=exc.reason_code,
+            detail=direct_infra_detail,
             argv_append=argv_append,
             passthrough_source=passthrough_source,
             project_prefix=direct_prefix,
@@ -4177,13 +4897,130 @@ def run_lane(
             declared_evidence=declared_evidence,
             clock=clock,
         )
-    result = execute_plan(
-        plan,
-        cwd=project_root,
-        timeout=deadline.remaining(),
-        process_runner=process_runner,
-        clock=clock,
-    )
+    # (B028/DA-D10) THE ONE OUTER CATCH FOR DIRECT R0.
+    #
+    # `LaneDeadline.remaining()` raises `BUDGET_EXCEEDED`/`LANE_TIMEOUT` the
+    # instant the lane-wide budget is spent, and this tail reads it three
+    # times: once for the command's own timeout, then twice more in the
+    # post-command dirt/HEAD guard below. The command's own overrun is
+    # already converted into a `CommandResult` by `execute_command`, so the
+    # crash B028 measured was the NEXT read -- `git.dirty_paths(...,
+    # remaining=deadline.remaining)` -- raising uncaught past `main()`, which
+    # exited 4 having written NOTHING to the reserved `--verdict-json`.
+    #
+    # One catch around the whole tail, not one per `remaining()` call: DA-D10
+    # says so explicitly, and the reason is that the sixteen timing checks in
+    # this codebase are a moving target while the two dispatch entry points
+    # are not. A wrapper per call site is a rule every future timing check
+    # must remember; a boundary is a rule the code enforces.
+    #
+    # `result_holder` is the state question the entry's own "why this needs a
+    # design pass" section raises: what exists at the moment of the timeout.
+    # If the command already ran, its result is real evidence -- the argv,
+    # the timing, the output tails -- and the verdict keeps it, carrying the
+    # refusing pair as the R0 claim. If it did not, there is no result to
+    # assemble from and `refuse_lane` builds the complete refusal artifact,
+    # exactly as this function's other pre-work refusals do.
+    result_holder: list[CommandResult] = []
+    try:
+        result = execute_plan(
+            plan,
+            cwd=project_root,
+            timeout=deadline.remaining(),
+            process_runner=process_runner,
+            clock=clock,
+        )
+        result_holder.append(result)
+        return _finish_direct_r0_lane(
+            lane,
+            commit=commit,
+            repo=repo,
+            result=result,
+            pre_run_head=pre_run_head,
+            deadline=deadline,
+            assay_version=assay_version,
+            judge_provenance=judge_provenance,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
+            clock=clock,
+            diagnostics=diagnostics,
+        )
+    except AssayError as exc:
+        detail = announce_refusal(exc, diagnostics=diagnostics)
+        if result_holder:
+            return assemble_verdict(
+                lane=lane,
+                commit=commit,
+                result=result_holder[0],
+                claims=(
+                    Claim(
+                        rigor="R0",
+                        source="computed",
+                        status=exc.outcome,
+                        verified_by_assay=True,
+                        reason_code=exc.reason_code,
+                        detail=detail.text if detail else None,
+                        detail_dropped_bytes=(
+                            detail.dropped_bytes if detail else None
+                        ),
+                    ),
+                ),
+                assay_version=assay_version,
+                judge_provenance=judge_provenance,
+                evidence=evidence,
+                declared_evidence=declared_evidence,
+                ended=iso_utc(clock()),
+            )
+        return refuse_lane(
+            lane,
+            commit=commit,
+            status=exc.outcome,
+            reason_code=exc.reason_code,
+            detail=detail,
+            argv_append=argv_append,
+            passthrough_source=passthrough_source,
+            project_prefix=direct_prefix,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
+            assay_version=assay_version,
+            judge_provenance=judge_provenance,
+            evidence=evidence,
+            declared_evidence=declared_evidence,
+            clock=clock,
+        )
+
+
+def _finish_direct_r0_lane(
+    lane: Lane,
+    *,
+    commit: str,
+    repo: Path,
+    result: CommandResult,
+    pre_run_head: str,
+    deadline: LaneDeadline,
+    assay_version: str,
+    judge_provenance: JudgeProvenance | None,
+    evidence: tuple[Evidence, ...],
+    declared_evidence: tuple[EvidenceDeclaration, ...],
+    clock: Clock,
+    diagnostics: "TextIO | None" = None,
+) -> Verdict:
+    """The direct-R0 path's post-command work, extracted verbatim so that
+    B028's one outer catch can span it without indenting sixty lines of
+    A-175/A-178 reasoning into a ``try``.
+
+    Nothing here changed with B028 except its address: the post-run dirt/HEAD
+    guard, its precedence rule and its two terminals are exactly what
+    :func:`run_lane` executed inline before.
+
+    (B053/DA-R8) *diagnostics* is the one thing B028's extraction did NOT
+    carry over, and R-1's round 1 measured the consequence: this function was
+    created in this branch and given no stream, so the post-command
+    ``DIRTY_TREE``/``HEAD_CHANGED`` it refuses with printed nothing while the
+    branch claimed "every refusal reachable through ``assay run``" was
+    announced. Its single caller (:func:`run_lane`) already threads the
+    stream through nine other call sites in the same body.
+    """
     r0_claim = build_r0_claim(result)
 
     # A-175: post-command dirt precedes the final claim. The pre-run guard
@@ -4213,12 +5050,30 @@ def run_lane(
     # A clean tree whose HEAD moved is NOT dirty, and calling it DIRTY_TREE
     # was a false diagnosis for exactly the case P20 reproduced (a command
     # that commits away its own uncovered line).
+    #
+    # (B053/DA-R8) Both facts are KEPT rather than evaluated for truthiness
+    # and dropped -- the observation order above is unchanged, but the guard
+    # can now name which paths, or which two revisions, and does.
     post_run_reason: ReasonCode | None = None
-    if git.dirty_paths(repo, remaining=deadline.remaining):
+    post_dirty = git.dirty_paths(repo, remaining=deadline.remaining)
+    post_observed_head: str | None = None
+    if post_dirty:
         post_run_reason = ReasonCode.DIRTY_TREE
-    elif git.head_rev(repo, remaining=deadline.remaining) != pre_run_head:
-        post_run_reason = ReasonCode.HEAD_CHANGED
+    else:
+        post_observed_head = git.head_rev(repo, remaining=deadline.remaining)
+        if post_observed_head != pre_run_head:
+            post_run_reason = ReasonCode.HEAD_CHANGED
     if post_run_reason is not None:
+        direct_post_detail = announce_refusal(
+            post_command_refusal(
+                post_run_reason,
+                where=repo,
+                recorded_commit=pre_run_head,
+                dirty=post_dirty,
+                observed_head=post_observed_head,
+            ),
+            diagnostics=diagnostics,
+        )
         return assemble_verdict(
             lane=lane,
             commit=commit,
@@ -4230,6 +5085,12 @@ def run_lane(
                     status=Outcome.NO_MEASUREMENT,
                     verified_by_assay=True,
                     reason_code=post_run_reason,
+                    detail=direct_post_detail.text if direct_post_detail else None,
+                    detail_dropped_bytes=(
+                        direct_post_detail.dropped_bytes
+                        if direct_post_detail
+                        else None
+                    ),
                 ),
             ),
             assay_version=assay_version,

@@ -132,10 +132,10 @@ def test_a_root_level_project_passes_the_real_uncovered_line_canary(git_repo: Gi
     under one shared helper rather than being spread across two files that
     could silently drift apart."""
     result = _run_uncovered_line_canary(git_repo, under=".")
-    assert result.control_outcome is Outcome.PASS
-    assert result.transformed_outcome is Outcome.FAIL
-    assert result.expected_reason_code is ReasonCode.UNCOVERED_LINES
-    assert result.observed_reason_code is ReasonCode.UNCOVERED_LINES
+    assert result.attempts[0].control_outcome is Outcome.PASS
+    assert result.attempts[0].transformed_outcome is Outcome.FAIL
+    assert result.attempts[0].expected_reason_code is ReasonCode.UNCOVERED_LINES
+    assert result.attempts[0].observed_reason_code is ReasonCode.UNCOVERED_LINES
 
 
 def test_a_nested_project_passes_the_real_uncovered_line_canary_identically(
@@ -151,7 +151,7 @@ def test_a_nested_project_passes_the_real_uncovered_line_canary_identically(
     against ``git diff``'s repo-relative one (``"proj/pkg/greet.py"``) and
     never matched."""
     result = _run_uncovered_line_canary(git_repo, under="proj")
-    assert result.control_outcome is Outcome.PASS
-    assert result.transformed_outcome is Outcome.FAIL
-    assert result.expected_reason_code is ReasonCode.UNCOVERED_LINES
-    assert result.observed_reason_code is ReasonCode.UNCOVERED_LINES
+    assert result.attempts[0].control_outcome is Outcome.PASS
+    assert result.attempts[0].transformed_outcome is Outcome.FAIL
+    assert result.attempts[0].expected_reason_code is ReasonCode.UNCOVERED_LINES
+    assert result.attempts[0].observed_reason_code is ReasonCode.UNCOVERED_LINES

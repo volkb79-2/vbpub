@@ -100,6 +100,11 @@ VOCABULARY: dict[str, tuple[str, ...]] = {
         "MUTANTS_SURVIVED",
         "CANARY_SURVIVED",
         "COMMAND_FAILED",
+        # Wave D / schema v10, F015 (A-433 as amended by A-434 under DA-R18):
+        # the R4 red-first claim's judged refusal. RESERVED at the cut --
+        # phase 3 lands the producer -- so it is EXCLUDED_ENTIRELY below with
+        # its own recorded obligation.
+        "RED_FIRST_UNPROVEN",
     ),
     "ERROR": (
         "GIT_FAILED",
@@ -131,6 +136,11 @@ VOCABULARY: dict[str, tuple[str, ...]] = {
         # P21/A-163; P34/W3 lands the producer (A-253) --
         # `runner.run_lane`'s own external-tool preflight.
         "MISSING_EXTERNAL_TOOL",
+        # Wave D / schema v10, B004 (A-276/A-430): assay could not establish
+        # WHICH artifact the tests ran against. RESERVED at the cut -- the
+        # adjudicator lands later in this same wave -- so it is
+        # EXCLUDED_ENTIRELY below with its own recorded obligation.
+        "PROVENANCE_UNVERIFIED",
     ),
     "BUDGET_EXCEEDED": (
         "LANE_TIMEOUT",
@@ -193,9 +203,28 @@ ALL_PAIRS: frozenset[tuple[str, str]] = frozenset(
 #: producer-reachable (a byte-identical copy of P22's own carver-owned
 #: artifact lives in the ordinary fixture set below) and is REMOVED from this
 #: set rather than left excluded.
+#: **Wave D / schema v10 added two, RESERVED rather than unreachable-by-
+#: nature** -- the ``MISSING_EXTERNAL_TOOL`` pattern (A-013/A-086/A-144): a
+#: code lands in the bump the project is already paying and its producer
+#: renders it later, for free. Each carries the same recorded obligation the
+#: entries above discharged, and this audit turns red the moment a producer
+#: exists and no fixture does.
+#:
+#: **``NO_MEASUREMENT``/``PROVENANCE_UNVERIFIED`` (B004/A-430) is REMOVED
+#: from this set, its obligation now discharged.** The adjudicated
+#: image-provenance producer (``src/assay/adjudication.py``, wired in
+#: ``cli.py``'s ``_run_reserved``) landed in this same wave; its fixture,
+#: ``evidence_adjudicated_unverified.json``, joins the ordinary set below.
+#: The remaining reserved pair:
+#:
+#: * ``FAIL``/``RED_FIRST_UNPROVEN`` (F015/A-433/A-434) — the R4 red-first
+#:   producer is PHASE 3. Only the wire shape lands at the v10 cut, which is
+#:   why W6's drift-guard corpus pins an R4 verdict while no fixture here can
+#:   render one from a real run. Removed when phase 3 lands.
 EXCLUDED_ENTIRELY: frozenset[tuple[str, str]] = frozenset(
     {
         ("ERROR", "OUTPUT_WRITE_FAILED"),
+        ("FAIL", "RED_FIRST_UNPROVEN"),
     }
 )
 
@@ -674,10 +703,13 @@ def test_verify_rejects_an_unknown_coverage_level_field(validator: Draft202012Va
 
 def test_verify_rejects_an_unknown_canary_level_field(validator: Draft202012Validator):
     document = _load("r3_pass.json")
-    document["claims"][1]["canary"]["bogus"] = 1
+    document["claims"][1]["canary"]["attempts"][0]["bogus"] = 1
     assert why_invalid(validator, document) != []
     failures = verify_document(document)
-    assert any("unknown canary field(s)" in message and "bogus" in message for message in failures)
+    assert any(
+        "unknown canary.attempts entry field(s)" in message and "bogus" in message
+        for message in failures
+    )
 
 
 def test_verify_rejects_an_unknown_mutation_level_field(validator: Draft202012Validator):
@@ -988,7 +1020,7 @@ def test_verify_accepts_reconstructed_judgment_r2_and_r3():
         # P33/A-223a: an r3-only judgment records NO base -- and, since
         # A-227, is REFUSED if it does.
         "resolved": {"language": "python", "source_roots": ["pkg"]},
-        "r3": {"mechanism": "uncovered-line", "target": "pkg/greet.py"},
+        "r3": {"mechanism": "uncovered-line", "targets": ["pkg/greet.py"]},
     }
     assert verify_document(document2) == []
 
@@ -1126,7 +1158,10 @@ def test_verify_rejects_an_r3_pass_whose_transform_never_actually_failed():
     transformed canary outcome set to PASS (i.e. the canary never actually
     failed) while status stayed PASS -- accepted.'"""
     document = _load("r3_fail_canary_survived_unexpected_pass.json")
-    assert document["claims"][1]["canary"]["transformed_outcome"] == "PASS"
+    assert (
+        document["claims"][1]["canary"]["attempts"][0]["transformed_outcome"]
+        == "PASS"
+    )
     document["claims"][1]["status"] = "PASS"
     del document["claims"][1]["reason_code"]
     document["outcome"] = "PASS"
@@ -1149,7 +1184,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
     contradiction regardless is unconstructible
     (``Claim._check_a_judged_status_carries_its_own_payload``)."""
     document = {
-            "schema_version": 9,
+            "schema_version": 10,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "a" * 40,
@@ -1261,9 +1296,9 @@ def test_verify_rejects_a_foreign_schema_version_as_a_version_problem():
 
     failures = verify_document(document)
     assert failures == [
-        "schema_version 2 is not this verifier's version 9: a verdict "
+        "schema_version 2 is not this verifier's version 10: a verdict "
         "artifact is rejected, never upgraded in place -- re-produce it "
-        "with an assay whose VERDICT_SCHEMA_VERSION is 9"
+        "with an assay whose VERDICT_SCHEMA_VERSION is 10"
     ]
 
 
@@ -1282,7 +1317,7 @@ def test_verify_rejects_a_v3_artifact_with_exactly_one_version_diagnostic():
     failures = verify_document(document)
 
     assert len(failures) == 1
-    assert "schema_version 3 is not this verifier's version 9" in failures[0]
+    assert "schema_version 3 is not this verifier's version 10" in failures[0]
 
 
 # ============================================================================
@@ -1362,6 +1397,96 @@ def test_verify_rejects_an_r2_status_that_ignores_bucket_precedence(
     ), failures
 
 
+# --- B050/A-427/DA-R22: the floor is READ FROM THE DOCUMENT ----------------
+
+
+def _as_ingested_at_floor(document: dict, fail_under: float) -> dict:
+    """Rewrite an R2 fixture into the INGESTED shape at a declared floor.
+
+    Only the ingested contract's own fields change: `producer`, the tool
+    identity, the three derived facts (all empty, which is a legal ingested
+    record and keeps
+    `verify._check_ingested_r2_agrees_with_its_payload`'s four re-derivations
+    trivially satisfied rather than mocked away), assay's own policy fields
+    dropped (A-360 FORBIDS them here), and the operators renamed into the
+    ingested namespace, because an ingested payload records the foreign
+    tool's mutator names and `verify` refuses a native catalogue on an
+    ingested document.
+    """
+    judgment_r2 = document["judgment"]["r2"]
+    for assay_own_policy in ("jobs", "max_mutants", "operators"):
+        judgment_r2.pop(assay_own_policy, None)
+    judgment_r2["producer"] = "ingested"
+    judgment_r2["producer_tool"] = {
+        "name": "StrykerJS",
+        "version": "10.0.0",
+        "report_schema_version": "1.0",
+    }
+    judgment_r2["survived_uncovered"] = []
+    judgment_r2["lines_without_candidates"] = []
+    judgment_r2["discarded"] = 0
+    judgment_r2["fail_under"] = fail_under
+    claim = next(c for c in document["claims"] if c["rigor"] == "R2")
+    for bucket in ("killed", "survived", "crashed", "budget_exceeded", "equivalent"):
+        for mutant in claim["mutation"].get(bucket, []):
+            mutant["operator"] = "stryker:ConditionalExpression"
+    return document
+
+
+def test_verify_accepts_an_ingested_r2_PASS_with_recorded_survivors_at_a_met_floor(
+    validator: Draft202012Validator,
+):
+    """B050's acceptance witness: the document this build could not produce.
+
+    One killed and one survived is a 50.0% score. Declared floor 50.0, so
+    `judge_mutation`'s survived branch falls through and the claim is a PASS
+    that RECORDS its survivor — and `assay verify` re-derives that same PASS
+    by reading `judgment.r2.fail_under` off the wire, which is the whole
+    point of B050. Under v9 the lane could not even load (`config` refused any
+    floor but 100.0) and the verifier assumed 100, so this document was
+    unrepresentable AND unverifiable.
+    """
+    document = _as_ingested_at_floor(_load("r2_fail_mutants_survived.json"), 50.0)
+    claim = next(c for c in document["claims"] if c["rigor"] == "R2")
+    assert len(claim["mutation"]["killed"]) == 1
+    assert len(claim["mutation"]["survived"]) == 1
+    claim["status"] = "PASS"
+    del claim["reason_code"]
+    document["outcome"] = "PASS"
+    del document["reason_code"]
+    document["exit_code"] = 0
+
+    assert why_invalid(validator, document) == []
+    assert verify_document(document) == []
+
+
+def test_verify_rejects_that_same_PASS_when_the_recorded_floor_is_not_met(
+    validator: Draft202012Validator,
+):
+    """The control. Same payload, same PASS, floor 100.0 instead of 50.0.
+
+    Without this the test above would prove only that `verify` stopped
+    checking. The floor is the ONLY difference between the two documents, so
+    the accept and the refusal together show the check is reading it.
+    """
+    document = _as_ingested_at_floor(_load("r2_fail_mutants_survived.json"), 100.0)
+    claim = next(c for c in document["claims"] if c["rigor"] == "R2")
+    claim["status"] = "PASS"
+    del claim["reason_code"]
+    document["outcome"] = "PASS"
+    del document["reason_code"]
+    document["exit_code"] = 0
+
+    assert why_invalid(validator, document) == []
+    failures = verify_document(document)
+    assert any(
+        "disagrees with the re-derived judgment from mutation buckets "
+        "(FAIL, MUTANTS_SURVIVED)" in f
+        and "judgment.r2.fail_under 100.0" in f
+        for f in failures
+    ), failures
+
+
 def test_verify_rejects_an_r2_claim_that_misreports_its_own_failed_prerequisite(
     validator: Draft202012Validator,
 ):
@@ -1390,8 +1515,8 @@ def test_verify_rejects_an_r3_pass_whose_canary_failed_for_the_wrong_cause(
     """A canary that fails for some OTHER reason proves nothing about the
     defect it was built to catch -- FAIL/CANARY_SURVIVED, never PASS."""
     document = _load("r3_fail_canary_survived_wrong_reason.json")
-    canary = document["claims"][1]["canary"]
-    assert canary["observed_reason_code"] != canary["expected_reason_code"]
+    attempt = document["claims"][1]["canary"]["attempts"][0]
+    assert attempt["observed_reason_code"] != attempt["expected_reason_code"]
     document["claims"][1]["status"] = "PASS"
     del document["claims"][1]["reason_code"]
     document["outcome"] = "PASS"
@@ -1414,7 +1539,7 @@ def test_verify_rejects_an_r3_pass_built_on_a_broken_control(
     meaningless -- INCONCLUSIVE/CANARY_INCONCLUSIVE, never PASS. Nothing
     else in the artifact changes: the control outcome is the only edit."""
     document = _load("r3_pass.json")
-    document["claims"][1]["canary"]["control_outcome"] = "FAIL"
+    document["claims"][1]["canary"]["attempts"][0]["control_outcome"] = "FAIL"
 
     assert why_invalid(validator, document) == []
     failures = verify_document(document)

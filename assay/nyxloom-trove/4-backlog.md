@@ -860,7 +860,19 @@ whole-source coverage gate, while its attempted R1+ run fails on the Topos
 
 **Proposed by:** nyxloom, 2026-08-17, while retiring its own coverage, mutation,
 canary, verdict and gate-judgment implementations in favour of assay through the
-public CLI/verdict boundary. **Status: ASSESSED AND DEFERRED — the first
+public CLI/verdict boundary. **Status: RESOLVED in Wave D (verdict schema v10)
+— design A-432, implementation A-440.** The wire shape (`judgment.r3.targets`,
+`judgment.r3.aggregation`, `canary.attempts[]` with its `disposition` and the
+closed `not_attempted_reason` vocabulary) landed with the v10 cut; the lane
+surface (`judge.canary.targets`/`aggregation`, `LANE_SCHEMA_VERSION` still 2)
+and the ordered runner loop landed as A-440, with the W6 multi-target template
+replaced by real output of that loop. The seven requirements and eight oracles
+below were adopted by reference and are not diluted; the one thing
+deliberately NOT built is the optional `assay canary qualify` document kind
+(out of scope for this wave, per the wave prompt).
+
+*The original assessment follows, unedited, because it is the reasoning the
+design was held to.* **Status when written: ASSESSED AND DEFERRED — the first
 post-v6 schema item (v7).** Not folded into wave 1. The reasoning is below and
 is binding on whoever picks this up.
 
@@ -1131,6 +1143,38 @@ ciu-P07 vendored the pyz per the cmru precedent:
    assay-judged lanes are referenced there by name — `assay.toml` keeps
    owning judgment, `gates.toml` owns orchestration. One parser, argv for
    every consumer.)
+
+### Resolution — SHIPPED as documentation, Wave D phase 1 (DA-D16). RESOLVED
+
+Docs only, per the ruling. `docs/CONSUMERS.md` gains "What `assay.toml` is,
+and what it is not (B009)" as its first section after the preamble.
+
+- [x] **Item 1, verbatim in substance.** The section states the adapter +
+      judgment-policy role, that it is NOT an estate-wide lane registry, that
+      a project which cannot adopt assay declares its gates in its own
+      project-root gate script and invokes assay from there, and that
+      "assay-judged before release" is per-project release policy.
+- [x] **Item 2, AS MEASURED 2026-09-02 — and the measurement REFUTES the
+      entry's own premise.** The entry says per-repo vendoring "is RETIRED as
+      the estate pattern"; it is not. Measured directly: `ciu` vendors
+      `tools/assay/assay-3.2.0.pyz`, `cmru` `assay-2.3.0.pyz`, `nyxloom`
+      `assay-4.0.0.pyz`, `dstdns` `assay-4.0.0.pyz` (with per-lane
+      `[lanes.*.pins.assay]` sha256 blocks), each invoked through
+      `run-gate.toml`'s `assay_command` as
+      `["/opt/tester-venv/bin/python", "tools/assay/assay-<v>.pyz"]`. Nothing
+      is baked into a shared image and no consumer resolves assay from
+      `PATH`; assay itself builds its own wheel in-repo for its gate. DA-D16
+      says explicitly: do NOT prescribe the retired-vendoring future unless
+      it is already true. It is not, so the docs describe the vendored-pin
+      pattern as the one to copy and name the image-bake direction as a
+      backlog item that is not shipped.
+- [x] **Item 3, a one-line forward pointer, no more** — the section's closing
+      "Forward note" naming long async lanes and B007's shape.
+
+**Status: RESOLVED 2026-09-02 (Wave D phase 1), as documentation.** Item 2's
+de-vendoring carves (ciu CIU-40, a cmru equivalent) are unaffected and remain
+those tools' own work; this entry no longer blocks on them, and the docs now
+say what is true rather than what was intended.
 
 ## B010 — `assay run` is unusable when the gate environment is not the invoking environment
 
@@ -2223,9 +2267,19 @@ undetected.
 
 ### Acceptance
 
-- [ ] `tester-unified-gate.sh` runs a linter over `src/assay/` as a real
+- [x] `tester-unified-gate.sh` runs a linter over `src/assay/` as a real
       phase, failing the gate on any finding not in an explicit, dated
-      baseline (if the ratchet approach is chosen);
+      baseline (if the ratchet approach is chosen); — **DONE 2026-09-02 under
+      DA-R7 (A-417), and with NO baseline: `src/assay` is pyflakes-clean, so
+      the phase enforces zero findings rather than a ratchet.**
+      `tools/tester-unified-gate.sh:84` (`build_lint_venv`, a THIRD venv
+      installed `--no-index --require-hashes` from
+      `gate/distribution/lint-wheelhouse/`), `:117` (`run_lint_phase`,
+      `python -m pyflakes "$scratch/clone/assay/src/assay"` → `:121`
+      `ASSAY_GATE_PHASE=pyflakes-clean`), called at `:623-624` after
+      `run_independent_witness`. A planted unused import reddens it:
+      transcript in the Wave D REPORT, and
+      `tests/test_distribution_gate.py:641` asserts it.
 - [x] the pre-existing findings above are either fixed or explicitly listed
       in that baseline with a reason each stays open — **fixed, all of
       them**: `python -m pyflakes` over the whole `src/assay/` tree
@@ -2267,6 +2321,92 @@ assay's own purity bar) to the image, add a phase to
 cheaply, before any of the wheel-isolation machinery), and confirm no other
 consuming project's gate regresses. The sweep above means that phase would
 pass clean on day one; nothing here blocks it from landing next.
+
+### Wave D phase 1, 2026-09-02: MEASURED, NOTHING LANDED (DA-D15's escape hatch)
+
+DA-D15 says: wire `pyflakes` and `ruff` (F-rules only) into the registered
+gate as a phase AFTER the suite, **inside the image if the tools are there,
+else inside `run-venv` from the offline wheelhouse if the closure already
+carries them; if neither is possible without a network fetch, write the
+decision ask and land nothing** — A-198's hash-bound closure is not to be
+loosened for a linter. All three checks were run, in that order:
+
+1. **The image does not carry either tool.**
+
+   ```
+   $ docker run --rm tester-unified:local sh -lc 'python -m pyflakes --version; ruff --version; python -m ruff --version'
+   /usr/local/bin/python: No module named pyflakes
+   sh: 1: ruff: not found
+   /usr/local/bin/python: No module named ruff
+   ```
+
+2. **The offline wheelhouse does not carry either tool.**
+   `gate/distribution/build-wheelhouse/` holds exactly five wheels —
+   `packaging`, `setuptools`, `setuptools_scm`, `vcs_versioning`, `wheel` —
+   and `gate/distribution/build-requirements.txt` pins those five with
+   `--hash=sha256:` and nothing else. Adding a sixth means fetching it from
+   the network to populate a closure whose whole point (A-198/P24) is that
+   it was fetched once, hashed, and committed.
+
+3. **The gate installs from that closure and nothing else.**
+   `tools/tester-unified-gate.sh:53-56` and `:82` install with
+   `--no-index --find-links "$distribution/build-wheelhouse"`, and `:126`
+   installs the built wheel with `--no-index --no-deps`. There is no other
+   ingress.
+
+The image's own `Dockerfile` lives at `tester-unified/Dockerfile`, **outside
+`assay/**`**, which this wave's implementer is explicitly forbidden to touch
+— and the 2026-08-25 note above already records why it is a cross-project
+change rather than a local one.
+
+**Decision ask, verbatim, in the Wave D REPORT.** Nothing was landed: no
+phase added to `tools/tester-unified-gate.sh`, no line added to
+`build-requirements.txt`, no wheel added to `build-wheelhouse/`.
+
+### RESOLVED 2026-09-02 (Wave D, DA-R7, A-417) — option (b), a fourth closure
+
+The controller ruled the ask above as **DA-R7**: option (b), `pyflakes`
+**only**, in its **own** closure. What landed:
+
+- `gate/distribution/lint-requirements.txt` — one line,
+  `pyflakes==3.4.0 --hash=sha256:f742a7db…`.
+- `gate/distribution/lint-wheelhouse/pyflakes-3.4.0-py2.py3-none-any.whl` —
+  63551 bytes, sha256 `f742a7dbd0d9cb9ea41e9a24a918996e8170c799fa528688d40dd582c8265f4f`,
+  fetched ONCE on this networked devcontainer with
+  `pip download pyflakes --no-deps` and committed. pyflakes has no
+  dependencies and is a pure-Python `py2.py3-none-any` wheel, so the closure
+  is one file and needs no platform matrix.
+- `gate/distribution/lint-wheelhouse-manifest.json` — the same sha256 and
+  size beside the existing `build-wheelhouse-manifest.json`, same
+  `schema_version: 1` shape.
+- `tools/tester-unified-gate.sh:84` `build_lint_venv` — a **third** venv,
+  `lint-venv`. Never `build-venv`, never `run-venv`: A-198's five-wheel
+  closure assertion at `:59-72` is byte-for-byte what it was, and
+  `tests/test_distribution_gate.py` asserts that `build_offline_closure_venvs`
+  mentions neither `pyflakes` nor `lint`.
+- `tools/tester-unified-gate.sh:117` `run_lint_phase` — pyflakes over the
+  **private exact-OID clone's** `src/assay`, not the bind-mounted worktree,
+  for A-198's own reason: a gitignored stray `.py` in the caller's tree must
+  be able neither to redden nor to launder the phase.
+
+**Why pyflakes only, and why the whole rule set is the F-rule set.** DA-D15
+asked for "pyflakes and ruff, F-rules only". DA-R7 dropped ruff: it ships as
+a ~10 MB platform-specific binary wheel (so the closure would need a
+platform matrix), and the rule set DA-D15 actually wants — the `F` rules —
+is *ruff's re-implementation of pyflakes*. pyflakes' entire rule set is that
+set: undefined names, unused imports and locals, redefinitions, f-strings
+with no placeholders. There is no rule selection to configure and therefore
+none to drift.
+
+**Scope is `src/assay` only, and that is a measurement, not a preference.**
+Measured 2026-09-02 with the same locked pyflakes 3.4.0: `src/assay` → 0
+findings; `gate/` → 0 findings; `tests/` → **31 findings across 19 modules**,
+and `tests/fixtures/mutation/python/broken.py` is a deliberately unparseable
+fixture that pyflakes can never pass. DA-R7's "and tests/ if clean" therefore
+resolves to "not tests/". Sweeping those 32 is a separate item with its own
+evidence — filed as **B062**.
+
+**Status: RESOLVED 2026-09-02 (Wave D phase 1 tail, A-417).**
 
 ---
 
@@ -2669,14 +2809,53 @@ not been done yet.
 
 ### Acceptance
 
-- [ ] a decision recorded on where the outer catch boundary belongs (one
+- [x] a decision recorded on where the outer catch boundary belongs (one
       per higher-rigor entry point vs. per call site);
-- [ ] a lane-wide `LANE_TIMEOUT` (measured via a real, short `budget_seconds`
+- [x] a lane-wide `LANE_TIMEOUT` (measured via a real, short `budget_seconds`
       and a genuinely slow command) writes a real, schema-valid verdict
       artifact to a reserved `--verdict-json`, driven through the installed
       CLI;
-- [ ] a test proving the fix is shown red against pre-fix code (matching
+- [x] a test proving the fix is shown red against pre-fix code (matching
       B025's own red-first discipline).
+
+### Resolution — RESOLVED, Wave D phase 1 (DA-D10 → A-415)
+
+- [x] **The boundary decision, recorded as A-415:** ONE outer catch per
+      dispatch entry point, never one per `deadline.remaining()` call site.
+      The entry's own argument is upheld by measurement — `remaining()` is
+      read from ~16 sites across `runner.py`, `mutation.py` and `canary.py`,
+      several added after B025, and none of them wrapped themselves.
+- [x] **Measured before anything was changed** (at `21bdf19d`, through
+      `assay.cli.main`, `budget = "1s"` and `argv = ["/bin/sh","-c","sleep
+      30"]`, no stubbed clock): the HIGHER-RIGOR entry point was **already
+      correct** — its single outer `try` (`src/assay/runner.py:3819`) spans
+      base resolution, the scratch root and the whole snapshot block, and
+      its `except AssayError` returns a refusal verdict. The DIRECT-R0 path
+      exited 4 with the reserved `--verdict-json` never created. The entry's
+      2026-08-25 measurement is therefore half stale, and only half the fix
+      it asks for was needed.
+- [x] **The direct-R0 boundary:** `src/assay/runner.py:4465-4551`, spanning
+      `execute_plan` and the post-command dirt/HEAD guard, with that guard
+      extracted verbatim into `_finish_direct_r0_lane`
+      (`src/assay/runner.py:4552`). A `result_holder` answers the entry's own
+      "what state exists at the moment of the timeout": a command that ran
+      contributes its result (argv, timing, output tails) and the refusing
+      pair becomes the R0 claim; nothing to assemble from goes through
+      `refuse_lane`.
+- [x] **Never masks the timeout.**
+      `_replace_highest_higher_rigor_claim_with_git_failed`
+      (`src/assay/runner.py:3609`) takes the pair as keyword parameters
+      defaulting to A-193/A-194's `ERROR`/`GIT_FAILED`, and the higher-rigor
+      handler (`src/assay/runner.py:3916`) passes the refusing error's own
+      pair for a `LANE_TIMEOUT`. Test:
+      `test_a_cleanup_that_failed_because_time_ran_out_says_so`, with
+      `test_a_cleanup_that_failed_for_any_other_reason_still_says_git_failed`
+      as the control that A-193/A-194's rule is narrowed, not replaced.
+- [x] **Schema-valid, not merely well-keyed:**
+      `test_the_timed_out_verdict_is_one_assay_verify_accepts` runs
+      `assay verify` over the written document on BOTH dispatch paths.
+- [x] **Red-first:** 3 failed / 4 passed against `21bdf19d`; 7 passed with
+      the fix. `tests/test_lane_timeout_writes_a_verdict.py`.
 
 ---
 
@@ -2731,15 +2910,58 @@ than left to be discovered as a confusing `BAD_LANE_CONFIG` claim.
 
 ### Acceptance
 
-- [ ] a decision recorded on whether R3's canary side-run should resolve
+- [x] a decision recorded on whether R3's canary side-run should resolve
       infrastructure facts at all;
-- [ ] if yes: `execute_command`/`canary.py`'s two call sites thread
+- [x] if yes: `execute_command`/`canary.py`'s two call sites thread
       *infrastructure_source*/*infrastructure_environment* through, and a
       CLI-driven test proves a resolvable `derived:` fact no longer produces
       a false `ERROR`/`BAD_LANE_CONFIG` R3 claim;
 - [ ] if no: documented explicitly as a known limitation in `docs/CONSUMERS.md`
       and `docs/DESIGN-GUIDE.md`, so a consumer hitting the misattributed
-      claim has somewhere to learn why.
+      claim has somewhere to learn why. — **not applicable; the answer was
+      yes, and it was already yes on the shipped path.**
+
+### Resolution — RESOLVED BY MEASUREMENT, Wave D phase 1 (DA-D11 as re-scoped by DA-R6 → A-416)
+
+**This entry's premise is corrected, not merely satisfied.** DA-R6 required
+measuring before writing code. Measured at `dd8f4d2c` through
+`assay.cli.main`, on a real R3 lane with a real gitignored `ciu.global.toml`
+and `[infrastructure] ASSAY_B029_FACT = "derived:deploy.cgroup_parent"`,
+whose pytest suite asserts the fact's value out of `os.environ`:
+
+```
+package: PASS (exit 0)
+"rigor": "R3", "status": "PASS",
+"canary": {"control_outcome": "PASS", "transformed_outcome": "FAIL",
+           "observed_reason_code": "COMMAND_FAILED",
+           "mechanism": "import-break", "target": "pkg/mod.py"}
+```
+
+The canary's own CONTROL half ran the fact-asserting suite and passed, so the
+shipped side-run **does** see the lane's infrastructure world. The entry says
+"only the canary's own side-run plan does not [resolve them]"; that is true
+of the LEGACY standalone `canary.run_python_canary`, and false of
+`canary.run_isolated_canary`, which is what `runner._run_prepared_lane`
+actually uses — it takes an already-executed `unit.result` from the
+snapshot-unit machinery and never reaches `execute_command`.
+
+- [x] **The threading landed anyway**, per DA-R6: `runner.execute_command`
+      (`src/assay/runner.py:828`) and `canary._run_pipeline` /
+      `canary.run_python_canary` (`src/assay/canary.py:188`, `:225`) take and
+      forward `infrastructure_source`/`infrastructure_environment`, both
+      defaulting to `None` so no existing caller changes.
+- [x] **`execute_command`'s docstring is corrected.** It stated the defect as
+      live in assay's own words ("this function accepts no
+      *infrastructure_source*/*infrastructure_environment* of its own"); it
+      now states what was measured, including which path was really affected.
+- [x] **Regression guard, not a red-first proof**, and labelled as such:
+      `tests/test_r3_canary_sees_infrastructure.py` — the CLI-driven R3 claim
+      with the fact-asserting suite, plus a signature/docstring check for the
+      legacy path. There was nothing red to show; the transcript above is the
+      evidence, and A-334 is satisfied because nothing here is a double.
+- [x] **`docs/CONSUMERS.md`** states the coupling positively in the
+      infrastructure section: both halves of an R3 canary run with the
+      resolved facts.
 
 ## B030 — `assay plan` reports zero candidates for every lane; its own test asserts the bug
 
@@ -4699,14 +4921,37 @@ candidates:
 
 ### Acceptance
 
-- [ ] a product ruling among the four options above (or a fifth), recorded
-      as a decision;
-- [ ] if (1), (2) or (4): a regression test that plants a directory-recreating
+- [x] a product ruling among the four options above (or a fifth), recorded
+      as a decision — **option (4)**, ruled DA-D1 in
+      `WAVE-PROMPT-2026-09-02-wave-d-v10-integrity.md` and recorded as
+      **A-408**, naming (1)/(2)/(3) as rejected. Implemented as
+      `assay.safeio.OutputReservation._refuse_if_parent_was_replaced`
+      (`src/assay/safeio.py:285`), called from `consume()`
+      (`src/assay/safeio.py:276`) so all five reserved-artifact reads
+      inherit it: `runner.py:2241` (coverage), `runner.py:2256` (SQL R2
+      `equivalence_artifact`), `runner.py:2286` (ingested mutation report),
+      `mutation.py:1642` (per-mutant equivalence), `mutation.py:1192`
+      (kill signal, the `crashed` fold);
+- [x] if (1), (2) or (4): a regression test that plants a directory-recreating
       fake tool (no real Vitest needed to prove the CORE mechanism) and
-      asserts the new, non-silent behaviour;
-- [ ] CONSUMERS' `clean: false` note (added this wave) updated to match
+      asserts the new, non-silent behaviour — **`tests/test_safeio_replaced_output_directory.py`**,
+      8 tests: the seam itself, the coverage read end-to-end through
+      `runner.run_lane` with a real `rm -rf && mkdir && cat >` shell command
+      (`ERROR`/`UNREADABLE_ARTIFACT`, not `EMPTY_COVERAGE`), `mutation.
+      _read_kill_signal` (refuses instead of folding to `crashed`), and the
+      two legitimate-state controls (an artifact written INTO the reserved
+      directory still reads; a genuinely absent one is still the truthful
+      `None`). Red-first: 4 failed / 4 passed with `src/assay/safeio.py`
+      stashed to the pre-fix state, 8 passed with the fix;
+- [x] CONSUMERS' `clean: false` note (added this wave) updated to match
       whatever ships — either it stays required with the same reason, or it
-      becomes optional with the new diagnostic named instead.
+      becomes optional with the new diagnostic named instead — **now
+      RECOMMENDED**, with the new refusal quoted:
+      `docs/CONSUMERS.md:622,633` and `README.md:264,269`;
+      reasoning in `docs/DESIGN-GUIDE.md` §"A replaced output directory is
+      named, not folded into EMPTY_COVERAGE".
+
+**Status: RESOLVED 2026-09-02 (Wave D phase 1) — A-408.**
 
 ---
 
@@ -4772,17 +5017,42 @@ genuinely has no floor to record. Then:
 
 ### Acceptance
 
-- [ ] `judgment.r2.fail_under` in the schema, the dataclass and `verify.py`
+**RESOLVED 2026-09-02 by A-436 (Wave D, schema v10). The wire half landed with
+the cut `b2fd09f3`; the producer/consumer half is the commit A-436 names.**
+
+- [x] `judgment.r2.fail_under` in the schema, the dataclass and `verify.py`
       (the 2.4.0 lesson: three places), forked on `producer`, with the frozen
-      drift-guard asset updated at that cut;
-- [ ] `judge_mutation` honours it and `verify.py` re-derives the R2 status
+      drift-guard asset updated at that cut — `src/assay/schemas/verdict.schema.json:1576`,
+      `verdict.py:2136-2154` (+ the `__post_init__` fork at `:2452-2464`),
+      `verify.py`'s re-derivation, and
+      `nyxloom-trove/carve-assets/W6/expected/ingested-r2-v10-template.json`
+      carrying `"fail_under": 100.0`;
+- [x] `judge_mutation` honours it and `verify.py` re-derives the R2 status
       from the document alone — proven by a verdict that PASSes with recorded
-      survivors and verifies clean, which is exactly the document this build
-      cannot produce;
-- [ ] the load-time refusal deleted, and
+      survivors and verifies clean, which is exactly the document the v9 build
+      could not produce. Two witnesses, one synthetic and one real:
+      `tests/test_verdict_conformance.py::test_verify_accepts_an_ingested_r2_PASS_with_recorded_survivors_at_a_met_floor`
+      (with its floor-not-met control), and — end to end over the committed
+      StrykerJS artifact —
+      `tests/test_runner_ingested_r2.py::test_a_declared_floor_the_real_report_MEETS_produces_a_verified_pass`:
+      21 killed / 88 survived = 19.27%, declared floor 19.0, R2 `PASS` with
+      all 88 survivors recorded, `verify_document(...) == []`;
+- [x] the load-time refusal deleted, and
       `test_a_sub_hundred_fail_under_is_refused_naming_the_wire_gap` replaced
-      by its positive counterpart;
-- [ ] CONSUMERS' ingested-R2 section drops the "must be 100.0" paragraph.
+      by its positive counterpart
+      (`test_a_sub_hundred_fail_under_LOADS_and_is_carried_to_the_judge`);
+      the `0.0..100.0` range check at `config.py:2502-2507` stays, and
+      `test_a_fail_under_outside_the_percentage_range_is_refused` still proves
+      it;
+- [x] CONSUMERS' ingested-R2 section drops the "must be 100.0" paragraph
+      (`docs/CONSUMERS.md:1281`); the four worked lanes at `:251`/`:437`/
+      `:813`/`:1260` keep `100.0` and stay legal.
+
+**`discarded` (B051) does not affect the denominator, and by construction
+rather than by an exclusion rule someone has to remember**: it is a COUNT
+beside the payload (DA-D4), never a `Mutation` bucket, so
+`mutation.mutation_pct`'s `killed + survived` cannot see it. B050 and B051
+were landed adjacently for exactly this reason (DA-R23).
 
 ---
 
@@ -4791,6 +5061,15 @@ genuinely has no floor to record. Then:
 **Filed 2026-08-31 from Wave B fix round 1, with evidence. FILE, DO NOT BUILD
 — what "derived" would even mean here is a real product question, not an
 implementation shortcut.**
+
+**Status: RESOLVED BY RULING 2026-09-02 (Wave D, DA-D4 as completed by DA-R26
+→ A-437).** The product question this entry refused to answer locally was
+answered by the controller: `discarded` means **listed**, the ingest-side
+derivation of that already ships, and the verify-side re-derivation DA-D4
+asked for **is not constructible** — so the field is **declared, not
+verified**, and says so in four places. The `9999` reproduction below is
+**still accepted, deliberately**; the residual is [B070](#b070). See the
+Resolution section at the end of this entry.
 
 > **Numbering note.** The controller's fix-round brief asked for this to be
 > filed as **B052**, citing "the same file-don't-build pattern as
@@ -4901,20 +5180,94 @@ PURPOSE reads as the second.
    deliberately uncompilable mutant is easy to produce with Stryker) so the
    field finally has a witness.
 
+### Resolution — RESOLVED BY RULING 2026-09-02, Wave D (DA-D4 as completed by DA-R26 → A-437)
+
+**The ruling is that the second half of DA-D4 is not constructible, and that
+this is a property of the field rather than a gap in the verifier.** The
+"listed vs encountered" question this entry asked is answered **listed** — and
+the ingest half of that answer already shipped with B046
+(`mutation.ingest_mutation_report` counts `_INGESTED_DISCARDED_STATUSES`,
+`mutation.py:1845`, `:1968`). What does not follow, and what DA-D4 assumed,
+is a verify-side re-derivation: under "listed" semantics a discarded mutant is
+*outside the document*. It is in no bucket (`mutation.py:1967-1969`
+`continue`s past the assignment), in neither `candidate_count` nor `total`
+(both are `attempted`, `mutation.py:1992-1997`, and
+`Mutation._check_arithmetic`, `verdict.py:1684-1703`, forbids them to differ
+outside the limit sentinel — so `candidate_count - total` is not merely absent
+but illegal), and its LINE is not in `lines_without_candidates`
+(`mutated_lines.add(...)` precedes the discard `continue`,
+`mutation.py:1966-1968`, correctly: the tool *did* produce a candidate there).
+A truthful document with 900 discarded mutants is byte-indistinguishable from
+a truthful one with 0.
+
+**The `9999` reproduction was re-run on the current tip and is NOT refused —
+deliberately, by ruling (DA-R26).** On the frozen real ingested document
+(`carve-assets/W6/expected/ingested-r2-v10-template.json`, 109 mutants, 21
+killed / 88 survived, `candidate_count == total == 109`),
+`judgment.r2.discarded = 9999` gives `verify_document(...) == []`, against a
+clean control of `[]` and a `-1` negative control that still produces its two
+named failures. The reason it stays accepted: every upper bound that catches
+it (`discarded <= total`, `discarded <= candidate_count`) equally refuses a
+**truthful** report that could not compile most of its own mutants — the exact
+report this field exists to make visible, and the exact failure this entry was
+filed to avoid. This entry's own "why this is not fixable in Wave B" section
+said so; DA-R26 makes it the ruling.
+
+**`discarded` is a COUNT beside the payload, never enters `Mutation`'s
+buckets, so the denominator is unaffected by construction** (DA-R23, the
+sentence B050's row carries too). That is what makes declared-not-verified
+proportionate: an inflated value understates how much was measured and can
+never manufacture a green.
+
+**The residual is filed as [B070](#b070), a v11 candidate** — list the
+discarded mutants, or carry an ingested-only in-scope count, so `discarded`
+becomes a difference `verify` can take. Adding that quantity before 5.0.0
+shipped would have been free; after it, it is a schema bump.
+
 ### Acceptance
 
-- [ ] the "listed vs encountered" ruling recorded as an A-row, naming which
-      alternative was rejected and why;
-- [ ] under **listed**: `discarded` re-derived from the payload in `verify.py`
-      beside the other three re-derivations, with a test that mutates it on a
-      REAL document and asserts a NAMED failure (the `9999` reproduction above
-      is the test to write);
-- [ ] under **encountered**: the declared-not-verified statement in the schema
-      description, DESIGN-GUIDE §11 and CONSUMERS, and a test asserting the
-      schema description says so — the same three-place discipline
-      `producer_tool` already carries;
-- [ ] a committed real report with a non-zero `discarded`, and a frozen
-      W-generation document carrying it, so the field has a witness at all.
+**RESOLVED 2026-09-02 by A-437 (Wave D, schema v10), route 1 of the three the
+wave REPORT laid out. Routes 2 (list the mutants / add the count now) and 3
+(an unsound upper bound) were both rejected by DA-R26 — 3 on the merits, 2 as
+a v11 item (`B070`).**
+
+- [x] the "listed vs encountered" ruling recorded as an A-row, naming which
+      alternative was rejected and why — **DA-D4 (listed) as completed by
+      DA-R26, recorded as A-437**, which names route 3, route-2-in-this-wave,
+      the `candidate_count - total` derivation and the hand-edited-fixture
+      witness as the rejected alternatives;
+- [x] under **listed**: ~~`discarded` re-derived from the payload in
+      `verify.py`~~ — **ruled not constructible (DA-R26)**, with the three
+      file:line seams above as the evidence. The `9999` document is asserted
+      **accepted**, with the reason written into the test, by
+      `tests/test_verify_ingested_r2.py::test_an_inflated_discarded_count_is_ACCEPTED_deliberately`
+      over the same real-artifact document the module's other negatives
+      mutate;
+- [x] the declared-not-verified statement in the schema description
+      (`src/assay/schemas/verdict.schema.json`
+      `$defs.judgment_r2.properties.discarded`, and its byte-identical W6 copy
+      `carve-assets/W6/verdict.schema.v10.json` — description bytes only, no
+      wire change, no second `!` commit, W6 MANIFEST row amended to record
+      it), DESIGN-GUIDE §11 beside `producer_tool`'s own "declared by
+      artifact, not verified" sentence, CONSUMERS' "what the verdict records"
+      paragraph in the ingested-lane section, and — the fourth place, which
+      this entry did not think to ask for — `verify.py`'s own docstring, now
+      carrying an explicit "what this function does NOT check" section plus a
+      comment at the check site. The machine check is
+      `test_the_schema_says_discarded_is_declared_not_verified`, the same
+      three-place discipline `producer_tool` carries;
+- [x] *(added by DA-R23's shared sentence)*
+      `test_an_inflated_discarded_count_cannot_move_the_R2_status` — the
+      structural half (`discarded` is not in the payload at all;
+      `total == candidate_count ==` the bucket sum) and the behavioural half
+      (the raw verifier's `judge_mutation` re-derivation still agrees);
+- [x] ~~a committed real report with a non-zero `discarded`, and a frozen
+      W-generation document carrying it~~ — **DA-D4's in-image Stryker witness
+      clause is WAIVED for a declared-not-verified field (DA-R26)**: the
+      derivation's evidence is B046's existing ingest tests over the committed
+      StrykerJS artifact, and no in-image run is needed to prove that a count
+      is *not* verified. A hand-authored fixture was not the alternative
+      (A-334). If B070 ever lands, the witness comes back with it.
 
 ---
 
@@ -4922,6 +5275,12 @@ PURPOSE reads as the second.
 
 **Filed 2026-08-31 during Wave B fix round 1, on the controller's request.
 FILE, DO NOT BUILD — the check is easy and what a MISMATCH MEANS is not.**
+
+**Status: RESOLVED 2026-09-02 (Wave D, DA-D5 → A-438).** The meaning was
+ruled and then built: a third non-repudiation tier, **content**, refusing on
+mismatch under a stated normalisation — line endings folded, one trailing
+newline ignored, everything else byte-exact. Cause (2), the rewritten source,
+is refused deliberately. See the Resolution section at the end of this entry.
 
 > **Numbering note.** B051 is the `discarded` finding. This entry was filed
 > second and takes the next free identifier. See B051's own numbering note for
@@ -5020,22 +5379,72 @@ is the actual question.
    if the ruling is "record, do not refuse" — in which case it is a schema
    field and belongs to the next cut, exactly as B050 does.
 
+### Resolution — SHIPPED, Wave D (DA-D5 → A-438)
+
+A third non-repudiation tier, **content**, at ingest, inside the baseline
+snapshot's own `with` block. `mutation._check_report_source_matches_commit`
+reads each measured file's committed blob through
+`isolation.SnapshotRepository.read_regular_file` and compares it with the
+report's embedded `source` under a normalisation the module STATES
+(`_CONTENT_TIER_NORMALISATION`): line endings folded to `\n`, one trailing
+newline ignored, everything else byte-exact. A mismatch is
+`ERROR`/`UNREADABLE_ARTIFACT` naming the file and all three causes with the
+one remedy. **No wire field, no warning mode, no opt-out key** (DA-D5). The
+`repository`/`read_timeout` parameters are REQUIRED on
+`ingest_mutation_report` with no default, so the strongest tier is not the one
+a caller can forget.
+
+**Cause (2) — a tool that rewrites sources in flight — is REFUSED by design,
+and that is the ruling the entry said it could not make locally.** Evidence
+whose text is not the commit's is not evidence about the commit: the mutants
+were applied to the rewritten text and carry the rewritten text's line
+numbers. A formatter writing back would trip `DIRTY_TREE` on the next run
+anyway. Cause (4), line endings and the final newline, is folded away by the
+normalisation rather than refused — that was the case that would have refused
+correct lanes over a `.gitattributes` setting.
+
 ### Acceptance
 
-- [ ] the mismatch ruling recorded as an A-row, naming the rejected
-      alternatives (refuse-always / warn / record-on-the-wire) and why;
-- [ ] the committed bytes read from the snapshot at ingest time and compared
-      under a documented normalisation, with a test that mutates ONE file's
-      `source` in the REAL committed Stryker fixture and asserts a NAMED
-      failure — and a companion test proving a byte-identical report still
-      passes, so the check is not vacuous;
-- [ ] a test for the transpiled/rewritten-source case (2), asserting whatever
-      the ruling says should happen to it — this is the case that decides
-      whether the feature is safe to ship at all;
-- [ ] CONSUMERS' ingested-R2 refusal list gains the new refusal, in the same
-      "what assay checks about your report" paragraph as `projectRoot`;
-- [ ] if the ruling is "record, do not refuse": the wire field in schema,
-      dataclass and `verify.py` (three places), at the next schema cut.
+**RESOLVED 2026-09-02 by A-438 (Wave D, DA-D5).**
+
+- [x] the mismatch ruling recorded as an A-row, naming the rejected
+      alternatives (warn / opt-out key / record-on-the-wire) and why —
+      **A-438**;
+- [x] the committed bytes read from the snapshot at ingest time and compared
+      under a documented normalisation
+      (`src/assay/mutation.py` `_CONTENT_TIER_NORMALISATION`,
+      `_normalise_source_for_compare`, `_check_report_source_matches_commit`,
+      called from `ingest_mutation_report` immediately after
+      `_resolve_report_paths` and BEFORE the bucketing loop), with the
+      one-file mutation test over the REAL committed Stryker fixture asserting
+      a named failure
+      (`tests/test_runner_ingested_r2.py::test_a_stale_report_source_is_refused_naming_the_file_and_the_causes`)
+      and the non-vacuity companion
+      (`test_a_byte_identical_report_still_passes_the_content_tier`, plus the
+      other 23 tests in that module, every one of which now runs through the
+      new tier);
+- [x] a test for the transpiled/rewritten-source case (2)
+      (`test_a_REWRITTEN_source_is_refused_and_that_is_the_ruling` —
+      reindentation only, asserted to change no token, and still refused,
+      because a check that let it through would have to decide which rewrites
+      preserve meaning in a language assay did not run);
+- [x] the normalisation tested in BOTH directions, which is what makes it a
+      contract rather than a shrug:
+      `test_CRLF_line_endings_are_not_a_content_mismatch`,
+      `test_one_trailing_newline_either_way_is_not_a_content_mismatch`, and
+      the BOUND, `test_a_SECOND_trailing_newline_IS_a_content_mismatch`;
+- [x] the degenerate case:
+      `test_a_measured_file_the_commit_does_not_track_is_the_same_refusal` —
+      "the commit has no such content" is cause 3 in its most literal form, so
+      it is this refusal and not the `GIT_FAILED` git's own wording would
+      produce;
+- [x] CONSUMERS' ingested-R2 refusal list gains the new refusal, in the same
+      "Refusals worth knowing before you hit them" paragraph as `projectRoot`
+      (`docs/CONSUMERS.md`), and DESIGN-GUIDE §11 gains the three-tier
+      statement with the rejected alternatives;
+- [x] ~~if the ruling is "record, do not refuse": the wire field~~ — the
+      ruling is REFUSE, so there is no wire field and this cut carries none
+      for it.
 
 ## B053 — an `ERROR`-outcome verdict's detailed message is constructed but never surfaced anywhere a consumer can read it — not stdout, not stderr, not the verdict JSON
 
@@ -5146,6 +5555,111 @@ not pre-decided:
 > assay-v4.1.0: unchanged. Records: `reports/assay-WAVE-C-go-CONTROLLER-LOG.md`
 > (round-2 entry) and `reports/assay-WAVE-C-go-REVIEW-round2.md`.
 
+### Resolution — halves (a) and (b) SHIPPED, Wave D phase 1 (DA-D2 → A-409)
+
+Both non-wire halves are done; half (c) (a per-claim `detail` field) is phase
+2 of the same wave and this entry stays OPEN for it.
+
+- [x] **Every `AssayError` that becomes part of a verdict has somewhere to
+  carry its message.** One emitter, `assay.runner.announce_refusal`
+  (`src/assay/runner.py:307`), printing exactly
+  `assay: {outcome}/{reason_code}: {message}`.
+- [x] **The narrower fix's INTENT, achieved without its mechanism.** The
+  entry proposed widening `_cmd_run`'s exception handling. Measured, that
+  cannot work: `src/assay/runner.py` has 15 `except AssayError` handlers that
+  convert the error into a refusal `Claim`/`Verdict` and RETURN — nothing
+  propagates to `_cmd_run`. The emitter is therefore called at the conversion
+  sites themselves — 13 calls: `runner.py:1332` (`evaluate_r1`'s own catch),
+  `:2796` (the baseline equivalence artifact), `:2812` (the coverage read),
+  `:2988` (diff parse), `:3044` (whole-target resolution), `:3074`
+  (targets-from-diff), `:3145` (ingested R2), `:3210` (the R2 orchestration
+  fault, announced once for the R2 AND R3 claims it refuses), `:3301` (R3),
+  `:3685` (`_run_higher_rigor_lane`'s plan resolution), `:3795` (the snapshot
+  block), `:4007` and `:4254` (`run_lane`'s own two plan resolutions) — and
+  `cli.py`'s three prints of that same text are refactored onto it
+  (`cli.py:300`, `:716`, `:749`).
+- [x] **DA-R3's `diagnostics` route, taken.** The stream is exactly the one
+  `environment_command`'s probe refusal uses; `cli.py:781` passes
+  `diagnostics=err`, so half (a) and half (b) are one mechanism.
+- [x] **Behavioral oracle 1** — a refusal raised deep past
+  `_resolve_declared_adapters` prints its constructed message:
+  `tests/test_cli_run.py::test_run_refuses_a_missing_required_infrastructure_env_var_without_crashing`
+  now asserts the line names `mynet` and
+  `MISSING_NETWORK_VAR_FOR_TEST` (that test previously asserted the SILENCE,
+  and its docstring said so — the assertion inverted is the regression proof).
+- [x] **Behavioral oracle 2 (controlled wrong implementation)** — the new
+  `tests/test_refusal_announcement.py` run against the pre-fix tree
+  (`git worktree add --detach … 36ac802c`) is **6 failed / 3 passed**; the 3
+  that pass on both sides are the controls (the vocabulary-completeness
+  check, the CLI-boundary refusal that already printed, and the
+  no-`diagnostics` default).
+- [x] **(c) the wire `detail` field** — SHIPPED in two steps, both in Wave D
+  phase 2. The FIELD landed with the v10 cut (`b2fd09f3`): `Claim.detail` +
+  `Claim.detail_dropped_bytes` at `src/assay/verdict.py:2931`, the presence
+  rule and the BYTE bound at `verdict.py:3055-3084`
+  (`Claim._check_detail`), the schema's deliberate character/byte split, and
+  `verify.py:2371-2392`. The PRODUCERS landed with A-439: every conversion
+  site that turns a refusing `AssayError` into a refusal claim now carries
+  that error's own message onto the claim, byte-copied from the same
+  expression `announce_refusal` prints — because `announce_refusal` now
+  RETURNS the bounded sentence (`runner.py`'s `announce_refusal`,
+  `verdict.refusal_detail`/`verdict.RefusalDetail`). Sites: `evaluate_r1`'s
+  `except`, the post-command refusal's non-R0 levels, the profile-read
+  failure, the deferred equivalence refusal, the three early-R2 refusals, the
+  ingested-R2 refusal, the R2 orchestration fault AND the R3 claim it also
+  refuses, the canary refusal, both direct-R0 R0 claims,
+  `_refuse_lane_with_plan` (every declared level, via a new `detail=`
+  keyword on `refuse_lane`), `_report_probe_refusal` (which now composes and
+  returns even with `diagnostics=None`), the pre-run dirty/`HEAD` guards, the
+  three cleanup-failure branches through
+  `_replace_highest_higher_rigor_claim_with_git_failed`, and `cli.py`'s four
+  `refuse_lane` sites. Tests: `tests/test_refusal_announcement.py`'s new
+  final section — the bound as a unit (head kept, codepoint boundary, empty →
+  absent), the emitter's return equals what it printed (and still returns
+  with no stream), and five end-to-end producing sites read off the DOCUMENT,
+  plus a no-refusal control and a real over-bound truncation.
+
+**~~Known limit, recorded rather than papered over:~~ CLOSED by DA-R3/A-414
+(below).** A refusal that no `AssayError` carries (`DIRTY_TREE`,
+`HEAD_CHANGED`, `MISSING_EXTERNAL_TOOL`, the `env_required` and `--shard`
+refusals) printed no line, on the reading that there was no message to copy.
+The controller ruled that backwards: the emitter's contract is a message, not
+an exception, and each of those sites holds the fact when it refuses.
+
+### Resolution addendum — the last six refusals, and one that must NOT print (DA-R3 + DA-R4 → A-414)
+
+- [x] **Every refusal reachable through `assay run` prints exactly one line,
+  without qualification.** All six previously-silent sites compose their
+  sentence where the fact is known and go through the SAME emitter:
+  `src/assay/runner.py:3792` (`DIRTY_TREE`, snapshot path — names the
+  uncommitted paths from `git.dirty_paths`), `:3806` (`HEAD_CHANGED` — names
+  both revisions), `:4056` (`MISSING_EXTERNAL_TOOL` — names the tool and the
+  adapter's whole declared list), `:4219` (`env_required` — names the unset
+  variables and the remedy), `:4284` (bad `--shard` — echoes the spec and
+  gives the form), `:4369` (`DIRTY_TREE`, direct-R0 path). Each builds an
+  `AssayError` purely to carry the message; no new exception type.
+- [x] **The counting test is extended to all six.** `tests/
+  test_refusal_announcement.py` gains one end-to-end test per site, each
+  asserting `len(refusal_lines) == 1` AND that the line names the fact
+  (`stray-note.txt`, both revisions, `assay-no-such-tool-b053`,
+  `ASSAY_B053_NO_SUCH_VAR`, `one-of-two`). Four go through the installed CLI
+  (`assay.cli.main`); `HEAD_CHANGED` and `MISSING_EXTERNAL_TOOL` go through
+  `runner.run_lane` directly, because the CLI resolves `commit` from `HEAD`
+  itself and the adapter is chosen by the lane's declared language — the
+  disagreement each guard exists to catch is a caller's, not an operator's.
+- [x] **A refusal the verdict discards prints nothing (DA-R4).** The
+  `equivalence_artifact` early-R2 refusal (A-279) is recorded at
+  `src/assay/runner.py:2855` and announced only at `:3194-3200`, the branch
+  where the early claim SURVIVES into the document. Two tests, a matched
+  pair: the command exits 0 → the claim is `ERROR`/`EXEC_FAILED` and the line
+  is printed once; the command exits 7 → the claim is `FAIL`/`COMMAND_FAILED`
+  and no line mentions the equivalence artifact. No general deferred-print
+  buffer: only this one site is decided before the command outcome is known.
+- [x] **Red-first.** 7 failed / 10 passed against the pre-fix tip
+  `10d9390d`; 17 passed with the fix. Every failure was `assert 0 == 1` on
+  the refusal-line count (or, for DA-R4, `assert not True` on the superseded
+  line), never a setup error.
+
 ## B054 — a NEVER-EXECUTED file matching `coverage.include` can make `@vitest/coverage-istanbul` emit a self-contradictory `branchMap`, and `UNREADABLE_ARTIFACT` refuses the WHOLE verdict rather than isolating the one file — defeating `changed_lines` mode's cost-scoping promise
 
 **Filed 2026-09-02, dstdns's first `javascript` lane adoption
@@ -5234,6 +5748,58 @@ case).
   audit trail A-357 exists to preserve — any fix must keep the file
   nameable, not merely stop refusing.
 
+### Resolution — SHIPPED, Wave D phase 1 (DA-D3 + DA-R2 → A-410). RESOLVED
+
+Shape 1, isolated per file. Shape 2 (document-only) rejected; the
+`excluded_files` wire list rejected by DA-D3.
+
+- [x] **The refusal is isolated to the offending file.** The parser drops the
+  contradicting arcs and records their lines
+  (`src/assay/coverage_parsers/coverage_istanbul_json.py:345`
+  `_contradictory_branch_lines`, `:381` `_without_lines`, stored on
+  `FileCoverage.contradictory_branch_lines`,
+  `src/assay/coverage_parsers/model.py:366`). The whole-artifact
+  `UNREADABLE_ARTIFACT` at parse time is gone for these two invariants and
+  unchanged for every other one.
+- [x] **A file IN the judged set still refuses** — `assay.evaluate`'s
+  `_refuse_contradictory_branch_arcs`
+  (`src/assay/evaluate.py:195`), called from `changed_lines` mode
+  (`src/assay/evaluate.py:561`, inside the per-file loop, immediately after
+  A-405's own check) and from `whole_target` mode
+  (`src/assay/evaluate.py:1156`). `ERROR`/`UNREADABLE_ARTIFACT`, naming the
+  file and the arc line(s).
+- [x] **Oracle 1: PASS on the strength of the changed-lines diff.**
+  `tests/test_coverage_istanbul_contradictory_branch_arcs.py::test_a_defective_file_outside_the_judged_set_is_skipped_and_named`
+  — a two-file istanbul artifact, one defective file outside the judged set,
+  verdict `PASS` at `pct == 100.0`, and the defective file NAMED on stderr
+  with its arc line.
+- [x] **"must at minimum name WHICH file broke it".** Three places: the
+  diagnostics line (`runner._announce_contradictory_branch_records`,
+  `src/assay/runner.py:352`, called from `evaluate_r1` at `:1267`), the
+  refusal message when the file is judged,
+  and the stored field itself.
+- [x] **Oracle 2 (controlled wrong implementation): the fix does NOT silently
+  drop the file's data.** The field is asserted directly in the parser tests,
+  and `test_the_committed_real_artifacts_carry_no_contradiction` proves both
+  committed REAL arc-bearing artifacts record no contradiction at all, so
+  nothing about a correct artifact's parse changed.
+- [x] **Red-first.** The new module against the pre-B054 tip (`440d5da9`) in a
+  detached scratch worktree: **5 failed / 2 passed**. The 2 that pass on both
+  sides are controls — the judged-file refusal (whose disposition is
+  deliberately unchanged, only its ORIGIN moved from the parser to
+  `evaluate`) and the all-clean lane.
+- [x] **The two pre-existing parser tests that asserted the OLD verdict-wide
+  refusal** (`tests/test_coverage_istanbul_branch_arcs.py`) are rewritten to
+  assert the new disposition, keeping the invariant names and their
+  reasoning. A-357's unrecognised-TYPE refusal is untouched.
+
+**Workaround retired.** dstdns's narrowed `coverage.include` was a workaround
+for exactly this; the broad `src/**` shape CONSUMERS documents is correct
+again, and CONSUMERS now says what a consumer sees for a defective file
+inside vs. outside the judged set.
+
+**Status: RESOLVED 2026-09-02 (Wave D phase 1) — A-410.**
+
 ---
 
 ## B055 — an uncovered Go statement sharing a physical LINE with a covered one is still laundered into `executed`; the statement-position oracle does not fix it, and cannot at line granularity
@@ -5313,11 +5879,26 @@ Go R1 line claim is statement-granular **to the line**, not to the statement.
       the REAL committed `coverage-lit.out` asserting line 4 reports the
       uncovered statement — and a companion test proving an ordinary
       single-statement line does NOT, so the marker is not vacuous;
-- [ ] CONSUMERS' Go section states the limit either way, in the same
-      paragraph that describes what a Go R1 line claim means;
-- [ ] `test_lit_go_drops_the_fabricated_signature_but_still_launders_line_four`
-      updated (it asserts today's behaviour deliberately, so it MUST go red
-      when this is fixed).
+- [x] the ruling recorded as an A-row, naming the three alternatives —
+      **A-413**, alternative 1 (leave it as a documented limit), with the
+      per-line marker and full column granularity named as rejected and
+      costed as schema cuts;
+- [ ] not applicable: no wire field, because it was not ruled to fix;
+- [x] CONSUMERS' Go section states the limit, in the same paragraph that
+      describes what a Go R1 line claim means — point 4 of "Go lanes",
+      `docs/CONSUMERS.md`, now opening with "a Go R1 claim is
+      statement-granular TO THE LINE, not to the statement" and carrying the
+      exposure, the triggering shapes and the one consumer-side remedy;
+- [x] `test_lit_go_drops_the_fabricated_signature_but_still_launders_line_four`
+      (`tests/test_statement_attribution_go_witnesses.py:122`) **STAYS
+      UNCHANGED** — DA-D12 says so explicitly. It asserts today's behaviour
+      over the REAL committed `coverage-lit.out`, which is now the ruled
+      behaviour rather than an unfixed one; it is the thing that would go red
+      if a future cut ever reverses A-413.
+
+**Status: RESOLVED 2026-09-02 (Wave D phase 1) — A-413**, as a ruled and
+documented limit rather than as a code change. Reversible at a future schema
+cut: `attribute_statements` already holds the data a fix would need.
 
 ---
 
@@ -5376,14 +5957,27 @@ option 1 would move the sibling toward.
 
 ### Acceptance
 
-- [ ] the ruling recorded as an A-row naming the three options above;
-- [ ] `test_verdict_schema_is_packaged.py`'s docstring no longer states a
-      measurement that a re-run would refute;
-- [ ] if option 2: a build with the git file finder unavailable, asserting the
-      schema is ABSENT without the stanza and PRESENT with it — the two-sided
-      check the docstring currently claims;
-- [ ] whatever is decided, the same treatment applied to the Go helper's own
-      packaging test, so the two do not drift apart again.
+- [x] the ruling recorded as an A-row naming the three options above —
+      **A-412**, option 1, with options 2 and 3 named as rejected and why;
+- [x] `test_verdict_schema_is_packaged.py`'s docstring no longer states a
+      measurement that a re-run would refute — it now states A-396's
+      measurement (the stanza deleted, the wheel still carries the schema and
+      47 members) and says the file asserts the OUTCOME, not the mechanism.
+      `test_pyproject_declares_the_schema_as_package_data`'s failure message
+      carried the same refuted claim and is corrected in the same way;
+- [ ] option 2 NOT taken — a second real wheel build in a suite that already
+      pays for two, for a guarantee the artifact-side outcome test already
+      covers. Named as rejected in A-412, and named as the right upgrade if
+      the cost ever falls;
+- [x] the same treatment applied to the Go helper's own packaging test —
+      **verified, not rewritten**, exactly as DA-D13 instructs:
+      `tests/test_go_helper_is_packaged.py`'s docstring already states the
+      corrected position ("this test deliberately asserts the OUTCOME … rather
+      than the mechanism") and already names this entry as the sibling's
+      unfixed state. Nothing in it needed to change; the two files are now
+      consistent by construction.
+
+**Status: RESOLVED 2026-09-02 (Wave D phase 1) — A-412.**
 
 ---
 
@@ -5752,10 +6346,24 @@ consumer who never reads this entry.
 
 ### Acceptance
 
-- [ ] a build with `--outdir <repo>/assay/dist` leaves no untracked path in
-      the worktree;
-- [ ] a test that would go RED if a future edit reintroduced one, asserting
-      the OUTCOME (the tree is clean after a build) rather than the mechanism.
+- [x] a build with `--outdir <repo>/assay/dist` leaves no untracked path in
+      the worktree — the staging tree is now a
+      `tempfile.TemporaryDirectory` (`gate/distribution/build_release.py:349`
+      `build_zipapp`), so the builder writes nothing outside `--outdir` at
+      all, on success OR on a raise;
+- [x] a test that would go RED if a future edit reintroduced one, asserting
+      the OUTCOME rather than the mechanism —
+      `tests/test_distribution_build_release.py::test_a_build_writes_nothing_outside_its_own_outdir`.
+      The `built` fixture's two real builds now target a `dist/` inside an
+      otherwise-empty directory each (exactly the shape
+      `--outdir <repo>/assay/dist` has), and the test asserts that enclosing
+      directory contains `dist` and nothing else. It never builds into the
+      real repository — doing so during the suite would itself dirty the tree
+      the self-hosted gate lane judges, which is the very failure this entry
+      is about.
+
+**Status: RESOLVED 2026-09-02 (Wave D phase 1) — A-411.** Shape 1 of the
+three; the other two named as rejected in the A-row.
 
 ---
 
@@ -6021,3 +6629,395 @@ rather than a bare `fatal:` git stderr passthrough.
       resolution gap, not a raw git stderr passthrough;
 - [ ] a regression test pins the R0/R1-vs-R2 discriminator above so it
       cannot silently regress back to today's split behavior unexplained.
+
+---
+
+## B062 — `tests/` carries 31 pyflakes findings, so the gate's new lint phase judges `src/assay` only
+
+**Filed 2026-09-02** from B024's landing (Wave D phase 1, DA-R7, A-417).
+
+DA-R7 asked for the lint phase to cover `src/assay` "and `tests/` if clean".
+It is not clean. Measured with the same locked `pyflakes==3.4.0` the gate now
+installs, from the repository root:
+
+```
+$ python -m pyflakes src/assay ; echo $?      # 0 findings
+0
+$ python -m pyflakes gate ; echo $?           # 0 findings
+0
+$ python -m pyflakes tests | grep -cE '^tests/[^ ]+\.py:[0-9]+:[0-9]+: '
+32
+```
+
+**31 findings across 19 modules**, plus a 32nd line that is not a finding at
+all: `tests/fixtures/mutation/python/broken.py:8:12: invalid syntax`, a
+**deliberately** unparseable fixture the mutation suite needs in order to
+prove how assay reports a source file it cannot parse. pyflakes can never
+pass over that path, so any `tests/` phase must exclude `tests/fixtures/`
+explicitly rather than pretend the tree is uniform.
+
+The 31 real findings, by class:
+
+| class | count | example |
+|---|---|---|
+| `'X' imported but unused` | 25 | `tests/test_refusal_announcement.py:36: 'sys'` |
+| `local variable 'X' is assigned to but never used` | 5 | `tests/test_runner_evaluate_r1.py:443: 'head_rev'` |
+| `redefinition of unused 'X'` | 1 | `tests/test_mutation_progress_budget_plan.py:26: 'collect_mutation_sites'` |
+
+None is an undefined name, so none is a latent `NameError` of the kind that
+filed B024 in the first place — which is why this is a follow-up and not a
+blocker.
+
+### Why it was not swept inside B024
+
+Deleting 25 imports and 5 locals across 19 test modules is a 19-file diff
+touching suites that B024's own commit does not otherwise go near, in a wave
+whose phase-1 tip was already under review by R-1. Two of the classes also
+need judgement rather than deletion: an unused import in a test can be a
+`pytest.importorskip`-shaped availability probe, and an assigned-never-read
+local can be the *point* of the assertion above it. Sweeping them belongs in
+a pass that reads each site, not in a lint-wiring commit.
+
+### Acceptance
+
+- [ ] the 31 findings are fixed (or, per site, justified in writing and
+      silenced deliberately — never a blanket `# noqa`);
+- [ ] `tests/fixtures/` is excluded by an explicit, commented rule that names
+      `broken.py` as the reason;
+- [ ] `run_lint_phase` (`tools/tester-unified-gate.sh:117`) is widened to
+      cover `tests/`, and the widening is proven by planting an unused import
+      in a test module and watching the phase go red;
+- [ ] the scope comment at `tools/tester-unified-gate.sh:111-116`, which
+      records today's measurement as the reason for the narrow scope, is
+      updated rather than left to rot.
+
+---
+
+## B063 — three test modules `git -C PROJECT_ROOT.parent`, so the suite cannot run from a copy of the tree
+
+**Filed 2026-09-02** from R-1's round-1 review of Wave D phase 1 (report:
+`nyxloom-trove/reports/assay-WAVE-D-v10-REVIEW-R1-round1.md`). **Not fixed in
+Wave D** — recorded here with R-1's measurement so the next person who copies
+the tree does not spend the same hour on it.
+
+Three modules compute `REPO_ROOT = PROJECT_ROOT.parent` and shell out to
+`git -C` against it:
+
+- `tests/test_python_qualification.py:42`
+- `tests/test_runner_snapshot_selection.py:805`
+- `tests/test_distribution_build_release.py`
+
+`PROJECT_ROOT` is assay's own directory, so `PROJECT_ROOT.parent` is the vbpub
+checkout — a real repository only when the tree is IN that checkout. Copy
+`assay/` anywhere else (`cp -r` into a scratchpad, a container bind of the
+project directory alone, a vendored subtree) and the parent is not a
+repository at all.
+
+**R-1's measurement, and why it matters that it is CONSTANT.** Running the
+whole suite from a `cp -r` copy of the worktree's `assay/` directory:
+
+```
+11 failed, 3956 passed, 18 skipped, 13 errors in 821.95s
+```
+
+**All 24 are in those three modules, on every copy, regardless of what else
+the copy contains.** R-1 hit this while mutation-testing: each mutant's
+whole-suite run carried the same 11+13, so a real regression would have had to
+be spotted against a noisy floor. The targeted reruns avoided the three
+modules entirely, which is how the mutation evidence stayed readable — but
+that is a workaround a reviewer had to discover, not a property of the suite.
+
+### Why this is a real defect and not just an odd fixture
+
+The suite's own claim is that it measures assay. A module that fails because
+of where the tree happens to sit is measuring the checkout, and it does it
+loudly enough (24 results) to mask the thing under test. It also silently
+sets the price of every future mutation, bisection or container run of the
+suite.
+
+### What a fix probably looks like (not prescribed)
+
+Resolve the repository from the test's own context rather than from a fixed
+parent hop — `git rev-parse --show-toplevel` from `PROJECT_ROOT`, or a
+fixture that SKIPS with a named reason when `PROJECT_ROOT.parent` is not a
+work tree. The second is cheap and honest: what these tests need is a
+repository, and "there is no repository here" is a skip condition, not a
+failure of assay.
+
+### Acceptance
+
+- [ ] a `cp -r` copy of `assay/` outside the vbpub checkout runs the suite
+      with **zero** failures and **zero** errors attributable to the missing
+      parent repository (measure it, quote the numbers);
+- [ ] whichever of skip-with-a-reason or resolve-from-context is chosen, the
+      choice is stated at the seam with the rejected alternative;
+- [ ] the three modules still measure what they measure today when the tree
+      IS in the vbpub checkout — proven by running them in place, unchanged
+      results.
+
+---
+
+## B064 — progress and resume beyond R2: what R0/R1 could observably report, and why R3's canary is the one tier where both are actually feasible
+
+**Filed 2026-09-02** by the controller, from an operator question during Wave
+D: *do R0/R1 runtimes justify progress/resume, and could the canary (R3) have
+them?* **FILED, NOT IMPLEMENTED — no scope in Wave D.** This entry records the
+measured answer so the question is not re-asked from scratch, and so that
+whoever builds B007 knows which of its design choices this one is coupled to.
+
+### The measured answer, tier by tier
+
+**R0 and R1: resume is a rerun by construction, and that is not a gap.**
+Each is exactly ONE command — the lane's own `argv` — run once. There is no
+checkpoint *inside* a foreign test runner for assay to resume from: assay does
+not know which of the runner's tests completed, and it must not guess. Worse,
+a coverage judgment assembled from a PARTIAL rerun would be unsound: the
+artifact would describe a subset of the suite while the claim describes the
+lane, which is precisely the laundering `EMPTY_COVERAGE` and B049's
+orphaned-reservation refusal exist to prevent. So "resume at R0/R1" can only
+ever mean "run the command again", which is what a consumer already does.
+
+**R0/R1 progress is cheap and merely unwired.** The run has a small, fixed
+set of phase boundaries that assay itself owns and can timestamp without
+knowing anything about the runner: run header, snapshot materialised, command
+finished (with its exit status), coverage parsed, verdict written. That is a
+uniform phase stream, the same shape at every tier, and it would make a lane
+that currently looks hung for nine minutes legible. Nothing about it is hard;
+it simply has no producer today, because `--progress` was built for the
+mutation sweep's per-candidate events.
+
+**R3 is the tier where BOTH are genuinely feasible**, and for the same reason
+they were feasible at R2: the canary has the same per-unit shape as a mutation
+sweep — one command per target/attempt, a small number of units, each with a
+deterministic identity — so the existing state mechanism (`.assay/`-persisted,
+identity-keyed records, the `schema_version`-mismatch-is-an-absent-record
+rule) applies without new substrate. Per-attempt progress events and
+per-target resume both fall out of that.
+
+### The B007 coupling — read this before designing B007's payload
+
+B007's ordered multi-target R3 canary already defines a **per-attempt payload**
+(ordered array, closed "why not attempted" vocabulary). That payload is
+exactly what a per-attempt progress EVENT would carry, and its identity is
+exactly what a per-target resume record would be keyed by. So B007's payload
+shape decides this entry's shape whether or not this entry is ever built.
+B007's A-row must say so in one sentence; nothing here widens B007's scope.
+
+### Explicitly not proposed here
+
+- No `--progress` producer at R0/R1, no resume at R0/R1, no R3 progress or
+  resume **in Wave D**.
+- Nothing that makes `--progress` or `--resume` mean something different per
+  tier: A-429 just made the estate pass both on every lane precisely because a
+  uniform invocation shape is the thing worth having.
+
+### Acceptance (for whoever picks this up)
+
+- [ ] a ruling recorded as an A-row on whether the R0/R1 phase stream is
+      built, naming the rejected alternatives (nothing; per-tier bespoke
+      events; a runner-aware progress that assay must not attempt);
+- [ ] if built, the phase vocabulary is CLOSED and identical across tiers, and
+      `verify.py` is untouched (progress is diagnostic, never evidence);
+- [ ] R3 progress/resume, if built, reuses B007's per-attempt identity rather
+      than inventing a second one — proven by a test that resumes a
+      multi-target canary and re-runs only the unattempted targets;
+- [ ] the measured claims above are re-checked, not inherited, at the time of
+      building.
+
+---
+
+## B069 — the gate-only harnesses' contract pins are invisible to the local suite, so a stale pin costs a 25-minute red gate
+
+**Filed 2026-09-02** by Wave D generation 9, on the controller's **DA-R24**,
+from the two red gate runs generation 8 paid during the v10 cut.
+**RESOLVED at filing** by A-435 (`tests/test_gate_harness_version_pins.py`);
+the entry stays for the measurement and for the rule it records.
+
+### The measurement
+
+`pytest tests -q` is green on this branch **with twenty tests skipped**, and
+those twenty are exactly the harnesses that drive a real produced artifact
+inside `tester-unified:local`. Every consumer of a wire shape under
+`gate/python/` is therefore invisible to a local run. Generation 8's v10 cut
+went red twice for nothing else:
+
+* `gate/python/qualify_topos.py:92` pinned
+  `carve-assets / "W5" / "expected"` after W6 became the newest drift-guard
+  generation;
+* `gate/python/qualify_topos.py:848` and `:905` pinned
+  `.get("schema_version") != 9` after `VERDICT_SCHEMA_VERSION` became 10.
+
+Each cost one ~25-minute run. Both are one grep away from being known in five
+seconds, and neither was, because nothing in the ordinary suite reads the
+harness text at all.
+
+### Why the pins themselves are RIGHT, and stay
+
+The harnesses pin deliberately. A glob or a "whatever is newest" lookup would
+let a schema cut or a carve-asset generation advance without a conscious edit,
+which is precisely the drift the `carve-assets/*/MANIFEST.md` freeze rule and
+the P25 harness's own header exist to prevent (**DA-R24**). Advancing a pin is
+supposed to be a decision someone makes. What was missing is not a looser pin;
+it is a **red that fires locally when the decision was forgotten**.
+
+### Rejected: a new gate phase
+
+A grep phase inside `tools/tester-unified-gate.sh` would move the red run five
+seconds earlier inside the same 25-minute container, still after the wheel
+build, and would add a twelfth phase to a script every edit of which must
+itself be gated (BRIEF-7 §3.1(f): generation 6's three-token edit to it went
+red). **DA-R24 rules: no new gate phase.**
+
+### What landed instead
+
+One local test, collected by the ordinary suite, that scans `gate/python/*.py`
+for two pin families and asserts each names the current contract:
+
+* a verdict-document `schema_version` compared to an integer literal, against
+  `assay.verdict.VERDICT_SCHEMA_VERSION`;
+* a `carve-assets` / `W<n>` path CONSTRUCTION, against the newest `W<n>`
+  directory under `nyxloom-trove/carve-assets/`.
+
+Two families are deliberately out of scope, and the test says so in its own
+text: the lane-file form `schema_version = 2` inside a TOML template string
+(`LANE_SCHEMA_VERSION` is a separate contract on its own version line, and
+folding them together would demand a lane bump per verdict bump), and PROSE
+references to frozen earlier generations (a docstring narrating
+`carve-assets/W4/test_acceptance_v8.py` is correct — only a harness that READS
+a stale generation is stale).
+
+### Acceptance
+
+- [x] a test under `tests/` scans `gate/python/*.py` and fails on a pin that
+      names anything but the current `VERDICT_SCHEMA_VERSION`
+      (`tests/test_gate_harness_version_pins.py`,
+      `test_gate_harnesses_pin_the_current_verdict_schema_version`);
+- [x] the same test fails on a `carve-assets/W<n>` construction that is not the
+      newest generation
+      (`test_gate_harnesses_pin_the_newest_carve_asset_generation`);
+- [x] the red is expressible without a checkout: the scanner run over a fixture
+      copy of the pre-cut harness text reports both
+      (`test_the_scanner_reports_a_pre_cut_harness_as_stale`), and run over the
+      real `b2fd09f3^:gate/python/qualify_topos.py` it reports all three real
+      stale pins (:92 W5, :848 and :905 schema 9);
+- [x] the lane `schema_version` and prose references are proven NOT matched
+      (`test_the_scanner_ignores_the_lane_schema_version_and_prose`);
+- [x] a scanner whose pattern rots to zero matches FAILS rather than passes
+      (both real-tree tests assert `found` is non-empty first).
+
+---
+
+## B070 — `judgment.r2.discarded` has no counterpart on the wire to be a difference OF, so it can only ever be declared: list the discarded mutants, or carry an ingested-only in-scope count
+
+**Filed 2026-09-02** by Wave D generation 10, on the controller's **DA-R26**,
+as the explicit residual of [B051](#b051). **v11 CANDIDATE — FILE, DO NOT
+BUILD in this wave.** It is a wire change, and Wave D's hard invariant is
+exactly ONE `feat(assay)!:` commit, which already exists (`b2fd09f3`).
+
+**The cost sentence, recorded because it is the whole reason this entry
+exists:** adding this quantity **before 5.0.0 shipped would have been free** —
+it would have ridden the v10 cut that was already breaking the wire — and
+**after 5.0.0 it is a v11 schema bump**, with its own hard cut, its own
+`W<n>` generation, and its own migration notes for every consumer. The
+window closed while B051 was being ruled on; that is not a mistake anyone
+made, it is what a design question surfacing mid-cut costs.
+
+### The problem
+
+B051 asked whether `discarded` could be re-derived from the document, and
+DA-D4 ruled the field means **listed** (the mutants the report itself
+enumerates with `CompileError`/`RuntimeError`), which
+`mutation.ingest_mutation_report` already implements at ingest
+(`mutation.py:1845`, `:1968`). DA-R26 then ruled that the verify side
+**cannot** re-derive it, and that the field is therefore declared, not
+verified (A-437).
+
+The reason is a missing quantity, not a missing check. Under "listed"
+semantics a discarded mutant is outside the document it would have to be
+derived from:
+
+* it is in **no `Mutation` bucket** — `ingest_mutation_report` `continue`s past
+  the bucket assignment (`mutation.py:1967-1969`);
+* it is in **neither `candidate_count` nor `total`** — both are set to
+  `attempted`, the bucket sum (`mutation.py:1992-1997`), and
+  `Mutation._check_arithmetic` (`verdict.py:1684-1703`) FORBIDS
+  `candidate_count != total` outside the limit sentinel, so
+  `discarded == candidate_count - total` is not merely absent but illegal;
+* its **line is not in `lines_without_candidates`** — `mutated_lines.add(...)`
+  precedes the discard `continue` (`mutation.py:1966-1968`), correctly, since
+  the tool did produce a candidate on that line.
+
+So a truthful ingested document with 5 bucketed and 900 discarded mutants is
+**byte-indistinguishable** from a truthful one with 5 bucketed and 0
+discarded, and `judgment.r2.discarded = 9999` on the frozen 109-mutant
+document verifies clean (re-run 2026-09-02, A-437). Every upper bound that
+catches that (`discarded <= total`, `<= candidate_count`) equally refuses the
+honest high-discard report the field exists to surface, which is why DA-R26
+rejected one.
+
+### Why it is worth fixing at v11 rather than living with
+
+`discarded` is the ONLY fact an ingested `judgment.r2` carries that the raw
+layer says nothing independent about. `survived_uncovered` must name positions
+the `survived` bucket records; `lines_without_candidates` must not name a line
+a recorded mutant starts on; `survived_uncovered` must be a subset of
+`survived`; the score is re-derived through `judge_mutation` (A-379) and, since
+B050, against the floor the document itself states. Declared-not-verified is
+the honest description of the exception — it is not a satisfying resting place
+for it. Note what is NOT at stake: `discarded` is a count beside the payload
+and never enters the buckets, so the denominator is unaffected by construction
+(DA-R23) and no value of this field can manufacture a green. This is a
+**credibility** gap, which is why it is a v11 candidate and not a defect.
+
+### The two shapes, and the trade between them
+
+Both are wire changes; a v11 cut would pick one, not both.
+
+1. **List the discarded mutants.** A `judgment.r2.discarded` that is an array
+   of positions (or a bucket beside `survived`) puts the field on
+   `survived_uncovered`'s footing: consistency-auditable against the payload,
+   with the same ascending/unique ordering rule and the same subset checks.
+   Larger, and it forces decisions DA-D4 never made — the record shape, what
+   `candidate_count`/`total` mean once a fifth disposition exists (the
+   `_check_arithmetic` rule above is written for four), whether the operator
+   namespace applies, and a W-generation template carrying a non-empty one.
+2. **Carry an ingested-only in-scope count** — the number of in-scope mutants
+   the report LISTED, before bucketing. Then
+   `discarded == listed_in_scope - total` is a difference `verify` can take,
+   with no new record shape and no arithmetic-rule change. Smaller, and it
+   verifies exactly the half DA-D4 named — but it says nothing about mutants
+   the tool dropped before reporting, which is the half B051's own entry called
+   "the thing the field is actually for".
+
+**Neither closes the un-listed half**, and a v11 design must say so out loud
+rather than let a green bar imply otherwise: a tool that silently drops 900
+candidates emits a document indistinguishable from one that generated 109.
+That half is not recoverable from any artifact assay receives, and the honest
+disposition for it stays the A-230a "declared by artifact" tier this entry's
+predecessor landed.
+
+### Acceptance
+
+- [ ] a v11 A-row picks shape 1 or shape 2 and states what the rejected one
+      would have bought, including whether the un-listed half is being left
+      declared;
+- [ ] the chosen quantity is on the wire in all three places (schema,
+      dataclass, `verify.py` — the 2.4.0 lesson), forked on `producer` the way
+      every other ingested-only field is;
+- [ ] `verify._check_ingested_r2_agrees_with_its_payload` gains a FOURTH real
+      re-derivation, and its "what this function does NOT check" section shrinks
+      to the un-listed half only;
+- [ ] the `9999` reproduction, which A-437 records as deliberately accepted,
+      becomes a NAMED refusal — and a truthful high-discard document is
+      committed alongside it as the control that proves the new bound does not
+      refuse the honest report (this control is the point; without it the bound
+      is route 3, which DA-R26 rejected);
+- [ ] a real report carrying a non-zero `discarded` (a deliberately
+      uncompilable mutant is easy to produce with Stryker), committed as a
+      fixture and frozen in the v11 `W<n>` generation — DA-D4's original
+      witness clause, waived for a declared field by DA-R26 and owed again the
+      moment the field is verified;
+- [ ] CONSUMERS' declared-not-verified paragraph and DESIGN-GUIDE §11's
+      matching paragraph are rewritten, not merely deleted: consumers who read
+      A-437's statement need to be told what replaced it, in the v11 migration
+      notes.

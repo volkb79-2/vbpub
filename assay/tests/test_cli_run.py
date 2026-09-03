@@ -662,20 +662,34 @@ def test_run_refuses_a_missing_required_infrastructure_env_var_without_crashing(
     `refuse_lane` like every other post-HEAD-resolution refusal in this
     module, which writes a real, schema-valid artifact -- `env_effective`
     honestly `{}` and `env_effective_incomplete: true`, since the thing
-    that's broken is the infrastructure declaration itself. This case joins
-    the same silent-on-stderr bucket the `--shard`/`--operators` refusals
-    already occupy (a normal, non-exception `Verdict` return prints no `err`
-    message; see B026 N-4) -- it did NOT gain a stderr message of its own."""
+    that's broken is the infrastructure declaration itself.
+
+    **B053/A-409 (Wave D), which CHANGED this test's stderr expectation.**
+    This case used to be in the "silent on stderr" bucket alongside the
+    `--shard`/`--operators` refusals: a normal, non-exception `Verdict`
+    return printed no `err` message at all, so the operator got exit 2 and
+    `BAD_LANE_CONFIG` with no sentence saying WHICH declaration was
+    unresolvable. That silence WAS the defect B053 filed, and it is gone: the
+    one emitter (`runner.announce_refusal`) is now called at every site where
+    an `AssayError` becomes a refusal verdict, including
+    `_run_higher_rigor_lane`'s plan-resolution catch that this test reaches.
+    The assertion below is therefore the NEW truth, asserted positively --
+    the fact name is on the line -- rather than the old absence."""
     lane = _r2_lane_single_site(git_repo) + (
         "\n[lanes.package.infrastructure]\n"
         'mynet = "required-env:MISSING_NETWORK_VAR_FOR_TEST"\n'
     )
     path = _write_and_commit_lane(git_repo, lane)
     code, out, err = run(["run", "package", "--file", str(path), "--verdict-json", "-"])
-    # B018/A-327: still the silent-on-stderr bucket for the REFUSAL itself --
-    # the one line present is the judge-provenance notice this source-tree
-    # invocation prints on every run, not a message this path gained.
-    assert_stderr_is_only_the_judge_provenance_notice(err)
+    # B053/A-409: exactly one refusal line, in the one emitter's format, and
+    # it names the offending declaration -- which is the whole point.
+    refusals = [
+        line for line in err.splitlines()
+        if line.startswith("assay: ERROR/BAD_LANE_CONFIG: ")
+    ]
+    assert len(refusals) == 1, err
+    assert "mynet" in refusals[0], refusals
+    assert "MISSING_NETWORK_VAR_FOR_TEST" in refusals[0], refusals
     assert "Traceback" not in err
     document = json.loads(out)
     assert why_invalid(validator, document) == []
@@ -1111,12 +1125,13 @@ target = "pkg/mod.py"
     r3_claim = document["claims"][1]
     assert r3_claim["status"] == "PASS"
     assert r3_claim["canary"]["mechanism"] == "import-break"
-    assert r3_claim["canary"]["control_outcome"] == "PASS"
-    assert r3_claim["canary"]["transformed_outcome"] == "FAIL"
-    assert r3_claim["canary"]["observed_reason_code"] == "COMMAND_FAILED"
+    attempt = r3_claim["canary"]["attempts"][0]
+    assert attempt["control_outcome"] == "PASS"
+    assert attempt["transformed_outcome"] == "FAIL"
+    assert attempt["observed_reason_code"] == "COMMAND_FAILED"
     assert document["judgment"]["r3"] == {
         "mechanism": "import-break",
-        "target": "pkg/mod.py",
+        "targets": ["pkg/mod.py"],
     }
     # O2: the consumer's own repository is exactly as it was before the run.
     assert git_repo.head() == head_before
@@ -1569,4 +1584,182 @@ evidence = [
 
     # ...and neither successor ever started
     assert adapter_calls == [], "no adapter may be resolved after batch expiry"
+    assert not sentinel_file.exists(), "the lane command must never have run"
+
+
+# --- B004/A-430: a lane declaring BOTH attested and adjudicated evidence -----
+
+
+def test_an_interleaved_attested_adjudicated_lane_merges_evidence_in_declared_order(
+    git_repo: GitRepo,
+):
+    """Carve review F4's own required proof: `[attested, adjudicated,
+    attested]`, INTERLEAVED, so concatenating the two loaders' own outputs
+    (rather than merging back by declared identity) would put the adjudicated
+    entry first or last instead of in the middle -- this is the shape that
+    catches that bug.
+    """
+    lane_text = """\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", "exit 0"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "5m"
+allow_argv_append = false
+
+[lanes.package.judge]
+attestation_dir = ".assay/attestations"
+adjudication_dir = "artifacts/adjudicated"
+evidence = [
+  {source="attested",key="alpha"},
+  {source="adjudicated",key="image-provenance"},
+  {source="attested",key="omega"},
+]
+"""
+    git_repo.write(".gitignore", ".assay/\nartifacts/\nverdict.json\n")
+    git_repo.write("src/reviewed/child.py", "old\n")
+    path = _write_and_commit_lane(git_repo, lane_text)
+    head = git_repo.head()
+
+    attestations = git_repo.path / ".assay/attestations"
+    attestations.mkdir(parents=True, exist_ok=True)
+    for key in ("alpha", "omega"):
+        (attestations / f"{key}.json").write_text(
+            json.dumps(
+                {
+                    "producer": "human:alice",
+                    "attested_commit": head,
+                    "reviewed_paths": ["src/reviewed"],
+                }
+            ),
+            encoding="utf-8",
+        )
+    adjudicated = git_repo.path / "artifacts" / "adjudicated"
+    adjudicated.mkdir(parents=True, exist_ok=True)
+    (adjudicated / "image-provenance.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "instance": "test",
+                "commit_under_test": head,
+                "tree_state": "clean",
+                "containers": [],
+                "overall": "verified-match",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    destination = git_repo.path / "verdict.json"
+    code, _, _ = run(
+        ["run", "package", "--file", str(path), "--verdict-json", str(destination)]
+    )
+
+    assert code == 0
+    document = json.loads(destination.read_text(encoding="utf-8"))
+    assert verify_document(document) == []
+    assert document["outcome"] == "PASS"
+    assert [item["key"] for item in document["evidence"]] == [
+        "alpha",
+        "image-provenance",
+        "omega",
+    ]
+    assert [item["source"] for item in document["evidence"]] == [
+        "attested",
+        "adjudicated",
+        "attested",
+    ]
+    for item in document["evidence"]:
+        assert item["status"] == "PASS"
+        assert item["verified_by_assay"] is False
+
+
+def test_an_adjudication_timeout_after_a_completed_attestation_pass_is_atomic(
+    git_repo: GitRepo, monkeypatch: pytest.MonkeyPatch
+):
+    """Carve review F4(d): the evidence deadline is atomic across the TWO
+    sequential loaders. The attested pass genuinely resolves (a real
+    attestation file, real git verification) before the adjudicated pass
+    expires; the whole point of the test is that the already-resolved
+    attested result is DISCARDED, not partially reported, and every declared
+    identity from BOTH sources renders the same payload-free
+    `BUDGET_EXCEEDED`/`LANE_TIMEOUT` pair -- `_run_reserved`'s own except
+    branch, exercised at the SECOND loader rather than the first.
+    """
+    sentinel_file = git_repo.path.parent / "command-really-ran"
+    lane_text = f"""\
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = ["/bin/sh", "-c", "touch {sentinel_file}"]
+env = {{}}
+env_passthrough = ["PATH"]
+budget = "5m"
+allow_argv_append = false
+
+[lanes.package.judge]
+attestation_dir = ".assay/attestations"
+adjudication_dir = "artifacts/adjudicated"
+evidence = [
+  {{source="attested",key="alpha"}},
+  {{source="adjudicated",key="image-provenance"}},
+]
+"""
+    git_repo.write(".gitignore", ".assay/\nartifacts/\nverdict.json\n")
+    git_repo.write("src/reviewed/child.py", "old\n")
+    path = _write_and_commit_lane(git_repo, lane_text)
+    head = git_repo.head()
+    attestations = git_repo.path / ".assay/attestations"
+    attestations.mkdir(parents=True, exist_ok=True)
+    (attestations / "alpha.json").write_text(
+        json.dumps(
+            {
+                "producer": "human:alice",
+                "attested_commit": head,
+                "reviewed_paths": ["src/reviewed"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    timeout = AssayError(
+        "lane budget exhausted inside the adjudicated evidence batch",
+        outcome=Outcome.BUDGET_EXCEEDED,
+        reason_code=ReasonCode.LANE_TIMEOUT,
+    )
+
+    def expire(*args, **kwargs):
+        raise timeout
+
+    monkeypatch.setattr(cli_module.adjudication, "load_adjudicated_evidence", expire)
+
+    destination = git_repo.path / "verdict.json"
+    code, _, _ = run(
+        ["run", "package", "--file", str(path), "--verdict-json", str(destination)]
+    )
+
+    assert code == 4, "the budget terminal, not a PASS built from the attested half"
+    document = json.loads(destination.read_text(encoding="utf-8"))
+    assert verify_document(document) == [], "the artifact must still be complete v4"
+    assert (document["outcome"], document["reason_code"]) == (
+        "BUDGET_EXCEEDED",
+        "LANE_TIMEOUT",
+    )
+    assert [item["key"] for item in document["evidence"]] == ["alpha", "image-provenance"]
+    for item in document["evidence"]:
+        assert (item["status"], item["reason_code"]) == (
+            "BUDGET_EXCEEDED",
+            "LANE_TIMEOUT",
+        )
+        # payload-free, and specifically NOT the real attested result the
+        # first loader actually computed -- it must be discarded, not kept.
+        assert "producer" not in item and "attested_commit" not in item
     assert not sentinel_file.exists(), "the lane command must never have run"

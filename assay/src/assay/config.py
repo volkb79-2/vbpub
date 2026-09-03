@@ -73,6 +73,7 @@ from .errors import LaneConfigError
 # the registry lived in `assay.mutation`.
 from .mutation_parsers import MUTATION_FORMAT_REGISTRY
 from .vocabulary import (
+    ADJUDICATED_EVIDENCE_KEYS,
     COVERAGE_PRODUCERS_BY_FORMAT,
     COVERAGE_PRODUCER_REQUIRED_FORMATS,
     MUTATION_OPERATORS,
@@ -110,13 +111,22 @@ __all__ = [
 #: P26/A-209-A-210. Duplicated verbatim from :mod:`assay.attestation` (which
 #: repeats it at its own public boundary) rather than imported: config.py and
 #: attestation.py stay independent readers of the same closed grammar, and
-#: neither trusts the other to have already validated it.
+#: neither trusts the other to have already validated it. B004/A-430 reuses
+#: the identical bounds for `judge.adjudication_dir` -- one grammar, shared by
+#: BOTH `judge.*_dir` fields within this module (see
+#: :func:`_validate_evidence_dir`), duplicated a third time only across the
+#: MODULE boundary into :mod:`assay.attestation`/:mod:`assay.adjudication`.
 MAX_ATTESTATION_DIR_BYTES = 4096
 MAX_ATTESTATION_DIR_COMPONENTS = 128
 MIN_EVIDENCE_DECLARATIONS = 1
 MAX_EVIDENCE_DECLARATIONS = 64
 _EVIDENCE_FIELDS: tuple[str, ...] = ("source", "key")
-_EVIDENCE_SOURCES: frozenset[str] = frozenset({"attested"})
+#: B004/A-430: widened from `{"attested"}` to include `"adjudicated"`.
+#: Exported PUBLICLY (no leading underscore) so `tests/
+#: test_docs_examples_and_vocabulary.py` (W7) can derive a documentation
+#: vocabulary from it, the same shape A-270 check 2 already uses for
+#: `SNAPSHOT_SELECTIONS`/`JUDGE_MODES`/`RIGOR_LEVELS`/`FORMAT_REGISTRY`.
+EVIDENCE_SOURCES: frozenset[str] = frozenset({"attested", "adjudicated"})
 _EVIDENCE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _ATTESTATION_DIR_CONTROL: frozenset[str] = frozenset(
     chr(c) for c in range(0x20)
@@ -142,7 +152,25 @@ LANE_SCHEMA_VERSION = 2
 
 #: A-053. TESTING-METHODOLOGY §Axis 1 / §Axis 2, and §12's table.
 SCOPES: frozenset[str] = frozenset({"S0", "S1", "S2", "S3", "S4"})
-RIGOR_LEVELS: tuple[str, ...] = ("R0", "R1", "R2", "R3")
+#: (F015/M7, A-433 under DA-R16, schema v10) ``"R4"`` — red-first
+#: (fail-before/pass-after) — is the next rung of the ORDERED ladder, not a
+#: new keying model: claims are keyed by ``rigor``, this tuple is what
+#: canonicalises a lane's declaration (an R0-led ordered SUBSEQUENCE, so
+#: ``["R0","R4"]`` is legal and declaration stays non-contiguous), and
+#: ``_replace_highest_higher_rigor_claim_with_git_failed`` replaces the
+#: highest declared higher-rigor claim. Red-first asserts a strictly more
+#: specific property than R3's canary and needs TWO materialisations, so it
+#: genuinely is the claim most dependent on cleanup.
+#:
+#: **The PRODUCER lands in phase 3.** Until it does, a lane that declares
+#: ``"R4"`` is refused at load with a clean ``LaneConfigError`` rather than
+#: accepted into a silence: :data:`JUDGE_FIELDS_BY_RIGOR` requires
+#: ``red_first``, which is not yet a member of :data:`_KNOWN_JUDGE_FIELDS`,
+#: so the declaration cannot be satisfied in either direction. That is
+#: deliberate and is the only shape AGENTS.md §4.2a permits for a level whose
+#: judge does not exist yet — an accepted-but-inert rigor level would render
+#: no claim and trip A-024's coverage rule as an unhandled ValueError.
+RIGOR_LEVELS: tuple[str, ...] = ("R0", "R1", "R2", "R3", "R4")
 ENFORCEMENTS: frozenset[str] = frozenset({"gate", "advisory"})
 
 #: The eight fields every lane declares at its top level, whatever its rigor.
@@ -238,6 +266,13 @@ JUDGE_FIELDS_BY_RIGOR: Mapping[str, tuple[str, ...]] = MappingProxyType(
         ),
         "R2": ("language", "source_roots", "mutation", "base"),
         "R3": ("language", "source_roots", "canary"),
+        # F015/A-433: the declaration red-first needs. `red_first` is NOT yet
+        # in `_KNOWN_JUDGE_FIELDS` (phase 3 adds it with its producer), so an
+        # R4 lane is refused at load in both directions -- omit it and the
+        # required field is missing, supply it and the field is unknown. A
+        # clean `LaneConfigError` either way, which is what a level whose
+        # judge does not exist yet must give (AGENTS.md §4.2a).
+        "R4": ("red_first",),
     }
 )
 
@@ -522,16 +557,14 @@ class MutationConfig:
         return payload
 
 
-_CANARY_FIELDS: tuple[str, ...] = ("mechanism", "target")
+_CANARY_FIELDS: tuple[str, ...] = ("mechanism", "target", "targets", "aggregation")
 
 
 @dataclass(frozen=True)
 class CanaryConfig:
-    """``[lanes.X.judge.canary]`` (P19) -- the closed R3 declaration: which
-    :mod:`assay.canary` mechanism to attempt, and which single source file to
-    attempt it against. Exactly two fields, never a plural list (P19 work
-    item 2: one R3 claim is one mechanism execution, never several results
-    collapsed into schema v3's single canary payload).
+    """``[lanes.X.judge.canary]`` (P19, B007/A-432) -- the closed R3
+    declaration: which :mod:`assay.canary` mechanism to attempt, and which
+    source file(s) to attempt it against.
 
     Before P19 this table was opaque and unvalidated (A-106: P09 built the
     mechanism, not the config reader for it); this loader is the first
@@ -540,23 +573,88 @@ class CanaryConfig:
     already uses, and the one :func:`~assay.canary.run_python_canary` already
     expects (A-145: repo-relative and project-relative are two spellings of
     the same file, and this loader speaks the project-relative one).
+
+    **B007/A-432 adds the PLURAL spelling, additively:
+    ``LANE_SCHEMA_VERSION`` stays 2.** ``targets`` is an ORDERED list of the
+    same project-relative spelling, 1..:data:`~assay.verdict.
+    MAX_CANARY_TARGETS`, duplicates refused; ``aggregation`` is the CLOSED
+    ``"any"``/``"all"`` policy over it. **Exactly one of ``target`` /
+    ``targets`` is declared**, never both and never neither, so every
+    existing single-target R3 lane keeps loading BYTE-unchanged;
+    ``aggregation`` is REQUIRED with ``targets`` and FORBIDDEN with
+    ``target`` -- with one declared target ``any`` and ``all`` denote the
+    same function, and writing one anyway would record a policy the lane
+    never stated (DESIGN-GUIDE §5).
+
+    :meth:`as_declared` reproduces exactly what was WRITTEN, so a
+    single-target lane's rendered declaration is byte-unchanged from v9;
+    :attr:`declared_targets` is the one place the two spellings become the
+    single ordered list every producer downstream consumes.
     """
 
     mechanism: str
-    target: str
+    target: str | None = None
+    #: (B007/A-432) the ordered plural spelling, or ``None`` when the lane
+    #: declared the singular one. Never both.
+    targets: tuple[str, ...] | None = None
+    #: (B007/A-432) ``"any"`` or ``"all"``, present iff :attr:`targets` is.
+    aggregation: str | None = None
+
+    def __post_init__(self) -> None:
+        # A structural invariant, not a config diagnostic: the LOADER states
+        # the message a lane author reads. This is the guard that keeps a
+        # hand-built `CanaryConfig` (every test that builds one, and every
+        # future caller) from constructing the shape the loader refuses.
+        if (self.target is None) == (self.targets is None):
+            raise ValueError(
+                f"CanaryConfig declares exactly one of target/targets, got "
+                f"target={self.target!r}, targets={self.targets!r}"
+            )
+        if self.targets is not None and not self.targets:
+            raise ValueError("CanaryConfig's targets list is empty")
+        if (len(self.declared_targets) > 1) != (self.aggregation is not None):
+            raise ValueError(
+                f"CanaryConfig's aggregation is present iff more than one "
+                f"target is declared, got targets={self.declared_targets!r}, "
+                f"aggregation={self.aggregation!r}"
+            )
+
+    @property
+    def declared_targets(self) -> tuple[str, ...]:
+        """The ORDERED target list either spelling denotes (B007/A-432).
+
+        The singular declaration normalises to a one-element list -- a
+        spelling normalisation of the kind ``wire_path`` already performs,
+        not a value assay chose -- so no producer downstream ever branches
+        on which spelling the lane used.
+        """
+        if self.targets is not None:
+            return self.targets
+        assert self.target is not None  # __post_init__'s own invariant
+        return (self.target,)
 
     def as_declared(self) -> dict[str, Any]:
-        return {"mechanism": self.mechanism, "target": self.target}
+        payload: dict[str, Any] = {"mechanism": self.mechanism}
+        if self.target is not None:
+            payload["target"] = self.target
+        else:
+            payload["targets"] = list(self.targets or ())
+            payload["aggregation"] = self.aggregation
+        return payload
 
 
 @dataclass(frozen=True)
 class EvidenceConfig:
-    """``judge.evidence[]`` (P26/A-209) -- one declared Tier-3 identity.
+    """``judge.evidence[]`` (P26/A-209, widened B004/A-430) -- one declared
+    Tier-3 (``"attested"``) or Tier-2 (``"adjudicated"``) identity.
 
-    Exactly ``source``/``key``; ``source`` is closed to ``"attested"`` (the
-    adjudicated sibling has no loader, A-085). Reproduces the parsed TOML
-    entry exactly via :meth:`as_declared`, the same mechanical no-invented-
-    default proof :meth:`Lane.as_declared` already gives the rest of the file.
+    Exactly ``source``/``key``; ``source`` is one of :data:`EVIDENCE_SOURCES`.
+    Up to v9 the only declarable value was ``"attested"`` (the adjudicated
+    sibling had no loader, A-085) -- B004 gives it one
+    (:func:`assay.adjudication.load_adjudicated_evidence`). Reproduces the
+    parsed TOML entry exactly via :meth:`as_declared`, the same mechanical
+    no-invented-default proof :meth:`Lane.as_declared` already gives the rest
+    of the file.
     """
 
     source: str
@@ -595,11 +693,17 @@ class JudgeConfig:
     #: check_base_is_head`), never guessed here. Required, never defaulted
     #: to "main" or another assumed ref (A-018's own "no invented values").
     base: str | None
-    #: (P26/A-209) Tier-3 evidence's HOW pair -- both ``None`` or both
-    #: present, on ANY canonical R0-led rigor sequence including R0-only.
-    #: Separate from computed rigor (§3): declaring these two never satisfies
-    #: nor requires a computed ``judge`` field.
+    #: (P26/A-209, widened B004/A-430 to a PER-SOURCE rule) Tier-3
+    #: ``attestation_dir`` is present iff `evidence` declares at least one
+    #: `source="attested"` entry; Tier-2 `adjudication_dir` is present iff it
+    #: declares at least one `source="adjudicated"` entry. A lane may declare
+    #: both dirs, one, or neither. Separate from computed rigor (§3):
+    #: declaring these never satisfies nor requires a computed ``judge``
+    #: field.
     attestation_dir: str | None = None
+    #: (B004/A-430) Tier-2's directory, the `adjudication_dir` half of the
+    #: pair above.
+    adjudication_dir: str | None = None
     evidence: tuple[EvidenceConfig, ...] | None = None
     #: (wave-1 §5, A-260) the declared R1 mode, verbatim -- `None` when the
     #: file omits `judge.mode`, which means `"changed_lines"`. Never
@@ -649,6 +753,8 @@ class JudgeConfig:
             declared["require_branch"] = self.require_branch
         if self.attestation_dir is not None:
             declared["attestation_dir"] = self.attestation_dir
+        if self.adjudication_dir is not None:
+            declared["adjudication_dir"] = self.adjudication_dir
         if self.evidence is not None:
             declared["evidence"] = [item.as_declared() for item in self.evidence]
         return declared
@@ -1249,20 +1355,28 @@ def _load_lane(
     # actually enforced and would produce an accidental CANARY_SURVIVED
     # that looks like a real finding, so it is refused at load unless the
     # canary target is itself one of `targets`.
+    #
+    # B007/A-432 generalises it to EVERY declared canary target, naming the
+    # offending one: the argument is per-probe, and a multi-target lane whose
+    # third probe sits outside the judged targets manufactures exactly the
+    # same accidental CANARY_SURVIVED as a single-target one would.
     if (
         judge is not None
         and judge.canary is not None
         and judge.canary.mechanism == "uncovered-line"
         and judge.mode == "whole_target"
-        and judge.canary.target not in (judge.targets or ())
     ):
-        raise LaneConfigError(
-            f"{where}: judge.canary.target {judge.canary.target!r} is not "
-            f"one of judge.targets {list(judge.targets or ())} under "
-            f"mode = 'whole_target'; outside the declared targets the "
-            f"uncovered-line canary proves nothing about the whole-target "
-            f"floor"
-        )
+        for canary_target in judge.canary.declared_targets:
+            if canary_target in (judge.targets or ()):
+                continue
+            field = "target" if judge.canary.target is not None else "targets"
+            raise LaneConfigError(
+                f"{where}: judge.canary.{field} names {canary_target!r}, "
+                f"which is not one of judge.targets "
+                f"{list(judge.targets or ())} under mode = 'whole_target'; "
+                f"outside the declared targets the uncovered-line canary "
+                f"proves nothing about the whole-target floor"
+            )
 
     where_table = table.get("where")
     if where_table is not None and not isinstance(where_table, dict):
@@ -1594,11 +1708,15 @@ def _load_judge(
             f"{where}: 'judge' must be a table, got {_type_name(table)}"
         )
 
-    unknown = sorted(set(table) - set(_KNOWN_JUDGE_FIELDS) - {"attestation_dir", "evidence"})
+    unknown = sorted(
+        set(table)
+        - set(_KNOWN_JUDGE_FIELDS)
+        - {"attestation_dir", "adjudication_dir", "evidence"}
+    )
     if unknown:
         raise LaneConfigError(
             f"{where}: unknown judge key(s): {', '.join(unknown)}; expected only: "
-            f"{', '.join((*_KNOWN_JUDGE_FIELDS, 'attestation_dir', 'evidence'))}"
+            f"{', '.join((*_KNOWN_JUDGE_FIELDS, 'attestation_dir', 'adjudication_dir', 'evidence'))}"
         )
 
     # wave-1 §5, A-260: `mode`/`targets` and §4/A-259's `require_branch` are
@@ -1735,15 +1853,41 @@ def _load_judge(
                 f"field 'judge.{field}'{hint}"
             )
 
-    # P26/A-209: Tier-3 evidence's HOW pair is a separate axis from computed
-    # rigor -- both present or both absent, on ANY rigor sequence including
-    # R0-only, and never itself counted toward `required`/`surplus` below.
+    # P26/A-209, widened B004/A-430 to a PER-SOURCE rule. Up to v9 the only
+    # declarable `judge.evidence[].source` was `"attested"`, so
+    # `has_attestation_dir == has_evidence` and "both present or both absent"
+    # said the same thing. Now that `"adjudicated"` is also declarable, the
+    # HOW pair is separate per source: `judge.attestation_dir` present iff
+    # `judge.evidence` declares at least one `source = "attested"` entry;
+    # `judge.adjudication_dir` present iff it declares at least one
+    # `source = "adjudicated"` entry. A lane may declare both dirs, one, or
+    # neither -- never counted toward `required`/`surplus` below, and every
+    # lane file that loaded under the OLD rule loads byte-identically under
+    # this one (an all-attested `judge.evidence` satisfies both new checks
+    # exactly as it satisfied the old single check).
+    #
+    # `evidence_items` is parsed HERE, once, rather than only at the
+    # assignment point below, so this rule can inspect actual declared
+    # sources rather than merely the array's presence; the assignment point
+    # below reuses this same parse instead of a second one.
+    evidence_items = (
+        _load_evidence(table["evidence"], where) if "evidence" in table else ()
+    )
     has_attestation_dir = "attestation_dir" in table
-    has_evidence = "evidence" in table
-    if has_attestation_dir != has_evidence:
+    has_adjudication_dir = "adjudication_dir" in table
+    has_attested_entry = any(item.source == "attested" for item in evidence_items)
+    has_adjudicated_entry = any(item.source == "adjudicated" for item in evidence_items)
+    if has_attestation_dir != has_attested_entry:
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' and 'judge.evidence' must "
-            f"both be present or both be absent"
+            f"{where}: 'judge.attestation_dir' must be present if, and only "
+            f"if, 'judge.evidence' declares at least one source='attested' "
+            f"entry"
+        )
+    if has_adjudication_dir != has_adjudicated_entry:
+        raise LaneConfigError(
+            f"{where}: 'judge.adjudication_dir' must be present if, and only "
+            f"if, 'judge.evidence' declares at least one source='adjudicated' "
+            f"entry"
         )
 
     # A-062 (controller ruling, overriding this package's first reading).
@@ -1772,7 +1916,14 @@ def _load_judge(
         # their reason exactly -- it is optional in every rigor that reads it,
         # so it can never be a member of `required`, and its own placement
         # rules are enforced by name above rather than by this message.
-        - {"attestation_dir", "evidence", "mode", "require_branch", "base_source"}
+        - {
+            "attestation_dir",
+            "adjudication_dir",
+            "evidence",
+            "mode",
+            "require_branch",
+            "base_source",
+        }
     )
     if surplus:
         raise LaneConfigError(
@@ -1845,10 +1996,20 @@ def _load_judge(
         targets = _load_targets(table["targets"], where)
 
     attestation_dir = None
-    evidence = None
     if has_attestation_dir:
-        attestation_dir = _validate_attestation_dir(table["attestation_dir"], where)
-        evidence = _load_evidence(table["evidence"], where)
+        attestation_dir = _validate_evidence_dir(
+            table["attestation_dir"], where, "attestation_dir"
+        )
+    adjudication_dir = None
+    if has_adjudication_dir:
+        adjudication_dir = _validate_evidence_dir(
+            table["adjudication_dir"], where, "adjudication_dir"
+        )
+    # `evidence_items` was already parsed above (per-source pairing rule);
+    # reused here rather than parsed a second time. Non-empty iff the lane
+    # declared `judge.evidence` at all (`_load_evidence` refuses an empty
+    # array), so this matches the old `evidence = None` default exactly.
+    evidence = evidence_items if evidence_items else None
 
     return JudgeConfig(
         language=language,
@@ -1865,46 +2026,56 @@ def _load_judge(
         targets=targets,
         require_branch=require_branch,
         attestation_dir=attestation_dir,
+        adjudication_dir=adjudication_dir,
         evidence=evidence,
     )
 
 
-def _validate_attestation_dir(value: Any, where: str) -> str:
-    """The closed ``judge.attestation_dir`` grammar (P26/A-210): canonical,
+def _validate_evidence_dir(value: Any, where: str, field_name: str) -> str:
+    """The closed ``judge.attestation_dir``/``judge.adjudication_dir`` grammar
+    (P26/A-210; B004/A-430 generalises it to a second field over the SAME
+    grammar rather than a second copy WITHIN this module): canonical,
     nonempty, project-relative POSIX spelling, 1..4,096 UTF-8 bytes and at
     most 128 nonempty components; not absolute; no ``.``/``..``/repeated
     slash/trailing slash/NUL/control character (U+0000..U+001F, U+007F).
     Existence is not required at load time -- runtime descriptor traversal
     owns absence and symlink/type facts (:func:`assay.safeio.read_bounded_input`).
+
+    *field_name* is ``"attestation_dir"`` or ``"adjudication_dir"``, used only
+    to name the offending field in every message -- this module and
+    :mod:`assay.attestation`/:mod:`assay.adjudication` stay independent
+    readers of the same grammar (see the constants' own comment above), so
+    this is NOT shared across that module boundary, only within this one.
     """
+    label = f"judge.{field_name}"
     if not isinstance(value, str) or not value:
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' must be a non-empty string, "
+            f"{where}: '{label}' must be a non-empty string, "
             f"got {_type_name(value)}"
         )
     try:
         encoded = value.encode("utf-8")
     except UnicodeEncodeError as exc:
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' {value!r} cannot be encoded as "
+            f"{where}: '{label}' {value!r} cannot be encoded as "
             f"UTF-8: {exc}"
         ) from exc
     if not (1 <= len(encoded) <= MAX_ATTESTATION_DIR_BYTES):
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' must be 1..{MAX_ATTESTATION_DIR_BYTES} "
+            f"{where}: '{label}' must be 1..{MAX_ATTESTATION_DIR_BYTES} "
             f"UTF-8 bytes, got {len(encoded)}"
         )
     if value.startswith("/"):
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' {value!r} must not be absolute"
+            f"{where}: '{label}' {value!r} must not be absolute"
         )
     if any(ch in _ATTESTATION_DIR_CONTROL for ch in value):
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' {value!r} contains a control character"
+            f"{where}: '{label}' {value!r} contains a control character"
         )
     if PurePosixPath(value).as_posix() != value:
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' {value!r} is not canonical POSIX "
+            f"{where}: '{label}' {value!r} is not canonical POSIX "
             f"spelling (no repeated slash, trailing slash, or '.' component)"
         )
     parts = value.split("/")
@@ -1916,21 +2087,29 @@ def _validate_attestation_dir(value: Any, where: str) -> str:
         # root. ".assay/attestations" is unaffected: a leading-dot FILENAME is
         # not a "." component.
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' {value!r} contains a "
+            f"{where}: '{label}' {value!r} contains a "
             f"'.' or '..' component"
         )
     if len(parts) > MAX_ATTESTATION_DIR_COMPONENTS:
         raise LaneConfigError(
-            f"{where}: 'judge.attestation_dir' {value!r} has more than "
+            f"{where}: '{label}' {value!r} has more than "
             f"{MAX_ATTESTATION_DIR_COMPONENTS} components"
         )
     return value
 
 
 def _load_evidence(value: Any, where: str) -> tuple[EvidenceConfig, ...]:
-    """The closed ``judge.evidence`` grammar (P26/A-209): 1..64 entries,
-    input order preserved, exactly the inline keys ``source``/``key``, only
-    ``source="attested"`` supported, and no duplicate ``(source, key)``.
+    """The closed ``judge.evidence`` grammar (P26/A-209, widened B004/A-430):
+    1..64 entries, input order preserved, exactly the inline keys
+    ``source``/``key``, ``source`` one of :data:`EVIDENCE_SOURCES`
+    (``"attested"`` or ``"adjudicated"``), and no duplicate ``(source, key)``.
+    An ``"adjudicated"`` entry's ``key`` is additionally checked against
+    :data:`assay.vocabulary.ADJUDICATED_EVIDENCE_KEYS` -- the closed set of
+    REGISTERED adjudicators (:data:`assay.adjudication.ADJUDICATORS`) --
+    because unlike an attested key (free-form; absence of the file it names
+    is a runtime ``MISSING_ATTESTATION``, not a load-time error), an
+    adjudicated key selects which PARSER runs, and an unregistered one can
+    never be dispatched.
     """
     if not isinstance(value, list):
         raise LaneConfigError(
@@ -1962,16 +2141,22 @@ def _load_evidence(value: Any, where: str) -> tuple[EvidenceConfig, ...]:
                     f"{where}: missing required field 'judge.evidence[{index}].{field}'"
                 )
         source = _as_str(entry["source"], where, f"judge.evidence[{index}].source")
-        if source not in _EVIDENCE_SOURCES:
+        if source not in EVIDENCE_SOURCES:
             raise LaneConfigError(
                 f"{where}: 'judge.evidence[{index}].source' must be one of "
-                f"{sorted(_EVIDENCE_SOURCES)}, got {source!r}"
+                f"{sorted(EVIDENCE_SOURCES)}, got {source!r}"
             )
         key = _as_str(entry["key"], where, f"judge.evidence[{index}].key")
         if not _EVIDENCE_KEY_RE.fullmatch(key):
             raise LaneConfigError(
                 f"{where}: 'judge.evidence[{index}].key' {key!r} does not match "
                 f"the closed grammar {_EVIDENCE_KEY_RE.pattern!r}"
+            )
+        if source == "adjudicated" and key not in ADJUDICATED_EVIDENCE_KEYS:
+            raise LaneConfigError(
+                f"{where}: 'judge.evidence[{index}].key' {key!r} is not a "
+                f"registered adjudicator; expected one of "
+                f"{sorted(ADJUDICATED_EVIDENCE_KEYS)}"
             )
         identity = (source, key)
         if identity in seen:
@@ -2480,38 +2665,18 @@ def _load_ingested_mutation(
             f"{where}: 'judge.mutation.fail_under' must be in 0.0..100.0, got "
             f"{fail_under}"
         )
-    if fail_under != 100.0:
-        # (A-380/B050) The one place this build cannot yet do what B046's
-        # contract describes, refused LOUDLY rather than half-implemented.
-        #
-        # A mutation-score floor below 100 means "some survivors are
-        # acceptable" -- and the v9 verdict has NO judgment.r2 field that can
-        # record which floor was applied. A lane judging at 90 would therefore
-        # emit a PASS beside recorded survivors with nothing in the document
-        # explaining it, and that breaks the single property judgment.r2
-        # exists to protect: that an independent consumer can re-derive the R2
-        # claim's STATUS from the payload's own buckets, with no external
-        # policy input. `verify.py`'s own re-derivation would (correctly) call
-        # such a document inconsistent.
-        #
-        # Accepting the key and silently ignoring it would be worse than
-        # either alternative -- inert config that cannot fail loudly when it
-        # is wrong (AGENTS.md 4.2a) -- and dropping the key would leave the
-        # documented worked lane unloadable. So: declarable, honoured at
-        # exactly its one currently-expressible value, and the message names
-        # the field a later schema cut needs.
-        raise LaneConfigError(
-            f"{where}: 'judge.mutation.fail_under' is {fail_under}, but this "
-            f"build can only honour 100.0 on an ingested lane. A lower floor "
-            f"means some surviving mutants are acceptable, and verdict schema "
-            f"v9 has no judgment.r2 field that records WHICH floor was "
-            f"applied -- so the verdict would report PASS beside recorded "
-            f"survivors with nothing in it to explain that, and an "
-            f"independent consumer re-deriving the R2 status from the payload "
-            f"(which is exactly what `assay verify` does) would call the "
-            f"document inconsistent. Declare 100.0, or track B050 for the "
-            f"wire field a lower floor needs"
-        )
+    # (B050/A-427, schema v10) The range check above is the WHOLE check now.
+    # Up to v9 a second refusal stood here rejecting every value but `100.0`,
+    # because the v9 verdict had no `judgment.r2` field that could record
+    # WHICH floor was applied: a lane judging at 90 would have emitted a PASS
+    # beside recorded survivors with nothing in the document explaining it,
+    # and `assay verify`'s own re-derivation would have (correctly) called
+    # that document inconsistent. v10 records the floor -- REQUIRED under
+    # `producer = "ingested"`, FORBIDDEN under `"native"` -- so the floor is
+    # honoured by `mutation.judge_mutation` and read back from the artifact
+    # by `verify._check_r2_rederivation`. The refusal's own message named
+    # B050 as the wire field a lower floor needs; that field exists, so the
+    # refusal is gone rather than relaxed.
     kill_signal_artifact: str | None = None
     if "kill_signal_artifact" in value:
         # Reachable only on a sql lane -- the reserved-key check above already
@@ -2550,11 +2715,18 @@ def _load_canary(
     project_root: Path,
     source_root_paths: tuple[Path, ...] | None,
 ) -> CanaryConfig:
-    """``judge.canary`` (P19): a closed table, exactly ``mechanism`` and
-    ``target`` -- never a plural list (work item 2: one R3 claim is one
-    mechanism execution).
+    """``judge.canary`` (P19, B007/A-432): a closed table -- ``mechanism``,
+    and then EXACTLY ONE of the singular ``target`` or the plural ordered
+    ``targets`` (with its required ``aggregation`` once it names more than
+    one probe).
 
-    ``target`` must be a normalized, project-relative path to a REAL,
+    P19 admitted only the singular spelling, on the ground that one R3 claim
+    is one mechanism execution. B007/A-432 keeps that per PROBE and lifts
+    the claim to an ORDERED, bounded ARRAY of them -- so the plural form is
+    an addition, never a replacement, and a lane that declared ``target``
+    loads byte-unchanged.
+
+    Each target must be a normalized, project-relative path to a REAL,
     ordinary source file contained beneath one of the lane's own declared
     ``source_roots`` -- the identical containment discipline
     :func:`_resolve_source_root` already applies to a source root itself,
@@ -2585,12 +2757,29 @@ def _load_canary(
             f"{where}: unknown judge.canary key(s): {', '.join(unknown)}; "
             f"expected only: {', '.join(_CANARY_FIELDS)}"
         )
-    for field in _CANARY_FIELDS:
-        if field not in value:
-            raise LaneConfigError(
-                f"{where}: missing required field 'judge.canary.{field}'"
-            )
-
+    if "mechanism" not in value:
+        raise LaneConfigError(
+            f"{where}: missing required field 'judge.canary.mechanism'"
+        )
+    # B007/A-432: exactly one of the two spellings, never both and never
+    # neither. Stated as its own pair of diagnostics rather than folded into
+    # the required-field loop above, because "you declared both" and "you
+    # declared neither" are two different mistakes and a lane author fixes
+    # them differently.
+    singular = "target" in value
+    plural = "targets" in value
+    if singular and plural:
+        raise LaneConfigError(
+            f"{where}: 'judge.canary' declares BOTH 'target' and 'targets'; "
+            f"declare exactly one -- the singular spelling is the one-probe "
+            f"form of the plural one, and two spellings of one list is how "
+            f"they disagree"
+        )
+    if not singular and not plural:
+        raise LaneConfigError(
+            f"{where}: 'judge.canary' declares neither 'target' nor "
+            f"'targets'; a canary must name the source file(s) it transforms"
+        )
     mechanism = _as_str(value["mechanism"], where, "judge.canary.mechanism")
     # Deferred, not module-level -- the identical reasoning `_load_mutation`
     # already gives for `assay.mutation.MUTATION_OPERATORS`, one field over:
@@ -2605,13 +2794,122 @@ def _load_canary(
             f"{sorted(CANARY_MECHANISMS)}"
         )
 
-    target = _as_str(value["target"], where, "judge.canary.target")
+    # B007/A-432: ONE per-target rule, applied to whichever spelling the lane
+    # used. Every diagnostic names the field the author actually wrote, so
+    # the plural form does not inherit a message about a key it never
+    # declared.
+    if singular:
+        declared = [
+            _load_canary_target(
+                value["target"],
+                where=where,
+                field="judge.canary.target",
+                project_root=project_root,
+                source_root_paths=source_root_paths,
+            )
+        ]
+    else:
+        raw_targets = value["targets"]
+        if not isinstance(raw_targets, list):
+            raise LaneConfigError(
+                f"{where}: 'judge.canary.targets' must be an array, got "
+                f"{_type_name(raw_targets)}"
+            )
+        # Deferred for the same cycle reason as `CANARY_MECHANISMS` above
+        # (`assay.verdict` imports THIS module at its own module level), and
+        # imported rather than restated so the measured bound and the closed
+        # aggregation vocabulary each keep exactly ONE owner.
+        from .verdict import MAX_CANARY_TARGETS, MIN_CANARY_TARGETS
+
+        if not MIN_CANARY_TARGETS <= len(raw_targets) <= MAX_CANARY_TARGETS:
+            raise LaneConfigError(
+                f"{where}: 'judge.canary.targets' declares "
+                f"{len(raw_targets)} target(s); a canary declares between "
+                f"{MIN_CANARY_TARGETS} and {MAX_CANARY_TARGETS} (A-432: the "
+                f"bound is the measured materialisation cost, not taste)"
+            )
+        declared = [
+            _load_canary_target(
+                item,
+                where=where,
+                field=f"judge.canary.targets[{index}]",
+                project_root=project_root,
+                source_root_paths=source_root_paths,
+            )
+            for index, item in enumerate(raw_targets)
+        ]
+        duplicates = sorted({t for t in declared if declared.count(t) > 1})
+        if duplicates:
+            raise LaneConfigError(
+                f"{where}: 'judge.canary.targets' declares {duplicates} more "
+                f"than once; a repeated probe is the same probe"
+            )
+
+    # `aggregation` is required IFF the lane declares more than one probe:
+    # with one, `any` and `all` denote the same function, so recording one
+    # would record a policy the lane never stated (A-432), and
+    # `JudgmentR3.__post_init__` states the identical rule on the wire.
+    aggregation_declared = "aggregation" in value
+    if len(declared) > 1 and not aggregation_declared:
+        raise LaneConfigError(
+            f"{where}: 'judge.canary' declares {len(declared)} targets but "
+            f"no 'aggregation'; with more than one probe the claim's status "
+            f"is not defined without one, and assay does not invent a policy "
+            f"the lane never stated"
+        )
+    if len(declared) == 1 and aggregation_declared:
+        raise LaneConfigError(
+            f"{where}: 'judge.canary.aggregation' is declared beside a "
+            f"single target; with one declared probe 'any' and 'all' denote "
+            f"the same function, so recording one would record a policy this "
+            f"lane never stated"
+        )
+    aggregation = None
+    if aggregation_declared:
+        from .verdict import CANARY_AGGREGATIONS
+
+        aggregation = _as_str(
+            value["aggregation"], where, "judge.canary.aggregation"
+        )
+        if aggregation not in CANARY_AGGREGATIONS:
+            raise LaneConfigError(
+                f"{where}: 'judge.canary.aggregation' {aggregation!r} is not "
+                f"one of {list(CANARY_AGGREGATIONS)}"
+            )
+
+    if singular:
+        return CanaryConfig(mechanism=mechanism, target=declared[0])
+    return CanaryConfig(
+        mechanism=mechanism,
+        targets=tuple(declared),
+        aggregation=aggregation,
+    )
+
+
+def _load_canary_target(
+    raw: Any,
+    *,
+    where: str,
+    field: str,
+    project_root: Path,
+    source_root_paths: tuple[Path, ...] | None,
+) -> str:
+    """ONE declared canary target, validated and normalized (P19/P21/A-152,
+    generalised to the plural spelling by B007/A-432).
+
+    *field* is the key the lane author actually wrote -- ``judge.canary.target``
+    or ``judge.canary.targets[i]`` -- so every diagnostic below points at
+    the declaration it came from rather than at a spelling the lane never
+    used. The rules themselves are byte-unchanged from P19's single-target
+    loader.
+    """
+    target = _as_str(raw, where, field)
     if not target:
-        raise LaneConfigError(f"{where}: 'judge.canary.target' is empty")
+        raise LaneConfigError(f"{where}: '{field}' is empty")
     candidate = Path(target)
     if candidate.is_absolute():
         raise LaneConfigError(
-            f"{where}: 'judge.canary.target' {target!r} is absolute; it is "
+            f"{where}: '{field}' {target!r} is absolute; it is "
             f"relative to the project root, the same as source_roots"
         )
     raw_path = project_root / candidate
@@ -2621,14 +2919,14 @@ def _load_canary(
         # non-existent path, unlike a naive existence check that follows
         # the link first.
         raise LaneConfigError(
-            f"{where}: 'judge.canary.target' {target!r} is a symlink; a "
+            f"{where}: '{field}' {target!r} is a symlink; a "
             f"canary target must be a real, ordinary source file"
         )
     resolved = raw_path.resolve()
     roots = source_root_paths or ()
     if not any(resolved.is_relative_to(root) for root in roots):
         raise LaneConfigError(
-            f"{where}: 'judge.canary.target' {target!r} resolves to "
+            f"{where}: '{field}' {target!r} resolves to "
             f"{resolved}, which is not contained beneath any declared "
             f"source root {[str(root) for root in roots]} (via '..' or a "
             f"symlink) -- a canary target must live beneath a declared "
@@ -2636,31 +2934,31 @@ def _load_canary(
         )
     if not resolved.is_file():
         raise LaneConfigError(
-            f"{where}: 'judge.canary.target' {target!r} does not exist as "
+            f"{where}: '{field}' {target!r} does not exist as "
             f"a file under the project root {project_root} (looked for "
             f"{resolved})"
         )
     # P21/A-152: the declared spelling becomes the NORMALIZED wire spelling
-    # here, at the one boundary that reads it, so `CanaryResult.target` and
-    # `judgment.r3.target` are equal as STRINGS rather than merely as
+    # here, at the one boundary that reads it, so `CanaryAttempt.target` and
+    # `judgment.r3.targets[]` are equal as STRINGS rather than merely as
     # filesystem paths. `./src/p.py` and `src/p.py` name one file; if both
     # spellings could reach the artifact, the equality check that finally
-    # makes `judgment.r3.target` witnessable could be satisfied -- or
+    # makes `judgment.r3.targets` witnessable could be satisfied -- or
     # broken -- by spelling alone. Normalizing at load also means the model
     # never receives a shape its wire grammar would refuse, so a legal lane
     # can never crash a producer.
     if "\\" in target:
         raise LaneConfigError(
-            f"{where}: 'judge.canary.target' {target!r} contains a backslash; "
+            f"{where}: '{field}' {target!r} contains a backslash; "
             f"declare it with forward slashes regardless of platform"
         )
     normalized = PurePosixPath(os.path.normpath(target)).as_posix()
     if normalized == "." or normalized.startswith("../"):
         raise LaneConfigError(
-            f"{where}: 'judge.canary.target' {target!r} does not normalize to "
+            f"{where}: '{field}' {target!r} does not normalize to "
             f"a path inside the project ({normalized!r})"
         )
-    return CanaryConfig(mechanism=mechanism, target=normalized)
+    return normalized
 
 
 def _resolve_source_root(raw: str, where: str, project_root: Path) -> Path:

@@ -71,6 +71,7 @@ from typing import Any, Sequence, TextIO
 
 from . import __version__
 from . import (
+    adjudication,
     attestation,
     diff,
     git,
@@ -94,6 +95,32 @@ from .vocabulary import MUTATION_OPERATORS, WITHDRAWN_MUTATION_OPERATORS
 from .verify import build_verify_parser, cmd_verify
 
 __all__ = ["build_parser", "main"]
+
+
+#: (B028/DA-R13, A-425) The bound on the ONE Git call assay makes *after* a
+#: lane's own budget has already expired: the commit label the
+#: ``LANE_TIMEOUT`` refusal verdict is written under
+#: (:func:`_run_reserved`).
+#:
+#: **Why a grace at all, rather than the spent deadline or no deadline.** The
+#: spent deadline cannot be reused -- it has, by construction, zero left, so
+#: passing it would mean no verdict is ever written for the very case
+#: ``--verdict-json`` was reserved for. No deadline at all is what A-420
+#: shipped, and DA-R13 ruled it out: an unbounded ``git rev-parse`` after the
+#: budget is gone contradicts the budget's single purpose -- assay never
+#: hangs -- because a repository on a stalled network mount would hang the
+#: refusal itself, the one code path whose whole job is to terminate.
+#:
+#: **Why two seconds.** This is a documented policy constant, not a
+#: measurement (DESIGN-GUIDE §5 forbids inventing the latter, not stating the
+#: former), and it is the same kind of decision as DA-D2's 2048-byte
+#: ``detail`` bound. On a healthy repository ``git rev-parse HEAD`` completes
+#: in milliseconds -- it reads one ref and exits -- so two seconds is three
+#: orders of magnitude of headroom for a label read: large enough that it can
+#: never be confused with "the lane's budget was too small", small enough
+#: that "git is unavailable" is answered promptly rather than waited out.
+#: Exceeding it is therefore evidence about Git, not about the lane.
+LABEL_GRACE_SECONDS = 2.0
 
 
 def _add_request_base_argument(subparser: argparse.ArgumentParser) -> None:
@@ -294,7 +321,10 @@ def main(
         else:  # pragma: no cover - argparse rejects unknown subcommands first
             raise AssertionError(f"unhandled command {args.command!r}")
     except AssayError as exc:
-        print(f"assay: {exc.outcome}/{exc.reason_code}: {exc}", file=err)
+        # (B053/A-409) The same one emitter every internal conversion site
+        # now calls -- this print is where its format came from, and keeping
+        # a second spelling of it here is exactly how the two would drift.
+        runner.announce_refusal(exc, diagnostics=err)
         return exc.exit_code
     return Outcome.PASS.exit_code
 
@@ -527,7 +557,12 @@ def _resolve_declared_adapters(lane: Lane) -> LanguageAdapter | None:
 
 
 def _cmd_run(
-    args: argparse.Namespace, appended: list[str], out: TextIO, err: TextIO
+    args: argparse.Namespace,
+    appended: list[str],
+    out: TextIO,
+    err: TextIO,
+    *,
+    label_grace_seconds: float = LABEL_GRACE_SECONDS,
 ) -> int:
     lane_file = _resolve_lane_file(args.file)
     lane: Lane = lane_file.lane(args.lane)
@@ -590,7 +625,16 @@ def _cmd_run(
     try:
         if (progress_arg := getattr(args, "progress", None)) is not None:
             validate_progress_destination(progress_arg)
-        return _run_reserved(args, lane, lane_file, appended, destination, out, err)
+        return _run_reserved(
+            args,
+            lane,
+            lane_file,
+            appended,
+            destination,
+            out,
+            err,
+            label_grace_seconds=label_grace_seconds,
+        )
     finally:
         if destination is not None:
             destination.close()
@@ -634,6 +678,8 @@ def _run_reserved(
     destination: "VerdictOutput | None",
     out: TextIO,
     err: TextIO,
+    *,
+    label_grace_seconds: float = LABEL_GRACE_SECONDS,
 ) -> int:
     # P26/A-212: one LaneDeadline, started here -- before HEAD is even
     # resolved -- reaches HEAD, attestation, adapter resolution, and the
@@ -674,34 +720,165 @@ def _run_reserved(
         lane_file.project_root / "ciu.global.toml" if lane.infrastructure else None
     )
     infrastructure_environment = os.environ if lane.infrastructure else None
-    commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
-
+    # Pure, and independent of every Git fact -- resolved BEFORE the first
+    # deadline-bounded call so the timeout refusal below can render the
+    # lane's declared evidence identities exactly as A-213's does.
     declared_evidence = _declared_evidence(lane)
-    # No declaration means no loader call. Otherwise attestation_dir exists
-    # by config invariant; the loader reads live project-contained input and
-    # compares exact committed Git objects before adapter/command work.
+    try:
+        commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
+    except AssayError as exc:
+        if exc.reason_code is not ReasonCode.LANE_TIMEOUT:
+            raise
+        # (B028/DA-R9, SF-1) The EARLIEST place the lane-wide deadline can
+        # expire, and the place R-1's `budget = "0.001s"` probe actually
+        # escaped from -- measured, with the stack captured in the REPORT:
+        # `cli.py` -> `git.head_rev` -> `git._run_bounded` ->
+        # `LaneDeadline.remaining`. That is UPSTREAM of `run_lane` entirely,
+        # so the handler around `run_lane` below cannot see it and the
+        # reserved `--verdict-json` was never written.
+        #
+        # **The one fact that is not yet known here is the commit label** --
+        # DA-R9's own contingency ("if `refuse_lane` needs a fact that is
+        # unavailable before `git.repo_top`, the verdict carries what is
+        # known and the REPORT records exactly which field"). It is READ,
+        # never fabricated: a commit label is an IDENTITY, not a
+        # measurement, `budget` bounds the lane's work rather than the
+        # artifact's production (the `write_verdict`/summary tail below
+        # already runs past the deadline on every timed-out lane), and an
+        # invented label would be the one thing this project must never
+        # emit.
+        #
+        # (A-425/DA-R13) The read is BOUNDED, by its own short grace rather
+        # than by the lane's spent deadline -- which has zero left by
+        # construction, so reusing it would mean no timed-out lane ever gets
+        # the verdict `--verdict-json` reserved. A-420 shipped this call
+        # unbounded and DA-R13 ruled that out: assay never hangs, and a
+        # stalled mount would otherwise hang the refusal path itself. The
+        # grace is expressed through the SAME `remaining=` shape every other
+        # Git call uses -- `LaneDeadline` constructed directly because its
+        # `start` classmethod rejects a non-positive budget, and the
+        # grace-expired test sets `label_grace_seconds = 0.0` through the
+        # parameter rather than stubbing anything.
+        #
+        # If the grace ALSO expires, no verdict is written and the one line
+        # the emitter prints says the LABEL could not be read within it --
+        # the operator's next move is to look at Git, not at `budget`. Any
+        # OTHER Git fault re-raises the ORIGINAL timeout unchanged: a Git
+        # fault must not be renamed, and a lane that cannot be labelled at
+        # all is exactly the case `main()`'s handler already owns.
+        grace = runner.LaneDeadline(
+            expires_at=time.monotonic() + label_grace_seconds,
+            monotonic=time.monotonic,
+        )
+        try:
+            commit = git.head_rev(lane_file.project_root, remaining=grace.remaining)
+        except AssayError as label_exc:
+            if label_exc.reason_code is ReasonCode.LANE_TIMEOUT:
+                raise AssayError(
+                    f"the lane-wide deadline expired, and the commit label "
+                    f"the refusal verdict must carry could not be read from "
+                    f"{lane_file.project_root} within the "
+                    f"{label_grace_seconds}s grace allowed for it "
+                    f"(assay.cli.LABEL_GRACE_SECONDS); no verdict was "
+                    f"written -- git, not the lane's budget, is what did not "
+                    f"answer",
+                    outcome=exc.outcome,
+                    reason_code=exc.reason_code,
+                ) from None
+            raise exc from None
+        # (B053/A-428, A-439) Announced BEFORE the artifact is built, not
+        # after, because the artifact now carries the announced sentence:
+        # `announce_refusal` returns the bounded copy and `refuse_lane` puts
+        # it on every declared level's claim. The observable order is
+        # unchanged -- `refuse_lane` writes nothing to any stream.
+        detail = runner.announce_refusal(exc, diagnostics=err)
+        verdict = runner.refuse_lane(
+            lane,
+            commit=commit,
+            status=exc.outcome,
+            reason_code=exc.reason_code,
+            detail=detail,
+            argv_append=appended,
+            infrastructure_source=infrastructure_source,
+            infrastructure_environment=infrastructure_environment,
+            assay_version=__version__,
+            judge_provenance=judge_provenance,
+            evidence=_timed_out_evidence(declared_evidence, exc),
+            declared_evidence=declared_evidence,
+        )
+        if destination is not None:
+            runner.write_verdict(verdict, destination)
+        if args.verdict_json != "-":
+            _print_run_summary(verdict, out)
+        return verdict.exit_code
+
+    # No declaration means no loader call. Otherwise each declared source's
+    # own directory exists by config invariant (B004/A-430's PER-SOURCE
+    # pairing rule -- up to v9 there was only one source, so one loader call
+    # sufficed; from v10 a lane may declare `attested`, `adjudicated`, or
+    # both). `attestation.load_attested_evidence` refuses any declaration
+    # whose source is not `"attested"` (A-085), and
+    # `adjudication.load_adjudicated_evidence` is its Tier-2 mirror image --
+    # neither loader handles the other's identities -- so a mixed lane needs
+    # ONE call to EACH loader, over its own subset, with the two result
+    # tuples merged back into the lane's full DECLARED order:
+    # `runner._require_evidence_bound_to_lane` requires the final `evidence`
+    # tuple to equal `declared_evidence`'s identities as an ORDERED LIST
+    # (list equality, not set membership), which an interleaved declaration
+    # like `[attested, adjudicated, attested]` would not get from simply
+    # concatenating the two loaders' own outputs.
+    attested_declared = tuple(
+        item for item in declared_evidence if item.source == "attested"
+    )
+    adjudicated_declared = tuple(
+        item for item in declared_evidence if item.source == "adjudicated"
+    )
     if declared_evidence:
         try:
-            evidence = attestation.load_attested_evidence(
-                lane_file.project_root,
-                head=commit,
-                declared=declared_evidence,
-                project_root=lane_file.project_root,
-                attestation_dir=lane.judge.attestation_dir,
-                remaining=deadline.remaining,
+            attested_evidence = (
+                attestation.load_attested_evidence(
+                    lane_file.project_root,
+                    head=commit,
+                    declared=attested_declared,
+                    project_root=lane_file.project_root,
+                    attestation_dir=lane.judge.attestation_dir,
+                    remaining=deadline.remaining,
+                )
+                if attested_declared
+                else ()
+            )
+            adjudicated_evidence = (
+                adjudication.load_adjudicated_evidence(
+                    lane_file.project_root,
+                    head=commit,
+                    declared=adjudicated_declared,
+                    adjudication_dir=lane.judge.adjudication_dir,
+                    remaining=deadline.remaining,
+                )
+                if adjudicated_declared
+                else ()
             )
         except AssayError as exc:
             if exc.reason_code is not ReasonCode.LANE_TIMEOUT:
                 raise
-            # A-213: the attestation deadline is atomic. No adapter or
-            # command ever launches; every declared rigor claim AND every
-            # declared evidence identity becomes the SAME payload-free
-            # BUDGET_EXCEEDED/LANE_TIMEOUT pair.
+            # A-213, generalised across TWO SEQUENTIAL loaders (B004): the
+            # evidence deadline is atomic regardless of WHICH loader's Git
+            # calls or file reads exhausted it -- whichever already ran
+            # (including a first loader's already-loaded results, silently
+            # discarded rather than partially reported) is superseded, and
+            # every declared identity from BOTH sources becomes the SAME
+            # payload-free BUDGET_EXCEEDED/LANE_TIMEOUT pair, in declared
+            # order (`_timed_out_evidence` is already source-agnostic: it
+            # copies `item.source` from the declaration, not from either
+            # loader's result).
+            # (B053/A-439) Same order, same reason, as the sibling above.
+            detail = runner.announce_refusal(exc, diagnostics=err)
             verdict = runner.refuse_lane(
                 lane,
                 commit=commit,
                 status=exc.outcome,
                 reason_code=exc.reason_code,
+                detail=detail,
                 argv_append=appended,
                 infrastructure_source=infrastructure_source,
                 infrastructure_environment=infrastructure_environment,
@@ -710,12 +887,22 @@ def _run_reserved(
                 evidence=_timed_out_evidence(declared_evidence, exc),
                 declared_evidence=declared_evidence,
             )
-            print(f"assay: {exc.outcome}/{exc.reason_code}: {exc}", file=err)
             if destination is not None:
                 runner.write_verdict(verdict, destination)
             if args.verdict_json != "-":
                 _print_run_summary(verdict, out)
             return verdict.exit_code
+        else:
+            # Merge back into the lane's own declared order -- see the
+            # comment above this block for why concatenation alone is not
+            # enough once a lane interleaves sources.
+            by_identity = {
+                item.identity: item
+                for item in (*attested_evidence, *adjudicated_evidence)
+            }
+            evidence = tuple(
+                by_identity[item.identity] for item in declared_evidence
+            )
     else:
         evidence = ()
 
@@ -730,11 +917,13 @@ def _run_reserved(
         #
         # P26/A-213: adapter refusal preserves already-resolved evidence --
         # it is never permission to erase it.
+        detail = runner.announce_refusal(exc, diagnostics=err)
         verdict = runner.refuse_lane(
             lane,
             commit=commit,
             status=exc.outcome,
             reason_code=exc.reason_code,
+            detail=detail,
             argv_append=appended,
             infrastructure_source=infrastructure_source,
             infrastructure_environment=infrastructure_environment,
@@ -743,43 +932,87 @@ def _run_reserved(
             evidence=evidence,
             declared_evidence=declared_evidence,
         )
-        print(f"assay: {exc.outcome}/{exc.reason_code}: {exc}", file=err)
     else:
-        verdict = runner.run_lane(
-            lane,
-            commit=commit,
-            repo=lane_file.project_root,
-            project_root=lane_file.project_root,
-            adapter=adapter,
-            assay_version=__version__,
-            judge_provenance=judge_provenance,
-            argv_append=appended,
-            evidence=evidence,
-            declared_evidence=declared_evidence,
-            deadline=deadline,
-            resume=getattr(args, "resume", False),
-            shard=getattr(args, "shard", None),
-            infrastructure_source=infrastructure_source,
-            infrastructure_environment=infrastructure_environment,
-            # B031/A-320: opt-in, consumer-named, absent by default. Resolved
-            # against the invoking CWD (like every other CLI path argument),
-            # never against the project root, and never derived from the lane
-            # name.
-            progress_artifact=(
-                Path(progress_arg).expanduser()
-                if (progress_arg := getattr(args, "progress", None)) is not None
-                else None
-            ),
-            # B019/A-328: the gate request's own comparison base, threaded
-            # verbatim. `run_lane` decides whether this lane delegated to it,
-            # and refuses every disagreement -- the CLI does not adjudicate.
-            request_base=getattr(args, "request_base", None),
-            # B032/A-322: where the `environment_command` probe's refusal
-            # message goes. `run_lane` returns a Verdict and carries no
-            # free-text field for a cause (A-138/A-170), so B010's "refuse
-            # with a clear message" needs a stream, not a reason code.
-            diagnostics=err,
-        )
+        # (B028/DA-R9, SF-1) The SECOND half of DA-D10's intent: "the reserved
+        # `--verdict-json` is WRITTEN" binds wherever the lane-wide deadline
+        # expires, not only where `run_lane`'s own two catches can see it.
+        #
+        # R-1's round-1 measurement: with `budget = "0.001s"` the deadline is
+        # already spent when `run_lane` calls `git.repo_top`, which is UPSTREAM
+        # of both the direct-R0 `try` and `_run_higher_rigor_lane`'s outer
+        # catch. The `AssayError` reached `main()`'s handler, which prints and
+        # returns the exit code having written NOTHING -- on both dispatch
+        # paths, and identically on the pre-B028 build, so B028's `CHANGES.md`
+        # headline was broader than what shipped.
+        #
+        # One handler here covers both paths, because both go through this one
+        # call. Deliberately the same shape as the attestation-timeout handler
+        # above (A-213): scoped to `LANE_TIMEOUT` alone -- anything else still
+        # propagates, because a bug must not be laundered into a verdict --
+        # and refusing through `refuse_lane`, which renders the identical
+        # payload-free pair on every declared level.
+        #
+        # No fact is missing: `commit`, `judge_provenance`, `evidence` and
+        # `declared_evidence` are all resolved ABOVE this point by the
+        # P26/A-212 sequence, so this verdict carries exactly what the
+        # attestation-timeout verdict carries. The one thing it cannot carry
+        # is a `CommandResult` -- the command never ran, which is what
+        # `NO_MEASUREMENT`/`LANE_TIMEOUT` says.
+        try:
+            verdict = runner.run_lane(
+                lane,
+                commit=commit,
+                repo=lane_file.project_root,
+                project_root=lane_file.project_root,
+                adapter=adapter,
+                assay_version=__version__,
+                judge_provenance=judge_provenance,
+                argv_append=appended,
+                evidence=evidence,
+                declared_evidence=declared_evidence,
+                deadline=deadline,
+                resume=getattr(args, "resume", False),
+                shard=getattr(args, "shard", None),
+                infrastructure_source=infrastructure_source,
+                infrastructure_environment=infrastructure_environment,
+                # B031/A-320: opt-in, consumer-named, absent by default.
+                # Resolved against the invoking CWD (like every other CLI path
+                # argument), never against the project root, and never derived
+                # from the lane name.
+                progress_artifact=(
+                    Path(progress_arg).expanduser()
+                    if (progress_arg := getattr(args, "progress", None)) is not None
+                    else None
+                ),
+                # B019/A-328: the gate request's own comparison base, threaded
+                # verbatim. `run_lane` decides whether this lane delegated to
+                # it, and refuses every disagreement -- the CLI does not
+                # adjudicate.
+                request_base=getattr(args, "request_base", None),
+                # B032/A-322: where the `environment_command` probe's refusal
+                # message goes. `run_lane` returns a Verdict and carries no
+                # free-text field for a cause (A-138/A-170), so B010's "refuse
+                # with a clear message" needs a stream, not a reason code.
+                diagnostics=err,
+            )
+        except AssayError as exc:
+            if exc.reason_code is not ReasonCode.LANE_TIMEOUT:
+                raise
+            detail = runner.announce_refusal(exc, diagnostics=err)
+            verdict = runner.refuse_lane(
+                lane,
+                commit=commit,
+                status=exc.outcome,
+                reason_code=exc.reason_code,
+                detail=detail,
+                argv_append=appended,
+                infrastructure_source=infrastructure_source,
+                infrastructure_environment=infrastructure_environment,
+                assay_version=__version__,
+                judge_provenance=judge_provenance,
+                evidence=evidence,
+                declared_evidence=declared_evidence,
+            )
     if destination is not None:
         # Exactly once, and the summary is printed only after it succeeded:
         # a run that could not deliver the artifact it was asked for must not

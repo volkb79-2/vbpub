@@ -139,10 +139,10 @@ def test_the_real_control_passes_and_the_real_transform_fails_for_uncovered_line
         transformed_profile=transformed_profile,
     )
 
-    assert result.control_outcome is Outcome.PASS
-    assert result.transformed_outcome is Outcome.FAIL
-    assert result.expected_reason_code is ReasonCode.UNCOVERED_LINES
-    assert result.observed_reason_code is ReasonCode.UNCOVERED_LINES
+    assert result.attempts[0].control_outcome is Outcome.PASS
+    assert result.attempts[0].transformed_outcome is Outcome.FAIL
+    assert result.attempts[0].expected_reason_code is ReasonCode.UNCOVERED_LINES
+    assert result.attempts[0].observed_reason_code is ReasonCode.UNCOVERED_LINES
 
     claim = canary.build_canary_claim(result)
     assert claim.status is Outcome.PASS
@@ -194,9 +194,9 @@ def test_import_break_is_not_provable_by_the_r1_only_go_canary_and_is_inconclusi
         transformed_profile=transformed_profile,
     )
 
-    assert result.control_outcome is Outcome.PASS  # the control still ran
-    assert result.transformed_outcome is None
-    assert result.expected_reason_code is None
+    assert result.attempts[0].control_outcome is Outcome.PASS  # the control still ran
+    assert result.attempts[0].transformed_outcome is None
+    assert result.attempts[0].expected_reason_code is None
 
     claim = canary.build_canary_claim(result)
     assert claim.status is Outcome.INCONCLUSIVE
@@ -213,7 +213,7 @@ def test_an_unrecognised_mechanism_is_inconclusive(control_profile, control_sour
         transformed_profile=control_profile,  # never consulted
     )
 
-    assert result.transformed_outcome is None
+    assert result.attempts[0].transformed_outcome is None
     claim = canary.build_canary_claim(result)
     assert claim.status is Outcome.INCONCLUSIVE
     assert claim.reason_code is ReasonCode.CANARY_INCONCLUSIVE
@@ -240,8 +240,8 @@ def test_a_transform_that_produces_no_change_is_inconclusive(control_profile):
         transformed_profile=control_profile,
     )
 
-    assert result.transformed_outcome is None
-    assert "nothing to judge" in result.description
+    assert result.attempts[0].transformed_outcome is None
+    assert "nothing to judge" in result.attempts[0].description
     claim = canary.build_canary_claim(result)
     assert claim.status is Outcome.INCONCLUSIVE
     assert claim.reason_code is ReasonCode.CANARY_INCONCLUSIVE
@@ -293,9 +293,9 @@ def test_a_transformed_run_that_fails_for_the_wrong_reason_survives(
         transformed_profile=wrong_reason_profile,
     )
 
-    assert result.transformed_outcome is Outcome.FAIL
-    assert result.observed_reason_code is ReasonCode.EXCLUDED_LINES
-    assert result.expected_reason_code is ReasonCode.UNCOVERED_LINES
+    assert result.attempts[0].transformed_outcome is Outcome.FAIL
+    assert result.attempts[0].observed_reason_code is ReasonCode.EXCLUDED_LINES
+    assert result.attempts[0].expected_reason_code is ReasonCode.UNCOVERED_LINES
 
     claim = canary.build_canary_claim(result)
     assert claim.status is Outcome.FAIL
@@ -337,7 +337,7 @@ def test_a_broken_control_profile_renders_inconclusive_not_a_silent_pass(
         transformed_profile=transformed_profile,
     )
 
-    assert result.control_outcome is Outcome.FAIL
+    assert result.attempts[0].control_outcome is Outcome.FAIL
 
     claim = canary.build_canary_claim(result)
     assert claim.status is Outcome.INCONCLUSIVE

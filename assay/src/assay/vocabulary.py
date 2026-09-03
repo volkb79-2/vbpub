@@ -48,6 +48,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 __all__ = [
+    "ADJUDICATED_EVIDENCE_KEYS",
     "COVERAGE_PRODUCERS_BY_FORMAT",
     "COVERAGE_PRODUCER_REQUIRED_FORMATS",
     "STATEMENT_ATTRIBUTABLE_FORMATS_BY_LANGUAGE",
@@ -281,6 +282,33 @@ COVERAGE_PRODUCER_REQUIRED_FORMATS: frozenset[str] = frozenset(
 STATEMENT_ATTRIBUTABLE_FORMATS_BY_LANGUAGE: Mapping[str, frozenset[str]] = (
     MappingProxyType({"go": frozenset({"go-cover"})})
 )
+
+#: (B004/A-430) The closed set of registered Tier-2 adjudicator keys a lane
+#: may declare under ``judge.evidence[].key`` when ``source = "adjudicated"``.
+#: :mod:`assay.config` checks a declared key against this set at LOAD time.
+#:
+#: **Why the fact lives here and not in :mod:`assay.adjudication` itself,
+#: which owns the real registry (:data:`assay.adjudication.ADJUDICATORS`).**
+#: :mod:`assay.verdict` imports FROM :mod:`assay.config` (for
+#: `LANE_SCHEMA_VERSION`/`JudgeConfig`), and :mod:`assay.adjudication` imports
+#: FROM :mod:`assay.verdict` (for `Evidence`/`EvidenceDeclaration`) the same
+#: way :mod:`assay.attestation` already does one tier over -- so
+#: `config -> adjudication -> verdict -> config` is a real cycle, not merely
+#: an undesirable one, the moment `config.py` imports `adjudication.py`
+#: directly. `assay.vocabulary` imports nothing (a true leaf, exactly as
+#: `STATEMENT_ATTRIBUTABLE_FORMATS_BY_LANGUAGE` above already relies on), so
+#: it is the one module both `config.py` and `adjudication.py` can import
+#: without opening that cycle. Precisely DA-R1's shape ("the check has to run
+#: at config load, and `assay.config` must not import" the module that owns
+#: the real registry) applied to a different registry and a different reason
+#: (an import CYCLE here, rather than DA-R1's `assay.adapters`-specific O2
+#: guarantee) for the same resolution.
+#:
+#: The cost, exactly as `STATEMENT_ATTRIBUTABLE_FORMATS_BY_LANGUAGE`'s own
+#: comment states it: this set and `assay.adjudication.ADJUDICATORS` are two
+#: statements of one fact and can drift, so a test derives one from the other
+#: and asserts equality (``tests/test_adjudication_registry.py``).
+ADJUDICATED_EVIDENCE_KEYS: frozenset[str] = frozenset({"image-provenance"})
 
 #: (B045/B038(a)) The producers whose `branchMap` really is a set of ARCS --
 #: one location and one count per branch ARM -- and can therefore answer

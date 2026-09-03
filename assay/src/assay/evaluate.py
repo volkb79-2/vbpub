@@ -192,6 +192,55 @@ def _refuse_line_directive_remapped(path: str, *, judged_as: str) -> NoReturn:
     )
 
 
+def _refuse_contradictory_branch_arcs(
+    path: str, lines: frozenset[int], *, judged_as: str
+) -> NoReturn:
+    """Refuse a file whose coverage record contradicts itself about its own
+    branch arcs AND that is in this lane's judged set (B054/A-410).
+
+    **The asymmetry, and why it is the same one A-405 already established.**
+    The parser has dropped the offending arcs and recorded their lines
+    (:attr:`~assay.coverage_parsers.model.FileCoverage.contradictory_branch_lines`),
+    so this file's arc data is INCOMPLETE by exactly those lines. If the file
+    is not judged, that costs the verdict nothing: code outside the diff is
+    invisible to the verdict by construction, and taking a lane down for a
+    never-executed file's own instrumentation quirk is precisely the
+    cost-scoping failure B054 filed — one such file used to refuse every
+    OTHER file's correct data. If the file IS judged, there is no honest
+    number for it: assay would be reporting a branch percentage over a set of
+    arcs it knows is missing members, which is DESIGN-GUIDE §5's laundering
+    gate.
+
+    **Why ``ERROR``/``UNREADABLE_ARTIFACT`` and not
+    ``BAD_LANE_CONFIG``.** Unlike A-405's ``//line`` case — where the
+    artifact is exactly what the toolchain correctly wrote and the LANE asked
+    for the impossible — here the artifact itself is internally inconsistent:
+    it classifies a line as branch-bearing that its own ``statementMap``/``s``
+    does not classify as code at all. That is an object that exists and
+    cannot be trusted, which is what ``UNREADABLE_ARTIFACT`` already names.
+    The message keeps the wording B054 records from the shipped 4.0.0
+    refusal, so a consumer who saw the old verdict-wide refusal recognises
+    the sentence.
+    """
+    raise AssayError(
+        f"{path!r}: its 'branchMap' arcs contradict its own "
+        f"'statementMap'/'s' line classification at line(s) "
+        f"{sorted(lines)} -- a branch arc is recorded on a line the same "
+        f"record does not classify as executed or missing (or a covered arc "
+        f"sits on a line that never ran). {judged_as}, and assay will not "
+        f"judge branch coverage for a file whose own record disagrees with "
+        f"itself: the arcs on those lines were dropped, so any percentage "
+        f"reported for this file would be computed over arcs assay knows are "
+        f"missing. A never-executed file that your coverage.include glob "
+        f"matches but no test imports is the common cause -- narrow the glob "
+        f"to the tested surface, or exclude this file from the lane's "
+        f"judge.source_roots (or judge.targets), where assay already ignores "
+        f"it.",
+        outcome=Outcome.ERROR,
+        reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+    )
+
+
 class _Attribution(Enum):
     """The three-way result of resolving one unattributed line against a
     set of :class:`~assay.adapters.base.StatementSpan` values (P07).
@@ -496,6 +545,22 @@ def evaluate_coverage(
             # rather than over the profile.
             _refuse_line_directive_remapped(
                 path,
+                judged_as=(
+                    f"This lane judges it: {len(lines)} changed line(s) in it "
+                    f"are inside judge.source_roots"
+                ),
+            )
+
+        if file_cov.contradictory_branch_lines:
+            # B054/A-410, placed and reasoned exactly like A-405's check
+            # directly above: INSIDE the loop, so it is reached only for a
+            # file that cleared `_is_considered` AND has changed lines in
+            # this diff. A defective record on a file the lane does not judge
+            # never gets here -- which is the whole of B054's fix, since
+            # refusing it verdict-wide at PARSE time is what the entry filed.
+            _refuse_contradictory_branch_arcs(
+                path,
+                file_cov.contradictory_branch_lines,
                 judged_as=(
                     f"This lane judges it: {len(lines)} changed line(s) in it "
                     f"are inside judge.source_roots"
@@ -1077,6 +1142,20 @@ def evaluate_targets(
             # implies -- write tests -- is not the remedy.
             _refuse_line_directive_remapped(
                 repo_path,
+                judged_as=(
+                    f"This lane judges it: it is declared in judge.targets as "
+                    f"{raw_target!r}"
+                ),
+            )
+        if file_cov is not None and file_cov.contradictory_branch_lines:
+            # B054/A-410, whole-target mode's own half of the same rule. A
+            # declared target IS the judged set here, so there is no
+            # "outside the diff" case to be lenient about -- an explicitly
+            # named target whose record disagrees with itself has no honest
+            # number, exactly as in changed_lines mode.
+            _refuse_contradictory_branch_arcs(
+                repo_path,
+                file_cov.contradictory_branch_lines,
                 judged_as=(
                     f"This lane judges it: it is declared in judge.targets as "
                     f"{raw_target!r}"

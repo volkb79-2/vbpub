@@ -1,5 +1,5 @@
 {
-  "schema_version": 9,
+  "schema_version": 10,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "cccccccccccccccccccccccccccccccccccccccc",
@@ -41,7 +41,9 @@
     },
     "r3": {
       "mechanism": "uncovered-line",
-      "target": "pkg/greet.py"
+      "targets": [
+        "pkg/greet.py"
+      ]
     }
   },
   "snapshot_policy": {
@@ -61,12 +63,17 @@
       "verified_by_assay": true,
       "canary": {
         "mechanism": "uncovered-line",
-        "target": "pkg/greet.py",
-        "description": "appended never-called `def _assay_canary_unreached` (2 uncovered lines) at end of file",
-        "control_outcome": "PASS",
-        "transformed_outcome": "FAIL",
-        "expected_reason_code": "UNCOVERED_LINES",
-        "observed_reason_code": "UNCOVERED_LINES"
+        "attempts": [
+          {
+            "target": "pkg/greet.py",
+            "description": "appended never-called `def _assay_canary_unreached` (2 uncovered lines) at end of file",
+            "disposition": "attempted",
+            "control_outcome": "PASS",
+            "transformed_outcome": "FAIL",
+            "expected_reason_code": "UNCOVERED_LINES",
+            "observed_reason_code": "UNCOVERED_LINES"
+          }
+        ]
       }
     }
   ],
