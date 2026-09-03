@@ -129,7 +129,7 @@ time): **`tester-unified: PASS (exit 0)`**. Verdict JSON
 `config.py` 483-487 gap from run 1 is gone. Full evidence + per-oracle
 mapping in `nyxloom-P99-REPORT.md`.
 
-## Commit (this one) — docs(nyxloom): P99 -- REPORT.md with full oracle evidence + gate verdict
+## Commit `fb5e79dc` — docs(nyxloom): P99 -- REPORT.md with full oracle evidence + gate verdict
 
 Written after gate run 3's PASS was confirmed. Contains per-oracle
 evidence (exact pytest node + PASSED output for each of O1-O5, plus two
