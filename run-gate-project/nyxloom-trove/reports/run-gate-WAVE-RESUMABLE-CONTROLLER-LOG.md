@@ -319,3 +319,55 @@ controller's entries from the implementer's return onward; wave records
   - **Round 3 (ask 5): verification-only** of RW-25..RW-31 on the committed
     tip by the same reviewer — no third full pass. Fix package 2 goes to a
     FRESH implementer (the successor is past 300k tokens).
+
+- **2026-09-03 (fix package 2 returned — all seven rulings + both round-2
+  nits landed at `661fde05`, gate GREEN; RW-32..RW-36; one addendum commit
+  before round 3)** — Verified in a separate step from
+  `selftest-pkg2-4.log`: `553 passed, 2 skipped` / `diff-coverage OK:
+  494/494 changed executable lines covered (100.0% ≥ 100.0% floor)` /
+  `lane 'selftest' exit 0`; tree clean, `__revision__` still 34. Landed:
+  RW-27 `43d66ba8`, RW-29 `d16d9380`, RW-28 `7fd45793`, RW-25 `3af55353`,
+  both round-2 nits `713887fc`, RW-30/RW-31/RW-26 `2cb91b4e`, `pid_ns_inode`
+  coverage `f4a46459`, records `661fde05`. Red-first proven at the seam for
+  RW-27 (the reviewer's self-refuting `candidate 1/172` + `has not advanced
+  for 1230s`), RW-29 (two-step: a foreign-namespace record was
+  re-attached, then `--fresh` exited 0 having `rm -f`'d another client's
+  container), RW-28 (empty promotion disclosure; the now-false "the owning
+  client preserves the evidence"), RW-25 (exit 0 with its own container
+  started over the unreadable record). No live docker probe: the package
+  adds no new docker argv shape and RW-28's promotion is fully expressible
+  against the stateful fake docker. Five decision asks, ruled:
+  - **RW-32 (ask 1 — RW-28's promotion on a failing container destroys the
+    evidence `rm -f` would remove): ACCEPT, one addendum commit.** Before
+    the `rm -f`, the follower calls `save_container_logs` (the path the
+    owner already uses on a non-zero exit) and the disclosure line
+    attributes the evidence to the client actually doing the work, not the
+    gone owner. A promotion without this is worse than the self-heal it
+    replaces — the diagnostic record for the one case most likely to need
+    it (the owner died, the container did not exit cleanly) would be lost.
+    Dispatched as a small, contained addendum to a fresh implementer before
+    round 3, so the reviewer verifies the complete diff once.
+  - **RW-33 (ask 2 — RW-29's foreign-namespace record still names a pid
+    meaningless in this namespace): confirmed as implemented.** A second
+    return channel so all six message sites could say "an unverifiable pid
+    N" was considered and is too large for what it buys; the boundary
+    disclosure line immediately before the existing messages is enough —
+    a reader who follows the log sees the caveat once, in order.
+  - **RW-34 (ask 3 — RW-25's `--fresh` degrade reads `container` and
+    `started_at` from an unknown-schema record): confirmed as
+    implemented.** Two fields is the minimum a human-directed `--fresh`
+    needs to name what it is about to remove; narrowing further would make
+    the remedy line in RW-25's refusal message untrue.
+  - **RW-35 (ask 4 — an inflight record with no `schema` key is corrupt,
+    not foreign): confirmed as implemented.** Rev 34 is the first revision
+    that writes the file at all, so an absent key has no innocent
+    explanation (no prior revision ever omitted it) — treating it as
+    corrupt (no record returned) rather than foreign (refuse) is the
+    correct read of RW-25's intent.
+  - **RW-36 (ask 5 — commit trailers changed mid-package, Fable 5.1 through
+    `3af55353` then Sonnet 5 from `713887fc`): no history rewrite.** The
+    harness re-issued its attribution instruction mid-flight; both
+    trailers are an honest record of when each commit was made under which
+    instruction. The wave's merge commit carries the CURRENT attribution
+    (Sonnet 5, this session's `Claude-Session` URL); nothing on the branch
+    is rewritten.
