@@ -2922,3 +2922,165 @@ gate runs.
 * **No B-id allocated.** The two verifier defects are unreleased,
   branch-local, and inside the item that exposed them; filing them would
   have been filing a bug against code that never shipped.
+
+## Generation 13 — B004, the whole carve (A-442), and the wave's last item closes
+
+**B004 is DONE, in one commit, `d9fc22eb`, gate GREEN.** BRIEF-12 named this
+"the LAST item in this wave" and scoped it to possibly span generations,
+cutting at internal boundaries (after the parser, after the lane surface,
+after the adjudicator, after the producers, after W2–W7) if needed. It did
+not need to: every boundary landed inside this generation's budget, so there
+is one commit rather than a sequence of intermediate checkpoints. All eight
+of the wave's post-cut items (BRIEF-11 §4.1's list) are now shipped; nothing
+of B004's own scope remains.
+
+### Acceptance, box by box, with file:line evidence
+
+Against the shipped code at `d9fc22eb`:
+
+* **The parser.** `src/assay/adjudication.py:134` `evaluate_provenance`,
+  total over `document_bytes` — no branch raises. `MAX_ADJUDICATION_BYTES`
+  (`:98`, 1 MiB) and `MAX_EVIDENCE_DECLARATIONS` (`:103`, 64) are the two
+  bounds; `_ACCEPTED_SCHEMA_VERSIONS = (1, 2)` (`:113`) is DA-R12's measured
+  set; `_KNOWN_OVERALL_VALUES` (`:118`) is the closed six-member vocabulary,
+  an unrecognised value refused rather than guessed; `_COMMIT_RE` (`:131`)
+  is the green-path-only hex-prefix check against HEAD.
+* **The lane surface.** `config.py:129` `EVIDENCE_SOURCES` (now public,
+  `{"attested", "adjudicated"}`); `:1877-1888` the per-source
+  `adjudication_dir` pairing rule (present iff an adjudicated entry is
+  declared); `:2000-2006` both directories built through the one
+  generalised `_validate_evidence_dir` (`:2034`); `:2144-2147` the
+  `EVIDENCE_SOURCES` membership check at the loader's own boundary.
+  `LANE_SCHEMA_VERSION` untouched — grep for a second `!` commit on this
+  branch finds none; `b2fd09f3` is still the only one.
+* **The adjudicator.** `ADJUDICATORS: Mapping[str, Adjudicator] =
+  {"image-provenance": evaluate_provenance}` (`adjudication.py:217`), the
+  one registered key, cross-checked against
+  `vocabulary.ADJUDICATED_EVIDENCE_KEYS` by a drift-equality test
+  (`test_adjudication_registry.py`) plus a vacuity guard (the set is
+  non-empty, so the equality can't pass by both sides being `{}`).
+  `load_adjudicated_evidence` (`:220`) checks `remaining()` at entry and
+  after every declared item — A-213's atomic timeout contract, unchanged in
+  shape from `attestation.load_attested_evidence`.
+* **The producers.** `cli.py`'s split/dispatch/merge (see LOG #40) — F4's
+  finding in full: independent calls to each loader over its own declared
+  subset, results merged back into the lane's full DECLARED order (not
+  concatenated), one shared `try`/`except` keeping the evidence deadline
+  atomic across both loaders. Proved by two new CLI-level tests: the
+  interleaved-lane merge-order test and the second-loader-timeout atomicity
+  test (a REAL first-loader PASS discarded, not merely unasserted).
+* **W2–W7.** The only new asset touched is the frozen `carve-assets/W2/`
+  read-only (real ciu 6.0.3/7.10.1 output, per A-334 — no test double
+  stands in for ciu's own decision anywhere in this generation's tests). No
+  `W1`/`W3`/`W4`/`W5`/`W6` edit; `src/assay/schemas/verdict.schema.json`
+  stays byte-frozen against `carve-assets/W6/verdict.schema.v10.json`.
+* **The tripwire.** `tests/test_verdict_conformance.py`'s
+  `EXCLUDED_ENTIRELY` drops `("NO_MEASUREMENT", "PROVENANCE_UNVERIFIED")`
+  now that `tests/fixtures/verdicts/evidence_adjudicated_unverified.json`
+  discharges the obligation the comment block itself named as the removal
+  condition. All 177 tests in the file pass, the new fixture included.
+
+### The import-cycle finding, and the deviation it forced
+
+The carve's own text (W3) suggested `config.py` import the adjudicator
+registry directly, the same shape as its existing `from .coverage import
+FORMAT_REGISTRY`. That is not buildable: `assay.verdict` imports FROM
+`config.py`, and `adjudication.py` (like `attestation.py`) must import FROM
+`verdict.py` for `Evidence`/`EvidenceDeclaration` — a direct
+`config -> adjudication` import closes a real three-hop cycle. The closed
+KEY SET, not the registry, moved to `assay.vocabulary` (a genuine leaf
+module, zero internal imports, confirmed by grep before relying on it) —
+DA-R1/A-406's shape one field over, for a different underlying reason.
+
+Separately, the carve's W3 text also suggested sharing `_validate_
+attestation_dir` across `attestation.py` and the new module. `config.py`
+already carried a comment recording a DELIBERATE "independent readers,
+neither trusts the other" design principle for that grammar, predating the
+carve. I followed the shipped precedent over the carve's stale suggestion —
+generalising the validator only WITHIN `config.py` (one function serving
+both `attestation_dir` and `adjudication_dir`), while `adjudication.py` and
+`attestation.py` stay fully independent of each other — and recorded the
+deviation in both the code comment and `decisions.md`'s A-442 row, per
+generation 12's own lesson about a pre-cut ruling's mechanics conflicting
+with what actually shipped.
+
+### Gate transcript, generation 13
+
+`gate-gen13.log` on `d9fc22eb`, read in a separate step from the run
+(LESSONS L4): `GATE_EXIT=0` exactly once (grep count 1), one
+`ASSAY_REGISTERED_GATE_COMPLETE=1`, zero `FAILED|DIRTY_TREE|Traceback`
+matches, wheel `assay-4.1.1.dev45+gd9fc22eb-py3-none-any.whl` (the commit in
+the wheel's own local-version label matches the gate's own printed
+`commit: d9fc22ebd84e1f3a05dd03f903e9a14ae49a7685`), all twelve
+`ASSAY_GATE_PHASE` markers present in order (`wheel-installed`,
+`attestation-hardened`, `verdict-v5-accepted`,
+`lane-schema-v2-successors-verified`,
+`verdict-v6-v7-v8-v9-hard-cut-verified`, `verdict-v10-successors-verified`,
+`judge-provenance-bound-to-the-installed-wheel`, `self-hosted-lane-passed`,
+`topos-qualified`, `cmru-b006a-qualified`, `independent-self-hosting-passed`,
+`pyflakes-clean`), no stray gate container left behind afterward (`docker
+ps` clean of the gate's own container once `GATE_EXIT=` appeared). A full
+local `pytest tests -q` was also run once, serially under
+`nice -n 19 ionice -c 3` per the host-load rule: **4178 passed, 20 skipped**,
+0 failed, 379.08s — 47 more passing than generation 12's 4131, consistent
+with the ~44 new/added test functions this generation plus a small number
+of newly-parametrized conformance cases from the discharged fixture.
+
+### Isolation and the shared branch
+
+R-2 (this wave's reviewer) landed `78a786fc` directly on the shared branch
+mid-generation — a real gap it found in `verify.py`'s
+`_check_r3_rederivation` (no validation branch for `not_attempted_reason ==
+"budget_exhausted"`), fixed and committed by R-2 itself, not by me. Verified
+non-overlapping with every file this generation's commit touches
+(`verify.py` and `tests/test_canary_multi_target.py` only) before proceeding
+on top of it; no merge conflict, no special remediation needed. **A-443**
+folds in a second, small R-2 finding: `decisions.md`'s A-430 row names the
+adjudicated-evidence lane field `name`; the shipped grammar
+(`EvidenceDeclaration.key`) and CONSUMERS.md's own example both correctly
+use `key`. A-430 itself is left untouched (A-408's append-only convention);
+A-443 is the correction row.
+
+### What a reviewer should push on (generation 13's own work)
+
+* **The `overall != "verified-match"` collapse.** All five non-green
+  `overall` values (`mismatch`, `not-verified-dirty`,
+  `not-verified-unknown`, `not-verified-no-evidence`,
+  `refused-no-identity`) render the identical `NO_MEASUREMENT`/
+  `PROVENANCE_UNVERIFIED` pair. A reviewer who wants ciu's specific refusal
+  reason surfaced in assay's own `reason_code` vocabulary should say so —
+  as shipped, assay renders ciu's decision, not ciu's diagnosis, per B004's
+  own framing ("binding only the commit prefix itself").
+* **The `_validate_evidence_dir` generalisation, scoped to `config.py`
+  only.** I read the "independent readers" comment as scoped to the two
+  MODULES (`attestation.py` / `adjudication.py`), not to every caller of
+  the grammar; a reviewer who reads it as forbidding the shared helper
+  inside `config.py` too should say so, since that is a narrower reading
+  than the one I shipped against.
+* **`_COMMIT_RE`'s lower bound of 8 hex characters.** Measured against
+  `carve-assets/W2/`'s real captures, which never carry a prefix shorter
+  than 8; there is no ciu-side minimum documented anywhere I found, so this
+  is my own choice of floor, not a measured one, and a reviewer should ask
+  whether it is too permissive or too strict against ciu's actual practice.
+* **Full pytest run outside the gate is diligence, not the registered
+  gate itself** — matching generation 12's own practice, not a new
+  requirement; the number that actually gates the branch is
+  `GATE_EXIT=0` from `gate-gen13.log`.
+
+### What I did NOT do, and why
+
+* **No GATE 2 / O8 work.** Out of B004's scope per BRIEF-12; not started,
+  not touched.
+* **No schema edit.** `LANE_SCHEMA_VERSION` stays 2; `inventory_schema`
+  stays 1; `src/assay/schemas/verdict.schema.json` is byte-untouched.
+* **No second `!` commit.**
+* **No B-id allocated.** Nothing found in this generation's own work rose
+  to a filed defect; R-2's two findings (SF-1, the A-430 field-name typo)
+  were both fixed/recorded directly rather than filed, since both are
+  branch-local and inside items already in flight on this branch.
+* **No intermediate checkpoint BRIEF written.** The E-008 clause requires
+  one only when a generation cuts short of a coherent boundary; this
+  generation reached B004's actual completion, the wave's last named item,
+  inside its own budget, so there is nothing to hand to a successor beyond
+  this REPORT section and LOG #40 — the remaining wave work (R-2 round 2,
+  merge, the 5.0.0 release) is not implementer work.
