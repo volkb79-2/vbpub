@@ -925,8 +925,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     misread a version field exists to prevent. The
     record therefore also names its OWNER: `owner_pid`, `owner_start` (the
     process start time, field 22 of `/proc/<pid>/stat`, so a recycled pid
-    cannot impersonate the owner) and `boot_id` (a pid means nothing across
-    a reboot). The store must be
+    cannot impersonate the owner), `boot_id` (a pid means nothing across
+    a reboot) and `pid_ns` (the PID namespace's inode — a pid means nothing
+    across a namespace either, and `boot_id` alone cannot say so because it
+    is host-GLOBAL: every container on one host reads the same value). The
+    store must be
     git-ignored and that is CHECKED, exactly as `R-36g` checks it, over all
     three paths the writer can leave behind. A store that cannot be
     confirmed ignored, or cannot be written, degrades to ONE warning that
@@ -1045,10 +1048,24 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     hijacked.** Scope answers two worktrees (`R-39a`); it does not answer two
     terminals on ONE tree, and that case is common precisely because the
     host's rule is one gate container at a time ACROSS agents. The record's
-    owner triple (`owner_pid` + `owner_start` + `boot_id`) is checked before
-    anything else: the owner is ALIVE when the boot id matches this boot, the
-    pid exists, and its start time is the recorded one — a conjunction, so a
-    recycled pid and a post-reboot pid both read as DEAD.
+    owner identity (`owner_pid` + `owner_start` + `boot_id` + `pid_ns`) is
+    checked before anything else: the owner is ALIVE when the boot id matches
+    this boot, the pid exists, and its start time is the recorded one — a
+    conjunction, so a recycled pid and a post-reboot pid both read as DEAD.
+    - **Another PID namespace → liveness UNKNOWN → treated as ALIVE.** When
+      the record's `pid_ns` is not this client's, the pid cannot be looked up
+      here AT ALL, and the answer is not "dead" — it is "I could never have
+      seen it". `boot_id` cannot catch this on its own: it is host-global, so
+      two clients in two containers that bind-mount the same worktree (this
+      host does exactly that) both match on boot and then each read the
+      other's live owner as dead — which is `R-39e`'s hijack, back again
+      across a namespace boundary. Unknown resolves to ALIVE in the same
+      direction every other "could not determine" in this decision takes:
+      the run is FOLLOWED, `--fresh` REFUSES, and nothing is removed. The
+      boundary itself is disclosed by name, because an assumption of life is
+      a different claim from a reading of it. A record written before rev 34
+      recorded the inode cannot be compared, so the question is not asked and
+      the boot + start-time conjunction answers alone.
     - **Owner alive** → this client FOLLOWS: `run-gate: following <name>
       (owner pid <N>, started <t>)`, then the same `docker logs -f` stream
       and the same exit code — and it removes NOTHING. Not the container, not

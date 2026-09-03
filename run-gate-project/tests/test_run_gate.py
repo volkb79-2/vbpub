@@ -6241,7 +6241,19 @@ def live_owner_fields() -> dict:
     honest "the owner is alive" a test can plant."""
     return {"owner_pid": os.getpid(),
             "owner_start": run_gate.process_start_ticks(os.getpid()),
-            "boot_id": run_gate.boot_id()}
+            "boot_id": run_gate.boot_id(),
+            "pid_ns": run_gate.pid_ns_inode()}
+
+
+def foreign_owner_fields() -> dict:
+    """RW-29: a record written by a client in ANOTHER pid namespace. The boot
+    id matches (it is host-global), the pid does not resolve here, and the
+    inode says why — which is the only reason this is not read as a dead
+    owner."""
+    return {"owner_pid": 2 ** 22 + 1,
+            "owner_start": 987654321,
+            "boot_id": run_gate.boot_id(),
+            "pid_ns": run_gate.pid_ns_inode() + 1}
 
 
 def _no_op_sleep(monkeypatch, then=None) -> list[float]:
@@ -6438,6 +6450,41 @@ class TestInflightRecordDecisions:
         assert (state / "run-gate-planted").exists()
         # not the follower's to record: the owner writes the one entry
         assert not (proj / ".run-gate" / "history.json").exists()
+
+    def test_a_record_from_another_namespace_is_followed_and_says_why(
+            self, tmp_path, monkeypatch, capsys):
+        """RW-29 through main(). The pid in this record resolves to nothing
+        HERE, and before the inode conjunct that read as "the owner is dead"
+        — so this client adopted the container, `rm -f`'d it and cleared the
+        record out from under a client that was still watching it in another
+        container. Unknown liveness now resolves to ALIVE, and the reason is
+        disclosed: an operator who sees a follow where they expected an
+        adoption is owed the namespace boundary that caused it."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, status="running", code=0,
+                                **foreign_owner_fields())
+        assert run_gate.main(["suite"]) == 0
+        out = capsys.readouterr().out
+        assert "written in a DIFFERENT PID namespace" in out, out
+        assert f"pid {2 ** 22 + 1} cannot be looked up from here" in out, out
+        assert "treated as LIVE" in out, out
+        assert "| follow — no new container was started" in out, out
+        assert "re-attached" not in out
+        assert lane_runs(log) == []
+        assert [c for c in _docker_calls(log) if c[0] == "rm"] == []
+        assert record.exists()
+        assert not (proj / ".run-gate" / "history.json").exists()
+
+    def test_fresh_refuses_a_record_from_another_namespace(
+            self, tmp_path, monkeypatch, capsys):
+        """"Unknown" never authorises a removal. `--fresh` refuses exactly as
+        it does against a pid it CAN see."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, **foreign_owner_fields())
+        assert run_gate.main(["suite", "--fresh"]) == 2
+        assert f"LIVE client (pid {2 ** 22 + 1}" in capsys.readouterr().err
+        assert [c for c in _docker_calls(log) if c[0] == "rm"] == []
+        assert record.exists() and (state / "run-gate-planted").exists()
 
     def test_a_live_owner_refuses_fresh_by_pid(self, tmp_path, monkeypatch,
                                                capsys):
@@ -7751,6 +7798,36 @@ class TestOwnerLivenessAndFollowEdges:
 
     def test_no_such_process_is_not_an_answer(self):
         assert run_gate.process_start_ticks(2 ** 22 + 1) is None
+
+    def test_a_record_from_another_pid_namespace_reads_as_ALIVE_not_dead(self):
+        """RW-29 (review round 2, G3). `boot_id` is host-GLOBAL — identical in
+        every container on the host — while a pid means something only inside
+        ONE pid namespace. Two clients in two containers that bind-mount the
+        same worktree (this host does exactly that) therefore both passed the
+        boot check and then looked the recorded pid up in their own
+        namespace, where it is absent or is a stranger with a different start
+        time. Either way the old conjunction said "dead", so a LIVE owner
+        read as dead and B2's hijack came back across the namespace boundary.
+
+        The namespace inode makes the boot conjunct honest: a record from
+        another namespace is "liveness UNKNOWN", and unknown resolves to
+        ALIVE here — follow it, never remove it."""
+        foreign = {"owner_pid": 2 ** 22 + 1,          # no such pid HERE
+                   "owner_start": 987654321,          # and a start we cannot match
+                   "boot_id": run_gate.boot_id(),     # host-global: matches
+                   "pid_ns": run_gate.pid_ns_inode() + 1}
+        assert run_gate.live_owner_pid(foreign) == 2 ** 22 + 1
+
+    def test_a_record_that_names_no_namespace_keeps_the_old_conjunction(self):
+        """A record written before rev 34 recorded the inode cannot be
+        compared, so the question is not asked — the boot + start-time
+        conjunction answers alone, exactly as it did."""
+        assert run_gate.live_owner_pid(
+            {"owner_pid": 2 ** 22 + 1, "owner_start": 987654321,
+             "boot_id": run_gate.boot_id()}) is None
+
+    def test_this_process_is_its_own_live_owner_in_its_own_namespace(self):
+        assert run_gate.live_owner_pid(live_owner_fields()) == os.getpid()
 
     def _follow(self, tmp_path, monkeypatch, body):
         fake_docker(tmp_path, monkeypatch)

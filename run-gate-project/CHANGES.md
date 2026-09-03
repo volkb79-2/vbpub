@@ -154,8 +154,14 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     Every branch is disclosed by name.
   - **Two clients on one lane: the second FOLLOWS, it does not take over.**
     The record names the client that started the container (`owner_pid`,
-    the process start time from `/proc/<pid>/stat`, and `boot_id` — a
-    conjunction, so a recycled pid and a post-reboot pid both read as dead).
+    the process start time from `/proc/<pid>/stat`, `boot_id`, and `pid_ns`
+    — the PID namespace's inode — a conjunction, so a recycled pid and a
+    post-reboot pid both read as dead). A record from ANOTHER pid namespace
+    is a third answer, not a dead owner: `boot_id` is host-global, so two
+    clients in two containers that bind-mount one worktree used to match on
+    boot and then each read the other's live owner as dead. Its liveness is
+    UNKNOWN, it is treated as ALIVE (followed; `--fresh` refuses), and the
+    namespace boundary is disclosed by name.
     An invocation that finds a LIVE owner prints `following <name> (owner
     pid N, started <t>)`, streams the same logs, exits with the same code and
     removes nothing: not the container, not the record, not a history entry —
