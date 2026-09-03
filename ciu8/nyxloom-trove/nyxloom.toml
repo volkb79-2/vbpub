@@ -1,0 +1,50 @@
+[project]
+id = "ciu8"
+default_branch = "main"
+
+trove = "nyxloom-trove"
+
+handoff_globs   = ["nyxloom-trove/handoffs/*.md"]
+reports_dir     = "nyxloom-trove/reports"
+decisions_inbox = "nyxloom-trove/decisions.md"
+archive_dir     = "nyxloom-trove/archive"
+archive_keep_visible = 10
+agent_logs      = "nyxloom-trove/agent-logs"
+
+worktree_root = "../.worktrees"
+
+# Docs nyxloom READS but does not manage (live in this project's own tree).
+# Fill in as needed -- see nyxloom-trove/STANDARD.md "declaration model".
+[refs]
+readme = "README.md"
+docs_dir = "docs"
+
+# ciu8's real gate (ciu8-P001 bootstraps the files this argv needs -- see
+# that handoff's contract items 1-8 -- and is itself gated by it once they
+# exist). Mirrors ciu/nyxloom-trove/nyxloom.toml's own [gates.tester-unified]
+# (same environment, same assay-judged R0+R1 pattern) -- NEVER the
+# devcontainer (cockpit doctrine). See nyxloom-trove/STANDARD.md.
+[gates.tester-unified]
+argv = ["bash", "-c", "cd {worktree}/ciu8 && exec ./run-gate.py --worktree {worktree} ciu8"]
+phase = "implementation"
+asserts = ["tests-pass", "changed-line-coverage", "assay-verdict"]
+timeout_seconds = 1800
+environment = "tester-unified"
+
+# Managed per-entry backlog (docs/backlog-entries-spec.md). Uncomment to
+# adopt; omitting the section entirely keeps every backlog-entry lint rule
+# and CLI verb silent.
+# [backlog_entries]
+# dir       = "nyxloom-trove/backlog"
+# id_prefix = "B"
+
+[policy]
+max_active_tasks = 3
+ready_queue_target = 5
+max_attempts_per_task = 3
+merge_mode = "manual"
+retention_days = 60
+reconcile_interval_seconds = 30
+http_port = 8942
+
+[notify]
