@@ -1232,11 +1232,14 @@ def _check_l14(findings: list[LintFinding], path: Path, fm) -> None:
     a "found a defect" case -- catch broadly (the file may not exist yet in
     an environment that hasn't run onboarding, or may be mid-edit) and
     report a WARNING rather than raising, so L1-L13's other findings for
-    this file are never lost to an uncaught exception here.
+    this file are never lost to an uncaught exception here. This handler's
+    domain can only ever REDUCE what L14 reports (a working check downgrades
+    to "can't validate"); it can never manufacture a false ERROR or a false
+    clean pass -- same shape as doctor.py's decision-hold-unresolved check.
     """
     try:
         routes = Routes.load()
-    except Exception as exc:
+    except Exception as exc:  # census: advisory-degradation (nyxloom-P100)
         findings.append(LintFinding(
             rule="L14",
             severity="warning",
