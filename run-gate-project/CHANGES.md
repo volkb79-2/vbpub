@@ -35,6 +35,23 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [23.5.0] - 2026-09-03
+<!-- cmru: generated -->
+<!-- cmru: source-end=7cd835a06bf1bc66c2d0d0e612c56df178fc970b -->
+
+### Fixed
+- fix(run-gate): RG-39 review report -- strip stray NUL bytes from prior commit (ad2b0e2d)
+- fix(run-gate): RG-39 -- cover acquire_exec_lock's OSError branch (diff-coverage floor) (fefc6c19)
+- fix(run-gate): RG-39 -- internal exec-mode mutex, no caller flock required (rev 34, R-39) (2c6b2bbc)
+
+### Changed
+- merge(run-gate): RG-39 -- internal exec-mode mutual exclusion (rev 35) (609dfb67)
+
+### Documentation
+- docs(run-gate): RG-39 exec-mutex merged (609dfb67, rev 35); RG-42 filed for an unrelated pre-existing ciu8 gate-linkage gap (ff1f9a63)
+- docs(run-gate): resumable-gate wave SHIPPED -- 23.4.0 merged, released, deployed (471703ee)
+- docs(run-gate): RG-39 exec-mutex review round 1 -- ACCEPT (467b2358)
+
 ## [23.4.0] - 2026-09-03
 <!-- cmru: generated -->
 <!-- cmru: source-end=b7b5f38dd7655cc44049d1bb3667ad705c1cd4f0 -->
