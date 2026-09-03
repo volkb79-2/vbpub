@@ -799,3 +799,74 @@ precedent for shape and discipline.
     run) → migration notes → B004 carve begins (A-430/A-431, generation 4's
     re-captured ciu assets, read the REPORT section first). Next ids
     A-440 / B071.
+
+- **2026-09-03 (generation 12 returned — B007 + migration notes landed,
+  gate GREEN on `fd489620`; B004 not started; DA-R30/DA-R31; R-2 and
+  generation 13 dispatched in parallel)** — Verified independently from
+  `gate-gen12a.log` and `gate-gen12b.log`, each in a separate step: both
+  `GATE_EXIT=0` exactly once, one `ASSAY_REGISTERED_GATE_COMPLETE=1` each,
+  zero `FAILED|DIRTY_TREE|Traceback`, both carry
+  `ASSAY_GATE_PHASE=verdict-v10-successors-verified`; `git log main..HEAD`
+  confirmed exactly ONE `!` commit (`b2fd09f3`); tree clean at `a4528144`.
+  Landed: `d30b313b` B007/A-440 (a canary declares several probes with a
+  stated aggregation — `targets`/`aggregation`, `declared_targets`, the
+  exactly-one-of and aggregation-iff-plural rules stated both as lane
+  diagnostics and a `__post_init__` invariant, `_load_canary_target`
+  generalising B005's whole-target rule, `run_isolated_canaries`, 30 tests,
+  the W6 template replaced by real `assay run` output — the one authorised
+  post-cut W6 edit, now spent); `fd489620` migration notes/A-441
+  (`docs/CONSUMERS.md` "Migration notes (v9 → v10)", four dangling anchors
+  now resolved, B004's subsection marked "reserved on the wire, producer
+  pending" for later amendment, two pre-existing dangling anchors fixed in
+  passing); `a4528144` checkpoint/BRIEF-12. Full suite run once on
+  `fd489620`: 4131 passed / 20 skipped.
+  - **DA-R30 (decision ask — `earlier_target_terminal`'s producer set
+    narrower than A-432's parenthesis): CONFIRMED as implemented.** A-432
+    named "a refusal or an INCONCLUSIVE" as the terminal's producers; a
+    refusal renders the whole R3 claim payload-free (no per-target array
+    exists to carry the member, and a PARTIAL array whose terminal probe
+    has no entry would assert a target was never attempted when it was and
+    broke), so a refusal cannot produce this member — only an INCONCLUSIVE
+    can, with budget exhaustion owning its own distinct member. The
+    generation's reasoning is sound: A-432's parenthesis described the
+    conceptual causes, not a literal enumeration of wire producers, and the
+    as-shipped reading is the only one the schema shape can express. No
+    change; the two branch-local verifier defects the producer exposed
+    (`_check_r3_rederivation` treating a FAIL under `all` as terminal, and
+    applying status equality to a `BUDGET_EXCEEDED` claim) were correctly
+    fixed in scope, not filed — pre-existing code made wrong by a producer
+    this wave adds is this wave's to fix.
+  - **DA-R31 (disclosure — the migration-notes commit used a one-line
+    Python `replace()` instead of Edit, and DA-R29's exemption does not
+    quite cover it): noted, not undone.** DA-R29 exempted heredoc appends
+    of PURELY NEW text; this commit's diff (`+144/-10` in CONSUMERS.md)
+    shows it also corrected two PRE-EXISTING dangling anchors (a stale
+    heading spelling, a missing `(b)` in a link) — genuine edits to
+    existing content, the category DA-R29 reserves for the Edit tool. The
+    outcome is correct and gate-verified (a link check over three docs is
+    clean), so nothing is redone; the standing order is restated to
+    generation 13 and every future implementer without exception: an
+    insertion anchored inside an existing file, even when the bulk of the
+    change is new prose, goes through Edit — a scripted `replace()` is for
+    the narrow case of appending wholly after the file's last line.
+  - **Reviewer R-2 dispatched** (fresh Opus, never a fork) against
+    `93188912..a4528144` — R-1's own tip through the checkpoint above it —
+    in its OWN detached worktree/clone at `a4528144` (never the shared
+    `.worktrees/assay-wave-d-v10`, which generation 13 continues to use),
+    so its registered-gate run and generation 13's do not race for the
+    same files. Told DA-R19 (2N canary bound deliberate), DA-R21 (F015/R4
+    out of scope, wire-only), DA-R26 (`discarded` declared-not-verified),
+    DA-R28 (B004 continues behind it, out of R-2's range), the R-2 section
+    of the wave prompt as its push list, 3-round cap. Host rule: ONE gate
+    container across ALL agents (`docker ps` + `pgrep -af
+    tester-unified-gate.sh`, wait rather than race generation 13).
+  - **Generation 13 dispatched in parallel** (fresh Opus, BRIEF-12 seed,
+    DA-R1..R31) on the shared worktree, tip `a4528144`: B004 — the whole
+    carve, may span further generations, boundaries as BRIEF-12 lists them
+    (`{1,2}` `schema_version` parser → `judge.adjudication_dir` +
+    adjudicated-evidence lane surface → the adjudicator → the producers →
+    W2–W7), the conformance tripwire stays armed until a producer exists,
+    the migration-notes B004 subsection is AMENDED not rewritten when it
+    lands. E-008 checkpoint clause applies; wire-change-breaks-hand-fixtures
+    lesson (BRIEF-12) and the grep-before-touching-a-field discipline both
+    carried forward. Next ids **A-442 / B071**, re-check main every time.

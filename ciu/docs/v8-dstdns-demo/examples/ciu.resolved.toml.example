@@ -85,11 +85,11 @@ facts = []
 [resolved.gates.3]                               # before wave 4
 healthy = ["controller.controller"]
 completed = []
-facts = ["vault:secret/internal/internal_dlq_token@controller.controller"]   # worker_io's secret→minter edge (S8.3); probed through CIU's vault binding
-assumed = []                                     # remote facts accepted without a receipt would be listed here (S17.5)
+facts = ["vault:secret/internal/internal_dlq_token@controller.controller"]   # worker_io's secret→minter edge (S8.3): minter facts ARE gate facts (S8.5.2, draft.5); probed through CIU's vault binding
+assumed = []                                     # non-empty only under `ciu up --allow-assumed`: { kind, subject, provider, host, reason } per remote fact taken on reachability alone (S8.5.4, S17.5)
 # Remote providers (db_core, consul_server, redis_core, db_init on gstammtisch) are not gated here: their facts and completions
-# come from gstammtisch's RECEIPT when `ciu activate` carried it (`--receipts`, S17.4.3, S8.5.3); a hand-started `ciu up` without
-# one records them as `assumed` and WARNs. gstammtisch's own receipt carries healthy = ["consul_server.consul", "redis_core.redis",
+# come from gstammtisch's RECEIPT, which `ciu activate apply` carried (`--receipts`, S17.4.3, S8.5.3); a hand-started `ciu up`
+# without one is REFUSED unless --allow-assumed (S17.5). gstammtisch's own receipt carries healthy = ["consul_server.consul", "redis_core.redis",
 # "db_core.postgres", "db_core.minio", …], completed = ["db_core.postgres_init", "db_core.minio_init", "db_init.runner"],
 # facts = ["pg:db/dstdns", "pg:role/controller", "vault:secret/consul/controller/token", …].
 
@@ -285,9 +285,15 @@ store_entries = [
 
 # There is no closing marker table: the file is written atomically and is either complete or absent (S3.7.5, S14.4.2).
 #
-# After a successful `ciu up` this host also writes ciu.receipt.json (api = "ciu/receipt", S17.4.3):
-# { instance_id = "98535c", host = "rs1002", layout = "prod3", release_digest = "sha256:…", resolved_digest = "sha256:…",
-#   services = { "controller.controller" = "healthy", … }, completed = [], facts = ["vault:secret/internal/internal_dlq_token@controller.controller", …],
+# After a successful `ciu up` this host also writes ciu.receipt.json (api = "ciu/receipt", S17.4.3, draft.5):
+# { subject = { instance_id = "98535c", layout = "prod3", host = "rs1002", selection = { main_db = { level = "live", realization = "db_core", service = "postgres" }, … },
+#               release_digest = "sha256:…",            # the manifest digest (S17.3.1); a hand-started up carries plan_digest over the declaration files instead
+#               activation_id = "5d1c…" },              # minted by `ciu activate apply` for this activation; absent on a hand-started up
+#   subject_digest = "sha256:…",
+#   services = { "controller.controller" = { state = "healthy", container_id = "…", image_digest = "sha256:…", started_at = … }, … },
+#   completed = [],                                     # { container_id, exit_code, finished_at } per one-shot on this host
+#   facts = [{ fact = "vault:secret/internal/internal_dlq_token", provider_service = "controller.controller", observed_at = … }, …],
 #   publications = [...], assumed = [], created = 2026-09-03T11:09:40Z }
-# `ciu activate apply` carries it to the next host of the layout, which accepts these facts only when instance, layout and
-# resolved digest match its own render of rs1002 (S17.4.4).
+# `ciu activate apply` carries it to the next host of the layout, which accepts these facts only when the receipt's subject equals
+# its own (instance, layout, selection, release digest) AND the activation id is this activation's (S17.4.4) — nothing time- or
+# host-local (rendered_at, uids, physical paths) is compared, and a receipt from an earlier activation is stale by definition.
