@@ -372,3 +372,51 @@ controller's entries from the implementer's return onward; wave records
     instruction. The wave's merge commit carries the CURRENT attribution
     (Sonnet 5, this session's `Claude-Session` URL); nothing on the branch
     is rewritten.
+
+- **2026-09-03 (round 3: NOT ACCEPT — one real finding, everything else
+  driven to a genuine observation and PASS; RW-37; fix-and-reverify, no
+  round 4)** — Report `a5b2834a` on the branch
+  (`run-gate-WAVE-RESUMABLE-REVIEW-round3.md`). Six of seven checklist
+  items independently driven (not just read) and PASS: RW-27 with the
+  reviewer's own `FakeClock`, RW-28's promotion plus its RW-32 evidence
+  deviation across 17 tests, RW-29's foreign-namespace path driven live,
+  RW-25's core refusal, RW-30/31/26 re-measured directly against
+  `/workspaces/dstdns/run-gate.toml` (18 of 35, matching exactly), both
+  round-2 nits, and a fresh selftest on `661fde05` (host rule observed:
+  waited for a competing gate container) — `553 passed, 2 skipped` /
+  `diff-coverage OK: 494/494` / `exit 0`, matching package 2's own numbers
+  exactly.
+
+  **RW-37 (RW-35 was WRONG — confirmed a claim that is not true): fix,
+  narrowly, no new full round.** `load_inflight_record`
+  (`run-gate.py:1216-1218`) only refuses on `schema is not None and schema
+  != INFLIGHT_SCHEMA` — an ABSENT `schema` key skips that branch entirely
+  and, if `container` is present, the record is returned as if valid. The
+  reviewer found the actual failure is worse than the two alternatives
+  RW-35 weighed: a schema-absent record whose `commit` matches HEAD
+  reaches `resolve_inflight()` → `adopt_inflight_start()`
+  (`run-gate.py:1556`), which does a bare `pending["started_at"]`
+  subscript and raises an unhandled `KeyError` if that field is also
+  missing. SPEC.md:953 states the same false claim ("A record carrying no
+  `schema` key at all is not a versioned record but a corrupt one") — the
+  SPEC is right about intent, the CODE never implemented it; `--fresh` is
+  unaffected (it already reads via `.get()`). Independently reproduced by
+  the controller before ruling: `load_inflight_record` at
+  `run-gate.py:1216` confirmed to return the dict unchanged when `schema`
+  is absent; `adopt_inflight_start` confirmed to use a bare subscript, not
+  `.get()`.
+
+  **Fix, one line plus a regression test:** in `load_inflight_record`, an
+  absent `schema` key returns `None` (corrupt, matching SPEC.md:953 and
+  RW-35's original intent) BEFORE the mismatch branch runs — `schema is
+  None` is its own case, not folded into `schema != INFLIGHT_SCHEMA`. One
+  red-first test: a record with `container` set, `commit` matching HEAD,
+  no `schema` key, and no `started_at` — must not reach
+  `adopt_inflight_start` at all (returns `None`, so `resolve_inflight`
+  treats it as no record and runs fresh). This is round 3's own review
+  target, dispatched as a small, tightly-scoped fix — not a fourth full
+  adversarial round (the round-cap 3 is exhausted, and the reviewer itself
+  recommended fast fix-and-reverify over reopening the wave). The
+  controller verifies the diff and the selftest directly; no new reviewer
+  round is dispatched for a single-conditional, mechanically-checkable
+  fix with an exact reproduction already in hand.
