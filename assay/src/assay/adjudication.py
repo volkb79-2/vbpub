@@ -152,10 +152,18 @@ def evaluate_provenance(document_bytes: bytes, head: str) -> tuple[Outcome, Reas
         return Outcome.ERROR, ReasonCode.UNREADABLE_ARTIFACT
     try:
         document = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError, RecursionError):
         # Row 5: invalid JSON is "present but unreadable", the same
         # classification :func:`assay.attestation.parse_attestation` gives
-        # invalid JSON one tier over.
+        # invalid JSON one tier over. `RecursionError` (R-2/round-2) is a
+        # real member of this class, not a hypothetical: `json.loads` raises
+        # it -- as a genuine C-stack-depth check on current CPython, not
+        # merely `sys.getrecursionlimit()` -- for a pathologically nested
+        # document well inside `MAX_ADJUDICATION_BYTES`'s 1 MiB bound, so the
+        # loader's size limit alone does not exclude it. Legible-but-too-deep
+        # is "present but unreadable", the same as unparseable JSON, not a
+        # new terminal and not a raise this TOTAL function is allowed to let
+        # through.
         return Outcome.ERROR, ReasonCode.UNREADABLE_ARTIFACT
     if not isinstance(document, dict):
         # Row 6: legible JSON that is not the shape ciu's schema describes.

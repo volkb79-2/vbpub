@@ -208,6 +208,29 @@ def test_invalid_json_renders_unreadable_artifact():
     assert (outcome, reason_code) == (Outcome.ERROR, ReasonCode.UNREADABLE_ARTIFACT)
 
 
+def test_a_pathologically_deep_document_renders_unreadable_artifact_not_a_raise():
+    # R-2/round-2: the module docstring's TOTAL/"never raises" claim (and
+    # A-442's own restatement of it) covers "malformed, unreadable, absent,
+    # or non-green" -- but `json.loads` on a deeply nested structure can
+    # raise `RecursionError` (a `RuntimeError` subclass CPython now raises as
+    # a real C-stack-depth check, not merely `sys.getrecursionlimit()`),
+    # which the original `except (json.JSONDecodeError, ValueError)` clause
+    # does not catch. This document is 200,000 bytes -- comfortably inside
+    # `MAX_ADJUDICATION_BYTES` (1 MiB), the bound `load_adjudicated_evidence`
+    # already applies before a document ever reaches this function -- so a
+    # real (corrupted, truncated-then-repeated, or adversarial) capture at
+    # this depth is not excluded by the size bound alone; only this
+    # function's own parsing has to survive it. A 100,000-deep nested array
+    # is legible JSON to `json.loads` at reasonable depths and only fails at
+    # the C-stack boundary, which is exactly why this is "present but
+    # unreadable" (row 5), the same classification the sibling malformed-JSON
+    # test above gets, not a new terminal.
+    depth = 100_000
+    pathological = b"[" * depth + b"]" * depth
+    outcome, reason_code = evaluate_provenance(pathological, _HEAD)
+    assert (outcome, reason_code) == (Outcome.ERROR, ReasonCode.UNREADABLE_ARTIFACT)
+
+
 def test_legible_json_that_is_not_an_object_renders_format_mismatch():
     # N1: decoded CLEANLY -- "unreadable" would be a false diagnosis of a
     # document assay read perfectly well and judged to be the wrong shape.
