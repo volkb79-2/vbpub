@@ -72,11 +72,14 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     events HAVE been seen is a different fact and gets its own sentence
     naming the last event it held: it is silence, not "no events", so the
     stall clock keeps running rather than stopping forever.
-  - **Silence is measured from the watch's construction until the file first
-    moves under it**, and from each movement after that. A first observation
-    is a baseline, not movement — restarting the clock there would give a
-    container that was already frozen when this client re-attached a fresh,
-    full stall window.
+  - **Silence is measured from the last time the FILE moved** — on the first
+    observation that is `wall_now − mtime`, which for a re-attach is a
+    moment before this client existed; after that, from each movement. A
+    container already frozen when this client re-attached is as silent as
+    its file is old and stalls at once, while a lane whose first candidate
+    arrives after a long startup (provision, baseline suite, mutant
+    generation) gets its full window from that event rather than being
+    announced and killed by the same poll.
   - On a re-attach the file WATCHED, and the verdict path DISCLOSED, are the
     ones the inflight record names — the artifacts that run declared, not
     the ones this invocation's config would construct.

@@ -1140,15 +1140,26 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     load — a command lane writes no progress file, so the key could never do
     anything, and an inert key that reads like a real one is the defect
     `R-08a` was filed for one key over.
-    - **Where the silence is measured FROM.** Real movement restarts the
-      clock; the watch's FIRST observation does not. There is no earlier
-      event for a first observation to have moved from — it is the baseline
-      `R-40a` already calls it — and restarting the clock there would hand a
-      container that was ALREADY frozen when this client arrived a fresh,
-      full stall window. That is exactly the `R-39` re-attach case: the run
-      being judged started in another process, possibly hours ago. So
-      silence runs from the watch's construction until the file first moves
-      under it, and from each movement after that.
+    - **Where the silence is measured FROM: the FILE.** Real movement
+      restarts the clock; the watch's FIRST observation is not movement —
+      there is no earlier event for it to have moved from; it is the
+      baseline `R-40a` already calls it. Its age is therefore taken from the
+      file itself, `wall_now − mtime`, **which for a re-attach is a moment
+      before this client existed.** That answers both cases exactly: a
+      container ALREADY frozen when this client arrived is as silent as its
+      file is old and stalls at once (the `R-39` re-attach case — the run
+      being judged started in another process, possibly hours ago), while a
+      lane whose first candidate arrives after a long startup has an mtime
+      of ~now and gets its FULL window.
+      Seeding the clock from the watch's CONSTRUCTION instead — rev 34's
+      first cut — bought the first case at the price of the second, which is
+      the case `R-40` exists for: an assay mutation lane's startup is image
+      entry, `safe.directory`, a Postgres provision, collection, the
+      baseline suite and mutant generation, all before candidate #1, so a
+      lane declaring the `stall_timeout = "15m"` this spec recommends it was
+      announced and stopped by the SAME `poll()` (`candidate 1/172`
+      printed, then `has not advanced for 1200s`) — a self-refuting message
+      an operator reads only after `docker rm -f` has run.
     - **Which file, on a re-attach.** The one the RECORD names
       (`R-39a`'s `progress`), not the one this invocation's config would
       construct: it is the file that run was told to write, and a lane

@@ -7032,6 +7032,16 @@ def candidate(i: int, total: int = 172, **over) -> dict:
             "candidate_total": total, **over}
 
 
+def age_file(path: Path, seconds: float) -> None:
+    """Push a file's mtime `seconds` into the past. RW-27 measures the first
+    observation's silence from the FILE, so "this file has been frozen for
+    fifteen minutes" is a property of the file, not of the driven clock — and
+    a test that cannot express it cannot tell the re-attach case apart from
+    the slow-start one."""
+    stat = path.stat()
+    os.utime(path, (stat.st_atime, time.time() - seconds))
+
+
 class TestProgressWatch:
     """RG-36 / R-40. The arithmetic and the silence rule, on a driven clock.
     `budget` is advisory here and hard in assay, so the only bound a long
@@ -7140,24 +7150,59 @@ class TestProgressWatch:
         assert "has not advanced for 900s (stall_timeout 900s)" in stalled
         assert "last event seen: candidate 37/172" in stalled
 
-    def test_a_file_already_frozen_when_the_watch_starts_stalls_from_construction(
+    def test_a_file_already_frozen_when_the_watch_starts_stalls_from_its_mtime(
             self, tmp_path, capsys):
-        """Hollow test 6. The existing frozen-file case writes the file and
-        polls immediately, so an implementation that starts the silence clock
-        at the FIRST OBSERVED EVENT passes it unchanged. This one cannot: the
-        file is already there and never moves again, which is the re-attach
-        case R-39 adds — the run started in another process, possibly hours
-        ago, and a first poll that reset the clock would hand an already-dead
-        lane a fresh full stall window."""
+        """Hollow test 6, corrected by RW-27. The existing frozen-file case
+        writes the file and polls immediately, so an implementation that
+        starts the silence clock at the FIRST OBSERVED EVENT passes it
+        unchanged. This one cannot: the file was last written 900 s ago and
+        never moves again, which is the re-attach case R-39 adds — the run
+        started in another process, possibly hours ago, and a first poll that
+        reset the clock would hand an already-dead lane a fresh full stall
+        window. The AGE COMES FROM THE FILE (`wall_now - mtime`), not from
+        this client's construction: a client that has existed for two seconds
+        must still see 900 s of silence here."""
         clock = FakeClock()
         path = tmp_path / ".assay" / "progress-cw2b_schema.jsonl"
         write_progress(path, candidate(37))        # frozen BEFORE the watch
+        age_file(path, 900)                        # ...and frozen 900s ago
         watch = run_gate.ProgressWatch(path, "sql-mutation", 900, clock)
-        clock.advance(900)
         stalled = watch.poll()
-        assert stalled is not None, "the silence was measured from the poll"
+        assert stalled is not None, "the silence was measured from the client"
         assert "has not advanced for 900s (stall_timeout 900s)" in stalled
         assert "last event seen: candidate 37/172" in stalled
+
+    def test_a_slow_starting_lane_is_not_killed_by_the_poll_that_proves_it_alive(
+            self, tmp_path, capsys):
+        """RW-27 (review round 2, G1 — BLOCKER). Measuring silence from the
+        watch's CONSTRUCTION kills the exact lane RG-36 exists to serve: an
+        assay mutation lane's startup is image entry, `safe.directory`, a
+        Postgres provision, collection, the baseline suite and mutant
+        generation — all before candidate #1. With `stall_timeout = 15m` (the
+        value this wave recommends dstdns give `sql-mutation`) a first
+        candidate arriving at t+20m was announced and stopped by the SAME
+        `poll()`: `candidate 1/172` printed, then `has not advanced for
+        1200s`. The message refutes itself, and `docker rm -f` has already
+        run by the time anyone reads it.
+
+        The file is the authority: its mtime says the lane moved just now."""
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-cw2b_schema.jsonl"
+        watch = run_gate.ProgressWatch(path, "sql-mutation", 900, clock)
+        for _ in range(40):                        # 20 minutes of startup
+            clock.advance(30)
+            assert watch.poll() is None            # no file yet: never a stall
+        write_progress(path, candidate(1))         # the first candidate lands
+        clock.advance(30)
+        assert watch.poll() is None, \
+            "the lane was stalled on the poll that announced its first candidate"
+        out = capsys.readouterr().out
+        assert "run-gate: progress sql-mutation: candidate 1/172\n" in out
+        # ...and it gets its FULL window from that event, not a remainder.
+        clock.advance(899)
+        assert watch.poll() is None
+        clock.advance(1)
+        assert watch.poll() is not None
 
     def test_the_first_movement_under_the_watch_does_restart_the_clock(
             self, tmp_path, capsys):
