@@ -2666,3 +2666,124 @@ canary loop (which is also the ONE authorised edit to W6: the hand-authored
 `multi-target-r3-v10-template.json` is replaced by real output and the
 MANIFEST corrected), and CONSUMERS' "Migration notes (v9 → v10)" LAST — now
 forward-referenced from three places, all of which dangle until it exists.
+
+## Generation 11 — B053's `detail` PRODUCERS (A-439)
+
+**Seeded by BRIEF-10.** DA-R27's order for what remained: B053 `detail`
+producers → B004 `PROVENANCE_UNVERIFIED` producer → B007 multi-target canary
+loop → CONSUMERS "Migration notes (v9 → v10)". This generation landed the
+FIRST of the four and cut at the E-008 boundary. **No decision asks.**
+
+### B053 (c) — the producers (A-439), commit `d0e212e2`
+
+**The design question this item actually posed, and how it was answered.**
+A-428 fixed the field, the bound, the presence rule and the truncation end;
+it did not fix the MECHANISM by which the wire's sentence becomes a byte copy
+of the stream's. A per-site `detail=str(exc)[:2048]` literal satisfies the
+words and fails the intent: fifteen sites each re-deriving a bound is fifteen
+chances to apply it differently, and `Claim._check_detail` then rejects a
+legal run. The mechanism chosen instead is that **`announce_refusal` RETURNS
+the bounded sentence it just printed** — so the line and the field are ONE
+expression evaluated ONCE at ONE site, and a site that wanted them to
+disagree would have to compose the message twice deliberately.
+
+**Two sites cannot take that return and say so in a comment.** The deferred
+equivalence-artifact refusal (A-414) builds its claim BEFORE the announcement
+— the claim may be discarded first — and the R3 claim an R2 orchestration
+fault also refuses must not print a second line. Both call
+`verdict.refusal_detail(str(exc))`, which is literally the expression the
+emitter evaluates, on the same error object.
+
+**Acceptance, with file:line evidence.**
+
+| B053 box | disposition | evidence |
+|---|---|---|
+| **(c) the wire `detail` field** | **[x]** | field + bound from the cut: `src/assay/verdict.py:2931` (`detail_dropped_bytes`), `Claim._check_detail` at `verdict.py:3055-3084`, `verify.py:2371-2392`. Producers this commit: `verdict.RefusalDetail` + `verdict.refusal_detail` (new, beside `CLAIM_DETAIL_BYTES = 2048` at `verdict.py:431`); `runner.announce_refusal` returns it; ~17 conversion sites + `cli.py`'s four |
+| the copy is BYTE-identical to the stream's | **[x]** | structural (one expression per site) and asserted: `tests/test_refusal_announcement.py::test_the_emitter_returns_exactly_the_sentence_it_printed`, plus five end-to-end tests that compare the DOCUMENT's `detail` against the sole announced line's message |
+| per CLAIM, not per verdict | **[x]** | `test_a_whole_lane_refusal_puts_one_sentence_on_every_declared_level` (R0 and R1 both carry it); the R2-fault/R3 pair carries one sentence on two claims from one announcement |
+| absent on `PASS` | **[x]** | `test_a_run_that_refused_nothing_carries_no_detail_anywhere`, in the model AND in `to_dict()`; `test_the_r1_conversion_site_...` asserts the PASSING R0 claim beside a refusing R1 has neither key |
+| the 2048-BYTE bound, head kept, count exact | **[x]** | `test_truncation_keeps_the_head_and_counts_the_bytes_it_dropped`; and a REAL over-bound refusal end to end: `test_a_refusal_longer_than_the_bound_is_cut_on_the_wire_and_whole_on_the_stream` (140 stray files) |
+| the cut lands on a codepoint boundary | **[x]** | `test_the_cut_lands_on_a_codepoint_boundary_and_never_inside_a_character` — a 2050-byte message cutting at 2047, no U+FFFD, and the result accepted by `Claim` |
+
+**Measured: the sites, and the two that changed behaviour.**
+
+* `_report_probe_refusal` lost its `if diagnostics is None: return` early
+  exit. It composes and returns unconditionally now and guards only the
+  printing. That early return made "no line on my stream" and "no cause in my
+  document" a single decision, and they are not the same decision.
+* `cli.py`'s four `refuse_lane` sites announce BEFORE building the artifact
+  rather than after. The observable order is unchanged: `refuse_lane` writes
+  to no stream.
+
+**What deliberately did NOT get a `detail`, and why it is checkable rather
+than a judgement call.** A FAILING R0 claim — a command that exited nonzero —
+carries none. It is a MEASUREMENT, not a refusal; no `AssayError` composed a
+sentence for it, and `announce_refusal` printed no line. The presence rule is
+exactly "where the emitter produced text", which is why the control test can
+assert it. Likewise the three R1 `NO_MEASUREMENT` fixtures that did NOT
+change (`branch_unavailable`, `missing_external_tool`, `target_not_measured`):
+those claims come from R1's own guard sequence with no refusing error behind
+them.
+
+**The three fixtures that DID change, and the placeholder rule.**
+`tests/fixtures/verdicts/r1_no_measurement_{dirty_tree,base_is_head,empty_coverage}.json`
+gained the field. `empty_coverage`'s sentence is a literal and is written down
+whole. The other two name a per-run temporary source root and an abbreviated
+revision, so they carry `<SOURCE_ROOT>`/`<HEAD12>` and the new
+`_fixture_with` helper fills them **from facts the test created**, never from
+the artifact under comparison — which would make the field compare against
+itself. The whole-document `assert document == fixture` comparison is
+preserved; `_fixture_with` asserts the placeholder is present, so a reworded
+message that dropped it fails rather than silently substituting nothing.
+
+**The wire-shape grep, before the gate (BRIEF-10 §3's standing rule).**
+`detail` over `gate/` and `tools/` → two hits, both prose
+(`gate/python/qualify_topos.py:1093` "implementation detail";
+`tools/tester-unified-gate.sh:579`, the comment describing the v10 acceptance
+suite). No gate harness reads, compares or asserts the field.
+`qualify_topos.py`'s six refusal scenarios (`_check_missing_profile`,
+`_check_dirty_consumer`, `_check_base_is_head`, `_check_command_dirt`,
+`_check_command_head_move`, `_check_wrong_source_root`) assert `(outcome,
+reason_code)` pairs only. Its two `compare_complete_artifact` calls are
+against `p25-pass-v10-template.json` and `p25-missing-v10-template.json`,
+neither of which is a refusal artifact. **W6's frozen templates are fed to
+`verify_document` as STATIC documents** by `test_acceptance_v10.py`, and
+`detail` is optional — so no W6 asset needed amending, and none was amended.
+W1..W5 are untouched.
+
+### What a reviewer should push on
+
+1. **The `RefusalDetail`-as-one-value choice.** It is threaded through
+   `refuse_lane` → `_refuse_lane_with_plan` and
+   `_replace_highest_higher_rigor_claim_with_git_failed` as a single optional
+   parameter rather than a `(text, count)` pair. The argument is that
+   `_check_detail` refuses either half alone, so a value that cannot be split
+   cannot be half-threaded. Push on whether any call path can now reach a
+   claim with one half.
+2. **The two `refusal_detail(str(exc))` sites.** They are the only places
+   where byte-identity rests on an argument rather than on a shared
+   expression result. Both are commented; verify the errors really are the
+   same objects the announcements use.
+3. **`_report_probe_refusal`'s lost early return.** Confirm nothing now
+   prints when `diagnostics is None` (the tails loop is guarded).
+4. **The `cli.py` reordering.** Confirm the four sites' stream ordering is
+   genuinely unchanged.
+5. **The fixture placeholders.** Push on whether `_fixture_with` weakens the
+   hand-written oracle.
+
+### What generation 11 did NOT do, and why
+
+* **B004, B007 and the CONSUMERS migration notes are NOT started.** B004 is
+  not the small tripwire edit the brief's summary line suggests: `src/assay/`
+  has no image-provenance adjudicator at all (`provenance.py` is B018's JUDGE
+  provenance), so A-430 (1)+(2) are on the wire but (4)'s lane surface
+  (`judge.adjudication_dir`, the `adjudicated` evidence declaration), the
+  `schema_version` `{1, 2}` parser and every producer of the code remain to be
+  built, along with the carve's W2-W7 and the re-captured ciu assets. That is
+  not an item to start ~30 tool calls before a checkpoint, and the E-008
+  clause forbids starting one that cannot be finished. **The
+  `EXCLUDED_ENTIRELY` tripwire at `tests/test_verdict_conformance.py:221-227`
+  is therefore still in place and must stay in place** until the producer
+  exists — removing it now would assert a producer that is not there.
+* No second `!` commit; `LANE_SCHEMA_VERSION` stays 2; `inventory_schema`
+  stays 1; no module renames; W1..W6 untouched; M7 stays PLANNED.

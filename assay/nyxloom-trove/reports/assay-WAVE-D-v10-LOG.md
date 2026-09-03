@@ -1668,3 +1668,54 @@ this lands the code that fills it.
   no longer says the document carries no free-text cause.
 - Targeted suites green while iterating; no full-suite run on this commit
   (the checkpoint's single run covers it).
+
+### 36. `docs(assay): Wave D generation 11 checkpoint -- B053 producers gate-green, BRIEF-11`
+
+- **Registered gate GREEN on `d0e212e2`** (B053/A-439), read in a separate
+  step from `<scratchpad>/gate-gen11a.log`: `GATE_EXIT=0` (exactly one), one
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, **zero** `FAILED|DIRTY_TREE|Traceback`,
+  wheel **`assay-4.1.1.dev38+gd0e212e2-py3-none-any.whl`** (the judged
+  commit), twelve phases: `wheel-installed`, `attestation-hardened`,
+  `verdict-v5-accepted`, `lane-schema-v2-successors-verified`,
+  `verdict-v6-v7-v8-v9-hard-cut-verified`,
+  **`verdict-v10-successors-verified`**,
+  `judge-provenance-bound-to-the-installed-wheel`, `self-hosted-lane-passed`,
+  `topos-qualified`, `cmru-b006a-qualified`,
+  `independent-self-hosting-passed`, `pyflakes-clean`. The container was
+  capped to 3 CPUs on the FIRST poll iteration; no `tester-unified:local`
+  container and no `tester-unified-gate.sh` process was running when it
+  launched (host load 3.24). The long-lived `assay-p34w9-*` postgres
+  containers were checked and are 10-hour-old leftovers, not a gate run.
+- Full local suite, once, serial, at the checkpoint: **4103 passed, 20
+  skipped**, 412 s. Generation 10's run was 4091/20 — the delta is exactly
+  this generation's twelve new tests.
+- **No gate on THIS commit, deliberately** (records only; the gate-verified
+  commit stays **`d0e212e2`**), on the precedent generations 6-10 set for
+  their docs-only checkpoints.
+- **Checkpoint taken at the boundary the E-008 clause ranks HIGHEST: a green
+  registered gate.** No half-done item is left behind — B053 is complete and
+  B004 was not started.
+- **B004 was deliberately NOT started, and the reason is a correction to
+  BRIEF-10's framing.** BRIEF-10 §4.2 reads as though B004 is mostly the
+  removal of one `EXCLUDED_ENTIRELY` entry. It is not: `src/assay/` contains
+  no image-provenance adjudicator at all (`provenance.py` is B018's JUDGE
+  provenance). A-430 (1) and (2) are on the wire; (3)'s `{1, 2}`
+  `schema_version` parser, (4)'s `judge.adjudication_dir` +
+  `adjudicated`-evidence lane surface, the `mismatch → NO_MEASUREMENT`
+  mapping and every producer are not, along with the carve's W2-W7. The
+  E-008 clause forbids starting an item that cannot be finished before the
+  cut. **The tripwire at `tests/test_verdict_conformance.py:221-227` is
+  therefore still armed and must stay armed until the producer exists** —
+  removing it now would assert a producer that is not there. BRIEF-11 §4.1
+  says this at length so generation 12 does not re-plan it from the summary.
+- **Five of the eight post-cut items are done; three remain** in DA-R27's
+  order: B004 `PROVENANCE_UNVERIFIED` producer → B007 multi-target canary
+  loop → CONSUMERS "Migration notes (v9 → v10)". **Nothing is blocked**, and
+  generation 11 raises no decision asks.
+- One forward reference ADDED, recorded so it is not left dangling:
+  `docs/CONSUMERS.md`'s retitled refusal-line section now links
+  `(#migration-notes-v9--v10)` **by anchor**. The migration-notes item now has
+  FOUR referrers, not three, and the heading spelling must match that anchor.
+- Ids: **A-439** allocated (next free **A-440**); no B-id allocated (next
+  free **B071**). `main` re-checked before the decision: backlog high-water
+  **B068**. Main wins on ids at merge.
