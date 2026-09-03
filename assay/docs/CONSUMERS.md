@@ -1293,8 +1293,8 @@ tolerated — and `assay verify` re-derives that same PASS by reading the floor
 FROM the document rather than assuming one. Up to schema v9 a lower floor was
 refused at load, because v9 had no field that could record WHICH floor
 applied; that refusal is gone with the field that replaced it, and only the
-`0.0..100.0` range check remains. (**B050**, schema v10 — see the migration
-notes.)
+`0.0..100.0` range check remains. (**B050**, schema v10 — see the
+[migration notes](#migration-notes-v9--v10).)
 
 **The status map**, each direction chosen for the visible-failure side:
 
@@ -1330,7 +1330,8 @@ assay's finding.** Assay derives the number at ingest, by counting the
 `CompileError`/`RuntimeError` mutants the report itself *lists*; `assay
 verify` then checks that the wire value is an integer and is not negative,
 and nothing else. That is the whole check, and it is deliberate (**B051**,
-schema v10 — see the migration notes). A discarded mutant is, by that same
+schema v10 — see the [migration notes](#migration-notes-v9--v10)). A
+discarded mutant is, by that same
 "listed" definition, absent from the document: it is in no mutation bucket,
 it is in neither `candidate_count` nor `total`, and its line is not in
 `lines_without_candidates` — so a truthful report that discarded 900 mutants
@@ -1396,7 +1397,7 @@ all three — run the mutation tool inside the lane, against the committed tree,
 so the report assay reads is the one this commit produced. A measured file the
 commit does not track at all is the same refusal, for the same reason: "the
 commit has no such content" is the strongest content mismatch there is.
-(**B052**, this release — see the migration notes.)
+(**B052**, this release — see the [migration notes](#migration-notes-v9--v10).)
 
 ## Browser coverage of a UI as an R1 lane
 
@@ -1604,7 +1605,7 @@ A gate wrapper reads this the way `assay run` would, without running it:
   `[lanes.<n>.isolation] link_paths` list, `[]` when the lane declared none.
   A non-empty list tells a gate that this lane's snapshot will NOT be purely
   committed objects — see [Linking a dependency closure into the
-  snapshot](#linking-a-dependency-closure-into-the-snapshot-link_paths-b041b).
+  snapshot](#b-linking-a-dependency-closure-into-the-snapshot-link_paths-b041b).
 
 `inventory_schema` stays `1`: it changes when an EXISTING key's meaning
 changes, never merely because a new key was added — which is why `cwd`,
@@ -1765,6 +1766,138 @@ has nothing to do with your product: land the pin one commit and the schema bump
 commit in between either runs a v1 assay against a v2 file (rejected as an unknown key) or a v2
 assay against your still-v1 file (rejected as a missing `[isolation]` table) — a self-inflicted
 outage with a one-line fix that is obvious only once you already know why the gate went red.
+
+## Migration notes (v9 → v10)
+
+Verdict schema v10 is a **hard cut**, exactly as v9 was over v8: `assay verify`
+refuses a v9 document with one version-only diagnostic and reads nothing
+downstream of it. There is no dual-version verifier, no compatibility writer
+and no upgrade-in-place. Every consumer pins its own release, so nothing
+re-points until it re-pins — these notes are what you re-pin against.
+
+**`assay.toml` does not move.** Lane `schema_version` stays **2**, every
+addition below is additive and optional, and every lane file that loads today
+loads byte-unchanged. `assay lanes --json`'s `inventory_schema` stays **1**.
+So the migration is: re-pin, re-run, and read the four paragraphs below that
+apply to the lanes you actually declare.
+
+**A Python or Go lane that declares R0/R1 (and R2 natively) is unchanged.**
+Nothing in this cut touches the fields such a lane produces. If you declare no
+R3 canary, ingest no foreign mutation report, and read no refusal payload, the
+only difference you will observe is the `schema_version` number itself.
+
+### If you declare an R3 canary: a one-element `targets` list
+
+The singular `judgment.r3.target` does **not** survive, and neither does the
+flat `canary` body. A lane that declares one probe now renders:
+
+```json
+"judgment": {"r3": {"mechanism": "import-break", "targets": ["pkg/mod.py"]}},
+"claims": [{"rigor": "R3", "canary": {"mechanism": "import-break",
+  "attempts": [{"target": "pkg/mod.py", "description": "...",
+                "disposition": "attempted", "control_outcome": "PASS",
+                "transformed_outcome": "FAIL",
+                "expected_reason_code": "COMMAND_FAILED",
+                "observed_reason_code": "COMMAND_FAILED"}]}}]
+```
+
+**Your lane file does not change**, and neither does the judgement it gets: a
+one-element `targets` array and a one-element `attempts` array is the whole
+migration, and such a lane records **no** `aggregation` (with one probe `any`
+and `all` denote the same function, so recording one would state a policy the
+lane never declared). If you consume the canary payload, move from
+`claim.canary.target` to `claim.canary.attempts[0].target` and expect the
+per-attempt `disposition`. Declaring several probes is new and optional — see
+[Declare more than one canary probe](#declare-more-than-one-canary-probe-targets-and-aggregation-b007).
+
+### If you ingest a mutation report: `judgment.r2.fail_under`, and two new refusals
+
+**`judgment.r2.fail_under` is now REQUIRED** on an ingested R2 document and
+**FORBIDDEN** on a native one. It is spelled byte-identically to
+`judgment.r1.fail_under`. Nothing is required of you: assay writes it, and
+`assay verify` reads the floor FROM the document instead of assuming `100.0`.
+What it unlocks is that `judge.mutation.fail_under` may now be any value in
+`0.0..100.0` — up to v9 anything but `100.0` was refused at load, because v9
+had no field that could record which floor applied. Every ingested lane that
+could have produced a v9 document declared `100.0`, so that is the value a
+migrated document carries.
+
+**`judgment.r2.discarded` is declared, not verified.** Assay counts what the
+foreign report itself lists and copies the number; `assay verify` checks that
+it is a non-negative integer and nothing else. Read it as the tool's word. It
+can never move a status — it is outside the score's denominator by
+construction.
+
+**Two refusals are new, and both can turn a lane that was green on v9 red on
+v10 without your product changing:**
+
+* **the ingested report must be about the judged commit's own CONTENT.** For
+  every measured file, assay reads the committed blob back through the
+  snapshot the lane's command ran in and compares it with the `source` the
+  report embeds; a mismatch is `ERROR`/`UNREADABLE_ARTIFACT` naming the file.
+  A CRLF checkout is fine (line endings are folded, one trailing newline
+  ignored); a **reformatted or transpiled** source is not. The remedy is
+  always the same: run the mutation tool inside the lane, against the
+  committed tree.
+* **a self-contradicting istanbul record now costs you that file, not the
+  verdict** — and, when the file IS judged, it refuses
+  `ERROR`/`UNREADABLE_ARTIFACT` naming the file and the arc line. Through
+  4.1.0 the whole artifact was refused; the disposition is now per file, and a
+  file this lane does not judge is dropped with a line on the diagnostics
+  stream. If you narrowed `coverage.include` to work around the old behaviour,
+  you can widen it back — but a judged file with a contradicting record still
+  refuses.
+
+### If you read refusals: `claim.detail` is now on the wire
+
+A non-PASS claim may carry `detail` (the refusing sentence) and
+`detail_dropped_bytes` beside it. The pair is all-or-nothing, a PASS claim
+carries neither, and the text is bounded at 2048 UTF-8 bytes with the head
+kept. **Nothing is required of you** — the field is optional and additive.
+It is **declared, not verified**: assay copies the sentence it printed and
+never parses it. The closed `(outcome, reason_code)` pair remains the only
+machine-readable statement in the document; a gate that pattern-matches
+`detail` is reading diagnosis as policy.
+
+### Reserved on the wire, producer pending: adjudicated image provenance (B004)
+
+`PROVENANCE_UNVERIFIED` joins the `NO_MEASUREMENT` reason-code set and
+`RED_FIRST_UNPROVEN` joins the `FAIL` set at this cut. **Both are RESERVED**
+— the `MISSING_EXTERNAL_TOOL` pattern this project has used since A-013 — and
+are rendered by their own producers in a later release. **If you keep your own
+copy of the reason-code vocabulary, add both members now**; a consumer that
+enumerates the codes and refuses the unknown will otherwise break on the
+release that starts producing them.
+
+One narrowing lands with them and is worth checking against any evidence you
+declare today: `evidence[].source = "adjudicated"` now implies
+`verified_by_assay: false` in **both** the model and the JSON Schema. Up to v9
+the adjudicated branch left that an unconstrained boolean, so a Tier-2 result
+could ship `true` and be legal in both layers, reading as computed.
+
+The lane shape the producer will take is **designed and not yet available** —
+do not write it into a lane file against this release, which refuses
+`source = "adjudicated"` at load:
+
+```
+[lanes.<name>.judge]
+adjudication_dir = "artifacts/adjudicated"
+evidence = [{ source = "adjudicated", key = "image-provenance" }]
+```
+
+The document it will read is produced by your own harness, on the host, before
+the container starts:
+
+```sh
+ciu provenance --json > "$PROJECT/artifacts/adjudicated/image-provenance.json" || true
+```
+
+**The `|| true` is load-bearing.** `ciu provenance --json` exits **2** on
+`overall: "mismatch"` while still writing a complete, valid document to
+stdout. The document, never the exit code, is the evidence — a mismatch is
+what assay reads as `NO_MEASUREMENT`/`PROVENANCE_UNVERIFIED`, which says assay
+could not establish WHICH artifact the tests ran against. That is the absence
+of a measurement, not a failed one: it must never read as "the code is bad".
 
 ## Practices that prevent the failures we actually hit
 
@@ -2235,7 +2368,7 @@ The extents in it are spelled the way your `.out` file spells them, so they
 can be grepped against the artifact directly. **Since 4.2.0 you get that text
 from `assay run` too** — on stderr, as the one refusal line described under
 ["When a lane refuses, read the one stderr
-line"](#when-a-lane-refuses-read-the-one-stderr-line--the-document-does-not-carry-the-sentence)
+line"](#when-a-lane-refuses-read-the-one-stderr-line--and-since-schema-v10-the-same-sentence-in-the-document)
 (B053) — **and, since schema v10, in the document as `claim.detail`** on the
 refusing claim, byte-identical to that line's message. The reason code is
 still the only thing to gate on; the sentence naming the disagreeing extents

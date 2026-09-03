@@ -15,10 +15,10 @@ next schema cut", and cutting a version per field is the mistake this project
 wrote B007's sequencing note to prevent.
 
 **Every consumer pins its own `.pyz`, so nothing re-points until it re-pins;
-these notes are what it re-pins against.** The full "Migration notes
-(v9 → v10)" section lands in `docs/CONSUMERS.md` with the rest of this wave,
-once the items that ride this bump have their own refusals to describe. The
-short form:
+these notes are what it re-pins against.** The full
+[Migration notes (v9 → v10)](docs/CONSUMERS.md#migration-notes-v9--v10)
+section in `docs/CONSUMERS.md` says what a consumer actually does about each
+one, lane by lane. The short form:
 
 - **`judgment.r2.fail_under`** — REQUIRED under `producer = "ingested"`,
   FORBIDDEN under `"native"`, spelled byte-identically to
