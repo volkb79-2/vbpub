@@ -6,8 +6,17 @@ lanes on hosts other than the one you are sitting at: enrolling a host as a
 Buildkite agent, giving this host access to trigger and collect, and how the
 result plugs into run-gate, assay and ciu. Written 2026-09-02; the Buildkite
 commands were read from the vendor's docs that day and are quoted as found —
-**verify the apt channel and the API paths once against the live docs before
-the first enrollment**, they are the two things most likely to have moved.
+**verify the apt channel once against the live docs before the first
+enrollment**, it is the thing most likely to have moved. The REST paths in §4
+were re-read from the vendor docs on 2026-09-03 and are what
+`tools/buildkite/bk-lane.sh` actually calls.
+
+The two seams that need no remote host — the pipeline generator (§3) and the
+trigger/collector (§4) — are now written and tested without a network: both
+`--dry-run` and the live code path of every `bk-lane.sh` verb (`run`'s seven
+terminal states, its wait budget, and `collect`'s downloads and refusals)
+against a stubbed `curl`. **No build has ever been created against the real API and no artifact
+downloaded from it** (§6). The artifacts contract, seam 1, is still just docs.
 
 The decision this implements is **D-110.4** (dstdns decisions, 2026-08-20):
 long and asynchronous lanes are additional `run-gate.toml` lanes with large
@@ -122,29 +131,103 @@ second host with its own token, name and queue.
 ## 3. The pipeline
 
 One pipeline per repository (`vbpub`, later `dstdns`). Its stored
-configuration is two lines:
+configuration is one step — it generates the real steps and uploads them:
+
+```yaml
+env:
+  RUN_GATE_QUEUE: "gate-<host-a>"
+steps:
+  - label: ":pipeline: lanes"
+    agents:
+      queue: "gate-<host-a>"
+    command: |
+      run-gate-project/tools/buildkite/pipeline.sh run-gate-project > "${TMPDIR:-/tmp}/pipeline.yml" &&
+      buildkite-agent pipeline upload "${TMPDIR:-/tmp}/pipeline.yml"
+```
+
+Three things about those lines, each of which was wrong in an earlier draft:
+
+- **Generate to a file, then upload the file — and put that file outside the
+  checkout.** `buildkite-agent` runs a command with `bash -e -c` and *not*
+  `-o pipefail`, so `pipeline.sh | upload` would discard the generator's exit
+  status: its exit 2 — the refusal contract this whole section rests on —
+  would be swallowed and the pipeline would upload whatever reached the pipe.
+  Two statements joined by `&&`, no pipe, no subtlety: a refusal fails the
+  step. The file goes to `${TMPDIR:-/tmp}` rather than the checkout root
+  because `git status --porcelain` — what run-gate's `check_clean_tree` and
+  its dirty-run detection both read — reports untracked files, so a stray
+  `pipeline.yml` in the checkout would fail every `clean_tree` lane on that
+  host and mark every run dirty in the RG-27 trend series. The agent's default
+  `git-clean-flags` (`-ffxdq`) happens to sweep it today; a custom clean flag
+  or checkout hook (§2 already sets `hooks-path`) would not.
+- **The upload step names a LITERAL queue**, the enrollment host's. The
+  generator job has to run *somewhere*, and with no `agents:` it lands on an
+  arbitrary agent — or on none, sitting in `scheduled` forever, if the default
+  queue has no agent. Pinning it to one known host is the only honest default.
+  This does not pin the *lanes*: a build that overrides `RUN_GATE_QUEUE` still
+  runs its generator step here, and the steps it generates carry the override's
+  queue, so the work goes to the other host.
+- **`RUN_GATE_LANES`, when the build carries one, is inherited** by this step
+  from the build's environment, so the generator sees it with no further
+  plumbing. **A build's own env overrides the pipeline's**, which is what
+  `BK_QUEUE` uses in §4.2.
+
+(The paths are vbpub's: the script and the project directory it is asked about
+are both `run-gate-project/…`.)
+
+**`run-gate-project/tools/buildkite/pipeline.sh` is that generator, and it is
+written** (seam 2 in §6; tested by `tests/test_buildkite_tools.py`). It reads
+`./run-gate.py --list` — the stable, machine-readable lane listing that
+`CONSUMERS.md`'s anti-goals name as the ONLY way a consumer may read lane
+metadata — and prints, on stdout, one step per selected lane. It never opens
+`run-gate.toml`, starts no container, makes no network call and takes no
+`--dry-run`: running it *is* the rehearsal, because output is all it does.
+
+```
+usage: pipeline.sh [PROJECT_DIR]        (default: .)
+       pipeline.sh --help
+```
+
+`PROJECT_DIR` is the directory holding `run-gate.py`, **as the agent will see
+it** relative to the checkout root: it is used both to invoke `--list` here and
+verbatim inside the emitted `command` and `artifact_paths` (a plain `.` emits
+neither a `cd` nor a path prefix). Its environment contract:
+
+| variable | required | meaning |
+|---|---|---|
+| `RUN_GATE_QUEUE` | **yes** | the agent queue (`gate-<host>`); also names the concurrency group. Unset or empty → exit 2 naming it, never a default |
+| `RUN_GATE_LANES` | no | space-separated lane names. A name the listing does not show → exit 2 naming it (and listing what it does show). Empty/unset → every lane, see below |
+| `RUN_GATE_TIMEOUT_MINUTES` | no | per-step timeout, default 300; must be a positive integer |
+
+Exit 0 means the document was emitted; **exit 2 is always a refusal** — bad
+environment, unknown lane, a project with no executable `run-gate.py`, a
+`--list` that failed, or a listing that no longer matches the three-column
+contract the generator was written against (`name<TAB>kind<TAB>environment`,
+verified against `run-gate.py` rev 33 `cmd_list()`). It refuses rather than
+guesses: a fourth column would mean the contract moved.
+
+**`--list` cannot say which lanes are remote-capable — there is no such
+column** — and inventing one in the generator would be exactly the second
+parser of `run-gate.toml` the anti-goal forbids. So an empty `RUN_GATE_LANES`
+selects **every** lane the listing shows (both of run-gate's kinds, `command`
+and `assay`); a build that wants a subset names it. If a remote-capability
+column is ever wanted, it belongs in `--list` itself, as a run-gate change.
+
+A generated step — every key the generator emits, in the order it emits them,
+with `<project>` standing in for the `PROJECT_DIR` argument and `gate-alpha`
+for whatever `RUN_GATE_QUEUE` held:
 
 ```yaml
 steps:
-  - label: ":pipeline: lanes"
-    command: "tools/buildkite/pipeline.sh | buildkite-agent pipeline upload"
-```
-
-`tools/buildkite/pipeline.sh` (not written yet; see §6) parses
-`./run-gate.py --list` — the stable, machine-readable lane listing that
-`CONSUMERS.md`'s anti-goals name as the ONLY way a consumer may read lane
-metadata — and emits one step per lane the build asks for. The shape of a
-generated step:
-
-```yaml
-  - label: "run-gate: mutation on <host>"
+  - label: "run-gate: mutation on gate-alpha"
     command: "cd <project> && ./run-gate.py mutation"
     agents:
-      queue: "gate-<host>"
+      queue: "gate-alpha"
     concurrency: 1
-    concurrency_group: "gate/<host>"
+    concurrency_group: "gate/gate-alpha"
     timeout_in_minutes: 300
     artifact_paths:
+      - "<project>/.assay/*"
       - "<project>/.assay/**/*"
       - "<project>/.run-gate/history.json"
     env:
@@ -153,22 +236,34 @@ generated step:
 
 Three of those lines carry the doctrine:
 
-- `concurrency: 1` + `concurrency_group: "gate/<host>"` is the
+- `concurrency: 1` + `concurrency_group: "gate/$RUN_GATE_QUEUE"` is the
   one-container rule, enforced by the queue for every trigger, not by
-  agents remembering it.
+  agents remembering it. One queue per host means one group per host.
 - `command` is the same argv every other consumer uses. No CI-only script
   runs the tests; if the lane is wrong, it is wrong for everyone and fixed
   once.
 - `artifact_paths` is the contract by which the result travels back: the
   verdict, the progress file and the evidence directory under `.assay/`, and
-  the RG-27 history entry. A lane that should run remotely declares
-  `artifacts = [...]` in its `run-gate.toml` entry so the paths are stated
-  in one place (`LANE-AUTHORING.md` §5).
+  the RG-27 history entry. **The three globs are FIXED.** The generator cannot
+  see what a lane declared in `artifacts = [...]` — `--list` does not carry it,
+  and reading `run-gate.toml` is the forbidden second parser — so a declared
+  artifact that lives outside `.assay/` or `.run-gate/` **does not travel**.
+  vbpub's own `run-gate-project/selftest` is exactly that case: its
+  `artifacts = ["coverage.json"]` matches none of the three globs. **The
+  authoring rule that makes these fixed globs sufficient is
+  `LANE-AUTHORING.md` §5: a remote-capable lane keeps every artifact it wants
+  back under `.assay/`** — follow it and nothing is lost; ignore it and the
+  generator cannot help, because it may not read `run-gate.toml`. (RG-45's
+  `--list --json` form could one day carry `artifacts` and remove the rule.)
+  `.assay/*` sits beside
+  `.assay/**/*` as insurance for a file directly in `.assay/` — the progress
+  file is one — because whether zglob's `**` covers that has not been seen on a
+  live build.
 
 Which lanes a build runs is an input, not a fixed list: pass
-`RUN_GATE_LANES="mutation nightly-properties"` in the build's `env` and let
-the generator select; an empty value means every lane the project marks for
-remote execution.
+`RUN_GATE_LANES="mutation nightly-properties"` in the build's `env` (which is
+exactly what `bk-lane.sh run` does, §4) and let the generator select; an empty
+value means every lane the listing shows, per the paragraph above.
 
 ---
 
@@ -184,42 +279,116 @@ umask 077; printf '%s\n' '<token>' > ~/.config/buildkite/api-token
 curl -fsS -H "Authorization: Bearer $(cat ~/.config/buildkite/api-token)" https://api.buildkite.com/v2/user
 ```
 
-**4.2 Trigger a build for a commit (synchronous use).** From the REST API as
-read on 2026-09-02: `POST /v2/organizations/{org}/pipelines/{pipeline}/builds`
-with `commit` and `branch` required; poll
-`GET …/builds/{number}` until `state` leaves `scheduled`/`running`
-(`passed`, `failed`, `canceled`, `blocked` are terminal for our purposes).
+**4.2 `bk-lane.sh` — trigger, wait, collect.** The sketch that used to sit here
+is now a real script, `run-gate-project/tools/buildkite/bk-lane.sh` (seam 4 in
+§6). It only creates builds and reads their results: the lane still runs as
+`./run-gate.py <lane>` on the agent, and this script never opens
+`run-gate.toml` — lane *selection* travels as the build's
+`env.RUN_GATE_LANES`, which the §3 generator then reads.
 
-```bash
-#!/usr/bin/env bash
-# bk-lane.sh — trigger one run-gate lane on a remote host and wait for it. UNTESTED SKETCH.
-set -euo pipefail
-org=<org>; pipeline=vbpub; commit=$(git rev-parse HEAD); lanes=${1:?lane names}
-tok=$(cat ~/.config/buildkite/api-token)
-api=https://api.buildkite.com/v2/organizations/$org/pipelines/$pipeline/builds
-number=$(curl -fsS -X POST "$api" -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' \
-  -d "{\"commit\":\"$commit\",\"branch\":\"$(git rev-parse --abbrev-ref HEAD)\",\"message\":\"run-gate: $lanes\",\"env\":{\"RUN_GATE_LANES\":\"$lanes\"}}" \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["number"])')
-echo "build $number for $commit"
-while :; do
-  state=$(curl -fsS "$api/$number" -H "Authorization: Bearer $tok" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')
-  case $state in scheduled|running|waiting) sleep 30 ;; *) echo "state: $state"; break ;; esac
-done
+```
+bk-lane.sh [--dry-run] run <lane>...                  create a build for HEAD, wait
+bk-lane.sh [--dry-run] status <build-number>          print the build's state
+bk-lane.sh [--dry-run] collect <build-number> <dir>   download the artifacts
+bk-lane.sh --help
 ```
 
-**4.3 Collect artifacts.** The build's job objects carry an `artifact_url`;
-the artifacts endpoint under the build lists files with a download URL each.
-The collector (§6) downloads `.assay/**` for the commit into a local
-commit-addressed directory and hands the verdict to whoever asked: run-gate's
-history store for the lane, a `.assay-inbox/`-style drop for dstdns (the
-pattern its release notifications already use), or assay's Tier 3 ledger for
-fuzz findings.
+- `run` takes `commit` and `branch` from git in the current work tree (a
+  detached HEAD is refused — Buildkite requires a branch), POSTs the build with
+  `env.RUN_GATE_LANES` set to the named lanes, then polls
+  `GET …/builds/{number}` every `BK_POLL_SECONDS` until the state is terminal.
+  **Terminal states: `passed`, `failed`, `canceled`, `blocked`, `skipped`,
+  `not_run`, `waiting_failed`.** A lane name may not start with `-`, and
+  `--dry-run` is honoured anywhere in the arguments — `run --dry-run lint` is a
+  dry run, not a real build for a lane called `--dry-run`.
+- `collect` reads the build (for its commit), lists its artifacts, and
+  downloads each into `<dir>/<commit>/<artifact path>` — commit-addressed, so a
+  late result can still be matched to what produced it. **Both** path
+  components are checked before anything is written: an artifact path that is
+  absolute or holds a `..` component is refused, and so is a `commit` outside
+  `[A-Za-z0-9._-]` — it is a free-form field of the build response ("Ref, SHA
+  or tag"), and a `../..` there would write outside `<dir>`.
+- `status` prints the state and exits 0.
 
-**4.4 Asynchronous use.** Fire the build and do not wait: the result is the
-artifact, keyed by commit. A later `bk-lane.sh --collect <commit>` (or the
-collector on a timer) fetches it. Buildkite's own notifications can post to
-a webhook, but this host has no public endpoint, so polling by commit is the
-honest first design.
+**Exit codes — the whole contract, on every path:**
+
+| code | means |
+|---|---|
+| 0 | the verb did what it says (for `run`: the build passed) |
+| 1 | the build did not pass — a terminal state other than `passed`, and **nothing else** |
+| 2 | refused: every refusal, including a malformed or short API response and either path component above |
+| 3 | gave up waiting (`BK_MAX_WAIT_MINUTES`); the message names the build number and last state, and the build is still out there for `status`/`collect` |
+
+| variable | required | meaning |
+|---|---|---|
+| `BK_ORG` | **yes** | organization slug; no default |
+| `BK_PIPELINE` | **yes** | pipeline slug; no default |
+| `BK_TOKEN_FILE` | no | default `~/.config/buildkite/api-token`; **must be mode 0600 or the script refuses** (exit 2, naming the mode it found) |
+| `BK_POLL_SECONDS` | no | poll interval for `run`, default 30 |
+| `BK_MAX_WAIT_MINUTES` | no | `run` only: how long to keep polling, default 300 (the §3 step's own timeout). Exceeded → **exit 3**, naming the build number and last state. The budget counts the time the script spends *sleeping between polls*; **every request is separately bounded** — API reads (create, poll, status, artifact listing) by total time, `--connect-timeout 10 --max-time 120`, and artifact downloads by stall instead, `--connect-timeout 10 --speed-time 60 --speed-limit 1024` — and the budget is compared *before* each sleep, so the true wall-clock bound is `BK_MAX_WAIT_MINUTES` + one `BK_POLL_SECONDS` + one 120 s request: a long poll interval overshoots the budget by up to one interval (`BK_MAX_WAIT_MINUTES=1 BK_POLL_SECONDS=600` sleeps the full 600 s before giving up), which is the honest bound, and nothing can hang the caller. Without the budget, a build parked in `scheduled` (a mistyped `BK_QUEUE` is the way in — no queue is validated against a live agent) spins a `GET` forever |
+| `BK_QUEUE` | no | `run` only: sent as `env.RUN_GATE_QUEUE` in the create-build body beside `RUN_GATE_LANES`. A build's env overrides the pipeline's (§3), so this moves ONE run to another host's queue with no pipeline edit; unset, the key is not sent at all and the pipeline's default queue stands |
+
+Dependencies are `bash`, `coreutils`, `git`, `curl` and `python3` (stdlib
+`json` only). **`jq` is deliberately not assumed** — the hosts do not need a
+second install to be usable.
+
+The REST paths it uses, verified against the vendor docs on 2026-09-03:
+
+```
+POST /v2/organizations/{org.slug}/pipelines/{pipeline.slug}/builds
+GET  /v2/organizations/{org.slug}/pipelines/{pipeline.slug}/builds/{build.number}
+GET  /v2/organizations/{org.slug}/pipelines/{pipeline.slug}/builds/{build.number}/artifacts
+```
+
+The third is "List artifacts for a build" from
+<https://buildkite.com/docs/apis/rest-api/artifacts>, read 2026-09-03; each
+artifact object in the response carries `id`, `job_id`, `url`, `download_url`,
+`state`, `path`, `dirname`, `filename`, `mime_type`, `file_size` and `sha1sum`
+(the deprecated `glob_path`/`original_path` are `null`). The collector uses
+`path` and `download_url` and nothing else.
+
+**What has actually been run.** Two things, neither of which reaches
+Buildkite. `--dry-run` prints every curl invocation the verb would make — with
+the bearer token replaced by `<redacted>` — and makes **no** network call. And
+the live code path runs in `tests/test_buildkite_tools.py` against a `curl`
+(and `sleep`) stub on `PATH`, which is what covers the exit codes for all seven
+terminal states, the wait budget, the two containment guards and a download
+landing under `<dir>/<commit>/`. No test in this repo touches the network or
+Buildkite. **But no build has ever been created against the real API, and no
+artifact downloaded from it** — a stub is not a service. Treat the first real
+`bk-lane.sh run` as the first test of the network path, and start it on the
+cheapest lane (§8).
+
+```bash
+BK_ORG=<org> BK_PIPELINE=vbpub ./tools/buildkite/bk-lane.sh --dry-run run selftest
+```
+
+**4.3 Collect artifacts.** `bk-lane.sh collect <build-number> <dir>` downloads
+whatever the build actually uploaded — which is whatever the §3 step's three
+fixed globs matched — into `<dir>/<commit>/…`. The intent is the verdict, the
+progress file and the evidence directory under `.assay/`, plus the RG-27
+`history.json`; **that the progress file (directly inside `.assay/`) is among
+them is to be verified on the first live build**, since it depends on how
+Buildkite's zglob treats `**`, which is why `.assay/*` is emitted alongside
+`.assay/**/*`. An artifact a lane declares outside those prefixes does not come
+back at all (§3) — `LANE-AUTHORING.md` §5 is the rule that keeps them inside.
+A download is bounded by **stall, not by total time** (`--speed-time 60
+--speed-limit 1024`, and deliberately no `--max-time`): a transfer moving at
+under 1 KiB/s for a minute fails, while a large evidence directory that keeps
+moving finishes however long it takes — a total cap would have failed exactly
+the artifacts most worth collecting. Handing the verdict onward is
+still a manual step and is deliberately NOT in the script: run-gate's history
+store for the lane, a `.assay-inbox/`-style drop for dstdns (the pattern its
+release notifications already use), or assay's Tier 3 ledger for fuzz findings.
+
+**4.4 Asynchronous use.** Fire the build and do not wait — `bk-lane.sh run`
+prints the build number before it starts polling, so an operator (or a later
+session) can `Ctrl-C` and come back with `status` and `collect` against that
+number. The result is the artifact, keyed by commit. Buildkite's own
+notifications can post to a webhook, but this host has no public endpoint, so
+polling is the honest first design. Collecting by *commit* rather than by build
+number would need a build search (`GET …/builds?commit=…`); that is not
+implemented, and `collect` takes the build number for now.
 
 ---
 
@@ -255,16 +424,22 @@ carries no secret; the base image is public already.
 
 ---
 
-## 6. Integration seams (nothing implemented yet, in build order)
+## 6. Integration seams (in build order)
 
-| # | seam | owner | shape |
-|---|---|---|---|
-| 1 | Artifacts contract | run-gate (docs) + each lane | every remote-capable lane declares `artifacts` covering `.assay/<lane>/**`, `.assay/progress-<lane>.jsonl`, `.run-gate/history.json`; one `artifact_paths` glob per step |
-| 2 | Pipeline generator | `run-gate-project/tools/buildkite/pipeline.sh` | consumes `./run-gate.py --list` only (no second parser of `run-gate.toml`); emits the step shape in §3; selects by `RUN_GATE_LANES` |
-| 3 | Image provenance | `tester-unified/` cmru project, `run-gate.toml` central config | build-from-checkout first; GHCR publish via `oci-image-push` later; `image_digest` key in the environment table (new RG item) |
-| 4 | Trigger + collector | `bk-lane.sh` on the controller host | create, wait or return, collect by commit into a commit-addressed directory; feed run-gate history with a `host` field (new RG item) and dstdns's inbox |
-| 5 | Async evidence | assay Tier 3 (A-O08 shape) | fuzz findings and nightly campaign verdicts land as attested, commit-bound evidence; assay proves staleness, never truth |
-| 6 | Stack-needing lanes on a remote host | ciu (v8 `ciu gate`, or v7 `ciu up` today) | the Buildkite step runs `ciu` LOCALLY on that host under the agent user; ciu stays the local orchestrator, Buildkite the trigger |
+**Seams 2 and 4** are the ones that need no remote host, and they have landed —
+tested with no network, no Buildkite account and no container
+(`tests/test_buildkite_tools.py`: `--dry-run` plus the live path against a
+stubbed `curl`), and nothing here has yet run against a live agent or the real
+API. **Seam 1 has not landed** (below). Seams 3, 5 and 6 are untouched.
+
+| # | seam | owner | status | shape |
+|---|---|---|---|---|
+| 1 | Artifacts contract | run-gate (docs) + each lane | **docs seam, not started** (E5-R5) | the generator's two `.assay/` globs plus `.run-gate/history.json` are FIXED, and they are its only executable evidence; **no lane in the estate declares the set** (every `artifacts =` in the repo today is a single file, and `run-gate-project/selftest`'s own `coverage.json` matches none of the globs), and a lane's declared `artifacts` outside `.assay/` and `.run-gate/` do not travel. The authoring side of the reconciliation has landed — **`LANE-AUTHORING.md` §5 requires a remote-capable lane to keep every artifact it wants back under `.assay/`**, which is what makes the fixed globs sufficient — but no lane declares such a set yet, so the seam itself has not started; RG-45's `--list --json` could later expose `artifacts` and retire the rule |
+| 2 | Pipeline generator | `run-gate-project/tools/buildkite/pipeline.sh` | **landed (no live build yet)** | consumes `./run-gate.py --list` only (no second parser of `run-gate.toml`); emits the §3 step shape; selects by `RUN_GATE_LANES`; refuses (exit 2) an unknown or duplicated lane, a missing `RUN_GATE_QUEUE`, a leading-zero timeout, or a listing wider than the three documented columns |
+| 3 | Image provenance | `tester-unified/` cmru project, `run-gate.toml` central config | not started | build-from-checkout first; GHCR publish via `oci-image-push` later; `image_digest` key in the environment table (new RG item) |
+| 4 | Trigger + collector | `run-gate-project/tools/buildkite/bk-lane.sh` on the controller host | **landed (no live build yet)** | `run` creates + waits (exit 3 when `BK_MAX_WAIT_MINUTES` runs out), `status` reads, `collect` downloads into a commit-addressed directory with both path components gated; token file must be 0600; exit codes 0/1/2/3 as §4.2 states. Still open: feeding run-gate history with a `host` field (new RG item), dstdns's inbox, and lookup by commit instead of build number (§4.4) |
+| 5 | Async evidence | assay Tier 3 (A-O08 shape) | not started | fuzz findings and nightly campaign verdicts land as attested, commit-bound evidence; assay proves staleness, never truth |
+| 6 | Stack-needing lanes on a remote host | ciu (v8 `ciu gate`, or v7 `ciu up` today) | not started | the Buildkite step runs `ciu` LOCALLY on that host under the agent user; ciu stays the local orchestrator, Buildkite the trigger |
 
 Before seam 3 or 6 is designed, measure the two hosts: cores, RAM, Docker
 version, whether they carry production, their outbound network policy, and
@@ -298,9 +473,19 @@ push/activate/`ciu ssh` surface later). The two uses do not interfere:
 - [ ] `buildkite-agent` in the docker group; `docker ps` works as that user.
 - [ ] Image present (§5, build from checkout) and `./run-gate.py doctor`
       clean from a fresh clone on the host.
-- [ ] Pipeline created with the two-line upload step; first build runs the
-      cheapest lane (`lint` or `selftest`) and its artifacts appear.
-- [ ] API token on this host at `~/.config/buildkite/api-token`, `bk-lane.sh`
-      triggers and waits for that lane.
+- [ ] Pipeline created with the §3 generator-upload step and `RUN_GATE_QUEUE`
+      set; `RUN_GATE_LANES=selftest run-gate-project/tools/buildkite/pipeline.sh
+      run-gate-project` first checked by eye on this host — it needs no agent.
+- [ ] First build runs the cheapest lane (`lint` or `selftest`) and its
+      artifacts appear. **Check which ones did**: the globs are fixed (§3), so
+      note whether a file directly inside `.assay/` came back — that is the
+      open zglob question §4.3 names — and whether anything the lane declared
+      outside `.assay/`/`.run-gate/` is missing, as it will be.
+- [ ] API token on this host at `~/.config/buildkite/api-token`, mode 0600;
+      `bk-lane.sh --dry-run run selftest` inspected, THEN the same command
+      without `--dry-run` — **this is the first live exercise of that script**
+      (§4.2), so read its output rather than trusting it.
+- [ ] `bk-lane.sh collect <number> <dir>` fetches that build's artifacts —
+      also a first live exercise.
 - [ ] Second host enrolled the same way with its own queue; two builds for
       two hosts run concurrently, two builds for one host do not.
