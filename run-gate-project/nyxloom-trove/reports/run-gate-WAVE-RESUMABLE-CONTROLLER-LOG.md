@@ -228,3 +228,47 @@ controller's entries from the implementer's return onward; wave records
   to `REMOTE-LANES-BUILDKITE.md` only) — that agent touches none of the
   files this wave edits, starts no container, and is folded into CHANGES
   and the backlog (RG-41..44) by the controller after 23.4.0 merges.
+
+- **2026-09-03 (fix SUCCESSOR returned — every ruling landed at `21e6bbea`,
+  selftests green, live probe both scenarios PASS; RW-23..RW-26; reviewer
+  round 2 dispatched)** — Verified in a separate step: `selftest-succ-0.log`
+  on the inherited tip `e87007cc` `505 passed, 2 skipped` /
+  `diff-coverage OK: 342/342` / `exit 0` (the independent read the previous
+  entry owed), and `selftest-succ-3.log` on `21e6bbea` `538 passed, 2
+  skipped` / `diff-coverage OK: 452/452` / `exit 0`; eighteen commits since
+  main, tree clean, `__revision__ = 34`. Landed: RW-15 `a8dc5ebc`, RW-20
+  `cb6104a4`, RW-17 `86f7f7b4`, RW-18 `ffc64903`, RW-19 `d7e280ce`
+  (+ RW-21's `R-39e` sentence; RW-22 confirmed), records `21e6bbea`.
+  Red-first proven for RW-15/18/19/20 (seven cases); RW-17's red at the
+  seam with an honest note. Live probe under the host rule, transcripts in
+  the REPORT: scenario 1 — A exits 0 with its true result, B prints
+  `following … (owner pid N, started …)`, ONE `docker run`, ONE `rm`, ONE
+  history entry (at `73e6b061` the same shape gave A exit 3); scenario 2 —
+  kill -9, re-attach as owner, replay from `FIRST-LINE-AT-START`, container
+  clock duration. Two findings beyond the rulings, both accepted: hollow
+  test 6 hid a real defect (silence was measured from the first OBSERVED
+  event, so an already-frozen container got a fresh window on re-attach;
+  now from the watch's construction), and RW-14's stateful fake docker
+  interleaved two clients' argv lines (~1 in 15 flake; one `write()` per
+  line now). One intermediate gate went red because the implementer edited
+  files while it ran — RG-39's own trap, re-measured clean.
+  - **RW-23 (ask 1 — RW-18 applied to the follow and `--fresh --dry-run`
+    branches): confirmed.** The rule is "the dry run names the real
+    outcome on every branch"; both branches were this wave's own.
+  - **RW-24 (ask 2 — silence measured from the watch's construction):
+    confirmed.** A container already frozen when a client re-attaches has
+    been silent at least that long; SPEC R-40 says so in one sentence.
+  - **RW-25 (ask 3 — an unknown-schema inflight record): REFUSE, do not
+    degrade.** Degrade-and-overwrite lets an older client destroy a newer
+    client's record — the exact loss RG-35 exists to end. Exit 2 naming
+    both schema numbers and the remedy (upgrade run-gate; or `--fresh`
+    when the record's container name is readable; else the record path to
+    delete). Lands in the post-round-2 fix package (or as one commit
+    verified at merge if round 2 has no findings).
+  - **RW-26 (ask 4 — RG-34's box shape): close RG-34 as FIXED** (run-gate's
+    half is the `doctor` WARN, shipped); the `scale-admission` hit is the
+    dstdns notification's business and a dstdns filing, not an unticked
+    box run-gate can never tick. Same package as RW-25.
+  - **Reviewer round 2 dispatched** (the round-1 reviewer's session, cap
+    3) on `21e6bbea`: every round-1 finding re-reproduced, new-defect hunt
+    on the owner-liveness edges, one selftest, report as its only file.

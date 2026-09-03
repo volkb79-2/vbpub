@@ -156,3 +156,14 @@ dstdns D-110.4. Rulings here are E5-Rn.
   `--max-time`), API calls keep the 120 s cap; two arrays, the sweep test
   split; one sentence each in header/usage/§4.2/§4.3. Round 2 (same
   reviewer) on that commit's tip.
+
+- **2026-09-03 (E5-R16 landed at `ef8396df`; reviewer round 2 dispatched)**
+  — Two curl bound arrays (`CURL_API_BOUNDS` = `--connect-timeout 10
+  --max-time 120`; `CURL_DOWNLOAD_BOUNDS` = `--connect-timeout 10
+  --speed-time 60 --speed-limit 1024`, no `--max-time`); the sweep test
+  splits API lines from the download line and asserts the download line
+  carries NO `--max-time`; §4.3 says a moving evidence directory finishes
+  however long it takes. 66 tests, shellcheck style-clean, scope exact.
+  Round 2 (same reviewer) on `ef8396df`: every round-1 demonstration
+  re-run, the docs-truth table, a fresh hollow-test hunt on the PATH-stub
+  harness. After ACCEPT: merge `--no-ff` to main, no release.
