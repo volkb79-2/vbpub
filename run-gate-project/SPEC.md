@@ -185,16 +185,34 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     message: it is the one misplaced key whose remedy really is deletion,
     because the value that governs the lane lives in the consumer's
     `assay.toml`, not one level up. Both checks run BEFORE the generic one.
-  - **Measured consumer impact (2026-09-02, parsed with this loader over
-    every lane of `/workspaces/dstdns/run-gate.toml`, not text-grepped):**
-    **13 of 29** dstdns lanes refuse at load on `pins.assay.budget`, and
-    **four** of those (`assay-dlq`, `assay`, `sql-mutation`,
+  - **Measured consumer impact — a number with a DATE, and the command that
+    re-takes it.** **18 of 35 dstdns lanes as measured on 2026-09-03** refuse
+    at load on `pins.assay.budget` (13 of 29 on 2026-09-02; dstdns merged the
+    `assay-p166-result-dedup` family in between, five more lanes carrying the
+    same key). A hard-coded count of a peer repo's config cannot stay true
+    between a review and a merge, so this spec states the measurement, not a
+    fact — re-take it from `run-gate-project/` with:
+
+    ```sh
+    python3 -c 'import importlib.util as I, tomllib, pathlib
+    s = I.spec_from_file_location("rg", "run-gate.py"); rg = I.module_from_spec(s); s.loader.exec_module(rg)
+    L = tomllib.loads(pathlib.Path("/workspaces/dstdns/run-gate.toml").read_text())["lanes"]
+    def refuses(n, t):
+     try: rg._validate_lane(n, t, "run-gate.toml"); return False
+     except rg.GateError: return True
+    r = [n for n, t in L.items() if refuses(n, t)]
+    print(len(r), "of", len(L), "dstdns lanes refuse at load:", ", ".join(r))'
+    ```
+
+    The migration's SHAPE is the durable part and it does not move with the
+    count: **four** lanes (`assay-dlq`, `assay`, `sql-mutation`,
     `assay-p129-enumeration-cursor`) also carry `clean_tree = false` in the
-    same misplaced position. The migration is therefore TWO rounds: the
-    `budget` refusal fires first and masks the `clean_tree` one. The four
-    inert `clean_tree = false` lines are a live consumer defect this check
-    just discovered — those lanes have been running `clean_tree = true` all
-    along.
+    same misplaced position, so the migration is TWO rounds — the `budget`
+    refusal fires first and masks the `clean_tree` one (re-measured
+    2026-09-03 by deleting every `pins.*.budget` and re-loading: those same
+    four, unchanged). Those four inert `clean_tree = false` lines are a live
+    consumer defect this check discovered — the lanes have been running
+    `clean_tree = true` all along.
 
 - `R-09` Environment resolution: project `[environments.<name>]` shadows the
   central one entirely (same name = project wins, no field merging); an

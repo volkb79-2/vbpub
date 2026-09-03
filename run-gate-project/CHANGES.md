@@ -41,19 +41,39 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
        been running with the default; deleting a misplaced
        `clean_tree = false` makes that silent default permanent, which is
        the opposite of what the line was written to say.
-  - **Measured consumer impact (2026-09-02, parsed with the rev-34 loader
-    over every lane, not text-grepped):** **13 of 29** dstdns lanes refuse
-    at load — `assay-dlq`, `assay`, `sql-mutation`,
-    `assay-p129-enumeration-cursor`, `worker-execution-admission`,
+  - **Measured consumer impact — a number with a DATE, and the command that
+    re-takes it.** **18 of 35 dstdns lanes as measured on 2026-09-03**,
+    parsed with this loader over every lane, not text-grepped: `assay-dlq`,
+    `assay`, `sql-mutation`, `assay-p129-enumeration-cursor`,
+    `worker-execution-admission`,
     `worker-execution-admission-r2-{compare,boolop,flips,falsy}`,
-    `assay-p169-op-override-projection`, and
-    `assay-p169-op-override-projection-r2-{compare,boolop,falsy}`. Four of
-    them (`assay-dlq`, `assay`, `sql-mutation`,
-    `assay-p129-enumeration-cursor`) also carry `clean_tree = false` under
-    `[lanes.<n>.pins.assay]`, where it has been inert all along — those four
-    lanes have been running with `clean_tree = true`, which is a live dstdns
-    defect this check just found, not a run-gate change. No vbpub-estate
-    `run-gate.toml` declares any of it (all eleven parsed).
+    `assay-p169-op-override-projection`,
+    `assay-p169-op-override-projection-r2-{compare,boolop,falsy}`,
+    `assay-p166-result-dedup`, and
+    `assay-p166-result-dedup-r2-{compare,boolop,flips,falsy}`. It was 13 of
+    29 on 2026-09-02; dstdns merged the `assay-p166-result-dedup` family in
+    between, five more lanes carrying the same key. A hard-coded count of a
+    peer repo's config ages between a review and a merge, so re-take it
+    rather than trusting this line — from `run-gate-project/`:
+
+    ```sh
+    python3 -c 'import importlib.util as I, tomllib, pathlib
+    s = I.spec_from_file_location("rg", "run-gate.py"); rg = I.module_from_spec(s); s.loader.exec_module(rg)
+    L = tomllib.loads(pathlib.Path("/workspaces/dstdns/run-gate.toml").read_text())["lanes"]
+    def refuses(n, t):
+     try: rg._validate_lane(n, t, "run-gate.toml"); return False
+     except rg.GateError: return True
+    r = [n for n, t in L.items() if refuses(n, t)]
+    print(len(r), "of", len(L), "dstdns lanes refuse at load:", ", ".join(r))'
+    ```
+
+    The migration's SHAPE does not move with the count: four of them
+    (`assay-dlq`, `assay`, `sql-mutation`, `assay-p129-enumeration-cursor`)
+    also carry `clean_tree = false` under `[lanes.<n>.pins.assay]`, where it
+    has been inert all along — those four lanes have been running with
+    `clean_tree = true`, which is a live dstdns defect this check found, not
+    a run-gate change (re-measured 2026-09-03: still exactly those four). No
+    vbpub-estate `run-gate.toml` declares any of it (all eleven parsed).
 
 ### Added
 - **RG-36 — liveness judged from the progress file, not from a guessed wall

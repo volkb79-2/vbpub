@@ -1,7 +1,10 @@
 # run-gate wave "resumable, observable gate" — implementer LOG
 
 Append-only. One entry per commit / gate / decision, with measured numbers.
-Wave prompt: `run-gate-project/nyxloom-trove/WAVE-PROMPT-2026-09-02-resumable-gate.md`.
+Wave prompt:
+`/workspaces/vbpub/run-gate-project/nyxloom-trove/WAVE-PROMPT-2026-09-02-resumable-gate.md`
+— **in the MAIN checkout, not on this branch** (RW-31; see the correction
+entry at the end of this file).
 Branch `feature/run-gate-wave-resumable`, forked from `main` at `f6d3a858`.
 Target: run-gate 23.4.0, `__revision__ = 34`.
 
@@ -417,3 +420,62 @@ expressible, selftest on the COMMITTED tip only (RG-39).
   asked for). Re-run with the pattern fixed and the client logs moved out of
   the judged tree; both transcripts are in the REPORT, the invalid one
   labelled as such.
+
+---
+
+## Fix round 2 — fresh implementer session (2026-09-03)
+
+Inherited tip `4a7a490b` (review round 2's report on top of the
+implementation tip `21e6bbea`), tree clean. Package: RW-27, RW-29, RW-28,
+RW-25, RW-30, RW-31, RW-26 plus the two round-2 nits. `__revision__` stays
+34; its note is extended where a ruling changes what it claims.
+
+### Correction to the round-1 N5 entry (RW-31 / review round 2 G5)
+
+The 2026-09-02 entry for RW-19/N5 lists "wave-prompt path stated as the main
+checkout's" among the corrections it made. **That half did not land.** It is
+appended here rather than rewritten there, because a log that edits its own
+past claims is worse than one that carries the correction: `REPORT:5` and
+`LOG:4` both still gave
+`run-gate-project/nyxloom-trove/WAVE-PROMPT-2026-09-02-resumable-gate.md`
+with no qualifier, and that file does not exist on this branch
+(`run-gate-project/nyxloom-trove/` holds `reports/` alone). Both now give
+`/workspaces/vbpub/run-gate-project/nyxloom-trove/WAVE-PROMPT-2026-09-02-resumable-gate.md`
+and say **in the MAIN checkout, not on this branch**. The other half of N5
+(the verbatim CONSUMERS transcript) was correctly done and the reviewer
+verified it.
+
+### Landed
+
+| commit | ruling | evidence |
+|---|---|---|
+| `43d66ba8` | **RW-27** (G1, blocker) | red: `has not advanced for 1230s` printed beside `candidate 1/172` by the same `poll()` — the reviewer's self-refuting pair, verbatim |
+| `d16d9380` | **RW-29** (G3) | red in two steps (helper first, conjunct second) so the red is behavioural: `re-attached to run-gate-planted` for a foreign-namespace record, and `--fresh` exiting 0 after `rm -f`-ing another client's container |
+| `7fd45793` | **RW-28** (G2) | red: the promotion disclosure absent, and `(followed — the owning client preserves the evidence)` on a run this client had to clean up |
+| `3af55353` | **RW-25** | red: `main(["suite"])` returned 0 having started its own container over the unreadable record; `--fresh` said "nothing to remove" |
+| `713887fc` | nits N-a, N-b | red proven by reverting both seams in place: `(record, None) == (record, 2914229)`, and no `progress mutation: candidate 41/172` line |
+
+### Re-measured for RW-30 (2026-09-03, this branch's loader)
+
+```
+18 of 35 dstdns lanes refuse at load: assay-dlq, assay, sql-mutation,
+assay-p129-enumeration-cursor, worker-execution-admission,
+worker-execution-admission-r2-{compare,boolop,flips,falsy},
+assay-p169-op-override-projection,
+assay-p169-op-override-projection-r2-{compare,boolop,falsy},
+assay-p166-result-dedup,
+assay-p166-result-dedup-r2-{compare,boolop,flips,falsy}
+round 2 (every pins.*.budget deleted): 4 of 35 still refuse — assay-dlq,
+assay, sql-mutation, assay-p129-enumeration-cursor
+RG-34 doctor hit, re-parsed: 1 — scale-admission
+```
+
+Matches the reviewer's independent measurement exactly. The counts now
+travel with their date and with the command that re-takes them, in CHANGES,
+SPEC `R-08a`, the backlog and the REPORT's notification.
+
+### Gates (verdicts read in a separate step, on committed tips)
+
+- After RW-27, tip `43d66ba8`, `scratchpad/selftest-pkg2-1.log`:
+  `539 passed, 2 skipped` / `diff-coverage OK: 453/453 changed executable
+  lines covered (100.0% ≥ 100.0% floor)` / `run-gate: lane 'selftest' exit 0`.

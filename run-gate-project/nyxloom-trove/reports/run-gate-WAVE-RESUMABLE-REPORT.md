@@ -2,8 +2,12 @@
 
 Branch `feature/run-gate-wave-resumable` (forked from `main` at `f6d3a858`),
 target run-gate 23.4.0 / `__revision__ = 34`. Wave prompt:
-`run-gate-project/nyxloom-trove/WAVE-PROMPT-2026-09-02-resumable-gate.md`
-(rulings RW-1..RW-8). Blow-by-blow: `-LOG.md` beside this file.
+`/workspaces/vbpub/run-gate-project/nyxloom-trove/WAVE-PROMPT-2026-09-02-resumable-gate.md`
+— **in the MAIN checkout, not on this branch**, where
+`run-gate-project/nyxloom-trove/` holds `reports/` alone (RW-31; the
+unqualified path here is what review round 2's G5 found the LOG claiming was
+already corrected). Rulings RW-1..RW-8. Blow-by-blow: `-LOG.md` beside this
+file.
 
 ## What landed
 
@@ -219,6 +223,12 @@ behaviour test; the review's probes are the red-first tests where the
 pre-fix tip expresses the wrong behaviour.
 
 ## Corrected dstdns notification (RW-13, RW-19/S7)
+
+> **SUPERSEDED 2026-09-03 by "dstdns notification, re-measured" at the
+> end of this file (RW-30).** The counts below were true on 2026-09-02 and
+> are not any more: dstdns merged the `assay-p166-result-dedup` family in
+> between. The migration's SHAPE (two rounds; move `clean_tree`, do not
+> delete it) is unchanged and still correct.
 
 Everything below is PARSED with the rev-34 loader over every lane of
 `/workspaces/dstdns/run-gate.toml` (29 lanes), not text-grepped. Re-measured
@@ -464,3 +474,166 @@ scratch repo deleted by the EXIT trap.
    than the one it was filed from. Confirm that is the record you want,
    rather than closing RG-34 outright and filing the `scale-admission` hit
    as a note in the dstdns notification only.
+
+---
+
+# Fix round 2 (after adversarial review round 2), 2026-09-03
+
+Fresh implementer session. Rulings **RW-27 (G1, the blocker), RW-29 (G3),
+RW-28 (G2), RW-25, RW-30 (G4), RW-31 (G5), RW-26**, plus both round-2 nits.
+Round-2 tip reviewed was `21e6bbea`; this package starts at `4a7a490b` (the
+review report on top of it).
+
+| commit | ruling | one line |
+|---|---|---|
+| `43d66ba8` | **RW-27** (G1) | silence is measured from the FILE's mtime on the first observation, not from the client's construction |
+| `d16d9380` | **RW-29** (G3) | the PID-namespace inode joins the owner conjunction; another namespace = liveness UNKNOWN = ALIVE |
+| `7fd45793` | **RW-28** (G2) | a follower that outlives its owner is promoted and finishes the three duties |
+| `3af55353` | **RW-25** | an inflight record of another schema is REFUSED (exit 2), never disclosed-and-overwritten |
+| `713887fc` | nits **N-a**, **N-b** | a `null` recorded artifact falls back to the config; `repoll_owner_race` seeds `owner` from the caller's pid |
+
+## "As ruled" — RW-25 … RW-31
+
+- **RW-27 (G1) — as ruled.** Seeded from the FILE. On the first observation
+  the age is `wall_now − mtime` (the mtime `_newest()` already read and threw
+  away on that path), so a re-attached frozen file stalls at once — RW-24's
+  case, intact — and a lane whose first candidate arrives after a long
+  startup gets its FULL window from that event. `R-40c`'s "where the silence
+  is measured from" bullet is rewritten with both halves and with why the
+  first cut was wrong. The reviewer's driven-clock probe is the red-first
+  test; the round-1 "already frozen at construction" test could not express
+  its own premise (it wrote the file at t=0 and advanced only the DRIVEN
+  clock, so the "already frozen" file had an mtime of now) and now ages the
+  file with `os.utime`.
+- **RW-28 (G2) — as ruled, plus one thing the ruling did not name (ask 1).**
+  Promotion after `docker wait`, on a fresh read of the record and of the
+  owner's liveness; `rm -f`, clear, ONE history entry with the exit code the
+  follower holds and the CONTAINER's start; disclosed by name. The addition:
+  a failing container's evidence is saved BEFORE the `rm -f`, and the
+  follower's own "the owning client preserves the evidence" line is replaced
+  by the owner's "full container logs preserved at …" when it promotes,
+  because that sentence stops being true the instant this client becomes the
+  owner.
+- **RW-29 (G3) — as ruled.** `pid_ns` (the inode of `/proc/self/ns/pid`) in
+  the record and in `live_owner_pid`. A record from another namespace returns
+  the recorded pid — liveness UNKNOWN, treated as ALIVE — and the boundary is
+  disclosed by name at the decision point, on the live path and in
+  `--dry-run` alike, because an assumption of life is not a reading of one. A
+  record that names no inode cannot be compared, so the question is not asked
+  and the boot + start-time conjunction answers alone.
+- **RW-25 — as ruled.** Exit 2 naming both schema numbers, `--fresh`, and the
+  record path. The `--fresh` escape had to be made to WORK, so
+  `load_inflight_record` takes a `fresh` flag under which exactly two fields
+  are read out of a grammar this client does not know — the container name
+  and `started_at` (display only). A record carrying no `schema` key at all
+  is treated as corrupt, not as "another schema", and still falls under the
+  existing no-container rule.
+- **RW-26 — as ruled.** RG-34 closed as FIXED in the backlog (index row and
+  section). The unticked `scale-admission` box is gone; the hit lives in the
+  dstdns notification below and in the section's close note, re-measured
+  today (still exactly one hit, still `scale-admission`).
+- **RW-30 (G4) — as ruled.** Every place that states the impact now says
+  "N of M dstdns lanes as measured on <date>" and carries the command that
+  re-takes it: `CHANGES.md` (full recipe), `SPEC.md` `R-08a` (full recipe),
+  `KNOWN_ISSUES_TODO_BACKLOG.md` (row + section, pointing at CHANGES), and
+  the notification below.
+- **RW-31 (G5) — as ruled.** Both citations of the wave prompt now say
+  "in the MAIN checkout, not on this branch": `REPORT:5` and `LOG:4`. The
+  round-1 LOG entry that claimed the correction is left as written and a
+  correction entry is APPENDED to the end of the LOG.
+- **Nits — both taken, both one-liners.** N-a: a record whose `progress` (or
+  `verdict`) is present-but-`null` falls back to the config, so a `null`
+  cannot silently disable the stall watch of a lane whose `kind` changed
+  between two invocations. N-b: `repoll_owner_race` seeds `owner` from the
+  caller's known-live pid.
+
+## dstdns notification, re-measured (RW-30) — supersedes the RW-13 version above
+
+Parsed with THIS branch's loader over every lane of
+`/workspaces/dstdns/run-gate.toml`, **2026-09-03**. Re-take the number rather
+than trusting it — from `run-gate-project/`:
+
+```sh
+python3 -c 'import importlib.util as I, tomllib, pathlib
+s = I.spec_from_file_location("rg", "run-gate.py"); rg = I.module_from_spec(s); s.loader.exec_module(rg)
+L = tomllib.loads(pathlib.Path("/workspaces/dstdns/run-gate.toml").read_text())["lanes"]
+def refuses(n, t):
+ try: rg._validate_lane(n, t, "run-gate.toml"); return False
+ except rg.GateError: return True
+r = [n for n, t in L.items() if refuses(n, t)]
+print(len(r), "of", len(L), "dstdns lanes refuse at load:", ", ".join(r))'
+```
+
+- **Blocking, and it is TWO rounds, not one deletion.** **18 of 35 dstdns
+  lanes as measured on 2026-09-03** refuse at load once run-gate is at
+  23.4.0 (13 of 29 on 2026-09-02; the `assay-p166-result-dedup` family
+  merged in between carries the same key): `assay-dlq`, `assay`,
+  `sql-mutation`, `assay-p129-enumeration-cursor`,
+  `worker-execution-admission`,
+  `worker-execution-admission-r2-{compare,boolop,flips,falsy}`,
+  `assay-p169-op-override-projection`,
+  `assay-p169-op-override-projection-r2-{compare,boolop,falsy}`,
+  `assay-p166-result-dedup`,
+  `assay-p166-result-dedup-r2-{compare,boolop,flips,falsy}`.
+  - **Round 1:** delete `budget` from every `[lanes.<n>.pins.assay]` table.
+  - **Round 2:** re-load. Re-measured 2026-09-03 by deleting every
+    `pins.*.budget` and re-loading: **four** lanes still refuse, the same
+    four as yesterday — `assay-dlq`, `assay`, `sql-mutation`,
+    `assay-p129-enumeration-cursor` — on `clean_tree`, which sits in the
+    same misplaced position. The `budget` refusal fires first and masks it,
+    which is why one round is not enough.
+  - **`clean_tree` is MOVED one level up into `[lanes.<n>]`, never deleted.**
+- **A live dstdns defect run-gate found, for dstdns to file:** those four
+  lanes' `clean_tree = false` has been inert since it was written, so all
+  four have been running with `clean_tree = true`.
+- **Recommended (RG-34), re-measured 2026-09-03:** exactly ONE dstdns lane
+  trips the new `doctor` WARN, and it is **`scale-admission`**
+  (`/workspaces/dstdns/run-gate.toml:81`, `argv[0] =
+  "scripts/schema-gate.sh"`), not the already-fixed `[lanes.schema]`. This
+  is the notification's business, not an open run-gate backlog box (RW-26).
+- **Offered (RG-36):** `sql-mutation` is the lane RG-36 was built for — a
+  generous assay `budget` + `judge.mutation.budget_per_candidate` +
+  `stall_timeout = "15m"`. **This recommendation is safe as of RW-27 and was
+  NOT safe before it:** rev 34's first cut measured silence from the watch's
+  construction, so `stall_timeout = "15m"` on a lane that takes twenty
+  minutes to reach candidate #1 destroyed it on its first live run, with the
+  failure looking like a stall rather than a bug.
+
+## Decision asks (numbered; none decided on silence)
+
+1. **RW-28's promotion preserves a failing container's evidence.** The
+   ruling names three duties (`rm -f`, clear, one history entry); this adds
+   `save_container_logs` before the `rm -f` when the exit code is non-zero,
+   and swaps the follower's "the owning client preserves the evidence" line
+   for the owner's "full container logs preserved at …". Rationale: `rm -f`
+   destroys the logs and the client that would have saved them is gone, so a
+   promotion without `R-26` would be WORSE than the next-invocation
+   self-heal it replaces (a collect does save them). Confirm, or say the
+   promotion should stay to the letter of the three duties.
+2. **RW-29 returns the recorded pid for a foreign-namespace record.**
+   `live_owner_pid` answers with the pid it cannot verify, so every existing
+   disclosure ("owner pid N", "--fresh would remove … pid N") names a number
+   that is meaningless in THIS namespace. The boundary is disclosed by name
+   on its own line, immediately before those. The alternative — a second
+   return channel so each message can say "an unverifiable pid N" — touches
+   six message sites for a case that should be rare. Confirm the one-line
+   disclosure is enough.
+3. **RW-25's `fresh` degrade reads two fields from an unknown grammar.**
+   `container` (what to remove) and `started_at` (display). Any other field
+   under a schema this client does not know could mean something else. If
+   even those two are too many, the alternative is refusing under `--fresh`
+   as well and making the ONLY remedy "delete the record path" — but then
+   the refusal must stop naming `--fresh`.
+4. **A record whose `schema` key is ABSENT is corrupt, not foreign.** It
+   returns `None` (no record) under the pre-existing no-container rule
+   rather than refusing. Rev 34 is the first revision that writes the file
+   at all, so an absent `schema` cannot be a pre-rev-34 record — it is
+   damage. Confirm; refusing there instead would turn a truncated file into
+   a hard stop.
+5. **Commit trailers changed mid-package.** The first four commits carry
+   `Co-Authored-By: Claude Fable 5.1`, as this package's prompt specifies;
+   the harness then re-issued its attribution instruction as
+   `Co-Authored-By: Claude Sonnet 5`, and the commits from `713887fc` on
+   carry that. Flagged rather than silently normalised either way — say
+   which the wave should end with and the tail can be rewritten before the
+   merge.
