@@ -174,24 +174,34 @@ def render_argv(template: list[str], mapping: dict[str, str]) -> list[str]:
 
 
 # D-BATCHC (2026-07-26, plan-factory-hardening.md; Batch C -- modulate
-# review depth by complexity band + declared gate rigor). Two ALREADY-
-# EXISTING inputs drive the band (Frontmatter.tier / types.py:434, a
-# scope-size fallback when tier is absent or unparseable / types.py
-# :403-405) -- no new schema field, no new frontmatter key.
-_TIER_BAND = {"implement-1": 1, "implement-2": 2, "implement-3": 3}
+# review depth by complexity band + declared gate rigor).
+#
+# nyxloom-P101 (NL-7): scope size is the SOLE band signal. `tier` used to
+# feed a hardcoded `_TIER_BAND = {"implement-1": 1, "implement-2": 2,
+# "implement-3": 3}` table, which was wrong in both directions. The only
+# key mapping to _HIGH_BAND was `implement-3`, which is not a tier in the
+# deployed routes.toml or in the tracked routes.host.toml and never has
+# been (config.py and effects_carve.py already record this) -- so the tier
+# path could never RAISE the band. Meanwhile `implement-1` and
+# `implement-2`, the tiers nyxloom's own handoffs really do declare,
+# resolved to 1 and 2, both below _HIGH_BAND, and short-circuited the
+# scope-size branch below -- so the tier path could only ever LOWER it,
+# suppressing the high-complexity reason for exactly the large-scope
+# handoffs that named a real tier. It was a one-way suppressor, never a
+# trigger. Restoring a tier-derived band requires a real per-tier
+# complexity fact in routes.toml (NL-7 option 2), not another hardcoded
+# tier-name table.
 _LOW_BAND = 1
 _HIGH_BAND = 3
-# >N touched paths in scope.touch is treated as band 3 when tier can't be
-# read at all -- a handoff spanning that many files is, by the same
-# "mechanical/cheap vs. hard" banding routes.host.toml already uses for
-# implement-1 vs. implement-3, no longer a small/cheap change.
+# >N touched paths in scope.touch is treated as band 3 -- a handoff
+# spanning that many files is no longer a small/cheap change.
 _HIGH_BAND_SCOPE_TOUCH_THRESHOLD = 5
 # A gate whose `.asserts` (config.GateDef.asserts) is missing EITHER of
 # these is "shallow" (catches less); one declaring BOTH is "rigorous".
 _RIGOROUS_ASSERTS = {"changed-line-coverage", "mutation"}
 
 
-def compute_review_depth_directive(tier: str | None, scope_touch: list[str] | None,
+def compute_review_depth_directive(scope_touch: list[str] | None,
                                    gate_asserts: list[str] | None) -> str:
     """Pure signal -> reviewer-prompt directive (no I/O, no route/tier choice).
 
@@ -199,28 +209,25 @@ def compute_review_depth_directive(tier: str | None, scope_touch: list[str] | No
     `build_dispatch` below does the bounded argv append -- same "pure helper,
     then argv-bounded append" split.
 
-    Band comes from `tier` ('implement-1'..'implement-3' per _TIER_BAND); an
-    absent or unrecognized tier falls back to a scope-size proxy on
-    `scope_touch` (see _HIGH_BAND_SCOPE_TOUCH_THRESHOLD). Gate rigor comes
-    from `gate_asserts` (config.GateDef.asserts; None/[] is the shallowest
-    case -- no gate, or a gate declaring nothing, both read as maximally
-    shallow, never crash).
+    Band comes from the size of `scope_touch` alone (see
+    _HIGH_BAND_SCOPE_TOUCH_THRESHOLD and the nyxloom-P101 note above it);
+    there is deliberately no tier-derived band and no `tier` parameter. Gate
+    rigor comes from `gate_asserts` (config.GateDef.asserts; None/[] is the
+    shallowest case -- no gate, or a gate declaring nothing, both read as
+    maximally shallow, never crash).
 
-    Returns '' when the band is BELOW high (i.e. implement-1/implement-2, or
-    the fallback's small-scope case) AND the gate is rigorous (declares both
-    changed-line-coverage and mutation) -- the load-bearing neutral case:
-    `build_dispatch` appends nothing and the REVIEW_INDEPENDENT prompt stays
-    byte-identical to a pre-BATCHC dispatch. Otherwise returns a short
-    directive naming the SPECIFIC reason(s) it fired (high band and/or the
-    missing gate rigor) -- never a generic "look harder" with no reason,
-    since the reviewer's own judgment about what to double-check depends on
-    WHY it's being asked to.
+    Returns '' when the band is BELOW high (a small scope_touch) AND the gate
+    is rigorous (declares both changed-line-coverage and mutation) -- the
+    load-bearing neutral case: `build_dispatch` appends nothing and the
+    REVIEW_INDEPENDENT prompt stays byte-identical to a pre-BATCHC dispatch.
+    Otherwise returns a short directive naming the SPECIFIC reason(s) it
+    fired (high band and/or the missing gate rigor) -- never a generic "look
+    harder" with no reason, since the reviewer's own judgment about what to
+    double-check depends on WHY it's being asked to.
     """
-    band = _TIER_BAND.get(tier or "")
-    if band is None:
-        band = (_HIGH_BAND
-                if len(scope_touch or []) > _HIGH_BAND_SCOPE_TOUCH_THRESHOLD
-                else _LOW_BAND)
+    band = (_HIGH_BAND
+            if len(scope_touch or []) > _HIGH_BAND_SCOPE_TOUCH_THRESHOLD
+            else _LOW_BAND)
 
     asserts_set = set(gate_asserts or [])
     missing_rigor = _RIGOROUS_ASSERTS - asserts_set

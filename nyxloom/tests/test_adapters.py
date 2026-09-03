@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import inspect
+import re
 
 import json
 from datetime import datetime, timedelta, timezone
@@ -2080,12 +2082,13 @@ def test_review_focus_only_embedded_for_review_independent_role():
 # ============================================================================
 
 def test_compute_review_depth_directive_embeds_high_complexity_and_shallow_gate():
-    """Oracle 1: a high band (implement-3) combined with a shallow gate
+    """Oracle 1: a high band (a large scope_touch) combined with a shallow gate
     (asserts only tests-pass -- missing changed-line-coverage AND mutation)
     returns a non-empty directive naming BOTH reasons. build_dispatch then
     embeds that directive verbatim into the REVIEW_INDEPENDENT prompt."""
     directive = adapters.compute_review_depth_directive(
-        tier="implement-3", scope_touch=["a.py"], gate_asserts=["tests-pass"])
+        scope_touch=[f"src/file{i}.py" for i in range(6)],
+        gate_asserts=["tests-pass"])
     assert directive != ""
     assert "high-complexity" in directive          # names the band reason
     assert "tests-pass" in directive                # names the shallow-gate reason
@@ -2101,7 +2104,7 @@ def test_compute_review_depth_directive_embeds_high_complexity_and_shallow_gate(
 
 
 def test_review_depth_absent_prompt_is_byte_identical_to_pre_batchc():
-    """Oracle 2 (LOAD-BEARING SAFETY ORACLE): low band (implement-1) +
+    """Oracle 2 (LOAD-BEARING SAFETY ORACLE): low band (a small scope_touch) +
     rigorous gate (both changed-line-coverage AND mutation declared) ->
     compute_review_depth_directive returns ''. build_dispatch's output for
     that '' is then BYTE-IDENTICAL to the pre-BATCHC prompt (the same
@@ -2110,7 +2113,7 @@ def test_review_depth_absent_prompt_is_byte_identical_to_pre_batchc():
     works'. Checked via the literal snapshot AND explicit review_depth=""
     /default-omitted parity."""
     directive = adapters.compute_review_depth_directive(
-        tier="implement-1", scope_touch=["a.py"],
+        scope_touch=["a.py"],
         gate_asserts=["tests-pass", "changed-line-coverage", "mutation"])
     assert directive == ""
 
@@ -2131,7 +2134,7 @@ def test_review_depth_absent_prompt_is_byte_identical_to_pre_batchc():
 
 
 def test_compute_review_depth_directive_shallow_gate_alone_triggers_it():
-    """Oracle 3: LOW band (implement-1) but a shallow gate still fires --
+    """Oracle 3: LOW band (a small scope_touch) but a shallow gate still fires --
     the directive names ONLY the rigor gap, NOT a high-complexity reason
     (proves the two signals are independent triggers, not just band-driven).
     Proves gate_asserts=[] and gate_asserts=None (a project with no
@@ -2139,14 +2142,14 @@ def test_compute_review_depth_directive_shallow_gate_alone_triggers_it():
     maximally shallow."""
     for asserts in (["tests-pass"], [], None):
         directive = adapters.compute_review_depth_directive(
-            tier="implement-1", scope_touch=["a.py"], gate_asserts=asserts)
+            scope_touch=["a.py"], gate_asserts=asserts)
         assert directive != "", f"gate_asserts={asserts!r} should still be shallow"
         assert "high-complexity" not in directive   # band is low -- NOT the reason
         assert "coverage" in directive and "mutation" in directive
 
     # No crash dispatching with either shallow-gate directive either.
     directive_empty_asserts = adapters.compute_review_depth_directive(
-        tier="implement-1", scope_touch=["a.py"], gate_asserts=None)
+        scope_touch=["a.py"], gate_asserts=None)
     _argv, prompt = adapters.build_dispatch(
         _fake_route(), handoff_path="h.md", worktree="/wt", branch="feat/T1",
         task_id="T1", gate_hint="pytest -q", receipt_path="r.json",
@@ -2155,30 +2158,133 @@ def test_compute_review_depth_directive_shallow_gate_alone_triggers_it():
     assert "declares no assertions" in prompt
 
 
-def test_compute_review_depth_directive_scope_size_fallback():
-    """Oracle 4: an absent/unparseable tier falls back to a scope.touch-size
-    proxy. A large scope_touch (above _HIGH_BAND_SCOPE_TOUCH_THRESHOLD) is
-    treated as band 3 (directive fires, naming high-complexity) even with a
-    RIGOROUS gate paired in both cases -- isolating that the FALLBACK band
-    alone (not gate rigor) drives the difference. A tiny scope_touch stays
-    band 1 (directive empty)."""
+def test_compute_review_depth_directive_scope_size_band():
+    """Oracle 4: the band comes from scope.touch size -- the SOLE band
+    signal since nyxloom-P101 retired the tier-derived band. A large
+    scope_touch (above _HIGH_BAND_SCOPE_TOUCH_THRESHOLD) is treated as band
+    3 (directive fires, naming high-complexity) even with a RIGOROUS gate
+    paired in both cases -- isolating that the band alone (not gate rigor)
+    drives the difference. A tiny scope_touch stays band 1 (directive
+    empty)."""
     rigorous = ["tests-pass", "changed-line-coverage", "mutation"]
     large_scope = [f"src/file{i}.py" for i in range(8)]
     directive_large = adapters.compute_review_depth_directive(
-        tier=None, scope_touch=large_scope, gate_asserts=rigorous)
+        scope_touch=large_scope, gate_asserts=rigorous)
     assert directive_large != ""
     assert "high-complexity" in directive_large
 
     tiny_scope = ["src/one_file.py"]
     directive_tiny = adapters.compute_review_depth_directive(
-        tier=None, scope_touch=tiny_scope, gate_asserts=rigorous)
+        scope_touch=tiny_scope, gate_asserts=rigorous)
     assert directive_tiny == ""
 
-    # An unrecognized (not just absent) tier string falls back the same way.
-    directive_unparseable = adapters.compute_review_depth_directive(
-        tier="not-a-real-tier", scope_touch=large_scope, gate_asserts=rigorous)
-    assert directive_unparseable != ""
-    assert "high-complexity" in directive_unparseable
+
+def test_compute_review_depth_directive_signature_and_threshold_boundary():
+    """nyxloom-P101 O1: the tier-derived suppressor is gone AND the
+    threshold boundary is pinned. With a RIGOROUS gate_asserts (so gate
+    rigor contributes nothing and the band is isolated as the only
+    variable), 6 distinct scope_touch paths fire the high-complexity
+    reason; exactly 5 paths returns ''. The signature check is EXACT tuple
+    equality on the real signature object, not merely 'tier not in
+    parameters' -- a fix that keeps the suppressor under a renamed
+    (`handoff_tier`) or defaulted (`tier: str | None = None`) parameter, or
+    reads it from a module-level global, would pass a bare absence check
+    while leaving the defect fully intact; exact tuple equality rejects all
+    three. The boundary half independently catches an off-by-one that used
+    `>=` instead of `>` against _HIGH_BAND_SCOPE_TOUCH_THRESHOLD."""
+    rigorous = ["tests-pass", "changed-line-coverage", "mutation"]
+    six_paths = [f"src/file{i}.py" for i in range(6)]
+    five_paths = [f"src/file{i}.py" for i in range(5)]
+
+    directive_six = adapters.compute_review_depth_directive(
+        scope_touch=six_paths, gate_asserts=rigorous)
+    assert "high-complexity" in directive_six
+
+    directive_five = adapters.compute_review_depth_directive(
+        scope_touch=five_paths, gate_asserts=rigorous)
+    assert directive_five == ""
+
+    assert tuple(inspect.signature(
+        adapters.compute_review_depth_directive).parameters) == (
+        "scope_touch", "gate_asserts")
+
+
+def test_adapters_module_carries_no_tier_shaped_string_literal():
+    """nyxloom-P101 O3: no tier-shaped string literal survives anywhere in
+    adapters.py's AST. Parses that ONE file (bounded scan root) and walks
+    EVERY ast.Constant whose value is a str -- not only dict keys -- so
+    that reintroductions other than a literal `_TIER_BAND = {...}` dict
+    (dict(zip(...)), a list-of-tuples, an if/elif chain, a `match`
+    statement, a `.startswith('implement-')` guard) are all caught too.
+    This is deliberately an AST scan and not a grep for the strings
+    themselves: the pinned nyxloom-P101 comment above _LOW_BAND legitimately
+    NAMES 'implement-1'/'implement-2'/'implement-3' inside a `#` comment,
+    which is invisible to the AST, so a textual ban would false-positive on
+    the correct fix. Separately, _TIER_BAND itself no longer exists. Known
+    limits, not covered by this check: a computed
+    `{f"implement-{i}": i for i in range(1,4)}` builds its keys at runtime,
+    and a dict keyed on DEPLOYED tier names (e.g. `{"luna-high": 1}`) is not
+    tier-shaped -- both are covered instead by the exact-signature check
+    above and by code review."""
+    path = Path(__file__).resolve().parents[1] / "src" / "nyxloom" / "adapters.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tier_shaped = re.compile(r"(implement|review|carve)-\d+")
+    hits = [node.value for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and tier_shaped.search(node.value)]
+    assert hits == [], f"tier-shaped string literal(s) survive in adapters.py: {hits}"
+    assert not hasattr(adapters, "_TIER_BAND")
+
+
+def test_adapters_carries_the_pinned_nyxloom_p101_band_comment_exactly():
+    """nyxloom-P101 O4: Work item 2's replacement comment block is present
+    VERBATIM as one exact fixed substring (newlines and leading '# '
+    included -- a plain `in` containment test, no regex), and ANCHORED so it
+    cannot merely exist somewhere: it appears exactly once, and strictly
+    before `def compute_review_depth_directive`. Completeness is checked
+    independently of presence: the old false '...banding routes.host.toml
+    already uses for' clause and the old 'per _TIER_BAND' docstring
+    reference are both asserted absent. Without the anchor, pasting the
+    pinned block at the end of the file while leaving the real band block
+    unedited above it would wrongly pass both the containment and both
+    absence checks -- the block's own _LOW_BAND/_HIGH_BAND/
+    _HIGH_BAND_SCOPE_TOUCH_THRESHOLD lines merely re-bind the same values,
+    so nothing would break."""
+    path = Path(__file__).resolve().parents[1] / "src" / "nyxloom" / "adapters.py"
+    src = path.read_text(encoding="utf-8")
+
+    pinned = (
+        "# D-BATCHC (2026-07-26, plan-factory-hardening.md; Batch C -- modulate\n"
+        "# review depth by complexity band + declared gate rigor).\n"
+        "#\n"
+        "# nyxloom-P101 (NL-7): scope size is the SOLE band signal. `tier` used to\n"
+        '# feed a hardcoded `_TIER_BAND = {"implement-1": 1, "implement-2": 2,\n'
+        '# "implement-3": 3}` table, which was wrong in both directions. The only\n'
+        "# key mapping to _HIGH_BAND was `implement-3`, which is not a tier in the\n"
+        "# deployed routes.toml or in the tracked routes.host.toml and never has\n"
+        "# been (config.py and effects_carve.py already record this) -- so the tier\n"
+        "# path could never RAISE the band. Meanwhile `implement-1` and\n"
+        "# `implement-2`, the tiers nyxloom's own handoffs really do declare,\n"
+        "# resolved to 1 and 2, both below _HIGH_BAND, and short-circuited the\n"
+        "# scope-size branch below -- so the tier path could only ever LOWER it,\n"
+        "# suppressing the high-complexity reason for exactly the large-scope\n"
+        "# handoffs that named a real tier. It was a one-way suppressor, never a\n"
+        "# trigger. Restoring a tier-derived band requires a real per-tier\n"
+        "# complexity fact in routes.toml (NL-7 option 2), not another hardcoded\n"
+        "# tier-name table.\n"
+        "_LOW_BAND = 1\n"
+        "_HIGH_BAND = 3\n"
+        "# >N touched paths in scope.touch is treated as band 3 -- a handoff\n"
+        "# spanning that many files is no longer a small/cheap change.\n"
+        "_HIGH_BAND_SCOPE_TOUCH_THRESHOLD = 5\n"
+    )
+
+    assert src.count(pinned) == 1
+    assert src.index(pinned) < src.index("def compute_review_depth_directive")
+    assert src.count(
+        '"mechanical/cheap vs. hard" banding routes.host.toml already uses for'
+    ) == 0
+    assert "per _TIER_BAND" not in src
 
 
 def test_review_depth_only_embedded_for_review_independent_role():
@@ -2186,7 +2292,8 @@ def test_review_depth_only_embedded_for_review_independent_role():
     review_depth passed to an IMPLEMENTER (or CARVER) dispatch appends
     NOTHING (the directive is reviewer-facing only)."""
     directive = adapters.compute_review_depth_directive(
-        tier="implement-3", scope_touch=["a.py"], gate_asserts=["tests-pass"])
+        scope_touch=[f"src/file{i}.py" for i in range(6)],
+        gate_asserts=["tests-pass"])
     assert directive != ""  # sanity: a real, non-empty directive
 
     _a, impl_prompt = adapters.build_dispatch(
@@ -2232,7 +2339,8 @@ def test_review_depth_worst_case_argv_degrades_never_raises():
         tight_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
 
     directive = adapters.compute_review_depth_directive(
-        tier="implement-3", scope_touch=["a.py"], gate_asserts=["tests-pass"])
+        scope_touch=[f"src/file{i}.py" for i in range(6)],
+        gate_asserts=["tests-pass"])
     _argv, prompt = adapters.build_dispatch(
         tight_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x",
         review_depth=directive, **kw)
@@ -2264,7 +2372,8 @@ def test_review_depth_truncates_when_room_tight_but_above_floor():
         floor_route, role=Role.REVIEW_INDEPENDENT, attempt_id="att-x", **kw)
 
     directive = adapters.compute_review_depth_directive(
-        tier="implement-3", scope_touch=["a.py"], gate_asserts=["tests-pass"])
+        scope_touch=[f"src/file{i}.py" for i in range(6)],
+        gate_asserts=["tests-pass"])
     assert len(directive) > 60  # sanity: long enough that a 46-char room truncates it
 
     # room = argv_max - len(floor_prompt) - len("\nReview depth: ") ~= 46:
@@ -2289,7 +2398,8 @@ def test_review_depth_coexists_with_review_focus():
     the focus header/body is not corrupted by the depth append)."""
     focus = ["check the CAS revert for a stale head_commit"]
     directive = adapters.compute_review_depth_directive(
-        tier="implement-3", scope_touch=["a.py"], gate_asserts=["tests-pass"])
+        scope_touch=[f"src/file{i}.py" for i in range(6)],
+        gate_asserts=["tests-pass"])
     assert directive != ""
 
     _argv, prompt = adapters.build_dispatch(
@@ -2439,7 +2549,8 @@ def test_escalation_note_coexists_with_review_focus_and_review_depth():
     ample_route = RouteDef(route_id="ample", cli="fake", model="m", argv_max=3000)
     focus = ["check the CAS revert for a stale head_commit"]
     directive = adapters.compute_review_depth_directive(
-        tier="implement-3", scope_touch=["a.py"], gate_asserts=["tests-pass"])
+        scope_touch=[f"src/file{i}.py" for i in range(6)],
+        gate_asserts=["tests-pass"])
     assert directive != ""
 
     _argv, prompt = adapters.build_dispatch(
