@@ -479,3 +479,27 @@ SPEC `R-08a`, the backlog and the REPORT's notification.
 - After RW-27, tip `43d66ba8`, `scratchpad/selftest-pkg2-1.log`:
   `539 passed, 2 skipped` / `diff-coverage OK: 453/453 changed executable
   lines covered (100.0% ≥ 100.0% floor)` / `run-gate: lane 'selftest' exit 0`.
+- Docs rulings landed as `2cb91b4e` (RW-30 / RW-31 / RW-26). The gate on
+  that tip, `scratchpad/selftest-pkg2-2.log`, was **RED on the diff-coverage
+  half only**: `552 passed, 2 skipped` / `diff-coverage FAIL: 492/494
+  (99.6%)`, naming `run-gate.py: [1325, 1326]` — `pid_ns_inode`'s
+  `except OSError` pair. Covered by a test rather than a pragma (`f4a46459`):
+  the branch has a real meaning worth pinning — "could not determine" is not
+  "another namespace".
+- Final, tip `f4a46459`, `scratchpad/selftest-pkg2-3.log`:
+  `553 passed, 2 skipped, 2 warnings in 77.83s` / `diff-coverage OK: 494/494
+  changed executable lines covered (100.0% ≥ 100.0% floor)` /
+  `run-gate: lane 'selftest' exit 0`. Tree clean at launch; no file was
+  edited while a gate ran (RG-39's trap).
+
+### Not done, deliberately
+
+- **No live docker probe.** RW-28's promotion is fully expressible against
+  the stateful fake docker (the direct `follow_container` probes plant a
+  real record on disk and assert the `rm`, the cleared record and the
+  disclosure; the `main()`-driven one adds the single history entry with the
+  container's own start), and this package introduces no new docker ARGV
+  shape — `rm -f`, `logs` and `wait` are all argv the wave already proved
+  live. Spending the host's one container slot would have bought nothing.
+- **`__revision__` stays 34.** Its note is extended for file-seeded silence,
+  the namespace conjunct, follower promotion and the unknown-schema refusal.

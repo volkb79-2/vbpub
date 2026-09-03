@@ -637,3 +637,30 @@ print(len(r), "of", len(L), "dstdns lanes refuse at load:", ", ".join(r))'
    carry that. Flagged rather than silently normalised either way — say
    which the wave should end with and the tail can be rewritten before the
    merge.
+
+## Fix round 2 — gates
+
+Both read in a separate step from their own logs, on committed tips, with
+nothing edited while a gate ran.
+
+First (after RW-27, tip `43d66ba8`, `scratchpad/selftest-pkg2-1.log`):
+
+```
+539 passed, 2 skipped, 2 warnings in 71.55s (0:01:11)
+diff-coverage OK: 453/453 changed executable lines covered (100.0% ≥ 100.0% floor)
+run-gate: lane 'selftest' exit 0
+```
+
+Final (tip `f4a46459`, `scratchpad/selftest-pkg2-3.log`):
+
+```
+553 passed, 2 skipped, 2 warnings in 77.83s (0:01:17)
+diff-coverage OK: 494/494 changed executable lines covered (100.0% ≥ 100.0% floor)
+run-gate: lane 'selftest' exit 0
+```
+
+The gate on the docs tip `2cb91b4e` was RED on the diff-coverage half alone
+(`492/494`, naming `pid_ns_inode`'s `except OSError` pair) and is fixed by
+`f4a46459`, which covers that branch with a test rather than a pragma. No
+live docker probe: this package introduces no new docker argv shape, and
+RW-28's promotion is fully expressible against the stateful fake docker.
