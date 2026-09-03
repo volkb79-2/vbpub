@@ -122,6 +122,17 @@ assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-2.1.0.pyz"]
 [lanes.<name>.pins.assay]
 version = "2.1.0"                   # DECLARING it = a claim: the lane verifies <assay_command> --version reports it
 sha256 = "tools/assay/assay-2.1.0.pyz.sha256"   # verified FROM its own directory
+# ...and NOTHING else. A pin table takes these two keys; any other is
+# refused at load (RG-32, rev 34). In particular `budget` here was never
+# enforced and is now a refusal: a kind = "assay" lane's real budget lives
+# in the TARGET assay.toml's [lanes.<assay_lane>], and run-gate's own
+# lane-level `budget` (one level up, no `pins` in the path) stays advisory.
+# A pin key that is itself a legal LANE key is named as one — "'clean_tree'
+# is a lane key; it belongs one level up in [lanes.<n>], where it is
+# load-bearing — move it, do not delete it". MOVE it: under a pin table it
+# never did anything, so the lane has been running with the default.
+# `budget` is the one exception and keeps its own message: its value belongs
+# in the target assay.toml, so there really is nothing to move.
 ```
 
 Environment facts resolution order (no silent fallbacks anywhere):
@@ -473,6 +484,38 @@ container command lane invoked with `--worktree` whose argv contains no
 `{worktree}` token (host lanes are exempt — their cwd relocates into the
 override tree), so a dropped override fails loudly instead of silently
 judging some other tree.
+
+**`--fresh` does NOT fan out into a conjunction (RG-35, rev 34), and there is
+no token for it.** Unlike `--worktree` and `{base}`, which must reach every
+sub-lane or the gate judges the wrong thing, `--fresh` REMOVES a running
+container: propagating it would destroy every sub-lane's inflight container,
+including ones legitimately still running for another commit or another
+client. It stays per-invocation. Nothing is lost by that, because a sub-lane
+that has a container it cannot attach to refuses on its own terms and the
+refusal reaches the operator through the chain — verified against a host
+conjunction whose sub-lane carried a mismatched inflight record (re-captured
+2026-09-03; the earlier copy of this block had been re-wrapped by hand and
+was not what run-gate prints — one line, no space before the comma):
+
+```
+$ ./run-gate.py gate                                    # exit 2
+run-gate: rev 34 | lane gate | env built-in 'host'
+run-gate: admission: lane 'sub' declares no resources.memory — not memory-accounted (shared-infra rules still apply)
+run-gate: lane 'sub' has an inflight container run-gate-conj-sub-1-1 (started 2026-09-02T11:00:00Z, running) judging commit deaddeaddeaddeaddeaddeaddeaddeaddeaddead, but /tmp/…/conj-probe is now at 205c896265dc0b0766cefa6ffc234c537660aaf7 — run-gate will not attach that run to this commit, and will not start a second container for the same lane. Wait for it to finish, or re-run with --fresh (which removes run-gate-conj-sub-1-1 first)
+run-gate: lane 'gate' exit 2
+```
+
+(The only edit to that capture is the scratch tree's path, elided to
+`/tmp/…/conj-probe`. The conjunction's second sub-invocation never ran: the
+`&&` chain stops at the refusal.)
+
+The `&&` chain stops at the refusing sub-lane (the step after it never ran),
+the message names THAT sub-lane, its container and `--fresh`, and exit 2
+passes through to the conjunction. The operator applies `--fresh` to that
+sub-lane directly: `./run-gate.py sub --fresh`. A consumer that wants one
+sub-lane always fresh writes `--fresh` into that sub-invocation's own static
+argv inside the conjunction — and thereby forfeits re-attach for it, which
+is a deliberate trade, not a default.
 
 ### Consumer examples
 

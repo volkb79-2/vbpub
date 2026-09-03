@@ -9,6 +9,246 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
+### BREAKING
+- **RG-32 — `[lanes.*.pins.*].budget` is refused at load (rev 34, SPEC
+  `R-08a`).** The key was silently inert: `run-gate` never read it, and the
+  value that actually governs a `kind = "assay"` lane's run time is the
+  TARGET `assay.toml`'s own `[lanes.<assay_lane>] budget`. It sat one
+  nesting level below a REAL, load-bearing lane-level `budget` that looks
+  identical when read — an `R-04`-class defect, measured three times in one
+  dstdns session (two independent review agents and the controller each read
+  `pins.assay.budget = "90m"` as the bound of a lane whose `assay.toml` said
+  `120m`; the numbers had drifted with nothing able to notice).
+  - `pins` tables now validate their keys at all: `sha256` and `version` are
+    the only ones accepted, and any other is refused the way an unrecognized
+    lane key already was. A pin table that accepted anything is how `budget`
+    came to live there.
+  - **Migration, in TWO rounds — and a key under a pin table is MOVED, never
+    deleted, unless it is `budget`.** The `budget` refusal fires first and
+    MASKS any other misplaced key in the same table, so the load has to be
+    run twice:
+    1. Delete the `budget` line from every `[lanes.<name>.pins.<pin>]`
+       table. Nothing replaces it — the lane's real budget already lives in
+       your `assay.toml` `[lanes.<assay_lane>]`, and run-gate's own
+       lane-level `budget` (one level up, no `pins` in the path) is
+       unchanged and still advisory. `budget` is the one key here whose
+       remedy really is deletion.
+    2. Re-run the load. Any remaining pin key that is itself a legal LANE
+       key is now refused by a message that says so — `'clean_tree' is a
+       lane key; it belongs one level up in [lanes.<n>], where it is
+       load-bearing — move it, do not delete it`. **Move it; do not delete
+       it.** Under a pin table it has never done anything, so the lane has
+       been running with the default; deleting a misplaced
+       `clean_tree = false` makes that silent default permanent, which is
+       the opposite of what the line was written to say.
+  - **Measured consumer impact — a number with a DATE, and the command that
+    re-takes it.** **18 of 35 dstdns lanes as measured on 2026-09-03**,
+    parsed with this loader over every lane, not text-grepped: `assay-dlq`,
+    `assay`, `sql-mutation`, `assay-p129-enumeration-cursor`,
+    `worker-execution-admission`,
+    `worker-execution-admission-r2-{compare,boolop,flips,falsy}`,
+    `assay-p169-op-override-projection`,
+    `assay-p169-op-override-projection-r2-{compare,boolop,falsy}`,
+    `assay-p166-result-dedup`, and
+    `assay-p166-result-dedup-r2-{compare,boolop,flips,falsy}`. It was 13 of
+    29 on 2026-09-02; dstdns merged the `assay-p166-result-dedup` family in
+    between, five more lanes carrying the same key. A hard-coded count of a
+    peer repo's config ages between a review and a merge, so re-take it
+    rather than trusting this line — from `run-gate-project/`:
+
+    ```sh
+    python3 -c 'import importlib.util as I, tomllib, pathlib
+    s = I.spec_from_file_location("rg", "run-gate.py"); rg = I.module_from_spec(s); s.loader.exec_module(rg)
+    L = tomllib.loads(pathlib.Path("/workspaces/dstdns/run-gate.toml").read_text())["lanes"]
+    def refuses(n, t):
+     try: rg._validate_lane(n, t, "run-gate.toml"); return False
+     except rg.GateError: return True
+    r = [n for n, t in L.items() if refuses(n, t)]
+    print(len(r), "of", len(L), "dstdns lanes refuse at load:", ", ".join(r))'
+    ```
+
+    The migration's SHAPE does not move with the count: four of them
+    (`assay-dlq`, `assay`, `sql-mutation`, `assay-p129-enumeration-cursor`)
+    also carry `clean_tree = false` under `[lanes.<n>.pins.assay]`, where it
+    has been inert all along — those four lanes have been running with
+    `clean_tree = true`, which is a live dstdns defect this check found, not
+    a run-gate change (re-measured 2026-09-03: still exactly those four). No
+    vbpub-estate `run-gate.toml` declares any of it (all eleven parsed).
+
+### Added
+- **RG-36 — liveness judged from the progress file, not from a guessed wall
+  budget (rev 34, SPEC `R-40`).** `budget` is advisory here and a hard
+  lane-wide bound in assay, so the only way to bound a long mutation lane was
+  to guess a TOTAL — dstdns raised `sql-mutation` 90m → 120m and it still
+  could not finish a window. Since rev 33 every assay lane writes
+  `.assay/progress-<assay_lane>.jsonl`; run-gate now reads it.
+  - **Disclosure:** while an assay lane's container runs, the file is read
+    every `PROGRESS_POLL_SECONDS = 30` and, when something changed,
+    run-gate prints `progress <lane>: candidate 37/172, 1.9/min, ETA 71m`.
+    The first observation prints the count alone — one event with no clock
+    in the file is a baseline, not a measurement. A lane whose judge writes
+    no candidate events (an R0/R1 lane, or no file at all) is disclosed ONCE
+    and is never treated as a fault. A file that VANISHES mid-run after
+    events HAVE been seen is a different fact and gets its own sentence
+    naming the last event it held: it is silence, not "no events", so the
+    stall clock keeps running rather than stopping forever.
+  - **Silence is measured from the last time the FILE moved** — on the first
+    observation that is `wall_now − mtime`, which for a re-attach is a
+    moment before this client existed; after that, from each movement. A
+    container already frozen when this client re-attached is as silent as
+    its file is old and stalls at once, while a lane whose first candidate
+    arrives after a long startup (provision, baseline suite, mutant
+    generation) gets its full window from that event rather than being
+    announced and killed by the same poll.
+  - On a re-attach the file WATCHED, and the verdict path DISCLOSED, are the
+    ones the inflight record names — the artifacts that run declared, not
+    the ones this invocation's config would construct.
+  - **New optional lane key `stall_timeout` (assay lanes only)**, same
+    `\d+[smh]` grammar as `budget`. The lane is stopped only when its
+    container is still RUNNING and the progress file has not advanced for
+    that long: `docker rm -f`, evidence saved, exit 3, naming the stall, the
+    last event seen and the age. **Never on total elapsed time** — `budget`
+    stays advisory and its output is unchanged. Declared on a
+    `kind = "command"` lane it is refused at load: a command lane writes no
+    progress file and could never stall by this rule.
+  - **Timing is coarse today and becomes exact without a rewrite:** assay's
+    events carry no timestamp yet (assay B065), so the rate comes from
+    run-gate's own clock since the first event it observed and advancement
+    from the file's mtime; an event that already carries `elapsed_s` is
+    preferred.
+  - **Documented shape for a mutation lane:** a generous assay `budget` +
+    `judge.mutation.budget_per_candidate` + run-gate `stall_timeout`. For
+    R0/R1 lanes `budget` is the command's own bound and there is nothing to
+    add.
+  - **A container `kind = "command"` lane gets no liveness signal from this
+    and refuses `stall_timeout` by name** — it writes no progress file.
+    Backlog **RG-41** carries the answer (judge silence from the log stream
+    run-gate already tails, with the signal's SOURCE disclosed); not in this
+    release.
+- **RG-34 — `doctor` names an unprefixed script path in a container command
+  lane (rev 34, SPEC `R-30b`).** One `[WARN]` per `kind = "command"` lane on
+  a non-host environment whose `argv[0]` is a relative path containing `/`
+  and not starting with `{worktree}`, naming the lane, the element, the fix
+  (`"{worktree}/<path>"`) and the mechanism: a container that mounts only the
+  judged worktree (a Mode-B instance's own runner) has nothing at the bare
+  repo root the `--workdir` names, so the argv dies with `No such file or
+  directory` there while working under a full-repo mount. Measured on dstdns
+  P152 — `argv = ["scripts/schema-gate.sh", "{worktree}"]`, the argument
+  templated and the script path not, `lane 'schema' exit 127`, 100%
+  reproducible. A warning, never a refusal, and it does not change doctor's
+  exit code: the same argv is correct under a full-repo mount, and run-gate
+  cannot see statically which mount a lane will get. run-gate does not
+  rewrite argv — the fix is one edit in the consumer's config. No
+  vbpub-estate lane trips it (swept at release).
+  **Known affected consumer:** dstdns `[lanes.scale-admission]`
+  (`argv = ["scripts/schema-gate.sh", "{worktree}", …]`, environment
+  `test-runner`) — exactly one hit, parsed with `tomllib` over every dstdns
+  lane. The `[lanes.schema]` this was filed from is already fixed
+  (`dstdns@65582354`).
+
+### Fixed
+- **RG-35 — a lane's container is found again after its client dies (rev 34,
+  SPEC `R-39`).** A container lane runs detached and is removed by an
+  explicit `docker rm -f` in a `finally`. When the CLIENT dies — SIGKILL, a
+  devcontainer restart, a harness that reaps a background command (measured
+  2026-09-02: the Claude harness killed a detached `cmru release` after 33 s
+  and its inner gate container ran to completion unobserved) — that `finally`
+  never runs, and until now nothing on disk named the container: exit status,
+  evidence and history were lost and the NEXT invocation started a SECOND
+  container for the same lane on the same commit.
+  - A successful `docker run -d` now writes
+    `<project>/.run-gate/inflight/<lane>.json` — container name and id,
+    `started_at`, the judged commit, worktree, project dir, the lane's
+    verdict/progress paths and `__revision__ ` — under the same store
+    discipline the history file already has (per judged worktree × project ×
+    lane, git-ignore CHECKED over record + lock + temp, sibling lock +
+    atomic rename).
+  - A later invocation of the same lane **re-attaches** to a running
+    container (plain `docker logs -f` — which replays from the container's
+    first line — plus `docker wait`),
+    **collects** an exited one and finishes exactly as an attached run
+    would, **reports and clears** one the host lost (recording that run as
+    `aborted`, never as a pass) and runs fresh, and **refuses (exit 2)** when
+    the record judges a different commit — naming both commits and the new
+    `--fresh` flag, which removes the named container first and runs anew.
+    Every branch is disclosed by name.
+  - **Two clients on one lane: the second FOLLOWS, it does not take over.**
+    The record names the client that started the container (`owner_pid`,
+    the process start time from `/proc/<pid>/stat`, `boot_id`, and `pid_ns`
+    — the PID namespace's inode — a conjunction, so a recycled pid and a
+    post-reboot pid both read as dead). A record from ANOTHER pid namespace
+    is a third answer, not a dead owner: `boot_id` is host-global, so two
+    clients in two containers that bind-mount one worktree used to match on
+    boot and then each read the other's live owner as dead. Its liveness is
+    UNKNOWN, it is treated as ALIVE (followed; `--fresh` refuses), and the
+    namespace boundary is disclosed by name.
+    An invocation that finds a LIVE owner prints `following <name> (owner
+    pid N, started <t>)`, streams the same logs, exits with the same code and
+    removes nothing: not the container, not the record, not a history entry —
+    all three stay with the owner, so the run is still recorded exactly once.
+    `--fresh` against a live owner is refused by pid; run-gate never removes
+    another client's container. A DEAD owner is adopted exactly as above.
+    If the owner dies WHILE it is being followed, the follower is
+    **promoted** when the run ends — the record and the owner's liveness are
+    re-read after `docker wait` returns, and a follower that finds itself
+    alone removes the container (preserving the failing container's evidence
+    first), clears the record and writes the one history entry with the exit
+    code it holds, saying so by name. Without it a finished container squats
+    the host's one gate slot until the lane is next invoked, and `history`
+    shows a completed run as never having happened.
+    The one state where a live owner's container is ALREADY gone is the
+    owner's own `rm -f` → clear-the-record window, microseconds wide, so the
+    decision is re-read three times over about a second before any refusal:
+    normally the record has gone by the second read and this client simply
+    runs fresh, because a refusal naming a pid whose run has finished is
+    worse than a one-second wait. Bounded, never a wait loop.
+  - **"Gone" is exactly one thing, and the name is not the identity.** Only
+    `No such object` / `No such container` on `docker inspect`'s stderr
+    means the container is gone; every other inspect failure (an unreachable
+    daemon above all) is exit 3 with the record UNTOUCHED and nothing
+    recorded — a docker restart can never orphan a live gate container or
+    write a false `aborted`. And because container names are deterministic
+    per (environment, repo, lane), the container's `{{.Id}}` is read in the
+    same inspect call and compared with the recorded one: a mismatch is
+    disclosed (`a different container now wears this name; run-gate will not
+    touch it`), the record is cleared and the lane runs fresh. run-gate
+    never re-attaches to, or removes, a container it cannot identify.
+  - History records a re-attached or collected run ONCE, with the duration
+    measured from the container's start rather than from the seconds the
+    client was attached. A RE-ATTACHED run measures `now − started`, because
+    the client is watching the container finish; a COLLECTED one takes
+    `FinishedAt − StartedAt` from the same `docker inspect` that answered
+    the state question, so the idle time between a container's exit and the
+    collect never joins the trend series (an overnight collect used to
+    record three hours for a run that took minutes). If either stamp is
+    missing or is docker's `0001-01-01T00:00:00Z` "never set" value, the
+    record's own `started_at` answers as before.
+  - **New flag `--fresh`** (run path, ephemeral container lanes only —
+    refused by name on host lanes, exec lanes and every verb). `--dry-run`
+    discloses an inflight record and changes nothing — and it now names
+    what a live run would ACTUALLY do with that record: the refusal on a
+    commit mismatch, the follow when the owner is alive, the removal under
+    `--fresh`. It resolves HEAD and the owner first and walks the live
+    decision's branches in the live decision's order.
+  - A re-attached or followed lane discloses the `budget` and
+    `stall_timeout` it is armed with, exactly as a fresh one does. They were
+    printed on the fresh path only, so a re-attached lane could be stopped
+    against a `stall_timeout` its own invocation had never mentioned. On a
+    follow the line also names the owning pid as the client that will act on
+    it.
+  - The record's `schema` is CHECKED on read, not merely written, and a
+    record of another schema is **refused (exit 2)** rather than ignored:
+    ignoring it means starting a second container for the lane and
+    overwriting a newer client's record — the loss the record exists to
+    prevent. The refusal names both schema numbers and every way out
+    (upgrade run-gate; `--fresh`, which reads only the container NAME out of
+    a grammar it does not know and removes it; else the record's path to
+    delete).
+  - **Consumer note:** the record lives in the `.run-gate/` directory
+    adopters already git-ignore for `history.json`; no config change is
+    needed. A project that has NOT ignored it gets one warning per run
+    saying re-attach is off, and the lane still runs.
+
 <!-- Post-release housekeeping (assay CHANGES.md precedent): this block is
      CLEARED immediately after a release. cmru generates the dated entry
      below from the commit range but does NOT clear this hand-written block

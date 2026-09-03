@@ -117,6 +117,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `assay_lane` + `assay_command` (assay kind: both required; `assay_command`
   is a non-empty string list — the tool NEVER invents an assay invocation),
   `pins` (assay kind: table of `{sha256 = "<path>", version = "<str>"}` —
+  **those TWO keys and no others: an unrecognized key under
+  `[lanes.<name>.pins.<pin>]` is refused at load exactly as an unrecognized
+  lane key is (RG-32, rev 34), and `budget` is refused with its own message
+  naming the value's real owner** —
   `sha256` required, path relative to the project and existence-checked at
   load (project lanes and inherited central lanes alike); a declared
   `version` is VERIFIED in-lane via `<assay_command> --version`, which must
@@ -125,7 +129,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   tolerated; review fix) — declaring it asserts
   the command honors that convention,
   RG-4), `clean_tree` (bool, default **true**), `budget` (`\d+[smh]`,
-  advisory only), `memory` (`\d+[bkmg]?`, docker `--memory`),
+  advisory only), `stall_timeout` (`\d+[smh]`, assay lanes ONLY — bounds
+  SILENCE in the lane's progress file, never total elapsed time; `R-40c`),
+  `memory` (`\d+[bkmg]?`, docker `--memory`),
   `description` (optional non-empty string, one line, shown by `--help`),
   `required_env` (optional unique list of valid environment-variable names
   this lane's tests REQUIRE — enforced per R-24), `artifacts` (optional
@@ -145,6 +151,69 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   NON-EMPTY list of non-empty path strings the lane is expected to leave
   behind — disclosed after every run per R-18; `{worktree}` tokens are
   substituted, relative entries resolve against the effective project dir).
+- `R-08a` **Pin tables carry two keys, and `budget` is not one of them
+  (RG-32).** `[lanes.<name>.pins.<pin>]` accepts `sha256` and `version`
+  ONLY. A `budget` key there is refused at load, by name, with the message
+  `pin '<pin>' declares 'budget' — run-gate never enforced it; the lane's
+  budget lives in the consumer's assay.toml [lanes.<assay_lane>] (delete
+  this key; the lane-level run-gate 'budget' stays advisory)`. This is an
+  `R-04`-class defect, not a nit: the key sat one nesting level below a
+  REAL, load-bearing `budget` that looks identical when read, and it did
+  nothing. Measured cost — three readers on one dstdns session (two
+  independent Opus review agents and the controller) each read
+  `pins.assay.budget = "90m"` as the governing bound of a mutation lane
+  whose `assay.toml` actually declared `120m`; the two numbers had drifted
+  with nothing able to notice. Renaming it to `budget_hint` plus a
+  drift check was REJECTED: the check would be a second reading of an
+  assay-owned fact, which `R-35` already forbids for the comparison base,
+  and a decorative key is still a key a reviewer must learn to ignore. The
+  generic unknown-key refusal is the durable half — a pin table that
+  accepted anything is how `budget` came to live there. **BREAKING** for any
+  consumer that declares the key today; the migration is recorded in
+  CHANGES, and it is not one deletion (see below).
+  - **A misplaced LANE key is named as one, and the remedy is MOVE, not
+    delete.** When an unrecognized pin key is itself a legal lane key, the
+    refusal says so: `'clean_tree' is a lane key; it belongs one level up in
+    [lanes.<n>], where it is load-bearing — move it, do not delete it (under
+    a pin table it has never done anything, so the lane has been running
+    with the default instead)`. Without this clause the refusal is the
+    generic `unknown key(s) clean_tree (allowed: sha256, version)`, whose
+    obvious remedy is deletion — and deleting a misplaced
+    `clean_tree = false` silently flips that lane to the default `true`,
+    i.e. `R-08a` would rename its own defect class rather than close it.
+    `budget` is deliberately excluded from this clause and keeps its own
+    message: it is the one misplaced key whose remedy really is deletion,
+    because the value that governs the lane lives in the consumer's
+    `assay.toml`, not one level up. Both checks run BEFORE the generic one.
+  - **Measured consumer impact — a number with a DATE, and the command that
+    re-takes it.** **18 of 35 dstdns lanes as measured on 2026-09-03** refuse
+    at load on `pins.assay.budget` (13 of 29 on 2026-09-02; dstdns merged the
+    `assay-p166-result-dedup` family in between, five more lanes carrying the
+    same key). A hard-coded count of a peer repo's config cannot stay true
+    between a review and a merge, so this spec states the measurement, not a
+    fact — re-take it from `run-gate-project/` with:
+
+    ```sh
+    python3 -c 'import importlib.util as I, tomllib, pathlib
+    s = I.spec_from_file_location("rg", "run-gate.py"); rg = I.module_from_spec(s); s.loader.exec_module(rg)
+    L = tomllib.loads(pathlib.Path("/workspaces/dstdns/run-gate.toml").read_text())["lanes"]
+    def refuses(n, t):
+     try: rg._validate_lane(n, t, "run-gate.toml"); return False
+     except rg.GateError: return True
+    r = [n for n, t in L.items() if refuses(n, t)]
+    print(len(r), "of", len(L), "dstdns lanes refuse at load:", ", ".join(r))'
+    ```
+
+    The migration's SHAPE is the durable part and it does not move with the
+    count: **four** lanes (`assay-dlq`, `assay`, `sql-mutation`,
+    `assay-p129-enumeration-cursor`) also carry `clean_tree = false` in the
+    same misplaced position, so the migration is TWO rounds — the `budget`
+    refusal fires first and masks the `clean_tree` one (re-measured
+    2026-09-03 by deleting every `pins.*.budget` and re-loading: those same
+    four, unchanged). Those four inert `clean_tree = false` lines are a live
+    consumer defect this check discovered — the lanes have been running
+    `clean_tree = true` all along.
+
 - `R-09` Environment resolution: project `[environments.<name>]` shadows the
   central one entirely (same name = project wins, no field merging); an
   undefined name → error naming the lane and BOTH candidate files. The
@@ -559,6 +628,30 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   then it protects nothing. With a host lane declared and a plain checkout,
   the same check records `[OK]`, so a reader can tell it ran.
 
+- `R-30b` **Unprefixed script path in a container command lane (RG-34).**
+  `doctor` emits ONE `[WARN]` per `kind = "command"` lane on a NON-host
+  environment whose `argv[0]` is a relative path containing `/` and not
+  starting with `{worktree}` — naming the lane, the element, the fix
+  (`"{worktree}/<path>"`) and the mechanism: a container that mounts only
+  the judged worktree (a Mode-B instance's own runner, not the shared one)
+  has nothing at the bare repo root the `--workdir` names, so the argv dies
+  with `No such file or directory` there while working under a full-repo
+  mount. Measured on dstdns P152: `[lanes.schema] argv =
+  ["scripts/schema-gate.sh", "{worktree}"]` — the ARGUMENT templated, the
+  script path not — `lane 'schema' exit 127` against a dedicated-container
+  worktree, 100% reproducible, while the sibling `p128-schema-lineage` lane
+  (`["bash", "{worktree}/scripts/p128-assay-schema.sh"]`) was correct.
+  A **warning, never a refusal**, and it does not change doctor's exit code:
+  the same argv is CORRECT under a full-repo mount, and which mount a lane
+  gets is not visible to run-gate statically — a refusal would break working
+  consumers to prevent a hazard that may not apply to them. run-gate does
+  not rewrite argv either: the fix is one edit in the consumer's own config,
+  and a tool that silently rewrote a declared command would be a worse
+  defect than the one it patched. The check reads the DECLARATION only, so
+  it still answers for a lane whose environment failed to resolve. With at
+  least one container command lane and nothing to flag it records one
+  `[OK]`, so a reader can tell it ran (`R-30a`'s precedent).
+
 - `R-31` **Wheel as second artifact (RG-14):** the script stays PRIMARY —
   fresh clone, zero installs, `./run-gate.py --list` unchanged is the design
   win and must never regress. A wheel wraps the SAME bytes for
@@ -821,6 +914,336 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     never wrote. A pin that declares no version is not checked (there is no
     claim to hold it to); an older judge then fails the lane loudly with
     assay's own `unrecognized arguments` line, never silently.
+
+- `R-39` **Re-attach: a lane's container outlives its client, and is found
+  again (RG-35).** A container lane runs detached (`R-15`) and is removed by
+  an explicit `docker rm -f` in a `finally`. When the CLIENT dies — SIGKILL,
+  a devcontainer restart, a harness that reaps a background command — that
+  `finally` never runs: the container keeps going, the judge still writes its
+  verdict into the bind-mounted worktree, and nobody collects the exit
+  status, the evidence (`R-26`) or the history record (`R-36`). Until rev 34
+  the next invocation of the same lane then started a SECOND container for
+  the same commit. It does not any more.
+  - **`R-39a` The inflight record.** On a SUCCESSFUL `docker run -d`, and
+    only then, run-gate writes `<effective project dir>/.run-gate/inflight/
+    <lane>.json`: container name and id, `started_at` (UTC ISO) and
+    `started_epoch`, the judged commit, worktree, project dir, the lane's
+    verdict and progress paths (`null` for a command lane), and
+    `__revision__`. Scope is (judged worktree x project x lane) BY
+    CONSTRUCTION — `R-21` already relocates the effective project dir into
+    the judged tree, so two worktrees' gates address two different files and
+    never meet, which is `R-36f`'s scoping answer reused rather than
+    re-derived. The record's WRITE is serialised by a sibling
+    `inflight.lock` (`O_NOFOLLOW`, 0600, bounded) plus
+    write-temp-then-`os.replace`; that lock spans the write and nothing
+    else, and it is NOT what arbitrates two live clients — `R-39e` is. The
+    record's `schema` is CHECKED on read, not merely written, and a record of
+    another schema is **REFUSED (exit 2)**, never degraded: an old client
+    reading a future record under today's rules is the silent misread a
+    version field exists to prevent, and *treating it as absent* is worse
+    still — this client then starts a SECOND container for the lane and
+    writes its own record over the newer one, which is the loss `R-39` exists
+    to end, performed by the tool. The refusal names both schema numbers and
+    every way out: upgrade run-gate to the revision that wrote it; `--fresh`
+    where the record's container NAME is readable; else the record's path to
+    delete. `--fresh` therefore has to work against such a record, so under
+    it exactly two fields are read out of a grammar this client does not
+    know — the container name (what to remove) and `started_at` (display) —
+    and never the commit, the owner or the artifacts. A record carrying no
+    `schema` key at all is not a versioned record but a corrupt one, and
+    falls under the no-container rule below. The
+    record therefore also names its OWNER: `owner_pid`, `owner_start` (the
+    process start time, field 22 of `/proc/<pid>/stat`, so a recycled pid
+    cannot impersonate the owner), `boot_id` (a pid means nothing across
+    a reboot) and `pid_ns` (the PID namespace's inode — a pid means nothing
+    across a namespace either, and `boot_id` alone cannot say so because it
+    is host-GLOBAL: every container on one host reads the same value). The
+    store must be
+    git-ignored and that is CHECKED, exactly as `R-36g` checks it, over all
+    three paths the writer can leave behind. A store that cannot be
+    confirmed ignored, or cannot be written, degrades to ONE warning that
+    says what is lost ("if this client dies … the next invocation will start
+    a second one") and the lane RUNS: refusing to write is not refusing to
+    run, and run-gate has never made an un-ignored `.run-gate/` fatal.
+  - **`R-39b` The decision, taken before anything is built.** With a record
+    present, run-gate first asks whether the record's OWNER is still alive
+    (`R-39e`); if it is, this invocation FOLLOWS and none of the branches
+    below apply. Otherwise `docker inspect` answers for the named container
+    and exactly one of five things happens, each DISCLOSED by name (`R-05`)
+    — silence here is what turns a surviving container into a duplicate:
+    **running + same commit** → re-attach (`run-gate: re-attached to <name>
+    (started <t>, running for <m>m <s>s)`, then PLAIN `docker logs -f` +
+    `docker wait` — plain, because `logs -f` already replays the container's
+    log from its FIRST line before it follows, so a `--since` filter could
+    only ever SUBTRACT lines a reconnecting client is entitled to; and the
+    only stamp available to filter with is run-gate's own, taken after
+    `docker run -d` returned and truncated to whole seconds, so it would
+    subtract exactly the container's opening output); **exited + same
+    commit** → collect
+    (`run-gate: collected <name> (exited <code> at <t>)`) and finish exactly
+    as an attached run would; **gone** → say so, record that run as
+    `aborted`, clear the record, run fresh; **a different commit** → refuse,
+    exit 2, naming both commits, the container, and `--fresh`; **`--fresh`**
+    → remove the named container (by name, disclosed), clear the record, run
+    anew. An `inspect` answer that parses as NEITHER a state nor a gone
+    signal refuses (exit 3) rather than guessing — guessing "gone" would
+    start the duplicate this requirement exists to prevent.
+    - **What "gone" is, exactly.** ONLY `No such object` / `No such
+      container` on `docker inspect`'s stderr. Every other inspect failure —
+      an unreachable daemon above all — is INFRASTRUCTURE: exit 3, the
+      record UNTOUCHED, no history write. Reading a daemon outage as gone
+      (rev 34's first cut did) writes a false `aborted` entry and deletes
+      the only thing on disk that can find the still-running container once
+      the daemon returns, which is the loss `R-39` exists to end.
+    - **The name is not the identity.** Container names are deterministic
+      per (environment, repo, lane), so a record that outlives its container
+      can name a DIFFERENT container that later took the same name. `{{.Id}}`
+      rides along in the same `inspect` format (no extra call) and a
+      mismatch is treated as GONE, disclosed by name: `a different container
+      now wears this name; run-gate will not touch it`. The record is
+      cleared and the lane runs fresh — run-gate never re-attaches to, and
+      never removes, a container it cannot identify as its own. Automatic re-attach with `--fresh` as the
+    escape, rather than a refusal requiring an `--attach` flag, is decision
+    D4 of the post-v10 plan: a restart is the COMMON case after a client
+    death, and a manual step is exactly what the host's one-container rule
+    was written to avoid.
+  - **`R-39c` One finish, one history record.** The fresh, re-attached and
+    collected paths share ONE tail (`await_container`): logs, `docker wait`,
+    evidence on failure, `docker rm -f`, record cleared in the SAME `finally`
+    that removes the container, artifacts disclosed. History records the run
+    ONCE, with the outcome from the real exit code and the duration measured
+    from the CONTAINER, not from the seconds this client happened to be
+    attached.
+    - **Which container clock, by path.** A RE-ATTACH measures `now −
+      started_epoch`: the client is watching the container finish, so its own
+      clock is the container's. A COLLECT does not — the container exited at
+      some arbitrary earlier moment and the idle gap since is not part of the
+      run — so it takes `FinishedAt − StartedAt` from the same `docker
+      inspect` that answered the state question, no extra call. Left as `now
+      − started_epoch` it charged one overnight collect with the whole night
+      (`duration_seconds: 10800.028` for a container that had exited three
+      hours earlier), inside the median/min/max series `R-27` exists to make
+      trustworthy. Docker's stamps are hand-parsed: NANOSECOND fractions, and
+      the year-1 zero value `0001-01-01T00:00:00Z` that means "never set" (a
+      RUNNING container's `FinishedAt` is exactly that). Either stamp
+      missing, unparsable or zero, or a finish before its start → the
+      record's own `started_at` answers, as before; a duration is never
+      invented from half a pair.
+    A run whose container is gone is recorded
+    `aborted`, never a pass; a container that disappears mid-collect leaves
+    `docker wait` unreadable, which is already an exit-3 refusal, never a
+    pass.
+    - **What the invocation says about itself.** The usual `rev | lane | env
+      | slice` header belongs to a run this client STARTED; a re-attach or a
+      follow prints `rev | lane | re-attach` / `| follow` instead, because
+      the header's mounts and slice are claims this invocation never made.
+      The lane's own BOUNDS are the opposite case and print on all three
+      paths (`print_lane_bounds`): `budget` and `stall_timeout` are facts
+      about the lane, and a re-attached lane that was never told its
+      `stall_timeout` got stopped against a number its own output had never
+      mentioned. On a FOLLOW the `stall_timeout` line also names the owning
+      pid as the client that will act on it — the same fact, without
+      implying this invocation would be the one to stop the container.
+      The ARTIFACTS a re-attach or follow discloses are the ones the RECORD
+      declared (`verdict`, `progress`), not the ones this invocation's
+      config would construct: they are what THAT run was told to write, and
+      the live config is not the authority for a run already in flight.
+      A record that NAMES no path — the key absent, or the `null` a command
+      lane's record writes — falls back to the config, which for a command
+      lane still discloses no verdict and arms no watch. Presence of the key
+      used to be the test; a `null` then suppressed the artifact and, worse,
+      SILENTLY disabled the stall watch of a lane whose `kind` had changed
+      between two invocations.
+  - **`R-39d` Where it does not apply.** `--dry-run` DISCLOSES a record and
+    names what a live run would do with it, and changes nothing — it does
+    not attach, collect, clear or remove. The disclosure resolves HEAD and
+    the owner FIRST and walks the live decision's branches in the live
+    decision's order, so it names the refusal, the follow or the `--fresh`
+    removal where those are what would happen; announcing "re-attach or
+    collect" for a record the live run refuses is worse than saying nothing,
+    because a dry run's whole audience is someone about to act on it. Host lanes and exec lanes start no
+    container of run-gate's own, so they have no record and refuse `--fresh`
+    by name (`R-25`/`R-35`'s rule), as do `doctor`, `history`,
+    `validate-pointers` and a bare invocation. A conjunction lane carries the
+    behaviour to each SUB-lane it invokes; the conjunction itself is a
+    command lane with no container of its own and no record. `--fresh` is
+    per-invocation and deliberately does NOT fan out into a conjunction (no
+    token, unlike `--worktree` and `{base}`): it REMOVES a container, and
+    propagating it would destroy sub-lane containers that are legitimately
+    running. Nothing is lost — a sub-lane that cannot attach refuses on its
+    own terms, the `&&` chain stops there, and the refusal naming that
+    sub-lane, its container and `--fresh` passes out through the conjunction
+    as exit 2 (verified; CONSUMERS "Gate-conjunction lanes" carries the
+    transcript and the shape a consumer writes if it wants one sub-lane
+    always fresh).
+  - **`R-39e` Two clients, one lane: the live owner is FOLLOWED, never
+    hijacked.** Scope answers two worktrees (`R-39a`); it does not answer two
+    terminals on ONE tree, and that case is common precisely because the
+    host's rule is one gate container at a time ACROSS agents. The record's
+    owner identity (`owner_pid` + `owner_start` + `boot_id` + `pid_ns`) is
+    checked before anything else: the owner is ALIVE when the boot id matches
+    this boot, the pid exists, and its start time is the recorded one — a
+    conjunction, so a recycled pid and a post-reboot pid both read as DEAD.
+    - **Another PID namespace → liveness UNKNOWN → treated as ALIVE.** When
+      the record's `pid_ns` is not this client's, the pid cannot be looked up
+      here AT ALL, and the answer is not "dead" — it is "I could never have
+      seen it". `boot_id` cannot catch this on its own: it is host-global, so
+      two clients in two containers that bind-mount the same worktree (this
+      host does exactly that) both match on boot and then each read the
+      other's live owner as dead — which is `R-39e`'s hijack, back again
+      across a namespace boundary. Unknown resolves to ALIVE in the same
+      direction every other "could not determine" in this decision takes:
+      the run is FOLLOWED, `--fresh` REFUSES, and nothing is removed. The
+      boundary itself is disclosed by name, because an assumption of life is
+      a different claim from a reading of it. A record written before rev 34
+      recorded the inode cannot be compared, so the question is not asked and
+      the boot + start-time conjunction answers alone.
+    - **Owner alive** → this client FOLLOWS: `run-gate: following <name>
+      (owner pid <N>, started <t>)`, then the same `docker logs -f` stream
+      and the same exit code — and it removes NOTHING. Not the container, not
+      the record, not a history entry: all three belong to the client that
+      started the run and is still there to do them, which is what keeps
+      `R-39c`'s "ONCE" true with two clients attached. `docker wait` is
+      issued BEFORE the log stream and runs concurrently with it, because the
+      owner removes the container within milliseconds of its exit and a wait
+      issued after that removal would answer "No such container" — a
+      follower reporting exit 3 on a lane it just watched pass. The price is
+      one EXTRA docker client held open for the lane's whole duration, and
+      it is accepted deliberately: the alternative loses the follower's exit
+      code on every clean finish, which is every run that matters.
+    - **Owner alive, `--fresh`** → REFUSED (exit 2), naming the pid.
+      run-gate never removes another client's container; `--fresh` is an
+      escape from a container nobody is watching.
+    - **Owner alive, container already gone** → the decision is RE-READ
+      first, `OWNER_RACE_REPOLLS = 3` times in all (the first read included)
+      at `OWNER_RACE_PAUSE_SECONDS = 0.5` apart, ~1 s in total. The two
+      facts can only both hold inside the owner's own `docker rm -f` →
+      `clear_inflight_record` window, which is microseconds wide, so the
+      second read normally finds NO RECORD: this client then says so and
+      runs fresh, because a refusal naming a pid whose run is already over
+      is worse than a one-second wait. If the record vanished → run fresh.
+      If the owner died meanwhile → the ordinary gone-container path
+      (`aborted`, cleared, fresh). Only if the owner is STILL alive after
+      the full window is it refused (exit 2) naming the pid, record
+      untouched: the owner owns that outcome, and a second `aborted` written
+      from here would be a second result for one run. Bounded, never a wait
+      loop — an owner genuinely wedged between those two statements must
+      still produce the refusal.
+    - **Owner dies WHILE being followed → the follower is PROMOTED.** The
+      three duties are re-decided on a fresh read of the record and of the
+      owner's liveness AFTER `docker wait` returns, not assumed from the
+      decision taken at the start. If the owner is gone, this client does
+      them: `docker rm -f`, clear the record, and write the ONE history entry
+      `R-39c` promises, with the exit code it is holding and the CONTAINER's
+      start (`R-39c`'s duration rule, unchanged). Evidence is preserved first
+      when the run failed (`R-26`) — `rm -f` destroys the logs and the
+      client that would have saved them is no longer here. The promotion is
+      disclosed BY NAME ("the owning client (pid N) is gone; this client is
+      finishing its cleanup"), because a follower that suddenly removes a
+      container it announced it would not touch owes the reason, and because
+      the failure line it prints changes owner with it. Without this the
+      lane still self-heals — the next invocation collects the exited
+      container and records it — but that is the NEXT run: until then a
+      finished container squats the host's one gate slot, its record points
+      at it, and `history` shows a completed run as never having happened.
+    - **Owner dead** (or a record from before rev 34, which names no owner)
+      → `R-39b` unchanged: re-attach, collect, report-and-clear, or refuse on
+      a commit mismatch. "After its client dies" is now literally what the
+      code checks.
+    - Rejected: a lock held for the LIFETIME of the run, which would refuse
+      the second terminal outright and lose the follow — the operator's most
+      common second invocation is "show me what it is doing", not "start
+      another one".
+
+- `R-40` **Progress-judged liveness (RG-36).** `budget` is advisory here and
+  a hard lane-wide bound in assay, so the only way to bound a long mutation
+  lane was to guess a TOTAL: dstdns raised `sql-mutation` from 90m to 120m
+  and it still could not finish a window (`R-38`'s transcript). Since rev 33
+  every assay lane writes `.assay/progress-<assay_lane>.jsonl` with a
+  `candidate_index`/`candidate_total` per candidate, so health is read off
+  the file instead — rate, ETA, and the load-bearing one, SILENCE.
+  - **`R-40a` Disclosure, every `PROGRESS_POLL_SECONDS = 30`.** While an
+    assay lane's container runs, run-gate reads the file the same `R-38`
+    constructs and prints, AT MOST once per poll and only when something
+    changed: `run-gate: progress <lane>: candidate <i>/<N>, <rate>/min, ETA
+    <m>m`. The FIRST observation is a baseline and prints the count alone: a
+    single event with no clock in the file is not a measurement, and
+    inventing a rate would be the guess this replaces. 30 s judges a
+    15-minute `stall_timeout` to within 3%. Each poll costs a `stat()`, a
+    full `read_text()` and a `json.loads()` per line — the file is
+    append-only and no offset is remembered — so a four-hour lane costs 480
+    of those, which on a 4 000-candidate mutation lane is ~2M line parses
+    over the run: cheap beside the judge it is watching, but not the "480
+    `stat()`s" this paragraph claimed before review round 1 (N1). An
+    incremental read from a saved offset would remove the parse half and is
+    the obvious step if the file ever grows enough to matter. Disclosure
+    only (`R-05`) — nothing here decides anything.
+  - **`R-40b` No events is disclosed ONCE and is never a fault.** A missing
+    file, a file holding only the `run` header (an R0/R1 lane — one command,
+    no candidates), or a judge that writes none, prints `run-gate: progress
+    <lane>: no candidate events (not an R2 lane, or the judge writes none)`
+    exactly once and is treated as healthy. A torn last line (the judge is
+    mid-append) is skipped, not fatal.
+    - **A file that VANISHES mid-run is not this case.** Once an event has
+      been seen, a file that becomes unreadable — deleted, truncated,
+      replaced — gets its own sentence naming the last event it held, and it
+      is SILENCE: the stall clock keeps running from the last real movement,
+      not from the vanishing. Printing `no candidate events` there was both
+      untrue and disabling — stall detection stopped forever, so a lane that
+      lost its progress file became permanently unstoppable at the moment it
+      most needed bounding (review round 1 N4). The notice is armed once per
+      disappearance; a file that comes back reports normally again.
+  - **`R-40c` `stall_timeout`, an optional lane key with the `budget`
+    grammar.** The lane is stopped ONLY when the container is STILL RUNNING
+    and the progress file has not advanced for that long — `docker rm -f`,
+    evidence saved (`R-26`), exit 3, naming the stall, the last event seen
+    and the age. **NEVER on total elapsed time**: `budget` stays advisory and
+    its disclosure is unchanged. The "still running" half is structural, not
+    asserted: the check only ever runs in the poll of a `docker logs -f` that
+    has not returned. A lane whose file never appears cannot stall by this
+    rule (`R-40b` says so out loud), which is what keeps the key from killing
+    R0/R1 containers. Declared on a `kind = "command"` lane it is REFUSED at
+    load — a command lane writes no progress file, so the key could never do
+    anything, and an inert key that reads like a real one is the defect
+    `R-08a` was filed for one key over.
+    - **Where the silence is measured FROM: the FILE.** Real movement
+      restarts the clock; the watch's FIRST observation is not movement —
+      there is no earlier event for it to have moved from; it is the
+      baseline `R-40a` already calls it. Its age is therefore taken from the
+      file itself, `wall_now − mtime`, **which for a re-attach is a moment
+      before this client existed.** That answers both cases exactly: a
+      container ALREADY frozen when this client arrived is as silent as its
+      file is old and stalls at once (the `R-39` re-attach case — the run
+      being judged started in another process, possibly hours ago), while a
+      lane whose first candidate arrives after a long startup has an mtime
+      of ~now and gets its FULL window.
+      Seeding the clock from the watch's CONSTRUCTION instead — rev 34's
+      first cut — bought the first case at the price of the second, which is
+      the case `R-40` exists for: an assay mutation lane's startup is image
+      entry, `safe.directory`, a Postgres provision, collection, the
+      baseline suite and mutant generation, all before candidate #1, so a
+      lane declaring the `stall_timeout = "15m"` this spec recommends it was
+      announced and stopped by the SAME `poll()` (`candidate 1/172`
+      printed, then `has not advanced for 1200s`) — a self-refuting message
+      an operator reads only after `docker rm -f` has run.
+    - **Which file, on a re-attach.** The one the RECORD names
+      (`R-39a`'s `progress`), not the one this invocation's config would
+      construct: it is the file that run was told to write, and a lane
+      retargeted between the two invocations would otherwise be judged by
+      the silence of a file nobody was ever going to append to. A record
+      that names no path there — absent, or `null` — falls back to the
+      config, so neither a pre-rev-34 record nor a lane that has just become
+      an assay lane loses its watch in silence.
+  - **`R-40d` Coarse now, exact later, same code.** assay's events carry no
+    timestamp today, so the rate is measured against run-gate's OWN clock
+    from the first event it observed and advancement is the file's mtime.
+    Where an event already carries `elapsed_s` (assay B065) it is PREFERRED,
+    so the same implementation becomes exact when B065 lands — no rewrite,
+    and no second reading of the same fact.
+  - **`R-40e` The documented shape.** For a mutation lane: a generous assay
+    `budget` + `judge.mutation.budget_per_candidate` + run-gate
+    `stall_timeout`. For R0/R1: `budget` is the command's own bound and
+    there is nothing to add.
 
 ## 6. Non-goals (unchanged from CONSUMERS)
 
