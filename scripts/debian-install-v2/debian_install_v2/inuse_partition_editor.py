@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-inuse-partition-editor.py — add partitions to a disk that is CURRENTLY IN USE
+inuse_partition_editor.py — add partitions to a disk that is CURRENTLY IN USE
 (mounted root, live production host) without unmounting or rebooting, on top
 of sfdisk's dump/restore. That is the whole point of this tool: existing
 entries are kept verbatim, there is no kernel re-read of the full table, and
@@ -23,12 +23,19 @@ logical EBR only — GPT partitions need no gap).
 Mutating commands need --commit to actually write.
 
 Examples:
-  inuse-partition-editor.py --disk /dev/vda free
-  inuse-partition-editor.py --disk /dev/vda add-swap --count 2 --size fill --labels gswap1,gswap2          # dry-run
-  inuse-partition-editor.py --disk /dev/vda add-swap --count 2 --size fill --labels gswap1,gswap2 --commit
-  inuse-partition-editor.py --disk /dev/vda add --size 100G --type 8e --commit
-  inuse-partition-editor.py --disk /dev/vda dump --out /root/vda.sfdisk
-  inuse-partition-editor.py --disk /dev/vda restore --in /root/vda.sfdisk --commit
+  inuse_partition_editor.py --disk /dev/vda free
+  inuse_partition_editor.py --disk /dev/vda add-swap --count 2 --size fill --labels gswap1,gswap2          # dry-run
+  inuse_partition_editor.py --disk /dev/vda add-swap --count 2 --size fill --labels gswap1,gswap2 --commit
+  inuse_partition_editor.py --disk /dev/vda add --size 100G --type 8e --commit
+  inuse_partition_editor.py --disk /dev/vda dump --out /root/vda.sfdisk
+  inuse_partition_editor.py --disk /dev/vda restore --in /root/vda.sfdisk --commit
+
+Also importable: `from debian_install_v2 import inuse_partition_editor` and
+`inuse_partition_editor.Table(disk, raw=..., disk_sectors=...)` builds a
+Table from an already-fetched dump/size instead of shelling out itself —
+used by installer.py's own preflight/backup/rollback-wrapped apply so every
+subprocess call still passes through HostActions' allowlist and dry-run
+gate, not this module's own bare `run()`.
 """
 import argparse, hashlib, os, re, subprocess, sys, time
 
@@ -67,10 +74,15 @@ def parse_size(s, sector):
     return (n * {'k':1024,'m':1024**2,'g':1024**3,'t':1024**4}[u[0]]) // sector
 
 class Table:
-    def __init__(self, disk):
+    def __init__(self, disk, *, raw=None, disk_sectors=None):
+        # raw=/disk_sectors= let a caller that already fetched the dump
+        # through its own gated subprocess wrapper (e.g. installer.py's
+        # HostActions, for dry-run/allowlist safety) hand it in instead of
+        # this constructor shelling out itself. Omitted (CLI usage), the
+        # original sfdisk/blockdev calls run exactly as before.
         self.disk, self.header, self.parts, self.added, self.sector = disk, [], [], [], 512
         self.label_type = self.first_lba = self.last_lba = None
-        self.raw = run(["sfdisk", "-d", disk], quiet=True).stdout
+        self.raw = raw if raw is not None else run(["sfdisk", "-d", disk], quiet=True).stdout
         for line in self.raw.splitlines():
             ms = re.match(r'sector-size:\s*(\d+)', line)
             if ms: self.sector = int(ms.group(1))
@@ -82,15 +94,18 @@ class Table:
             if me: self.last_lba = int(me.group(1))
             m = re.match(r'^(/dev/\S+)\s*:\s*(.*)$', line)
             if not m: self.header.append(line); continue
+            num_match = re.search(r'(\d+)$', m.group(1))
+            if not num_match: self.header.append(line); continue
             attrs = dict(_ATTR_RE.findall(m.group(2)))
+            if 'start' not in attrs or 'size' not in attrs: self.header.append(line); continue
             self.parts.append(dict(
-                dev=m.group(1), num=int(re.search(r'(\d+)$', m.group(1)).group(1)),
+                dev=m.group(1), num=int(num_match.group(1)),
                 start=int(attrs['start']), size=int(attrs['size']),
                 type=attrs['type'].strip('"')))
         if self.label_type not in ("dos", "mbr", "gpt"):
             sys.exit(f"unsupported disklabel {self.label_type!r} on {disk} "
                      f"— this tool only handles MBR/dos and GPT partition tables")
-        self.disk_sectors = int(run(["blockdev", "--getsz", disk], quiet=True).stdout.strip())
+        self.disk_sectors = disk_sectors if disk_sectors is not None else int(run(["blockdev", "--getsz", disk], quiet=True).stdout.strip())
 
     @property
     def is_gpt(self): return self.label_type == "gpt"

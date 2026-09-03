@@ -88,7 +88,7 @@ def test_fstab_swap_entries_are_planned(tmp_path):
     StateStore(config.state_dir).save_new(StateStore.new(config))
     installer.resume()
     fstab = actions.dry_run_writes["/etc/fstab"]
-    assert len([line for line in fstab.splitlines() if " none swap sw,pri=10 0 0" in line]) == 8
+    assert len([line for line in fstab.splitlines() if " none swap sw,pri=10,discard=once 0 0" in line]) == 8
 
 
 def test_disk_transaction_manifest_and_health_gate_are_planned(tmp_path):

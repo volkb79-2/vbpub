@@ -43,18 +43,38 @@ class Config:
     run_apt_config: bool = True
     run_journald_config: bool = True
     run_docker_install: bool = True
+    run_ksm: bool = True
+    run_oomd_config: bool = True
+    run_fstrim: bool = True
+    run_docker_cleanup: bool = True
+    run_apt_auto_upgrade: bool = True
+    run_auto_reboot: bool = True
 
     swap_disk_total_gb: int = 32
     swap_file_count: int = 8
     swap_priority: int = 10
+    swap_discard: bool = True
     preserve_root_size_gb: int = 10
     zswap_compressor: Literal["zstd", "lz4", "lzo-rle"] = "zstd"
     zswap_zpool: Literal["z3fold", "zbud", "zsmalloc"] = "z3fold"
     zswap_pool_percent: int = 25
+    # 50, not the kernel's own default of 60 or gstammtisch's 100: anon pages
+    # stay the most precious tier even with zswap making reclaim cheap, so
+    # this host fleet favors a middle value over "swap early, zswap absorbs
+    # it" (100) or the stock default (60). oomd (run_oomd_config) is the
+    # safety net that makes ANY of these values safe to run unattended;
+    # 5-10 is the documented alternative for latency-sensitive workloads
+    # (databases etc.) that want almost no anon reclaim regardless of swap
+    # cost, and 100 remains documented for a memory-fungible/zswap-protected
+    # host in the gstammtisch mold. See debian_install_v2/README.md.
+    vm_swappiness: int = 50
     docker_live_restore: bool = True
     docker_log_driver: str = "json-file"
     docker_log_max_size: str = "50m"
     docker_log_max_file: str = "3"
+    docker_cleanup_max_age_hours: int = 240
+    apt_auto_upgrade_mode: Literal["full", "security-only", "notify-only"] = "full"
+    reboot_window_time: str = "03:00"
     telegram_bot_token: str = field(default="", repr=False)
     telegram_chat_id: str = field(default="", repr=False)
     credential_mode: Literal["root-storage", "systemd"] = "root-storage"
@@ -62,6 +82,7 @@ class Config:
 
 _SIZE_RE = re.compile(r"^[0-9]+$")
 _DOCKER_LOG_MAX_SIZE_RE = re.compile(r"^[0-9]+[bkmg]?$", re.IGNORECASE)
+_HHMM_RE = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
 def _reject_obsolete(data: dict[str, Any]) -> None:
     obsolete = sorted(set(data) & OBSOLETE_VARIABLES)
     if obsolete:
@@ -83,7 +104,8 @@ def _validate(config: Config) -> None:
             raise ConfigError(f"{name} must be a JSON boolean")
     integer_names = [
         "schema_version", "swap_disk_total_gb", "swap_file_count", "swap_priority",
-        "preserve_root_size_gb", "zswap_pool_percent",
+        "preserve_root_size_gb", "zswap_pool_percent", "vm_swappiness",
+        "docker_cleanup_max_age_hours",
     ]
     for name in integer_names:
         value = getattr(config, name)
@@ -93,6 +115,7 @@ def _validate(config: Config) -> None:
             "log_dir", "state_dir", "stage2_output",
             "telegram_bot_token", "telegram_chat_id",
             "docker_log_driver", "docker_log_max_size", "docker_log_max_file",
+            "reboot_window_time",
         ]
     for name in string_names:
         if not isinstance(getattr(config, name), str):
@@ -125,6 +148,14 @@ def _validate(config: Config) -> None:
         raise ConfigError("zswap_pool_percent must be from 5 to 60")
     if not 0 <= config.swap_priority <= 32767:
         raise ConfigError("swap_priority must be from 0 to 32767")
+    if not 0 <= config.vm_swappiness <= 100:
+        raise ConfigError("vm_swappiness must be from 0 to 100")
+    if not 1 <= config.docker_cleanup_max_age_hours <= 8760:
+        raise ConfigError("docker_cleanup_max_age_hours must be from 1 to 8760")
+    if config.apt_auto_upgrade_mode not in {"full", "security-only", "notify-only"}:
+        raise ConfigError("apt_auto_upgrade_mode must be full, security-only, or notify-only")
+    if not _HHMM_RE.fullmatch(config.reboot_window_time):
+        raise ConfigError("reboot_window_time must be 24h HH:MM (e.g. '03:00')")
     if bool(config.telegram_bot_token) != bool(config.telegram_chat_id):
         raise ConfigError("telegram_bot_token and telegram_chat_id must be supplied together")
     if config.credential_mode not in {"root-storage", "systemd"}:

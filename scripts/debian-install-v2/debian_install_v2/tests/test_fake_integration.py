@@ -22,6 +22,7 @@ class FakeHostActions(HostActions):
         self.files: dict[str, bytes] = {}
         self.readback: str | None = None
         self.applied = False
+        self.exists_result = True
 
     def run(self, argv: list[str], description: str = "", dangerous: bool = False) -> str | None:
         self._validate(list(argv))
@@ -43,6 +44,16 @@ class FakeHostActions(HostActions):
             raise AssertionError(path)
         self.planned.append(PlannedAction(("/usr/bin/tee", path), f"write {path}", True))
         self.files[path] = content.encode("utf-8")
+
+    def exists(self, path: str) -> bool:
+        # No real block devices in a fake test run — the post-partx/udevadm
+        # device-appearance poll in _apply_known_swap_shape() would otherwise
+        # spin for 5s per swap partition and then fail. Readback verification
+        # (self.readback / expected_readback()) is this fixture's actual
+        # source of truth for "did partitioning succeed", not device nodes.
+        # exists_result lets a test override this to prove the poll's own
+        # failure path (device never appears) still raises correctly.
+        return self.exists_result
 
 
 def test_fake_write_file_rejects_relative_path():
@@ -109,6 +120,49 @@ def test_mismatched_readback_rolls_back(tmp_path):
     assert rollback
     backup_name = rollback[0].argv[3]
     assert actions.files[str(rollback[0].argv[3])].decode() == CURRENT_DUMP
+
+
+def test_apply_uses_partx_and_udevadm_not_partprobe(tmp_path):
+    # P0#3 (DEBIAN-INSTALLv2-REVIEW.md): partprobe alone is less reliable at
+    # getting new partition device nodes to exist than partx -a + udevadm
+    # settle — the mechanism inuse_partition_editor.Table.write() already
+    # uses, ported here to go through HostActions instead of a bare
+    # subprocess.run.
+    installer, actions = make_installer(tmp_path)
+    _, readback = expected_readback(installer)
+    actions.readback = readback
+    installer._apply_known_swap_shape()
+    argvs = [action.argv for action in actions.planned]
+    assert ("/usr/sbin/partx", "-a", "/dev/vda") in argvs
+    assert ("/usr/bin/udevadm", "settle") in argvs
+    assert not any(argv[0] == "/usr/sbin/partprobe" for argv in argvs)
+
+
+def test_apply_raises_when_swap_device_never_appears(tmp_path):
+    installer, actions = make_installer(tmp_path)
+    _, readback = expected_readback(installer)
+    actions.readback = readback
+    actions.exists_result = False
+    with pytest.raises(RuntimeError, match="partition device did not appear"):
+        installer._apply_known_swap_shape()
+
+
+def test_disk_facts_tolerates_quoted_gpt_name_attribute(tmp_path):
+    # P0#1 (DEBIAN-INSTALLv2-REVIEW.md): a naive line.split() mis-tokenizes
+    # a quoted name= value that contains a space (real GPT disks commonly
+    # carry one, e.g. a cloud image's "EFI System Partition" label on an
+    # earlier partition) — inuse_partition_editor.Table's _ATTR_RE-based
+    # parser handles it correctly.
+    installer, actions = make_installer(tmp_path)
+    actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = (
+        'label: gpt\ndevice: /dev/vda\n\n'
+        '/dev/vda1 : start=2048, size=1050624, type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b, '
+        'name="EFI System Partition"\n'
+        '/dev/vda3 : start=2500608, size=20971520, type=0fc63daf-8483-4772-8e79-3d69d8477de4\n'
+    )
+    disk_sectors, root_start, root_size = installer._disk_facts()
+    assert root_start == 2500608
+    assert root_size == 20971520
 
 
 def test_verify_refuses_checksum_mismatch(tmp_path):

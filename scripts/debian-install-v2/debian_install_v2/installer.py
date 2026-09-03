@@ -12,17 +12,34 @@ import time
 import urllib.parse
 import urllib.request
 
+from . import inuse_partition_editor
 from .actions import HostActions
 from .config import Config, ConfigError
 from .state import StateStore
 from .templates import (
     APT_CUSTOM,
+    APT_PERIODIC_CONFIG,
     APT_PRIORITIES,
     APT_SOURCES,
+    APT_UPDATE_NOTIFY_SCRIPT,
+    APT_UPDATE_NOTIFY_SERVICE,
+    APT_UPDATE_NOTIFY_TIMER,
+    BOOT_NOTIFY_SERVICE,
     CGROUP2_FLAGS_SCRIPT,
     CGROUP2_FLAGS_SERVICE,
+    DOCKER_CLEANUP_SERVICE,
+    DOCKER_CLEANUP_TIMER,
+    FSTRIM_OVERRIDE,
+    KSM_SERVICE,
+    NEEDRESTART_CONFIG,
+    NOTIFY_SCRIPT,
+    OOMD_CONFIG,
+    REBOOT_CHECK_SCRIPT,
+    REBOOT_CHECK_SERVICE,
+    REBOOT_CHECK_TIMER,
     STAGE2_SERVICE,
     THP_SERVICE,
+    UNATTENDED_UPGRADES_CONFIG,
     ZSWAP_SERVICE,
 )
 
@@ -294,6 +311,71 @@ MaxFileSec=1month
         self.actions.write_file("/etc/docker/daemon.json", json.dumps(existing, indent=2) + "\n", 0o644)
         self.state.mark_step("docker_daemon_config", "success", self.config.docker_log_driver)
 
+    def _install_notify_helper(self) -> None:
+        # Unconditional, like cgroup2-flags: harmless if Telegram isn't
+        # configured (the script itself no-ops when credentials are absent),
+        # and vbpub-reboot-check/vbpub-apt-check depend on it existing.
+        self.actions.write_file("/usr/local/sbin/vbpub-notify", NOTIFY_SCRIPT, 0o755)
+        self.state.mark_step("notify_helper", "success", "/usr/local/sbin/vbpub-notify")
+
+    def _configure_docker_cleanup(self) -> None:
+        self.actions.write_file(
+            "/etc/systemd/system/vbpub-docker-cleanup.service",
+            DOCKER_CLEANUP_SERVICE.format(age_hours=self.config.docker_cleanup_max_age_hours),
+        )
+        self.actions.write_file("/etc/systemd/system/vbpub-docker-cleanup.timer", DOCKER_CLEANUP_TIMER)
+        self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
+        self._run(
+            ["/usr/bin/systemctl", "enable", "--now", "vbpub-docker-cleanup.timer"],
+            "enable docker cleanup timer", dangerous=True,
+        )
+        self.state.mark_step(
+            "docker_cleanup", "success",
+            f"weekly, age>={self.config.docker_cleanup_max_age_hours}h, images+containers+build-cache only",
+        )
+
+    def _unattended_upgrade_origins(self) -> list[str]:
+        release = self.release
+        security = [
+            f'    "origin=Debian,codename={release},label=Debian-Security";',
+            f'    "origin=Debian,codename={release}-security,label=Debian-Security";',
+        ]
+        if self.config.apt_auto_upgrade_mode == "security-only":
+            return security
+        return security + [
+            f'    "origin=Debian,codename={release}";',
+            f'    "origin=Debian,codename={release}-updates";',
+            f'    "origin=Debian,codename={release}-backports";',
+            '    "origin=Debian,suite=testing";',
+            '    "origin=Debian,suite=unstable";',
+        ]
+
+    def _configure_apt_auto_upgrade(self) -> None:
+        if self.config.apt_auto_upgrade_mode == "notify-only":
+            self.actions.write_file("/usr/local/sbin/vbpub-apt-check", APT_UPDATE_NOTIFY_SCRIPT, 0o755)
+            self.actions.write_file("/etc/systemd/system/vbpub-apt-check.service", APT_UPDATE_NOTIFY_SERVICE)
+            self.actions.write_file("/etc/systemd/system/vbpub-apt-check.timer", APT_UPDATE_NOTIFY_TIMER)
+            self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
+            self._run(
+                ["/usr/bin/systemctl", "enable", "--now", "vbpub-apt-check.timer"],
+                "enable apt notify-only check", dangerous=True,
+            )
+            self.state.mark_step("apt_auto_upgrade", "success", "notify-only")
+            return
+        self._packages(["unattended-upgrades", "needrestart"], "apt-auto-upgrade")
+        origins = self._unattended_upgrade_origins()
+        self.actions.write_file(
+            "/etc/apt/apt.conf.d/51-vbpub-unattended-upgrades",
+            UNATTENDED_UPGRADES_CONFIG.format(mode=self.config.apt_auto_upgrade_mode, origins="\n".join(origins)),
+        )
+        self.actions.write_file("/etc/apt/apt.conf.d/20auto-upgrades", APT_PERIODIC_CONFIG)
+        self.actions.write_file("/etc/needrestart/conf.d/vbpub.conf", NEEDRESTART_CONFIG)
+        self._run(
+            ["/usr/bin/systemctl", "enable", "--now", "apt-daily.timer", "apt-daily-upgrade.timer"],
+            "enable apt auto-upgrade timers", dangerous=True,
+        )
+        self.state.mark_step("apt_auto_upgrade", "success", self.config.apt_auto_upgrade_mode)
+
     def _configure_cgroup2_flags(self) -> None:
         # Default ON, no config flag — memory_recursiveprot missing silently
         # defeats every slice's MemoryLow/MemoryMin with no other symptom
@@ -314,6 +396,51 @@ MaxFileSec=1month
         )
         self.state.mark_step("cgroup2_flags", "success", "memory_recursiveprot+nsdelegate")
 
+    def _configure_ksm(self) -> None:
+        self.actions.write_file("/etc/systemd/system/ksm-config.service", KSM_SERVICE)
+        self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
+        self._run(["/usr/bin/systemctl", "enable", "ksm-config.service"], "enable KSM unit")
+        self.state.mark_step("ksm_config", "success", "ksmd enabled host-wide, opt-in per process")
+
+    def _configure_oomd(self) -> None:
+        self.actions.mkdir("/etc/systemd/oomd.conf.d")
+        self.actions.write_file("/etc/systemd/oomd.conf.d/vbpub.conf", OOMD_CONFIG)
+        self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
+        self._run(
+            ["/usr/bin/systemctl", "enable", "--now", "systemd-oomd"],
+            "enable systemd-oomd with vbpub thresholds", dangerous=True,
+        )
+        self.state.mark_step("oomd_config", "success", "SwapUsedLimit=90%, pressure=60%/20s")
+
+    def _configure_fstrim(self) -> None:
+        self.actions.mkdir("/etc/systemd/system/fstrim.timer.d")
+        self.actions.write_file("/etc/systemd/system/fstrim.timer.d/vbpub-daily.conf", FSTRIM_OVERRIDE)
+        self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
+        self._run(
+            ["/usr/bin/systemctl", "enable", "--now", "fstrim.timer"],
+            "enable daily fstrim", dangerous=True,
+        )
+        self.state.mark_step("fstrim_config", "success", "daily, whole-disk")
+
+    def _configure_auto_reboot(self) -> None:
+        self.actions.write_file("/usr/local/sbin/vbpub-reboot-check", REBOOT_CHECK_SCRIPT, 0o755)
+        self.actions.write_file("/etc/systemd/system/vbpub-reboot-check.service", REBOOT_CHECK_SERVICE)
+        self.actions.write_file(
+            "/etc/systemd/system/vbpub-reboot-check.timer",
+            REBOOT_CHECK_TIMER.format(time=self.config.reboot_window_time),
+        )
+        self.actions.write_file("/etc/systemd/system/vbpub-boot-notify.service", BOOT_NOTIFY_SERVICE)
+        self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
+        self._run(
+            ["/usr/bin/systemctl", "enable", "--now", "vbpub-reboot-check.timer"],
+            "enable scheduled reboot-required check", dangerous=True,
+        )
+        self._run(
+            ["/usr/bin/systemctl", "enable", "vbpub-boot-notify.service"],
+            "enable post-reboot notice", dangerous=True,
+        )
+        self.state.mark_step("auto_reboot", "success", self.config.reboot_window_time)
+
     def _configure_zswap(self) -> None:
         self.actions.write_file(
             "/etc/systemd/system/zswap-config.service",
@@ -327,7 +454,7 @@ MaxFileSec=1month
         self.actions.write_file(
             "/etc/sysctl.d/99-vbpub-swap.conf",
             "\n".join([
-                "vm.swappiness = 80",
+                f"vm.swappiness = {self.config.vm_swappiness}",
                 "vm.page-cluster = 0",
                 "vm.vfs_cache_pressure = 50",
                 "vm.watermark_scale_factor = 125",
@@ -348,20 +475,18 @@ MaxFileSec=1month
             return gib_to_sectors(512), 2500608, gib_to_sectors(8)
         size_output = self._run(["/usr/sbin/blockdev", "--getsize64", f"/dev/{self.root_disk}"])
         dump = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"])
-        start = size = 0
-        prefix = self._partition_base
-        for line in dump.splitlines():
-            fields = line.split()
-            if fields and fields[0] == f"{prefix}{self.root_number}":
-                for item in fields[1:]:
-                    key, _, value = item.strip(",").partition("=")
-                    if key == "start":
-                        start = int(value)
-                    elif key == "size":
-                        size = int(value)
-        if size <= 0:
+        disk_sectors = int(size_output) // 512
+        # Table's attribute parser is regex-based (_ATTR_RE) and tolerates
+        # padded (`start=        2048`) and quoted (`name="EFI System
+        # Partition"`) attributes the way real sfdisk --dump output looks —
+        # unlike a naive line.split(), which mis-tokenizes a quoted value
+        # containing spaces. raw=/disk_sectors= reuse the dump we already
+        # fetched through HostActions instead of letting Table shell out.
+        table = inuse_partition_editor.Table(f"/dev/{self.root_disk}", raw=dump, disk_sectors=disk_sectors)
+        root_entry = next((part for part in table.parts if part["num"] == self.root_number), None)
+        if root_entry is None:
             raise RuntimeError(f"could not parse current root partition from sfdisk dump")
-        return int(size_output) // 512, start, size
+        return disk_sectors, root_entry["start"], root_entry["size"]
 
     def _preflight_disk_transaction(self) -> dict[str, object]:
         if self.actions.dry_run:
@@ -537,7 +662,13 @@ MaxFileSec=1month
             self.actions.write_file(str(backup_dir / checksum_name), f"{backup_digest}  {backup_name}\n", 0o644)
             self.actions.write_file(plan_path, plan_text)
             self._run(["/usr/sbin/sfdisk", "--force", "--no-reread", f"/dev/{self.root_disk}"], dangerous=True)
-            self._run(["/usr/sbin/partprobe", f"/dev/{self.root_disk}"], "refresh kernel partition view")
+            # partx -a + udevadm settle (inuse_partition_editor.Table.write()'s
+            # own apply mechanism, ported to go through HostActions rather than
+            # its bare subprocess.run) is more reliable than partprobe alone at
+            # getting the new swap partitions' /dev/xxxN nodes to actually exist
+            # before _activate_swap_partitions() tries to mkswap them (P0#3).
+            self._run(["/usr/sbin/partx", "-a", f"/dev/{self.root_disk}"], "register new partitions with the kernel", dangerous=True)
+            self._run(["/usr/bin/udevadm", "settle"], "wait for udev to create new device nodes")
             readback = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
             readback_entries = self._parse_partition_entries(readback)
             if readback_entries != plan_entries:
@@ -548,6 +679,17 @@ MaxFileSec=1month
                 )
                 self._run(["/usr/sbin/partprobe", f"/dev/{self.root_disk}"], "refresh kernel view after rollback")
                 raise RuntimeError(f"partition table verification failed; restored backup {backup_dir / backup_name}")
+            expected_paths = [
+                f"{self._partition_base}{number}"
+                for number in range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1)
+            ]
+            for path in expected_paths:
+                for _ in range(50):
+                    if self.actions.exists(path):
+                        break
+                    time.sleep(0.1)
+                else:
+                    raise RuntimeError(f"partition device did not appear after partx/udevadm settle: {path}")
         manifest = {
             "preflight": preflight,
             "plan": plan_text,
@@ -599,19 +741,21 @@ MaxFileSec=1month
         fstab_entries = []
         if not self.actions.dry_run:
             self._run(["/usr/sbin/swapoff", "-a"], "disable existing swap before formatting fresh devices", True)
-        for number in range(first_number, last_number + 1):
+        discard = ",discard=once" if self.config.swap_discard else ""
+        for offset, number in enumerate(range(first_number, last_number + 1), start=1):
             path = f"{prefix}{number}"
+            label = f"vbpub-swap{offset}"
             partuuid = "dry-run" if self.actions.dry_run else self._run(["/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", path])
             if not self.actions.dry_run and not partuuid:
                 raise RuntimeError(f"expected swap partition has no PARTUUID after partitioning: {path}")
-            self._run(["/usr/sbin/mkswap", path], f"format {path}", dangerous=True)
+            self._run(["/usr/sbin/mkswap", "-L", label, path], f"format {path}", dangerous=True)
             self._run(["/usr/bin/swapon", "-p", str(self.config.swap_priority), path], f"enable {path}", dangerous=True)
             refreshed = partuuid if self.actions.dry_run else self._run(["/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", path])
             if not refreshed:
                 raise RuntimeError(f"PARTUUID disappeared after mkswap: {path}")
-            fstab_entries.append(f"PARTUUID={refreshed} none swap sw,pri={self.config.swap_priority} 0 0")
+            fstab_entries.append(f"PARTUUID={refreshed} none swap sw,pri={self.config.swap_priority}{discard} 0 0")
         self._persist_fstab(fstab_entries)
-        self.state.mark_step("swap_partitions", "planned" if self.actions.dry_run else "success", f"{self.config.swap_file_count} native GPT swaps")
+        self.state.mark_step("swap_partitions", "planned" if self.actions.dry_run else "success", f"{self.config.swap_file_count} native GPT swaps, labeled vbpub-swapN")
 
     def _persist_fstab(self, entries: list[str]) -> None:
         fstab_path = Path("/etc/fstab")
@@ -625,7 +769,13 @@ MaxFileSec=1month
 
     def _install_stage2(self) -> None:
         python = shutil.which("python3") or "/usr/bin/python3"
-        working_directory = str(Path(__file__).resolve().parents[2])
+        # parents[1], not [2]: installer.py lives at .../debian-install-v2/
+        # debian_install_v2/installer.py, so parents[1] is the directory that
+        # directly contains the debian_install_v2 package — `-m` prepends
+        # WorkingDirectory to sys.path, so `-m debian_install_v2.bootstrap`
+        # only resolves from there. parents[2] was one level too high
+        # (ModuleNotFoundError on every real host — see DEBIAN-INSTALLv2-REVIEW.md P1#4).
+        working_directory = str(Path(__file__).resolve().parents[1])
         env_file = "/etc/vbpub/bootstrap.env"
         credentials_line = "-"
         if self.config.telegram_bot_token and self.config.telegram_chat_id:
@@ -694,6 +844,7 @@ MaxFileSec=1month
         if self.config.run_apt_config:
             self._configure_apt()
         self._packages(["python3"], "stage1")
+        self._install_notify_helper()
         if self.config.run_user_config:
             self._configure_users()
         if self.config.run_journald_config:
@@ -701,6 +852,10 @@ MaxFileSec=1month
         if self.config.run_docker_install:
             self._install_docker()
             self._configure_docker_daemon()
+            if self.config.run_docker_cleanup:
+                self._configure_docker_cleanup()
+        if self.config.run_apt_auto_upgrade:
+            self._configure_apt_auto_upgrade()
         self._install_stage2()
         self._reboot()
 
@@ -708,6 +863,14 @@ MaxFileSec=1month
         self._packages(["e2fsprogs", "util-linux"], "stage2")
         self._configure_zswap()
         self._configure_cgroup2_flags()
+        if self.config.run_ksm:
+            self._configure_ksm()
+        if self.config.run_oomd_config:
+            self._configure_oomd()
+        if self.config.run_fstrim:
+            self._configure_fstrim()
+        if self.config.run_auto_reboot:
+            self._configure_auto_reboot()
         self._apply_known_swap_shape()
         self._activate_swap_partitions()
         self._health_gate_swap_devices()

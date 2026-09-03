@@ -58,8 +58,6 @@ echo "== installing scripts =="
 # script that no longer exists (it moved into files/usr/local/sbin/ with the
 # soulmask_rcon.py split), so it always failed `install` and aborted the
 # script under `set -e`. Left removed rather than restored.
-# moved to `debian-install`
-#install -m 0755 "$HERE/scripts/partition-editor.py"   /usr/local/sbin/partition-editor.py
 install -m 0755 "$HERE/scripts/swap-health.sh"        /usr/local/bin/swap-health
 
 echo "== sysctl =="

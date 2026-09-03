@@ -1,6 +1,6 @@
-# Privileged test environment for inuse-partition-editor.py
+# Privileged test environment for inuse_partition_editor.py
 
-`inuse-partition-editor.py`'s whole point is editing a partition table on a
+`inuse_partition_editor.py`'s whole point is editing a partition table on a
 disk that is currently in use — no unmount, no reboot. The parsing/planning
 logic is covered by the ordinary (non-privileged) R0/R1 suite in
 `debian_install_v2/tests/`, proven against real `sfdisk --dump` output on

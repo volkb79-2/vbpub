@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build (if needed), boot, and run the root-gated real-commit test tier for
-# inuse-partition-editor.py inside the privileged systemd container defined
+# inuse_partition_editor.py inside the privileged systemd container defined
 # alongside this script, then always tear the container down.
 #
 # Usage: scripts/debian-install-v2/testing/run-privileged-tests.sh [pytest args...]

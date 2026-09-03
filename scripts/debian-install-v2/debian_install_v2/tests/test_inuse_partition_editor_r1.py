@@ -1,5 +1,5 @@
 """R1 — adversarial edge cases and real-sfdisk contract tests for
-inuse-partition-editor.py.
+inuse_partition_editor.py.
 
 These prove the module's parsing/planning against ACTUAL `sfdisk --dump`
 output (not a hand-typed fixture) and lock in the regressions found during
@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "inuse-partition-editor.py"
+MODULE_PATH = Path(__file__).resolve().parents[1] / "inuse_partition_editor.py"
 SFDISK_TOOLS = ("sfdisk", "blockdev", "partx")
 
 pytestmark = pytest.mark.skipif(

@@ -1,10 +1,10 @@
-"""R0 — fast unit coverage for inuse-partition-editor.py.
+"""R0 — fast unit coverage for inuse_partition_editor.py.
 
-The module's filename has a hyphen, so it can't be `import`ed normally;
-it is loaded by path via importlib. All tests here fake subprocess.run
-(no real sfdisk/blockdev calls) and never touch the filesystem outside
-of pytest's tmp_path. Real-sfdisk contract tests live in
-test_inuse_partition_editor_r1.py.
+Loaded by path via importlib (matching how installer.py and the other
+sibling test modules load it) rather than a plain package import, so this
+file stays runnable standalone. All tests here fake subprocess.run (no real
+sfdisk/blockdev calls) and never touch the filesystem outside of pytest's
+tmp_path. Real-sfdisk contract tests live in test_inuse_partition_editor_r1.py.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "inuse-partition-editor.py"
+MODULE_PATH = Path(__file__).resolve().parents[1] / "inuse_partition_editor.py"
 
 
 def load_module():
@@ -162,6 +162,31 @@ def test_table_refuses_unsupported_disklabel(mod, monkeypatch):
     sun_dump = "label: sun\nunit: sectors\nsector-size: 512\n"
     with pytest.raises(SystemExit, match="unsupported disklabel 'sun'"):
         make_table(mod, monkeypatch, dump=sun_dump, sectors=10485760)
+
+
+def test_table_accepts_injected_raw_and_disk_sectors_without_shelling_out(mod, monkeypatch):
+    # installer.py's own preflight/manifest/rollback wraps this construction
+    # path around a dump it already fetched through HostActions (allowlist +
+    # dry-run gated) — Table must not shell out itself when given raw=/
+    # disk_sectors=, or that gate is bypassed entirely.
+    def explode(*a, **kw):
+        raise AssertionError("Table shelled out despite raw=/disk_sectors= being provided")
+    monkeypatch.setattr(mod.subprocess, "run", explode)
+    t = mod.Table("/dev/vda", raw=DOS_DUMP, disk_sectors=DOS_DISK_SECTORS)
+    assert t.disk_sectors == DOS_DISK_SECTORS
+    assert {p["num"] for p in t.parts} == {1, 2, 5}
+
+
+def test_table_skips_lines_with_no_digit_suffixed_device_name(mod):
+    dump = "label: gpt\ndevice: /dev/vda\n\n/dev/vdax : start=9, size=9, type=def\n"
+    t = mod.Table("/dev/vda", raw=dump, disk_sectors=10485760)
+    assert t.parts == []
+
+
+def test_table_skips_lines_missing_start_or_size(mod):
+    dump = "label: gpt\ndevice: /dev/vda\n\n/dev/vda3 : type=linux\n"
+    t = mod.Table("/dev/vda", raw=dump, disk_sectors=10485760)
+    assert t.parts == []
 
 
 # --- free_regions ---

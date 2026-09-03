@@ -1,5 +1,5 @@
 # Privileged, systemd-as-PID1 test environment for
-# debian_install_v2/inuse-partition-editor.py.
+# debian_install_v2/inuse_partition_editor.py.
 #
 # Why this exists instead of adapting tester-unified (vbpub's shared gate
 # image): tester-unified runs as an unprivileged uid (1003), has no systemd,
@@ -9,7 +9,7 @@
 # "needs adaptation" case, so per this repo's own doctrine this gets its own
 # small, disposable image instead of bending a shared one.
 #
-# What only THIS image can test: inuse-partition-editor.py's whole point is
+# What only THIS image can test: inuse_partition_editor.py's whole point is
 # editing a partition table on a disk that is currently in use — the real
 # --commit path needs root, a loop device with kernel partition scanning
 # (`losetup --partscan`), and `partx`/`udevadm settle` behaving as they do on

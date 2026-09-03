@@ -300,7 +300,7 @@ def test_activate_swap_partitions_real(tmp_path):
     installer.actions.outputs[("/usr/bin/swapon", "-p", "10", "/dev/vda4")] = ""
     installer._activate_swap_partitions()
     fstab = installer.actions.files["/etc/fstab"].decode()
-    assert fstab.count(" none swap sw,pri=10 0 0") == 8
+    assert fstab.count(" none swap sw,pri=10,discard=once 0 0") == 8
 
 
 def test_install_stage2_systemd_credentials(tmp_path):
