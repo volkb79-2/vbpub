@@ -3,39 +3,57 @@ kind: backlog-entry
 schema_version: 1
 id: NL-7
 title: "adapters.py's _TIER_BAND hardcodes implement-N keys that have never been live routes.toml values, silently dead since D-BATCHC"
-status: open
+status: fixed
 type: "bugfix"
 severity: "low"
 component: "gates"
 provenance: "nyxloom-P100 adversarial carve review, 2026-09-03; NL-2 origin"
 filed_date: "2026-09-03"
+closed_date: "2026-09-03"
+closed_reason: "nyxloom-P101: retired _TIER_BAND; scope.touch size is now the sole band signal. Option 1 of the two proposed; option 2 (a routes.toml-backed band) needs a per-tier complexity fact neither routes file carries."
 ---
 
 ## Observed mechanism and reproduction
 
-`src/nyxloom/adapters.py:181` declares:
+`src/nyxloom/adapters.py:181` declared:
 
 ```python
 _TIER_BAND = {"implement-1": 1, "implement-2": 2, "implement-3": 3}
 ```
 
-consumed by `compute_review_depth_directive` (~line 192) to modulate reviewer
-review-depth by complexity band (D-BATCHC, 2026-07-26,
-`plan-factory-hardening.md`, Batch C). It reads the same `Frontmatter.tier`
-field (`types.py:434`) that routing (`reconcile.py:1072`,
-`rules_dispatch.py:109`) and now `nyxloom lint`'s L14 rule (nyxloom-P100)
-consume — but `_TIER_BAND`'s keys (`implement-1`, `implement-2`,
-`implement-3`) have never been real values in the live `routes.toml` (see
-NL-2), so `_TIER_BAND.get(tier or "")` has returned `None` for every real
-handoff since D-BATCHC shipped, silently falling back to the
-`scope_touch`-count proxy (`_HIGH_BAND_SCOPE_TOUCH_THRESHOLD`) every single
-time. Not a crash — the fallback is a reasonable substitute signal — but the
-same false premise NL-2 diagnoses, embedded a second time in unrelated
-production logic, undetected because the fallback happens to produce
-plausible output.
+consumed by `compute_review_depth_directive` to modulate reviewer review-depth
+by complexity band (D-BATCHC, 2026-07-26, `plan-factory-hardening.md`, Batch C).
 
-Found during nyxloom-P100's adversarial carve review (2026-09-03) while
-sweeping for other `fm.tier`-hardcoding consumers beyond the routing path.
+**Corrected by nyxloom-P101 (2026-09-03).** This entry originally said the keys
+had "never been real values in the live `routes.toml`" and that the lookup "has
+returned `None` for every real handoff". The first half is true on its own
+terms; the second is false, and the two do not follow from one another:
+
+- `Routes.load()` reads the DEPLOYED `$XDG_STATE_HOME/nyxloom/routes.toml`,
+  which carries pre-B16 names (`flash-high`, `luna-high`, `sonnet5-high`,
+  `frontier-review`, ...) and declares no `implement-*` tier. So "not a live
+  routable tier" was correct.
+- But handoff authors take `tier:` values from the TRACKED `routes.host.toml`,
+  which has declared `[tiers.implement-1]` and `[tiers.implement-2]` since the
+  B16 rename on 2026-07-23 -- three days BEFORE D-BATCHC shipped `_TIER_BAND`.
+  22 archived handoffs declare `tier: implement-2`, including nyxloom-P98 and
+  nyxloom-P99. `_TIER_BAND` never consulted any routes file; it matched the raw
+  frontmatter string, so for those handoffs it returned `2`, not `None`.
+
+The real defect was therefore not dead code but a **one-way suppressor**.
+`implement-3` -- the only key mapping to `_HIGH_BAND` -- exists in neither the
+deployed nor the tracked file, so the tier path could never RAISE the band;
+while `implement-1`/`implement-2` resolved below `_HIGH_BAND` and
+short-circuited the scope-size branch, so it could only ever LOWER it. A
+30-file `implement-2` handoff got no high-complexity directive; the same
+handoff with no tier field did.
+
+Scope of impact, measured honestly: nyxloom's own gate declares
+`asserts = ["tests-pass", "changed-line-coverage", "canary-verified"]` -- no
+`mutation` -- so it always reads as "shallow" and the directive was never empty
+here; for nyxloom the bug omitted the high-complexity REASON from an otherwise
+non-empty directive. For a project whose gate declares `mutation`, the
+suppression was total.
 
 ## Why nyxloom owns it
 
