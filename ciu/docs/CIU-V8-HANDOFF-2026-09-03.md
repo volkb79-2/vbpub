@@ -15,7 +15,11 @@ State: proposal **rev 3.3** + SPEC-V8 **draft.6** + response §6–§7 + demo co
 ## The v7 question (what to do with `vbpub/tester-unified` today) — unchanged from the rev 3.2 session
 No ciu v7 mechanism. Governance drift = consumer edit (NL-6: copy one `[governance]` table into nyxloom's and pwmcp's root defaults). A persistent per-worktree tester in v7 = dstdns's `tools/test-runner` pattern; vbpub's gates already run per lane in fresh `tester-unified:local` containers through run-gate's central config. RG-39 is buildable as annotated (exec mode only; lock after the sorted shared-infra locks; stack-directory key once RG-37 lands = S14.4.7's canonical key; proposal N22).
 
+## Host enrollment (added after round 3, operator direction 2026-09-03 — draft.7 / rev 3.4)
+CIU-93's design was refined by the operator and accepted for **both lines**: `ciu host enroll <name>` prints a version-pinned `get.py enroll` one-liner carrying the public key; the target installs ciu and the key and prints its host-key fingerprint; `ciu host enroll <name> --ssh-host --fingerprint` pins it and writes the row. No token, no callback, no endpoint. Written as `CIU-HOST-ENROLLMENT-PROPOSAL.md` rev 2, v8 S7.2.4 + S18 row + `ciu-ssh/` in the state root (V8-29), v7 `SPEC.md` S14.7 (a backport package — an explicit exception to v7's maintenance-only posture), cmru KI-24 (the `get.py enroll` template subcommand). Oracles O1–O6 in the proposal §8 for both carves. The round-4 prompt (`CIU-V8-THIRD-PARTY-REVIEW-PROMPT-ROUND4.md`) covers draft.7 and the enrollment design; the operator runs that review next.
+
 ## Next session, in order
-1. Carve checkpoint A for `vbpub/ciu8` (load the `carve` skill; briefs with acceptance oracles; V8-1's table-spec + S3.8.5/S3.8.6 conformance tests first, then V8-27, V8-14, V8-2 (state root + host file + cold move), V8-11 + V8-26 (lock matrix + lease), V8-13, V8-5; first dstdns stack as the tracer bullet).
-2. Optional targeted round 4 on the rules draft.6 introduced — S2.6, S17.4 (manifest + state machine), S14.4.9, S4.1.2, S8.5.2a, S17.6.1, S16.9.4 — and `examples/monorepo/`; reuse the round-2 prompt's §2/§4 shape scoped to Appendix D §D.3.
-3. RG-39 / N22 as a run-gate v7 package; NL-6 as a nyxloom consumer edit.
+1. Fold round 4 when it arrives (same method; rev 3.5 / draft.8; response §8; Appendix D §D.5).
+2. Carve checkpoint A for `vbpub/ciu8` (load the `carve` skill; briefs with acceptance oracles; V8-1's table-spec + S3.8.5/S3.8.6 conformance tests first, then V8-27, V8-14, V8-2 (state root + host file + cold move), V8-11 + V8-26 (lock matrix + lease), V8-13, V8-5; first dstdns stack as the tracer bullet).
+3. Carve the v7 enrollment backport (N23: ciu v7 `host enroll` + `ciu/get.py` via `cmru get-py --project ciu`; cmru KI-24 first, since the ciu carve's O2/O3/O6 need the template subcommand) — dstdns P171 is the consumer.
+4. RG-39 / N22 as a run-gate v7 package; NL-6 as a nyxloom consumer edit.

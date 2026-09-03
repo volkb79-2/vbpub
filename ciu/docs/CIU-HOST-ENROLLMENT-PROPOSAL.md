@@ -1,264 +1,109 @@
-# CIU Proposal — Remote Host Enrollment via `get.py` (`ciu host enroll`)
+# CIU Proposal — Remote Host Enrollment (`ciu host enroll`) — revision 2
 
-**Status:** PROPOSAL — not yet normative, not yet filed as a backlog entry (see §7).
-**Author:** dstdns controller session, 2026-09-03, on operator request. Not reviewed, not
-interviewed against the operator beyond the originating decision this builds on.
-**Target:** additive to whichever CIU major line is current when accepted — v7 (`ciu.hosts.toml`
-`[deploy.hosts.<h>]`, `SPEC.md` S14) today, v8 (`ciu.hosts.toml` `[hosts.<h>]`, `SPEC-V8.md` S7.2/
-S17.1/S17.3–S17.4, currently draft.6 and actively churning) once it lands. This proposal is
-written against **both** schemas explicitly (§3.4) because v8 was mid-review at time of writing
-and a design pinned to a single draft would likely be stale before anyone reads it.
-**Relationship to other documents:** does not touch, extend, or contradict `CIU-V8-*` (the
-integrated-model proposal) or `SPEC-V8.md` — it proposes a step that happens **before** any of
-that machinery is reachable (§1), and its only requirement of either schema is "write one entry
-into the host-inventory file with these fields" (§3.4).
+**Status:** PROPOSAL, accepted in shape by the operator on 2026-09-03 for **both lines**: a backport package on ciu v7 (`SPEC.md` S14.7) and the same verb in v8 (`SPEC-V8.md` draft.7 S7.2.4, carve row V8-29). Filed as **CIU-93**; the cmru half is **KI-24**. Not implemented.
+**Revision 2 (2026-09-03)** replaces revision 1's token-authenticated bootstrap URL, callback and tls-edge endpoint with a two-step flow that needs no infrastructure: the control host prints a one-liner carrying the public key; the target's installer installs ciu and the key and prints its host-key fingerprint; the control host pins the fingerprint the operator read. The operator's refinement, recorded in §9.
+**Author:** dstdns controller session (rev 1, from decision D-097/D-358); ciu v8 design session (rev 2).
+**Relationship to other documents:** additive to `SPEC.md` S14 (v7) and `SPEC-V8.md` S7.2/S17 (v8); it happens **before** any of that machinery is reachable and requires of either schema only "write one host-inventory row and one key file".
 
 ---
 
 ## 0. Where this comes from
 
-dstdns's `docs/spec-configuration-and-landscape.md` decision **D-097** (2026-08-19, operator
-interview) designed and then **deferred** a piece of the remote-deployment transport story:
+dstdns decision **D-097** (2026-08-19) designed and deferred "self-hosted `get.py --bootstrap-url --token` (behind tls-edge, GitHub-independent)" as the enrollment story of the remote-deployment transport. dstdns-P171's carve (2026-09-02/03) confirmed live that enrolling a fresh host is still fully manual (`ssh-keygen`, out-of-band key distribution, `ssh-keyscan`, a hand-written TOML row). Decision **D-358** (2026-09-03) formalized revision 1 of this proposal upstream as CIU-93. The operator reviewed it the same day and asked for the simpler shape this revision specifies.
 
-> updates PUSH-ONLY via `ciu ssh`/`ciu up --host` … enrollment secrets in ciu's LOCAL secret store
-> (not Vault) … self-hosted `get.py --bootstrap-url --token` (behind tls-edge, GitHub-independent)
-> DESIGNED + DEFERRED.
+## 1. The gap (unchanged)
 
-Nothing further was written down at the time — D-097 names the shape and stops. Separately, this
-session's dstdns-P171 carve (2026-09-02/03) surfaced ciu's existing `.ciu.hosts.toml` + `ciu ssh`/
-`ciu up --host` mechanism for placing seeded-infra targets on a real remote host, and noted in
-passing that host enrollment today is entirely manual (`ssh-keygen` once, `ssh-keyscan` once for
-TOFU, hand-edit the TOML) — and drafted a never-filed placeholder backlog idea, tentatively
-"CIU-93 `ciu remote setup <host>`", with no design behind it. This proposal is that design.
+Both spec lines fully specify transport, push and activation for an **already-trusted** host — a working `ssh_key`, a pinned `known_host`, a reachable `ssh_host` in the inventory (v7 S14.1–S14.6; v8 S7.2, S17.1–S17.4) — and neither says how a host that has never spoken to this checkout gets its first inventory row. The v8 activation state machine additionally *requires* the `ciu` executable on every target (`prepare` runs `ciu instance init --host` and `ciu check` there, S17.4.1), so "enroll" must also mean "install ciu".
 
-## 1. The gap
+## 2. The design in one paragraph
 
-CIU already has a complete, well-specified mechanism for **an already-trusted host**:
+`ciu host enroll <name>` on the control host generates an ed25519 key pair into the project's own state (the private half never moves) and prints one command for the target's admin. That command fetches ciu's own `get.py` installer at a pinned version and runs its `enroll` subcommand with the **public** key and the controller's name: the installer installs ciu transactionally, refuses without an SSH server, creates or confirms the deploy user, appends the key to that user's `authorized_keys`, and prints the host's SSH host-key fingerprint together with the addresses it sees. The operator then runs `ciu host enroll <name> --ssh-host <addr> --fingerprint <as printed>`: ciu keyscans the host, refuses unless the fingerprint matches what the admin read on the console, connects with the key, runs `ciu version` on the target as proof, writes the inventory row with the pinned `known_host`, and prints it. No token, no callback, no listener, no new trust primitive, no cmru download backend.
 
-- **v7** `SPEC.md` S14: `.ciu.hosts.toml` host inventory (`ssh_host`/`ssh_user`/`ssh_port`/
-  `ssh_key`/`known_host`/…), `ciu ssh <host>`, `ciu up --host <host>` (render-on-target),
-  `ciu up --host <host> --thin` (docker-optional push→activate, activation contract
-  `bootstrap|apply|health|rollback` — S14.6, "the same shape as the cmru ProjectAdapter"),
-  host-scoped local secrets for pre-Vault material (S14.3a), fail-closed host-key pinning
-  with a documented TOFU escape hatch (S14.4a, `CIU_SSH_INSECURE_TOFU=1`).
-- **v8 draft.6** `SPEC-V8.md` S7.2/S17.1/S17.3–S17.4: the same shape, restated — `[hosts.<h>]`
-  in `ciu.hosts.toml`, `known_host` required unless `local` or TOFU, `[activate] bootstrap|
-  apply|health` (v8 drops `rollback` from the host contract — rollback becomes CIU's own state
-  machine over the `releases/`+`candidate`+`current`+`previous` chain, S17.3–S17.4), host-scoped
-  `[secrets.<entry>]`.
-
-Every one of these verbs **assumes `ciu.hosts.toml` already has a working entry**: a reachable
-`ssh_host`, a private key CIU can use, and a pinned `known_host`. Nothing in either spec describes
-how that entry gets created for a host that has never spoken to this ciu checkout before — today
-it is 100% manual: an operator runs `ssh-keygen` by hand, copies the public half onto the target
-through some out-of-band channel (cloud-init, a password login, a provider's console), runs
-`ssh-keyscan` to pin the host key, and hand-writes the TOML row. `CIU_SSH_INSECURE_TOFU=1` covers
-the "pin the host key without a manual keyscan" half of the trust problem; nothing covers the
-"get an authorized key onto the target and back an inventory row out of it" half.
-
-This is exactly the gap D-097 named and deferred: a **self-hosted, GitHub-independent**
-bootstrap installer (`get.py`, behind tls-edge, token-authenticated) that a remote admin runs
-**once, by hand, on a bare host with nothing on it but a Python 3 interpreter**, closing the loop
-back to a populated, working `ciu.hosts.toml` entry — without requiring pre-existing SSH trust,
-without a GitHub account, and without installing Docker or a general-purpose CIU runtime on hosts
-that don't need it (mirroring S14.6/S17's `docker_optional` design intent).
-
-## 2. What already exists to build on
-
-**`get.py` is not hypothetical — it is a working, in-production mechanism**, just not yet
-pointed at this problem:
-
-- `cmru get-py --project <name> [--config <toml>]` renders `templates/get.py.tmpl` (191-line
-  template, `cmru/src/cmru/getpy.py` is the renderer) into a **self-contained, stdlib-only**
-  Python 3 script: transactional install/update/rollback via a `releases/<tag>/` +
-  atomic `current` symlink swap (`os.replace`, never a plain rename — survives a crash mid-swap),
-  SHA256 + minisign-signed-manifest verification before extraction, system/user scope, an
-  exclusive flock so two installer runs never race, tar-path-traversal/symlink-escape hardening
-  on extraction, and a **pluggable adapter seam** (`ENTRYPOINT`, invoked for `bootstrap|apply|
-  health|rollback` — the *exact same four verbs* S14.6/S17.4 give a `--thin` host's `activate`
-  contract).
-- **`vbpub/tls-edge/get.py` is a live consumer** of this generator (`# generated by cmru get-py`
-  in its own header) — proof the pattern is production-hardened, not a sketch: token auth
-  (`--github-token`/`-file`/`-stdin`/env, with file-permission and ownership checks), HTTPS-only
-  + host-allowlisted downloads with an `Authorization`-header-stripping redirect handler, wheel
-  SHA256 verification before `pip install --no-index`, and a SIGINT/SIGTERM handler that cleans
-  up a partial staging dir rather than leaving one behind.
-- Its **one and only** hard-coded dependency on GitHub is the download backend
-  (`RELEASES_API = https://api.github.com/repos/{owner}/{repo}/releases`, `_ALLOWED_HOSTS =
-  {api.github.com, github.com, *.githubusercontent.com}`) — everything else (transactional
-  install, adapter seam, verification chain, locking, scope handling) is backend-agnostic.
-
-**The one thing that does not exist yet**: a second download backend in `get.py.tmpl` /
-`cmru get-py`'s renderer, for a **self-hosted, token-authenticated bootstrap URL** instead of
-GitHub Releases. D-097 named this explicitly ("self-hosted `get.py --bootstrap-url --token`
-…GitHub-independent"). This is a **cmru-side prerequisite** for the design below, not something
-this proposal can do inside ciu alone — flagged as an open dependency in §6.
-
-## 3. Proposed design
-
-### 3.1 The new verb: `ciu host enroll <name>`
+## 3. Step 1 — the control host: `ciu host enroll <name>`
 
 ```
-ciu host enroll <name> [--ttl 15m] [--host-hint ADDR] [--admin]
+ciu host enroll <name> [--user USER] [--port N] [--controller FQDN] [--from PATTERN] [--docker]
+                       [--installer-url URL] [--global] [--replace]
 ```
 
-Run on the **control host** (wherever `ciu.hosts.toml` for this project lives), interactively,
-mirroring `ciu init`'s interview-driven posture (v8 P3 "explicitness over magic" — nothing here
-should invent a fact the operator didn't confirm):
+1. **Key generation, control-side.** An ed25519 key pair is generated with the platform's `ssh-keygen` (never a hand-rolled implementation) into the project's own state: **v8** `<state root>/ciu-ssh/<name>` and `<name>.pub` (directory 0700, key 0600; `ciu-ssh/` joins the state-root and gitignore lists, S2.6/S2.3.1, and the backup set, S14.8.1); **v7** `<repo>/.ciu/secrets/hosts/<name>/ssh_key` and `ssh_key.pub` (the S14.3a host-scoped namespace, 0700/0600). The key comment is `ciu@<controller>:<project>`. The private half is written once and read only by SSH; it is never printed, logged, copied into a bundle, or sent anywhere.
+2. **The controller name.** `--controller` defaults to the control host's declared name — v8: the `fqdn` of the `local = true` host (S7.2); v7: `topology.external.public_fqdn` when declared — and is **required** when neither exists. It is data for the key comment and for the printed line; it is never a callback address.
+3. **The installer URL.** The one-liner names ciu's own `get.py` (rendered by `cmru get-py --project ciu`, committed at `ciu/get.py` and shipped as a release asset) **pinned to the control host's own ciu version**, `https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/get.py`, so control and target run the same ciu; `--installer-url` overrides it (a self-hosted mirror, a commit-pinned raw URL). The owner/repo come from the constants cmru bakes into the package at release time; nothing is guessed at run time.
+4. **Print, then stop.** The verb prints the key location, the public key, and two commands — the target's one-liner (§4) and the control host's completion command (§5) — and exits 0. Nothing is written to the inventory yet; a partial enrollment leaves only the key files, which `ciu host enroll <name> --abort` removes. There is no polling and no listener: the admin may run the one-liner an hour later.
+5. **Refusals** (`[S7.2]` in v8, `[S14.7]` in v7): `<name>` already in the inventory without `--replace`; no controller name; `ssh-keygen` absent; the key directory not writable. `--replace` regenerates the key and, at step 2, overwrites `ssh_key` and `known_host` of the existing row — the rotation path.
 
-1. **Generate the enrollment keypair now, control-side**, not target-side. CIU already owns key
-   generation via the existing S4/S14.3a secret machinery (`GEN_LOCAL`); reuse it verbatim rather
-   than inventing a second key-generation path. Store the private half exactly where a normal
-   `ssh_key` entry would point (project secret store, `.ciu/secrets/hosts/<name>/ssh_key` in v7's
-   S14.3a namespace shape, or the v8-equivalent `[secrets.hosts.<h>]` store, S10.4). Generating
-   control-side (not target-side, and not by having `get.py` mint its own keypair) means the
-   private key never transits the network at all — the public half is the only thing that
-   travels, over the bootstrap channel, and the target never needs to report anything secret back.
-2. **Issue a single-use, short-TTL bootstrap token** (default 15 min, `--ttl` overridable) and a
-   bootstrap URL served **behind tls-edge** (D-097's own words) — `https://<control-tls-edge-fqdn>/
-   enroll/<token>`. The token is scoped to exactly one enrollment attempt and is invalidated on
-   first successful use or TTL expiry, whichever comes first — this is a bootstrap credential, not
-   a standing one, and should be treated with the same posture S14.4a gives host-key pinning
-   (fail-closed, no silent fallback).
-3. **Print the one-liner** for the admin to run *on the target, once, by hand*:
-   ```
-   curl -fsSL https://<control-tls-edge-fqdn>/enroll/<token> | python3 - bootstrap
-   ```
-   This is the entire admin-facing surface. No SSH access to the target is assumed to exist yet;
-   `curl` + `python3` (stdlib only, matching every existing `get.py` prerequisite check) is the
-   full requirement — deliberately at or below `--thin`'s own bar (S14.6/S17: "an SSH shell with
-   only POSIX `sh` + `tar`/`unzip` + `touch`, no Docker and no general-purpose Python" was
-   `--thin`'s target; enrollment's target is even barer, since it runs *before* SSH exists at all).
-4. **`ciu host enroll` then polls** (or holds the interactive session open, matching `ciu init`'s
-   synchronous interview shape) for the callback described in §3.3, up to the TTL. On success it
-   writes the `ciu.hosts.toml` row (§3.4) and prints it for operator confirmation before
-   persisting — never silent-write a fact this consequential (P3/P10). On TTL expiry it reports
-   the token dead and exits non-zero; nothing partial is written.
+The printed one-liner:
 
-### 3.2 The enrollment `get.py` variant
-
-A **project-level** `get.py` variant (rendered once, served at the bootstrap URL, not per-host)
-whose `ENTRYPOINT` implements exactly one adapter action beyond the four `get.py.tmpl` already
-knows about: `bootstrap`. Concretely:
-
-- **Download backend**: the new self-hosted backend from §2 — `--bootstrap-url` (baked into the
-  rendered script, not typed by the admin) + the single-use `--token` (the trailing path segment
-  of the URL the admin already curled, so no *second* secret needs typing — the token that
-  authenticated the download **is** the enrollment credential; §3.3 reuses it for the callback).
-- **What `bootstrap` does on the target**, in order, fail-fast at every step (AGENTS.md §4.2a
-  DERIVE → READ → FAIL, applied host-side): checks for an existing `openssh-server` (refuses with
-  a clear message naming the missing package if absent — this proposal does **not** propose
-  auto-installing system packages without operator awareness, matching `get.py.tmpl`'s existing
-  `check_prerequisites()` philosophy of refusing before any network I/O rather than improvising);
-  creates or confirms the deploy user CIU will connect as; appends the **control-generated public
-  key** (shipped inside the bootstrap payload, verified via the same SHA256+minisign chain every
-  other `get.py` asset already gets — §2) to that user's `authorized_keys`, `0600`, correct owner;
-  reads back the host's own SSH host public key (`/etc/ssh/ssh_host_ed25519_key.pub` or
-  equivalent) for §3.3's callback.
-- **What it deliberately does NOT do**: generate its own keypair (§3.1.1 — the control host owns
-  key generation), install Docker, or run any deploy logic. Enrollment's job ends at "CIU can now
-  SSH in." Everything after that is S14/S17's existing, already-specified territory.
-
-### 3.3 The callback
-
-A single authenticated HTTPS POST from target back to the same tls-edge-fronted control endpoint,
-using the **same token** (proving the request came from the party that successfully downloaded
-the bootstrap payload — no new trust primitive introduced), carrying: the reachable address the
-admin should confirm (`--host-hint` from §3.1 if given, else the target's own best guess of its
-routable address — flagged for **operator confirmation**, never auto-trusted, since a host behind
-NAT/a load balancer cannot reliably self-report its externally-reachable name), and the SSH host
-public key read in §3.2's last step. `ciu host enroll` receives this, prints it, and asks the
-operator to confirm before writing `known_host` — this is TOFU, same as `CIU_SSH_INSECURE_TOFU=1`
-already is, just **automated and logged** instead of a manual `ssh-keyscan` — it does not claim a
-stronger trust model than S14.4a already accepts, it only removes the manual step of running and
-transcribing `ssh-keyscan`'s output by hand.
-
-### 3.4 What gets written
-
-One row, in whichever schema is current (§0's Target note):
-
-**v7** (`SPEC.md` S14.3, `[deploy.hosts.<name>]`):
-```toml
-[deploy.hosts.<name>]
-ssh_host    = "<confirmed address>"
-ssh_key     = "ASK_VAULT:hosts/<name>/ssh_key"   # or the S14.3a local-store path
-known_host  = "<algo> <base64-key>"              # from §3.3, operator-confirmed
+```
+curl -fsSL https://github.com/<owner>/vbpub/releases/download/ciu-v8.0.0/get.py \
+  | sudo python3 - enroll --authorized-key 'ssh-ed25519 AAAA… ciu@gstammtisch.dchive.de:dstdns' \
+      --controller gstammtisch.dchive.de --user ops --name rs1002
 ```
 
-**v8** (`SPEC-V8.md` S7.2, `[hosts.<h>]`):
-```toml
-[hosts.<name>]
-ssh_host    = "<confirmed address>"
-ssh_key     = "<S10.4 host-scoped secret path>"
-known_host  = "<algo> <base64-key>"
+`--from PATTERN` adds an `authorized_keys` `from="PATTERN"` restriction to the printed key line; it is **opt-in** because OpenSSH matches `from=` against the client's source address or reverse-DNS name, which differs from the controller's FQDN behind NAT and on a mesh. `--docker` asks the installer to add the deploy user to the `docker` group (needed on every host that will run `ciu up --host`, not on a `docker_optional` host).
+
+## 4. The target: `get.py enroll` (a cmru template subcommand, KI-24)
+
+`get.py` is the estate's existing transactional installer (`cmru get-py`, proven live in `vbpub/tls-edge/get.py`: `releases/<tag>` + atomic `current`, SHA256 + minisign manifest verification, prerequisite checks before any network I/O, an exclusive flock, a `bootstrap|apply|health|rollback` adapter seam). Revision 2 adds one subcommand to `cmru/templates/get.py.tmpl`, available to **every** project that renders `get.py`:
+
+```
+get.py [--manifest-pubkey …] enroll --authorized-key 'KEY' --controller FQDN
+       [--user USER] [--name NAME] [--from PATTERN] [--docker] [--no-install] [--scope system]
 ```
 
-Nothing else — `bundle_dir`, `push_mode`, `docker_optional`, `[activate]` are all left to the
-operator to add afterward, exactly as they would for a hand-written row today. Enrollment's
-job is narrowly "get from nothing to a working, pinned SSH connection," not "fully configure a
-deploy target."
+In order, fail-fast, and idempotent on re-run:
 
-## 4. Reuse: enrollment and `--thin` activation are the same artifact
+1. **Prerequisites before any network I/O** (the template's existing `check_prerequisites` posture): Linux; root (or `sudo`); an SSH server present (`sshd` on `PATH` or `/usr/sbin/sshd`) — absent → `EXIT_PREREQ` naming the package (`openssh-server`); the key line parses as `<type> <base64>[ <comment>]` with `type ∈ ssh-ed25519 | ecdsa-sha2-* | sk-* | ssh-rsa` → else `EXIT_CONFIG`. The installer never installs system packages.
+2. **Install** the project exactly as `get.py install --scope system` does (transaction, verification, `current` switch); `--no-install` skips it for a host that only needs the key. For ciu this puts the `ciu` executable on the target, which v8's `prepare` requires (S17.4.1) and v7's `ciu up --host` render-on-target requires (S14.2).
+3. **Deploy user**: `--user` (default `ciu`) is created when absent (`useradd --create-home --shell /bin/bash`), left untouched when present; with `--docker`, added to the `docker` group when that group exists, refused with `EXIT_PREREQ` when it does not.
+4. **Authorized key**: `~USER/.ssh/` 0700 and `authorized_keys` 0600, both owned by the user; the key line (with the `from=` prefix when `--from` was given) is appended **once** — an identical line already present is reported, not duplicated; a line with the same key and a different prefix is refused (`EXIT_CONFIG`, "key present with different options; remove it by hand").
+5. **Report**: the fingerprint of every host key in `/etc/ssh/ssh_host_*_key.pub` (`ssh-keygen -lf`, SHA256 form), the addresses the host sees (`hostname -I`, best effort, labelled as unconfirmed), the deploy user, the installed project version, and the exact completion command for the controller: `ciu host enroll <NAME> --ssh-host <address> --fingerprint SHA256:<ed25519 fingerprint>` (`<NAME>` from `--name`, else a placeholder the operator fills in).
 
-This is the strongest argument for shaping it this way rather than inventing a separate
-mechanism: `get.py.tmpl`'s adapter seam already speaks the **exact same four-verb vocabulary**
-(`bootstrap|apply|health|rollback` in v7, `bootstrap|apply|health` in v8) that S14.6/S17.4's
-`[activate]` host contract requires for a `docker_optional` target. A host enrolled via §3.2's
-`get.py bootstrap` action, if it is also going to be a `--thin` deploy target, can have the
-**same installed `get.py`** serve as its `activate` entrypoint going forward
-(`activate = "python3 /opt/<project>/get.py"`, CIU appending the verb per S14.6b) — no second
-script, no second install, no drift between "how this host got enrolled" and "how this host gets
-deployed to." A host that will run full Docker-based `ciu up --host` instead simply never invokes
-`get.py` again after enrollment; the artifact costs it nothing.
+What `enroll` deliberately does **not** do: generate a key pair, call anything back, open a listener, install packages, run deploy logic, or touch `sshd_config`. Its blast radius is one user and one `authorized_keys` line plus the project install.
 
-## 5. Security posture (mirrors S14.4 + `get.py`'s existing S4/S5 hardening, does not weaken it)
+## 5. Step 2 — the control host: `ciu host enroll <name> --ssh-host ADDR --fingerprint FP`
 
-- Bootstrap tokens are single-use, short-TTL, and served only behind tls-edge HTTPS — never a
-  plaintext channel (matches `get.py`'s existing HTTPS-only + host-allowlist enforcement, §2).
-- The private key never leaves the control host (§3.1.1) — only the public half and a bootstrap
-  token cross the wire, both already-disclosable-by-design values.
-- `known_host` is still operator-confirmed before being trusted (§3.3) — this proposal automates
-  the *mechanics* of TOFU pinning, not the *trust decision* itself; S14.4a's fail-closed posture
-  is unchanged.
-- The target-side `bootstrap` action never installs system packages or runs deploy logic (§3.2) —
-  its blast radius is exactly "one authorized_keys line," which is the minimum needed to make
-  every subsequent S14/S17 verb reachable and nothing more.
+```
+ciu host enroll <name> --ssh-host ADDR [--port N] [--user USER] --fingerprint SHA256:… [--global] [--replace]
+```
 
-## 6. Open dependency: cmru's self-hosted `get.py` backend
+1. **Keyscan** the host (`ssh-keyscan -p N -t ed25519,ecdsa,rsa ADDR`); compute the SHA256 fingerprint of each returned key; refuse unless one equals `--fingerprint` (`[S7.2] rs1002.dchive.de presents SHA256:Q7… ; expected SHA256:M2… — not the host the admin enrolled, or a man in the middle`). Without `--fingerprint` the verb prints the scanned fingerprints and asks for confirmation on a TTY; non-interactive without the flag is a refusal. This is TOFU with a second channel — the fingerprint the admin read on the console — the same trust model the specs already accept (v7 S14.4a, v8 S7.2's `known_host`), automated and logged rather than manual.
+2. **Prove the key and the install**: connect as USER with the generated key and the scanned host key (pinned for this connection only), run `ciu version`; a refused login or a missing `ciu` is an ERROR naming which (`[S7.2] rs1002: key accepted but ciu is not installed; run get.py enroll again without --no-install`).
+3. **Write the row** with a round-trip writer that preserves the operator's other tables and comments — never a rewrite of the whole file — into the inventory: **v8** `ciu.hosts.toml` in the checkout root (or `~/.config/ciu/hosts.toml` with `--global`, S17.1): `[hosts.<name>] ssh_host, ssh_user, ssh_port (only when ≠ 22), ssh_key = "<state root>/ciu-ssh/<name>", known_host = "<algo> <base64>"` (the `[ADDR]:N` form for a non-default port); **v7** `.ciu.hosts.toml`: the same keys under `[deploy.hosts.<name>]` with `ssh_key = "<repo>/.ciu/secrets/hosts/<name>/ssh_key"`. Nothing else is written — `bundle_dir`, `docker_optional`, `[activate]`, addresses and `fqdn` stay the operator's to add, exactly as for a hand-written row.
+4. **Print the row** and exit 0. From here every existing verb works: `ciu ssh <name>`, `ciu up --host <name>`, v8 `push`/`activate`.
 
-§2 flags this explicitly: `get.py.tmpl` today only knows how to download from GitHub Releases.
-D-097 wants ("GitHub-independent") and this proposal's §3.2 needs a second backend — a
-bootstrap-URL-plus-token download path — added to `cmru get-py`'s template/renderer. This is a
-**cmru-repo change**, not a ciu one; this proposal's `ciu host enroll` verb is the *consumer* of
-that backend, not its owner. Filing that as a companion cmru backlog entry (cross-referenced to
-whatever this proposal is filed as) is a prerequisite before `ciu host enroll` can actually be
-implemented end-to-end — the verb can be designed and reviewed independently, but not shipped
-without it.
+## 6. The v7 backport and the v8 form are the same design
 
-## 7. Open questions for the operator (not resolved by this proposal)
+| | v7 (`SPEC.md` S14.7, backport package) | v8 (`SPEC-V8.md` S7.2.4, V8-29) |
+|---|---|---|
+| verb | `ciu host enroll` (a `host` group beside the flat `host-secrets`) | `ciu host enroll` |
+| key location | `.ciu/secrets/hosts/<name>/ssh_key[.pub]` (S14.3a namespace) | `<state root>/ciu-ssh/<name>[.pub]` (S2.6) |
+| inventory row | `[deploy.hosts.<name>]` in `.ciu.hosts.toml` | `[hosts.<name>]` in `ciu.hosts.toml` |
+| pinning | `known_host`, S14.4a fail-closed, S14.4c port form | `known_host`, S7.2 |
+| installer | ciu's `get.py` (new: `cmru get-py --project ciu`, committed + released) | the same, pinned to the control's ciu 8.x |
+| what the target needs ciu for | `ciu up --host` render-on-target (S14.2); `--thin` hosts may use the installed `get.py` as their `activate` entrypoint (S14.6) | `prepare`/`apply` (S17.4.1); `docker_optional` hosts alike |
 
-1. **Interactive-and-blocking vs. issue-and-return.** §3.1 proposes `ciu host enroll` holds the
-   session open polling for the callback (matching `ciu init`'s synchronous interview shape). An
-   alternative: issue the token and one-liner, return immediately, and let a separate `ciu host
-   enroll --check <name>` verb poll later — better for an admin who won't run the one-liner for
-   an hour. No strong argument either way found in existing doctrine; genuinely the operator's
-   call.
-2. **Does `--host-hint` matter, or should the callback's self-reported address always require
-   confirmation regardless?** §3.3 already requires confirmation either way; `--host-hint` is
-   only a convenience default for the confirmation prompt.
-3. **Where does the bootstrap-URL tls-edge endpoint actually live** — a new tls-edge route on the
-   *control* host's own tls-edge instance, or a small standalone service? D-097 says "behind
-   tls-edge" but does not say whose. This proposal assumes the control host's own, consistent with
-   "no new trust primitive" (§3.3), but does not treat that as settled.
-4. **Should this be CIU-93** (formalizing the tentative, never-filed idea from the P171 carve) or
-   a fresh backlog number — check `vbpub/ciu/KNOWN_ISSUES_TODO_BACKLOG.md`'s actual current tail
-   before filing either way; do not assume CIU-93 is still free.
+## 7. Security posture
 
-## 8. What this proposal deliberately does not do
+- The private key is generated where it is used and never leaves the control host's state; the public key and the controller's name are the only values that cross the wire, both public by nature.
+- `curl | python3` is the estate's existing installer posture; the printed URL is **version-pinned** (a release asset of the control's own ciu), never `latest`, and `--installer-url` lets an estate serve the same file from its own mirror. Manifest verification (SHA256 + minisign) covers the installed release exactly as for every other `get.py` install.
+- Host-key trust is TOFU confirmed through a second channel (the console fingerprint); the verb refuses on mismatch and writes nothing before the match. `CIU_SSH_INSECURE_TOFU=1` remains the documented escape and is never set by this verb.
+- The target-side blast radius is one user, one `authorized_keys` line and the project install; `from=` restrictions are opt-in and explicit.
+- Nothing listens: no token, no endpoint, no window in which a third party can present itself as the target.
 
-It does not touch `--thin`'s existing push/activate mechanics (S14.6/S17.3–S17.4), does not
-propose changes to the host TOML schema beyond the three fields every hand-written row already
-has (§3.4), does not introduce Vault into the pre-trust bootstrap path (D-097 was explicit that
-enrollment secrets live in ciu's local store, not Vault — this proposal follows that), and does
-not attempt to resolve v8's still-churning release/candidate/current model — enrollment happens
-strictly before any of that is reachable, so it has no opinion on it.
+## 8. Oracles for the carve (both lines)
+
+- **O1** Step 1 creates the key pair with modes 0700/0600, prints a one-liner that contains the exact public key, the pinned installer URL and the completion command, and writes no inventory row; a second step 1 without `--replace` is refused.
+- **O2** `get.py enroll` in a fixture container with `openssh-server`: creates the user, appends the key once (a re-run reports "already present" and leaves one line), sets modes and ownership, and prints a SHA256 fingerprint equal to `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`.
+- **O3** `get.py enroll` in a fixture without an SSH server exits `EXIT_PREREQ` naming `openssh-server` and performs no network I/O (assert no download happened).
+- **O4** Step 2 with a wrong `--fingerprint` refuses and writes nothing; with the right one it writes exactly the specified row (round-trip: the operator's other tables and comments survive byte-for-byte) and `ciu ssh <name> -- ciu version` then succeeds.
+- **O5** Controlled wrong implementations that must fail: one that writes the row before the fingerprint check (O4); one that prints or logs private-key material (a grep oracle over stdout/stderr/logs for the private key's first line); one that rewrites the inventory file whole (O4's byte-for-byte comparison).
+- **O6** The cmru template: `cmru get-py --project ciu` renders a `get.py` whose `enroll --help` lists exactly the §4 flags, and the rendered script is byte-identical to the committed `ciu/get.py` at release.
+
+## 9. Operator direction 2026-09-03 (what revision 2 changed and why)
+
+The operator read revision 1 and proposed the printed one-liner carrying the public key and the controller's name, "not using bootstrap". Applied with three refinements: the target-side mode is `enroll`, separate from the `bootstrap|apply|health` activation verbs; `--controller` names the key comment and never a callback (`from=` restrictions opt-in); the URL is version-pinned. Consequences: revision 1's §3.2 (token-authenticated bootstrap `get.py` variant), §3.3 (the callback), §6 (the cmru self-hosted download backend as a prerequisite) and §7's questions 1–3 (interactive vs async, `--host-hint`, the endpoint's location) are withdrawn — a two-step verb has no polling, the operator supplies the address, and no endpoint exists. D-097's "GitHub-independent" wish is met by `--installer-url` and a self-hosted mirror, not by a new download backend; a self-hosted backend for the *wheel* download stays an optional cmru item. Question 4 is settled: CIU-93. The decision to backport to v7 is the operator's (2026-09-03), an explicit exception to v7's maintenance-only posture because dstdns needs remote placement before ciu8 ships.
+
+## 10. What this proposal does not do
+
+It does not touch push/activate mechanics in either line, does not add inventory keys, does not introduce Vault into the pre-trust path (D-097), and does not auto-configure `bundle_dir`, `docker_optional` or `[activate]`. Enrollment ends at "ciu can SSH in, and ciu is installed there".
