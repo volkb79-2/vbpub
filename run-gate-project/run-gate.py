@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 33  # rev 33: RG-33 -- every `kind = "assay"` lane is invoked with `--resume --progress .assay/progress-<assay_lane>.jsonl`, unconditionally (R-38): both are no-ops on a lane without R2 and, on a mutation lane, the difference between a budget-capped retry resuming from `.assay/mutation-state/` and one re-testing every mutant from #1 (dstdns `sql-mutation`, three retries, state never written). Progress lands beside the verdict under the git-ignored `.assay/`, never in the judged tree. Requires a judge that knows both flags (assay >= 2.4.2); an older pin fails the lane by argparse, loudly, not silently. rev 32: RG-31 --`assay_toolchain_findings()`'s own worktree resolution (shared by `doctor` check 5 and `--check-env`) still took the RAW `--worktree` string through the run-path's lenient `resolve_repo_and_worktree` (no upfront validation) instead of RG-30's validated `resolve_worktree_scope()`; a bad override silently produced a `probe_dir` nothing mounted, and the resulting SKIP blamed "assay older than 3.2.0" instead of the real `--worktree` problem `doctor` check 3 already names correctly two checks earlier in the same report. Now routed through `resolve_worktree_scope()` like every other RG-30/R-37 read-scope site, so a bad override raises the SAME `GateError` and is caught by the existing per-lane SKIP handler with the real cause. rev 31: RG-30 -- `doctor` and `--check-env` both passed `None` to `resolve_repo_and_worktree` instead of the caller's `--worktree`, so `doctor --worktree B` silently reported the INVOKING tree's answers under B's name (including the R-30a host-lane git-view WARN); the same read-scope hazard `history` (RG-27 B1, rev 30) already closed for that verb, now closed for the last remaining instance. `doctor`'s per-tree checks (git identity, R-30a, mountinfo) and the shared assay-toolchain probe's `cd` target (`assay_toolchain_findings`) both follow `--worktree` now, resolved+validated via a new shared `resolve_worktree_scope()`; a bad override becomes a `[FAIL] git` record inside doctor's own existing try/except rather than a false `[OK]` on the R-30a check. `--check-env`'s env-drift scan follows it too and refuses upfront (no per-check ledger to degrade into). Both verbs disclose the selected tree in their output (R-37). rev 30 (round-2 review fixes folded in: `history` honors --worktree on the READ side and refuses an override that names no git work tree, so a query can never answer with the invoking checkout's data under another tree's name; flushing a record is at-most-once, so a Ctrl-C inside the telemetry write surfaces as the KeyboardInterrupt instead of a second-flush traceback; `--json` is refused by name outside `history` instead of accepted and ignored; `history` as a lane name is a flagged LOAD-TIME breaking change): RG-27 lane invocation history — a per-(judged worktree × project) `.run-gate/history.json` store holding, per lane, a `latest` slot (ANY outcome, dirty/aborted/mid-rebase included) and a bounded per-commit trend series ([history] keep, default 10); completed fails join history WITH their outcome and the stats are split passes/completed, aborted+dirty+mid-rebase runs never do; new `history [LANE] [--json]` query verb; concurrency answered by SCOPE first (two worktrees address two files) then a sibling-lockfile + atomic-rename write; the store must be git-ignored or the write is refused with the remedy rather than dirtying the tree (R-36); rev 29: P02 review round — the RG-25 `command -v` fitness probe is BATCHED per environment over the union of every lane's tools (was one container per lane, which made R-30's own cost claim quantitatively false), and the three places still claiming `--dry-run`/`doctor` start nothing now say what they actually start; rev 28: RG-26 `--base REF` reaches a delegating assay lane as `--request-base` (assay B019 usable from the gate at last) — delegation DERIVED from `assay lanes --json`, no new run-gate.toml key; conjunction lanes propagate it through a `{base}` token; a non-delegating lane refuses it by name (R-35). Also RG-28: an assay lane on the built-in host environment no longer raises KeyError('argv') (R-19); rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 34  # NOTE (controller): this branch was cut independently from `feature/run-gate-wave-resumable`, which ALSO claims rev 34 on its own unmerged branch -- renumber one of the two at merge time. rev 34: RG-39 -- exec-mode lanes no longer depend on every CALLER wrapping its own `flock` around the `docker exec` (dstdns `GUIDE.md` S1) to avoid two lanes racing the SAME persistent container: a new internal lock keyed on the resolved container name (`resolve_container_name()`'s own identity, resolved ONCE in `main()` and threaded into `run_exec_lane()` rather than re-derived, so the lock key and the eventual `docker exec` target can never drift apart) -- `/tmp/run-gate-exec-<container>.lock`, the SAME O_NOFOLLOW+0600 discipline as RG-20's shared-infra locks via a new shared `_open_lockfile()` helper (R-39). Acquired strictly AFTER every RG-20 shared-infra lock the lane declares is already held (a fixed global order -- shared-infra, then exec target -- that makes an ABBA deadlock between the two lock kinds impossible), released from the SAME `finally`, with RG-27's `flush_run_record` staying outside the held window as it already was. `LOCK_EX` blocking (a racing lane WAITS, never fails); isolated container names never meet; `--dry-run` plans the lock (name + path) but never takes or blocks on it, RG-8's pattern. Ephemeral `docker run` lanes have nothing to serialize (each container is per-invocation already) and are untouched. rev 33: RG-33 -- every `kind = "assay"` lane is invoked with `--resume --progress .assay/progress-<assay_lane>.jsonl`, unconditionally (R-38): both are no-ops on a lane without R2 and, on a mutation lane, the difference between a budget-capped retry resuming from `.assay/mutation-state/` and one re-testing every mutant from #1 (dstdns `sql-mutation`, three retries, state never written). Progress lands beside the verdict under the git-ignored `.assay/`, never in the judged tree. Requires a judge that knows both flags (assay >= 2.4.2); an older pin fails the lane by argparse, loudly, not silently. rev 32: RG-31 --`assay_toolchain_findings()`'s own worktree resolution (shared by `doctor` check 5 and `--check-env`) still took the RAW `--worktree` string through the run-path's lenient `resolve_repo_and_worktree` (no upfront validation) instead of RG-30's validated `resolve_worktree_scope()`; a bad override silently produced a `probe_dir` nothing mounted, and the resulting SKIP blamed "assay older than 3.2.0" instead of the real `--worktree` problem `doctor` check 3 already names correctly two checks earlier in the same report. Now routed through `resolve_worktree_scope()` like every other RG-30/R-37 read-scope site, so a bad override raises the SAME `GateError` and is caught by the existing per-lane SKIP handler with the real cause. rev 31: RG-30 -- `doctor` and `--check-env` both passed `None` to `resolve_repo_and_worktree` instead of the caller's `--worktree`, so `doctor --worktree B` silently reported the INVOKING tree's answers under B's name (including the R-30a host-lane git-view WARN); the same read-scope hazard `history` (RG-27 B1, rev 30) already closed for that verb, now closed for the last remaining instance. `doctor`'s per-tree checks (git identity, R-30a, mountinfo) and the shared assay-toolchain probe's `cd` target (`assay_toolchain_findings`) both follow `--worktree` now, resolved+validated via a new shared `resolve_worktree_scope()`; a bad override becomes a `[FAIL] git` record inside doctor's own existing try/except rather than a false `[OK]` on the R-30a check. `--check-env`'s env-drift scan follows it too and refuses upfront (no per-check ledger to degrade into). Both verbs disclose the selected tree in their output (R-37). rev 30 (round-2 review fixes folded in: `history` honors --worktree on the READ side and refuses an override that names no git work tree, so a query can never answer with the invoking checkout's data under another tree's name; flushing a record is at-most-once, so a Ctrl-C inside the telemetry write surfaces as the KeyboardInterrupt instead of a second-flush traceback; `--json` is refused by name outside `history` instead of accepted and ignored; `history` as a lane name is a flagged LOAD-TIME breaking change): RG-27 lane invocation history — a per-(judged worktree × project) `.run-gate/history.json` store holding, per lane, a `latest` slot (ANY outcome, dirty/aborted/mid-rebase included) and a bounded per-commit trend series ([history] keep, default 10); completed fails join history WITH their outcome and the stats are split passes/completed, aborted+dirty+mid-rebase runs never do; new `history [LANE] [--json]` query verb; concurrency answered by SCOPE first (two worktrees address two files) then a sibling-lockfile + atomic-rename write; the store must be git-ignored or the write is refused with the remedy rather than dirtying the tree (R-36); rev 29: P02 review round — the RG-25 `command -v` fitness probe is BATCHED per environment over the union of every lane's tools (was one container per lane, which made R-30's own cost claim quantitatively false), and the three places still claiming `--dry-run`/`doctor` start nothing now say what they actually start; rev 28: RG-26 `--base REF` reaches a delegating assay lane as `--request-base` (assay B019 usable from the gate at last) — delegation DERIVED from `assay lanes --json`, no new run-gate.toml key; conjunction lanes propagate it through a `{base}` token; a non-delegating lane refuses it by name (R-35). Also RG-28: an assay lane on the built-in host environment no longer raises KeyError('argv') (R-19); rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import ast
@@ -643,6 +643,15 @@ def check_slice_memory_admission(lane: dict, lane_name: str,
           f"+ {lane_name!r} {declared} <= budget {_fmt_mb(cap)}", flush=True)
 
 
+def _open_lockfile(path: Path) -> int:
+    """Shared RG-20/RG-39 discipline for a content-free coordination file
+    with a predictable /tmp name: 0600 + O_NOFOLLOW — don't follow a
+    planted symlink, don't share it across accounts. Every flock-based
+    lock in this file opens through here so the two lock kinds stay
+    siblings, never near-copies with subtly different flag sets."""
+    return os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+
+
 def acquire_shared_locks(lane: dict, lane_name: str, dry_run: bool) -> list[int]:
     """RG-20 admission, shared-infra half: lanes declaring the same
     resources.shared service name serialize on a per-name flock
@@ -665,10 +674,7 @@ def acquire_shared_locks(lane: dict, lane_name: str, dry_run: bool) -> list[int]
     for svc in sorted(names):
         path = Path(SHARED_LOCK_DIR) / f"run-gate-shared-{svc}.lock"
         try:
-            # 0600 + O_NOFOLLOW (review MINOR): the file is content-free
-            # coordination state with a predictable name; don't follow a
-            # planted symlink and don't share it across accounts.
-            fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            fd = _open_lockfile(path)
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
@@ -684,6 +690,45 @@ def acquire_shared_locks(lane: dict, lane_name: str, dry_run: bool) -> list[int]
                        f"unusable: {exc}")
         fds.append(fd)
     return fds
+
+
+def acquire_exec_lock(container_name: str, lane_name: str,
+                      dry_run: bool) -> int | None:
+    """RG-39: exec-mode lanes serialize on the RESOLVED CONTAINER IDENTITY
+    itself (/tmp/run-gate-exec-<container>.lock), so a caller-side `flock`
+    (dstdns GUIDE.md §1) is no longer required for correctness — only two
+    lanes that resolve to the SAME container ever meet here; a genuinely
+    independent container (different project_name/environment_tag,
+    including a Mode-B instance, or a declared container_name) gets a
+    distinct lock name and is never delayed by this call.
+
+    Caller contract (enforced by main(), not here): this must be called
+    only AFTER every RG-20 shared-infra lock the lane declares is already
+    held, and released from the SAME `finally` that releases those — a
+    fixed global order (shared-infra, then exec target) that makes an
+    ABBA deadlock between the two lock kinds impossible regardless of
+    which a project declares. `LOCK_EX` blocking: a second lane racing the
+    same container WAITS, it does not fail. Dry runs plan the lock but
+    never take or block on it (RG-8's pattern, `acquire_shared_locks`'
+    dry-run half). Returns the held fd (closing it releases the flock), or
+    None for a dry run — there is nothing to close."""
+    path = Path(SHARED_LOCK_DIR) / f"run-gate-exec-{container_name}.lock"
+    if dry_run:
+        print(f"run-gate: DRY RUN — exec-mode serialization planned for "
+              f"container {container_name!r} ({path})", flush=True)
+        return None
+    try:
+        fd = _open_lockfile(path)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f"run-gate: lane {lane_name!r}: waiting for container "
+                  f"{container_name!r} — another gate holds {path}",
+                  flush=True)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError as exc:
+        fail_infra(f"lane {lane_name!r}: exec-mode lock {path} unusable: {exc}")
+    return fd
 
 
 def check_clean_tree(worktree: Path) -> None:
@@ -2642,7 +2687,9 @@ def resolve_container_name(env_name: str, env: dict, repo: Path,
 
 
 def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
-                  worktree: Path, env: dict, env_source: str, env_name: str,
+                  worktree: Path, env: dict, env_source: str,
+                  container_name: str, container_name_src: str,
+                  container_start_remedy: str,
                   slice_name: str | None, slice_src: str,
                   dry_run: bool = False,
                   request_base: str | None = None) -> int:
@@ -2652,12 +2699,22 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     Fail-fast: refuses to start the runner itself — that is CIU's job.
     This keeps run-gate as pure gate orchestration without duplicating
     lifecycle management that belongs to the deployment authority.
+
+    container_name/container_name_src/container_start_remedy arrive PRE-
+    RESOLVED (RG-39: main() calls resolve_container_name() once, before
+    this function even starts) rather than being re-derived here — the
+    exec-mode mutex lock main() takes has to be keyed on the EXACT identity
+    this function execs into, and the lock is acquired (and its release
+    scheduled) before this function is called at all. A second, independent
+    resolve_container_name() call in here could in principle read a
+    ciu.global.toml that changed between the two calls and exec into a
+    container the lock was never actually keyed on.
     """
     docker = shutil.which("docker")
     if not docker:
         fail_infra("docker not found on PATH — exec-mode lanes need it")
-    name, name_src, start_remedy = resolve_container_name(
-        env_name, env, repo, worktree, env_source)
+    name, name_src, start_remedy = \
+        container_name, container_name_src, container_start_remedy
     running = subprocess.run([docker, "ps", "--format", "{{.Names}}"],
                              capture_output=True, text=True)
     if running.returncode != 0:
@@ -3105,14 +3162,33 @@ def main(argv: list[str] | None = None) -> int:
             check_slice_memory_admission(lane, args.lane, slice_name,
                                          slice_src)
         locks = acquire_shared_locks(lane, args.lane, args.dry_run)
+        # RG-39: the exec-mode mutex fd, closed from the SAME finally as the
+        # shared-infra fds above — None until (and unless) the exec branch
+        # below actually resolves a container identity and takes it. Kept
+        # OUTSIDE the try's exec branch so a resolve_container_name() or
+        # acquire_exec_lock() failure still hits `finally` and releases
+        # `locks` (this variable simply stays None; nothing to close).
+        exec_lock_fd = None
         try:
             if not env:  # built-in 'host'
                 code = run_host_lane(lane, args.lane, eff_proj, worktree,
                                      dry_run=args.dry_run,
                                      request_base=request_base)
             elif env.get("mode") == "exec":
+                # Resolved HERE, not inside run_exec_lane: the lock key and
+                # the eventual `docker exec` target must be the SAME
+                # identity, and the lock has to be held (ordering: strictly
+                # after the shared-infra locks above) before the exec ever
+                # starts.
+                container_name, container_name_src, container_start_remedy = \
+                    resolve_container_name(lane_environment_name(lane), env,
+                                           repo, worktree, env_source)
+                exec_lock_fd = acquire_exec_lock(container_name, args.lane,
+                                                 args.dry_run)
                 code = run_exec_lane(lane, args.lane, eff_proj, repo, worktree,
-                                     env, env_source, lane_environment_name(lane),
+                                     env, env_source,
+                                     container_name, container_name_src,
+                                     container_start_remedy,
                                      slice_name, slice_src,
                                      dry_run=args.dry_run,
                                      request_base=request_base)
@@ -3124,6 +3200,12 @@ def main(argv: list[str] | None = None) -> int:
                                           request_base=request_base)
             print(f"run-gate: lane {args.lane!r} exit {code}", flush=True)
         finally:
+            # RG-39: exec lock released before the shared-infra locks below
+            # (LIFO of acquisition order) — not load-bearing for correctness
+            # (different lock names never nest), but it keeps the release
+            # order legible against the acquisition order above.
+            if exec_lock_fd is not None:
+                os.close(exec_lock_fd)  # releases the exec-mode flock
             for fd in locks:
                 os.close(fd)  # releases the flock
         # RG-27: outside the shared-infra lock — telemetry never extends a

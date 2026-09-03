@@ -822,6 +822,32 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     claim to hold it to); an older judge then fails the lane loudly with
     assay's own `unrecognized arguments` line, never silently.
 
+- `R-39` **Exec-mode internal mutual exclusion (RG-39).** An exec-mode lane
+  no longer depends on every CALLER wrapping its own `flock` around the
+  `docker exec` (dstdns `GUIDE.md` §1) to keep two lanes racing the SAME
+  persistent container from contaminating each other's evidence: run-gate
+  now takes an internal lock keyed on the RESOLVED CONTAINER NAME —
+  `resolve_container_name()`'s own identity, resolved once in `main()` and
+  threaded into `run_exec_lane()` rather than re-derived, so the lock key and
+  the eventual `docker exec` target can never drift apart —
+  `/tmp/run-gate-exec-<container>.lock`, the SAME `O_NOFOLLOW`+`0600`
+  discipline as `R-29`'s shared-infra locks (a shared `_open_lockfile()`
+  helper backs both). Acquired strictly AFTER every `R-29` shared-infra lock
+  the lane declares is already held, and released from the SAME `finally` —
+  a fixed global order (shared-infra, then exec target) that makes an ABBA
+  deadlock between the two lock kinds impossible regardless of declaration
+  order. `LOCK_EX`, blocking: a second lane racing the SAME container WAITS
+  (`waiting for container '<name>' — another gate holds <path>`), it does not
+  fail; two lanes resolving to DIFFERENT container names never meet. Held
+  across the whole exec-and-evidence-collection window; `R-36`'s history
+  write (`flush_run_record`) happens after release, never inside it.
+  `--dry-run` plans the lock (container name + path) but never takes or
+  blocks on it (`R-28`'s pattern). Ephemeral container lanes have nothing to
+  serialize here — each `docker run` is per-invocation already, out of scope
+  by construction. The caller-side `flock` of dstdns `GUIDE.md` §1 stays
+  valid as an outer lock (consistent acquisition order) and becomes optional
+  for correctness, not required.
+
 ## 6. Non-goals (unchanged from CONSUMERS)
 
 No second parser of `run-gate.toml`; no judgment policy here (assay owns

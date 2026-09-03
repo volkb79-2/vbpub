@@ -3445,6 +3445,207 @@ class TestResourceAdmission:
 
 
 # ---------------------------------------------------------------------------
+# RG-39 — exec-mode internal mutex: a SECOND lock on top of RG-20's shared-
+# infra locks, keyed on the resolved container identity, acquired only after
+# every shared-infra lock the lane declares is already held.
+# ---------------------------------------------------------------------------
+
+class TestExecModeMutex:
+    """A caller-side flock (dstdns GUIDE.md §1) used to be the only thing
+    stopping two lanes racing the SAME persistent container from
+    contaminating each other's evidence. These oracles prove run-gate now
+    does that itself: same container -> the second gate WAITS (not skip,
+    not fail); different containers -> never meet; --dry-run never blocks;
+    a lane that raises still releases the lock; and the new lock is taken
+    strictly AFTER RG-20's shared-infra locks, never before (the ordering
+    that keeps the two lock kinds from ever ABBA-deadlocking)."""
+
+    def _tag(self) -> str:
+        # pid-suffixed like RG-20's own svc names above: this file's own
+        # test process might not be the only run-gate test suite touching
+        # /tmp on this host (see TestResourceAdmission's `f"pg-{os.getpid()}"`
+        # precedent) -- a fixed identity would collide with a concurrent run
+        # of THIS SAME file under pytest-xdist.
+        return f"dev1-{os.getpid()}"
+
+    def _container_name(self) -> str:
+        return f"myproj-{self._tag()}-runner"
+
+    def _lock_path(self, container: str | None = None) -> Path:
+        return Path("/tmp") / f"run-gate-exec-{container or self._container_name()}.lock"
+
+    def _proj(self, tmp_path, extra_lane_toml: str = "", name: str = "proj"):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, EXEC_LANE + extra_lane_toml, name=name)
+        (repo / "ciu.global.toml").write_text(
+            f"[deploy]\nproject_name = 'myproj'\nenvironment_tag = '{self._tag()}'\n")
+        commit_all(repo, "ciu config")
+        return repo, proj
+
+    @staticmethod
+    def _ps_returns(monkeypatch, *names: str) -> None:
+        shim = shim_dir_of(monkeypatch) / "docker"
+        body = shim.read_text()
+        listing = "\\n".join(names)
+        body = body.replace('case "$1" in',
+                            f'case "$1" in\n  ps) printf \'{listing}\\n\' ;;')
+        shim.write_text(body)
+
+    def test_serializes_concurrent_gates_on_same_container(
+            self, tmp_path, monkeypatch, capsys):
+        """THE oracle: a second gate resolving to the SAME container WAITS
+        for the first — the property a caller-side flock used to be the
+        only thing providing."""
+        repo, proj = self._proj(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        self._ps_returns(monkeypatch, self._container_name())
+        monkeypatch.chdir(proj)
+
+        lock_path = self._lock_path()
+        holder = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
+        fcntl.flock(holder, fcntl.LOCK_EX)  # the "first gate" holds it
+
+        result = {}
+
+        def gate():
+            result["rc"] = run_gate.main(["suite"])
+
+        worker = threading.Thread(target=gate, daemon=True)
+        worker.start()
+        try:
+            deadline = time.time() + 5
+            while worker.is_alive() and time.time() < deadline:
+                time.sleep(0.05)
+            assert worker.is_alive(), "gate must block while another gate " \
+                                      "holds the exec-mode container lock"
+        finally:
+            # Unconditional release: an assertion failure just above must
+            # never leave this fd's flock held for the REST of the test
+            # session — flock() conflicts across independently-opened fds
+            # on the same file EVEN WITHIN ONE PROCESS, so a later test
+            # opening this same path would self-deadlock on a lock this
+            # process itself never let go of (observed while proving this
+            # test genuinely red pre-fix: exactly this leak, on exactly
+            # this assert, hung the NEXT test forever).
+            fcntl.flock(holder, fcntl.LOCK_UN)
+            os.close(holder)  # "first gate" finished -> waiter proceeds
+        worker.join(timeout=15)
+        assert not worker.is_alive()
+        assert result["rc"] == 0
+        out = capsys.readouterr().out
+        assert f"waiting for container {self._container_name()!r}" in out
+
+    def test_isolated_containers_never_contend(self, tmp_path, monkeypatch):
+        """A genuinely independent container (here: a second lane with its
+        own DECLARED container_name) gets a distinct lock name and runs
+        unblocked while the FIRST container's lock is held elsewhere."""
+        other = f"other-runner-{os.getpid()}"
+        extra = textwrap.dedent(f"""
+            [environments.runner2]
+            image = "runner:latest"
+            mode = "exec"
+            container_name = "{other}"
+
+            [lanes.other]
+            kind = "command"
+            environment = "runner2"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        repo, proj = self._proj(tmp_path, extra_lane_toml=extra)
+        fake_docker(tmp_path, monkeypatch)
+        self._ps_returns(monkeypatch, self._container_name(), other)
+        monkeypatch.chdir(proj)
+
+        holder = os.open(self._lock_path(), os.O_CREAT | os.O_RDWR, 0o666)
+        fcntl.flock(holder, fcntl.LOCK_EX)  # "suite"'s container is busy
+        try:
+            start = time.time()
+            rc = run_gate.main(["other"])
+            elapsed = time.time() - start
+        finally:
+            fcntl.flock(holder, fcntl.LOCK_UN)
+            os.close(holder)
+        assert rc == 0
+        assert elapsed < 2, ("a DIFFERENT container's lane must never wait "
+                             f"on another container's lock (took {elapsed}s)")
+
+    def test_dry_run_never_blocks(self, tmp_path, monkeypatch, capsys):
+        repo, proj = self._proj(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        self._ps_returns(monkeypatch, self._container_name())
+        monkeypatch.chdir(proj)
+
+        holder = os.open(self._lock_path(), os.O_CREAT | os.O_RDWR, 0o666)
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            rc = run_gate.main(["suite", "--dry-run"])
+            assert rc == 0
+            out = capsys.readouterr().out
+            assert "exec-mode serialization planned for" in out
+            assert self._container_name() in out
+            assert "waiting for container" not in out
+        finally:
+            fcntl.flock(holder, fcntl.LOCK_UN)
+            os.close(holder)
+
+    def test_lock_released_when_lane_raises(self, tmp_path, monkeypatch):
+        """The finally path: an exception raised INSIDE the held-lock
+        window (evidence collection, here) must still release the lock —
+        this test probes for it directly afterward."""
+        repo, proj = self._proj(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        self._ps_returns(monkeypatch, self._container_name())
+        monkeypatch.chdir(proj)
+
+        def _boom(*a, **k):
+            raise RuntimeError("evidence collection exploded")
+        monkeypatch.setattr(run_gate, "print_lane_artifacts", _boom)
+
+        with pytest.raises(RuntimeError):
+            run_gate.main(["suite"])
+
+        probe = os.open(self._lock_path(), os.O_CREAT | os.O_RDWR, 0o666)
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)  # must succeed
+        finally:
+            fcntl.flock(probe, fcntl.LOCK_UN)
+            os.close(probe)
+
+    def test_acquired_after_shared_infra_locks(self, tmp_path, monkeypatch):
+        """Ordering oracle: the exec-mode lock must be taken strictly AFTER
+        every declared shared-infra lock is already held — the fixed global
+        order that keeps this new lock from ever ABBA-deadlocking against
+        RG-20's own locking."""
+        svc = f"pg-{os.getpid()}"
+        extra = ("    [lanes.suite.resources]\n"
+                f'    shared = ["{svc}"]\n')
+        repo, proj = self._proj(tmp_path, extra_lane_toml=extra)
+        fake_docker(tmp_path, monkeypatch)
+        self._ps_returns(monkeypatch, self._container_name())
+        monkeypatch.chdir(proj)
+
+        order = []
+        real_shared = run_gate.acquire_shared_locks
+        real_exec = run_gate.acquire_exec_lock
+
+        def _tracked_shared(*a, **k):
+            order.append("shared")
+            return real_shared(*a, **k)
+
+        def _tracked_exec(*a, **k):
+            order.append("exec")
+            return real_exec(*a, **k)
+
+        monkeypatch.setattr(run_gate, "acquire_shared_locks", _tracked_shared)
+        monkeypatch.setattr(run_gate, "acquire_exec_lock", _tracked_exec)
+        rc = run_gate.main(["suite"])
+        assert rc == 0, "lane must succeed (proves both locks were usable)"
+        assert order == ["shared", "exec"], \
+            f"exec lock must be acquired AFTER shared-infra locks, got {order}"
+
+
+# ---------------------------------------------------------------------------
 # RG-9 — doctor: one preflight command for the first-contact failure classes
 # ---------------------------------------------------------------------------
 

@@ -9,6 +9,19 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
+### Fixed
+- **RG-39 (rev 34, SPEC `R-39`) — exec-mode lanes now serialize internally on
+  the resolved container name, closing the need for every caller's own
+  `flock`.** A second lock (`/tmp/run-gate-exec-<container>.lock`, RG-20's
+  `O_NOFOLLOW`+`0600` discipline via a new shared `_open_lockfile()` helper)
+  is acquired strictly AFTER RG-20's shared-infra locks and released from the
+  same `finally` — a fixed global order that rules out an ABBA deadlock
+  between the two lock kinds. A second lane racing the SAME container WAITS
+  (blocking `LOCK_EX`, never fails); different containers never meet;
+  `--dry-run` plans the lock but never blocks. The caller-side `flock` of
+  dstdns `GUIDE.md` §1 stays valid as an outer lock and becomes optional for
+  correctness, not required.
+
 <!-- Post-release housekeeping (assay CHANGES.md precedent): this block is
      CLEARED immediately after a release. cmru generates the dated entry
      below from the commit range but does NOT clear this hand-written block
