@@ -279,6 +279,16 @@ class CarveStageConfig:
 
 
 @dataclass
+class L10Config:
+    """NL-3: per-project override of lint's L10 handoff-size thresholds
+    (src/nyxloom/lint.py's `_check_l10`). Resolved from `[lint.l10]` in
+    TOML; absence of the table/either key falls back to these tool-wide
+    defaults, unchanged from lint.py's own pre-override literals."""
+    warn_tokens: int = 10000
+    error_tokens: int = 18000
+
+
+@dataclass
 class ProjectConfig:
     project_id: str
     root: Path
@@ -341,6 +351,12 @@ class ProjectConfig:
     # instance means 'feature off' (session="fresh"). Not wired into
     # scheduling/behavior in P1 -- inert config until P2+.
     carve: CarveStageConfig = field(default_factory=CarveStageConfig)
+    # NL-3: per-project override of lint's L10 handoff-size thresholds.
+    # Default instance means 'use lint.py's tool-wide defaults' (10000 warn /
+    # 18000 error) -- resolved from `[lint.l10]` in TOML at load time (see
+    # L10Config, immediately above, and ProjectConfig.load's validation of
+    # this table below).
+    l10: L10Config = field(default_factory=L10Config)
 
     @classmethod
     def load(cls, root: Path) -> "ProjectConfig":
@@ -447,6 +463,28 @@ class ProjectConfig:
                      if k in CarveStageConfig.__dataclass_fields__}
         carve_cfg = CarveStageConfig(**carve_kw)
         log.debug("carve stage config resolved", session=carve_cfg.session)
+        # NL-3: per-project override of lint's L10 handoff-size thresholds.
+        # `[lint.l10]` is optional; absence (of `[lint]` or `[lint.l10]`) is
+        # the normal case and falls back to L10Config()'s tool-wide defaults.
+        # A PRESENT table is validated immediately and FAILS LOUDLY (mirrors
+        # validate_pipeline's load-time-ValueError pattern above) rather than
+        # being silently corrected or ignored -- warn_tokens >= error_tokens
+        # (equality included: a two-tier system collapses to one dead branch
+        # otherwise) or either value <= 0 is malformed.
+        l10_data = data.get("lint", {}).get("l10", {})
+        l10 = L10Config(**l10_data)
+        if l10.warn_tokens >= l10.error_tokens:
+            log.warning("lint.l10 validation failed", reason="warn>=error",
+                        warn_tokens=l10.warn_tokens, error_tokens=l10.error_tokens)
+            raise ValueError(
+                f"[lint.l10]: warn_tokens ({l10.warn_tokens}) must be strictly "
+                f"less than error_tokens ({l10.error_tokens})")
+        if l10.warn_tokens <= 0 or l10.error_tokens <= 0:
+            log.warning("lint.l10 validation failed", reason="non-positive",
+                        warn_tokens=l10.warn_tokens, error_tokens=l10.error_tokens)
+            raise ValueError(
+                f"[lint.l10]: warn_tokens ({l10.warn_tokens}) and error_tokens "
+                f"({l10.error_tokens}) must both be > 0")
         return cls(
             project_id=data["project"]["id"],
             root=root,
@@ -471,6 +509,7 @@ class ProjectConfig:
             stage_overrides=stage_overrides,
             logging_level=logging_level if isinstance(logging_level, str) else None,
             carve=carve_cfg,
+            l10=l10,
         )
 
     def redact(self, text: str) -> str:
