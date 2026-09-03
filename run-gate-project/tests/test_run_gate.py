@@ -7909,6 +7909,17 @@ class TestOwnerLivenessAndFollowEdges:
     def test_no_such_process_is_not_an_answer(self):
         assert run_gate.process_start_ticks(2 ** 22 + 1) is None
 
+    def test_a_kernel_that_will_not_name_the_namespace_asks_no_question(
+            self, monkeypatch):
+        """"Could not determine" is not "another namespace": a kernel that
+        will not answer `/proc/self/ns/pid` leaves the boot + start-time
+        conjunction to answer alone, exactly as it did before RW-29."""
+        def boom(*a, **k):
+            raise OSError("no /proc/self/ns here")
+        monkeypatch.setattr(run_gate.os, "stat", boom)
+        assert run_gate.pid_ns_inode() is None
+        assert run_gate.record_is_foreign_namespace({"pid_ns": 12345}) is False
+
     def test_a_single_repoll_still_reports_the_owner_it_was_given(
             self, tmp_path, monkeypatch):
         """Review round 2, N-b. `OWNER_RACE_REPOLLS` counts the CALLER's read
