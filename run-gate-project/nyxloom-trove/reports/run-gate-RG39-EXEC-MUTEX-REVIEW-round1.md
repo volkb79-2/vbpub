@@ -1,0 +1,265 @@
+# RG-39 exec-mode mutex — adversarial review, round 1
+
+**Branch:** `fix/run-gate-exec-mutex-rg39` @ `fefc6c19` (base `23fe2c98`)
+**Reviewer:** fresh Opus session (not a fork), isolated detached worktree
+`/workspaces/vbpub/.worktrees/run-gate-rg39-review` at `fefc6c19`
+**Date:** 2026-09-03
+
+## Verdict: ACCEPT
+
+The fix does what RG-39 (refinements 1 and 2 only, as scoped) specifies: a
+new `/tmp/run-gate-exec-<container>.lock` acquired strictly after RG-20's
+shared-infra locks, released from the same `finally`, keyed on a
+`resolve_container_name()` result resolved exactly once in `main()` and
+threaded (not re-derived) into `run_exec_lane()`. The registered gate is
+green with full diff coverage. One MINOR, genuinely reproducible defect was
+found (below) but it is a pre-existing gap in shared code this branch
+inherited rather than introduced, matches a precedent the task's own
+"already-ruled facts" already accepted for a sibling gap, and does not
+compromise the mutex's correctness — it does not block merge, but I
+recommend filing it to the backlog.
+
+---
+
+## Findings by severity
+
+### MINOR — `acquire_exec_lock()` does not catch every exception `os.open()`
+can raise for a pathological lock-key character, so it can crash with a
+raw traceback instead of the documented "never a traceback for config/env
+errors" `GateError` contract
+
+**Push point:** container-name-as-lock-key collision surface. Driven to a
+real, reproduced observation, not just read.
+
+`resolve_container_name()` returns a project-declared `env["container_name"]`
+verbatim (`run-gate.py:2642-2646`) with only an `isinstance(str)` +
+non-empty-after-`.strip()` check at config-load time
+(`run-gate.py:126-129`) — no charset restriction. `acquire_exec_lock()`
+interpolates that string directly into a `Path` (`run-gate.py:715`) and
+opens it via the new shared `_open_lockfile()` helper
+(`os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)`,
+`run-gate.py:652`), catching only `OSError`
+(`run-gate.py:719-728,684-690`).
+
+CPython's `os.open()` raises a plain `ValueError` — NOT an `OSError`
+subclass, confirmed directly (`issubclass(ValueError, OSError)` is
+`False`) — for a path string that contains an embedded ASCII NUL
+character. TOML's own basic-string escape syntax for arbitrary control
+characters (a backslash, the letter u, then four hex digits naming the
+Unicode code point) lets a project author write exactly a NUL character
+into `run-gate.toml`'s `container_name` value. Python's `tomllib` parses
+such a basic string into an ordinary Python string carrying a literal NUL
+as one of its characters, without complaint, and the existing config
+validator (a non-empty-string check only) does not reject it.
+
+Reproduced end-to-end through the real CLI (not just a unit call): a
+disposable project whose `run-gate.toml` declares an exec-mode
+environment with a `container_name` value equal to the four characters
+"a", "b" ... followed by a NUL character ... followed by "c", "d" (built
+via the TOML escape described above, not typed as a literal control
+character), with one `command`-kind lane pointed at that environment,
+run via `./run-gate.py suite` produces:
+
+```
+Traceback (most recent call last):
+  File ".../run-gate.py", line 3231, in <module>
+    sys.exit(main())
+  File ".../run-gate.py", line 3186, in main
+    exec_lock_fd = acquire_exec_lock(container_name, args.lane, args.dry_run)
+  File ".../run-gate.py", line 721, in acquire_exec_lock
+    fd = _open_lockfile(path)
+  File ".../run-gate.py", line 652, in _open_lockfile
+    return os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+ValueError: open: embedded null character in path
+```
+
+returncode 1 — not the `GateInfraError` (exit 3, one-line, no traceback)
+`main()`'s own `except GateError` handler produces for every OTHER
+unusable lock path.
+
+**Other three inputs this push point asked about were checked and are all
+safe** — verified directly against the reviewed `acquire_exec_lock()`:
+- A forward slash inside `container_name` (e.g. `"foo/bar"`) → `Path`
+  splits it into a nonexistent-parent path; `os.open()` raises
+  `FileNotFoundError` (an `OSError`), correctly caught → clean
+  `GateInfraError`, exit 3, no traceback, no file created.
+- A `../../../../tmp/evil`-style payload → same nonexistent-intermediate-
+  directory failure; POSIX path resolution cannot honor a `..` component
+  through a directory that was never created, so no traversal occurs and
+  nothing is written outside the intended `/tmp/run-gate-exec-*` name —
+  confirmed no stray file appeared anywhere on disk.
+- A 300-character name (exceeds `NAME_MAX`) → `OSError` (`ENAMETOOLONG`),
+  same clean path.
+
+**Why this doesn't block ACCEPT:** the identical gap (catching only
+`OSError`) already exists, unchanged by this diff, in
+`acquire_shared_locks()` (RG-20) — the same class of pre-existing
+shared-code gap the task's "already-ruled facts" already accepted as "not
+this branch's to fix" for a different pre-existing RG-20 issue. This
+diff's `_open_lockfile()` refactor faithfully preserves that existing
+exception-handling behavior rather than introducing something new; it just
+gives it a second caller. Triggering it requires control over the
+project's own `run-gate.toml` (already a semi-trusted position — that same
+file also names the docker image and argv executed), so it is not a new
+external attack surface, only a robustness gap against
+misconfiguration/corruption of that file. Worth a backlog entry (e.g.
+widening the exception clause around both `acquire_shared_locks` and
+`acquire_exec_lock`'s calls into `_open_lockfile`, or rejecting control
+characters in `container_name`/`resources.shared` names at config-load
+time) but not a merge blocker for RG-39 specifically.
+
+### INFORMATIONAL — the new mutex does not cover the RG-25/RG-26 environment
+probe, which also `docker exec`s into the same resolved container
+
+**Push point:** the `resolve_container_name()` single-call refactor, and
+the general adversarial pass. Driven to a real observation (traced the
+call graph), not a defect — noted for the record.
+
+`build_env_probe_argv()` (`run-gate.py:1729-1759`, unchanged by this diff)
+independently calls `resolve_container_name()` for the `assay lanes --json`
+inventory probe (RG-25) and the comparison-base delegation query (RG-26) —
+a short, synchronous, attached `docker exec` into the SAME container a
+judged lane will run in. Critically, `plan_comparison_base()` — which can
+trigger this probe — runs in `main()`'s dispatch **before** any lock is
+even acquired (`run-gate.py:3105`, with the comment "resolve the comparison
+base BEFORE any admission or lock"). So within a single invocation, and
+across two concurrent invocations resolving to the same container, this
+probe's `docker exec` can interleave with another lane's mutex-held
+`run_exec_lane()` window unsynchronized.
+
+This is **not** a stale second call site of `run_exec_lane`'s old internal
+resolution (the bug pattern being hunted for) — `build_env_probe_argv` is
+a wholly separate, pre-existing mechanism, was never covered by any lock
+before this branch, and RG-39's own backlog/SPEC text scopes the mutex to
+the judged lane's exec-and-evidence-collection window, not to probes whose
+own docstring says "a probe's result is never a verdict." I judge this
+correctly out of scope for RG-39 and do not recommend blocking on it, but
+it is a second place "docker exec into a resolved container" happens
+without the new mutex, worth knowing about if a future RG-37/v8 pass
+revisits this file's exec-mode contract.
+
+---
+
+## Push points driven to a real observation vs. read only
+
+1. **Deadlock/ordering correctness — driven to a real observation.** Grepped
+   every call site of `acquire_shared_locks` and `acquire_exec_lock` in
+   `run-gate.py`: each has exactly ONE call site, both inside `main()`'s
+   single dispatch, with `acquire_shared_locks` at line 3164 executing
+   unconditionally before the `if/elif/else` env-kind dispatch, and
+   `acquire_exec_lock` reachable only inside the `elif env.get("mode") ==
+   "exec":` branch (lines 3183-3187), strictly after. No other caller
+   exists that could acquire them in reverse order — verified by
+   exhaustive grep, not sampling.
+
+2. **Lock file lifecycle — driven to a real observation.** Grepped the
+   entire file for `unlink`/`os.remove` near any `.lock` path: none exist.
+   The exec lock file, like RG-20's shared-infra lock files, is created
+   with `O_CREAT` and never deleted — no TOCTOU unlink-and-recreate race is
+   possible because there is no unlink at all.
+
+3. **Container-name-as-lock-key collision surface — driven to a real
+   observation**, including an end-to-end CLI repro. See MINOR finding
+   above; a forward slash, `..`-traversal, and overlong names are all
+   safe (also directly tested), only the embedded-NUL-character case
+   escapes the `except OSError` net.
+
+4. **Dry-run correctness under contention — read the code path exactly.**
+   `acquire_exec_lock()`'s `if dry_run:` branch (`run-gate.py:717-719`)
+   prints the plan and `return None` structurally BEFORE `_open_lockfile()`
+   is ever reached — there is no code path from `dry_run=True` into the
+   file-open/flock call at all. Also re-confirmed by the existing
+   `test_dry_run_never_blocks` passing under the fixed tree.
+
+5. **The `resolve_container_name()` single-call refactor — driven to a real
+   observation.** Grepped every call site of `run_exec_lane` (one,
+   `main()`, correctly threaded) and every call site of
+   `resolve_container_name` (three: `main()`'s exec branch — new/correct;
+   `run_exec_lane`'s own former internal call — removed by this diff, now
+   takes the parameter instead; and `build_env_probe_argv` — pre-existing,
+   unrelated, see INFORMATIONAL finding above). No stale caller still using
+   the old re-derive-inside-`run_exec_lane` pattern.
+
+6. **Registered gate + selftest — driven to a real observation, own
+   worktree, log read in a separate step.** See below.
+
+7. **General adversarial pass — driven to a real observation.** Independently
+   reproduced red-first: swapped the pre-fix `run-gate.py` (from `23fe2c98`)
+   into my own worktree with the NEW test file kept, and ran
+   `TestExecModeMutex` alone:
+
+   ```
+   FAILED test_serializes_concurrent_gates_on_same_container
+   FAILED test_dry_run_never_blocks
+   FAILED test_acquired_after_shared_infra_locks
+   FAILED test_unusable_lock_path_is_infra_failure_not_traceback
+   4 failed, 2 passed, 1 warning in 1.63s
+   ```
+
+   The two that pass even without the fix
+   (`test_isolated_containers_never_contend`,
+   `test_lock_released_when_lane_raises`) do so for a legitimate reason —
+   with no mutex at all, nothing ever contends and nothing is ever held to
+   fail to release, so they trivially hold in the unfixed tree too; they
+   are regression guards for the fixed behavior, not proof the mutex exists,
+   and the other four genuinely are. Restored the fixed `run-gate.py`
+   (`git diff --stat run-gate.py` empty, confirming an exact restore) and
+   reran the same class: `6 passed, 1 warning in 6.05s`. This corroborates
+   the backlog entry's own "3/5 failing" red-first claim (made against the
+   original 5-test set, before the 6th OSError-branch test was added).
+
+   Traced each new test's assertion to the exact code it depends on
+   (`print_lane_artifacts` call site inside `run_exec_lane`'s
+   held-lock window for the exception test; module-level monkeypatch
+   resolution for the ordering test) — no hollow tests found. No silent
+   behavior change to any caller other than `run_exec_lane`:
+   `run_host_lane`/`run_container_lane` signatures are untouched by the
+   diff, and `run_exec_lane`'s only caller was updated in lockstep.
+
+---
+
+## Registered gate / selftest verdict
+
+Ran `python3 run-gate.py selftest` myself in my own detached worktree
+(`nice -n 19 ionice -c 3`, host-rule compliant, HOST-mode lane so no gate
+container was launched). Read the log file in a separate step afterward
+(not a pipe tail):
+
+```
+495 passed, 2 skipped, 2 warnings in 71.45s (0:01:11)
+diff-coverage OK: 25/25 changed executable lines covered (100.0% ≥ 100.0% floor)
+run-gate: lane 'selftest' exit 0
+```
+
+The 2 skips are the pre-existing, unrelated wheel-packaging tests
+(local `setuptools_scm` version mismatch against the pin), not something
+this branch touches. Numbers match the backlog entry's own claim exactly.
+
+---
+
+## Notes on the "already ruled" facts
+
+- **Rev-number collision (34 vs. `feature/run-gate-wave-resumable`):**
+  confirmed present exactly as described — a `NOTE (controller)` comment at
+  `__revision__ = 34` names it explicitly. Not flagged as a defect, per
+  instructions.
+- **Refinement (3) (v8 stack-directory keying) correctly not built:** confirmed
+  — no RG-37 code, no stack-directory lock key anywhere in this diff.
+  Correct per scope.
+- **Pre-existing leaked-lock-fd gap in RG-20's own tests:** confirmed still
+  present, untouched, out of scope — did not re-litigate per instructions,
+  only confirmed the reasoning holds (this branch's own new test avoids the
+  same trap with an explicit `try/finally` around its manually-held probe
+  lock).
+
+## Host hygiene
+
+`docker ps`/`pgrep tester-unified-gate.sh` checked before starting (host
+load ~9.6/9.9/9.1 on 8 cores from unrelated concurrent agents — no
+run-gate/RG-39 activity from anyone else). `selftest` is a HOST-mode lane
+(no container launched, confirmed from `run-gate.toml`'s own comment
+explaining why — mountinfo self-testing breaks under tester-unified), so
+the `docker update --cpus=3` clause did not apply; pytest was run serially
+under `nice -n 19 ionice -c 3` throughout, never concurrent with the
+background selftest run. No docker containers or stray files left behind
+(`docker ps` clean, temp repro directories removed).
