@@ -7,7 +7,15 @@ schema_version = 2
 scope = "S1"
 rigor = ["R0", "R2"]
 enforcement = "gate"
-argv = ["python3", "-m", "pytest", "tests", "-q"]
+# /opt/tester-venv/bin/python3, not bare "python3": assay spawns this argv
+# as its own subprocess, independent of whatever interpreter invoked
+# `assay.cli` itself -- bare "python3" resolves via PATH to
+# /usr/local/bin/python3 inside tester-unified, which has no pytest.
+# Hardcoded, scoped to this file's one documented consumption path
+# (run-gate.toml's [lanes.r2], always inside a tester-unified container);
+# see scripts/debian-install-v2/assay.toml, where this exact pattern was
+# worked out and verified live first.
+argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q"]
 env = { PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
 budget = "45m"

@@ -24,12 +24,25 @@
 # stay as they are — this file is an ADDITIONAL, standard-naming lane
 # matrix layered on top for scripts/LANE-MATRIX-PROGRESS.md's program, not
 # a replacement.
+#
+# environment = "bare-host", not "host", for r0-r1/gate (run-gate RG-43
+# estate-wide sweep, 2026-09-03): as of rev 36, plain "host" is a CONTAINER
+# default with no docker-socket mount (verified live via --dry-run) —
+# gate.sh needs real docker access to launch its own nested container, and
+# gate needs it to launch r0-r1/r2/r3 as nested `./run-gate.py <lane>`
+# processes. r2's `pip install -e assay` also can't work inside
+# tester-unified (its site-packages is root-owned, read-only for the
+# non-root user the container runs as) -- PYTHONPATH points straight at
+# assay's own src-layout source instead (verified equivalent: pip install
+# -e never gave assay a real installed-distribution identity either). See
+# scripts/debian-install-v2/run-gate.toml, where this exact pattern was
+# worked out and verified live first.
 # =============================================================================
 schema_version = 1
 
 [lanes.r0-r1]
 kind = "command"
-environment = "host"
+environment = "bare-host"
 argv = [
     "bash", "-c",
     "cd {worktree}/scripts/cgroup-profiler && exec tools/gate.sh {worktree} coverage",
@@ -37,18 +50,17 @@ argv = [
 clean_tree = false
 budget = "20m"
 
-# Mutation testing via a live, worktree-installed assay (never a pinned
-# zipapp for an in-repo consumer — assay/docs/INTERNAL-CONSUMERS.md),
-# executed inside tester-unified since this project's report-tier modules
-# need pandas/plotly/matplotlib/scipy/ruptures. The judge policy (source
-# roots, operators, budget) lives in this project's own assay.toml
-# [lanes.r2]; this lane just installs and invokes it.
+# Mutation testing via a live worktree assay (never a pinned zipapp for an
+# in-repo consumer — assay/docs/INTERNAL-CONSUMERS.md), executed inside
+# tester-unified since this project's report-tier modules need
+# pandas/plotly/matplotlib/scipy/ruptures. The judge policy (source roots,
+# operators, budget) lives in this project's own assay.toml [lanes.r2].
 [lanes.r2]
 kind = "command"
 environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "cd {worktree} && pip install -q -e assay && cd {worktree}/scripts/cgroup-profiler && mkdir -p .assay && exec assay run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
+    "export PYTHONPATH={worktree}/assay/src && cd {worktree}/scripts/cgroup-profiler && mkdir -p .assay && exec $TESTER_VENV/bin/python3 -m assay.cli run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
 ]
 clean_tree = false
 budget = "45m"
@@ -74,10 +86,10 @@ budget = "10m"
 # is the reference shape).
 [lanes.gate]
 kind = "command"
-environment = "host"
+environment = "bare-host"
 argv = [
     "bash", "-c",
-    "./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r2 && ./run-gate.py --worktree {worktree} r3",
+    "cd {worktree}/scripts/cgroup-profiler && ./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r2 && ./run-gate.py --worktree {worktree} r3",
 ]
 clean_tree = false
 budget = "90m"

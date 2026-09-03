@@ -3,14 +3,21 @@
 # (one parser, D-110). tools/gate.sh owns its own container mechanics (its
 # srdm-gate image, cgroup verification via tools/cgroup-parent.sh, detached
 # run + separate verdict read); run-gate owns uniform invocation only — same
-# split as assay's self-hosting driver. Host lanes.
+# split as assay's self-hosting driver. Bare-host lanes.
+#
+# environment = "bare-host", not "host" (run-gate RG-43 estate-wide sweep,
+# 2026-09-03): as of rev 36, plain "host" is a CONTAINER default with no
+# docker-socket mount (verified live via --dry-run) — gate.sh needs real
+# docker access to launch its own nested srdm-gate container, the same trap
+# assay's own self-hosting driver hit and was fixed the same way
+# (assay/run-gate.toml).
 # See run-gate-project/SPEC.md.
 # =============================================================================
 schema_version = 1
 
 [lanes.unit]
 kind = "command"
-environment = "host"
+environment = "bare-host"
 # Meaningful on a dirty tree BY DESIGN (gate.sh's own contract), hence
 # clean_tree=false with that written reason.
 argv = ["bash", "{worktree}/shared-ramdisk-depot-manager/tools/gate.sh", "{worktree}", "unit"]
@@ -22,13 +29,13 @@ budget = "20m"
 # vacuous percentage when the diff cannot see the work.
 [lanes.coverage]
 kind = "command"
-environment = "host"
+environment = "bare-host"
 argv = ["bash", "{worktree}/shared-ramdisk-depot-manager/tools/gate.sh", "{worktree}", "coverage"]
 budget = "20m"
 
 [lanes.e2e]
 kind = "command"
-environment = "host"
+environment = "bare-host"
 argv = ["bash", "{worktree}/shared-ramdisk-depot-manager/tools/gate.sh", "{worktree}", "e2e"]
 clean_tree = false
 budget = "60m"
