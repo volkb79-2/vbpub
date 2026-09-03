@@ -4,7 +4,7 @@ id: nyxloom-P99-l10-per-project-thresholds
 project: nyxloom
 title: "L10 handoff-size thresholds: per-project [lint.l10] override in nyxloom.toml"
 tier: implement-2
-input_revision: "c4cdd5e9"
+input_revision: "f84953a7"
 depends_on: []
 session: fresh
 source:
