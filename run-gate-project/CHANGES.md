@@ -216,9 +216,14 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     against a `stall_timeout` its own invocation had never mentioned. On a
     follow the line also names the owning pid as the client that will act on
     it.
-  - The record's `schema` is CHECKED on read, not merely written: a record
-    of another schema is disclosed by name and treated as no record, so a
-    future format cannot be silently misread by an older client.
+  - The record's `schema` is CHECKED on read, not merely written, and a
+    record of another schema is **refused (exit 2)** rather than ignored:
+    ignoring it means starting a second container for the lane and
+    overwriting a newer client's record — the loss the record exists to
+    prevent. The refusal names both schema numbers and every way out
+    (upgrade run-gate; `--fresh`, which reads only the container NAME out of
+    a grammar it does not know and removes it; else the record's path to
+    delete).
   - **Consumer note:** the record lives in the `.run-gate/` directory
     adopters already git-ignore for `history.json`; no config change is
     needed. A project that has NOT ignored it gets one warning per run

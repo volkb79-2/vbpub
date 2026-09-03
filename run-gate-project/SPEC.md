@@ -919,10 +919,21 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `inflight.lock` (`O_NOFOLLOW`, 0600, bounded) plus
     write-temp-then-`os.replace`; that lock spans the write and nothing
     else, and it is NOT what arbitrates two live clients — `R-39e` is. The
-    record's `schema` is CHECKED on read, not merely written: a record of
-    another schema is disclosed by name and treated as no record, because an
-    old client reading a future record under today's rules is the silent
-    misread a version field exists to prevent. The
+    record's `schema` is CHECKED on read, not merely written, and a record of
+    another schema is **REFUSED (exit 2)**, never degraded: an old client
+    reading a future record under today's rules is the silent misread a
+    version field exists to prevent, and *treating it as absent* is worse
+    still — this client then starts a SECOND container for the lane and
+    writes its own record over the newer one, which is the loss `R-39` exists
+    to end, performed by the tool. The refusal names both schema numbers and
+    every way out: upgrade run-gate to the revision that wrote it; `--fresh`
+    where the record's container NAME is readable; else the record's path to
+    delete. `--fresh` therefore has to work against such a record, so under
+    it exactly two fields are read out of a grammar this client does not
+    know — the container name (what to remove) and `started_at` (display) —
+    and never the commit, the owner or the artifacts. A record carrying no
+    `schema` key at all is not a versioned record but a corrupt one, and
+    falls under the no-container rule below. The
     record therefore also names its OWNER: `owner_pid`, `owner_start` (the
     process start time, field 22 of `/proc/<pid>/stat`, so a recycled pid
     cannot impersonate the owner), `boot_id` (a pid means nothing across

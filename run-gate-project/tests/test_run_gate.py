@@ -6895,30 +6895,70 @@ class TestInflightRecordDecisions:
         assert len(lane_runs(log)) == 1
         assert not record.exists()
 
-    def test_a_record_of_another_schema_is_disclosed_and_ignored(
+    def test_a_record_of_another_schema_is_REFUSED_not_overwritten(
             self, tmp_path, monkeypatch, capsys):
-        """N2. `INFLIGHT_SCHEMA` was written and never checked, so a future
-        schema-2 record would be read by an old client under schema-1 rules —
-        the silent misread a version field exists to prevent. Ignored, but
-        never in silence: the consequence is a second container for a lane
-        that already has one, and the operator is told why."""
+        """RW-25 (controller ruling on round-1 ask 3). Rev 34's first cut
+        disclosed the mismatch and then treated the record as no record —
+        which means the old client starts its OWN container for a lane that
+        already has one and writes its own record OVER the newer one. That is
+        precisely the loss RG-35 exists to end, performed by the tool, and a
+        warning on stderr does not undo it after the fact.
+
+        Refuse (exit 2) instead, naming both schema numbers and every way
+        out."""
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         record = plant_inflight(proj, repo, state, schema=99)
-        assert run_gate.main(["suite"]) == 0
+        before = record.read_text()
+        assert run_gate.main(["suite"]) == 2
         err = capsys.readouterr().err
-        assert "ignoring the inflight record at" in err
-        assert "it declares schema 99" in err
-        assert f"reads schema {run_gate.INFLIGHT_SCHEMA}" in err
-        # Treated as NO record: nothing was inspected, nothing re-attached.
-        assert [c for c in _docker_calls(log) if c[0] == "inspect"] == []
-        assert len(lane_runs(log)) == 1
-        # The container the unreadable record named is left strictly alone —
-        # run-gate does not remove what it cannot identify.
+        assert "declares schema 99" in err
+        assert f"this run-gate (rev {run_gate.__revision__}) reads schema " \
+            f"{run_gate.INFLIGHT_SCHEMA}" in err
+        # Every remedy, named: upgrade; --fresh (the container name IS
+        # readable here); or the path to delete.
+        assert "Upgrade run-gate to the revision that wrote it" in err
+        assert "--fresh" in err and "run-gate-planted" in err
+        assert str(record) in err
+        # Nothing was started, nothing was inspected, and neither the record
+        # nor the container it names was touched.
+        assert lane_runs(log) == []
+        assert _docker_calls(log) == []
         assert (state / "run-gate-planted").exists()
-        # The record itself does NOT survive: this client started its own
-        # container and wrote its own record over it, then cleared it in the
-        # usual `finally`. That is the cost the warning names, and it is why
-        # the warning exists rather than a silent `return None`.
+        assert record.read_text() == before
+
+    def test_an_unreadable_schema_with_no_container_name_names_the_path(
+            self, tmp_path, monkeypatch, capsys):
+        """`--fresh` is only a remedy when there IS a container name to
+        remove. A schema whose record does not even carry one leaves exactly
+        one way out, and the refusal must say which."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = proj / ".run-gate" / "inflight" / "suite.json"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps({"schema": 99, "boxcar": "who knows"}))
+        assert run_gate.main(["suite"]) == 2
+        err = capsys.readouterr().err
+        assert "declares schema 99" in err
+        assert "--fresh" not in err
+        assert f"delete {record}" in err
+        assert lane_runs(log) == []
+
+    def test_fresh_reads_only_the_container_name_out_of_a_foreign_record(
+            self, tmp_path, monkeypatch, capsys):
+        """The escape the refusal offers has to WORK. Under `--fresh` the
+        only things read out of a record whose grammar this client does not
+        know are the container NAME (what to remove) and, for display,
+        `started_at` — never its commit, its owner or its artifacts."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, schema=99)
+        assert run_gate.main(["suite", "--fresh"]) == 0
+        outerr = capsys.readouterr()
+        assert "declares schema 99" in outerr.err
+        assert "only its container name" in outerr.err
+        assert ("run-gate: --fresh: removing inflight container "
+                "run-gate-planted (started 2026-09-02T11:00:00Z, running)"
+                ) in outerr.out
+        assert ["rm", "-f", "run-gate-planted"] in _docker_calls(log)
+        assert len(lane_runs(log)) == 1        # ran anew
         assert not record.exists()
 
     ASSAY_ARTIFACT_LANE = """\
