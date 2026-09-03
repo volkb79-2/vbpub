@@ -461,6 +461,167 @@ cat /sys/fs/cgroup/wings.slice/io.weight             # what io.cost reads direct
 
 ---
 
+## Per-container `memory.min` guarantees — the `dev-memory_min_guaranteed` tier (not built, documentation only)
+
+Not installed today. Researched in depth during dstdns's P165 sql-mutation-gate
+incident (2026-09-03 — a disposable Postgres's 3GB `shared_buffers` produced
+periodic zswap-refault CPU bursts that stalled the production game server's
+network for several seconds every ~4 minutes) while designing a way to give a
+**continuously-processing** container (unlike the bursty/transient population
+of `dev-background.slice`) a genuine floor against thrashing, without letting
+that floor compete with the game server's own guarantee. Recorded here because
+it's the `memory.min` analog of an already-established pattern in this file
+(§3 above): a whole-estate ceiling on a shared parent, composed with genuine
+per-container guarantees applied at the leaf.
+
+### Why not just add `MemoryMin` to `dev-background.slice`
+
+`memory.min` is **not** a simple "protect whatever you set" knob — the kernel
+distributes a slice's effective protection across every child *currently using
+memory*, proportional to usage, regardless of whether that child declared
+anything of its own. A child with no declared `memory.min` defaults to `0` as
+its own base claim, but if the parent has protection left unclaimed by
+explicitly-declaring siblings, that surplus still flows to it, proportional to
+its own usage share. Concretely: add `MemoryMin=800M` directly to
+`dev-background.slice` today, and every ordinary gate/test-runner container
+already living there — none of which asked for any protection — would start
+absorbing a share of that 800M under contention, simply by virtue of using
+memory. That's a silent behavior change for a large, heterogeneous, shared
+tier, not a no-op for anyone who doesn't opt in.
+
+**Consequence:** the guarantee needs its own slice, with a population limited
+to containers that intentionally want (and are individually admission-checked
+for) a real floor — so the redistribution surplus has nowhere else to go.
+
+### The design: static ceiling + admission control, not dynamic reconciliation
+
+Two ways to make a lone (or small) set of children's guarantees actually
+effective were considered:
+
+1. **Dynamic**: a manager script recomputes the parent's `MemoryMin` on every
+   container start/stop, summing whatever's currently claimed, and pushes it
+   via `systemctl set-property --runtime` (see "Why set-property --runtime"
+   above — this is the same reload-safe mechanism already used for IO caps,
+   never a raw cgroupfs write, which a routine `apt install`-triggered
+   `daemon-reload` would silently wipe).
+2. **Static**: host-setup provisions a fixed ceiling once, as a human decision
+   ("this is the total we will ever guarantee across all
+   individually-governed containers combined"), and the consumer (ciu) does
+   pure **admission control** — before starting a container with a declared
+   claim, sum the currently-running claimants' own declared values (read
+   straight from cgroupfs or from ciu's own governance config, no systemd
+   interaction needed) and refuse to start if admitting this one would exceed
+   the static ceiling.
+
+**Chose (2).** Dynamic slice-property management needs host-level
+`systemctl`-management privilege — meaningfully more than a container
+orchestration tool needs today, and a bigger blast radius for its own bugs (a
+mis-computed sum corrupts a *host* cgroup property, not just one stack). It
+also creates a drift class of bug: a container that stops out-of-band (crash,
+OOM-kill, a bare `docker stop`) isn't reliably observed, so a purely
+start/stop-triggered reconciler ratchets the parent's claimed floor upward
+over time unless a periodic GC pass also exists to catch it. The static
+ceiling has none of that — nothing persistent to keep in sync, no privilege
+expansion, and a refusal-to-start is exactly this codebase's existing
+fail-fast doctrine (`AGENTS.md` §4.2a: a default is legitimate only when it's
+a policy choice correct in the absence of information — a human-set ceiling
+is exactly that; a silently-recomputed one risks becoming the "silent
+invention" hazard that section warns against) applied to memory admission
+instead of config values.
+
+### The one invariant that actually matters: keep the parent's claim exactly matched, never generous
+
+`dev-memory_min_guaranteed.slice`'s own `MemoryMin` only protects its children
+if it has enough effective protection handed down from **its own** parent
+(`dev.slice`) — the ancestor-chain rule already documented above (§5, and see
+`../../scripts/gstammtisch-guide/` `soulmask_tmpfs.slice`, which independently
+arrived at the identical constraint for the production game server's tmpfs
+tiers: *"parent's MemoryMin must be ≥ children's, or the child's floor is
+silently ineffective."*) So `dev.slice` needs a `MemoryMin` too — not just the
+new leaf slice.
+
+The subtle part: it is tempting to give `dev.slice` some **generous** headroom
+"just in case" — exactly the mistake this section opened by warning against,
+now one level up. If `dev.slice`'s own `MemoryMin` exceeds what
+`dev-memory_min_guaranteed.slice` itself currently claims (its own declared
+value, capped by its *actual live usage* — the kernel formula is
+`min(usage, declared)`, so an under-utilized guaranteed slice claims less than
+its ceiling even if it's entitled to more), the leftover surplus at the
+`dev.slice` level flows to **`dev-interactive.slice` and
+`dev-background.slice` too** — recreating the exact leak this whole design
+exists to avoid, just one hop higher.
+
+**The fix, and the reason for the `dev-memory_min_guaranteed.slice` name and
+value pairing the operator proposed**: set `dev.slice`'s own `MemoryMin` to
+*exactly* the same number as `dev-memory_min_guaranteed.slice`'s own ceiling —
+never more. When the guaranteed slice is fully utilized (its declared
+children's claims sum to its own ceiling), this leaves zero surplus at
+`dev.slice`, so nothing leaks to the other two tiers. There is one residual,
+bounded gap even with matched values: whenever the guaranteed slice is
+*under*-utilized relative to its own ceiling (e.g. the ceiling is provisioned
+for two 128M containers but only one is currently running), the unclaimed
+portion at the **leaf** slice still has nowhere else to flow at the `dev.slice`
+level *specifically because the two numbers are pinned equal* — verified by
+walking the formula: `dev-memory_min_guaranteed`'s own `protected` value
+already absorbs 100% of what `dev.slice` hands down whenever
+`dev-memory_min_guaranteed`'s usage ≥ its own ceiling, and even below that
+threshold the surplus term at `dev.slice` is bounded by `dev.slice`'s
+`MemoryMin` value itself — i.e. the worst-case leak to the other two tiers is
+capped at the size of the guaranteed-tier's own ceiling, not unbounded. Given
+the ceiling is meant to be a small, deliberately conservative number (low
+hundreds of MB, not GB — this host has ~367M genuinely free under normal
+production load, see the P165 incident numbers), a bounded worst case of "the
+same small number, occasionally" is an acceptable, quantified tradeoff — not
+a reason to add reconciliation machinery.
+
+### Consequences of alternative configurations (why each was rejected or deferred)
+
+| Alternative | What actually happens | Verdict |
+|---|---|---|
+| `MemoryMin` directly on `dev-background.slice` | Surplus redistributes to every existing gate/test-runner container using memory, not just the intended one | Rejected — see above |
+| `dev.slice` given a "generous" `MemoryMin` (more than the guaranteed slice's own ceiling) | Surplus leaks to `dev-interactive.slice`/`dev-background.slice`, unbounded by how generous the headroom was | Rejected — pin the two values exactly equal instead |
+| Skip `dev.slice`, set `MemoryMin` only on `dev-memory_min_guaranteed.slice` | Ancestor-chain rule caps effective protection at what `dev.slice` (0 today) hands down — the leaf's `MemoryMin` is silently inert, `systemctl show` reports the value, nothing is actually protected | Rejected — both levels are required, not either/or |
+| Disable `memory_recursiveprot` host-wide to force stricter, non-cascading semantics | It's a mount flag on `/sys/fs/cgroup`, not scoped to one hierarchy — `dev-interactive.slice`'s own `MemoryLow` and the game server's `soulmask_tmpfs.slice` hierarchy both already depend on it being enabled; turning it off to fix one new leaf slice breaks two unrelated, already-working protections | Rejected — see §5 above, `mdt-host-check.sh` already FAILs when this flag is missing, for good reason |
+| Dynamic per-start/stop reconciliation (Option 1 above) | Works, but needs new host-systemd privilege for the consumer (ciu) and a periodic-GC-pass class of bug for out-of-band stops | Deferred — revisit only if the static ceiling proves too limiting in practice; tracked as ciu backlog `CIU-94` |
+| A race between two concurrent admission checks against the shared ceiling (two custom-managed containers starting at once, no cross-root lock) | `memory.min` overcommit degrades gracefully — the kernel's own proportional formula divides an oversubscribed claim across more claimants than intended, so each gets a smaller-than-requested floor, never a hard failure, crash, or OOM | Accepted as a known, low-stakes limitation — not worth a cross-ciu-root lock (operator decision, 2026-09-03) |
+
+### Sketch of the new slice (documentation only — not rendered/installed)
+
+Following `dev-background.slice.in`'s own pattern (a dash-nested child of
+`dev.slice`, no explicit `[Slice] Parent=` needed):
+
+```ini
+# units/dev-memory_min_guaranteed.slice.in (PROPOSED, not yet added)
+[Unit]
+Description=Individually-governed containers with a real memory.min floor (sql-mutation-gate, similar continuously-processing workloads)
+Before=slices.target
+
+[Slice]
+# The ONE number that must always equal dev.slice's own MemoryMin exactly —
+# see "the one invariant that actually matters" in CGROUP-NOTES.md. This is
+# the total ever guaranteed across every container placed here combined;
+# admission control (ciu, CIU-94) refuses to start a container whose own
+# declared claim would push the live sum past this ceiling.
+MemoryMin=@DEV_MEMORY_MIN_GUARANTEED_CEILING@
+
+# No MemoryHigh/Max here deliberately -- those stay per-container (ciu's
+# existing mem_limit/mem_reservation injection already does this on the
+# container's own scope, no slice-level ceiling needed for them, unlike the
+# min floor which requires ancestor cooperation).
+```
+
+Plus the matching addition to `dev.slice.in`:
+
+```ini
+# ADDED to units/dev.slice.in (PROPOSED):
+MemoryMin=@DEV_MEMORY_MIN_GUARANTEED_CEILING@  # same value/env var as above, pinned equal, always
+```
+
+Both values must be rendered from the **same** `host-setup.env` variable
+(`DEV_MEMORY_MIN_GUARANTEED_CEILING`) rather than two independently-set
+variables that happen to start out equal — two variables invites exactly the
+drift this design depends on not happening.
+
 ## A game-server-tuned custom kernel — what it would consider (not proposed, documentation only)
 
 Not work to do — a reference for *if* a kernel is ever rebuilt specifically
