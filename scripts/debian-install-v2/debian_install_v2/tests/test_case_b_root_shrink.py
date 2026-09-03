@@ -165,17 +165,18 @@ def test_plan_root_shrink_honors_preserve_root_size_gb_above_filesystem_minimum(
     assert target_gib == pytest.approx(10, abs=0.01)
 
 
-def test_plan_root_shrink_clamps_to_filesystem_minimum_when_preserve_is_smaller(tmp_path):
+def test_plan_root_shrink_refuses_when_preserve_is_smaller_than_filesystem_minimum(tmp_path):
     # preserve_root_size_gb=1 GiB is far below the fixture's real minimum
-    # (~7.8 GiB with margin) -- the filesystem's own floor must win, not the
-    # (unsafe) configured value.
+    # (~7.8 GiB with margin) -- CASE-B-ROOT-SHRINK-DESIGN.md's "always
+    # verify at runtime, refuse if it doesn't fit" rule: this must refuse
+    # outright, never silently target a larger size than configured
+    # (adversarial review finding -- an earlier version of this test
+    # asserted the silent-clamp behavior as correct, which was itself the
+    # bug: nothing told the operator preserve_root_size_gb was overridden).
     installer, actions = make_case_b_installer(tmp_path, preserve_root_size_gb=1)
-    installer._plan_root_shrink()
-    env_content = actions.files["/etc/vbpub/root-shrink-plan.env"].decode()
-    fields = dict(line.split("=", 1) for line in env_content.splitlines() if line)
-    target_sectors = int(fields["TARGET_SECTORS"])
-    minimum_sectors = 2_000_000 * 4096 // 512
-    assert target_sectors >= minimum_sectors
+    with pytest.raises(RuntimeError, match="smaller than the root filesystem's own minimum"):
+        installer._plan_root_shrink()
+    assert "/etc/vbpub/root-shrink-plan.env" not in actions.files
 
 
 def test_plan_root_shrink_raises_when_disk_still_lacks_space_after_shrink(tmp_path):
@@ -238,7 +239,8 @@ def _seed_root_shrink_step(installer: Installer, status: str, detail: str = "") 
 
 def test_verify_root_shrink_noop_when_no_step_recorded(tmp_path):
     installer, actions = make_case_a_installer(tmp_path)
-    installer._verify_and_apply_root_shrink()  # no root_shrink step at all -> Case A, silent no-op
+    # False -> _stage2() must still call _apply_known_swap_shape() normally.
+    assert installer._verify_and_apply_root_shrink() is False
     state = StateStore(installer.config.state_dir).load()
     assert "root_shrink" not in state["steps"]
 
@@ -246,7 +248,7 @@ def test_verify_root_shrink_noop_when_no_step_recorded(tmp_path):
 def test_verify_root_shrink_noop_when_step_not_planned(tmp_path):
     installer, actions = make_case_a_installer(tmp_path)
     _seed_root_shrink_step(installer, "not_needed", "existing free space already covers the planned swap shape")
-    installer._verify_and_apply_root_shrink()
+    assert installer._verify_and_apply_root_shrink() is False
     state = StateStore(installer.config.state_dir).load()
     assert state["steps"]["root_shrink"]["status"] == "not_needed"  # untouched
 
@@ -294,7 +296,13 @@ def test_verify_root_shrink_success_cleans_up_and_falls_through(tmp_path, monkey
         f"DEVICE=/dev/vda3\nDISK=/dev/vda\nTARGET_BLOCKS=1\nTARGET_SECTORS={shrunk_sectors + 1000}\n"
         f"SFDISK_PLAN=/etc/vbpub/root-shrink-plan.sfdisk\n",
     )
-    installer._verify_and_apply_root_shrink()
+    # True -> _stage2() must SKIP _apply_known_swap_shape() (adversarial
+    # review finding: the hook's own sfdisk write already placed the swap
+    # partitions in the same write that shrunk root; re-running
+    # _apply_known_swap_shape() would try to write them again and
+    # _validate_plan_geometry() would refuse it as a fresh-install-contract
+    # violation, crashing stage2 right after this reports success).
+    assert installer._verify_and_apply_root_shrink() is True
     state = StateStore(installer.config.state_dir).load()
     assert state["steps"]["root_shrink"]["status"] == "success"
     cleanup_initramfs_calls = [a for a in actions.planned if a.argv[:2] == ("/usr/sbin/update-initramfs", "-u")]
@@ -321,7 +329,12 @@ def test_verify_root_shrink_dry_run_assumes_success(tmp_path):
     installer, actions = make_case_a_installer(tmp_path)
     installer.actions.dry_run = True
     _seed_root_shrink_step(installer, "planned", "target root ... hook installed")
-    installer._verify_and_apply_root_shrink()
+    # False, deliberately, even though the state is marked "success": no real
+    # hook ever wrote anything in dry-run, so the ordinary Case-A dry-run
+    # planning path (_apply_known_swap_shape()) must still run to show its
+    # plan -- only a REAL post-hook success (verified against a real device)
+    # skips it.
+    assert installer._verify_and_apply_root_shrink() is False
     state = StateStore(installer.config.state_dir).load()
     assert state["steps"]["root_shrink"]["status"] == "success"
 
@@ -348,3 +361,51 @@ def test_stage1_and_stage2_still_dry_run_clean_with_root_shrink_wired_in(tmp_pat
     # stage2 still reached and planned the ordinary swap-activation work
     # (unaffected by the new root_shrink wiring on this Case-A fixture).
     assert any(action.argv[0] == "/usr/sbin/mkswap" for action in actions.planned)
+
+
+# --- _stage2() control flow: the critical post-Case-B-success regression ---
+
+def test_stage2_skips_apply_known_swap_shape_when_root_shrink_already_wrote_swap(tmp_path, monkeypatch):
+    # Adversarial review finding: _apply_known_swap_shape() re-running after
+    # a REAL Case B success would try to write the same swap partitions the
+    # hook's own sfdisk plan already placed on disk, and
+    # _validate_plan_geometry() would refuse it as "existing partition
+    # follows root and would be dropped" -- crashing stage2 immediately
+    # after root_shrink reported success. Proven here at the level that
+    # actually matters (does _stage2() call _apply_known_swap_shape() at
+    # all) rather than by re-simulating the whole zswap/cgroup2/ksm/oomd
+    # pipeline: every other stage2 step is stubbed to a no-op spy so this
+    # test is exclusively about the one conditional the fix added.
+    installer, actions = make_case_a_installer(tmp_path)
+    calls = []
+    monkeypatch.setattr(installer, "_packages", lambda *a, **k: None)
+    monkeypatch.setattr(installer, "_verify_and_apply_root_shrink", lambda: True)
+    monkeypatch.setattr(installer, "_configure_zswap", lambda: None)
+    monkeypatch.setattr(installer, "_configure_cgroup2_flags", lambda: None)
+    monkeypatch.setattr(installer, "_configure_ksm", lambda: None)
+    monkeypatch.setattr(installer, "_configure_oomd", lambda: None)
+    monkeypatch.setattr(installer, "_configure_fstrim", lambda: None)
+    monkeypatch.setattr(installer, "_configure_auto_reboot", lambda: None)
+    monkeypatch.setattr(installer, "_apply_known_swap_shape", lambda: calls.append("apply_known_swap_shape"))
+    monkeypatch.setattr(installer, "_activate_swap_partitions", lambda: calls.append("activate_swap_partitions"))
+    monkeypatch.setattr(installer, "_health_gate_swap_devices", lambda: calls.append("health_gate"))
+    installer._stage2()
+    assert calls == ["activate_swap_partitions", "health_gate"]  # apply_known_swap_shape must NOT appear
+
+
+def test_stage2_still_calls_apply_known_swap_shape_for_case_a(tmp_path, monkeypatch):
+    installer, actions = make_case_a_installer(tmp_path)
+    calls = []
+    monkeypatch.setattr(installer, "_packages", lambda *a, **k: None)
+    monkeypatch.setattr(installer, "_verify_and_apply_root_shrink", lambda: False)
+    monkeypatch.setattr(installer, "_configure_zswap", lambda: None)
+    monkeypatch.setattr(installer, "_configure_cgroup2_flags", lambda: None)
+    monkeypatch.setattr(installer, "_configure_ksm", lambda: None)
+    monkeypatch.setattr(installer, "_configure_oomd", lambda: None)
+    monkeypatch.setattr(installer, "_configure_fstrim", lambda: None)
+    monkeypatch.setattr(installer, "_configure_auto_reboot", lambda: None)
+    monkeypatch.setattr(installer, "_apply_known_swap_shape", lambda: calls.append("apply_known_swap_shape"))
+    monkeypatch.setattr(installer, "_activate_swap_partitions", lambda: calls.append("activate_swap_partitions"))
+    monkeypatch.setattr(installer, "_health_gate_swap_devices", lambda: calls.append("health_gate"))
+    installer._stage2()
+    assert calls == ["apply_known_swap_shape", "activate_swap_partitions", "health_gate"]

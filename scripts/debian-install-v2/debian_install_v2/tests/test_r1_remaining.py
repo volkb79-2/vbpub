@@ -241,6 +241,12 @@ def test_write_plan_real_keeps_earlier_partitions(tmp_path):
     assert "/dev/vda1" in plan
     assert "/dev/vda2" in plan
     assert "size=20971520" in plan
+    # Adversarial review finding: header_lines used to match every
+    # non-root partition line too (not just true header/metadata lines),
+    # duplicating each earlier partition's entry in the generated plan --
+    # the exact script Case B's initramfs hook applies blindly at boot.
+    assert plan.count("/dev/vda1 ") == 1
+    assert plan.count("/dev/vda2 ") == 1
     assert "type=0657fd6d" in plan
 
 

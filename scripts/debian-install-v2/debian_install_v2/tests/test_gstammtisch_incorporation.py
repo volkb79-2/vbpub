@@ -204,3 +204,32 @@ def test_stage2_unit_module_path_and_workdir_resolve(tmp_path):
     workdir = workdir_line.removeprefix("WorkingDirectory=")
     assert workdir.endswith("/scripts/debian-install-v2")
     assert (Path(workdir) / "debian_install_v2" / "bootstrap.py").is_file()
+
+
+def test_notify_credentials_written_to_fixed_path_under_default_credential_mode(tmp_path):
+    # Adversarial review finding: /usr/local/sbin/vbpub-notify (NOTIFY_SCRIPT)
+    # checks ONLY the fixed /etc/vbpub/credentials path (several standalone
+    # units calling it declare no LoadCredential= of their own, so
+    # $CREDENTIALS_DIRECTORY is never set for them) -- but credential_mode's
+    # DEFAULT ("root-storage") used to write credentials to
+    # {state_dir}/credentials only, so every vbpub-notify call under the
+    # default config silently found empty files and exited 0. That fixed
+    # path must be populated regardless of credential_mode.
+    _, actions = install_dry(
+        tmp_path, telegram_bot_token="123:token", telegram_chat_id="456",
+    )
+    assert actions.dry_run_writes["/etc/vbpub/credentials/telegram_bot_token"] == "123:token\n"
+    assert actions.dry_run_writes["/etc/vbpub/credentials/telegram_chat_id"] == "456\n"
+    # And the mode-specific copy is still written too (root-storage's own
+    # consumption path, unchanged).
+    state_dir_token = f"{tmp_path / 'state'}/credentials/telegram_bot_token"
+    assert actions.dry_run_writes[state_dir_token] == "123:token\n"
+
+
+def test_notify_credentials_written_to_fixed_path_under_systemd_credential_mode(tmp_path):
+    _, actions = install_dry(
+        tmp_path, telegram_bot_token="123:token", telegram_chat_id="456",
+        credential_mode="systemd",
+    )
+    assert actions.dry_run_writes["/etc/vbpub/credentials/telegram_bot_token"] == "123:token\n"
+    assert actions.dry_run_writes["/etc/vbpub/credentials/telegram_chat_id"] == "456\n"

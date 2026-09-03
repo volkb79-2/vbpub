@@ -652,8 +652,20 @@ MaxFileSec=1month
         safety_margin_sectors = (256 * 1024 * 1024) // sector
         requested_sectors = self.config.preserve_root_size_gb * 1024 * 1024 * 1024 // sector
         alignment = 2048
-        target_root_sectors = max(requested_sectors, minimum_sectors + safety_margin_sectors)
-        target_root_sectors = ((target_root_sectors + alignment - 1) // alignment) * alignment
+        # Refuse outright rather than silently target a larger size than
+        # configured -- CASE-B-ROOT-SHRINK-DESIGN.md's explicit "always
+        # verify at runtime, refuse if it doesn't fit" rule. Clamping up via
+        # max() here would mean preserve_root_size_gb quietly stops being
+        # the number that governs the shrink the moment it's too small,
+        # with nothing telling the operator their configured value was
+        # overridden.
+        if requested_sectors < minimum_sectors + safety_margin_sectors:
+            raise RuntimeError(
+                f"preserve_root_size_gb ({self.config.preserve_root_size_gb} GiB) is smaller than the "
+                f"root filesystem's own minimum plus margin ({(minimum_sectors + safety_margin_sectors) * sector / 1024**3:.2f} GiB); "
+                f"raise preserve_root_size_gb rather than shrinking further than configured"
+            )
+        target_root_sectors = ((requested_sectors + alignment - 1) // alignment) * alignment
         if target_root_sectors >= root_size:
             raise RuntimeError(
                 f"root shrink target ({target_root_sectors} sectors) is not smaller than the current "
@@ -707,27 +719,40 @@ MaxFileSec=1month
             f"target root {target_root_sectors} sectors (was {root_size}); hook installed",
         )
 
-    def _verify_and_apply_root_shrink(self) -> None:
+    def _verify_and_apply_root_shrink(self) -> bool:
         """First action in _stage2(): resolve whatever the Case B hook did (or didn't).
 
         No root_shrink step recorded -> Case A, nothing to do, proceed exactly
-        as today. root_size already <= the planned target -> the hook
-        succeeded on a prior boot: clean up the hook (so future boots don't
-        keep paying its idempotency-check cost) and fall through into the
-        normal Case-A swap-placement path -- free space now exists exactly as
-        if it had been there all along. Otherwise the hook silently no-op'd
-        or failed: mark it, notify, and stop stage2 here rather than guessing
-        or retrying destructively -- a clearly-flagged, always-bootable,
-        partially-provisioned host beats a silent wrong one.
+        as today (returns False). root_size already <= the planned target ->
+        the hook succeeded on a prior boot: clean up the hook (so future boots
+        don't keep paying its idempotency-check cost) and return True.
+        Otherwise the hook silently no-op'd or failed: mark it, notify, and
+        stop stage2 here rather than guessing or retrying destructively -- a
+        clearly-flagged, always-bootable, partially-provisioned host beats a
+        silent wrong one.
+
+        The return value matters: the hook's OWN sfdisk write (built by
+        _plan_root_shrink() via the same _write_sfdisk_plan()) already placed
+        the swap partitions on disk in the SAME write that shrunk root --
+        unlike Case A, there is no separate partition-table step left to do.
+        Calling _apply_known_swap_shape() again after a real (non-dry-run)
+        success would try to write those same partitions a second time, and
+        _validate_plan_geometry() would refuse it as "existing partition
+        follows root and would be dropped" (adversarial review finding, a
+        stage2 crash immediately after root_shrink reports success). The
+        caller must skip straight to _activate_swap_partitions() when this
+        returns True. Dry-run returns False deliberately: no hook ever wrote
+        anything for real, so the ordinary Case-A dry-run planning path
+        (already tested, already correct) should still run to show its plan.
         """
         state = self.state.load()
         root_shrink_step = state.get("steps", {}).get("root_shrink")
         if not root_shrink_step or root_shrink_step.get("status") != "planned":
-            return
+            return False
         disk_sectors, root_start, root_size = self._disk_facts()
         if self.actions.dry_run:
             self.state.mark_step("root_shrink", "success", "dry-run: assumed the hook succeeded")
-            return
+            return False
         plan_env = Path("/etc/vbpub/root-shrink-plan.env")
         target_sectors = None
         if plan_env.is_file():
@@ -750,7 +775,7 @@ MaxFileSec=1month
                 ["/usr/sbin/update-initramfs", "-u"], "rebuild initramfs without the root-shrink hook", dangerous=True
             )
             self.state.mark_step("root_shrink", "success", f"root shrunk to {root_size} sectors (target {target_sectors})")
-            return
+            return True
         self.state.mark_step("root_shrink", "failed", f"root is still {root_size} sectors, target was {target_sectors}")
         self._notify(
             f"vbpub: root shrink did not complete (still {root_size} sectors, wanted <= {target_sectors}); "
@@ -772,9 +797,15 @@ MaxFileSec=1month
             ])
         else:
             dump = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
+        # Excludes ANY partition line (not just root's own) -- the `kept`
+        # loop below already captures every partition before root verbatim;
+        # matching only root's own prefix here left every earlier partition
+        # (e.g. an ESP before a root_number > 1) in BOTH header_lines and
+        # kept, duplicating its line in the generated plan (adversarial
+        # review finding, reproduced against the project's own fixtures).
         header_lines = [
             line for line in dump.splitlines()
-            if ":" in line and not line.startswith(f"{prefix}{self.root_number}")
+            if ":" in line and not line.startswith(prefix)
         ]
         kept: list[str] = []
         for line in dump.splitlines():
@@ -958,6 +989,20 @@ MaxFileSec=1month
         env_file = "/etc/vbpub/bootstrap.env"
         credentials_line = "-"
         if self.config.telegram_bot_token and self.config.telegram_chat_id:
+            # /usr/local/sbin/vbpub-notify (NOTIFY_SCRIPT) is called from
+            # several standalone systemd units (reboot-check, boot-notify,
+            # apt-update-notify) that declare no LoadCredential= of their
+            # own, so $CREDENTIALS_DIRECTORY is never set for them -- it
+            # always falls back to the ONE fixed path /etc/vbpub/credentials
+            # (shell templates in this codebase use fixed paths only, never
+            # state_dir interpolation). Write that copy unconditionally,
+            # regardless of credential_mode, or root-storage installs (the
+            # config default) silently never send a single notification --
+            # every notify call finds empty files and exits 0 (adversarial
+            # review finding). Same content, same 0600 mode as the
+            # mode-specific copy below; no additional exposure.
+            self.actions.write_file("/etc/vbpub/credentials/telegram_bot_token", self.config.telegram_bot_token + "\n", 0o600)
+            self.actions.write_file("/etc/vbpub/credentials/telegram_chat_id", self.config.telegram_chat_id + "\n", 0o600)
             if self.config.credential_mode == "root-storage":
                 credential_dir = Path(self.config.state_dir) / "credentials"
                 self.actions.write_file(str(credential_dir / "telegram_bot_token"), self.config.telegram_bot_token + "\n", 0o600)
@@ -968,8 +1013,6 @@ MaxFileSec=1month
                     f"telegram_bot_token:/etc/vbpub/credentials/telegram_bot_token "
                     f"telegram_chat_id:/etc/vbpub/credentials/telegram_chat_id"
                 )
-                self.actions.write_file("/etc/vbpub/credentials/telegram_bot_token", self.config.telegram_bot_token + "\n", 0o600)
-                self.actions.write_file("/etc/vbpub/credentials/telegram_chat_id", self.config.telegram_chat_id + "\n", 0o600)
                 credential_note = "systemd LoadCredential Telegram credentials configured"
         else:
             credential_note = "Telegram disabled"
@@ -1041,7 +1084,10 @@ MaxFileSec=1month
 
     def _stage2(self) -> None:
         self._packages(["e2fsprogs", "util-linux"], "stage2")
-        self._verify_and_apply_root_shrink()
+        # True iff Case B's own hook already wrote the swap partitions as
+        # part of shrinking root -- _apply_known_swap_shape() must then be
+        # skipped, not re-run (see _verify_and_apply_root_shrink()'s docstring).
+        swap_partitions_already_written = self._verify_and_apply_root_shrink()
         self._configure_zswap()
         self._configure_cgroup2_flags()
         if self.config.run_ksm:
@@ -1052,7 +1098,8 @@ MaxFileSec=1month
             self._configure_fstrim()
         if self.config.run_auto_reboot:
             self._configure_auto_reboot()
-        self._apply_known_swap_shape()
+        if not swap_partitions_already_written:
+            self._apply_known_swap_shape()
         self._activate_swap_partitions()
         self._health_gate_swap_devices()
         self.state.save(phase="done", status="success")

@@ -93,6 +93,17 @@ def test_extra_json_must_be_an_object(mod, monkeypatch):
         mod.build_config()
 
 
+@pytest.mark.parametrize("name", ["SWAP_ARCH", "SWAP_TOTAL_GB", "SWAP_FILES", "USE_PARTITION"])
+def test_build_config_rejects_v1_obsolete_env_var_names(mod, monkeypatch, name):
+    # config.py's own OBSOLETE_VARIABLES check only inspects the JSON config
+    # FILE's keys -- it never sees an env var that build_config() simply
+    # never read. Setting the literal v1 name (the likely mistake) must be
+    # rejected here, not silently ignored in favor of v2's default.
+    monkeypatch.setenv(name, "64")
+    with pytest.raises(SystemExit, match=name):
+        mod.build_config()
+
+
 # --- fetch_subtree -------------------------------------------------------
 
 def _fake_tarball(files: dict[str, bytes], *, executable: set[str] = frozenset()) -> bytes:
@@ -139,4 +150,35 @@ def test_fetch_subtree_raises_when_nothing_matches(mod, monkeypatch, tmp_path):
     tarball = _fake_tarball({"README.md": b"nothing relevant here\n"})
     monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: _FakeResponse(tarball))
     with pytest.raises(SystemExit, match="found nothing under"):
+        mod.fetch_subtree("https://github.com/volkb79-2/vbpub", "main", tmp_path / "install", debug=False)
+
+
+def test_fetch_subtree_refuses_tar_slip_path_traversal(mod, monkeypatch, tmp_path):
+    # A member name embedding ".." after the matched subtree prefix would
+    # otherwise resolve outside install_dir the moment target.write_bytes()
+    # touches the real filesystem -- this process runs as root (adversarial
+    # review finding).
+    tarball = _fake_tarball({"scripts/debian-install-v2/../../../etc/cron.d/evil": b"* * * * * root pwned\n"})
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: _FakeResponse(tarball))
+    install_dir = tmp_path / "install"
+    with pytest.raises(SystemExit, match="unsafe path"):
+        mod.fetch_subtree("https://github.com/volkb79-2/vbpub", "main", install_dir, debug=False)
+    assert not (tmp_path / "etc").exists()
+    assert not Path("/etc/cron.d/evil").exists()
+
+
+def test_fetch_subtree_reports_a_truncated_download_cleanly(mod, monkeypatch, tmp_path):
+    class _TruncatedResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            self.close()
+
+    # Valid gzip header, then nothing -- tarfile raises ReadError, not
+    # URLError, when the stream is corrupt/truncated mid-download.
+    import gzip
+    truncated = gzip.compress(b"scripts/debian-install-v2/x")[:8]
+    monkeypatch.setattr(mod.urllib.request, "urlopen", lambda *a, **k: _TruncatedResponse(truncated))
+    with pytest.raises(SystemExit, match="corrupt or truncated download"):
         mod.fetch_subtree("https://github.com/volkb79-2/vbpub", "main", tmp_path / "install", debug=False)

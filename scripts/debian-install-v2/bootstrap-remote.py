@@ -145,7 +145,25 @@ def _env_int(name: str) -> int | None:
         raise BootstrapError(f"{name}={value!r} is not an integer") from None
 
 
+# Mirrors debian_install_v2.config.OBSOLETE_VARIABLES (v1's env-var names).
+# Duplicated rather than imported: this wrapper must run standalone via
+# curl|python3 before the fetched debian_install_v2 package exists on disk
+# at all -- see build_config()'s own module docstring on that constraint.
+# config.py's own OBSOLETE_VARIABLES check only inspects the JSON config
+# FILE's keys, never env vars, so an operator setting one of these (the
+# likely mistake, since they're literally the v1 names) would otherwise be
+# silently ignored here, not "rejected outright" as this file's own
+# docstring claims (adversarial review finding).
+_V1_OBSOLETE_ENV_VARS = {"SWAP_ARCH", "SWAP_TOTAL_GB", "SWAP_FILES", "USE_PARTITION"}
+
+
 def build_config() -> dict:
+    present_obsolete = sorted(name for name in _V1_OBSOLETE_ENV_VARS if os.environ.get(name))
+    if present_obsolete:
+        raise BootstrapError(
+            f"{', '.join(present_obsolete)} {'is' if len(present_obsolete) == 1 else 'are'} v1 env var name(s) "
+            f"with no v2 equivalent -- see this file's docstring for the current names"
+        )
     config: dict = {}
     for env_name, field in _STRING_FIELDS.items():
         value = os.environ.get(env_name)
@@ -188,7 +206,17 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
                         continue
                     if not member.isfile():
                         continue
-                    relative = Path(*parts[1 + prefix_len:])
+                    relative_parts = parts[1 + prefix_len:]
+                    if not relative_parts or ".." in relative_parts or any(
+                        Path(part).is_absolute() for part in relative_parts
+                    ):
+                        # Tar-slip: a member name embedding ".." after the
+                        # matched subtree prefix would otherwise resolve
+                        # outside install_dir the moment target.write_bytes()
+                        # touches the real filesystem -- this process runs as
+                        # root (enforced in main()).
+                        raise BootstrapError(f"refusing archive member with an unsafe path: {member.name!r}")
+                    relative = Path(*relative_parts)
                     target = install_dir / relative
                     target.parent.mkdir(parents=True, exist_ok=True)
                     extracted = archive.extractfile(member)
@@ -200,6 +228,12 @@ def fetch_subtree(repo_url: str, branch: str, install_dir: Path, *, debug: bool)
                     written += 1
     except urllib.error.URLError as exc:
         raise BootstrapError(f"could not fetch {tarball_url}: {exc}") from None
+    except tarfile.TarError as exc:
+        # A flaky connection on an unattended remote host can truncate the
+        # gzip/tar stream mid-download -- tarfile.ReadError and friends are
+        # not URLError subclasses, and would otherwise surface as a bare
+        # traceback instead of this tool's own diagnostic.
+        raise BootstrapError(f"corrupt or truncated download from {tarball_url}: {exc}") from None
     if written == 0:
         raise BootstrapError(
             f"downloaded {tarball_url} but found nothing under {'/'.join(SUBTREE)}/ — "
