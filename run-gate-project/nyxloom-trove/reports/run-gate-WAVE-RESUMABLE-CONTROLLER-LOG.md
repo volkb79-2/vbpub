@@ -646,3 +646,48 @@ controller's entries from the implementer's return onward; wave records
   (renumber `__revision__` 34→35), then file the RG-42..48 backlog batch
   (was RG-41..47 before this wave's own RG-39/40 renumbering shifted
   everything by one).
+
+- **2026-09-03 (RG-39 EXEC-MUTEX MERGED — rev 35; a second, unrelated
+  cross-project regression found and filed as RG-42, NOT blocking)** —
+  Merged `fix/run-gate-exec-mutex-rg39` `--no-ff` as `609dfb67`, second
+  per the recorded sequencing decision. Two real conflicts, both from the
+  known collision (this branch independently claimed rev 34/`R-39` before
+  either side had merged): `run-gate.py`'s `__revision__` docstring
+  (resolved by hand — RG-39's own history entry renumbered `rev 34` →
+  `rev 35` and prepended before the wave's own `rev 34` text, confirmed
+  byte-identical shared `rev 33`-and-earlier tail on both sides before
+  merging so nothing was silently dropped) and `SPEC.md`'s `R-39` rule
+  (renumbered → `R-41`, next free slot — main's own rules now run through
+  `R-40`). Two stale `SPEC \`R-39\`` self-citations (CHANGES.md's RG-39
+  entry, the backlog's RG-39 row) corrected to `R-41`; the WAVE's own
+  `R-39`/`R-39e` citations (RG-35's row, the RG-35/36 `## RG-` sections)
+  are correctly untouched — that is genuinely the re-attach rule.
+  `CHANGES.md` and `KNOWN_ISSUES_TODO_BACKLOG.md` auto-merged cleanly (no
+  manual resolution needed).
+  **Independent gate verification, in a fresh isolated worktree** (never
+  the shared checkout — see below for why): `634 passed, 3 skipped`,
+  `exit 1` — ONE failure, `TestPointerLinkageEstate::
+  test_trove_pointers_name_real_lanes[ciu8]`, reproducing identically
+  and for the SAME reason on main's tip taken immediately BEFORE this
+  merge (`471703ee`, verified in a second throwaway worktree: `628
+  passed, 3 skipped`, same single failure) — so this is confirmed
+  pre-existing, not introduced by RG-39 or by this merge's conflict
+  resolution. Root cause read directly (`validate-pointers` against
+  `ciu8/nyxloom-trove/nyxloom.toml`): the ciu8 carve (landed on main
+  earlier this session as `67f5e734`/`cc8120f8`, rebased hashes) hand-
+  declared `[gates.tester-unified]` pointing at a `ciu8/run-gate.toml`
+  that its own Part A bootstrap contract creates LATER — a deliberate,
+  self-documented choice (the trove's own comment: "ciu8's real gate...
+  is itself gated by it once they exist", mirroring `ciu/nyxloom-trove/
+  nyxloom.toml`'s identical pattern), not an oversight. Filed as **RG-42**:
+  this is a genuine, previously-unseen estate-sweep gap (a subproject
+  mid-bootstrap has no way to tell `TestPointerLinkageEstate` "not yet"),
+  self-resolving once `ciu8-P001` implements Part A, not fixed here — an
+  opt-out mechanism is proposed but explicitly not built pending a second
+  occurrence. run-gate-project's OWN registered gate is RED on the
+  shared checkout right now for this one, unrelated reason; every
+  verification in this entry used an isolated worktree specifically to
+  route around it and confirm RG-39's own diff is genuinely clean.
+  Pushed. **RG-39 exec-mutex track CLOSED.** Remaining: file the RG-43..48
+  backlog batch (was RG-42..47 before RG-42 was consumed by this entry's
+  own filing).
