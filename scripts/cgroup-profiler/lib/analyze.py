@@ -76,6 +76,21 @@ _NON_ADDITIVE_UNITS = {"pct", "ratio"}
 _MIN_GAP_DEFAULT = 5.0
 _MIN_CORR_N = 30  # below this, correlate() still reports r but callers must not call it a finding.
 
+# The adaptive sampler (DESIGN.md §4.4) swings cadence from hot_interval
+# (0.25s default) to idle_interval (2s+) and back, so the raw frame's row
+# spacing is irregular by construction. changepoint detection, correlation,
+# and phase/target statistics all implicitly assume comparable time-per-row —
+# a hot burst would otherwise dominate a correlation or bias a changepoint's
+# apparent location purely by contributing more rows for the same duration.
+# build() resamples onto this fixed grid before any of those three; charting
+# (build_series) deliberately stays on the raw, native-resolution frame — that
+# is a different consumer with its own separate resampling for report_html's
+# resolution selector (DESIGN.md §4.11). 1s sits well below _MIN_GAP_DEFAULT
+# (5s) so it cannot itself blur two changepoints the min-gap dedup would
+# otherwise have kept distinct, and matches report_html's own finest
+# post-raw resolution step.
+_ANALYSIS_RESAMPLE_STEP = "1s"
+
 
 # ── to_frame: reshape + rate derivation, entirely pandas ───────────────────
 
@@ -93,19 +108,22 @@ def _flatten_group(entry: Dict[str, Any]) -> Dict[str, Optional[float]]:
         if not isinstance(payload, dict):
             continue
         if group == "io":
-            agg: Dict[str, float] = {}
-            saw_device = False
-            for fields in payload.values():
-                if not isinstance(fields, dict):
-                    continue
-                saw_device = True
-                for key, value in fields.items():
-                    if value is None:
+            devices = [fields for fields in payload.values() if isinstance(fields, dict)]
+            if devices:
+                all_keys: Set[str] = set()
+                for fields in devices:
+                    all_keys.update(fields.keys())
+                for key in all_keys:
+                    # A field missing from even one device that reported
+                    # this tick makes the TOTAL unmeasurable, not "as if
+                    # that device contributed 0" — summing only the devices
+                    # that happened to have the field would silently invent
+                    # a total lower than the real one. dict.get(key) folds
+                    # "key absent" and "explicit None" into the same check.
+                    values = [fields.get(key) for fields in devices]
+                    if any(v is None for v in values):
                         continue
-                    agg[key] = agg.get(key, 0) + value
-            if saw_device:
-                for key, value in agg.items():
-                    out[f"io.{key}"] = value
+                    out[f"io.{key}"] = sum(values)
             continue
         for key, value in payload.items():
             if value is None or (isinstance(value, (int, float)) and not isinstance(value, bool)):
@@ -683,6 +701,10 @@ def build(run: Any) -> Analysis:
     events = [Event.from_dict(e) for e in _read_safe(run, "events.jsonl")]
 
     df = to_frame(samples)
+    # Everything below except build_series() (native-resolution charting,
+    # kept on the raw frame on purpose) needs comparable time-per-row — see
+    # _ANALYSIS_RESAMPLE_STEP's docstring.
+    resampled = resample_frame(df, _ANALYSIS_RESAMPLE_STEP)
 
     monos = [float(s.get("mono", 0.0)) for s in samples]
     t_start = min(monos) if monos else float(manifest.get("started", 0.0) or 0.0)
@@ -692,7 +714,7 @@ def build(run: Any) -> Analysis:
     marks = _dedupe_simultaneous_phase_marks(_resolve_mark_times(marks, started, t_start, t_end))
 
     known_phases = phases_from_marks(marks, t_start, t_end)
-    phases = auto_phases(df, known_phases, t_start, t_end) if not df.empty else known_phases
+    phases = auto_phases(resampled, known_phases, t_start, t_end) if not resampled.empty else known_phases
 
     targets_meta = manifest.get("targets") or []
     by_cgroup = {t["cgroup"]: t for t in targets_meta if t.get("cgroup")}
@@ -711,10 +733,11 @@ def build(run: Any) -> Analysis:
     series = summarise_descendants(series, named_keys)
 
     df = _remap_targets(df, by_cgroup)
+    resampled = _remap_targets(resampled, by_cgroup)
 
     observers = [t["key"] for t in targets_meta if t.get("role") == "observer" and t.get("key")]
     subjects = [t["key"] for t in targets_meta if t.get("role") != "observer" and t.get("key")]
-    correlations = correlate(df, observers, subjects)
+    correlations = correlate(resampled, observers, subjects)
 
     analysis = Analysis(
         manifest=manifest,
@@ -722,8 +745,8 @@ def build(run: Any) -> Analysis:
         phases=phases,
         events=events,
         series=series,
-        per_phase=_phase_stats(df, phases),
-        per_target=_target_stats(df),
+        per_phase=_phase_stats(resampled, phases),
+        per_target=_target_stats(resampled),
         correlations=correlations,
         host=manifest.get("host") or {},
         limits=manifest.get("limits") or {},

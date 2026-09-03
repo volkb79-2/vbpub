@@ -77,6 +77,21 @@
     // Host letsencrypt certs (readonly). Consider security implications.
     // "source=/etc/letsencrypt,target=/etc/letsencrypt,type=bind,consistency=cached,readonly",
 
+    // ── Host kernel debugfs (readonly) ──────────────────────────────────────────
+    // Exposes runtime stats no /sys/module/*/parameters/ file carries — the
+    // motivating case is zswap: /sys/kernel/debug/zswap/{pool_total_size,
+    // stored_pages,pool_limit_hit,written_back_pages,...} are debugfs-only,
+    // there is no /sys/module/zswap/parameters/ equivalent for any of them.
+    // HOST PREREQUISITE: debugfs mounted at /sys/kernel/debug — this is a
+    // systemd default (sys-kernel-debug.mount) on every host tested so far,
+    // not something host-setup arranges; verify with
+    // `findmnt -t debugfs` from the host if a fresh host ever lacks it.
+    // Whole tree, not just zswap/: broader than the motivating case (also
+    // exposes tracing/kprobes/etc — consider security implications on a
+    // shared host), but readonly bounds it to observation, and debugfs's own
+    // individual files are already kernel-enforced readonly regardless.
+    "source=/sys/kernel/debug,target=/sys/kernel/debug,type=bind,readonly",
+
     // ── Host ssh keys (readonly, dual-use: native keys + in-container), owned by host ─────────
     "source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh-host,type=bind,consistency=cached,readonly",
 

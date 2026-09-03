@@ -142,6 +142,20 @@ they are what lets a budget-capped retry continue instead of restarting from
 mutant #1. Resume state and the progress stream live under the git-ignored
 `.assay/`, never in the judged tree. The judge must be assay >= 2.4.1.
 
+## Consuming assay from inside vbpub (estate-wide, 2026-08-27)
+
+A project living in this monorepo (cmru, ciu, anything under `scripts/`)
+does NOT pin a versioned `assay-*.pyz` copy — that drifted silently in
+practice (two consumers stuck on 2.3.0 while 2.4.2 had already shipped).
+Install from the worktree's own bind-mounted `assay/` at lane-run time
+instead (`pip install -e {worktree}/assay`, zero third-party deps, no
+caching needed) — see `assay/docs/INTERNAL-CONSUMERS.md` for the mechanism
+and the tradeoff it deliberately accepts (no staged rollout within one
+worktree's history) versus why that's the right call for a same-repo,
+same-review-discipline dependency. Pinning stays correct for a consumer
+OUTSIDE this repo (`assay/docs/CONSUMERS.md`) — the two docs are for two
+different trust boundaries, not two options for the same one.
+
 ## Worktree protocol
 Parallel implementation runs in `.worktrees/<branch>` (branch from `main`).
 Merge serially onto `main` with `--no-ff`; expect minor overlap reconciliation.

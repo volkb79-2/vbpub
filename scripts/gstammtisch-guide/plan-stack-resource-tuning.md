@@ -90,7 +90,7 @@ program.
 ### PKG-3 `[supervised]` — Phase B measurement program (after PKG-1 review + squeeze run)
 1. Interim recorder on host: systemd service looping `/root/topos-venv/bin/topos --once --json`
    every 10s → `/var/log/topos/rec-<date>.jsonl` (retire once topos headless-record lands).
-2. Game-impact watch running concurrently: `soulmask-zswap-monitor.py --json` + `rcon_probe.py`
+2. Game-impact watch running concurrently: `soulmask-monitor.py --json` + `rcon_probe.py`
    (gates: game `rf_d` < 100/s sustained, RCON RTT p95 stable).
 3. Bring dstdns stack up tier-by-tier as `ciu up` would (infra → apps → observability), ≥60s
    settle per tier; note any remaining ciu 10s-hook timeouts (should be fixed by D2).

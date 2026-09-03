@@ -1,0 +1,83 @@
+# =============================================================================
+# cgroup-profiler gate lanes — parsed ONLY by run-gate.py (one parser,
+# D-110). r0-r1 wraps this project's OWN pre-existing tools/gate.sh
+# verbatim, host-scoped, because that script already does its own complete
+# docker orchestration (placement-verified, detached-run, separate
+# verdict-read — see gate.sh's own header for why) and run-gate.py's
+# container orchestration would just be a second, redundant layer around
+# the same docker calls. This mirrors debian-install-v2's
+# r1-privileged-commit precedent (a host lane whose argv happens to be a
+# script that itself launches docker).
+#
+# r2 and r3 both run INSIDE run-gate.py's own tester-unified container
+# (SPEC.md R-15/R-16 — placement, dual-mount, safe.directory, detached-
+# run+separate-verdict-read): r2 because assay's R2 execution needs this
+# project's report-tier deps (pandas/plotly/etc, already baked into
+# tester-unified:local per this project's own nyxloom-trove/nyxloom.toml);
+# r3 because tools/canary-run.sh, UNLIKE gate.sh, does NOT launch its own
+# container — it expects to already be running somewhere with those same
+# deps (resolving python via $TESTER_VENV, which tester-unified:local's
+# own Dockerfile bakes in) or a local venv/, so it needs an outer
+# container, not none.
+#
+# nyxloom-trove/nyxloom.toml's [gates.unit]/[gates.coverage]/[gates.canary]
+# stay as they are — this file is an ADDITIONAL, standard-naming lane
+# matrix layered on top for scripts/LANE-MATRIX-PROGRESS.md's program, not
+# a replacement.
+# =============================================================================
+schema_version = 1
+
+[lanes.r0-r1]
+kind = "command"
+environment = "host"
+argv = [
+    "bash", "-c",
+    "cd {worktree}/scripts/cgroup-profiler && exec tools/gate.sh {worktree} coverage",
+]
+clean_tree = false
+budget = "20m"
+
+# Mutation testing via a live, worktree-installed assay (never a pinned
+# zipapp for an in-repo consumer — assay/docs/INTERNAL-CONSUMERS.md),
+# executed inside tester-unified since this project's report-tier modules
+# need pandas/plotly/matplotlib/scipy/ruptures. The judge policy (source
+# roots, operators, budget) lives in this project's own assay.toml
+# [lanes.r2]; this lane just installs and invokes it.
+[lanes.r2]
+kind = "command"
+environment = "tester-unified"
+argv = [
+    "bash", "-c",
+    "cd {worktree} && pip install -q -e assay && cd {worktree}/scripts/cgroup-profiler && mkdir -p .assay && exec assay run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
+]
+clean_tree = false
+budget = "45m"
+artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
+
+# Proves the gate REJECTS known-bad code — this project's own
+# tools/canary-run.sh (7 real canaries, built by a prior session). Runs
+# inside tester-unified (see file header) since the script itself does not
+# launch a container and needs $TESTER_VENV's report-tier deps.
+[lanes.r3]
+kind = "command"
+environment = "tester-unified"
+argv = [
+    "bash", "-c",
+    "cd {worktree}/scripts/cgroup-profiler && exec tools/canary-run.sh",
+]
+clean_tree = false
+budget = "10m"
+
+# The implementation/release gate: every consumer (release steps, agents,
+# humans) runs THIS lane; none duplicates the sub-lane sequence. RG-1: every
+# sub-invocation carries --worktree {worktree} explicitly (cmru's [lanes.gate]
+# is the reference shape).
+[lanes.gate]
+kind = "command"
+environment = "host"
+argv = [
+    "bash", "-c",
+    "./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r2 && ./run-gate.py --worktree {worktree} r3",
+]
+clean_tree = false
+budget = "90m"

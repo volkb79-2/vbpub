@@ -1,3 +1,26 @@
+# Root-level scratch/log artifacts explicitly out of scope for the
+# debian-install-v2 move (left untracked by design, not by omission) —
+# gitignored rather than committed or deleted so they stop appearing as
+# untracked noise in `git status` and, more importantly, so they stop
+# tripping assay's own repo-wide dirty-tree check (assay has no
+# --allow-dirty escape hatch; an untracked file anywhere in the repo
+# blocks every project's R1+/R2 lane, not just the one it happens to sit
+# next to).
+/DEBIAN-INSTALL-REVIEW.md
+/DEBIAN-INSTALLv2-REVIEW.md
+/custom_script.output
+
+# ciu's own per-worktree instance metadata (branch, worktree path, runtime
+# instance id/network — regenerated per worktree, not repo content). Every
+# ciu-managed worktree gets one of these at its own root. It was already
+# invisible to plain `git status` via a worktree-local `.git/info/exclude`
+# entry, but assay's dirty_paths() deliberately does NOT honor
+# info/exclude (A-177: only a committed .gitignore may suppress a dirty
+# path, precisely so an unversioned personal exclude can't silently hide a
+# real untracked source file) — so without this entry it permanently trips
+# DIRTY_TREE on every R1+/R2 lane in every ciu-managed vbpub worktree.
+/ciu.worktree-instance.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

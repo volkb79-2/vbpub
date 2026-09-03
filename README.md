@@ -17,12 +17,17 @@ one config and one installed CLI.
 | **empyrion-translation** | [`game_stuff/empyrion/`](game_stuff/empyrion/) | tarball | *(delegated, on-demand)* — date-tagged |
 | plesk-mailbox-create | [`plesk-mailbox-create/`](plesk-mailbox-create/) | script tool | n/a |
 | vsc-devcontainer | [`vsc-devcontainer/`](vsc-devcontainer/) | devcontainer image | n/a |
+| **debian-install v2** | [`scripts/debian-install-v2/`](scripts/debian-install-v2/) | root-only Python installer | n/a |
 
 Each product has its own README with product-specific detail.
 
 Testing is uniform across the projects that adopted the gate entrypoint:
 `cd <project> && ./run-gate.py --list` discovers that project's declared
 lanes (see [`run-gate-project/CONSUMERS.md`](run-gate-project/CONSUMERS.md)).
+
+For Debian hosts, `debian-install v2` applies a known fresh-install swap shape
+from one JSON file. See [`docs/CONSUMERS.md`](docs/CONSUMERS.md) for adoption;
+the legacy shell bootstrap remains under `scripts/debian-install/`.
 
 ## Repository setup and initial CMRU build
 

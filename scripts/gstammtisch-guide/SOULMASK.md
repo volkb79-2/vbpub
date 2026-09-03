@@ -399,7 +399,7 @@ For Soulmask in production: **min=6G, high=7G** (2026-07-07; 6G/8G interim on 07
 
 ```bash
 # Live monitor (5-second samples):
-soulmask-zswap-monitor.sh
+soulmask-monitor.sh
 
 # Columns:
 #   RAM(M)      — Soulmask cgroup in uncompressed RAM
@@ -437,7 +437,7 @@ Observed (2026-06-27): 374M in RAM, 0M in zswap. The 1.3G not yet accessed has n
 **Calibration tools** (run while players are active, after ~30–60 min of warmup):
 
 ```bash
-soulmask-zswap-monitor.sh        # Terminal 1: live refault/s, RAM, zswap
+soulmask-monitor.sh        # Terminal 1: live refault/s, RAM, zswap
 soulmask-mempress.sh             # Terminal 2: apply and step memory.high pressure
 ```
 
@@ -534,7 +534,7 @@ The **shape between 3G and 6G is unknown**. It could be a gradual ramp, a cliff 
 
 **What to record at each step**:
 ```bash
-soulmask-zswap-monitor.sh 10   # 10s samples; record refault/s baseline, spikes
+soulmask-monitor.sh 10   # 10s samples; record refault/s baseline, spikes
 # also note: player reports of lag (chest opens, area transitions)
 ```
 
@@ -658,7 +658,7 @@ Not useful for: zswap stats, memory.min values — those live in /sys/fs/cgroup,
 
 | Script | What it shows |
 |---|---|
-| `soulmask-zswap-monitor.sh [N]` | Per-5s: RAM, zswap pool (compressed), swap total (uncompressed), refault/s, majfault/s, pak shmem, compression ratio |
+| `soulmask-monitor.sh [N]` | Per-5s: RAM, zswap pool (compressed), swap total (uncompressed), refault/s, majfault/s, pak shmem, compression ratio |
 | `soulmask-mempress.sh status` | All knobs (min/high/low), zswap pool, refault cumulative |
 | `soulmask-mempress.sh apply 6G 7G` | Set production band (min=6G, high=7G) + print persist commands |
 | `soulmask-mempress.sh min/high/down/up/finalize/reset` | Calibration — see §2d |
@@ -695,9 +695,9 @@ awk '/SwapTotal|SwapFree|SwapCached/{print}' /proc/meminfo
 ```
 
 ### No-install htop alternative: `btop`
-`btop` (install: `apt install btop`) has a cleaner default layout — shows process tree, per-CPU, per-NIC, per-disk with less key-chord overhead than htop. Still no cgroup zswap columns. For cgroup-level visibility, `systemd-cgtop` + `soulmask-zswap-monitor.sh` in a tmux split is the practical answer.
+`btop` (install: `apt install btop`) has a cleaner default layout — shows process tree, per-CPU, per-NIC, per-disk with less key-chord overhead than htop. Still no cgroup zswap columns. For cgroup-level visibility, `systemd-cgtop` + `soulmask-monitor.sh` in a tmux split is the practical answer.
 
-**The fundamental gap**: no standard tool shows per-cgroup `workingset_refault_anon` rate. Our `soulmask-zswap-monitor.sh` fills this gap specifically for Soulmask. A general solution would require a BPF-based tool (bpftrace) or a custom Prometheus exporter reading `/sys/fs/cgroup/*/memory.stat`.
+**The fundamental gap**: no standard tool shows per-cgroup `workingset_refault_anon` rate. Our `soulmask-monitor.sh` fills this gap specifically for Soulmask. A general solution would require a BPF-based tool (bpftrace) or a custom Prometheus exporter reading `/sys/fs/cgroup/*/memory.stat`.
 
 ## 3. Orderly shutdown on host `reboot` — the problem & fix
 
@@ -709,7 +709,7 @@ awk '/SwapTotal|SwapFree|SwapCached/{print}' /proc/meminfo
 
 **Verify:** after `systemctl enable soulmask-graceful-stop.service`, run a real `reboot` and confirm the save/DB file mtime advanced and the logs show a clean shutdown. Interim habit until verified: stop the server from the panel before any manual reboot.
 
-## 4. RCON administration — [`exec-soulmask-rcon.sh`](scripts/exec-soulmask-rcon.sh)
+## 4. RCON administration — [`exec-soulmask-rcon.sh`](files/usr/local/sbin/exec-soulmask-rcon.sh)
 
 Runs **any** RCON command against the running container and prints the reply, with a connection test first. Command list: <https://saraserenity.net/soulmask/remote_console.php>.
 
@@ -724,11 +724,12 @@ exec-soulmask-rcon.sh SaveAndExit 15              # save + 15s shutdown countdow
 exec-soulmask-rcon.sh broadcast Reboot in 60s     # multi-word args are forwarded intact
 ```
 
-**How it works / why these choices:**
-- **Source RCON**, so the tiny `itzg/rcon-cli` image works directly.
-- **IP whitelist:** the helper runs `itzg/rcon-cli` inside the Soulmask container's *own* network namespace (`--network container:<cid>`), so it connects to **127.0.0.1** — a loopback connection that the whitelist accepts, with no IP discovery needed and nothing exposed publicly.
+**How it works / why these choices** (as of the 2026-08-27 rewrite — `exec-soulmask-rcon.sh` is now a thin shim to `exec-soulmask-rcon.py`, which drives the Source RCON protocol directly via `soulmask_rcon.py` instead of `itzg/rcon-cli`; `soulmask-shutdown.sh` still uses `itzg/rcon-cli` independently, hence the pre-pull above):
+- **Source RCON** implemented directly in `soulmask_rcon.py` (adapted from the already-proven `scripts/damon-analysis/rcon_probe.py`) — no external RCON client dependency for this tool.
+- **IP whitelist:** `soulmask_rcon.py` runs *inside* the Soulmask container's own network namespace via `nsenter --net=/proc/<WSServer-PID>/ns/net`, so it connects to **127.0.0.1** — a loopback connection the whitelist accepts, with no IP discovery needed and nothing exposed publicly. This must run directly on the game host (root, real `/proc` visibility of the container's PID) — it doesn't work from inside a nested/dev container talking to the host's Docker daemon over a socket.
 - **Port/password** are read from the container env (`RCON_PORT`/`RCON_PASSWORD`, injected by Wings) — nothing hard-coded.
-- **Multi-arg:** all arguments are forwarded to `rcon-cli`, which joins them into one command — so `SaveWorld 0`, `kick <id> <reason>`, etc. work.
+- **Multi-arg:** all trailing arguments are joined into one command — so `SaveWorld 0`, `kick <id> <reason>`, etc. work.
+- Every RCON connection ends with the server logging `Error: Receive error: SE_EWOULDBLOCK` / `Closing connection` a couple of seconds after the reply — confirmed live against production, this is the server's own idle-connection teardown misreporting a normal condition, not a client bug. Harmless for this manual tool (one connection per invocation); `soulmask-monitor.py`'s continuous RCON polling holds one connection open instead (`soulmask_rcon.py --relay`) so it only pays that cost once, not once per poll.
 
 **If the connection test fails**, the `-d` output localizes it: container detection, empty password env, or — most likely — the **RCON IP whitelist** rejecting the connection. If loopback is rejected, add `127.0.0.1` to Soulmask's RCON allowed-IP list (server config) or whitelist the helper's bridge IP.
 

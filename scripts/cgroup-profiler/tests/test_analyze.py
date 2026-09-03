@@ -148,6 +148,23 @@ class TestFlattenGroup:
         out = analyze._flatten_group({"io": {"254:0": {"rbytes": 100, "wbytes": None}}})
         assert out == {"io.rbytes": 100}
 
+    def test_io_field_missing_from_one_of_two_devices_excludes_the_whole_field(self):
+        # Regression test: a field one device didn't report this tick (a
+        # transient parse miss, kernel version skew on a newer io.stat
+        # field) must make the TOTAL unmeasurable for that field, not sum
+        # only the devices that happened to report it — that would silently
+        # under-report the real total as if the silent device contributed
+        # zero, violating "absent is not zero" for the multi-device case
+        # exactly as the single-device case above already guards against.
+        out = analyze._flatten_group({
+            "io": {
+                "254:0": {"rbytes": 100, "wbytes": 50},
+                "254:1": {"rbytes": 200},   # no "wbytes" this tick
+            }
+        })
+        assert out == {"io.rbytes": 300}   # both devices reported rbytes: summed
+        assert "io.wbytes" not in out      # only one device reported wbytes: absent
+
     def test_io_with_no_usable_device_contributes_no_columns(self):
         out = analyze._flatten_group({"io": {}})
         assert out == {}
@@ -576,6 +593,67 @@ class TestBuildEndToEnd:
         from nothing, and make_proposals must not crash on that."""
         analysis = analyze.build(self._run_dir(run_dir_with_data))
         assert isinstance(analysis.proposals, list)
+
+
+class TestBuildResamplesBeforeStats:
+    """Regression test for _ANALYSIS_RESAMPLE_STEP: build() must resample
+    onto a fixed grid before per_target/per_phase/correlations, not feed
+    them the raw, adaptively-sampled (irregular cadence) frame directly.
+
+    Without that, a metric's per-target mean is silently ROW-weighted:
+    a short burst of closely-spaced samples (the sampler's hot cadence)
+    dominates a mean even when a much longer quiet stretch (idle cadence,
+    far fewer rows for the same or greater duration) is the true majority
+    of the run's wall-clock time.
+    """
+
+    def _build(self, tmp_path: Path, samples: list) -> Analysis:
+        run_dir = tmp_path / "run-irregular"
+        run_dir.mkdir()
+        with (run_dir / "samples.jsonl").open("w") as fh:
+            for record in samples:
+                fh.write(json.dumps(record) + "\n")
+        (run_dir / "manifest.json").write_text(json.dumps({
+            "run_id": "run-irregular",
+            "started": samples[0]["t"],
+            "ended": samples[-1]["t"],
+            "targets": [
+                {"key": "gate", "cgroup": SUBJECT, "label": "gate",
+                 "kind": "slice", "role": "subject"},
+            ],
+            "host": {}, "limits": {},
+        }))
+        return analyze.build(FakeRunDir(run_dir))
+
+    def test_target_mean_is_time_weighted_not_row_weighted(self, tmp_path: Path):
+        # 10s quiet at value 100 (2 samples, at mono 0.0 and 5.0), then a 2s
+        # hot burst at value 200 (20 samples, every 0.1s). The quiet stretch
+        # spans 5x the wall-clock time of the burst but would be outnumbered
+        # 2:20 by raw row count if build() fed _target_stats the un-resampled
+        # frame. Time-weighted (resampled onto 1s buckets first, each
+        # non-empty bucket contributing equally) lands well below the
+        # row-weighted figure of (2*100 + 20*200)/22 ≈ 190.9.
+        samples = []
+        seq = 0
+        for mono in (0.0, 5.0):
+            samples.append(make_sample(seq, mono, cgroups={
+                SUBJECT: cg_metrics(current=100, usage_usec=0),
+            }))
+            seq += 1
+        mono = 10.0
+        while mono < 12.0:
+            samples.append(make_sample(seq, mono, cgroups={
+                SUBJECT: cg_metrics(current=200, usage_usec=0),
+            }))
+            seq += 1
+            mono += 0.1
+
+        analysis = self._build(tmp_path, samples)
+        row = next(
+            r for r in analysis.per_target
+            if r["target"] == "gate" and r["metric"] == "mem.current"
+        )
+        assert row["mean"] < 175.0
 
 
 class _RaisingRunDir:

@@ -190,6 +190,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
     from lib import events as events_mod
     from lib import limits as limits_mod
     from lib import metrics as metrics_mod
+    from lib import phases as phases_mod
     from lib import sampler as sampler_mod
     from lib import store as store_mod
 
@@ -305,9 +306,10 @@ def cmd_collect(args: argparse.Namespace) -> int:
             _note(f"collecting into {run.path}")
             prev = None
             prev_mono = None
+            marks_seen = 0
 
             def on_sample(record):
-                nonlocal prev, prev_mono
+                nonlocal prev, prev_mono, marks_seen
                 run.append("samples", record)
                 if prev is not None:
                     dt = record["mono"] - prev_mono
@@ -317,6 +319,17 @@ def cmd_collect(args: argparse.Namespace) -> int:
                 if damon_session and record["seq"] % 20 == 0:
                     for region in damon_session.collect():
                         run.append("damon", {"mono": record["mono"], **region})
+                # A phase mark can be written by a different process sharing
+                # this run directory (cgprofile mark, a wrapper boundary, a
+                # log-tail match — see DESIGN.md §3) — this sampler has no
+                # other way to notice one, so poll for new marks each tick
+                # and give any that arrived the same next-tick-snaps-to-hot
+                # treatment as an event or a topology change (sampler.py
+                # §4.4's "any... phase mark" clause).
+                marks = phases_mod.load_marks(run.path)
+                if len(marks) > marks_seen:
+                    marks_seen = len(marks)
+                    sampler.force_hot()
 
             def on_topology(appeared, disappeared):
                 # The sampler reports membership changes without timestamps;
@@ -512,7 +525,18 @@ def _start_run(args: argparse.Namespace):
         child = _launch_helper(run.path, collect_args, args.helper_image,
                                getattr(args, "helper_cgroup_parent", None))
 
-    _wait_for(os.path.join(run.path, READY_FILE), args.start_timeout, "the collector to start")
+    try:
+        _wait_for(os.path.join(run.path, READY_FILE), args.start_timeout, "the collector to start")
+    except SystemExit:
+        # The collector (or, in helper mode, a whole privileged container)
+        # never signalled ready — it would otherwise run forever with nothing
+        # left holding a reference to stop it.
+        child.terminate()
+        try:
+            child.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            child.kill()
+        raise
     return run, child
 
 
@@ -551,7 +575,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     env["CGPROFILE_RUN_DIR"] = run.path
     env["CGPROFILE_MARK"] = os.path.join(HERE, "cgprofile")
     started = time.time()
-    result = subprocess.run(args.command, env=env, check=False)
+    try:
+        result = subprocess.run(args.command, env=env, check=False)
+    except OSError as exc:
+        # A launch failure (bad command, no exec permission) is not caught
+        # by check=False — that only governs a nonzero exit, not a failed
+        # exec. Without this, the collector process (or a whole privileged
+        # helper container) would be left running forever with nothing left
+        # holding a reference to stop it.
+        _stop_log_tailers(tailers)
+        _stop_run(run, child)
+        _err(f"failed to run {args.command[0]!r}: {exc}")
     elapsed = time.time() - started
 
     phases_mod.emit_mark(run.path, f"{label}:done", kind="event",

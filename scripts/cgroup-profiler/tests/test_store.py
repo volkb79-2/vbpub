@@ -196,6 +196,23 @@ def test_append_to_a_read_only_directory_raises(tmp_path: Path):
         os.chmod(rd.path, 0o755)   # so tmp_path teardown can still clean up
 
 
+def test_append_raises_on_short_write_instead_of_silently_truncating(tmp_path: Path, monkeypatch):
+    # A short write is POSIX-legal for a regular file under resource
+    # pressure. The module's own contract is exactly one os.write() syscall
+    # per line (for O_APPEND interleaving atomicity against concurrent
+    # writers) — a short write must be surfaced loudly, never silently
+    # truncated and never retried with a second write() call.
+    rd = store.RunDir(str(tmp_path), run_id="run-test-short-write")
+    real_write = os.write
+
+    def short_write(fd, data):
+        return real_write(fd, data[: len(data) - 1]) if len(data) > 1 else real_write(fd, data)
+
+    monkeypatch.setattr(store.os, "write", short_write)
+    with pytest.raises(OSError, match="short write appending to"):
+        rd.append("samples", {"seq": 1})
+
+
 def test_append_is_atomic_across_real_separate_processes(tmp_path: Path):
     # concurrent.futures above proves it for threads (shared fd table);
     # this proves the same O_APPEND-single-write property across genuinely

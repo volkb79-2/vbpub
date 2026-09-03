@@ -46,6 +46,7 @@ from lib import damon as damon_lib
 from lib import limits as limits_lib
 from lib import logtail as logtail_lib
 from lib import metrics as metrics_lib
+from lib import phases as phases_lib
 from lib import report_html as report_html_lib
 from lib import report_md as report_md_lib
 from lib import sampler as sampler_lib
@@ -95,10 +96,17 @@ def make_fake_sampler(script: List[tuple]):
     """
 
     class _FakeSampler:
+        instances: List["_FakeSampler"] = []
+
         def __init__(self, membership, config, sample_fn, clock=None, sleep=None):
             self.membership = membership
             self.config = config
             self.sample_fn = sample_fn
+            self.force_hot_calls = 0
+            _FakeSampler.instances.append(self)
+
+        def force_hot(self):
+            self.force_hot_calls += 1
 
         def run(self, should_stop, on_sample, on_topology):
             for action in script:
@@ -843,6 +851,44 @@ class TestCmdCollect:
         events = list(run.read("events"))
         assert any(e["kind"] == "memory_high_breach" for e in events)
 
+    def test_a_new_mark_snaps_the_sampler_to_hot_on_the_next_tick(self, collect_env, tmp_path: Path, monkeypatch):
+        # DESIGN.md §4.4: "any... phase mark ⇒ snap straight to hot_interval
+        # on the next tick." A mark is written by a different process sharing
+        # this run directory (cgprofile mark, a wrapper boundary, a log-tail
+        # match — DESIGN.md §3) — the sampler has no way to notice one on its
+        # own, so cmd_collect's on_sample must poll marks.jsonl each tick and
+        # call sampler.force_hot() when it grows. No mark exists for the
+        # first tick; one is written between the first and second, mirroring
+        # test_event_detection_actually_fires_when_a_counter_moves' mid-run
+        # mutation pattern above.
+        run_dir = tmp_path / "run-mark-forces-hot"
+
+        class MarkWritingSampler(make_fake_sampler([("sample", 0, 0.0)])):
+            def run(self, should_stop, on_sample, on_topology):
+                super().run(should_stop, on_sample, on_topology)
+                phases_lib.emit_mark(str(run_dir), "loading-world", kind="phase")
+                raw = self.sample_fn(self.membership) or {}
+                record = {"seq": 1, "t": 1_754_325_600.25, "mono": 0.25, "cg": raw.get("cg", {})}
+                on_sample(record)
+
+        monkeypatch.setattr(sampler_lib, "Sampler", MarkWritingSampler)
+        cg.cmd_collect(make_collect_args(run_dir))
+
+        instance = MarkWritingSampler.instances[-1]
+        assert instance.force_hot_calls == 1
+
+    def test_no_new_marks_never_calls_force_hot(self, collect_env, tmp_path: Path, monkeypatch):
+        run_dir = tmp_path / "run-no-marks"
+        monkeypatch.setattr(
+            sampler_lib, "Sampler",
+            make_fake_sampler([("sample", 0, 0.0), ("sample", 1, 0.25)]),
+        )
+        cg.cmd_collect(make_collect_args(run_dir))
+        # make_fake_sampler's _FakeSampler is a fresh class per call, so its
+        # own instances list holds exactly this run's construction.
+        sampler_cls = sampler_lib.Sampler
+        assert sampler_cls.instances[-1].force_hot_calls == 0
+
     def test_topology_change_before_any_sample_anchors_to_mono_zero(self, collect_env, tmp_path: Path, monkeypatch):
         run_dir = tmp_path / "run-topo-first"
         args = make_collect_args(run_dir, follow_children=True)
@@ -1227,6 +1273,73 @@ class TestStartRun:
         assert called["image"] == "img:local"
         assert called["cgroup_parent"] == "dev-interactive.slice"
 
+    def test_ready_wait_timeout_terminates_the_child(self, monkeypatch, tmp_path: Path):
+        # Regression test: if the collector never signals ready within
+        # start_timeout, _wait_for raises SystemExit before _start_run ever
+        # returns a `child` to the caller — without cleanup here, the
+        # spawned collector process (or, in helper mode, a whole privileged
+        # container) would be left running forever with nothing left
+        # holding a reference to stop it.
+        spawned = {}
+
+        def never_ready_popen(*args, **kwargs):
+            child = FakePopen()
+            spawned["child"] = child
+            return child
+
+        monkeypatch.setattr(cg.subprocess, "Popen", never_ready_popen)
+        monkeypatch.setattr(access, "choose_mode", lambda requested: "direct")
+        clock = {"t": 0.0}
+        monkeypatch.setattr(cg.time, "monotonic", lambda: clock["t"])
+        monkeypatch.setattr(cg.time, "sleep", lambda dt: clock.__setitem__("t", clock["t"] + dt))
+        args = argparse.Namespace(
+            target=["cgroup:/dev.slice"], observe=[], out_dir=str(tmp_path), run_id="run-never-ready",
+            mode="auto", hot_interval=0.25, idle_interval=2.0, discovery_interval=2.0, max_depth=4,
+            duration=None, follow_children=False, damon=False, cap=[], helper_image=None,
+            start_timeout=1.0,
+        )
+        with pytest.raises(SystemExit):
+            cg._start_run(args)
+
+        assert spawned["child"].terminated is True
+
+    def test_ready_wait_timeout_kills_child_when_terminate_does_not_land_in_time(
+        self, monkeypatch, tmp_path: Path
+    ):
+        # Same leak as above, one step further: terminate() alone is not
+        # always enough (a wedged process can ignore SIGTERM), so the
+        # cleanup's own wait(timeout=10) must fall back to kill() rather
+        # than leaving the process running because ITS wait blocked too.
+        class StubbornPopen(FakePopen):
+            def wait(self, timeout=None):
+                if timeout is not None and not self.killed:
+                    raise cg.subprocess.TimeoutExpired(cmd="collector", timeout=timeout)
+                return super().wait(timeout)
+
+        spawned = {}
+
+        def never_ready_popen(*args, **kwargs):
+            child = StubbornPopen()
+            spawned["child"] = child
+            return child
+
+        monkeypatch.setattr(cg.subprocess, "Popen", never_ready_popen)
+        monkeypatch.setattr(access, "choose_mode", lambda requested: "direct")
+        clock = {"t": 0.0}
+        monkeypatch.setattr(cg.time, "monotonic", lambda: clock["t"])
+        monkeypatch.setattr(cg.time, "sleep", lambda dt: clock.__setitem__("t", clock["t"] + dt))
+        args = argparse.Namespace(
+            target=["cgroup:/dev.slice"], observe=[], out_dir=str(tmp_path), run_id="run-stubborn",
+            mode="auto", hot_interval=0.25, idle_interval=2.0, discovery_interval=2.0, max_depth=4,
+            duration=None, follow_children=False, damon=False, cap=[], helper_image=None,
+            start_timeout=1.0,
+        )
+        with pytest.raises(SystemExit):
+            cg._start_run(args)
+
+        assert spawned["child"].terminated is True
+        assert spawned["child"].killed is True
+
     def test_helper_mode_with_no_cgroup_parent_attribute_passes_none(self, monkeypatch, tmp_path: Path):
         # _add_common always defines --helper-cgroup-parent, but _start_run
         # reads it via getattr(..., None) so it degrades gracefully if a
@@ -1293,6 +1406,36 @@ class TestCmdRun:
         assert marks[0]["meta"]["argv"] == ["echo", "hi"]
         assert marks[1]["name"] == "echo:done"
         assert marks[1]["meta"]["exit_code"] == 17
+
+    def test_command_launch_failure_still_stops_the_collector(self, monkeypatch, tmp_path: Path):
+        # Regression test: subprocess.run's check=False only governs a
+        # nonzero exit code, not a failed exec (bad command, no permission)
+        # — that raises OSError, which used to propagate straight out of
+        # cmd_run and skip _stop_run entirely, leaking the collector process
+        # (or, in helper mode, a whole privileged container) forever.
+        run = store_lib.RunDir(str(tmp_path), run_id="run-launch-fail")
+        child = FakePopen()
+        monkeypatch.setattr(cg, "_start_run", lambda args: (run, child))
+        stopped = {"run": False, "tailers": False}
+        monkeypatch.setattr(
+            cg, "_stop_run",
+            lambda run_, child_, timeout=30.0: stopped.__setitem__("run", True),
+        )
+        monkeypatch.setattr(
+            cg, "_stop_log_tailers",
+            lambda tailers: stopped.__setitem__("tailers", True),
+        )
+
+        def raising_subprocess_run(command, env=None, check=False):
+            raise FileNotFoundError(2, "No such file or directory", command[0])
+
+        monkeypatch.setattr(cg.subprocess, "run", raising_subprocess_run)
+        args = run_args(["no-such-binary"])
+        with pytest.raises(SystemExit):
+            cg.cmd_run(args)
+
+        assert stopped["run"] is True
+        assert stopped["tailers"] is True
 
     def test_log_tailers_start_after_the_collector_and_stop_before_stop_run(self, monkeypatch, tmp_path: Path):
         FakeLogTailer.instances = []

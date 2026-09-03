@@ -70,6 +70,15 @@ def test_cgroup_disappearing_between_validation_and_write_rolls_back(cgroup_root
     # A container can exit mid-run, deleting its whole cgroup directory —
     # after _refuse_unless_safe already said yes. The apply loop must still
     # end up with nothing half-applied.
+    #
+    # The vanished cgroup is caught by _apply_one's own read-before-write
+    # check (it can no longer read a prior value to record), which raises
+    # CapsError rather than reaching _write and failing there with a plain
+    # OSError — refusing before writing is the stricter, preferred outcome,
+    # and it happens to be indistinguishable from here whether the read
+    # failed because the cgroup vanished or for some other transient reason.
+    # Either way the invariant under test is the rollback, not the exact
+    # exception type.
     first_path = cgroup_root / "dev.slice/dev-background.slice/memory.max"
     doomed_dir = cgroup_root / "wings.slice"
     first_before = read(first_path)
@@ -89,11 +98,49 @@ def test_cgroup_disappearing_between_validation_and_write_rolls_back(cgroup_root
         "/wings.slice": {"memory.high": "1073741824"},
     }
     tc = caps.TempCaps(changes, root=str(cgroup_root))
-    with pytest.raises(OSError):
+    with pytest.raises(caps.CapsError):
         tc.__enter__()
 
     assert read(first_path) == first_before   # rolled back even though its cgroup still exists
     assert tc.applied == []
+
+
+def test_transient_read_failure_refuses_instead_of_treating_value_as_max(cgroup_root, monkeypatch):
+    # Regression test: a read failure on the PRIOR value must never be
+    # silently treated the same as the file genuinely holding "max". The
+    # cgroup here never disappears and its file never stops existing — only
+    # the one read_text() call for it fails, simulating a transient race
+    # rather than the file being genuinely gone. If that failure were
+    # conflated with "was max" (the bug), TempCaps would go on to apply the
+    # change and, on restore, permanently overwrite this cgroup's real
+    # memory.high (14 GiB) with the literal string "max" instead of putting
+    # the real value back.
+    second_path = cgroup_root / "wings.slice/memory.high"
+    second_before = read(second_path)
+    assert second_before != "max"   # sanity: this cgroup has a real declared value
+
+    real_read_text = caps.read_text
+
+    def flaky_read_text(path: str):
+        if path == str(second_path):
+            return None   # the file is still there; this one read just failed
+        return real_read_text(path)
+
+    monkeypatch.setattr(caps, "read_text", flaky_read_text)
+
+    changes = {
+        "/dev.slice/dev-background.slice": {"memory.max": "1073741824"},
+        "/wings.slice": {"memory.high": "1073741824"},
+    }
+    tc = caps.TempCaps(changes, root=str(cgroup_root))
+    with pytest.raises(caps.CapsError):
+        tc.__enter__()
+
+    assert tc.applied == []
+    # The real value must survive untouched — never overwritten with the new
+    # value, and never later clobbered with "max" by a restore that thought
+    # it had to put back an "unlimited" sentinel.
+    assert read(second_path) == second_before
 
 
 @pytest.mark.parametrize(

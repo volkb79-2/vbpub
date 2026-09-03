@@ -7,9 +7,12 @@
 # this passes. Dogfooding by design — run-gate gates itself through its own
 # machinery.
 #
-# HOST mode, deliberately — NOT tester-unified (verified empirically
-# 2026-08-24, a container run of this exact lane produced 53 unrelated
-# failures a bare-host run did not). test_run_gate.py's own suite is
+# BARE-HOST mode, deliberately (rev 24: 'host' now means a container by
+# default, same as any named environment — R-38; this lane is the ONE
+# known case that needs the 'bare-host' opt-out instead) — NOT tester-unified
+# either (verified empirically 2026-08-24, a container run of this exact
+# lane produced 53 unrelated failures a bare-host run did not).
+# test_run_gate.py's own suite is
 # self-referential: many tests exercise physical_path()'s REAL
 # /proc/self/mountinfo lookup against pytest's own tmp_path fixtures (only
 # `docker run` itself is faked; RG-3's dual-mount and friends need a genuine
@@ -45,7 +48,7 @@ schema_version = 1
 
 [lanes.selftest]
 kind = "command"
-environment = "host"
+environment = "bare-host"
 argv = ["bash", "-c", "python3 -m pytest tests -q --cov=. --cov-branch --cov-report=json:coverage.json && exec python3 tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)

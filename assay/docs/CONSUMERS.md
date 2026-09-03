@@ -1,5 +1,11 @@
 # Consuming Assay from another repository
 
+**Inside vbpub?** This doc is for a genuinely separate repository. A project
+living in this same monorepo (cmru, ciu, anything under `scripts/`) should
+read [`INTERNAL-CONSUMERS.md`](INTERNAL-CONSUMERS.md) instead — it installs
+from the bind-mounted worktree with no pin, for reasons that doc states
+plainly. The rest of this file assumes you are outside that boundary.
+
 Assay is a release artifact, not an estate-only source import. A consumer can use either
 the wheel or the matching zipapp from one immutable `assay-v*` GitHub Release. The wheel is
 the normal integration; the zipapp is the zero-install option for a gate image that already

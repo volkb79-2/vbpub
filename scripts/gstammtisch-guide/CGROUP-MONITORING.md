@@ -415,7 +415,7 @@ Cumulative count of anonymous pages that were evicted to zswap and then accessed
 (requiring decompression). Each increment is one decompression event: one game thread
 blocked for ~2–5µs while zstd decompressed 4KB.
 
-The rate of change (delta per second) is what `soulmask-zswap-monitor.sh` shows as
+The rate of change (delta per second) is what `soulmask-monitor.sh` shows as
 `rflt/s`. At 1/s in steady state: healthy. At 40,000/s during area load: normal spike.
 At sustained 500+/s at rest: memory.min is too low.
 
@@ -1002,8 +1002,8 @@ zswap entirely.
 
 ## §10 — Reading the monitor output correctly
 
-> As of 2026-07-07 the monitor is `soulmask-zswap-monitor.py` (stdlib python3;
-> `soulmask-zswap-monitor.sh` is now a 2-line exec wrapper for CLI compat). It
+> As of 2026-07-07 the monitor is `soulmask-monitor.py` (stdlib python3;
+> `soulmask-monitor.sh` is now a 2-line exec wrapper for CLI compat). It
 > replaces the old `rflt/s` + `mflt/s` pair with a genuine split of refault
 > sources — see "Why `rf_z/s` and `rf_d/s` replace `rflt/s`/`mflt/s`" below —
 > adds the file-refault stream `rf_f/s` (swappiness validation, MEASUREMENTS.md
@@ -1013,7 +1013,7 @@ zswap entirely.
 > <uuid-prefix|id-prefix|name-substring>` selects which WSServer container to
 > monitor; without it the first is used and a notice lists the others (`--json`
 > always carries the selected container id + name). Run
-> `soulmask-zswap-monitor.py --help` for the full column guide — including a
+> `soulmask-monitor.py --help` for the full column guide — including a
 > mapping of these per-cgroup columns onto htop's per-process M_VIRT/RES/SHR/
 > CODE/DATA view; this section mirrors it with a live captured example.
 
@@ -1052,7 +1052,7 @@ trade on this host.
 
 ### Monitor line anatomy
 
-Live capture, `sudo soulmask-zswap-monitor.py 2`, 2026-07-07 (3 players):
+Live capture, `sudo soulmask-monitor.py 2`, 2026-07-07 (3 players):
 
 ```
 time     | RAM    anon   z_pool  z_eq    rf_z/s   rf_d/s   rf_f/s   | p_RAM  p_z    p_disk  p_rfz/s  p_rfd/s  | disk_sw
@@ -1101,7 +1101,7 @@ pool); `anon` ≈ the DATA-ish heap/stack portion of RES; `file` overlaps
 htop's CODE/SHR plus non-mapped charged page cache. Nothing in htop, `free`,
 `vmstat`, or `docker stats` exposes `z_pool`/`z_eq`/`zswpin` or the
 zswap-vs-disk refault split — per-cgroup `memory.stat` is the only source.
-Full mapping: `soulmask-zswap-monitor.py --help`.
+Full mapping: `soulmask-monitor.py --help`.
 
 **`z_eq / z_pool` is the true compression ratio — `memory.swap.current` is
 not the numerator.** `memory.swap.current` also counts swapcached pages
@@ -1120,7 +1120,7 @@ disk I/O in the game's anon path.
 > `_disk_sw_mb` computed `/proc/swaps Used − stored_pages×4K` **without**
 > subtracting SwapCached, which could show `disk_sw` several GB higher than
 > the true on-disk amount (SwapCached pages are in RAM with a lazy swap slot,
-> not on disk). `soulmask-zswap-monitor.py` subtracts `/proc/meminfo
+> not on disk). `soulmask-monitor.py` subtracts `/proc/meminfo
 > SwapCached` by default; see §12.7 for the full cross-check methodology.
 
 ### What values are suspicious

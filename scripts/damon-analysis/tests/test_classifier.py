@@ -67,14 +67,19 @@ class TestClassify:
         age_us = int(120 * 1e6)
         assert self.c.classify(0, age_us, MAX_NR) == 'idle'
 
-    def test_nonzero_rate_below_warm_not_cold(self):
-        # 1% (below warm threshold 5%) but not zero — should be 'warm' (transitional)
-        age_us = int(60 * 1e6)  # old, but access rate is non-zero
-        # rate = 0.2/20 is below warm but classify checks rate == 0 for cold
-        # actual rate: access_rate_pct(0, MAX_NR)==0, so this is 0 rate
-        # let's test with truly 0 rate first → already tested above
-        # non-zero but below warm threshold: rate = 0.5/20 → Python int, use 0
-        pass
+    def test_nonzero_rate_below_warm_transitional(self):
+        # 0.5% (below warm threshold 5%), nonzero, and not yet aged past
+        # cold_age (30s) → 'warm' (transitional, the final else branch)
+        age_us = int(10 * 1e6)
+        assert self.c.classify(1, age_us, 200) == 'warm'
+
+    def test_nonzero_rate_below_warm_aged_becomes_cold(self):
+        # Same rate as above, but old enough (>= cold_age 30s) → 'cold':
+        # the rate==0.0 check that guards 'idle' doesn't apply here since
+        # the rate is nonzero, so an aged low-but-nonzero-rate region falls
+        # through to the age_us >= cold_age_us branch.
+        age_us = int(60 * 1e6)
+        assert self.c.classify(1, age_us, 200) == 'cold'
 
     def test_zero_max_nr_accesses(self):
         # If max_nr_accesses=0, no accesses possible → rate=0 → check age

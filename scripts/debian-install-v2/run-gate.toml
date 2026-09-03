@@ -1,0 +1,119 @@
+# =============================================================================
+# debian-install gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# r0-r1, r2 and r3 are the standard 3-tier lane matrix (see scripts/
+# LANE-MATRIX-PROGRESS.md) and are host-scoped because they exercise
+# dry-run and fake-command boundaries only; no disk/systemd mutation is
+# permitted in any of them. fake-integration and r1-privileged-commit are
+# extra, non-aggregate lanes predating the 3-tier scheme; r1-privileged-
+# commit is the one deliberate exception that mutates a disposable disk
+# image, but ONLY inside a throwaway --privileged systemd container of its
+# own (scripts/debian-install-v2/testing/), never on the host itself or a
+# host block device — see that directory's README for why the real
+# --commit/partx/mkswap path needs root + a container to test at all.
+# Neither fake-integration nor r1-privileged-commit is part of [lanes.gate];
+# run them by explicit name. r2 joined that list 2026-09-03: it's a NATIVE
+# assay mutation lane, which can only ever be 100%-or-FAIL by assay's own
+# design (no fail_under floor exists for a native lane, unlike an ingested
+# report) -- measured baseline 113 killed / 118 survived = 48.9% against
+# base=origin/main, where the whole debian_install_v2 subtree counts as
+# "changed" (it doesn't exist on main yet), not just any one session's
+# edits, so this reflects the package's overall test-suite maturity, not a
+# regression. r2 still runs and reports its real, complete result whenever
+# invoked by name (`./run-gate.py r2`) or as part of `assay lanes --file
+# assay.toml` inventories -- it's excluded from the aggregate specifically
+# so a pre-existing, estate-typical mutation-coverage gap doesn't block
+# every debian-install-v2 change from merging while closing it properly is
+# out of scope for one session (assay/docs/CONSUMERS.md's own R2-adoption
+# guidance: "adopt R2 deliberately... expand only after observing real
+# runs"). Fold it back into [lanes.gate] once real coverage closes the gap.
+#
+# environment = "bare-host", deliberately, every lane (run-gate RG-43): as
+# of rev 36, plain "host" is a CONTAINER default (DEFAULT_HOST_IMAGE), not
+# bare execution — and that image has no pytest/assay reachable for this
+# devcontainer's UID outside the interactive shell's own pre-activated
+# venv (measured live: `/usr/local/bin/python3 -m pytest` -> "No module
+# named pytest" inside a fresh `docker run` of the same image). Every lane
+# here needs the invoking devcontainer's real environment (venv, pip-
+# installed test tooling, and r1-privileged-commit's own nested Docker
+# access), same reasoning run-gate-project's own selftest lane already
+# documents (SPEC.md R-42) for the identical trap. RG-43's own estate-wide
+# sweep of every other `environment = "host"` lane this flip affects has
+# not happened yet — this file is that sweep's first, scoped instance.
+# =============================================================================
+schema_version = 1
+
+[lanes.r0-r1]
+kind = "command"
+environment = "bare-host"
+argv = [
+    "bash", "-c",
+    "cd {worktree}/scripts/debian-install-v2 && python3 -m compileall -q debian_install_v2 && PYTHONPATH=. python3 -m pytest debian_install_v2/tests -q --cov=debian_install_v2 --cov-branch --cov-report=term-missing",
+]
+clean_tree = false
+budget = "5m"
+
+# Mutation testing via a live, worktree-installed assay (never a pinned
+# zipapp for an in-repo consumer — assay/docs/INTERNAL-CONSUMERS.md). The
+# judge policy (source roots, operators, budget) lives in this project's own
+# assay.toml [lanes.r2]; this lane just installs and invokes it.
+[lanes.r2]
+kind = "command"
+environment = "bare-host"
+argv = [
+    "bash", "-c",
+    "cd {worktree} && pip install -q -e assay && cd {worktree}/scripts/debian-install-v2 && mkdir -p .assay && exec assay run r2 --resume --progress .assay/r2-progress.jsonl --verdict-json .assay/verdict-r2.json",
+]
+clean_tree = false
+budget = "30m"
+artifacts = [".assay/verdict-r2.json", ".assay/r2-progress.jsonl"]
+
+# Proves the gate REJECTS known-bad code — each canary breaks exactly one
+# contract a named test claims to assert, and that test must go red.
+[lanes.r3]
+kind = "command"
+environment = "bare-host"
+argv = [
+    "bash", "-c",
+    "cd {worktree}/scripts/debian-install-v2 && exec tools/canary-run.sh",
+]
+clean_tree = false
+budget = "5m"
+
+[lanes.fake-integration]
+kind = "command"
+environment = "bare-host"
+argv = [
+    "bash", "-c",
+    "cd {worktree}/scripts/debian-install-v2 && PYTHONPATH=. python3 -m pytest debian_install_v2/tests/test_fake_integration.py -q",
+]
+clean_tree = false
+budget = "3m"
+
+# Requires a Docker daemon reachable from the host lane runner (this repo's
+# devcontainer talks to one via docker-outside-of-docker) and builds/boots a
+# --privileged container — see scripts/debian-install-v2/testing/README.md.
+# Skip this lane in any environment without Docker access; it is not part
+# of any aggregate lane and nothing else here depends on it passing.
+[lanes.r1-privileged-commit]
+kind = "command"
+environment = "bare-host"
+argv = [
+    "bash", "{worktree}/scripts/debian-install-v2/testing/run-privileged-tests.sh",
+]
+clean_tree = false
+budget = "10m"
+
+# The implementation/release gate: every consumer (release steps, agents,
+# humans) runs THIS lane; none duplicates the sub-lane sequence. RG-1: every
+# sub-invocation carries --worktree {worktree} explicitly (cmru's [lanes.gate]
+# is the reference shape). fake-integration, r1-privileged-commit, and r2
+# are deliberately NOT part of this aggregate — see the file header.
+[lanes.gate]
+kind = "command"
+environment = "bare-host"
+argv = [
+    "bash", "-c",
+    "./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r3",
+]
+clean_tree = false
+budget = "1h"

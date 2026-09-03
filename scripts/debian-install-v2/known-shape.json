@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "fresh_install": true,
+  "swap_disk_total_gb": 32,
+  "swap_file_count": 8,
+  "zswap_compressor": "zstd",
+  "telegram_bot_token": "",
+  "telegram_chat_id": "",
+  "auto_reboot_after_stage1": true,
+  "never_reboot": false
+}

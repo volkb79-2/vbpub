@@ -968,7 +968,7 @@ class TestEffectiveTreeExecution:
 
             [lanes.where]
             kind = "command"
-            environment = "host"
+            environment = "bare-host"
             argv = ["bash", "-c", "pwd"]
             clean_tree = false
         """)
@@ -2091,14 +2091,14 @@ class TestRequiredEnv:
         assert "tester-unified" in proc.stderr
 
     def test_host_lane_enforces_preflight_without_allowlist(self, tmp_path, monkeypatch):
-        # host lanes have no forwarding boundary: presence check only.
+        # bare-host lanes have no forwarding boundary: presence check only.
         repo = make_repo(tmp_path)
         cfg = """\
             schema_version = 1
 
             [lanes.suite]
             kind = "command"
-            environment = "host"
+            environment = "bare-host"
             argv = ["bash", "-c", "echo ran"]
             required_env = ["HOST_ONLY_VAR"]
             """
@@ -2347,7 +2347,7 @@ class TestConjunctionOverrideGuard:
 
         [lanes.gate]
         kind = "command"
-        environment = "host"
+        environment = "bare-host"
         # RG-1 fixed shape: every sub-invocation carries the override.
         argv = ["bash", "-c", "./run-gate.py --worktree {worktree} suite"]
         clean_tree = false
@@ -2388,13 +2388,13 @@ class TestConjunctionOverrideGuard:
         assert proc.returncode == 0, proc.stderr
 
     def test_host_lane_without_token_still_accepts_override(self, tmp_path, monkeypatch):
-        # host lanes relocate via cwd (R-19/R-21), so no token is needed.
+        # bare-host lanes relocate via cwd (R-19/R-21), so no token is needed.
         repo = make_repo(tmp_path)
         proj = make_project(repo, """\
             schema_version = 1
             [lanes.suite]
             kind = "command"
-            environment = "host"
+            environment = "bare-host"
             argv = ["bash", "-c", "pwd"]
             clean_tree = false
             """)
@@ -3048,7 +3048,7 @@ class TestDryRun:
             schema_version = 1
             [lanes.smoke]
             kind = "command"
-            environment = "host"
+            environment = "bare-host"
             argv = ["bash", "-c", "exit 5"]
             clean_tree = false
         """
@@ -3724,7 +3724,28 @@ class TestDoctor:
         assert proc.returncode == 2
         assert "[FAIL] docker" in proc.stdout
 
-    def test_host_only_project_skips_slice_checks(self, tmp_path, monkeypatch):
+    def test_bare_host_only_project_skips_slice_checks(self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = """\
+            schema_version = 1
+            [lanes.smoke]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["bash", "-c", "true"]
+            clean_tree = false
+        """
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.delenv(CGROUP_VAR, raising=False)  # bare-host needs no slice
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 0, proc.stdout
+        assert "slice for env" not in proc.stdout
+
+    def test_host_project_needs_slice_check_since_it_is_a_container_now(
+            self, tmp_path, monkeypatch):
+        # rev 24: 'host' routes through run_container_lane() like any named
+        # environment (R-38) — it needs a real slice, exactly the opposite
+        # of test_bare_host_only_project_skips_slice_checks above.
         repo = make_repo(tmp_path)
         cfg = """\
             schema_version = 1
@@ -3736,10 +3757,13 @@ class TestDoctor:
         """
         proj = make_project(repo, cfg)
         fake_docker(tmp_path, monkeypatch)
-        monkeypatch.delenv(CGROUP_VAR, raising=False)  # host needs no slice
+        monkeypatch.setenv(CGROUP_VAR, "dev-background.slice")
         proc = run_tool(proj, "doctor")
-        assert proc.returncode == 0, proc.stdout
-        assert "slice for env" not in proc.stdout
+        assert "slice for env host" in proc.stdout
+        monkeypatch.delenv(CGROUP_VAR, raising=False)
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 2
+        assert "no cgroup slice for the gate" in proc.stdout
 
     def test_mountinfo_bare_host_view_warns(self, tmp_path, monkeypatch):
         """phys == repo (no alias derivable): container lanes would need the
@@ -3824,7 +3848,7 @@ class TestLinkedWorktreeHostLaneWarning:
         schema_version = 1
         [lanes.smoke]
         kind = "command"
-        environment = "host"
+        environment = "bare-host"
         argv = ["bash", "-c", "true"]
         clean_tree = false
     """
@@ -4116,7 +4140,7 @@ class TestAssayToolchainFitness:
 
     def test_host_environment_lane_skips(self, tmp_path, monkeypatch, capsys):
         cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
-                                     'environment = "host"', 1)
+                                     'environment = "bare-host"', 1)
         cfg = cfg.replace('[environments.tester-unified]\n    image = "tester-unified:local"\n',
                           "")
         self._project(tmp_path, monkeypatch, cfg)
@@ -4124,7 +4148,7 @@ class TestAssayToolchainFitness:
         code, out = self._doctor(capsys)
         assert code == 0, out
         assert "[SKIP] lane 'ui-unit' toolchain" in out
-        assert "built-in 'host'" in out
+        assert "built-in 'bare-host'" in out
 
     def test_docker_absent_skips_the_probe(self, tmp_path, monkeypatch, capsys):
         self._project(tmp_path, monkeypatch)
@@ -4620,7 +4644,7 @@ class TestComparisonBasePassthrough:
             schema_version = 1
             [lanes.gate]
             kind = "command"
-            environment = "host"
+            environment = "bare-host"
             argv = ["bash", "-c",
                     "echo ./run-gate.py --base {base} a && echo ./run-gate.py --base {base} b"]
             clean_tree = false
@@ -4661,10 +4685,10 @@ class TestComparisonBasePassthrough:
 
     def test_host_assay_lane_probes_locally_without_docker(
             self, tmp_path, monkeypatch, capsys):
-        """A `host` environment IS this machine: the same probe script, no
-        container to enter."""
+        """A `bare-host` environment IS this machine: the same probe script,
+        no container to enter."""
         cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
-                                     'environment = "host"', 1)
+                                     'environment = "bare-host"', 1)
         self._project(tmp_path, monkeypatch, cfg)
         log = fake_docker(tmp_path, monkeypatch)   # records, never executes
         self._judge(monkeypatch, "request")
@@ -4721,13 +4745,14 @@ class TestComparisonBasePassthrough:
     def test_host_assay_lane_actually_builds_the_assay_inner(
             self, tmp_path, monkeypatch, capfd):
         """RG-28's own oracle (S3). The sibling test above proves the base
-        reached a host assay lane; this one proves the lane BODY is the real
-        assay inner and not a stub — pin/cd/verdict all present, executed
-        with the effective project dir as cwd. Gutting run_host_lane's assay
-        branch back to `lane["argv"]` reddens this with KeyError; replacing
-        `build_assay_inner(...)` with `"true"` reddens every assertion."""
+        reached a bare-host assay lane; this one proves the lane BODY is the
+        real assay inner and not a stub — pin/cd/verdict all present, executed
+        with the effective project dir as cwd. Gutting run_bare_host_lane's
+        assay branch back to `lane["argv"]` reddens this with KeyError;
+        replacing `build_assay_inner(...)` with `"true"` reddens every
+        assertion."""
         cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
-                                     'environment = "host"', 1)
+                                     'environment = "bare-host"', 1)
         _repo, proj = self._project(tmp_path, monkeypatch, cfg)
         fake_docker(tmp_path, monkeypatch)
         # A judge that ECHOES its own argv, so the executed inner is visible.
@@ -6196,7 +6221,7 @@ class TestResumeAndProgressAlways:
         """RG-28's echo oracle: the judge prints the argv it was EXECUTED
         with, so this is the real handover, not the builder's string."""
         cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
-                                     'environment = "host"', 1)
+                                     'environment = "bare-host"', 1)
         TestComparisonBasePassthrough._project(self, tmp_path, monkeypatch, cfg)
         fake_docker(tmp_path, monkeypatch)
         install_fake_assay(monkeypatch, """\

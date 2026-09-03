@@ -131,7 +131,7 @@ _show() {
   else
     printf "  out:        %dM not in RAM  (writeback=0: all in zswap, none on disk)\n" $(_mb "$out")
   fi
-  printf "  refault:    %s cumulative  (run soulmask-zswap-monitor.sh for rate)\n" "$refault"
+  printf "  refault:    %s cumulative  (run soulmask-monitor.sh for rate)\n" "$refault"
   echo ""
 }
 
