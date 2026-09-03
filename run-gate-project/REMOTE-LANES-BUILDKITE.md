@@ -241,9 +241,13 @@ Three of those lines carry the doctrine:
   and reading `run-gate.toml` is the forbidden second parser — so a declared
   artifact that lives outside `.assay/` or `.run-gate/` **does not travel**.
   vbpub's own `run-gate-project/selftest` is exactly that case: its
-  `artifacts = ["coverage.json"]` matches none of the three globs. Until RG-45
-  (a `--list --json` form that could carry `artifacts`) exists, a remote-capable
-  lane keeps everything it wants back under `.assay/`. `.assay/*` sits beside
+  `artifacts = ["coverage.json"]` matches none of the three globs. **The
+  authoring rule that makes these fixed globs sufficient is
+  `LANE-AUTHORING.md` §5: a remote-capable lane keeps every artifact it wants
+  back under `.assay/`** — follow it and nothing is lost; ignore it and the
+  generator cannot help, because it may not read `run-gate.toml`. (RG-45's
+  `--list --json` form could one day carry `artifacts` and remove the rule.)
+  `.assay/*` sits beside
   `.assay/**/*` as insurance for a file directly in `.assay/` — the progress
   file is one — because whether zglob's `**` covers that has not been seen on a
   live build.
@@ -313,7 +317,7 @@ bk-lane.sh --help
 | `BK_PIPELINE` | **yes** | pipeline slug; no default |
 | `BK_TOKEN_FILE` | no | default `~/.config/buildkite/api-token`; **must be mode 0600 or the script refuses** (exit 2, naming the mode it found) |
 | `BK_POLL_SECONDS` | no | poll interval for `run`, default 30 |
-| `BK_MAX_WAIT_MINUTES` | no | `run` only: how long to keep polling, default 300 (the §3 step's own timeout). Exceeded → **exit 3**, naming the build number and last state. The budget counts the time the script spends *sleeping between polls* — what an unattended `run` burns; a single hung request is curl's business. Without it, a build parked in `scheduled` (a mistyped `BK_QUEUE` is the way in — no queue is validated against a live agent) spins a `GET` forever |
+| `BK_MAX_WAIT_MINUTES` | no | `run` only: how long to keep polling, default 300 (the §3 step's own timeout). Exceeded → **exit 3**, naming the build number and last state. The budget counts the time the script spends *sleeping between polls*; **every request is separately bounded** (`--connect-timeout 10 --max-time 120`, on every invocation including the artifact downloads), so the true wall-clock bound is `BK_MAX_WAIT_MINUTES` plus at most one 120 s request per poll and nothing can hang the caller. Without the budget, a build parked in `scheduled` (a mistyped `BK_QUEUE` is the way in — no queue is validated against a live agent) spins a `GET` forever |
 | `BK_QUEUE` | no | `run` only: sent as `env.RUN_GATE_QUEUE` in the create-build body beside `RUN_GATE_LANES`. A build's env overrides the pipeline's (§3), so this moves ONE run to another host's queue with no pipeline edit; unset, the key is not sent at all and the pipeline's default queue stands |
 
 Dependencies are `bash`, `coreutils`, `git`, `curl` and `python3` (stdlib
@@ -359,7 +363,11 @@ progress file and the evidence directory under `.assay/`, plus the RG-27
 them is to be verified on the first live build**, since it depends on how
 Buildkite's zglob treats `**`, which is why `.assay/*` is emitted alongside
 `.assay/**/*`. An artifact a lane declares outside those prefixes does not come
-back at all (§3). Handing the verdict onward is
+back at all (§3) — `LANE-AUTHORING.md` §5 is the rule that keeps them inside.
+Each download is bounded like every other request (`--max-time 120`), so a
+single artifact that needs longer than two minutes to transfer fails the
+collect rather than being waited on; if that ever bites, the cap is one array
+at the top of the script. Handing the verdict onward is
 still a manual step and is deliberately NOT in the script: run-gate's history
 store for the lane, a `.assay-inbox/`-style drop for dstdns (the pattern its
 release notifications already use), or assay's Tier 3 ledger for fuzz findings.
@@ -417,7 +425,7 @@ API. **Seam 1 has not landed** (below). Seams 3, 5 and 6 are untouched.
 
 | # | seam | owner | status | shape |
 |---|---|---|---|---|
-| 1 | Artifacts contract | run-gate (docs) + each lane | **docs seam, not started** (E5-R5) | the generator's two `.assay/` globs plus `.run-gate/history.json` are FIXED, and they are its only executable evidence; **no lane in the estate declares the set** (`LANE-AUTHORING.md` §5 asks for it; every `artifacts =` in the repo today is a single file, and `run-gate-project/selftest`'s own `coverage.json` matches none of the globs), and a lane's declared `artifacts` outside `.assay/` and `.run-gate/` do not travel. Reconciling the two is real work: RG-45's `--list --json` could expose `artifacts`, or `LANE-AUTHORING.md` §5 can require remote-capable lanes to keep them under `.assay/` |
+| 1 | Artifacts contract | run-gate (docs) + each lane | **docs seam, not started** (E5-R5) | the generator's two `.assay/` globs plus `.run-gate/history.json` are FIXED, and they are its only executable evidence; **no lane in the estate declares the set** (every `artifacts =` in the repo today is a single file, and `run-gate-project/selftest`'s own `coverage.json` matches none of the globs), and a lane's declared `artifacts` outside `.assay/` and `.run-gate/` do not travel. The authoring side of the reconciliation has landed — **`LANE-AUTHORING.md` §5 requires a remote-capable lane to keep every artifact it wants back under `.assay/`**, which is what makes the fixed globs sufficient — but no lane declares such a set yet, so the seam itself has not started; RG-45's `--list --json` could later expose `artifacts` and retire the rule |
 | 2 | Pipeline generator | `run-gate-project/tools/buildkite/pipeline.sh` | **landed (no live build yet)** | consumes `./run-gate.py --list` only (no second parser of `run-gate.toml`); emits the §3 step shape; selects by `RUN_GATE_LANES`; refuses (exit 2) an unknown or duplicated lane, a missing `RUN_GATE_QUEUE`, a leading-zero timeout, or a listing wider than the three documented columns |
 | 3 | Image provenance | `tester-unified/` cmru project, `run-gate.toml` central config | not started | build-from-checkout first; GHCR publish via `oci-image-push` later; `image_digest` key in the environment table (new RG item) |
 | 4 | Trigger + collector | `run-gate-project/tools/buildkite/bk-lane.sh` on the controller host | **landed (no live build yet)** | `run` creates + waits (exit 3 when `BK_MAX_WAIT_MINUTES` runs out), `status` reads, `collect` downloads into a commit-addressed directory with both path components gated; token file must be 0600; exit codes 0/1/2/3 as §4.2 states. Still open: feeding run-gate history with a `host` field (new RG item), dstdns's inbox, and lookup by commit instead of build number (§4.4) |

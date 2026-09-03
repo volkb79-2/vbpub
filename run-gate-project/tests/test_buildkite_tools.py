@@ -322,6 +322,11 @@ def test_pipeline_never_reads_run_gate_toml():
 
 TOKEN = "bkua-secret-do-not-print"
 API = "https://api.buildkite.com/v2/organizations/acme/pipelines/vbpub/builds"
+# Every request is bounded so a hung connection cannot hang the caller: the
+# wait budget counts only sleep time, so these are what make the wall-clock
+# bound finite (E5-R14).
+BOUNDS = "'--connect-timeout' '10' '--max-time' '120'"
+GET = "curl '-fsS' " + BOUNDS
 
 
 @pytest.fixture
@@ -440,7 +445,7 @@ def test_bk_run_dry_run_prints_the_post_with_a_redacted_token(token_file, git_re
     # the poll it would then do, and the terminal states it waits for. Matched
     # as WHOLE WORDS: a bare `"failed" in stdout` is satisfied by the substring
     # inside "waiting_failed", so it would pass with `failed` dropped entirely.
-    assert "curl '-fsS' '%s/<build-number>'" % API in res.stdout
+    assert "%s '%s/<build-number>'" % (GET, API) in res.stdout
     printed = set(re.findall(r"[A-Za-z_]+", res.stdout))
     assert {"passed", "failed", "canceled", "blocked", "skipped", "not_run",
             "waiting_failed"} <= printed
@@ -482,6 +487,24 @@ def test_bk_run_refuses_an_unquotable_bk_queue(token_file, git_repo):
     assert "BK_QUEUE" in res.stderr
 
 
+def test_every_dry_run_curl_line_is_bounded(token_file, git_repo, tmp_path):
+    """E5-R14: the wait budget counts sleep time only, so an unbounded request
+    would make the real wall-clock bound infinite. Every printed invocation —
+    create, poll, status, artifact listing, artifact download — carries both
+    flags, and so does every real one (they come from one array)."""
+    root, _ = git_repo
+    runs = [_bk("--dry-run", "run", "lint", token_file=token_file, cwd=root),
+            _bk("--dry-run", "status", "7", token_file=token_file),
+            _bk("--dry-run", "collect", "7", str(tmp_path), token_file=token_file)]
+    lines = []
+    for res in runs:
+        assert res.returncode == 0, res.stderr
+        lines += [ln for ln in res.stdout.splitlines() if ln.startswith("curl ")]
+    assert len(lines) == 6      # run: create + poll; status: 1; collect: 3
+    for line in lines:
+        assert BOUNDS in line, line
+
+
 def test_bk_run_dry_run_honours_the_poll_interval(token_file, git_repo):
     root, _ = git_repo
     res = _bk("--dry-run", "run", "selftest", token_file=token_file, cwd=root,
@@ -494,7 +517,7 @@ def test_bk_status_dry_run_prints_one_get(token_file):
     res = _bk("--dry-run", "status", "1234", token_file=token_file)
     assert res.returncode == 0, res.stderr
     assert res.stdout.strip() == (
-        "curl '-fsS' '%s/1234' '-H' 'Authorization: Bearer <redacted>'" % API)
+        "%s '%s/1234' '-H' 'Authorization: Bearer <redacted>'" % (GET, API))
     assert TOKEN not in res.stdout
 
 
@@ -503,10 +526,10 @@ def test_bk_collect_dry_run_prints_the_verified_artifacts_endpoint(token_file,
     res = _bk("--dry-run", "collect", "1234", str(tmp_path / "in"),
               token_file=token_file)
     assert res.returncode == 0, res.stderr
-    assert "curl '-fsS' '%s/1234' '-H' 'Authorization: Bearer <redacted>'" % API \
+    assert "%s '%s/1234' '-H' 'Authorization: Bearer <redacted>'" % (GET, API) \
         in res.stdout
-    assert "curl '-fsS' '%s/1234/artifacts' '-H' 'Authorization: Bearer <redacted>'" \
-        % API in res.stdout
+    assert "%s '%s/1234/artifacts' '-H' 'Authorization: Bearer <redacted>'" \
+        % (GET, API) in res.stdout
     assert "'-o' '%s/<commit>/<artifact path>'" % (tmp_path / "in") in res.stdout
     assert TOKEN not in res.stdout
     assert not (tmp_path / "in").exists()      # dry-run creates nothing
