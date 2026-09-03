@@ -85,12 +85,17 @@ planned implementer bands, whose numeric order runs in the opposite direction:
 | `2d` | `implement-2` | constrained implementation from examples, skeletons, and prepared proof |
 | `2e` | `implement-1` | mechanical completion of a locked edit map and acceptance suite |
 
-Only `implement-1` and `implement-2` are deployed today. Until the remaining
-bands exist, `contract_class` is an authoring/review classification recorded in
-the body, while frontmatter `tier` names a live route. Do not put a nonexistent
-tier in frontmatter. Routing a `2a`-`2c` package through `implement-2` requires an
-explicit human/controller override and a frontier-capable route; preferably
-carve it down first.
+The table above names the PLANNED tier each contract class is intended to route
+through once the remaining implementer bands exist — it is not itself a claim
+about what `routes.toml` declares today. `contract_class` (2a-2e) is an
+authoring/review classification recorded in the body; frontmatter `tier` is a
+different thing entirely: it must always be a literal key that exists in the
+CURRENT live `routes.toml`, chosen for the capability the assigned contract
+class needs, regardless of what name a future band will eventually carry. Do
+not put a nonexistent tier in frontmatter. Routing a `2a`-`2c` package through
+a live tier whose capability is below what the class needs requires an explicit
+human/controller override and a frontier-capable route; preferably carve it
+down first.
 
 #### 2a. Design-bearing implementation (`implement-5`, hardest)
 
@@ -387,7 +392,7 @@ schema_version: 1
 id: <project>-P<NN>-<kebab-slug>      # unique per project
 project: <project id>
 title: "<one line>"
-tier: implement-2                      # live capability band, not a model name
+tier: <a live key from routes.toml>    # live capability band, not a model name
 input_revision: "<base commit short sha>"
 depends_on: []                         # [P52, D-006] — merged handoffs / open decisions
 session: fresh                         # or: resume:<area>  (cache-reuse hint)
