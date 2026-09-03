@@ -1,0 +1,29 @@
+# examples/monorepo/ciu.toml — the monorepo ROOT (modelled on vbpub): a zero-instance project
+# (S16.11) that carries the shared policy its children inherit through `[ciu] inherit` (S3.1.5):
+# governance, the estate's ephemeral tester environment, the gate slice, the judge floor. It has no
+# realizations, no instance and no lanes of its own; `ciu check` here runs stages 1–3, 11, 12, 14.
+# The shared IMAGE build lives next to it in tester-unified/Dockerfile (vbpub's real one is
+# vbpub/tester-unified/Dockerfile); children reach it through build.context (S6.2), never through
+# a shared stack directory (proposal X83).
+
+[project]
+name = "estate"
+revision = 8
+
+[governance]                           # permitted in a zero-instance root (S16.11.1): inherited by every child; also the gate slice default here
+enabled = true
+cgroup_parent = "dev-background.slice" # the host's dev tier (root AGENTS.md "Host cgroup placement")
+memory_max = "2G"
+memory_swap_max = "0"
+cpu_weight = 100
+
+[testing]
+cgroup_slice = "dev-background.slice"  # inheritable (S3.1.5)
+
+[testing.judge]
+version = ">=4.1"                      # inheritable; unused HERE (no assay lane) — INFO, not an error (S16.3)
+
+[testing.environments.tester-unified]  # inheritable: the estate's ephemeral tester, declared once (run-gate R-22 lifted)
+mode = "ephemeral"
+image = "tester-unified:local"         # built from tester-unified/Dockerfile by the estate's build step (cmru), not by a child
+forward_env = ["CGROUP_PARENT_DEV_BACKGROUND"]

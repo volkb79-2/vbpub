@@ -3,7 +3,8 @@
 # Plain TOML, committed, the project's declarations. Layering (deep-merge,
 # no rendering anywhere in this chain — P11 "declarations are data"):
 #   ciu.toml → ciu.site.toml (sparse, committed) → ciu.instance.toml (operator,
-#   per checkout, gitignored) → ciu.instance.generated.toml (ciu-owned facts)
+#   per checkout, gitignored) → ciu.instance.generated.toml (ciu-owned identity +
+#   build facts; travels with a release) → ciu.host.toml (host facts; state root)
 #   → ciu.resolved.toml (rendered: everything merged + the derived [resolved.*]
 #   tables; atomic; the machine interface for templates, hooks, the gate, assay)
 #
@@ -199,8 +200,8 @@ http = { url = "https://example.org" }
 
 # -----------------------------------------------------------------------------
 # Realness. Selection: `ciu up --realness` > [realness.pin] > `default`; the
-# instance's per-layout record ([ciu.instance.realness.<layout>], generated
-# file) is a CONSTRAINT — a selection that differs from it is refused until
+# instance's per-layout record (ciu.instance.json `realness.<layout>`, in the
+# state root — never in a file that travels, S2.6) is a CONSTRAINT — a selection that differs from it is refused until
 # `ciu clean --vanilla` (S9.4.2).
 # -----------------------------------------------------------------------------
 [realness]

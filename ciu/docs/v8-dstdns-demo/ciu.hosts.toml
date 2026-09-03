@@ -27,7 +27,7 @@ bundle_excludes = [".git", "node_modules", "artifacts"]
 [hosts.gstammtisch.addresses]
 mesh = "100.64.0.11"                           # tailscale
 public = "152.53.179.117"
-[hosts.gstammtisch.activate]                   # the conventional commands (S17.4), run inside the candidate release; --host regenerates [ciu.host.generated] for THIS host (S14.2.3)
+[hosts.gstammtisch.activate]                   # the conventional commands (S17.4.1): CIU's own `prepare` (host file into /opt/ciu/state, check) → apply → health run inside the CANDIDATE release; the current/previous switch is CIU's, after the receipt
 bootstrap = "ciu instance init --host gstammtisch && ciu check --layout prod3"
 apply = "ciu up --layout prod3"
 health = "ciu check --live --layout prod3"

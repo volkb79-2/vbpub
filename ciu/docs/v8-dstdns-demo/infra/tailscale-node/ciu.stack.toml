@@ -21,7 +21,7 @@ host_network = true                  # ciu injects network_mode: host, no hostna
 
 [ciu_stack.tailscale.settings]       # consumer data read by the hooks and the compose template
 # No tailnet hostname here: the compose template reads host.hostname (a host fact
-# from [ciu.host.generated], S3.5.3). The v7 interpolation of the deploying
+# from ciu.host.toml's [ciu.host], S3.5.3). The v7 interpolation of the deploying
 # shell's HOSTNAME is impossible in v8 — the compose process environment is
 # closed (S11.6).
 # Enrollment seed file (mode 0400) holding the single-use auth key, written by the

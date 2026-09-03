@@ -1,0 +1,20 @@
+# ciu.host.toml — HOST-LOCAL facts of this machine (gitignored; plain TOML; mode 0644; CIU-owned,
+# rewritten whole by `ciu instance init [--host <h>]`, S14.2). Lives in the STATE ROOT (S2.6): the
+# checkout itself here, `<bundle_dir>/state/` on a release target, where `ciu activate apply`'s
+# prepare step writes it (S17.4.1) — it never travels with a release. Merged LAST (S3.1.1) and read
+# by templates and hooks as `host.*` (S3.5.3). This example is the primary devcontainer checkout of
+# dstdns; a worktree instance on the same machine has an identical file.
+
+[ciu.host]
+name = "localhost"                    # which [hosts.<h>] this machine is (the `local = true` host without --host)
+hostname = "gstammtisch"              # the machine's own hostname (lease holder ciu@gstammtisch:98535c, S14.6.2)
+env_type = "devcontainer"             # devcontainer | native | github-actions
+user_uid = 1003
+user_gid = 1003
+docker_gid = 994
+# repo_root (/workspaces/dstdns) and physical_repo_root (/home/vb/volkb79-2/dstdns — the HOST path
+# the daemon sees, docker-outside-of-docker) are DERIVED at every verb from the checkout being run
+# and the S4.1.4 sentinel-proven mapping; they are not stored (S14.2): a release's directory changes
+# per release and this file is shared by all of them (S2.6.3).
+# No public_fqdn here: a host's public name is DECLARED in ciu.hosts.toml ([hosts.localhost] fqdn)
+# and read by templates as host.fqdn (S7.2, R-16).

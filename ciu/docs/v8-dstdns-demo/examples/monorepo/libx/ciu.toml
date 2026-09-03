@@ -1,0 +1,20 @@
+# examples/monorepo/libx/ciu.toml — a command-only child (a library with one pytest lane).
+# Its nearest root is THIS directory (S1.5: nested inside the estate root — INFO, intended); it
+# inherits the root's governance, tester environment, slice and judge floor (S3.1.5). The floor is
+# unused here because no lane is an assay lane — permitted, INFO (S16.3, round-3 T3-03).
+# Zero-instance: no realizations, no instance, no lock; `ciu gate unit` runs the inherited
+# ephemeral tester in the inherited slice with the declared cap.
+
+[project]
+name = "libx"
+revision = 8
+
+[ciu]
+inherit = "../ciu.toml"                # leaves this root, stays inside the worktree — allowed (S3.1.5)
+
+[testing.lanes.unit]
+kind = "command"
+environment = "tester-unified"         # the inherited environment
+argv = ["pytest", "-q", "tests"]
+budget = "10m"
+resources = { memory_max = "1G" }     # REQUIRED: the slice is finite (S16.6.1, round-3 T3-10)

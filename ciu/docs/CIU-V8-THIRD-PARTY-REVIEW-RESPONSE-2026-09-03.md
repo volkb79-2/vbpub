@@ -144,3 +144,32 @@ The reviewer's waves, resolutions and socket-claim table agree with the example.
 
 ### 6.5 Still open after this round
 Items 1–6 of §5 stand. Added: exec parallelism unsupported by design; admission per uid; `plan_digest` requires byte-identical files; image archives are whole tarballs; the monorepo's consumer work (proposal §4.10 items 18–22). A targeted round-3 review of the rules draft.5 introduced (S17.4.3, S17.3.6, S16.6.1, S16.9.4, S3.1.5, S14.4.8, S4.5.3) is the recommended next review, scoped to Appendix D §D.2.
+
+---
+
+## 7 Round 3 — draft.5 (2026-09-03, later still)
+
+**Input:** `CIU-V8-THIRD-PARTY-REVIEW-ROUND3-2026-09-03.md` (same reviewer; round-2 fix audit: 3 landed, 2 incomplete, 5 landed-and-broke; new findings T3-01..T3-10: 6 BLOCKER, 4 MAJOR; the demo re-verified correct at the topology layer). **Output:** `SPEC-V8.md` 8.0.0-**draft.6** (Appendix D §D.3), proposal **rev 3.3** (§4.3.15, §4.7 X85–X94, §4.8, §4.10 items 23–26), the demo (host-file split, receipt and activation comments, `examples/monorepo/`), this section.
+
+**Verdict on the verdict.** Accepted in full: every finding holds against the text. T3-02 is narrower than the defect it found — the same reasoning applies to the store, the data directories, the realness records and the hook state — so draft.6 fixes the class with a state root rather than the instance with a host-facts overlay. T3-05's narrow reopening is accepted as the author's call: a move is cold and a copy is refused; the in-checkout posture, path-derived display identity and the token as a collision mark all stand, so nothing went back to the operator.
+
+### 7.1 Findings
+
+| id | sev | disposition | what changed (spec rule) | reasoning |
+|---|---|---|---|---|
+| T3-01 | BLOCKER | A | S17.4.1, S17.4.3, S17.4.4, S17.5, S8.5.4 | The activation manifest (`ciu activate plan`, `ciu/activation`) carries the id and, per host, the expected release digest and selection; a receipt is validated against the **provider's** entry, never the consumer's; an absent id never matches. `plan_digest` is withdrawn: a hand-started host computes the digest of the release `push` would build for it, which covers hooks, templates, seeds and declared inputs — the reviewer's "complete declared runtime closure" is exactly the release closure. |
+| T3-02 | BLOCKER | A, widened | S2.6, S14.2, S9.4, S10.6, S6.8, S6.10, S17.3.1, S17.3.3, S17.3.4, S17.4.1, S17.4.2, S14.1.1 | The state root; `ciu.host.toml`; realness in the instance record; prepare → apply → health → receipt → switch in both directions; pointers unchanged on failure; no automatic compensation. The reviewer's `<bundle_dir>/state/<instance>/<host>/` became `<bundle_dir>/state/` because a bundle directory holds one instance and a state root is per host by construction. |
+| T3-03 | BLOCKER | A | S3.1.5, S6.2, S16.3, S17.3.1, S3.3, demo `examples/monorepo/` | Reach = the containing worktree (git top level), canonicalized; inherited policy flattened into `ciu.inherited.toml` with source digests at push; an inherited judge floor is permitted and unused without an assay lane; the fixture with a zero-instance root, an assay child with a sibling build context, and a command-only child. |
+| T3-04 | BLOCKER | A | S14.3, S14.4.3, S14.4.7–S14.4.9, S14.7.1, S18.2 | The lock matrix; the realization-only lease class; lock-free lease records under `ciu-leases/`; `CIU_LEASE_FDS` so a CIU verb inside a lease reuses the inherited descriptor; non-blocking observers. |
+| T3-05 | BLOCKER | A (narrow reopening; author's call) | S4.1.1, S4.1.2, S4.5.3, S14.8.2, S18 | Cold move; copies refused; `--fresh`; `adopt --owner` withdrawn; the "copied tree" claim withdrawn; labels never rewritten. The reviewer's alternative — an atomic ownership record outside both copyable trees plus recreation of every labelled resource — was not adopted: it is the registry the operator declined (§2.1) plus a volume migration, for a case (renaming a running deployment) that `down`, `clean`, move, `up` already covers. |
+| T3-06 | BLOCKER | A | S3.8.6, S8.5.4, S17.5, S18.2, S18.4 | `probes` with a closed result, `invalid-receipt` and `no-manifest`, the four APIs, three variables; the document's enumerations become a tested output of the implementation. |
+| T3-07 | MAJOR | A | S17.6.1, S6.2, S17.3.6 | The reference-level image map before any per-service decision; immutable release tags in archive mode; id comparison before create in none mode. |
+| T3-08 | MAJOR | A′ | S16.9.4, S16.7.2, S16.5, S16.10 | Random 128-bit run ids with exclusive creation and a `run.json` manifest, as proposed. `ciu gate --resume` is withdrawn rather than hardened: assay's resume is content-keyed and self-contained, so a CIU resume would resume nothing. The progress path stays in the run directory — a deviation from the run-gate `.assay/progress-<lane>.jsonl` convention stated with its reason (no hidden directories, no shared files) rather than adopted; assay's `--resume` is always passed. |
+| T3-09 | MAJOR | A | S8.5.2a, S8.5.4, S6.4 | Probes from the consumer's vantage (a probe container on the instance network with the same `extra_hosts`, a host-namespace helper, the consumer host); `probe = "none"` on the binding for a UDP host-network listener. |
+| T3-10 | MAJOR | A | S16.6.1, S16.6.4, S16.5, S15.3, S13.3.2 | `memory_max` required for every admitted lane (reserving the whole remaining capacity for an undeclared lane was not adopted: an undeclared cap on a shared host is a declaration error, not a scheduling policy); every hard cap incl. `cpu.max` and each `io.max` tuple aborts on mismatch; a requested hard cap the host cannot enforce is refused before start. |
+
+### 7.2 Round-2 audit rows
+The incomplete rows (T2-03, T2-09) and the landed-and-broke rows (T2-01, T2-05, T2-06, T2-07, T2-08) resolve through 7.1. The reviewer's `flock -n /sys/fs/cgroup` check confirmed that locking the cgroup directory is possible on this host's cgroup2fs; S16.6.1 stands.
+
+### 7.3 Still open
+Items 1–6 of §5 and the additions of §6.5 stand; proposal §4.10 items 23–26 are new. Recommended next review: a targeted round 4 on S2.6 (the state root), S17.4 (the activation state machine and manifest), S14.4.9 (the lock matrix) and `examples/monorepo/`.

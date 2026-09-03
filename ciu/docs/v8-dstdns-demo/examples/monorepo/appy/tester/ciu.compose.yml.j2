@@ -1,0 +1,11 @@
+# examples/monorepo/appy/tester/ciu.compose.yml.j2 — what the template MUST write and nothing
+# else (S11.2, S11.3): image, command, the checkout mount. container_name, hostname, networks,
+# labels, build:, cgroup fields are INJECTED (S11.4). The exec-mode mount proof (S16.4.3) checks that
+# this container mounts THIS checkout's physical root at workdir before any lane runs in it.
+services:
+  tester:
+    image: {{ ciu_stack.tester.image }}
+    command: ["sleep", "infinity"]
+    working_dir: {{ host.repo_root }}
+    volumes:
+      - "{{ host.physical_repo_root }}:{{ host.repo_root }}:rw"
