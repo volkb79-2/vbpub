@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import textwrap
 from pathlib import Path
@@ -1114,6 +1115,260 @@ class TestL13OracleScopeCoverage:
         findings: list = []
         lint._check_l13(findings, Path("demo-P01-test.md"), fm)
         assert findings == []
+
+
+AUTHORING_MD_PATH = Path(__file__).resolve().parent.parent / "reference" / "AUTHORING.md"
+
+# The exact text Work item 1 (nyxloom-P100) pins verbatim, extracted
+# programmatically from the frozen handoff's own blockquote and compared
+# here whitespace-normalized (AUTHORING.md's own line-wrap width need not
+# match this file's — see FIX-VERIFICATION-2.md's note on "a plain
+# fixed-string grep -F" being ordinary implementation latitude for a
+# whitespace-normalized substring check).
+AUTHORING_TIER_PARAGRAPH = (
+    "The table above names the PLANNED tier each contract class is "
+    "intended to route through once the remaining implementer bands "
+    "exist — it is not itself a claim about what `routes.toml` "
+    "declares today. `contract_class` (2a-2e) is an authoring/review "
+    "classification recorded in the body; frontmatter `tier` is a "
+    "different thing entirely: it must always be a literal key that "
+    "exists in the CURRENT live `routes.toml`, chosen for the capability "
+    "the assigned contract class needs, regardless of what name a future "
+    "band will eventually carry. Do not put a nonexistent tier in "
+    "frontmatter. Routing a `2a`-`2c` package through a live tier whose "
+    "capability is below what the class needs requires an explicit "
+    "human/controller override and a frontier-capable route; preferably "
+    "carve it down first."
+)
+
+
+class TestAuthoringDocTierGuidance:
+    """O1 (nyxloom-P100/NL-2): reference/AUTHORING.md's tier prose is
+    repaired to match live routes.toml -- the pinned replacement paragraph
+    is present verbatim (whitespace-normalized), the old false "are
+    deployed today" claim is gone, and the Level 2 worked example's tier:
+    line no longer prints a literal implement-2 value."""
+
+    def test_pinned_replacement_paragraph_present_verbatim(self):
+        text = AUTHORING_MD_PATH.read_text(encoding="utf-8")
+        normalized = " ".join(text.split())
+        assert " ".join(AUTHORING_TIER_PARAGRAPH.split()) in normalized
+
+    def test_old_deployed_today_claim_is_gone(self):
+        text = AUTHORING_MD_PATH.read_text(encoding="utf-8")
+        assert text.count("are deployed today") == 0
+
+    def test_worked_example_tier_is_a_placeholder_not_implement_2(self):
+        text = AUTHORING_MD_PATH.read_text(encoding="utf-8")
+        assert "tier: implement-2" not in text
+        assert re.search(r"tier:\s*<[^>\n]+>", text), \
+            "worked example's tier: line must use an angle-bracket " \
+            "placeholder, matching every other value in that YAML block"
+
+
+SONNET_ROUTES_TOML = """\
+revision = "test-rev-l14"
+
+[tiers.sonnet5-high]
+routes = ["fake-cli"]
+
+[routes.fake-cli]
+cli = "fake"
+model = "fake-model"
+probe = ["true"]
+usage_source = "none"
+trust = "operator"
+"""
+
+MALFORMED_ROUTES_TOML_BAD_SYNTAX = "this is not [ valid toml\n"
+
+MALFORMED_ROUTES_TOML_MISSING_ROUTES_KEY = """\
+revision = "test-rev-l14-malformed"
+
+[tiers.sonnet5-high]
+description = "a tier entry missing its required routes key"
+"""
+
+
+def _l14_handoff_text(handoff_id: str, tier: str, *, body_padding: str = "") -> str:
+    """A schema-valid, otherwise-clean handoff (mirrors _handoff_text_at_
+    token_count's / TestL13's inline fixtures) parameterized by `tier`, the
+    one field L14 validates."""
+    return f"""---
+schema_version: 1
+id: {handoff_id}
+project: demo
+title: Test
+tier: {tier}
+input_revision: "0000000"
+source: {{kind: review}}
+scope: {{touch: ["src/thing.py"]}}
+oracles:
+  - id: O1
+    observable: "pass"
+    negative: "fail"
+    gate: pytest-q
+gates: [pytest-q]
+escalate_if: ["trigger"]
+---
+
+Body with BLOCKED: marker.
+worktree branch out of scope read first context to read
+{body_padding}
+"""
+
+
+class TestL14TierRoutesToml:
+    """Test L14 (NL-2/nyxloom-P100): fm.tier must resolve against the live
+    routes.toml, read fresh on every call -- never a hardcoded allowlist or
+    blocklist of "known" tier names."""
+
+    def test_valid_tier_no_finding_direct_call(self, sample_project, tmp_path):
+        """O2: a real routes.toml key (sonnet5-high) passes with no L14
+        finding via lint_file() called directly."""
+        paths.routes_path().write_text(SONNET_ROUTES_TOML)
+        path = tmp_path / "demo-P01-test.md"
+        path.write_text(_l14_handoff_text("demo-P01-test", "sonnet5-high"))
+
+        findings = lint.lint_file(path, sample_project)
+        assert [f for f in findings if f.rule == "L14"] == []
+
+    def test_valid_tier_no_finding_real_cli(self, sample_project, tmp_state, capsys):
+        """O2: the SAME fixture through the real `nyxloom lint <path>` CLI
+        entry point (cli.main, the precedent TestCmdLintResolvesOwnProject
+        already uses) -- both paths must agree."""
+        paths.routes_path().write_text(SONNET_ROUTES_TOML)
+        handoff = sample_project.root / "handoff" / "demo-P02-test.md"
+        handoff.write_text(_l14_handoff_text("demo-P02-test", "sonnet5-high"))
+
+        exit_code = cli.main(["lint", str(handoff)])
+        out = capsys.readouterr().out
+
+        assert "L14" not in out
+        assert exit_code == 0
+
+    @pytest.mark.parametrize("bad_tier,expect_suggestion", [
+        # The three real historical bad values from NL-2's own reproduction,
+        # plus the REQUIRED near-miss (sonnet5-hgih, NOT one of the three
+        # historical values -- the fixture that distinguishes a real
+        # live-data allowlist from a hardcoded blocklist of just the three
+        # named strings). Only sonnet-xhigh/sonnet5-hgih are close enough to
+        # sonnet5-high for difflib's default cutoff to suggest it (verified
+        # directly) -- Work item 3 explicitly allows an empty suggestion
+        # list for the other two ("do not error if no close match exists,
+        # just name the bad value"), so only those two assert the mention.
+        ("implement-2", False),
+        ("sonnet-xhigh", True),
+        ("opus-xhigh", False),
+        ("sonnet5-hgih", True),
+    ])
+    def test_bad_tier_produces_l14_error(self, sample_project, tmp_path,
+                                          bad_tier, expect_suggestion):
+        """O3: each of the four required bad values produces exactly one
+        L14 ERROR naming the bad value; a real live-data check (not a
+        hardcoded allowlist/blocklist) is proven by O5, not this test alone."""
+        paths.routes_path().write_text(SONNET_ROUTES_TOML)
+        path = tmp_path / "demo-P01-test.md"
+        path.write_text(_l14_handoff_text("demo-P01-test", bad_tier))
+
+        findings = lint.lint_file(path, sample_project)
+        l14 = [f for f in findings if f.rule == "L14"]
+        assert len(l14) == 1
+        assert l14[0].severity == "error"
+        assert bad_tier in l14[0].message
+        if expect_suggestion:
+            assert "sonnet5-high" in l14[0].message
+
+    def test_missing_routes_toml_warns_via_real_cli(self, tmp_path, tmp_state, capsys):
+        """O4 case (a): a project whose paths.routes_path() does not exist
+        (tmp_state's ensure_layout() only creates directories, never
+        routes.toml itself) produces an L14 WARNING, not an ERROR and not a
+        crash, via the real CLI subprocess-equivalent entry point."""
+        root = _write_trove_project(tmp_path, "l14-missing-routes", "l14missing")
+        handoff = _write_real_handoff(root, "l14missing", "l14missing-P01-real")
+        assert not paths.routes_path().exists()
+
+        exit_code = cli.main(["lint", str(handoff)])
+        out = capsys.readouterr().out
+
+        assert "L14" in out
+        assert "warning" in out
+        assert exit_code == 0
+
+    def test_malformed_routes_toml_bad_syntax_warns_and_keeps_other_findings(
+        self, tmp_path, tmp_state, capsys
+    ):
+        """O4 case (b), variant 1: routes.toml EXISTS but is not valid TOML
+        (tomllib.TOMLDecodeError). Must WARN, not crash the CLI subprocess,
+        and L1-L13's other findings for the same file (here L10, reusing
+        TestL10Size's own over-threshold fixture shape) must still be
+        reported alongside it."""
+        paths.routes_path().write_text(MALFORMED_ROUTES_TOML_BAD_SYNTAX)
+        root = _write_trove_project(tmp_path, "l14-bad-syntax", "l14badsyntax")
+        large_body = "x" * 45000  # 11250 tokens, over L10's 10k warn floor
+        handoff = _write_real_handoff(root, "l14badsyntax", "l14badsyntax-P01-real")
+        handoff.write_text(handoff.read_text() + large_body)
+
+        exit_code = cli.main(["lint", str(handoff)])
+        out = capsys.readouterr().out
+
+        assert "L14" in out
+        assert "warning" in out
+        assert "L10" in out
+        assert exit_code == 0
+
+    def test_malformed_routes_toml_missing_routes_key_warns(
+        self, tmp_path, tmp_state, capsys
+    ):
+        """O4 case (b), variant 2: routes.toml exists and IS valid TOML, but
+        a [tiers.x] entry is missing its required `routes` key -- reproduces
+        Routes.load()'s own KeyError failure mode exactly (not OSError, so a
+        narrow `except FileNotFoundError` would let this propagate
+        uncaught). Must WARN, not crash."""
+        paths.routes_path().write_text(MALFORMED_ROUTES_TOML_MISSING_ROUTES_KEY)
+        root = _write_trove_project(tmp_path, "l14-missing-key", "l14missingkey")
+        handoff = _write_real_handoff(root, "l14missingkey", "l14missingkey-P01-real")
+
+        exit_code = cli.main(["lint", str(handoff)])
+        out = capsys.readouterr().out
+
+        assert "L14" in out
+        assert "warning" in out
+        assert exit_code == 0
+
+    def test_live_reread_no_caching_across_routes_toml_mutation(
+        self, sample_project, tmp_path
+    ):
+        """O5: after a first lint pass with only [tiers.sonnet5-high]
+        declared, the SAME on-disk routes.toml is rewritten in the SAME
+        process (no restart, no code change) to declare
+        [tiers.new-tier-name] instead. Re-linting the IDENTICAL handoff
+        (tier: sonnet5-high) that previously passed must now fail, and a
+        handoff with tier: new-tier-name must now pass -- proving L14
+        re-resolves routes.toml on every call rather than caching a
+        snapshot (Routes.load() itself has no caching; this must not add
+        any either)."""
+        paths.routes_path().write_text(SONNET_ROUTES_TOML)
+        old_handoff = tmp_path / "demo-P01-test.md"
+        old_handoff.write_text(_l14_handoff_text("demo-P01-test", "sonnet5-high"))
+
+        first_pass = lint.lint_file(old_handoff, sample_project)
+        assert [f for f in first_pass if f.rule == "L14"] == []
+
+        renamed_routes_toml = SONNET_ROUTES_TOML.replace(
+            "sonnet5-high", "new-tier-name"
+        )
+        paths.routes_path().write_text(renamed_routes_toml)
+
+        second_pass = lint.lint_file(old_handoff, sample_project)
+        l14_second = [f for f in second_pass if f.rule == "L14"]
+        assert len(l14_second) == 1
+        assert l14_second[0].severity == "error"
+
+        new_handoff = tmp_path / "demo-P02-test.md"
+        new_handoff.write_text(_l14_handoff_text("demo-P02-test", "new-tier-name"))
+        third_pass = lint.lint_file(new_handoff, sample_project)
+        assert [f for f in third_pass if f.rule == "L14"] == []
 
 
 class TestGoldenCorpus:
