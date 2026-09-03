@@ -2261,7 +2261,13 @@ def _check_r3_rederivation(verdict: Verdict, failures: list[str]) -> None:
        every later one is ``not_attempted``/``short_circuited``; under
        ``all``, no attempt is ``short_circuited``; after a TERMINAL attempt
        every later one is ``not_attempted``. A document whose bookkeeping
-       contradicts its own aggregation is refused.
+       contradicts its own aggregation is refused. **The same holds for
+       ``budget_exhausted`` (R-2/SF-1):** it may appear only on a
+       ``BUDGET_EXCEEDED``/``LANE_TIMEOUT`` claim -- a judged status is
+       unreachable once the deadline cuts a probe short -- and only as a
+       trailing run: no ``attempted`` entry may follow the first
+       ``budget_exhausted`` one, which is exactly where the mechanism
+       stopped.
 
     **A FAIL under ``all`` is not terminal** (DA-R19). It decides the status
     and stops nothing: the 2N materialisation bound is deliberate, because
@@ -2344,8 +2350,27 @@ def _check_r3_rederivation(verdict: Verdict, failures: list[str]) -> None:
             f"refusal means no probe produced a record to report"
         )
 
+    # R-2/SF-1: the index of the FIRST `budget_exhausted` entry, or `None` if
+    # there is none. By construction (`canary.run_isolated_canaries`) every
+    # `budget_exhausted` entry is a TRAILING run starting exactly where the
+    # deadline cut a probe short -- nothing `attempted` can follow it.
+    budget_at = min(
+        (
+            i
+            for i, a in enumerate(claim.canary.attempts)
+            if a.not_attempted_reason == "budget_exhausted"
+        ),
+        default=None,
+    )
     for index, attempt in enumerate(claim.canary.attempts):
-        if attempt.disposition != "not_attempted":
+        if attempt.disposition == "attempted":
+            if budget_at is not None and index >= budget_at:
+                failures.append(
+                    f"R3 canary attempt {index} ({attempt.target}) is "
+                    f"recorded 'attempted' at or after attempt {budget_at}, "
+                    f"where the budget ran out -- every target from there "
+                    f"on is not_attempted"
+                )
             continue
         why = attempt.not_attempted_reason
         if why == "short_circuited":
@@ -2367,6 +2392,19 @@ def _check_r3_rederivation(verdict: Verdict, failures: list[str]) -> None:
                     f"R3 canary attempt {index} ({attempt.target}) records "
                     f"'earlier_target_terminal' but no earlier attempt was "
                     f"terminal"
+                )
+        elif why == "budget_exhausted":
+            if (claim.status, claim.reason_code) != (
+                Outcome.BUDGET_EXCEEDED,
+                ReasonCode.LANE_TIMEOUT,
+            ):
+                failures.append(
+                    f"R3 canary attempt {index} ({attempt.target}) records "
+                    f"not_attempted_reason 'budget_exhausted', which only "
+                    f"the mechanism's own BUDGET_EXCEEDED/LANE_TIMEOUT "
+                    f"terminal can produce -- a judged status is "
+                    f"unreachable once the deadline cuts a probe short; "
+                    f"got {_fmt(claim.status, claim.reason_code)}"
                 )
 
 

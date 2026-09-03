@@ -486,6 +486,41 @@ def test_a_short_circuit_the_aggregation_cannot_explain_is_refused(
     assert any("short_circuited" in failure for failure in failures), failures
 
 
+def test_a_budget_exhausted_reason_on_a_judged_claim_is_refused(
+    git_repo: GitRepo,
+):
+    """R-2/SF-1 (`assay-WAVE-D-v10-REVIEW-R2-round1.md`): the bookkeeping
+    check validated `short_circuited` and `earlier_target_terminal` but had
+    no branch for the third closed member, `budget_exhausted`, so a document
+    claiming a judged status while one target is recorded
+    `not_attempted`/`budget_exhausted` verified clean under BOTH `assay
+    verify` and the independent `jsonschema` validator. Take the SAME real
+    short-circuiting `any` verdict `test_a_short_circuit_the_aggregation_
+    cannot_explain_is_refused` uses and relabel its one `not_attempted`
+    entry's reason `budget_exhausted` instead, leaving the claim's own
+    judged `status` untouched -- `budget_exhausted` is only reachable
+    through the mechanism's own `BUDGET_EXCEEDED`/`LANE_TIMEOUT` terminal
+    (`canary.run_isolated_canaries`), so a judged claim can never truthfully
+    carry it."""
+    _seed(git_repo)
+    verdict, _ = _run(git_repo, _lane(git_repo, aggregation="any"))
+    document = verdict.to_dict()
+    assert verify_document(document) == []
+
+    for claim in document["claims"]:
+        if claim["rigor"] != "R3":
+            continue
+        for attempt in claim["canary"]["attempts"]:
+            if attempt.get("disposition") == "not_attempted":
+                attempt["not_attempted_reason"] = "budget_exhausted"
+    failures = verify_document(document)
+    assert any("budget_exhausted" in failure for failure in failures), failures
+    assert any(
+        "unreachable once the deadline cuts a probe short" in failure
+        for failure in failures
+    ), failures
+
+
 def test_a_payload_under_a_refusal_other_than_the_budget_is_refused(
     git_repo: GitRepo,
 ):
