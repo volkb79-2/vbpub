@@ -34,7 +34,7 @@ base = "origin/main"
 
 [lanes.r2.judge.mutation]
 jobs = 2
-max_mutants = 200
+max_mutants = 320
 operators = [
   "python:compare-swap",
   "python:boolop-swap",
