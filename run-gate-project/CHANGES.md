@@ -9,29 +9,12 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
-### Fixed
-- **RG-39 (rev 35, SPEC `R-41`) — exec-mode lanes now serialize internally on
-  the resolved container name, closing the need for every caller's own
-  `flock`.** A second lock (`/tmp/run-gate-exec-<container>.lock`, RG-20's
-  `O_NOFOLLOW`+`0600` discipline via a new shared `_open_lockfile()` helper)
-  is acquired strictly AFTER RG-20's shared-infra locks and released from the
-  same `finally` — a fixed global order that rules out an ABBA deadlock
-  between the two lock kinds. A second lane racing the SAME container WAITS
-  (blocking `LOCK_EX`, never fails); different containers never meet;
-  `--dry-run` plans the lock but never blocks. The caller-side `flock` of
-  dstdns `GUIDE.md` §1 stays valid as an outer lock and becomes optional for
-  correctness, not required.
-
-<!-- Post-release housekeeping (assay CHANGES.md precedent): this block is
-     CLEARED immediately after a release. cmru generates the dated entry
-     below from the commit range but does NOT clear this hand-written block
-     itself — leaving content here would republish shipped work as
-     "unreleased" on the next cycle. Recurred on run-gate-project as of
-     2026-09-01 (rev 24/25/27/28/29/30 content had survived three releases,
-     23.1.0/23.2.0/23.2.1; then again the SAME cycle, since cutting
-     23.2.2 to ship RG-31's own fix — confirming this really is a manual
-     per-release step, not something cmru will ever do for you); cleared
-     both times. -->
+<!-- cleared 2026-09-03 after the 23.5.0 release, per the standing
+     housekeeping rule (see CHANGES.md history for the two prior
+     occurrences this recurred on this project): cmru's generator produces
+     the dated entry below from the commit range but does not clear this
+     hand-written block, so leaving content here republishes shipped work
+     as "unreleased". -->
 
 <!-- cmru: release history -->
 
