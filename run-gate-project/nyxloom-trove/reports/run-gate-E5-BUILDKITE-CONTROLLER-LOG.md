@@ -76,3 +76,47 @@ dstdns D-110.4. Rulings here are E5-Rn.
   no-network proof, the 38 tests + hollow-test hunt, docs-truth table,
   shellcheck + shell-safety; report committed as its only file. After
   ACCEPT: merge `--no-ff` to main, no release.
+
+- **2026-09-03 (reviewer round 1: NOT ACCEPT — 1 BLOCKER, 5 SHOULD-FIX,
+  9 NIT; E5-R7..E5-R12; fix package to the same implementer, round 2
+  next)** — Report `31efccca` on the branch. Verified true by the reviewer:
+  scope discipline exact; §3 step shape validated key-by-key and in order
+  via PyYAML against run-gate-project (1 step), cmru (5), assay (1); every
+  vendor REST path, artifact field and build state matches the fetched
+  docs; E5-R6's premise confirmed by the vendor (precedence Pipeline →
+  Build → Step); zero socket syscalls under `strace -f -e trace=network`
+  for all three dry-run verbs; token never printed; 38/38 tests, collected
+  by the selftest lane. Findings: **B1** `collect` used the build
+  response's free-form `commit` as a directory name unchecked (a
+  `../../../escape` commit wrote outside `<dir>` under a stubbed curl);
+  **S1** `run --dry-run lint` (flag after the verb) is swallowed as a lane
+  name and POSTs a real build; **S2** §6 row 1 claimed "landed" for a seam
+  nothing declares, and "matching" globs the generator cannot compute;
+  **S3** unbounded polling; **S4** the stored pipeline snippet pipes the
+  generator into the upload with no pipefail and no queue on the upload
+  step; **S5** refusals exit 1, not the stated 2; N1 the whole non-dry-run
+  path untested (E5-R2 "asserted" by a word in prose); N2–N9 as listed.
+  - **E5-R7 (B1 + N1):** shell guard `[A-Za-z0-9._-]+` on `commit` and
+    `[0-9]+` on the build number before either is a path component; AND
+    the PATH-stubbed `curl` harness so the traversal guard, the seven
+    terminal states and the exit-code contract are genuinely tested.
+  - **E5-R8 (S2, ask 2 → (a) now):** §6 row 1 returns to a true state
+    (docs seam, not started; fixed globs are the only executable evidence;
+    artifacts outside `.assay/` and `.run-gate/` do not travel); the rule
+    "a remote-capable lane keeps every artifact it wants back under
+    `.assay/`" added by the controller to LANE-AUTHORING.md §5 on main;
+    (c) — `artifacts` via `--list --json` — folds into RG-45.
+  - **E5-R9 (S1, ask 3 → both):** `--dry-run` accepted anywhere in argv;
+    `-`-leading lane names refused by name.
+  - **E5-R10 (S3, ask 4 → now):** `BK_MAX_WAIT_MINUTES` (default 300),
+    exit 3 naming build number and last state when exceeded.
+  - **E5-R11 (S4, ask 5 → fix here):** generate to a file, then upload it
+    (no pipefail subtlety); the upload step declares a LITERAL enrollment
+    queue with the reason in one sentence.
+  - **E5-R12 (S5):** exit codes 0 passed / 1 not passed / 2 refused (every
+    refusal through `die`) / 3 gave up waiting, stated once, tested.
+  - **Nits N2–N9 all taken** (N6 → refuse duplicate lane names; N8 → third
+    glob `<project>/.assay/*` AND §4.3 softened until the first live build).
+  - Fix package sent to the same implementer (context intact, small
+    package); reviewer round 2 (same reviewer session, cap 3) on its tip;
+    after ACCEPT merge `--no-ff` to main, no release.

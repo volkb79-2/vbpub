@@ -283,11 +283,16 @@ operator and a controller session are equal triggers. `CONSUMERS.md`
 and the integration seams are in **`REMOTE-LANES-BUILDKITE.md`**.
 
 What a remote lane needs from its author is exactly what a local one needs
-plus two things: **artifacts declared** (`artifacts = [...]` so the verdict,
-the progress file and the evidence directory travel back), and **a budget
-that assumes nobody is watching** — `stall_timeout` for silence, `budget`
-for the honest maximum, and assay's `--resume` (already passed by R-38) so a
-re-run picks up where the last one stopped.
+plus two things: **artifacts declared AND kept under `.assay/`** (the
+pipeline generator cannot read a lane's `artifacts` — `--list` does not
+carry them, by the no-second-parser rule — so its upload globs are fixed:
+`<project>/.assay/**`, `<project>/.assay/*` and
+`<project>/.run-gate/history.json`; a declared artifact anywhere else, such
+as `run-gate-project/selftest`'s `coverage.json`, does not travel back until
+RG-45 exposes `artifacts` through `--list --json`), and **a budget that
+assumes nobody is watching** — `stall_timeout` for silence, `budget` for the
+honest maximum, and assay's `--resume` (already passed by R-38) so a re-run
+picks up where the last one stopped.
 
 ---
 
