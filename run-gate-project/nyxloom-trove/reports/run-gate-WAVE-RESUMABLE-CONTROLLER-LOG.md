@@ -518,3 +518,56 @@ controller's entries from the implementer's return onward; wave records
     thorough. Own detached worktree/clone for its probes; told the
     merge-sequencing decision above so it doesn't flag the pending
     revision renumbering as a defect.
+
+- **2026-09-03 (RG-39 review round 1: ACCEPT; MERGE-READY, waiting on the
+  wave to land first per the sequencing decision)** — Report `467b2358`
+  (`ad2b0e2d` a same-round encoding fix, three stray NUL bytes from the
+  report's own TOML-escape-syntax prose that made git misclassify the
+  file as binary — content/verdict unchanged). Verified independently:
+  `495 passed, 2 skipped` / `diff-coverage OK: 25/25` / `exit 0`
+  (matches the implementer's own numbers exactly); tree clean. Six push
+  points all driven to real observations, not just read: lock ORDERING
+  (grepped every caller of both lock functions — exactly one each, both
+  in `main()`, order textually enforced, no violation path exists);
+  STALE LOCK FILES (grepped for any `unlink`/`os.remove` near a `.lock`
+  path — none exist, so no TOCTOU is possible); DRY-RUN (confirmed by
+  code reading that the `if dry_run` branch returns before the file is
+  ever opened); the SIGNATURE-CHANGE REFACTOR (confirmed `run_exec_lane`
+  has exactly one caller, correctly threaded — no stale second call site
+  silently bypassing the mutex); RED-FIRST (independently re-swapped in
+  the pre-fix code with the new tests kept: 4/6 failed as expected, 2
+  passed trivially for legitimate reasons — no hollow tests); the gate
+  itself, run fresh in an isolated worktree.
+  - **MINOR (not a blocker): `acquire_exec_lock()`'s `except OSError`
+    doesn't catch every exception `os.open()` can raise for a pathological
+    lock-key character** — a `container_name` containing a NUL byte
+    (constructible via a project's own `run-gate.toml`, TOML's control-
+    character escape, not rejected by the existing non-empty-string
+    load-time check) makes `os.open()` raise `ValueError`, producing a raw
+    traceback instead of the documented clean exit-3 `GateError` contract.
+    Reproduced end-to-end through the real CLI. Slash, `..`-traversal and
+    overlong names were separately tested and are safe. **Confirmed
+    inherited unchanged from RG-20's own `acquire_shared_locks`** — not
+    introduced by this diff, so it does not block merge. **Filed for the
+    next backlog batch** (folded into the RG-42..47 filings already
+    planned for after the wave merges — becomes the 7th item in that
+    batch, exact number confirmed at filing time once the wave's own
+    renumbering lands): a shared charset/control-character validation at
+    config-load time for `container_name` and `resources.shared` names
+    would close this for BOTH `acquire_exec_lock` and
+    `acquire_shared_locks` at once, rather than patching each `except`
+    clause separately.
+  - **INFORMATIONAL, correctly out of scope, no action:** `build_env_
+    probe_argv()` (RG-25/RG-26's environment-inventory probe, unchanged
+    by this diff) also `docker exec`s into the same resolved container,
+    unsynchronized by the new mutex — traced as a wholly separate,
+    pre-existing mechanism (never lock-covered before this branch either,
+    RG-39's own scope is the judged lane's exec-and-evidence window, not
+    a probe whose own docstring says "a probe's result is never a
+    verdict"). Worth knowing if a future RG-37/v8 pass revisits the
+    exec-mode contract; not a defect, not filed.
+  - **MERGE-READY.** Per the sequencing decision above: this branch waits
+    for `feature/run-gate-wave-resumable` to merge first (keeping
+    `__revision__ = 34`), then merges second with its own bump renumbered
+    34→35, verified by one more fresh selftest at that point before
+    calling it done.
