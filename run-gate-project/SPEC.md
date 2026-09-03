@@ -919,6 +919,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `inflight.lock` (`O_NOFOLLOW`, 0600, bounded) plus
     write-temp-then-`os.replace`; that lock spans the write and nothing
     else, and it is NOT what arbitrates two live clients — `R-39e` is. The
+    record's `schema` is CHECKED on read, not merely written: a record of
+    another schema is disclosed by name and treated as no record, because an
+    old client reading a future record under today's rules is the silent
+    misread a version field exists to prevent. The
     record therefore also names its OWNER: `owner_pid`, `owner_start` (the
     process start time, field 22 of `/proc/<pid>/stat`, so a recycled pid
     cannot impersonate the owner) and `boot_id` (a pid means nothing across
@@ -1008,6 +1012,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       mentioned. On a FOLLOW the `stall_timeout` line also names the owning
       pid as the client that will act on it — the same fact, without
       implying this invocation would be the one to stop the container.
+      The ARTIFACTS a re-attach or follow discloses are the ones the RECORD
+      declared (`verdict`, `progress`), not the ones this invocation's
+      config would construct: they are what THAT run was told to write, and
+      the live config is not the authority for a run already in flight.
+      Presence of the key is the test, so a record written before rev 34
+      falls back to the config and a command lane's recorded `null`
+      correctly discloses no verdict.
   - **`R-39d` Where it does not apply.** `--dry-run` DISCLOSES a record and
     names what a live run would do with it, and changes nothing — it does
     not attach, collect, clear or remove. The disclosure resolves HEAD and
@@ -1092,14 +1103,30 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     <m>m`. The FIRST observation is a baseline and prints the count alone: a
     single event with no clock in the file is not a measurement, and
     inventing a rate would be the guess this replaces. 30 s judges a
-    15-minute `stall_timeout` to within 3% and costs a four-hour lane 480
-    `stat()`s. Disclosure only (`R-05`) — nothing here decides anything.
+    15-minute `stall_timeout` to within 3%. Each poll costs a `stat()`, a
+    full `read_text()` and a `json.loads()` per line — the file is
+    append-only and no offset is remembered — so a four-hour lane costs 480
+    of those, which on a 4 000-candidate mutation lane is ~2M line parses
+    over the run: cheap beside the judge it is watching, but not the "480
+    `stat()`s" this paragraph claimed before review round 1 (N1). An
+    incremental read from a saved offset would remove the parse half and is
+    the obvious step if the file ever grows enough to matter. Disclosure
+    only (`R-05`) — nothing here decides anything.
   - **`R-40b` No events is disclosed ONCE and is never a fault.** A missing
     file, a file holding only the `run` header (an R0/R1 lane — one command,
     no candidates), or a judge that writes none, prints `run-gate: progress
     <lane>: no candidate events (not an R2 lane, or the judge writes none)`
     exactly once and is treated as healthy. A torn last line (the judge is
     mid-append) is skipped, not fatal.
+    - **A file that VANISHES mid-run is not this case.** Once an event has
+      been seen, a file that becomes unreadable — deleted, truncated,
+      replaced — gets its own sentence naming the last event it held, and it
+      is SILENCE: the stall clock keeps running from the last real movement,
+      not from the vanishing. Printing `no candidate events` there was both
+      untrue and disabling — stall detection stopped forever, so a lane that
+      lost its progress file became permanently unstoppable at the moment it
+      most needed bounding (review round 1 N4). The notice is armed once per
+      disappearance; a file that comes back reports normally again.
   - **`R-40c` `stall_timeout`, an optional lane key with the `budget`
     grammar.** The lane is stopped ONLY when the container is STILL RUNNING
     and the progress file has not advanced for that long — `docker rm -f`,
@@ -1113,6 +1140,22 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     load — a command lane writes no progress file, so the key could never do
     anything, and an inert key that reads like a real one is the defect
     `R-08a` was filed for one key over.
+    - **Where the silence is measured FROM.** Real movement restarts the
+      clock; the watch's FIRST observation does not. There is no earlier
+      event for a first observation to have moved from — it is the baseline
+      `R-40a` already calls it — and restarting the clock there would hand a
+      container that was ALREADY frozen when this client arrived a fresh,
+      full stall window. That is exactly the `R-39` re-attach case: the run
+      being judged started in another process, possibly hours ago. So
+      silence runs from the watch's construction until the file first moves
+      under it, and from each movement after that.
+    - **Which file, on a re-attach.** The one the RECORD names
+      (`R-39a`'s `progress`), not the one this invocation's config would
+      construct: it is the file that run was told to write, and a lane
+      retargeted between the two invocations would otherwise be judged by
+      the silence of a file nobody was ever going to append to. Presence of
+      the key decides, so a record written before rev 34 falls back to the
+      config.
   - **`R-40d` Coarse now, exact later, same code.** assay's events carry no
     timestamp today, so the rate is measured against run-gate's OWN clock
     from the first event it observed and advancement is the file's mtime.

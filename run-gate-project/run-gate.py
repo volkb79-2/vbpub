@@ -12,7 +12,7 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 34  # rev 34 (the "resumable, observable gate" wave): RG-36 -- liveness for a long assay lane is judged from its PROGRESS FILE, not from a guessed total: `budget` is advisory here and hard in assay, so the only bound available was a number someone made up (dstdns raised `sql-mutation` 90m -> 120m and it still could not finish a window). While an assay lane's container runs, `.assay/progress-<assay_lane>.jsonl` (the file rev 33 already asks for) is read every PROGRESS_POLL_SECONDS = 30 and, when it moved, `progress <lane>: candidate i/N, <rate>/min, ETA <m>m` is printed; a judge that writes no candidate events is disclosed ONCE and never treated as a fault. New optional lane key `stall_timeout` (assay lanes only, the `budget` grammar) stops the lane ONLY while its container is still RUNNING and the file has been silent that long -- rm -f, evidence, exit 3, naming the last event and the age -- NEVER on total elapsed time. Coarse by necessity (assay's events carry no timestamp yet, B065) but written so an event carrying `elapsed_s` is preferred, making the same code exact without a rewrite (R-40). RG-34 -- `doctor` names a `kind = "command"` container lane whose argv[0] is a RELATIVE path containing `/` and not `{worktree}`-anchored, with the fix and the mechanism: a container that mounts only the judged worktree (a Mode-B instance's own runner) has nothing at the bare repo root its --workdir names, so dstdns P152's `argv = ["scripts/schema-gate.sh", "{worktree}"]` -- argument templated, script path not -- was `exit 127`, 100% reproducible there and invisible under the shared full-repo mount. A WARNING, never a refusal, and run-gate never rewrites argv: the same argv is correct under a full-repo mount and which one a lane gets is not statically visible (R-30b). RG-32 (BREAKING) -- `[lanes.*.pins.*]` validates its keys at last (`sha256`, `version`, nothing else), and `budget` there is refused BY NAME with the owner of the value it was mistaken for: run-gate never read it, the governing number is the target `assay.toml`'s own `[lanes.<assay_lane>] budget`, and the dead key sat one nesting level below a REAL lane-level `budget` that reads identically -- misread as governing three times in ONE dstdns session (two independent review agents and the controller), against a lane whose assay.toml had drifted 90m -> 120m with nothing able to notice. Renaming it to `budget_hint` + a drift check was rejected: a second reading of an assay-owned fact (R-35's own rule). Migration is one deletion per lane, in CHANGES (R-08a). RG-35 -- a lane's container outlives its client BY DESIGN (`docker run -d`, `rm -f` in a finally a killed client never reaches), and until now nothing on disk named it: the exit status, the evidence and the history record were lost and the NEXT invocation started a SECOND container for the same lane on the same commit -- the one-gate rule broken by the tool itself, on a host that shares 8 cores with a production workload. A successful `docker run -d` now writes `.run-gate/inflight/<lane>.json` (same store, same R-36f/g discipline: per (judged worktree x project x lane), git-ignore CHECKED, sibling lock + atomic rename) naming the container, its id, the judged commit, the tree and the assay artifacts; a later invocation of the same lane re-attaches to a RUNNING container (plain `docker logs -f` + `wait`), COLLECTS an exited one and finishes exactly as an attached run would, reports and clears a GONE one (recording that run as `aborted`, never as a pass) and runs fresh, and REFUSES (exit 2) when the record judges another commit -- naming both commits and `--fresh`, which removes the named container first. History records such a run ONCE, with the duration measured from the CONTAINER's start (R-39) -- and for a COLLECT, from the container's OWN clock, `FinishedAt - StartedAt` off the same inspect that answered the state question (RW-17), because a collect happens an arbitrary time after the container exited and that idle gap is not part of the run: left as `now - started` it charged one overnight collect 10800s for a run of minutes, inside the very median/min/max series RG-27 exists to make trustworthy. Docker's stamps are hand-parsed (nanosecond fractions, and the year-1 zero value that means "never set" -- a RUNNING container's FinishedAt is exactly that); either stamp missing or zero falls back to the record's `started_at`, never to half a pair. And two disclosure corrections (RW-18): `--dry-run` resolves HEAD and the owner BEFORE it speaks and walks the live decision's branches in the live decision's ORDER, so it names the refusal / the follow / the `--fresh` removal instead of announcing "re-attach or collect" for a record the live run refuses with exit 2 -- a dry run's whole audience is someone about to act on it; and the `budget`/`stall_timeout` lines, which lived on the fresh path only while `resolve_inflight` armed the watch and returned before them, now print on the RE-ATTACH and FOLLOW paths too (`print_lane_bounds`, one site so they cannot drift), because a re-attached lane was being stopped against a `stall_timeout` its own invocation had never mentioned -- unlike the `rev | lane | env | slice` header these are facts about the LANE, not claims about mounts this client never chose. Review round 1 found the concurrency half of that claim FALSE and it is fixed here (R-39e): a second client on the same lane re-attached to a container whose client was still ALIVE, `rm -f`'d it out from under that client and cleared the record, so the client that actually started the run got `docker wait` on a container that no longer existed and reported exit 3 on a GREEN lane. The record now names its OWNER (pid + the process start time from /proc/<pid>/stat + boot id, a conjunction so a recycled or post-reboot pid reads as dead) and an ALIVE owner is FOLLOWED, never hijacked -- same log stream, same exit code, and no `rm`, no cleared record, no history entry, all three still the owner's; `--fresh` against a live owner refuses by pid, because run-gate never removes another client's container. The one state in which a live owner's container is ALREADY gone is that owner's own `rm -f` -> `clear_inflight_record` window, microseconds wide, so the decision is re-read OWNER_RACE_REPOLLS = 3 times over ~1 s before any refusal (RW-20): the second read normally finds no record and this client runs fresh, because a refusal naming a pid whose run is already over is worse than a one-second wait -- bounded, never a wait loop. A DEAD owner is adopted exactly as before, so "after its client dies" is now literally what the code checks. Two more round-1 corrections in the same decision: "gone" is ONLY `No such object`/`No such container` on docker inspect's stderr -- every other inspect failure (an unreachable daemon above all) is exit 3 with the record UNTOUCHED and nothing recorded, because reading a daemon outage as gone wrote a false `aborted` AND deleted the only thing on disk that can find the still-running container once the daemon returns; and the container's `{{.Id}}` now rides along in the same inspect format, so a record whose name has been taken by a DIFFERENT container is disclosed as such ("a different container now wears this name; run-gate will not touch it"), cleared and re-run fresh, never re-attached to and never `rm -f`'d. A fourth: the re-attach log stream is PLAIN `docker logs -f`, not `--since <started_at>` -- `logs -f` already replays from the container's first line, so the filter could only ever SUBTRACT, and the stamp it filtered on was run-gate's own clock AFTER `docker run -d` returned, truncated to whole seconds, i.e. exactly the container's opening output (RW-15). rev 33: RG-33 -- every `kind = "assay"` lane is invoked with `--resume --progress .assay/progress-<assay_lane>.jsonl`, unconditionally (R-38): both are no-ops on a lane without R2 and, on a mutation lane, the difference between a budget-capped retry resuming from `.assay/mutation-state/` and one re-testing every mutant from #1 (dstdns `sql-mutation`, three retries, state never written). Progress lands beside the verdict under the git-ignored `.assay/`, never in the judged tree. Requires a judge that knows both flags (assay >= 2.4.2); an older pin fails the lane by argparse, loudly, not silently. rev 32: RG-31 --`assay_toolchain_findings()`'s own worktree resolution (shared by `doctor` check 5 and `--check-env`) still took the RAW `--worktree` string through the run-path's lenient `resolve_repo_and_worktree` (no upfront validation) instead of RG-30's validated `resolve_worktree_scope()`; a bad override silently produced a `probe_dir` nothing mounted, and the resulting SKIP blamed "assay older than 3.2.0" instead of the real `--worktree` problem `doctor` check 3 already names correctly two checks earlier in the same report. Now routed through `resolve_worktree_scope()` like every other RG-30/R-37 read-scope site, so a bad override raises the SAME `GateError` and is caught by the existing per-lane SKIP handler with the real cause. rev 31: RG-30 -- `doctor` and `--check-env` both passed `None` to `resolve_repo_and_worktree` instead of the caller's `--worktree`, so `doctor --worktree B` silently reported the INVOKING tree's answers under B's name (including the R-30a host-lane git-view WARN); the same read-scope hazard `history` (RG-27 B1, rev 30) already closed for that verb, now closed for the last remaining instance. `doctor`'s per-tree checks (git identity, R-30a, mountinfo) and the shared assay-toolchain probe's `cd` target (`assay_toolchain_findings`) both follow `--worktree` now, resolved+validated via a new shared `resolve_worktree_scope()`; a bad override becomes a `[FAIL] git` record inside doctor's own existing try/except rather than a false `[OK]` on the R-30a check. `--check-env`'s env-drift scan follows it too and refuses upfront (no per-check ledger to degrade into). Both verbs disclose the selected tree in their output (R-37). rev 30 (round-2 review fixes folded in: `history` honors --worktree on the READ side and refuses an override that names no git work tree, so a query can never answer with the invoking checkout's data under another tree's name; flushing a record is at-most-once, so a Ctrl-C inside the telemetry write surfaces as the KeyboardInterrupt instead of a second-flush traceback; `--json` is refused by name outside `history` instead of accepted and ignored; `history` as a lane name is a flagged LOAD-TIME breaking change): RG-27 lane invocation history — a per-(judged worktree × project) `.run-gate/history.json` store holding, per lane, a `latest` slot (ANY outcome, dirty/aborted/mid-rebase included) and a bounded per-commit trend series ([history] keep, default 10); completed fails join history WITH their outcome and the stats are split passes/completed, aborted+dirty+mid-rebase runs never do; new `history [LANE] [--json]` query verb; concurrency answered by SCOPE first (two worktrees address two files) then a sibling-lockfile + atomic-rename write; the store must be git-ignored or the write is refused with the remedy rather than dirtying the tree (R-36); rev 29: P02 review round — the RG-25 `command -v` fitness probe is BATCHED per environment over the union of every lane's tools (was one container per lane, which made R-30's own cost claim quantitatively false), and the three places still claiming `--dry-run`/`doctor` start nothing now say what they actually start; rev 28: RG-26 `--base REF` reaches a delegating assay lane as `--request-base` (assay B019 usable from the gate at last) — delegation DERIVED from `assay lanes --json`, no new run-gate.toml key; conjunction lanes propagate it through a `{base}` token; a non-delegating lane refuses it by name (R-35). Also RG-28: an assay lane on the built-in host environment no longer raises KeyError('argv') (R-19); rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+__revision__ = 34  # rev 34 (the "resumable, observable gate" wave): RG-36 -- liveness for a long assay lane is judged from its PROGRESS FILE, not from a guessed total: `budget` is advisory here and hard in assay, so the only bound available was a number someone made up (dstdns raised `sql-mutation` 90m -> 120m and it still could not finish a window). While an assay lane's container runs, `.assay/progress-<assay_lane>.jsonl` (the file rev 33 already asks for) is read every PROGRESS_POLL_SECONDS = 30 and, when it moved, `progress <lane>: candidate i/N, <rate>/min, ETA <m>m` is printed; a judge that writes no candidate events is disclosed ONCE and never treated as a fault; a file that VANISHES after events were seen is a different fact with its own sentence and is SILENCE that keeps the stall clock running (review N4 -- it used to print "no candidate events" and disable stall detection forever, so a lane that lost its file became permanently unstoppable), and silence runs from the watch's CONSTRUCTION until the file first moves under it, because a first observation is a baseline and restarting the clock there hands an already-frozen container a fresh full window -- exactly the re-attach case. On a re-attach or follow the progress file WATCHED and the verdict DISCLOSED are the ones the RECORD names, not the live config's (review N3): they are that run's declared artifacts, and presence of the key is the authority test so a pre-rev-34 record still falls back. The record's `schema` is CHECKED on read (review N2), disclosed and treated as no record on a mismatch. New optional lane key `stall_timeout` (assay lanes only, the `budget` grammar) stops the lane ONLY while its container is still RUNNING and the file has been silent that long -- rm -f, evidence, exit 3, naming the last event and the age -- NEVER on total elapsed time. Coarse by necessity (assay's events carry no timestamp yet, B065) but written so an event carrying `elapsed_s` is preferred, making the same code exact without a rewrite (R-40). RG-34 -- `doctor` names a `kind = "command"` container lane whose argv[0] is a RELATIVE path containing `/` and not `{worktree}`-anchored, with the fix and the mechanism: a container that mounts only the judged worktree (a Mode-B instance's own runner) has nothing at the bare repo root its --workdir names, so dstdns P152's `argv = ["scripts/schema-gate.sh", "{worktree}"]` -- argument templated, script path not -- was `exit 127`, 100% reproducible there and invisible under the shared full-repo mount. A WARNING, never a refusal, and run-gate never rewrites argv: the same argv is correct under a full-repo mount and which one a lane gets is not statically visible (R-30b). RG-32 (BREAKING) -- `[lanes.*.pins.*]` validates its keys at last (`sha256`, `version`, nothing else), and `budget` there is refused BY NAME with the owner of the value it was mistaken for: run-gate never read it, the governing number is the target `assay.toml`'s own `[lanes.<assay_lane>] budget`, and the dead key sat one nesting level below a REAL lane-level `budget` that reads identically -- misread as governing three times in ONE dstdns session (two independent review agents and the controller), against a lane whose assay.toml had drifted 90m -> 120m with nothing able to notice. Renaming it to `budget_hint` + a drift check was rejected: a second reading of an assay-owned fact (R-35's own rule). Migration is one deletion per lane, in CHANGES (R-08a). RG-35 -- a lane's container outlives its client BY DESIGN (`docker run -d`, `rm -f` in a finally a killed client never reaches), and until now nothing on disk named it: the exit status, the evidence and the history record were lost and the NEXT invocation started a SECOND container for the same lane on the same commit -- the one-gate rule broken by the tool itself, on a host that shares 8 cores with a production workload. A successful `docker run -d` now writes `.run-gate/inflight/<lane>.json` (same store, same R-36f/g discipline: per (judged worktree x project x lane), git-ignore CHECKED, sibling lock + atomic rename) naming the container, its id, the judged commit, the tree and the assay artifacts; a later invocation of the same lane re-attaches to a RUNNING container (plain `docker logs -f` + `wait`), COLLECTS an exited one and finishes exactly as an attached run would, reports and clears a GONE one (recording that run as `aborted`, never as a pass) and runs fresh, and REFUSES (exit 2) when the record judges another commit -- naming both commits and `--fresh`, which removes the named container first. History records such a run ONCE, with the duration measured from the CONTAINER's start (R-39) -- and for a COLLECT, from the container's OWN clock, `FinishedAt - StartedAt` off the same inspect that answered the state question (RW-17), because a collect happens an arbitrary time after the container exited and that idle gap is not part of the run: left as `now - started` it charged one overnight collect 10800s for a run of minutes, inside the very median/min/max series RG-27 exists to make trustworthy. Docker's stamps are hand-parsed (nanosecond fractions, and the year-1 zero value that means "never set" -- a RUNNING container's FinishedAt is exactly that); either stamp missing or zero falls back to the record's `started_at`, never to half a pair. And two disclosure corrections (RW-18): `--dry-run` resolves HEAD and the owner BEFORE it speaks and walks the live decision's branches in the live decision's ORDER, so it names the refusal / the follow / the `--fresh` removal instead of announcing "re-attach or collect" for a record the live run refuses with exit 2 -- a dry run's whole audience is someone about to act on it; and the `budget`/`stall_timeout` lines, which lived on the fresh path only while `resolve_inflight` armed the watch and returned before them, now print on the RE-ATTACH and FOLLOW paths too (`print_lane_bounds`, one site so they cannot drift), because a re-attached lane was being stopped against a `stall_timeout` its own invocation had never mentioned -- unlike the `rev | lane | env | slice` header these are facts about the LANE, not claims about mounts this client never chose. Review round 1 found the concurrency half of that claim FALSE and it is fixed here (R-39e): a second client on the same lane re-attached to a container whose client was still ALIVE, `rm -f`'d it out from under that client and cleared the record, so the client that actually started the run got `docker wait` on a container that no longer existed and reported exit 3 on a GREEN lane. The record now names its OWNER (pid + the process start time from /proc/<pid>/stat + boot id, a conjunction so a recycled or post-reboot pid reads as dead) and an ALIVE owner is FOLLOWED, never hijacked -- same log stream, same exit code, and no `rm`, no cleared record, no history entry, all three still the owner's; `--fresh` against a live owner refuses by pid, because run-gate never removes another client's container. The one state in which a live owner's container is ALREADY gone is that owner's own `rm -f` -> `clear_inflight_record` window, microseconds wide, so the decision is re-read OWNER_RACE_REPOLLS = 3 times over ~1 s before any refusal (RW-20): the second read normally finds no record and this client runs fresh, because a refusal naming a pid whose run is already over is worse than a one-second wait -- bounded, never a wait loop. A DEAD owner is adopted exactly as before, so "after its client dies" is now literally what the code checks. Two more round-1 corrections in the same decision: "gone" is ONLY `No such object`/`No such container` on docker inspect's stderr -- every other inspect failure (an unreachable daemon above all) is exit 3 with the record UNTOUCHED and nothing recorded, because reading a daemon outage as gone wrote a false `aborted` AND deleted the only thing on disk that can find the still-running container once the daemon returns; and the container's `{{.Id}}` now rides along in the same inspect format, so a record whose name has been taken by a DIFFERENT container is disclosed as such ("a different container now wears this name; run-gate will not touch it"), cleared and re-run fresh, never re-attached to and never `rm -f`'d. A fourth: the re-attach log stream is PLAIN `docker logs -f`, not `--since <started_at>` -- `logs -f` already replays from the container's first line, so the filter could only ever SUBTRACT, and the stamp it filtered on was run-gate's own clock AFTER `docker run -d` returned, truncated to whole seconds, i.e. exactly the container's opening output (RW-15). rev 33: RG-33 -- every `kind = "assay"` lane is invoked with `--resume --progress .assay/progress-<assay_lane>.jsonl`, unconditionally (R-38): both are no-ops on a lane without R2 and, on a mutation lane, the difference between a budget-capped retry resuming from `.assay/mutation-state/` and one re-testing every mutant from #1 (dstdns `sql-mutation`, three retries, state never written). Progress lands beside the verdict under the git-ignored `.assay/`, never in the judged tree. Requires a judge that knows both flags (assay >= 2.4.2); an older pin fails the lane by argparse, loudly, not silently. rev 32: RG-31 --`assay_toolchain_findings()`'s own worktree resolution (shared by `doctor` check 5 and `--check-env`) still took the RAW `--worktree` string through the run-path's lenient `resolve_repo_and_worktree` (no upfront validation) instead of RG-30's validated `resolve_worktree_scope()`; a bad override silently produced a `probe_dir` nothing mounted, and the resulting SKIP blamed "assay older than 3.2.0" instead of the real `--worktree` problem `doctor` check 3 already names correctly two checks earlier in the same report. Now routed through `resolve_worktree_scope()` like every other RG-30/R-37 read-scope site, so a bad override raises the SAME `GateError` and is caught by the existing per-lane SKIP handler with the real cause. rev 31: RG-30 -- `doctor` and `--check-env` both passed `None` to `resolve_repo_and_worktree` instead of the caller's `--worktree`, so `doctor --worktree B` silently reported the INVOKING tree's answers under B's name (including the R-30a host-lane git-view WARN); the same read-scope hazard `history` (RG-27 B1, rev 30) already closed for that verb, now closed for the last remaining instance. `doctor`'s per-tree checks (git identity, R-30a, mountinfo) and the shared assay-toolchain probe's `cd` target (`assay_toolchain_findings`) both follow `--worktree` now, resolved+validated via a new shared `resolve_worktree_scope()`; a bad override becomes a `[FAIL] git` record inside doctor's own existing try/except rather than a false `[OK]` on the R-30a check. `--check-env`'s env-drift scan follows it too and refuses upfront (no per-check ledger to degrade into). Both verbs disclose the selected tree in their output (R-37). rev 30 (round-2 review fixes folded in: `history` honors --worktree on the READ side and refuses an override that names no git work tree, so a query can never answer with the invoking checkout's data under another tree's name; flushing a record is at-most-once, so a Ctrl-C inside the telemetry write surfaces as the KeyboardInterrupt instead of a second-flush traceback; `--json` is refused by name outside `history` instead of accepted and ignored; `history` as a lane name is a flagged LOAD-TIME breaking change): RG-27 lane invocation history — a per-(judged worktree × project) `.run-gate/history.json` store holding, per lane, a `latest` slot (ANY outcome, dirty/aborted/mid-rebase included) and a bounded per-commit trend series ([history] keep, default 10); completed fails join history WITH their outcome and the stats are split passes/completed, aborted+dirty+mid-rebase runs never do; new `history [LANE] [--json]` query verb; concurrency answered by SCOPE first (two worktrees address two files) then a sibling-lockfile + atomic-rename write; the store must be git-ignored or the write is refused with the remedy rather than dirtying the tree (R-36); rev 29: P02 review round — the RG-25 `command -v` fitness probe is BATCHED per environment over the union of every lane's tools (was one container per lane, which made R-30's own cost claim quantitatively false), and the three places still claiming `--dry-run`/`doctor` start nothing now say what they actually start; rev 28: RG-26 `--base REF` reaches a delegating assay lane as `--request-base` (assay B019 usable from the gate at last) — delegation DERIVED from `assay lanes --json`, no new run-gate.toml key; conjunction lanes propagate it through a `{base}` token; a non-delegating lane refuses it by name (R-35). Also RG-28: an assay lane on the built-in host environment no longer raises KeyError('argv') (R-19); rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
 
 import argparse
 import ast
@@ -80,10 +80,18 @@ OWNER_RACE_REPOLLS = 3            # total reads of the record, first included
 OWNER_RACE_PAUSE_SECONDS = 0.5    # -> ~1.0 s across the two extra reads
 
 # RG-36: how often the container loop looks at the lane's progress file.
-# 30 s judges a 15-minute stall_timeout to within 3% and costs a 4-hour
-# mutation lane 480 stat()s — cheap enough that the poll never competes with
-# the lane it is watching, coarse enough that it is not a busy loop. It is
-# NOT the disclosure interval: a poll that sees no new event prints nothing.
+# 30 s judges a 15-minute stall_timeout to within 3%. What one poll COSTS is
+# a stat(), a full read_text() and a json.loads() of every line — the file is
+# append-only and there is no saved offset — so a 4-hour lane costs 480 of
+# those, and on a 4 000-candidate mutation lane the parse half is ~2M line
+# loads over the run. Still cheap beside the lane it is watching (the judge
+# is running mutants), and honest about what it is: the earlier "480 stat()s"
+# in this comment and in `R-40a` undercounted it by two whole operations
+# (review round 1 N1). An incremental read from a saved offset is the
+# obvious next step if the file ever gets big enough to matter; it is not
+# needed at these sizes and would add a resume-after-truncate case.
+# This is NOT the disclosure interval: a poll that sees no new event prints
+# nothing.
 PROGRESS_POLL_SECONDS = 30
 
 
@@ -1194,7 +1202,24 @@ def load_inflight_record(path: Path) -> dict | None:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
         return None
-    return data if isinstance(data, dict) and data.get("container") else None
+    if not isinstance(data, dict) or not data.get("container"):
+        return None
+    if data.get("schema") != INFLIGHT_SCHEMA:
+        # N2 (review round 1): the version was WRITTEN and never checked, so
+        # a future schema-2 record would be read by an old client under
+        # schema-1 rules — the silent misread a version field exists to
+        # prevent. Disclosed rather than dropped in silence: the consequence
+        # is a second container for a lane that already has one, and an
+        # operator who is told why can upgrade or clear the record.
+        print(f"{PROG}: WARNING: ignoring the inflight record at {path}: it "
+              f"declares schema {data.get('schema')!r} and this run-gate "
+              f"(rev {__revision__}) reads schema {INFLIGHT_SCHEMA} — "
+              f"treating the lane as having no record, which means a "
+              f"container it may name will not be re-attached to. Upgrade "
+              f"run-gate, or remove that file once you know the container "
+              f"it names is gone", file=sys.stderr, flush=True)
+        return None
+    return data
 
 
 def write_inflight_record(project_dir: Path, worktree: Path, lane_name: str,
@@ -1650,14 +1675,28 @@ def redact_forwarded_values(argv: list[str], keys: list[str]) -> list[str]:
 
 
 def print_lane_artifacts(lane: dict, lane_name: str, project_dir: Path,
-                         worktree: Path) -> None:
+                         worktree: Path, recorded: dict | None = None) -> None:
     """R-18/RG-10: after EVERY run — any kind, any runner mode, success or
     failure — say where the evidence landed. Assay lanes always disclose the
     verdict convention; declared `artifacts` add to it. Paths resolve
     against the EFFECTIVE project dir (relocated into the judged tree,
-    R-21); `{worktree}` tokens inside entries are substituted."""
+    R-21); `{worktree}` tokens inside entries are substituted.
+
+    `recorded` is the inflight record of a run this client RE-ATTACHED to or
+    FOLLOWED. Where it names a `verdict`, that is the answer: it is the path
+    THAT run declared and wrote to, and the live config is not the authority
+    for a run already in flight — a lane retargeted between the two
+    invocations would otherwise send an operator to a file nothing wrote
+    (N3). PRESENCE of the key is the test, not truthiness, so a command
+    lane's recorded `null` correctly discloses no verdict while a record
+    written before rev 34 falls back to the config."""
     verdict_path: Path | None = None
-    if lane["kind"] == "assay":
+    if recorded is not None and "verdict" in recorded:
+        declared = recorded["verdict"]
+        if declared:
+            verdict_path = Path(os.path.normpath(declared))
+            print(f"run-gate: verdict artifact: {verdict_path}", flush=True)
+    elif lane["kind"] == "assay":
         verdict_path = Path(os.path.normpath(
             project_dir / (".assay/verdict-" + lane["assay_lane"] + ".json")))
         print(f"run-gate: verdict artifact: {verdict_path}", flush=True)
@@ -2994,8 +3033,14 @@ class ProgressWatch:
         self.stall_seconds = stall_seconds
         self.clock = clock
         self._announced_silent = False
+        self._announced_vanished = False
         self._first: tuple[int, float] | None = None
         self._token: tuple | None = None
+        # N4: the last (index, total) actually observed. It is what tells
+        # "never saw an event" (not an R2 lane) apart from "had one, and the
+        # file is unreadable now" (silence that must keep counting), and it
+        # is what the stall message names once the file itself is gone.
+        self._last_seen: tuple[int, object] | None = None
         self._token_at = clock()
 
     def _newest(self) -> tuple[dict | None, float | None]:
@@ -3051,40 +3096,82 @@ class ProgressWatch:
         print(f"{head}, {rate:.1f}/min, ETA {(total - index) / rate:.0f}m",
               flush=True)
 
+    def _last_event_phrase(self) -> str:
+        index, total = self._last_seen        # only called after one was seen
+        return (f"candidate {index}"
+                + (f"/{total}" if isinstance(total, int)
+                   and not isinstance(total, bool) else ""))
+
+    def _stall(self, age: float) -> str:
+        return (f"the container is still RUNNING but "
+                f"{self.path.name} has not advanced for {int(age)}s "
+                f"(stall_timeout {self.stall_seconds}s); last event seen: "
+                f"{self._last_event_phrase()}")
+
     def poll(self) -> str | None:
         """One look at the file. Prints at most one line, and only when
         something changed. Returns a STALL description, or None."""
         newest, mtime = self._newest()
         now = self.clock()
         if newest is None:
-            if not self._announced_silent:
-                self._announced_silent = True
-                print(f"run-gate: progress {self.lane}: no candidate events "
-                      f"(not an R2 lane, or the judge writes none)",
-                      flush=True)
-            # RW-5: a lane without a progress file cannot stall by this rule.
-            # Treating silence-with-no-file as a stall would kill every R0/R1
-            # container that declared the key.
-            return None
+            if self._last_seen is None:
+                # Never an event here: not an R2 lane, or the judge has not
+                # written one yet.
+                if not self._announced_silent:
+                    self._announced_silent = True
+                    print(f"run-gate: progress {self.lane}: no candidate "
+                          f"events (not an R2 lane, or the judge writes "
+                          f"none)", flush=True)
+                # RW-5: a lane without a progress file cannot stall by this
+                # rule. Treating silence-with-no-file as a stall would kill
+                # every R0/R1 container that declared the key.
+                return None
+            # N4 (review round 1): the file WAS readable and is not any
+            # more — deleted, truncated to nothing, or replaced mid-run.
+            # That is a different fact from "no candidate events", which is
+            # what it used to print, and it is SILENCE: the stall clock must
+            # keep running, or a lane that loses its progress file becomes
+            # permanently unstoppable at the exact moment it most needs
+            # bounding. `_token_at` is deliberately not touched — silence is
+            # measured from the last real movement, not from the vanishing.
+            if not self._announced_vanished:
+                self._announced_vanished = True
+                print(f"run-gate: progress {self.lane}: {self.path.name} is "
+                      f"no longer readable — it was, at "
+                      f"{self._last_event_phrase()}. A file that disappears "
+                      f"mid-run is SILENCE, not 'no events': the stall clock "
+                      f"keeps running from the last event seen", flush=True)
+            if self.stall_seconds is None:
+                return None          # no stall_timeout: disclosure only
+            age = now - self._token_at
+            return None if age < self.stall_seconds else self._stall(age)
         index = newest["candidate_index"]
         elapsed = newest.get("elapsed_s")
         token = (mtime, index, elapsed)
         if token != self._token:
+            first_observation = self._token is None
             self._token = token
-            self._token_at = now
+            self._last_seen = (index, newest.get("candidate_total"))
+            self._announced_vanished = False   # a file that came back
+            if not first_observation:
+                # Real MOVEMENT restarts the silence clock. The first
+                # observation is not movement — `_report` already calls it a
+                # baseline, there being no earlier event to have moved from —
+                # and restarting the clock there would hand a container that
+                # was ALREADY frozen when this client arrived a fresh, full
+                # stall window. That is exactly the re-attach case `R-39`
+                # adds: the run this watch is judging started in another
+                # process, possibly hours ago. Silence is therefore measured
+                # from the watch's CONSTRUCTION until the file first moves
+                # under it.
+                self._token_at = now
             self._report(index, newest.get("candidate_total"), elapsed, now)
-            return None
         if self.stall_seconds is None:
             return None              # no stall_timeout: disclosure only
         age = now - self._token_at
         if age < self.stall_seconds:
             return None
-        return (f"the container is still RUNNING but "
-                f"{self.path.name} has not advanced for {int(age)}s "
-                f"(stall_timeout {self.stall_seconds}s); last event seen: "
-                f"candidate {index}"
-                + (f"/{newest['candidate_total']}"
-                   if isinstance(newest.get("candidate_total"), int) else ""))
+        return self._stall(age)
 
 
 def print_lane_bounds(lane: dict, owner_pid: int | None = None) -> None:
@@ -3115,11 +3202,21 @@ def print_lane_bounds(lane: dict, owner_pid: int | None = None) -> None:
               f"never on total elapsed time{enforcer}", flush=True)
 
 
-def make_progress_watch(lane: dict, lane_name: str,
-                        project_dir: Path) -> "ProgressWatch | None":
+def make_progress_watch(lane: dict, lane_name: str, project_dir: Path,
+                        recorded: dict | None = None) -> "ProgressWatch | None":
     """A watch for an assay lane (the only kind that writes the file R-38
-    constructs), else None — a command lane has nothing to read."""
-    _verdict, progress = assay_artifact_paths(lane, project_dir)
+    constructs), else None — a command lane has nothing to read.
+
+    `recorded` is the inflight record of a run this client re-attached to.
+    Where it names a `progress` path, that is the file to watch: it is the
+    one THAT run was told to write, and recomputing it from the live config
+    would watch a file nothing is appending to if the lane was retargeted
+    between the two invocations (N3). PRESENCE of the key decides, so a
+    pre-rev-34 record still falls back to the config."""
+    if recorded is not None and "progress" in recorded:
+        progress = recorded["progress"]
+    else:
+        _verdict, progress = assay_artifact_paths(lane, project_dir)
     if progress is None:
         return None
     stall = lane.get("stall_timeout")
@@ -3129,7 +3226,8 @@ def make_progress_watch(lane: dict, lane_name: str,
 
 def await_container(docker: str, name: str, lane: dict, lane_name: str,
                     project_dir: Path, worktree: Path,
-                    watch: "ProgressWatch | None" = None) -> int:
+                    watch: "ProgressWatch | None" = None,
+                    recorded: dict | None = None) -> int:
     """Stream a running container's logs, wait for its status, preserve
     evidence on failure, remove it, clear its inflight record, disclose its
     artifacts. ONE path for all three arrivals (a fresh `docker run -d`, a
@@ -3202,7 +3300,7 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                  "; container logs could NOT be captured before removal")
         print(f"run-gate: lane {lane_name!r} failed with exit {code}{where}",
               flush=True)
-    print_lane_artifacts(lane, lane_name, project_dir, worktree)
+    print_lane_artifacts(lane, lane_name, project_dir, worktree, recorded)
     return code
 
 
@@ -3218,7 +3316,8 @@ def disown_run_record(run_record: dict | None) -> None:
 
 
 def follow_container(docker: str, name: str, lane: dict, lane_name: str,
-                     project_dir: Path, worktree: Path) -> int:
+                     project_dir: Path, worktree: Path,
+                     recorded: dict | None = None) -> int:
     """RW-14: watch a run whose OWNER is still alive, and touch nothing else.
 
     Streams the same logs and exits with the same code as the owner, but does
@@ -3249,7 +3348,7 @@ def follow_container(docker: str, name: str, lane: dict, lane_name: str,
         print(f"run-gate: lane {lane_name!r} failed with exit {code} "
               f"(followed — the owning client preserves the evidence)",
               flush=True)
-    print_lane_artifacts(lane, lane_name, project_dir, worktree)
+    print_lane_artifacts(lane, lane_name, project_dir, worktree, recorded)
     return code
 
 
@@ -3417,7 +3516,7 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
         print_lane_bounds(lane, owner_pid=owner)
         disown_run_record(run_record)
         return follow_container(docker, name, lane, lane_name, project_dir,
-                                worktree)
+                                worktree, recorded=pending)
     adopt_inflight_start(run_record, pending)
     if status == "running":
         print(f"run-gate: re-attached to {name} (started {started}, running "
@@ -3440,10 +3539,15 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
     # A re-attached lane used to be stopped against a `stall_timeout` its own
     # output had never mentioned — the watch below is armed either way.
     print_lane_bounds(lane)
+    # N3: the artifacts THAT run declared, not the ones this invocation's
+    # config would construct — a lane retargeted between the two invocations
+    # would otherwise watch a file nothing is appending to and point the
+    # operator at a verdict nothing wrote.
     return await_container(docker, name, lane, lane_name, project_dir,
-                           worktree,
+                           worktree, recorded=pending,
                            watch=make_progress_watch(lane, lane_name,
-                                                     project_dir))
+                                                     project_dir,
+                                                     recorded=pending))
 
 
 def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,

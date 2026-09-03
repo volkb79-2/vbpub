@@ -485,19 +485,22 @@ container: propagating it would destroy every sub-lane's inflight container,
 including ones legitimately still running for another commit or another
 client. It stays per-invocation. Nothing is lost by that, because a sub-lane
 that has a container it cannot attach to refuses on its own terms and the
-refusal reaches the operator through the chain — verified 2026-09-02 against
-a host conjunction whose sub-lane carried a mismatched inflight record:
+refusal reaches the operator through the chain — verified against a host
+conjunction whose sub-lane carried a mismatched inflight record (re-captured
+2026-09-03; the earlier copy of this block had been re-wrapped by hand and
+was not what run-gate prints — one line, no space before the comma):
 
 ```
 $ ./run-gate.py gate                                    # exit 2
 run-gate: rev 34 | lane gate | env built-in 'host'
-run-gate: lane 'sub' has an inflight container run-gate-conj-sub-1-1 (started
-2026-09-02T11:00:00Z, running) judging commit deaddead… , but <tree> is now at
-d9e396ed… — run-gate will not attach that run to this commit, and will not
-start a second container for the same lane. Wait for it to finish, or re-run
-with --fresh (which removes run-gate-conj-sub-1-1 first)
+run-gate: admission: lane 'sub' declares no resources.memory — not memory-accounted (shared-infra rules still apply)
+run-gate: lane 'sub' has an inflight container run-gate-conj-sub-1-1 (started 2026-09-02T11:00:00Z, running) judging commit deaddeaddeaddeaddeaddeaddeaddeaddeaddead, but /tmp/…/conj-probe is now at 205c896265dc0b0766cefa6ffc234c537660aaf7 — run-gate will not attach that run to this commit, and will not start a second container for the same lane. Wait for it to finish, or re-run with --fresh (which removes run-gate-conj-sub-1-1 first)
 run-gate: lane 'gate' exit 2
 ```
+
+(The only edit to that capture is the scratch tree's path, elided to
+`/tmp/…/conj-probe`. The conjunction's second sub-invocation never ran: the
+`&&` chain stops at the refusal.)
 
 The `&&` chain stops at the refusing sub-lane (the step after it never ran),
 the message names THAT sub-lane, its container and `--fresh`, and exit 2

@@ -6073,8 +6073,17 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
     shim = shim_dir_of(monkeypatch) / "docker"
     shim.write_text(textwrap.dedent(f"""\
         #!/bin/sh
-        printf '%s\\037' "$@" >> "{log}"
-        printf '\\n' >> "{log}"
+        # ONE write() for the whole line. Two appends (`printf '%s\\037' "$@"`
+        # then `printf '\\n'`) let a CONCURRENT shim process slip its own
+        # argv between them, and this is the one fixture two clients run at
+        # once: the interleaved line then matches no argv pattern and
+        # `TestTwoClientsOneLane` fails ~1 run in 15 waiting for a `logs -f`
+        # that did happen. Found 2026-09-03; the flake is the harness's, not
+        # run-gate's.
+        __sep=$(printf '\\037')
+        __line=""
+        for __a in "$@"; do __line="$__line$__a$__sep"; done
+        printf '%s\\n' "$__line" >> "{log}"
         S="{state}"
         cmd="$1"; shift
         case "$cmd" in
@@ -6589,14 +6598,33 @@ class TestInflightRecordDecisions:
 
     def test_a_gone_container_is_reported_cleared_and_the_lane_runs_fresh(
             self, tmp_path, monkeypatch, capsys):
+        """Hollow test 4: the `aborted` entry `record_lost_run` writes is
+        SUPERSEDED in `latest` by the fresh run that follows, so asserting
+        the store afterwards proves nothing — which is why `record_lost_run`
+        was only ever proven by a direct call, its WIRING into
+        `resolve_inflight` unasserted. Wrap the write instead and assert the
+        ordered PAIR: the lost run is recorded as `aborted` FIRST, then the
+        fresh run's own outcome. A run that vanished must never look like a
+        run that never happened (RW-3)."""
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         record = plant_inflight(proj, repo, state, status=None)
+        written: list[tuple[str, object]] = []
+        real = run_gate.record_invocation
+
+        def spy(project_dir, worktree, entry, *a, **k):
+            written.append((entry.get("outcome"), entry.get("commit")))
+            return real(project_dir, worktree, entry, *a, **k)
+
+        monkeypatch.setattr(run_gate, "record_invocation", spy)
         assert run_gate.main(["suite"]) == 0
         assert ("run-gate: inflight record names run-gate-planted (started "
                 "2026-09-02T11:00:00Z) but no such container exists"
                 ) in capsys.readouterr().out
         assert len(lane_runs(log)) == 1        # ran fresh, exactly once
         assert not record.exists()
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+        assert written == [("aborted", head), ("pass", head)], written
 
     def test_a_record_for_another_commit_refuses_and_names_both(
             self, tmp_path, monkeypatch, capsys):
@@ -6677,6 +6705,54 @@ class TestInflightRecordDecisions:
         assert run_gate.main(["suite"]) == 2
         assert "deaddeaddead" in capsys.readouterr().err
 
+    def test_dry_run_names_the_collect_an_exited_container_would_get(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        plant_inflight(proj, repo, state, status="exited", code=7)
+        assert run_gate.main(["suite", "--dry-run"]) == 0
+        out = capsys.readouterr().out
+        assert ("a live run would collect it (it exited 7 at "
+                "2026-09-02T12:00:00Z)") in out
+        assert lane_runs(log) == []
+
+    def test_dry_run_names_the_re_poll_a_live_owner_with_no_container_gets(
+            self, tmp_path, monkeypatch, capsys):
+        """RW-20's branch, disclosed rather than described as a plain loss:
+        the dry run must say the live run would re-read before deciding."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        plant_inflight(proj, repo, state, status=None, **live_owner_fields())
+        assert run_gate.main(["suite", "--dry-run"]) == 0
+        out = capsys.readouterr().out
+        assert "re-read the record for about a second" in out
+        assert f"refuse (exit 2) naming pid {os.getpid()}" in out
+        assert lane_runs(log) == []
+
+    def test_dry_run_with_fresh_against_a_live_owner_names_the_refusal(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        plant_inflight(proj, repo, state, **live_owner_fields())
+        assert run_gate.main(["suite", "--fresh", "--dry-run"]) == 0
+        out = capsys.readouterr().out
+        assert ("--fresh never removes a LIVE client's container, and pid "
+                f"{os.getpid()} owns this one") in out
+        assert [c for c in _docker_calls(log) if c[0] == "rm"] == []
+
+    def test_fresh_says_nothing_to_remove_when_the_owner_clears_first(
+            self, tmp_path, monkeypatch, capsys):
+        """`--fresh` always says what it did, including when RW-20's re-poll
+        finds the record already gone — silence there would leave an operator
+        who typed `--fresh` unsure whether anything was removed."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, status=None,
+                                **live_owner_fields())
+        _no_op_sleep(monkeypatch, then=lambda: record.unlink(missing_ok=True))
+        assert run_gate.main(["suite", "--fresh"]) == 0
+        out = capsys.readouterr().out
+        assert "whose live owner cleared the record" in out
+        assert ("run-gate: --fresh: no inflight record for lane 'suite' — "
+                "nothing to remove") in out
+        assert len(lane_runs(log)) == 1
+
     def test_dry_run_names_the_follow_a_live_owner_would_get(
             self, tmp_path, monkeypatch, capsys):
         """The same defect one branch over: RW-14 added FOLLOW to the live
@@ -6735,6 +6811,104 @@ class TestInflightRecordDecisions:
         # …and the lane runs fresh with its own new container.
         assert len(lane_runs(log)) == 1
         assert not record.exists()
+
+    def test_a_record_of_another_schema_is_disclosed_and_ignored(
+            self, tmp_path, monkeypatch, capsys):
+        """N2. `INFLIGHT_SCHEMA` was written and never checked, so a future
+        schema-2 record would be read by an old client under schema-1 rules —
+        the silent misread a version field exists to prevent. Ignored, but
+        never in silence: the consequence is a second container for a lane
+        that already has one, and the operator is told why."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, schema=99)
+        assert run_gate.main(["suite"]) == 0
+        err = capsys.readouterr().err
+        assert "ignoring the inflight record at" in err
+        assert "it declares schema 99" in err
+        assert f"reads schema {run_gate.INFLIGHT_SCHEMA}" in err
+        # Treated as NO record: nothing was inspected, nothing re-attached.
+        assert [c for c in _docker_calls(log) if c[0] == "inspect"] == []
+        assert len(lane_runs(log)) == 1
+        # The container the unreadable record named is left strictly alone —
+        # run-gate does not remove what it cannot identify.
+        assert (state / "run-gate-planted").exists()
+        # The record itself does NOT survive: this client started its own
+        # container and wrote its own record over it, then cleared it in the
+        # usual `finally`. That is the cost the warning names, and it is why
+        # the warning exists rather than a silent `return None`.
+        assert not record.exists()
+
+    ASSAY_ARTIFACT_LANE = """\
+        schema_version = 1
+        [environments.tester-unified]
+        image = "tester-unified:local"
+        [lanes.mutation]
+        kind = "assay"
+        environment = "tester-unified"
+        assay_lane = "cw2b_schema"
+        assay_command = ["./a.pyz"]
+        clean_tree = false
+    """
+
+    def test_a_re_attached_run_discloses_the_verdict_the_record_declared(
+            self, tmp_path, monkeypatch, capsys):
+        """N3. `verdict` and `progress` were written into the record and
+        never read back: the re-attach path recomputed both from the LIVE
+        config. They are the artifacts THAT run declared, and the live config
+        is not the authority for a run already in flight — retarget the lane
+        between the two invocations and the operator is sent to a file
+        nothing wrote."""
+        repo, proj, log, state = self._fixture(
+            tmp_path, monkeypatch, config=self.ASSAY_ARTIFACT_LANE)
+        recorded_verdict = str(tmp_path / "the-run-that-is-running.json")
+        plant_inflight(proj, repo, state, lane="mutation", status="running",
+                       verdict=recorded_verdict, progress=None)
+        assert run_gate.main(["mutation"]) == 0
+        out = capsys.readouterr().out
+        assert f"run-gate: verdict artifact: {recorded_verdict}" in out
+        assert "verdict-cw2b_schema.json" not in out   # NOT the live config's
+
+    def test_a_re_attached_run_watches_the_progress_file_the_record_declared(
+            self, tmp_path, monkeypatch, capsys):
+        repo, proj, log, state = self._fixture(
+            tmp_path, monkeypatch, config=self.ASSAY_ARTIFACT_LANE)
+        recorded_progress = tmp_path / "that-runs-progress.jsonl"
+        write_progress(recorded_progress, candidate(41))
+        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
+        plant_inflight(proj, repo, state, lane="mutation", status="running",
+                       verdict=None, progress=str(recorded_progress))
+        (state / ".hang").write_text("")
+        stop = threading.Event()
+
+        def release():
+            stop.wait(1.0)
+            (state / ".hang").unlink(missing_ok=True)
+
+        releaser = threading.Thread(target=release, daemon=True)
+        releaser.start()
+        try:
+            assert run_gate.main(["mutation"]) == 0
+        finally:
+            stop.set()
+            releaser.join(timeout=10)
+        out = capsys.readouterr().out
+        assert "run-gate: progress mutation: candidate 41/172" in out
+
+    def test_a_pre_rev_34_record_without_the_keys_falls_back_to_the_config(
+            self, tmp_path, monkeypatch, capsys):
+        """PRESENCE of the key is the authority test, not truthiness: a
+        record written before rev 34 named no artifacts at all and must
+        still get the config's answer, while a COMMAND lane's recorded
+        `null` correctly discloses no verdict."""
+        repo, proj, log, state = self._fixture(
+            tmp_path, monkeypatch, config=self.ASSAY_ARTIFACT_LANE)
+        record = plant_inflight(proj, repo, state, lane="mutation",
+                               status="running")
+        payload = json.loads(record.read_text())
+        del payload["verdict"], payload["progress"]
+        record.write_text(json.dumps(payload))
+        assert run_gate.main(["mutation"]) == 0
+        assert "verdict-cw2b_schema.json" in capsys.readouterr().out
 
     def test_a_docker_failure_that_is_not_gone_leaves_the_record_alone(
             self, tmp_path, monkeypatch, capsys):
@@ -6965,6 +7139,106 @@ class TestProgressWatch:
         assert "still RUNNING" in stalled
         assert "has not advanced for 900s (stall_timeout 900s)" in stalled
         assert "last event seen: candidate 37/172" in stalled
+
+    def test_a_file_already_frozen_when_the_watch_starts_stalls_from_construction(
+            self, tmp_path, capsys):
+        """Hollow test 6. The existing frozen-file case writes the file and
+        polls immediately, so an implementation that starts the silence clock
+        at the FIRST OBSERVED EVENT passes it unchanged. This one cannot: the
+        file is already there and never moves again, which is the re-attach
+        case R-39 adds — the run started in another process, possibly hours
+        ago, and a first poll that reset the clock would hand an already-dead
+        lane a fresh full stall window."""
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-cw2b_schema.jsonl"
+        write_progress(path, candidate(37))        # frozen BEFORE the watch
+        watch = run_gate.ProgressWatch(path, "sql-mutation", 900, clock)
+        clock.advance(900)
+        stalled = watch.poll()
+        assert stalled is not None, "the silence was measured from the poll"
+        assert "has not advanced for 900s (stall_timeout 900s)" in stalled
+        assert "last event seen: candidate 37/172" in stalled
+
+    def test_the_first_movement_under_the_watch_does_restart_the_clock(
+            self, tmp_path, capsys):
+        """The other half of the same rule: a baseline is not movement, but
+        the first REAL advance is, and it must reset the clock like any
+        other — otherwise a lane that starts slowly is stopped for making
+        progress."""
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-cw2b_schema.jsonl"
+        write_progress(path, candidate(37))
+        watch = run_gate.ProgressWatch(path, "sql-mutation", 900, clock)
+        clock.advance(899)
+        assert watch.poll() is None
+        write_progress(path, candidate(38))        # it moved
+        clock.advance(1)
+        assert watch.poll() is None                # clock restarted at 900
+        clock.advance(899)
+        assert watch.poll() is None
+        clock.advance(1)
+        assert watch.poll() is not None
+
+    def test_a_vanished_file_is_its_own_sentence_and_keeps_counting(
+            self, tmp_path, capsys):
+        """N4. A file that DISAPPEARS mid-run used to print `no candidate
+        events (not an R2 lane, or the judge writes none)` — untrue — and
+        stall detection then stopped forever, so a lane became permanently
+        unstoppable at the moment it most needed bounding."""
+        w = self._watch(tmp_path, stall=900)
+        write_progress(w.path, candidate(37))
+        assert w.watch.poll() is None
+        capsys.readouterr()
+        w.path.unlink()
+        w.clock.advance(300)
+        assert w.watch.poll() is None              # silence, not yet a stall
+        out = capsys.readouterr().out
+        assert "no candidate events" not in out
+        assert ("run-gate: progress sql-mutation: "
+                "progress-cw2b_schema.jsonl is no longer readable — it was, "
+                "at candidate 37/172. A file that disappears mid-run is "
+                "SILENCE, not 'no events': the stall clock keeps running "
+                "from the last event seen") in out
+        w.clock.advance(300)
+        assert w.watch.poll() is None
+        assert capsys.readouterr().out == ""       # said once, not per poll
+        w.clock.advance(300)                       # 900s of silence in all
+        stalled = w.watch.poll()
+        assert stalled is not None
+        assert "has not advanced for 900s" in stalled
+        assert "last event seen: candidate 37/172" in stalled
+
+    def test_a_vanished_file_without_stall_timeout_is_only_disclosure(
+            self, tmp_path, capsys):
+        w = self._watch(tmp_path, stall=None)
+        write_progress(w.path, candidate(37))
+        w.watch.poll()
+        w.path.unlink()
+        for _ in range(3):
+            w.clock.advance(100000)
+            assert w.watch.poll() is None
+        assert w.watch._announced_vanished
+
+    def test_a_file_that_comes_back_reports_again_and_resets_the_notice(
+            self, tmp_path, capsys):
+        """A judge that rewrites the file (a resume, R-38) is not a fault:
+        the vanish notice is armed once per disappearance, not once per run."""
+        w = self._watch(tmp_path, stall=900)
+        write_progress(w.path, candidate(37))
+        w.watch.poll()
+        w.path.unlink()
+        w.clock.advance(100)
+        w.watch.poll()
+        capsys.readouterr()
+        write_progress(w.path, candidate(40))
+        w.clock.advance(100)
+        assert w.watch.poll() is None
+        assert "candidate 40/172" in capsys.readouterr().out
+        w.path.unlink()
+        w.clock.advance(100)
+        assert w.watch.poll() is None
+        assert "no longer readable — it was, at candidate 40/172" \
+            in capsys.readouterr().out
 
     def test_without_stall_timeout_a_frozen_file_is_only_disclosure(
             self, tmp_path, capsys):
@@ -7493,6 +7767,14 @@ class TestInflightRecordStore:
         head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
                               capture_output=True, text=True).stdout.strip()
         assert data["container"] == lane_runs(log)[0][3]
+        # Hollow test 2: this line used to prove the CONSTRUCTION of a value
+        # no product code read. `container_id` is now load-bearing — it is
+        # compared against `{{.Id}}` on every re-attach — and the behaviour
+        # it buys is asserted in
+        # `TestInflightRecordDecisions::test_a_name_worn_by_a_different_
+        # container_is_gone_by_name`, where a stranger wearing the lane's
+        # name is disclosed, not attached to and not removed. Kept here only
+        # as the field inventory this test is.
         assert data["container_id"] == f"sha256:fakeid-{data['container']}"
         assert data["commit"] == head
         assert data["worktree"] == str(repo)

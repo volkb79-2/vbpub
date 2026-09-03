@@ -2199,12 +2199,22 @@ lane's schema sub-lane against a dedicated container since
 
 ### Acceptance
 
-- [ ] `[lanes.schema]`'s argv resolves correctly against a worktree whose
+- [x] `[lanes.schema]`'s argv resolves correctly against a worktree whose
       test-runner container mounts only that worktree's own subtree (not
       the full repo root) — verified via a real Mode-B dedicated-container
       run, not just main's shared-container case;
       — **dstdns-side**: the argv lives in dstdns's `run-gate.toml`, and
       run-gate deliberately does not rewrite a consumer's declared command.
+      **Done at `dstdns@65582354`** (the P152 merge): that lane now reads
+      `argv = ["{worktree}/scripts/schema-gate.sh", "{worktree}"]` with an
+      RG-34 comment above it.
+- [ ] **dstdns `[lanes.scale-admission]` is the lane that still trips the
+      new WARN** (`argv = ["scripts/schema-gate.sh", "{worktree}",
+      "tests/schema/test_scale_admission.py"]`, environment `test-runner`,
+      `/workspaces/dstdns/run-gate.toml:81`). Re-measured with `tomllib`
+      over every dstdns lane on 2026-09-02 and again on 2026-09-03: exactly
+      ONE hit, and it is not `schema`. Same one-edit remedy, same
+      dstdns-side ownership.
 - [x] Every other `kind = "command"` lane's argv is swept for the same
       unprefixed-script-path pattern — for the vbpub estate, and by
       `doctor` from now on for every consumer;
@@ -2228,7 +2238,7 @@ environment whose `argv[0]` is a relative path containing `/` and not
 starting with `{worktree}`:
 
 ```
-run-gate: doctor: [WARN] lane 'schema' argv[0] (RG-34): 'scripts/schema-gate.sh'
+run-gate: doctor: [WARN] lane 'scale-admission' argv[0] (RG-34): 'scripts/schema-gate.sh'
 is a RELATIVE path, resolved against the container's --workdir instead of the
 judged tree — declare it '{worktree}/scripts/schema-gate.sh'. A container that
 mounts ONLY the judged worktree (a Mode-B instance's own runner, not the
@@ -2249,6 +2259,23 @@ dir; assay lanes, which have no argv of their own).
 
 **Estate sweep, 2026-09-02** (`tomllib` over every `*/run-gate.toml` in
 vbpub, not `grep`): no vbpub lane trips the check.
+
+**Which dstdns lane still trips it (corrected, review round 1 S7).** The
+lane this item was FILED from — `[lanes.schema]` — was fixed in the P152
+merge itself (`dstdns@65582354`) and now reads
+`argv = ["{worktree}/scripts/schema-gate.sh", "{worktree}"]`. Parsing every
+dstdns lane with `tomllib` (2026-09-02, re-run 2026-09-03) gives exactly one
+hit, and it is a different lane:
+
+```
+RG34-FLAG scale-admission scripts/schema-gate.sh | env test-runner
+```
+
+(`/workspaces/dstdns/run-gate.toml:81`, `argv = ["scripts/schema-gate.sh",
+"{worktree}", "tests/schema/test_scale_admission.py"]`.) The notification to
+dstdns names that lane. RG-34 therefore lands with a LIVE consumer hit
+rather than an already-fixed one — the transcript above is written for
+`scale-admission` accordingly.
 
 ### Source
 
@@ -2307,7 +2334,9 @@ shares 8 cores with a production game server (load 85 that afternoon).
 ### Status — FIXED 2026-09-02 (rev 34, SPEC `R-39`)
 
 Landed under the "resumable, observable gate" wave (RW-1..RW-3 of
-`nyxloom-trove/WAVE-PROMPT-2026-09-02-resumable-gate.md`; decision D4 of the
+`/workspaces/vbpub/run-gate-project/nyxloom-trove/WAVE-PROMPT-2026-09-02-resumable-gate.md`
+— the MAIN checkout's, not this branch's, whose `nyxloom-trove/` holds
+`reports/` only (review round 1 N5); decision D4 of the
 post-v10 plan — automatic re-attach with `--fresh` as the escape, not an
 `--attach` flag).
 

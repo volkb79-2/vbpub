@@ -68,7 +68,18 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     The first observation prints the count alone — one event with no clock
     in the file is a baseline, not a measurement. A lane whose judge writes
     no candidate events (an R0/R1 lane, or no file at all) is disclosed ONCE
-    and is never treated as a fault.
+    and is never treated as a fault. A file that VANISHES mid-run after
+    events HAVE been seen is a different fact and gets its own sentence
+    naming the last event it held: it is silence, not "no events", so the
+    stall clock keeps running rather than stopping forever.
+  - **Silence is measured from the watch's construction until the file first
+    moves under it**, and from each movement after that. A first observation
+    is a baseline, not movement — restarting the clock there would give a
+    container that was already frozen when this client re-attached a fresh,
+    full stall window.
+  - On a re-attach the file WATCHED, and the verdict path DISCLOSED, are the
+    ones the inflight record names — the artifacts that run declared, not
+    the ones this invocation's config would construct.
   - **New optional lane key `stall_timeout` (assay lanes only)**, same
     `\d+[smh]` grammar as `budget`. The lane is stopped only when its
     container is still RUNNING and the progress file has not advanced for
@@ -106,6 +117,11 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   cannot see statically which mount a lane will get. run-gate does not
   rewrite argv — the fix is one edit in the consumer's config. No
   vbpub-estate lane trips it (swept at release).
+  **Known affected consumer:** dstdns `[lanes.scale-admission]`
+  (`argv = ["scripts/schema-gate.sh", "{worktree}", …]`, environment
+  `test-runner`) — exactly one hit, parsed with `tomllib` over every dstdns
+  lane. The `[lanes.schema]` this was filed from is already fixed
+  (`dstdns@65582354`).
 
 ### Fixed
 - **RG-35 — a lane's container is found again after its client dies (rev 34,
@@ -183,6 +199,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     against a `stall_timeout` its own invocation had never mentioned. On a
     follow the line also names the owning pid as the client that will act on
     it.
+  - The record's `schema` is CHECKED on read, not merely written: a record
+    of another schema is disclosed by name and treated as no record, so a
+    future format cannot be silently misread by an older client.
   - **Consumer note:** the record lives in the `.run-gate/` directory
     adopters already git-ignore for `history.json`; no config change is
     needed. A project that has NOT ignored it gets one warning per run
