@@ -55,8 +55,8 @@ SPEC §9.
 | RG-35 | a lane's container outlives a dead run-gate client (`docker run -d` … `rm -f` in a `finally` the client never reaches), but nothing re-attaches: exit status, evidence and history are lost and the next invocation starts a DUPLICATE container for the same lane — the one-gate rule broken by the tool | Major | FIXED 2026-09-02 (rev 34, SPEC `R-39`) — `.run-gate/inflight/<lane>.json`, automatic re-attach/collect/report-lost, `--fresh` escape, commit mismatch refused |
 | RG-36 | the only liveness bound for a long assay lane is a GUESSED total `budget` (advisory here, hard in assay); rev 33's progress file makes rate/ETA/stall observable but run-gate reads none of it | Major | FIXED 2026-09-02 (rev 34, SPEC `R-40`) — the COARSE half: 30 s progress disclosure with rate/ETA, no-events disclosed once and never a fault, optional `stall_timeout` lane key (assay lanes only; stops the lane only while RUNNING and silent that long, never on total elapsed). Exact timing = E-3, needs assay B065; the code already prefers an event's `elapsed_s`, so B065 makes it exact with no rewrite |
 | RG-37 | exec-mode container derivation (`run-gate.py` `resolve_container_name`, R-14a) reads `deploy.project_name` + `deploy.environment_tag` (fallback `deploy.network_name`) from the consumer's rendered `ciu.global.toml`; a CIU v8 checkout (SPEC-V8 draft.3, ciu CIU-92) renders `ciu.resolved.toml` instead, with identities as data under `[resolved.identities.<realization>.<service>] container_name`, and has no `deploy` table — every dstdns exec lane would fail container resolution the day dstdns moves to v8, while the operator decided (2026-09-02) that run-gate STAYS maintained in parallel with `ciu gate` and is "aligned with future changes in ciu v8" | Major | OPEN 2026-09-02 — filed from the v8 design review (ciu `docs/CIU-V8-ADVERSARIAL-REVIEW-2026-09-02.md` R-01, proposal §4.4 V8-19 / §4.11 N18): additive lookup order — when `ciu.resolved.toml` exists in the judged checkout, resolve `environments.<n>.container_name` (or a new `exec_in = "<realization>.<service>"` key) through `resolved.identities`, otherwise keep the v7 path; `kind = "sequence"` in-process conjunction lanes (N21) are the second alignment item |
-| RG-40 | a container `kind = "command"` lane has NO liveness signal at all: `stall_timeout` is refused there (rev 34, R-40c — it is judged from a progress file only an assay lane writes), so the lane shape most likely to hang is the one run-gate cannot bound except by a `budget` it never enforces | Major | OPEN 2026-09-02 — RW-9: judge silence from the LOG STREAM run-gate already tails (`docker logs -f`), same "silence, never elapsed" semantics as `R-40`, with the SOURCE of the signal disclosed at start (`progress file` vs `log stream`); E-3 candidate (23.5.0) |
-| RG-39 | `tools/coverage_gate.py` takes its changed-line numbers from `git diff base..HEAD` (committed) but its coverage from the file ON DISK, so running the `selftest` lane with `--allow-dirty` over an uncommitted change reports lines as uncovered that are covered — the two are offset by whatever the working tree added above them | Medium | OPEN 2026-09-02 — measured twice in the rev-34 wave (`175/177 (98.9%)` dirty → `153/153 (100.0%)` on the same code once committed); either diff the WORKING TREE when the tree is dirty, or refuse/disclose the mismatch instead of printing a number nobody can act on |
+| RG-41 | a container `kind = "command"` lane has NO liveness signal at all: `stall_timeout` is refused there (rev 34, R-40c — it is judged from a progress file only an assay lane writes), so the lane shape most likely to hang is the one run-gate cannot bound except by a `budget` it never enforces | Major | OPEN 2026-09-02 — RW-9: judge silence from the LOG STREAM run-gate already tails (`docker logs -f`), same "silence, never elapsed" semantics as `R-40`, with the SOURCE of the signal disclosed at start (`progress file` vs `log stream`); E-3 candidate (23.5.0) |
+| RG-40 | `tools/coverage_gate.py` takes its changed-line numbers from `git diff base..HEAD` (committed) but its coverage from the file ON DISK, so running the `selftest` lane with `--allow-dirty` over an uncommitted change reports lines as uncovered that are covered — the two are offset by whatever the working tree added above them | Medium | OPEN 2026-09-02 — measured twice in the rev-34 wave (`175/177 (98.9%)` dirty → `153/153 (100.0%)` on the same code once committed); either diff the WORKING TREE when the tree is dirty, or refuse/disclose the mismatch instead of printing a number nobody can act on |
 | RG-38 | resume state lives under the JUDGED project root, so a fresh worktree per run (cmru release transaction, Mode-B instances) loses it and a retry restarts from mutant #1 despite `--resume` | Medium | OPEN 2026-09-02 — bind-mount a per-repo durable `.run-gate/assay-state/<project>/` at the state path; needs assay B066 (`--state-dir`); copy-in/out fallback until then |
 
 ---
@@ -2520,7 +2520,7 @@ per-unit bounds). R0/R1 lanes are one command each and cannot resume below
 that grain by construction; canary (R3) and red-first (R4) have mutation's
 per-unit shape and get the same mechanism through assay B064/B066.
 
-## RG-39 — `coverage_gate.py` reports misleading uncovered lines on a dirty tree
+## RG-40 — `coverage_gate.py` reports misleading uncovered lines on a dirty tree
 
 **Found 2026-09-02** while implementing the rev-34 wave, twice, each time
 costing a full gate round (~70 s of suite plus the investigation).
@@ -2577,7 +2577,7 @@ minimum.
 run-gate rev 34's own implementation wave
 (`nyxloom-trove/reports/run-gate-WAVE-RESUMABLE-LOG.md`, entries E5 and E7).
 
-## RG-40 — a container `kind = "command"` lane has no liveness signal: judge silence from the LOG STREAM
+## RG-41 — a container `kind = "command"` lane has no liveness signal: judge silence from the LOG STREAM
 
 **Filed 2026-09-02 by controller ruling RW-9**, out of the rev-34 wave's own
 decision ask: `stall_timeout` was refused on command lanes, and the refusal
@@ -2678,6 +2678,6 @@ the real cost of this item and the reason it is not a footnote to RG-36.
 
 Sequenced with the other progress/resume work: E-3 of
 `assay/nyxloom-trove/WAVE-PLAN-2026-09-02-after-v10.md` (RG-36 exact timing
-once assay B065 lands, RG-38, RG-39). Not implemented in rev 34 by ruling —
+once assay B065 lands, RG-38, RG-40). Not implemented in rev 34 by ruling —
 the wave shipped the refusal, and this is the answer to what the refusal
 costs.

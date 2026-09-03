@@ -122,7 +122,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     add.
   - **A container `kind = "command"` lane gets no liveness signal from this
     and refuses `stall_timeout` by name** — it writes no progress file.
-    Backlog **RG-40** carries the answer (judge silence from the log stream
+    Backlog **RG-41** carries the answer (judge silence from the log stream
     run-gate already tails, with the signal's SOURCE disclosed); not in this
     release.
 - **RG-34 — `doctor` names an unprefixed script path in a container command

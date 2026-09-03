@@ -18,7 +18,7 @@ diff-coverage OK: 342/342 changed executable lines covered (100.0% ≥ 100.0% fl
 run-gate: lane 'selftest' exit 0
 ```
 
-(`scratchpad/selftest-fix-rw16b.log`, untracked. RG-39 still applies: gate on
+(`scratchpad/selftest-fix-rw16b.log`, untracked. RG-40 still applies: gate on
 a COMMITTED tip only, or the diff-coverage line numbers are offset.)
 
 ## Landed (four commits, on top of the review report `be7d94b3`)
@@ -89,7 +89,7 @@ Line numbers are on tip `450b3e22`.
    mismatch case. (b) Extract the `budget` / `stall_timeout` disclosure prints
    (`run-gate.py:3301` and `3307`) into one helper and call it on the re-attach
    AND follow paths too, before `await_container`/`follow_container`.
-   (c) RG-40's acceptance criteria in `KNOWN_ISSUES_TODO_BACKLOG.md` gain "the
+   (c) RG-41's acceptance criteria in `KNOWN_ISSUES_TODO_BACKLOG.md` gain "the
    source-of-signal line is printed on re-attach and follow too".
 4. **RW-19.**
    - **S7:** RG-34's dstdns consumer is `scale-admission`, not `schema`

@@ -461,7 +461,7 @@ not a finding.)
 | migration is one deletion per lane | CHANGES:22 | **FALSE for 4 lanes**, and harmful there | B1 |
 | no vbpub-estate `run-gate.toml` declares the key / trips RG-34 | CHANGES | TRUE | parsed all 11 estate configs, zero hits |
 | dstdns `[lanes.schema]` still needs the argv fix | REPORT:194 | **FALSE** (fixed at `dstdns@65582354`); `scale-admission` is the live hit | S7 |
-| RG-35/36/32/34 rows FIXED with evidence; RG-39/RG-40 OPEN with acceptance criteria | backlog:52-59 | TRUE | read |
+| RG-35/36/32/34 rows FIXED with evidence; RG-40/RG-41 OPEN with acceptance criteria | backlog:52-59 | TRUE | read |
 | `[Unreleased]` complete for 23.4.0, nothing that did not land | CHANGES:12-124 | TRUE | every entry maps to shipped code |
 
 ## Hollow tests (would pass against a wrong implementation)
@@ -512,7 +512,7 @@ good shape; these six are the exceptions.
    the current conflation and document it in `R-39b` as a known loss?
 5. **S4.** Use `FinishedAt` for a collected run's duration, or accept
    `now − started_epoch` and note it in `R-39c`?
-6. **RG-40 scope.** RG-40's filing assumes `stall_timeout` becomes legal on
+6. **RG-41 scope.** RG-41's filing assumes `stall_timeout` becomes legal on
    command lanes with the source disclosed. Note that S6 (no disclosure on a
    re-attach) will apply to that source line too — worth fixing here rather
    than inheriting it.

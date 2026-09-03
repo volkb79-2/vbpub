@@ -241,7 +241,7 @@ a separate step): `488 passed, 2 skipped, 2 warnings in 69.52s`,
 Commits: RG-35 `6fe633f5`, RG-32 `8db781e6`, RG-34 `1e41069f`, RG-36
 `10aa59e2`. 428 -> 488 tests (+60).
 
-Filed while here: **RG-39** — `tools/coverage_gate.py`'s dirty-tree line
+Filed while here: **RG-40** — `tools/coverage_gate.py`'s dirty-tree line
 numbers (the artifact E5/E7 record), with the transcript and two proposed
 fixes. Not fixed in this wave: it is the gate every other item was measured
 with, and changing it mid-wave would have invalidated those measurements.
@@ -257,10 +257,10 @@ BRIEF was needed because nothing is left open.
 ## E10 — controller rulings RW-9/RW-10/RW-11 + follow-up package, 2026-09-02
 
 - **RW-9** (ask 1): the `stall_timeout` refusal on command lanes STANDS.
-  The gap it leaves is filed as **RG-40** — judge silence from the LOG
+  The gap it leaves is filed as **RG-41** — judge silence from the LOG
   STREAM run-gate already tails, same "silence, never elapsed" semantics as
   R-40, with the signal's SOURCE disclosed at start. Section written in
-  RG-39's shape + index row; NOT implemented (E-3 candidate, 23.5.0).
+  RG-40's shape + index row; NOT implemented (E-3 candidate, 23.5.0).
   Scope measured with `tomllib` rather than asserted: **5 container
   `kind = "command"` lanes vs 3 container assay lanes** across vbpub's
   `*/run-gate.toml` (plus 9 host lanes, outside the question) — the key is
@@ -277,10 +277,10 @@ BRIEF was needed because nothing is left open.
   named, container named, `--fresh` named, exit 2 through the chain.
   Paragraph (with that transcript) added to CONSUMERS "Gate-conjunction
   lanes"; one sentence added under SPEC `R-39d`.
-- **RW-11** (ask 3): RG-39 stands as filed, not fixed here. No action.
+- **RW-11** (ask 3): RG-40 stands as filed, not fixed here. No action.
 - **RW-12**: the E-008 deviation is accepted as recorded.
 
-CHANGES `[Unreleased]`: one line under the RG-36 entry pointing at RG-40.
+CHANGES `[Unreleased]`: one line under the RG-36 entry pointing at RG-41.
 Nothing else in that block changed.
 
 ## Fix round 1 (after adversarial review round 1), 2026-09-02
@@ -334,7 +334,7 @@ the order RW-14 → RW-13 → RW-16 → RW-15 → RW-17 → RW-18 → RW-19.
 Fresh successor seeded with `BRIEF-1` + controller-log rulings RW-13..RW-22.
 Orders: RW-15 → RW-20 → RW-17 → RW-18 → RW-19, then the live two-client
 probe. One commit per ruling, red-first where a pre-fix implementation is
-expressible, selftest on the COMMITTED tip only (RG-39).
+expressible, selftest on the COMMITTED tip only (RG-40).
 
 - **First act — the gate on the inherited tip `e87007cc`, read separately.**
   BRIEF-1's figures were quoted from a log the controller could not find on
@@ -375,7 +375,7 @@ expressible, selftest on the COMMITTED tip only (RG-39).
   order, so it names the refusal, the follow, the `--fresh` removal and
   RW-20's re-read. `print_lane_bounds` extracted and called from the fresh,
   re-attach AND follow paths (on a follow it names the owning pid as the
-  client that will act on the stall). RG-40's acceptance criteria gained the
+  client that will act on the stall). RG-41's acceptance criteria gained the
   "printed on re-attach and follow too" clause. Red-first PROVEN: five of six
   new cases fail against `86f7f7b4`.
 - **RW-19 — `d7e280ce`.** S7 (RG-34's live consumer is `scale-admission`,
@@ -405,7 +405,7 @@ expressible, selftest on the COMMITTED tip only (RG-39).
   `538 passed, 2 skipped` / `diff-coverage OK: 452/452 (100.0%)` /
   `run-gate: lane 'selftest' exit 0` (`scratchpad/selftest-succ-2.log`).
   An earlier gate on `ffc64903` went red at `417/421` — that run was launched
-  and then this session edited files WHILE it ran, which is RG-39's own trap;
+  and then this session edited files WHILE it ran, which is RG-40's own trap;
   it was re-measured on a clean committed tree and the four genuinely
   uncovered lines (three untested dry-run branches and RW-20's `--fresh`
   clause) got behaviour tests.
@@ -490,7 +490,7 @@ SPEC `R-08a`, the backlog and the REPORT's notification.
   `553 passed, 2 skipped, 2 warnings in 77.83s` / `diff-coverage OK: 494/494
   changed executable lines covered (100.0% ≥ 100.0% floor)` /
   `run-gate: lane 'selftest' exit 0`. Tree clean at launch; no file was
-  edited while a gate ran (RG-39's trap).
+  edited while a gate ran (RG-40's trap).
 
 ### Not done, deliberately
 
