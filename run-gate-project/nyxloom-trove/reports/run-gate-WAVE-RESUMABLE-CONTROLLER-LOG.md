@@ -272,3 +272,50 @@ controller's entries from the implementer's return onward; wave records
   - **Reviewer round 2 dispatched** (the round-1 reviewer's session, cap
     3) on `21e6bbea`: every round-1 finding re-reproduced, new-defect hunt
     on the owner-liveness edges, one selftest, report as its only file.
+
+- **2026-09-03 (reviewer round 2: NOT ACCEPT — 1 BLOCKER, 4 SHOULD-FIX,
+  2 NIT, zero round-1 regressions; RW-27..RW-31; fix package 2 to a FRESH
+  implementer; round 3 = verification only)** — Report `4a7a490b`.
+  Selftest on `21e6bbea` re-run by the reviewer: `538 passed` /
+  `diff-coverage OK: 452/452` / `exit 0`. All fourteen round-1 findings
+  re-reproduced FIXED (B2's two-client probe: A exit 0 true result, B
+  follows, one run/one rm/one history entry; B1's new refusal sentence
+  verbatim; S4's duration 3600.0). New findings, all accepted:
+  - **RW-27 (G1, BLOCKER — RW-24 as implemented kills a slow-starting lane
+    on the poll that proves it alive): seed the silence clock from the
+    FILE.** On the first observation, age = `wall_now − mtime` (the mtime
+    `_newest()` already reads), so a re-attached frozen file stalls at
+    once (RW-24's case) and a fresh lane whose first candidate arrives
+    after a long startup (dstdns `sql-mutation`: provision, baseline,
+    mutant generation before candidate #1) gets its full window. R-40's
+    sentence gains its second half: silence is measured from the last time
+    the FILE moved, which for a re-attach is before this client existed.
+    Red-first: the reviewer's driven-clock probe (`candidate 1/172` printed
+    and stalled by the same `poll()`).
+  - **RW-28 (G2 — a follower outliving its owner leaves the orphan): promote.**
+    After `docker wait` returns, re-read the record and the owner's
+    liveness; if the owner is gone, the follower does the three duties
+    (`rm -f`, clear, ONE history entry with the exit code it holds) and
+    discloses by name ("the owning client (pid N) is gone; this client is
+    finishing its cleanup"). "One run, one rm, one history entry" stays
+    true in the one case that broke it.
+  - **RW-29 (G3 — owner identity not PID-namespace-safe): add the conjunct.**
+    The PID namespace inode (`os.stat("/proc/self/ns/pid").st_ino`) joins
+    the record and `live_owner_pid`; a record from ANOTHER namespace is
+    "liveness unknown" and is treated as ALIVE — follow, or refuse on
+    `--fresh` — never as dead. This host bind-mounts the same worktrees
+    into several devcontainers; the hazard is real here.
+  - **RW-30 (G4 — the dstdns count is already stale, 18 of 35 today):
+    measured-on-date plus the one-liner.** CHANGES/SPEC/REPORT/notification
+    say "N of M dstdns lanes as measured on <date> with `<command>`" and
+    carry the re-measure command; the number is re-measured once more at
+    merge. The four `clean_tree` moves are unchanged.
+  - **RW-31 (G5 — the LOG records an N5 fix that did not land): land it**
+    (the wave-prompt path stated as the main checkout's) and correct the
+    LOG entry rather than rewrite it (append a correction line).
+  - **Plus RW-25 and RW-26** (refuse an unknown-schema record; close RG-34
+    as FIXED with the `scale-admission` hit in the notification only) —
+    verified absent by the reviewer, land in this package.
+  - **Round 3 (ask 5): verification-only** of RW-25..RW-31 on the committed
+    tip by the same reviewer — no third full pass. Fix package 2 goes to a
+    FRESH implementer (the successor is past 300k tokens).

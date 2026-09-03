@@ -195,3 +195,14 @@ dstdns D-110.4. Rulings here are E5-Rn.
     count and shellcheck, then merges `--no-ff` to main — no release; the
     CHANGES `[Unreleased]` line for the Buildkite tools is folded after
     23.4.0 merges (append-conflict avoidance).
+
+- **2026-09-03 (final commit `c2105cf7` verified; MERGED to main `c79d374b`,
+  `--no-ff`)** — Controller's own verification on the tip: 72 tests green
+  serially under nice/ionice, `shellcheck -S style` clean, the three
+  `|| die`s and `check_number` on the build number present, scope = the four
+  product files plus the two review reports. No release (the next run-gate
+  release carries `tools/buildkite/`); the CHANGES `[Unreleased]` line is
+  folded after 23.4.0 merges. Seam status after the merge: 2 and 4 landed
+  (dry-run + stubbed-live tested, never run against the real API), 1 docs
+  only, 3/5/6 not started; next E-5 act needs the operator's host facts and
+  the Buildkite org slug (§6 last paragraph, §8 checklist).
