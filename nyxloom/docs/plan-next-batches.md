@@ -308,6 +308,8 @@ cold-dispatch site (both `None` cases guarded). Gate 36/36 diff-cov green; adver
 reviewed (frozen-core-adjacent). **Deferred to D-R2/D-R3:** actual reviewer-tier/model
 SELECTION by band (needs `review-1`/`review-2` routes built first).
 
+**Superseded in part by nyxloom-P101 (2026-09-03):** the `Frontmatter.tier` band above was retired -- `implement-3` existed in no routes file, so the tier lookup could only ever suppress the band, never raise it. The signature is now `compute_review_depth_directive(scope_touch, gate_asserts)` and scope size is the sole band signal. Gate rigor is unchanged.
+
 ## BATCH D — test-health + mutation (enables H + reliable concurrency)
 - **B3-followon — ✅ DONE (merge `f9f5234f`, 2026-07-26).** "gates async-with-timeout"
   from `plan-flow-hardening.md`'s B3/P71 (per-stage concurrency shipped the

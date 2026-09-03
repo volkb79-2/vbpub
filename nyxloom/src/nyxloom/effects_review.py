@@ -432,7 +432,6 @@ class ReviewEffector:
                     if first_tsf is not None else None)
         review_gate = gate_runner.select_verification_gate(cfg)
         review_depth = adapters.compute_review_depth_directive(
-            tier=first_fm.tier if first_fm is not None else None,
             scope_touch=first_fm.scope.touch if first_fm is not None else [],
             gate_asserts=review_gate.asserts if review_gate is not None else [],
         )
