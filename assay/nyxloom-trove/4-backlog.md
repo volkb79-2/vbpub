@@ -5581,9 +5581,31 @@ Both non-wire halves are done; half (c) (a per-claim `detail` field) is phase
   that pass on both sides are the controls (the vocabulary-completeness
   check, the CLI-boundary refusal that already printed, and the
   no-`diagnostics` default).
-- [ ] **(c) the wire `detail` field** — phase 2 of Wave D (DA-D2 (c)), NOT
-  done here. Nothing under `verdict.py`/`verify.py`/`src/assay/schemas/` was
-  touched.
+- [x] **(c) the wire `detail` field** — SHIPPED in two steps, both in Wave D
+  phase 2. The FIELD landed with the v10 cut (`b2fd09f3`): `Claim.detail` +
+  `Claim.detail_dropped_bytes` at `src/assay/verdict.py:2931`, the presence
+  rule and the BYTE bound at `verdict.py:3055-3084`
+  (`Claim._check_detail`), the schema's deliberate character/byte split, and
+  `verify.py:2371-2392`. The PRODUCERS landed with A-439: every conversion
+  site that turns a refusing `AssayError` into a refusal claim now carries
+  that error's own message onto the claim, byte-copied from the same
+  expression `announce_refusal` prints — because `announce_refusal` now
+  RETURNS the bounded sentence (`runner.py`'s `announce_refusal`,
+  `verdict.refusal_detail`/`verdict.RefusalDetail`). Sites: `evaluate_r1`'s
+  `except`, the post-command refusal's non-R0 levels, the profile-read
+  failure, the deferred equivalence refusal, the three early-R2 refusals, the
+  ingested-R2 refusal, the R2 orchestration fault AND the R3 claim it also
+  refuses, the canary refusal, both direct-R0 R0 claims,
+  `_refuse_lane_with_plan` (every declared level, via a new `detail=`
+  keyword on `refuse_lane`), `_report_probe_refusal` (which now composes and
+  returns even with `diagnostics=None`), the pre-run dirty/`HEAD` guards, the
+  three cleanup-failure branches through
+  `_replace_highest_higher_rigor_claim_with_git_failed`, and `cli.py`'s four
+  `refuse_lane` sites. Tests: `tests/test_refusal_announcement.py`'s new
+  final section — the bound as a unit (head kept, codepoint boundary, empty →
+  absent), the emitter's return equals what it printed (and still returns
+  with no stream), and five end-to-end producing sites read off the DOCUMENT,
+  plus a no-refusal control and a real over-bound truncation.
 
 **~~Known limit, recorded rather than papered over:~~ CLOSED by DA-R3/A-414
 (below).** A refusal that no `AssayError` carries (`DIRTY_TREE`,

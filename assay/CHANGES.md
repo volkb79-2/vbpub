@@ -76,6 +76,23 @@ signatures; and `outcome`, `status`, `coverage.pct`, `coverage.missing_lines`
 and `coverage.missing_branch_lines` are still read by those names.
 
 ### Fixed
+- **A refusal's sentence now reaches a consumer that has only the archived
+  artifact.** Schema v10 declared `claim.detail`; this release fills it. Every
+  conversion site that turns a refusing `AssayError` into a refusal claim now
+  puts that error's own message onto the claim, byte-identical to the one
+  stderr line the same site prints — the emitter RETURNS the bounded sentence
+  it printed, so the line and the document are one composition and cannot
+  drift. It lands wherever a refusal produced text: the R1/R2/R3 conversion
+  sites, the whole-lane refusal (which puts the one sentence on EVERY declared
+  level, because one root cause refused every tier), the environment-probe
+  refusal, the pre-run and post-command dirt/`HEAD` guards, and the
+  cleanup-time replacement that used to leave a bare `ERROR`/`GIT_FAILED`
+  where a real claim had been. A `PASS` claim carries none, and neither does a
+  refusal that composed no text. Bounded at 2048 UTF-8 bytes, **head kept**,
+  with `detail_dropped_bytes` recording exactly what was cut — the stream
+  still gets the whole sentence, so a long refusal is complete on your
+  terminal and honestly truncated in your archive. Declared, not verified: do
+  not parse it, and do not gate on it. (B053/DA-D2(c), A-428, A-439)
 - **An ingested mutation report must now be about the judged commit's own
   CONTENT, not merely about this checkout.** For every measured file, assay
   reads the committed blob back through the snapshot the lane's command ran

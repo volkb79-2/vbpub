@@ -785,11 +785,18 @@ def _run_reserved(
                     reason_code=exc.reason_code,
                 ) from None
             raise exc from None
+        # (B053/A-428, A-439) Announced BEFORE the artifact is built, not
+        # after, because the artifact now carries the announced sentence:
+        # `announce_refusal` returns the bounded copy and `refuse_lane` puts
+        # it on every declared level's claim. The observable order is
+        # unchanged -- `refuse_lane` writes nothing to any stream.
+        detail = runner.announce_refusal(exc, diagnostics=err)
         verdict = runner.refuse_lane(
             lane,
             commit=commit,
             status=exc.outcome,
             reason_code=exc.reason_code,
+            detail=detail,
             argv_append=appended,
             infrastructure_source=infrastructure_source,
             infrastructure_environment=infrastructure_environment,
@@ -798,7 +805,6 @@ def _run_reserved(
             evidence=_timed_out_evidence(declared_evidence, exc),
             declared_evidence=declared_evidence,
         )
-        runner.announce_refusal(exc, diagnostics=err)
         if destination is not None:
             runner.write_verdict(verdict, destination)
         if args.verdict_json != "-":
@@ -825,11 +831,14 @@ def _run_reserved(
             # command ever launches; every declared rigor claim AND every
             # declared evidence identity becomes the SAME payload-free
             # BUDGET_EXCEEDED/LANE_TIMEOUT pair.
+            # (B053/A-439) Same order, same reason, as the sibling above.
+            detail = runner.announce_refusal(exc, diagnostics=err)
             verdict = runner.refuse_lane(
                 lane,
                 commit=commit,
                 status=exc.outcome,
                 reason_code=exc.reason_code,
+                detail=detail,
                 argv_append=appended,
                 infrastructure_source=infrastructure_source,
                 infrastructure_environment=infrastructure_environment,
@@ -838,7 +847,6 @@ def _run_reserved(
                 evidence=_timed_out_evidence(declared_evidence, exc),
                 declared_evidence=declared_evidence,
             )
-            runner.announce_refusal(exc, diagnostics=err)
             if destination is not None:
                 runner.write_verdict(verdict, destination)
             if args.verdict_json != "-":
@@ -858,11 +866,13 @@ def _run_reserved(
         #
         # P26/A-213: adapter refusal preserves already-resolved evidence --
         # it is never permission to erase it.
+        detail = runner.announce_refusal(exc, diagnostics=err)
         verdict = runner.refuse_lane(
             lane,
             commit=commit,
             status=exc.outcome,
             reason_code=exc.reason_code,
+            detail=detail,
             argv_append=appended,
             infrastructure_source=infrastructure_source,
             infrastructure_environment=infrastructure_environment,
@@ -871,7 +881,6 @@ def _run_reserved(
             evidence=evidence,
             declared_evidence=declared_evidence,
         )
-        runner.announce_refusal(exc, diagnostics=err)
     else:
         # (B028/DA-R9, SF-1) The SECOND half of DA-D10's intent: "the reserved
         # `--verdict-json` is WRITTEN" binds wherever the lane-wide deadline
@@ -938,11 +947,13 @@ def _run_reserved(
         except AssayError as exc:
             if exc.reason_code is not ReasonCode.LANE_TIMEOUT:
                 raise
+            detail = runner.announce_refusal(exc, diagnostics=err)
             verdict = runner.refuse_lane(
                 lane,
                 commit=commit,
                 status=exc.outcome,
                 reason_code=exc.reason_code,
+                detail=detail,
                 argv_append=appended,
                 infrastructure_source=infrastructure_source,
                 infrastructure_environment=infrastructure_environment,
@@ -951,7 +962,6 @@ def _run_reserved(
                 evidence=evidence,
                 declared_evidence=declared_evidence,
             )
-            runner.announce_refusal(exc, diagnostics=err)
     if destination is not None:
         # Exactly once, and the summary is printed only after it succeeded:
         # a run that could not deliver the artifact it was asked for must not

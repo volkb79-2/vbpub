@@ -142,6 +142,29 @@ def _validate(document: dict, validator: Draft202012Validator) -> None:
     assert why_invalid(validator, document) == []
 
 
+def _fixture_with(fixture: dict, substitutions: dict[str, str]) -> dict:
+    """(B053/A-428, A-439) A hand-written fixture, with its placeholders
+    filled from facts the TEST owns.
+
+    ``claim.detail`` is the refusing sentence, and two of this module's
+    refusals name something no fixture can know ahead of time: the temporary
+    source root, and an abbreviated revision. Everything else about the
+    expected document -- including the rest of that same sentence -- stays
+    written down by hand and compared whole.
+
+    The substitution is deliberately a plain string replace over the
+    SERIALISED fixture rather than a per-field patch: a placeholder that
+    stops appearing (because a message was reworded and the fixture updated
+    without it) leaves the fixture unchanged and the comparison fails, which
+    is the direction a fixture is supposed to fail in.
+    """
+    text = json.dumps(fixture)
+    for placeholder, value in substitutions.items():
+        assert placeholder in text, f"{placeholder} is not in the fixture"
+        text = text.replace(placeholder, json.dumps(value)[1:-1])
+    return json.loads(text)
+
+
 def test_r1_pass_matches_the_hand_written_fixture(
     git_repo: GitRepo, validator: Draft202012Validator
 ):
@@ -297,7 +320,17 @@ def test_r1_no_measurement_dirty_tree_matches_the_hand_written_fixture(
     )
 
     document = json.loads(verdict.to_json())
-    assert document == r1_verdict_fixture("r1_no_measurement_dirty_tree")
+    # (B053/A-428, A-439) The fixture is still the WHOLE hand-written
+    # document, `claim.detail` included -- one substitution, for the one fact
+    # that cannot be written down ahead of time: the source root is a
+    # per-run temporary directory THIS test created, so the placeholder is
+    # filled from the test's own knowledge and never from the artifact under
+    # comparison (which would make the field compare against itself).
+    expected = _fixture_with(
+        r1_verdict_fixture("r1_no_measurement_dirty_tree"),
+        {"<SOURCE_ROOT>": str(git_repo.path / "pkg")},
+    )
+    assert document == expected
     assert "coverage" not in document["claims"][1]
     _validate(document, validator)
 
@@ -338,7 +371,13 @@ def test_r1_no_measurement_base_is_head_matches_the_hand_written_fixture(
     )
 
     document = json.loads(verdict.to_json())
-    assert document == r1_verdict_fixture("r1_no_measurement_base_is_head")
+    # (A-439) Same one-substitution rule as the dirty-tree sibling: the
+    # abbreviated revision is this test's own `head_rev`, which it created.
+    expected = _fixture_with(
+        r1_verdict_fixture("r1_no_measurement_base_is_head"),
+        {"<HEAD12>": head_rev[:12]},
+    )
+    assert document == expected
     assert "coverage" not in document["claims"][1]
     _validate(document, validator)
 

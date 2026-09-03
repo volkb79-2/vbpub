@@ -1594,3 +1594,77 @@ seconds of launch. Load stayed 5.1–7.4.
   allocated (next free **B071**). `main` re-checked immediately before each
   allocation: backlog high-water **B068**, decisions high-water **A-407**.
   Main wins on ids at merge.
+
+### 35. `feat(assay): a refusal's own sentence reaches the wire -- claim.detail's producers (B053, A-439)`
+
+**Generation 11, item 1 of 4 (DA-R27's order).** The v10 cut landed the FIELD;
+this lands the code that fills it.
+
+- **The mechanism, in one sentence:** `runner.announce_refusal` now RETURNS
+  the bounded copy of the sentence it just printed
+  (`verdict.RefusalDetail`, built by the new `verdict.refusal_detail`), and
+  each conversion site passes that value into the `Claim` it is building.
+  A-428's byte copy stops being a convention and becomes structural: a site
+  that wanted the line and the field to disagree would have to compose the
+  message twice on purpose.
+- **New in `src/assay/verdict.py`** (beside `CLAIM_DETAIL_BYTES`, which the
+  cut already carried): `RefusalDetail` (frozen, `text` + `dropped_bytes`,
+  self-validating) and `refusal_detail(message)` — head kept, cut walked BACK
+  off UTF-8 continuation bytes so a straddling character is dropped whole,
+  `None` for an empty message. Both exported.
+- **Producing sites wired** (all in `runner.py` unless noted): `evaluate_r1`'s
+  `except`; the post-command refusal's non-R0 levels; the profile-read
+  failure; the DEFERRED equivalence refusal (via `refusal_detail(str(exc))`,
+  because its claim may be discarded before the announcement); the three
+  early-R2 refusals; the ingested-R2 refusal; the R2 orchestration fault AND
+  the R3 claim it also refuses (announced once, `detail` on both — the reason
+  A-428 puts the field on the claim, not the verdict); the canary refusal;
+  both direct-R0 `R0` claims; `_refuse_lane_with_plan` via a new `detail=`
+  keyword on `refuse_lane`/`refuse_all` (one sentence on EVERY declared
+  level); `_report_probe_refusal`; the pre-run dirty/`HEAD` guards; the three
+  cleanup branches through
+  `_replace_highest_higher_rigor_claim_with_git_failed`; and `cli.py`'s four
+  `refuse_lane` sites.
+- **Two behaviour changes worth naming.** `_report_probe_refusal` lost its
+  `if diagnostics is None: return` early exit — it composes and returns
+  unconditionally now and guards only the printing, because that return made
+  "no line on my stream" and "no cause in my document" one decision.
+  `cli.py`'s four sites announce BEFORE building the artifact rather than
+  after; the observable order is unchanged, since `refuse_lane` writes to no
+  stream.
+- **Tests:** twelve new, all in `tests/test_refusal_announcement.py`'s new
+  final section — the bound as a unit (whole/short, empty → absent, head kept
+  with an exact dropped count, the codepoint boundary with a 2050-byte
+  message that must cut at 2047), the emitter's return equals what it printed
+  and still returns with no stream, and five end-to-end producing sites read
+  off the DOCUMENT: `evaluate_r1`, the whole-lane refusal on every declared
+  level, a real over-bound truncation (140 stray files push the dirty-tree
+  sentence past 2048 bytes — whole on the stream, cut on the wire), the
+  cleanup replacement, and the direct-R0 post-command guard. Plus a control:
+  a run that refused nothing carries no `detail` anywhere, in the model and
+  in `to_dict()`.
+- **Three hand-written fixtures gained the field**
+  (`tests/fixtures/verdicts/r1_no_measurement_{dirty_tree,base_is_head,empty_coverage}.json`).
+  The two whose sentence names a per-run temporary path or an abbreviated
+  revision carry a `<SOURCE_ROOT>`/`<HEAD12>` placeholder that the new
+  `_fixture_with` helper fills from facts the TEST created — never from the
+  artifact under comparison, which would make the field compare against
+  itself. The whole-document comparison is preserved. The other three R1
+  `NO_MEASUREMENT` fixtures are unchanged and must be: those claims come from
+  R1's own guard sequence with no refusing error behind them.
+- **Wire-shape grep before the gate (BRIEF-10 §3's rule):** `detail` over
+  `gate/` and `tools/` → two hits, both prose (`qualify_topos.py`'s
+  "implementation detail", `tester-unified-gate.sh`'s own comment describing
+  the v10 acceptance suite). No gate harness reads or compares the field.
+  `qualify_topos.py`'s six refusal scenarios assert `(outcome, reason_code)`
+  pairs only; its two `compare_complete_artifact` calls are against
+  `p25-pass`/`p25-missing`, neither of which is a refusal. W6's frozen
+  templates are fed to `verify_document` as STATIC documents, and `detail` is
+  optional — so no W6 asset needed touching, and none was.
+- Docs: `CHANGES.md` `[Unreleased]` → Fixed; `docs/DESIGN-GUIDE.md` §B026 N-4
+  gains "How the byte copy is guaranteed structurally"; `docs/CONSUMERS.md`'s
+  refusal-line section is retitled and now states the field, its bound and
+  the one way the two can differ (length), and the coverage-extent paragraph
+  no longer says the document carries no free-text cause.
+- Targeted suites green while iterating; no full-suite run on this commit
+  (the checkpoint's single run covers it).

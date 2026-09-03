@@ -5,9 +5,13 @@ B053's finding: an :class:`~assay.errors.AssayError` carries a sentence that
 names the file, the target or the declaration that refused, and that sentence
 is thrown away the moment the error becomes a refusal
 :class:`~assay.verdict.Claim` or :class:`~assay.verdict.Verdict`. The verdict
-document carries only the closed ``(status, reason_code)`` pair — A-138/A-170
-keep it that way, and DA-D2 (c) defers the on-the-wire ``detail`` field to the
-v10 cut — so a consumer reads ``ERROR``/``BAD_LANE_CONFIG`` and has to guess.
+document used to carry only the closed ``(status, reason_code)`` pair — A-138/
+A-170 keep that pair the only MACHINE-READABLE statement in it — so a consumer
+read ``ERROR``/``BAD_LANE_CONFIG`` and had to guess. Half (c), A-428, landed by
+A-439, puts the same sentence in the document as ``claim.detail``, bounded and
+declared-not-verified; the last section of this module is about it, and about
+the one property that makes it worth having: it is a BYTE COPY of the line,
+never a second composition.
 
 **Why this module tests ONE emitter and not a handler at the CLI boundary.**
 :mod:`assay.runner` converts an ``AssayError`` into a refusal claim or a
@@ -39,7 +43,7 @@ from pathlib import Path
 import pytest
 from conftest import FakeAdapter, GitRepo, make_lane, make_r1_judge
 
-from assay import runner
+from assay import runner, verdict
 from assay.cli import main
 from assay.errors import REASON_CODES, AssayError, Outcome, ReasonCode
 
@@ -1004,3 +1008,355 @@ def test_a_state_leak_with_no_outcome_in_hand_still_propagates_and_stays_silent(
         )
 
     assert _refusal_lines(diagnostics.getvalue()) == [], diagnostics.getvalue()
+
+
+# --- (c) the same sentence, on the wire: `claim.detail` -----------------------
+#
+# B053/DA-D2 (c), A-428, landed by A-439. Halves (a) and (b) above put the
+# refusal's sentence on a STREAM. A consumer that archives the verdict and
+# throws the stream away still had ``ERROR``/``BAD_LANE_CONFIG`` and a guess.
+# `claim.detail` is that same sentence, in the document -- a BYTE COPY, never
+# a second composition, which is the property every test below is really
+# about.
+
+
+def _detail_of(claim) -> str | None:
+    """The claim's detail, whether it is a dataclass or a wire dict."""
+    return claim["detail"] if isinstance(claim, dict) else claim.detail
+
+
+def _dropped_of(claim) -> int | None:
+    return (
+        claim["detail_dropped_bytes"]
+        if isinstance(claim, dict)
+        else claim.detail_dropped_bytes
+    )
+
+
+def _message_of(line: str) -> str:
+    """The MESSAGE half of one announced line: ``assay: {pair}: {message}``.
+
+    Split at most twice, so a message containing ``": "`` (most of them do --
+    they quote paths and declarations) survives intact.
+    """
+    return line.split(": ", 2)[2]
+
+
+def _sole_announced_message(diagnostics: str) -> str:
+    lines = _refusal_lines(diagnostics)
+    assert len(lines) == 1, diagnostics
+    return _message_of(lines[0])
+
+
+# --- the bound itself, as a unit ---------------------------------------------
+
+
+def test_a_short_message_is_carried_whole_and_drops_nothing():
+    detail = verdict.refusal_detail("lane 'package': the artifact is absent")
+    assert detail == verdict.RefusalDetail(
+        text="lane 'package': the artifact is absent", dropped_bytes=0
+    )
+
+
+def test_an_empty_message_produces_no_detail_at_all():
+    """A-428: absent says "no refusal produced text". An EMPTY string cannot
+    say it -- `Claim` rejects one -- so absent and empty must not be two
+    spellings of one state."""
+    assert verdict.refusal_detail("") is None
+
+
+def test_truncation_keeps_the_head_and_counts_the_bytes_it_dropped():
+    """A-428, stated and now enforced: the opposite end from B014's command
+    tails. A composed refusal puts the identifying facts FIRST."""
+    message = "HEAD-IDENTIFIES-THE-CAUSE " + ("x" * 4000)
+    detail = verdict.refusal_detail(message)
+
+    assert detail is not None
+    assert detail.text.startswith("HEAD-IDENTIFIES-THE-CAUSE ")
+    assert len(detail.text.encode("utf-8")) == verdict.CLAIM_DETAIL_BYTES
+    assert detail.dropped_bytes == len(message.encode("utf-8")) - len(
+        detail.text.encode("utf-8")
+    )
+    # The retained text plus what was dropped IS the original, exactly: the
+    # count is a statement about this message, not an approximation.
+    assert len(detail.text.encode("utf-8")) + detail.dropped_bytes == len(
+        message.encode("utf-8")
+    )
+
+
+def test_the_cut_lands_on_a_codepoint_boundary_and_never_inside_a_character():
+    """The bound is stated in BYTES and the text is measured in bytes, so a
+    multi-byte character straddling it is dropped WHOLE. A byte-slicing
+    implementation would decode to U+FFFD here, or raise."""
+    # 'e' + 683 three-byte characters = 1 + 2049 bytes: the character
+    # covering byte 2048 begins at 2047 and must be dropped entire.
+    message = "e" + "中" * 683
+    assert len(message.encode("utf-8")) == 2050
+
+    detail = verdict.refusal_detail(message)
+    assert detail is not None
+    assert "�" not in detail.text
+    assert detail.text == "e" + "中" * 682
+    assert len(detail.text.encode("utf-8")) == 2047
+    assert detail.dropped_bytes == 3
+    # And the result is a document this layer accepts, which is the only
+    # reason the boundary walk exists.
+    assert verdict.Claim(
+        rigor="R1",
+        source="computed",
+        status=Outcome.ERROR,
+        verified_by_assay=True,
+        reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        detail=detail.text,
+        detail_dropped_bytes=detail.dropped_bytes,
+    ).detail == detail.text
+
+
+def test_the_emitter_returns_exactly_the_sentence_it_printed():
+    """The whole point of routing `detail` through the emitter's RETURN
+    value: one expression, one site, one reading of ``str(exc)``."""
+    message = "coverage key 'src/a.py' and 'src/./a.py' normalise to the same file"
+    stream = io.StringIO()
+    detail = runner.announce_refusal(
+        AssayError(
+            message, outcome=Outcome.ERROR, reason_code=ReasonCode.UNREADABLE_ARTIFACT
+        ),
+        diagnostics=stream,
+    )
+    assert detail is not None
+    assert detail.text == message
+    assert detail.text == _sole_announced_message(stream.getvalue())
+
+
+def test_the_emitter_still_returns_the_sentence_when_nothing_is_printed():
+    """A caller that passed ``diagnostics=None`` asked for no line on ITS
+    stream. It did not ask for a document that cannot say why it refused."""
+    detail = runner.announce_refusal(
+        AssayError(
+            "the declared adapter 'ada' is not registered",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        ),
+        diagnostics=None,
+    )
+    assert detail is not None
+    assert detail.text == "the declared adapter 'ada' is not registered"
+
+
+# --- per producing site, end to end ------------------------------------------
+
+
+def test_the_r1_conversion_site_puts_its_own_sentence_on_the_r1_claim(
+    git_repo: GitRepo,
+):
+    """Producing site 1: ``evaluate_r1``'s ``except AssayError``.
+
+    The same scenario the FIRST test in this module drives -- a coverage
+    artifact that is not a coverage-py document -- read from the DOCUMENT
+    this time. Before A-439 the artifact carried
+    ``ERROR``/``FORMAT_MISMATCH`` and nothing else.
+    """
+    base_rev = _seed_python_project(git_repo)
+    path = git_repo.write("assay.toml", _r1_lane_writing("not JSON", base=base_rev))
+    git_repo.commit_all("add assay.toml")
+
+    out, err = io.StringIO(), io.StringIO()
+    main(
+        ["run", "package", "--file", str(path), "--verdict-json", "-"],
+        stdout=out,
+        stderr=err,
+    )
+
+    document = json.loads(out.getvalue())
+    r1 = next(c for c in document["claims"] if c["rigor"] == "R1")
+    assert r1["status"] == "ERROR"
+    assert _detail_of(r1) == _sole_announced_message(err.getvalue())
+    assert _dropped_of(r1) == 0
+    # The R0 claim really PASSED -- it is a measurement, not a refusal -- so
+    # it carries no sentence at all (A-428).
+    r0 = next(c for c in document["claims"] if c["rigor"] == "R0")
+    assert "detail" not in r0 and "detail_dropped_bytes" not in r0
+
+
+def test_a_whole_lane_refusal_puts_one_sentence_on_every_declared_level(
+    git_repo: GitRepo,
+):
+    """Producing site 2: ``_refuse_lane_with_plan``, through the pre-run
+    dirty-tree guard.
+
+    ONE root cause stopped the whole run, so this function renders the same
+    ``(status, reason_code)`` on every declared level -- and now the same
+    sentence with it. Per CLAIM, not per verdict (A-428): the field is on
+    each claim, and here each claim genuinely was refused for this reason.
+    """
+    base_rev = _seed_python_project(git_repo)
+    path = git_repo.write("assay.toml", _r1_lane_writing("{}", base=base_rev))
+    git_repo.commit_all("add assay.toml")
+    (git_repo.path / "STRAY-UNTRACKED").write_text("uncommitted\n", encoding="utf-8")
+
+    out, err = io.StringIO(), io.StringIO()
+    main(
+        ["run", "package", "--file", str(path), "--verdict-json", "-"],
+        stdout=out,
+        stderr=err,
+    )
+
+    document = json.loads(out.getvalue())
+    assert document["reason_code"] == "DIRTY_TREE", document
+    announced = _sole_announced_message(err.getvalue())
+    assert "STRAY-UNTRACKED" in announced
+    assert [c["rigor"] for c in document["claims"]] == ["R0", "R1"]
+    for claim in document["claims"]:
+        assert _detail_of(claim) == announced, claim
+        assert _dropped_of(claim) == 0, claim
+
+
+def test_a_refusal_longer_than_the_bound_is_cut_on_the_wire_and_whole_on_the_stream(
+    git_repo: GitRepo,
+):
+    """The bound is the WIRE's, not the stream's.
+
+    The dirty-tree sentence names every affected path, so enough stray files
+    push a real, reachable refusal past 2048 bytes. The operator watching
+    stderr still gets the whole list; the archived document gets the head and
+    an honest count of what it lost.
+    """
+    base_rev = _seed_python_project(git_repo)
+    path = git_repo.write("assay.toml", _r1_lane_writing("{}", base=base_rev))
+    git_repo.commit_all("add assay.toml")
+    for i in range(140):
+        (git_repo.path / f"STRAY-{i:04d}-with-a-long-enough-name").write_text(
+            "x\n", encoding="utf-8"
+        )
+
+    out, err = io.StringIO(), io.StringIO()
+    main(
+        ["run", "package", "--file", str(path), "--verdict-json", "-"],
+        stdout=out,
+        stderr=err,
+    )
+
+    document = json.loads(out.getvalue())
+    assert document["reason_code"] == "DIRTY_TREE", document
+    announced = _sole_announced_message(err.getvalue())
+    assert len(announced.encode("utf-8")) > verdict.CLAIM_DETAIL_BYTES, len(announced)
+
+    claim = document["claims"][0]
+    detail = _detail_of(claim)
+    assert len(detail.encode("utf-8")) <= verdict.CLAIM_DETAIL_BYTES
+    # The HEAD survived: the identifying facts every site puts first.
+    assert announced.startswith(detail)
+    assert _dropped_of(claim) == len(announced.encode("utf-8")) - len(
+        detail.encode("utf-8")
+    )
+    assert _dropped_of(claim) > 0
+
+
+def test_the_cleanup_replacement_site_says_which_cleanup_failed(
+    git_repo: GitRepo,
+):
+    """Producing site 3: ``_replace_highest_higher_rigor_claim_with_git_failed``.
+
+    B053's original complaint, one rung in: a claim that was REPLACED by
+    ``ERROR``/``GIT_FAILED`` after the lane's own work had already completed.
+    Payload-free (A-193/A-194) is not the same as sentence-free.
+    """
+    git_repo.write(".gitignore", "cov.json\n")
+    git_repo.write("pkg/mod.zzz", "BASE\n")
+    base_rev = git_repo.commit_all("add pkg base")
+    git_repo.write("pkg/mod.zzz", "BASE\nLINE2\n")
+    head_rev = git_repo.commit_all("add pkg head")
+
+    judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",), base=base_rev)
+    payload = (
+        '{"files": {"pkg/mod.zzz": {"executed_lines": [1, 2], '
+        '"missing_lines": [], "excluded_lines": []}}}'
+    )
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=judge,
+        argv=("/bin/sh", "-c", f"printf '%s' '{payload}' > cov.json"),
+    )
+    diagnostics = io.StringIO()
+
+    result = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        scratch_root_factory=_scratch_root_factory_leaking_on_exit(),
+        diagnostics=diagnostics,
+    )
+
+    r1 = next(c for c in result.claims if c.rigor == "R1")
+    assert r1.reason_code is ReasonCode.GIT_FAILED
+    assert _detail_of(r1) == _sole_announced_message(diagnostics.getvalue())
+    assert "snapshot cleanup detected leaked state" in _detail_of(r1)
+    # The R0 claim beneath it completed for real and is untouched.
+    r0 = next(c for c in result.claims if c.rigor == "R0")
+    assert r0.status is Outcome.PASS and _detail_of(r0) is None
+
+
+def test_the_direct_r0_post_command_guard_names_what_the_command_left_behind(
+    git_repo: GitRepo,
+):
+    """Producing site 4: ``_finish_direct_r0_lane``'s post-command dirt/HEAD
+    guard, on the direct R0-only path -- a different assembly from every
+    higher-rigor site above (no snapshot, no `refuse_lane`)."""
+    git_repo.write("pkg/mod.zzz", "BASE\n")
+    head_rev = git_repo.commit_all("add pkg base")
+
+    lane = make_lane(
+        rigor=("R0",),
+        argv=("/bin/sh", "-c", "printf 'left behind\\n' > COMMAND-LEFT-THIS"),
+    )
+    diagnostics = io.StringIO()
+
+    result = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        diagnostics=diagnostics,
+    )
+
+    r0 = next(c for c in result.claims if c.rigor == "R0")
+    assert r0.reason_code is ReasonCode.DIRTY_TREE
+    assert _detail_of(r0) == _sole_announced_message(diagnostics.getvalue())
+    assert "COMMAND-LEFT-THIS" in _detail_of(r0)
+    assert _dropped_of(r0) == 0
+
+
+def test_a_run_that_refused_nothing_carries_no_detail_anywhere(
+    git_repo: GitRepo,
+):
+    """The control. A-428 puts `detail` on NON-PASS claims only, and a run
+    with no refusal announced no sentence to copy."""
+    git_repo.write("pkg/mod.zzz", "BASE\n")
+    head_rev = git_repo.commit_all("add pkg base")
+
+    lane = make_lane(rigor=("R0",), argv=("/bin/sh", "-c", "exit 0"))
+    diagnostics = io.StringIO()
+
+    result = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=ADAPTER,
+        assay_version="0.1.0",
+        diagnostics=diagnostics,
+    )
+
+    assert result.outcome is Outcome.PASS
+    assert _refusal_lines(diagnostics.getvalue()) == []
+    for claim in result.claims:
+        assert _detail_of(claim) is None, claim
+        assert _dropped_of(claim) is None, claim
+    payload = result.to_dict()
+    for claim in payload["claims"]:
+        assert "detail" not in claim and "detail_dropped_bytes" not in claim

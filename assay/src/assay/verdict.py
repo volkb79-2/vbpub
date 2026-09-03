@@ -97,6 +97,8 @@ __all__ = [
     "LANE_RESOLVED_FIELDS",
     "COMMAND_TAIL_BYTES",
     "CLAIM_DETAIL_BYTES",
+    "RefusalDetail",
+    "refusal_detail",
     "CANARY_AGGREGATIONS",
     "CANARY_DISPOSITIONS",
     "CANARY_NOT_ATTEMPTED_REASONS",
@@ -2890,6 +2892,89 @@ class Judgment:
         if self.r4 is not None:
             payload["r4"] = self.r4.to_dict()
         return payload
+
+
+@dataclass(frozen=True, kw_only=True)
+class RefusalDetail:
+    """(B053/DA-D2(c), A-428, A-439) One refusal's sentence, already bounded.
+
+    The PRODUCER side of :attr:`Claim.detail`. It exists as one value rather
+    than two loose keywords for one reason: the text and the count of what
+    was cut from it are meaningless apart, and :meth:`Claim._check_detail`
+    refuses a document where only one of them arrived. A single object cannot
+    be half-threaded through a call chain.
+
+    It is built by :func:`refusal_detail` from the refusing error's OWN
+    message and by nothing else, so the sentence on the wire is a byte copy
+    of the sentence :func:`assay.runner.announce_refusal` puts on the
+    diagnostics stream at the same conversion site (A-428). Two spellings of
+    one refusal is how the line a caller reads and the document a consumer
+    archives drift apart.
+    """
+
+    text: str
+    dropped_bytes: int
+
+    def __post_init__(self) -> None:
+        if not self.text:
+            raise ValueError(
+                "RefusalDetail.text must be non-empty -- an absent detail is "
+                "spelled by passing no RefusalDetail at all (A-428)"
+            )
+        if len(self.text.encode("utf-8")) > CLAIM_DETAIL_BYTES:
+            raise ValueError(
+                f"RefusalDetail.text is {len(self.text.encode('utf-8'))} "
+                f"UTF-8 bytes, over the {CLAIM_DETAIL_BYTES}-byte bound -- "
+                f"build it with refusal_detail(), which does the truncation"
+            )
+        if isinstance(self.dropped_bytes, bool) or not isinstance(self.dropped_bytes, int):
+            raise ValueError(
+                f"RefusalDetail.dropped_bytes must be an integer, got "
+                f"{self.dropped_bytes!r}"
+            )
+        if self.dropped_bytes < 0:
+            raise ValueError(
+                f"RefusalDetail.dropped_bytes must not be negative, got "
+                f"{self.dropped_bytes!r}"
+            )
+
+
+def refusal_detail(message: str) -> RefusalDetail | None:
+    """(B053/A-428, A-439) Bound *message* to :data:`CLAIM_DETAIL_BYTES`,
+    keeping the HEAD, and record what was dropped.
+
+    ``None`` for an empty message, which is the wire's own way of saying "no
+    refusal produced text" (:meth:`Claim._check_detail` rejects an empty
+    ``detail``: absent and empty must not be two spellings of one state).
+
+    **The head, not the tail** -- the opposite end from
+    :func:`assay.runner._bounded_tail`, and for the stated reason (A-428): a
+    command's captured output is most informative at its END, because the
+    failure is last, while a refusal message assay COMPOSES is most
+    informative at its START, because every site puts the identifying facts
+    -- which artifact, which target, which declaration -- first.
+
+    The cut lands on a UTF-8 codepoint boundary at or below the bound, never
+    inside a character: the retained text is measured in the same currency
+    the bound is stated in, exactly as ``_bounded_tail`` does at the other
+    end, so a multi-byte character is dropped whole rather than becoming
+    U+FFFD.
+    """
+    if not message:
+        return None
+    encoded = message.encode("utf-8")
+    if len(encoded) <= CLAIM_DETAIL_BYTES:
+        return RefusalDetail(text=message, dropped_bytes=0)
+    cutoff = CLAIM_DETAIL_BYTES
+    # Walk BACK off a continuation byte: the retained head must end on a
+    # character boundary, so a character straddling the bound is dropped
+    # whole and counted among the dropped bytes.
+    while cutoff > 0 and (encoded[cutoff] & 0xC0) == 0x80:
+        cutoff -= 1
+    return RefusalDetail(
+        text=encoded[:cutoff].decode("utf-8"),
+        dropped_bytes=len(encoded) - cutoff,
+    )
 
 
 @dataclass(frozen=True, kw_only=True)

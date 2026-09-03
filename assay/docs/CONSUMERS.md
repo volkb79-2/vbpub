@@ -1712,15 +1712,26 @@ outage with a one-line fix that is obvious only once you already know why the ga
 Every item below cost someone real time — here, in a consumer's repo, or in
 assay's own development. None is stylistic.
 
-### When a lane refuses, read the one stderr line — the document does not carry the sentence
+### When a lane refuses, read the one stderr line — and, since schema v10, the same sentence in the document
 
-The verdict document records a closed `(outcome, reason_code)` pair and no
-free text. That is deliberate: the enumerations are a wire contract, and a
-consumer's gate must be able to switch on them without parsing prose. But the
-pair alone does not say WHICH file was unreadable, WHICH declaration was
-unresolvable, or WHICH target failed to resolve — and until 4.2.0 that
+The verdict's MACHINE-READABLE surface is a closed `(outcome, reason_code)`
+pair. That is deliberate and unchanged: the enumerations are a wire contract,
+and a consumer's gate must be able to switch on them without parsing prose.
+But the pair alone does not say WHICH file was unreadable, WHICH declaration
+was unresolvable, or WHICH target failed to resolve — and until 4.2.0 that
 sentence, which assay had all along, was discarded the moment the refusal
 became a claim.
+
+**Since schema v10 the same sentence is also in the document**, as
+`claim.detail` on the refusing claim, with `claim.detail_dropped_bytes` beside
+it. It is a byte copy of the line described below — same text, same site, one
+composition — bounded at 2048 UTF-8 bytes (head kept, dropped bytes counted).
+It is **declared, not verified**: assay copies it and never parses it, and
+`assay verify` checks only that it is present where a refusal happened and
+that it fits the bound. Everything this section says about not parsing the
+LINE applies identically to the FIELD. See ["Migration notes (v9 →
+v10)"](#migration-notes-v9--v10) for what a consumer does about it (nothing
+required — the field is optional and additive).
 
 Every refusal now prints exactly one line, in exactly this shape:
 
@@ -1752,6 +1763,13 @@ under two spellings), and the text after the second colon is the raising
 layer's own message, **byte for byte**. It is diagnostic text, not a wire
 field: do not parse it, and do not gate on it. Gate on the exit code and the
 document; read the line when you need to know why.
+
+`claim.detail` carries that same text after the second colon — not the whole
+line, and not the indented context lines some sites print beneath it. The one
+place the two can differ is length: the stream is unbounded, the field is
+capped at 2048 UTF-8 bytes, so a very long refusal (a dirty tree naming a
+hundred paths, say) reaches your terminal whole and your archive truncated,
+with `detail_dropped_bytes` saying by how much.
 
 **There is no exception to "exactly one line".** A first cut of this feature
 left five refusals silent — a dirty work tree (on both the snapshot and the
@@ -2159,9 +2177,10 @@ can be grepped against the artifact directly. **Since 4.2.0 you get that text
 from `assay run` too** — on stderr, as the one refusal line described under
 ["When a lane refuses, read the one stderr
 line"](#when-a-lane-refuses-read-the-one-stderr-line--the-document-does-not-carry-the-sentence)
-(B053). The verdict document still carries no free-text cause by design, so
-the reason code is all a document-reading consumer gets; the sentence naming
-the disagreeing extents is on the diagnostics stream.
+(B053) — **and, since schema v10, in the document as `claim.detail`** on the
+refusing claim, byte-identical to that line's message. The reason code is
+still the only thing to gate on; the sentence naming the disagreeing extents
+is now available to a consumer that has only the archived artifact.
 
 The fix on your side is to regenerate the profile from the tree you are
 judging — never to relax the check, which exists because attributing anyway

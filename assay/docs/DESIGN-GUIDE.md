@@ -457,6 +457,21 @@ a quick fix.)** Wave D pays both commitments, deliberately and in one cut:
   (A-428), bounded at 2048 UTF-8 bytes with B014's truncation convention
   (`detail_dropped_bytes`), present on NON-PASS claims only.
 
+**How the byte copy is guaranteed structurally, not by convention (A-439).**
+`announce_refusal` RETURNS the bounded sentence it just printed, and the
+conversion site passes that value straight into the `Claim` it is building —
+one expression, one site, one reading of `str(exc)`. A site that wanted the
+line and the field to disagree would have to compose the message twice on
+purpose. The two sites that cannot take the return value directly — the
+deferred equivalence-artifact refusal, whose announcement happens later, and
+the R3 claim an R2 orchestration fault also refuses, which must not print a
+second line — call `verdict.refusal_detail(str(exc))`, which is literally the
+expression `announce_refusal` evaluates, on the same error object.
+`refuse_lane` takes the value as one `RefusalDetail` rather than as a text/
+count pair, because a truncated sentence with no count and a count with no
+sentence are both documents the model refuses: one value cannot be
+half-threaded through a call chain.
+
 What did NOT change, and must not be read as changed: **`detail` is
 DECLARED, NOT VERIFIED** (A-230a, `producer_tool`'s own words). Assay copies
 that text and never parses it; the model and `assay verify` check the
