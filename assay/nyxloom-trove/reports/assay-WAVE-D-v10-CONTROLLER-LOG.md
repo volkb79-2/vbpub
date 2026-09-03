@@ -870,3 +870,51 @@ precedent for shape and discipline.
     lands. E-008 checkpoint clause applies; wire-change-breaks-hand-fixtures
     lesson (BRIEF-12) and the grep-before-touching-a-field discipline both
     carried forward. Next ids **A-442 / B071**, re-check main every time.
+
+- **2026-09-03 (R-2 ROUND 1: ACCEPT-conditional; SF-1 + N-1; DA-R32/DA-R33;
+  routed into generation 13, no new agent dispatched — session near its
+  context limit)** — Report `2128e464` on the shared branch (R-2's own
+  isolated worktree, torn down after the one report commit; `git show
+  --stat` confirmed the commit touches only the report file). Own
+  registered gate green (`assay-4.1.1.dev42+ga4528144`), full suite once
+  `4131 passed / 20 skipped / 1 warning` — matching generation 12's own
+  count exactly. Everything on the R-2 push list checked out sound with
+  real-artifact evidence (B069/B050/B051/B052/B053/B007, `verify.py`
+  independence, `LANE_SCHEMA_VERSION`/`inventory_schema` untouched, the
+  conformance tripwire armed, migration notes + anchors, decisions.md
+  append-only, no A/B-id collisions), plus a second authorised post-cut
+  schema touch beyond the one named (`5b2730b6`/B051/DA-R26, description
+  bytes only, MANIFEST-recorded, byte-identical across both copies) —
+  confirmed sound, not a defect.
+  - **DA-R32 (SF-1 — `_check_r3_rederivation` validates two of three
+    `not_attempted_reason` members, not `budget_exhausted`): CONFIRMED,
+    real hole, fix required before merge.** Independently reproduced by
+    the controller: `verify.py:2348-2367`'s `if why ==
+    "short_circuited": ... elif why == "earlier_target_terminal": ...`
+    chain has no branch for `why == "budget_exhausted"` — such an attempt
+    passes through the loop with zero validation, so a document claiming
+    a judged R3 status while carrying a `budget_exhausted` attempt
+    verifies clean under both `assay verify` and the independent
+    `jsonschema` validator. No real producer emits the bad pairing today
+    (not a blocker), but this wave's own stated purpose is exactly this
+    kind of integrity check, so it lands before merge, not after. Fix:
+    one added branch mirroring the two existing ones (a `budget_exhausted`
+    attempt must not precede the terminal that actually exhausted the
+    budget, symmetric to `earlier_target_terminal`'s check) plus one
+    regression test built on the real W6 template with one field flipped
+    (R-2's own reproduction method, not a synthetic fixture).
+  - **DA-R33 (N-1 — decisions.md's A-430 row names the adjudicated-evidence
+    lane field `name`; the shipped grammar and CONSUMERS.md both use
+    `key`): CONFIRMED, one-line docs correction.** Independently verified:
+    `verdict.py:3370`'s `EvidenceDeclaration.key` and
+    `docs/CONSUMERS.md:1890`'s own example (`key = "image-provenance"`)
+    both already say `key`; A-430's prose alone says `name`. Not blocking
+    (B004 hasn't started building the lane surface yet), but corrected
+    NOW, before generation 13 reads that row further into the carve — a
+    stale field name in the row it is actively working from is exactly
+    the kind of drift this wave exists to prevent elsewhere.
+  - **Routing: both land as generation 13's own next two commits, ahead of
+    or alongside its B004 work — no new agent dispatched** (the controller
+    session is near its context limit; the operator said not to start new
+    agents). Generation 13 was messaged directly with both findings, their
+    exact locations and the fix shape above.
