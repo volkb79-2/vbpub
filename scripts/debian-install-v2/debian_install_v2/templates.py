@@ -451,6 +451,84 @@ ExecStartPost=/usr/bin/rm -f /etc/vbpub/rebooted-for-updates
 WantedBy=multi-user.target
 """
 
+# Case B (root-fills-disk): build-time hook, runs during `update-initramfs -u`
+# itself, not at boot. Embeds sfdisk into the image (util-linux ships no
+# initramfs-tools hook of its own for it, unlike e2fsprogs's resize2fs/e2fsck,
+# which are already bundled automatically) and copies in the plan files
+# ROOT_SHRINK_LOCAL_PREMOUNT_HOOK reads at boot -- a plain /etc/vbpub/ file is
+# NOT part of the initramfs image unless something explicitly copies it in.
+# Defensive against both files being absent (a build triggered long after
+# stage2's own cleanup already deleted this hook, in case that delete ever
+# raced or failed).
+ROOT_SHRINK_BUILD_HOOK = """\
+#!/bin/sh
+PREREQS=""
+case "$1" in prereqs) echo "$PREREQS"; exit 0 ;; esac
+. /usr/share/initramfs-tools/hook-functions
+
+copy_exec /usr/sbin/sfdisk /usr/sbin/sfdisk
+
+for f in /etc/vbpub/root-shrink-plan.env /etc/vbpub/root-shrink-plan.sfdisk; do
+  [ -f "$f" ] && copy_file vbpub-root-shrink-plan "$f" "$f"
+done
+"""
+
+# Case B: runtime hook, local-premount (fires pre-mount, before the real root
+# is ever mounted -- the one window ext4 can be shrunk offline). Every
+# failure branch falls through to exit 0 (boot the unmodified, still-
+# oversized root) rather than abort the boot -- these are unattended remote
+# installs with no assumed console access, so a host that stays reachable
+# and gets flagged "shrink didn't happen" beats one stuck at an initramfs
+# rescue shell. The one exception is sfdisk failing AFTER the filesystem was
+# already shrunk: growing the filesystem back to fill the still-large
+# partition actively repairs consistency rather than merely not making it
+# worse. No `set -e`: every command that can fail is explicitly `||`-guarded
+# instead, so the fall-through behavior never depends on subtle semantics.
+ROOT_SHRINK_LOCAL_PREMOUNT_HOOK = """\
+#!/bin/sh
+PREREQS=""
+case "$1" in prereqs) echo "$PREREQS"; exit 0 ;; esac
+. /scripts/functions
+set -u
+
+PLAN_ENV=/etc/vbpub/root-shrink-plan.env
+[ -f "$PLAN_ENV" ] || exit 0
+DEVICE=""
+DISK=""
+TARGET_BLOCKS=""
+TARGET_SECTORS=""
+SFDISK_PLAN=""
+. "$PLAN_ENV"
+[ -n "$DEVICE" ] && [ -n "$DISK" ] && [ -n "$TARGET_BLOCKS" ] && [ -n "$TARGET_SECTORS" ] && [ -n "$SFDISK_PLAN" ] || exit 0
+[ -f "$SFDISK_PLAN" ] || exit 0
+[ -b "$DEVICE" ] || exit 0
+[ -b "$DISK" ] || exit 0
+
+# Idempotent no-op: already shrunk (a prior boot's hook succeeded but
+# stage2 hasn't cleaned up yet) or shrunk further by something else.
+CURRENT_SECTORS=$(sfdisk --dump "$DISK" 2>/dev/null | sed -n "s#^$DEVICE *:.*size= *\\([0-9][0-9]*\\).*#\\1#p")
+case "$CURRENT_SECTORS" in ''|*[!0-9]*) exit 0 ;; esac
+[ "$CURRENT_SECTORS" -le "$TARGET_SECTORS" ] && exit 0
+
+e2fsck -f -y "$DEVICE" || { log_failure_msg "vbpub-root-shrink: fsck failed, skipping shrink"; exit 0; }
+
+MIN_BLOCKS=$(resize2fs -P "$DEVICE" 2>&1 | sed -n 's/^Estimated minimum size of the filesystem: *\\([0-9][0-9]*\\).*/\\1/p')
+case "$MIN_BLOCKS" in
+  ''|*[!0-9]*) log_failure_msg "vbpub-root-shrink: could not read minimum filesystem size, skipping"; exit 0 ;;
+esac
+[ "$MIN_BLOCKS" -le "$TARGET_BLOCKS" ] || { log_failure_msg "vbpub-root-shrink: target too small (min=$MIN_BLOCKS target=$TARGET_BLOCKS)"; exit 0; }
+
+resize2fs "$DEVICE" "$TARGET_BLOCKS" || { log_failure_msg "vbpub-root-shrink: resize2fs shrink failed"; exit 0; }
+e2fsck -f -y "$DEVICE" || { log_failure_msg "vbpub-root-shrink: post-shrink fsck failed"; exit 0; }
+
+sfdisk --no-reread --force "$DISK" < "$SFDISK_PLAN" || {
+  log_failure_msg "vbpub-root-shrink: sfdisk apply failed; growing filesystem back to stay consistent"
+  resize2fs "$DEVICE"
+  exit 0
+}
+blockdev --rereadpt "$DISK" 2>/dev/null || true
+"""
+
 
 STAGE2_SERVICE = """\
 [Unit]

@@ -37,6 +37,8 @@ from .templates import (
     REBOOT_CHECK_SCRIPT,
     REBOOT_CHECK_SERVICE,
     REBOOT_CHECK_TIMER,
+    ROOT_SHRINK_BUILD_HOOK,
+    ROOT_SHRINK_LOCAL_PREMOUNT_HOOK,
     STAGE2_SERVICE,
     THP_SERVICE,
     UNATTENDED_UPGRADES_CONFIG,
@@ -582,6 +584,183 @@ MaxFileSec=1month
         partitions = [(start + index * per_device, per_device) for index in range(self.config.swap_file_count)]
         return partitions, new_root_size
 
+    def _root_filesystem_facts(self) -> tuple[int, int]:
+        """(block_size_bytes, minimum_blocks) for the live, mounted root filesystem.
+
+        Both dumpe2fs -h and resize2fs -P are read-only estimate operations —
+        safe to run against root while it's mounted read-write, unlike the
+        actual shrink, which needs the offline window the initramfs hook
+        provides (see CASE-B-ROOT-SHRINK-DESIGN.md).
+        """
+        if self.actions.dry_run:
+            return 4096, 1_000_000
+        dumpe2fs_output = self._run(
+            ["/usr/sbin/dumpe2fs", "-h", self.root_partition_path],
+            "read root filesystem block size",
+            dangerous=False,
+        )
+        block_size = 0
+        for line in dumpe2fs_output.splitlines():
+            if line.strip().startswith("Block size:"):
+                block_size = int(line.split(":", 1)[1].strip())
+        if block_size <= 0:
+            raise RuntimeError("could not determine root filesystem block size from dumpe2fs -h")
+        resize2fs_output = self._run(
+            ["/usr/sbin/resize2fs", "-P", self.root_partition_path],
+            "compute minimum ext filesystem size",
+            dangerous=False,
+        )
+        minimum_blocks = 0
+        for line in resize2fs_output.splitlines():
+            if "Estimated minimum size of the filesystem:" in line:
+                minimum_blocks = int(line.rsplit(":", 1)[1].strip())
+        if minimum_blocks <= 0:
+            raise RuntimeError("could not determine minimum root filesystem size from resize2fs -P")
+        return block_size, minimum_blocks
+
+    def _plan_root_shrink(self) -> None:
+        """Case B: install an initramfs hook to shrink root offline, pre-mount.
+
+        Called late in _stage1(), before _install_stage2()/_reboot() -- an
+        initramfs-tools local-premount hook fires on EVERY boot, so
+        installing it before stage1's own existing reboot is enough; no
+        extra reboot cycle is needed. Auto-detected, not configurable:
+        _plan_swap_partitions() succeeding at all means free space already
+        covers the known swap shape (Case A, the inuse_partition_editor.Table
+        path in _apply_known_swap_shape() handles it exactly as today, and
+        this method is a no-op). Only its "disk lacks space" failure mode
+        means root itself must shrink first (Case B).
+        """
+        try:
+            self._plan_swap_partitions()
+        except RuntimeError as exc:
+            if "disk lacks space for known swap shape" not in str(exc):
+                raise
+        else:
+            self.state.mark_step("root_shrink", "not_needed", "existing free space already covers the planned swap shape")
+            return
+
+        self._packages(["e2fsprogs"], "stage1")
+        disk_sectors, root_start, root_size = self._disk_facts()
+        sector = 512
+        block_size, minimum_blocks = self._root_filesystem_facts()
+        minimum_sectors = (minimum_blocks * block_size + sector - 1) // sector
+        # Headroom above the filesystem's own reported minimum: resize2fs -P
+        # is an estimate, and shrinking to the exact byte-for-byte minimum
+        # leaves zero room for anything the live system wrote between that
+        # estimate and the offline shrink actually running.
+        safety_margin_sectors = (256 * 1024 * 1024) // sector
+        requested_sectors = self.config.preserve_root_size_gb * 1024 * 1024 * 1024 // sector
+        alignment = 2048
+        target_root_sectors = max(requested_sectors, minimum_sectors + safety_margin_sectors)
+        target_root_sectors = ((target_root_sectors + alignment - 1) // alignment) * alignment
+        if target_root_sectors >= root_size:
+            raise RuntimeError(
+                f"root shrink target ({target_root_sectors} sectors) is not smaller than the current "
+                f"root ({root_size} sectors); refusing to plan a no-op or growing shrink"
+            )
+
+        # per_device is the identical computation _plan_swap_partitions() just
+        # did with these same config values -- reaching this line already
+        # proves it raised "lacks space", not "too small for N devices", so
+        # per_device > 0 here is an established invariant, not something to
+        # re-check.
+        total_swap_sectors = self.config.swap_disk_total_gb * 1024 * 1024 * 1024 // sector
+        per_device = total_swap_sectors // self.config.swap_file_count
+        per_device -= per_device % alignment
+        actual_total = per_device * self.config.swap_file_count
+        end_buffer = 2048
+        first_swap_start = ((root_start + target_root_sectors + alignment - 1) // alignment) * alignment
+        required_end = first_swap_start + actual_total + end_buffer
+        if required_end > disk_sectors:
+            needed_gib = (required_end - disk_sectors + 1024 ** 3 - 1) // 1024 ** 3
+            raise RuntimeError(
+                f"disk still lacks space for the known swap shape even after shrinking root to its "
+                f"filesystem minimum; reduce swap by about {needed_gib} GiB"
+            )
+        swap_partitions = [
+            (first_swap_start + index * per_device, per_device) for index in range(self.config.swap_file_count)
+        ]
+
+        plan_text = self._write_sfdisk_plan(swap_partitions, target_root_sectors)
+        target_blocks = (target_root_sectors * sector) // block_size
+        env_content = "".join([
+            f"DEVICE={self.root_partition_path}\n",
+            f"DISK=/dev/{self.root_disk}\n",
+            f"TARGET_BLOCKS={target_blocks}\n",
+            f"TARGET_SECTORS={target_root_sectors}\n",
+            "SFDISK_PLAN=/etc/vbpub/root-shrink-plan.sfdisk\n",
+        ])
+        self.actions.write_file("/etc/vbpub/root-shrink-plan.sfdisk", plan_text, 0o600)
+        self.actions.write_file("/etc/vbpub/root-shrink-plan.env", env_content, 0o600)
+        self.actions.write_file(
+            "/etc/initramfs-tools/hooks/vbpub-root-shrink", ROOT_SHRINK_BUILD_HOOK, 0o755
+        )
+        self.actions.write_file(
+            "/etc/initramfs-tools/scripts/local-premount/vbpub-root-shrink",
+            ROOT_SHRINK_LOCAL_PREMOUNT_HOOK,
+            0o755,
+        )
+        self._run(["/usr/sbin/update-initramfs", "-u"], "rebuild initramfs with the root-shrink hook", dangerous=True)
+        self.state.mark_step(
+            "root_shrink", "planned",
+            f"target root {target_root_sectors} sectors (was {root_size}); hook installed",
+        )
+
+    def _verify_and_apply_root_shrink(self) -> None:
+        """First action in _stage2(): resolve whatever the Case B hook did (or didn't).
+
+        No root_shrink step recorded -> Case A, nothing to do, proceed exactly
+        as today. root_size already <= the planned target -> the hook
+        succeeded on a prior boot: clean up the hook (so future boots don't
+        keep paying its idempotency-check cost) and fall through into the
+        normal Case-A swap-placement path -- free space now exists exactly as
+        if it had been there all along. Otherwise the hook silently no-op'd
+        or failed: mark it, notify, and stop stage2 here rather than guessing
+        or retrying destructively -- a clearly-flagged, always-bootable,
+        partially-provisioned host beats a silent wrong one.
+        """
+        state = self.state.load()
+        root_shrink_step = state.get("steps", {}).get("root_shrink")
+        if not root_shrink_step or root_shrink_step.get("status") != "planned":
+            return
+        disk_sectors, root_start, root_size = self._disk_facts()
+        if self.actions.dry_run:
+            self.state.mark_step("root_shrink", "success", "dry-run: assumed the hook succeeded")
+            return
+        plan_env = Path("/etc/vbpub/root-shrink-plan.env")
+        target_sectors = None
+        if plan_env.is_file():
+            for line in plan_env.read_text(encoding="utf-8").splitlines():
+                if line.startswith("TARGET_SECTORS="):
+                    target_sectors = int(line.partition("=")[2].strip())
+        if target_sectors is None:
+            raise RuntimeError(
+                "root shrink step is 'planned' but /etc/vbpub/root-shrink-plan.env is missing or malformed"
+            )
+        if root_size <= target_sectors:
+            for path in (
+                "/etc/initramfs-tools/scripts/local-premount/vbpub-root-shrink",
+                "/etc/initramfs-tools/hooks/vbpub-root-shrink",
+                "/etc/vbpub/root-shrink-plan.env",
+                "/etc/vbpub/root-shrink-plan.sfdisk",
+            ):
+                Path(path).unlink(missing_ok=True)
+            self._run(
+                ["/usr/sbin/update-initramfs", "-u"], "rebuild initramfs without the root-shrink hook", dangerous=True
+            )
+            self.state.mark_step("root_shrink", "success", f"root shrunk to {root_size} sectors (target {target_sectors})")
+            return
+        self.state.mark_step("root_shrink", "failed", f"root is still {root_size} sectors, target was {target_sectors}")
+        self._notify(
+            f"vbpub: root shrink did not complete (still {root_size} sectors, wanted <= {target_sectors}); "
+            f"swap was not configured, host is otherwise healthy"
+        )
+        raise RuntimeError(
+            f"root shrink did not complete: root is still {root_size} sectors (target {target_sectors}); "
+            f"stopping before swap placement rather than guessing"
+        )
+
     def _write_sfdisk_plan(self, partitions: list[tuple[int, int]], new_root_size: int) -> str:
         prefix = self._partition_base
         if self.actions.dry_run:
@@ -856,11 +1035,13 @@ MaxFileSec=1month
                 self._configure_docker_cleanup()
         if self.config.run_apt_auto_upgrade:
             self._configure_apt_auto_upgrade()
+        self._plan_root_shrink()
         self._install_stage2()
         self._reboot()
 
     def _stage2(self) -> None:
         self._packages(["e2fsprogs", "util-linux"], "stage2")
+        self._verify_and_apply_root_shrink()
         self._configure_zswap()
         self._configure_cgroup2_flags()
         if self.config.run_ksm:
