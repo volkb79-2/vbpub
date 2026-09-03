@@ -5,7 +5,7 @@ project: ciu8
 component: schema
 title: "Bootstrap ciu8 + v8 config schema: revision=8 gate, closed-key validators from one table-spec, ciu8 schema --json, S3.8.5/S3.8.6 conformance"
 tier: luna-high
-input_revision: "b19880bc3b66b6cef22a58f69ddef67ff8a06b1e"
+input_revision: "c6e77ad342b7f66496d88de2db0e1e33c2f25729"
 depends_on: []
 session: fresh
 source: {kind: roadmap}
