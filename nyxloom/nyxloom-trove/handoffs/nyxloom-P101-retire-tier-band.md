@@ -4,7 +4,7 @@ id: nyxloom-P101-retire-tier-band
 project: nyxloom
 title: "Retire adapters.py's _TIER_BAND one-way suppressor; scope size becomes the sole band signal"
 tier: luna-high
-input_revision: "d50684d9"
+input_revision: "49b98bf7"
 depends_on: []
 session: fresh
 source:
