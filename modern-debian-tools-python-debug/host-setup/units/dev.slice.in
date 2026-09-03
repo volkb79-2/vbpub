@@ -5,15 +5,27 @@ Description=Dev/build/interactive estate — one absolute IOPS/bandwidth ceiling
 Before=slices.target
 
 [Slice]
-# Root parent for dev-interactive.slice + dev-background.slice (systemd
-# derives the nesting from the dash-separated names — no parent directive
-# needed on either child). ONLY an IO ceiling lives here (host dev-tier
-# cgroup governance rollout): CPUWeight/memory/OOM policy stay per-child,
-# since interactive and background work genuinely need different shapes
-# there. IO is different — even interactive/IDE activity must not be able to
-# starve production I/O, so ONE absolute cap bounds both tiers combined
-# rather than being duplicated (and potentially summed past a safe total) on
-# each child separately.
+# Root parent for dev-interactive.slice + dev-background.slice +
+# dev-memory_min_guaranteed.slice (systemd derives the nesting from the
+# dash-separated names — no parent directive needed on any child). ONLY an IO
+# ceiling and (see below) the guaranteed-tier's MemoryMin live here (host
+# dev-tier cgroup governance rollout): CPUWeight/memory-high/max/OOM policy
+# stay per-child, since interactive and background work genuinely need
+# different shapes there. IO is different — even interactive/IDE activity
+# must not be able to starve production I/O, so ONE absolute cap bounds both
+# tiers combined rather than being duplicated (and potentially summed past a
+# safe total) on each child separately.
+#
+# MemoryMin below exists ONLY to back dev-memory_min_guaranteed.slice's own
+# floor -- cgroup v2's ancestor-chain rule means a child's MemoryMin is
+# inert unless every ancestor up to here also carries an adequate value
+# (CGROUP-NOTES.md "Per-container memory.min guarantees"). It MUST stay
+# exactly equal to that slice's own MemoryMin, never more: any surplus here
+# beyond what the guaranteed tier actually claims leaks, via cgroup v2's
+# proportional redistribution, to dev-interactive.slice and
+# dev-background.slice too -- both rendered from the SAME
+# DEV_MEMORY_MIN_GUARANTEED_CEILING env var for exactly this reason.
+MemoryMin=@DEV_MEMORY_MIN_GUARANTEED_CEILING@
 #
 # Static boot-window fallbacks (deliberately tight — mdt-host-slices.service
 # overrides them at runtime with DEV_IO_CAP_PCT% (60% by default) of the

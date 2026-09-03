@@ -129,6 +129,8 @@ render() { # render <template> <dest>
 render "$HERE/units/dev.slice.in"              /etc/systemd/system/dev.slice
 render "$HERE/units/dev-interactive.slice.in"  /etc/systemd/system/dev-interactive.slice
 render "$HERE/units/dev-background.slice.in"   /etc/systemd/system/dev-background.slice
+render "$HERE/units/dev-memory_min_guaranteed.slice.in" \
+  /etc/systemd/system/dev-memory_min_guaranteed.slice
 render "$HERE/units/dev-buildkitd.slice.in"    /etc/systemd/system/dev-buildkitd.slice
 render "$HERE/units/mdt-buildkitd.service.in"  /etc/systemd/system/mdt-buildkitd.service
 render "$HERE/units/mdt-host-slices.timer.in"  /etc/systemd/system/mdt-host-slices.timer
@@ -215,7 +217,7 @@ systemctl daemon-reload
 # dev.slice first — its children nest under it by name, but starting it
 # explicitly means the root's IO ceiling is in force even before any of the
 # three has its own first member.
-systemctl start dev.slice dev-interactive.slice dev-background.slice dev-buildkitd.slice 2>/dev/null || true
+systemctl start dev.slice dev-interactive.slice dev-background.slice dev-memory_min_guaranteed.slice dev-buildkitd.slice 2>/dev/null || true
 systemctl enable mdt-host-slices.service          # boot-time apply
 systemctl enable --now mdt-host-slices.timer      # periodic sweep
 systemctl enable --now mdt-buildkitd.service      # host-managed BuildKit worker

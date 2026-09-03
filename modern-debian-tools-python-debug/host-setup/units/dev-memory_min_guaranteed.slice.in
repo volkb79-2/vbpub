@@ -1,0 +1,41 @@
+# RENDERED by host-setup/install.sh from host-setup.env — do not edit the
+# installed copy; edit /etc/mdt/host-setup.env and re-run install.sh.
+[Unit]
+Description=Individually-governed containers with a real memory.min floor (sql-mutation-gate and similar continuously-processing workloads)
+Before=slices.target
+
+[Slice]
+# NOTE: no explicit parent directive — systemd derives nesting from the
+# dash-separated name: "dev-memory_min_guaranteed.slice" nests under
+# "dev.slice" automatically once dev.slice.in is also installed, same as
+# dev-interactive.slice/dev-background.slice. This is a SIBLING of those two,
+# not a child of either — see CGROUP-NOTES.md "Per-container memory.min
+# guarantees" for the full design and why it cannot share dev-background.slice
+# (cgroup v2's proportional-surplus-redistribution would leak protection to
+# every unrelated container already living there).
+#
+# The total ever guaranteed across every container placed here combined.
+# ciu's admission control (CIU-94, not yet implemented) refuses to start a
+# container whose own declared claim would push the live sum past this
+# ceiling -- this slice's own value is the static side of that design; ciu
+# is the consumer-side admission-check half.
+#
+# THIS VALUE MUST STAY EXACTLY EQUAL to dev.slice's own MemoryMin below --
+# see CGROUP-NOTES.md "the one invariant that actually matters". Both are
+# rendered from the SAME env var (DEV_MEMORY_MIN_GUARANTEED_CEILING) on
+# purpose: two independently-set variables that happen to start out equal
+# invites exactly the drift this design depends on not happening.
+MemoryMin=@DEV_MEMORY_MIN_GUARANTEED_CEILING@
+
+# No MemoryHigh/Max here deliberately. Those stay per-container (ciu's
+# existing mem_limit/mem_reservation injection already applies them directly
+# to a container's own scope) -- only the min floor requires ancestor
+# cooperation, so only it belongs on the shared slice.
+#
+# Containers join via an explicit `docker run
+# --cgroup-parent=dev-memory_min_guaranteed.slice` or compose
+# `cgroup_parent: dev-memory_min_guaranteed.slice` (ciu governance injects
+# it once a stack's `governance.cgroup_parent` names this slice). There is
+# no Docker daemon-wide fallback into this tier -- unlike dev-background.slice,
+# landing here must always be an explicit, deliberate choice per container,
+# never an accident of an unconfigured default.
