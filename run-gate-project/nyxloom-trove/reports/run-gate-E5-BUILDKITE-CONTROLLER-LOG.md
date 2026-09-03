@@ -120,3 +120,26 @@ dstdns D-110.4. Rulings here are E5-Rn.
   - Fix package sent to the same implementer (context intact, small
     package); reviewer round 2 (same reviewer session, cap 3) on its tip;
     after ACCEPT merge `--no-ff` to main, no release.
+
+- **2026-09-03 (round-1 fix package landed at `6dceaaf0`; E5-R13..E5-R15;
+  one follow-up, then round 2)** — `a777f109` scripts + tests, `6dceaaf0`
+  docs. Reported: 65 tests (was 38), green in declared and random order,
+  484 collected across `tests/`; `shellcheck -S style` clean; scope
+  diff against every wave-owned file empty. E5-R7: `check_path_component`
+  gates the response `commit` (`[A-Za-z0-9._-]`, no `.`/`..`) and the build
+  number before `mkdir`; the PATH-stub `curl`+`sleep` harness makes the
+  live path real in tests (seven terminal states with actual exit codes,
+  the commit guard, three escaping artifact paths, malformed/short
+  responses, a happy-path `collect` landing bytes at
+  `<dir>/<commit>/.assay/verdict.json`). E5-R9: `--dry-run` anywhere
+  (`--` ends options), `run --dry-run lint` records zero curl calls,
+  `-`-leading names refused. E5-R10: `BK_MAX_WAIT_MINUTES` → exit 3 naming
+  build and last state. E5-R12: every refusal through `die`, contract
+  0/1/2/3 stated once. E5-R8/E5-R11 and N2–N9 as ruled.
+  - **E5-R13 (ask 1):** N9 has no meaning for `run` — accepted as reasoned.
+  - **E5-R14 (ask 2):** keep the sleep-time budget as documented AND bound
+    each request with `--connect-timeout 10 --max-time 120`; the doc says
+    the wall-clock bound is the budget plus at most one request per poll.
+  - **E5-R15 (ask 3):** the `.assay/` authoring rule landed on main
+    (`3f148522`); §3 and §6 row 1 point at LANE-AUTHORING §5; row 1 stays
+    "not started". Round 2 (same reviewer, cap 3) on the follow-up's tip.
