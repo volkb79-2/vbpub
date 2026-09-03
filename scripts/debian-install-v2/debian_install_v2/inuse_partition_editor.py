@@ -50,7 +50,7 @@ MBR_TYPE_SWAP = "82"
 # Tolerant key=value tokenizer for sfdisk dump attribute strings. Handles both
 # the padded real format (`start=        2048`) and quoted values
 # (`name="EFI System Partition"`), for either label type.
-_ATTR_RE = re.compile(r'([A-Za-z0-9_-]+)=\s*("[^"]*"|[^,\s]+)')
+ATTR_RE = re.compile(r'([A-Za-z0-9_-]+)=\s*("[^"]*"|[^,\s]+)')
 
 def run(cmd, *, input=None, check=True, quiet=False):
     if not quiet: print(f"  + {' '.join(cmd)}")
@@ -96,8 +96,18 @@ class Table:
             if not m: self.header.append(line); continue
             num_match = re.search(r'(\d+)$', m.group(1))
             if not num_match: self.header.append(line); continue
-            attrs = dict(_ATTR_RE.findall(m.group(2)))
-            if 'start' not in attrs or 'size' not in attrs: self.header.append(line); continue
+            attrs = dict(ATTR_RE.findall(m.group(2)))
+            if 'start' not in attrs or 'size' not in attrs:
+                # Fail loud, not silent: a real sfdisk --dump ALWAYS emits
+                # both for an existing partition, so this is corrupt/
+                # malicious input, not a format variant to tolerate. Silently
+                # filing it into self.header (an earlier version of this
+                # fix) would make free_regions() report that partition's
+                # real on-disk sectors as free, and add()/write() (which
+                # calls sfdisk with --force, disabling consistency checking)
+                # could then plan a new partition overlapping it undetected
+                # before a destructive commit (adversarial review finding).
+                sys.exit(f"malformed partition entry on {disk} (missing start=/size=): {line!r}")
             self.parts.append(dict(
                 dev=m.group(1), num=int(num_match.group(1)),
                 start=int(attrs['start']), size=int(attrs['size']),

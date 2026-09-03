@@ -183,10 +183,15 @@ def test_table_skips_lines_with_no_digit_suffixed_device_name(mod):
     assert t.parts == []
 
 
-def test_table_skips_lines_missing_start_or_size(mod):
+def test_table_refuses_lines_missing_start_or_size(mod):
+    # Fail loud, not silent (adversarial review finding, reverting an
+    # earlier draft of this fix): a real sfdisk --dump always emits both for
+    # an existing partition, so silently excluding a malformed one from
+    # self.parts would make free_regions() report its real on-disk sectors
+    # as free -- a --force write could then overlap it undetected.
     dump = "label: gpt\ndevice: /dev/vda\n\n/dev/vda3 : type=linux\n"
-    t = mod.Table("/dev/vda", raw=dump, disk_sectors=10485760)
-    assert t.parts == []
+    with pytest.raises(SystemExit, match="missing start=/size="):
+        mod.Table("/dev/vda", raw=dump, disk_sectors=10485760)
 
 
 # --- free_regions ---

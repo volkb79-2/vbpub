@@ -484,10 +484,23 @@ MaxFileSec=1month
         # unlike a naive line.split(), which mis-tokenizes a quoted value
         # containing spaces. raw=/disk_sectors= reuse the dump we already
         # fetched through HostActions instead of letting Table shell out.
-        table = inuse_partition_editor.Table(f"/dev/{self.root_disk}", raw=dump, disk_sectors=disk_sectors)
+        try:
+            table = inuse_partition_editor.Table(f"/dev/{self.root_disk}", raw=dump, disk_sectors=disk_sectors)
+        except SystemExit as exc:
+            # Table.__init__ calls sys.exit() on an unsupported disklabel --
+            # a clean CLI idiom for that module's own __main__ entrypoint,
+            # but SystemExit is a BaseException, not Exception: bootstrap.py's
+            # `except Exception` around the installer's own run does not
+            # catch it, so it would otherwise skip the normal
+            # "{PROG}: action failed: ..." message and state/notification
+            # error-reporting path every other RuntimeError here goes
+            # through (adversarial review finding).
+            raise RuntimeError(f"could not read partition table: {exc}") from exc
         root_entry = next((part for part in table.parts if part["num"] == self.root_number), None)
         if root_entry is None:
             raise RuntimeError(f"could not parse current root partition from sfdisk dump")
+        if root_entry["size"] <= 0:
+            raise RuntimeError(f"root partition {self.root_number} has a non-positive size in sfdisk dump")
         return disk_sectors, root_entry["start"], root_entry["size"]
 
     def _preflight_disk_transaction(self) -> dict[str, object]:
@@ -522,11 +535,15 @@ MaxFileSec=1month
             suffix = columns[0][len(prefix):]
             if not suffix.isdigit():
                 continue
-            values: dict[str, str] = {}
-            for item in columns[1:]:
-                key, _, value = item.strip(",").partition("=")
-                if value:
-                    values[key] = value
+            # Regex-based (inuse_partition_editor.ATTR_RE), not a per-token
+            # line.split() -- the padded real sfdisk --dump format
+            # (`start=        2048`) is silently mis-tokenized by a plain
+            # split into separate "start=" / "2048," pieces, dropping both
+            # keys entirely (adversarial review finding: this crashed
+            # _validate_plan_geometry() with an uncaught KeyError on the
+            # rollback-decision path instead of a clean diagnostic).
+            attrs_text = line.partition(":")[2]
+            values = {key: value.strip('"') for key, value in inuse_partition_editor.ATTR_RE.findall(attrs_text)}
             entries[int(suffix)] = values
         return entries
 

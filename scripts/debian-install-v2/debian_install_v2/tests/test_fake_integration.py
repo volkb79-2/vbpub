@@ -165,6 +165,27 @@ def test_disk_facts_tolerates_quoted_gpt_name_attribute(tmp_path):
     assert root_size == 20971520
 
 
+def test_disk_facts_converts_unsupported_disklabel_systemexit_to_runtimeerror(tmp_path):
+    # Table.__init__ calls sys.exit() (SystemExit, a BaseException) on an
+    # unsupported disklabel -- a clean CLI idiom for the editor's own
+    # __main__, but bootstrap.py's `except Exception` around the installer's
+    # run does not catch it, skipping the normal error-reporting path every
+    # other RuntimeError here goes through (adversarial review finding).
+    installer, actions = make_installer(tmp_path)
+    actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = "label: sun\nunit: sectors\nsector-size: 512\n"
+    with pytest.raises(RuntimeError, match="could not read partition table"):
+        installer._disk_facts()
+
+
+def test_disk_facts_rejects_non_positive_root_size(tmp_path):
+    installer, actions = make_installer(tmp_path)
+    actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = (
+        "label: gpt\ndevice: /dev/vda\n\n/dev/vda3 : start=2500608, size=0, type=0fc63daf-8483-4772-8e79-3d69d8477de4\n"
+    )
+    with pytest.raises(RuntimeError, match="non-positive size"):
+        installer._disk_facts()
+
+
 def test_verify_refuses_checksum_mismatch(tmp_path):
     installer, _ = make_installer(tmp_path)
     transaction_dir = Path(installer.config.state_dir)

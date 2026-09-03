@@ -52,7 +52,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   (required), `cgroup_slice` (optional), `mode` (optional, `"ephemeral"`
   or `"exec"`, default `"ephemeral"`), `forward_env` (optional list of
   environment-variable names). `host` and `bare-host` are both built-in
-  names (never definable), and swapped roles at rev 24: `host` (the
+  names (never definable), and swapped roles in the host/bare-host flip
+  (RG-43): `host` (the
   default) resolves to a synthetic environment — `image` is
   `DEFAULT_HOST_IMAGE` unless `$RUN_GATE_HOST_IMAGE` overrides it, no
   `cgroup_slice` declared (resolves from `$CGROUP_PARENT_DEV_BACKGROUND`,
@@ -333,13 +334,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   the same assay inner the container runners build (RG-28: the validator
   accepts that combination, and the runner used to raise `KeyError('argv')`
   on it — a traceback for a legal config, which `R-04` calls a defect; this
-  fix now lives on `bare-host` specifically, since rev 24 moved the OLD
-  bare-execution behavior there — see `R-42`) (R-21). A command `bare-host`
+  fix now lives on `bare-host` specifically, since the host/bare-host flip
+  (RG-43) moved the OLD bare-execution behavior there — see `R-42`) (R-21). A command `bare-host`
   lane uses no docker and no safe.directory — that trap is container-specific;
   an assay `bare-host` lane inherits the shared inner, whose
   `GIT_CONFIG_GLOBAL` isolation (`R-19a`) keeps that write out of the
   operator's own git config. Exit passthrough identical either way. `host`
-  lanes (the default, since rev 24) are container lanes in every respect,
+  lanes (the default, since the host/bare-host flip, RG-43) are container lanes in every respect,
   in which the RG-28 combination was never reachable in the first place —
   see `R-42`.
 - `R-42` **`host` is a container default, not a synonym for bare execution**

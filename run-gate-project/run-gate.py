@@ -33,7 +33,8 @@ PROG = "run-gate"
 CONFIG_NAME = "run-gate.toml"
 SCHEMA_VERSION = 1
 CGROUP_ENV_VAR = "CGROUP_PARENT_DEV_BACKGROUND"
-# `host` (default) and `bare-host` (opt-out) swapped roles at rev 24 — `host`
+# `host` (default) and `bare-host` (opt-out) swapped roles in the
+# host/bare-host flip (RG-43) — `host`
 # now routes through the same container machinery every named environment
 # uses (dual-mount, --cgroup-parent from $CGROUP_PARENT_DEV_BACKGROUND,
 # pointed at DEFAULT_HOST_IMAGE unless $RUN_GATE_HOST_IMAGE overrides it);
@@ -4093,7 +4094,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, worktree: 
     # bare-host lane must not quietly operate on the invocation checkout
     # either.
     # RG-28 (found while implementing RG-26): `kind = "assay"` with
-    # `environment = "bare-host"` (rev 24: was `"host"` before the
+    # `environment = "bare-host"` (RG-43: was `"host"` before the
     # host/bare-host role swap — RG-43 moved bare execution here) is a
     # config the validator ACCEPTS, and this runner used to index
     # lane["argv"] unconditionally — a KeyError traceback for a legal

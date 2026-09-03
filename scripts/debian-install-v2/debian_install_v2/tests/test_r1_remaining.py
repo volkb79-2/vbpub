@@ -177,6 +177,28 @@ def test_parse_partition_entries_skips_non_digit(tmp_path):
     assert "vdax" not in {str(k) for k in entries}
 
 
+def test_parse_partition_entries_tolerates_real_padded_dump_format(tmp_path):
+    # Adversarial review finding: a naive line.split() on the real padded
+    # sfdisk --dump format (multiple spaces after `=`) splits "start=" and
+    # "        2048," into SEPARATE tokens, silently dropping both the
+    # start= and size= keys entirely -- confirmed by direct execution
+    # before this fix. _validate_plan_geometry() then raised an uncaught
+    # KeyError instead of a clean diagnostic on the rollback-decision path.
+    installer = make_installer(tmp_path)
+    dump = (
+        "label: gpt\n"
+        "/dev/vda1 : start=        2048, size=     1050624, type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b, "
+        'name="EFI System Partition"\n'
+        "/dev/vda3 : start=     2500608, size=    20971520, type=0fc63daf-8483-4772-8e79-3d69d8477de4\n"
+    )
+    entries = installer._parse_partition_entries(dump)
+    assert entries[1]["start"] == "2048"
+    assert entries[1]["size"] == "1050624"
+    assert entries[1]["name"] == "EFI System Partition"
+    assert entries[3]["start"] == "2500608"
+    assert entries[3]["size"] == "20971520"
+
+
 def test_geometry_missing_root(tmp_path):
     installer = make_installer(tmp_path)
     with pytest.raises(RuntimeError, match="does not preserve the root partition"):
