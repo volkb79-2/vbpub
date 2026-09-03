@@ -715,7 +715,7 @@ confirms it has none.
 emits exactly five warnings and no errors:
 
 ```
-- L10 warning handoff size 13626 tokens
+- L10 warning handoff size ~13.8k tokens   (exact count drifts with any edit; treat as ~14k)
 - L13 warning oracle 'O3' references path 'src/nyxloom/config.py' not covered by scope.touch
 - L13 warning oracle 'O3' references path 'src/nyxloom/effects_carve.py' not covered by scope.touch
 - L13 warning oracle 'O3' references path 'tests/test_config.py' not covered by scope.touch
