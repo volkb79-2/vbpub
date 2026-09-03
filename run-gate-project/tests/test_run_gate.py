@@ -6961,6 +6961,38 @@ class TestInflightRecordDecisions:
         assert len(lane_runs(log)) == 1        # ran anew
         assert not record.exists()
 
+    def test_a_schema_absent_record_with_a_matching_commit_runs_fresh(
+            self, tmp_path, monkeypatch, capsys):
+        """RW-37 (RW-35 was wrong). A record with no `schema` key at all
+        used to fall through `load_inflight_record`'s mismatch check
+        untouched and, with `container` present, come back as if it were a
+        valid record — so when its `commit` also happened to match HEAD,
+        `resolve_inflight()` walked it into `adopt_inflight_start()`'s bare
+        `pending["started_at"]` subscript and raised an unhandled KeyError
+        (this record has no `started_at` either) instead of the clean
+        "corrupt, so no record" fallthrough SPEC.md:953 already promised.
+        Driven end to end through `main()`, the same shape
+        `test_fresh_without_a_record_says_so_and_runs` proves for the
+        genuinely-absent case: no crash, and the lane runs as if fresh."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+        record = proj / ".run-gate" / "inflight" / "suite.json"
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps({
+            "lane": "suite", "container": "run-gate-planted",
+            "commit": head, "worktree": str(repo),
+        }))
+        # The container itself must be alive and RUNNING (no owner fields ->
+        # `live_owner_pid` reads as dead-owner/adopt, not follow) — a gone
+        # container takes the "lost run" branch instead, which already
+        # returns cleanly regardless of this bug and would prove nothing.
+        # This is exactly the shape that reached `adopt_inflight_start`'s
+        # bare `pending["started_at"]` before the fix.
+        (state / "run-gate-planted").write_text("running 0 - \n")
+        assert run_gate.main(["suite"]) == 0
+        assert len(lane_runs(log)) == 1        # ran fresh, no re-attach
+
     ASSAY_ARTIFACT_LANE = """\
         schema_version = 1
         [environments.tester-unified]
@@ -8180,6 +8212,22 @@ class TestInflightRecordStore:
 
     def test_a_missing_record_is_no_record(self, tmp_path):
         assert run_gate.load_inflight_record(tmp_path / "absent.json") is None
+
+    def test_a_record_with_no_schema_key_is_corrupt_not_valid(self, tmp_path):
+        """RW-37 (RW-35 was wrong): an ABSENT `schema` key skipped the
+        mismatch branch entirely and, with `container` present, the record
+        used to come back as if it were a valid, current-schema record —
+        contradicting SPEC.md:953, which already called a schema-absent
+        record corrupt. A container-bearing, commit-bearing,
+        `started_at`-less record like this one is exactly what reached
+        `adopt_inflight_start`'s bare `pending["started_at"]` subscript and
+        raised an unhandled KeyError when `commit` happened to match HEAD
+        (see TestInflightRecordDecisions for that path end to end)."""
+        path = tmp_path / "rec.json"
+        path.write_text(json.dumps({
+            "container": "run-gate-planted", "commit": "deadbeefcafe",
+        }))
+        assert run_gate.load_inflight_record(path) is None
 
 
 class TestReattachedRunHistory:

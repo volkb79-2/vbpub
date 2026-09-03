@@ -1216,6 +1216,17 @@ def load_inflight_record(path: Path, fresh: bool = False) -> dict | None:
         return None
     if not isinstance(data, dict):
         return None
+    if "schema" not in data:
+        # RW-37: a record that never carried a `schema` key at all is not a
+        # versioned record this client merely fails to recognize — it is
+        # CORRUPT (SPEC.md:953) and falls under the no-container rule below,
+        # not RW-25's refusal, which is for a record that DOES declare a
+        # schema. Falling through here, as the first cut did, let a
+        # schema-absent but container-bearing record reach
+        # `resolve_inflight()` -> `adopt_inflight_start()`'s bare
+        # `pending["started_at"]` subscript and raise an unhandled KeyError
+        # when that field was also missing.
+        return None
     schema = data.get("schema")
     if schema is not None and schema != INFLIGHT_SCHEMA:
         container = data.get("container")
