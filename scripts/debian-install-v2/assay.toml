@@ -18,7 +18,15 @@ rigor = ["R0", "R2"]
 # from that conjunction (see run-gate.toml's header comment, same
 # treatment fake-integration/r1-privileged-commit already get).
 enforcement = "gate"
-argv = ["python3", "-m", "pytest", "debian_install_v2/tests", "-q"]
+# /opt/tester-venv/bin/python3, not bare "python3": assay spawns this argv
+# as its own subprocess, independent of whatever interpreter invoked
+# `assay.cli` itself -- bare "python3" resolves via PATH to
+# /usr/local/bin/python3 inside tester-unified, which has no pytest.
+# Hardcoded because this file is scoped to its one documented consumption
+# path (run-gate.toml's [lanes.r2], always inside a tester-unified
+# container); this devcontainer itself has no /opt/tester-venv, so `assay
+# run r2` cannot be run locally outside that container as a side effect.
+argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "debian_install_v2/tests", "-q"]
 env = { PYTHONPATH = ".", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
 budget = "50m"
