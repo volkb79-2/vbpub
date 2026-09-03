@@ -745,3 +745,14 @@ precedent for shape and discipline.
   B071**. Generation 11 is a FRESH Opus successor seeded with BRIEF-10 +
   DA-R1..R27, dispatched when the operator says work may start again; then
   R-2 → merge → release 5.0.0 (low priority, DA-R21).
+
+- **2026-09-03 (limits reset — generation 11 dispatched)** — Operator:
+  "limits have reset. switch to max parallelism now." Generation 11 (fresh
+  Opus, BRIEF-10 seed, DA-R1..R27) dispatched on `9de276bd` for B053
+  `detail` producers → B004 producer (leave `EXCLUDED_ENTIRELY`) → B007
+  canary loop (the one authorised W6 edit, own gate run) → CONSUMERS
+  "Migration notes (v9 → v10)". Runs in parallel with the run-gate fix
+  successor (host lanes + one short live probe) and an E-5 seams
+  implementer (no containers); the one-container rule is in every prompt.
+  R-2 is dispatched on generation 11's tip when all four items are
+  gate-green. Next ids A-439 / B071.

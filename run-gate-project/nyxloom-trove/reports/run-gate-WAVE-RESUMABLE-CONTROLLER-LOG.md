@@ -213,3 +213,18 @@ controller's entries from the implementer's return onward; wave records
     lane name that no inflight record owns") for the next run-gate package,
     together with RG-41..43, after the 23.4.0 merge. run-gate never removes
     what it did not start.
+
+- **2026-09-03 (limits reset — fix SUCCESSOR dispatched; E-5 seams
+  implementer dispatched in parallel)** — Operator: "limits have reset.
+  switch to max parallelism now." Successor (fresh Opus, BRIEF-1 seed,
+  RW-13..RW-22) on `e87007cc`: FIRST ACT is one selftest on the committed
+  tip read separately (the previous implementer's verdict was quoted, its
+  log never found), then RW-15 → RW-20 → RW-17 → RW-18 → RW-19 → R-39e's
+  RW-21 sentence, then the live two-client probe (follow + kill-9
+  re-attach) under the host rule, then return for reviewer round 2. In
+  parallel, on a separate branch `feature/run-gate-buildkite-seams` from
+  main: E-5 seams 2 and 4 (`tools/buildkite/pipeline.sh` from `--list`,
+  `tools/buildkite/bk-lane.sh` with `--dry-run`, their tests, doc updates
+  to `REMOTE-LANES-BUILDKITE.md` only) — that agent touches none of the
+  files this wave edits, starts no container, and is folded into CHANGES
+  and the backlog (RG-41..44) by the controller after 23.4.0 merges.
