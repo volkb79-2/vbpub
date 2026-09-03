@@ -56,3 +56,23 @@ dstdns D-110.4. Rulings here are E5-Rn.
     wave files), then merge `--no-ff` to main — no release, the next
     run-gate release carries the tools; the CHANGES line is folded after
     23.4.0 lands.
+
+- **2026-09-03 (E5-R6 follow-up landed at `17077426`; reviewer round 1
+  dispatched)** — `bk-lane.sh run` gains optional `BK_QUEUE` → sent as
+  `env.RUN_GATE_QUEUE` in the create-build body only when set (an empty
+  key would override the pipeline's default with nothing); a value outside
+  `[A-Za-z0-9._-]` refused by name; three dry-run tests (38 total, serial
+  under nice/ionice, 1.09 s); §3 and §4.2 say a build's env overrides the
+  pipeline queue. No selftest for this commit, deliberately and stated: no
+  `run-gate.py` line changes, the lane's diff-coverage floor has nothing
+  new to judge. Implementer's correction accepted: `shellcheck` had emitted
+  one info-level SC1003 false positive on `pipeline.sh` line 93 (a literal
+  backslash in a `case` pattern), now disabled by name with the reason
+  inline — the controller's "shellcheck clean" was at `-S warning`, which
+  hides info-level notes; both scripts are clean at every level now.
+  Reviewer round 1 dispatched (fresh Opus, never a fork) on `17077426`:
+  blind diff, scope discipline, the generator against three real projects
+  parsed as YAML, dry-run transcripts checked against the vendor REST docs,
+  no-network proof, the 38 tests + hollow-test hunt, docs-truth table,
+  shellcheck + shell-safety; report committed as its only file. After
+  ACCEPT: merge `--no-ff` to main, no release.
