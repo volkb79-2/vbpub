@@ -420,3 +420,45 @@ controller's entries from the implementer's return onward; wave records
   controller verifies the diff and the selftest directly; no new reviewer
   round is dispatched for a single-conditional, mechanically-checkable
   fix with an exact reproduction already in hand.
+
+- **2026-09-03 (SEPARATE ITEM, not this wave — a NEW backlog finding on
+  main, dispatched to implementation)** — Operator: "i think run-gate has
+  new backlog, you can send to implement." `KNOWN_ISSUES_TODO_BACKLOG.md`
+  gained **RG-39 on `main`** (commit `1f312ab1`, 2026-09-03, filed from
+  dstdns D-321/D-339/D-321-correction): no internal mutual exclusion
+  around `docker exec`/`docker run` into a resolved container, so every
+  consumer must remember an external `flock` or two lanes racing the same
+  container silently contaminate each other's evidence. Already annotated
+  buildable by the ciu v8 design review (`ccbc02bf`, SPEC-V8 draft.5 §4.11
+  N22) with three refinements — (1) exec mode only, (2) lock AFTER
+  `acquire_shared_locks()`'s shared-infra locks in the SAME fixed order,
+  released in the same `finally`, `/tmp/run-gate-exec-<container>.lock`
+  with RG-20's 0600+O_NOFOLLOW discipline, blocking `LOCK_EX`, dry runs
+  plan-never-block, (3) v8 alignment (keying on a Realization's stack
+  directory once RG-37 exists) — **explicitly deferred, RG-37 doesn't
+  exist yet; only (1)+(2) are in scope.** Dispatched to a fresh Opus
+  implementer on a NEW branch `fix/run-gate-exec-mutex-rg39`, worktree
+  `.worktrees/run-gate-exec-mutex-rg39`, off `origin/main` tip `23fe2c98`
+  — independent of both in-flight waves, touches neither's files.
+  **ID-COLLISION FOUND, noted for the run-gate wave's OWN merge step (not
+  acted on now — that worktree is mid-fix for RW-37, do not touch it
+  concurrently):** the wave's OWN branch (`feature/run-gate-wave-resumable`)
+  independently allocated `RG-39` (coverage_gate.py dirty-tree line-number
+  offset, `d4e8e137`) and `RG-40` (container command-lane liveness /
+  RW-9's E-3 candidate, `73e6b061`) — from a point where main only had up
+  to RG-38. Main has since taken the REAL `RG-39` for the mutex finding
+  above. **At the run-gate wave's merge (after this session's RW-37 fix
+  lands), its two rows must be renumbered before merging: coverage_gate
+  → RG-40, command-lane-liveness → RG-41** (main's next free number after
+  its own real RG-39), and the wave's already-planned NEW filings shift
+  from RG-41..46 to **RG-42..47**. Any narrative use of "RG-39" in that
+  wave's own LOG/REPORT prose (e.g. "RG-39's own trap" for the
+  never-edit-during-a-selftest rule) refers to the coverage_gate finding
+  and should read as RG-40 after renumbering — cosmetic, not a substance
+  change, and low priority relative to actually landing the number
+  correctly in `KNOWN_ISSUES_TODO_BACKLOG.md`, `CHANGES.md` and
+  `SPEC.md`.
+  **Rev-number note for the same merge:** this new exec-mutex branch
+  bumps `__revision__` from 33 independently of the wave's own bump to
+  34 — whichever of the two merges to main SECOND must renumber its own
+  bump to the next free integer at merge time, not before.
