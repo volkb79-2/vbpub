@@ -186,3 +186,123 @@ BLOCKED, not worked around" section.
 Branch left as-is (commits `453950d8`, `abd9954a`, `52dad492`, `e8f480ef`),
 plus this LOG and the REPORT committed in a follow-up commit
 (`4f64571b`). Not merged (controller's step).
+
+## Coordinator resolution (2026-09-03, same session)
+
+The coordinator confirmed the BLOCKED report was correct and repaired the
+handoff: `nyxloom-trove/handoffs/nyxloom-P100-tier-routes-toml-
+validation.md` was re-frozen at `input_revision: "3519a73f"` (repair round
+5, `nyxloom-P100-FIX-VERIFICATION-4.md` independently re-confirmed the
+math and scope, verdict READY). New: **Work item 5** (re-measure
+`src/nyxloom/lint.py`'s row in the ownership-inventory doc, `wc -l` on the
+real tree, not a hardcoded number, following the doc's own "Re-measured
+DATE (...)" note convention -- add `nyxloom-trove/reports/
+CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md` and
+`tests/test_core_characterization.py` (verify-only) to `scope.touch`) and
+**O7** (both `test_inventory_sizes_are_within_the_declared_tolerance` and
+`test_inventory_paths_all_exist` pass; the row reflects the real post-edit
+count). My prior 6 commits (`453950d8`..`00a2482a`) stand unchanged.
+
+## `a65d4ed2` -- docs(nyxloom): P100 -- Work item 5, re-measure lint.py's ownership-inventory row
+
+Re-measured `src/nyxloom/lint.py` with `wc -l` on the current tree (not
+trusting the number already written in the BLOCKED REPORT, per Work item
+5's own instruction and nyxloom-P99's own hard-won lesson about this
+exact file): **1262**, unchanged
+since the BLOCKED report (no further edits landed on `lint.py` in the
+interim). Updated the `CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md`
+row `src/nyxloom/lint.py | 1,112 | ...` -> `| 1,262 | ...` (responsibility
+text unchanged -- still accurate) and added a "Re-measured 2026-09-03
+(nyxloom-P100)" paragraph directly after the existing nyxloom-P98 note,
+matching the document's own convention exactly. Touched only that one
+row, per Work item 5's explicit instruction. Verified locally:
+`pytest tests/test_core_characterization.py -k
+"test_inventory_sizes_are_within_the_declared_tolerance or
+test_inventory_paths_all_exist"` -> 2 passed. Then ran the FULL local
+suite (`pytest tests -n auto -q`, captured to a file and its exit code
+read separately from any pipe, per gate-verdict-reading discipline) ->
+**exit 0, zero failures** across all 782 collected tests -- the
+BLOCKED-triggering reverse dependency is resolved with no other
+regression introduced.
+
+## Real containerized gate run (`./run-gate.py ... tester-unified`)
+
+Per the coordinator's instruction, re-attempted the real gate this time.
+`docker ps` at first check showed `objective_turing` (`tester-unified:
+local`) still up (a DIFFERENT package's run -- `assay-wave-d-v10-r2b`,
+confirmed via `docker exec objective_turing ps aux`: a multi-stage
+`assay ... topos-qualification` pipeline, not nyxloom's own lane, genuinely
+progressing via active CPU-consuming `pytest -n auto` workers, not hung).
+Host load was elevated (~8-12 across the three averages). Per the
+standing host-load rule (one gate container at a time across all agents
+on this shared host), waited rather than running concurrently -- a
+background poll (`until ! docker ps ... | grep -qi tester-unified; do
+sleep 30; done`) rather than a tight loop, corrected once after an initial
+filter bug (checked `{{.Names}}` instead of `{{.Image}}`, would have
+false-"cleared" immediately -- caught before it could report a false
+readiness, fixed to check `{{.Image}}`). Reported an honest wait-time
+estimate to the coordinator when asked mid-wait (bounded by the lane's
+30m budget and nyxloom's own ~4min historical baseline) rather than
+guessing a number. The container cleared naturally; confirmed via a fresh
+`docker ps` (host load down to ~6-8) before proceeding.
+
+Ran, from `/workspaces/vbpub/.worktrees/nyxloom-nl2/nyxloom`:
+```
+./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-nl2 tester-unified
+```
+in the background (budget 30m; not a short foreground wait). Located the
+new container (`docker ps --filter ancestor=tester-unified:local`,
+`2158345256fb`) within seconds of it starting and immediately ran `docker
+update --cpus=3 2158345256fb` (confirmed via `docker inspect
+--format '{{.HostConfig.NanoCpus}}'` -> `3000000000`), per the host-load
+rule. Confirmed via `docker exec ... ps aux` mid-run that it was genuinely
+executing `pytest tests -n auto -q --cov=src/nyxloom` with active xdist
+workers, not hung.
+
+**Verdict read as a SEPARATE step from running the gate** (the log file
+was read via the file-read tool directly, never piped through `tail`/
+`grep`; the verdict JSON was then read as an independent second source):
+
+```
+assay-4.0.0.pyz: OK
+tester-unified: PASS (exit 0)
+  commit: a65d4ed2dfd1760d5ddd95b4076ad38af59c8bd3
+  argv: /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-report=json:coverage.json
+run-gate: verdict artifact: /workspaces/vbpub/.worktrees/nyxloom-nl2/nyxloom/.assay/verdict-tester-unified.json
+run-gate: lane 'tester-unified' exit 0
+GATE_EXIT_CODE=0
+```
+
+`.assay/verdict-tester-unified.json` (read independently, full content in
+the REPORT): `"outcome": "PASS"`, `"exit_code": 0`, `"commit":
+"a65d4ed2dfd1760d5ddd95b4076ad38af59c8bd3"` (this package's HEAD at the
+time of the run), `claims`: R0 (`tests-pass`) = PASS, R1
+(`changed-line-coverage`) = PASS at `pct: 100.0` (26/26 executable
+changed lines covered -- meaningfully non-trivial this time, unlike a
+zero-line-diff pass, since this package's diff adds real executable code
+in `_check_l14`). The gate's own container was gone (no longer listed in
+`docker ps -a`) immediately after the run finished -- `run-gate.py` tears
+its own container down; nothing left for this package to clean up beyond
+the CPU cap already applied while it ran.
+
+Re-ran O6 fresh, one more time, at the exact commit the gate verdict names
+(`a65d4ed2`) for a final, tied-to-this-HEAD capture (see REPORT): result
+unchanged from every earlier run -- this package's own handoff produces
+zero findings, the two pre-existing frontmatter-less notes still fail L1
+(unrelated, pre-existing).
+
+## Conclusion: GREEN -- all 7 oracles pass with real gate evidence
+
+O1-O5 and O7: proven by the real `tester-unified` gate's PASS verdict
+(R0/R1 both PASS, commit `a65d4ed2`) -- the full `pytest tests -n auto -q`
+suite, including every new `TestL14TierRoutesToml`/
+`TestAuthoringDocTierGuidance` case and both named O7 tests, ran INSIDE
+the actual gate container and passed, not merely a local proxy this time.
+O6: real host-filesystem sweep, run outside any container as required,
+re-confirmed at the gate-verdict commit. No further findings, no new
+reverse dependencies, no `escalate_if` trigger fired during this final
+pass.
+
+All 6 Work items are complete; all 7 oracles (O1-O7) pass with real,
+independently-read evidence. Not merged (controller's step, per doctrine)
+-- this package's own implementer role stops here.
