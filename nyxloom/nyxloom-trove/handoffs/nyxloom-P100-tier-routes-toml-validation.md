@@ -19,6 +19,8 @@ scope:
     - "tests/conftest.py"               # verify-only, no edit expected: read (not modified) for its sample_project fixture and paths.routes_path().write_text(...) pattern, the template every new L14 test must follow; listed because O2 cites it directly
     - "nyxloom-trove/reports/nyxloom-P100-LOG.md"     # NEW: per-commit LOG per the estate's standard contract
     - "nyxloom-trove/reports/nyxloom-P100-REPORT.md"  # NEW: per-oracle evidence, including O6's real-repo lint output verbatim (O6 cannot run inside the tester-unified container, so its proof lives here, not in a new automated test)
+    - "tests/test_core_characterization.py"  # verify-only, no edit expected: it reads the inventory doc below and asserts against the real tree -- fixing the doc (Work item 5) is what makes it pass again; listed because O7 requires confirming it collects and passes
+    - "nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md"  # a LIVE, mechanically-checked inventory (unlike tests/legacy_planner.py -- this one is meant to track current reality; tests/test_core_characterization.py enforces it), missed by all four carve-review rounds because it's a nyxloom-trove/reports/ doc, outside the reference/src/tests sweep scope -- surfaced only when the implementer actually ran the gate (same class of miss as nyxloom-P98's own Work item 10). Only the src/nyxloom/lint.py row needs updating (confirmed: neither tests/test_lint.py nor reference/AUTHORING.md has its own row in this file) -- re-measure with `wc -l` on the tree after Work items 1-4 land, do not hardcode a number, add a "Re-measured <today> (nyxloom-P100)" note per the doc's own convention (see Work item 5)
     - "nyxloom-trove/handoffs"           # directory sweep, verify-only: O6 lints every real file here at implementation time; already swept clean by the carver (P98/P99 archived) at freeze time, re-verified as part of this package's own Work item 4/O6, no edit expected unless escalate_if fires
     - "nyxloom-trove/archive"            # directory sweep, verify-only: the destination the carver already moved nyxloom-P98's and nyxloom-P99's handoff+LOG+REPORT+review files to (before this freeze) -- named here only so O6's premise ("both packages' handoffs are no longer in the live directory") is auditable against the real tree, not touched further by this package
   forbid:
@@ -153,6 +155,22 @@ oracles:
       real host-scoped `routes.toml` on the worktree's own filesystem. If any OTHER handoff in that
       directory fails L14 when this check runs, that is `escalate_if`-worthy (see below), not
       something to silently fix by editing a file outside `scope.touch`.
+    gate: tester-unified
+  - id: O7
+    observable: >-
+      `tests/test_core_characterization.py::test_inventory_sizes_are_within_the_declared_tolerance`
+      and `::test_inventory_paths_all_exist` both pass on the tree after Work items 1-5 land (i.e.
+      the full `tester-unified` gate, which runs the whole `pytest` suite, is green -- this is not
+      a new isolated test, it is confirming a PRE-EXISTING test that Work items 1-4's real line-
+      count growth would otherwise break). The `src/nyxloom/lint.py` row in
+      `CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md` reflects the REAL post-edit line count
+      (`wc -l`), not a guessed or pre-computed number.
+    negative: >-
+      Hardcoding a predicted line count in the inventory row instead of re-measuring after the
+      real edits land fails this oracle if the prediction is even one line off (exactly the trap
+      nyxloom-P99's own carve review warned about for this same file). Leaving the row stale and
+      instead loosening or deleting the characterization test fails this oracle even more directly
+      -- the test is correct today, the row is what's wrong.
     gate: tester-unified
 gates: [tester-unified]
 escalate_if:
@@ -333,6 +351,25 @@ a contract item.
      finding — a one-time real-repo check, not a new automated test, run
      and recorded verbatim in the REPORT as evidence (see LOG/REPORT
      contract).
+5. **Fix the ownership inventory `tests/test_core_characterization.py`
+   checks against reality — a reverse dependency Work items 1-4's real
+   line-count growth trips, exactly like nyxloom-P98 hit and fixed the
+   same way.** Adding L14 to `lint.py` grows it past
+   `nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md`'s
+   recorded row for that file (recorded 1,112 lines at carve time;
+   `test_inventory_sizes_are_within_the_declared_tolerance` fails once
+   the real count drifts past its declared tolerance). Re-measure
+   `src/nyxloom/lint.py` with `wc -l` on the tree AFTER Work items 1-4's
+   edits land (do not hardcode a number from this handoff's own prose —
+   re-measure for real, matching nyxloom-P99's own hard-won lesson about
+   this exact file), update its recorded line count, and add a short
+   "Re-measured <today> (nyxloom-P100)" note following the document's own
+   existing convention (see its "Re-measured DATE (CR-NN review) for ..."
+   paragraphs near the top). This file is a *live*, mechanically-checked
+   inventory — unlike `tests/legacy_planner.py` (a DIFFERENT, frozen file
+   this package never touches), it is meant to be kept current, not
+   frozen; updating it is the correct fix, not a forbidden edit. Do not
+   re-measure or touch any OTHER row in this file — only `lint.py`'s.
 
 ## Implementation packet (normative)
 
