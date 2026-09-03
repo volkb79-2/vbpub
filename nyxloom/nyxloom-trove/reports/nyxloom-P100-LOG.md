@@ -184,5 +184,5 @@ fix needs an out-of-scope file) already exists in this repo:
 BLOCKED, not worked around" section.
 
 Branch left as-is (commits `453950d8`, `abd9954a`, `52dad492`, `e8f480ef`),
-plus this LOG and the REPORT committed in a follow-up commit. Not merged
-(controller's step).
+plus this LOG and the REPORT committed in a follow-up commit
+(`4f64571b`). Not merged (controller's step).
