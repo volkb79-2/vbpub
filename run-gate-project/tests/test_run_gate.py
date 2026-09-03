@@ -3644,6 +3644,30 @@ class TestExecModeMutex:
         assert order == ["shared", "exec"], \
             f"exec lock must be acquired AFTER shared-infra locks, got {order}"
 
+    def test_unusable_lock_path_is_infra_failure_not_traceback(
+            self, tmp_path, monkeypatch, capsys):
+        """Mirrors RG-20's own oracle (TestResourceAdmission, same name): a
+        directory sitting at the lock path is a real environment failure —
+        exit 3, never a traceback. In-process (not `run_tool()`'s
+        subprocess, unlike the RG-20 precedent) so this actually exercises
+        `acquire_exec_lock`'s OSError branch under THIS suite's own
+        coverage instrumentation — a subprocess run is invisible to it."""
+        repo, proj = self._proj(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        self._ps_returns(monkeypatch, self._container_name())
+        monkeypatch.chdir(proj)
+        # The container name is pid-suffixed, not test-suffixed (every
+        # method in this class shares it) — an earlier test in this same
+        # run may have already left a plain FILE at this path (RG-20's own
+        # locks are never unlinked, only unlocked), so clear it first.
+        self._lock_path().unlink(missing_ok=True)
+        self._lock_path().mkdir()  # a directory where the flock file must go
+        rc = run_gate.main(["suite"])
+        assert rc == 3
+        err = capsys.readouterr().err
+        assert "exec-mode lock" in err
+        assert "Traceback" not in err
+
 
 # ---------------------------------------------------------------------------
 # RG-9 — doctor: one preflight command for the first-contact failure classes
