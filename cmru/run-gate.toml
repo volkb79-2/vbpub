@@ -76,14 +76,20 @@ memory = "1g"
 memory_swap = "16g"
 
 # The implementation/release gate: every consumer (cmru release steps, agents,
-# humans) runs THIS lane; none duplicates the sub-lane sequence. Host lane:
-# each sub-lane launches its own gated tester-unified container via run-gate.
-# RG-1: every sub-invocation carries `--worktree {worktree}` explicitly — an
-# override given to `gate` must reach every sub-lane (run-gate refuses
-# container lanes whose argv drops it; here we simply never drop it).
+# humans) runs THIS lane; none duplicates the sub-lane sequence. Bare-host,
+# not "host" (run-gate RG-43 estate-wide sweep, 2026-09-03): as of rev 36,
+# plain "host" is a CONTAINER default with no docker-socket mount (verified
+# live via --dry-run), and each sub-lane below launches its OWN gated
+# tester-unified container via a nested `./run-gate.py <lane>` — this
+# orchestrator needs real docker access to start those, the same trap
+# debian-install-v2's own [lanes.gate] hit and was fixed the same way
+# (scripts/debian-install-v2/run-gate.toml). RG-1: every sub-invocation
+# carries `--worktree {worktree}` explicitly — an override given to `gate`
+# must reach every sub-lane (run-gate refuses container lanes whose argv
+# drops it; here we simply never drop it).
 [lanes.gate]
 kind = "command"
-environment = "host"
-argv = ["bash", "-c", "./run-gate.py --worktree {worktree} assay && ./run-gate.py --worktree {worktree} coverage && ./run-gate.py --worktree {worktree} mutation && ./run-gate.py --worktree {worktree} canary"]
+environment = "bare-host"
+argv = ["bash", "-c", "cd {worktree}/cmru && ./run-gate.py --worktree {worktree} assay && ./run-gate.py --worktree {worktree} coverage && ./run-gate.py --worktree {worktree} mutation && ./run-gate.py --worktree {worktree} canary"]
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
 budget = "5h"

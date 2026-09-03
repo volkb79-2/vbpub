@@ -204,8 +204,16 @@ def test_damo_usable_false_when_script_missing(tmp_path, monkeypatch):
 
 
 def test_damo_usable_false_for_broken_host_shebang(tmp_path, monkeypatch):
+    # A real absolute path here (this project's own actual host venv, as an
+    # earlier version of this test used) is not a reliable "known broken"
+    # reference: found live inside a tester-unified container, where a
+    # damon-analysis/venv/bin/python3 symlink resolves to /usr/bin/python3.13
+    # -- that exact absolute path happens to be tester-unified's own system
+    # interpreter, so the "broken" shebang accidentally became a working one
+    # in that one environment, flipping this assertion. tmp_path's own
+    # namespace guarantees an interpreter path no real environment provides.
     script = tmp_path / "damo"
-    script.write_text("#!/home/vb/volkb79-2/vbpub/scripts/damon-analysis/venv/bin/python3\n")
+    script.write_text(f"#!{tmp_path}/definitely-not-a-real-interpreter\n")
     monkeypatch.setattr(damon, "_DAMO_BIN", str(script))
     assert damon.damo_usable() is False
 
