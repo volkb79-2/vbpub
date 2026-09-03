@@ -473,18 +473,22 @@ class ProjectConfig:
         # otherwise) or either value <= 0 is malformed.
         l10_data = data.get("lint", {}).get("l10", {})
         l10 = L10Config(**l10_data)
-        if l10.warn_tokens >= l10.error_tokens:
-            log.warning("lint.l10 validation failed", reason="warn>=error",
-                        warn_tokens=l10.warn_tokens, error_tokens=l10.error_tokens)
-            raise ValueError(
-                f"[lint.l10]: warn_tokens ({l10.warn_tokens}) must be strictly "
-                f"less than error_tokens ({l10.error_tokens})")
+        # Non-positive is checked BEFORE ordering: a negative error_tokens is
+        # always < any sane (positive, default-10000) warn_tokens, so if
+        # ordering were checked first a negative-value fixture would always
+        # be caught by the ordering branch instead, leaving this branch dead.
         if l10.warn_tokens <= 0 or l10.error_tokens <= 0:
             log.warning("lint.l10 validation failed", reason="non-positive",
                         warn_tokens=l10.warn_tokens, error_tokens=l10.error_tokens)
             raise ValueError(
                 f"[lint.l10]: warn_tokens ({l10.warn_tokens}) and error_tokens "
                 f"({l10.error_tokens}) must both be > 0")
+        if l10.warn_tokens >= l10.error_tokens:
+            log.warning("lint.l10 validation failed", reason="warn>=error",
+                        warn_tokens=l10.warn_tokens, error_tokens=l10.error_tokens)
+            raise ValueError(
+                f"[lint.l10]: warn_tokens ({l10.warn_tokens}) must be strictly "
+                f"less than error_tokens ({l10.error_tokens})")
         return cls(
             project_id=data["project"]["id"],
             root=root,
