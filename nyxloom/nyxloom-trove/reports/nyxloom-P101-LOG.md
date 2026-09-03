@@ -161,4 +161,72 @@ needed).
 
 ## Gate run
 
-<!-- filled in below once the real containerized gate has run -->
+`docker ps`/`uptime` before starting: a DIFFERENT package's `tester-unified:
+local` container (`boring_napier`, a `cmru-release`/assay qualification run,
+confirmed genuinely active via `docker exec boring_napier ps aux` -- real
+xdist pytest workers, not hung) was up. Per the standing one-gate-container
+rule, waited rather than stacking a second one -- a background poll (`until !
+docker ps --format '{{.Image}}' | grep -qi '^tester-unified'; do sleep 20;
+done`), not a tight loop. It cleared naturally (~2 minutes); confirmed via a
+fresh `docker ps` (host load down from ~8.6 to ~4.5-7) before proceeding.
+
+Ran, from `/workspaces/vbpub/.worktrees/nyxloom-p101-tier-band/nyxloom`
+(no `--worktree` flag, since already cwd'd inside the target tree -- passing
+it here would double-append the path and break the docker mount):
+
+```
+python3 run-gate.py tester-unified
+```
+
+in the background. Located the new container within seconds
+(`docker ps --filter ancestor=tester-unified:local`, `3cee628ece81`) and
+immediately ran `docker update --cpus=3 3cee628ece81`, confirmed via `docker
+inspect --format '{{.HostConfig.NanoCpus}}'` -> `3000000000`. Confirmed via
+`docker exec ... ps aux` mid-run that it was genuinely executing `pytest
+tests -n auto -q --cov=src/nyxloom` with active xdist workers, not hung.
+
+The commit judged is `4241922e` -- the LOG+REPORT commit made just before the
+gate was launched (the tree had to be clean; `run-gate.py` refuses a dirty
+tree, which is exactly what happened on the first launch attempt before this
+one -- the two untracked LOG/REPORT files were committed first, see the
+commit list above).
+
+**Verdict read as a SEPARATE step from running the gate** (the log file was
+read via the file-read tool directly, not piped/tailed; the verdict JSON was
+then read as an independent second source):
+
+```
+run-gate: admission: lane 'tester-unified' declares no resources.memory -- not memory-accounted (shared-infra rules still apply)
+run-gate: rev 33 | lane tester-unified | env [environments.tester-unified] in central .../run-gate.toml | slice dev-background.slice
+run-gate: budget 30m (advisory)
+assay-4.0.0.pyz: OK
+tester-unified: PASS (exit 0)
+  commit: 4241922e41e6332d3637f272ab4a08a8230db020
+  argv: /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-report=json:coverage.json
+run-gate: verdict artifact: /workspaces/vbpub/.worktrees/nyxloom-p101-tier-band/nyxloom/.assay/verdict-tester-unified.json
+run-gate: lane 'tester-unified' exit 0
+```
+
+`.assay/verdict-tester-unified.json` (read independently, full content in the
+REPORT): `"outcome": "PASS"`, `"exit_code": 0`, `"commit":
+"4241922e41e6332d3637f272ab4a08a8230db020"` -- this package's HEAD at the time
+of the run. `claims`: R0 (`tests-pass`) = PASS; R1 (`changed-line-coverage`) =
+PASS at `pct: 100.0` (`considered: 1` file, `executable: 4`, `covered: 4`,
+resolved against merge-base `5857045c` under `source_roots: ["src"]`, which
+counts only `src/` statement lines, not test files -- the full `pytest tests
+-n auto -q` run this verdict reflects nonetheless includes every new/updated
+test this package added, all passing). The gate's own container was gone (no
+longer listed in `docker ps -a`) immediately after the run finished --
+`run-gate.py` tears its own container down.
+
+## Conclusion: GREEN
+
+All 10 Work items complete. O1-O5: proven both by isolated local test runs
+(above) and by the real gate's full `pytest tests -n auto -q` run, which
+includes every new/updated test in this package, passing inside the actual
+container. O6: the real `tester-unified` gate PASS (exit 0, commit
+`4241922e`) plus the separately-read BLG-findings-zero evidence (Work item
+8(c)). No `escalate_if` trigger fired at any point. Not merged (controller's
+step, per doctrine) -- this package's implementer role stops here.
+
+This final LOG + REPORT update committed as `<filled in by the next commit>`.

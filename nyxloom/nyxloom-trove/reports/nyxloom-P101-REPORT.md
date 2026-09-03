@@ -264,5 +264,79 @@ mattered, and the real containerized gate below is the actual O6 evidence.
 
 ## Gate run
 
-<!-- filled in once the real containerized gate has run and its verdict has
-     been read in a separate step -->
+Ran from `/workspaces/vbpub/.worktrees/nyxloom-p101-tier-band/nyxloom`
+(no `--worktree` flag -- already cwd'd inside the target tree):
+
+```
+$ python3 run-gate.py tester-unified
+```
+
+Waited for a different package's `tester-unified:local` container
+(`boring_napier`, a `cmru-release` qualification run, confirmed genuinely
+active) to clear before launching, per the standing one-gate-container rule
+(shared host, also runs a production game server). `docker update --cpus=3`
+applied to the new container within seconds of it starting.
+
+**Verdict, read as a SEPARATE step from the run** (LESSONS L4 -- the run's own
+log was read directly, not piped/tailed; the verdict JSON was then read
+independently as a second source):
+
+```
+tester-unified: PASS (exit 0)
+  commit: 4241922e41e6332d3637f272ab4a08a8230db020
+  argv: /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-report=json:coverage.json
+run-gate: lane 'tester-unified' exit 0
+```
+
+`.assay/verdict-tester-unified.json`:
+```json
+"outcome": "PASS",
+"exit_code": 0,
+"commit": "4241922e41e6332d3637f272ab4a08a8230db020",
+"claims": [
+  {"rigor": "R0", "status": "PASS", "verified_by_assay": true},
+  {"rigor": "R1", "status": "PASS", "verified_by_assay": true,
+   "coverage": {"pct": 100.0, "considered": 1, "executable": 4, "covered": 4}}
+]
+```
+
+R0 = `tests-pass` (the full `pytest tests -n auto -q` suite, including every
+new/updated test this package added, inside the actual container). R1 =
+`changed-line-coverage` at 100.0% (resolved against merge-base `5857045c`
+under `source_roots: ["src"]`, so it counts only `src/` statement lines
+touched since the branch diverged from main). This is exactly the
+`tester-unified` gate's real, declared `asserts` (`nyxloom-trove/nyxloom.toml`
+line 91: `["tests-pass", "changed-line-coverage", "canary-verified"]`) --
+proving nyxloom's own project-level "honest bound" claim in the handoff's
+"Why this package exists" section: this gate never declares `mutation`, which
+is why Work item 7's hand-run controlled breaks are the only mutation
+evidence for every oracle above.
+
+The judged commit, `4241922e`, is the LOG+REPORT commit made immediately
+before this run (the tree had to be clean for `run-gate.py` to accept it --
+confirmed by a first launch attempt refusing on the two then-untracked
+LOG/REPORT files, which were committed first).
+
+## Conclusion
+
+**GREEN.** All 10 Work items complete, all 6 oracles (O1-O6) have direct
+evidence: O1-O5 via isolated local test runs AND the real gate's full suite
+run; O6 via the real `tester-unified` gate's PASS verdict (exit 0, commit
+`4241922e`) plus the separately-read BLG-findings-zero evidence (Work item
+8(c)). All 11 prescribed controlled breaks (Work item 7) were run by hand,
+each witnessed to fail its named oracle for the named reason, then reverted
+and confirmed byte-identical to the fixed state.
+
+No `escalate_if` trigger fired at any point: the pre-edit sweep found exactly
+one file for `_TIER_BAND` and exactly one production caller for
+`compute_review_depth_directive`; the ownership-inventory tolerance held with
+the real post-edit line counts; the `TestWaveLeaseUnion` harness at
+`tests/test_effects_review.py:254-314` still reached `launch_review`'s
+dispatch branch unchanged.
+
+Not merged and not claimed "ready to merge" -- that determination is a fresh
+adversarial reviewer's, per doctrine. This package's implementer role stops
+here.
+
+Final commit range: `ac61f7d9..<this REPORT's own commit hash, filled in by
+a follow-up commit per the self-hash rule>`.
