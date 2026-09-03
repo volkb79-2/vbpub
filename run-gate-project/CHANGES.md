@@ -262,6 +262,92 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [23.4.0] - 2026-09-03
+<!-- cmru: generated -->
+<!-- cmru: source-end=b7b5f38dd7655cc44049d1bb3667ad705c1cd4f0 -->
+
+### Added
+- feat(run-gate): bk-lane.sh BK_QUEUE overrides the pipeline queue per build (E5-R6) (17077426)
+- feat(run-gate): bk-lane.sh trigger + collector (REMOTE-LANES seam 4) (8fcf3dd9)
+- feat(run-gate): Buildkite pipeline generator (REMOTE-LANES seam 2) (c07ae6af)
+- feat(run-gate): RG-36 -- liveness judged from the progress file, with an optional stall_timeout (rev 34, R-40) (10aa59e2)
+- feat(run-gate): RG-34 -- doctor names an unprefixed script path in a container command lane (rev 34, R-30b) (1e41069f)
+
+### Fixed
+- fix(run-gate): RW-37 follow-up -- restore line 1259's coverage after the fix stole it (d274bc73)
+- fix(run-gate): RW-37 -- an absent schema key in an inflight record is corrupt, not a mismatch fall-through (0f866432)
+- fix(run-gate): review round 2 nits N-a and N-b -- both one-liners, both taken (713887fc)
+- fix(run-gate): RW-25 -- an inflight record of another schema is REFUSED, not disclosed-and-overwritten (3af55353)
+- fix(run-gate): RW-28 -- a follower that outlives its owner is promoted, not left with an orphan (G2) (7fd45793)
+- fix(run-gate): RW-29 -- the owner's identity is namespace-safe, and unknown means ALIVE (G3) (d16d9380)
+- fix(run-gate): RW-27 -- silence is measured from the FILE, not from this client (G1) (43d66ba8)
+- fix(run-gate): close collect's two uncontracted exits; round-2 nits (E5-R17/R18/R19) (c2105cf7)
+- fix(run-gate): bound artifact downloads by stall, API calls by total time (E5-R16) (ef8396df)
+- fix(run-gate): bound every request; point §3 at the LANE-AUTHORING rule (E5-R14/R15) (d58f122b)
+- fix(run-gate): review round 1 — traversal, swallowed --dry-run, unbounded poll, exit codes (a777f109)
+- fix(run-gate): RW-19 -- S7 + N1..N5 + hollow tests 2-6, and one real flake in the wave's own fixture (d7e280ce)
+- fix(run-gate): RW-18 -- the dry run names the real outcome, and every path discloses the lane's bounds (S5+S6, R-39b/d) (ffc64903)
+- fix(run-gate): RW-17 -- a COLLECTED run's duration is the container's own FinishedAt - StartedAt (S4, R-39c) (86f7f7b4)
+- fix(run-gate): RW-20 -- a live owner whose container is already gone is re-polled before the refusal (R-39e) (cb6104a4)
+- fix(run-gate): RW-15 -- drop `--since`; plain `docker logs -f` already replays from the first line (S1, R-39b) (a8dc5ebc)
+- fix(run-gate): RW-16 -- "gone" is only "No such object", and the name is not the identity (S2+S3, R-39b) (3f157a3e)
+- fix(run-gate): RW-13 -- a misplaced LANE key says "move it", and RG-32's impact is the parsed 13 (B1, R-08a) (074ae074)
+- fix(run-gate): RW-14 -- a live owner's container is FOLLOWED, never hijacked (B2, R-39e) (73f2bb14)
+- fix(run-gate)!: RG-32 -- `pins.*.budget` refused at load; pin tables validate their keys (rev 34, R-08a) (8db781e6)
+- fix(run-gate): RG-35 -- a lane's container is found again after its client dies (rev 34, R-39) (6fe633f5)
+
+### Changed
+- merge(run-gate): resumable-gate wave (E-1) -- 23.4.0, rev 34 (2dfc45df)
+- merge(run-gate): E-5 Buildkite seams 2+4 -- pipeline generator from --list, bk-lane.sh trigger/collector, 72 network-free tests, REMOTE-LANES manual updated (c79d374b)
+- backlog(run-gate,assay): the progress/re-attach/unbounded-budget pattern as estate default -- RG-35..RG-37, B065..B067 (b57b2d12)
+
+### Documentation
+- docs(run-gate): renumber the wave's own RG-39/RG-40 -- real collision with main's RG-39 (f239001a)
+- docs(run-gate): RW-38 -- RW-37's fix shipped an incomplete diff, caught by re-verifying the gate myself (5857045c)
+- docs(run-gate): RG-39 exec-mutex review round 1 ACCEPT -- merge-ready, waiting on the wave to land first (62cd09ad)
+- docs(run-gate): RG-39 exec-mutex implementer verified, gate GREEN -- merge sequencing decided, review round dispatched (1f601fdd)
+- docs(run-gate): new backlog RG-39 (exec mutex) dispatched -- separate branch, plus a real ID-collision note for the wave's own merge (118f79a0)
+- docs(ciu): v8 design set rev 3.2 / SPEC-V8 draft.5 -- round-2 delta audit folded (T2-01..T2-10 + every incomplete/broke audit row), canonical lock keys + ciu lease, [ciu] inherit, ciu8 decision recorded; demo ciu.toml files re-included in git (v7 **/ciu.toml rule hid them); RG-39 annotated as buildable; nyxloom NL-6 filed (ccbc02bf)
+- docs(run-gate): round 3 NOT ACCEPT -- RW-37, RW-35 was wrong, fix-and-reverify (5c07b5c5)
+- docs(run-gate): resumable-gate wave -- review round 3 (verification-only): NOT ACCEPT, RW-35's ruling not implemented (a5b2834a)
+- docs(run-gate): correct RW-32 -- already implemented at 7fd45793, no addendum (5c2a77a0)
+- docs(run-gate): fix package 2 landed at 661fde05, gate GREEN -- RW-32..RW-36 ruled (718070ee)
+- docs(run-gate): fix round 2 -- gate verdicts and what was deliberately not done (661fde05)
+- docs(run-gate): RW-30, RW-31, RW-26 -- a dated measurement with its command, the N5 path, and RG-34 closed (2cb91b4e)
+- docs(run-gate): RG-39 -- no internal mutual exclusion around the container exec (1f312ab1)
+- docs(run-gate): E-5 merged (c79d374b); run-gate review round 2 NOT ACCEPT -- RW-27..RW-31 ruled, fresh fix implementer for package 2, round 3 verification-only (7fb0adde)
+- docs(run-gate): adversarial review round 2 -- NOT ACCEPT, 1 new blocker (4a7a490b)
+- docs(run-gate): E-5 review round 2 ACCEPT -- E5-R17..R19 (fold SF1 + nits before the merge); LANE-AUTHORING §5 quotes the generator's exact glob (477f80f9)
+- docs(run-gate): E-5 Buildkite seams 2+4 -- adversarial review round 2, ACCEPT (10dced36)
+- docs(run-gate): fix successor returned green at 21e6bbea, RW-23..RW-26, reviewer round 2 dispatched; E-5 E5-R16 landed at ef8396df, round 2 dispatched (740f43b4)
+- docs(run-gate): E-5 controller log -- E5-R14/R15 landed at d58f122b; E5-R16 bounds downloads by stall (59a2120f)
+- docs(run-gate): fix round 1 part 2 -- LOG + REPORT, the live two-client probe, RW-20..RW-22 as ruled (21e6bbea)
+- docs(run-gate): E-5 controller log -- round-1 fix package at 6dceaaf0 (65 tests); E5-R13..R15; curl timeouts follow-up then round 2 (4f23919d)
+- docs(run-gate): REMOTE-LANES §3/§4/§6 corrected after review round 1 (6dceaaf0)
+- docs(run-gate): E-5 review round 1 NOT ACCEPT -- E5-R7..R12 ruled; LANE-AUTHORING §5: remote-capable lanes keep artifacts under .assay/ (3f148522)
+- docs(run-gate): E-5 Buildkite seams 2+4 -- adversarial review round 1, NOT ACCEPT (31efccca)
+- docs(run-gate): E-5 controller log -- BK_QUEUE follow-up landed at 17077426, reviewer round 1 dispatched (7eb3beea)
+- docs(run-gate): E-5 controller log -- Buildkite seams 2 and 4 landed on feature/run-gate-buildkite-seams; E5-R1..R6; BK_QUEUE follow-up then review (1dfc07ae)
+- docs(run-gate): REMOTE-LANES §3/§4/§6 point at the real Buildkite tools (81ff037f)
+- docs(assay,run-gate): limits reset -- three implementers dispatched in parallel (assay gen 11, run-gate fix successor, E-5 Buildkite seams) (c4cdd5e9)
+- docs(run-gate): controller log -- the fix implementer's selftest verdict is quoted, not read; successor re-gates first (b30a900d)
+- docs(run-gate): resumable-gate wave -- fix implementer checkpointed at e87007cc (RW-13/14/16 landed, gate green); RW-20..RW-22; no successor dispatched (session limit) (d615cc2e)
+- docs(run-gate): fix round 1 -- LOG entry and continuation BRIEF 1 (E-008 cut) (e87007cc)
+- docs(run-gate): LANE-AUTHORING.md + REMOTE-LANES-BUILDKITE.md -- sibling guides to CONSUMERS; E-5 (remote/async lanes) recorded in the post-v10 wave plan (780f9a98)
+- docs(run-gate): resumable-gate wave -- reviewer round 1 NOT ACCEPT (2 blockers); RW-13..RW-19 ruled, fresh fix implementer dispatched (bdad6768)
+- docs(run-gate): adversarial review round 1 -- NOT ACCEPT, 2 blockers (be7d94b3)
+- docs(run-gate): resumable-gate wave -- follow-up package verified at 73e6b061, reviewer round 1 dispatched (70f676c4)
+- docs(run-gate): RG-40 filed (RW-9) and --fresh's conjunction shape documented (RW-10) (73e6b061)
+- docs(run-gate): resumable-gate wave -- implementer returned gate-green; controller log with RW-9..RW-12 (061fd861)
+- docs(run-gate): wave records for rev 34 + RG-39 (coverage_gate dirty-tree line numbers) (d4e8e137)
+- docs(run-gate): RG-34 addendum — second independent repro, broader scope (ff922ddd)
+- docs(run-gate,assay): run-gate resumable-gate wave dispatched (E-1: RG-35/36/32/34 -> 23.4.0); operator rulings D1-D7 accepted, F015 leaves Wave D (DA-R21) (dc6e88c4)
+- docs(run-gate,assay): RG-37/RG-38 id swap -- resume-state durability is RG-38, RG-37 is the ciu v8 session's container-derivation row (05e123d3)
+
+### Testing
+- test(run-gate): RW-29 -- cover the kernel that will not name the namespace (f4a46459)
+- test(run-gate): cover the owner-liveness and follow-path edges (diff-coverage floor) (450b3e22)
+
 ## [23.3.0] - 2026-09-02
 <!-- cmru: generated -->
 <!-- cmru: source-end=b36c6925d1d8ff8bf6fd4b74de8a5bd9f3855dbe -->
