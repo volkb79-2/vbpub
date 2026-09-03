@@ -936,8 +936,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     and exactly one of five things happens, each DISCLOSED by name (`R-05`)
     — silence here is what turns a surviving container into a duplicate:
     **running + same commit** → re-attach (`run-gate: re-attached to <name>
-    (started <t>, running for <m>m <s>s)`, then `docker logs -f --since
-    <started_at>` + `docker wait`); **exited + same commit** → collect
+    (started <t>, running for <m>m <s>s)`, then PLAIN `docker logs -f` +
+    `docker wait` — plain, because `logs -f` already replays the container's
+    log from its FIRST line before it follows, so a `--since` filter could
+    only ever SUBTRACT lines a reconnecting client is entitled to; and the
+    only stamp available to filter with is run-gate's own, taken after
+    `docker run -d` returned and truncated to whole seconds, so it would
+    subtract exactly the container's opening output); **exited + same
+    commit** → collect
     (`run-gate: collected <name> (exited <code> at <t>)`) and finish exactly
     as an attached run would; **gone** → say so, record that run as
     `aborted`, clear the record, run fresh; **a different commit** → refuse,

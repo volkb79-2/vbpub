@@ -125,7 +125,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     lane, git-ignore CHECKED over record + lock + temp, sibling lock +
     atomic rename).
   - A later invocation of the same lane **re-attaches** to a running
-    container (`docker logs -f --since <started_at>` + `docker wait`),
+    container (plain `docker logs -f` — which replays from the container's
+    first line — plus `docker wait`),
     **collects** an exited one and finishes exactly as an attached run
     would, **reports and clears** one the host lost (recording that run as
     `aborted`, never as a pass) and runs fresh, and **refuses (exit 2)** when

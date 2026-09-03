@@ -6090,6 +6090,16 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
             printf '%s|%s|2026-09-02T12:00:00Z|%s\\n' "$status" "$code" "$id"
             ;;
           logs)
+            # Real `docker logs` REPLAYS the container's whole log from its
+            # first line before it follows, so the shim emits an opening
+            # line every streaming client is entitled to see. `--since`
+            # DROPS it — that is the loss review round 1 (S1) found, and it
+            # is what makes the re-attach test red against the
+            # `--since <started_at>` implementation rev 34 first shipped.
+            case "$*" in
+              *--since*) ;;
+              *) echo "FAKE-FIRST-LINE" ;;
+            esac
             # Only the STREAMING form blocks. `docker logs <name>` is how
             # evidence is captured before removal, and a shim that blocked
             # there too would hang the very path a stall depends on.
@@ -6314,20 +6324,33 @@ class TestInflightRecordDecisions:
         assert lane_slot(proj)["latest"]["exit_code"] == 7
 
     def test_a_running_container_is_re_attached_not_re_run(
-            self, tmp_path, monkeypatch, capsys):
+            self, tmp_path, monkeypatch, capfd):
+        """RW-15 (review S1, hollow test 1). The assertion that matters is
+        the one a reconnecting operator can see: the container's FIRST line
+        is replayed. The old test pinned the literal argv
+        `["logs","-f","--since","2026-09-02T11:00:00Z","run-gate-planted"]`,
+        which is an implementation detail AND locks in the loss — an
+        implementation that drops the container's opening output passes it
+        unchanged. `capfd`, not `capsys`: the replay is written by the
+        `docker logs` SUBPROCESS to fd 1, which is precisely why an argv
+        assertion was reached for in the first place."""
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         plant_inflight(proj, repo, state, status="running", code=0)
         assert run_gate.main(["suite"]) == 0
-        out = capsys.readouterr().out
+        out = capfd.readouterr().out
         assert ("run-gate: re-attached to run-gate-planted (started "
                 "2026-09-02T11:00:00Z, running for 12m 34s)") in out
         assert "re-attach — no new container was started" in out
         assert lane_runs(log) == []
-        # `--since` the CONTAINER's start, so a reconnecting client sees the
-        # run from its beginning rather than only what happened after it
-        # arrived.
-        assert ["logs", "-f", "--since", "2026-09-02T11:00:00Z",
-                "run-gate-planted"] in _docker_calls(log)
+        # The replay begins at the container's FIRST line — the whole reason
+        # a re-attaching client streams logs at all. Plain `docker logs -f`
+        # replays from the beginning on its own; `--since` could only ever
+        # subtract, and the only stamp available to subtract with is this
+        # tool's own, taken after `docker run -d` returned.
+        assert "FAKE-FIRST-LINE" in out, out
+        assert "FAKE-LOGS-LINE" in out
+        assert "--since" not in " ".join(
+            part for call in _docker_calls(log) for part in call)
         assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
 
     def test_a_live_owners_container_is_followed_and_left_alone(
