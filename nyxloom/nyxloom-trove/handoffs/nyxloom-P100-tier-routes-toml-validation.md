@@ -17,6 +17,8 @@ scope:
     - "tests/test_lint.py"              # new TestL14TierRoutesToml class: positive fixture (a real routes.toml key), negative fixtures (the three real historical bad values from NL-2's own reproduction: implement-2, sonnet-xhigh, opus-xhigh), a nearest-match wording check, a missing-routes.toml warning case, and one test going through the ACTUAL `nyxloom lint <file>` CLI entry point (not lint_file() called directly) to prove L14 is really wired into the real command, not just reachable in isolation
     - "src/nyxloom/schemas/handoff-frontmatter.schema.json"  # no schema-shape change needed -- tier's existing "type":"string","pattern" stays exactly as is (see Scope/forbid); confirmed present in scope.touch only because the carve review must independently verify this file needs NO edit, not because it does
     - "tests/conftest.py"               # verify-only, no edit expected: read (not modified) for its sample_project fixture and paths.routes_path().write_text(...) pattern, the template every new L14 test must follow; listed because O2 cites it directly
+    - "nyxloom-trove/reports/nyxloom-P100-LOG.md"     # NEW: per-commit LOG per the estate's standard contract
+    - "nyxloom-trove/reports/nyxloom-P100-REPORT.md"  # NEW: per-oracle evidence, including O6's real-repo lint output verbatim (O6 cannot run inside the tester-unified container, so its proof lives here, not in a new automated test)
     - "nyxloom-trove/handoffs"           # directory sweep, verify-only: O6 lints every real file here at implementation time; already swept clean by the carver (P98/P99 archived) at freeze time, re-verified as part of this package's own Work item 4/O6, no edit expected unless escalate_if fires
     - "nyxloom-trove/archive"            # directory sweep, verify-only: the destination the carver already moved nyxloom-P98's and nyxloom-P99's handoff+LOG+REPORT+review files to (before this freeze) -- named here only so O6's premise ("both packages' handoffs are no longer in the live directory") is auditable against the real tree, not touched further by this package
   forbid:
@@ -24,29 +26,24 @@ scope:
 oracles:
   - id: O1
     observable: >-
-      `reference/AUTHORING.md` no longer contains the sentence "Only `implement-1` and
-      `implement-2` are deployed today" (`grep -c` for that exact phrase prints `0`), the Level 2
-      worked example's `tier:` line no longer prints a literal `implement-2` value (it uses an
-      angle-bracket placeholder matching the block's own convention, e.g. `tier: <a live key from
-      routes.toml>`), and the surrounding prose still clearly distinguishes `contract_class` (a
-      body-recorded authoring/review classification, from the 2a-2e ladder) from `tier`
-      (frontmatter, must be a literal live `routes.toml` key) -- i.e. the fix is a correction, not
-      a deletion that leaves the ladder table's own purpose unstated. Additionally, `grep -ciE`
-      for the pattern `(only|still).{0,20}(implement-1|implement-2).{0,40}(deployed|live|today)`
-      across the whole file prints `0` -- this widens the check beyond one exact sentence to the
-      whole FAMILY of same-meaning claims (word order, tense, or synonym changes must not evade
-      it), and no NEW sentence anywhere in the file asserts a specific closed list of "current"
-      tier names in prose (the only permitted way to refer to valid tiers is the live-`routes.toml`
-      indirection language already used elsewhere in the doc).
+      `reference/AUTHORING.md` contains, VERBATIM (a plain fixed-string `grep -F`, not a regex --
+      Work item 1 pins the exact replacement text precisely so this check does not need to guess
+      at paraphrase), the full replacement paragraph Work item 1 specifies (the one starting "The
+      table above names the PLANNED tier..."). Separately, `grep -c` for the literal string "are
+      deployed today" prints `0` (the old sentence, or anything reusing its exact closing clause,
+      is gone). The Level 2 worked example's `tier:` line no longer prints a literal `implement-2`
+      value (it uses an angle-bracket placeholder matching the block's own convention, e.g.
+      `tier: <a live key from routes.toml>`).
     negative: >-
-      Deleting the false sentence without replacing it with an accurate one (leaving the
-      contract_class/tier distinction unstated) fails this oracle -- silence is not the same as a
-      correction. Changing the worked example's literal value to a DIFFERENT hardcoded real key
-      (e.g. `tier: sonnet5-high`) instead of a placeholder also fails this oracle: NL-3's own
-      lesson applies here too -- a literal current value drifts the exact way `implement-2` did,
-      one level later. A same-meaning paraphrase of the banned sentence (e.g. "`implement-1` and
-      `implement-2` remain the only bands live today") also fails this oracle -- the regex check
-      exists precisely because a bare exact-string `grep` does not catch this.
+      Any deviation from Work item 1's pinned replacement text (missing sentences, reordered
+      clauses, a paraphrase that conveys the same meaning in different words) fails the verbatim
+      check -- that is the point of pinning exact text instead of trying to regex-detect every
+      possible bad paraphrase, which the first carve-review round on this package found both
+      evadable by real paraphrases and prone to false positives on legitimately correct prose,
+      because a fixed-window keyword match cannot carry semantic polarity. Changing the worked example's
+      literal value to a DIFFERENT hardcoded real key (e.g. `tier: sonnet5-high`) instead of a
+      placeholder also fails this oracle: NL-3's own lesson applies here too -- a literal current
+      value drifts the exact way `implement-2` did, one level later.
     gate: tester-unified
   - id: O2
     observable: >-
@@ -125,23 +122,37 @@ oracles:
     gate: tester-unified
   - id: O6
     observable: >-
-      Immediately before this package's own gate run is treated as final (i.e. as the last step of
-      Work item 5, after L14 itself is implemented and before claiming done): `nyxloom lint`
-      against every file currently in `nyxloom-trove/handoffs/*.md` on the tree at that moment
-      (this handoff's own file included) produces no L14 finding. As of this carve
-      (`input_revision`), the carver has already archived nyxloom-P98's and nyxloom-P99's
-      handoffs (moved to `nyxloom-trove/archive/`, outside `handoff_globs`, per their own completed
-      merges) specifically because both declared the same invalid `tier: implement-2` this
-      package's own frontmatter also carried until this repair -- this oracle both confirms that
-      cleanup held and guards against a NEW handoff appearing in the live directory with an invalid
-      tier between carve and dispatch (a real risk under concurrent package development, not
-      hypothetical).
+      Run DIRECTLY ON THE WORKTREE'S OWN FILESYSTEM (the implementer/reviewer's own shell,
+      `python3 -m nyxloom.cli lint` or equivalent invoked from the worktree root -- NOT as a new
+      pytest test inside the `tester-unified` gate container, and NOT asserted as part of that
+      container's automated suite). This is necessary, not a style choice: `Routes.load()` reads
+      `paths.routes_path()`, which resolves to a path under the OPERATOR's real `$XDG_STATE_HOME`
+      on the host -- the `tester-unified` container does not mount it, so this check cannot run
+      inside that container at all. Immediately before this package's own gate run is treated as
+      final (i.e. as the last step of Work item 5, after L14 itself is implemented and before
+      claiming done): `nyxloom lint` against every file currently in `nyxloom-trove/handoffs/*.md`
+      on the worktree's tree at that moment (this handoff's own file included) produces no L14
+      finding. Capture the exact command and its full output verbatim in
+      `nyxloom-trove/reports/nyxloom-P100-REPORT.md` as evidence -- this oracle's proof lives in
+      the REPORT, not in a new automated test, because the check's own precondition (a real,
+      operator-scoped `routes.toml`) cannot be reproduced inside the containerized gate the other
+      oracles run in. As of this carve (`input_revision`), the carver has already archived
+      nyxloom-P98's and nyxloom-P99's handoffs (moved to `nyxloom-trove/archive/`, outside
+      `handoff_globs`, per their own completed merges) specifically because both declared the same
+      invalid `tier: implement-2` this package's own frontmatter also carried until this repair --
+      this oracle both confirms that cleanup held and guards against a NEW handoff appearing in the
+      live directory with an invalid tier between carve and dispatch (a real risk under concurrent
+      package development, not hypothetical).
     negative: >-
       Skipping this check because "the sweep was already done at carve time" fails this oracle --
       the whole point is re-verifying at implementation time, since other handoffs can appear in
-      the live directory after the carve freezes and before this package's own gate run. If any
-      OTHER handoff in that directory fails L14 when this check runs, that is `escalate_if`-worthy
-      (see below), not something to silently fix by editing a file outside `scope.touch`.
+      the live directory after the carve freezes and before this package's own gate run. Attempting
+      to run this check INSIDE the `tester-unified` container (e.g. as a new pytest test) also
+      fails this oracle even if the implementer works around the missing mount somehow (a fake/
+      injected routes.toml inside the container is not the real check) -- this must run against the
+      real host-scoped `routes.toml` on the worktree's own filesystem. If any OTHER handoff in that
+      directory fails L14 when this check runs, that is `escalate_if`-worthy (see below), not
+      something to silently fix by editing a file outside `scope.touch`.
     gate: tester-unified
 gates: [tester-unified]
 escalate_if:
@@ -240,26 +251,37 @@ a contract item.
 
 ## Work
 
-1. **Fix AUTHORING.md's false "deployed today" claim and the stale worked
-   example.** Replace the paragraph at lines ~88-93 (currently: "Only
-   `implement-1` and `implement-2` are deployed today. Until the
-   remaining bands exist, `contract_class` is an authoring/review
-   classification recorded in the body, while frontmatter `tier` names a
-   live route. Do not put a nonexistent tier in frontmatter...") with text
-   that keeps the true, useful parts (contract_class lives in the body;
-   tier in frontmatter must name a live route; do not put a nonexistent
-   tier in frontmatter) but removes the false claim that `implement-1`/
-   `implement-2` are themselves live `routes.toml` keys today — they are
-   not, and have never been (confirmed: the live matrix's actual keys as
-   of this carve are `flash-high`, `flash-max`, `terra-med`, `luna-high`,
-   `sonnet5-high`, `frontier-review`, `haiku-low`, `free-high`; the
-   `implement-N` names are a PLANNED future renaming, not a current
-   routing key, per `routes.toml`'s own comment: "Destined for the
-   `implement-2` tier once B16 ... lands"). State plainly that the
-   2a-2e/`implement-N` table names where each contract class is
-   *intended* to route once that renaming lands, and that a carver must
-   always pick tier from the CURRENT live `routes.toml` regardless of
-   what name a future band will eventually carry.
+1. **Fix AUTHORING.md's false "deployed today" claim.** Replace the
+   paragraph at lines ~88-93 (currently: "Only `implement-1` and
+   `implement-2` are deployed today. Until the remaining bands exist,
+   `contract_class` is an authoring/review classification recorded in the
+   body, while frontmatter `tier` names a live route. Do not put a
+   nonexistent tier in frontmatter...") with EXACTLY this text, verbatim,
+   no rewording (pinned to make O1 a plain substring check — this
+   package's earlier oracle draft tried to catch every possible
+   paraphrase of the false claim with a regex and failed both ways, see
+   the fix-verification report; fixing the WORDING itself, not just
+   banning bad wording, is what actually closes it):
+
+   > The table above names the PLANNED tier each contract class is
+   > intended to route through once the remaining implementer bands
+   > exist — it is not itself a claim about what `routes.toml` declares
+   > today. `contract_class` (2a-2e) is an authoring/review
+   > classification recorded in the body; frontmatter `tier` is a
+   > different thing entirely: it must always be a literal key that
+   > exists in the CURRENT live `routes.toml`, chosen for the capability
+   > the assigned contract class needs, regardless of what name a future
+   > band will eventually carry. Do not put a nonexistent tier in
+   > frontmatter. Routing a `2a`-`2c` package through a live tier whose
+   > capability is below what the class needs requires an explicit
+   > human/controller override; preferably carve it down first.
+
+   (Confirmed accurate at carve time: the live matrix's actual keys are
+   `flash-high`, `flash-max`, `terra-med`, `luna-high`, `sonnet5-high`,
+   `frontier-review`, `haiku-low`, `free-high`; `implement-N` is a
+   PLANNED future renaming per `routes.toml`'s own comment — "Destined
+   for the `implement-2` tier once B16 ... lands" — not a current
+   routing key.)
 2. **Fix the worked example's literal `tier: implement-2`** (~line 390)
    to an angle-bracket placeholder consistent with every other value in
    that same YAML block (e.g. `tier: <a live key from routes.toml>` —
@@ -302,11 +324,14 @@ a contract item.
      `TestL10Size` fixture's handoff and confirm its L10 finding is still
      present alongside L14's WARNING).
    - O5: the two-write, same-process re-lint proving no caching.
-   - O6: after all of the above pass, lint every file currently in
-     `nyxloom-trove/handoffs/*.md` (the real directory, not a test
-     fixture) and confirm none produces an L14 finding — this is a
-     one-time real-repo check, not a new automated test, run and recorded
-     in the REPORT as evidence (see LOG/REPORT contract).
+   - O6: after all of the above pass, on the worktree's own filesystem
+     directly (never inside the `tester-unified` container, which does
+     not mount the operator's real `routes.toml` — see O6's own text),
+     lint every file currently in `nyxloom-trove/handoffs/*.md` (the real
+     directory, not a test fixture) and confirm none produces an L14
+     finding — a one-time real-repo check, not a new automated test, run
+     and recorded verbatim in the REPORT as evidence (see LOG/REPORT
+     contract).
 
 ## Implementation packet (normative)
 
@@ -339,13 +364,19 @@ historical bad values with a helpful message. O4 → fail-soft on missing
 data, doesn't break the rest of lint. O5 → no caching, genuinely
 live-reads the file.
 
-**Degrees of freedom left to the implementer:** the exact wording of the
-AUTHORING.md replacement paragraph and the placeholder text (must satisfy
-O1's requirements, wording is free); the exact `LintFinding.message`
-text for L14 (must name the bad value and, when applicable, nearest
-matches, per O3 — exact phrasing is free); whether `_check_l14` is
-implemented as one function or delegates to a small private helper for
-the `difflib` lookup (either is fine, no test distinguishes them).
+**Degrees of freedom left to the implementer:** the AUTHORING.md
+replacement paragraph's wording is NOT free — Work item 1 pins it
+verbatim, and O1 checks for its exact presence (a lesson from this
+package's own first carve-review round: an open-ended "wording is free,
+just don't say the false thing" instruction is exactly what made the
+first O1 draft unenforceable). The worked example's placeholder text (the
+`tier:` line's replacement value) IS free, as long as it's an
+angle-bracket placeholder, not a second literal. The exact
+`LintFinding.message` text for L14 is free (must name the bad value and,
+when applicable, nearest matches, per O3 — exact phrasing is free);
+whether `_check_l14` is implemented as one function or delegates to a
+small private helper for the `difflib` lookup is free (either is fine, no
+test distinguishes them).
 
 ## Scope / forbid
 
