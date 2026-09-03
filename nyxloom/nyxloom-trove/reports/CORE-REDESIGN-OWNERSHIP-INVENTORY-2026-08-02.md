@@ -53,6 +53,16 @@ its own tolerance today) and trimmed its responsibility text's gate-verify-
 cadence clause for the same reason -- the rule itself is deleted, not
 merely resized.
 
+Re-measured 2026-09-03 (nyxloom-P100) for `lint.py`'s row: 1,112 -> 1,262
+lines. NL-2's new L14 rule (`_check_l14`, validating a handoff's
+frontmatter `tier` against the live `routes.toml`, called from
+`lint_file` immediately after L13) is a new lint check, not a CR-01
+redesign edit -- the row's package ownership and responsibility text
+(`CR-01: document-truth contradiction rule is a standing gate, not a
+cleanup script`) are unchanged and still accurate. No other row is
+affected: `reference/AUTHORING.md` and `tests/test_lint.py` (this
+package's other touched files) have no row in this document.
+
 ## Mechanical contract (enforced by `tests/test_core_characterization.py`)
 
 This document is checked by tests, so a reader editing it knows what fails and
@@ -116,7 +126,7 @@ why. The rules are deliberately structural, never line-exact:
 | `src/nyxloom/exception_census.py` | 256 | CR-02b (added 2026-08-03): the broad-exception classification vocabulary, the structural fan-in derivation, and the per-module legacy budget. Pure AST reads; imports nothing from the package. Every other CR package interacts with it in ONE direction only -- by lowering its own module's budget as it classifies or retires handlers. Raising a budget is a review-rejectable change, not a merge conflict resolution |
 | `src/nyxloom/snapshot.py` | 580 | CR-02 (added 2026-08-03): the typed snapshot-input vocabulary and the authoritative/advisory fan-in. Pure -- it imports no other package module and reads nothing. Owned by CR-02 alone; the later handler-registry and planning-rule packages CONSUME its `SnapshotAudit` (carried on `ReconcileInput`) instead of re-deriving authority classification per call site, which is a dependency on this surface, not shared ownership of it |
 | `src/nyxloom/config.py` | 1,003 | CR-01, CR-08, CR-13b: instance configuration remains a boundary; workflow documents do not become arbitrary code. CR-08 Slice 2a (2026-08-04) added `healthy_routes`, the one shared pure predicate replacing four independently hand-written "healthy route" filters, plus the earlier route-resolution fix (`for_tier`/`for_role` never raise). CR-08 Slice 3a (2026-08-04) added `select_route`/`SelectionResult`, a typed explanation wrapper around `healthy_routes(...)[0]`, scoped to implement-dispatch only and not yet wired into any real dispatch site |
-| `src/nyxloom/lint.py` | 1,112 | CR-01: document-truth contradiction rule is a standing gate, not a cleanup script |
+| `src/nyxloom/lint.py` | 1,262 | CR-01: document-truth contradiction rule is a standing gate, not a cleanup script |
 | `src/nyxloom/doctor.py` | 855 | CR-02, CR-04, CR-16 (re-measured 2026-08-04, decision_hold-unresolved follow-up): authority/snapshot and liveness fault reporting. CR-16 adds `liveness_findings` -- reconcile-deadman, tick-error-streak, notify-transport-unreachable -- folded into `doctor_project`'s sweep and separately callable for `nyxloom doctor --liveness`'s fast healthcheck path. 2026-08-04 adds check 12 (`decision-hold-unresolved`): flags a `NEEDS_DECISION` task with no declared D-dep at all -- the reject_triage human-judgment-escalation shape the `decision_hold` release-blindness fix now correctly leaves parked, previously visible only by pull (dashboard/status/digest) |
 | `src/nyxloom/notify.py` | 532 | CR-16 (re-measured 2026-08-03): health alarms need an independent escape path, not only this transport. Adds `probe_transport` -- an active reachability probe distinct from `send()`, never publishing a real notification -- that `doctor.liveness_findings` drives as the second, transport-independent alarm path |
 | `src/nyxloom/leases.py` | 114 | CR-05: injected effect port; no effector may reach through `Daemon` for lease state |
