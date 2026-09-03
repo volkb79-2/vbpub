@@ -1,4 +1,4 @@
-"""Carve-quality lint, rules L1-L13 (SPEC docs/SPEC.md §6). PACKAGE P01.
+"""Carve-quality lint, rules L1-L14 (SPEC docs/SPEC.md §6). PACKAGE P01.
 
 INTERFACE CONTRACT (frozen):
 
@@ -138,6 +138,7 @@ S5  error   uniqueness: within a single spine doc, the `id`s of its own
 
 from __future__ import annotations
 
+import difflib
 import fnmatch
 import importlib.resources
 import json
@@ -149,7 +150,7 @@ from pathlib import Path
 import jsonschema
 
 from . import backlog_entries, backlog_items, doc_lifecycle, frontmatter, paths
-from .config import ProjectConfig
+from .config import ProjectConfig, Routes
 from .log import get_logger
 from .types import LintFinding, utc_now
 
@@ -216,6 +217,9 @@ def lint_file(path: Path, cfg: ProjectConfig) -> list[LintFinding]:
 
     # L13: Every oracle-referenced path is covered by scope.touch
     _check_l13(findings, path, fm)
+
+    # L14: fm.tier must resolve against the live routes.toml
+    _check_l14(findings, path, fm)
 
     # Sort findings by rule then line
     findings.sort(key=lambda f: (f.rule, f.line or 9999))
@@ -1209,3 +1213,47 @@ def _check_l13(findings: list[LintFinding], path: Path, fm) -> None:
                                 f"not covered by scope.touch",
                         path=str(path)
                     ))
+
+
+# ----- L14 (NL-2: fm.tier must resolve against the live routes.toml) -----
+
+def _check_l14(findings: list[LintFinding], path: Path, fm) -> None:
+    """Check: frontmatter `tier` names a key that actually exists in the
+    CURRENT `routes.toml` -- read fresh on every call (`Routes.load()` has
+    no caching, and this rule must not add any; see NL-2/nyxloom-P100).
+
+    `contract_class` (2a-2e, in the body) is a different vocabulary from
+    `tier` (frontmatter, a routing key) -- this rule only ever validates
+    the latter, and only against the live file, never a hardcoded
+    allowlist/blocklist of "known" tier names (that would silently
+    reintroduce NL-2's own root cause one level down).
+
+    A missing or unparseable `routes.toml` is a "can't determine" case, not
+    a "found a defect" case -- catch broadly (the file may not exist yet in
+    an environment that hasn't run onboarding, or may be mid-edit) and
+    report a WARNING rather than raising, so L1-L13's other findings for
+    this file are never lost to an uncaught exception here.
+    """
+    try:
+        routes = Routes.load()
+    except Exception as exc:
+        findings.append(LintFinding(
+            rule="L14",
+            severity="warning",
+            message=f"tier could not be validated: routes.toml unavailable "
+                    f"({type(exc).__name__}: {exc})",
+            path=str(path)
+        ))
+        return
+
+    if fm.tier not in routes.tiers:
+        suggestions = difflib.get_close_matches(fm.tier, routes.tiers.keys(), n=3)
+        message = f"tier '{fm.tier}' is not a key in the live routes.toml"
+        if suggestions:
+            message += f" -- nearest: {', '.join(suggestions)}"
+        findings.append(LintFinding(
+            rule="L14",
+            severity="error",
+            message=message,
+            path=str(path)
+        ))
