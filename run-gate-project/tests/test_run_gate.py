@@ -6451,6 +6451,42 @@ class TestInflightRecordDecisions:
         # not the follower's to record: the owner writes the one entry
         assert not (proj / ".run-gate" / "history.json").exists()
 
+    def test_a_follower_that_outlives_its_owner_leaves_no_orphan(
+            self, tmp_path, monkeypatch, capsys):
+        """RW-28 through main() — the reviewer's follower-outlives-owner
+        probe, whose three lines were `containers still present: [...]`,
+        `inflight record still present: True`, `history: none`. A follower
+        reported the true exit code and left a finished container squatting
+        the host's one gate slot with nothing on disk saying the run had
+        happened.
+
+        The owner's liveness is the fact that CHANGES here, so it is the one
+        the fixture drives: alive when this client decides to follow, gone by
+        the time the container finishes. Everything asserted below is the
+        shipped behaviour — the disclosure, the `rm`, the cleared record and
+        the single history entry carrying the container's own start."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, status="running", code=0,
+                                **live_owner_fields())
+        answers = iter([os.getpid()])          # alive once, then gone
+        monkeypatch.setattr(run_gate, "live_owner_pid",
+                            lambda pending: next(answers, None))
+        assert run_gate.main(["suite"]) == 0
+        out = capsys.readouterr().out
+        assert f"run-gate: following run-gate-planted (owner pid " in out
+        assert (f"run-gate: the owning client (pid {os.getpid()}) is gone; "
+                f"this client is finishing its cleanup") in out, out
+        assert [c for c in _docker_calls(log) if c[0] == "rm"] == \
+            [["rm", "-f", "run-gate-planted"]], _docker_calls(log)
+        assert not record.exists()
+        # ONE entry, with the CONTAINER's start (planted 754 s ago), not the
+        # four seconds this client was attached to it (RW-3).
+        slot = lane_slot(proj)
+        assert len(slot["history"]) == 1, slot
+        assert slot["latest"]["outcome"] == "pass"
+        assert slot["latest"]["exit_code"] == 0
+        assert 754 <= slot["latest"]["duration_seconds"] < 900
+
     def test_a_record_from_another_namespace_is_followed_and_says_why(
             self, tmp_path, monkeypatch, capsys):
         """RW-29 through main(). The pid in this record resolves to nothing
@@ -7829,14 +7865,94 @@ class TestOwnerLivenessAndFollowEdges:
     def test_this_process_is_its_own_live_owner_in_its_own_namespace(self):
         assert run_gate.live_owner_pid(live_owner_fields()) == os.getpid()
 
-    def _follow(self, tmp_path, monkeypatch, body):
+    def _follow(self, tmp_path, monkeypatch, body, **kw):
         fake_docker(tmp_path, monkeypatch)
         shim = shim_dir_of(monkeypatch) / "docker"
         shim.write_text(body)
         shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
         return run_gate.follow_container(str(shim), "run-gate-x",
                                          {"kind": "command"}, "suite",
-                                         tmp_path, tmp_path)
+                                         tmp_path, tmp_path, **kw)
+
+    def _dead_owner_record(self, tmp_path, container="run-gate-x") -> Path:
+        """An inflight record whose owner does NOT exist — the state the
+        follower finds when the client it was following was killed."""
+        path = run_gate.inflight_path(tmp_path, "suite")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(
+            {"schema": 1, "lane": "suite", "container": container,
+             "started_at": "2026-09-02T11:00:00Z",
+             "started_epoch": time.time() - 754,
+             "owner_pid": 2 ** 22 + 1, "owner_start": 987654321,
+             "boot_id": run_gate.boot_id(),
+             "pid_ns": run_gate.pid_ns_inode()}))
+        return path
+
+    def test_a_follower_whose_owner_died_promotes_itself_and_cleans_up(
+            self, tmp_path, monkeypatch, capsys):
+        """RW-28 (review round 2, G2). The follower is told, correctly, that
+        the owner does all three duties — and nothing re-checked that the
+        owner was still there when the run ENDED. A follower that outlived
+        its owner reported the true exit code and then left a finished
+        container squatting the host's one gate slot, a record pointing at
+        it, and NO history entry at all for a run that completed. It does
+        self-heal on the next invocation of the lane, but the self-heal is
+        the next run, and until then `history` shows the run as never having
+        happened.
+
+        So: after `docker wait` returns, re-read the record and the owner's
+        liveness. Owner gone → promote, and say so by name."""
+        record = self._dead_owner_record(tmp_path)
+        calls = tmp_path / "calls"
+        code = self._follow(
+            tmp_path, monkeypatch,
+            f'#!/bin/sh\necho "$@" >> {calls}\n'
+            f'case $1 in wait) echo 0;; esac\nexit 0\n')
+        assert code == 0
+        out = capsys.readouterr().out
+        assert (f"run-gate: the owning client (pid {2 ** 22 + 1}) is gone; "
+                f"this client is finishing its cleanup") in out, out
+        assert "rm -f run-gate-x" in calls.read_text(), calls.read_text()
+        assert not record.exists()
+
+    def test_a_follower_whose_owner_is_still_there_still_touches_nothing(
+            self, tmp_path, monkeypatch, capsys):
+        """The other half of RW-28: promotion is conditional on the owner
+        being GONE, re-read at the end. A live owner keeps all three duties,
+        which is `R-39e` unchanged."""
+        record = run_gate.inflight_path(tmp_path, "suite")
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps(
+            {"schema": 1, "lane": "suite", "container": "run-gate-x",
+             "started_at": "2026-09-02T11:00:00Z", **live_owner_fields()}))
+        calls = tmp_path / "calls"
+        code = self._follow(
+            tmp_path, monkeypatch,
+            f'#!/bin/sh\necho "$@" >> {calls}\n'
+            f'case $1 in wait) echo 0;; esac\nexit 0\n')
+        assert code == 0
+        assert "is gone" not in capsys.readouterr().out
+        assert "rm" not in calls.read_text()
+        assert record.exists()
+
+    def test_a_promoted_follower_preserves_a_failing_containers_evidence(
+            self, tmp_path, monkeypatch, capsys):
+        """`rm -f` destroys the logs, and the owner that would have saved
+        them first is gone. A promotion that skipped this would be WORSE
+        than the next-invocation self-heal it replaces, which collects the
+        exited container and saves them (R-26)."""
+        monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
+        self._dead_owner_record(tmp_path)
+        code = self._follow(tmp_path, monkeypatch,
+                            "#!/bin/sh\ncase $1 in wait) echo 7;; "
+                            "logs) echo CONTAINER-EVIDENCE;; esac\nexit 0\n")
+        assert code == 7
+        out = capsys.readouterr().out
+        assert "run-gate: lane 'suite' failed with exit 7" in out, out
+        assert "the owning client preserves the evidence" not in out, out
+        assert "full container logs preserved at" in out, out
+        assert "CONTAINER-EVIDENCE" in (tmp_path / "ev" /
+                                        "run-gate-x.log").read_text()
 
     def test_a_follower_that_cannot_read_the_status_touches_nothing(
             self, tmp_path, monkeypatch):

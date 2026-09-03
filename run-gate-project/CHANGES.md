@@ -168,6 +168,14 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     all three stay with the owner, so the run is still recorded exactly once.
     `--fresh` against a live owner is refused by pid; run-gate never removes
     another client's container. A DEAD owner is adopted exactly as above.
+    If the owner dies WHILE it is being followed, the follower is
+    **promoted** when the run ends — the record and the owner's liveness are
+    re-read after `docker wait` returns, and a follower that finds itself
+    alone removes the container (preserving the failing container's evidence
+    first), clears the record and writes the one history entry with the exit
+    code it holds, saying so by name. Without it a finished container squats
+    the host's one gate slot until the lane is next invoked, and `history`
+    shows a completed run as never having happened.
     The one state where a live owner's container is ALREADY gone is the
     owner's own `rm -f` → clear-the-record window, microseconds wide, so the
     decision is re-read three times over about a second before any refusal:

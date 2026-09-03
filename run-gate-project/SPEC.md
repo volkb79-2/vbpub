@@ -1097,6 +1097,23 @@ disagree, §8 amendments win, then README, then CONSUMERS.
       from here would be a second result for one run. Bounded, never a wait
       loop — an owner genuinely wedged between those two statements must
       still produce the refusal.
+    - **Owner dies WHILE being followed → the follower is PROMOTED.** The
+      three duties are re-decided on a fresh read of the record and of the
+      owner's liveness AFTER `docker wait` returns, not assumed from the
+      decision taken at the start. If the owner is gone, this client does
+      them: `docker rm -f`, clear the record, and write the ONE history entry
+      `R-39c` promises, with the exit code it is holding and the CONTAINER's
+      start (`R-39c`'s duration rule, unchanged). Evidence is preserved first
+      when the run failed (`R-26`) — `rm -f` destroys the logs and the
+      client that would have saved them is no longer here. The promotion is
+      disclosed BY NAME ("the owning client (pid N) is gone; this client is
+      finishing its cleanup"), because a follower that suddenly removes a
+      container it announced it would not touch owes the reason, and because
+      the failure line it prints changes owner with it. Without this the
+      lane still self-heals — the next invocation collects the exited
+      container and records it — but that is the NEXT run: until then a
+      finished container squats the host's one gate slot, its record points
+      at it, and `history` shows a completed run as never having happened.
     - **Owner dead** (or a record from before rev 34, which names no owner)
       → `R-39b` unchanged: re-attach, collect, report-and-clear, or refuse on
       a commit mismatch. "After its client dies" is now literally what the
