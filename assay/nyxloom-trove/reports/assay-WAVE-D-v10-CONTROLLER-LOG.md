@@ -942,3 +942,59 @@ precedent for shape and discipline.
     told about N-1** (or the earlier session-limit checkpoint reminder,
     which also went to R-2 by the same mistake) — messaged directly right
     after this log entry, no new agent dispatched.
+
+- **2026-09-03 (GENERATION 13 VERIFIED — B004 complete, WAVE D
+  IMPLEMENTATION DONE; gate GREEN on `d9fc22eb`; DA-R34; R-2 round 2 +
+  run-gate RW-37 both fanned out, operator: "fresh session, feel free to
+  fan out work again")** — Verified independently from `gate-gen13.log`
+  in a separate step: `GATE_EXIT=0` exactly once, one
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, zero `FAILED|DIRTY_TREE|Traceback`,
+  all twelve `ASSAY_GATE_PHASE` markers present including
+  `verdict-v10-successors-verified`, wheel `assay-4.1.1.dev45+gd9fc22eb`
+  carrying the judged commit; `git log main..HEAD` confirms exactly ONE
+  `!` commit (`b2fd09f3`, unchanged); tree clean. `d9fc22eb` (A-442, 17
+  files, 1762 insertions): `src/assay/adjudication.py` (new,
+  `evaluate_provenance` total/never-raises), `vocabulary.ADJUDICATED_EVIDENCE_KEYS`
+  as the shared leaf import (avoiding a real `config↔adjudication↔verdict`
+  cycle), `config.py`'s per-source `attestation_dir`/`adjudication_dir`
+  rule, `cli.py`'s F4-compliant split/dispatch/merge producer (a mixed
+  attested+adjudicated lane's declared order preserved through a
+  `{identity: Evidence}` merge, one atomic timeout wrapping both loaders),
+  the conformance tripwire's `EXCLUDED_ENTIRELY` entry DISCHARGED (not
+  merely disarmed — a real fixture,
+  `evidence_adjudicated_unverified.json`, plus a separate real-pipeline
+  integration test), docs corrected (README/DESIGN-GUIDE's "invokes" was
+  falsified by this integration, B004's own migration-notes subsection
+  amended from "reserved" to "live in this release"). One recorded
+  deviation from the carve's own W3 text (config.py/attestation.py's
+  documented "independent readers, neither trusts the other" anti-sharing
+  comment predates and overrides the carve's "promote to a shared
+  validator" suggestion — a third copy in `adjudication.py`, not a shared
+  one across that boundary, following the generation-12 lesson: follow
+  the ruling's argument over its stale mechanics). `0c6863ff` records
+  only. R-2's `78a786fc` confirmed non-overlapping beneath it. **A-443
+  landed exactly as directed — an APPENDED correction row, A-430 left
+  untouched** (independently confirmed: `decisions.md`'s tail carries
+  A-443 verbatim, naming R-2's finding). No checkpoint BRIEF — B004
+  reached actual completion within budget. Ids used: A-442/A-443; next
+  free **A-444 / B071**.
+  - **DA-R34: generation 13's work CONFIRMED complete and sound; all
+    eight of Wave D's post-cut items are now shipped.** Nothing of B004's
+    own scope remains open. Three points the generation itself flagged
+    for a reviewer to push on (an import-cycle finding, the W3
+    validator-sharing deviation above, and — per its REPORT — a third the
+    controller has not yet read in full) are left for R-2's round 2
+    rather than pre-judged here.
+  - **R-2 round 2 dispatched** (resuming R-2's own session, round 2 of the
+    3-round cap) against `2128e464..0c6863ff` — R-2's own round-1 tip
+    through generation 13's completion, i.e. SF-1's fix plus the entire
+    B004 carve, the one item explicitly out of round 1's range (DA-R28).
+    Told DA-R32/DA-R33/DA-R34, the three self-flagged push-points in
+    generation 13's REPORT, and that this is the LAST implementation item
+    in the wave — a round-2 ACCEPT clears the path to merge + release
+    5.0.0.
+  - **In parallel, run-gate's RW-37 fix is picked up fresh** (its prior
+    implementer is no longer resumable — the operator's "fresh session"
+    signal). The fix itself was already complete and red-first-verified
+    as uncommitted worktree state; a fresh implementer verifies, finishes
+    and commits it. See the run-gate controller log for that ruling.
