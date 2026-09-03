@@ -609,3 +609,40 @@ controller's entries from the implementer's return onward; wave records
   documented above and in the resume memory) BEFORE merging, then
   merge `--no-ff`, push, `cmru release --project run-gate-project
   --set-version 23.4.0`.
+
+- **2026-09-03 (WAVE SHIPPED — merged, released, deployed; 23.4.0,
+  rev 34)** — Renumbering committed (`f239001a`), verified: zero
+  remaining `RG-39` references, gate still GREEN (`556 passed, 2
+  skipped`, `diff-coverage OK 496/496`, `exit 0`) on the docs-only
+  change. Merged `--no-ff` to main as `2dfc45df`. Post-merge, re-verified
+  the merged tip in an ISOLATED throwaway worktree (never the shared
+  main checkout, which had an unrelated concurrent agent's in-progress
+  `ciu8/` bootstrap sitting alongside it as untracked content — that
+  directory is picked up by `TestPointerLinkageEstate`'s estate-wide
+  `glob("*/nyxloom-trove/nyxloom.toml")` scan and made the SAME selftest
+  fail with one FAILED test when run from the shared checkout; confirmed
+  this is pure timing interference, not a wave defect, by reading the
+  test's own fixture code and by running clean in the isolated worktree):
+  `628 passed, 2 skipped`, `diff-coverage OK 0/0`, `exit 0`. Pushed.
+  `cmru release --project run-gate-project --set-version 23.4.0
+  --allow-uncommitted` (untracked files elsewhere in the checkout, none
+  in `run-gate-project/`) run detached with a Monitor: selftest gate
+  succeeded in the release's own isolated worktree, tagged
+  `run-gate-v23.4.0`, wheel built and published, local main synced.
+  **Found + fixed the SAME recurring gap this project's own CHANGES.md
+  already documents in its housekeeping comment** (recurred twice before,
+  2026-09-01): cmru's generator writes the new `[23.4.0]` dated section
+  from the commit range but does not clear the hand-written
+  `[Unreleased]` block itself — 240 lines of already-shipped RG-32/34/35/36
+  content were still sitting under `[Unreleased]`, which would have
+  republished them as unreleased on the next cycle. Cleared by hand
+  (`cd750c0d`), leaving the header, the generator pointer comment, and
+  the housekeeping note itself (the next release still needs this same
+  manual step — cmru will not do it). Devcontainer deployed:
+  `pip install --upgrade` from the GitHub release asset URL (PyPI has no
+  index for this private tool; provenance confirmed via
+  `direct_url.json`), `pip show run-gate` now reads `23.4.0`.
+  **Wave CLOSED.** Next: merge `fix/run-gate-exec-mutex-rg39` second
+  (renumber `__revision__` 34→35), then file the RG-42..48 backlog batch
+  (was RG-41..47 before this wave's own RG-39/40 renumbering shifted
+  everything by one).
