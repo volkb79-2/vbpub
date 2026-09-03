@@ -1719,3 +1719,129 @@ this lands the code that fills it.
 - Ids: **A-439** allocated (next free **A-440**); no B-id allocated (next
   free **B071**). `main` re-checked before the decision: backlog high-water
   **B068**. Main wins on ids at merge.
+
+### 37. `feat(assay): a canary declares SEVERAL probes, in order, with a stated aggregation (B007, A-440)`
+
+**Generation 12, item 1 of 3 (DA-R28's order).** The v10 cut landed B007's
+WIRE shape; this lands the lane surface and the runner loop that produce it.
+**Registered gate GREEN on this commit** (`gate-gen12a.log`, wheel
+`assay-4.1.1.dev40+gd30b313b`).
+
+- **The lane surface** (`config.py`). `CanaryConfig` gains `targets` and
+  `aggregation` beside `target`; `_CANARY_FIELDS` is now four keys and the
+  closed-table check is unchanged. **Exactly one of `target`/`targets`** and
+  **`aggregation` iff more than one probe** are stated TWICE on purpose: as
+  lane diagnostics in `_load_canary` (what an author reads) and as a
+  `__post_init__` invariant (so no hand-built config, in a test or a future
+  caller, can reach a shape `assay.toml` could not declare).
+  `declared_targets` is the ONE place the two spellings become the single
+  ordered list; nothing downstream branches on spelling. `as_declared()`
+  reproduces exactly what was written, so a singular lane's rendered
+  declaration is byte-unchanged.
+- **`_load_canary_target(..., field=...)`** carries P19's per-target rules
+  verbatim, parameterised by the key the author actually wrote — a bad entry
+  says `judge.canary.targets[1]`, never a key the lane never used.
+- **The bound and the vocabulary are IMPORTED, not restated.**
+  `MIN_/MAX_CANARY_TARGETS` and `CANARY_AGGREGATIONS` come from
+  `assay.verdict` through the deferred import `CANARY_MECHANISMS` already
+  uses. A-432 said "spelled beside `MIN_/MAX_MUTANTS` in `config.py`", which
+  predates the cut giving both constants an owner in `verdict.py`; a bound
+  with two owners is a bound that drifts.
+- **The loop** (`canary.py`): `run_isolated_canaries` COMPOSES the unchanged
+  single-target `run_isolated_canary` and returns `(CanaryResult,
+  AssayError | None)`. `any` short-circuits on the first PASS; `all` runs on
+  after a FAIL (**DA-R19**); an INCONCLUSIVE attempt is terminal in both
+  modes. **DA-R20 holds by construction**: calling the single-target runner
+  per target is exactly one control materialisation per probe.
+- **Budget exhaustion is the one place A-432's text could not be taken
+  literally, and the row says why.** A-432 asks for a between-targets check.
+  Measured here: the deadline is sampled dozens of times inside one target's
+  own git/subprocess work (`git.py:198` `_sample_remaining`), so a
+  between-targets-only check leaves `budget_exhausted` with no reachable
+  producer. The loop therefore CATCHES a `BUDGET_EXCEEDED` from a target's
+  run and records that probe and every later one
+  `not_attempted`/`budget_exhausted`, each `description` saying whether the
+  budget expired DURING it or was already gone. Every other refusal still
+  propagates to the payload-free claim it always rendered.
+- **Two branch-local verifier defects, found by running the producer against
+  the verifier.** `_check_r3_rederivation` treated a FAIL under `all` as
+  TERMINAL, so an `all` document with a survivor anywhere but last — exactly
+  the document DA-R19 exists to make producible — was refused; and it applied
+  its status equality to a `BUDGET_EXCEEDED` claim, which would have refused
+  the payload A-432 asks that terminal to keep. Both fixed in this commit,
+  neither filed: unreleased code, inside this item's own scope.
+- **The W6 witness is real now** (A-334). `expected/multi-target-r3-v10-template.json`
+  is the verbatim stdout of `assay run` over a two-file git repository,
+  `import-break`, `targets = ["pkg/greet.py", "pkg/farewell.py"]`,
+  `aggregation = "any"` — the first probe caught for `COMMAND_FAILED`, the
+  second short-circuited by the loop. The MANIFEST row and its hand-authored
+  paragraph were corrected; **the frozen schema copy was not touched.** This
+  is the ONE authorised post-cut W6 edit and it is now spent.
+- Tests: a new `tests/test_canary_multi_target.py` (13 nodes, every one an
+  end-to-end run of the real substrate, each verdict passed through
+  `assay.verify` so producer and hand-transcribed verifier are proven to
+  agree) plus 17 new nodes in `tests/test_config_canary.py`. One existing
+  test changed meaning with the feature (`test_canary_missing_target_is_rejected`:
+  "missing" now names both spellings).
+
+### 38. `docs(assay): the v9 -> v10 migration notes, and the anchors that now resolve (A-441)`
+
+**Generation 12, item 2 of 3.** `docs/CONSUMERS.md` gains
+`## Migration notes (v9 → v10)` beside `## Adopting a v2-capable release`.
+
+- **The heading spelling was the risk, and it is checked.** Four places link
+  it by anchor (`#migration-notes-v9--v10`); a link check over README,
+  CONSUMERS and DESIGN-GUIDE is now clean, and **two anchors that were
+  ALREADY dangling are fixed here**: the link to the refusal-line section
+  still used that heading's pre-A-439 spelling (generation 11 retitled the
+  heading), and the `link_paths` link omitted the `(b)` its `####` heading
+  carries.
+- **Organised by what a consumer DECLARES**, opening with the fact that
+  `assay.toml` does not move and that a Python or Go lane with no R3, no
+  ingested report and no refusal reader sees only the version number change.
+- **DA-R28 honoured**: the adjudicated provenance lane shape is present and
+  marked *designed and not yet available*, with the `|| true` and its reason,
+  written to be amended rather than rewritten when B004's producer lands. The
+  fence carries no `assay-doc-example` skip marker because it is not a
+  `toml` fence at all — this release refuses `source = "adjudicated"` at
+  load, and a live example that cannot load would be a red docs test.
+- Also landed with B007 and recorded in A-441: CONSUMERS' new
+  `## Declare more than one canary probe: targets and aggregation (B007)`
+  section, carrying **A-432's required `any` vacuity paragraph**.
+
+### 39. `docs(assay): Wave D generation 12 checkpoint -- B007 + migration notes gate-green, BRIEF-12`
+
+**Generation 12's E-008 checkpoint.** Records only.
+
+- **Gate GREEN twice this generation**, verdict read in a separate step both
+  times: `gate-gen12a.log` on **`d30b313b`** (B007) and `gate-gen12b.log` on
+  **`fd489620`** (the migration notes). Both: `GATE_EXIT=0` exactly once, one
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, zero `FAILED|DIRTY_TREE|Traceback`, the
+  wheel carrying the commit, and the `verdict-v10-successors-verified` phase
+  among twelve.
+- **Seven of the eight post-cut items are done. ONE remains: B004**, the
+  whole carve, which BRIEF-11 §4.1 scoped and which this generation did not
+  start — the E-008 clause forbids starting an item that cannot be finished,
+  and B004 spans generations by the controller's own ruling. **The tripwire
+  at `tests/test_verdict_conformance.py:221-227` is still armed**, correctly.
+- **Full suite run once**, per the host rule: 4131 passed, 20 skipped, after
+  the one doc-example fence marker was added.
+- **One decision ask** (numbered in the REPORT), raised rather than decided
+  on silence: A-432 names "a refusal" beside an INCONCLUSIVE as a producer of
+  `earlier_target_terminal`; as implemented a refusal renders a payload-free
+  claim and that member is produced by the INCONCLUSIVE case alone.
+- **One process deviation, disclosed:** the migration-notes BLOCK was
+  inserted into `docs/CONSUMERS.md` with a one-line Python `replace` rather
+  than the Edit tool. It is a purely new block (DA-R29's category) and the
+  diff shows exactly that, but the mechanism was the scripted one the
+  standing order names. Every other change this generation used Edit or a
+  heredoc append.
+- **Commit trailer changed mid-generation, on instruction from the harness,
+  not by choice**: commit `d30b313b` carries `Co-Authored-By: Claude Fable
+  5.1`, and `fd489620` onwards carry `Co-Authored-By: Claude Sonnet 5`,
+  because the session's attribution guidance was replaced between the two.
+  Flagged so a reviewer reads it as an instruction change rather than
+  tampering.
+- Ids: **A-440** and **A-441** allocated (next free **A-442**); no B-id
+  allocated (next free **B071**). `main` re-checked: backlog high-water
+  **B068**. Main wins on ids at merge.

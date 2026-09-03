@@ -2787,3 +2787,138 @@ W1..W5 are untouched.
   exists — removing it now would assert a producer that is not there.
 * No second `!` commit; `LANE_SCHEMA_VERSION` stays 2; `inventory_schema`
   stays 1; no module renames; W1..W6 untouched; M7 stays PLANNED.
+
+## Generation 12 — B007's LOOP (A-440) and the migration notes (A-441)
+
+**Both items are done and the registered gate is GREEN on each.** Commits
+`d30b313b` (B007) and `fd489620` (migration notes); gate logs
+`gate-gen12a.log` and `gate-gen12b.log`, each read in a separate step.
+**Seven of the eight post-cut items are now done; B004 alone remains**, not
+started, its tripwire still armed.
+
+### B007 — acceptance, box by box, with file:line evidence
+
+A-432's requirements, each against the shipped code at `d30b313b`:
+
+* **Lane surface, additive, `LANE_SCHEMA_VERSION` still 2.**
+  `config.py:550` `_CANARY_FIELDS = ("mechanism", "target", "targets",
+  "aggregation")`; `CanaryConfig` at `:553` with `targets`/`aggregation` and
+  the `declared_targets` property; `_load_canary`'s exactly-one-of and
+  aggregation rules; `_load_canary_target` carrying P19's per-target rules
+  parameterised by `field`. `LANE_SCHEMA_VERSION` is untouched, and
+  `tests/test_config_canary.py::test_the_singular_spelling_is_the_one_probe_form_of_the_plural_one`
+  is the byte-compatibility proof.
+* **Ordered, 1..8, duplicates refused.** The bound and the aggregation
+  vocabulary are imported from `assay.verdict` (deferred, the cycle
+  `CANARY_MECHANISMS` already documents), never restated —
+  `test_more_than_the_measured_bound_is_rejected` drives the real
+  `MAX_CANARY_TARGETS`, so a change to the measurement moves the test with
+  it.
+* **`aggregation` required iff more than one probe, forbidden with one**, in
+  the loader AND in `CanaryConfig.__post_init__`, matching
+  `JudgmentR3.__post_init__`'s identical wire rule
+  (`verdict.py:2601-2614`).
+* **The loop.** `canary.run_isolated_canaries` composes the unchanged
+  single-target runner; `any` short-circuits on the first PASS, `all` runs on
+  after a FAIL (DA-R19), an INCONCLUSIVE attempt is terminal in both modes,
+  and budget exhaustion is its own terminal carrying the payload.
+* **DA-R20 is satisfied structurally**: one control materialisation per
+  probe, because each probe is one call to `run_isolated_canary`.
+* **The closed `not_attempted_reason` vocabulary has a producer for all
+  three members** — `short_circuited` (loop, `any`),
+  `earlier_target_terminal` (loop after an INCONCLUSIVE, and
+  `runner._broken_control_canary`), `budget_exhausted` (loop). See the
+  decision ask below about which cases produce the second member.
+* **B005's whole-target rule generalises** (`config.py:1277-1297`), naming
+  the offending target; one rule, one message, so the single-target
+  diagnostic's wording changed with it.
+* **The W6 witness is real** and the frozen schema copy was not touched.
+
+### The two verifier defects this producer exposed
+
+Neither is in a released build; both are branch-local, inside B007's own
+scope, and fixed in `d30b313b` rather than filed.
+
+1. **`_check_r3_rederivation` treated a FAIL under `all` as terminal.** With
+   attempts `[FAIL, FAIL]` under `all` it appended *"attempt 1 is recorded
+   'attempted' after attempt 0 ended the claim"* — refusing exactly the
+   document DA-R19 exists to make producible. `terminal_at` is now set only
+   by an INCONCLUSIVE attempt and by `any`'s first PASS, and the STATUS is
+   first-decisive-wins (`status is None` guards), which is `judge_canary`'s
+   early return transcribed rather than imported (A-182).
+   `tests/test_canary_multi_target.py::test_all_attempts_every_probe_even_after_one_survives`
+   is the regression, and it runs the real substrate.
+2. **The status equality was applied to a `BUDGET_EXCEEDED` claim carrying a
+   payload**, which would have refused the document A-432 asks that terminal
+   to write. The equality now applies to the judged statuses
+   (`_JUDGED_R3_STATUSES`); any other status carrying a payload must be
+   exactly `BUDGET_EXCEEDED`/`LANE_TIMEOUT` and anything else is refused —
+   the carve-out is one status wide, and
+   `test_a_payload_under_a_refusal_other_than_the_budget_is_refused` proves
+   the wall on the other side of it. The BOOKKEEPING check still applies to
+   every payload; what is exempt is the status, not the record.
+
+### The gate-field grep, before the first gate run (BRIEF-11 §3(a))
+
+`grep -rn canary gate/ tools/` — `gate/python/qualify_cmru_b006a.py` is the
+only reader. It declares the SINGULAR `target` in its own lane TOML (`:154`),
+asserts `len(attempts) == 1` and `disposition == "attempted"` (`:560-567`),
+and asserts `r3["targets"] == [attempt["target"]] and "aggregation" not in
+r3` (`:585`). All three still hold exactly: a single-target lane is
+unchanged in every field. `tools/tester-unified-gate.sh:582` mentions
+`canary.attempts[]` in a comment only. The B069 tripwire
+(`tests/test_gate_harness_version_pins.py`) was green locally before both
+gate runs.
+
+### Decision asks for the controller (generation 12)
+
+1. **`earlier_target_terminal`'s producer set is NARROWER than A-432's
+   parenthesis.** A-432 writes the member as *"an earlier attempt ended the
+   claim — a refusal or an INCONCLUSIVE"*. As implemented it is produced by
+   the INCONCLUSIVE case alone (the loop, and the broken-baseline branch),
+   because a refusal renders the **payload-free** R3 claim it always has:
+   there is no attempts array to carry the member, and a partial array whose
+   terminal probe has no entry would assert that probe was never tried when
+   in fact it was tried and broke. Budget exhaustion, the one refusal that
+   KEEPS its payload, owns its own member (`budget_exhausted`). I shipped
+   this reading and record it rather than deciding it on silence: if the
+   controller wants a refusal to keep its payload too, that is a further
+   producer change plus a second `verify.py` carve-out, and it is not what
+   `_check_r3_rederivation` was written against.
+
+### What a reviewer should push on (generation 12's own work)
+
+* **The budget-exhaustion reading.** `not_attempted` is used for the probe
+  the deadline cut short mid-run. I argue it is the literal dispositional
+  claim — *there is no run to report* — and the entry's own `description`
+  distinguishes "expired during this probe" from "already gone before it".
+  A reviewer who thinks a mid-run probe must not be called `not_attempted`
+  should say what else the closed two-member disposition could call it.
+* **`_broken_control_canary`'s shape.** A lane whose own baseline failed
+  records attempt 0 with the baseline's outcome and the rest
+  `earlier_target_terminal`. Nothing ran. The alternative — every target
+  carrying the same control outcome — asserts N control runs that never
+  happened; the other alternative — truncating `judgment.r3.targets` — hides
+  what the lane declared.
+* **The verifier's first-decisive-wins status.** Under `all`,
+  `[FAIL, INCONCLUSIVE]` renders `FAIL`, not `INCONCLUSIVE`, because the FAIL
+  decided the claim first. That matches `judge_canary`'s early return
+  exactly, but it is a judgement call the ruling did not spell out.
+* **The `_Gate` process runner in the new test module** reads the snapshot's
+  own bytes and fails iff the import-break marker is present. It is a real
+  gate in miniature, not a scripted result — but it IS the seam, and a
+  reviewer should check it cannot be satisfied by a runner that fails
+  everything (`_Gate(catches=False)` is used for exactly that contrast).
+
+### What I did NOT do, and why
+
+* **B004 was not started.** BRIEF-11 §4.1 scoped it as a full carve; the
+  E-008 clause forbids starting an item that cannot be finished before the
+  cut, and DA-R28 puts it last, in its own generation(s). The tripwire at
+  `tests/test_verdict_conformance.py:221-227` is still armed, correctly.
+* **No second `!` commit**; `LANE_SCHEMA_VERSION` stays 2;
+  `inventory_schema` stays 1; `src/assay/schemas/verdict.schema.json` and
+  `carve-assets/W6/verdict.schema.v10.json` are byte-untouched.
+* **No B-id allocated.** The two verifier defects are unreleased,
+  branch-local, and inside the item that exposed them; filing them would
+  have been filing a bug against code that never shipped.
