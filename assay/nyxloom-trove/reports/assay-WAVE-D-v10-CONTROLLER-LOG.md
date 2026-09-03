@@ -913,8 +913,32 @@ precedent for shape and discipline.
     NOW, before generation 13 reads that row further into the carve — a
     stale field name in the row it is actively working from is exactly
     the kind of drift this wave exists to prevent elsewhere.
-  - **Routing: both land as generation 13's own next two commits, ahead of
-    or alongside its B004 work — no new agent dispatched** (the controller
-    session is near its context limit; the operator said not to start new
-    agents). Generation 13 was messaged directly with both findings, their
-    exact locations and the fix shape above.
+  - **Routing correction: the controller mis-addressed its follow-up
+    message — sent to R-2's own agent instead of generation 13's.** R-2
+    (correctly identifying the mistake) applied SF-1 itself rather than
+    silently absorbing it: `78a786fc` on the shared branch, scoped via
+    `--only` to exactly `verify.py` + one new test in
+    `test_canary_multi_target.py` (confirmed: the commit's diffstat
+    touches nothing else, `decisions.md` included). Two checks added,
+    mirroring the two existing branches: a `budget_exhausted` entry's
+    claim must be exactly `BUDGET_EXCEEDED`/`LANE_TIMEOUT`, and
+    `budget_exhausted` entries must form a trailing run (no `attempted`
+    entry may follow). Red-first via a scoped `git stash` on `verify.py`
+    alone; targeted suite 88 passed, no regressions. **SF-1 is DONE.**
+  - **N-1 correctly declined by R-2, not applied.** `decisions.md` is
+    dirty with generation 13's own unreviewed, in-progress `A-442` row (the
+    whole B004 decision record) — editing the same file risked bundling
+    unrelated content under one commit message via `git commit --only`'s
+    path scoping (a path-level `--only` does not protect against two
+    logical changes landing in the SAME file's diff). R-2's own
+    recommendation, adopted here: **N-1 lands as generation 13's own
+    `A-443`, an APPENDED correction row, never an in-place edit to
+    `A-430`** — this matches the wave's own established discipline for
+    correcting a prior record (RW-31's precedent on the run-gate side:
+    "correct the LOG entry rather than rewrite it"). The controller's
+    original DA-R33 wording ("one-line docs correction") under-specified
+    this and is amended by this entry, not rewritten.
+  - **Routing, corrected: the real generation 13 agent has NOT yet been
+    told about N-1** (or the earlier session-limit checkpoint reminder,
+    which also went to R-2 by the same mistake) — messaged directly right
+    after this log entry, no new agent dispatched.
