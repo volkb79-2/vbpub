@@ -143,3 +143,16 @@ dstdns D-110.4. Rulings here are E5-Rn.
   - **E5-R15 (ask 3):** the `.assay/` authoring rule landed on main
     (`3f148522`); §3 and §6 row 1 point at LANE-AUTHORING §5; row 1 stays
     "not started". Round 2 (same reviewer, cap 3) on the follow-up's tip.
+
+- **2026-09-03 (E5-R14/R15 landed at `d58f122b`; E5-R16)** — Every curl
+  invocation carries `--connect-timeout 10 --max-time 120` from one array
+  (real calls and dry-run lines cannot drift; one test sweeps all six
+  dry-run curl lines); §3, §4.3 and §6 row 1 name LANE-AUTHORING §5 as the
+  rule that makes the fixed globs sufficient; row 1 stays "not started".
+  66 tests, shellcheck style-clean, no selftest needed. Implementer flagged
+  (not re-litigated) that a uniform 120 s cap also bounds artifact
+  DOWNLOADS. **E5-R16: taken** — downloads are bounded by stall
+  (`--connect-timeout 10 --speed-time 60 --speed-limit 1024`, no
+  `--max-time`), API calls keep the 120 s cap; two arrays, the sweep test
+  split; one sentence each in header/usage/§4.2/§4.3. Round 2 (same
+  reviewer) on that commit's tip.
