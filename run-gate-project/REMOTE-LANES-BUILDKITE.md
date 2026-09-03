@@ -141,7 +141,10 @@ steps:
 (The paths are vbpub's: the script and the project directory it is asked
 about are both `run-gate-project/…`. `RUN_GATE_LANES`, when the build carries
 one, is inherited from the build's environment by this step, so the generator
-sees it without any further plumbing.)
+sees it without any further plumbing. **A build's own env overrides the
+pipeline's**, so a build created with `RUN_GATE_QUEUE` in its env — what
+`BK_QUEUE` does in §4.2 — runs on that queue instead of the default above,
+with no pipeline edit.)
 
 **`run-gate-project/tools/buildkite/pipeline.sh` is that generator, and it is
 written** (seam 2 in §6; tested by `tests/test_buildkite_tools.py`). It reads
@@ -266,6 +269,7 @@ bk-lane.sh --help
 | `BK_PIPELINE` | **yes** | pipeline slug; no default |
 | `BK_TOKEN_FILE` | no | default `~/.config/buildkite/api-token`; **must be mode 0600 or the script refuses** (exit 2, naming the mode it found) |
 | `BK_POLL_SECONDS` | no | poll interval for `run`, default 30 |
+| `BK_QUEUE` | no | `run` only: sent as `env.RUN_GATE_QUEUE` in the create-build body beside `RUN_GATE_LANES`. A build's env overrides the pipeline's (§3), so this moves ONE run to another host's queue with no pipeline edit; unset, the key is not sent at all and the pipeline's default queue stands |
 
 Dependencies are `bash`, `coreutils`, `git`, `curl` and `python3` (stdlib
 `json` only). **`jq` is deliberately not assumed** — the hosts do not need a

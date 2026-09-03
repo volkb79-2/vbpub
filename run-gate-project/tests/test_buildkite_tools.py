@@ -300,6 +300,7 @@ def git_repo(tmp_path_factory):
 def _bk(*args, token_file=None, cwd=None, **overrides):
     env = dict(os.environ, BK_ORG="acme", BK_PIPELINE="vbpub")
     env.pop("BK_POLL_SECONDS", None)
+    env.pop("BK_QUEUE", None)
     if token_file is not None:
         env["BK_TOKEN_FILE"] = str(token_file)
     for key, value in overrides.items():
@@ -335,6 +336,41 @@ def test_bk_run_dry_run_prints_the_post_with_a_redacted_token(token_file, git_re
                   "not_run", "waiting_failed"):
         assert state in res.stdout
     assert TOKEN not in res.stdout and TOKEN not in res.stderr
+
+
+def test_bk_run_sends_bk_queue_as_the_builds_own_run_gate_queue(token_file,
+                                                                git_repo):
+    """E5-R6: a build's env overrides the pipeline's env, so BK_QUEUE moves one
+    run to another host's queue without editing the pipeline."""
+    root, _ = git_repo
+    res = _bk("--dry-run", "run", "mutation", token_file=token_file, cwd=root,
+              BK_QUEUE="gate-beta")
+    assert res.returncode == 0, res.stderr
+    post = next(ln for ln in res.stdout.splitlines()
+                if "-X" in ln and "POST" in ln)
+    assert ('"env": {"RUN_GATE_LANES": "mutation", '
+            '"RUN_GATE_QUEUE": "gate-beta"}') in post
+    assert "RUN_GATE_QUEUE=gate-beta" in res.stdout      # said in prose too
+
+
+def test_bk_run_omits_run_gate_queue_when_bk_queue_is_unset(token_file, git_repo):
+    """Unset means the pipeline's own default queue stands — the key must not
+    be sent empty, which would override it with nothing."""
+    root, _ = git_repo
+    res = _bk("--dry-run", "run", "mutation", token_file=token_file, cwd=root)
+    assert res.returncode == 0, res.stderr
+    post = next(ln for ln in res.stdout.splitlines()
+                if "-X" in ln and "POST" in ln)
+    assert '"env": {"RUN_GATE_LANES": "mutation"}' in post
+    assert "RUN_GATE_QUEUE" not in res.stdout
+
+
+def test_bk_run_refuses_an_unquotable_bk_queue(token_file, git_repo):
+    root, _ = git_repo
+    res = _bk("--dry-run", "run", "mutation", token_file=token_file, cwd=root,
+              BK_QUEUE='gate beta"')
+    assert res.returncode == 2
+    assert "BK_QUEUE" in res.stderr
 
 
 def test_bk_run_dry_run_honours_the_poll_interval(token_file, git_repo):

@@ -26,6 +26,12 @@
 #                   must be mode 0600 or this script refuses (exit 2). Token
 #                   scopes needed: read_builds, write_builds, read_artifacts.
 #   BK_POLL_SECONDS optional — poll interval for `run`, default 30
+#   BK_QUEUE        optional — `run` only: sent as env.RUN_GATE_QUEUE in the
+#                   create-build body, which overrides the pipeline's own
+#                   env.RUN_GATE_QUEUE for that build (a build's env wins over
+#                   the pipeline's), so one command moves a run to another
+#                   host's queue without editing the pipeline. Unset = the
+#                   pipeline's default queue, and the key is not sent at all.
 #
 # REST paths, verified against the vendor docs on 2026-09-03:
 #   POST /v2/organizations/{org}/pipelines/{pipeline}/builds
@@ -64,7 +70,8 @@ usage: bk-lane.sh [--dry-run] run <lane>...
 
 environment: BK_ORG and BK_PIPELINE are required; BK_TOKEN_FILE defaults to
 ~/.config/buildkite/api-token and must be mode 0600; BK_POLL_SECONDS
-defaults to 30.
+defaults to 30; BK_QUEUE, if set, is sent as env.RUN_GATE_QUEUE in the
+create-build body and overrides the pipeline's queue for that build.
 
 terminal build states: passed failed canceled blocked skipped not_run
 waiting_failed.  exit codes: 0 ok/passed, 1 the build did not pass, 2 refused.
@@ -161,14 +168,27 @@ do_run() {
     branch=$(git rev-parse --abbrev-ref HEAD)
     [ "$branch" != "HEAD" ] || die "HEAD is detached; Buildkite requires a branch — check out a branch before triggering"
 
+    # BK_QUEUE, when set, rides in the build's env as RUN_GATE_QUEUE: a
+    # build's env overrides the pipeline's, so this moves ONE run to another
+    # host's queue without editing the pipeline. Unset -> the key is absent
+    # and the pipeline's own default queue stands.
+    local queue=${BK_QUEUE-}
+    case "$queue" in
+        *[!A-Za-z0-9._-]*) die "BK_QUEUE='$queue' has a character outside [A-Za-z0-9._-]; a Buildkite queue name does not need one" ;;
+    esac
+
     local body
-    body=$(RG_COMMIT="$commit" RG_BRANCH="$branch" RG_LANES="$lanes" python3 -c '
+    body=$(RG_COMMIT="$commit" RG_BRANCH="$branch" RG_LANES="$lanes" \
+           RG_QUEUE="$queue" python3 -c '
 import json, os
+build_env = {"RUN_GATE_LANES": os.environ["RG_LANES"]}
+if os.environ["RG_QUEUE"]:
+    build_env["RUN_GATE_QUEUE"] = os.environ["RG_QUEUE"]
 print(json.dumps({
     "commit": os.environ["RG_COMMIT"],
     "branch": os.environ["RG_BRANCH"],
     "message": "run-gate: " + os.environ["RG_LANES"],
-    "env": {"RUN_GATE_LANES": os.environ["RG_LANES"]},
+    "env": build_env,
 }, sort_keys=True))')
 
     local post=(-fsS -X POST "$API" -H "$AUTH_HEADER"
@@ -177,6 +197,9 @@ print(json.dumps({
     if [ "$DRY_RUN" = yes ]; then
         printf 'would create a build for %s on branch %s with lanes: %s\n' \
             "$commit" "$branch" "$lanes"
+        if [ -n "$queue" ]; then
+            printf "the build's env overrides the pipeline queue: RUN_GATE_QUEUE=%s\n" "$queue"
+        fi
         show_curl "${post[@]}"
         printf 'then poll every %ss until the state is terminal (%s):\n' \
             "$poll_seconds" "$TERMINAL_STATES"

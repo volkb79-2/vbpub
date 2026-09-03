@@ -89,6 +89,7 @@ fi
 while [ "$project" != "/" ] && [ "${project%/}" != "$project" ]; do
     project=${project%/}
 done
+# shellcheck disable=SC1003  # '\' here is a literal backslash to match on, not an escape
 case "$project" in
     *'"'*|*'$'*|*'`'*|*'\'*|*$'\n'*)
         die "project directory '$project' contains a character that cannot be quoted safely inside the emitted YAML (\" \$ \` \\\\ or newline)" ;;
