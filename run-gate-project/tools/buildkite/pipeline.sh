@@ -118,8 +118,11 @@ esac
 timeout=${RUN_GATE_TIMEOUT_MINUTES:-300}
 case "$timeout" in
     ""|*[!0-9]*) die "RUN_GATE_TIMEOUT_MINUTES='$timeout' is not a positive integer number of minutes" ;;
+    0) die "RUN_GATE_TIMEOUT_MINUTES='0' is not a positive integer number of minutes" ;;
+    # A leading zero is not cosmetic here: this value is emitted into YAML, and
+    # a YAML parser reads `timeout_in_minutes: 0300` as OCTAL 192.
+    0*) die "RUN_GATE_TIMEOUT_MINUTES='$timeout' has a leading zero — write it plainly; YAML reads a leading-zero integer as octal (0300 is 192, not 300)" ;;
 esac
-[ "$timeout" -gt 0 ] || die "RUN_GATE_TIMEOUT_MINUTES='$timeout' is not a positive integer number of minutes"
 
 # --- the listing -----------------------------------------------------------
 if ! listing=$(cd "$project" && ./run-gate.py --list); then
@@ -153,11 +156,17 @@ EOF
 
 # --- selection -------------------------------------------------------------
 requested=${RUN_GATE_LANES-}
+# Globbing OFF for the deliberate word-splits below: RUN_GATE_LANES='*' would
+# otherwise expand against the current directory and turn stray filenames into
+# lane names (it fails closed today — a file is not a lane — but the class of
+# bug is removable, so remove it).
+set -f
 if [ -z "${requested//[[:space:]]/}" ]; then
     selected=$available            # every lane the listing shows (see header)
 else
     selected=""
     unknown=""
+    duplicate=""
     for want in $requested; do
         found=""
         for have in $available; do
@@ -166,6 +175,9 @@ else
                 break
             fi
         done
+        case " $selected " in
+            *" $want "*) duplicate="$duplicate $want" ;;
+        esac
         if [ -n "$found" ]; then
             selected="$selected $want"
         else
@@ -174,6 +186,9 @@ else
     done
     if [ -n "$unknown" ]; then
         die "RUN_GATE_LANES names lane(s)$unknown that '$project/run-gate.py --list' does not show; it shows:$available"
+    fi
+    if [ -n "$duplicate" ]; then
+        die "RUN_GATE_LANES names lane(s)$duplicate more than once; that would emit two identical steps with the same label, which is never what was meant"
     fi
 fi
 
@@ -189,6 +204,14 @@ for lane in $selected; do
     printf '    concurrency_group: "gate/%s"\n' "$queue"
     printf '    timeout_in_minutes: %s\n' "$timeout"
     printf '    artifact_paths:\n'
+    # Three FIXED globs — the generator cannot see a lane's declared
+    # `artifacts` (--list does not carry them, and reading run-gate.toml is the
+    # forbidden second parser), so an artifact a lane declares OUTSIDE these
+    # prefixes does not travel. `.assay/*` is deliberate insurance beside
+    # `.assay/**/*`: whether `**` also matches a file sitting directly in
+    # `.assay/` (the progress file does) is Buildkite's zglob's business, and
+    # that has not been observed on a live build yet.
+    printf '      - "%s.assay/*"\n' "$art_prefix"
     printf '      - "%s.assay/**/*"\n' "$art_prefix"
     printf '      - "%s.run-gate/history.json"\n' "$art_prefix"
     printf '    env:\n'

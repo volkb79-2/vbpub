@@ -26,6 +26,14 @@
 #                   must be mode 0600 or this script refuses (exit 2). Token
 #                   scopes needed: read_builds, write_builds, read_artifacts.
 #   BK_POLL_SECONDS optional — poll interval for `run`, default 30
+#   BK_MAX_WAIT_MINUTES
+#                   optional — `run` only: how long to keep polling, default
+#                   300 (the §3 step's own timeout). Exceeded -> exit 3 naming
+#                   the build number and the last state, so `status`/`collect`
+#                   can pick that build up later (§4.4). The budget counts the
+#                   time this script spends SLEEPING between polls, which is
+#                   what an unattended `run` actually burns; a single request
+#                   that hangs is curl's business, not this counter's.
 #   BK_QUEUE        optional — `run` only: sent as env.RUN_GATE_QUEUE in the
 #                   create-build body, which overrides the pipeline's own
 #                   env.RUN_GATE_QUEUE for that build (a build's env wins over
@@ -43,6 +51,16 @@
 #
 # Dependencies: bash, coreutils, git, curl, python3 (stdlib json only). `jq` is
 # deliberately NOT assumed.
+#
+# EXIT CODES — the whole contract, true of every path:
+#   0  the verb did what it says (for `run`: the build passed)
+#   1  the build did not pass (a terminal state other than `passed`) — this
+#      code means THAT and nothing else
+#   2  refused: every refusal goes through `die`, including a malformed or
+#      short API response, a `commit` or artifact `path` this script will not
+#      use as a path component, and every bad argument or environment value
+#   3  gave up waiting (BK_MAX_WAIT_MINUTES); the build is still out there and
+#      the message names its number and last state
 #
 # STATUS: only --dry-run has been exercised (tests/test_buildkite_tools.py).
 # No live build has been created by this script yet.
@@ -66,15 +84,22 @@ usage: bk-lane.sh [--dry-run] run <lane>...
   status    print the build's state and exit 0.
   collect   download every artifact of the build into <dir>/<commit>/...
   --dry-run print the curl invocations that would run (token redacted) and
-            touch no network.
+            touch no network. Accepted ANYWHERE in the arguments, before or
+            after the verb — it is the one flag whose whole job is "make no
+            network call", so a misordered one must not be swallowed.
 
 environment: BK_ORG and BK_PIPELINE are required; BK_TOKEN_FILE defaults to
 ~/.config/buildkite/api-token and must be mode 0600; BK_POLL_SECONDS
-defaults to 30; BK_QUEUE, if set, is sent as env.RUN_GATE_QUEUE in the
-create-build body and overrides the pipeline's queue for that build.
+defaults to 30; BK_MAX_WAIT_MINUTES defaults to 300; BK_QUEUE, if set, is
+sent as env.RUN_GATE_QUEUE in the create-build body and overrides the
+pipeline's queue for that build.
 
 terminal build states: passed failed canceled blocked skipped not_run
-waiting_failed.  exit codes: 0 ok/passed, 1 the build did not pass, 2 refused.
+waiting_failed.
+
+exit codes: 0 ok (for `run`: passed) | 1 the build did not pass, and nothing
+else | 2 refused (every refusal, via `die`) | 3 gave up waiting, the message
+naming the build number and last state so `status`/`collect` can follow up.
 EOF
 }
 
@@ -98,16 +123,28 @@ show_curl() {   # print a curl invocation with the bearer token redacted
 }
 
 # --- arguments -------------------------------------------------------------
+# --dry-run is honoured ANYWHERE in argv: `run --dry-run lint` used to make
+# `--dry-run` a lane name and create a REAL build, which is the worst possible
+# reading of the one flag that exists to make no network call. Everything after
+# a literal `--` is a positional, so a lane genuinely called `--dry-run` (there
+# is none — lane names may not start with `-`, see do_run) stays expressible.
 DRY_RUN=no
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        --dry-run) DRY_RUN=yes; shift ;;
+positional=()
+end_of_options=no
+for arg in "$@"; do
+    if [ "$end_of_options" = yes ]; then
+        positional+=("$arg")
+        continue
+    fi
+    case "$arg" in
+        --dry-run) DRY_RUN=yes ;;
         --help|-h) usage; exit 0 ;;
-        --) shift; break ;;
-        -*) die "unknown option '$1' (see --help)" ;;
-        *) break ;;
+        --) end_of_options=yes ;;
+        -*) die "unknown option '$arg' (see --help)" ;;
+        *) positional+=("$arg") ;;
     esac
 done
+set -- ${positional[@]+"${positional[@]}"}
 [ "$#" -gt 0 ] || { usage >&2; die "no verb given (run|status|collect)"; }
 verb=$1; shift
 
@@ -125,24 +162,47 @@ TOKEN=$(cat "$token_file")
 [ -n "$TOKEN" ] || die "token file '$token_file' is empty"
 AUTH_HEADER="Authorization: Bearer $TOKEN"
 
+# A positive integer with NO leading zero: "0300" read as octal 192 by a YAML
+# parser is the sibling bug in pipeline.sh, and "07" is never what anyone means.
+check_positive_int() {   # $1 = value, $2 = what it is (for the message)
+    case "$1" in
+        ""|*[!0-9]*) die "$2='$1' is not a positive integer" ;;
+        0) die "$2='0' is not a positive integer" ;;
+        0*) die "$2='$1' has a leading zero — write it plainly; a leading zero is read as octal by a YAML parser and is never what was meant" ;;
+    esac
+}
+
 poll_seconds=${BK_POLL_SECONDS:-30}
-case "$poll_seconds" in
-    ""|*[!0-9]*) die "BK_POLL_SECONDS='$poll_seconds' is not a positive integer number of seconds" ;;
-esac
-[ "$poll_seconds" -gt 0 ] || die "BK_POLL_SECONDS='$poll_seconds' is not a positive integer number of seconds"
+check_positive_int "$poll_seconds" BK_POLL_SECONDS
+max_wait_minutes=${BK_MAX_WAIT_MINUTES:-300}
+check_positive_int "$max_wait_minutes" BK_MAX_WAIT_MINUTES
 
 API="https://api.buildkite.com/v2/organizations/$org/pipelines/$pipeline/builds"
 
 # --- small json readers (stdlib python3; jq is not assumed) ----------------
+# Every one of these is called through `api_field`, so a malformed response, a
+# missing field or a failed request is a `die` (exit 2) — never a bare exit 1,
+# which is reserved for "the build did not pass".
 json_field() {   # $1 = key; reads the JSON object on stdin
     RG_KEY=$1 python3 -c '
 import json, os, sys
-doc = json.load(sys.stdin)
+try:
+    doc = json.load(sys.stdin)
+except ValueError as exc:
+    sys.exit("response is not JSON: %s" % exc)
 key = os.environ["RG_KEY"]
-if key not in doc:
-    sys.exit("bk-lane.sh: response has no %r field" % key)
+if not isinstance(doc, dict) or key not in doc:
+    sys.exit("response has no %r field" % key)
 print(doc[key])
 '
+}
+
+api_field() {   # $1 = url, $2 = key -> the field's value on stdout, or die
+    local value
+    if ! value=$(curl -fsS "$1" -H "$AUTH_HEADER" | json_field "$2"); then
+        die "GET $1 did not yield a usable '$2' (see the message above)"
+    fi
+    printf '%s\n' "$value"
 }
 
 check_number() {
@@ -151,14 +211,32 @@ check_number() {
     esac
 }
 
+# Anything used as a PATH COMPONENT is gated on the script's own charset before
+# it is used. `commit` comes straight from the build response and Buildkite
+# documents it as a free-form "Ref, SHA or tag" chosen by whoever created the
+# build — a `../../..` there would write outside the destination directory, so
+# it is checked exactly like a lane name or a queue name.
+check_path_component() {   # $1 = value, $2 = what it is
+    case "$1" in
+        "") die "$2 from the API response is empty; refusing to use it as a directory name" ;;
+        *[!A-Za-z0-9._-]*) die "$2 '$1' from the API response has a character outside [A-Za-z0-9._-]; refusing to use it as a directory name" ;;
+        .|..) die "$2 '$1' from the API response is not usable as a directory name" ;;
+    esac
+}
+
 # --- verbs -----------------------------------------------------------------
 do_run() {
     [ "$#" -gt 0 ] || die "run needs at least one lane name"
-    local lane
+    local lane seen=""
     for lane in "$@"; do
         case "$lane" in
+            -*) die "lane name '$lane' starts with '-'; lane names cannot. If you meant the flag, it is '--dry-run' (accepted anywhere in the arguments)" ;;
             *[!A-Za-z0-9._-]*) die "lane name '$lane' has a character outside [A-Za-z0-9._-]" ;;
         esac
+        case " $seen " in
+            *" $lane "*) die "lane '$lane' is named twice; RUN_GATE_LANES would run it twice on the agent" ;;
+        esac
+        seen="$seen $lane"
     done
     local lanes="$*"
 
@@ -201,24 +279,33 @@ print(json.dumps({
             printf "the build's env overrides the pipeline queue: RUN_GATE_QUEUE=%s\n" "$queue"
         fi
         show_curl "${post[@]}"
-        printf 'then poll every %ss until the state is terminal (%s):\n' \
-            "$poll_seconds" "$TERMINAL_STATES"
+        printf 'then poll every %ss, for at most %s minutes, until the state is terminal (%s):\n' \
+            "$poll_seconds" "$max_wait_minutes" "$TERMINAL_STATES"
         show_curl -fsS "$API/<build-number>" -H "$AUTH_HEADER"
         return 0
     fi
 
     local number
-    number=$(curl "${post[@]}" | json_field number)
+    if ! number=$(curl "${post[@]}" | json_field number); then
+        die "creating the build did not yield a usable 'number' (see the message above)"
+    fi
+    check_path_component "$number" "build number"
     printf 'build %s for %s (branch %s), lanes: %s\n' "$number" "$commit" "$branch" "$lanes"
 
-    local state
+    local state waited=0 budget=$((max_wait_minutes * 60))
     while :; do
-        state=$(curl -fsS "$API/$number" -H "$AUTH_HEADER" | json_field state)
+        state=$(api_field "$API/$number" state)
         case " $TERMINAL_STATES " in
             *" $state "*) break ;;
         esac
+        if [ "$waited" -ge "$budget" ]; then
+            printf 'build %s is still %s after %s minutes of waiting; giving up on the WAIT, not on the build — follow it with: %s status %s\n' \
+                "$number" "$state" "$max_wait_minutes" "$PROG" "$number" >&2
+            return 3
+        fi
         printf 'state: %s — polling again in %ss\n' "$state" "$poll_seconds"
         sleep "$poll_seconds"
+        waited=$((waited + poll_seconds))
     done
     printf 'build %s state: %s\n' "$number" "$state"
     [ "$state" = passed ] || return 1
@@ -228,11 +315,13 @@ print(json.dumps({
 do_status() {
     check_number "${1-}"
     local number=$1
+    shift
+    [ "$#" -eq 0 ] || die "status takes exactly one argument (the build number); it does not know what to do with: $*"
     if [ "$DRY_RUN" = yes ]; then
         show_curl -fsS "$API/$number" -H "$AUTH_HEADER"
         return 0
     fi
-    curl -fsS "$API/$number" -H "$AUTH_HEADER" | json_field state
+    api_field "$API/$number" state
 }
 
 do_collect() {
@@ -240,6 +329,8 @@ do_collect() {
     local number=$1
     local dir=${2-}
     [ -n "$dir" ] || die "collect needs a destination directory: collect <build-number> <dir>"
+    shift 2
+    [ "$#" -eq 0 ] || die "collect takes exactly two arguments (the build number and a directory); it does not know what to do with: $*"
 
     if [ "$DRY_RUN" = yes ]; then
         printf 'would read the build to learn its commit:\n'
@@ -251,26 +342,51 @@ do_collect() {
         return 0
     fi
 
+    # The commit is a PATH COMPONENT taken from the response, so it is gated
+    # before `mkdir` ever sees it (B1: `"commit": "../../../escape"` used to
+    # write outside <dir>).
     local commit
-    commit=$(curl -fsS "$API/$number" -H "$AUTH_HEADER" | json_field commit)
+    commit=$(api_field "$API/$number" commit)
+    check_path_component "$commit" "the build's commit"
     local dest="$dir/$commit"
     mkdir -p "$dest"
 
-    local listing
-    listing=$(curl -fsS "$API/$number/artifacts" -H "$AUTH_HEADER")
-
-    local pairs
-    pairs=$(printf '%s' "$listing" | python3 -c '
+    local listing pairs
+    if ! listing=$(curl -fsS "$API/$number/artifacts" -H "$AUTH_HEADER"); then
+        die "GET $API/$number/artifacts failed"
+    fi
+    # python does the JSON only; every refusal below is the shell's, so it is a
+    # `die` (exit 2) and not the exit 1 that means "the build did not pass".
+    if ! pairs=$(printf '%s' "$listing" | python3 -c '
 import json, sys
-for a in json.load(sys.stdin):
+try:
+    doc = json.load(sys.stdin)
+except ValueError as exc:
+    sys.exit("artifact listing is not JSON: %s" % exc)
+if not isinstance(doc, list):
+    sys.exit("artifact listing is not a JSON array")
+for a in doc:
+    if not isinstance(a, dict) or "path" not in a or "download_url" not in a:
+        sys.exit("an artifact object has no path/download_url")
     path, url = a["path"], a["download_url"]
-    if path.startswith("/") or ".." in path.split("/") or "\t" in path or "\n" in path:
-        sys.exit("bk-lane.sh: refusing artifact path %r" % path)
+    if "\t" in path or "\n" in path or "\t" in url or "\n" in url:
+        sys.exit("artifact path or url contains a tab or newline: %r" % path)
     print("%s\t%s" % (path, url))
-')
+'); then
+        die "the artifact listing of build $number is unusable (see the message above)"
+    fi
+
     local path url count=0
     while IFS=$'\t' read -r path url; do
         [ -n "$path" ] || continue
+        # Containment, in the script's own idiom: no absolute path, no ".."
+        # component, nothing that escapes <dest>.
+        case "$path" in
+            /*) die "refusing artifact path '$path': it is absolute and would write outside $dest" ;;
+        esac
+        case "/$path/" in
+            */../*) die "refusing artifact path '$path': a '..' component would write outside $dest" ;;
+        esac
         mkdir -p "$dest/$(dirname "$path")"
         curl -fsSL "$url" -H "$AUTH_HEADER" -o "$dest/$path"
         printf '%s\n' "$dest/$path"

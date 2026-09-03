@@ -8,15 +8,22 @@ Both scripts are exercised WITHOUT a network and WITHOUT a Buildkite account:
   is the whole contract between them — `name<TAB>kind<TAB>environment`, one
   lane per line — so a stub is a faithful stand-in, and no test here may parse
   `run-gate.toml` any more than the generator may.
-* `bk-lane.sh` is exercised only through `--dry-run`, which prints the curl
-  invocations it would make (with the bearer token redacted) and touches
-  nothing. NO TEST IN THIS FILE MAKES A NETWORK CALL. The live path has
-  therefore never been run; that is stated in the manual too.
+* `bk-lane.sh` is exercised two ways, neither of which reaches Buildkite:
+  through `--dry-run`, which prints the curl invocations it would make (with
+  the bearer token redacted) and touches nothing; and through the LIVE code
+  path with a `curl` (and `sleep`) stub on `PATH`, which is what covers the
+  exit-code contract, all seven terminal states, the wait budget and the two
+  containment guards on `collect`. NO TEST IN THIS FILE MAKES A NETWORK CALL —
+  the stub is a shell script that reads a canned response out of the
+  environment. A real build has still never been created; that is what the
+  manual says too, and the stub does not change it.
 
 No test in this file starts a container either.
 """
 
+import json
 import os
+import re
 import shutil
 import subprocess
 import textwrap
@@ -89,6 +96,7 @@ def test_pipeline_emits_the_section_3_step_shape(tmp_path):
             concurrency_group: "gate/gate-alpha"
             timeout_in_minutes: 300
             artifact_paths:
+              - "proj/.assay/*"
               - "proj/.assay/**/*"
               - "proj/.run-gate/history.json"
             env:
@@ -101,6 +109,7 @@ def test_pipeline_emits_the_section_3_step_shape(tmp_path):
             concurrency_group: "gate/gate-alpha"
             timeout_in_minutes: 300
             artifact_paths:
+              - "proj/.assay/*"
               - "proj/.assay/**/*"
               - "proj/.run-gate/history.json"
             env:
@@ -113,6 +122,7 @@ def test_pipeline_emits_the_section_3_step_shape(tmp_path):
             concurrency_group: "gate/gate-alpha"
             timeout_in_minutes: 300
             artifact_paths:
+              - "proj/.assay/*"
               - "proj/.assay/**/*"
               - "proj/.run-gate/history.json"
             env:
@@ -138,7 +148,8 @@ def test_pipeline_output_parses_as_the_documented_pipeline(tmp_path):
         "concurrency": 1,
         "concurrency_group": "gate/gate-alpha",
         "timeout_in_minutes": 300,
-        "artifact_paths": ["proj/.assay/**/*", "proj/.run-gate/history.json"],
+        "artifact_paths": ["proj/.assay/*", "proj/.assay/**/*",
+                           "proj/.run-gate/history.json"],
         "env": {"RUN_GATE_LANE": "mutation"},
     }
 
@@ -149,6 +160,7 @@ def test_pipeline_default_project_is_dot_and_emits_no_cd(tmp_path):
                                            "RUN_GATE_LANES": "selftest"})
     assert res.returncode == 0, res.stderr
     assert '    command: "./run-gate.py selftest"\n' in res.stdout
+    assert '      - ".assay/*"\n' in res.stdout
     assert '      - ".assay/**/*"\n' in res.stdout
     assert '      - ".run-gate/history.json"\n' in res.stdout
     assert "cd " not in res.stdout
@@ -182,6 +194,44 @@ def test_pipeline_refuses_a_bad_timeout(tmp_path):
                env={"RUN_GATE_QUEUE": "q1", "RUN_GATE_TIMEOUT_MINUTES": "5m"})
     assert res.returncode == 2
     assert "RUN_GATE_TIMEOUT_MINUTES='5m'" in res.stderr
+
+
+@pytest.mark.parametrize("value", ["0300", "030", "0"])
+def test_pipeline_refuses_a_leading_zero_timeout(tmp_path, value):
+    """N4: `timeout_in_minutes: 0300` is read by a YAML parser as OCTAL 192,
+    so emitting it verbatim would silently quarter the budget."""
+    assert yaml is None or yaml.safe_load("c: 0300")["c"] == 192   # the reason
+    _stub_project(tmp_path / "proj")
+    res = _run(PIPELINE_SH, "proj", cwd=tmp_path,
+               env={"RUN_GATE_QUEUE": "q1", "RUN_GATE_LANES": "selftest",
+                    "RUN_GATE_TIMEOUT_MINUTES": value})
+    assert res.returncode == 2
+    assert "RUN_GATE_TIMEOUT_MINUTES='%s'" % value in res.stderr
+
+
+def test_pipeline_refuses_a_duplicate_lane_name(tmp_path):
+    """N6: two identical steps with identical labels is never what was meant."""
+    _stub_project(tmp_path / "proj")
+    res = _run(PIPELINE_SH, "proj", cwd=tmp_path,
+               env={"RUN_GATE_QUEUE": "q1",
+                    "RUN_GATE_LANES": "selftest mutation selftest"})
+    assert res.returncode == 2
+    assert "more than once" in res.stderr
+    assert "selftest" in res.stderr
+
+
+def test_pipeline_does_not_glob_the_lane_selection(tmp_path):
+    """N5: `RUN_GATE_LANES='*'` used to expand against the working directory,
+    so a FILE called `selftest` could enter the selection as a lane."""
+    _stub_project(tmp_path / "proj")
+    (tmp_path / "selftest").write_text("decoy\n")
+    (tmp_path / "decoyfile").write_text("decoy\n")
+    res = _run(PIPELINE_SH, "proj", cwd=tmp_path,
+               env={"RUN_GATE_QUEUE": "q1", "RUN_GATE_LANES": "*"})
+    assert res.returncode == 2
+    assert "'*'" in res.stderr or "* that" in res.stderr   # the literal name
+    assert "decoyfile" not in res.stderr                   # nothing expanded
+    assert res.stdout == ""
 
 
 def test_pipeline_refuses_an_unknown_lane_by_name(tmp_path):
@@ -299,8 +349,8 @@ def git_repo(tmp_path_factory):
 
 def _bk(*args, token_file=None, cwd=None, **overrides):
     env = dict(os.environ, BK_ORG="acme", BK_PIPELINE="vbpub")
-    env.pop("BK_POLL_SECONDS", None)
-    env.pop("BK_QUEUE", None)
+    for key in ("BK_POLL_SECONDS", "BK_QUEUE", "BK_MAX_WAIT_MINUTES"):
+        env.pop(key, None)
     if token_file is not None:
         env["BK_TOKEN_FILE"] = str(token_file)
     for key, value in overrides.items():
@@ -311,6 +361,63 @@ def _bk(*args, token_file=None, cwd=None, **overrides):
     return subprocess.run([str(BK_LANE_SH), *args], env=env,
                           cwd=str(cwd) if cwd else None,
                           capture_output=True, text=True)
+
+
+# --- the live path, with `curl` stubbed on PATH (still no network) ----------
+
+CURL_STUB = """\
+#!/usr/bin/env bash
+# Test double for curl: records the invocation, answers from the environment.
+url=""; out=""; prev=""
+for a in "$@"; do
+  case "$prev" in -o) out=$a ;; esac
+  case "$a" in http://*|https://*) url=$a ;; esac
+  prev=$a
+done
+printf '%s\\n' "$*" >> "$FAKE_CALLS"
+if [ -n "$out" ]; then
+  printf '%s' "${FAKE_BODY-artifact-bytes}" > "$out"
+  exit 0
+fi
+case "$url" in
+  */artifacts) printf '%s' "$FAKE_ARTIFACTS" ;;
+  *) printf '%s' "$FAKE_BUILD" ;;
+esac
+"""
+
+SLEEP_STUB = "#!/usr/bin/env bash\n# Test double for sleep: the wait budget is\n" \
+             "# counted in poll intervals, so it need not really elapse.\nexit 0\n"
+
+
+@pytest.fixture
+def stub_bin(tmp_path):
+    """`curl` and `sleep` doubles on PATH — this is what makes bk-lane.sh's
+    LIVE path testable without a network, a token or a Buildkite account."""
+    bindir = tmp_path / "stubbin"
+    bindir.mkdir()
+    (bindir / "curl").write_text(CURL_STUB)
+    (bindir / "sleep").write_text(SLEEP_STUB)
+    for name in ("curl", "sleep"):
+        (bindir / name).chmod(0o755)
+    return bindir, tmp_path / "curl-calls.txt"
+
+
+def _bk_live(stub_bin, *args, build=None, artifacts=None, body=None, **kwargs):
+    bindir, calls = stub_bin
+    env = {
+        "PATH": "%s:%s" % (bindir, os.environ["PATH"]),
+        "FAKE_CALLS": str(calls),
+        "FAKE_BUILD": json.dumps(build if build is not None else
+                                 {"number": 4242, "state": "passed",
+                                  "commit": "abc123"}),
+        "FAKE_ARTIFACTS": json.dumps(artifacts if artifacts is not None else []),
+    }
+    if body is not None:
+        env["FAKE_BODY"] = body
+    res = _bk(*args, **kwargs, **env)
+    res.curl_calls = (calls.read_text().splitlines()
+                      if calls.exists() else [])       # type: ignore[attr-defined]
+    return res
 
 
 def test_bk_run_dry_run_prints_the_post_with_a_redacted_token(token_file, git_repo):
@@ -330,11 +437,13 @@ def test_bk_run_dry_run_prints_the_post_with_a_redacted_token(token_file, git_re
     assert '"branch": "trunk"' in post
     assert '"env": {"RUN_GATE_LANES": "mutation nightly-properties"}' in post
     assert '"message": "run-gate: mutation nightly-properties"' in post
-    # the poll it would then do, and the terminal states it waits for
+    # the poll it would then do, and the terminal states it waits for. Matched
+    # as WHOLE WORDS: a bare `"failed" in stdout` is satisfied by the substring
+    # inside "waiting_failed", so it would pass with `failed` dropped entirely.
     assert "curl '-fsS' '%s/<build-number>'" % API in res.stdout
-    for state in ("passed", "failed", "canceled", "blocked", "skipped",
-                  "not_run", "waiting_failed"):
-        assert state in res.stdout
+    printed = set(re.findall(r"[A-Za-z_]+", res.stdout))
+    assert {"passed", "failed", "canceled", "blocked", "skipped", "not_run",
+            "waiting_failed"} <= printed
     assert TOKEN not in res.stdout and TOKEN not in res.stderr
 
 
@@ -501,5 +610,182 @@ def test_both_tools_are_executable_and_need_only_documented_binaries():
         assert script.read_text().startswith("#!/usr/bin/env bash\n")
     for binary in ("bash", "git", "curl", "python3"):
         assert shutil.which(binary), binary
-    # jq is deliberately not a dependency of either script
-    assert "jq " not in _uncommented(BK_LANE_SH)
+    # jq is deliberately not a dependency of either script. As a WHOLE WORD:
+    # `"jq " not in ...` would pass for `| jq -r`, `/usr/bin/jq` or `jq\n`.
+    for script in (PIPELINE_SH, BK_LANE_SH):
+        assert not re.search(r"\bjq\b", _uncommented(script)), script
+
+
+# ---------------------------------------------------------------------------
+# seam 4, LIVE path — `curl` and `sleep` stubbed on PATH. Still no network:
+# the stub is a shell script answering out of the environment.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("state,expected_exit", [
+    ("passed", 0),
+    ("failed", 1),
+    ("canceled", 1),
+    ("blocked", 1),          # E5-R2: terminal, and NOT a pass
+    ("skipped", 1),
+    ("not_run", 1),
+    ("waiting_failed", 1),
+])
+def test_bk_run_exit_code_for_every_terminal_state(stub_bin, token_file,
+                                                   git_repo, state,
+                                                   expected_exit):
+    """The exit-code contract, on the path that actually implements it: 0 for
+    `passed` and 1 for every other terminal state. Asserting the WORD appears
+    in dry-run prose (what the suite used to do) would pass against a script
+    that printed the word and then looped forever."""
+    root, _ = git_repo
+    res = _bk_live(stub_bin, "run", "lint", token_file=token_file, cwd=root,
+                   build={"number": 77, "state": state, "commit": "abc123"})
+    assert res.returncode == expected_exit, (res.stdout, res.stderr)
+    assert "build 77 state: %s" % state in res.stdout
+    assert any("-X POST" in call for call in res.curl_calls)
+    assert TOKEN not in res.stdout and TOKEN not in res.stderr
+
+
+def test_bk_run_after_verb_dry_run_makes_no_curl_call(stub_bin, token_file,
+                                                      git_repo):
+    """S1: `run --dry-run lint` used to create a REAL build, because the flag
+    was taken as a lane name. With curl stubbed, "made no call" is checkable."""
+    root, _ = git_repo
+    res = _bk_live(stub_bin, "run", "--dry-run", "lint", token_file=token_file,
+                   cwd=root)
+    assert res.returncode == 0, res.stderr
+    assert res.curl_calls == []
+    assert "would create a build" in res.stdout
+    assert "RUN_GATE_LANES" in res.stdout and "--dry-run" not in res.stdout
+
+
+def test_bk_run_refuses_a_lane_name_starting_with_a_dash(token_file, git_repo):
+    root, _ = git_repo
+    res = _bk("run", "-lint", token_file=token_file, cwd=root)
+    assert res.returncode == 2
+    assert "-lint" in res.stderr
+    # and after `--`, where it reaches the lane check itself
+    res = _bk("run", "--", "-lint", token_file=token_file, cwd=root)
+    assert res.returncode == 2
+    assert "starts with '-'" in res.stderr
+
+
+def test_bk_run_gives_up_waiting_with_exit_3(stub_bin, token_file, git_repo):
+    """E5-R10: a build parked in a non-terminal state (a mistyped BK_QUEUE is
+    the way in) must not spin forever unattended."""
+    root, _ = git_repo
+    res = _bk_live(stub_bin, "run", "lint", token_file=token_file, cwd=root,
+                   build={"number": 99, "state": "scheduled", "commit": "abc"},
+                   BK_MAX_WAIT_MINUTES="1", BK_POLL_SECONDS="30")
+    assert res.returncode == 3, (res.stdout, res.stderr)
+    assert "build 99 is still scheduled after 1 minutes" in res.stderr
+    assert "status 99" in res.stderr          # how to pick it up later
+    assert len(res.curl_calls) == 4           # POST + three polls, then give up
+
+
+def test_bk_status_live_path_prints_the_state(stub_bin, token_file):
+    res = _bk_live(stub_bin, "status", "7", token_file=token_file,
+                   build={"number": 7, "state": "running", "commit": "abc"})
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip() == "running"
+
+
+def test_bk_refuses_a_response_missing_the_field_with_exit_2(stub_bin,
+                                                             token_file):
+    """E5-R12: a short response is a refusal (2), not "the build did not
+    pass" (1) — the one distinction the exit-code contract exists to make."""
+    res = _bk_live(stub_bin, "status", "7", token_file=token_file,
+                   build={"number": 7})
+    assert res.returncode == 2
+    assert "state" in res.stderr
+
+
+def test_bk_collect_live_path_writes_under_the_commit_directory(stub_bin,
+                                                                token_file,
+                                                                tmp_path):
+    dest = tmp_path / "inbox"
+    res = _bk_live(
+        stub_bin, "collect", "7", str(dest), token_file=token_file,
+        build={"number": 7, "state": "passed", "commit": "deadbee"},
+        artifacts=[{"path": ".assay/verdict.json",
+                    "download_url": "https://example.invalid/dl/1"},
+                   {"path": ".run-gate/history.json",
+                    "download_url": "https://example.invalid/dl/2"}],
+        body="ARTIFACT-BYTES")
+    assert res.returncode == 0, res.stderr
+    assert (dest / "deadbee" / ".assay" / "verdict.json").read_text() \
+        == "ARTIFACT-BYTES"
+    assert (dest / "deadbee" / ".run-gate" / "history.json").exists()
+    assert "collected 2 artifact(s) of build 7" in res.stdout
+
+
+def test_bk_collect_refuses_a_commit_that_would_escape_the_directory(
+        stub_bin, token_file, tmp_path):
+    """B1: `commit` is a free-form field of the build response ("Ref, SHA or
+    tag"), used as a path component. `../../../escape` used to write outside
+    <dir> — the one containment §4.2 advertises."""
+    dest = tmp_path / "inbox" / "deep"
+    dest.mkdir(parents=True)
+    res = _bk_live(
+        stub_bin, "collect", "7", str(dest), token_file=token_file,
+        build={"number": 7, "state": "passed", "commit": "../../../escape"},
+        artifacts=[{"path": "pwned.txt",
+                    "download_url": "https://example.invalid/dl/1"}])
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert "../../../escape" in res.stderr
+    assert list(tmp_path.glob("**/pwned.txt")) == []
+    assert not (tmp_path.parent / "escape").exists()
+
+
+@pytest.mark.parametrize("bad_path", ["../../escape/x", "/etc/passwd",
+                                      "a/../../b"])
+def test_bk_collect_refuses_an_escaping_artifact_path_with_exit_2(
+        stub_bin, token_file, tmp_path, bad_path):
+    """Also E5-R12: this refusal used to exit 1, colliding with "the build did
+    not pass"."""
+    dest = tmp_path / "inbox"
+    res = _bk_live(
+        stub_bin, "collect", "7", str(dest), token_file=token_file,
+        build={"number": 7, "state": "passed", "commit": "abc123"},
+        artifacts=[{"path": bad_path,
+                    "download_url": "https://example.invalid/dl/1"}])
+    assert res.returncode == 2, (res.stdout, res.stderr)
+    assert "refusing artifact path" in res.stderr
+    assert list(tmp_path.glob("**/x")) == []
+
+
+def test_bk_collect_refuses_a_malformed_artifact_listing_with_exit_2(
+        stub_bin, token_file, tmp_path):
+    res = _bk_live(stub_bin, "collect", "7", str(tmp_path / "inbox"),
+                   token_file=token_file,
+                   build={"number": 7, "state": "passed", "commit": "abc123"},
+                   artifacts=[{"path": ".assay/x"}])   # no download_url
+    assert res.returncode == 2
+    assert "unusable" in res.stderr
+
+
+def test_bk_collect_refuses_extra_arguments(token_file, tmp_path):
+    res = _bk("--dry-run", "collect", "7", str(tmp_path), "extra",
+              token_file=token_file)
+    assert res.returncode == 2
+    assert "extra" in res.stderr
+
+
+def test_bk_run_refuses_a_duplicate_lane(token_file, git_repo):
+    root, _ = git_repo
+    res = _bk("--dry-run", "run", "lint", "lint", token_file=token_file,
+              cwd=root)
+    assert res.returncode == 2
+    assert "named twice" in res.stderr
+
+
+@pytest.mark.parametrize("var,value", [
+    ("BK_POLL_SECONDS", "030"),
+    ("BK_MAX_WAIT_MINUTES", "0300"),
+])
+def test_bk_refuses_a_leading_zero_by_name(token_file, var, value):
+    res = _bk("--dry-run", "status", "1", token_file=token_file,
+              **{var: value})
+    assert res.returncode == 2
+    assert "%s='%s'" % (var, value) in res.stderr
+    assert "leading zero" in res.stderr
