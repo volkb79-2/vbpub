@@ -315,6 +315,29 @@ and `coverage.missing_branch_lines` are still read by those names.
 
 ### Added
 
+- **An R3 lane can declare up to EIGHT canary probes, and the runner attempts
+  them in the order declared.** `[lanes.X.judge.canary]` gains `targets` (an
+  ordered project-relative list, 1..8, duplicates refused) and `aggregation`
+  (`"any"` or `"all"`); declare exactly ONE of `target`/`targets`, and
+  `aggregation` exactly when you name more than one probe — with a single
+  probe `any` and `all` denote the same function, so recording one would
+  record a policy the lane never stated. **`assay.toml`'s `schema_version`
+  stays 2 and every existing single-target R3 lane loads byte-unchanged.**
+  Under `any` the first CAUGHT probe short-circuits and every later target is
+  recorded `not_attempted`/`short_circuited`; under `all` every probe is
+  attempted even after one survives, because naming EVERY surviving probe is
+  the reason to declare several. An INCONCLUSIVE probe is terminal in both
+  modes (`earlier_target_terminal`), and budget exhaustion is its own
+  terminal — `BUDGET_EXCEEDED`/`LANE_TIMEOUT`, never folded into the
+  aggregation, with the probes that never ran still visible in the payload as
+  `budget_exhausted`. **`any` is a strictly WEAKER claim than the
+  single-target form** (it PASSes when one probe was caught even if every
+  other survived); a lane that means "every declared probe is caught"
+  declares `all` — see
+  [CONSUMERS](docs/CONSUMERS.md#declare-more-than-one-canary-probe-targets-and-aggregation-b007).
+  Under `mode = "whole_target"` the rule that a canary target must be one of
+  `judge.targets` now applies to every declared target, naming the offending
+  one. (B007/DA-D8, A-432/A-440)
 - **An ingested R2 lane's `judge.mutation.fail_under` is now a floor that is
   TAKEN.** Any value in `0.0..100.0` loads; the mutation score
   (`killed / (killed + survived)`, percent — `budget_exceeded`, `equivalent`

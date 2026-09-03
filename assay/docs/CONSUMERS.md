@@ -52,8 +52,9 @@ and is **not** the shipped state. Do not write a gate that assumes it.
 
 **Forward note.** Long asynchronous lanes (mutation campaigns, fuzzing) are
 planned as ordinary assay lanes with large budgets, triggered remotely and
-invoked through the same project gate script; see B007's multi-target canary
-for the bounded-long-judgment shape.
+invoked through the same project gate script; the bounded-long-judgment
+shape is the multi-target canary, which ships — see
+[Declare more than one canary probe](#declare-more-than-one-canary-probe-targets-and-aggregation-b007).
 
 ## Obtain and verify an immutable release
 
@@ -198,7 +199,7 @@ per path (A-271):
 |---|---|
 | `judge.coverage.artifact` | the reservation is armed before the command runs, from the project root |
 | `judge.mutation.artifact` / `equivalence_artifact` / `kill_signal_artifact` | same reservation discipline |
-| `judge.source_roots`, `judge.targets`, `judge.canary.target` | these name repository content, not a working directory |
+| `judge.source_roots`, `judge.targets`, `judge.canary.target`/`judge.canary.targets` | these name repository content, not a working directory |
 | `infrastructure` facts | resolved in the invoking context, before any snapshot exists |
 
 So a lane with `cwd = "applications/webapp-ui-react"` writing coverage into
@@ -1683,6 +1684,64 @@ When a command fails or times out, read the optional top-level
 Each tail is at most 64 KiB; its paired `*_dropped_bytes` field says how much
 head-side output was omitted. Absent tails mean no captured-output contract
 applies (for example, the command never started).
+
+## Declare more than one canary probe: `targets` and `aggregation` (B007)
+
+An R3 lane may name up to **eight** canary targets instead of one. The bound
+is measured, not chosen: one target costs about 2.76 s of snapshot
+materialisation plus two full runs of the lane's own command, and eight of
+them is 7.4 % of the smallest budget any worked example in this guide
+declares.
+
+<!-- assay-doc-example:skip reason="the judge.canary table only; the surrounding lane is whatever your R3 lane already declares" -->
+```toml
+[lanes.package.judge.canary]
+mechanism = "import-break"
+targets = ["src/pkg/router.py", "src/pkg/auth.py", "src/pkg/billing.py"]
+aggregation = "all"
+```
+
+Declare **exactly one** of `target` and `targets`, never both. The singular
+spelling is unchanged and keeps loading byte-for-byte as it always has; on
+the wire it normalises to a one-element `targets` array.
+
+`aggregation` is **required once you name more than one probe, and forbidden
+when you name one**. With a single probe `any` and `all` denote the same
+function, so writing one would record a policy your lane never stated — its
+ABSENCE is the checkable statement "one declared target, no aggregation
+policy".
+
+**`any` is a strictly WEAKER claim than the single-target form, and it is
+easy to read as a stronger one.** Under `any` the lane PASSes as soon as ONE
+probe is caught — even if every other declared probe survived, unnoticed,
+because the run short-circuits at the first catch and records the rest as
+`not_attempted`/`short_circuited`. So `any` answers "does this gate catch
+anything at all, somewhere in this list?", which is a smoke test. **If you
+mean "every declared probe is caught", declare `all`** — it attempts every
+target even after one survives, precisely so the verdict can name every
+surviving probe, and it FAILs if any of them survived.
+
+Two things end a run early in **both** modes, and both are recorded rather
+than inferred:
+
+* an **INCONCLUSIVE** probe (a broken control, a no-op transform) — nothing
+  further can be concluded, so every later target is recorded
+  `not_attempted`/`earlier_target_terminal`;
+* **budget exhaustion** — the claim is `BUDGET_EXCEEDED`/`LANE_TIMEOUT`, never
+  folded into the aggregation, and the probes that never ran stay visible in
+  the payload as `not_attempted`/`budget_exhausted`. That is the one refusal
+  that keeps its canary payload, because "we ran out of budget after two of
+  five probes" is a fact a payload-free refusal cannot state.
+
+Every attempt names its own target, in the order you declared them, and
+`judgment.r3.targets` repeats that declaration — the two are checked pairwise
+and in order, so a surviving probe can never be reported under a caught
+probe's name.
+
+Under `mode = "whole_target"`, **every** declared canary target must also be
+one of `judge.targets`. Outside them an `uncovered-line` probe proves nothing
+about the floor actually enforced and would manufacture a `CANARY_SURVIVED`
+that looks like a real finding.
 
 ## Adopting a v2-capable release
 

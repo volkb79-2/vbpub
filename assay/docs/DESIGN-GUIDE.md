@@ -2283,10 +2283,21 @@ time against the vocabulary its own module owns: `coverage.format` against
 `assay.coverage.FORMAT_REGISTRY` (A-068), `mutation.operators` against
 `assay.mutation.MUTATION_OPERATORS`, and `canary.mechanism` against
 `assay.canary.CANARY_MECHANISMS` (P19). `canary` declares exactly one
-`mechanism` and one project-relative `target`, never a plural list — one R3
-claim is one mechanism execution, because the verdict contract carries a
-single canary payload (v3 and planned v4 alike) and collapsing several results into it would report a judgement
-nobody made. **A declared `uncovered-line` canary only ever reaches its own
+`mechanism` and then **exactly one of** a project-relative `target` or the
+ORDERED `targets` list (1..8, duplicates refused) with its CLOSED
+`aggregation` (`"any"`/`"all"`) — B007/A-432, schema v10, additive:
+`LANE_SCHEMA_VERSION` stays 2 and a lane that declared `target` loads
+byte-unchanged. Through v9 only the singular spelling existed, because the
+verdict contract carried a single canary payload and collapsing several
+results into it would have reported a judgement nobody made; v10 keeps that
+rule PER PROBE and lifts the claim to an ordered ARRAY of them, one
+`canary.attempts[]` entry per declared target, so nothing is collapsed. The
+`aggregation` is required once more than one probe is named and forbidden
+when one is — with a single probe `any` and `all` denote the same function,
+so recording one would record a policy the lane never stated, and its
+absence is the checkable statement. The bound of 8 is MEASURED (~2.76 s of
+materialisation per target, against the smallest documented lane budget),
+not chosen. **A declared `uncovered-line` canary only ever reaches its own
 expected reason on a lane that also declares R1** (A-150): `UNCOVERED_LINES`
 comes from the R1 evaluation and from nowhere else, so an R0+R3 lane can
 report that mechanism as having survived and never as having been caught.

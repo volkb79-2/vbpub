@@ -74,20 +74,36 @@ cut), so the migration had exactly one legal value.
 
 ### The two NEW templates, and why a drift guard carries a shape with no producer
 
-Both are **HAND-AUTHORED**, and this manifest says so plainly rather than
-implying a run behind them. Neither shape has a producer at the moment of the
-cut, and that is precisely the reason to freeze them: this is the
-`MISSING_EXTERNAL_TOOL` reservation pattern (A-013/A-086/A-144) applied to a
-document rather than to a reason code — the contract is pinned first, so the
-producer lands INTO a shape rather than defining one as it goes. **The moment
-each producer exists, its own real output replaces the authored document
-here**, exactly as W5's `ingested-r2` template replaced its own absence once
-B046's runner path landed.
+Both were **HAND-AUTHORED at the cut**, and this manifest said so plainly
+rather than implying a run behind them. Neither shape had a producer at the
+moment of the cut, and that was precisely the reason to freeze them: this is
+the `MISSING_EXTERNAL_TOOL` reservation pattern (A-013/A-086/A-144) applied to
+a document rather than to a reason code — the contract is pinned first, so
+the producer lands INTO a shape rather than defining one as it goes. **The
+moment each producer exists, its own real output replaces the authored
+document here**, exactly as W5's `ingested-r2` template replaced its own
+absence once B046's runner path landed.
 
 | file | shape it pins | when it becomes real |
 |---|---|---|
-| `multi-target-r3-v10-template.json` | `aggregation = "any"`, two declared targets, the first caught and the second recorded `not_attempted`/`short_circuited` | when B007's multi-target loop lands (later in this same wave) |
+| `multi-target-r3-v10-template.json` | `aggregation = "any"`, two declared targets, the first caught and the second recorded `not_attempted`/`short_circuited` | **DONE — B007's loop landed (A-440) and this file is now REAL OUTPUT** |
 | `r4-red-first-v10-template.json` | an `R4` claim carrying BOTH recorded outcomes beside `judgment.r4` | when F015's producer lands (phase 3) |
+
+**`multi-target-r3-v10-template.json` is no longer hand-authored** (B007/A-440,
+the ONE authorised edit to this directory after the cut, and the promise the
+row above made). It is the verbatim stdout of a real run of the shipped
+substrate: a throwaway git repository holding `pkg/greet.py`,
+`pkg/farewell.py` and a real pytest suite, an `R0`+`R3` lane declaring
+`mechanism = "import-break"`, `targets = ["pkg/greet.py", "pkg/farewell.py"]`
+and `aggregation = "any"`, run through `assay run canary-multi --file
+assay.toml --verdict-json -`. The first probe's transform was caught for
+exactly the expected reason (`COMMAND_FAILED`), which answers an `any`
+aggregation, so the second is recorded `not_attempted`/`short_circuited` by
+the loop itself — nobody typed that entry. Like W5's `ingested-r2` template
+(and for the same honest reason) it carries no `judge_provenance`: the run
+behind it was an in-tree invocation with no installed-wheel provenance to
+record. `assay_version`, `commit`, `started`, `ended` and the interpreter path
+inside `argv_declared` are that run's own facts, not chosen values.
 
 The multi-target document exists because W5 learned this lesson about
 `producer` in its own fix round and wrote it down: a guard that covers one
@@ -98,9 +114,10 @@ bookkeeping — would ship with zero frozen coverage.
 
 `judge_provenance` is deliberately **absent** from all nine, unchanged from W5:
 it is optional, and inventing a digest for a template is precisely the
-laundering B018 exists to prevent. The one document that IS a real run
-(`ingested-r2-v10-template.json`, inherited from W5) omits it for its own
-honest reason — the run behind it was an in-tree pytest invocation with no
+laundering B018 exists to prevent. The **two** documents that ARE real runs
+(`ingested-r2-v10-template.json`, inherited from W5, and
+`multi-target-r3-v10-template.json` since B007/A-440) omit it for their own
+honest reason — each run behind them was an in-tree invocation with no
 installed-wheel provenance to record.
 
 ## The guards this directory carries forward

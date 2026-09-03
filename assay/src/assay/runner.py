@@ -3568,53 +3568,60 @@ def _run_prepared_lane(
         # its own module level, so a module-level import here would close a
         # genuine cycle -- the identical reasoning `assay.mutation`'s own
         # module docstring already gives for `execute_plan`.
-        from .canary import build_canary_claim, run_isolated_canary
+        from .canary import build_canary_claim, run_isolated_canaries
 
         canary_cfg = lane.judge.canary
+        # B007/A-432: the ONE ordered list either declared spelling denotes,
+        # resolved here and never re-derived downstream. A lane that declared
+        # the singular `target` yields a one-element list and an ABSENT
+        # aggregation, so its rendered judgment is byte-unchanged.
+        canary_targets = canary_cfg.declared_targets
+        canary_aggregation = canary_cfg.aggregation
+        r3_judgment = JudgmentR3(
+            mechanism=canary_cfg.mechanism,
+            targets=canary_targets,
+            aggregation=canary_aggregation,
+        )
         if result.outcome is not Outcome.PASS:
-            canary_result = CanaryResult(
+            canary_result = _broken_control_canary(
                 mechanism=canary_cfg.mechanism,
-                attempts=(
-                    CanaryAttempt(
-                        target=canary_cfg.target,
-                        description=(
-                            "the lane's baseline command did not PASS -- a "
-                            "canary control cannot be a known-good half of a "
-                            "failing lane"
-                        ),
-                        control_outcome=result.outcome,
-                    ),
+                targets=canary_targets,
+                control_outcome=result.outcome,
+                description=(
+                    "the lane's baseline command did not PASS -- a canary "
+                    "control cannot be a known-good half of a failing lane"
                 ),
             )
-            claims += (build_canary_claim(canary_result),)
-            judgment_r3 = JudgmentR3(
-                mechanism=canary_cfg.mechanism, targets=(canary_cfg.target,)
+            claims += (
+                build_canary_claim(
+                    canary_result, aggregation=canary_aggregation
+                ),
             )
+            judgment_r3 = r3_judgment
         elif canary_cfg.mechanism == "uncovered-line" and next(
             claim for claim in claims if claim.rigor == "R1"
         ).status is not Outcome.PASS:
             r1_status = next(claim for claim in claims if claim.rigor == "R1").status
-            canary_result = CanaryResult(
+            canary_result = _broken_control_canary(
                 mechanism=canary_cfg.mechanism,
-                attempts=(
-                    CanaryAttempt(
-                        target=canary_cfg.target,
-                        description=(
-                            "the lane's baseline R1 coverage measurement did "
-                            "not PASS -- an uncovered-line canary control has "
-                            "no known-good coverage baseline"
-                        ),
-                        control_outcome=r1_status,
-                    ),
+                targets=canary_targets,
+                control_outcome=r1_status,
+                description=(
+                    "the lane's baseline R1 coverage measurement did not "
+                    "PASS -- an uncovered-line canary control has no "
+                    "known-good coverage baseline"
                 ),
             )
-            claims += (build_canary_claim(canary_result),)
-            judgment_r3 = JudgmentR3(
-                mechanism=canary_cfg.mechanism, targets=(canary_cfg.target,)
+            claims += (
+                build_canary_claim(
+                    canary_result, aggregation=canary_aggregation
+                ),
             )
+            judgment_r3 = r3_judgment
         else:
+            terminal: AssayError | None = None
             try:
-                canary_result = run_isolated_canary(
+                canary_result, terminal = run_isolated_canaries(
                     lane,
                     prepared=prepared,
                     plan=plan,
@@ -3622,7 +3629,8 @@ def _run_prepared_lane(
                     project_root=project_root,
                     resolved_base=resolved_base,
                     mechanism=canary_cfg.mechanism,
-                    target=canary_cfg.target,
+                    targets=canary_targets,
+                    aggregation=canary_aggregation,
                     adapter=adapter,
                     process_runner=process_runner,
                     clock=clock,
@@ -3643,10 +3651,36 @@ def _run_prepared_lane(
                     ),
                 )
             else:
-                claims += (build_canary_claim(canary_result),)
-                judgment_r3 = JudgmentR3(
-                    mechanism=canary_cfg.mechanism, targets=(canary_cfg.target,)
-                )
+                if terminal is None:
+                    claims += (
+                        build_canary_claim(
+                            canary_result, aggregation=canary_aggregation
+                        ),
+                    )
+                else:
+                    # A-432: budget exhaustion stays its OWN terminal --
+                    # `BUDGET_EXCEEDED`/`LANE_TIMEOUT`, never folded into the
+                    # aggregation -- and the untried targets stay visible in
+                    # the payload it carries. `Claim`'s own R3 rule already
+                    # permits a payload here (only a judged status REQUIRES
+                    # one), and `verify.py` re-derives the aggregation for
+                    # JUDGED statuses only, for exactly this reason.
+                    detail = announce_refusal(terminal, diagnostics=diagnostics)
+                    claims += (
+                        Claim(
+                            rigor="R3",
+                            source="computed",
+                            status=terminal.outcome,
+                            verified_by_assay=True,
+                            reason_code=terminal.reason_code,
+                            detail=detail.text if detail else None,
+                            detail_dropped_bytes=(
+                                detail.dropped_bytes if detail else None
+                            ),
+                            canary=canary_result,
+                        ),
+                    )
+                judgment_r3 = r3_judgment
         ended = iso_utc(clock())
 
     judgment: Judgment | None = None
@@ -3683,6 +3717,50 @@ def _run_prepared_lane(
         ended=ended,
         helpers=tuple(helpers_seen),
     )
+
+
+def _broken_control_canary(
+    *,
+    mechanism: str,
+    targets: tuple[str, ...],
+    control_outcome: Outcome,
+    description: str,
+) -> CanaryResult:
+    """(P19, generalised by B007/A-432) the R3 payload for a lane whose own
+    baseline is not a known-good control.
+
+    No probe is materialised at all here: the lane already told us the
+    control half fails, which :func:`assay.canary.judge_attempt` renders
+    ``INCONCLUSIVE``/``CANARY_INCONCLUSIVE`` -- and an ``INCONCLUSIVE``
+    attempt is TERMINAL in both aggregation modes (A-432). So the FIRST
+    declared target carries the baseline's own outcome and every later one
+    is recorded ``not_attempted``/``earlier_target_terminal``, which is both
+    the true bookkeeping and exactly what ``verify.py`` re-derives. Recording
+    the broken control against every target instead would assert N control
+    runs that never happened; truncating ``judgment.r3.targets`` to the
+    first would hide what the lane declared.
+    """
+    skipped = (
+        f"attempt 0 ({targets[0]}) was INCONCLUSIVE -- the lane's own "
+        f"baseline is not a known-good control, which ends the claim in "
+        f"both aggregation modes"
+    )
+    attempts: tuple[CanaryAttempt, ...] = (
+        CanaryAttempt(
+            target=targets[0],
+            description=description,
+            control_outcome=control_outcome,
+        ),
+    ) + tuple(
+        CanaryAttempt(
+            target=target,
+            description=skipped,
+            disposition="not_attempted",
+            not_attempted_reason="earlier_target_terminal",
+        )
+        for target in targets[1:]
+    )
+    return CanaryResult(mechanism=mechanism, attempts=attempts)
 
 
 def _build_judgment_resolved(

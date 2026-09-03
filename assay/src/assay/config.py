@@ -547,16 +547,14 @@ class MutationConfig:
         return payload
 
 
-_CANARY_FIELDS: tuple[str, ...] = ("mechanism", "target")
+_CANARY_FIELDS: tuple[str, ...] = ("mechanism", "target", "targets", "aggregation")
 
 
 @dataclass(frozen=True)
 class CanaryConfig:
-    """``[lanes.X.judge.canary]`` (P19) -- the closed R3 declaration: which
-    :mod:`assay.canary` mechanism to attempt, and which single source file to
-    attempt it against. Exactly two fields, never a plural list (P19 work
-    item 2: one R3 claim is one mechanism execution, never several results
-    collapsed into schema v3's single canary payload).
+    """``[lanes.X.judge.canary]`` (P19, B007/A-432) -- the closed R3
+    declaration: which :mod:`assay.canary` mechanism to attempt, and which
+    source file(s) to attempt it against.
 
     Before P19 this table was opaque and unvalidated (A-106: P09 built the
     mechanism, not the config reader for it); this loader is the first
@@ -565,13 +563,74 @@ class CanaryConfig:
     already uses, and the one :func:`~assay.canary.run_python_canary` already
     expects (A-145: repo-relative and project-relative are two spellings of
     the same file, and this loader speaks the project-relative one).
+
+    **B007/A-432 adds the PLURAL spelling, additively:
+    ``LANE_SCHEMA_VERSION`` stays 2.** ``targets`` is an ORDERED list of the
+    same project-relative spelling, 1..:data:`~assay.verdict.
+    MAX_CANARY_TARGETS`, duplicates refused; ``aggregation`` is the CLOSED
+    ``"any"``/``"all"`` policy over it. **Exactly one of ``target`` /
+    ``targets`` is declared**, never both and never neither, so every
+    existing single-target R3 lane keeps loading BYTE-unchanged;
+    ``aggregation`` is REQUIRED with ``targets`` and FORBIDDEN with
+    ``target`` -- with one declared target ``any`` and ``all`` denote the
+    same function, and writing one anyway would record a policy the lane
+    never stated (DESIGN-GUIDE §5).
+
+    :meth:`as_declared` reproduces exactly what was WRITTEN, so a
+    single-target lane's rendered declaration is byte-unchanged from v9;
+    :attr:`declared_targets` is the one place the two spellings become the
+    single ordered list every producer downstream consumes.
     """
 
     mechanism: str
-    target: str
+    target: str | None = None
+    #: (B007/A-432) the ordered plural spelling, or ``None`` when the lane
+    #: declared the singular one. Never both.
+    targets: tuple[str, ...] | None = None
+    #: (B007/A-432) ``"any"`` or ``"all"``, present iff :attr:`targets` is.
+    aggregation: str | None = None
+
+    def __post_init__(self) -> None:
+        # A structural invariant, not a config diagnostic: the LOADER states
+        # the message a lane author reads. This is the guard that keeps a
+        # hand-built `CanaryConfig` (every test that builds one, and every
+        # future caller) from constructing the shape the loader refuses.
+        if (self.target is None) == (self.targets is None):
+            raise ValueError(
+                f"CanaryConfig declares exactly one of target/targets, got "
+                f"target={self.target!r}, targets={self.targets!r}"
+            )
+        if self.targets is not None and not self.targets:
+            raise ValueError("CanaryConfig's targets list is empty")
+        if (len(self.declared_targets) > 1) != (self.aggregation is not None):
+            raise ValueError(
+                f"CanaryConfig's aggregation is present iff more than one "
+                f"target is declared, got targets={self.declared_targets!r}, "
+                f"aggregation={self.aggregation!r}"
+            )
+
+    @property
+    def declared_targets(self) -> tuple[str, ...]:
+        """The ORDERED target list either spelling denotes (B007/A-432).
+
+        The singular declaration normalises to a one-element list -- a
+        spelling normalisation of the kind ``wire_path`` already performs,
+        not a value assay chose -- so no producer downstream ever branches
+        on which spelling the lane used.
+        """
+        if self.targets is not None:
+            return self.targets
+        assert self.target is not None  # __post_init__'s own invariant
+        return (self.target,)
 
     def as_declared(self) -> dict[str, Any]:
-        return {"mechanism": self.mechanism, "target": self.target}
+        payload: dict[str, Any] = {"mechanism": self.mechanism}
+        if self.target is not None:
+            payload["target"] = self.target
+        else:
+            payload["targets"] = list(self.targets or ())
+            payload["aggregation"] = self.aggregation
+        return payload
 
 
 @dataclass(frozen=True)
@@ -1274,20 +1333,28 @@ def _load_lane(
     # actually enforced and would produce an accidental CANARY_SURVIVED
     # that looks like a real finding, so it is refused at load unless the
     # canary target is itself one of `targets`.
+    #
+    # B007/A-432 generalises it to EVERY declared canary target, naming the
+    # offending one: the argument is per-probe, and a multi-target lane whose
+    # third probe sits outside the judged targets manufactures exactly the
+    # same accidental CANARY_SURVIVED as a single-target one would.
     if (
         judge is not None
         and judge.canary is not None
         and judge.canary.mechanism == "uncovered-line"
         and judge.mode == "whole_target"
-        and judge.canary.target not in (judge.targets or ())
     ):
-        raise LaneConfigError(
-            f"{where}: judge.canary.target {judge.canary.target!r} is not "
-            f"one of judge.targets {list(judge.targets or ())} under "
-            f"mode = 'whole_target'; outside the declared targets the "
-            f"uncovered-line canary proves nothing about the whole-target "
-            f"floor"
-        )
+        for canary_target in judge.canary.declared_targets:
+            if canary_target in (judge.targets or ()):
+                continue
+            field = "target" if judge.canary.target is not None else "targets"
+            raise LaneConfigError(
+                f"{where}: judge.canary.{field} names {canary_target!r}, "
+                f"which is not one of judge.targets "
+                f"{list(judge.targets or ())} under mode = 'whole_target'; "
+                f"outside the declared targets the uncovered-line canary "
+                f"proves nothing about the whole-target floor"
+            )
 
     where_table = table.get("where")
     if where_table is not None and not isinstance(where_table, dict):
@@ -2555,11 +2622,18 @@ def _load_canary(
     project_root: Path,
     source_root_paths: tuple[Path, ...] | None,
 ) -> CanaryConfig:
-    """``judge.canary`` (P19): a closed table, exactly ``mechanism`` and
-    ``target`` -- never a plural list (work item 2: one R3 claim is one
-    mechanism execution).
+    """``judge.canary`` (P19, B007/A-432): a closed table -- ``mechanism``,
+    and then EXACTLY ONE of the singular ``target`` or the plural ordered
+    ``targets`` (with its required ``aggregation`` once it names more than
+    one probe).
 
-    ``target`` must be a normalized, project-relative path to a REAL,
+    P19 admitted only the singular spelling, on the ground that one R3 claim
+    is one mechanism execution. B007/A-432 keeps that per PROBE and lifts
+    the claim to an ORDERED, bounded ARRAY of them -- so the plural form is
+    an addition, never a replacement, and a lane that declared ``target``
+    loads byte-unchanged.
+
+    Each target must be a normalized, project-relative path to a REAL,
     ordinary source file contained beneath one of the lane's own declared
     ``source_roots`` -- the identical containment discipline
     :func:`_resolve_source_root` already applies to a source root itself,
@@ -2590,12 +2664,29 @@ def _load_canary(
             f"{where}: unknown judge.canary key(s): {', '.join(unknown)}; "
             f"expected only: {', '.join(_CANARY_FIELDS)}"
         )
-    for field in _CANARY_FIELDS:
-        if field not in value:
-            raise LaneConfigError(
-                f"{where}: missing required field 'judge.canary.{field}'"
-            )
-
+    if "mechanism" not in value:
+        raise LaneConfigError(
+            f"{where}: missing required field 'judge.canary.mechanism'"
+        )
+    # B007/A-432: exactly one of the two spellings, never both and never
+    # neither. Stated as its own pair of diagnostics rather than folded into
+    # the required-field loop above, because "you declared both" and "you
+    # declared neither" are two different mistakes and a lane author fixes
+    # them differently.
+    singular = "target" in value
+    plural = "targets" in value
+    if singular and plural:
+        raise LaneConfigError(
+            f"{where}: 'judge.canary' declares BOTH 'target' and 'targets'; "
+            f"declare exactly one -- the singular spelling is the one-probe "
+            f"form of the plural one, and two spellings of one list is how "
+            f"they disagree"
+        )
+    if not singular and not plural:
+        raise LaneConfigError(
+            f"{where}: 'judge.canary' declares neither 'target' nor "
+            f"'targets'; a canary must name the source file(s) it transforms"
+        )
     mechanism = _as_str(value["mechanism"], where, "judge.canary.mechanism")
     # Deferred, not module-level -- the identical reasoning `_load_mutation`
     # already gives for `assay.mutation.MUTATION_OPERATORS`, one field over:
@@ -2610,13 +2701,122 @@ def _load_canary(
             f"{sorted(CANARY_MECHANISMS)}"
         )
 
-    target = _as_str(value["target"], where, "judge.canary.target")
+    # B007/A-432: ONE per-target rule, applied to whichever spelling the lane
+    # used. Every diagnostic names the field the author actually wrote, so
+    # the plural form does not inherit a message about a key it never
+    # declared.
+    if singular:
+        declared = [
+            _load_canary_target(
+                value["target"],
+                where=where,
+                field="judge.canary.target",
+                project_root=project_root,
+                source_root_paths=source_root_paths,
+            )
+        ]
+    else:
+        raw_targets = value["targets"]
+        if not isinstance(raw_targets, list):
+            raise LaneConfigError(
+                f"{where}: 'judge.canary.targets' must be an array, got "
+                f"{_type_name(raw_targets)}"
+            )
+        # Deferred for the same cycle reason as `CANARY_MECHANISMS` above
+        # (`assay.verdict` imports THIS module at its own module level), and
+        # imported rather than restated so the measured bound and the closed
+        # aggregation vocabulary each keep exactly ONE owner.
+        from .verdict import MAX_CANARY_TARGETS, MIN_CANARY_TARGETS
+
+        if not MIN_CANARY_TARGETS <= len(raw_targets) <= MAX_CANARY_TARGETS:
+            raise LaneConfigError(
+                f"{where}: 'judge.canary.targets' declares "
+                f"{len(raw_targets)} target(s); a canary declares between "
+                f"{MIN_CANARY_TARGETS} and {MAX_CANARY_TARGETS} (A-432: the "
+                f"bound is the measured materialisation cost, not taste)"
+            )
+        declared = [
+            _load_canary_target(
+                item,
+                where=where,
+                field=f"judge.canary.targets[{index}]",
+                project_root=project_root,
+                source_root_paths=source_root_paths,
+            )
+            for index, item in enumerate(raw_targets)
+        ]
+        duplicates = sorted({t for t in declared if declared.count(t) > 1})
+        if duplicates:
+            raise LaneConfigError(
+                f"{where}: 'judge.canary.targets' declares {duplicates} more "
+                f"than once; a repeated probe is the same probe"
+            )
+
+    # `aggregation` is required IFF the lane declares more than one probe:
+    # with one, `any` and `all` denote the same function, so recording one
+    # would record a policy the lane never stated (A-432), and
+    # `JudgmentR3.__post_init__` states the identical rule on the wire.
+    aggregation_declared = "aggregation" in value
+    if len(declared) > 1 and not aggregation_declared:
+        raise LaneConfigError(
+            f"{where}: 'judge.canary' declares {len(declared)} targets but "
+            f"no 'aggregation'; with more than one probe the claim's status "
+            f"is not defined without one, and assay does not invent a policy "
+            f"the lane never stated"
+        )
+    if len(declared) == 1 and aggregation_declared:
+        raise LaneConfigError(
+            f"{where}: 'judge.canary.aggregation' is declared beside a "
+            f"single target; with one declared probe 'any' and 'all' denote "
+            f"the same function, so recording one would record a policy this "
+            f"lane never stated"
+        )
+    aggregation = None
+    if aggregation_declared:
+        from .verdict import CANARY_AGGREGATIONS
+
+        aggregation = _as_str(
+            value["aggregation"], where, "judge.canary.aggregation"
+        )
+        if aggregation not in CANARY_AGGREGATIONS:
+            raise LaneConfigError(
+                f"{where}: 'judge.canary.aggregation' {aggregation!r} is not "
+                f"one of {list(CANARY_AGGREGATIONS)}"
+            )
+
+    if singular:
+        return CanaryConfig(mechanism=mechanism, target=declared[0])
+    return CanaryConfig(
+        mechanism=mechanism,
+        targets=tuple(declared),
+        aggregation=aggregation,
+    )
+
+
+def _load_canary_target(
+    raw: Any,
+    *,
+    where: str,
+    field: str,
+    project_root: Path,
+    source_root_paths: tuple[Path, ...] | None,
+) -> str:
+    """ONE declared canary target, validated and normalized (P19/P21/A-152,
+    generalised to the plural spelling by B007/A-432).
+
+    *field* is the key the lane author actually wrote -- ``judge.canary.target``
+    or ``judge.canary.targets[i]`` -- so every diagnostic below points at
+    the declaration it came from rather than at a spelling the lane never
+    used. The rules themselves are byte-unchanged from P19's single-target
+    loader.
+    """
+    target = _as_str(raw, where, field)
     if not target:
-        raise LaneConfigError(f"{where}: 'judge.canary.target' is empty")
+        raise LaneConfigError(f"{where}: '{field}' is empty")
     candidate = Path(target)
     if candidate.is_absolute():
         raise LaneConfigError(
-            f"{where}: 'judge.canary.target' {target!r} is absolute; it is "
+            f"{where}: '{field}' {target!r} is absolute; it is "
             f"relative to the project root, the same as source_roots"
         )
     raw_path = project_root / candidate
@@ -2626,14 +2826,14 @@ def _load_canary(
         # non-existent path, unlike a naive existence check that follows
         # the link first.
         raise LaneConfigError(
-            f"{where}: 'judge.canary.target' {target!r} is a symlink; a "
+            f"{where}: '{field}' {target!r} is a symlink; a "
             f"canary target must be a real, ordinary source file"
         )
     resolved = raw_path.resolve()
     roots = source_root_paths or ()
     if not any(resolved.is_relative_to(root) for root in roots):
         raise LaneConfigError(
-            f"{where}: 'judge.canary.target' {target!r} resolves to "
+            f"{where}: '{field}' {target!r} resolves to "
             f"{resolved}, which is not contained beneath any declared "
             f"source root {[str(root) for root in roots]} (via '..' or a "
             f"symlink) -- a canary target must live beneath a declared "
@@ -2641,31 +2841,31 @@ def _load_canary(
         )
     if not resolved.is_file():
         raise LaneConfigError(
-            f"{where}: 'judge.canary.target' {target!r} does not exist as "
+            f"{where}: '{field}' {target!r} does not exist as "
             f"a file under the project root {project_root} (looked for "
             f"{resolved})"
         )
     # P21/A-152: the declared spelling becomes the NORMALIZED wire spelling
-    # here, at the one boundary that reads it, so `CanaryResult.target` and
-    # `judgment.r3.target` are equal as STRINGS rather than merely as
+    # here, at the one boundary that reads it, so `CanaryAttempt.target` and
+    # `judgment.r3.targets[]` are equal as STRINGS rather than merely as
     # filesystem paths. `./src/p.py` and `src/p.py` name one file; if both
     # spellings could reach the artifact, the equality check that finally
-    # makes `judgment.r3.target` witnessable could be satisfied -- or
+    # makes `judgment.r3.targets` witnessable could be satisfied -- or
     # broken -- by spelling alone. Normalizing at load also means the model
     # never receives a shape its wire grammar would refuse, so a legal lane
     # can never crash a producer.
     if "\\" in target:
         raise LaneConfigError(
-            f"{where}: 'judge.canary.target' {target!r} contains a backslash; "
+            f"{where}: '{field}' {target!r} contains a backslash; "
             f"declare it with forward slashes regardless of platform"
         )
     normalized = PurePosixPath(os.path.normpath(target)).as_posix()
     if normalized == "." or normalized.startswith("../"):
         raise LaneConfigError(
-            f"{where}: 'judge.canary.target' {target!r} does not normalize to "
+            f"{where}: '{field}' {target!r} does not normalize to "
             f"a path inside the project ({normalized!r})"
         )
-    return CanaryConfig(mechanism=mechanism, target=normalized)
+    return normalized
 
 
 def _resolve_source_root(raw: str, where: str, project_root: Path) -> Path:

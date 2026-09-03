@@ -860,7 +860,19 @@ whole-source coverage gate, while its attempted R1+ run fails on the Topos
 
 **Proposed by:** nyxloom, 2026-08-17, while retiring its own coverage, mutation,
 canary, verdict and gate-judgment implementations in favour of assay through the
-public CLI/verdict boundary. **Status: ASSESSED AND DEFERRED — the first
+public CLI/verdict boundary. **Status: RESOLVED in Wave D (verdict schema v10)
+— design A-432, implementation A-440.** The wire shape (`judgment.r3.targets`,
+`judgment.r3.aggregation`, `canary.attempts[]` with its `disposition` and the
+closed `not_attempted_reason` vocabulary) landed with the v10 cut; the lane
+surface (`judge.canary.targets`/`aggregation`, `LANE_SCHEMA_VERSION` still 2)
+and the ordered runner loop landed as A-440, with the W6 multi-target template
+replaced by real output of that loop. The seven requirements and eight oracles
+below were adopted by reference and are not diluted; the one thing
+deliberately NOT built is the optional `assay canary qualify` document kind
+(out of scope for this wave, per the wave prompt).
+
+*The original assessment follows, unedited, because it is the reasoning the
+design was held to.* **Status when written: ASSESSED AND DEFERRED — the first
 post-v6 schema item (v7).** Not folded into wave 1. The reasoning is below and
 is binding on whoever picks this up.
 

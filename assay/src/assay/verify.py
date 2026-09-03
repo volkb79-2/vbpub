@@ -2232,17 +2232,29 @@ def _judge_one_attempt(attempt: Any) -> tuple[Outcome, ReasonCode | None]:
     return Outcome.PASS, None
 
 
+#: (B007/A-432) the R3 statuses that ARE a judgement of a canary result, and
+#: are therefore re-derivable from the attempts. `BUDGET_EXCEEDED` is the one
+#: non-judged status that may still carry the payload -- it is the mechanism
+#: running out of budget, recorded so the untried targets stay visible.
+_JUDGED_R3_STATUSES: frozenset[Outcome] = frozenset(
+    {Outcome.PASS, Outcome.FAIL, Outcome.INCONCLUSIVE}
+)
+
+
 def _check_r3_rederivation(verdict: Verdict, failures: list[str]) -> None:
     """Re-derive the R3 claim's status from its ``canary`` payload, and check
     the aggregation BOOKKEEPING the payload asserts about itself.
 
     Two independent statements, both hand-transcribed (A-182, B007/A-432):
 
-    1. **The status.** Attempts are judged in DECLARED order. An
-       ``INCONCLUSIVE`` attempt is TERMINAL in both modes. Under ``any`` the
-       first ``PASS`` decides the claim; under ``all`` any ``FAIL`` does; if
-       every attempt ran under ``any`` without a ``PASS``, the claim is
-       ``FAIL``/``CANARY_SURVIVED``.
+    1. **The status.** Attempts are judged in DECLARED order, and the FIRST
+       decisive one wins. An ``INCONCLUSIVE`` attempt is terminal in both
+       modes. Under ``any`` the first ``PASS`` decides the claim; under
+       ``all`` any ``FAIL`` does; if every attempt ran under ``any`` without
+       a ``PASS``, the claim is ``FAIL``/``CANARY_SURVIVED``. A
+       ``BUDGET_EXCEEDED``/``LANE_TIMEOUT`` claim is exempt from the
+       equality and only from it: its status comes from the mechanism, not
+       from the aggregation (A-432).
     2. **The bookkeeping**, which is what makes a multi-target payload
        checkable rather than merely present: under ``any``, exactly the
        attempts up to and including the first ``PASS`` are ``attempted`` and
@@ -2250,6 +2262,12 @@ def _check_r3_rederivation(verdict: Verdict, failures: list[str]) -> None:
        ``all``, no attempt is ``short_circuited``; after a TERMINAL attempt
        every later one is ``not_attempted``. A document whose bookkeeping
        contradicts its own aggregation is refused.
+
+    **A FAIL under ``all`` is not terminal** (DA-R19). It decides the status
+    and stops nothing: the 2N materialisation bound is deliberate, because
+    naming EVERY surviving probe is the whole reason a lane declares
+    several. Only ``any``'s first ``PASS`` and an ``INCONCLUSIVE`` attempt
+    end the run.
     """
     claim = next((item for item in verdict.claims if item.rigor == "R3"), None)
     if claim is None or claim.canary is None:
@@ -2259,6 +2277,13 @@ def _check_r3_rederivation(verdict: Verdict, failures: list[str]) -> None:
 
     status: Outcome | None = None
     reason_code: ReasonCode | None = None
+    #: What ENDED the run, as opposed to what merely decided the STATUS. Only
+    #: an INCONCLUSIVE attempt (terminal in both modes) and `any`'s first
+    #: PASS (the short circuit) end it. A FAIL under `all` decides the claim
+    #: and stops NOTHING -- DA-R19 affirms the deliberate 2N bound, because
+    #: naming EVERY surviving probe is the whole reason a lane declares
+    #: several -- so a later `attempted` entry after one is correct, not a
+    #: contradiction.
     terminal_at: int | None = None
     first_pass_at: int | None = None
     saw_pass = False
@@ -2274,31 +2299,49 @@ def _check_r3_rederivation(verdict: Verdict, failures: list[str]) -> None:
             break
         attempt_status, attempt_reason = _judge_one_attempt(attempt)
         if attempt_status is Outcome.INCONCLUSIVE:
-            status, reason_code, terminal_at = attempt_status, attempt_reason, index
+            if status is None:
+                status, reason_code = attempt_status, attempt_reason
+            terminal_at = index
             continue
         if attempt_status is Outcome.PASS:
             saw_pass = True
             if first_pass_at is None:
                 first_pass_at = index
             if aggregation != "all":
-                status, reason_code, terminal_at = Outcome.PASS, None, index
+                if status is None:
+                    status, reason_code = Outcome.PASS, None
+                terminal_at = index
         else:
-            if aggregation != "any":
-                status, reason_code, terminal_at = (
-                    Outcome.FAIL,
-                    ReasonCode.CANARY_SURVIVED,
-                    index,
-                )
+            if aggregation != "any" and status is None:
+                status, reason_code = Outcome.FAIL, ReasonCode.CANARY_SURVIVED
     if status is None:
         status, reason_code = (
             (Outcome.PASS, None) if saw_pass
             else (Outcome.FAIL, ReasonCode.CANARY_SURVIVED)
         )
-    if (claim.status, claim.reason_code) != (status, reason_code):
+    # A-432: budget exhaustion stays its OWN terminal -- `BUDGET_EXCEEDED`/
+    # `LANE_TIMEOUT`, never folded into the aggregation -- and it carries the
+    # payload precisely so the untried targets stay visible. Its status comes
+    # from the MECHANISM, not from the attempts, so re-deriving one from them
+    # and demanding equality would refuse the very document the ruling asks
+    # the producer to write. The BOOKKEEPING below still applies to it in
+    # full: what may not be checked is the status, not the record.
+    if claim.status in _JUDGED_R3_STATUSES:
+        if (claim.status, claim.reason_code) != (status, reason_code):
+            failures.append(
+                f"R3 claim status {_fmt(claim.status, claim.reason_code)} "
+                f"disagrees with the re-derived judgment from the canary "
+                f"result {_fmt(status, reason_code)}"
+            )
+    elif (claim.status, claim.reason_code) != (
+        Outcome.BUDGET_EXCEEDED,
+        ReasonCode.LANE_TIMEOUT,
+    ):
         failures.append(
             f"R3 claim status {_fmt(claim.status, claim.reason_code)} "
-            f"disagrees with the re-derived judgment from the canary "
-            f"result {_fmt(status, reason_code)}"
+            f"carries a canary payload, but the only non-judged status that "
+            f"may is BUDGET_EXCEEDED/LANE_TIMEOUT (A-432) -- every other "
+            f"refusal means no probe produced a record to report"
         )
 
     for index, attempt in enumerate(claim.canary.attempts):

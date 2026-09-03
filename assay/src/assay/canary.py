@@ -120,6 +120,7 @@ __all__ = [
     "judge_attempt",
     "judge_canary",
     "run_go_canary",
+    "run_isolated_canaries",
     "run_isolated_canary",
     "run_python_canary",
 ]
@@ -148,11 +149,12 @@ def _single_target_result(*, mechanism: str, **attempt: object) -> CanaryResult:
     """(B007/A-432, schema v10) the R3 payload for a lane that declared ONE
     canary target: a one-element ``attempts`` array.
 
-    Every producer in this module runs exactly one target today -- the
-    multi-target loop is B007's own implementation step -- so every one of
-    them builds its evidence through here rather than restating the wrapping.
-    The mechanism is a LANE fact and lives on the result; everything else is
-    a TARGET fact and lives on the attempt.
+    Every producer in this module runs exactly ONE target -- the multi-target
+    form is :func:`run_isolated_canaries`, which COMPOSES this one-target
+    runner rather than re-implementing it -- so every one of them builds its
+    evidence through here rather than restating the wrapping. The mechanism
+    is a LANE fact and lives on the result; everything else is a TARGET fact
+    and lives on the attempt.
     """
     return CanaryResult(
         mechanism=mechanism,
@@ -619,6 +621,170 @@ def run_isolated_canary(
         expected_reason_code=expected_reason,
         observed_reason_code=observed_reason_code,
     )
+
+
+def _not_attempted(target: str, why: str, *, detail: str) -> CanaryAttempt:
+    """One declared probe that was never tried, and the CLOSED reason it
+    was not (B007/A-432).
+
+    *detail* becomes the entry's ``description``: the vocabulary member says
+    which RULE skipped the probe, and the sentence says what that rule saw,
+    so a reader of the document never has to reconstruct it from the
+    neighbouring attempts.
+    """
+    return CanaryAttempt(
+        target=target,
+        description=detail,
+        disposition="not_attempted",
+        not_attempted_reason=why,
+    )
+
+
+def run_isolated_canaries(
+    lane: Lane,
+    *,
+    prepared: SnapshotRepository,
+    plan: CommandPlan,
+    deadline: LaneDeadline,
+    project_root: Path,
+    resolved_base: str | None,
+    mechanism: str,
+    targets: Iterable[str],
+    aggregation: str | None,
+    adapter: LanguageAdapter,
+    process_runner: ProcessRunner,
+    clock: Clock,
+) -> tuple[CanaryResult, AssayError | None]:
+    """(B007/A-432) the ORDERED multi-target R3 run: one
+    :func:`run_isolated_canary` per declared target, in DECLARED order, with
+    the aggregation's own bookkeeping recorded for the probes it did not try.
+
+    Returns the whole :class:`~assay.verdict.CanaryResult` and, when the run
+    ended on a TERMINAL that is not itself a judgement, the
+    :class:`~assay.errors.AssayError` that ended it -- today exactly one
+    case, budget exhaustion, whose claim is
+    ``BUDGET_EXCEEDED``/``LANE_TIMEOUT`` and NEVER folded into the
+    aggregation (A-432), with the untried targets visible in the payload
+    that comes back beside it.
+
+    **What stops the loop, and what does not** (A-432, DA-R19):
+
+    * under ``"any"`` the first ``PASS`` SHORT-CIRCUITS -- the question is
+      answered, and each further target costs a measured ~2.76 s of
+      materialisation plus two full command runs. Every later target is
+      recorded ``not_attempted``/``short_circuited``;
+    * under ``"all"`` a ``FAIL`` does NOT stop anything (DA-R19 affirms the
+      deliberate 2N bound: naming EVERY surviving probe is the whole reason
+      a lane declares several), so the loop runs on and the claim is still
+      ``FAIL``/``CANARY_SURVIVED``;
+    * in BOTH modes an ``INCONCLUSIVE`` attempt is TERMINAL -- nothing
+      further can be concluded from probes judged against a baseline that
+      was not itself known-good -- and every later target is recorded
+      ``not_attempted``/``earlier_target_terminal``;
+    * budget exhaustion ends the run wherever it happens, and the probe it
+      happened in, together with every later one, is recorded
+      ``not_attempted``/``budget_exhausted``. ``not_attempted`` is the
+      dispositional statement "there is no run to report", which is exactly
+      true of a probe the deadline cut short: its own ``description`` says
+      whether the budget expired DURING it or was already gone before it, so
+      the document never has to be reconstructed from its neighbours.
+
+    **Every OTHER refusal raised inside a target's own run propagates**,
+    exactly as it does for a single-target lane: a ``DIRTY_TREE``/
+    ``HEAD_CHANGED``/``UNREADABLE_ARTIFACT`` fault is the canary MACHINERY
+    failing, and the caller renders the payload-FREE R3 claim it always has.
+    Budget exhaustion is the one that keeps its payload because the untried
+    targets are the whole point of recording it (A-432): a lane that ran out
+    of budget after two of five probes has said something a payload-free
+    refusal cannot.
+    """
+    declared = tuple(targets)
+    attempts: list[CanaryAttempt] = []
+    terminal: AssayError | None = None
+    index = 0
+    while index < len(declared):
+        target = declared[index]
+        try:
+            one = run_isolated_canary(
+                lane,
+                prepared=prepared,
+                plan=plan,
+                deadline=deadline,
+                project_root=project_root,
+                resolved_base=resolved_base,
+                mechanism=mechanism,
+                target=target,
+                adapter=adapter,
+                process_runner=process_runner,
+                clock=clock,
+            )
+        except AssayError as exc:
+            if exc.outcome is not Outcome.BUDGET_EXCEEDED:
+                raise
+            terminal = exc
+            ran = len(attempts)
+            attempts.append(
+                _not_attempted(
+                    target,
+                    "budget_exhausted",
+                    detail=(
+                        f"the lane-wide deadline expired during this probe, "
+                        f"which produced no run to report ({ran} of "
+                        f"{len(declared)} declared targets had already run)"
+                    ),
+                )
+            )
+            attempts.extend(
+                [
+                    _not_attempted(
+                        later,
+                        "budget_exhausted",
+                        detail=(
+                            f"the lane-wide deadline was already gone before "
+                            f"this probe's control materialisation ({ran} of "
+                            f"{len(declared)} declared targets had run)"
+                        ),
+                    )
+                    for later in declared[index + 1 :]
+                ]
+            )
+            break
+        attempt = one.attempts[0]
+        attempts.append(attempt)
+        index += 1
+        at = len(attempts) - 1
+        status, _ = judge_attempt(attempt)
+        if status is Outcome.INCONCLUSIVE:
+            attempts.extend(
+                [
+                    _not_attempted(
+                        later,
+                        "earlier_target_terminal",
+                        detail=(
+                            f"attempt {at} ({target}) was INCONCLUSIVE, "
+                            f"which ends the claim in both aggregation modes"
+                        ),
+                    )
+                    for later in declared[index:]
+                ]
+            )
+            break
+        if status is Outcome.PASS and aggregation == "any":
+            attempts.extend(
+                [
+                    _not_attempted(
+                        later,
+                        "short_circuited",
+                        detail=(
+                            f"attempt {at} ({target}) was caught, which "
+                            f"answers an 'any' aggregation"
+                        ),
+                    )
+                    for later in declared[index:]
+                ]
+            )
+            break
+    return CanaryResult(mechanism=mechanism, attempts=tuple(attempts)), terminal
 
 
 def _evaluate_go(
