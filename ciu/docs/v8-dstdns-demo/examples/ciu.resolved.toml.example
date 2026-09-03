@@ -45,19 +45,24 @@ probe_targets = "live"
 
 # =============================== DERIVED ====================================
 [resolved]
-schema_version = 2
+api = "ciu/resolved"                             # artifact discriminator + its own version (S18.4)
+api_version = 1
 layout = "prod3"
 host = "rs1002"
 environment = "prod"
-rendered_at = 2026-09-02T11:05:12Z
+rendered_at = 2026-09-03T11:05:12Z
+# Waves per S8.4.1 — consumer → provider edges lifted to Realizations, same-Realization
+# edges discarded, wave(R) = 0 without providers else 1 + max(wave(provider)); all 22
+# Realizations of prod3's closure appear. `wait = "none"` bindings add no bind edge but
+# their cross-host resolutions still add network edges (→ tailscale_node); every
+# vault-sourced/-stored secret adds a secret→vault edge (S8.3). Derived by the rule,
+# reproduced by `ciu check --graph`; hosts deploy only their own placements (S7.7).
 waves = [
-  ["tailscale_node"],                                           # wave 0: transport (network.mesh.realized_by); per_host → on every host
-  ["vault"],                                                    # wave 1: every vault-sourced or vault-stored secret derives an edge here
-  ["consul_server", "redis_core", "db_core"],                   # wave 2
-  ["db_init", "authentik", "skywalking", "otel_aggregator"],    # wave 3
-  ["controller", "docker_stats_exporter", "otel_collector_node"],
-  ["worker_io", "worker_db", "webapp_server", "webapp_ui_react"],
-  ["reverse_proxy"],
+  ["cadvisor", "github_runner", "github_runner_webhook", "otel_aggregator", "otel_collector_node", "registry_lightweight", "tailscale_node", "vault", "webapp_ui_react", "webhook_listener"],   # wave 0: no providers (vault binds nothing; the collectors' and the UI's bindings are same-host, wait = "none")
+  ["consul_server", "db_core", "redis_core", "reverse_proxy", "skywalking"],   # wave 1: secret→vault edges; reverse_proxy: network edges (its wait = "none" upstreams cross mesh)
+  ["authentik", "db_init", "docker_stats_exporter"],                           # wave 2
+  ["controller", "webapp_server", "worker_db"],                                # wave 3 (requires app_schema → db_init)
+  ["worker_io"],                                                               # wave 4 (binds controller.http with the default wait; internal_dlq_token minter edge)
 ]
 edges = [
   { from = "controller.controller", to = "db_core.postgres", kind = "bind" },             # binds.database → main_db.sql (+ facts pg:db/dstdns, pg:role/controller)
@@ -70,12 +75,23 @@ edges = [
   # …
 ]
 
-[resolved.gates.2]                               # before wave 3. Nothing of wave 2 runs on rs1002, so THIS host's entry is empty and the
-healthy = []                                     # remote providers are probed for reachability over their resolutions only (S8.5.3);
-completed = []                                   # gstammtisch's own rendered file carries the authoritative gate for them:
-facts = []                                       #   healthy = ["consul_server.consul", "redis_core.redis", "db_core.postgres", "db_core.minio"]
-                                                 #   completed = ["db_core.postgres_init", "db_core.minio_init"]
-                                                 #   facts = ["pg:db/dstdns", "pg:role/controller", "vault:secret/consul/controller/token", …]
+# Gates (S8.5.1, S8.5.4) list the predicates evaluated on THIS host (rs1002) before the next wave — the strongest predicate
+# per edge into a provider that runs here. Every `wait = "none"` binding (tracing, otel, the proxy's upstreams) adds no
+# predicate; rs1002's first gated provider is controller, which worker_io (wave 4) binds with the default wait:
+[resolved.gates.1]                               # before wave 2: no provider on rs1002 has a gated edge from a later wave
+healthy = []
+completed = []
+facts = []
+[resolved.gates.3]                               # before wave 4
+healthy = ["controller.controller"]
+completed = []
+facts = ["vault:secret/internal/internal_dlq_token@controller.controller"]   # worker_io's secret→minter edge (S8.3); probed through CIU's vault binding
+assumed = []                                     # remote facts accepted without a receipt would be listed here (S17.5)
+# Remote providers (db_core, consul_server, redis_core, db_init on gstammtisch) are not gated here: their facts and completions
+# come from gstammtisch's RECEIPT when `ciu activate` carried it (`--receipts`, S17.4.3, S8.5.3); a hand-started `ciu up` without
+# one records them as `assumed` and WARNs. gstammtisch's own receipt carries healthy = ["consul_server.consul", "redis_core.redis",
+# "db_core.postgres", "db_core.minio", …], completed = ["db_core.postgres_init", "db_core.minio_init", "db_init.runner"],
+# facts = ["pg:db/dstdns", "pg:role/controller", "vault:secret/consul/controller/token", …].
 
 [resolved.services.main_db]                      # S9.3.3: level, realization and the VARIANT service — the health/endpoint/exec-target bearer (S5.2, S8.6)
 level = "live"
@@ -95,7 +111,8 @@ kind = "address"
 [resolved.networks.mesh]
 name = "mesh"
 kind = "address"
-realized_by = "tailscale_node"
+realized_by = "mesh_node"                        # the LogicalService (S7.3); its selected variant service:
+realized_service = "tailscale_node.tailscale"    # what readiness (S7.3.2) and the network edges (S8.3) point at
 [resolved.networks.public]
 name = "public"
 kind = "address"
@@ -130,11 +147,12 @@ port = 5432
 protocol = "tcp"
 publish = "instance"
 host_port = 5432
-published_on = ["mesh"]                          # DERIVED publication (S7.4.1): declared instance-only, but controller/webapp_server/
-                                                 # worker_io@rs1002 BIND it (binds with an endpoint) over mesh, so gstammtisch gets
-                                                 # ports: ["100.64.0.11:5432:5432/tcp"] — bound to its mesh address only. A bare
-                                                 # `requires = ["main_db"]` would derive NO publication (R-22). [] on the single-host
-                                                 # layout "local"; a publish = "host" endpoint is published in every layout.
+publications = [                                 # SOCKET CLAIMS (S7.4.6): DERIVED publication (S7.4.1) — declared instance-only, but controller/
+  { scope = "network", network = "mesh", bind = "100.64.0.11", port = 5432, protocol = "tcp" },   # webapp_server/worker_io@rs1002 BIND it over mesh, so gstammtisch gets
+]                                                # ports: ["100.64.0.11:5432:5432/tcp"] — bound to its mesh address only. A bare `requires = ["main_db"]`
+                                                 # would derive NO publication (R-22). [] on the single-host layout "local". Claims collide per
+                                                 # S6.3.2 (same host, protocol, port, and equal or wildcard bind) — which is how T-13 found
+                                                 # authentik.http and db_core.minio.s3 both claiming mesh:9000 on gstammtisch (authentik is 9010 now).
 
 [resolved.identities.controller.controller]
 container_name = "dstdns-98535c-controller"       # service == realization → the service part is omitted (S4.2.2)
@@ -148,7 +166,7 @@ protocol = "http"
 publish = "proxy"
 host_port = 8083
 path = "/api/controller"
-published_on = ["mesh"]                          # reverse_proxy@tsstammtisch and worker_db@gstammtisch bind it over mesh (S7.4.3; allow_from admits both)
+publications = [ { scope = "network", network = "mesh", bind = "100.64.0.12", port = 8083, protocol = "tcp" } ]   # reverse_proxy@tsstammtisch and worker_db@gstammtisch bind it over mesh (S7.4.3; allow_from admits both — declared data, consumed by the proxy's nginx template, S7.4.4)
 
 [resolved.identities.worker_io.worker]
 container_name = "dstdns-98535c-worker-io-worker"    # worker_io → worker-io (S4.2.1)
@@ -235,7 +253,14 @@ requires = ["tailscale_node"]
 # url = "https://gstammtisch.dchive.de/api/controller"   # the proxy-network form of step 5: the proxy routes BY this path
 # requires = ["reverse_proxy"]            # the proxy must be up first (network readiness, S7.3.2)
 
-[resolved.bundle.rs1002]                         # with --layout: what `ciu push` ships to this host and why (S17.3.1, S15.4)
+[resolved.capabilities.main_db]                  # S3.7.6: the capability index for machine readers that start from a LogicalService (`ciu query capability main_db`)
+level = "live"
+realization = "db_core"
+service = "postgres"
+container_name = "dstdns-98535c-db-core-postgres"
+endpoints = { sql = { host = "dstdns-98535c-db-core-postgres", port = 5432 } }   # as seen from the instance network; per-consumer views are the bindings above
+
+[resolved.bundle.rs1002]                         # with --layout: what `ciu push` ships to this host and why (S17.3.2, S15.4) — the secrets CAPSULE per source
 store_entries = [
   { entry = "secrets.controller.controller.postgres_password", travels = false, why = "from = vault; rs1002 resolves ciu.vault over mesh — the target fetches" },
   { entry = "secrets.registry_lightweight.registry.registry_http_secret", travels = false, why = "realization not placed on rs1002" },
@@ -246,7 +271,7 @@ store_entries = [
 # [resolved] layout = "local" host = "localhost" environment = "dev"
 # [ciu.instance.realness.local] main_db = "live" app_schema = "live" probe_targets = "simulated"   (merged input, generated file)
 # [resolved.placement.db_core] hosts = ["localhost"]
-# [resolved.identities.db_core.postgres.endpoints.sql] … published_on = []   (single host: nothing published)
+# [resolved.identities.db_core.postgres.endpoints.sql] … publications = []   (single host: nothing published)
 # [resolved.bindings.controller.controller.database]
 # network = "instance"  host = "dstdns-98535c-db-core-postgres"  port = 5432  delivery = "env"  variables = ["POSTGRES_HOST", "POSTGRES_PORT"]  requires = []
 # [resolved.services.probe_targets]  level = "simulated"  realization = "mock_targets"  service = "dns"
@@ -259,3 +284,10 @@ store_entries = [
 # network = "instance"  host = "dstdns-98535c-db-core-postgres"  port = 5432  delivery = "env"  variables = ["POSTGRES_HOST", "POSTGRES_PORT"]
 
 # There is no closing marker table: the file is written atomically and is either complete or absent (S3.7.5, S14.4.2).
+#
+# After a successful `ciu up` this host also writes ciu.receipt.json (api = "ciu/receipt", S17.4.3):
+# { instance_id = "98535c", host = "rs1002", layout = "prod3", release_digest = "sha256:…", resolved_digest = "sha256:…",
+#   services = { "controller.controller" = "healthy", … }, completed = [], facts = ["vault:secret/internal/internal_dlq_token@controller.controller", …],
+#   publications = [...], assumed = [], created = 2026-09-03T11:09:40Z }
+# `ciu activate apply` carries it to the next host of the layout, which accepts these facts only when instance, layout and
+# resolved digest match its own render of rs1002 (S17.4.4).

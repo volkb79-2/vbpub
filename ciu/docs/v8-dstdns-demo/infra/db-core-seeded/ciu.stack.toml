@@ -19,6 +19,7 @@
 
 [ciu_stack.postgres]
 image = "dstdns/db-core-seeded:latest"   # <project.registry.namespace>/db-core-seeded — a literal in plain TOML; `ciu build` tags exactly this
+build = { context = "../..", dockerfile = "infra/db-core-seeded/Dockerfile" }   # project-built (S6.2, S17.6): the schema + fixtures are baked in at build time
 probe_user = "postgres"              # the superuser ciu's pg:* probes exec as inside this container (S5.6.2)
 # Ordering only (S6.4.4): the hook needs Vault up and unsealed, and nothing here
 # derives that edge (no vault-sourced secret) — so it is declared. The hook

@@ -15,9 +15,10 @@ cgroup_parent = "dev-background.slice"
 memory_max = "2G"
 device = "/dev/vda"                  # autodetect fails from inside docker-outside-of-docker
 
-# Stack-table override through the merged view: consul's HTTP API is published
-# on this site's host (the v7/rev-2 demo did this in infra/consul-server/ciu.toml.j2).
-[realization.consul_server.services.consul.endpoints.http]
-publish = "host"
-host_port = 8500
-host_bind = "127.0.0.1"
+# Stack-table override through the merged view (the v7/rev-2 demo did this kind
+# of thing in per-stack ciu.toml.j2 files): pgAdmin's login e-mail is a site fact.
+# (A rev-3.0 version of this file published consul's HTTP API bound to 127.0.0.1
+# here; on prod3 consumers on rs1002 resolve consul cross-host, and S7.8 step 5
+# refuses a loopback-bound host publication for such a resolution — T-13.)
+[realization.db_core.services.pgadmin.settings]
+email = "ops@dchive.de"

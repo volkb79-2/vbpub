@@ -9,6 +9,7 @@
 
 [ciu_stack.runner]
 image = "dstdns/test-runner:latest"
+build = { context = "../..", dockerfile = "tools/test-runner/Dockerfile", args = { ASSAY_FLOOR = ">=4.1" } }   # project-built (S6.2, S17.6); the image installs the newest judge satisfying the floor
 
 # Bindings with env delivery: the container gets POSTGRES_*, REDIS_*, CONTROLLER_*
 # and WEBAPP_SERVER_* injected, and `docker exec` inherits them — which is how a
@@ -50,8 +51,8 @@ postgres_password = { from = "vault", path = "postgres_controller_password", del
 redis_password    = { from = "vault", path = "redis_password",               delivery = "env", env_name = "TEST_RUNNER_SECRETS_REDIS_PASSWORD" }
 
 [governance]                         # per-stack override of the global base
-memory_max = "800M"
-memory_swap_max = "17G"
+memory_max = "4G"                    # ≥ the largest exec lane's memory_max (schema, sql-mutation: 4G) — an exec lane cannot exceed its container's cap (S16.6.4)
+memory_swap_max = "0"                # cgroup memory.swap.max (swap alone); compose memswap_limit = memory_max + this (S13.3)
 
 [hooks]
 pre_compose = []

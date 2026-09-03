@@ -15,6 +15,7 @@
 
 [ciu_stack.worker]
 image = "dstdns/worker-io:latest"    # <project.registry.namespace>/worker-io — a literal in plain TOML; `ciu build` tags exactly this
+build = { context = "../..", dockerfile = "applications/worker-io/Dockerfile" }   # project-built (S6.2, S17.6)
 instances = 2
 endpoints.http = { port = 8080, protocol = "http" }    # /health; instance network only
 # No `requires`: every dependency carries data (a binding below); the vault edge

@@ -58,6 +58,14 @@ Design-level (also recorded in the proposal §4.3 and the spec):
 - **D24** No built-ins: `[hosts.localhost]` and `[layouts.local]` are declared (written by `ciu init` in a fresh project); the minimal example shows the whole ceremony.
 - **D25** `require_provenance = true` on the `sql-mutation` and `release` lanes: the containers under test must match `HEAD` (S16.5.6).
 
+Changed by the third-party review round (draft.4, 2026-09-03; `../CIU-V8-THIRD-PARTY-REVIEW-RESPONSE-2026-09-03.md`):
+- **D26** `[network.<n>] realized_by` names a **LogicalService** (`mesh_node`, `reverse_proxy`), whose selected variant service carries readiness (T-04).
+- **D27** Project-built images declare `build = { context, dockerfile }` on the service (twelve services); ciu injects the compose `build:` stanza and templates no longer write it; there is no vendor-image list (T-29).
+- **D28** Demo defects the review found and this round fixed: the tester's governance (`memory_max = "4G"`, at least the largest exec lane's cap, T-12), the `clean` environment forwards `SCHEMA_GATE_PG_DUMP` (T-12), the judge floor is `>=4.1` (ciu's own minimum, T-08), authentik's proxied endpoint moved to host port 9010 (it collided with MinIO's 9000 on gstammtisch's mesh address, T-13), and the site override that bound consul's API to 127.0.0.1 — unreachable for cross-host consumers — was replaced by a pgAdmin setting override (T-13).
+- **D29** The resolved example's waves are now derived by the S8.4.1 rule (five waves, all 22 prod3 Realizations); publications are socket claims; `[resolved.capabilities.*]` and the receipt shape are shown (T-14, T-26, T-33, T-35).
+- **D30** `examples/minimal/` shows what `ciu init --stack web --image nginx:1.27` really writes (plus `.gitignore`) and marks the hand-added endpoint/healthcheck (T-06).
+- **D31** Tester secrets stay `env`-delivered; per-service secret directories are mounted at `/run/secrets` (S10.7), so `*_FILE=/run/secrets/<key>` pointers are unchanged (T-24).
+
 Gone with draft.3 (each file says so where it used to be): `routes.*` in any file; `init_requires`/`uses`/`after`/`init_provides`/`[hooks.provides]`; `directive = "ASK_VAULT:…"` strings, `consumed_by`, `produced_by`; `[service.<n>] contract`; `owned-seeded` (now `seeded`); `request_base`; `deploy.labels.prefix`; `deploy.env.defaults`; `public_fqdn` detection; `.j2` declaration files and the per-stack `ciu.toml.j2` override; the rendered-file lock and its closing `render` table.
 
 Consumer-level (what the converters had to choose; each is commented in the file):

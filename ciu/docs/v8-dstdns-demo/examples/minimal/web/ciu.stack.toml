@@ -1,6 +1,8 @@
 # examples/minimal/web/ciu.stack.toml — one service, one host-published endpoint.
 # The realization name (`web`) is bound by ciu.toml [realization.web].location;
 # the container is hello-<instance>-web (service == realization → no suffix).
+# `ciu init --stack web --image nginx:1.27` wrote the image line only; the
+# endpoint (and the compose healthcheck) were added by hand (S19.2).
 [ciu_stack.web]
-image = "nginx:1.27"
+image = "nginx:1.27"                 # no `build` table → pulled, recorded by digest (S6.2)
 endpoints.http = { port = 80, protocol = "http", publish = "host", host_port = 8080 }

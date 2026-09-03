@@ -13,6 +13,7 @@
 
 [ciu_stack.server]
 image = "dstdns/webapp-server:latest"   # <project.registry.namespace>/webapp-server — a literal in plain TOML; `ciu build` tags exactly this
+build = { context = "../..", dockerfile = "applications/webapp-server/Dockerfile" }   # project-built (S6.2, S17.6)
 requires = ["app_schema"]             # ordering only: an edge to db_init.runner's completion; no data, no publication. The vault edge derives from the secrets (S8.3) and is not repeated.
 # The proxy fronts `path`; in prod3 it (tsstammtisch) is on another host than this stack (rs1002), so publish = "proxy"
 # needs host_port + allow_from (S7.4.3). 8081: controller holds 8083, webapp_ui 8082, cadvisor 8080 on that host (S6.3.2).

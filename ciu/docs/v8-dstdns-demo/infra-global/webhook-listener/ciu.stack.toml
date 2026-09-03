@@ -11,6 +11,7 @@
 
 [ciu_stack.webhook]
 image = "dstdns/webhook-listener:latest"   # <project.registry.namespace>/webhook-listener — a literal in plain TOML; `ciu build` tags exactly this
+build = { context = ".", dockerfile = "Dockerfile" }   # project-built (S6.2, S17.6)
 endpoints.http = { port = 9000, protocol = "http", publish = "host", host_port = 9000 }   # GitHub delivers to the host port
 [ciu_stack.webhook.hostdir]
 data = ""                            # "" = ciu-generated: <physical_repo_root>/ciu-data/webhook_listener/webhook/data (S6.8)

@@ -3,19 +3,15 @@
 # -http), the instance network, ciu.* labels, CIU_* env, healthcheck timing,
 # cgroup fields. Consumers reach the servers through their own bindings
 # (to = "probe_targets.dns" → udp://<host>:<port>, to = "probe_targets.http" →
-# http://<host>:<port>, S7.8); nothing here names them. One image, built here
-# from the Dockerfile in [mock_image] (build context = repo root so it can COPY
-# tests/ and libs/); the base image tag comes from the global [build] user table.
+# http://<host>:<port>, S7.8); nothing here names them. One image, project-built
+# from the `build` table of [ciu_stack.dns] (context = repo root so the Dockerfile
+# can COPY tests/ and libs/); ciu injects the compose build: stanza (draft.4).
 # Both services carry a healthcheck: dns is the variant service the `release`
 # lane gates on (requires.healthy = ["probe_targets"]) and the workers' bindings
 # wait on each endpoint's owning service (S6.4, S11.5).
 services:
   dns:
-    build:
-      context: {{ mock_image.context }}
-      dockerfile: {{ mock_image.dockerfile }}
-      args:
-        PYTHON_BASE_IMAGE: "{{ build.mock_python_base_image }}"
+    # build: is INJECTED from [ciu_stack.dns] build (S6.2, S11.4); a template that writes it is refused (S11.3)
     image: {{ ciu_stack.dns.image }}
     command: ["python", "-m", "tests._harness.mock_targets.mock_dns"]
     restart: unless-stopped
@@ -30,11 +26,7 @@ services:
       # interval / timeout / retries / start_period: injected from ciu_stack.dns.health (S6.6.4)
 
   http:
-    build:
-      context: {{ mock_image.context }}
-      dockerfile: {{ mock_image.dockerfile }}
-      args:
-        PYTHON_BASE_IMAGE: "{{ build.mock_python_base_image }}"
+    # build: is INJECTED from [ciu_stack.dns] build (S6.2, S11.4); a template that writes it is refused (S11.3)
     image: {{ ciu_stack.http.image }}
     command: ["python", "-m", "tests._harness.mock_targets.http_target"]
     restart: unless-stopped

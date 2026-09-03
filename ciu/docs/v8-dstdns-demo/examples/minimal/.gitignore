@@ -1,0 +1,18 @@
+# written by `ciu init` (S2.3.1, S19.1) — every machine-owned file ciu creates, never committed
+ciu.resolved.toml
+ciu.instance.toml
+ciu.instance.generated.toml
+ciu.instance.json
+ciu.compose.yml
+ciu.state.toml
+ciu.rendered/
+ciu.secret-copy.*
+ciu.secrets.toml
+ciu.secrets.transport.toml
+ciu.hosts.toml
+ciu.gate.*
+ciu.receipt.json
+ciu.release.json
+ciu.env
+ciu-data/
+ciu-gate-evidence/
