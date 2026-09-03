@@ -308,9 +308,11 @@ def test_the_model_refuses_an_unknown_source():
 
 
 def test_the_model_refuses_an_unknown_rigor_level():
+    # `R4` became a real rung at schema v10 (F015/A-433), so the level this
+    # asserts about must be one the ladder genuinely does not have.
     with pytest.raises(ValueError, match="rigor must be one of"):
         Claim(
-            rigor="R4", source="computed", status=Outcome.PASS, verified_by_assay=True
+            rigor="R9", source="computed", status=Outcome.PASS, verified_by_assay=True
         )
 
 
@@ -654,13 +656,24 @@ def test_missing_attestation_cannot_claim_a_payload_was_obtained():
 
 
 def test_adjudicated_slot_is_reserved_without_attestation_fields():
+    # B004/A-430 (schema v10) narrowed the adjudicated branch: Tier 2 is a
+    # document assay READ, so `verified_by_assay` is False there exactly as it
+    # already was under `attested`. Up to v9 it was an unconstrained boolean.
     adjudicated = Evidence(
         source="adjudicated",
         key="sast",
         status=Outcome.PASS,
-        verified_by_assay=True,
+        verified_by_assay=False,
     )
     assert adjudicated.to_dict()["source"] == "adjudicated"
+
+    with pytest.raises(ValueError, match="adjudicated evidence always carries"):
+        Evidence(
+            source="adjudicated",
+            key="sast",
+            status=Outcome.PASS,
+            verified_by_assay=True,
+        )
 
     with pytest.raises(ValueError, match="only to attested"):
         Evidence(

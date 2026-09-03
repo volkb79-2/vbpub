@@ -3,11 +3,13 @@ kind: backlog-entry
 schema_version: 1
 id: NL-2
 title: "AUTHORING.md's tier worked example ('implement-2') and prose are unroutable against live routes.toml — no mechanical check exists"
-status: open
+status: fixed
 type: "bugfix"
 severity: "medium"
 provenance: "dstdns P130/P132/P133 carve-reviews, decisions.md D-187"
 filed_date: "2026-08-25"
+closed_date: "2026-09-03"
+closed_reason: "Shipped as nyxloom-P100, merged 480ef39f. AUTHORING.md stale tier example fixed; L14 lint rule validates fm.tier against live Routes.load().tiers. Post-merge gate PASS."
 ---
 
 ## Observed mechanism

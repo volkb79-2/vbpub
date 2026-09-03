@@ -550,15 +550,41 @@ def check_qualification_artifact(artifact: Mapping[str, Any]) -> Mapping[str, An
             raise QualificationError(f"R2 {bucket!r} bucket is not empty: {mutation.get(bucket)}")
 
     canary = _claim(artifact, "R3").get("canary", {})
-    if canary.get("control_outcome") != "PASS":
-        raise QualificationError(f"R3 control did not PASS: {canary}")
-    if canary.get("transformed_outcome") != "FAIL":
-        raise QualificationError(f"R3 transformed did not FAIL: {canary}")
+    # (verdict v10 / B007 / A-432) the canary payload is `{mechanism,
+    # attempts[]}` now, one entry per declared target, and the run fields
+    # moved into the entry. This lane declares exactly ONE target, so the
+    # length is asserted rather than indexed past: a second attempt appearing
+    # here would mean the lane under qualification stopped being the lane
+    # this harness describes, and silently reading `attempts[0]` would hide
+    # that.
+    attempts = canary.get("attempts")
+    if not isinstance(attempts, list) or len(attempts) != 1:
+        raise QualificationError(
+            f"R3 canary is not the single-attempt payload this lane declares: {canary}"
+        )
+    attempt = attempts[0]
+    if attempt.get("disposition") != "attempted":
+        raise QualificationError(f"R3 canary attempt was not attempted: {attempt}")
+    if attempt.get("control_outcome") != "PASS":
+        raise QualificationError(f"R3 control did not PASS: {attempt}")
+    if attempt.get("transformed_outcome") != "FAIL":
+        raise QualificationError(f"R3 transformed did not FAIL: {attempt}")
     if (
-        canary.get("expected_reason_code") != "UNCOVERED_LINES"
-        or canary.get("observed_reason_code") != "UNCOVERED_LINES"
+        attempt.get("expected_reason_code") != "UNCOVERED_LINES"
+        or attempt.get("observed_reason_code") != "UNCOVERED_LINES"
     ):
-        raise QualificationError(f"R3 reason code mismatch: {canary}")
+        raise QualificationError(f"R3 reason code mismatch: {attempt}")
+    # The judgment's declared target list and the attempt's own target are
+    # the pairing `verify.py` re-derives, so this harness checks it on a real
+    # artifact rather than trusting it. `aggregation` is ABSENT with one
+    # declared probe -- `any` and `all` denote the same function there, so
+    # recording one would record a policy the lane never stated.
+    r3 = artifact.get("judgment", {}).get("r3", {})
+    if r3.get("targets") != [attempt.get("target")] or "aggregation" in r3:
+        raise QualificationError(
+            f"R3 judgment does not declare exactly the one target the single "
+            f"attempt names, with no aggregation: {r3}"
+        )
 
     expected_policy = {
         "selection": "repository-minus-unsafe-symlinks",

@@ -1,0 +1,49 @@
+# examples/monorepo/appy/ciu.toml — an application child with an assay lane and a PERSISTENT
+# exec-mode tester of its own: a two-file stack (tester/) whose build.context is the monorepo's
+# shared Dockerfile directory (S6.2: a context may leave this root, never the worktree). Every
+# worktree instance of appy gets its own governed tester from it — `ciu instance init && ciu up`
+# in a worktree is the per-worktree tester; nothing is auto-started (no `autostart`, X-rows §4.8).
+# The judge floor comes from the root (inherited, S3.1.5) and IS required here: the `judge` lane is
+# an assay lane (S16.3).
+
+[project]
+name = "appy"
+revision = 8
+
+[ciu]
+inherit = "../ciu.toml"
+
+[realness]
+default = "live"
+
+[service.tester]
+live = "tester"                        # the capability the exec environment names (S16.4 exec_in)
+
+[realization.tester]
+kind = "ciu_stack"
+location = "tester"                    # under THIS root (S5.4) — the shared thing is the image build, not the directory
+
+[bundles.test]
+services = ["tester"]
+
+[layouts.local]
+hosts.localhost = { bundles = ["test"], reach = ["instance"] }
+
+[testing.environments.tester]          # exec into THIS instance's tester; one lane at a time on its stack-directory lock (S16.5.7)
+mode = "exec"
+exec_in = "tester"
+forward_env = ["CGROUP_PARENT_DEV_BACKGROUND"]
+
+[testing.lanes.unit]                   # the inherited ephemeral environment also works in a child
+kind = "command"
+environment = "tester-unified"
+argv = ["pytest", "-q", "tests/unit"]
+budget = "10m"
+resources = { memory_max = "1G" }
+
+[testing.lanes.judge]
+kind = "assay"
+environment = "tester"
+assay_lane = "appy"                    # assay.toml [lanes.appy]; ciu asks `assay lanes --json`, never parses the file (S16.7)
+budget = "30m"
+resources = { memory_max = "1G" }     # ≤ the tester's effective governance (2G inherited; S16.6.4)

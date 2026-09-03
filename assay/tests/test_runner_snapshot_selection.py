@@ -608,10 +608,10 @@ def test_live_command_observes_exact_policy_in_every_unit(git_repo: GitRepo) -> 
     r3 = claims_by_rigor["R3"]
     assert r3.status is Outcome.PASS
     assert r3.canary is not None
-    assert r3.canary.control_outcome is Outcome.PASS
-    assert r3.canary.transformed_outcome is Outcome.FAIL
-    assert r3.canary.expected_reason_code is ReasonCode.UNCOVERED_LINES
-    assert r3.canary.observed_reason_code is ReasonCode.UNCOVERED_LINES
+    assert r3.canary.attempts[0].control_outcome is Outcome.PASS
+    assert r3.canary.attempts[0].transformed_outcome is Outcome.FAIL
+    assert r3.canary.attempts[0].expected_reason_code is ReasonCode.UNCOVERED_LINES
+    assert r3.canary.attempts[0].observed_reason_code is ReasonCode.UNCOVERED_LINES
 
     # The consumer's OWN repository -- never touched by any of this.
     assert git_repo.head() == head_rev

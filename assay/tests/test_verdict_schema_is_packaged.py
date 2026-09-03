@@ -17,11 +17,28 @@ That negative names the hollowness precisely, so the defences are aimed at it:
 * the text that comes back out of the venv is compared with the source file, so
   "a file with the right name is present" cannot stand in for "the schema is".
 
-Measured in the gate image while writing this: with
+**What this test does NOT claim, corrected 2026-09-02 (B056/DA-D13 → A-412).**
+Through 4.1.0 this docstring stated a measurement — *"with
 `[tool.setuptools.package-data]` the wheel carries
 `assay/schemas/verdict.schema.json`; without it the wheel carries only
 `assay/__init__.py`, `assay/cli.py`, `assay/config.py`, `assay/errors.py` and
-`assay/verdict.py`. Both sides are real.
+`assay/verdict.py`. Both sides are real."* — that a re-run refutes. Built from
+the current tree with that entire stanza deleted, the wheel still carries the
+schema, and 47 members in total rather than five: `setuptools_scm` installs a
+git file finder and setuptools' `include_package_data` defaults to true under
+pyproject metadata, so every git-TRACKED file under the package directory
+ships regardless of the stanza (A-396's measurement).
+
+So this file makes no claim about WHICH mechanism ships the schema. It
+asserts the OUTCOME — the schema is in the wheel, and resolves from inside a
+clean venv — which stays true whichever mechanism delivers it and stays red
+if none does. That is the shape its sibling `test_go_helper_is_packaged.py`
+already had, and the two are now consistent by construction rather than by
+coincidence. The `package-data` declaration is KEPT (not dropped, DA-D13's
+third option) because A-029 is a consumer-facing guarantee that should not
+rest on git tracking, and because it is what ships the schema in the
+git-metadata-absent build `[tool.setuptools_scm]`'s own `fallback_version`
+anticipates.
 """
 
 from __future__ import annotations
@@ -115,13 +132,31 @@ def test_the_shipped_schema_enumerates_exactly_the_vocabulary_module_declares():
 
 
 def test_pyproject_declares_the_schema_as_package_data():
+    """The declaration is KEPT, and this records why — not the refuted claim
+    that deleting it would drop the schema from the wheel (B056/A-412).
+
+    It is the belt to the git file finder's braces: A-029 is a
+    consumer-facing guarantee, and resting it on "every file under the
+    package directory happens to be git-tracked" would make an untracked or
+    generated schema vanish silently. It is also what ships the schema in the
+    git-metadata-absent build `[tool.setuptools_scm]`'s own
+    `fallback_version` anticipates, where the finder cannot run at all.
+
+    The OUTCOME — the schema is really in the wheel — is asserted separately,
+    against the artifact, by `test_the_schema_is_inside_the_built_wheel`.
+    That is the check that goes red if the schema stops shipping, by any
+    mechanism or the loss of all of them.
+    """
     pyproject = tomllib.loads(
         (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )
     package_data = pyproject["tool"]["setuptools"]["package-data"]
     assert "schemas/*.json" in package_data["assay"], (
-        "without this the schema exists in the source tree and vanishes on "
-        "install — A-029 broken for every consumer, with the suite still green"
+        "the declaration was removed. It is not the only thing that ships the "
+        "schema today (setuptools_scm's git file finder does too), so the "
+        "wheel may still carry it — but a build with no git metadata, or a "
+        "schema that is not git-tracked, then silently drops it and breaks "
+        "A-029 for every consumer"
     )
 
 
@@ -229,4 +264,4 @@ def test_load_schema_works_from_the_installed_package(standalone: Standalone):
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.split()[0] == "urn:assay:schema:verdict:9"
+    assert proc.stdout.split()[0] == "urn:assay:schema:verdict:10"

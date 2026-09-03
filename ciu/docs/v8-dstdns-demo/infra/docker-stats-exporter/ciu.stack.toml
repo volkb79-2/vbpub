@@ -13,6 +13,7 @@
 
 [ciu_stack.exporter]
 image = "dstdns/docker-stats-exporter:latest"   # <project.registry.namespace>/docker-stats-exporter — a literal in plain TOML; `ciu build` tags exactly this
+build = { context = "../..", dockerfile = "infra/docker-stats-exporter/Dockerfile" }   # project-built (S6.2, S17.6)
 # The compose env MUST carry the consul token (AGENTS.md §4.2a): an empty one is a
 # 403 on every KV read — a permanently degraded exporter that still looks healthy.
 # No fail-fast key on the service in v8: the secret's `env_name` below guarantees

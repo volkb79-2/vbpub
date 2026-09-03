@@ -1,37 +1,21 @@
-# ciu.instance.generated.toml — CIU-OWNED facts of this instance (gitignored; plain
-# TOML; mode 0644). Rewritten WHOLE by ciu: `ciu instance init` (identity + host
-# facts), `ciu build` (build facts), the first `ciu up` of a layout (that
-# layout's realness record). A hand edit is overwritten without notice (S14.2.1).
+# ciu.instance.generated.toml — CIU-OWNED facts of this instance that are true on EVERY host of
+# a layout (gitignored; plain TOML; mode 0644). Rewritten WHOLE by ciu: `ciu instance init`
+# (identity + owner token), `ciu build` (build facts). A hand edit is overwritten without notice
+# (S14.2.1). Since draft.6 it holds NOTHING host-local: host facts live in ciu.host.toml in the
+# state root (S2.6, S14.2), and the per-layout realness record lives in ciu.instance.json (S9.4) —
+# so this file travels with a release unchanged and the release stays byte-identical to its
+# manifest for life (S17.3.1, round-3 T3-02).
 #
-# The split (S14.2): the operator's ciu.instance.toml carries only what the
-# operator decides (layout, bundles, label, host-port overrides, joins).
-# Everything ciu KNOWS about the instance lives here, merged AFTER that file.
-#
-# The file travels with the bundle on `ciu push`, so instance_id is identical on
-# every host of a layout; [ciu.host.generated] is regenerated on each target by
-# `ciu instance init --host <h>` (S14.2.3, S17.3.4). This example is the primary
-# devcontainer checkout of dstdns.
+# The split (S14.2): the operator's ciu.instance.toml carries only what the operator decides
+# (layout, bundles, label, host-port overrides, joins); this file carries what ciu KNOWS about the
+# instance as a whole; ciu.host.toml carries what ciu knows about THIS machine. This example is the
+# primary devcontainer checkout of dstdns.
 
 [ciu.instance.generated]              # instance IDENTITY — identical on every host of a layout
 instance_id = "98535c"                # first 6 hex chars of sha256(physical checkout path), S4.1.1
+owner_id = "3f9c2a7e8b1d4c5f6a0e9d8c7b6a5f4e"   # 128-bit owner token, generated once (S4.1.1); stamped on every resource as ciu.owner;
+                                      # a collision mark, not a proof of a move — moves are cold (S4.1.2)
 
-[ciu.host.generated]                  # HOST-LOCAL facts — regenerated per host
-name = "localhost"                    # which [hosts.<h>] this machine is (the `local = true` host without --host)
-hostname = "gstammtisch"              # the machine's own hostname (lease holder ciu@gstammtisch:98535c, S14.6.2)
-repo_root = "/workspaces/dstdns"
-physical_repo_root = "/home/vb/volkb79-2/dstdns"   # the HOST path the daemon sees (docker-outside-of-docker)
-env_type = "devcontainer"             # devcontainer | native | github-actions
-user_uid = 1003
-user_gid = 1003
-docker_gid = 994
-# No public_fqdn here: a host's public name is DECLARED in ciu.hosts.toml
-# ([hosts.localhost] fqdn) and read by templates as host.fqdn (S7.2, R-16).
-
-[ciu.instance.build]                  # written by `ciu build` (S17.6): version, time (+ image digests in a real file)
+[ciu.instance.build]                  # written by `ciu build` (S17.6.1): version, time (+ the image map's ids and digests in a real file)
 build_version = "2026.09.02-9f3c1a2"
 build_time = "2026-09-02T11:02:41Z"
-
-[ciu.instance.realness.local]         # S9.4: ONE table per layout, written at that layout's first `ciu up`; a CONSTRAINT on later selections until `ciu clean --vanilla`
-main_db = "live"                      # (a real record lists every LogicalService of the deploy set; the three that carry a choice are shown)
-app_schema = "live"
-probe_targets = "simulated"           # this instance runs the mock DNS/HTTP targets, not the internet

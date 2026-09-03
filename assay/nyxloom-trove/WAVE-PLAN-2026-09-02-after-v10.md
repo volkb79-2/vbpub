@@ -211,6 +211,41 @@ parallel already?" Consequences:
   where Wave D stands) → E-3 (run-gate 23.5.0: RG-36 exact, RG-38) → E-4
   (B067, F015/R4, canary resume).
 
+## 4b. E-5 — remote and asynchronous lanes (operator, 2026-09-02, late)
+
+Operator: "`Buildkite on your own hosts` is the next step. I have the account
+setup done … the hosts in question we would get ssh-root access in parallel,
+to be used as well by ciu (v8). We *could* publish our tester-unified as image
+to our github … it would just be another entry in our cmru config."
+
+Recorded as **E-5**, independent of E-2..E-4 (it changes no run-gate or
+assay code for its first step) and sequenced after E-1's release only because
+it shares the controller:
+
+- **Decision of record:** D-110.4 stands — Buildkite agents on the remote
+  hosts run long/async lanes via the identical `./run-gate.py <lane>`; ciu is
+  never the remote job runner; plain SSH is not the queue.
+- **Manual:** `run-gate-project/REMOTE-LANES-BUILDKITE.md` (enrollment,
+  pipeline shape with the one-container `concurrency_group`, API access from
+  the controller host, image on the remote host, ciu interplay, seams 1–6).
+  Lane-authoring guidance that remote lanes depend on:
+  `run-gate-project/LANE-AUTHORING.md`.
+- **Image:** start with build-from-checkout on each host (what
+  `nyxloom/tools/remote-mutation-audit-host.sh` does; zero new config);
+  publish to GHCR via cmru's existing `oci-image-build`/`oci-image-push`
+  handlers when host build time matters — that needs a `tester-unified/`
+  cmru project (bake HCL + `[steps.push]`), not a cmru change; pin by digest.
+- **Order inside E-5:** (1) measure the two hosts and the account's plan
+  limits; (2) enrol host A, run `lint`/`selftest` remotely, collect
+  artifacts; (3) artifacts contract + pipeline generator from `--list`;
+  (4) `bk-lane.sh` trigger/collect on the controller host; (5) host B;
+  (6) GHCR publish + `image_digest` (new RG item); (7) stack-needing lanes
+  via ciu on the host (after ciu v8).
+- **New backlog rows to file after the 23.4.0 merge** (append-conflict
+  avoidance with RG-39/RG-40): RG-41 lane-authoring guide row (docs, landed
+  on main already), RG-42 `image_digest` in the environment table, RG-43
+  history entries carry a `host` field for collected remote runs.
+
 ## 5. What this plan does NOT decide
 
 The Wave D rulings (DA-D1..D16, DA-R1..R20) stand. Nothing in G1 changes the

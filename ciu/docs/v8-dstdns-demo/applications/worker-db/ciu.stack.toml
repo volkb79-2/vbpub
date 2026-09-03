@@ -14,6 +14,7 @@
 
 [ciu_stack.worker]
 image = "dstdns/worker-db:latest"    # <project.registry.namespace>/worker-db — a literal in plain TOML; `ciu build` tags exactly this
+build = { context = "../..", dockerfile = "applications/worker-db/Dockerfile" }   # project-built (S6.2, S17.6)
 instances = 2
 requires = ["app_schema"]            # ordering only: db_init's schema must be complete (was the one-shot-exit-0 probe). The vault edge derives from the secrets (S8.3) and is not repeated.
 endpoints.http = { port = 8080, protocol = "http" }    # /health; instance network only

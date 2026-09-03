@@ -16,13 +16,15 @@ paths. So this module scaffolds a **reviewable SKELETON, not a guaranteed-
 working gate**: every project-specific value in the emitted Dockerfile and
 argv carries an explicit `# nyxloom-scaffold: adjust ...` marker. The value
 delivered is "no more blank page + `has_gate` flips True"; the TRUST check
-remains `nyxloom gate verify` (GA1), which the operator runs after filling
-in the markers -- v2 scaffolds, GA1 verifies, they compose.
+is adopting assay/run-gate (nyxloom-P98 retired GA1's `nyxloom gate verify`
+cross-check -- Assay's own R2/R3 mechanisms supersede it), which the
+operator does after filling in the markers -- v2 scaffolds, assay/run-gate
+verifies, they compose.
 
 Single ecosystem: Python/pytest only (no per-ecosystem detection). Out of
-scope (deliberately not built here): reacting to a LAUNDERS/BROKEN `nyxloom
-gate verify` verdict, multi-ecosystem templates, and actually running or
-building the scaffolded gate -- this module never shells out (mirrors
+scope (deliberately not built here): reacting to a gate that turns out
+untrustworthy, multi-ecosystem templates, and actually running or building
+the scaffolded gate -- this module never shells out (mirrors
 `onboarding_gate.assess_gate`'s own no-subprocess contract).
 
 No `tomli_w` dependency (nyxloom has none): the `[gates.<id>]` section is
@@ -116,16 +118,15 @@ def render_gate_def(
     argv skeleton with `{worktree}` substitution (gate_runner.py replaces
     that token with the real scratch-worktree path at invocation time) and
     an `ADJUST_MARKER` trailing comment naming every project-specific
-    placeholder (image tag, mount path, source/test dir, `--source`).
-    `phase="post-merge"` (picked up by `gate_runner.select_verification_gate`
-    ahead of any `implementation`-phase gate) and
-    `asserts=["tests-pass", "changed-line-coverage"]` per D-GA3v2."""
+    placeholder (image tag, mount path, source/test dir). `phase="post-merge"`
+    (picked up by `gate_runner.select_verification_gate` ahead of any
+    `implementation`-phase gate) and `asserts=["tests-pass"]` -- the scaffold
+    no longer measures a coverage floor itself; adopt assay/run-gate
+    (run-gate-project/CONSUMERS.md, assay/docs/CONSUMERS.md) for real rigor."""
     inner = (
         "cd {worktree} && "
         "PYTHONPATH=src python -m pytest tests -n auto -q "
-        "--cov=src --cov-report=json:/tmp/scaffolded-gate-cov.json && "
-        "python -m nyxloom.coverage_gate --base main "
-        "--coverage-json /tmp/scaffolded-gate-cov.json --source src"
+        "--cov=src --cov-report=json:/tmp/scaffolded-gate-cov.json"
     )
     # DETACHED, not attached (`docker run -d` -> `docker wait` -> `docker logs`),
     # deliberately. An attached `docker run --rm` reads its verdict off the
@@ -154,10 +155,13 @@ def render_gate_def(
         'docker rm "$cid" >/dev/null 2>&1 || true; '
         'exit "$code"  '
         f"# {ADJUST_MARKER} the image tag, the mount path, source dir "
-        '("src"), test dir ("tests"), --source, and the '
+        '("src"), test dir ("tests"), and the '
         f"--cgroup-parent={GATE_SLICE} above are placeholders "
         "for YOUR project's real layout/host -- build the scaffolded Dockerfile "
-        "and tag it to match, and install the slice, before this argv can run."
+        "and tag it to match, and install the slice, before this argv can run. "
+        "For real rigor beyond tests-pass, adopt run-gate+assay "
+        "(run-gate-project/CONSUMERS.md, assay/docs/CONSUMERS.md) rather than "
+        "a nyxloom-side coverage judgment."
     )
     return GateDef(
         gate_id=gate_id,
@@ -165,7 +169,7 @@ def render_gate_def(
         phase="post-merge",
         timeout_seconds=timeout_seconds,
         environment="scaffolded",
-        asserts=["tests-pass", "changed-line-coverage"],
+        asserts=["tests-pass"],
     )
 
 

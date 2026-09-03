@@ -2772,6 +2772,69 @@ host-key/Vault/temp-file security envelope applies unchanged to the scp/tar
 fallback (fail-closed pinning; key material never logged; mode-0600 temp files
 cleaned up in `finally`).
 
+### S14.7 — Host enrollment (`ciu host enroll`, CIU-93; backport of the v8 S7.2.4 design, operator direction 2026-09-03)
+
+S14.1–S14.6 assume an inventory row that already works: a reachable
+`ssh_host`, a usable `ssh_key`, a pinned `known_host`. S14.7 is the step
+before that — from a bare host with nothing but Python 3 and an SSH server to
+such a row — specified in full in `docs/CIU-HOST-ENROLLMENT-PROPOSAL.md`
+revision 2; this section is the normative summary for the v7 line. No token,
+no callback, no listener; the private key never leaves the control host.
+
+- **S14.7a Step 1 — `ciu host enroll <name> [--user U] [--port N]
+  [--controller FQDN] [--from PATTERN] [--docker] [--installer-url URL]
+  [--replace]`** on the control host generates an ed25519 key pair with
+  `ssh-keygen` into the S14.3a host namespace,
+  `<repo>/.ciu/secrets/hosts/<name>/ssh_key` and `ssh_key.pub` (dir `0700`,
+  key `0600`, comment `ciu@<controller>:<project>`; `--controller` defaults to
+  `topology.external.public_fqdn` and is required when it is not declared),
+  and prints — writing **no** inventory row — the one command the target's
+  admin runs: ciu's own `get.py` installer, pinned to the control host's ciu
+  version (`https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/get.py`,
+  or `--installer-url`), with `enroll --authorized-key '<public key>'
+  --controller <FQDN> [--user U] [--name <name>] [--from PATTERN] [--docker]`.
+  An existing `<name>` is refused with a tagged `[S14.7]` error unless
+  `--replace` (rotation: a new key; `ssh_key`/`known_host` overwritten in
+  step 2); `--abort` removes a step-1 key pair that will not complete.
+- **S14.7b The target — `get.py enroll`** (a cmru `get.py` template subcommand,
+  cmru KI-24; ciu ships its rendered `get.py` at `ciu/get.py` and as a release
+  asset): before any network I/O it checks root, an SSH server (`sshd` on
+  `PATH` or `/usr/sbin/sshd`; absent → `EXIT_PREREQ` naming `openssh-server`)
+  and that the key line parses; then installs ciu exactly as `get.py install
+  --scope system` (transaction, manifest verification, `current` switch;
+  `--no-install` skips it), creates or confirms the deploy user (`useradd
+  --create-home`; `--docker` adds it to the `docker` group and refuses when the
+  group is absent), appends the key line **once** to that user's
+  `authorized_keys` (`~/.ssh` `0700`, file `0600`, owned by the user; an
+  identical line is reported, a same-key-different-options line is refused),
+  and prints the SHA256 fingerprint of every `/etc/ssh/ssh_host_*_key.pub`,
+  the addresses it sees (unconfirmed), the user, the installed version and
+  the exact step-2 command. It never generates keys, calls back, installs
+  packages, runs deploy logic or edits `sshd_config`.
+- **S14.7c Step 2 — `ciu host enroll <name> --ssh-host ADDR --fingerprint
+  SHA256:… [--port N] [--user U]`**: keyscans `ADDR`; refuses unless a scanned
+  key's SHA256 fingerprint equals `--fingerprint` (the one the admin read on
+  the console — TOFU with a second channel, S14.4a's trust model automated;
+  without the flag a TTY is asked to confirm the scanned fingerprints and a
+  non-TTY run is refused); connects as U with the generated key and the
+  scanned host key pinned for that connection only and runs `ciu version`
+  (a refused login or a missing `ciu` is a tagged error naming which); and
+  only then writes `[deploy.hosts.<name>] ssh_host, ssh_user, ssh_port (when
+  ≠ 22), ssh_key = "<repo>/.ciu/secrets/hosts/<name>/ssh_key", known_host =
+  "<algo> <base64>"` (the S14.4c `[ADDR]:N` form for a non-default port) into
+  `.ciu.hosts.toml` with a round-trip writer that preserves the operator's
+  other tables and comments, and prints the row. Nothing else is written:
+  `bundle_dir`, `docker_optional`, `activate`, `admin` and `secrets` stay the
+  operator's, as for a hand-written row. `--thin` hosts MAY use the installed
+  `get.py` as their `activate` entrypoint (S14.6b) — the same adapter seam.
+- **S14.7d Security envelope.** S14.4a–S14.4c apply unchanged; the verb never
+  sets `CIU_SSH_INSECURE_TOFU`; key material is never printed or logged
+  (S14.4b); the printed installer URL is version-pinned, never `latest`; the
+  `from=` restriction is opt-in because OpenSSH matches it against the
+  client's source address or reverse name, which differs from the
+  controller's FQDN behind NAT and on a mesh. Enrollment secrets stay in the
+  local store (dstdns D-097), never in Vault.
+
 ## S15 — Stack-wide resource governance (cgroups)
 
 A stack MAY declare `[<root>.governance]` (stack-scoped per S3.6, like

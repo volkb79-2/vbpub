@@ -105,15 +105,22 @@ from .runner import (
     _execute_snapshot_unit,
     _relocate_source_roots,
 )
-from .verdict import CanaryResult, Claim
+from .verdict import (
+    CANARY_AGGREGATIONS,
+    CanaryAttempt,
+    CanaryResult,
+    Claim,
+)
 
 __all__ = [
     "CANARY_MECHANISMS",
     "MECHANISM_IMPORT_BREAK",
     "MECHANISM_UNCOVERED_LINE",
     "build_canary_claim",
+    "judge_attempt",
     "judge_canary",
     "run_go_canary",
+    "run_isolated_canaries",
     "run_isolated_canary",
     "run_python_canary",
 ]
@@ -136,6 +143,23 @@ _EXPECTED_REASON_BY_MECHANISM: Mapping[str, ReasonCode] = MappingProxyType(
         MECHANISM_UNCOVERED_LINE: ReasonCode.UNCOVERED_LINES,
     }
 )
+
+
+def _single_target_result(*, mechanism: str, **attempt: object) -> CanaryResult:
+    """(B007/A-432, schema v10) the R3 payload for a lane that declared ONE
+    canary target: a one-element ``attempts`` array.
+
+    Every producer in this module runs exactly ONE target -- the multi-target
+    form is :func:`run_isolated_canaries`, which COMPOSES this one-target
+    runner rather than re-implementing it -- so every one of them builds its
+    evidence through here rather than restating the wrapping. The mechanism
+    is a LANE fact and lives on the result; everything else is a TARGET fact
+    and lives on the attempt.
+    """
+    return CanaryResult(
+        mechanism=mechanism,
+        attempts=(CanaryAttempt(**attempt),),  # type: ignore[arg-type]
+    )
 
 #: (P19) the closed vocabulary :mod:`assay.config`'s loader cross-checks
 #: ``judge.canary.mechanism`` against, imported from there via a DEFERRED
@@ -192,6 +216,8 @@ def _run_pipeline(
     project_root: Path,
     base_commit: str,
     adapter: LanguageAdapter,
+    infrastructure_source: Path | None = None,
+    infrastructure_environment: Mapping[str, str] | None = None,
     process_runner: ProcessRunner,
     clock: Clock,
 ) -> tuple[Outcome, ReasonCode | None]:
@@ -210,8 +236,22 @@ def _run_pipeline(
     file — a DIFFERENT, unrelated cause from either mechanism's own
     intended one. The R0 outcome is reported instead, honestly.
     """
+    # (B029/DA-R6) The side-run's own plan resolves the lane's infrastructure
+    # facts exactly as the lane's main command does. Before this, a
+    # ``derived:`` fact raised out of `resolve_command_plan` here on a lane
+    # whose infrastructure resolves everywhere else, and this function's
+    # caller turned that into a misattributed R3 claim. Only this LEGACY
+    # standalone path was ever affected -- `run_isolated_canary`, the path
+    # `runner._run_prepared_lane` actually uses, takes an already-executed
+    # `unit.result` and was measured correct (DA-R6's transcript) -- but this
+    # path is public API and its plan should not be a second, poorer world.
     result = execute_command(
-        lane, cwd=project_root, process_runner=process_runner, clock=clock
+        lane,
+        cwd=project_root,
+        infrastructure_source=infrastructure_source,
+        infrastructure_environment=infrastructure_environment,
+        process_runner=process_runner,
+        clock=clock,
     )
     r0_claim = build_r0_claim(result)
     if r0_claim.status is not Outcome.PASS or "R1" not in lane.rigor:
@@ -231,6 +271,13 @@ def run_python_canary(
     target_path: str,
     adapter: LanguageAdapter,
     mechanism: str,
+    #: (B029/DA-R6) Forwarded, unchanged, to BOTH halves' own
+    #: :func:`~assay.runner.execute_command` -- the control and the
+    #: transformed run see one infrastructure world, and it is the lane's.
+    #: Defaulting both to ``None`` keeps every existing caller's behaviour
+    #: byte-identical on a lane that declares no infrastructure.
+    infrastructure_source: Path | None = None,
+    infrastructure_environment: Mapping[str, str] | None = None,
     process_runner: ProcessRunner = default_process_runner,
     clock: Clock = _utc_now,
 ) -> CanaryResult:
@@ -264,6 +311,8 @@ def run_python_canary(
         project_root=project_root,
         base_commit=base_commit,
         adapter=adapter,
+        infrastructure_source=infrastructure_source,
+        infrastructure_environment=infrastructure_environment,
         process_runner=process_runner,
         clock=clock,
     )
@@ -274,7 +323,7 @@ def run_python_canary(
     original_text = target.read_text(encoding="utf-8")
     applied = _apply_mechanism(adapter, mechanism, original_text)
     if applied is None:
-        return CanaryResult(
+        return _single_target_result(
             mechanism=mechanism,
             target=target_path,
             description=(
@@ -287,7 +336,7 @@ def run_python_canary(
 
     transformed_text, description = applied
     if transformed_text == original_text:
-        return CanaryResult(
+        return _single_target_result(
             mechanism=mechanism,
             target=target_path,
             description=(
@@ -308,10 +357,12 @@ def run_python_canary(
         project_root=project_root,
         base_commit=control_commit,
         adapter=adapter,
+        infrastructure_source=infrastructure_source,
+        infrastructure_environment=infrastructure_environment,
         process_runner=process_runner,
         clock=clock,
     )
-    return CanaryResult(
+    return _single_target_result(
         mechanism=mechanism,
         target=target_path,
         description=description,
@@ -497,7 +548,7 @@ def run_isolated_canary(
 
     applied = _apply_mechanism(adapter, mechanism, original_text)
     if applied is None:
-        return CanaryResult(
+        return _single_target_result(
             mechanism=mechanism,
             target=target,
             description=(
@@ -510,7 +561,7 @@ def run_isolated_canary(
 
     transformed_text, description = applied
     if transformed_text == original_text:
-        return CanaryResult(
+        return _single_target_result(
             mechanism=mechanism,
             target=target,
             description=(
@@ -561,7 +612,7 @@ def run_isolated_canary(
             deadline=deadline,
         )
 
-    return CanaryResult(
+    return _single_target_result(
         mechanism=mechanism,
         target=target,
         description=description,
@@ -570,6 +621,170 @@ def run_isolated_canary(
         expected_reason_code=expected_reason,
         observed_reason_code=observed_reason_code,
     )
+
+
+def _not_attempted(target: str, why: str, *, detail: str) -> CanaryAttempt:
+    """One declared probe that was never tried, and the CLOSED reason it
+    was not (B007/A-432).
+
+    *detail* becomes the entry's ``description``: the vocabulary member says
+    which RULE skipped the probe, and the sentence says what that rule saw,
+    so a reader of the document never has to reconstruct it from the
+    neighbouring attempts.
+    """
+    return CanaryAttempt(
+        target=target,
+        description=detail,
+        disposition="not_attempted",
+        not_attempted_reason=why,
+    )
+
+
+def run_isolated_canaries(
+    lane: Lane,
+    *,
+    prepared: SnapshotRepository,
+    plan: CommandPlan,
+    deadline: LaneDeadline,
+    project_root: Path,
+    resolved_base: str | None,
+    mechanism: str,
+    targets: Iterable[str],
+    aggregation: str | None,
+    adapter: LanguageAdapter,
+    process_runner: ProcessRunner,
+    clock: Clock,
+) -> tuple[CanaryResult, AssayError | None]:
+    """(B007/A-432) the ORDERED multi-target R3 run: one
+    :func:`run_isolated_canary` per declared target, in DECLARED order, with
+    the aggregation's own bookkeeping recorded for the probes it did not try.
+
+    Returns the whole :class:`~assay.verdict.CanaryResult` and, when the run
+    ended on a TERMINAL that is not itself a judgement, the
+    :class:`~assay.errors.AssayError` that ended it -- today exactly one
+    case, budget exhaustion, whose claim is
+    ``BUDGET_EXCEEDED``/``LANE_TIMEOUT`` and NEVER folded into the
+    aggregation (A-432), with the untried targets visible in the payload
+    that comes back beside it.
+
+    **What stops the loop, and what does not** (A-432, DA-R19):
+
+    * under ``"any"`` the first ``PASS`` SHORT-CIRCUITS -- the question is
+      answered, and each further target costs a measured ~2.76 s of
+      materialisation plus two full command runs. Every later target is
+      recorded ``not_attempted``/``short_circuited``;
+    * under ``"all"`` a ``FAIL`` does NOT stop anything (DA-R19 affirms the
+      deliberate 2N bound: naming EVERY surviving probe is the whole reason
+      a lane declares several), so the loop runs on and the claim is still
+      ``FAIL``/``CANARY_SURVIVED``;
+    * in BOTH modes an ``INCONCLUSIVE`` attempt is TERMINAL -- nothing
+      further can be concluded from probes judged against a baseline that
+      was not itself known-good -- and every later target is recorded
+      ``not_attempted``/``earlier_target_terminal``;
+    * budget exhaustion ends the run wherever it happens, and the probe it
+      happened in, together with every later one, is recorded
+      ``not_attempted``/``budget_exhausted``. ``not_attempted`` is the
+      dispositional statement "there is no run to report", which is exactly
+      true of a probe the deadline cut short: its own ``description`` says
+      whether the budget expired DURING it or was already gone before it, so
+      the document never has to be reconstructed from its neighbours.
+
+    **Every OTHER refusal raised inside a target's own run propagates**,
+    exactly as it does for a single-target lane: a ``DIRTY_TREE``/
+    ``HEAD_CHANGED``/``UNREADABLE_ARTIFACT`` fault is the canary MACHINERY
+    failing, and the caller renders the payload-FREE R3 claim it always has.
+    Budget exhaustion is the one that keeps its payload because the untried
+    targets are the whole point of recording it (A-432): a lane that ran out
+    of budget after two of five probes has said something a payload-free
+    refusal cannot.
+    """
+    declared = tuple(targets)
+    attempts: list[CanaryAttempt] = []
+    terminal: AssayError | None = None
+    index = 0
+    while index < len(declared):
+        target = declared[index]
+        try:
+            one = run_isolated_canary(
+                lane,
+                prepared=prepared,
+                plan=plan,
+                deadline=deadline,
+                project_root=project_root,
+                resolved_base=resolved_base,
+                mechanism=mechanism,
+                target=target,
+                adapter=adapter,
+                process_runner=process_runner,
+                clock=clock,
+            )
+        except AssayError as exc:
+            if exc.outcome is not Outcome.BUDGET_EXCEEDED:
+                raise
+            terminal = exc
+            ran = len(attempts)
+            attempts.append(
+                _not_attempted(
+                    target,
+                    "budget_exhausted",
+                    detail=(
+                        f"the lane-wide deadline expired during this probe, "
+                        f"which produced no run to report ({ran} of "
+                        f"{len(declared)} declared targets had already run)"
+                    ),
+                )
+            )
+            attempts.extend(
+                [
+                    _not_attempted(
+                        later,
+                        "budget_exhausted",
+                        detail=(
+                            f"the lane-wide deadline was already gone before "
+                            f"this probe's control materialisation ({ran} of "
+                            f"{len(declared)} declared targets had run)"
+                        ),
+                    )
+                    for later in declared[index + 1 :]
+                ]
+            )
+            break
+        attempt = one.attempts[0]
+        attempts.append(attempt)
+        index += 1
+        at = len(attempts) - 1
+        status, _ = judge_attempt(attempt)
+        if status is Outcome.INCONCLUSIVE:
+            attempts.extend(
+                [
+                    _not_attempted(
+                        later,
+                        "earlier_target_terminal",
+                        detail=(
+                            f"attempt {at} ({target}) was INCONCLUSIVE, "
+                            f"which ends the claim in both aggregation modes"
+                        ),
+                    )
+                    for later in declared[index:]
+                ]
+            )
+            break
+        if status is Outcome.PASS and aggregation == "any":
+            attempts.extend(
+                [
+                    _not_attempted(
+                        later,
+                        "short_circuited",
+                        detail=(
+                            f"attempt {at} ({target}) was caught, which "
+                            f"answers an 'any' aggregation"
+                        ),
+                    )
+                    for later in declared[index:]
+                ]
+            )
+            break
+    return CanaryResult(mechanism=mechanism, attempts=tuple(attempts)), terminal
 
 
 def _evaluate_go(
@@ -659,7 +874,7 @@ def run_go_canary(
 
     expected_reason = _EXPECTED_REASON_BY_MECHANISM.get(mechanism)
     if mechanism not in _GO_R1_MECHANISMS:
-        return CanaryResult(
+        return _single_target_result(
             mechanism=mechanism,
             target=target_path,
             description=(
@@ -672,7 +887,7 @@ def run_go_canary(
 
     transformed_source, description = adapter.inject_uncovered_line(control_source)
     if transformed_source == control_source:
-        return CanaryResult(
+        return _single_target_result(
             mechanism=mechanism,
             target=target_path,
             description=(
@@ -693,7 +908,7 @@ def run_go_canary(
         fail_under=fail_under,
         allow_excluded=allow_excluded,
     )
-    return CanaryResult(
+    return _single_target_result(
         mechanism=mechanism,
         target=target_path,
         description=description,
@@ -704,8 +919,9 @@ def run_go_canary(
     )
 
 
-def judge_canary(result: CanaryResult) -> tuple[Outcome, ReasonCode | None]:
-    """The judgement A-109 maps onto the two existing reason codes:
+def judge_attempt(attempt: CanaryAttempt) -> tuple[Outcome, ReasonCode | None]:
+    """ONE target's judgement. A-109 maps it onto the two existing reason
+    codes:
 
     * a broken control, or a transform that never genuinely ran (a
       malformed mechanism or a no-op) — ``INCONCLUSIVE``/``CANARY_INCONCLUSIVE``
@@ -716,23 +932,77 @@ def judge_canary(result: CanaryResult) -> tuple[Outcome, ReasonCode | None]:
       caught, whichever way);
     * otherwise — a PASSING control and a transformed run that failed for
       EXACTLY the expected reason — ``PASS``.
+
+    A ``"not_attempted"`` entry has no judgement of its own: it is
+    bookkeeping about an aggregation, and :func:`judge_canary` reads it as
+    such.
     """
-    if result.control_outcome is not Outcome.PASS:
+    if attempt.control_outcome is not Outcome.PASS:
         return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
-    if result.transformed_outcome is None:
+    if attempt.transformed_outcome is None:
         return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
-    if result.transformed_outcome is Outcome.PASS:
+    if attempt.transformed_outcome is Outcome.PASS:
         return Outcome.FAIL, ReasonCode.CANARY_SURVIVED
-    if result.observed_reason_code != result.expected_reason_code:
+    if attempt.observed_reason_code != attempt.expected_reason_code:
         return Outcome.FAIL, ReasonCode.CANARY_SURVIVED
     return Outcome.PASS, None
 
 
-def build_canary_claim(result: CanaryResult) -> Claim:
+def judge_canary(
+    result: CanaryResult, *, aggregation: str | None = None
+) -> tuple[Outcome, ReasonCode | None]:
+    """The R3 claim's judgement over the whole ordered attempt array
+    (B007/A-432, schema v10).
+
+    With ONE declared target ``aggregation`` is absent and this is
+    :func:`judge_attempt` verbatim — the v9 behaviour, unchanged, which is
+    why every existing single-target lane keeps its exact verdict.
+
+    With several, attempts run in DECLARED order and:
+
+    * under ``"any"`` the first ``PASS`` SHORT-CIRCUITS (the question is
+      answered and each further target costs a measured ~2.76 s plus two
+      command runs); if every attempt ran without a ``PASS`` the claim is
+      ``FAIL``/``CANARY_SURVIVED``;
+    * under ``"all"`` every target is attempted even after a ``FAIL``
+      (DA-R19 affirms the deliberate 2N bound: naming EVERY surviving probe
+      is the whole reason a lane declares several), and any ``FAIL`` is
+      ``FAIL``/``CANARY_SURVIVED``.
+
+    In BOTH modes an ``INCONCLUSIVE``/``CANARY_INCONCLUSIVE`` attempt is
+    **TERMINAL, not aggregated**: the claim takes that outcome and code
+    exactly as a single-target lane does today, and every later target is
+    recorded ``not_attempted``.
+    """
+    if aggregation is not None and aggregation not in CANARY_AGGREGATIONS:
+        raise ValueError(
+            f"canary aggregation must be one of {list(CANARY_AGGREGATIONS)} "
+            f"or None, got {aggregation!r}"
+        )
+    saw_pass = False
+    for attempt in result.attempts:
+        if attempt.disposition == "not_attempted":
+            continue
+        status, reason_code = judge_attempt(attempt)
+        if status is Outcome.INCONCLUSIVE:
+            return status, reason_code
+        if status is Outcome.PASS:
+            saw_pass = True
+            if aggregation != "all":
+                return Outcome.PASS, None
+        else:
+            if aggregation != "any":
+                return Outcome.FAIL, ReasonCode.CANARY_SURVIVED
+    if saw_pass:
+        return Outcome.PASS, None
+    return Outcome.FAIL, ReasonCode.CANARY_SURVIVED
+
+
+def build_canary_claim(result: CanaryResult, *, aggregation: str | None = None) -> Claim:
     """The R3 :class:`~assay.verdict.Claim` from a
     :class:`~assay.verdict.CanaryResult` (A-108) — the exact mapping
     :func:`~assay.runner.build_r0_claim` performs for R0, one level up."""
-    status, reason_code = judge_canary(result)
+    status, reason_code = judge_canary(result, aggregation=aggregation)
     return Claim(
         rigor="R3",
         source="computed",

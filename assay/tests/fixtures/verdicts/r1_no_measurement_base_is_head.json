@@ -1,5 +1,5 @@
 {
-  "schema_version": 9,
+  "schema_version": 10,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -44,7 +44,9 @@
       "source": "computed",
       "status": "NO_MEASUREMENT",
       "verified_by_assay": true,
-      "reason_code": "BASE_IS_HEAD"
+      "reason_code": "BASE_IS_HEAD",
+      "detail": "resolved base (<HEAD12>) IS HEAD (<HEAD12>) — there is no delta to measure. base should resolve to an ancestor of HEAD; check that HEAD is not already the tip of that ref.",
+      "detail_dropped_bytes": 0
     }
   ],
   "evidence": []

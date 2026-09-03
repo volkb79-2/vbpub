@@ -1,0 +1,129 @@
+{
+  "schema_version": 2,
+  "instance": "dstdns-98535c",
+  "commit_under_test": "a9b10791",
+  "tree_state": "clean",
+  "containers": [
+    {
+      "name": "dstdns-98535c-adminer",
+      "image": "adminer:latest",
+      "labelled_revision": null,
+      "status": "unlabelled"
+    },
+    {
+      "name": "dstdns-98535c-authentik-server",
+      "image": "ghcr.io/goauthentik/server:latest",
+      "labelled_revision": null,
+      "status": "unlabelled"
+    },
+    {
+      "name": "dstdns-98535c-authentik-worker",
+      "image": "ghcr.io/goauthentik/server:latest",
+      "labelled_revision": null,
+      "status": "unlabelled"
+    },
+    {
+      "name": "dstdns-98535c-consul",
+      "image": "hashicorp/consul:latest",
+      "labelled_revision": null,
+      "status": "unlabelled"
+    },
+    {
+      "name": "dstdns-98535c-docker-stats-exporter",
+      "image": "ed0cc43a28bc",
+      "labelled_revision": null,
+      "status": "unlabelled"
+    },
+    {
+      "name": "dstdns-98535c-minio",
+      "image": "minio/minio:latest",
+      "labelled_revision": null,
+      "status": "unlabelled"
+    },
+    {
+      "name": "dstdns-98535c-otel-aggregator",
+      "image": "otel/opentelemetry-collector-contrib:latest",
+      "labelled_revision": "f817832365a9a2b829bc7c25feffcf8834585dea",
+      "status": "mismatch"
+    },
+    {
+      "name": "dstdns-98535c-otel-collector-node",
+      "image": "otel/opentelemetry-collector-contrib:latest",
+      "labelled_revision": "f817832365a9a2b829bc7c25feffcf8834585dea",
+      "status": "mismatch"
+    },
+    {
+      "name": "dstdns-98535c-pgadmin",
+      "image": "dpage/pgadmin4:latest",
+      "labelled_revision": null,
+      "status": "unlabelled"
+    },
+    {
+      "name": "dstdns-98535c-postgres",
+      "image": "timescale/timescaledb-ha:pg18.4-ts2.27.1",
+      "labelled_revision": "refs/heads/master",
+      "status": "mismatch"
+    },
+    {
+      "name": "dstdns-98535c-pwmcp",
+      "image": "ghcr.io/volkb79-2/pwmcp:latest",
+      "labelled_revision": null,
+      "status": "unlabelled"
+    },
+    {
+      "name": "dstdns-98535c-redis",
+      "image": "redis:8-alpine",
+      "labelled_revision": null,
+      "status": "unlabelled"
+    },
+    {
+      "name": "dstdns-98535c-reverse-proxy",
+      "image": "nginx:alpine",
+      "labelled_revision": null,
+      "status": "unlabelled"
+    },
+    {
+      "name": "dstdns-98535c-skywalking-oap",
+      "image": "apache/skywalking-oap-server:latest",
+      "labelled_revision": null,
+      "status": "unlabelled"
+    },
+    {
+      "name": "dstdns-98535c-skywalking-postgres",
+      "image": "postgres:alpine",
+      "labelled_revision": null,
+      "status": "unlabelled"
+    },
+    {
+      "name": "dstdns-98535c-skywalking-ui",
+      "image": "apache/skywalking-ui:latest",
+      "labelled_revision": "19ca126d9bd931b51af86e31086bf615dad3decd",
+      "status": "mismatch"
+    },
+    {
+      "name": "dstdns-98535c-test-runner",
+      "image": "dstdns/test-runner:latest",
+      "labelled_revision": null,
+      "status": "unlabelled"
+    },
+    {
+      "name": "dstdns-98535c-vault",
+      "image": "15835cfa813e",
+      "labelled_revision": null,
+      "status": "unlabelled"
+    },
+    {
+      "name": "dstdns-98535c-webapp-server",
+      "image": "494bea690b76",
+      "labelled_revision": null,
+      "status": "unlabelled"
+    },
+    {
+      "name": "dstdns-98535c-webapp-ui-react",
+      "image": "55cf68632a01",
+      "labelled_revision": null,
+      "status": "unlabelled"
+    }
+  ],
+  "overall": "mismatch"
+}

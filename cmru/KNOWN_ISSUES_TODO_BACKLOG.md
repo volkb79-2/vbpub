@@ -955,3 +955,66 @@ the raise. Fix (b) must instead produce a single `## [<next-version>] -
 prose, and zero remaining `- UNRELEASED` headers anywhere in the file —
 verify with a real project fixture carrying such a section, asserting the
 post-release file has exactly one header for that version.
+
+### KI-24 — `get.py` needs an `enroll` subcommand (install + authorized key + host-key fingerprint) so ciu can enroll a bare host without a token, a callback or a self-hosted backend
+
+**Status:** open (filed 2026-09-03 from the ciu v8 design session; operator direction of the same day, ciu CIU-93 revision 2, `vbpub/ciu/docs/CIU-HOST-ENROLLMENT-PROPOSAL.md` §4 and oracles O2/O3/O6).
+
+**Mechanism.** `templates/get.py.tmpl` renders a transactional installer with
+`install|update|status|rollback` subcommands and a `bootstrap|apply|health|
+rollback` adapter seam (`ENTRYPOINT`). ciu's remote-host enrollment (v7
+`SPEC.md` S14.7, v8 `SPEC-V8.md` S7.2.4) needs the target's admin to run ONE
+command on a bare host that (a) installs the project exactly as `install
+--scope system` does, (b) creates or confirms a deploy user, (c) appends a
+control-generated SSH public key once to that user's `authorized_keys`, and
+(d) prints the host's SSH host-key fingerprints so the control host can pin
+`known_host` after the operator confirms them. None of that exists in the
+template; the previously discussed alternative — a token-authenticated
+self-hosted download backend (dstdns D-097) — was withdrawn by the operator
+as infrastructure that carried nothing the operator did not have to confirm
+anyway.
+
+**Proposed contract** (one new subcommand, available to every project that
+renders `get.py`; nothing else in the template changes):
+
+```
+get.py [--manifest-pubkey …] enroll --authorized-key 'KEY' --controller FQDN
+       [--user USER] [--name NAME] [--from PATTERN] [--docker] [--no-install] [--scope system]
+```
+
+In order, fail-fast, idempotent on re-run: (1) prerequisites BEFORE any
+network I/O — Linux, root/sudo, an SSH server (`sshd` on `PATH` or
+`/usr/sbin/sshd`; absent → `EXIT_PREREQ` naming `openssh-server`), the key
+line parses as `<type> <base64>[ <comment>]` with `type ∈ ssh-ed25519 |
+ecdsa-sha2-* | sk-* | ssh-rsa` (else `EXIT_CONFIG`); the installer never
+installs system packages. (2) `install --scope system` verbatim (transaction,
+manifest verification, `current` switch); `--no-install` skips it. (3)
+`--user` (default `ciu`) created with `useradd --create-home --shell
+/bin/bash` when absent, untouched when present; `--docker` adds it to the
+`docker` group, refused with `EXIT_PREREQ` when the group is absent. (4)
+`~USER/.ssh` 0700 and `authorized_keys` 0600 owned by USER; the key line
+(with `from="PATTERN",` prefixed when `--from` was given) appended ONCE — an
+identical line is reported not duplicated, a same-key-different-options line
+is refused with `EXIT_CONFIG`. (5) Print: the SHA256 fingerprint of every
+`/etc/ssh/ssh_host_*_key.pub` (`ssh-keygen -lf`), the addresses from
+`hostname -I` labelled unconfirmed, the user, the installed version, and the
+exact completion command `ciu host enroll <NAME> --ssh-host <address>
+--fingerprint SHA256:<ed25519 fingerprint>` (`<NAME>` from `--name`, else a
+placeholder). It never generates keys, calls anything back, opens a
+listener, edits `sshd_config` or runs the adapter verbs.
+
+**Oracles.** O2: in a fixture container with `openssh-server`, `enroll`
+creates the user, appends the key once (a re-run leaves one line and reports
+it), sets modes/ownership, and prints a fingerprint equal to `ssh-keygen -lf
+/etc/ssh/ssh_host_ed25519_key.pub`. O3: without an SSH server it exits
+`EXIT_PREREQ` naming `openssh-server` and performs no network I/O. O6: `cmru
+get-py --project ciu` renders a script whose `enroll --help` lists exactly
+the flags above, byte-identical to the `ciu/get.py` ciu commits and ships as
+a release asset. Controlled wrong implementation: one that appends the key
+before the prerequisite checks must fail O3; one that duplicates the line on
+re-run must fail O2.
+
+**Cross-references.** ciu CIU-93 (the verb, both lines), `vbpub/ciu/docs/
+CIU-HOST-ENROLLMENT-PROPOSAL.md` rev 2 (the full design), dstdns D-097/D-358
+(origin). The self-hosted *wheel* download backend D-097 wished for stays a
+separate, optional item (ciu proposal §4.10 item 27) — not required here.

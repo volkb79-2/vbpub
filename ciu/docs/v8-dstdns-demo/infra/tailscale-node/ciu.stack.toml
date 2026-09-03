@@ -2,7 +2,7 @@
 # Realization `tailscale_node` (bound by ciu.toml [realization.tailscale_node]
 # with per_host = true — declared THERE, S5.4, never in a stack file) = the
 # `mesh_node` LogicalService AND the transport of [network.mesh]
-# (`realized_by = "tailscale_node"`). Nobody depends on this stack by name:
+# (`realized_by = "mesh_node"` — a LogicalService, never a Realization, S7.3). Nobody depends on this stack by name:
 # every cross-host binding resolution over the mesh gains a DERIVED network edge
 # onto it on the consumer's host and, being per_host, on the provider's (S8.3),
 # plus a reachability probe of the resolution before the consumer's wave
@@ -21,7 +21,7 @@ host_network = true                  # ciu injects network_mode: host, no hostna
 
 [ciu_stack.tailscale.settings]       # consumer data read by the hooks and the compose template
 # No tailnet hostname here: the compose template reads host.hostname (a host fact
-# from [ciu.host.generated], S3.5.3). The v7 interpolation of the deploying
+# from ciu.host.toml's [ciu.host], S3.5.3). The v7 interpolation of the deploying
 # shell's HOSTNAME is impossible in v8 — the compose process environment is
 # closed (S11.6).
 # Enrollment seed file (mode 0400) holding the single-use auth key, written by the

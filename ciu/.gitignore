@@ -4,6 +4,11 @@
 # Rendered config outputs (S1.8 — gitignored, see .gitignored.ciu)
 ciu.global.toml
 **/ciu.toml
+# v8 design-set demo (docs/v8-dstdns-demo): in v8 `ciu.toml` is a COMMITTED
+# declaration file (SPEC-V8 S2.1), so re-include the demo's copies that the v7
+# rule above hides. Found 2026-09-03: the two earlier design-set commits shipped
+# the demo without its ciu.toml because of this rule.
+!docs/v8-dstdns-demo/**/ciu.toml
 # CIU's own rendered compose (a hand-written docker-compose.yml for the
 # --shipped path is intentionally NOT ignored — maintainers commit it)
 **/ciu.compose.yml

@@ -3,11 +3,13 @@ kind: backlog-entry
 schema_version: 1
 id: NL-3
 title: "L10 handoff-size thresholds are hardcoded constants, need a per-project nyxloom.toml override"
-status: open
+status: fixed
 type: "feature"
 severity: "medium"
 provenance: "dstdns 2026-08-29, packages P137/P138 (nyxloom-trove/reviews/dstdns-P137-carve-review-r1.md, dstdns-P138-carve-review-r1.md)"
 filed_date: "2026-08-29"
+closed_date: "2026-09-03"
+closed_reason: "nyxloom-P99, merged 49525ef9: adds optional [lint.l10] table to nyxloom.toml (warn_tokens/error_tokens override, both directions), fails loudly on malformed values at ProjectConfig.load time"
 ---
 
 ## Observed mechanism and reproduction

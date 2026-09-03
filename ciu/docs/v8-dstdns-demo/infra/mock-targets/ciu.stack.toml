@@ -11,7 +11,8 @@
 
 [ciu_stack.dns]                      # UDP DNS server (dnslib) answering from fixture data
 primary = true                       # the health-bearing service for the realization (contract []: its health stands for probe_targets, S5.3.4)
-image = "dstdns/mock-targets:latest" # <project.registry.namespace>/mock-targets — a literal in plain TOML; built by the compose template from [mock_image]
+image = "dstdns/mock-targets:latest" # <project.registry.namespace>/mock-targets — a literal in plain TOML
+build = { context = "../..", dockerfile = "infra/mock-targets/Dockerfile", args = { PYTHON_BASE_IMAGE = "python:3.14-slim" } }   # project-built (S6.2, S17.6): declared here, injected into compose (S11.4) — the template no longer writes build:; http shares the image and declares no build
 endpoints.dns = { port = 5353, protocol = "udp" }   # publish = "instance"; host publishing for local debugging is a ciu.site.toml override through the merged view ([realization.mock_targets.services.dns.endpoints.dns] publish = "host", host_port = …), never here
 [ciu_stack.dns.env]                  # consumer data → the container's environment (the compose template loops over it)
 MOCK_DNS_HOST = "0.0.0.0"            # bind address inside the container

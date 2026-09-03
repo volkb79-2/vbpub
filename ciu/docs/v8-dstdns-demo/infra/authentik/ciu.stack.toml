@@ -13,7 +13,7 @@ primary = true                       # health-bearing; the hook drives the OIDC/
 # `path` = what the reverse proxy fronts. In prod3 the proxy (tsstammtisch) is on another host than this stack
 # (gstammtisch), so publish = "proxy" needs host_port + allow_from (S7.4.3); minio's 9000 on that host is instance-only.
 # rs1002 is admitted too: webapp_server (apps bundle) reads the JWKS over the mesh in prod3 (its binding, S7.8 step 5).
-endpoints.http  = { port = 9000, protocol = "http", publish = "proxy", host_port = 9000, path = "/auth", allow_from = ["host.tsstammtisch", "host.rs1002"] }
+endpoints.http  = { port = 9000, protocol = "http", publish = "proxy", host_port = 9010, path = "/auth", allow_from = ["host.tsstammtisch", "host.rs1002"] }
 endpoints.https = { port = 9443, protocol = "https" }
 # No `requires` for vault: every `from = "vault"` / `store = "vault"` secret below derives that edge (S8.3).
 

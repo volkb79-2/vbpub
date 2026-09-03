@@ -63,8 +63,11 @@ def gate_functions(tmp_path_factory) -> Path:
     body = source.split(marker, 1)[0]
 
     if not Path(AMBIENT_TESTER_VENV_PYTHON).exists():
+        # 4 since B024/DA-R7: `build_lint_venv` resolves the same base prefix
+        # the build/run venvs are cut from, so the lint closure is built by the
+        # image's own interpreter and not by whatever is first on PATH.
         occurrences = body.count(AMBIENT_TESTER_VENV_PYTHON)
-        assert occurrences == 3, (
+        assert occurrences == 4, (
             f"expected exactly 3 uses of {AMBIENT_TESTER_VENV_PYTHON} in the "
             f"function definitions, found {occurrences}; update this test's "
             "substitution if the script changed"
@@ -390,6 +393,19 @@ class _SelfHostedLaneFixture:
         )
 
 
+#: Shell preamble every `assay` stub in this module shares: resolve the
+#: verdict path the way the real CLI does — the token after `--verdict-json` —
+#: instead of by argv position. See `_self_hosted_lane_fixture`'s docstring.
+_VERDICT_PATH_FROM_ARGV = (
+    'out=""; prev=""\n'
+    'for arg in "$@"; do\n'
+    '  if [ "$prev" = "--verdict-json" ]; then out="$arg"; fi\n'
+    '  prev="$arg"\n'
+    "done\n"
+    'if [ -z "$out" ]; then echo "stub: no --verdict-json in argv" >&2; exit 64; fi\n'
+)
+
+
 def _self_hosted_lane_fixture(
     tmp_path: Path, *, version: str, digest: str | None = None
 ) -> _SelfHostedLaneFixture:
@@ -401,8 +417,13 @@ def _self_hosted_lane_fixture(
     exercised by a value the stub did not simply echo back from the gate.
     *digest* overrides it to drive the refusal branch.
 
-    Note the argv position: the gate now passes `--require-judge-provenance`
-    before `--verdict-json`, so the artifact path the stub writes to is `$5`.
+    The stub finds its output path by READING the argv for `--verdict-json`
+    rather than by position. It used to write to `$5`, with a note here saying
+    so — and that note had to move once already when
+    `--require-judge-provenance` was added, and would have moved again when
+    A-429 added `--resume --progress`. A stub whose contract is "the value
+    after `--verdict-json`" is the same contract the real CLI has, and it does
+    not break every time the gate's invocation grows a flag.
     """
     tmp_path.mkdir(parents=True, exist_ok=True)
     stub_dir = tmp_path / "stubs"
@@ -426,7 +447,8 @@ def _self_hosted_lane_fixture(
     stub_assay = stub_dir / "assay"
     stub_assay.write_text(
         "#!/usr/bin/env bash\n"
-        f"printf '%s' {shlex.quote(document)} > \"$5\"\n"
+        + _VERDICT_PATH_FROM_ARGV
+        + f"printf '%s' {shlex.quote(document)} > \"$out\"\n"
         "exit 0\n"
     )
     stub_assay.chmod(0o755)
@@ -485,7 +507,9 @@ def test_self_hosted_lane_refuses_a_verdict_carrying_no_judge_identity(
     stub_dir.mkdir()
     stub_assay = stub_dir / "assay"
     stub_assay.write_text(
-        '#!/usr/bin/env bash\nprintf \'{"assay_version": "9.9.9"}\' > "$5"\nexit 0\n'
+        "#!/usr/bin/env bash\n"
+        + _VERDICT_PATH_FROM_ARGV
+        + 'printf \'{"assay_version": "9.9.9"}\' > "$out"\nexit 0\n'
     )
     stub_assay.chmod(0o755)
     worktree = tmp_path / "worktree"
@@ -521,7 +545,8 @@ def test_the_self_hosted_lane_demands_the_judge_identity_from_assay_itself(
     stub_assay.write_text(
         "#!/usr/bin/env bash\n"
         f'printf \'%s\\n\' "$@" > "{argv_log}"\n'
-        'printf \'{"assay_version": "9.9.9"}\' > "$5"\n'
+        + _VERDICT_PATH_FROM_ARGV
+        + 'printf \'{"assay_version": "9.9.9"}\' > "$out"\n'
         "exit 0\n"
     )
     stub_assay.chmod(0o755)
@@ -542,6 +567,201 @@ def test_the_self_hosted_lane_demands_the_judge_identity_from_assay_itself(
         "run",
         "tester-unified",
         "--require-judge-provenance",
+        # (A-429) the estate-wide pair, on the one `assay run` run-gate does
+        # not drive. Asserted on the invocation the stub RECEIVED, so this is
+        # the flags actually reaching assay, not a substring of the script.
+        "--resume",
+        "--progress",
+        f"{scratch}/progress-tester-unified.jsonl",
         "--verdict-json",
         f"{scratch}/verdict.json",
     ]
+
+
+# --- B024/DA-R7: the pyflakes lint phase and its own hash-bound closure -----
+
+
+LINT_WHEELHOUSE = DISTRIBUTION / "lint-wheelhouse"
+LINT_REQUIREMENTS = DISTRIBUTION / "lint-requirements.txt"
+LINT_MANIFEST = DISTRIBUTION / "lint-wheelhouse-manifest.json"
+
+
+@pytest.fixture(scope="session")
+def lint_venv(tmp_path_factory, gate_functions: Path) -> Path:
+    """A real `lint-venv` built by the gate's OWN `build_lint_venv`, from the
+    committed offline wheelhouse with `--require-hashes`. Built once per
+    session because every assertion below wants the same closure the gate
+    installs, not a pip-resolved approximation of it."""
+    scratch = tmp_path_factory.mktemp("lint-scratch")
+    proc = run_bash(
+        f'build_lint_venv "{scratch}" "{DISTRIBUTION}"',
+        gate_functions=gate_functions,
+        timeout=180,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return scratch
+
+
+def test_lint_requirements_pin_the_wheels_that_are_actually_committed() -> None:
+    """The pin, the manifest and the bytes on disk must agree. A wheelhouse
+    whose hash line does not match its own file is a closure that will only
+    fail inside the network-less container, where nobody can fetch a fix."""
+    lines = [
+        line.strip()
+        for line in LINT_REQUIREMENTS.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    assert len(lines) == 1, lines
+    assert lines[0].startswith("pyflakes==3.4.0 --hash=sha256:"), lines[0]
+
+    manifest = json.loads(LINT_MANIFEST.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 1
+    entries = manifest["requirements"]
+    assert len(entries) == 1, entries
+
+    wheels = sorted(LINT_WHEELHOUSE.glob("*.whl"))
+    assert [w.name for w in wheels] == [entries[0]["filename"]]
+
+    payload = wheels[0].read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    assert digest == entries[0]["sha256"]
+    assert len(payload) == entries[0]["size"]
+    assert f"--hash=sha256:{digest}" in LINT_REQUIREMENTS.read_text(encoding="utf-8")
+
+
+def test_the_lint_closure_is_a_third_venv_and_never_the_build_or_run_venv() -> None:
+    """A-198's five-wheel build closure is an assertion about what can enter
+    the wheel. A linter is neither a build input nor a runtime dependency, so
+    it gets its own venv and the build closure's assertion stays exactly what
+    it was."""
+    source = GATE_SCRIPT.read_text(encoding="utf-8")
+    lint_fn = source.split("build_lint_venv() {", 1)[1].split("\n}\n", 1)[0]
+
+    assert "$scratch/lint-venv" in lint_fn
+    assert "build-venv" not in lint_fn
+    assert "run-venv" not in lint_fn
+    assert "--require-hashes" in lint_fn
+    assert "--no-index" in lint_fn
+    assert "lint-wheelhouse" in lint_fn
+
+    build_fn = source.split("build_offline_closure_venvs() {", 1)[1].split("\n}\n", 1)[0]
+    assert "pyflakes" not in build_fn
+    assert "lint" not in build_fn
+
+    run_fn = source.split("run_lint_phase() {", 1)[1].split("\n}\n", 1)[0]
+    assert "$scratch/lint-venv/bin/python" in run_fn
+    # The judged bytes are the private exact-OID clone's, never the caller's
+    # bind-mounted worktree.
+    assert "$scratch/clone/assay/src/assay" in run_fn
+
+
+def test_the_lint_phase_runs_after_the_suite_and_marks_itself() -> None:
+    source = GATE_SCRIPT.read_text(encoding="utf-8")
+    assert "echo 'ASSAY_GATE_PHASE=pyflakes-clean'" in source
+
+    inner = source.split("run_inner() {", 1)[1].split("# --- entry points", 1)[0]
+    self_host = inner.index("run_self_hosted_lane")
+    witness = inner.index("run_independent_witness")
+    lint = inner.index("run_lint_phase")
+    assert self_host < witness < lint
+
+
+def test_a_planted_unused_import_reddens_the_lint_phase(
+    tmp_path: Path, gate_functions: Path, lint_venv: Path
+) -> None:
+    """The whole point of the phase. A clean tree passes and emits the marker
+    exactly once; the same tree with one unused import fails, names the file
+    and line, and emits NO marker -- a phase that cannot go red is wiring, not
+    a gate."""
+    scratch = tmp_path / "scratch"
+    package = scratch / "clone" / "assay" / "src" / "assay"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    module = package / "config.py"
+    module.write_text("import json\n\n\ndef load(text: str) -> object:\n    return json.loads(text)\n", encoding="utf-8")
+    shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
+
+    clean = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
+    assert clean.returncode == 0, clean.stderr
+    assert clean.stdout.count("ASSAY_GATE_PHASE=pyflakes-clean") == 1
+
+    module.write_text(
+        "import json\nimport os\n\n\ndef load(text: str) -> object:\n    return json.loads(text)\n",
+        encoding="utf-8",
+    )
+    planted = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
+    assert planted.returncode != 0
+    assert "ASSAY_GATE_PHASE=pyflakes-clean" not in planted.stdout
+    assert "'os' imported but unused" in planted.stdout + planted.stderr
+    assert "config.py" in planted.stdout + planted.stderr
+
+
+def test_an_undefined_name_reddens_the_lint_phase(
+    tmp_path: Path, gate_functions: Path, lint_venv: Path
+) -> None:
+    """pyflakes' whole rule set is the F-rule set, and the rule that pays for
+    the phase is F821: a name that does not exist at runtime, which a test
+    suite only catches on the branch that executes it."""
+    scratch = tmp_path / "scratch"
+    package = scratch / "clone" / "assay" / "src" / "assay"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "errors.py").write_text(
+        "def refuse(reason: str) -> str:\n"
+        "    if reason == 'x':\n"
+        "        return REASON_TABLE[reason]\n"
+        "    return reason\n",
+        encoding="utf-8",
+    )
+    shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
+
+    proc = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
+    assert proc.returncode != 0
+    assert "undefined name 'REASON_TABLE'" in proc.stdout + proc.stderr
+
+
+def test_the_shipped_source_tree_is_pyflakes_clean(
+    tmp_path: Path, gate_functions: Path, lint_venv: Path
+) -> None:
+    """The gate's own assertion, brought forward into the ordinary suite so a
+    finding is visible in `pytest tests` instead of only after a nine-minute
+    container run. Runs the identical locked pyflakes over the identical
+    package the gate lints."""
+    scratch = tmp_path / "scratch"
+    (scratch / "clone" / "assay" / "src").mkdir(parents=True)
+    (scratch / "clone" / "assay" / "src" / "assay").symlink_to(PROJECT_ROOT / "src" / "assay")
+    shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
+
+    proc = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions, timeout=180)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_the_self_hosted_lane_is_invoked_with_resume_and_progress() -> None:
+    """(A-429) The 2026-09-02 operator directive, now estate policy: EVERY
+    ``assay run`` in the estate passes ``--resume --progress <path>``
+    (vbpub ``AGENTS.md``; run-gate SPEC R-38 / RG-33, run-gate rev 33).
+
+    run-gate appends both to every assay-kind lane it drives. This gate calls
+    ``assay run`` itself, so it is the one invocation in the estate a
+    run-gate change cannot reach — which is exactly why it is asserted here
+    rather than assumed. Both flags are no-ops on this R0 lane by assay's own
+    contract, and that is the point: the shape is uniform whether or not a
+    lane has anything to checkpoint.
+
+    The progress path must stay under the gate's ``$scratch``. A progress file
+    written into the worktree would be an untracked path in the tree the lane
+    is judging, i.e. a self-inflicted ``DIRTY_TREE``.
+    """
+    source = GATE_SCRIPT.read_text(encoding="utf-8")
+    invocation = source.split("assay run tester-unified", 1)[1].split("; then", 1)[0]
+
+    assert "--resume" in invocation, invocation
+    assert '--progress "$scratch/progress-tester-unified.jsonl"' in invocation, (
+        invocation
+    )
+    assert "--require-judge-provenance" in invocation, invocation
+    assert '--verdict-json "$scratch/verdict.json"' in invocation, invocation
+    # Exactly one such invocation: a second, unflagged one would defeat this.
+    assert source.count("assay run tester-unified") == 1, source.count(
+        "assay run tester-unified"
+    )

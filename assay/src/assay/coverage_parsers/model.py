@@ -327,6 +327,35 @@ class FileCoverage:
     :func:`assay.statement_attribution.attribute_statements`; see
     :class:`CoverageProfile.statement_attributed` for why that correction
     cannot be silently skipped.
+
+    ``contradictory_branch_lines`` (B054/A-410) is METADATA ABOUT ARCS THAT
+    ARE NOT HERE: the source lines of branch arcs a parser found in the
+    artifact and DROPPED, because keeping them would have contradicted this
+    same record's own line classification (an arc on a line no statement
+    extent covers, or a covered arc on a line whose statement count is 0).
+    ``None`` means the parser looked and found no such defect — the state
+    every correctly-produced artifact is in, and the only state every format
+    but ``coverage-istanbul-json`` can be in today. A non-empty frozenset
+    means this FILE's record is internally inconsistent and its arc data is
+    incomplete by exactly those lines.
+
+    It is STORED, unlike :attr:`line_directive_remapped`, and the difference
+    is forced rather than chosen: a ``//line``-remapped file stays derivable
+    from ``blocks``, which survives every rebuild, whereas a dropped arc
+    leaves nothing behind to derive from once it is gone. It is deliberately
+    exempt from the arc invariants below — those relate ``branches`` to
+    ``executed``/``missing``/``excluded``, and these lines are precisely the
+    ones NOT in ``branches``; folding them in would re-raise the very
+    ValueError the parser dropped them to avoid. It is checked for
+    positivity, which is a property of a line number and not of an arc.
+
+    What CONSUMES it: :mod:`assay.evaluate` refuses — naming the file and the
+    offending line(s) — if such a file is in the judged set, and ignores it
+    entirely if it is not; :mod:`assay.runner` names every such file on the
+    caller's diagnostics stream, so a file that is merely skipped is never
+    skipped SILENTLY. The asymmetry is the same one
+    :attr:`line_directive_remapped` documents: code outside the diff is
+    invisible to the verdict by construction.
     """
 
     executed: frozenset[int]
@@ -334,8 +363,18 @@ class FileCoverage:
     excluded: frozenset[int] | None
     branches: "BranchCoverage | None" = None
     blocks: "tuple[CoverageBlock, ...] | None" = None
+    contradictory_branch_lines: frozenset[int] | None = None
 
     def __post_init__(self) -> None:
+        if self.contradictory_branch_lines is not None:
+            non_positive = sorted(
+                line for line in self.contradictory_branch_lines if line < 1
+            )
+            if non_positive:
+                raise ValueError(
+                    f"FileCoverage.contradictory_branch_lines contains "
+                    f"non-positive line number(s): {non_positive}"
+                )
         for name in ("executed", "missing", "excluded"):
             lines = getattr(self, name)
             if lines is None:

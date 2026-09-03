@@ -61,7 +61,7 @@ def test_scaffold_gate_config_reloads_with_a_valid_gatedef(tmp_path):
     cfg = ProjectConfig.load(project_root)
     gate = cfg.gates["scaffolded-pytest"]
     assert gate.phase == "post-merge"
-    assert gate.asserts == ["tests-pass", "changed-line-coverage"]
+    assert gate.asserts == ["tests-pass"]
     assert gate.argv
 
 

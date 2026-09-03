@@ -246,11 +246,6 @@ def _scenarios() -> list[dict]:
                 task_id="demo-D11", route_id="r1"),
         },
         {
-            "name": "verify-gate-dispatch",
-            "seed": lambda p, cfg: None,
-            "action": lambda: reconcile.VerifyGate(project="demo"),
-        },
-        {
             "name": "post-merge-gate-dispatch",
             "seed": lambda p, cfg: _seed_task(p, "demo-D12", TaskState.VALIDATING),
             "action": lambda: reconcile.RunPostMergeGate(task_id="demo-D12"),

@@ -1,8 +1,9 @@
 """P19 work item 1 — ``judge.canary`` is a CLOSED table, validated at LOAD
 time rather than passed through opaque (A-106's own deliberate gap, closed
-here): exactly ``mechanism`` (one of :data:`assay.canary.CANARY_MECHANISMS`)
-and ``target`` (a normalized, project-relative path to a real, ordinary
-source file beneath one of the lane's own declared ``source_roots``).
+here): ``mechanism`` (one of :data:`assay.canary.CANARY_MECHANISMS`) and a
+normalized, project-relative path to a real, ordinary source file beneath
+one of the lane's own declared ``source_roots`` — the singular ``target``,
+or (B007/A-432) the ordered plural ``targets`` with its ``aggregation``.
 
 Mirrors ``tests/test_config_mutation.py``'s own house pattern one field
 over: the vocabulary is cross-checked against its own owner
@@ -19,6 +20,7 @@ from conftest import R0_LANE, Project, set_key
 from assay.canary import CANARY_MECHANISMS
 from assay.config import CanaryConfig, load_lane_file
 from assay.errors import LaneConfigError
+from assay.verdict import CANARY_AGGREGATIONS, MAX_CANARY_TARGETS
 
 R3_JUDGE = """
 [lanes.package.judge]
@@ -125,8 +127,13 @@ def test_canary_missing_mechanism_is_rejected(project: Project):
 
 
 def test_canary_missing_target_is_rejected(project: Project):
+    """B007/A-432 changed what "missing" MEANS here: the table must name the
+    source it transforms, in one of the two spellings, so the diagnostic
+    names both rather than only the singular one it used to require."""
     lane = _lane_with_canary('\n[lanes.package.judge.canary]\nmechanism = "import-break"\n')
-    with pytest.raises(LaneConfigError, match="judge.canary.target"):
+    with pytest.raises(
+        LaneConfigError, match="declares neither 'target' nor 'targets'"
+    ):
         load_lane_file(project.write(lane))
 
 
@@ -216,3 +223,213 @@ def test_canary_that_is_not_a_string_is_rejected(project: Project):
 def test_canary_config_as_declared_round_trips():
     canary = CanaryConfig(mechanism="uncovered-line", target="src/mod.py")
     assert canary.as_declared() == {"mechanism": "uncovered-line", "target": "src/mod.py"}
+
+
+# --- B007/A-432: the plural spelling ------------------------------------------
+
+
+def _plural_canary_table(
+    *,
+    mechanism: str = "import-break",
+    targets: str = '["src/a.py", "src/b.py"]',
+    aggregation: str | None = "any",
+) -> str:
+    table = (
+        f"\n[lanes.package.judge.canary]\n"
+        f'mechanism = "{mechanism}"\n'
+        f"targets = {targets}\n"
+    )
+    if aggregation is not None:
+        table += f'aggregation = "{aggregation}"\n'
+    return table
+
+
+def _two_targets(project: Project) -> None:
+    project.file("src/a.py", "a = 1\n")
+    project.file("src/b.py", "b = 2\n")
+
+
+def test_the_plural_spelling_loads_as_an_ordered_list(project: Project):
+    """A-432's lane surface, additive: `LANE_SCHEMA_VERSION` stays 2 and the
+    ORDER the file declares is the order the loader keeps -- attempts are
+    made in declared order, so a sorted or de-ordered list would silently
+    change which probe answers first."""
+    _two_targets(project)
+    lane = _lane_with_canary(_plural_canary_table(targets='["src/b.py", "src/a.py"]'))
+    judge = load_lane_file(project.write(lane)).lane("package").judge
+
+    assert judge is not None and judge.canary is not None
+    assert judge.canary == CanaryConfig(
+        mechanism="import-break",
+        targets=("src/b.py", "src/a.py"),
+        aggregation="any",
+    )
+    assert judge.canary.declared_targets == ("src/b.py", "src/a.py")
+    assert judge.canary.target is None
+
+
+def test_the_singular_spelling_is_the_one_probe_form_of_the_plural_one(
+    project: Project,
+):
+    """The compatibility statement the whole additive design rests on: no
+    producer downstream branches on which spelling the lane used."""
+    project.file("src/mod.py", "x = 1\n")
+    judge = (
+        load_lane_file(project.write(_lane_with_canary(_canary_table())))
+        .lane("package")
+        .judge
+    )
+
+    assert judge is not None and judge.canary is not None
+    assert judge.canary.declared_targets == ("src/mod.py",)
+    assert judge.canary.aggregation is None
+
+
+def test_both_spellings_at_once_are_rejected(project: Project):
+    _two_targets(project)
+    lane = _lane_with_canary(
+        '\n[lanes.package.judge.canary]\n'
+        'mechanism = "import-break"\n'
+        'target = "src/a.py"\n'
+        'targets = ["src/a.py", "src/b.py"]\n'
+        'aggregation = "any"\n'
+    )
+    with pytest.raises(LaneConfigError, match="declares BOTH 'target' and 'targets'"):
+        load_lane_file(project.write(lane))
+
+
+def test_every_declared_aggregation_is_accepted(project: Project):
+    """Direction 1 of the closed-vocabulary pair, the house pattern this
+    module already applies to `mechanism`: the vocabulary is cross-checked
+    against its own owner, never duplicated here."""
+    _two_targets(project)
+    for aggregation in CANARY_AGGREGATIONS:
+        lane = _lane_with_canary(_plural_canary_table(aggregation=aggregation))
+        judge = load_lane_file(project.write(lane)).lane("package").judge
+        assert judge is not None and judge.canary is not None
+        assert judge.canary.aggregation == aggregation
+
+
+def test_an_unknown_aggregation_is_rejected(project: Project):
+    _two_targets(project)
+    lane = _lane_with_canary(_plural_canary_table(aggregation="most"))
+    with pytest.raises(LaneConfigError, match="'judge.canary.aggregation' 'most'"):
+        load_lane_file(project.write(lane))
+
+
+def test_several_targets_without_an_aggregation_are_rejected(project: Project):
+    """A-432: with more than one probe the claim's status is not defined
+    without one, and assay does not invent a policy the lane never stated."""
+    _two_targets(project)
+    lane = _lane_with_canary(_plural_canary_table(aggregation=None))
+    with pytest.raises(LaneConfigError, match="targets but no 'aggregation'"):
+        load_lane_file(project.write(lane))
+
+
+def test_an_aggregation_over_one_probe_is_rejected(project: Project):
+    """Its ABSENCE is the checkable statement 'one declared target, no
+    aggregation policy' -- so recording one there would record a policy the
+    lane never stated, in either spelling."""
+    project.file("src/a.py", "a = 1\n")
+    plural = _lane_with_canary(_plural_canary_table(targets='["src/a.py"]'))
+    with pytest.raises(LaneConfigError, match="declared beside a single target"):
+        load_lane_file(project.write(plural))
+
+    singular = _lane_with_canary(
+        '\n[lanes.package.judge.canary]\n'
+        'mechanism = "import-break"\n'
+        'target = "src/a.py"\n'
+        'aggregation = "all"\n'
+    )
+    with pytest.raises(LaneConfigError, match="declared beside a single target"):
+        load_lane_file(project.write(singular))
+
+
+def test_one_target_in_the_plural_spelling_needs_no_aggregation(project: Project):
+    project.file("src/a.py", "a = 1\n")
+    lane = _lane_with_canary(
+        _plural_canary_table(targets='["src/a.py"]', aggregation=None)
+    )
+    judge = load_lane_file(project.write(lane)).lane("package").judge
+
+    assert judge is not None and judge.canary is not None
+    assert judge.canary.declared_targets == ("src/a.py",)
+    assert judge.canary.aggregation is None
+
+
+def test_a_repeated_probe_is_rejected(project: Project):
+    _two_targets(project)
+    lane = _lane_with_canary(
+        _plural_canary_table(targets='["src/a.py", "src/b.py", "src/a.py"]')
+    )
+    with pytest.raises(LaneConfigError, match="more than once"):
+        load_lane_file(project.write(lane))
+
+
+def test_more_than_the_measured_bound_is_rejected(project: Project):
+    """The bound is MEASURED (~2.76 s of materialisation per target against
+    the smallest documented lane budget), and it is imported from its one
+    owner rather than restated here."""
+    for index in range(MAX_CANARY_TARGETS + 1):
+        project.file(f"src/t{index}.py", f"t{index} = {index}\n")
+    listed = ", ".join(
+        f'"src/t{index}.py"' for index in range(MAX_CANARY_TARGETS + 1)
+    )
+    lane = _lane_with_canary(_plural_canary_table(targets=f"[{listed}]"))
+    with pytest.raises(LaneConfigError, match="declares 9 target"):
+        load_lane_file(project.write(lane))
+
+
+def test_an_empty_target_list_is_rejected(project: Project):
+    lane = _lane_with_canary(_plural_canary_table(targets="[]", aggregation=None))
+    with pytest.raises(LaneConfigError, match="declares 0 target"):
+        load_lane_file(project.write(lane))
+
+
+def test_a_target_list_that_is_not_an_array_is_rejected(project: Project):
+    lane = _lane_with_canary(
+        _plural_canary_table(targets='"src/a.py"', aggregation=None)
+    )
+    with pytest.raises(LaneConfigError, match="'judge.canary.targets' must be an array"):
+        load_lane_file(project.write(lane))
+
+
+def test_a_bad_entry_names_its_own_index_not_the_singular_key(project: Project):
+    """Every per-target diagnostic points at the declaration it came from:
+    the plural form never inherits a message about a key the lane never
+    wrote."""
+    _two_targets(project)
+    lane = _lane_with_canary(
+        _plural_canary_table(targets='["src/a.py", "src/missing.py"]')
+    )
+    with pytest.raises(LaneConfigError, match=r"judge\.canary\.targets\[1\]"):
+        load_lane_file(project.write(lane))
+
+
+def test_plural_as_declared_reproduces_exactly_what_was_written():
+    canary = CanaryConfig(
+        mechanism="import-break", targets=("src/a.py", "src/b.py"), aggregation="all"
+    )
+    assert canary.as_declared() == {
+        "mechanism": "import-break",
+        "targets": ["src/a.py", "src/b.py"],
+        "aggregation": "all",
+    }
+
+
+def test_a_canary_config_cannot_be_built_in_a_shape_the_loader_refuses():
+    """The structural half of the same rule: a hand-built `CanaryConfig` --
+    every test that constructs one, and every future caller -- cannot reach
+    a shape `assay.toml` could not have declared."""
+    with pytest.raises(ValueError, match="exactly one of target/targets"):
+        CanaryConfig(mechanism="import-break")
+    with pytest.raises(ValueError, match="exactly one of target/targets"):
+        CanaryConfig(
+            mechanism="import-break", target="src/a.py", targets=("src/a.py",)
+        )
+    with pytest.raises(ValueError, match="aggregation is present iff"):
+        CanaryConfig(mechanism="import-break", targets=("src/a.py", "src/b.py"))
+    with pytest.raises(ValueError, match="aggregation is present iff"):
+        CanaryConfig(
+            mechanism="import-break", target="src/a.py", aggregation="any"
+        )

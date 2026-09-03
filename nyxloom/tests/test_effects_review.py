@@ -314,6 +314,72 @@ class TestWaveLeaseUnion:
         }
 
 
+class TestReviewDepthReachesTheRealCaller:
+    """nyxloom-P101 O5: the caller edit that drops the stale `tier=` kwarg
+    (WI5) is proven end-to-end through the REAL `ReviewEffector.launch_review`
+    handler, mirroring TestWaveLeaseUnion's full-path harness above.
+
+    Both directions are asserted: a caller wired to a hardcoded list (e.g.
+    `scope_touch=["a","b","c","d","e","f"]` instead of
+    `first_fm.scope.touch`) would pass a one-direction "6 paths -> fires"
+    check just as happily as the real caller -- the 1-path direction is what
+    proves the frontmatter's REAL `scope.touch` is what reaches the
+    directive, not a stand-in.
+    """
+
+    class _FM:
+        tier = None
+        source = None
+
+        def __init__(self, touch):
+            self.scope = type("S", (), {"touch": touch})()
+
+        def effective_mutexes(self):
+            return []
+
+    def _launch_and_capture_review_depth(self, sample_project, monkeypatch, touch):
+        from nyxloom import effects_dispatch, wrapper
+
+        fm = self._FM(touch)
+        monkeypatch.setattr(effects_dispatch, "frontmatter_for",
+                            lambda c, tsf: fm if tsf else None)
+        monkeypatch.setattr(wrapper, "launch_detached", lambda spec: 4242)
+
+        captured: dict = {}
+
+        def _capturing_build_dispatch(route, **kw):
+            captured.update(kw)
+            return (["fake-cli"], "prompt")
+
+        monkeypatch.setattr(effects_review.adapters, "build_dispatch",
+                            _capturing_build_dispatch)
+        monkeypatch.setattr(effects_review.config.Routes, "load",
+                            classmethod(lambda cls: _routes()))
+
+        states = {"t-a": TaskStateFile(schema_version=storage.SCHEMA_VERSION,
+                                       task_id="t-a", project="demo",
+                                       state=TaskState.AWAITING_REVIEW,
+                                       since=utc_now())}
+        ports = effects.EffectPorts.system()
+        effector = effects_review.ReviewEffector(ports)
+        ctx = effects.EffectContext(project="demo", cfg=sample_project,
+                                    states=states, ports=ports)
+        effector.launch_review(
+            ctx, reconcile.LaunchReview(wave_id="w1", task_ids=["t-a"]))
+
+        return captured["review_depth"]
+
+    def test_scope_touch_size_drives_review_depth_through_the_real_caller(
+            self, tmp_state, sample_project, monkeypatch):
+        large = self._launch_and_capture_review_depth(
+            sample_project, monkeypatch, [f"src/file{i}.py" for i in range(6)])
+        assert "high-complexity" in large
+
+        small = self._launch_and_capture_review_depth(
+            sample_project, monkeypatch, ["src/one_file.py"])
+        assert "high-complexity" not in small
+
+
 def _routes():
     from nyxloom.config import RouteDef, Routes
     return Routes(

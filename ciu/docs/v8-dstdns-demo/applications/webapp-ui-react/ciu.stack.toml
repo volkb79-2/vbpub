@@ -14,6 +14,7 @@
 
 [ciu_stack.ui]
 image = "dstdns/webapp-ui-react:latest"   # <project.registry.namespace>/webapp-ui-react — a literal in plain TOML; `ciu build` tags exactly this
+build = { context = "../../applications/webapp-ui-react", dockerfile = "Dockerfile" }   # project-built (S6.2, S17.6)
 # The reverse proxy fronts `path`; in prod3 it (tsstammtisch) is on another host than this stack (rs1002), so
 # publish = "proxy" needs host_port + allow_from (S7.4.3). 8082: controller holds 8083, webapp_server 8081, cadvisor 8080 there (S6.3.2).
 # gstammtisch is admitted too: authentik (identity bundle) binds this origin for its redirect URIs over the mesh in prod3 (wait = "none").

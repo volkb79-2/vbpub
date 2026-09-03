@@ -307,8 +307,8 @@ def test_both_r3_canary_halves_run_in_the_declared_cwd(
     assert verdict.outcome is Outcome.PASS, verdict.reason_code
     r3_claim = next(claim for claim in verdict.claims if claim.rigor == "R3")
     assert r3_claim.canary is not None
-    assert r3_claim.canary.control_outcome is Outcome.PASS
-    assert r3_claim.canary.transformed_outcome is Outcome.FAIL
+    assert r3_claim.canary.attempts[0].control_outcome is Outcome.PASS
+    assert r3_claim.canary.attempts[0].transformed_outcome is Outcome.FAIL
     recorded = _recorded(log)
     # baseline + control half + transformed half.
     assert len(recorded) >= 3, recorded

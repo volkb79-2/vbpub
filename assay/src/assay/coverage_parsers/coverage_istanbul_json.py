@@ -306,18 +306,100 @@ def _parse_record(
     # document, not parser defects, so they must reach a consumer as this
     # format's own ERROR/UNREADABLE_ARTIFACT rather than as a bare
     # `ValueError` from a dataclass.
+    #
+    # (B054/A-410) The two invariants a REAL producer trips are not parser
+    # defects and are no longer the whole artifact's problem: they are a
+    # defect of THIS FILE'S record, isolated here. `@vitest/coverage-istanbul`
+    # statically instruments a file its `coverage.include` glob matches even
+    # when no test imports it, and for an ordinary braceless single-statement
+    # `if` it can emit a `branchMap` arc on a line that appears in NEITHER
+    # bucket. Refusing the artifact for that took down every OTHER file's
+    # correct data -- the exact opposite of what `changed_lines` mode
+    # promises a consumer adopting coverage incrementally. The offending arcs
+    # are DROPPED (they cannot be kept: `FileCoverage` refuses construction)
+    # and their lines RECORDED, so nothing is silent: `evaluate` refuses by
+    # name if this file is judged, and `runner` names it on the diagnostics
+    # stream either way.
+    #
+    # Every OTHER `ValueError` this construction can raise still refuses the
+    # artifact through the `except` below -- the isolation is per-invariant,
+    # not a blanket "ignore what the dataclass says".
+    contradictory = _contradictory_branch_lines(executed, missing, branches)
+    if contradictory:
+        branches = _without_lines(branches, contradictory)
     try:
         return FileCoverage(
             executed=executed,
             missing=missing,
             excluded=None,
             branches=branches,
+            contradictory_branch_lines=contradictory or None,
         )
     except ValueError as exc:
         raise _malformed(
             f"record for {path!r}: its 'branchMap' arcs contradict its own "
             f"'statementMap'/'s' line classification -- {exc}"
         ) from exc
+
+
+def _contradictory_branch_lines(
+    executed: frozenset[int],
+    missing: frozenset[int],
+    branches: "BranchCoverage | None",
+) -> frozenset[int]:
+    """The branch source lines that contradict this record's own
+    ``statementMap``/``s`` classification (B054/A-410).
+
+    Exactly the two :meth:`FileCoverage.__post_init__` invariants that an
+    honest istanbul producer can trip on a real file, computed here so the
+    parser can name them rather than reading them back out of a
+    ``ValueError``'s message:
+
+    * a branch line in NEITHER ``executed`` nor ``missing`` -- no statement
+      extent covers it, so the record classifies as code a line it does not
+      classify as code (B054's witness: a braceless single-statement ``if``
+      in a file no test imports);
+    * a branch line in ``missing`` carrying a NONZERO covered-arc count -- a
+      line that never ran cannot have taken an arc.
+
+    Deliberately NOT the ``excluded`` invariant: this format never populates
+    ``excluded`` (it is always ``None`` here), so that invariant is vacuous
+    and including it would be a check that cannot fire.
+    """
+    if branches is None:
+        return frozenset()
+    branch_lines = frozenset(branches.by_line)
+    unconsidered = branch_lines - (executed | missing)
+    tampered = frozenset(
+        line
+        for line in branch_lines & missing
+        if branches.by_line[line][0] != 0
+    )
+    return unconsidered | tampered
+
+
+def _without_lines(
+    branches: "BranchCoverage | None", drop: frozenset[int]
+) -> "BranchCoverage | None":
+    """*branches* with *drop*'s lines removed.
+
+    Never ``None`` when *branches* was not ``None``, even if every line is
+    dropped: ``None`` means "this FORMAT cannot express arcs at all" (A-008),
+    which is a different, false statement about an istanbul artifact. An
+    empty :class:`BranchCoverage` says "expressed, and none survived", which
+    is the truth.
+    """
+    if branches is None:
+        return None
+    return BranchCoverage(
+        by_line=MappingProxyType(
+            {
+                line: counts
+                for line, counts in branches.by_line.items()
+                if line not in drop
+            }
+        )
+    )
 
 
 def _branch_arcs(path: str, record: dict) -> BranchCoverage:

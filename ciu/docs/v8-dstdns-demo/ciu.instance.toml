@@ -1,6 +1,6 @@
 # ciu.instance.toml — per-instance OPERATOR declarations (gitignored; ALWAYS
 # present for a project with realizations, the primary checkout included).
-# Plain TOML (draft.3): `ciu instance init` creates it, `ciu instance add --join`
+# Plain TOML (since draft.3; maintained at draft.5): `ciu instance init` creates it, `ciu instance add --join`
 # appends tables with a round-trip writer that keeps your comments (S9.5.5);
 # nothing here is ever rewritten whole. Merged after ciu.site.toml.
 #

@@ -86,13 +86,16 @@ def test_r3_alone_proves_the_declared_canary_through_run_lane(git_repo: GitRepo)
     assert r3_claim.status is Outcome.PASS
     assert r3_claim.canary is not None
     assert r3_claim.canary.mechanism == "import-break"
-    assert r3_claim.canary.control_outcome is Outcome.PASS
-    assert r3_claim.canary.transformed_outcome is Outcome.FAIL
-    assert r3_claim.canary.observed_reason_code is ReasonCode.COMMAND_FAILED
+    assert r3_claim.canary.attempts[0].control_outcome is Outcome.PASS
+    assert r3_claim.canary.attempts[0].transformed_outcome is Outcome.FAIL
+    assert r3_claim.canary.attempts[0].observed_reason_code is ReasonCode.COMMAND_FAILED
     assert verdict.judgment is not None
     assert verdict.judgment.r3 is not None
     assert verdict.judgment.r3.mechanism == "import-break"
-    assert verdict.judgment.r3.target == "pkg/mod.py"
+    assert verdict.judgment.r3.targets == ("pkg/mod.py",)
+    # B007/A-432: a lane that declared ONE target records no aggregation --
+    # with one probe "any" and "all" denote the same function.
+    assert verdict.judgment.r3.aggregation is None
     assert verdict.judgment.r1 is None
     assert verdict.judgment.r2 is None
     # O2: the consumer's own repository is untouched by any of it.
@@ -136,10 +139,10 @@ def test_r3_reports_canary_survived_when_the_transform_is_never_actually_caught(
     r3_claim = verdict.claims[1]
     assert r3_claim.status is Outcome.FAIL
     assert r3_claim.reason_code is ReasonCode.CANARY_SURVIVED
-    assert r3_claim.canary.control_outcome is Outcome.PASS
-    assert r3_claim.canary.transformed_outcome is Outcome.PASS
+    assert r3_claim.canary.attempts[0].control_outcome is Outcome.PASS
+    assert r3_claim.canary.attempts[0].transformed_outcome is Outcome.PASS
     assert verdict.judgment.r3 == runner.JudgmentR3(
-        mechanism="import-break", target="pkg/mod.py"
+        mechanism="import-break", targets=("pkg/mod.py",)
     )
 
 
@@ -226,10 +229,10 @@ def test_r3_proves_the_uncovered_line_canary_for_its_own_reason_when_r1_is_decla
 
     r3_claim = verdict.claims[-1]
     assert r3_claim.status is Outcome.PASS
-    assert r3_claim.canary.control_outcome is Outcome.PASS
-    assert r3_claim.canary.transformed_outcome is Outcome.FAIL
-    assert r3_claim.canary.expected_reason_code is ReasonCode.UNCOVERED_LINES
-    assert r3_claim.canary.observed_reason_code is ReasonCode.UNCOVERED_LINES
+    assert r3_claim.canary.attempts[0].control_outcome is Outcome.PASS
+    assert r3_claim.canary.attempts[0].transformed_outcome is Outcome.FAIL
+    assert r3_claim.canary.attempts[0].expected_reason_code is ReasonCode.UNCOVERED_LINES
+    assert r3_claim.canary.attempts[0].observed_reason_code is ReasonCode.UNCOVERED_LINES
     # The lane's R1 half really measures this history (one considered
     # file, fully covered) -- so the copy's own control half, running the
     # identical evaluation against the identical bytes, is not being
@@ -285,9 +288,9 @@ def test_r3_reports_a_real_wrong_cause_as_survived_with_the_unmocked_adapter(
     r3_claim = verdict.claims[-1]
     assert r3_claim.status is Outcome.FAIL
     assert r3_claim.reason_code is ReasonCode.CANARY_SURVIVED
-    assert r3_claim.canary.transformed_outcome is Outcome.FAIL, "it DID fail"
-    assert r3_claim.canary.expected_reason_code is ReasonCode.COMMAND_FAILED
-    assert r3_claim.canary.observed_reason_code is ReasonCode.UNCOVERED_LINES
+    assert r3_claim.canary.attempts[0].transformed_outcome is Outcome.FAIL, "it DID fail"
+    assert r3_claim.canary.attempts[0].expected_reason_code is ReasonCode.COMMAND_FAILED
+    assert r3_claim.canary.attempts[0].observed_reason_code is ReasonCode.UNCOVERED_LINES
     assert git_repo.git("status", "--porcelain") == ""
 
 
@@ -407,8 +410,8 @@ def test_r3_proves_a_canary_for_a_project_in_a_subdirectory_of_its_repo(
 
     assert verdict.outcome is Outcome.PASS
     r3_claim = verdict.claims[1]
-    assert r3_claim.canary.control_outcome is Outcome.PASS
-    assert r3_claim.canary.transformed_outcome is Outcome.FAIL
+    assert r3_claim.canary.attempts[0].control_outcome is Outcome.PASS
+    assert r3_claim.canary.attempts[0].transformed_outcome is Outcome.FAIL
     assert git_repo.git("status", "--porcelain") == ""
 
 
@@ -506,8 +509,8 @@ def test_r1_r2_and_r3_together_each_render_their_own_independent_claim(
     assert r1_claim.coverage is not None
     assert r2_claim.mutation is not None
     assert r3_claim.canary is not None
-    assert r3_claim.canary.control_outcome is Outcome.PASS
-    assert r3_claim.canary.transformed_outcome is Outcome.FAIL
+    assert r3_claim.canary.attempts[0].control_outcome is Outcome.PASS
+    assert r3_claim.canary.attempts[0].transformed_outcome is Outcome.FAIL
     assert verdict.judgment.r1 is not None
     assert verdict.judgment.r2 is not None
     assert verdict.judgment.r3 is not None

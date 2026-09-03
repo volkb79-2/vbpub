@@ -85,6 +85,20 @@ left as-is — they name routes that don't exist in the live matrix).
 - **(2026-07-23)** "Strictly more capable" is evaluated on the **per-axis
   capability vector** of D-R13: `review-*`/`carve-*` compare on the
   reasoning/agentic axis, not the coding axis a `implement-*` tier gates on.
+- **(refined 2026-07-26) Code-standards (DRY, non-duplication) becomes an
+  explicit, named review criterion — conditional on the implementer having
+  been told to follow it.** Today neither dispatch mentions it: it's neither
+  a standing prompt instruction nor a mechanically checked property, so
+  whether a reviewer flags it is incidental to what it happens to notice, not
+  a verified concern. Fix as a matched PAIR of standing instructions (the same
+  idiom as the scope-amendment escape hatch, `adapters.py`'s IMPLEMENTER
+  default prompt) — cross-cutting and task-independent, so it belongs on
+  every dispatch rather than requiring each handoff author to remember to
+  declare it as a named oracle: the implementer's standing prompt states the
+  DRY expectation; the reviewer's standing prompt is told to check for it and
+  reject (never silently fix — a DRY violation in production logic is
+  production logic, out of D-R8's bounded repair scope above) when it finds
+  duplication the implementer should have caught.
 
 ## D-R3 — Tier PREDICTION is the crux (carver responsibility)
 

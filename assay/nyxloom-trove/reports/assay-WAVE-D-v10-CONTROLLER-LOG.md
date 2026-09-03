@@ -656,3 +656,345 @@ precedent for shape and discipline.
     for its live probe, so the prompt says WAIT on `docker ps`, never a
     second container. R-2 is dispatched on the phase-2 tip when generation
     9 (or its successor) reports the seven items gate-green.
+
+- **2026-09-02 (generation 9 returned at a green checkpoint — B069 + B050
+  landed, B051 BLOCKED; DA-R25..DA-R27; generation 10 dispatched)** —
+  Verified from `gate-gen9a.log` in a separate step: `GATE_EXIT=0` once,
+  one `ASSAY_REGISTERED_GATE_COMPLETE=1`, zero `FAILED|DIRTY_TREE|Traceback`,
+  wheel `assay-4.1.1.dev33+g962211cd-py3-none-any.whl`, the v10 successor
+  phase present. Three commits: `61b8d836` (B069 tripwire, A-435 — run over
+  the genuine pre-fix `qualify_topos.py` it names all three stale pins that
+  cost generation 8 two gate runs), `962211cd` (B050, A-436 — the witness is
+  the committed StrykerJS artifact through a real run: 21 killed / 88
+  survived = 19.27 %, floor 19.0, R2 PASS recording all 88 survivors,
+  `verify_document(...) == []`, and the same fixture at 100.0 still FAIL as
+  the control), `1b127356` (checkpoint, BRIEF-9). Still exactly one `!`
+  commit; tree clean; full local suite 4081 passed / 20 skipped once, serial.
+  Next ids **A-437 / B070**.
+  - **DA-R25 (ask 1 — A-223d's terminal under a met floor): CONFIRMED as
+    restored.** A-223d's stated rule is `killed + survived == 0` with a
+    non-empty `equivalent`; its code read `not killed` alone only because
+    `survived` was unreachable there before B050. A met floor with survivors
+    recorded must not be called `ALL_MUTANTS_EQUIVALENT` — that would name
+    a survivor and deny it in the same document. The guard now matches the
+    docstring; no shipped outcome changes (the regression suite is the
+    proof). A-436 records it; nothing further.
+  - **DA-R26 (ask 2 — B051's verify-side re-derivation is not
+    constructible): route 1, `discarded` is DECLARED-not-verified, said in
+    every place that describes it; the residual is filed, not built.** The
+    implementer is right and so was B051's own entry: a discarded mutant is,
+    by DA-D4's "listed" semantics, outside the document — absent from every
+    bucket, from `candidate_count` and from `lines_without_candidates` — so
+    a truthful high-discard report is byte-indistinguishable from a
+    truthful zero-discard one, and every bound that catches `9999` refuses
+    the honest report the field exists to surface. DA-D4 was under-specified
+    on the verify side; this ruling completes it. The field carries no
+    judgment weight (the score's denominator never included it, A-436), so
+    declared-not-verified is proportionate, and it has precedent on this
+    very wire: `claim.detail` (A-428) and Tier-3 attestations
+    (`verified_by_assay: false`). Land: the schema `description` of
+    `judgment.r2.discarded` (and the W6 copy `verdict.schema.v10.json`,
+    description bytes only — no wire change, no second `!`), DESIGN-GUIDE
+    §11 where `producer_tool` already says "declared", CONSUMERS' ingested-
+    lane section, and `verify.py`'s own statement of what it does NOT check;
+    B051 → RESOLVED by ruling with the `9999` reproduction re-run and
+    recorded as NOT refused, deliberately. **Rejected:** route 3 (an unsound
+    upper bound — the exact failure B051 was filed to avoid); route 2 for
+    THIS wave — a listed `discarded` bucket would put the field on
+    `survived`'s footing (consistency-auditable), but it is a payload design
+    DA-D4 never made (record shape, `candidate_count`/`total` invariants,
+    W6 templates) and the wave is low priority; file it as **B070** (v11
+    candidate: "list the discarded mutants, or carry an ingested-only
+    in-scope count, so `discarded` becomes a difference verify can take"),
+    with the sentence that adding it before 5.0.0 ships would have been
+    free and after it is a v11. **DA-D4's witness clause is waived for a
+    declared-not-verified field**: the ingest-side derivation's evidence is
+    B046's existing tests over the committed StrykerJS artifact; no
+    in-image Stryker run is required to prove that a count is not verified.
+  - **DA-R27 (ask 3 — DA-R23's adjacency): B051 lands NEXT, as route 1, then
+    B052.** The adjacency holds because B051 is now a docs + verify-docstring
+    + backlog commit that follows B050 directly. Order for generation 10:
+    B051 (route 1, one commit) → B052 → B053 `detail` → B004 → B007 →
+    CONSUMERS "Migration notes (v9 → v10)" (which now also states that
+    `discarded` is declared-not-verified).
+  - **Generation 10 dispatched** (fresh Opus, BRIEF-9 seed, DA-R25..R27 in
+    the prompt; host rule, ONE gate container — the run-gate wave's reviewer
+    is running a live probe on this host and may hold it).
+
+- **2026-09-02 (session limit — generation 10 checkpointed at `9de276bd`;
+  B051 + B052 gate-green; NO successor dispatched yet)** — Operator: "we
+  approach the session limit, don't start new work, make sure you can
+  resume running agents." Generation 10 cut at a green registered gate.
+  Verified from `gate-gen10a.log` in a separate step: `GATE_EXIT=0` once,
+  one `ASSAY_REGISTERED_GATE_COMPLETE=1`, zero `FAILED|DIRTY_TREE|Traceback`,
+  wheel `assay-4.1.1.dev36+g83c31f18-py3-none-any.whl`, the v10 successor
+  phase present. Branch: `5b2730b6` (B051 resolved by ruling, A-437 —
+  declared-not-verified in four places, the `9999` reproduction re-run and
+  NOT refused, B070 filed), `83c31f18` (B052 shipped, A-438 — content-tier
+  compare through `SnapshotRepository.read_regular_file`, line endings and
+  one trailing newline normalised, everything else byte-exact; seven tests
+  over the real StrykerJS artifact), `9de276bd` (checkpoint, BRIEF-10). Still
+  exactly one `!` commit; tree clean; full local suite 4091 passed / 20
+  skipped once. No decision asks; A-438 (4) folds "a measured path the
+  commit does not track" into the same content refusal — accepted as
+  recorded (no terminal, reason code or tier changes), R-2 may revisit.
+  **Done 4 of 8: B069, B050, B051, B052. Remaining, in DA-R27's order: B053
+  `detail` producers → B004 `PROVENANCE_UNVERIFIED` producer (leave
+  `EXCLUDED_ENTIRELY`) → B007 multi-target canary loop (the one authorised
+  W6 edit) → CONSUMERS "Migration notes (v9 → v10)".** Next ids **A-439 /
+  B071**. Generation 11 is a FRESH Opus successor seeded with BRIEF-10 +
+  DA-R1..R27, dispatched when the operator says work may start again; then
+  R-2 → merge → release 5.0.0 (low priority, DA-R21).
+
+- **2026-09-03 (limits reset — generation 11 dispatched)** — Operator:
+  "limits have reset. switch to max parallelism now." Generation 11 (fresh
+  Opus, BRIEF-10 seed, DA-R1..R27) dispatched on `9de276bd` for B053
+  `detail` producers → B004 producer (leave `EXCLUDED_ENTIRELY`) → B007
+  canary loop (the one authorised W6 edit, own gate run) → CONSUMERS
+  "Migration notes (v9 → v10)". Runs in parallel with the run-gate fix
+  successor (host lanes + one short live probe) and an E-5 seams
+  implementer (no containers); the one-container rule is in every prompt.
+  R-2 is dispatched on generation 11's tip when all four items are
+  gate-green. Next ids A-439 / B071.
+
+- **2026-09-03 (generation 11 checkpointed at `97907425` — B053 producers
+  gate-green; B004 measured as a full carve; DA-R28/DA-R29; generation 12
+  dispatched)** — Verified from `gate-gen11a.log` in a separate step:
+  `GATE_EXIT=0` once, one `ASSAY_REGISTERED_GATE_COMPLETE=1`, zero
+  `FAILED|DIRTY_TREE|Traceback`, wheel `assay-4.1.1.dev38+gd0e212e2`, the
+  v10 successor phase present; still exactly one `!` commit; tree clean;
+  full suite 4103 passed / 20 skipped. `d0e212e2` B053 (A-439):
+  `announce_refusal` RETURNS the bounded sentence (`verdict.RefusalDetail`
+  / `refusal_detail`) and ~17 conversion sites plus `cli.py` pass it into
+  the `Claim`, so A-428's byte copy is structural; twelve tests, five
+  end-to-end off the produced document incl. a real over-bound truncation.
+  Three hand-written verdict fixtures broke on the wire change and now
+  carry `<SOURCE_ROOT>`/`<HEAD12>` placeholders filled from facts the test
+  created — the lesson that a wire change can break fixtures no `gate/`
+  grep finds is in BRIEF-11 §3(b). **Finding accepted: BRIEF-10 §4.2
+  understated B004.** `src/assay/` has no image-provenance adjudicator at
+  all (`provenance.py` is B018's judge provenance); on the wire are only the
+  reason code and the `adjudicated ⇒ verified_by_assay is False` narrowing;
+  A-430 (3)'s `{1,2}` `schema_version` parser, (4)'s `judge.adjudication_dir`
+  + adjudicated-evidence lane surface, the mismatch mapping, every producer,
+  and the carve's W2–W7 remain. The conformance tripwire stays armed until
+  a producer exists — correct.
+  - **DA-R28 — reorder: B007 → CONSUMERS migration notes → B004.** The
+    wave is low priority (DA-R21) and B004 is a multi-generation carve; the
+    two remaining small items close every other obligation first. The
+    migration-notes section is written with B004's shape as "reserved on
+    the wire, producer pending" and amended when B004 lands (the heading
+    spelling must match the four in-doc anchors `#migration-notes-v9--v10`).
+    B004 then runs in its own generation(s) as the LAST item. If the
+    operator wants 5.0.0 sooner, B004's producer moves to E-2 by one
+    ruling, with the tripwire still armed and A-430's wire half shipping as
+    a reserved code — the DA-R21 precedent — and the branch is never left
+    mid-item. Not decided now; generation 12 proceeds with B004 in scope.
+  - **DA-R29 — process note accepted.** Heredoc appends of purely NEW text
+    (a new test section, LOG entries, an A-row, a new BRIEF) are not the
+    pattern rewrites the standing order forbids; edits to existing content
+    stay Edit-tool only. No change to the orders.
+  - **Generation 12 dispatched** (fresh Opus, BRIEF-11 seed, DA-R1..R29):
+    B007 loop (A-432; DA-R19/DA-R20; the one authorised W6 edit; own gate
+    run) → migration notes → B004 carve begins (A-430/A-431, generation 4's
+    re-captured ciu assets, read the REPORT section first). Next ids
+    A-440 / B071.
+
+- **2026-09-03 (generation 12 returned — B007 + migration notes landed,
+  gate GREEN on `fd489620`; B004 not started; DA-R30/DA-R31; R-2 and
+  generation 13 dispatched in parallel)** — Verified independently from
+  `gate-gen12a.log` and `gate-gen12b.log`, each in a separate step: both
+  `GATE_EXIT=0` exactly once, one `ASSAY_REGISTERED_GATE_COMPLETE=1` each,
+  zero `FAILED|DIRTY_TREE|Traceback`, both carry
+  `ASSAY_GATE_PHASE=verdict-v10-successors-verified`; `git log main..HEAD`
+  confirmed exactly ONE `!` commit (`b2fd09f3`); tree clean at `a4528144`.
+  Landed: `d30b313b` B007/A-440 (a canary declares several probes with a
+  stated aggregation — `targets`/`aggregation`, `declared_targets`, the
+  exactly-one-of and aggregation-iff-plural rules stated both as lane
+  diagnostics and a `__post_init__` invariant, `_load_canary_target`
+  generalising B005's whole-target rule, `run_isolated_canaries`, 30 tests,
+  the W6 template replaced by real `assay run` output — the one authorised
+  post-cut W6 edit, now spent); `fd489620` migration notes/A-441
+  (`docs/CONSUMERS.md` "Migration notes (v9 → v10)", four dangling anchors
+  now resolved, B004's subsection marked "reserved on the wire, producer
+  pending" for later amendment, two pre-existing dangling anchors fixed in
+  passing); `a4528144` checkpoint/BRIEF-12. Full suite run once on
+  `fd489620`: 4131 passed / 20 skipped.
+  - **DA-R30 (decision ask — `earlier_target_terminal`'s producer set
+    narrower than A-432's parenthesis): CONFIRMED as implemented.** A-432
+    named "a refusal or an INCONCLUSIVE" as the terminal's producers; a
+    refusal renders the whole R3 claim payload-free (no per-target array
+    exists to carry the member, and a PARTIAL array whose terminal probe
+    has no entry would assert a target was never attempted when it was and
+    broke), so a refusal cannot produce this member — only an INCONCLUSIVE
+    can, with budget exhaustion owning its own distinct member. The
+    generation's reasoning is sound: A-432's parenthesis described the
+    conceptual causes, not a literal enumeration of wire producers, and the
+    as-shipped reading is the only one the schema shape can express. No
+    change; the two branch-local verifier defects the producer exposed
+    (`_check_r3_rederivation` treating a FAIL under `all` as terminal, and
+    applying status equality to a `BUDGET_EXCEEDED` claim) were correctly
+    fixed in scope, not filed — pre-existing code made wrong by a producer
+    this wave adds is this wave's to fix.
+  - **DA-R31 (disclosure — the migration-notes commit used a one-line
+    Python `replace()` instead of Edit, and DA-R29's exemption does not
+    quite cover it): noted, not undone.** DA-R29 exempted heredoc appends
+    of PURELY NEW text; this commit's diff (`+144/-10` in CONSUMERS.md)
+    shows it also corrected two PRE-EXISTING dangling anchors (a stale
+    heading spelling, a missing `(b)` in a link) — genuine edits to
+    existing content, the category DA-R29 reserves for the Edit tool. The
+    outcome is correct and gate-verified (a link check over three docs is
+    clean), so nothing is redone; the standing order is restated to
+    generation 13 and every future implementer without exception: an
+    insertion anchored inside an existing file, even when the bulk of the
+    change is new prose, goes through Edit — a scripted `replace()` is for
+    the narrow case of appending wholly after the file's last line.
+  - **Reviewer R-2 dispatched** (fresh Opus, never a fork) against
+    `93188912..a4528144` — R-1's own tip through the checkpoint above it —
+    in its OWN detached worktree/clone at `a4528144` (never the shared
+    `.worktrees/assay-wave-d-v10`, which generation 13 continues to use),
+    so its registered-gate run and generation 13's do not race for the
+    same files. Told DA-R19 (2N canary bound deliberate), DA-R21 (F015/R4
+    out of scope, wire-only), DA-R26 (`discarded` declared-not-verified),
+    DA-R28 (B004 continues behind it, out of R-2's range), the R-2 section
+    of the wave prompt as its push list, 3-round cap. Host rule: ONE gate
+    container across ALL agents (`docker ps` + `pgrep -af
+    tester-unified-gate.sh`, wait rather than race generation 13).
+  - **Generation 13 dispatched in parallel** (fresh Opus, BRIEF-12 seed,
+    DA-R1..R31) on the shared worktree, tip `a4528144`: B004 — the whole
+    carve, may span further generations, boundaries as BRIEF-12 lists them
+    (`{1,2}` `schema_version` parser → `judge.adjudication_dir` +
+    adjudicated-evidence lane surface → the adjudicator → the producers →
+    W2–W7), the conformance tripwire stays armed until a producer exists,
+    the migration-notes B004 subsection is AMENDED not rewritten when it
+    lands. E-008 checkpoint clause applies; wire-change-breaks-hand-fixtures
+    lesson (BRIEF-12) and the grep-before-touching-a-field discipline both
+    carried forward. Next ids **A-442 / B071**, re-check main every time.
+
+- **2026-09-03 (R-2 ROUND 1: ACCEPT-conditional; SF-1 + N-1; DA-R32/DA-R33;
+  routed into generation 13, no new agent dispatched — session near its
+  context limit)** — Report `2128e464` on the shared branch (R-2's own
+  isolated worktree, torn down after the one report commit; `git show
+  --stat` confirmed the commit touches only the report file). Own
+  registered gate green (`assay-4.1.1.dev42+ga4528144`), full suite once
+  `4131 passed / 20 skipped / 1 warning` — matching generation 12's own
+  count exactly. Everything on the R-2 push list checked out sound with
+  real-artifact evidence (B069/B050/B051/B052/B053/B007, `verify.py`
+  independence, `LANE_SCHEMA_VERSION`/`inventory_schema` untouched, the
+  conformance tripwire armed, migration notes + anchors, decisions.md
+  append-only, no A/B-id collisions), plus a second authorised post-cut
+  schema touch beyond the one named (`5b2730b6`/B051/DA-R26, description
+  bytes only, MANIFEST-recorded, byte-identical across both copies) —
+  confirmed sound, not a defect.
+  - **DA-R32 (SF-1 — `_check_r3_rederivation` validates two of three
+    `not_attempted_reason` members, not `budget_exhausted`): CONFIRMED,
+    real hole, fix required before merge.** Independently reproduced by
+    the controller: `verify.py:2348-2367`'s `if why ==
+    "short_circuited": ... elif why == "earlier_target_terminal": ...`
+    chain has no branch for `why == "budget_exhausted"` — such an attempt
+    passes through the loop with zero validation, so a document claiming
+    a judged R3 status while carrying a `budget_exhausted` attempt
+    verifies clean under both `assay verify` and the independent
+    `jsonschema` validator. No real producer emits the bad pairing today
+    (not a blocker), but this wave's own stated purpose is exactly this
+    kind of integrity check, so it lands before merge, not after. Fix:
+    one added branch mirroring the two existing ones (a `budget_exhausted`
+    attempt must not precede the terminal that actually exhausted the
+    budget, symmetric to `earlier_target_terminal`'s check) plus one
+    regression test built on the real W6 template with one field flipped
+    (R-2's own reproduction method, not a synthetic fixture).
+  - **DA-R33 (N-1 — decisions.md's A-430 row names the adjudicated-evidence
+    lane field `name`; the shipped grammar and CONSUMERS.md both use
+    `key`): CONFIRMED, one-line docs correction.** Independently verified:
+    `verdict.py:3370`'s `EvidenceDeclaration.key` and
+    `docs/CONSUMERS.md:1890`'s own example (`key = "image-provenance"`)
+    both already say `key`; A-430's prose alone says `name`. Not blocking
+    (B004 hasn't started building the lane surface yet), but corrected
+    NOW, before generation 13 reads that row further into the carve — a
+    stale field name in the row it is actively working from is exactly
+    the kind of drift this wave exists to prevent elsewhere.
+  - **Routing correction: the controller mis-addressed its follow-up
+    message — sent to R-2's own agent instead of generation 13's.** R-2
+    (correctly identifying the mistake) applied SF-1 itself rather than
+    silently absorbing it: `78a786fc` on the shared branch, scoped via
+    `--only` to exactly `verify.py` + one new test in
+    `test_canary_multi_target.py` (confirmed: the commit's diffstat
+    touches nothing else, `decisions.md` included). Two checks added,
+    mirroring the two existing branches: a `budget_exhausted` entry's
+    claim must be exactly `BUDGET_EXCEEDED`/`LANE_TIMEOUT`, and
+    `budget_exhausted` entries must form a trailing run (no `attempted`
+    entry may follow). Red-first via a scoped `git stash` on `verify.py`
+    alone; targeted suite 88 passed, no regressions. **SF-1 is DONE.**
+  - **N-1 correctly declined by R-2, not applied.** `decisions.md` is
+    dirty with generation 13's own unreviewed, in-progress `A-442` row (the
+    whole B004 decision record) — editing the same file risked bundling
+    unrelated content under one commit message via `git commit --only`'s
+    path scoping (a path-level `--only` does not protect against two
+    logical changes landing in the SAME file's diff). R-2's own
+    recommendation, adopted here: **N-1 lands as generation 13's own
+    `A-443`, an APPENDED correction row, never an in-place edit to
+    `A-430`** — this matches the wave's own established discipline for
+    correcting a prior record (RW-31's precedent on the run-gate side:
+    "correct the LOG entry rather than rewrite it"). The controller's
+    original DA-R33 wording ("one-line docs correction") under-specified
+    this and is amended by this entry, not rewritten.
+  - **Routing, corrected: the real generation 13 agent has NOT yet been
+    told about N-1** (or the earlier session-limit checkpoint reminder,
+    which also went to R-2 by the same mistake) — messaged directly right
+    after this log entry, no new agent dispatched.
+
+- **2026-09-03 (GENERATION 13 VERIFIED — B004 complete, WAVE D
+  IMPLEMENTATION DONE; gate GREEN on `d9fc22eb`; DA-R34; R-2 round 2 +
+  run-gate RW-37 both fanned out, operator: "fresh session, feel free to
+  fan out work again")** — Verified independently from `gate-gen13.log`
+  in a separate step: `GATE_EXIT=0` exactly once, one
+  `ASSAY_REGISTERED_GATE_COMPLETE=1`, zero `FAILED|DIRTY_TREE|Traceback`,
+  all twelve `ASSAY_GATE_PHASE` markers present including
+  `verdict-v10-successors-verified`, wheel `assay-4.1.1.dev45+gd9fc22eb`
+  carrying the judged commit; `git log main..HEAD` confirms exactly ONE
+  `!` commit (`b2fd09f3`, unchanged); tree clean. `d9fc22eb` (A-442, 17
+  files, 1762 insertions): `src/assay/adjudication.py` (new,
+  `evaluate_provenance` total/never-raises), `vocabulary.ADJUDICATED_EVIDENCE_KEYS`
+  as the shared leaf import (avoiding a real `config↔adjudication↔verdict`
+  cycle), `config.py`'s per-source `attestation_dir`/`adjudication_dir`
+  rule, `cli.py`'s F4-compliant split/dispatch/merge producer (a mixed
+  attested+adjudicated lane's declared order preserved through a
+  `{identity: Evidence}` merge, one atomic timeout wrapping both loaders),
+  the conformance tripwire's `EXCLUDED_ENTIRELY` entry DISCHARGED (not
+  merely disarmed — a real fixture,
+  `evidence_adjudicated_unverified.json`, plus a separate real-pipeline
+  integration test), docs corrected (README/DESIGN-GUIDE's "invokes" was
+  falsified by this integration, B004's own migration-notes subsection
+  amended from "reserved" to "live in this release"). One recorded
+  deviation from the carve's own W3 text (config.py/attestation.py's
+  documented "independent readers, neither trusts the other" anti-sharing
+  comment predates and overrides the carve's "promote to a shared
+  validator" suggestion — a third copy in `adjudication.py`, not a shared
+  one across that boundary, following the generation-12 lesson: follow
+  the ruling's argument over its stale mechanics). `0c6863ff` records
+  only. R-2's `78a786fc` confirmed non-overlapping beneath it. **A-443
+  landed exactly as directed — an APPENDED correction row, A-430 left
+  untouched** (independently confirmed: `decisions.md`'s tail carries
+  A-443 verbatim, naming R-2's finding). No checkpoint BRIEF — B004
+  reached actual completion within budget. Ids used: A-442/A-443; next
+  free **A-444 / B071**.
+  - **DA-R34: generation 13's work CONFIRMED complete and sound; all
+    eight of Wave D's post-cut items are now shipped.** Nothing of B004's
+    own scope remains open. Three points the generation itself flagged
+    for a reviewer to push on (an import-cycle finding, the W3
+    validator-sharing deviation above, and — per its REPORT — a third the
+    controller has not yet read in full) are left for R-2's round 2
+    rather than pre-judged here.
+  - **R-2 round 2 dispatched** (resuming R-2's own session, round 2 of the
+    3-round cap) against `2128e464..0c6863ff` — R-2's own round-1 tip
+    through generation 13's completion, i.e. SF-1's fix plus the entire
+    B004 carve, the one item explicitly out of round 1's range (DA-R28).
+    Told DA-R32/DA-R33/DA-R34, the three self-flagged push-points in
+    generation 13's REPORT, and that this is the LAST implementation item
+    in the wave — a round-2 ACCEPT clears the path to merge + release
+    5.0.0.
+  - **In parallel, run-gate's RW-37 fix is picked up fresh** (its prior
+    implementer is no longer resumable — the operator's "fresh session"
+    signal). The fix itself was already complete and red-first-verified
+    as uncommitted worktree state; a fresh implementer verifies, finishes
+    and commits it. See the run-gate controller log for that ruling.

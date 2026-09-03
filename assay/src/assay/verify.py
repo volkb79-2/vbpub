@@ -60,10 +60,14 @@ Three stages:
    ``mutation``/``canary`` evidence, which schema shape and rollup agreement
    alone cannot catch (a ``PASS`` reporting 0% coverage, a ``PASS`` with a
    surviving mutant, or a ``PASS`` canary whose transform never actually
-   failed are all schema-valid AND rollup-consistent). R3 reuses
-   :func:`assay.canary.judge_canary` directly — it is already pure over an
-   already-reconstructed :class:`~assay.verdict.CanaryResult`, needing no
-   lane/process/filesystem state. R2 reuses
+   failed are all schema-valid AND rollup-consistent). **R3 no longer reuses
+   ``assay.canary.judge_canary``** (it did up to v9, on the recorded ground
+   that the function was already pure over a reconstructed payload): B007/
+   A-432 made the v10 judgement an AGGREGATION over an ordered attempt array
+   with its own bookkeeping, and importing the producer's aggregation would
+   make this check agree with the producer by construction rather than by
+   argument — exactly what A-182 forbids. It is hand-transcribed here, as R4's
+   ``PASS iff before != PASS and after == PASS`` is. R2 reuses
    :func:`assay.mutation.judge_mutation`'s bucket precedence rather than
    copying its mapping, via a minimal stand-in for the ``runner.
    CommandResult`` baseline it expects (see :func:`_check_r2_rederivation`
@@ -86,13 +90,14 @@ from datetime import datetime
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, TextIO
 
-from .canary import judge_canary
 from .mutation import judge_mutation
 from .verdict import (
+    CLAIM_DETAIL_BYTES,
     EXIT_CODES,
     MUTATION_BUCKETS,
     REASON_CODES,
     VERDICT_SCHEMA_VERSION,
+    CanaryAttempt,
     CanaryResult,
     Claim,
     Coverage,
@@ -104,12 +109,14 @@ from .verdict import (
     JudgmentR1,
     JudgmentR2,
     JudgmentR3,
+    JudgmentR4,
     JudgmentResolved,
     MutantOutcome,
     Mutation,
     MutationProducerTool,
     Outcome,
     ReasonCode,
+    RedFirstResult,
     SnapshotPolicy,
     SourcePosition,
     Verdict,
@@ -683,16 +690,31 @@ def _check_judgment_matches_claims(document: dict, failures: list[str]) -> None:
                     f"judgment.r3.mechanism {declared_mechanism!r}"
                 )
             # P21/A-152/A-O18: the half schema v3 could not witness at all,
-            # which is why this migration exists. Both sides are normalized
+            # which is why that migration existed. Both sides are normalized
             # by their own grammar, so this equality is over one spelling.
-            observed_target = canary.get("target")
-            declared_target = judgment_r3.get("target")
-            if observed_target != declared_target:
+            # B007/A-432 (schema v10) generalises it from one equality to a
+            # PAIRWISE, IN-ORDER one over the whole array: attempt i is the
+            # record of target i. A shorter list would let a lane declare
+            # probes it never recorded; a reordered one would let a surviving
+            # probe be reported under a caught probe's name.
+            attempts = canary.get("attempts")
+            observed_targets = (
+                [
+                    item.get("target")
+                    for item in attempts
+                    if isinstance(item, dict)
+                ]
+                if isinstance(attempts, list)
+                else None
+            )
+            declared_targets = judgment_r3.get("targets")
+            if observed_targets != declared_targets:
                 failures.append(
-                    f"the R3 canary payload ran against {observed_target!r} "
-                    f"while judgment.r3.target declares {declared_target!r}; "
-                    f"the recorded canary answers for a different file than "
-                    f"the policy asked about"
+                    f"the R3 canary payload recorded attempts for "
+                    f"{observed_targets!r} while judgment.r3.targets declares "
+                    f"{declared_targets!r}; the recorded canary answers for "
+                    f"different files, or in a different order, than the "
+                    f"policy asked about"
                 )
 
 
@@ -856,6 +878,31 @@ def _check_ingested_r2_agrees_with_its_payload(
        enforces -- checked here as "present and non-negative", the only part
        of it a document can be wrong about on its own.
 
+    **What this function does NOT check, stated so a green bar cannot be
+    misread (B051/DA-D4/DA-R26).** ``discarded`` is **DECLARED, NOT
+    VERIFIED**, in ``producer_tool``'s own words (A-230a). Item 4 above is
+    the whole of it: a range check, not a re-derivation, and no fourth
+    re-derivation exists to be written. Under DA-D4's ``listed`` semantics
+    -- which :func:`assay.mutation.ingest_mutation_report` implements at
+    ingest -- a discarded mutant is by construction outside this document:
+    ``ingest_mutation_report`` ``continue``s past the bucket assignment, so
+    it is in no bucket; ``candidate_count`` and ``total`` are both the bucket
+    sum and :meth:`assay.verdict.Mutation._check_arithmetic` forbids them to
+    differ outside the limit sentinel, so ``discarded`` is not their
+    difference either; and its LINE is absent from
+    ``lines_without_candidates`` because the tool did produce a candidate
+    there. A truthful document with 900 discarded mutants is therefore
+    byte-indistinguishable from a truthful one with 0, and every upper bound
+    that would catch an inflated count (``discarded <= total``, ``<=
+    candidate_count``) would also refuse the honest high-discard report the
+    field exists to surface -- the failure B051 was filed to avoid. A count
+    set to ``9999`` on a real 109-mutant ingested document verifies clean,
+    deliberately and by ruling. The field carries no judgment weight while it
+    stays unverified: it is a COUNT beside the payload, never enters the
+    ``Mutation`` buckets, so the score's denominator is unaffected by
+    construction. **B070** is the v11 candidate that would put the missing
+    quantity on the wire and make this a difference this function could take.
+
     The MUTATION SCORE itself (``killed / (killed + survived)``) is re-derived
     by :func:`_check_r2_rederivation` through
     :func:`assay.mutation.judge_mutation`, which an ingested claim goes
@@ -961,6 +1008,11 @@ def _check_ingested_r2_agrees_with_its_payload(
                     f"candidate and carry one"
                 )
 
+    # DECLARED, NOT VERIFIED (B051/DA-D4/DA-R26). This is the whole of the
+    # check and the docstring says why no more is constructible: a discarded
+    # mutant is outside the document, so an upper bound here would refuse the
+    # honest high-discard report rather than the inflated one. B070 is the
+    # v11 candidate that would supply the missing quantity.
     discarded = r2.get("discarded")
     if isinstance(discarded, bool) or not isinstance(discarded, int):
         failures.append(
@@ -1548,6 +1600,9 @@ def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
         # so is read the same way r1's is.
         mode=raw["mode"],
         targets=tuple(raw["targets"]) if "targets" in raw else None,
+        # B050/A-427 (schema v10): registered here in the same commit the
+        # dataclass and the schema gain it -- A-323's lesson, restated.
+        fail_under=raw.get("fail_under"),
         shard_index=raw.get("shard_index"),
         shard_count=raw.get("shard_count"),
     )
@@ -1556,9 +1611,26 @@ def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
 
 
 def _reconstruct_judgment_r3(raw: dict) -> JudgmentR3:
-    r3 = JudgmentR3(mechanism=raw["mechanism"], target=raw["target"])
+    # B007/A-432 (schema v10): the singular `target` is gone; `targets` is an
+    # ORDERED list and `aggregation` is present iff the lane declared the
+    # plural spelling.
+    r3 = JudgmentR3(
+        mechanism=raw["mechanism"],
+        targets=tuple(raw["targets"]),
+        aggregation=raw.get("aggregation"),
+    )
     _reject_unknown_keys(raw, r3.to_dict(), "judgment.r3")
     return r3
+
+
+def _reconstruct_judgment_r4(raw: dict) -> JudgmentR4:
+    r4 = JudgmentR4(
+        tests=tuple(raw["tests"]),
+        broken_commit=raw["broken_commit"],
+        broken_commit_source=raw["broken_commit_source"],
+    )
+    _reject_unknown_keys(raw, r4.to_dict(), "judgment.r4")
+    return r4
 
 
 def _reconstruct_judgment(raw: dict) -> Judgment:
@@ -1567,26 +1639,53 @@ def _reconstruct_judgment(raw: dict) -> Judgment:
         r1=_reconstruct_judgment_r1(raw["r1"]) if "r1" in raw else None,
         r2=_reconstruct_judgment_r2(raw["r2"]) if "r2" in raw else None,
         r3=_reconstruct_judgment_r3(raw["r3"]) if "r3" in raw else None,
+        r4=_reconstruct_judgment_r4(raw["r4"]) if "r4" in raw else None,
     )
     _reject_unknown_keys(raw, judgment.to_dict(), "judgment")
     return judgment
 
 
-def _reconstruct_canary(raw: dict) -> CanaryResult:
+def _reconstruct_canary_attempt(raw: dict) -> CanaryAttempt:
     transformed = raw.get("transformed_outcome")
     expected_rc = raw.get("expected_reason_code")
     observed_rc = raw.get("observed_reason_code")
-    canary = CanaryResult(
-        mechanism=raw["mechanism"],
+    control = raw.get("control_outcome")
+    attempt = CanaryAttempt(
         target=raw["target"],
         description=raw["description"],
-        control_outcome=Outcome(raw["control_outcome"]),
+        disposition=raw["disposition"],
+        not_attempted_reason=raw.get("not_attempted_reason"),
+        control_outcome=Outcome(control) if control is not None else None,
         transformed_outcome=Outcome(transformed) if transformed is not None else None,
         expected_reason_code=ReasonCode(expected_rc) if expected_rc is not None else None,
         observed_reason_code=ReasonCode(observed_rc) if observed_rc is not None else None,
     )
+    _reject_unknown_keys(raw, attempt.to_dict(), "canary.attempts entry")
+    return attempt
+
+
+def _reconstruct_canary(raw: dict) -> CanaryResult:
+    # B007/A-432 (schema v10): one mechanism, an ordered attempts array.
+    canary = CanaryResult(
+        mechanism=raw["mechanism"],
+        attempts=tuple(
+            _reconstruct_canary_attempt(item) for item in raw["attempts"]
+        ),
+    )
     _reject_unknown_keys(raw, canary.to_dict(), "canary")
     return canary
+
+
+def _reconstruct_red_first(raw: dict) -> RedFirstResult:
+    after = raw.get("after_outcome")
+    red_first = RedFirstResult(
+        broken_commit=raw["broken_commit"],
+        tests=tuple(raw["tests"]),
+        before_outcome=Outcome(raw["before_outcome"]),
+        after_outcome=Outcome(after) if after is not None else None,
+    )
+    _reject_unknown_keys(raw, red_first.to_dict(), "red_first")
+    return red_first
 
 
 def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
@@ -1638,6 +1737,11 @@ def _reconstruct_claim(raw: dict) -> Claim:
         coverage=_reconstruct_coverage(raw["coverage"]) if "coverage" in raw else None,
         canary=_reconstruct_canary(raw["canary"]) if "canary" in raw else None,
         mutation=_reconstruct_mutation(raw["mutation"]) if "mutation" in raw else None,
+        red_first=(
+            _reconstruct_red_first(raw["red_first"]) if "red_first" in raw else None
+        ),
+        detail=raw.get("detail"),
+        detail_dropped_bytes=raw.get("detail_dropped_bytes"),
     )
     _reject_unknown_keys(raw, claim.to_dict(), "claim")
     return claim
@@ -1987,6 +2091,26 @@ def _check_r2_rederivation(verdict: Verdict, failures: list[str]) -> None:
     returning early on a missing R0 sibling would have let sol finding 2's
     second contradictory artifact — a ``PASS`` with a genuine surviving
     mutant — pass unexamined simply by not declaring R0 (P16 review).
+
+    **B050/A-427/DA-R22: the mutation floor is READ FROM THE DOCUMENT.** Up
+    to v9 this check assumed ``100.0``, and the assumption held only because
+    :mod:`assay.config` refused to load any other value on an ingested lane.
+    v10 puts the floor on the wire (``judgment.r2.fail_under``, REQUIRED
+    under ``producer = "ingested"`` and FORBIDDEN under ``"native"``), so the
+    re-derivation reads it here and hands it to the same
+    :func:`assay.mutation.judge_mutation`, which computes the score with the
+    same :func:`assay.mutation.mutation_pct`. **No second formula anywhere**:
+    a score hand-transcribed here would be a copy of the producer's
+    arithmetic free to drift from it silently, and A-182's independence
+    requirement is about not importing the producer's DECISION — which this
+    function has always satisfied by re-deriving the status from the payload
+    instead of trusting the recorded one, and still does.
+
+    An absent ``judgment.r2``, or an absent floor on it (which is the NATIVE
+    shape), means ``100.0`` — the parameter's own default, and the value a
+    native run is judged at. That is not a fallback papering over an unknown:
+    a native document is FORBIDDEN from recording a floor precisely because a
+    native R2 has none, so reading ``None`` here is reading a fact.
     """
     claim = next((item for item in verdict.claims if item.rigor == "R2"), None)
     if claim is None:
@@ -2069,31 +2193,286 @@ def _check_r2_rederivation(verdict: Verdict, failures: list[str]) -> None:
         # Never read on this branch; named so, rather than fabricated from a
         # claim that has nothing to do with it.
         baseline = _BASELINE_NEVER_READ
-    expected = judge_mutation(baseline, claim.mutation)
+    # B050/A-427/DA-R22: the floor comes from the artifact, never from a
+    # constant here. `judgment.r2` is absent on a payload-free R2 claim (those
+    # branches have all returned above) and its `fail_under` is absent on
+    # every NATIVE document, which the schema forbids from carrying one.
+    judgment_r2 = verdict.judgment.r2 if verdict.judgment is not None else None
+    recorded_floor = getattr(judgment_r2, "fail_under", None)
+    fail_under = 100.0 if recorded_floor is None else float(recorded_floor)
+    expected = judge_mutation(baseline, claim.mutation, fail_under=fail_under)
     if (claim.status, claim.reason_code) != expected:
         failures.append(
             f"R2 claim status {_fmt(claim.status, claim.reason_code)} "
             f"disagrees with the re-derived judgment from mutation buckets "
-            f"{_fmt(*expected)}"
+            f"{_fmt(*expected)} at the floor the document itself records "
+            f"(judgment.r2.fail_under {fail_under})"
         )
 
 
+def _judge_one_attempt(attempt: Any) -> tuple[Outcome, ReasonCode | None]:
+    """A-109's per-target mapping, HAND-TRANSCRIBED (A-182).
+
+    Up to v9 this module imported ``assay.canary.judge_canary`` directly, on
+    the recorded ground that it was already pure over a reconstructed
+    payload. B007/A-432 ends that: the v10 judgement is an AGGREGATION over
+    an ordered array with its own bookkeeping, which is exactly the kind of
+    rule A-182 says the verifier must state for itself — importing the
+    producer's aggregation would make the check agree with the producer by
+    construction rather than by argument.
+    """
+    if attempt.control_outcome is not Outcome.PASS:
+        return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
+    if attempt.transformed_outcome is None:
+        return Outcome.INCONCLUSIVE, ReasonCode.CANARY_INCONCLUSIVE
+    if attempt.transformed_outcome is Outcome.PASS:
+        return Outcome.FAIL, ReasonCode.CANARY_SURVIVED
+    if attempt.observed_reason_code != attempt.expected_reason_code:
+        return Outcome.FAIL, ReasonCode.CANARY_SURVIVED
+    return Outcome.PASS, None
+
+
+#: (B007/A-432) the R3 statuses that ARE a judgement of a canary result, and
+#: are therefore re-derivable from the attempts. `BUDGET_EXCEEDED` is the one
+#: non-judged status that may still carry the payload -- it is the mechanism
+#: running out of budget, recorded so the untried targets stay visible.
+_JUDGED_R3_STATUSES: frozenset[Outcome] = frozenset(
+    {Outcome.PASS, Outcome.FAIL, Outcome.INCONCLUSIVE}
+)
+
+
 def _check_r3_rederivation(verdict: Verdict, failures: list[str]) -> None:
-    """Re-derive the R3 claim's status from its ``canary`` payload, reusing
-    :func:`assay.canary.judge_canary` directly — it is already pure over an
-    already-reconstructed :class:`~assay.verdict.CanaryResult`, needing no
-    lane/process/filesystem state.
+    """Re-derive the R3 claim's status from its ``canary`` payload, and check
+    the aggregation BOOKKEEPING the payload asserts about itself.
+
+    Two independent statements, both hand-transcribed (A-182, B007/A-432):
+
+    1. **The status.** Attempts are judged in DECLARED order, and the FIRST
+       decisive one wins. An ``INCONCLUSIVE`` attempt is terminal in both
+       modes. Under ``any`` the first ``PASS`` decides the claim; under
+       ``all`` any ``FAIL`` does; if every attempt ran under ``any`` without
+       a ``PASS``, the claim is ``FAIL``/``CANARY_SURVIVED``. A
+       ``BUDGET_EXCEEDED``/``LANE_TIMEOUT`` claim is exempt from the
+       equality and only from it: its status comes from the mechanism, not
+       from the aggregation (A-432).
+    2. **The bookkeeping**, which is what makes a multi-target payload
+       checkable rather than merely present: under ``any``, exactly the
+       attempts up to and including the first ``PASS`` are ``attempted`` and
+       every later one is ``not_attempted``/``short_circuited``; under
+       ``all``, no attempt is ``short_circuited``; after a TERMINAL attempt
+       every later one is ``not_attempted``. A document whose bookkeeping
+       contradicts its own aggregation is refused. **The same holds for
+       ``budget_exhausted`` (R-2/SF-1):** it may appear only on a
+       ``BUDGET_EXCEEDED``/``LANE_TIMEOUT`` claim -- a judged status is
+       unreachable once the deadline cuts a probe short -- and only as a
+       trailing run: no ``attempted`` entry may follow the first
+       ``budget_exhausted`` one, which is exactly where the mechanism
+       stopped.
+
+    **A FAIL under ``all`` is not terminal** (DA-R19). It decides the status
+    and stops nothing: the 2N materialisation bound is deliberate, because
+    naming EVERY surviving probe is the whole reason a lane declares
+    several. Only ``any``'s first ``PASS`` and an ``INCONCLUSIVE`` attempt
+    end the run.
     """
     claim = next((item for item in verdict.claims if item.rigor == "R3"), None)
     if claim is None or claim.canary is None:
         return
-    expected = judge_canary(claim.canary)
-    if (claim.status, claim.reason_code) != expected:
+    judgment_r3 = None if verdict.judgment is None else verdict.judgment.r3
+    aggregation = None if judgment_r3 is None else judgment_r3.aggregation
+
+    status: Outcome | None = None
+    reason_code: ReasonCode | None = None
+    #: What ENDED the run, as opposed to what merely decided the STATUS. Only
+    #: an INCONCLUSIVE attempt (terminal in both modes) and `any`'s first
+    #: PASS (the short circuit) end it. A FAIL under `all` decides the claim
+    #: and stops NOTHING -- DA-R19 affirms the deliberate 2N bound, because
+    #: naming EVERY surviving probe is the whole reason a lane declares
+    #: several -- so a later `attempted` entry after one is correct, not a
+    #: contradiction.
+    terminal_at: int | None = None
+    first_pass_at: int | None = None
+    saw_pass = False
+    for index, attempt in enumerate(claim.canary.attempts):
+        if attempt.disposition == "not_attempted":
+            continue
+        if terminal_at is not None:
+            failures.append(
+                f"R3 canary attempt {index} ({attempt.target}) is recorded "
+                f"'attempted' after attempt {terminal_at} ended the claim -- "
+                f"every target after a terminal attempt is not_attempted"
+            )
+            break
+        attempt_status, attempt_reason = _judge_one_attempt(attempt)
+        if attempt_status is Outcome.INCONCLUSIVE:
+            if status is None:
+                status, reason_code = attempt_status, attempt_reason
+            terminal_at = index
+            continue
+        if attempt_status is Outcome.PASS:
+            saw_pass = True
+            if first_pass_at is None:
+                first_pass_at = index
+            if aggregation != "all":
+                if status is None:
+                    status, reason_code = Outcome.PASS, None
+                terminal_at = index
+        else:
+            if aggregation != "any" and status is None:
+                status, reason_code = Outcome.FAIL, ReasonCode.CANARY_SURVIVED
+    if status is None:
+        status, reason_code = (
+            (Outcome.PASS, None) if saw_pass
+            else (Outcome.FAIL, ReasonCode.CANARY_SURVIVED)
+        )
+    # A-432: budget exhaustion stays its OWN terminal -- `BUDGET_EXCEEDED`/
+    # `LANE_TIMEOUT`, never folded into the aggregation -- and it carries the
+    # payload precisely so the untried targets stay visible. Its status comes
+    # from the MECHANISM, not from the attempts, so re-deriving one from them
+    # and demanding equality would refuse the very document the ruling asks
+    # the producer to write. The BOOKKEEPING below still applies to it in
+    # full: what may not be checked is the status, not the record.
+    if claim.status in _JUDGED_R3_STATUSES:
+        if (claim.status, claim.reason_code) != (status, reason_code):
+            failures.append(
+                f"R3 claim status {_fmt(claim.status, claim.reason_code)} "
+                f"disagrees with the re-derived judgment from the canary "
+                f"result {_fmt(status, reason_code)}"
+            )
+    elif (claim.status, claim.reason_code) != (
+        Outcome.BUDGET_EXCEEDED,
+        ReasonCode.LANE_TIMEOUT,
+    ):
         failures.append(
             f"R3 claim status {_fmt(claim.status, claim.reason_code)} "
-            f"disagrees with the re-derived judgment from the canary "
-            f"result {_fmt(*expected)}"
+            f"carries a canary payload, but the only non-judged status that "
+            f"may is BUDGET_EXCEEDED/LANE_TIMEOUT (A-432) -- every other "
+            f"refusal means no probe produced a record to report"
         )
+
+    # R-2/SF-1: the index of the FIRST `budget_exhausted` entry, or `None` if
+    # there is none. By construction (`canary.run_isolated_canaries`) every
+    # `budget_exhausted` entry is a TRAILING run starting exactly where the
+    # deadline cut a probe short -- nothing `attempted` can follow it.
+    budget_at = min(
+        (
+            i
+            for i, a in enumerate(claim.canary.attempts)
+            if a.not_attempted_reason == "budget_exhausted"
+        ),
+        default=None,
+    )
+    for index, attempt in enumerate(claim.canary.attempts):
+        if attempt.disposition == "attempted":
+            if budget_at is not None and index >= budget_at:
+                failures.append(
+                    f"R3 canary attempt {index} ({attempt.target}) is "
+                    f"recorded 'attempted' at or after attempt {budget_at}, "
+                    f"where the budget ran out -- every target from there "
+                    f"on is not_attempted"
+                )
+            continue
+        why = attempt.not_attempted_reason
+        if why == "short_circuited":
+            if aggregation != "any":
+                failures.append(
+                    f"R3 canary attempt {index} ({attempt.target}) records "
+                    f"not_attempted_reason 'short_circuited' under "
+                    f"aggregation {aggregation!r} -- only 'any' short-circuits"
+                )
+            elif first_pass_at is None or index < first_pass_at:
+                failures.append(
+                    f"R3 canary attempt {index} ({attempt.target}) records "
+                    f"'short_circuited' but no earlier attempt PASSed -- "
+                    f"nothing had answered the question yet"
+                )
+        elif why == "earlier_target_terminal":
+            if terminal_at is None or index < terminal_at:
+                failures.append(
+                    f"R3 canary attempt {index} ({attempt.target}) records "
+                    f"'earlier_target_terminal' but no earlier attempt was "
+                    f"terminal"
+                )
+        elif why == "budget_exhausted":
+            if (claim.status, claim.reason_code) != (
+                Outcome.BUDGET_EXCEEDED,
+                ReasonCode.LANE_TIMEOUT,
+            ):
+                failures.append(
+                    f"R3 canary attempt {index} ({attempt.target}) records "
+                    f"not_attempted_reason 'budget_exhausted', which only "
+                    f"the mechanism's own BUDGET_EXCEEDED/LANE_TIMEOUT "
+                    f"terminal can produce -- a judged status is "
+                    f"unreachable once the deadline cuts a probe short; "
+                    f"got {_fmt(claim.status, claim.reason_code)}"
+                )
+
+
+def _check_r4_rederivation(verdict: Verdict, failures: list[str]) -> None:
+    """Re-derive the R4 claim's status from the two recorded outcomes
+    (F015/A-433, as amended by A-434 under DA-R18), hand-transcribed:
+
+        ``PASS`` **iff** ``before_outcome != PASS`` and
+        ``after_outcome == PASS``.
+
+    Anything else is a judged ``FAIL``/``RED_FIRST_UNPROVEN`` -- both runs
+    completed, so assay measured something (that the declared test does not
+    discriminate the fix), which is ``CANARY_SURVIVED`` one rung down.
+    Failures of the MECHANISM never reach this payload at all; they carry the
+    outcome and code their own substrate raised, and a claim with no
+    ``red_first`` payload is not re-derived here.
+    """
+    claim = next((item for item in verdict.claims if item.rigor == "R4"), None)
+    if claim is None or claim.red_first is None:
+        return
+    payload = claim.red_first
+    if payload.before_outcome is not Outcome.PASS and payload.after_outcome is Outcome.PASS:
+        expected = (Outcome.PASS, None)
+    else:
+        expected = (Outcome.FAIL, ReasonCode.RED_FIRST_UNPROVEN)
+    if (claim.status, claim.reason_code) != expected:
+        failures.append(
+            f"R4 claim status {_fmt(claim.status, claim.reason_code)} "
+            f"disagrees with the re-derived judgment from the recorded "
+            f"before/after outcomes {_fmt(*expected)}"
+        )
+
+
+def _check_claim_detail(verdict: Verdict, failures: list[str]) -> None:
+    """(B053/DA-D2(c), A-428) ``detail``'s PRESENCE rule and its exact BYTE
+    bound -- never its content.
+
+    Stated here independently of the model and of the JSON Schema, because
+    the two say different things on purpose: ``maxLength`` counts CHARACTERS
+    and the ruling counts BYTES, so the document's bound is satisfied by
+    every legal artifact and this is where the real one is enforced.
+    """
+    for claim in verdict.claims:
+        if claim.detail is None:
+            if claim.detail_dropped_bytes is not None:
+                failures.append(
+                    f"{claim.rigor} claim records detail_dropped_bytes with "
+                    f"no detail -- the count describes a truncation of text "
+                    f"that is not in the document"
+                )
+            continue
+        if claim.status is Outcome.PASS:
+            failures.append(
+                f"{claim.rigor} claim is a PASS and carries a detail -- "
+                f"detail is the refusing sentence, and a pass refused nothing"
+            )
+        size = len(claim.detail.encode("utf-8"))
+        if size > CLAIM_DETAIL_BYTES:
+            failures.append(
+                f"{claim.rigor} claim detail is {size} UTF-8 bytes, over the "
+                f"{CLAIM_DETAIL_BYTES}-byte bound"
+            )
+        if claim.detail_dropped_bytes is None:
+            failures.append(
+                f"{claim.rigor} claim carries a detail with no "
+                f"detail_dropped_bytes -- a silently truncated sentence is "
+                f"worse than no sentence"
+            )
 
 
 def verify_document(document: Any) -> list[str]:
@@ -2170,6 +2549,8 @@ def verify_document(document: Any) -> list[str]:
         _check_r1_rederivation(verdict, failures)
         _check_r2_rederivation(verdict, failures)
         _check_r3_rederivation(verdict, failures)
+        _check_r4_rederivation(verdict, failures)
+        _check_claim_detail(verdict, failures)
 
     return failures
 

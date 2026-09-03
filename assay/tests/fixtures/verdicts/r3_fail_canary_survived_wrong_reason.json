@@ -1,5 +1,5 @@
 {
-  "schema_version": 9,
+  "schema_version": 10,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -42,7 +42,9 @@
     },
     "r3": {
       "mechanism": "import-break",
-      "target": "pkg/greet.py"
+      "targets": [
+        "pkg/greet.py"
+      ]
     }
   },
   "snapshot_policy": {
@@ -63,12 +65,17 @@
       "reason_code": "CANARY_SURVIVED",
       "canary": {
         "mechanism": "import-break",
-        "target": "pkg/greet.py",
-        "description": "mislabeled: performed the uncovered-line transform under the import-break mechanism name",
-        "control_outcome": "PASS",
-        "transformed_outcome": "FAIL",
-        "expected_reason_code": "COMMAND_FAILED",
-        "observed_reason_code": "UNCOVERED_LINES"
+        "attempts": [
+          {
+            "target": "pkg/greet.py",
+            "description": "mislabeled: performed the uncovered-line transform under the import-break mechanism name",
+            "disposition": "attempted",
+            "control_outcome": "PASS",
+            "transformed_outcome": "FAIL",
+            "expected_reason_code": "COMMAND_FAILED",
+            "observed_reason_code": "UNCOVERED_LINES"
+          }
+        ]
       }
     }
   ],

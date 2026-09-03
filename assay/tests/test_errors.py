@@ -42,6 +42,12 @@ EXPECTED_REASON_CODES = {
         "MUTANTS_SURVIVED",
         "CANARY_SURVIVED",
         "COMMAND_FAILED",
+        # Wave D / schema v10, F015 (A-433 as amended by A-434 under DA-R18):
+        # both commits materialised and both runs completed, and the
+        # fail-before/pass-after property did not hold. A judged FAIL, not a
+        # NO_MEASUREMENT -- CANARY_SURVIVED one rung up. RESERVED at the cut,
+        # rendered in phase 3.
+        "RED_FIRST_UNPROVEN",
     },
     "ERROR": {
         "GIT_FAILED",
@@ -70,6 +76,11 @@ EXPECTED_REASON_CODES = {
         "STALE_ATTESTATION",
         # P21/A-163, reserved for P27's first real external-tool preflight.
         "MISSING_EXTERNAL_TOOL",
+        # Wave D / schema v10, B004 (A-276/A-430): assay could not establish
+        # WHICH artifact the tests ran against. NO_MEASUREMENT and never FAIL
+        # -- a provenance mismatch says the measurement's subject is unknown,
+        # not that the code is bad.
+        "PROVENANCE_UNVERIFIED",
     },
     "BUDGET_EXCEEDED": {
         "LANE_TIMEOUT",

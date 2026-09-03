@@ -21,6 +21,7 @@ data-shaped refusals; there is no locally-defined exception type here
 from __future__ import annotations
 
 import os
+import posixpath
 import stat as stat_module
 from pathlib import Path, PurePosixPath
 from types import TracebackType
@@ -259,6 +260,12 @@ class OutputReservation:
         free, since consuming is exactly what nulls it -- a separate
         ``_consumed`` flag would only ever be checked after that null
         check already fired.
+
+        (B049/A-408) Before reading, the HELD parent descriptor is
+        ``fstat``'d and refused when its link count has fallen to zero:
+        that is a tool which deleted and recreated its own output
+        directory while the reservation was open. See
+        :meth:`_refuse_if_parent_was_replaced`.
         """
         if self._parent_fd is None:
             raise RuntimeError("reservation already closed or consumed")
@@ -266,6 +273,7 @@ class OutputReservation:
             raise RuntimeError("reservation not armed")
         parent_fd = self._parent_fd
         try:
+            self._refuse_if_parent_was_replaced(parent_fd)
             data = _safe_bounded_read(
                 self._basename, dir_fd=parent_fd, limit=self._limit, require_single_link=True
             )
@@ -273,6 +281,56 @@ class OutputReservation:
             os.close(parent_fd)
             self._parent_fd = None
         return data
+
+    def _refuse_if_parent_was_replaced(self, parent_fd: int) -> None:
+        """(B049/A-408) Refuse a reservation whose parent directory the
+        lane's own tool deleted and recreated during the run.
+
+        :func:`reserve_output` opens the artifact's parent directory ONCE,
+        before the lane's command starts, and this reservation holds that
+        descriptor for the command's whole execution; :meth:`consume` then
+        opens the basename relative to it. A tool that does ``rm -rf
+        <dir> && mkdir <dir> && write <artifact>`` -- Vitest's own default
+        ``coverage.clean = true``, and a common convention well beyond it --
+        writes into a DIFFERENT inode that merely answers to the same path.
+        The held descriptor still refers to the orphaned original, whose
+        directory entry is gone, so the basename lookup raises
+        ``FileNotFoundError`` and ``_safe_bounded_read`` returns ``None`` --
+        which every caller reads as "the command wrote nothing at all"
+        (``NO_MEASUREMENT``/``EMPTY_COVERAGE`` for a coverage read, a
+        ``crashed`` mutant for :mod:`assay.mutation`'s absent read). Each of
+        those messages asserts a checkable falsehood over an artifact that
+        was complete on disk at the declared path the whole time.
+
+        ``st_nlink == 0`` on the already-held descriptor is the exact,
+        name-free witness for that state: an unlinked directory inode keeps
+        its own open descriptor alive with a zero link count even though a
+        NEW inode now answers to the same path (measured on this
+        filesystem: held fd ``nlink=0``, recreated directory a different
+        ``st_ino``). Reading it costs one ``fstat`` on a descriptor this
+        object already owns, so -- unlike re-opening the parent chain by
+        NAME (option (1) in B049) -- it adds no TOCTOU surface at all.
+
+        The refusal is ``ERROR``/``UNREADABLE_ARTIFACT``, which
+        ``assay.coverage``'s own vocabulary note already reserves for "an
+        object that exists but cannot be trusted ... or a race the caller's
+        own reservation already detected". No new reason code, no schema
+        change (A-138/A-170).
+        """
+        st = os.fstat(parent_fd)
+        if st.st_nlink != 0:
+            return
+        parent = posixpath.dirname(self._artifact)
+        where = repr(parent) if parent else "the project root"
+        raise _refuse(
+            f"{self._artifact!r}: the directory {where} that assay reserved "
+            f"this output in was deleted and recreated while the lane's "
+            f"command ran, so assay's reservation was orphaned and the "
+            f"artifact your tool actually wrote is unreachable through it. "
+            f"Turn the tool's clean/rm-first option off (for example "
+            f"Vitest's `coverage.clean = false`) or have it write into the "
+            f"existing directory instead of replacing it."
+        )
 
     def close(self) -> None:
         """Close the owned descriptor without unlinking; safe more than once."""

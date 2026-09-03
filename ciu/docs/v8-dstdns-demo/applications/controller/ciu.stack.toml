@@ -10,6 +10,7 @@
 
 [ciu_stack.controller]
 image = "dstdns/controller:latest"    # <project.registry.namespace>/controller — a literal in plain TOML; `ciu build` tags exactly this
+build = { context = "../..", dockerfile = "applications/controller/Dockerfile" }   # project-built (S6.2, S17.6): context = the repo root so the Dockerfile can COPY libs/
 requires = ["app_schema"]             # ordering only: an edge to db_init.runner's completion; no data, no publication (R-22)
 endpoints.http = { port = 8080, protocol = "http", publish = "proxy", host_port = 8083, path = "/api/controller", allow_from = ["host.tsstammtisch", "host.gstammtisch"] }
 # host_port 8083, not 8080: cadvisor (observability bundle, same host in prod3) already publishes host_port 8080 (S6.3.2).

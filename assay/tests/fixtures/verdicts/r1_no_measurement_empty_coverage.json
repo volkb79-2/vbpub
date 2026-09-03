@@ -1,5 +1,5 @@
 {
-  "schema_version": 9,
+  "schema_version": 10,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -44,7 +44,9 @@
       "source": "computed",
       "status": "NO_MEASUREMENT",
       "verified_by_assay": true,
-      "reason_code": "EMPTY_COVERAGE"
+      "reason_code": "EMPTY_COVERAGE",
+      "detail": "coverage artifact reports zero measured files — well-formed, but vacuous: no percentage computed from it means anything. This is distinct from a file reporting 0% coverage (which reaches evaluation normally) — here there is no file to have a percentage at all.",
+      "detail_dropped_bytes": 0
     }
   ],
   "evidence": []

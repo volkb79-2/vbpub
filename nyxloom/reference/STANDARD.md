@@ -189,19 +189,10 @@ beyond "a gate exists", a *meaningful* gate should:
   *inside* the container. Two defenses: run container gates **detached**
   (`docker run -d` → `docker wait` for the code → `docker logs` for the output,
   never the attached/hijacked stream — this is what `gate_scaffold` emits); and
-  probe the transport before trusting a verdict — `nyxloom gate verify` runs a
-  sentinel first and reports **TRANSPORT_UNTRUSTED** (rather than a real gate
-  verdict) when the transport truncates, and `nyxloom doctor` fails closed on the
-  same signal;
+  probe the transport before trusting a verdict — `nyxloom doctor` fails closed
+  when `transport_check.probe_default()` detects a truncating transport;
 - ideally enforce a **completeness floor** (e.g. changed-line coverage) and run in
   **parallel** so the floor stays affordable.
-
-**OFFERED, not mandated — the toolkit.** nyxloom ships `coverage_gate.py` (a
-changed-line coverage floor) and `mutation_gate.py` (hollow-test detection) that a
-project's `argv` MAY call. They are Python-specific and entirely opt-in. nyxloom
-mandates no image, no test framework, no coverage tool — only the interface above.
-The completeness/parallelism *ideas* generalise (`cargo llvm-cov`, `nyc`, `-j`); the
-tools do not.
 
 For a broader, risk-based catalogue of deterministic and asynchronous evidence
 (mutation, property testing, fuzzing, remote workers, and their limits), see
@@ -210,15 +201,10 @@ For a broader, risk-based catalogue of deterministic and asynchronous evidence
 **Gate rigor is a first-class, per-project fact.** A weak gate shifts the
 correctness burden onto the reviewer, so a project SHOULD declare what its gate
 actually asserts (the `asserts=[tests-pass|changed-line-coverage|mutation|
-canary-verified]` key on `[gates.*]`) — nyxloom surfaces it and routes review depth
-accordingly. `nyxloom gate verify` doesn't just trust the declaration: it PROVES the
-verifiable ones with disposable canaries — `canary-verified` via an import-break
-(the gate must reject broken code) and `changed-line-coverage` via an uncovered-line
-canary (a valid, test-neutral, never-executed line the gate must reject *because* of
-the floor, which a tests-only gate would launder). A declaration its own gate
-contradicts is a DECLARATION MISMATCH. Declaring a **coverage floor is offered, not
-mandated** — advisable wherever the ecosystem supports it (Python via the shipped
-`coverage_gate.py`; `cargo llvm-cov`/`nyc` elsewhere), but a project that runs tests
+canary-verified|assay-verdict]` key on `[gates.*]`) — nyxloom surfaces it and
+routes review depth accordingly. Declaring a coverage floor is offered, not
+mandated — advisable wherever the ecosystem supports it (`cargo llvm-cov`/`nyc`,
+or your project's own declared assay/run-gate lane), but a project that runs tests
 without one is still a valid consumer; it simply leans harder on the reviewer. Full
 rationale + the layered model (gate ⊕ reviewer ⊕ controller): `nyxloom-trove/
 LESSONS.md` PL2. The onboarding/verification workflow (offer to build a missing gate;
@@ -263,7 +249,7 @@ verify`). They apply to any consumer project's suite, not just nyxloom's.
 7. **Keep the run and the verdict separate; fail closed.** Read a gate's pass/fail in
    a step SEPARATE from running it — a wrapper's trailing `echo` or a pipe can mask
    the real exit code (`LESSONS.md` L4). A gate that cannot fail is worse than none;
-   prove it rejects a known-bad canary (`nyxloom gate verify`).
+   prove it rejects a known-bad canary.
 
 ## `exec-nyxloom init <project_folder>`
 

@@ -1,4 +1,4 @@
-"""Carve-quality lint, rules L1-L13 (SPEC docs/SPEC.md §6). PACKAGE P01.
+"""Carve-quality lint, rules L1-L14 (SPEC docs/SPEC.md §6). PACKAGE P01.
 
 INTERFACE CONTRACT (frozen):
 
@@ -65,8 +65,11 @@ L8  error   escalate_if entries containing introspective phrasing
             flagged 'non-mechanical escalation trigger (P51)'.
 L9  error   if any scope.touch glob/path matches cfg.infra_globs, the
             effective mutexes (fm.effective_mutexes()) must include 'stack'.
-L10 warning body+frontmatter token estimate (len(text)//4) over 10000 ->
-            warning; over 18000 -> error. Message includes the estimate.
+L10 warning body+frontmatter token estimate (len(text)//4) over
+            cfg.l10.warn_tokens -> warning; over cfg.l10.error_tokens ->
+            error. Message includes the estimate. Per-project-configurable
+            via `[lint.l10]` in nyxloom.toml (NL-3); defaults to 10000/18000
+            when absent.
 L11 error   body must contain (case-insens.) a worktree path mention
             ('worktree'), a branch name ('branch'), an out-of-scope/forbid
             mention ('out of scope' or 'forbid'), and a context section
@@ -135,6 +138,7 @@ S5  error   uniqueness: within a single spine doc, the `id`s of its own
 
 from __future__ import annotations
 
+import difflib
 import fnmatch
 import importlib.resources
 import json
@@ -146,7 +150,7 @@ from pathlib import Path
 import jsonschema
 
 from . import backlog_entries, backlog_items, doc_lifecycle, frontmatter, paths
-from .config import ProjectConfig
+from .config import ProjectConfig, Routes
 from .log import get_logger
 from .types import LintFinding, utc_now
 
@@ -203,7 +207,7 @@ def lint_file(path: Path, cfg: ProjectConfig) -> list[LintFinding]:
     _check_l9(findings, path, fm, cfg)
 
     # L10: Size limits
-    _check_l10(findings, path, full_text)
+    _check_l10(findings, path, full_text, cfg)
 
     # L11: Body contains required sections
     _check_l11(findings, path, body)
@@ -213,6 +217,9 @@ def lint_file(path: Path, cfg: ProjectConfig) -> list[LintFinding]:
 
     # L13: Every oracle-referenced path is covered by scope.touch
     _check_l13(findings, path, fm)
+
+    # L14: fm.tier must resolve against the live routes.toml
+    _check_l14(findings, path, fm)
 
     # Sort findings by rule then line
     findings.sort(key=lambda f: (f.rule, f.line or 9999))
@@ -1076,19 +1083,26 @@ def _check_l9(findings: list[LintFinding], path: Path, fm, cfg: ProjectConfig) -
 
 
 # ----- L10 -----
-def _check_l10(findings: list[LintFinding], path: Path, full_text: str) -> None:
-    """Check: size limits."""
+def _check_l10(findings: list[LintFinding], path: Path, full_text: str,
+                cfg: ProjectConfig) -> None:
+    """Check: size limits. Thresholds are per-project-configurable via
+    cfg.l10 (NL-3; `[lint.l10]` in nyxloom.toml, defaulting to 10000/18000
+    -- see config.L10Config). Strict `>` on both branches: a handoff at
+    exactly warn_tokens or exactly error_tokens is NOT flagged/escalated at
+    that tier -- this boundary behavior is part of the frozen contract, not
+    an implementation detail free to drift now that the literals are
+    variables."""
     tokens = len(full_text) // 4
     message = f"handoff size {tokens} tokens"
 
-    if tokens > 18000:
+    if tokens > cfg.l10.error_tokens:
         findings.append(LintFinding(
             rule="L10",
             severity="error",
             message=message,
             path=str(path)
         ))
-    elif tokens > 10000:
+    elif tokens > cfg.l10.warn_tokens:
         findings.append(LintFinding(
             rule="L10",
             severity="warning",
@@ -1199,3 +1213,50 @@ def _check_l13(findings: list[LintFinding], path: Path, fm) -> None:
                                 f"not covered by scope.touch",
                         path=str(path)
                     ))
+
+
+# ----- L14 (NL-2: fm.tier must resolve against the live routes.toml) -----
+
+def _check_l14(findings: list[LintFinding], path: Path, fm) -> None:
+    """Check: frontmatter `tier` names a key that actually exists in the
+    CURRENT `routes.toml` -- read fresh on every call (`Routes.load()` has
+    no caching, and this rule must not add any; see NL-2/nyxloom-P100).
+
+    `contract_class` (2a-2e, in the body) is a different vocabulary from
+    `tier` (frontmatter, a routing key) -- this rule only ever validates
+    the latter, and only against the live file, never a hardcoded
+    allowlist/blocklist of "known" tier names (that would silently
+    reintroduce NL-2's own root cause one level down).
+
+    A missing or unparseable `routes.toml` is a "can't determine" case, not
+    a "found a defect" case -- catch broadly (the file may not exist yet in
+    an environment that hasn't run onboarding, or may be mid-edit) and
+    report a WARNING rather than raising, so L1-L13's other findings for
+    this file are never lost to an uncaught exception here. This handler's
+    domain can only ever REDUCE what L14 reports (a working check downgrades
+    to "can't validate"); it can never manufacture a false ERROR or a false
+    clean pass -- same shape as doctor.py's decision-hold-unresolved check.
+    """
+    try:
+        routes = Routes.load()
+    except Exception as exc:  # census: advisory-degradation (nyxloom-P100)
+        findings.append(LintFinding(
+            rule="L14",
+            severity="warning",
+            message=f"tier could not be validated: routes.toml unavailable "
+                    f"({type(exc).__name__}: {exc})",
+            path=str(path)
+        ))
+        return
+
+    if fm.tier not in routes.tiers:
+        suggestions = difflib.get_close_matches(fm.tier, routes.tiers.keys(), n=3)
+        message = f"tier '{fm.tier}' is not a key in the live routes.toml"
+        if suggestions:
+            message += f" -- nearest: {', '.join(suggestions)}"
+        findings.append(LintFinding(
+            rule="L14",
+            severity="error",
+            message=message,
+            path=str(path)
+        ))

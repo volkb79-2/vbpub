@@ -1637,18 +1637,29 @@ def _execute_mutation_jobs(
             equivalence_bytes: bytes | None = None
             kill_signal_text: str | None = None
             decode_error: AssayError | None = None
-            if dirt is None:
+            # (B049/DA-D1, SF-4) `consume()` can now RAISE -- B049 gave it the
+            # replaced-parent refusal -- and before this `try`/`finally` that
+            # raise skipped both `close()` calls below, leaking
+            # `kill_signal_reservation`'s parent descriptor. Bounded at one
+            # descriptor per run (the raise is fatal to the whole R2 claim),
+            # so it was never a leak that grows; it is still a descriptor this
+            # function opened and owes.
+            try:
+                if dirt is None:
+                    if equivalence_reservation is not None:
+                        equivalence_bytes = equivalence_reservation.consume()
+                    if kill_signal_reservation is not None:
+                        try:
+                            kill_signal_text = _read_kill_signal(
+                                kill_signal_reservation
+                            )
+                        except AssayError as exc:
+                            decode_error = exc
+            finally:
                 if equivalence_reservation is not None:
-                    equivalence_bytes = equivalence_reservation.consume()
+                    equivalence_reservation.close()
                 if kill_signal_reservation is not None:
-                    try:
-                        kill_signal_text = _read_kill_signal(kill_signal_reservation)
-                    except AssayError as exc:
-                        decode_error = exc
-            if equivalence_reservation is not None:
-                equivalence_reservation.close()
-            if kill_signal_reservation is not None:
-                kill_signal_reservation.close()
+                    kill_signal_reservation.close()
             if dirt is not None:
                 raise dirt
             if decode_error is not None:
@@ -1870,6 +1881,8 @@ def ingest_mutation_report(
     mode: str,
     added: AddedLines | None,
     targets: Sequence[str] | None,
+    repository: SnapshotRepository,
+    read_timeout: float,
 ) -> IngestedMutationResult:
     """Turn a parsed foreign mutation report into assay's own R2 payload.
 
@@ -1894,6 +1907,19 @@ def ingest_mutation_report(
     Every path on the wire is REPO-TOP-relative, exactly as a natively
     generated :class:`MutantOutcome` already is -- one spelling, so an
     ingested and a native verdict can be read by the same consumer code.
+
+    *repository* and *read_timeout* carry B052/DA-D5's **content** tier, the
+    third and last non-repudiation question this function asks. Identity
+    (:func:`_check_report_project_root`) and anchoring
+    (:func:`_resolve_report_paths`) establish that the report is about this
+    checkout; content establishes that it is about this COMMIT, by reading
+    each measured file's blob back through
+    :meth:`~assay.isolation.SnapshotRepository.read_regular_file` and
+    comparing it with the report's own embedded ``source``. Both parameters
+    are REQUIRED and have no default, deliberately: a default would make the
+    strongest of the three tiers the one a caller can forget, and there is
+    exactly one caller (:func:`assay.runner._ingest_r2_report`), which already
+    holds the repository the lane's command ran against.
     """
     if report.producer.name and report.producer.version:
         producer_tool = MutationProducerTool(
@@ -1911,6 +1937,20 @@ def ingest_mutation_report(
     _check_report_project_root(report, run_cwd=run_cwd)
     wire_paths = _resolve_report_paths(
         report, run_cwd=run_cwd, repo_top=repo_top, source_root_paths=source_root_paths
+    )
+    # (B052/DA-D5) Tier three, CONTENT, in tier order and before a single
+    # mutant is bucketed. It runs third because it depends on the second: the
+    # committed blob can only be read once the report's own file key has been
+    # resolved to its repo-top-relative spelling. It runs BEFORE the bucketing
+    # loop because everything that loop computes -- byte spans, line numbers,
+    # `lines_without_candidates` -- is derived from the very text this check
+    # is about, so judging first and checking after would build a payload out
+    # of text assay is in the middle of deciding not to trust.
+    _check_report_source_matches_commit(
+        report,
+        wire_paths=wire_paths,
+        repository=repository,
+        timeout=read_timeout,
     )
     in_scope = _in_scope_predicate(mode=mode, added=added, targets=targets)
 
@@ -2090,6 +2130,151 @@ def _resolve_report_paths(
     return resolved
 
 
+#: (B052/DA-D5) The normalisation the content tier compares under, STATED
+#: rather than implied, because a comparison's normalisation is its contract:
+#: what it folds away is what it has decided not to be evidence about.
+#:
+#: Two folds, and only two:
+#:
+#: 1. **line endings are folded to ``\n``** -- CRLF and a lone CR alike. A
+#:    consumer whose `.gitattributes` checks files out CRLF gets a report whose
+#:    ``source`` is CRLF and a blob that is LF, and refusing that pair would
+#:    refuse a correct lane over a checkout setting (B052's cause 4). Assay's
+#:    own mutant positions are LINE numbers and byte spans WITHIN the report's
+#:    text, so a line-ending difference cannot move a mutant to a different
+#:    line or a different statement;
+#: 2. **one trailing newline is ignored** -- exactly one, at the very end.
+#:    Editors and tools disagree about the final newline, and a file that
+#:    differs from the commit only by having or lacking it differs in no line's
+#:    content.
+#:
+#: Everything else is BYTE-EXACT. Leading and interior whitespace, indentation,
+#: blank lines, trailing whitespace on a line, encoding of any non-ASCII
+#: character: all of it is compared, because all of it can change what a line
+#: says and what a byte span covers. In particular a formatter's rewrite is a
+#: MISMATCH by design (B052's cause 2, refused under DA-D5), and so is a
+#: second trailing newline.
+_CONTENT_TIER_NORMALISATION = (
+    "line endings folded to \\n, one trailing newline ignored, everything "
+    "else byte-exact"
+)
+
+
+def _normalise_source_for_compare(data: bytes) -> bytes:
+    """Apply :data:`_CONTENT_TIER_NORMALISATION` to *data*.
+
+    Operates on BYTES rather than ``str`` for the reason the whole module
+    does: the report's ``source`` is decoded UTF-8 text and the commit's blob
+    is raw bytes, and re-encoding the former is the only conversion that keeps
+    a non-ASCII character comparable to the bytes git actually stored.
+    """
+    folded = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    if folded.endswith(b"\n"):
+        folded = folded[:-1]
+    return folded
+
+
+def _check_report_source_matches_commit(
+    report: IngestedMutationReport,
+    *,
+    wire_paths: Mapping[str, str],
+    repository: SnapshotRepository,
+    timeout: float,
+) -> None:
+    """(B052/DA-D5) Non-repudiation tier THREE: **content**.
+
+    B046 established two tiers, and they answer weaker questions than this
+    one. ``_check_report_project_root`` establishes *identity* -- the report
+    is about the directory the lane's command ran in. ``_resolve_report_paths``
+    establishes *anchoring* -- every file it names resolves under a declared
+    source root, inside this snapshot. Neither establishes that the report is
+    about **this commit's content**, which is the property assay's own
+    committed-object snapshot exists to make checkable and the only one that
+    closes "an artifact from an earlier state of the same tree".
+
+    **Why it matters more here than anywhere else in the ingest path.** Assay
+    does not merely quote the report's ``source``; it COMPUTES from it. Every
+    mutant's byte span comes from ``_line_byte_offsets(source)``
+    (``mutation_parsers/mutation_report_json.py``), and
+    ``lines_without_candidates`` walks that same text line by line -- so a
+    report whose text is not the commit's produces positions that are correct
+    about a file assay never had and wrong about the one it judged. The
+    positions still LOOK like this commit's, because they are spelled with
+    this commit's paths.
+
+    So the committed blob is read back through
+    :meth:`assay.isolation.SnapshotRepository.read_regular_file` -- the same
+    prepared commit the lane's own command ran against -- and compared under
+    :data:`_CONTENT_TIER_NORMALISATION`.
+
+    **A mismatch is ``ERROR``/``UNREADABLE_ARTIFACT``, with no warning mode,
+    no opt-out key and no wire field** (DA-D5). Each of those was rejected for
+    its own reason: a warning is a fact nobody reads; an opt-out is the gate
+    being switched off from inside the lane file it is judging; and recording
+    it on the wire would archive a document assay has already decided not to
+    trust. The refusal names the file and the three causes B052 enumerated,
+    because a bare "content differs" leaves the consumer to guess which of
+    them they are in.
+
+    **Cause (2), a tool that rewrote the source in flight, is REFUSED by
+    design and this is the ruling rather than an oversight.** Evidence whose
+    text is not the commit's is not evidence about the commit: the mutants
+    were applied to transpiled or reformatted text, and the line numbers they
+    carry are that text's, not the committed file's. A formatter that writes
+    back into the working tree would trip ``DIRTY_TREE`` on the next run
+    anyway, so refusing here is consistent with what assay already does one
+    layer up rather than a new severity.
+
+    **A path the commit does not track at all is the same refusal**, not a
+    ``GIT_FAILED``: "the commit has no such content" is the strongest
+    possible content mismatch, and it is B052's cause 3 (a genuinely foreign
+    report) in its most literal form. Surfacing git's own "not a regular
+    tracked file" wording here would report a repository failure for a report
+    defect.
+    """
+    for key in sorted(report.sources):
+        wire_path = wire_paths[key]
+        try:
+            committed = repository.read_regular_file(
+                PurePosixPath(wire_path), timeout=timeout
+            )
+        except AssayError as exc:
+            raise AssayError(
+                f"mutation report measures {wire_path}, which the judged "
+                f"commit does not carry as a regular tracked file ({exc}). "
+                f"An ingested report is evidence about THIS commit's content; "
+                f"a file the commit does not have is an artifact from "
+                f"elsewhere. Run the mutation tool inside the lane, against "
+                f"the committed tree.",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            ) from exc
+        reported = report.sources[key].encode("utf-8")
+        if _normalise_source_for_compare(reported) == _normalise_source_for_compare(
+            committed
+        ):
+            continue
+        raise AssayError(
+            f"mutation report's embedded source for {wire_path} does not "
+            f"match the bytes the judged commit carries for that file "
+            f"(compared with {_CONTENT_TIER_NORMALISATION}; report "
+            f"{len(reported):,} bytes, commit {len(committed):,} bytes). "
+            f"Assay derives every mutant's line and byte span from the "
+            f"report's own text, so a report about different text produces "
+            f"positions that are wrong about the file it judged. Three "
+            f"causes: the report is STALE (the tool ran before the last "
+            f"edit); the tool REWROTE the source before mutating it "
+            f"(transpilation, or a formatter inside the test command) -- and "
+            f"a report about rewritten text is not evidence about the commit, "
+            f"so this is refused deliberately; or the report is FOREIGN (it "
+            f"describes another checkout). Remedy in all three: run the "
+            f"mutation tool inside the lane, against the committed tree, so "
+            f"the report assay reads is the one this commit produced.",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+        )
+
+
 def _in_scope_predicate(
     *, mode: str, added: AddedLines | None, targets: Sequence[str] | None
 ) -> Callable[[str, int], bool]:
@@ -2182,7 +2367,10 @@ def mutation_pct(mutation: Mutation) -> float:
 
 
 def judge_mutation(
-    baseline: CommandResult, mutation: Mutation | Literal["UNSUPPORTED"] | None
+    baseline: CommandResult,
+    mutation: Mutation | Literal["UNSUPPORTED"] | None,
+    *,
+    fail_under: float = 100.0,
 ) -> tuple[Outcome, ReasonCode | None]:
     """A-117's outcome/reason-code mapping, using only already-existing
     ``ReasonCode``s (``errors.py`` stays forbidden, A-121): baseline
@@ -2207,21 +2395,42 @@ def judge_mutation(
     ``survived`` has already returned by then); it sits here for readability,
     not because the position is load-bearing.
 
-    **B046 takes NO producer fork, and that is a decision rather than an
-    omission (A-379).** An ingested R2 judgment is judged by exactly this
-    function, unchanged: same precedence, same terminals, same
-    "any survivor is ``FAIL``/``MUTANTS_SURVIVED``". A ``fail_under``
-    parameter was written here and then removed, because it would have broken
-    the one property :class:`~assay.verdict.JudgmentR2`'s own docstring
-    promises -- *"an independent consumer can already re-derive the R2 claim's
-    status from* :class:`~assay.verdict.Mutation`'s *own bucket fields
-    alone"*. The v9 wire has no ``judgment.r2`` field that could record a
-    mutation-score floor, so a lane judging at 90% would emit a PASS beside
-    survivors with nothing in the document explaining it, and
-    :func:`assay.verify._check_r2_rederivation` -- which reuses THIS function
-    -- would correctly call that document a lie. See
-    ``config._load_ingested_mutation`` for the load-time refusal that keeps
-    the two in agreement, and B050 for the wire field a later cut needs.
+    **``fail_under`` is the mutation-score FLOOR, and B050/A-427/DA-R22 is
+    what made it expressible.** Under v9 this parameter could not exist. It
+    had been written here once and removed (A-379), because a floor below 100
+    would have broken the one property :class:`~assay.verdict.JudgmentR2`'s
+    own docstring promises -- *"an independent consumer can already re-derive
+    the R2 claim's status from* :class:`~assay.verdict.Mutation`'s *own bucket
+    fields alone"*. The v9 wire had no ``judgment.r2`` field that could record
+    WHICH floor was applied, so a lane judging at 90% would have emitted a
+    PASS beside recorded survivors with nothing in the document explaining it,
+    and :func:`assay.verify._check_r2_rederivation` -- which reuses THIS
+    function -- would have correctly called that document a lie.
+
+    v10 records the floor (``judgment.r2.fail_under``, REQUIRED under
+    ``producer = "ingested"`` and FORBIDDEN under ``"native"``), so the
+    re-derivation reads it FROM the document instead of assuming it. The
+    property is preserved, not weakened: the status is still re-derivable
+    with no external policy input, because the policy is now IN the artifact.
+
+    **The floor is applied on the ``survived`` branch and nowhere else**
+    (DA-R22): a non-empty ``survived`` is ``FAIL``/``MUTANTS_SURVIVED`` iff
+    :func:`mutation_pct` is below the floor, otherwise the branch falls
+    through to the terminals below it, unchanged. There is exactly ONE
+    formula for the score in this package and it is :func:`mutation_pct`;
+    the verifier calls these same two functions rather than restating either
+    (a second formula is how the two would drift).
+
+    **The default ``100.0`` keeps every existing outcome byte-identical, and
+    that is the regression witness.** Any survivor at all makes the score
+    strictly less than 100, so a native lane -- which never passes this
+    parameter, and whose ``judgment.r2`` is FORBIDDEN from carrying a floor
+    -- reaches exactly the terminal it reached before. Only an INGESTED lane,
+    which now declares its floor on the wire, can take the fall-through.
+    ``config._load_ingested_mutation`` used to refuse any value but ``100.0``
+    for precisely this reason; that refusal is gone with the wire field that
+    replaced it, and only the ``0.0 <= fail_under <= 100.0`` range check
+    remains.
     """
     if mutation is None:
         return baseline.outcome, baseline.reason_code
@@ -2241,19 +2450,42 @@ def judge_mutation(
         return Outcome.ERROR, ReasonCode.EXEC_FAILED
     if mutation.budget_exceeded:
         return Outcome.BUDGET_EXCEEDED, ReasonCode.LANE_TIMEOUT
-    if mutation.survived:
+    if mutation.survived and mutation_pct(mutation) < fail_under:
+        # B050/A-427/DA-R22. At the default floor of 100.0 this is the v9
+        # branch verbatim -- any survivor puts the score below 100 -- so a
+        # native lane's outcome is unchanged. An ingested lane that declared
+        # a lower floor, and met it, falls through to the terminals below,
+        # and the floor it met is on the wire for the verifier to read.
+        #
+        # `discarded` is a COUNT beside the payload (DA-D4) and never enters
+        # `Mutation`'s buckets, so the denominator here is unaffected by
+        # construction rather than by an exclusion rule someone must
+        # remember.
         return Outcome.FAIL, ReasonCode.MUTANTS_SURVIVED
-    if not mutation.killed and mutation.equivalent:
+    if not mutation.killed and not mutation.survived and mutation.equivalent:
         # A-223d. `killed + survived == 0` and something was proven inert:
         # the run attempted real mutants and none of them could ever have
         # been caught, so there is no evidence about the tests here to pass
-        # on. `survived` is already known empty on this branch.
+        # on.
+        #
+        # (B050) `not mutation.survived` is now stated rather than inherited.
+        # Up to v9 the branch above returned on ANY non-empty `survived`, so
+        # emptiness was implied here and the condition A-223d actually
+        # specifies -- "`killed + survived == 0` with a non-empty
+        # `equivalent`", its own words -- could be written as half of itself.
+        # A declared floor the run MET now falls through this far with
+        # survivors recorded, and calling that "all mutants were equivalent"
+        # would be false about the payload. This restores A-223d's stated
+        # guard; it does not narrow it.
         return Outcome.INCONCLUSIVE, ReasonCode.ALL_MUTANTS_EQUIVALENT
     return Outcome.PASS, None
 
 
 def build_mutation_claim(
-    baseline: CommandResult, mutation: Mutation | Literal["UNSUPPORTED"] | None
+    baseline: CommandResult,
+    mutation: Mutation | Literal["UNSUPPORTED"] | None,
+    *,
+    fail_under: float = 100.0,
 ) -> Claim:
     """The R2 :class:`~assay.verdict.Claim` from :func:`run_mutation`'s own
     return — the exact mapping ``assay.runner.build_r0_claim`` /
@@ -2262,8 +2494,17 @@ def build_mutation_claim(
     The capability marker attaches NO payload (A-183): ``MUTATION_UNSUPPORTED``
     says no candidate analysis happened, and :class:`~assay.verdict.Claim`
     itself refuses the pairing if a payload is attached anyway.
+
+    ``fail_under`` is passed straight to :func:`judge_mutation` (B050/A-427);
+    it defaults to ``100.0``, so a native call site that omits it is the v9
+    behaviour exactly. The only caller that supplies it is the INGESTED
+    branch of :func:`assay.runner._run_prepared_lane`, which reads it from
+    the same ``lane.judge.mutation.fail_under`` that
+    ``runner._build_ingested_judgment_r2`` writes onto the wire -- one value,
+    one read, so the document cannot record a floor other than the one that
+    judged it.
     """
-    status, reason_code = judge_mutation(baseline, mutation)
+    status, reason_code = judge_mutation(baseline, mutation, fail_under=fail_under)
     payload = None if mutation == UNSUPPORTED else mutation
     return Claim(
         rigor="R2",

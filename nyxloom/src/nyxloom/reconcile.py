@@ -286,26 +286,6 @@ INTERFACE CONTRACT (frozen). Semantics:
     silently never fire. Item 12 (READY_TO_CARVE re-carve) still precedes
     BOTH, because finishing already-started work outranks starting new
     work of either kind.
-16. GATE VERIFY CADENCE (GA4 2026-07-25, mirrors item 15's shape): a
-    seldom-run maintenance probe that re-runs GA1's `nyxloom gate verify`
-    canary check to confirm the project's declared gate STILL rejects a
-    known-bad commit -- a gate can quietly stop discriminating (a lint
-    exclusion widens, a test gets skipped) with nothing else in this
-    module noticing. Fires when policy.gate_verify_interval_days > 0
-    (opt-in; 0 disables, the safety default) AND
-    inp.days_since_gate_verify is None (never run) or >= that interval ->
-    VerifyGate(project=...). UNLIKE item 15 this is deliberately OUTSIDE
-    the single-carve-authority mutex: a gate verify runs a subprocess
-    against a few disposable canary commits, needs no LLM frontier route
-    and no carve slot, so it never sets carve_dispatch_planned and never
-    consults carve_in_flight / frontier_route_available / budget_allows --
-    it only respects project_paused (a paused project starts no new
-    process of any kind, same invariant item 14 closed for carving). The
-    daemon executes it on a background thread (a full verify runs several
-    real gate invocations, minutes) and is idempotent while one is already
-    in flight for the project, so this planner may harmlessly re-plan the
-    same VerifyGate every pass until the daemon's drain step appends
-    GATE_VERIFY_RECORDED and resets the cadence.
 17. GAP-AUDIT CARVE TRIGGER (F007 2026-07-27, gap-engine): a seldom-run,
     project-WIDE sibling of item 9. Item 9 refills the queue from the
     backlog/roadmap when it runs dry; this one evaluates whether features
@@ -331,11 +311,11 @@ INTERFACE CONTRACT (frozen). Semantics:
     would lose the slot indefinitely and starve). Item 12's re-carve still
     precedes both.
 
-    ACTIVITY-COUNTED CADENCE: UNLIKE test_health_interval_days and
-    gate_verify_interval_days, this does NOT fire on a calendar schedule.
-    It accumulates changed production lines (git diff --numstat) in the
-    scope defined by policy.gap_audit_source_paths since the last gap-audit
-    carve, and fires when accumulated changes exceed the threshold. An idle
+    ACTIVITY-COUNTED CADENCE: UNLIKE test_health_interval_days, this does
+    NOT fire on a calendar schedule. It accumulates changed production
+    lines (git diff --numstat) in the scope defined by
+    policy.gap_audit_source_paths since the last gap-audit carve, and fires
+    when accumulated changes exceed the threshold. An idle
     project with zero code changes must not accrue carve budget on an
     unchanged codebase -- the rationale is activity-scoped, not time-scoped.
 
@@ -571,24 +551,6 @@ class CarveDispatch(Action):
 
 
 @dataclass
-class VerifyGate(Action):
-    """GA4 2026-07-25 (module contract item 16, D-065 cadence mirror): the
-    periodic gate re-verification trigger -- re-run GA1's `nyxloom gate
-    verify` canary probe to confirm the project's declared gate still
-    rejects a known-bad commit. Deliberately NOT a CarveDispatch sibling:
-    it never contends for the single-carve-authority slot
-    (carve_dispatch_planned), needs no LLM frontier route, and needs no
-    carve budget -- it is a subprocess probe, not an agent turn. `project`
-    names the project this verify targets, mirroring CarveDispatch's own
-    `project`-is-self-describing convention (the daemon already knows the
-    project too, via run_pass's per-project loop, but carrying it here
-    keeps the action self-describing for tests/logs). task_id (inherited
-    from Action) is unused -- always a project-wide action, never
-    task-scoped."""
-    project: str | None = None
-
-
-@dataclass
 class StartCarverSession(Action):
     """F018 P2b-A1 (plan-long-running-carver.md §4.2, §5.1): cold-bootstrap
     (or new-generation) launch of the persistent strategic carver session.
@@ -701,9 +663,6 @@ TRACE_KINDS = frozenset({
     # compact:<trigger>/wait:<status>) -- same "no prose" rule as every
     # other kind above (plan §4.2).
     "carver",
-    # GA4 2026-07-25 (module contract item 16): the gate-verify cadence
-    # trigger's own breadcrumb ("fire"/"paused") -- same "no prose" rule.
-    "gate-verify",
     # F019 P1b 2026-07-25 (module contract item 10): the gate-failure
     # diagnosis routing's breadcrumb ("dispatch"/"skip:drain-agents").
     #

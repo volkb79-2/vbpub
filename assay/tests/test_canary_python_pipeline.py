@@ -123,10 +123,10 @@ def test_import_break_control_passes_and_the_real_transform_fails_command_failed
         mechanism=canary.MECHANISM_IMPORT_BREAK,
     )
 
-    assert result.control_outcome is Outcome.PASS
-    assert result.transformed_outcome is Outcome.FAIL
-    assert result.expected_reason_code is ReasonCode.COMMAND_FAILED
-    assert result.observed_reason_code is ReasonCode.COMMAND_FAILED
+    assert result.attempts[0].control_outcome is Outcome.PASS
+    assert result.attempts[0].transformed_outcome is Outcome.FAIL
+    assert result.attempts[0].expected_reason_code is ReasonCode.COMMAND_FAILED
+    assert result.attempts[0].observed_reason_code is ReasonCode.COMMAND_FAILED
 
     claim = canary.build_canary_claim(result)
     assert claim.status is Outcome.PASS
@@ -156,7 +156,9 @@ def test_import_break_control_passes_and_the_real_transform_fails_command_failed
         judgment=Judgment(
             # P33/A-223a: an R0,R3 judgment records no comparison base.
             resolved=JudgmentResolved(language="python", source_roots=("pkg",)),
-            r3=JudgmentR3(mechanism=canary.MECHANISM_IMPORT_BREAK, target=TARGET_PATH),
+            r3=JudgmentR3(
+                mechanism=canary.MECHANISM_IMPORT_BREAK, targets=(TARGET_PATH,)
+            ),
         ),
         claims=(r0_claim, claim),
         snapshot_policy=SnapshotPolicy(selection="repository"),
@@ -181,10 +183,10 @@ def test_uncovered_line_control_passes_and_the_real_transform_fails_uncovered_li
         mechanism=canary.MECHANISM_UNCOVERED_LINE,
     )
 
-    assert result.control_outcome is Outcome.PASS
-    assert result.transformed_outcome is Outcome.FAIL
-    assert result.expected_reason_code is ReasonCode.UNCOVERED_LINES
-    assert result.observed_reason_code is ReasonCode.UNCOVERED_LINES
+    assert result.attempts[0].control_outcome is Outcome.PASS
+    assert result.attempts[0].transformed_outcome is Outcome.FAIL
+    assert result.attempts[0].expected_reason_code is ReasonCode.UNCOVERED_LINES
+    assert result.attempts[0].observed_reason_code is ReasonCode.UNCOVERED_LINES
 
     claim = canary.build_canary_claim(result)
     assert claim.status is Outcome.PASS
@@ -214,9 +216,9 @@ def test_an_r0_only_lane_never_catches_the_uncovered_line_transform_and_survives
         mechanism=canary.MECHANISM_UNCOVERED_LINE,
     )
 
-    assert result.control_outcome is Outcome.PASS
-    assert result.transformed_outcome is Outcome.PASS  # unexpectedly passed
-    assert result.observed_reason_code is None
+    assert result.attempts[0].control_outcome is Outcome.PASS
+    assert result.attempts[0].transformed_outcome is Outcome.PASS  # unexpectedly passed
+    assert result.attempts[0].observed_reason_code is None
 
     claim = canary.build_canary_claim(result)
     assert claim.status is Outcome.FAIL
@@ -251,12 +253,12 @@ def test_a_mechanism_that_fails_for_the_wrong_reason_survives(git_repo: GitRepo)
         mechanism=canary.MECHANISM_IMPORT_BREAK,  # expects COMMAND_FAILED
     )
 
-    assert result.control_outcome is Outcome.PASS
+    assert result.attempts[0].control_outcome is Outcome.PASS
     # The mislabeled transform never actually breaks R0 -- it is caught by
     # R1 instead, for a DIFFERENT reason than the mechanism claims.
-    assert result.transformed_outcome is Outcome.FAIL
-    assert result.expected_reason_code is ReasonCode.COMMAND_FAILED
-    assert result.observed_reason_code is ReasonCode.UNCOVERED_LINES
+    assert result.attempts[0].transformed_outcome is Outcome.FAIL
+    assert result.attempts[0].expected_reason_code is ReasonCode.COMMAND_FAILED
+    assert result.attempts[0].observed_reason_code is ReasonCode.UNCOVERED_LINES
 
     claim = canary.build_canary_claim(result)
     assert claim.status is Outcome.FAIL
@@ -291,7 +293,7 @@ def test_a_broken_control_renders_inconclusive_not_a_silent_pass(git_repo: GitRe
         mechanism=canary.MECHANISM_UNCOVERED_LINE,
     )
 
-    assert result.control_outcome is Outcome.FAIL
+    assert result.attempts[0].control_outcome is Outcome.FAIL
 
     claim = canary.build_canary_claim(result)
     assert claim.status is Outcome.INCONCLUSIVE
@@ -317,9 +319,9 @@ def test_an_unrecognised_mechanism_is_inconclusive_after_a_real_control_run(
         mechanism="not-a-real-mechanism",
     )
 
-    assert result.control_outcome is Outcome.PASS  # the control still ran
-    assert result.transformed_outcome is None
-    assert result.expected_reason_code is None
+    assert result.attempts[0].control_outcome is Outcome.PASS  # the control still ran
+    assert result.attempts[0].transformed_outcome is None
+    assert result.attempts[0].expected_reason_code is None
 
     claim = canary.build_canary_claim(result)
     assert claim.status is Outcome.INCONCLUSIVE
@@ -350,9 +352,9 @@ def test_a_transform_that_produces_no_change_is_inconclusive(git_repo: GitRepo):
         mechanism=canary.MECHANISM_UNCOVERED_LINE,
     )
 
-    assert result.control_outcome is Outcome.PASS
-    assert result.transformed_outcome is None
-    assert "nothing to judge" in result.description
+    assert result.attempts[0].control_outcome is Outcome.PASS
+    assert result.attempts[0].transformed_outcome is None
+    assert "nothing to judge" in result.attempts[0].description
 
     claim = canary.build_canary_claim(result)
     assert claim.status is Outcome.INCONCLUSIVE

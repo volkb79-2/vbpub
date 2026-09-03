@@ -1,0 +1,91 @@
+{
+  "argv_appended": [],
+  "argv_declared": [
+    "/bin/sh",
+    "-c",
+    "/home/vscode/.venv/bin/python3 -m pytest tests -q"
+  ],
+  "argv_effective": [
+    "/bin/sh",
+    "-c",
+    "/home/vscode/.venv/bin/python3 -m pytest tests -q"
+  ],
+  "argv_modified": false,
+  "assay_version": "4.1.0",
+  "claims": [
+    {
+      "rigor": "R0",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    },
+    {
+      "canary": {
+        "attempts": [
+          {
+            "control_outcome": "PASS",
+            "description": "inserted `raise AssertionError(\"assay-canary-import-break\")` at line 1",
+            "disposition": "attempted",
+            "expected_reason_code": "COMMAND_FAILED",
+            "observed_reason_code": "COMMAND_FAILED",
+            "target": "pkg/greet.py",
+            "transformed_outcome": "FAIL"
+          },
+          {
+            "description": "attempt 0 (pkg/greet.py) was caught, which answers an 'any' aggregation",
+            "disposition": "not_attempted",
+            "not_attempted_reason": "short_circuited",
+            "target": "pkg/farewell.py"
+          }
+        ],
+        "mechanism": "import-break"
+      },
+      "rigor": "R3",
+      "source": "computed",
+      "status": "PASS",
+      "verified_by_assay": true
+    }
+  ],
+  "commit": "aec80d4273cac917eccfc43dc2be9d7b7d66dc6f",
+  "declared_evidence": [],
+  "declared_rigor": [
+    "R0",
+    "R3"
+  ],
+  "ended": "2026-09-03T03:42:57.025203+00:00",
+  "enforcement": "gate",
+  "env_declared": {
+    "PATH": "/usr/bin:/bin",
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+  "env_effective": {
+    "PATH": "/usr/bin:/bin",
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+  "evidence": [],
+  "exit_code": 0,
+  "judgment": {
+    "r3": {
+      "aggregation": "any",
+      "mechanism": "import-break",
+      "targets": [
+        "pkg/greet.py",
+        "pkg/farewell.py"
+      ]
+    },
+    "resolved": {
+      "language": "python",
+      "source_roots": [
+        "pkg"
+      ]
+    }
+  },
+  "lane": "canary-multi",
+  "outcome": "PASS",
+  "schema_version": 10,
+  "scope": "S1",
+  "snapshot_policy": {
+    "selection": "repository"
+  },
+  "started": "2026-09-03T03:42:52.577318+00:00"
+}

@@ -1,0 +1,10 @@
+# examples/monorepo/appy/tester/ciu.stack.toml — the per-project tester: two files, no logic.
+# The image is built from the monorepo's shared Dockerfile directory (S6.2: the context leaves this
+# stack and this child root, and stays inside the worktree). Identity, network, labels, governance
+# and the compose `build:` stanza are injected (S11.4); no healthcheck: the tester is an exec
+# target, not a provider, so `healthy` = Running (S8.6.3).
+
+[ciu_stack.tester]
+primary = true
+image = "appy/tester:latest"           # project-built: exactly one service declares build for this reference (S17.6.1)
+build = { context = "../../../tester-unified", dockerfile = "Dockerfile" }

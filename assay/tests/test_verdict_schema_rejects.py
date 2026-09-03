@@ -23,7 +23,14 @@ from conftest import verdict_fixture, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.errors import REASON_CODES, Outcome, ReasonCode
-from assay.verdict import CanaryResult, Claim, Coverage, MutantOutcome, Mutation
+from assay.verdict import (
+    CanaryAttempt,
+    CanaryResult,
+    Claim,
+    Coverage,
+    MutantOutcome,
+    Mutation,
+)
 
 #: The payload each level's own producer attaches to a PASS (P16 review),
 #: so a "the honest form builds" control is honest at every rigor level
@@ -52,12 +59,16 @@ _PASSING_PAYLOAD = {
     "R3": {
         "canary": CanaryResult(
             mechanism="uncovered-line",
-            target="pkg/mod.py",
-            description="appended a never-called function",
-            control_outcome=Outcome.PASS,
-            transformed_outcome=Outcome.FAIL,
-            expected_reason_code=ReasonCode.UNCOVERED_LINES,
-            observed_reason_code=ReasonCode.UNCOVERED_LINES,
+            attempts=(
+                CanaryAttempt(
+                    target="pkg/mod.py",
+                    description="appended a never-called function",
+                    control_outcome=Outcome.PASS,
+                    transformed_outcome=Outcome.FAIL,
+                    expected_reason_code=ReasonCode.UNCOVERED_LINES,
+                    observed_reason_code=ReasonCode.UNCOVERED_LINES,
+                ),
+            ),
         )
     },
 }

@@ -49,11 +49,17 @@ SPEC §9.
 | RG-27 | run-gate has no persisted per-lane-per-commit invocation history and no query verb — a controller deciding sync-vs-async/defer rigor has no data; retriaged from ciu CIU-55 (2026-08-25) to run-gate, which is the layer with direct invocation visibility in the current (pre-v8) architecture | Enhancement | FIXED 2026-08-31 (rev 30, run-gate-P03) — `history [LANE] [--json]` verb; store `<project>/.run-gate/history.json`, per (judged worktree × project) |
 | RG-30 | `doctor` and `--check-env` both pass `None` to `resolve_repo_and_worktree` (`run-gate.py:1789`, `:2068`) instead of the caller's `--worktree` value, so `doctor --worktree B` silently reports the INVOKING tree's answers, not B's — including RG-21's worktree-specific host-lane git-view WARN, which is exactly the per-tree answer that can legitimately differ | Medium | FIXED 2026-08-31 (rev 31, run-gate-P04) — new shared `resolve_worktree_scope()` (validates a real git worktree, refuses by name otherwise); `doctor`'s per-tree checks (git identity, RG-21 warning, mountinfo) and the shared `assay_toolchain_findings()` probe's `cd` target (used by both `doctor` and `--check-env`) now resolve/relocate under `--worktree`, disclosed in the report; `--check-env`'s env-drift scan follows it too and refuses upfront on a bad override (no per-check ledger to degrade into). SPEC `R-37` (`R-37a`/`R-37b`/`R-37c`). `./run-gate.py selftest` green: 394 passed, 2 skipped, diff-coverage 22/22 = 100.0%, exit 0 (commit `929be064`) |
 | RG-31 | `assay_toolchain_findings()`'s own `resolve_repo_and_worktree` call (the toolchain-fitness probe shared by `doctor` check 5 and `--check-env`) still takes the RAW `worktree_override` string, not RG-30's new validated `resolve_worktree_scope()` — so a bad `--worktree` combined with an assay lane present degrades safely (a `[SKIP]` on that check, no false-`[OK]`) but with a MISLEADING reason string (blames "an assay older than 3.2.0" rather than naming the real `--worktree` problem, which `doctor` check 3 already reported correctly two checks earlier in the same report) | Low | FIXED 2026-09-01 (rev 32) — routed through `resolve_worktree_scope()`, the same validated resolver check 3 and `--check-env` already use; a bad override now raises the identical `GateError` and the existing per-lane `except GateError` SKIP handler reports the real cause, never a guess about assay's version. New regression test `test_bad_worktree_skip_names_the_real_problem_not_assay_version` asserts the SKIP line repeats check 3's own "not a directory" cause and never says "older than 3.2.0". `./run-gate.py selftest --allow-dirty` green: 395 passed, 2 skipped, diff-coverage 0/0 = 100.0% (pre-commit run), exit 0 |
+| RG-32 | `[lanes.*.pins.*].budget` is silently inert — run-gate never read it, the governing value is the target `assay.toml`'s own `[lanes.<assay_lane>] budget`, and the key sits one nesting level below a REAL lane-level `budget` that reads identically (misread three times in one dstdns session) | Major | FIXED 2026-09-02 (rev 34, SPEC `R-08a`) — **BREAKING**: refused at load by name with the owner and the remedy; pin tables now validate their keys (`sha256`, `version`, nothing else), and a misplaced key that is itself a LANE key is named as one ("move it, do not delete it"); migration is TWO rounds over 18 of 35 dstdns lanes as measured 2026-09-03 (parsed, RW-13/RW-30; re-measure command in CHANGES), in CHANGES |
 | RG-33 | `kind = "assay"` mutation lanes never receive `--resume` (or `--progress`), so a budget-capped retry re-tests every mutant from #1 — dstdns `sql-mutation`, three 120-minute retries spent on the first of four target files, `.assay/mutation-state/` never written | Major | FIXED 2026-09-02 (rev 33, SPEC `R-38`) — every assay-kind invocation now carries `--resume --progress .assay/progress-<assay_lane>.jsonl` unconditionally (no-ops without R2, per assay's own contract); a pin declaring a judge older than 2.4.1 refuses by name at argv construction; five new tests in `TestResumeAndProgressAlways` including the executed host-runner argv and the dry-run docker argv line; assay's own gate script mirrors it in the assay wave |
-| RG-35 | a lane's container outlives a dead run-gate client (`docker run -d` … `rm -f` in a `finally` the client never reaches), but nothing re-attaches: exit status, evidence and history are lost and the next invocation starts a DUPLICATE container for the same lane — the one-gate rule broken by the tool | Major | OPEN 2026-09-02 — `.run-gate/inflight/<lane>.json` on start, re-attach (`docker logs -f --since` + `wait`) or collect-and-finish on restart, `--fresh` to force; operator's "re-attachable runs" pattern |
-| RG-36 | the only liveness bound for a long assay lane is a GUESSED total `budget` (advisory here, hard in assay); rev 33's progress file makes rate/ETA/stall observable but run-gate reads none of it | Major | OPEN 2026-09-02 — periodic `progress <lane>: i/N, rate, ETA` disclosure + optional `stall_timeout` (stop only when running AND silent for that long, never on total elapsed); exact timing needs assay B065 |
+| RG-34 | a `kind = "command"` container lane whose `argv[0]` is a bare relative script path resolves against the container's `--workdir`, so it dies with `exit 127` in any container that mounts only the judged worktree (dstdns P152's `schema` lane, 100% reproducible) while working under the shared full-repo mount | Major | FIXED 2026-09-02 (rev 34, SPEC `R-30b`) — run-gate's half: `doctor` names the lane, the element, the fix and the mechanism; a WARNING, never a refusal, and run-gate never rewrites a consumer's argv. CLOSED 2026-09-03 (RW-26): the argv edit itself is dstdns-side, so the live `scale-admission` hit is a line in the dstdns notification, not an acceptance box run-gate can never tick |
+| RG-35 | a lane's container outlives a dead run-gate client (`docker run -d` … `rm -f` in a `finally` the client never reaches), but nothing re-attaches: exit status, evidence and history are lost and the next invocation starts a DUPLICATE container for the same lane — the one-gate rule broken by the tool | Major | FIXED 2026-09-02 (rev 34, SPEC `R-39`) — `.run-gate/inflight/<lane>.json`, automatic re-attach/collect/report-lost, `--fresh` escape, commit mismatch refused |
+| RG-36 | the only liveness bound for a long assay lane is a GUESSED total `budget` (advisory here, hard in assay); rev 33's progress file makes rate/ETA/stall observable but run-gate reads none of it | Major | FIXED 2026-09-02 (rev 34, SPEC `R-40`) — the COARSE half: 30 s progress disclosure with rate/ETA, no-events disclosed once and never a fault, optional `stall_timeout` lane key (assay lanes only; stops the lane only while RUNNING and silent that long, never on total elapsed). Exact timing = E-3, needs assay B065; the code already prefers an event's `elapsed_s`, so B065 makes it exact with no rewrite |
 | RG-37 | exec-mode container derivation (`run-gate.py` `resolve_container_name`, R-14a) reads `deploy.project_name` + `deploy.environment_tag` (fallback `deploy.network_name`) from the consumer's rendered `ciu.global.toml`; a CIU v8 checkout (SPEC-V8 draft.3, ciu CIU-92) renders `ciu.resolved.toml` instead, with identities as data under `[resolved.identities.<realization>.<service>] container_name`, and has no `deploy` table — every dstdns exec lane would fail container resolution the day dstdns moves to v8, while the operator decided (2026-09-02) that run-gate STAYS maintained in parallel with `ciu gate` and is "aligned with future changes in ciu v8" | Major | OPEN 2026-09-02 — filed from the v8 design review (ciu `docs/CIU-V8-ADVERSARIAL-REVIEW-2026-09-02.md` R-01, proposal §4.4 V8-19 / §4.11 N18): additive lookup order — when `ciu.resolved.toml` exists in the judged checkout, resolve `environments.<n>.container_name` (or a new `exec_in = "<realization>.<service>"` key) through `resolved.identities`, otherwise keep the v7 path; `kind = "sequence"` in-process conjunction lanes (N21) are the second alignment item |
+| RG-42 | `TestPointerLinkageEstate`'s estate-wide sweep (`glob("*/nyxloom-trove/nyxloom.toml")`) certifies every subproject's declared gate pointers against real lanes on EVERY run-gate-project selftest, with no way for a subproject that is mid-bootstrap to say "not yet" — the ciu8 carve (`ciu8-P001`) hand-declared `[gates.tester-unified]` pointing at a `run-gate.toml` its own Part A bootstrap contract creates LATER, by design (mirrors `ciu/nyxloom-trove/nyxloom.toml`'s own pattern), which makes run-gate-project's OWN registered gate red for every consumer from the moment that trove is committed until the subproject's bootstrap actually lands — confirmed NOT caused by this wave or by RG-39 (reproduced identically on main's tip immediately before RG-39's own merge, `471703ee`) | Medium | OPEN 2026-09-03 — self-resolving once `ciu8-P001`'s Part A bootstrap creates `ciu8/run-gate.toml` (tracked separately in ciu8's own trove, not here); if a subproject bootstrap regularly outlives one gate cycle, the estate sweep could gain an opt-out (e.g. a `bootstrapping = true` key in `[project]`, skipped by `ESTATE_DOCS` until cleared) rather than every consumer tolerating a red selftest meanwhile — not built, no second occurrence yet to justify the mechanism |
+| RG-41 | a container `kind = "command"` lane has NO liveness signal at all: `stall_timeout` is refused there (rev 34, R-40c — it is judged from a progress file only an assay lane writes), so the lane shape most likely to hang is the one run-gate cannot bound except by a `budget` it never enforces | Major | OPEN 2026-09-02 — RW-9: judge silence from the LOG STREAM run-gate already tails (`docker logs -f`), same "silence, never elapsed" semantics as `R-40`, with the SOURCE of the signal disclosed at start (`progress file` vs `log stream`); E-3 candidate (23.5.0) |
+| RG-40 | `tools/coverage_gate.py` takes its changed-line numbers from `git diff base..HEAD` (committed) but its coverage from the file ON DISK, so running the `selftest` lane with `--allow-dirty` over an uncommitted change reports lines as uncovered that are covered — the two are offset by whatever the working tree added above them | Medium | OPEN 2026-09-02 — measured twice in the rev-34 wave (`175/177 (98.9%)` dirty → `153/153 (100.0%)` on the same code once committed); either diff the WORKING TREE when the tree is dirty, or refuse/disclose the mismatch instead of printing a number nobody can act on |
 | RG-38 | resume state lives under the JUDGED project root, so a fresh worktree per run (cmru release transaction, Mode-B instances) loses it and a retry restarts from mutant #1 despite `--resume` | Medium | OPEN 2026-09-02 — bind-mount a per-repo durable `.run-gate/assay-state/<project>/` at the state path; needs assay B066 (`--state-dir`); copy-in/out fallback until then |
+| RG-39 | run-gate has no internal mutual exclusion around the `docker exec`/`docker run` it performs into a resolved container, so every consumer must remember to wrap each invocation in its own `flock` (dstdns `GUIDE.md` §1) or two lanes racing the SAME container silently contaminate each other's evidence — but `resolve_container_name()` (the same function RG-37 tracks) already computes the exact container identity BEFORE that exec, every single call, so the tool already has everything it needs to serialize itself | Medium | FIXED 2026-09-03 (rev 35, SPEC `R-41`) — refinements (1) and (2) below, built exactly as specified; refinement (3) deliberately NOT built (RG-37, the v8 `ciu.resolved.toml` container-identity path, doesn't exist yet). New `acquire_exec_lock()` takes `/tmp/run-gate-exec-<container>.lock` (RG-20's `_open_lockfile()` discipline, now factored into a shared helper) on the container name `resolve_container_name()` resolves — resolved ONCE in `main()`, threaded into `run_exec_lane()` (no longer re-derived there) so the lock key and the `docker exec` target can never drift apart. Acquired strictly after `acquire_shared_locks()`'s locks in `main()`'s dispatch, released from the SAME `finally` (`exec_lock_fd`, closed before the shared-infra fds — LIFO, not load-bearing). `LOCK_EX` blocking with a `waiting for container '<name>' — another gate holds <path>` line; `--dry-run` prints the planned lock (name + path) and never blocks. Five new tests in `TestExecModeMutex`: same-container serialization (thread-raced, proven genuinely red pre-fix — a leaked lock fd on that test's own assertion failure path self-deadlocked the NEXT test via flock()'s per-open-file-description semantics, fixed with a try/finally, unrelated to the shipped fix itself), isolated containers never contend, `--dry-run` never blocks, the lock releases even when the lane raises (finally path), and a direct ordering assertion (shared-infra locks acquired before the exec lock); a sixth test (added after the first `selftest` run below caught it uncovered) exercises `acquire_exec_lock()`'s OSError branch, in-process (a `run_tool()` subprocess, RG-20's own precedent's pattern, is invisible to this suite's coverage instrumentation). Red-first proven: a scoped `git stash` of `run-gate.py` alone (fix reverted, tests kept) reproduced 3/5 new tests failing for the expected reasons before the fix, restored clean after. `./run-gate.py selftest` green (post-commit `2c6b2bbc` + a same-day coverage follow-up): 495 passed, 2 skipped, diff-coverage 25/25 = 100.0% (≥ 100.0% floor), exit 0. Originally filed from dstdns (D-321/D-339/D-321-correction): acquire an internal `flock` keyed by the resolved container name (or `${project_name}-${environment_tag}`, the same pair `resolve_container_name()` already reads) around the exec/run call itself, so a caller-side `flock` is no longer required for correctness, only for pre-emptive scheduling (e.g. a caller who wants to skip a busy container rather than block). A genuinely independent container (different `project_name`/`environment_tag`, including a Mode-B instance) naturally gets a distinct lock name and runs unblocked; two consumers that resolve to the SAME container (main's shared instance, or ciu's `--shared-infra-ref-services`) naturally serialize correctly with no caller coordination needed. Cross-reference RG-37: whichever container-identity resolution path RG-37 adds for `ciu.resolved.toml` (v8) should feed the SAME lock key, not a second scheme. **2026-09-03 (ciu v8 design, SPEC-V8 draft.5 / proposal rev 3.2 §4.11 N22): buildable as described, with three refinements.** (1) Exec mode only — an ephemeral `docker run` container is per invocation, there is nothing to serialize. (2) Take the lock AFTER `acquire_shared_locks()`' sorted shared-infra locks and release it in the same `finally` — a fixed global order (shared-infra, then the exec target) so no ABBA with RG-20 is possible; `/tmp/run-gate-exec-<container>.lock` with RG-20's 0600+O_NOFOLLOW discipline, LOCK_EX blocking with a "waiting for container X — another gate holds …" line, dry runs plan but never block (`acquire_shared_locks` is the pattern to copy); hold across the whole `run_exec_lane()` including evidence collection, and keep `flush_run_record` outside it (RG-27). (3) Alignment with v8: once RG-37 reads `ciu.resolved.toml`, key the lock on the owning Realization's **stack directory** (`[realization.<R>] location` of the container's owner, `flock` on the directory) instead of a name — draft.5 S14.4.7 declares the checkout root and the stack directory the ONLY canonical lock keys, `ciu gate` exec lanes take that same directory lock (S16.5.7) and `ciu lease acquire --realization` exposes it, so v7 run-gate and v8 ciu serialize against each other during the cutover; the name-keyed `/tmp` file is the v7-only form. The caller-side `flock` of dstdns GUIDE §1 stays valid as an outer lock (always acquired first → consistent order) and becomes optional for correctness |
 
 ---
 
@@ -1967,13 +1973,82 @@ silent 90m/120m drift found here).
 
 ### Acceptance
 
-- [ ] A `pins.assay.budget` key (however named going forward) either
+- [x] A `pins.assay.budget` key (however named going forward) either
       enforces something real or cannot be typo'd/misread as if it did;
-- [ ] `validate-pointers` (or an equivalent check) catches a declared value
+- [~] `validate-pointers` (or an equivalent check) catches a declared value
       that has drifted from the target `assay.toml` lane's real `budget`;
+      — **deliberately not built**, see the status note: option (b) was
+      rejected, so there is no declared value left to drift.
 - [ ] Existing dstdns lanes with a stale `pins.assay.budget` (`sql-mutation`
       `90m` vs real `120m`; likely others — not exhaustively swept from this
       report) get a follow-up cleanup pass once the mechanism is fixed here.
+      — **dstdns-side**, and now forced rather than optional: the key
+      refuses at load from rev 34, so dstdns must delete it before upgrading
+      (controller notifies dstdns-23 at release).
+
+### Status — FIXED 2026-09-02 (rev 34, SPEC `R-08a`), BREAKING
+
+Option **(a) refuse**, per ruling RW-7 of the "resumable, observable gate"
+wave. Option (b) — rename to `budget_hint` + a `validate-pointers` drift
+check — was rejected on the record: the cross-check would be a SECOND
+reading of an assay-owned fact, which `R-35` already forbids for the
+comparison base, and a decorative key is still a key every reviewer has to
+learn to ignore.
+
+`[lanes.<name>.pins.<pin>]` now validates its keys at all: `sha256` and
+`version`, nothing else. `budget` gets its own message rather than the
+generic unknown-key one, because the person reading it needs to be told
+where the value they meant actually lives:
+
+```
+<file> [lanes.sql-mutation].pins.assay: pin 'assay' declares 'budget' —
+run-gate never enforced it; the lane's budget lives in the consumer's
+assay.toml [lanes.cw2b_schema] (delete this key; the lane-level run-gate
+'budget' stays advisory)
+```
+
+The generic unknown-key refusal is the durable half of the fix: a pin table
+that accepted anything is HOW `budget` came to live there. Four tests in
+`TestPinKeysAreValidated`, including one that pins the surviving
+lookalike — a real lane-level `budget` still loads and stays advisory.
+
+No vbpub-estate `run-gate.toml` declares the key (swept 2026-09-02, all
+eleven configs parsed).
+
+**Amended 2026-09-02 after adversarial review round 1 (B1, ruling RW-13).**
+The first consumer-impact sweep was a text `grep`, which cannot tell a
+lane-level `budget` from one inside a pin table — the exact nesting confusion
+this item is about. PARSED with the rev-34 loader over every dstdns lane:
+
+- **18 of 35 lanes as measured on 2026-09-03** refuse at load, not 2:
+  `assay-dlq`, `assay`, `sql-mutation`, `assay-p129-enumeration-cursor`,
+  `worker-execution-admission`,
+  `worker-execution-admission-r2-{compare,boolop,flips,falsy}`,
+  `assay-p169-op-override-projection`,
+  `assay-p169-op-override-projection-r2-{compare,boolop,falsy}`,
+  `assay-p166-result-dedup`,
+  `assay-p166-result-dedup-r2-{compare,boolop,flips,falsy}`. It was 13 of 29
+  on 2026-09-02 (dstdns merged the `assay-p166-result-dedup` family in
+  between). **Re-measured, not trusted** — the command lives in CHANGES
+  `[Unreleased]` beside this entry (RW-30): a hard-coded count of a peer
+  repo's config cannot stay true between a review and a merge.
+- The migration is **two rounds**: the `budget` refusal fires first and masks
+  every other misplaced key in the same table. Four of those lanes
+  (`assay-dlq`, `assay`, `sql-mutation`, `assay-p129-enumeration-cursor`)
+  then refuse again on `clean_tree = false`, which sits in the same
+  misplaced position.
+- **A misplaced key that is itself a legal LANE key is now named as one**, so
+  the fix does not merely rename its own defect class: `'clean_tree' is a
+  lane key; it belongs one level up in [lanes.<n>], where it is load-bearing
+  — move it, do not delete it (under a pin table it has never done anything,
+  so the lane has been running with the default instead)`. `budget` is
+  excluded from that clause and keeps its own message: it is the one
+  misplaced key whose remedy really is deletion. Three further tests in
+  `TestPinKeysAreValidated` cover the new clause, the plural form and
+  `budget`'s precedence over it.
+- **Found in passing, and it is dstdns's to file:** those four lanes'
+  `clean_tree = false` has been inert since it was written — they have been
+  running with `clean_tree = true`.
 
 ## RG-33 — `sql-mutation`-style assay mutation lanes never pass `--resume`, so a budget-exceeded retry re-tests everything from scratch
 
@@ -2132,21 +2207,151 @@ lane's schema sub-lane against a dedicated container since
 
 ### Acceptance
 
-- [ ] `[lanes.schema]`'s argv resolves correctly against a worktree whose
+- [x] `[lanes.schema]`'s argv resolves correctly against a worktree whose
       test-runner container mounts only that worktree's own subtree (not
       the full repo root) — verified via a real Mode-B dedicated-container
       run, not just main's shared-container case;
-- [ ] Every other `kind = "command"` lane's argv is swept for the same
-      unprefixed-script-path pattern;
-- [ ] A regression test (or `doctor`/`validate-pointers`-style static check)
+      — **dstdns-side**: the argv lives in dstdns's `run-gate.toml`, and
+      run-gate deliberately does not rewrite a consumer's declared command.
+      **Done at `dstdns@65582354`** (the P152 merge): that lane now reads
+      `argv = ["{worktree}/scripts/schema-gate.sh", "{worktree}"]` with an
+      RG-34 comment above it.
+      (The one dstdns lane that still trips the new WARN,
+      `[lanes.scale-admission]`, is NOT a box here — see the close note
+      below, RW-26.)
+- [x] Every other `kind = "command"` lane's argv is swept for the same
+      unprefixed-script-path pattern — for the vbpub estate, and by
+      `doctor` from now on for every consumer;
+- [x] A regression test (or `doctor`/`validate-pointers`-style static check)
       catches a lane argv whose first element lacks `{worktree}` when its
       environment is `test-runner` and it takes a `--worktree` argument.
+
+### Status — FIXED 2026-09-02 (rev 34, SPEC `R-30b`) — run-gate's half
+
+Ruling RW-8: **`doctor` warns; run-gate does not rewrite argv.** The argv fix
+itself is the consumer's (dstdns P152), and it is one edit; a tool that
+silently rewrote a declared command would be a worse defect than the one it
+patched. A refusal was rejected too: the same argv is CORRECT under a
+full-repo mount, and which mount a lane gets is not visible to run-gate
+statically — a check that broke working consumers to prevent a hazard that
+may not apply to them would be switched off, and then it protects nothing
+(`R-30a`'s own reasoning).
+
+`doctor` now emits ONE `[WARN]` per `kind = "command"` lane on a NON-host
+environment whose `argv[0]` is a relative path containing `/` and not
+starting with `{worktree}`:
+
+```
+run-gate: doctor: [WARN] lane 'scale-admission' argv[0] (RG-34): 'scripts/schema-gate.sh'
+is a RELATIVE path, resolved against the container's --workdir instead of the
+judged tree — declare it '{worktree}/scripts/schema-gate.sh'. A container that
+mounts ONLY the judged worktree (a Mode-B instance's own runner, not the
+shared one) has nothing at the bare repo root --workdir names, so this argv
+dies there with 'No such file or directory' while working under a full-repo
+mount. A warning, not a refusal: which mount the lane gets is not visible to
+run-gate statically
+```
+
+It reads the DECLARATION only, so it still answers for a lane whose
+environment failed to resolve, and with at least one container command lane
+and nothing to flag it records one `[OK]` so a reader can tell it ran.
+Doctor's exit code is unchanged by it. Six tests in
+`TestDoctorNamesUnprefixedScriptPaths`, including the three shapes that must
+NOT warn (`{worktree}`-anchored, absolute, bare command name) and the two
+lane kinds outside the check (host lanes, whose cwd is the effective project
+dir; assay lanes, which have no argv of their own).
+
+**Estate sweep, 2026-09-02** (`tomllib` over every `*/run-gate.toml` in
+vbpub, not `grep`): no vbpub lane trips the check.
+
+**Which dstdns lane still trips it (corrected, review round 1 S7).** The
+lane this item was FILED from — `[lanes.schema]` — was fixed in the P152
+merge itself (`dstdns@65582354`) and now reads
+`argv = ["{worktree}/scripts/schema-gate.sh", "{worktree}"]`. Parsing every
+dstdns lane with `tomllib` (2026-09-02, re-run 2026-09-03) gives exactly one
+hit, and it is a different lane:
+
+```
+RG34-FLAG scale-admission scripts/schema-gate.sh | env test-runner
+```
+
+(`/workspaces/dstdns/run-gate.toml:81`, `argv = ["scripts/schema-gate.sh",
+"{worktree}", "tests/schema/test_scale_admission.py"]`.) The notification to
+dstdns names that lane. RG-34 therefore lands with a LIVE consumer hit
+rather than an already-fixed one — the transcript above is written for
+`scale-admission` accordingly.
+
+**CLOSED as FIXED, 2026-09-03 (RW-26).** run-gate's half is the `doctor`
+WARN and it is shipped; that is the whole of what this item can deliver. The
+`scale-admission` hit is a fact for the **dstdns notification** and a dstdns
+filing, not an acceptance box in run-gate's backlog: the argv lives in
+dstdns's `run-gate.toml`, run-gate deliberately never rewrites a consumer's
+declared command, and a box run-gate can never tick makes a closed item read
+as open forever. Re-measured 2026-09-03 with `tomllib` over every dstdns
+lane: still exactly ONE hit, still `scale-admission`.
 
 ### Source
 
 `dstdns` P152 (`nyxloom-trove/decisions.md` D-319), discovered live while
 finishing P152's own composite gate run under the operator's single-stack
 host-contention directive.
+
+### Second independent reproduction, BROADER consequence (dstdns P156, 2026-09-02)
+
+Same root fact (a Mode-B worktree's own dedicated test-runner container
+mounts ONLY that worktree's subtree, never the main checkout's `.git`), a
+DIFFERENT and wider-reaching symptom than the schema-lane argv bug above:
+running `run-gate test-runner --worktree <p156 worktree>` (the disclosed
+RG-24 `docker exec` workaround, since run-gate's own container resolution
+still targets the MAIN landscape per RG-24, still open) surfaced 12 failed
++ 14 errors across FIVE unrelated files, ALL tracing to the identical cause
+— a bare `subprocess.run(["git", ...], cwd=REPO_ROOT, ...)` where
+`REPO_ROOT` is `Path(__file__).resolve().parents[N]` (correctly resolving
+to the worktree checkout itself, NOT the P152 script-path bug) but that
+worktree's `.git` FILE names a `gitdir:` target
+(`/workspaces/dstdns/.git/worktrees/<name>`) unreachable from inside the
+container:
+```
+fatal: not a git repository: /workspaces/dstdns/.git/worktrees/p156-scale-admission-live-bounds
+```
+Files hit: `tests/config/test_lane_membership_census.py` (2 tests, `git
+ls-files`), `tests/config/test_workflow_stream_sources_agree.py` (all 14
+nodes error, `git ls-files '*.toml' '*.j2'`), `tests/config/
+test_doc_hygiene.py` (2 tests), `tests/config/
+test_legacy_config_system_is_gone.py` (6 tests), `tests/config/
+test_service_identity_inline.py` (2 tests, `git show <rev>:<path>`).
+Confirmed as environmental, not a P156 regression, via the discriminating
+test the acceptance criteria above already call for: the SAME 26 test
+nodes, run unchanged against `main`'s shared Mode-A test-runner (full repo
+root mounted, real `.git`), all PASS. Zero of these five files are P152's
+`schema-gate.sh`, so this is proof the mount gap is not scoped to one
+script — it is ANY in-container `git` subprocess call, repo-wide, and this
+backlog's own SPEC.md `R-23` claim ("run-gate's OWN container lanes are
+unaffected, because R-23 dual-mounts the REPO root") does not hold for this
+call path: R-23 only fires when run-gate itself constructs the container's
+mounts, and RG-24's disclosed Mode-B `docker exec` workaround never goes
+through that construction — it execs into a container ciu already deployed
+with its own (single-mount) compose definition.
+
+**Where the real fix belongs, most likely NOT here:** the test-runner
+container's mount set is a dstdns-owned artifact
+(`tools/test-runner/ciu.compose.yml.j2`), not something run-gate
+constructs for the RG-24 exec path — so the durable fix is almost
+certainly a second, read-only bind mount of the main checkout's `.git`
+into every Mode-B dedicated test-runner (git worktrees are DESIGNED to
+share one object database this way; it would not compromise per-worktree
+file isolation). Filed here rather than only as a dstdns-local note because
+this entry is where the mount-scope fact already lives, and because R-23's
+"container lanes are unaffected" claim in SPEC.md needs a caveat for the
+RG-24 exec-into-existing-container path specifically, independent of
+whichever repo lands the compose-mount fix. dstdns-local workaround applied
+in the interim, scoped to exactly one already-in-scope file (`test_
+lane_membership_census.py`): a cheap `git rev-parse --git-dir` liveness
+probe, `pytest.mark.skipif` on the one test needing `git ls-files`, honest
+`reason=` naming this exact gap — mirroring `test_run_gate_pointer_linkage.
+py`'s own "skip, don't fail, when the environment genuinely can't" pattern.
+The other four files were left unfixed (out of P156's own scope; this
+finding is the report of that decision, not a claim they were repaired).
 
 ## RG-35 — a lane's container outlives a dead run-gate client, but nothing re-attaches; a restart starts a duplicate
 
@@ -2188,13 +2393,53 @@ shares 8 cores with a production game server (load 85 that afternoon).
 
 ### Acceptance
 
-- [ ] kill -9 the client mid-lane (fake docker AND one live probe): the
-      container finishes; a second invocation prints the re-attach line,
-      yields the container's real exit code, records history once, and
-      starts NO second container;
-- [ ] an inflight record whose container is gone (host reboot) is reported
+- [x] kill -9 the client mid-lane (fake docker AND one live probe — the
+      live one is recorded in the wave REPORT): the container finishes; a
+      second invocation prints the re-attach line, yields the container's
+      real exit code, records history once, and starts NO second container;
+- [x] an inflight record whose container is gone (host reboot) is reported
       and cleared, never silently ignored;
-- [ ] `--dry-run` discloses an existing inflight record.
+- [x] `--dry-run` discloses an existing inflight record.
+
+### Status — FIXED 2026-09-02 (rev 34, SPEC `R-39`)
+
+Landed under the "resumable, observable gate" wave (RW-1..RW-3 of
+`/workspaces/vbpub/run-gate-project/nyxloom-trove/WAVE-PROMPT-2026-09-02-resumable-gate.md`
+— the MAIN checkout's, not this branch's, whose `nyxloom-trove/` holds
+`reports/` only (review round 1 N5); decision D4 of the
+post-v10 plan — automatic re-attach with `--fresh` as the escape, not an
+`--attach` flag).
+
+**Red proof (the controlled wrong implementation was the shipped rev 33).**
+`TestReattachAcrossADeadClient` drives a real client to its death against a
+STATEFUL fake docker (`fake_docker_stateful`: `run -d` creates a container,
+`inspect` answers from it or exits 1 like `No such object`, `wait` returns
+the recorded code, `rm -f` destroys it, a `.hang` marker makes `logs -f`
+block). Against rev 33 (measured on a detached worktree at `f6d3a858`):
+
+```
+AssertionError: a SECOND container was started for a lane that already had
+one running: [… '--name', 'run-gate-repo-suite-1779582-1788385365' …],
+             [… '--name', 'run-gate-repo-suite-1779695-1788385369' …]
+assert 2 == 1
+```
+
+Same test post-fix: one `docker run`, `run-gate: re-attached to
+run-gate-repo-suite-…`, exit 0, container removed, record cleared.
+
+**What landed.** `.run-gate/inflight/<lane>.json` written on a successful
+`docker run -d` (R-39a); `resolve_inflight()` taking the five-way decision
+before anything is built (R-39b: re-attach / collect / report-lost-and-run /
+refuse on a commit mismatch / `--fresh`); `await_container()` as the single
+finish shared by all three arrival paths (R-39c); `--fresh` refused by name
+on host lanes, exec lanes and every verb (R-39d). History records such a run
+once, with the duration from the container's own start (RW-3).
+
+**Live acceptance probe** (a fake-docker argv proves construction, not
+acceptance — AGENTS.md): one real `tester-unified:local` run, client killed
+mid-lane, second invocation re-attaches. Run under the host's
+one-container-at-a-time rule; transcript in
+`nyxloom-trove/reports/run-gate-WAVE-RESUMABLE-REPORT.md`.
 
 ## RG-36 — liveness judged from the progress file, not from a guessed wall budget: `stall_timeout` and ETA disclosure for assay lanes
 
@@ -2231,11 +2476,63 @@ progress instead: rate, ETA, and stall.
 
 ### Acceptance
 
-- [ ] a progress file advancing under a fake judge produces the ETA line
+- [x] a progress file advancing under a fake judge produces the ETA line
       with the right arithmetic; a frozen file + running container trips
       the stall at the configured time with evidence saved and exit 3;
-- [ ] no `stall_timeout` declared → behaviour unchanged;
-- [ ] an R0/R1 lane (no events) never stalls and says why, once.
+- [x] no `stall_timeout` declared → behaviour unchanged;
+- [x] an R0/R1 lane (no events) never stalls and says why, once.
+
+### Status — FIXED 2026-09-02 (rev 34, SPEC `R-40`) — the COARSE half
+
+Rulings RW-4/RW-5/RW-6. The "exact timing" half waits on assay **B065**
+(per-event `emitted_at`/`elapsed_s`) and is E-3 of the post-v10 plan; the
+code here already PREFERS an event's `elapsed_s` where one exists, so B065
+makes the same implementation exact without a rewrite.
+
+**Disclosure (`R-40a`/`R-40b`).** While an assay lane's container runs, the
+file R-38 already asks for is read every `PROGRESS_POLL_SECONDS = 30` (a
+module constant with its reason: 30 s judges a 15-minute `stall_timeout` to
+within 3% and costs a 4-hour lane 480 `stat()`s) and, when something changed,
+one line is printed:
+
+```
+run-gate: progress sql-mutation: candidate 29/172, 1.9/min, ETA 75m
+```
+
+The FIRST observation prints the count alone — one event and no clock in the
+file is a baseline, not a measurement, and inventing a rate there would be
+the guess this replaces. No file, a header-only file (R0/R1), or a torn last
+line yields `progress <lane>: no candidate events (not an R2 lane, or the
+judge writes none)` exactly ONCE, and is healthy.
+
+**`stall_timeout` (`R-40c`).** Optional lane key, the `budget` grammar,
+assay lanes only. The lane is stopped only when the container is STILL
+RUNNING and the file has not advanced for that long — and "still running" is
+structural, not asserted: the check runs only inside the poll of a `docker
+logs -f` that has not returned. Stop = `docker rm -f`, evidence saved, exit
+3:
+
+```
+run-gate: lane 'mutation' STALLED: the container is still RUNNING but
+progress-cw2b_schema.jsonl has not advanced for 900s (stall_timeout 900s);
+last event seen: candidate 37/172. The container was removed; container logs
+preserved at /tmp/run-gate/run-gate-....log
+```
+
+Never on total elapsed time — `budget` stays advisory, its print unchanged,
+and the two are disclosed side by side saying which is which. Declared on a
+`kind = "command"` lane the key is REFUSED at load: it could never do
+anything there, which is exactly RG-32's defect one key over.
+
+**Tests** (22): `TestProgressWatch` drives the arithmetic and the silence
+rule on a substituted clock (rate from run-gate's clock, rate from a
+B065-shaped `elapsed_s`, no-change prints nothing, no-events disclosed once,
+header-only, torn line, stall at exactly the configured age, movement resets
+the stall clock, no `stall_timeout` = disclosure only, absent total = no
+ETA); `TestStallTimeoutLaneKey` the validation and the two disclosures;
+`TestStallEndToEnd` the real container loop through `main()` — a frozen file
+under a blocking `docker logs -f` exits 3 with the container removed and the
+inflight record cleared, and a file a thread keeps advancing never stalls.
 
 ## RG-38 — resume state does not survive an ephemeral worktree (cmru release worktrees, Mode-B worktrees)
 
@@ -2281,3 +2578,165 @@ RG-38 + assay B065/B066/B067 (durable resume state, timestamped events,
 per-unit bounds). R0/R1 lanes are one command each and cannot resume below
 that grain by construction; canary (R3) and red-first (R4) have mutation's
 per-unit shape and get the same mechanism through assay B064/B066.
+
+## RG-40 — `coverage_gate.py` reports misleading uncovered lines on a dirty tree
+
+**Found 2026-09-02** while implementing the rev-34 wave, twice, each time
+costing a full gate round (~70 s of suite plus the investigation).
+
+### What's wrong
+
+`tools/coverage_gate.py` derives the set of changed lines from
+`git diff --relative --unified=0 <base> HEAD -- <source>` — **committed**
+state — while `coverage.json` describes the file **on disk**. With a clean
+tree those agree. With `--allow-dirty` over an uncommitted change they do
+not: every line below the working tree's insertions is offset, so the gate
+reports lines as uncovered that the suite covered, and (worse, silently)
+would report lines as covered that are not.
+
+Measured, same source in both runs, one commit apart:
+
+```
+dirty:      diff-coverage FAIL: 175/177 changed executable lines covered (98.9%)
+            Uncovered changed lines: run-gate.py: [3070, 3365]
+committed:  diff-coverage OK:   153/153 changed executable lines covered (100.0%)
+```
+
+`3070` and `3365` are HEAD-side numbers pointing at lines that, in the file
+coverage actually measured, are 22 lines further down.
+
+### Why it matters
+
+`--allow-dirty` is the DOCUMENTED way to gate work in progress (every wave
+prompt in this estate uses it), and the number it prints in that mode is not
+just imprecise — it names specific line numbers to go and test, which is an
+instruction to do the wrong thing. The two rounds this cost were both spent
+writing tests for lines that were already covered.
+
+### Proposed fix
+
+Either (a) when the judged tree is dirty, diff the WORKING TREE (`git diff
+<base>` with no `HEAD`, plus untracked-file handling) so both halves
+describe the same bytes; or (b) detect the mismatch (`git status
+--porcelain` on the source path) and DISCLOSE it — "diff-coverage measured
+against committed state while the tree is dirty; line numbers may not
+correspond" — or refuse outright, which is this estate's usual answer to a
+number that cannot be trusted (R-04). (a) is the useful one; (b) is the
+minimum.
+
+### Acceptance
+
+- [ ] The `selftest` lane run with `--allow-dirty` over an uncommitted change
+      reports the SAME uncovered set as the same code reports once committed;
+- [ ] Or, if the answer is (b), the run says plainly that its line numbers
+      describe the committed tree and the coverage describes the working one.
+
+### Source
+
+run-gate rev 34's own implementation wave
+(`nyxloom-trove/reports/run-gate-WAVE-RESUMABLE-LOG.md`, entries E5 and E7).
+
+## RG-41 — a container `kind = "command"` lane has no liveness signal: judge silence from the LOG STREAM
+
+**Filed 2026-09-02 by controller ruling RW-9**, out of the rev-34 wave's own
+decision ask: `stall_timeout` was refused on command lanes, and the refusal
+STANDS — but the gap it leaves is real and is this item.
+
+### What's wrong
+
+`R-40c` bounds a lane by SILENCE in `.assay/progress-<assay_lane>.jsonl`.
+Only an assay lane writes that file, so `stall_timeout` on a
+`kind = "command"` lane could never do anything and is refused at load —
+correctly, because an inert key that reads like a real one is exactly
+`R-08a`'s defect (RG-32), and run-gate does not guess a second signal it was
+never given.
+
+The consequence is that the lane shape MOST likely to hang has no bound at
+all. A container command lane is an arbitrary consumer command (a pytest
+suite, a schema gate, a conjunction of sub-lanes) running detached on a host
+shared with a production workload; the only thing declared about its
+duration is `budget`, which run-gate prints and never enforces (`R-15`
+disclosure, not a bound). A wedged suite therefore holds a gate container
+until a human notices — the failure mode RG-36 was filed to end, still open
+for the majority of the estate's lanes.
+
+### Measured evidence
+
+run-gate's own refusal message, rev 34 (`_validate_lane`):
+
+```
+<file> [lanes.<n>]: 'stall_timeout' is judged from
+.assay/progress-<assay_lane>.jsonl, which only a kind = "assay" lane writes —
+a command lane has no progress file and could never stall by this rule; use
+the command's own timeout instead (R-40)
+```
+
+Scope of the gap, counted with `tomllib` over every `*/run-gate.toml` in
+vbpub (2026-09-02): **5 container `kind = "command"` lanes vs 3 container
+assay lanes** (plus 9 host lanes, which run in-process and are outside this
+question entirely). So `stall_timeout` is available to the minority of the
+containerised lanes, and unavailable to the majority — including every
+gate-conjunction lane, which is a `kind = "command"` lane by construction
+(CONSUMERS "Gate-conjunction lanes") and is the shape nyxloom's daemon
+invokes.
+
+### Proposed fix (RW-9)
+
+run-gate ALREADY tails the container's output: `await_container` streams
+`docker logs -f` for the whole run. The ARRIVAL TIME of the last line, on
+run-gate's own clock, carries exactly the semantics `R-40` gives the
+progress file's mtime — a lane that has printed nothing for 15 minutes is
+silent in the same sense, and "silence, never total elapsed" is the same
+rule. So:
+
+- make `stall_timeout` legal on a container `kind = "command"` lane, judged
+  from log-stream silence;
+- DISCLOSE the source at start, since the two signals differ in what they
+  can miss: `run-gate: stall_timeout 15m (source: progress file)` vs
+  `(source: log stream)`. A lane that legitimately prints nothing for long
+  stretches (a single silent compile) is the log stream's known blind spot
+  and the reason the source must be named, not inferred;
+- keep the assay-lane behaviour exactly as `R-40` defines it — the progress
+  file stays the better signal where it exists, and an assay lane must not
+  silently downgrade to the weaker one;
+- the stop, the evidence, the exit code and the message shape are `R-40c`'s
+  already: `docker rm -f`, evidence saved, exit 3, naming the stall, the
+  last thing seen and the age.
+
+The implementation seam is one line: the poll loop in `await_container`
+already runs every `PROGRESS_POLL_SECONDS` and already owns the process
+whose output would be timestamped. Reading the stream's arrival times means
+`docker logs -f` can no longer inherit run-gate's stdout untouched — that is
+the real cost of this item and the reason it is not a footnote to RG-36.
+
+### Acceptance
+
+- [ ] A container command lane declaring `stall_timeout` loads, and its run
+      discloses `source: log stream` at start;
+- [ ] A lane whose container is running and has printed nothing for the
+      declared window is stopped: `docker rm -f`, evidence saved, exit 3,
+      naming the age and the last line seen;
+- [ ] A lane that keeps printing is never stopped, and its output still
+      reaches the operator's terminal unbuffered and in order (the
+      pass-through must not regress into a captured-then-replayed stream);
+- [ ] An assay lane is unchanged — it still judges from the progress file
+      and discloses `source: progress file`, never downgrading to the log
+      stream because a file has not appeared yet;
+- [ ] **The source-of-signal line is printed on the RE-ATTACH and FOLLOW
+      paths too, not only on the fresh one** (controller ruling RW-18, out
+      of review round 1's S6). Rev 34's first cut printed `budget` and
+      `stall_timeout` on the fresh path alone, so a re-attached lane was
+      stopped against a `stall_timeout` its own invocation had never
+      mentioned; rev 34 fixes that (`print_lane_bounds`, called from all
+      three paths), and this item inherits the rule rather than the defect.
+      The `source:` clause belongs on the same line, so adding it to
+      `print_lane_bounds` covers every path by construction — a second print
+      site is how the two drift apart again.
+
+### Status — OPEN 2026-09-02, E-3 candidate (23.5.0)
+
+Sequenced with the other progress/resume work: E-3 of
+`assay/nyxloom-trove/WAVE-PLAN-2026-09-02-after-v10.md` (RG-36 exact timing
+once assay B065 lands, RG-38, RG-40). Not implemented in rev 34 by ruling —
+the wave shipped the refusal, and this is the answer to what the refusal
+costs.

@@ -1,0 +1,36 @@
+# examples/minimal/ciu.toml — the smallest project with one stack and one gate lane
+# (SPEC-V8 draft.4 Appendix B). `ciu init --stack web --image nginx:1.27 --test-argv
+# "pytest -q"` writes exactly the tables below plus ciu.hosts.toml, web/ciu.stack.toml
+# (image only), web/ciu.compose.yml.j2 and .gitignore (S19.2); the endpoint and
+# the healthcheck in web/ were added BY HAND afterwards — init invents no facts (P3).
+# Nothing here is implicit — the host and the layout are declared (no built-ins).
+#   ciu init --stack web --image nginx:1.27 && ciu instance init && ciu up && ciu gate unit
+# A ZERO-INSTANCE project (a library, a tool, a docs repo) is what bare `ciu init`
+# writes: only [project] and [testing] — no [service], [realization], [bundles],
+# [layouts], [realness], no ciu.hosts.toml, no instance, no lock — `ciu gate` runs
+# directly (S16.11, S19.1).
+
+[project]
+name = "hello"
+revision = 8
+
+[realness]
+default = "live"
+
+[service.web]
+live = "web"
+
+[realization.web]
+kind = "ciu_stack"
+location = "web"
+
+[bundles.all]
+services = ["web"]
+
+[layouts.local]
+hosts.localhost = { bundles = ["all"], reach = ["instance"] }
+
+[testing.lanes.unit]
+kind = "command"
+environment = "host"                 # built-in when no [testing.environments.host] table declares it (S16.4.1)
+argv = ["pytest", "-q"]

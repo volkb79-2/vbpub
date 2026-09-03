@@ -21,17 +21,17 @@ ssh_user = "ops"
 ssh_port = 22
 ssh_key = "~/.ssh/ciu_deploy_ed25519"
 known_host = "gstammtisch.dchive.de ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI<redacted-demo>"
-bundle_dir = "/opt/ciu/current"
+bundle_dir = "/opt/ciu"                        # holds releases/, candidate, current, previous (S17.3–S17.4); never the `current` link itself
 push_mode = "rsync"
 bundle_excludes = [".git", "node_modules", "artifacts"]
 [hosts.gstammtisch.addresses]
 mesh = "100.64.0.11"                           # tailscale
 public = "152.53.179.117"
-[hosts.gstammtisch.activate]                   # the conventional commands (S17.4); --host regenerates [ciu.host.generated] for THIS host (S14.2.3)
+[hosts.gstammtisch.activate]                   # the conventional commands (S17.4.1): CIU's own `prepare` (host file into /opt/ciu/state, check) → apply → health run inside the CANDIDATE release; the current/previous switch is CIU's, after the receipt
 bootstrap = "ciu instance init --host gstammtisch && ciu check --layout prod3"
 apply = "ciu up --layout prod3"
 health = "ciu check --live --layout prod3"
-rollback = "ciu down"
+# no rollback command: `ciu activate rollback` swaps current/previous and runs the previous release's own apply (S17.4.1, draft.5)
 
 [hosts.rs1002]                                 # 4 cores / 8 GB — apps, worker-io, observability
 fqdn = "rs1002.dchive.de"
@@ -46,7 +46,7 @@ public = "203.0.113.12"
 bootstrap = "ciu instance init --host rs1002 && ciu check --layout prod3"
 apply = "ciu up --layout prod3"
 health = "ciu check --live --layout prod3"
-rollback = "ciu down"
+# no rollback command: `ciu activate rollback` swaps current/previous and runs the previous release's own apply (S17.4.1, draft.5)
 
 [hosts.tsstammtisch]                           # 4 cores / 4 GB — edge (public ingress), global services
 fqdn = "tsstammtisch.dchive.de"
@@ -61,7 +61,7 @@ public = "203.0.113.13"
 bootstrap = "ciu instance init --host tsstammtisch && ciu check --layout prod3"
 apply = "ciu up --layout prod3"
 health = "ciu check --live --layout prod3"
-rollback = "ciu down"
+# no rollback command: `ciu activate rollback` swaps current/previous and runs the previous release's own apply (S17.4.1, draft.5)
 [hosts.tsstammtisch.secrets]                   # host-scoped: materialized on the CIU host before push, shipped only to THIS host (S10.4, S17.3.1)
 tls_cert_pem = { from = "ask", var = "EDGE_TLS_CRT" }   # CIU_SECRET_EDGE_TLS_CRT, else the store, else a prompt
 tls_key_pem  = { from = "ask", var = "EDGE_TLS_KEY" }

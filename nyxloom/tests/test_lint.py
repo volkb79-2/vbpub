@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import subprocess
 import textwrap
 from pathlib import Path
 
@@ -586,6 +588,65 @@ class TestL9InfraMutex:
         assert len(l9_errors) > 0
 
 
+def _l10_project_root(tmp_path: Path, extra_toml: str, subdir: str = "l10-repo") -> Path:
+    """A real on-disk project (mirrors conftest.sample_project's own
+    git-init+add+commit shape -- NOT `_write_config_project`'s plain-files
+    one, further below in this file) with `extra_toml` appended to
+    SAMPLE_PROJECT_TOML under `.nyxloom/project.toml`. Caller calls
+    ProjectConfig.load(root) itself (never dataclasses.replace) -- each of
+    O1/O3/O4 needs a DIFFERENT [lint.l10] table on disk, so this builds a
+    fresh root per call rather than reusing the `sample_project` fixture
+    instance directly (NL-3 carve review B1)."""
+    from conftest import SAMPLE_PROJECT_TOML
+    root = tmp_path / subdir
+    (root / ".nyxloom").mkdir(parents=True)
+    (root / "handoff").mkdir()
+    (root / ".nyxloom" / "project.toml").write_text(SAMPLE_PROJECT_TOML + extra_toml)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "init"], cwd=root, check=True)
+    return root
+
+
+def _handoff_text_at_token_count(tokens: int) -> str:
+    """Handoff content (same shape as TestL10Size's own existing fixtures
+    above) whose L10 token estimate (len(full_text)//4, lint.py's own
+    formula) is EXACTLY `tokens` -- pads the body filler to hit the target
+    byte length precisely, so boundary assertions (`> N` vs `>= N`) are
+    unambiguous rather than merely far-from-boundary."""
+    template = """---
+schema_version: 1
+id: demo-P01-test
+project: demo
+title: Test
+tier: flash-high
+input_revision: "0000000"
+source: {{kind: review}}
+scope: {{touch: ["src/test.py"]}}
+oracles:
+  - id: O1
+    observable: "pass"
+    negative: "fail"
+    gate: pytest-q
+gates: [pytest-q]
+escalate_if: ["trigger"]
+---
+
+{body}
+BLOCKED: marker.
+worktree branch out of scope read first context to read
+"""
+    target_len = tokens * 4
+    base_len = len(template.format(body=""))
+    body_len = target_len - base_len
+    assert body_len >= 0, f"tokens={tokens} too small for template overhead ({base_len} chars)"
+    text = template.format(body="x" * body_len)
+    assert len(text) // 4 == tokens
+    return text
+
+
 class TestL10Size:
     """Test L10: size limits."""
 
@@ -656,6 +717,112 @@ worktree branch out of scope read first context to read
         findings = lint.lint_file(path, sample_project)
         l10_errors = [f for f in findings if f.rule == "L10"]
         assert any(f.severity == "error" for f in l10_errors)
+
+    def test_o1_partial_override_reaches_load_and_pins_new_boundary(self, tmp_path):
+        """O1: a REAL ProjectConfig.load() (not dataclasses.replace) on a
+        project whose .nyxloom/project.toml has [lint.l10] error_tokens =
+        25000 (warn_tokens absent) produces cfg.l10.error_tokens == 25000
+        and cfg.l10.warn_tokens == 10000 (untouched default); a handoff at
+        exactly the new boundary (25000 tokens) is WARNING not ERROR, and
+        one token over (25001) IS ERROR. Proves the override reaches the
+        instance .load() returns, a partial override leaves the other
+        field at its default, and the exact strict `>` boundary survives
+        parameterization."""
+        root = _l10_project_root(tmp_path, "\n[lint.l10]\nerror_tokens = 25000\n")
+        cfg = config.ProjectConfig.load(root)
+        assert cfg.l10.error_tokens == 25000
+        assert cfg.l10.warn_tokens == 10000
+
+        at_boundary = tmp_path / "at-boundary.md"
+        at_boundary.write_text(_handoff_text_at_token_count(25000))
+        findings = lint.lint_file(at_boundary, cfg)
+        l10 = [f for f in findings if f.rule == "L10"]
+        assert any(f.severity == "warning" for f in l10)
+        assert not any(f.severity == "error" for f in l10)
+
+        over_boundary = tmp_path / "over-boundary.md"
+        over_boundary.write_text(_handoff_text_at_token_count(25001))
+        findings2 = lint.lint_file(over_boundary, cfg)
+        l10_2 = [f for f in findings2 if f.rule == "L10"]
+        assert any(f.severity == "error" for f in l10_2)
+
+    def test_default_thresholds_boundary_values(self, sample_project, tmp_path):
+        """O2 addendum: pins today's strict `>` boundary as part of the
+        frozen contract, not an implementation detail free to drift once
+        the literals become variables -- a handoff at exactly 10000
+        tokens is not flagged at all, and one at exactly 18000 tokens is
+        WARNING, not ERROR, against the plain (no-override) default
+        config."""
+        at_warn = tmp_path / "at-warn.md"
+        at_warn.write_text(_handoff_text_at_token_count(10000))
+        findings = lint.lint_file(at_warn, sample_project)
+        assert not any(f.rule == "L10" for f in findings)
+
+        at_error = tmp_path / "at-error.md"
+        at_error.write_text(_handoff_text_at_token_count(18000))
+        findings2 = lint.lint_file(at_error, sample_project)
+        l10 = [f for f in findings2 if f.rule == "L10"]
+        assert any(f.severity == "warning" for f in l10)
+        assert not any(f.severity == "error" for f in l10)
+
+    def test_o3_malformed_warn_greater_than_error_raises(self, tmp_path):
+        """O3, case 1: warn_tokens > error_tokens raises ValueError at
+        load time, before any handoff is linted."""
+        root = _l10_project_root(
+            tmp_path, "\n[lint.l10]\nwarn_tokens = 20000\nerror_tokens = 10000\n")
+        with pytest.raises(ValueError):
+            config.ProjectConfig.load(root)
+
+    def test_o3_malformed_warn_equals_error_raises(self, tmp_path):
+        """O3, case 2 (the finding that failed the first carve draft): the
+        validation is warn_tokens >= error_tokens, not strict `>`, so
+        EQUALITY is also malformed -- a different boundary than
+        _check_l10's own strict `>` comparison (Work item 2/3 state this
+        explicitly; do not confuse the two)."""
+        root = _l10_project_root(
+            tmp_path, "\n[lint.l10]\nwarn_tokens = 10000\nerror_tokens = 10000\n")
+        with pytest.raises(ValueError):
+            config.ProjectConfig.load(root)
+
+    def test_o3_malformed_non_positive_raises(self, tmp_path):
+        """O3, case 3: a non-positive value raises ValueError at load
+        time."""
+        root = _l10_project_root(
+            tmp_path, "\n[lint.l10]\nerror_tokens = -5\n")
+        with pytest.raises(ValueError):
+            config.ProjectConfig.load(root)
+
+    def test_o4_lowered_thresholds_apply_symmetrically(self, tmp_path):
+        """O4: a full override LOWERING both thresholds below the
+        tool-wide defaults (warn_tokens=500, error_tokens=1000) lints a
+        ~700-token handoff (far under the OLD 10000/18000 defaults, but
+        between the NEW tighter numbers) as L10 WARNING -- same code path
+        as the raising case in O1, no special-cased direction."""
+        root = _l10_project_root(
+            tmp_path, "\n[lint.l10]\nwarn_tokens = 500\nerror_tokens = 1000\n")
+        cfg = config.ProjectConfig.load(root)
+        assert cfg.l10.warn_tokens == 500
+        assert cfg.l10.error_tokens == 1000
+
+        handoff = tmp_path / "lowered.md"
+        handoff.write_text(_handoff_text_at_token_count(700))
+        findings = lint.lint_file(handoff, cfg)
+        l10 = [f for f in findings if f.rule == "L10"]
+        assert any(f.severity == "warning" for f in l10)
+        assert not any(f.severity == "error" for f in l10)
+
+    def test_o5_schema_accepts_partial_l10_override(self, tmp_path):
+        """O5: nyxloom lint's own config-schema check (CFG1 /
+        lint.lint_config) run against a nyxloom.toml declaring ONLY
+        [lint.l10] error_tokens = 25000 (the same partial-override shape
+        O1 uses) produces no schema-validation finding -- proves
+        warn_tokens/error_tokens were NOT marked required, and lint/l10's
+        additionalProperties:false doesn't reject the legal partial
+        shape."""
+        root = _l10_project_root(tmp_path, "\n[lint.l10]\nerror_tokens = 25000\n")
+        cfg = config.ProjectConfig.load(root)
+        findings = lint.lint_config(cfg)
+        assert not any(f.rule == "CFG1" for f in findings)
 
 
 class TestL11BodySections:
@@ -950,6 +1117,260 @@ class TestL13OracleScopeCoverage:
         assert findings == []
 
 
+AUTHORING_MD_PATH = Path(__file__).resolve().parent.parent / "reference" / "AUTHORING.md"
+
+# The exact text Work item 1 (nyxloom-P100) pins verbatim, extracted
+# programmatically from the frozen handoff's own blockquote and compared
+# here whitespace-normalized (AUTHORING.md's own line-wrap width need not
+# match this file's — see FIX-VERIFICATION-2.md's note on "a plain
+# fixed-string grep -F" being ordinary implementation latitude for a
+# whitespace-normalized substring check).
+AUTHORING_TIER_PARAGRAPH = (
+    "The table above names the PLANNED tier each contract class is "
+    "intended to route through once the remaining implementer bands "
+    "exist — it is not itself a claim about what `routes.toml` "
+    "declares today. `contract_class` (2a-2e) is an authoring/review "
+    "classification recorded in the body; frontmatter `tier` is a "
+    "different thing entirely: it must always be a literal key that "
+    "exists in the CURRENT live `routes.toml`, chosen for the capability "
+    "the assigned contract class needs, regardless of what name a future "
+    "band will eventually carry. Do not put a nonexistent tier in "
+    "frontmatter. Routing a `2a`-`2c` package through a live tier whose "
+    "capability is below what the class needs requires an explicit "
+    "human/controller override and a frontier-capable route; preferably "
+    "carve it down first."
+)
+
+
+class TestAuthoringDocTierGuidance:
+    """O1 (nyxloom-P100/NL-2): reference/AUTHORING.md's tier prose is
+    repaired to match live routes.toml -- the pinned replacement paragraph
+    is present verbatim (whitespace-normalized), the old false "are
+    deployed today" claim is gone, and the Level 2 worked example's tier:
+    line no longer prints a literal implement-2 value."""
+
+    def test_pinned_replacement_paragraph_present_verbatim(self):
+        text = AUTHORING_MD_PATH.read_text(encoding="utf-8")
+        normalized = " ".join(text.split())
+        assert " ".join(AUTHORING_TIER_PARAGRAPH.split()) in normalized
+
+    def test_old_deployed_today_claim_is_gone(self):
+        text = AUTHORING_MD_PATH.read_text(encoding="utf-8")
+        assert text.count("are deployed today") == 0
+
+    def test_worked_example_tier_is_a_placeholder_not_implement_2(self):
+        text = AUTHORING_MD_PATH.read_text(encoding="utf-8")
+        assert "tier: implement-2" not in text
+        assert re.search(r"tier:\s*<[^>\n]+>", text), \
+            "worked example's tier: line must use an angle-bracket " \
+            "placeholder, matching every other value in that YAML block"
+
+
+SONNET_ROUTES_TOML = """\
+revision = "test-rev-l14"
+
+[tiers.sonnet5-high]
+routes = ["fake-cli"]
+
+[routes.fake-cli]
+cli = "fake"
+model = "fake-model"
+probe = ["true"]
+usage_source = "none"
+trust = "operator"
+"""
+
+MALFORMED_ROUTES_TOML_BAD_SYNTAX = "this is not [ valid toml\n"
+
+MALFORMED_ROUTES_TOML_MISSING_ROUTES_KEY = """\
+revision = "test-rev-l14-malformed"
+
+[tiers.sonnet5-high]
+description = "a tier entry missing its required routes key"
+"""
+
+
+def _l14_handoff_text(handoff_id: str, tier: str, *, body_padding: str = "") -> str:
+    """A schema-valid, otherwise-clean handoff (mirrors _handoff_text_at_
+    token_count's / TestL13's inline fixtures) parameterized by `tier`, the
+    one field L14 validates."""
+    return f"""---
+schema_version: 1
+id: {handoff_id}
+project: demo
+title: Test
+tier: {tier}
+input_revision: "0000000"
+source: {{kind: review}}
+scope: {{touch: ["src/thing.py"]}}
+oracles:
+  - id: O1
+    observable: "pass"
+    negative: "fail"
+    gate: pytest-q
+gates: [pytest-q]
+escalate_if: ["trigger"]
+---
+
+Body with BLOCKED: marker.
+worktree branch out of scope read first context to read
+{body_padding}
+"""
+
+
+class TestL14TierRoutesToml:
+    """Test L14 (NL-2/nyxloom-P100): fm.tier must resolve against the live
+    routes.toml, read fresh on every call -- never a hardcoded allowlist or
+    blocklist of "known" tier names."""
+
+    def test_valid_tier_no_finding_direct_call(self, sample_project, tmp_path):
+        """O2: a real routes.toml key (sonnet5-high) passes with no L14
+        finding via lint_file() called directly."""
+        paths.routes_path().write_text(SONNET_ROUTES_TOML)
+        path = tmp_path / "demo-P01-test.md"
+        path.write_text(_l14_handoff_text("demo-P01-test", "sonnet5-high"))
+
+        findings = lint.lint_file(path, sample_project)
+        assert [f for f in findings if f.rule == "L14"] == []
+
+    def test_valid_tier_no_finding_real_cli(self, sample_project, tmp_state, capsys):
+        """O2: the SAME fixture through the real `nyxloom lint <path>` CLI
+        entry point (cli.main, the precedent TestCmdLintResolvesOwnProject
+        already uses) -- both paths must agree."""
+        paths.routes_path().write_text(SONNET_ROUTES_TOML)
+        handoff = sample_project.root / "handoff" / "demo-P02-test.md"
+        handoff.write_text(_l14_handoff_text("demo-P02-test", "sonnet5-high"))
+
+        exit_code = cli.main(["lint", str(handoff)])
+        out = capsys.readouterr().out
+
+        assert "L14" not in out
+        assert exit_code == 0
+
+    @pytest.mark.parametrize("bad_tier,expect_suggestion", [
+        # The three real historical bad values from NL-2's own reproduction,
+        # plus the REQUIRED near-miss (sonnet5-hgih, NOT one of the three
+        # historical values -- the fixture that distinguishes a real
+        # live-data allowlist from a hardcoded blocklist of just the three
+        # named strings). Only sonnet-xhigh/sonnet5-hgih are close enough to
+        # sonnet5-high for difflib's default cutoff to suggest it (verified
+        # directly) -- Work item 3 explicitly allows an empty suggestion
+        # list for the other two ("do not error if no close match exists,
+        # just name the bad value"), so only those two assert the mention.
+        ("implement-2", False),
+        ("sonnet-xhigh", True),
+        ("opus-xhigh", False),
+        ("sonnet5-hgih", True),
+    ])
+    def test_bad_tier_produces_l14_error(self, sample_project, tmp_path,
+                                          bad_tier, expect_suggestion):
+        """O3: each of the four required bad values produces exactly one
+        L14 ERROR naming the bad value; a real live-data check (not a
+        hardcoded allowlist/blocklist) is proven by O5, not this test alone."""
+        paths.routes_path().write_text(SONNET_ROUTES_TOML)
+        path = tmp_path / "demo-P01-test.md"
+        path.write_text(_l14_handoff_text("demo-P01-test", bad_tier))
+
+        findings = lint.lint_file(path, sample_project)
+        l14 = [f for f in findings if f.rule == "L14"]
+        assert len(l14) == 1
+        assert l14[0].severity == "error"
+        assert bad_tier in l14[0].message
+        if expect_suggestion:
+            assert "sonnet5-high" in l14[0].message
+
+    def test_missing_routes_toml_warns_via_real_cli(self, tmp_path, tmp_state, capsys):
+        """O4 case (a): a project whose paths.routes_path() does not exist
+        (tmp_state's ensure_layout() only creates directories, never
+        routes.toml itself) produces an L14 WARNING, not an ERROR and not a
+        crash, via the real CLI subprocess-equivalent entry point."""
+        root = _write_trove_project(tmp_path, "l14-missing-routes", "l14missing")
+        handoff = _write_real_handoff(root, "l14missing", "l14missing-P01-real")
+        assert not paths.routes_path().exists()
+
+        exit_code = cli.main(["lint", str(handoff)])
+        out = capsys.readouterr().out
+
+        assert "L14" in out
+        assert "warning" in out
+        assert exit_code == 0
+
+    def test_malformed_routes_toml_bad_syntax_warns_and_keeps_other_findings(
+        self, tmp_path, tmp_state, capsys
+    ):
+        """O4 case (b), variant 1: routes.toml EXISTS but is not valid TOML
+        (tomllib.TOMLDecodeError). Must WARN, not crash the CLI subprocess,
+        and L1-L13's other findings for the same file (here L10, reusing
+        TestL10Size's own over-threshold fixture shape) must still be
+        reported alongside it."""
+        paths.routes_path().write_text(MALFORMED_ROUTES_TOML_BAD_SYNTAX)
+        root = _write_trove_project(tmp_path, "l14-bad-syntax", "l14badsyntax")
+        large_body = "x" * 45000  # 11250 tokens, over L10's 10k warn floor
+        handoff = _write_real_handoff(root, "l14badsyntax", "l14badsyntax-P01-real")
+        handoff.write_text(handoff.read_text() + large_body)
+
+        exit_code = cli.main(["lint", str(handoff)])
+        out = capsys.readouterr().out
+
+        assert "L14" in out
+        assert "warning" in out
+        assert "L10" in out
+        assert exit_code == 0
+
+    def test_malformed_routes_toml_missing_routes_key_warns(
+        self, tmp_path, tmp_state, capsys
+    ):
+        """O4 case (b), variant 2: routes.toml exists and IS valid TOML, but
+        a [tiers.x] entry is missing its required `routes` key -- reproduces
+        Routes.load()'s own KeyError failure mode exactly (not OSError, so a
+        narrow `except FileNotFoundError` would let this propagate
+        uncaught). Must WARN, not crash."""
+        paths.routes_path().write_text(MALFORMED_ROUTES_TOML_MISSING_ROUTES_KEY)
+        root = _write_trove_project(tmp_path, "l14-missing-key", "l14missingkey")
+        handoff = _write_real_handoff(root, "l14missingkey", "l14missingkey-P01-real")
+
+        exit_code = cli.main(["lint", str(handoff)])
+        out = capsys.readouterr().out
+
+        assert "L14" in out
+        assert "warning" in out
+        assert exit_code == 0
+
+    def test_live_reread_no_caching_across_routes_toml_mutation(
+        self, sample_project, tmp_path
+    ):
+        """O5: after a first lint pass with only [tiers.sonnet5-high]
+        declared, the SAME on-disk routes.toml is rewritten in the SAME
+        process (no restart, no code change) to declare
+        [tiers.new-tier-name] instead. Re-linting the IDENTICAL handoff
+        (tier: sonnet5-high) that previously passed must now fail, and a
+        handoff with tier: new-tier-name must now pass -- proving L14
+        re-resolves routes.toml on every call rather than caching a
+        snapshot (Routes.load() itself has no caching; this must not add
+        any either)."""
+        paths.routes_path().write_text(SONNET_ROUTES_TOML)
+        old_handoff = tmp_path / "demo-P01-test.md"
+        old_handoff.write_text(_l14_handoff_text("demo-P01-test", "sonnet5-high"))
+
+        first_pass = lint.lint_file(old_handoff, sample_project)
+        assert [f for f in first_pass if f.rule == "L14"] == []
+
+        renamed_routes_toml = SONNET_ROUTES_TOML.replace(
+            "sonnet5-high", "new-tier-name"
+        )
+        paths.routes_path().write_text(renamed_routes_toml)
+
+        second_pass = lint.lint_file(old_handoff, sample_project)
+        l14_second = [f for f in second_pass if f.rule == "L14"]
+        assert len(l14_second) == 1
+        assert l14_second[0].severity == "error"
+
+        new_handoff = tmp_path / "demo-P02-test.md"
+        new_handoff.write_text(_l14_handoff_text("demo-P02-test", "new-tier-name"))
+        third_pass = lint.lint_file(new_handoff, sample_project)
+        assert [f for f in third_pass if f.rule == "L14"] == []
+
+
 class TestGoldenCorpus:
     """Test golden corpus fixtures against expected rules."""
 
@@ -968,7 +1389,7 @@ class TestGoldenCorpus:
             ("demo-P18-path.md", "L7", True),
             ("demo-P19-intro.md", "L8", True),
             ("demo-P20-infra.md", "L9", True),
-            ("demo-P21-huge.md", "L10", False),  # L10 warning becomes error over 12k
+            ("demo-P21-huge.md", "L10", False),  # L10 warning becomes error over 18k
             ("demo-P22-missing.md", "L11", True),
             ("demo-P23-blocked.md", "L12", True),
         ],

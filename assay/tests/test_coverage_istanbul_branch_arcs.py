@@ -372,13 +372,21 @@ def test_a_branch_entry_with_zero_arms_is_unreadable():
     assert "has zero arms" in str(excinfo.value)
 
 
-def test_an_arc_on_a_line_no_statement_covers_is_unreadable():
+def test_an_arc_on_a_line_no_statement_covers_is_isolated_to_that_file():
     """`FileCoverage` invariant 3, reached through this parser rather than
     asserted on the dataclass: ``branchMap`` and ``statementMap`` are
     INDEPENDENT arrays in external input, so an artifact can name a branch on
-    line 99 while classifying only line 1. Before B045 no istanbul artifact
-    could violate a `FileCoverage` invariant at all and the construction
-    carried no guard; the guard exists now, and this is what reaches it."""
+    line 99 while classifying only line 1.
+
+    **B054/A-410 changed the DISPOSITION, not the detection.** Through
+    4.1.0 this raised `ERROR`/`UNREADABLE_ARTIFACT` at PARSE time and took
+    the whole verdict down — including every other file's correct data —
+    for what is a defect of ONE record. It is now isolated: the offending
+    arcs are dropped, their lines are recorded on the file, and the refusal
+    (still `ERROR`/`UNREADABLE_ARTIFACT`, still naming the file and the
+    line) happens in `assay.evaluate` only if the lane actually judges this
+    file. `tests/test_coverage_istanbul_contradictory_branch_arcs.py`
+    proves both halves of that disposition end to end."""
     document = _record(
         branchMap={
             "0": {
@@ -389,23 +397,35 @@ def test_an_arc_on_a_line_no_statement_covers_is_unreadable():
         },
         b={"0": [1, 0]},
     )
-    with pytest.raises(AssayError) as excinfo:
-        coverage_istanbul_json.parse(document, producer="istanbul")
-    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
-    assert "contradict its own" in str(excinfo.value)
-    assert "in neither .executed nor .missing" in str(excinfo.value)
+    profile = coverage_istanbul_json.parse(document, producer="istanbul")
+    file_cov = profile.files["/p/src/a.ts"]
+    assert file_cov.contradictory_branch_lines == frozenset({99})
+    # Dropped, not kept: keeping them is what `FileCoverage` refuses.
+    assert 99 not in file_cov.branches.by_line
+    # And NOT `None` -- "the format cannot express arcs" would be a false
+    # statement about an istanbul artifact (A-008).
+    assert file_cov.branches is not None
+    # Every OTHER fact about the record survives, which is the whole point.
+    assert file_cov.executed == frozenset({1})
 
 
-def test_a_covered_arc_on_a_never_executed_line_is_unreadable():
+def test_a_covered_arc_on_a_never_executed_line_is_isolated_to_that_file():
     """`FileCoverage` invariant 5, the anti-tamper one: a line whose statement
     count is 0 cannot have TAKEN a branch. Same construction as above with
     ``s`` flipped to 0, so the line lands in ``missing`` while the arc claims
-    it was covered."""
+    it was covered.
+
+    Isolated per file exactly like invariant 3 above (B054/A-410) — the
+    anti-tamper property is not weakened, it is RELOCATED: a file carrying
+    such a record can no longer report a branch percentage at all if the
+    lane judges it, and its arcs are gone either way."""
     document = _record(s={"0": 0})
-    with pytest.raises(AssayError) as excinfo:
-        coverage_istanbul_json.parse(document, producer="istanbul")
-    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
-    assert "cannot have taken an arc" in str(excinfo.value)
+    profile = coverage_istanbul_json.parse(document, producer="istanbul")
+    file_cov = profile.files["/p/src/a.ts"]
+    assert file_cov.contradictory_branch_lines == frozenset({1})
+    assert file_cov.branches is not None
+    assert file_cov.branches.by_line == {}
+    assert file_cov.missing == frozenset({1})
 
 
 @pytest.mark.parametrize(

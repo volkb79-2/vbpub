@@ -222,6 +222,25 @@ def attribute_statements(
                 excluded=file_cov.excluded,
                 branches=file_cov.branches,
                 blocks=file_cov.blocks,
+                # (B054/A-410) Carried, not re-derived: it is metadata about
+                # arcs the PARSER already dropped, so there is nothing left
+                # here to derive it from. A rebuild that forgot it would
+                # silently launder a defective record into a clean one.
+                #
+                # (DA-R8, SF-5) INSURANCE, NOT COVERED CODE -- and measured
+                # so. Both rebuilds in this module are behind
+                # `if file_cov.blocks is None: continue`; only `go-cover`
+                # populates `blocks` and only `coverage-istanbul-json`
+                # populates `contradictory_branch_lines`, so NO REAL ARTIFACT
+                # REACHES EITHER CARRY TODAY. R-1 deleted both (mutant `m5`)
+                # and the statement-attribution and istanbul-contradictory
+                # modules stayed green, 41 passed, identical to the unmutated
+                # baseline. The carry is kept because a future producer that
+                # populates both fields would otherwise launder the defect
+                # silently, which is the whole failure B054 filed -- but no
+                # test in this suite can tell the difference, and nobody
+                # should read these two lines as measured.
+                contradictory_branch_lines=file_cov.contradictory_branch_lines,
             )
             continue
 
@@ -336,6 +355,13 @@ def attribute_statements(
             excluded=file_cov.excluded,
             branches=file_cov.branches,
             blocks=file_cov.blocks,
+            # (B054/A-410) See the sibling rebuild above: carried, never
+            # re-derived -- and, per DA-R8/SF-5, unreachable by any real
+            # artifact today (measured: R-1's `m5` deletes both carries and
+            # nothing in the suite moves). Insurance against a future
+            # producer that populates `blocks` AND
+            # `contradictory_branch_lines`, not covered code.
+            contradictory_branch_lines=file_cov.contradictory_branch_lines,
         )
 
     return CoverageProfile(

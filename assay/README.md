@@ -261,23 +261,28 @@ test: {
     provider: 'istanbul',      // REQUIRED for a judged lane — see below
     reporter: ['json'],        // 'json' IS coverage-final.json
     reportsDirectory: '.assay', // keep it out of the tree, and gitignore it
-    clean: false               // REQUIRED inside an assay snapshot — see below
+    clean: false               // RECOMMENDED inside an assay snapshot — see below
   }
 }
 ```
 
-> **`coverage.clean: false` is REQUIRED for a lane assay judges, not a style
-> preference.** Vitest's own default (`clean: true`) deletes and recreates
-> `reportsDirectory` before writing, and assay reserves that directory's file
-> handle *before* your command runs so it can read the artifact back
-> afterward without a second, racy directory walk. A tool that deletes and
-> recreates the directory rather than writing into the one assay already
-> opened leaves that handle pointing at an orphaned, empty directory — assay
-> then reads nothing back, even though a fully-populated `coverage-final.json`
-> really exists on disk at that path. Measured: with Vitest's default
-> `clean: true`, `assay run` on a real, correctly-covered lane returns
-> `NO_MEASUREMENT`/`EMPTY_COVERAGE`; the *only* change that fixes it is
-> `clean: false`. See B049.
+> **`coverage.clean: false` is RECOMMENDED for a lane assay judges; forget
+> it and assay tells you so by name.** Vitest's own default (`clean: true`)
+> deletes and recreates `reportsDirectory` before writing, and assay reserves
+> that directory's file handle *before* your command runs so it can read the
+> artifact back afterward without a second, racy directory walk. A tool that
+> deletes and recreates the directory rather than writing into the one assay
+> already opened leaves that handle pointing at an orphaned, empty directory —
+> assay then reads nothing back, even though a fully-populated
+> `coverage-final.json` really exists on disk at that path. Up to 4.1.0 that
+> was reported as `NO_MEASUREMENT`/`EMPTY_COVERAGE` ("your tests produced no
+> coverage"), which is false. **From 5.0.0 it is `ERROR`/`UNREADABLE_ARTIFACT`
+> with a message naming the directory, the cause and the remedy**, for every
+> reserved artifact — coverage, a SQL R2 equivalence artifact, a mutation
+> lane's kill signal. Why the check is an `fstat` on the held descriptor
+> rather than a re-open by name: [DESIGN-GUIDE
+> §B049](docs/DESIGN-GUIDE.md#a-replaced-output-directory-is-named-not-folded-into-empty_coverage).
+> See B049.
 
 > **Use `@vitest/coverage-istanbul`, not `@vitest/coverage-v8`, for any lane
 > you gate on.** The v8 provider reports provably-never-executed lines as
@@ -547,8 +552,14 @@ all-in-one platform:
   to function.
 - **Tier 2 (adjudicated) evidence** is how assay integrates with SAST, SBOM,
   DAST, accessibility, or visual-regression tools without becoming one: it
-  invokes a declared tool and applies a declared threshold to its
-  structured output, nothing more opinionated than that.
+  invokes, or consumes the declared structured output of, a declared
+  third-party tool, and applies that tool's own decision — nothing more
+  opinionated than that. B004's image-provenance adjudicator is the shipped
+  example of the second shape: assay never invokes `ciu` itself (A-030;
+  at S3/S4 the docker socket the invocation would need is not even reachable
+  from inside the lane's own container), so it reads `ciu provenance --json`'s
+  declared output instead. See [CONSUMERS.md's "Adjudicated image
+  provenance"](docs/CONSUMERS.md#migration-notes-v9--v10) section.
 
 ## Contributing / development process
 

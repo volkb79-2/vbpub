@@ -11,6 +11,7 @@
 
 [ciu_stack.ddcli]
 image = "dstdns/ddcli:latest"        # <project.registry.namespace>/ddcli — a literal in plain TOML; `ciu build` tags exactly this
+build = { context = "../..", dockerfile = "applications/ddcli/Dockerfile" }   # project-built (S6.2, S17.6)
 
 # The one binding (S6.4). The OIDC issuer is COMPOSED in the compose template —
 # ciu_stack.ddcli.binds.idp.url + "/application/o/" + authentik.oidc_slug + "/" —

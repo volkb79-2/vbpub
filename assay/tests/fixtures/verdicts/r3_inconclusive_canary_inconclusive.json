@@ -1,5 +1,5 @@
 {
-  "schema_version": 9,
+  "schema_version": 10,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "ffffffffffffffffffffffffffffffffffffffff",
@@ -42,7 +42,9 @@
     },
     "r3": {
       "mechanism": "not-a-real-mechanism",
-      "target": "pkg/greet.py"
+      "targets": [
+        "pkg/greet.py"
+      ]
     }
   },
   "snapshot_policy": {
@@ -63,9 +65,14 @@
       "reason_code": "CANARY_INCONCLUSIVE",
       "canary": {
         "mechanism": "not-a-real-mechanism",
-        "target": "pkg/greet.py",
-        "description": "'not-a-real-mechanism' is not a known canary mechanism -- expected one of ['import-break', 'uncovered-line']; nothing to judge",
-        "control_outcome": "PASS"
+        "attempts": [
+          {
+            "target": "pkg/greet.py",
+            "description": "'not-a-real-mechanism' is not a known canary mechanism -- expected one of ['import-break', 'uncovered-line']; nothing to judge",
+            "disposition": "attempted",
+            "control_outcome": "PASS"
+          }
+        ]
       }
     }
   ],

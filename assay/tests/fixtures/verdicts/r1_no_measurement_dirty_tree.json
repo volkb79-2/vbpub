@@ -1,5 +1,5 @@
 {
-  "schema_version": 9,
+  "schema_version": 10,
   "assay_version": "0.1.0",
   "lane": "package",
   "commit": "9999999999999999999999999999999999999999",
@@ -44,7 +44,9 @@
       "source": "computed",
       "status": "NO_MEASUREMENT",
       "verified_by_assay": true,
-      "reason_code": "DIRTY_TREE"
+      "reason_code": "DIRTY_TREE",
+      "detail": "1 uncommitted file(s) under <SOURCE_ROOT> — the gate diffs committed HEAD, so these are invisible to it. Commit or stash, then re-run. Affected: pkg/mod.zzz",
+      "detail_dropped_bytes": 0
     }
   ],
   "evidence": []

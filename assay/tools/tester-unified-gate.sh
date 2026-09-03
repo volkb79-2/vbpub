@@ -72,6 +72,55 @@ for name, want in expected.items():
 PYEOF
 }
 
+# B024/DA-R7: the lint closure is a THIRD venv, never `build-venv` and never
+# `run-venv`. A linter is not a build input and not a runtime dependency, so
+# putting it in either would change what A-198's five-wheel closure assertion
+# above is asserting -- that assertion must stay byte-for-byte what it was.
+# `lint-wheelhouse/` holds exactly one pure-Python wheel (pyflakes has no
+# dependencies), fetched once on a networked host and pinned by sha256 in
+# `lint-requirements.txt` and `lint-wheelhouse-manifest.json`; the install is
+# `--no-index --require-hashes`, so the gate's own network-less closure is not
+# loosened by a byte.
+build_lint_venv() {
+  local scratch="$1" distribution="$2" base_prefix
+  base_prefix="$(/opt/tester-venv/bin/python -c 'import sys; print(sys.base_prefix)')"
+  "$base_prefix/bin/python3" -m venv "$scratch/lint-venv"
+
+  "$scratch/lint-venv/bin/python" -m pip install \
+    --no-index \
+    --find-links "$distribution/lint-wheelhouse" \
+    --require-hashes \
+    -r "$distribution/lint-requirements.txt"
+
+  "$scratch/lint-venv/bin/python" - <<'PYEOF' || die "installed lint closure does not match the locked pyflakes pin"
+from importlib.metadata import version
+
+got = version("pyflakes")
+assert got == "3.4.0", f"pyflakes: expected 3.4.0, got {got}"
+PYEOF
+}
+
+# Runs pyflakes over the JUDGED source -- the private exact-OID clone, not the
+# bind-mounted worktree, for the same reason the wheel is built from the clone
+# (A-198): a gitignored stray `.py` in the caller's tree must not be able to
+# redden or to launder this phase. pyflakes' whole rule set IS the F-rule set
+# (undefined names, unused imports and locals, redefinitions, f-strings without
+# placeholders); it carries no style opinions, so there is no rule selection to
+# get wrong and no configuration file to drift.
+#
+# Scope is `src/assay` only. Measured at B024's landing: `src/assay` and
+# `gate/` are pyflakes-clean; `tests/` reports 31 findings across 19 modules
+# and contains `tests/fixtures/mutation/python/broken.py`, a DELIBERATELY
+# unparseable fixture that pyflakes can never pass. Widening the scope is a
+# separate sweep with its own evidence (B062), not a side effect of wiring
+# the phase.
+run_lint_phase() {
+  local scratch="$1"
+  "$scratch/lint-venv/bin/python" -m pyflakes "$scratch/clone/assay/src/assay" \
+    || die 'pyflakes reported findings in src/assay (see the lines above)'
+  echo 'ASSAY_GATE_PHASE=pyflakes-clean'
+}
+
 build_one_wheel() {
   local scratch="$1"
   local -a wheels
@@ -230,7 +279,19 @@ run_self_hosted_lane() {
   # artifact it came from -- so a self-hosted run that somehow imported source
   # instead of the installed wheel stops here, loudly, rather than producing
   # evidence attributed to a build it never ran.
+  # (A-429) `--resume --progress` on EVERY `assay run` in the estate is an
+  # operator directive of 2026-09-02, now estate policy (vbpub AGENTS.md,
+  # run-gate SPEC R-38 / RG-33, run-gate rev 33). run-gate appends both to
+  # every assay-kind lane it drives; this gate calls `assay run` itself, so it
+  # mirrors the policy rather than being the one exception to it. Both are
+  # no-ops on THIS lane by assay's own contract -- `--progress` is ignored
+  # without R2 and resume state is touched only by the mutation sweep -- which
+  # is the point: the invocation shape is uniform across the estate whether or
+  # not a given lane has anything to checkpoint. The progress file lives in
+  # `$scratch` like the verdict, never in the worktree, where an untracked
+  # file would read as DIRTY_TREE.
   if ! assay run tester-unified --require-judge-provenance \
+      --resume --progress "$scratch/progress-tester-unified.jsonl" \
       --verdict-json "$scratch/verdict.json"; then
     echo 'ASSAY_GATE_DIAGNOSTIC=self-hosted-lane-red; rerunning its command for visible diagnostics' >&2
     # A red lane has two very different shapes and the rerun below only shows
@@ -468,10 +529,16 @@ run_inner() {
   # lives on in W5's v9 successors, run for real further down. Nothing about
   # W4 is deleted or rewritten: `carve-assets/W4/` is the historical record of
   # what was proved under the contract that existed at the time.
+  #
+  # Wave D (the v10 integrity cut): 9 -> 10 does to W5 exactly what 8 -> 9 did
+  # to W4, so W5 JOINS the same demotion -- collect-only here, hard-cut-probed
+  # below -- and its positive coverage lives on in W6's v10 successors, run
+  # for real further down. `carve-assets/W5/` is untouched by that cut.
   for locked in \
     "nyxloom-trove/carve-assets/W1/test_acceptance_v6.py" \
     "nyxloom-trove/carve-assets/W2/test_acceptance_v7.py" \
-    "nyxloom-trove/carve-assets/W4/test_acceptance_v8.py"
+    "nyxloom-trove/carve-assets/W4/test_acceptance_v8.py" \
+    "nyxloom-trove/carve-assets/W5/test_acceptance_v9.py"
   do
     # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
     PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
@@ -488,7 +555,7 @@ from assay.verify import verify_document
 
 root = Path(sys.argv[1]) / "nyxloom-trove" / "carve-assets"
 checked = 0
-for wave, version in (("W1", 6), ("W2", 7), ("W4", 8)):
+for wave, version in (("W1", 6), ("W2", 7), ("W4", 8), ("W5", 9)):
     expected = root / wave / "expected"
     paths = sorted(expected.glob("*.json"))
     assert paths, f"{wave}/expected holds no frozen templates to check"
@@ -496,28 +563,30 @@ for wave, version in (("W1", 6), ("W2", 7), ("W4", 8)):
         document = json.loads(path.read_text())
         failures = verify_document(document)
         assert failures == [
-            f"schema_version {version} is not this verifier's version 9: a "
+            f"schema_version {version} is not this verifier's version 10: a "
             f"verdict artifact is rejected, never upgraded in place -- "
-            f"re-produce it with an assay whose VERDICT_SCHEMA_VERSION is 9"
+            f"re-produce it with an assay whose VERDICT_SCHEMA_VERSION is 10"
         ], (wave, path.name, failures)
         checked += 1
-print(f"v6/v7/v8 hard-cut guard passed for {checked} frozen templates")
+print(f"v6/v7/v8/v9 hard-cut guard passed for {checked} frozen templates")
 PYEOF
-  echo 'ASSAY_GATE_PHASE=verdict-v6-v7-v8-hard-cut-verified'
+  echo 'ASSAY_GATE_PHASE=verdict-v6-v7-v8-v9-hard-cut-verified'
 
-  # A-359..A-366 (wave B, the producer cut): the locked v9 acceptance suite,
+  # A-427..A-434 (wave D, the integrity cut): the locked v10 acceptance suite,
   # run for real against the same installed wheel. It carries forward the
-  # positive coverage W1's, W2's and now W4's suites gave up above, and adds
-  # v9's own contract: `judgment.r2.producer` and BOTH directions of the fork
-  # it opens, the OPEN `stryker:` namespace beside three still-closed enums
-  # (plus the source-string drift guard that makes an open branch safe),
-  # `cwd_declared`'s deliberate absence from the lane-resolved group, and
-  # `snapshot_policy.link_paths`. Every negative in it is differential.
+  # positive coverage W1's, W2's, W4's and now W5's suites gave up above, and
+  # adds v10's own contract: `judgment.r2.fail_under` and BOTH directions of
+  # the producer fork it rides, `claim.detail` with its BYTE bound and its
+  # all-or-nothing dropped-byte pair, the two reserved reason codes in both
+  # schema places AND in `assay.errors` independently, the
+  # `adjudicated => verified_by_assay: false` narrowing, `canary.attempts[]`
+  # with its disposition fork and pairwise target equality, and `R4` with
+  # `judgment.r4`/`red_first`. Every negative in it is differential.
   # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
   PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
-    "$worktree/assay/nyxloom-trove/carve-assets/W5/test_acceptance_v9.py" \
+    "$worktree/assay/nyxloom-trove/carve-assets/W6/test_acceptance_v10.py" \
     -q -p no:randomly --override-ini=pythonpath=
-  echo 'ASSAY_GATE_PHASE=verdict-v9-successors-verified'
+  echo 'ASSAY_GATE_PHASE=verdict-v10-successors-verified'
 
   run_self_hosted_lane "$worktree" "$scratch" "$version" "$wheel"
 
@@ -566,6 +635,13 @@ PYEOF
   echo 'ASSAY_GATE_PHASE=cmru-b006a-qualified'
 
   run_independent_witness "$scratch" "$run_venv_site"
+
+  # B024/DA-R7: lint runs AFTER the suite, deliberately. It is the cheapest
+  # phase here and could run first, but a linter that reddens the gate before
+  # the tests have spoken buys a five-second answer at the cost of the one the
+  # reviewer actually needs. Its closure is built here, next to its only use.
+  build_lint_venv "$scratch" "$distribution"
+  run_lint_phase "$scratch"
 }
 
 # --- entry points ------------------------------------------------------------
