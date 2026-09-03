@@ -997,9 +997,25 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `aborted`, never a pass; a container that disappears mid-collect leaves
     `docker wait` unreadable, which is already an exit-3 refusal, never a
     pass.
-  - **`R-39d` Where it does not apply.** `--dry-run` DISCLOSES a record (and
-    what a live run would do with it) and changes nothing — it does not
-    attach, collect, clear or remove. Host lanes and exec lanes start no
+    - **What the invocation says about itself.** The usual `rev | lane | env
+      | slice` header belongs to a run this client STARTED; a re-attach or a
+      follow prints `rev | lane | re-attach` / `| follow` instead, because
+      the header's mounts and slice are claims this invocation never made.
+      The lane's own BOUNDS are the opposite case and print on all three
+      paths (`print_lane_bounds`): `budget` and `stall_timeout` are facts
+      about the lane, and a re-attached lane that was never told its
+      `stall_timeout` got stopped against a number its own output had never
+      mentioned. On a FOLLOW the `stall_timeout` line also names the owning
+      pid as the client that will act on it — the same fact, without
+      implying this invocation would be the one to stop the container.
+  - **`R-39d` Where it does not apply.** `--dry-run` DISCLOSES a record and
+    names what a live run would do with it, and changes nothing — it does
+    not attach, collect, clear or remove. The disclosure resolves HEAD and
+    the owner FIRST and walks the live decision's branches in the live
+    decision's order, so it names the refusal, the follow or the `--fresh`
+    removal where those are what would happen; announcing "re-attach or
+    collect" for a record the live run refuses is worse than saying nothing,
+    because a dry run's whole audience is someone about to act on it. Host lanes and exec lanes start no
     container of run-gate's own, so they have no record and refuse `--fresh`
     by name (`R-25`/`R-35`'s rule), as do `doctor`, `history`,
     `validate-pointers` and a bare invocation. A conjunction lane carries the

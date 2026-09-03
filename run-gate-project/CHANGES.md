@@ -172,7 +172,17 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
     record's own `started_at` answers as before.
   - **New flag `--fresh`** (run path, ephemeral container lanes only —
     refused by name on host lanes, exec lanes and every verb). `--dry-run`
-    discloses an inflight record and changes nothing.
+    discloses an inflight record and changes nothing — and it now names
+    what a live run would ACTUALLY do with that record: the refusal on a
+    commit mismatch, the follow when the owner is alive, the removal under
+    `--fresh`. It resolves HEAD and the owner first and walks the live
+    decision's branches in the live decision's order.
+  - A re-attached or followed lane discloses the `budget` and
+    `stall_timeout` it is armed with, exactly as a fresh one does. They were
+    printed on the fresh path only, so a re-attached lane could be stopped
+    against a `stall_timeout` its own invocation had never mentioned. On a
+    follow the line also names the owning pid as the client that will act on
+    it.
   - **Consumer note:** the record lives in the `.run-gate/` directory
     adopters already git-ignore for `history.json`; no config change is
     needed. A project that has NOT ignored it gets one warning per run

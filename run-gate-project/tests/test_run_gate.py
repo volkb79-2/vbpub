@@ -6526,6 +6526,67 @@ class TestInflightRecordDecisions:
         assert "following" not in out
         assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
 
+    BOUNDED_LANE = """\
+        schema_version = 1
+        [environments.tester-unified]
+        image = "tester-unified:local"
+        [lanes.mutation]
+        kind = "assay"
+        environment = "tester-unified"
+        assay_lane = "cw2b_schema"
+        assay_command = ["./a.pyz"]
+        budget = "120m"
+        stall_timeout = "15m"
+        clean_tree = false
+    """
+
+    def test_a_re_attached_lane_discloses_the_bounds_it_is_armed_with(
+            self, tmp_path, monkeypatch, capsys):
+        """RW-18 (review S6). The `budget` and `stall_timeout` prints lived
+        on the FRESH path only, while `resolve_inflight` armed the watch and
+        returned before them — so a re-attached lane was stopped against a
+        `stall_timeout` its own invocation had never mentioned. Unlike the
+        `rev | lane | env | slice` header these are facts about the LANE, not
+        claims about mounts this client did not choose (`R-05`)."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch,
+                                               config=self.BOUNDED_LANE)
+        plant_inflight(proj, repo, state, lane="mutation", status="running")
+        assert run_gate.main(["mutation"]) == 0
+        out = capsys.readouterr().out
+        assert "run-gate: re-attached to run-gate-planted" in out
+        assert "run-gate: budget 120m (advisory)" in out
+        assert ("run-gate: stall_timeout 15m — the lane is stopped only if "
+                "its progress file goes silent that long, never on total "
+                "elapsed time") in out
+        assert lane_runs(log) == []
+
+    def test_a_followed_lane_discloses_the_bounds_and_who_enforces_them(
+            self, tmp_path, monkeypatch, capsys):
+        """A follower is entitled to the same two numbers — it cannot make
+        sense of the owner stopping the container out from under its log
+        stream otherwise — but it will not be the client that acts on them,
+        and the line says so rather than implying otherwise."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch,
+                                               config=self.BOUNDED_LANE)
+        plant_inflight(proj, repo, state, lane="mutation", status="running",
+                       **live_owner_fields())
+        assert run_gate.main(["mutation"]) == 0
+        out = capsys.readouterr().out
+        assert "run-gate: following run-gate-planted" in out
+        assert "run-gate: budget 120m (advisory)" in out
+        assert (f"never on total elapsed time — enforced by the owning "
+                f"client, pid {os.getpid()}; this one only watches") in out
+
+    def test_a_lane_without_bounds_discloses_neither(
+            self, tmp_path, monkeypatch, capsys):
+        """Disclosure, not noise: a lane that declares neither key says
+        nothing about either, on every path."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        plant_inflight(proj, repo, state, status="running")
+        assert run_gate.main(["suite"]) == 0
+        out = capsys.readouterr().out
+        assert "budget" not in out and "stall_timeout" not in out
+
     def test_a_gone_container_is_reported_cleared_and_the_lane_runs_fresh(
             self, tmp_path, monkeypatch, capsys):
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
@@ -6587,11 +6648,61 @@ class TestInflightRecordDecisions:
         assert run_gate.main(["suite", "--dry-run"]) == 0
         assert ("run-gate: DRY RUN: an inflight record names container "
                 "run-gate-planted (started 2026-09-02T11:00:00Z, state "
-                "running) — a live run would re-attach to it or collect it"
+                "running) — a live run would re-attach to it"
                 ) in capsys.readouterr().out
         assert lane_runs(log) == []
         assert record.read_text() == before    # not cleared, not rewritten
         assert (state / "run-gate-planted").exists()   # not removed
+
+    def test_dry_run_names_the_refusal_a_commit_mismatch_would_give(
+            self, tmp_path, monkeypatch, capsys):
+        """RW-18 (review S5, hollow test 5). The dry-run branch used to be
+        taken BEFORE the commit comparison, so it announced "a live run would
+        re-attach to it or collect it" for a record the live run refuses with
+        exit 2. RW-1 asks the dry run to DISCLOSE the record; a disclosure
+        naming the wrong outcome is worse than none, because it is the one an
+        operator acts on. This case must say what the live run below says."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, commit="dead" * 10)
+        assert run_gate.main(["suite", "--dry-run"]) == 0
+        out = capsys.readouterr().out
+        assert "DRY RUN" in out
+        assert "a live run would REFUSE (exit 2)" in out
+        assert "deaddeaddead" in out and "--fresh removes run-gate-planted" in out
+        assert "re-attach" not in out and "collect it" not in out
+        assert lane_runs(log) == []
+        assert record.exists() and (state / "run-gate-planted").exists()
+        # …and the live run does exactly that.
+        capsys.readouterr()
+        assert run_gate.main(["suite"]) == 2
+        assert "deaddeaddead" in capsys.readouterr().err
+
+    def test_dry_run_names_the_follow_a_live_owner_would_get(
+            self, tmp_path, monkeypatch, capsys):
+        """The same defect one branch over: RW-14 added FOLLOW to the live
+        decision in this wave, and a dry run that still said "re-attach"
+        would be S5 again with a different name."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        plant_inflight(proj, repo, state, **live_owner_fields())
+        assert run_gate.main(["suite", "--dry-run"]) == 0
+        out = capsys.readouterr().out
+        assert f"a live run would FOLLOW it — pid {os.getpid()} is alive" in out
+        assert "removing nothing" in out
+        assert lane_runs(log) == []
+
+    def test_dry_run_with_fresh_names_the_removal_not_a_re_attach(
+            self, tmp_path, monkeypatch, capsys):
+        """`--fresh --dry-run` announced a re-attach for a record the live
+        run removes — the S5 shape a third time, since the dry-run branch
+        preceded the `--fresh` branch too."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state)
+        assert run_gate.main(["suite", "--fresh", "--dry-run"]) == 0
+        out = capsys.readouterr().out
+        assert "a live run would remove run-gate-planted and run anew" in out
+        assert "re-attach" not in out
+        assert [c for c in _docker_calls(log) if c[0] == "rm"] == []
+        assert record.exists() and (state / "run-gate-planted").exists()
 
     def test_dry_run_discloses_a_lost_record_too(self, tmp_path, monkeypatch,
                                                  capsys):

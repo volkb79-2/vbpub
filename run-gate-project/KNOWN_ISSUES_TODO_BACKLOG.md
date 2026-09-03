@@ -2622,7 +2622,17 @@ the real cost of this item and the reason it is not a footnote to RG-36.
       pass-through must not regress into a captured-then-replayed stream);
 - [ ] An assay lane is unchanged — it still judges from the progress file
       and discloses `source: progress file`, never downgrading to the log
-      stream because a file has not appeared yet.
+      stream because a file has not appeared yet;
+- [ ] **The source-of-signal line is printed on the RE-ATTACH and FOLLOW
+      paths too, not only on the fresh one** (controller ruling RW-18, out
+      of review round 1's S6). Rev 34's first cut printed `budget` and
+      `stall_timeout` on the fresh path alone, so a re-attached lane was
+      stopped against a `stall_timeout` its own invocation had never
+      mentioned; rev 34 fixes that (`print_lane_bounds`, called from all
+      three paths), and this item inherits the rule rather than the defect.
+      The `source:` clause belongs on the same line, so adding it to
+      `print_lane_bounds` covers every path by construction — a second print
+      site is how the two drift apart again.
 
 ### Status — OPEN 2026-09-02, E-3 candidate (23.5.0)
 
