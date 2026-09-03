@@ -496,6 +496,22 @@ MaxFileSec=1month
             # error-reporting path every other RuntimeError here goes
             # through (adversarial review finding).
             raise RuntimeError(f"could not read partition table: {exc}") from exc
+        if table.sector != 512:
+            # Every sector computation in this module (here and throughout
+            # _plan_swap_partitions()/_plan_root_shrink()/_write_sfdisk_plan())
+            # hardcodes 512-byte sectors -- true for every VPS/cloud host
+            # this tool targets (virtio-blk/virtio-scsi present 512-byte
+            # logical sectors regardless of physical backing storage), but
+            # not universally true (a native 4Kn disk with no 512e
+            # emulation reports 4096). Table already parses the dump's own
+            # `sector-size:` line, so refuse outright here rather than
+            # silently pairing a wrong-unit disk_sectors with sfdisk's own
+            # (correctly-scaled) start=/size= values on the destructive
+            # Case A/B partitioning path (adversarial review finding).
+            raise RuntimeError(
+                f"disk /dev/{self.root_disk} reports {table.sector}-byte sectors, not 512 -- "
+                f"this tool's sector arithmetic assumes 512 throughout and has not been verified against this disk"
+            )
         root_entry = next((part for part in table.parts if part["num"] == self.root_number), None)
         if root_entry is None:
             raise RuntimeError(f"could not parse current root partition from sfdisk dump")

@@ -177,6 +177,21 @@ def test_disk_facts_converts_unsupported_disklabel_systemexit_to_runtimeerror(tm
         installer._disk_facts()
 
 
+def test_disk_facts_refuses_non_512_byte_sectors(tmp_path):
+    # Every sector computation in this module hardcodes 512-byte sectors --
+    # true for every VPS/cloud host this tool targets, not universally true
+    # (a native 4Kn disk with no 512e emulation reports 4096). Refuse
+    # outright rather than silently pairing a wrong-unit disk_sectors with
+    # sfdisk's own correctly-scaled values (adversarial review finding).
+    installer, actions = make_installer(tmp_path)
+    actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = (
+        "label: gpt\ndevice: /dev/vda\nsector-size: 4096\n\n"
+        "/dev/vda3 : start=2500608, size=20971520, type=0fc63daf-8483-4772-8e79-3d69d8477de4\n"
+    )
+    with pytest.raises(RuntimeError, match="4096-byte sectors, not 512"):
+        installer._disk_facts()
+
+
 def test_disk_facts_rejects_non_positive_root_size(tmp_path):
     installer, actions = make_installer(tmp_path)
     actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = (

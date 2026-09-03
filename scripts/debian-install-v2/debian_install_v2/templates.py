@@ -526,6 +526,16 @@ sfdisk --no-reread --force "$DISK" < "$SFDISK_PLAN" || {
   resize2fs "$DEVICE"
   exit 0
 }
+# Deviation from CASE-B-ROOT-SHRINK-DESIGN.md's original skeleton, which
+# assumed initramfs's own subsequent device-open naturally triggers a
+# kernel partition re-read with no explicit call needed. blockdev
+# --rereadpt was ALREADY pre-allowlisted in actions.py (--rereadpt
+# specifically, unused by any other caller) before this hook existed --
+# a strong signal this exact call was anticipated -- so it's used here
+# for certainty rather than relying on an unverified implicit kernel
+# behavior. 2>/dev/null || true: never fail the boot over a re-read that
+# the normal mount sequence would have forced anyway (belt-and-suspenders,
+# not the load-bearing step).
 blockdev --rereadpt "$DISK" 2>/dev/null || true
 """
 
