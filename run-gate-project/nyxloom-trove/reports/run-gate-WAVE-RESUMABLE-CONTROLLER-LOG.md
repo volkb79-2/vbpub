@@ -338,15 +338,16 @@ controller's entries from the implementer's return onward; wave records
   adds no new docker argv shape and RW-28's promotion is fully expressible
   against the stateful fake docker. Five decision asks, ruled:
   - **RW-32 (ask 1 — RW-28's promotion on a failing container destroys the
-    evidence `rm -f` would remove): ACCEPT, one addendum commit.** Before
-    the `rm -f`, the follower calls `save_container_logs` (the path the
-    owner already uses on a non-zero exit) and the disclosure line
-    attributes the evidence to the client actually doing the work, not the
-    gone owner. A promotion without this is worse than the self-heal it
-    replaces — the diagnostic record for the one case most likely to need
-    it (the owner died, the container did not exit cleanly) would be lost.
-    Dispatched as a small, contained addendum to a fresh implementer before
-    round 3, so the reviewer verifies the complete diff once.
+    evidence `rm -f` would remove): CONFIRMED, already implemented, no
+    addendum needed.** [Correction, same entry: the report's phrasing
+    ("this adds…") was read as a not-yet-applied proposal; `promote_follower`
+    at `run-gate.py:3444` already calls `save_container_logs` before the
+    `rm -f` on a non-zero exit, and `follow_container:3491-3502` already
+    prints the promoted-vs-not-promoted disclosure with the evidence path
+    or its absence named. The commit is `7fd45793` (RW-28) itself — the
+    implementer built the fuller behaviour in the first pass and asked
+    whether the deviation beyond RW-28's literal three duties was wanted.
+    It is. Nothing further to land; round 3 proceeds on `661fde05` as-is.]
   - **RW-33 (ask 2 — RW-29's foreign-namespace record still names a pid
     meaningless in this namespace): confirmed as implemented.** A second
     return channel so all six message sites could say "an unverifiable pid
