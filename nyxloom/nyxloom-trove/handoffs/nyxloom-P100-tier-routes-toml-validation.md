@@ -274,7 +274,8 @@ a contract item.
    > band will eventually carry. Do not put a nonexistent tier in
    > frontmatter. Routing a `2a`-`2c` package through a live tier whose
    > capability is below what the class needs requires an explicit
-   > human/controller override; preferably carve it down first.
+   > human/controller override and a frontier-capable route; preferably
+   > carve it down first.
 
    (Confirmed accurate at carve time: the live matrix's actual keys are
    `flash-high`, `flash-max`, `terra-med`, `luna-high`, `sonnet5-high`,
