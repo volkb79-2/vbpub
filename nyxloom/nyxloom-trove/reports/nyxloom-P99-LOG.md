@@ -102,8 +102,40 @@ fixtures raise `ValueError`, and their messages) is unchanged. Local
 lines 474-491 (the whole `[lint.l10]` validation block) are no longer in
 the missing-lines list.
 
-## Gate run 2
+## Gate run 2 (refused, dirty tree — no container launched)
 
-`./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-nl3 tester-unified`
-— result and verdict recorded in `nyxloom-P99-REPORT.md` (read in a
-separate step from launching it, per gate discipline).
+Re-running `./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-nl3
+tester-unified` immediately after commit `9657bc7a` refused: "refusing to
+judge a dirty tree ... 1 uncommitted change(s) (first: '?? nyxloom/nyxloom-
+trove/reports/nyxloom-P99-LOG.md')". No container was started (exit before
+the docker argv line). Fixed by committing this LOG.md (below) before
+re-running.
+
+## Commit `79725379` — docs(nyxloom): P99 -- LOG.md through the gate-1-fail / reorder-fix / gate-2 cycle
+
+Committed this file's own then-current content (documenting gate run 1's
+FAIL and the reorder fix) so the worktree would be clean for the next
+gate attempt.
+
+## Gate run 3 (PASS)
+
+`./run-gate.py --worktree /workspaces/vbpub/.worktrees/nyxloom-nl3
+tester-unified` at commit `79725379` (the LOG.md commit, HEAD at gate
+time): **`tester-unified: PASS (exit 0)`**. Verdict JSON
+(`.assay/verdict-tester-unified.json`): `"outcome": "PASS"`,
+`"exit_code": 0`; claims R0 (`tests-pass`) `status: PASS`, R1
+(`changed-line-coverage`, `fail_under: 100.0`, `mode: changed_lines`)
+`status: PASS` with `"pct": 100.0`, `"missing_lines": {}` — the
+`config.py` 483-487 gap from run 1 is gone. Full evidence + per-oracle
+mapping in `nyxloom-P99-REPORT.md`.
+
+## Commit (this one) — docs(nyxloom): P99 -- REPORT.md with full oracle evidence + gate verdict
+
+Written after gate run 3's PASS was confirmed. Contains per-oracle
+evidence (exact pytest node + PASSED output for each of O1-O5, plus two
+independent out-of-pytest re-verifications: O1's `.load()` field values
+and O3's equality-case `ValueError` message), the gate-1-FAIL ->
+reorder-fix -> gate-3-PASS narrative, an itemization of every touched
+symbol in `config.py`/`lint.py`/the schema, and orientation telemetry.
+This is the final commit of the package -- all 6 Work items and all 5
+oracles are independently verified; not merging, per instructions.
