@@ -7021,3 +7021,112 @@ predecessor landed.
       matching paragraph are rewritten, not merely deleted: consumers who read
       A-437's statement need to be told what replaced it, in the v11 migration
       notes.
+
+---
+
+## B071 — a native R2 mutation candidate's `stdout_tail`/`stderr_tail` is computed and then discarded; `crashed`/`killed` verdicts carry no diagnostic evidence of why
+
+**Filed 2026-09-03 by the dstdns controller, found while diagnosing D-371/D-372
+(dstdns `nyxloom-trove/decisions.md`) on the `cw2b_schema` lane. Related but
+distinct from [B065](#b065) (progress-event richness for rate/ETA/stall — that
+answers "is it stalled", this answers "why did it end up in this bucket").**
+
+### What was measured
+
+Every mutant candidate's subprocess result already carries bounded output:
+`execute_command` (`runner.py:919-920`) always populates
+`CommandResult.stdout_tail`/`.stderr_tail` via `_bounded_tail`
+(`runner.py:580-596`, the final `COMMAND_TAIL_BYTES = 64 * 1024`,
+`runner.py:268`, of each stream) — this is not a new capability, it is the
+SAME plumbing B014 shipped and B027 hardened for exactly this kind of
+diagnostic use.
+
+`_execute_mutation_jobs` (`mutation.py`) has this `CommandResult` in scope as
+`run.result` at every classification site (`mutation.py:1707-1718`,
+`_classify_mutant_result` / `_classify_mutant_result_with_equivalence`), and
+persists TWO things per candidate from it:
+
+- `write_progress` (`mutation.py:1719-1730`) — `outcome_bucket` and
+  `elapsed_seconds` only;
+- `_write_mutation_state_record` (`mutation.py:1732-1751`, gated on
+  `state_project_root is not None`) — `outcome_bucket` plus mutation
+  identity fields (`source_sha256`, `replacement_sha256`, `lineno`,
+  `description`) only.
+
+Neither payload includes `run.result.stdout_tail` or `.stderr_tail`. The
+final verdict (`verdict-<lane>.json`) doesn't carry them either — its
+mutation `claims` entries are the same bucket-count/identity shape. Once a
+candidate's wave completes, `run.result` goes out of scope and the captured
+text is gone. This is a genuine omission, not a missing feature: `verdict.py`
+already defines `result_stdout_tail`/`result_stderr_tail` as first-class
+payload fields (`verdict.py:3778-3779`, serialized at `:4538-4544` when set),
+and `verify.py:1853-1859` already round-trips them for OTHER claim types.
+The R2 native mutation path simply never wires into machinery the codebase
+already has and already uses elsewhere.
+
+(Aside, found in the same pass, not filed separately: `write_progress`'s
+`outcome_bucket`/`elapsed_seconds` — confirmed present at `mutation.py:1727-1728`
+— mean B065's "no timestamp, no elapsed time, and no outcome bucket" claim is
+partially stale for the currently-installed 4.0.0; `emitted_at`, the `run`
+header's `budget_s`/`budget_per_candidate_s`, and the terminal `end` event
+B065 proposes are still genuinely absent. Worth a status check when B065 is
+next touched, not re-measured fully here.)
+
+### Concrete repro (real, not constructed)
+
+dstdns's `cw2b_schema` lane, `sql:drop-unique` on
+`infra/db-init/init-scripts/03c-create-workflow-core.sql`
+(`CONSTRAINT uq_work_units_id_operation UNIQUE (id, operation)` →
+`CONSTRAINT uq_work_units_id_operation CHECK (true)`), landed `crashed` with
+zero retained information about why — `.assay/mutation-state/<id>.json` held
+only `{outcome_bucket: "crashed", lineno: 189, description: "UNIQUE -> CHECK
+(true)", ...identity fields}`. Recovering the actual reason required manually
+reproducing the exact byte-range mutation by hand (~2 minutes: apply the
+mutation, re-run `scripts/sql-mutation-gate.sh` in isolation, read its
+stdout) to discover `ERROR: there is no unique constraint matching given keys
+for referenced table "work_units"` — a later `FOREIGN KEY` in the same DDL
+file requires that exact uniqueness to exist. `execute_command` had already
+captured this exact text as `stderr_tail` during the ORIGINAL run; it was
+computed once and thrown away.
+
+The same investigation session hit this twice: D-372 itself (`crashed`
+verdicts that were actually legitimate test-caught mutations, misclassified
+because the equivalence artifact never got written) was ALSO only diagnosable
+by manual reproduction — assay's own captured output would have shown `2
+failed, 450 passed` immediately, in seconds, instead of requiring a ~3-4
+minute manual re-run per candidate under investigation.
+
+### Proposed change
+
+Thread `run.result.stdout_tail`/`.stderr_tail` into both persistence sites
+using the SAME field names `verdict.py` already defines
+(`result_stdout_tail`/`result_stderr_tail`), so a future verdict-level
+surfacing (if ever wanted) needs no new vocabulary:
+
+- `_write_mutation_state_record`'s payload (`mutation.py:1734-1750`): add the
+  two fields, at minimum whenever `outcome_bucket` is `crashed` (the only
+  bucket where the tail is the ENTIRE diagnostic trail — a `killed`/`survived`
+  candidate's meaning is already fully carried by the pass/fail split, and a
+  `budget_exceeded` candidate's tail is whatever was captured before the
+  timeout, still potentially useful but lower priority);
+- optionally `write_progress`'s payload too, so a live-tailing monitor gets
+  the same signal without reading `mutation-state/`.
+
+Already bounded (64 KiB per stream, `COMMAND_TAIL_BYTES`) — no new size risk.
+No schema/wire change is required for the mutation-state file (it is not a
+verified artifact); a verdict-level change, if wanted later, is a separate,
+larger decision this entry does not make.
+
+### Acceptance
+
+- [ ] a `crashed` candidate's `mutation-state/<id>.json` carries
+      `result_stderr_tail` (and `result_stdout_tail` when non-empty) reading
+      the actual subprocess failure, verified on a real run (the
+      `uq_work_units_id_operation` case above is a ready-made fixture);
+- [ ] a `killed` candidate's record is unaffected in size/shape by default
+      (tails are opt-in by bucket, not universal, unless the design session
+      decides the cost is worth it for all four buckets);
+- [ ] `assay verify` is unaffected — this is diagnostic-only, like B065's
+      progress stream, never evidence;
+- [ ] CONSUMERS' mutation-state paragraph documents the new field(s) and
+      which buckets populate them.
