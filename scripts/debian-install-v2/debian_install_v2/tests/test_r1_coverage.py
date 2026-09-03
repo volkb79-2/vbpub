@@ -355,10 +355,17 @@ def test_write_file_real(tmp_path):
     assert target.read_text() == "hello\n"
 
 
-def test_write_file_rejects_relative():
+def test_write_file_rejects_relative(tmp_path, monkeypatch):
+    # cwd isolated to tmp_path: if this guard's `or` were ever mutated to
+    # `and` (a real mutation-testing finding, not hypothetical), the write
+    # would silently succeed instead of raising -- and without this chdir it
+    # would land in the tracked source tree (the suite's own cwd), dirtying
+    # the snapshot assay measures rather than merely failing this one test.
+    monkeypatch.chdir(tmp_path)
     actions = HostActions(dry_run=False)
     with pytest.raises(ActionError, match="absolute"):
         actions.write_file("relative.txt", "x")
+    assert not (tmp_path / "relative.txt").exists()
 
 
 # --- installer operational commands ---
