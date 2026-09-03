@@ -462,3 +462,59 @@ controller's entries from the implementer's return onward; wave records
   bumps `__revision__` from 33 independently of the wave's own bump to
   34 — whichever of the two merges to main SECOND must renumber its own
   bump to the next free integer at merge time, not before.
+
+- **2026-09-03 (RG-39 exec-mutex implementer returned, gate GREEN on
+  `fefc6c19`; one review round dispatched before merge)** — Verified
+  independently: `495 passed, 2 skipped` / `diff-coverage OK: 25/25` /
+  `exit 0` (`rg39-selftest-final.log`, read separately); scoped diff
+  against the branch's own fork point `23fe2c98` touches exactly five
+  files (`run-gate.py` +100/-10, `tests/test_run_gate.py` +225, `SPEC.md`
+  +26, `CHANGES.md` +13, `KNOWN_ISSUES_TODO_BACKLOG.md`'s RG-39 row only);
+  tree clean. (The much larger diff against a freshly-fetched
+  `origin/main` is a peer session's unrelated `ciu` v8 design push —
+  `c3730525`, draft.6 — landed on main after this branch forked; benign,
+  no file overlap, not a concern.)
+  - Built: `_open_lockfile()` factoring RG-20's 0600+`O_NOFOLLOW`
+    open-flags discipline so RG-39's lock is a sibling, not a near-copy;
+    `acquire_exec_lock()` (`/tmp/run-gate-exec-<container>.lock`, blocking
+    `LOCK_EX`, contention line naming the container and the lock path,
+    `--dry-run` plans without opening or blocking); `resolve_container_name()`
+    now called ONCE in `main()`'s dispatch rather than inside
+    `run_exec_lane()`, threaded through as parameters so the lock key and
+    the actual `docker exec` target can never independently drift; the
+    lock acquired strictly AFTER `acquire_shared_locks()` and released in
+    the SAME `finally` (fixed global order, no ABBA against RG-20),
+    `flush_run_record` still outside the held window (RG-27 unaffected).
+    Six new tests (`TestExecModeMutex`): same-container serialization
+    (thread-raced), isolated containers never contend, `--dry-run` never
+    blocks, the lock releases on the lane's own exception (`finally`
+    path), a direct ordering assertion (shared-infra before exec-lock, via
+    monkeypatched call tracking), and the `OSError` branch. Red-first
+    proven with a scoped `git stash push -- run-gate.py` (3/5 new tests
+    failed for the expected reasons, restored via `stash pop`). One
+    self-caught defect during that red-first pass, fixed in-place and
+    disclosed rather than hidden: a leaked lock fd on the FIRST red run's
+    own assertion-failure path self-deadlocked the NEXT test via
+    `flock()`'s per-open-file-description semantics — the same latent gap
+    pre-exists, untouched, in this file's own EXISTING RG-20 lock tests;
+    correctly left out of scope rather than opportunistically fixed
+    elsewhere. Refinement (3) (v8 stack-directory keying) correctly NOT
+    built — RG-37 doesn't exist yet, as instructed.
+  - **Merge sequencing decided:** the run-gate WAVE (`feature/run-gate-
+    wave-resumable`, closer to done — RW-37 finishing now, three review
+    rounds already spent) merges to main FIRST and keeps `__revision__ =
+    34`. This exec-mutex branch merges SECOND, after its own review
+    round below — at that point its `__revision__` bump renumbers 34→35,
+    and its rev-history docstring line is edited to read "rev 35" and
+    name rev 34 (the wave) as the immediately preceding entry. Not done
+    now — the branch is otherwise complete and this is a one-line
+    mechanical edit at actual merge time, verified by a fresh selftest
+    then, not before.
+  - **One adversarial review round dispatched** (fresh Opus, never a
+    fork) on this branch's own tip — new locking/concurrency code around
+    a shared host resource warrants the same scrutiny RG-20's own
+    admission locks got, even though the implementer's self-testing
+    (including the self-caught deadlock finding above) was unusually
+    thorough. Own detached worktree/clone for its probes; told the
+    merge-sequencing decision above so it doesn't flag the pending
+    revision renumbering as a defect.
