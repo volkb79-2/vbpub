@@ -4,7 +4,7 @@ id: nyxloom-P100-tier-routes-toml-validation
 project: nyxloom
 title: "Fix AUTHORING.md's stale tier example + add L14 (tier must resolve against live routes.toml)"
 tier: luna-high
-input_revision: "8fcc207c"
+input_revision: "1183d702"
 depends_on: []
 session: fresh
 source:
