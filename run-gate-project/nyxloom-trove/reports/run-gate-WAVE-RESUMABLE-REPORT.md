@@ -259,3 +259,208 @@ independently in this session.
   `stall_timeout = "15m"`, so the lane stops on SILENCE instead of on a
   guessed total, and a killed client re-attaches instead of starting a
   second 120-minute container.
+
+---
+
+# Fix round 1, part 2 (successor session), 2026-09-03
+
+Rulings **RW-15, RW-17, RW-18, RW-19** plus **RW-20** (which the controller
+ruled in answer to fix round 1's decision ask 1), and the live two-client
+probe this package owed. RW-21 and RW-22 are answered "as ruled" below.
+
+| commit | ruling | one line |
+|---|---|---|
+| `a8dc5ebc` | **RW-15** (S1) | `--since` dropped; plain `docker logs -f` already replays from the first line |
+| `cb6104a4` | **RW-20** (ask 1) | a live owner whose container is already gone is re-polled, bounded, before any refusal |
+| `86f7f7b4` | **RW-17** (S4) | a COLLECTED run's duration is the container's own `FinishedAt − StartedAt` |
+| `ffc64903` | **RW-18** (S5+S6) | the dry run names the real outcome; every path discloses the lane's bounds |
+| `d7e280ce` | **RW-19** | S7 + N1..N5 + hollow tests 2/4/6, and one real flake in the wave's own fixture |
+
+Gate on the committed tip `d7e280ce`, verdict read in a separate step:
+
+```
+538 passed, 2 skipped, 2 warnings in 70.00s (0:01:09)
+diff-coverage OK: 452/452 changed executable lines covered (100.0% ≥ 100.0% floor)
+run-gate: lane 'selftest' exit 0
+```
+
+## "As ruled" — RW-20, RW-21, RW-22
+
+- **RW-20 (fix round 1's ask 1) — as ruled.** The bounded re-poll is
+  implemented in `repoll_owner_race`: `OWNER_RACE_REPOLLS = 3` reads in all
+  (the caller's is the first) at `OWNER_RACE_PAUSE_SECONDS = 0.5`, ~1 s. The
+  record vanishing → disclose and run fresh; the owner dying → the ordinary
+  lost-container path; the owner still alive after the window → the refusal
+  by pid, unchanged. Bounded, never a wait loop, and the refusal test asserts
+  the bound.
+- **RW-21 (ask 2) — as ruled, confirmed.** The follower's `docker wait` stays
+  issued BEFORE and concurrently with the log stream. `SPEC.md R-39e` now
+  states the reason and the price in the same breath: one extra docker client
+  held open for the lane's duration, accepted because the alternative loses
+  the follower's exit code on every clean finish.
+- **RW-22 (ask 3) — as ruled, confirmed as shipped.** An impostor container
+  (a stranger wearing the lane's name, id mismatch) is disclosed, left
+  RUNNING, and never touched: run-gate does not remove what it did not
+  start. RG-44 (`doctor` names a container wearing a run-gate lane name that
+  no inflight record owns) is the CONTROLLER's filing after the 23.4.0 merge
+  and is deliberately not filed here.
+
+## Live two-client acceptance probe (real `tester-unified:local`)
+
+Host rule observed: `docker ps --format '{{.Image}} {{.Names}}'` clear of
+`tester-unified:local` and of any `run-gate-*` container (assay's Wave D
+generation 11 had just released the slot), one container at a time, capped
+with `docker update --cpus=3` within seconds of launch, container and scratch
+repo removed in an EXIT trap. Scratch repo `/tmp/rg-live-probe-succ`, a
+`kind = "command"` container lane printing 40 one-second ticks.
+
+**Honest note on the first attempt.** The probe ran twice. In the first run
+scenario 1 passed exactly as below, but scenario 2 was INVALID: the `pgrep`
+pattern matched only the detached launcher, so the run-gate client itself
+survived the `kill -9` and invocation 2 correctly printed `following … (owner
+pid 2653111)` instead of re-attaching. That is a genuine extra RW-14 data
+point — a live owner really is followed, not hijacked — but it is not the
+scenario the acceptance asks for. The run below is the corrected one, with
+the pattern fixed and the client logs moved OUT of the judged tree (in the
+first run they dirtied it, which correctly made the history entry
+`history_eligible: false`).
+
+### Scenario 1 — two clients, one lane: the second FOLLOWS
+
+```
+=== HEAD: e99cb5d30e2398d89222a34ad186bd5bb5214305
+--- client A inflight record:
+{
+  "boot_id": "119fbdb1-be66-4467-9a18-e04e1977ca03",
+  "commit": "e99cb5d30e2398d89222a34ad186bd5bb5214305",
+  "container": "run-gate-rg-live-probe-succ-probe-2662208-1788405791",
+  "container_id": "9144b2a4aef8288555edcb61ba41b647445c28c80648684ad2eced8f786d8cc7",
+  "lane": "probe",
+  "owner_pid": 2662208,
+  "owner_start": 7543605,
+  "progress": null,
+  "project_dir": "/tmp/rg-live-probe-succ",
+  "revision": 34,
+  "schema": 1,
+  "started_at": "2026-09-03T03:23:11Z",
+  "started_epoch": 1788405791.7470937,
+  "verdict": null,
+  "worktree": "/tmp/rg-live-probe-succ"
+}
+--- capped run-gate-rg-live-probe-succ-probe-2662208-1788405791 at 3 CPUs
+--- containers while BOTH are attached: run-gate-rg-live-probe-succ-probe-2662208-1788405791
+
+=== CLIENT A (the OWNER) output:
+run-gate: rev 34 | lane probe | env [environments.tester-unified] in /tmp/rg-live-probe-succ/run-gate.toml | slice dev-background.slice ($CGROUP_PARENT_DEV_BACKGROUND)
+run-gate: docker argv: /usr/bin/docker run -d --name run-gate-rg-live-probe-succ-probe-2662208-1788405791 --cgroup-parent dev-background.slice … tester-unified:local bash -c '…'
+FIRST-LINE-AT-START
+LIVE-PROBE tick 1 … LIVE-PROBE tick 40
+LIVE-PROBE-DONE
+run-gate: lane 'probe' exit 0
+EXIT=0
+=== CLIENT B (the FOLLOWER) output:
+run-gate: following run-gate-rg-live-probe-succ-probe-2662208-1788405791 (owner pid 2662208, started 2026-09-03T03:23:11Z)
+run-gate: rev 34 | lane probe | follow — no new container was started, and this client will not remove run-gate-rg-live-probe-succ-probe-2662208-1788405791, clear its record or record its history: pid 2662208 owns all three
+FIRST-LINE-AT-START
+LIVE-PROBE tick 1 … LIVE-PROBE tick 40
+LIVE-PROBE-DONE
+run-gate: lane 'probe' exit 0
+EXIT=0
+=== containers named run-gate-rg-live-probe-succ-* still present: 0
+=== distinct containers this lane EVER had: run-gate-rg-live-probe-succ-probe-2662208-1788405791  (one docker run)
+=== inflight record present: NO
+=== history:
+  series entries: 1
+  latest: {"outcome": "pass", "exit_code": 0, "duration_seconds": 41.007, "history_eligible": true}
+```
+
+(The `LIVE-PROBE tick 2..39` lines are elided from both clients' output for
+length; both printed all forty, in order. The only other elision is the
+`docker run` argv's inner command.)
+
+**PASS on every clause of the acceptance shape.** A — the client that started
+the run and the one a human is watching — exits **0** with its own true
+result, all forty ticks. B exits **0**, prints `following … (owner pid …)`,
+and removes nothing: the container, the record and the history entry all stay
+the owner's, and B's header says so by name. **ONE** `docker run` (one
+container name ever existed). **ONE** `rm` (zero containers remain, and only
+the owner had a `finally` to run one). **ONE** history entry, `pass`,
+`history_eligible: true`, `duration_seconds: 41.007` measured from the
+CONTAINER's start. This is review B2's exact probe, and at `73e6b061` it
+produced A exit 3 on a green lane with `outcome: "error"` in `latest`.
+
+### Scenario 2 — kill -9 the owner mid-lane; the next invocation RE-ATTACHES
+
+```
+--- capped run-gate-rg-live-probe-succ-probe-2671294-1788405832 at 3 CPUs
+--- SIGKILLing client pids: 2671288 2671288 2671294  at 03:23:59
+--- container after the kill: run-gate-rg-live-probe-succ-probe-2671294-1788405832 Up 8 seconds
+--- inflight record survives the kill: YES
+--- INVOCATION 2 (must re-attach, must NOT start a second container):
+run-gate: re-attached to run-gate-rg-live-probe-succ-probe-2671294-1788405832 (started 2026-09-03T03:23:53Z, running for 0m 08s)
+run-gate: rev 34 | lane probe | re-attach — no new container was started
+FIRST-LINE-AT-START
+  …
+LIVE-PROBE tick 40
+LIVE-PROBE-DONE
+run-gate: lane 'probe' exit 0
+EXIT=0
+=== invocation 2 built/started NO container: 'docker argv' lines = 0; re-attach header lines = 1
+=== containers named run-gate-rg-live-probe-succ-* still present: 0
+=== inflight record present: NO
+=== history after scenario 2:
+  series entries: 1
+    {"outcome": "pass", "exit_code": 0, "duration_seconds": 40.897, "started_at": "2026-09-03T03:23:53Z"}
+  latest: {"outcome": "pass", "exit_code": 0, "duration_seconds": 40.897}
+```
+
+**PASS.** The container outlived the SIGKILL; the record survived it;
+invocation 2 printed the re-attach line with the container's true age
+(`running for 0m 08s`), emitted **zero** `docker argv` lines — it never built
+a plan, let alone started a second container — replayed from the container's
+**FIRST** line (`FIRST-LINE-AT-START`, which is RW-15's plain `docker logs
+-f` proven live: this client attached ~33 s after that line was printed),
+exited with the lane's own code, removed the container, cleared the record,
+and recorded the run ONCE with `duration_seconds: 40.897` from the
+CONTAINER's clock rather than the ~33 s it was attached. `series entries: 1`
+rather than 2 across the two scenarios is RG-27's own rev-30 rule, not a
+loss: the trend series is keyed by (lane, commit) and a re-run of the same
+commit REPLACES its entry (`_apply_record`), so "the last N commits" stays
+true.
+
+Nothing was left behind: `docker ps -a` clear of `run-gate-rg-live-probe-*`,
+scratch repo deleted by the EXIT trap.
+
+## Decision asks (numbered; none decided on silence)
+
+1. **RW-18 was applied to two branches beyond the one S5 named.** The ruling
+   asks the dry run to compute the commit comparison first and name that
+   refusal. The same structural defect sat one branch over in two more
+   places, both introduced by THIS wave, and both are fixed here: a record
+   whose owner is ALIVE would be FOLLOWED (RW-14's branch), and `--fresh
+   --dry-run` announced a re-attach for a container the live run removes.
+   Flagged rather than done silently. Confirm, or say which should be
+   reverted to the narrower reading.
+2. **Hollow test 6 exposed a real behaviour change, not just a test.**
+   `ProgressWatch` measured silence from the first OBSERVED event, so a
+   container that was ALREADY frozen when a client re-attached received a
+   fresh, full `stall_timeout` window. Silence now runs from the watch's
+   CONSTRUCTION until the file first moves under it. This makes a re-attached
+   lane stoppable sooner than rev 34's first cut would have stopped it —
+   deliberate, and the case the wave exists for — but it is a behaviour
+   change the review asked for only as a test. Confirm.
+3. **N2's disclosure has a cost worth naming.** A record of an unknown schema
+   is ignored, and this client then starts its own container and writes its
+   OWN record over the unreadable one. That is the only coherent thing an
+   owner-of-a-new-run can do, and the warning says what is lost — but it does
+   mean a NEWER client's record can be destroyed by an OLDER one. If that is
+   not wanted, the alternative is refusing (exit 2) on an unknown schema
+   instead of degrading, which turns a forward-compatibility hint into a hard
+   stop. Ruled here as: degrade and disclose. Confirm.
+4. **`RG-34`'s backlog acceptance box changed shape.** The dstdns-side box is
+   now ticked (`schema` was fixed at `dstdns@65582354`) and a NEW unticked
+   box names `scale-admission` as the lane that still trips the WARN. The
+   section therefore stays OPEN on its consumer half, with a different lane
+   than the one it was filed from. Confirm that is the record you want,
+   rather than closing RG-34 outright and filing the `scale-admission` hit
+   as a note in the dstdns notification only.

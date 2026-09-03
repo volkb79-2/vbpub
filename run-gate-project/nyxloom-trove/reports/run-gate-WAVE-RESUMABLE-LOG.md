@@ -325,3 +325,95 @@ the order RW-14 → RW-13 → RW-16 → RW-15 → RW-17 → RW-18 → RW-19.
   RW-17, RW-18 and RW-19 remain, and the live two-client probe is still owed;
   seams, red-first plan, decision asks and a retention prompt are in
   `run-gate-WAVE-RESUMABLE-BRIEF-1.md`.
+
+## Fix round 1, part 2 (successor session), 2026-09-03
+
+Fresh successor seeded with `BRIEF-1` + controller-log rulings RW-13..RW-22.
+Orders: RW-15 → RW-20 → RW-17 → RW-18 → RW-19, then the live two-client
+probe. One commit per ruling, red-first where a pre-fix implementation is
+expressible, selftest on the COMMITTED tip only (RG-39).
+
+- **First act — the gate on the inherited tip `e87007cc`, read separately.**
+  BRIEF-1's figures were quoted from a log the controller could not find on
+  this host, so they were re-measured before anything was built:
+  `505 passed, 2 skipped` / `diff-coverage OK: 342/342 (100.0%)` /
+  `run-gate: lane 'selftest' exit 0` (`scratchpad/selftest-succ-0.log`). The
+  inherited figures were exactly right.
+- **RW-15 (S1) — `a8dc5ebc`.** `--since` dropped from `await_container` and
+  from the re-attach call; `started_at` stays as display + duration. Red-first
+  PROVEN: the stateful shim's `logs` now emits an opening `FAKE-FIRST-LINE`
+  that `--since` drops (which is the real loss — `started_at` is run-gate's
+  own clock AFTER `docker run -d`, truncated to whole seconds), and hollow
+  test 1's argv assertion became a `capfd` assertion on the replayed FIRST
+  line. Against `e87007cc`'s `run-gate.py`: `assert "FAKE-FIRST-LINE" in out`
+  fails. rev-34 note, SPEC `R-39b` and CHANGES corrected.
+- **RW-20 (ask 1) — `cb6104a4`.** `repoll_owner_race`: up to
+  `OWNER_RACE_REPOLLS = 3` reads at `OWNER_RACE_PAUSE_SECONDS = 0.5`, ~1 s.
+  Record gone → say so and run fresh; owner died meanwhile → the ordinary
+  lost-container path; owner still alive → the refusal by pid, unchanged.
+  Red-first PROVEN: three cases fail against `a8dc5ebc` (`assert 2 == 0`).
+  The refusal test now also asserts the re-poll is BOUNDED (exactly two
+  pauses), so a wait loop fails it. `R-39e` also gained RW-21's stated
+  reason for the follower's early `docker wait`.
+- **RW-17 (S4) — `86f7f7b4`.** `{{.State.StartedAt}}` joins the inspect
+  format (same call); `adopt_container_duration` puts `FinishedAt −
+  StartedAt` on a `_duration_seconds` channel `finish_run_record` prefers,
+  COLLECT path only. `parse_docker_timestamp` is hand-written
+  (`calendar.timegm` + `_DOCKER_TS_RE`) for nanosecond fractions and the
+  year-1 zero value; either stamp missing/zero, or a finish before its start,
+  falls back to the record's `started_at`. Red at the seam: pre-fix
+  `10800.0` vs the container clock's `3600.0` — matching the reviewer's
+  PROBE-F4 `10800.028`. Honest note recorded in the commit: the end-to-end
+  test cannot show this red on the pre-fix product, because the same commit
+  widens the inspect format and the old parser refuses the shim's answer
+  first. Hollow test 3 closed in the same commit (`len(history) == 1`).
+- **RW-18 (S5+S6) — `ffc64903`.** HEAD resolved before the dry-run branch;
+  the disclosure walks the LIVE decision's branches in the LIVE decision's
+  order, so it names the refusal, the follow, the `--fresh` removal and
+  RW-20's re-read. `print_lane_bounds` extracted and called from the fresh,
+  re-attach AND follow paths (on a follow it names the owning pid as the
+  client that will act on the stall). RG-40's acceptance criteria gained the
+  "printed on re-attach and follow too" clause. Red-first PROVEN: five of six
+  new cases fail against `86f7f7b4`.
+- **RW-19 — `d7e280ce`.** S7 (RG-34's live consumer is `scale-admission`,
+  re-verified with `tomllib` over every dstdns lane: exactly one hit;
+  `schema` fixed at `dstdns@65582354`), N1 (the poll's real cost: stat +
+  full read + a `json.loads` per line), N2 (`INFLIGHT_SCHEMA` checked on
+  read, mismatch disclosed and treated as no record), N3 (the record's
+  `verdict`/`progress` READ on re-attach and follow, presence-of-key as the
+  authority test), N4 (a vanished file gets its own sentence and keeps
+  counting toward `stall_timeout`), N5 (the CONSUMERS transcript RE-CAPTURED
+  from a real refusal, wave-prompt path stated as the main checkout's), and
+  hollow tests 2/4/6. Red-first PROVEN: seven cases fail against `ffc64903`.
+  - **Hollow test 6 turned out to be a real defect on this wave's own path.**
+    Silence was measured from the first OBSERVED event, so a container that
+    was already frozen when a client RE-ATTACHED to it got a fresh, full
+    stall window. A first observation is a baseline, not movement; the clock
+    now runs from the watch's construction until the file first moves under
+    it. The converse (the first REAL advance does restart it) is asserted
+    beside it.
+  - **A flake in the wave's own fixture, found and fixed.** The stateful fake
+    docker logged each invocation in TWO appends, so the one fixture that
+    runs two clients at once interleaved argv lines and
+    `TestTwoClientsOneLane` failed ~1 in 15 (twice in this session's
+    full-suite runs; reproduced deliberately at run 16 of 25). One `write()`
+    per line now; 30/30 green after.
+- **Gate on the committed tip `d7e280ce`**, verdict read in a separate step:
+  `538 passed, 2 skipped` / `diff-coverage OK: 452/452 (100.0%)` /
+  `run-gate: lane 'selftest' exit 0` (`scratchpad/selftest-succ-2.log`).
+  An earlier gate on `ffc64903` went red at `417/421` — that run was launched
+  and then this session edited files WHILE it ran, which is RG-39's own trap;
+  it was re-measured on a clean committed tree and the four genuinely
+  uncovered lines (three untested dry-run branches and RW-20's `--fresh`
+  clause) got behaviour tests.
+- **Live two-client probe: RUN, both scenarios PASS.** Transcript in the
+  REPORT. Host rule observed (`docker ps` clear of `tester-unified:local`
+  and `run-gate-*`, assay Wave D's generation-11 container had just
+  finished), one container at a time, `docker update --cpus=3` within
+  seconds, EXIT trap removed the container and the scratch repo. The first
+  attempt's SECOND scenario was invalid — the `pgrep` pattern matched only
+  the launcher, so the owner survived and invocation 2 correctly FOLLOWED
+  instead of re-attaching (a real RW-14 data point, but not the scenario
+  asked for). Re-run with the pattern fixed and the client logs moved out of
+  the judged tree; both transcripts are in the REPORT, the invalid one
+  labelled as such.
