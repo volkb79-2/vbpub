@@ -7130,3 +7130,87 @@ larger decision this entry does not make.
       progress stream, never evidence;
 - [ ] CONSUMERS' mutation-state paragraph documents the new field(s) and
       which buckets populate them.
+
+---
+
+## B072 — `attestation.py`'s `parse_attestation` has the IDENTICAL uncaught-`RecursionError` gap `adjudication.py` had before `f0126b35` fixed it
+
+**Filed 2026-09-07 by the vbpub controller.** Found during Wave D's R-2
+round-2 review (2026-09-03), flagged in that review's own report as
+INFORMATIONAL-1 with an explicit "controller decision ask: fix same-shaped
+or file+defer" — but never actually filed at the time, a bookkeeping miss
+this entry corrects. Re-verified live against today's `main` before filing
+(not re-asserted from the 4-day-old review).
+
+### What was measured
+
+`parse_attestation` (`attestation.py:222`) has the byte-identical pattern
+`adjudication.py`'s `evaluate_provenance` shipped before `f0126b35`:
+
+```python
+try:
+    payload = json.loads(text, object_pairs_hook=_no_duplicate_pairs)
+except (json.JSONDecodeError, ValueError) as exc:
+    raise _unreadable(f"{source_name}: not valid JSON ({exc})") from exc
+```
+
+`json.loads` is CPython's recursive-descent parser; a deeply-nested (but
+well-formed, well-under-bound) document blows the interpreter's C-stack
+check and raises `RecursionError`, a `RuntimeError` subclass — **not** a
+`ValueError` — so this `except` does not catch it. Reproduced directly
+against the live function on today's `main`:
+
+```
+$ python3 -c "
+from assay import attestation
+doc = '[' * 100000 + ']' * 100000   # 200,000 bytes, well under
+                                     # MAX_ATTESTATION_BYTES = 1 MiB
+attestation.parse_attestation(doc, source_name='repro')
+"
+RecursionError: maximum recursion depth exceeded
+```
+
+**Confirmed uncaught the whole way to the CLI**, same diligence as the
+original finding: `load_attestation_file` (`:293`) calls `parse_attestation`
+with no wrapping `try`; its own caller, `load_attested_evidence`
+(`:514-518`), catches only `except AssayError` — a `RecursionError` is not
+one; `cli.py`'s call site (`:839`) wraps nothing narrower than the whole
+lane dispatch; `cli.py` and `runner.py` both have **zero** `except
+Exception`/`except BaseException` clauses (grepped, confirmed empty).
+
+### Why this matters
+
+Attestation documents are produced entirely OUTSIDE assay — the same
+"caller's own harness, on the host, before the container starts" shape the
+adjudication module's docstring describes — so this is not a synthetic
+edge case reachable only by an adversary: a buggy or interrupted harness
+step, a truncated write under disk pressure, or a future producer shape
+assay hasn't seen yet could all plausibly emit something this parser
+chokes on the same way. A code path that can silently crash the whole
+`assay run` process instead of producing a judged `ERROR`/
+`UNREADABLE_ARTIFACT` refusal is exactly the class of defect Wave D's
+"integrity cut" framing exists to rule out — B072 duplicates the same gap
+into a second module rather than introducing a novel one.
+
+### Proposed fix
+
+Same one-line shape as `f0126b35`:
+
+```python
+except (json.JSONDecodeError, ValueError, RecursionError) as exc:
+```
+
+### Acceptance
+
+- [ ] a pathologically-nested, well-formed, well-under-`MAX_ATTESTATION_BYTES`
+      JSON document fed to `parse_attestation` raises
+      `AssayError`/`UNREADABLE_ARTIFACT`, not `RecursionError` — red-first
+      test mirroring `test_adjudication_provenance_parse.py`'s equivalent;
+- [ ] the fix is proven through the real CLI path (`load_attestation_file`
+      → `load_attested_evidence` → `cli.py`'s `assay run`), not just the
+      bare function, so the refusal a consumer actually sees is confirmed
+      clean rather than assumed from the unit-level fix;
+- [ ] a one-time sweep of `attestation.py`, `adjudication.py`, `cli.py` and
+      `runner.py` for any OTHER `except (..., ValueError)`-without-
+      `RecursionError` pattern parsing untrusted JSON, so this does not
+      recur a third time — named here even if none are found.
