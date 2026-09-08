@@ -31,22 +31,30 @@ Plus a docs commit (see `git log wings-cgroups/`).
 - `scripts/build-image.sh pterodactyl cgroup.1` → `wings-local:1.13.3-cgroup.1`
 - `test/smoke-placement.sh` — PASS (run against the throwaway
   `wings-smoke.slice`, deliberately NOT against the live `wings.slice`)
+- `test/e2e-systemd/run-e2e.sh` — **E2E: ALL PASS**, against a real systemd
+  over D-Bus in the privileged harness. This is the one that matters: the
+  `systemdintegration` tests were rewritten for the new design and now stand a
+  real process up in a transient `docker-<64hex>.scope` (via
+  `StartTransientUnit` + `PIDs`, exactly how Docker's systemd cgroup driver
+  creates a container scope) and read the properties back off the **`Scope`**
+  D-Bus interface. Three new cases pass:
+  - `TestApplyScopePropertiesIntegration` — `MemoryMin`/`MemoryLow`/`CPUWeight`
+    land on a real scope; a second `Apply` updates in place; a property omitted
+    from the second request keeps its previous value.
+  - `TestScopeMemoryCurrentIsReadableIntegration` — proves patch 0008's
+    retargeted read actually works on a scope. Had the interface still said
+    `"Slice"`, this fails.
+  - `TestApplyRefusesASliceIntegration` — the guard against ever pointing a
+    container property write at a slice.
 
 ## NOT verified — the honest gaps
 
-1. **The `systemdintegration` tests were never executed.** They were rewritten
-   for the new design (`internal/cgroups/integration_test.go` now stands a real
-   process up in a transient `docker-<64hex>.scope` via `StartTransientUnit` +
-   `PIDs` and reads properties back off the `Scope` D-Bus interface), and they
-   **compile** (`go vet -tags systemdintegration` is in `test.sh`), but the
-   privileged `test/e2e-systemd/` harness was not run in this session. **This is
-   the single highest-value next action**: it is the only thing that exercises
-   `Apply`, the floor ledger and the `Scope`-interface reads for real. Run
-   `test/e2e-systemd/run-e2e.sh`.
-2. **Nothing was run against a live Wings.** The post-`ContainerStart()`
+1. **Nothing was run against a live Wings.** The post-`ContainerStart()`
    application path (`environment/docker/scope.go`) has never executed against
-   a real Pterodactyl server.
-3. **The pelican series is untouched.** See below.
+   a real Pterodactyl server. The D-Bus layer beneath it is now e2e-proven, but
+   the wiring from `Environment.Start` through `ScopeEnsureRequest` to `Apply`
+   is only covered by unit tests plus reading.
+2. **The pelican series is untouched.** See below.
 
 ## Deferred: the pelican series
 
@@ -124,7 +132,6 @@ to a middle patch.
 
 ## Still to do
 
-- [ ] Run `test/e2e-systemd/run-e2e.sh` — the highest-value gap (see above)
 - [ ] Port the pelican series
 - [ ] Independent adversarial review of both commits (estate rule: **every**
       merged change gets one, no size exception)
