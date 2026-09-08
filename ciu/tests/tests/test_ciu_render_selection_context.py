@@ -232,6 +232,7 @@ def _add_stack(repo_root: Path) -> Path:
     return dst
 
 
+@pytest.mark.ciu_test_repo_reader  # CIU-91: _add_stack copytrees the shared test-repo/ tree
 def test_engine_threads_selection_into_configfiles_and_hooks(
     tmp_path, monkeypatch
 ):
@@ -371,6 +372,7 @@ def test_compose_render_also_merges_ciu_table(tmp_path):
     assert 'PROFILES: "core"' in rendered
 
 
+@pytest.mark.ciu_test_repo_reader  # CIU-91: _add_stack copytrees the shared test-repo/ tree
 def test_engine_identity_read_survives_unreadable_overlay(
     tmp_path, monkeypatch
 ):
@@ -443,6 +445,7 @@ def _identity_probe_stack(repo_root: Path, marker: Path) -> Path:
         ("malformed entry", "[S3.1c] ... has a malformed table"),
     ],
 )
+@pytest.mark.ciu_test_repo_reader  # CIU-91: _add_stack copytrees the shared test-repo/ tree
 def test_engine_identity_read_survives_an_unparseable_identity_record(
     tmp_path, monkeypatch, capsys, kind, payload
 ):
@@ -496,6 +499,7 @@ def test_engine_identity_read_survives_an_unparseable_identity_record(
     assert "ciu env generate" in out, "the warning must name the repair"
 
 
+@pytest.mark.ciu_test_repo_reader  # CIU-91: _add_stack copytrees the shared test-repo/ tree
 def test_identity_unreadable_agrees_between_check_preflight_and_real_run(
     tmp_path, monkeypatch, capsys
 ):
