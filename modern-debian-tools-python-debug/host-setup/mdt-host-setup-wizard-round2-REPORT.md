@@ -629,7 +629,14 @@ width being used, not a fixed 80 with a 120 ceiling.
 There is no single oracle for "reads better", so the check performed instead
 was a **fact-preservation audit**: every distinct technical claim in the
 original prose was enumerated from the pre-fix file and located in the new one.
-All 27 survive.
+**Correction (post-review fix-round):** claim #5 below (`mdt-apply-dev-caps.sh`
+falls back to the tight `DEV_STATIC_*` caps) did NOT actually survive as
+written — the round-2 rewrite kept the fact (statics remain in force until
+measured) but silently dropped the script's name, so the reader lost the
+pointer to which unit actually enforces the fallback. This was flagged as
+review finding F1 and has now been fixed (the script name is restored). With
+that fix applied, all 27 claims genuinely survive; before it, the true count
+was 26 of 27.
 
 IO device (1-3): the static caps are `dev.slice`'s `IOReadBandwidthMax` etc.;
 they are the boot-window fallback until the baseline runs; auto-discovery is

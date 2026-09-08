@@ -82,8 +82,23 @@ if [ -z "$gfp" ] || [ "$gmin_set" = 0 ]; then
   # an unset DEV_MEMORY_MIN_GUARANTEED_CEILING leaves both slices without a
   # MemoryMin at all. That is the shipped default and the expected state on
   # most hosts — the mechanism is opt-in per container, so not opting in is
-  # not a finding.
-  ok "inert (unit not installed or MemoryMin unset — the mechanism is opt-in, this is the default and expected state on most hosts)"
+  # not a finding. BUT the two units render from the same var and must drift
+  # together — if dev.slice's own MemoryMin is somehow set nonzero while the
+  # guaranteed tier's is unset, that is the maximal form of the exact leak
+  # this check exists to catch (ALL of dev.slice's floor redistributes to
+  # dev-interactive/dev-background, none of it reaches the guaranteed tier),
+  # so check dev.slice too rather than assuming "guaranteed tier unset" means
+  # "mechanism fully inert".
+  dmin=$(systemctl show dev.slice -p MemoryMin --value 2>/dev/null)
+  case "${dmin:-0}" in
+    0|""|"[not set]") dmin_set=0 ;;
+    *) dmin_set=1 ;;
+  esac
+  if [ "$dmin_set" = 1 ]; then
+    fail "MemoryMin MISMATCH: dev.slice=$dmin vs dev-memory_min_guaranteed.slice=<unset> — dev.slice has a floor but the guaranteed tier does not, so the ENTIRE surplus redistributes to dev-interactive.slice/dev-background.slice (the leak the guaranteed tier exists to prevent) and the guaranteed tier's own floor is silently inert. Fix: set DEV_MEMORY_MIN_GUARANTEED_CEILING in $CONF and re-run install.sh (both units render from that one var)"
+  else
+    ok "inert (unit not installed or MemoryMin unset on both slices — the mechanism is opt-in, this is the default and expected state on most hosts)"
+  fi
 else
   dmin=$(systemctl show dev.slice -p MemoryMin --value 2>/dev/null)
   if [ "$dmin" = "$gmin" ]; then

@@ -486,10 +486,19 @@ def resolve_default(
     step_memory_tiers()'s host-scaled keys.
 
     An empty value can therefore no longer be "chosen" by an earlier run and
-    remembered. That is the correct trade and costs nothing observable: on
-    every key whose proposal is None the chain simply falls through to the
-    example's own default, which for the one key where empty is the intended
-    answer (DEV_MEMORY_MIN_GUARANTEED_CEILING) is itself empty."""
+    remembered. For every key whose proposal is None this costs nothing
+    observable: the chain falls through to the example's own default, which
+    for the one key where empty is the intended answer
+    (DEV_MEMORY_MIN_GUARANTEED_CEILING) is itself empty. ONE exception:
+    IO_DEV_PATH's proposal is NOT always None — step_io_device() passes
+    `discovered or None`, so on a host where auto-discovery succeeds, an
+    operator who had previously, deliberately, left IO_DEV_PATH empty (to
+    opt static IO caps out entirely) will now see that fresh discovery
+    offered as the default and silently adopt it on a bare Enter. That is a
+    real, observable behavior change for that one case — not a defect in
+    this fix, since a deliberately-empty value is otherwise
+    indistinguishable from a blank one, but worth naming rather than
+    claiming universal harmlessness."""
     if key in cfg_current and cfg_current[key]:
         return cfg_current[key]
     if proposal is not None:
@@ -818,8 +827,8 @@ def step_io_baseline(baseline_env_path: Path, io_baseline_script: Path) -> bool:
         "`mdt-io-baseline.py` measures this disk's real IOPS and bandwidth ceilings with "
         "`fio` and caches the result for 30 days. The runtime sweep takes its caps as a "
         "PERCENTAGE of those measured numbers (steps c below), so until this has run once "
-        "there is nothing to take a percentage OF, and the deliberately tight `DEV_STATIC_*` "
-        "caps in host-setup.env remain in force."
+        "there is nothing to take a percentage OF, and `mdt-apply-dev-caps.sh` falls back to "
+        "the deliberately tight `DEV_STATIC_*` caps in host-setup.env."
     )
     status = check_baseline_freshness(baseline_env_path, io_baseline_script)
     if status == "fresh":
