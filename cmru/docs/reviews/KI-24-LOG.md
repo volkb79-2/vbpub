@@ -72,3 +72,24 @@ REPORT §"Controlled wrong implementations" for the real command output.
 
 **Gate:** `./run-gate.py --worktree <path> gate`, verdict read in a separate
 step. Result in the REPORT.
+
+## Commit 2 — `docs(cmru): KI-24 REPORT`
+
+`docs/reviews/KI-24-REPORT.md` only. Records, per oracle, what was actually run
+and its real output: the O2/O3/O6 evidence, both controlled-wrong-implementation
+reversions with their real pytest failures, the sshd measurement behind the one
+deviation, the new container test infrastructure, and the gate verdict.
+
+**Gate verdict (run against commit 1, `745046b5`, verdicts read in a separate
+step from the detached run's log):** GREEN —
+`assay exit 0`, `coverage exit 0` (1738 passed, 10 skipped, 100.00% coverage),
+`mutation exit 0` (no `src/` change since `cmru-v5.0.0` → nothing to mutate),
+`canary exit 0`, `gate exit 0`. Seven of the coverage lane's ten skips are this
+package's container oracles skipping inside `tester-unified`, as disclosed.
+
+Commit 2 touches no code, so the gate result for commit 1 stands for the branch.
+
+## Status: COMPLETE — not merged, not pushed
+
+Awaiting a fresh adversarial reviewer, per the plan's Process section. Start with
+`docs/reviews/KI-24-REPORT.md` §0 (the one deviation) and §6 (disclosures).
