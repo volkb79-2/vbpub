@@ -54,7 +54,7 @@ dnspython             # DNS toolkit (matches dstdns worker-io DNS work)
 websockets            # WebSocket client — poke WS endpoints (e.g. webapp-server)
 pydantic              # data validation (config/model scratch)
 pydantic-settings     # settings models
-structlog             # structured logging
+structlog<27          # structured logging; ceiling matches nyxloom/pyproject.toml's own structlog<27 pin (installed here is currently 26.1.0, one upstream minor from breaking nyxloom's build if left unconstrained)
 PyYAML                # YAML parse/emit
 jsonschema            # JSON-Schema validation for interactive inspection
 jinja2                # templating (also a CIU dependency)

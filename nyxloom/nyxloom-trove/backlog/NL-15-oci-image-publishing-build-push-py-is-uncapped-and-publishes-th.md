@@ -83,6 +83,15 @@ Before re-enabling `oci-image` in `artifacts` and restoring the
 
 `nyxloom/cmru.toml`, `nyxloom/build-push.py`, `nyxloom/docker-bake.hcl`.
 
+## Addendum (deferral consequence, found in the deferral's own fix-verification)
+
+Deferring OCI publishing means `ghcr.io`'s `nyxloomd:latest` /
+`nyxloom-agent-cli:latest` images now permanently drift from whatever the
+wheel ships -- nothing currently pulls them (nyxloomd isn't deployed
+anywhere), so this is not urgent, but re-enabling OCI publishing per this
+entry's own proposed contract should also either refresh those images in
+the same pass or explicitly document why they're being left stale.
+
 ## Provenance
 
 Found during nyxloom's cmru-release adoption, 2026-09-08
