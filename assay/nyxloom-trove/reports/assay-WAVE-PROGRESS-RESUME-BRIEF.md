@@ -1,5 +1,15 @@
 # Continuation brief 1 — progress/resume wave (2026-09-08)
 
+> **SUPERSEDED — the wave is complete.** B064, B065 and B066 all landed after
+> this brief was written (`940b5ba2`, `243de634`) and the registered gate is
+> green on the tip that carries them. Read
+> `assay-WAVE-PROGRESS-RESUME-LOG.md` and
+> `assay-WAVE-PROGRESS-RESUME-REPORT.md` instead; everything below that is
+> still load-bearing — most of all the gate-discipline lesson in "Two runs"
+> — is carried forward there. This file is kept as the record of the
+> checkpoint it documents, and the "what is left" section below is now
+> history, not instructions.
+
 **Written at the E-008 checkpoint clause** (~60 tool calls crossed during
 B067), cut at the strongest available boundary: a commit with a clean tree,
 a locally green suite, and the registered gate run on that exact tip.
