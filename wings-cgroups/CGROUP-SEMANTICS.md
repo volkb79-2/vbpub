@@ -1,11 +1,11 @@
 # cgroup-v2 memory semantics down a slice chain
 
-Every value this project sets — node slice, per-server slice, egg variable —
+Every value this project sets — node slice, per-server property, egg variable —
 lands on a cgroup-v2 knob whose behaviour depends on the *chain* it sits in, not
 on the value alone. This file is the reference for that behaviour: what each
-knob means, how nesting changes it, and the arithmetic behind
-`memory_min_budget` / `budget_policy`. Deployment steps are in
-[`SETUP.md`](SETUP.md); design rationale is in [`STRATEGY.md`](STRATEGY.md).
+knob means, how nesting changes it, and who arbitrates when the numbers don't
+add up. Deployment steps are in [`SETUP.md`](SETUP.md); design rationale is in
+[`STRATEGY.md`](STRATEGY.md).
 
 Examples use the shape this project produces:
 
@@ -13,9 +13,15 @@ Examples use the shape this project produces:
 -.slice                                    (root)
 └─ wings.slice                             the node tier — a real unit file
    ├─ wings-mgmt.slice                     Wings itself
-   └─ wings-<32hex>.slice                  one per server — transient, Wings-made
-      └─ docker-<id>.scope                 the container: where pages are charged
+   └─ docker-<id>.scope                    one per server — Docker-made; Wings
+                                           sets its properties. Pages are
+                                           charged here.
 ```
+
+Since 2026-09-08 there is no per-server slice between the tier and the
+container: Wings sets the per-server floors, ceilings and weights directly on
+the container's own scope. Two levels, not three. Everything below still holds —
+the rules are about the chain, and the chain just got shorter.
 
 ## The four knobs
 
@@ -35,19 +41,20 @@ A cgroup can never be protected more than its parent was granted. Wanted case:
 
 ```
 wings.slice          min=8G      the tier's total reservation
-└─ wings-A.slice     min=6G      6G ≤ 8G → honoured in full ✓
+└─ docker-A.scope    min=6G      6G ≤ 8G → honoured in full ✓
 ```
 
 Broken case, which reports no error anywhere:
 
 ```
 wings.slice          min=8G
-└─ wings-A.slice     min=10G     → effective 8G. The extra 2G is fiction.
+└─ docker-A.scope    min=10G     → effective 8G. The extra 2G is fiction.
 ```
 
 This is why the node slice's `MemoryMin` must be ≥ the sum of every per-server
-floor you intend to grant, and why Wings checks that sum at slice-creation time
-(`memory_min_budget`).
+floor you intend to grant. Wings does not enforce that sum — it applies what it
+was told and logs when the total exceeds the tier's live `MemoryMin`, nothing
+more (see "Overcommit, and who resolves it" below).
 
 ## Rule 2 — limits are the minimum along the whole path
 
@@ -56,13 +63,20 @@ between the cgroup and the root:
 
 ```
 wings.slice          high=14G
-└─ wings-A.slice     high=7G     → server throttles at 7G
-   └─ docker-….scope high=max    → still 7G; the parent wins
+└─ docker-A.scope    high=7G     → server throttles at 7G
 ```
 
-A child limit looser than its parent's is legal and inert. So is any limit above
-physical RAM: `WINGS_CG_MEMORY_MAX=20G` on a 15.6Gi host can never be reached
-and does nothing.
+A child limit looser than its parent's is legal and inert — `high=20G` on the
+scope under a 14G tier still throttles at 14G. So is any limit above physical
+RAM: `WINGS_CG_MEMORY_MAX=20G` on a 15.6Gi host can never be reached and does
+nothing.
+
+One consequence of the flat shape: the scope is now the *only* place below the
+tier where a per-server limit can live, and it is also where Docker puts the
+Panel's own memory limit. Two writers, one unit — the last one to set the
+property wins, and Wings applies its set just after the container starts. That
+is a change from the three-level shape, where a Wings value on the slice and a
+Docker value on the scope composed by this rule instead of overwriting.
 
 ## Rule 3 — a cgroup is never protected from itself
 
@@ -70,7 +84,7 @@ and does nothing.
 ignored by reclaim that the cgroup's own `high`/`max` triggers:
 
 ```
-wings-A.slice   min=6G  low=12G  high=7G     current=8.5G
+docker-A.scope   min=6G  low=12G  high=7G     current=8.5G
 ```
 
 At 8.5G the server is over its own `high`, so the kernel reclaims ~1.5G into
@@ -82,21 +96,44 @@ Corollary: any `low` above the same cgroup's `high` is decorative — the cgroup
 is never allowed to hold that much in the first place. `low=12G` with `high=7G`
 behaves exactly like `low=7G`.
 
-## Rule 4 — none of it works without `memory_recursiveprot`
+## Rule 4 — protection declared on a *parent* needs `memory_recursiveprot`
 
 Pages are charged to the **leaf** (`docker-*.scope`), never to the slices above
 it. Without the `memory_recursiveprot` mount flag, `wings.slice min=8G` protects
 only pages charged directly to `wings.slice` — approximately none — and the
-container inherits nothing. Every floor on the node becomes a no-op, silently.
+container inherits nothing. Such a floor becomes a no-op, silently.
 
 With the flag, a parent's protection covers its whole subtree, and children
-without their own `min` share it. This is also why a node can be usefully
-protected at the tier level alone: with `wings.slice min=8G` and an empty
-per-server slice, the server still gets the tier's protection — it just gets no
-*individual* guarantee, no per-server `high`, and no weights. Check with
+without their own `min` share it. This is why a node can be usefully protected
+at the tier level alone: with `wings.slice min=8G` and no per-server values at
+all, a server still gets the tier's protection — it just gets no *individual*
+guarantee, no per-server `high`, and no weights. Check with
 `grep cgroup2 /proc/mounts` ([`SETUP.md`](SETUP.md) §1b).
 
+**Since 2026-09-08 this is no longer what makes or breaks a Wings-set floor.**
+Wings writes `memory.min`/`memory.low` onto the container's own scope — the leaf
+that owns the pages — so there is no level to recurse through and no mount flag
+in the way. The flag stays a real prerequisite for two things, and they are not
+small ones:
+
+- the **node tier** itself. `wings.slice`'s `MemoryMin` is a parent protection,
+  and it is now the *entire* aggregate guarantee, since Wings does no budget
+  arithmetic. Strip the flag and the tier reservation stops covering anything.
+- any **admin-managed slice** a server is pinned to via `WINGS_CGROUP_PARENT`.
+  That path is untouched by the redesign: the floors live on the slice and the
+  container is a scope beneath it, exactly as before.
+
+The historical failure mode — a stripped flag silently voiding every per-server
+floor on the node, with `systemctl show` still reporting the configured number —
+is recorded in `TODO.md` and was the finding that motivated moving the
+properties down to the scope in the first place.
+
 ## Rule 5 — overcommitted protection is distributed by usage, not by weight
+
+**This is now the only thing that arbitrates overcommit.** Wings applies every
+floor exactly as configured and corrects nothing; when the sum exceeds the
+tier's protection, the mechanism below is what decides who actually gets it. No
+code of ours is involved, and there is no configuration for it.
 
 When the children's floors add up to more than the parent can back, the kernel
 does not fail and does not pick a winner. Each child claims
@@ -125,9 +162,13 @@ Worked example — two game servers, `wings.slice min=10G`, both asking `min=6G`
 | 8G | 3G | 6G | 3G | 9G ≤ 10G | **6G** | **3G** |
 
 The overcommit only bites when *both* servers are genuinely hot; the rest of the
-time each gets everything it actually touches. That is the behaviour
-`budget_policy: distribute` exists to allow. `memory.low` overcommits the same
+time each gets everything it actually touches. `memory.low` overcommits the same
 way.
+
+This behaviour is why the project stopped doing floor arithmetic at all: the
+kernel already resolves the case, continuously and by live load, and any
+Wings-side correction could only be worse — a floor shrunk at start time stays
+shrunk however busy that server later becomes.
 
 ## Rule 6 — weights compose multiplicatively down the tree
 
@@ -192,7 +233,7 @@ Inside the tier:
 ```
 wings.slice (47% of the host)
 ├─ wings-mgmt.slice                  cpu.weight=200   → 200/1200 = 17% of the tier =  8% of host
-└─ wings-<server>.slice              cpu.weight=1000  → 1000/1200 = 83% of the tier = 39% of host
+└─ docker-<server>.scope             cpu.weight=1000  → 1000/1200 = 83% of the tier = 39% of host
 ```
 
 Add a second server at the node default `cpu_weight: 200` and the same tier
@@ -202,7 +243,12 @@ siblings*, and the tier's total is defended one level up.
 
 ## Rule 7 — `IOWeight` is rescaled for BFQ, and the scale is brutally compressive
 
-This one is invisible and changes what your numbers mean.
+This one is invisible and changes what your numbers mean. **The table below is
+the reference you consult when picking a number by hand** — nothing in this
+project converts for you, at either tier: not the `wings.slice` unit file's
+`IOWeight=`, and, since patch 0005 was retired on 2026-09-08, not
+`WINGS_CG_IO_WEIGHT` either. You state a systemd `IOWeight`; you read the
+`io.bfq.weight` column to know what you actually bought.
 
 BFQ has its own weight file, `io.bfq.weight`, on a **1..1000** scale (default
 100) — it does *not* read `io.weight` (that file belongs to the `iocost`
@@ -244,40 +290,36 @@ at `IOWeight=500` (bfq 136) is fighting for the tier's share, not the disk's.
 **Watch for accidental asymmetry between CPU and IO.** A node slice carrying
 `CPUWeight=800` + `IOWeight=500` looks balanced and is not: 800 is 8:1 on CPU
 while 500 is **1.36:1** on IO. To give IO the same 8:1 priority the tier's CPU
-already has, the unit needs `IOWeight=7800` (→ bfq 800).
+already has, the unit needs `IOWeight=7800` (→ bfq 800). That is not a worked
+hypothetical: it is the live value in this node's `wings.slice` unit file,
+picked by hand from the table above for exactly that parity.
 
-### Stating BFQ weights directly
+### Picking the number by hand — at both tiers
 
-Rather than reverse-engineering the IOWeight that yields the weight you want,
-say it on BFQ's scale and let Wings do the conversion (patch 0005):
+The arithmetic is the same wherever the property is written, so do it the same
+way in both places:
 
-```yaml
-docker:
-  per_server_slices:
-    defaults:
-      io_bfq_weight: 200      # 1..1000, default 100 — BFQ's own scale
-```
+- **node tier** — `IOWeight=` in the `wings.slice` unit file. Always was by
+  hand.
+- **per server** — `docker.per_server_slices.defaults.io_weight`, or
+  `WINGS_CG_IO_WEIGHT` on the egg. Now also by hand.
 
-…or per server, `WINGS_CG_IO_BFQ_WEIGHT=500`. Wings converts with the exact
-inverse (`IOWeight = 100 + 11 × (bfq − 100)`) and applies the result as an
-ordinary `IOWeight` property, so the value stays systemd-owned and reload-safe.
-`io_weight` and `io_bfq_weight` set the same property and are mutually
-exclusive. Setting both in `defaults:` fails config validation and Wings does not
-start; setting both as per-server variables is logged and neither is applied —
-node configuration is the administrator's own file and gets caught loudly, while
-a bad egg variable must never keep a server from booting.
-
-Why not write `io.bfq.weight` directly? Because systemd re-derives that file
-from `IOWeight` every time it re-applies the unit's IO settings, silently
-clobbering a raw write — the same trap as Finding D, and the reason this
-project never writes cgroupfs directly.
-
-The applied weight appears in the Wings log with the derived value spelled out,
-so the effective number is visible without knowing any of this:
+The inverse, if you would rather start from the BFQ number you want:
 
 ```
-cgroups: ensured per-server slice  properties=… IOWeight=4500(io.bfq.weight=500)
+  IOWeight  =  100 + 11 × (io.bfq.weight − 100)      for bfq > 100
 ```
+
+so a real 5.4:1 (`io.bfq.weight` 540) is `IOWeight=4950`, and 8:1 (bfq 800) is
+`IOWeight=7800`. There used to be a convenience knob that did this conversion
+inside Wings — `io_bfq_weight` / `WINGS_CG_IO_BFQ_WEIGHT`, patch 0005. It was
+retired on 2026-09-08 in favour of one spelling on systemd's own scale; see
+[`patchstack/README.md`](v1-legacy/patchstack/README.md).
+
+Why not write `io.bfq.weight` directly and skip the arithmetic? Because systemd
+re-derives that file from `IOWeight` every time it re-applies the unit's IO
+settings, silently clobbering a raw write — the same trap as Finding D, and the
+reason this project never writes cgroupfs directly.
 
 Check what the kernel actually holds rather than what you set:
 
@@ -290,12 +332,12 @@ cat /sys/block/<dev>/queue/scheduler       # [bfq] or the weights do nothing at 
 Under `none`/`mq-deadline`, neither file does anything: no proportional IO
 control exists, and only `io.max` hard caps still bite.
 
-### The panel's "Block IO Weight" is a third knob, one level down
+### The panel's "Block IO Weight" is a second writer on the same file
 
 Stock Wings already carries a per-server IO weight of its own — the panel field
 that reaches Docker as `--blkio-weight`. It is easy to assume it is redundant
-with the slice weights above, or that it suffers the same compression. Neither
-is true. Measured on a cgroup-v2 + BFQ host, `docker run --blkio-weight 700`
+with the weights above, or that it suffers the same compression. The second is
+not true. Measured on a cgroup-v2 + BFQ host, `docker run --blkio-weight 700`
 produces, on the container's own scope:
 
 ```
@@ -303,72 +345,73 @@ io.bfq.weight = 700          # runc writes BFQ's file directly, uncompressed
 io.weight     = 100          # untouched
 ```
 
-So it lands on BFQ's own 10..1000 scale, at the **scope** level. The weights in
-this document act on the **slice** above it. By Rule 6 the two compose rather
-than compete:
+So it lands on BFQ's own 10..1000 scale, on the **scope** — which, since the
+per-server slice was retired, is the very cgroup `WINGS_CG_IO_WEIGHT` now
+targets:
 
 ```
 wings.slice                 IOWeight        share of the disk
-└─ wings-A.slice            io.bfq.weight   share of the tier   ← WINGS_CG_IO_BFQ_WEIGHT
-   └─ docker-….scope        io.bfq.weight   share of the slice  ← panel "Block IO Weight"
+└─ docker-….scope           io.bfq.weight   share of the tier
+                                            ← WINGS_CG_IO_WEIGHT (via IOWeight,
+                                              compressed) AND the panel's
+                                              "Block IO Weight" (raw)
 ```
 
-The scope weight only matters when a slice holds more than one container, which
-for a per-server slice means it is almost always inert — one container, no
-siblings, nothing to settle. Set the slice weight for server-versus-server
-priority; leave the panel field alone unless you know a slice has company.
+Before 2026-09-08 these were two levels apart and composed by Rule 6. They no
+longer do: both write `io.bfq.weight` on the same unit, by different routes, and
+the later write wins — and systemd re-derives that file from `IOWeight` whenever
+it re-applies the unit's IO settings, so the systemd-side value is the one that
+survives. **Use one or the other.** If you set `WINGS_CG_IO_WEIGHT`, leave the
+panel field at its default and read the result back off `io.bfq.weight` rather
+than trusting either number.
 
-The trap is nomenclature, not arithmetic: the panel's `io_weight` and this
-project's `defaults.io_weight` share a name while meaning different scales at
-different levels. `io_bfq_weight` is the one that says what it means.
+The remaining trap is nomenclature: the panel's `io_weight` and this project's
+`defaults.io_weight` share a name while meaning different scales — 10..1000 raw
+BFQ versus 1..10000 systemd-compressed. With `io_bfq_weight` retired there is no
+longer a spelling that disambiguates itself, so read the table above before
+typing a number into either field.
 
-## `memory_min_budget` and `budget_policy`
+## Overcommit, and who resolves it
 
-`memory_min_budget` is Wings' node-level ledger: the sum of `MemoryMin` across
-all `wings-*` slices must stay within it. Set it equal to the `wings.slice` unit
-file's `MemoryMin` — that is the number the kernel will actually honour (Rule 1).
-Empty disables the check.
+Nothing in Wings. There is no floor ledger and no policy knob: `memory_min_budget`
+and `budget_policy` (`clamp`/`refuse`/`distribute`) were removed on 2026-09-08
+along with the per-server slice. Wings applies the `memory.min`/`memory.low` it
+was configured with, as stated, and corrects nothing.
 
-`budget_policy` decides what happens when a request would exceed the remainder.
-All three apply every other property (`low`/`high`/`max`/weights) unchanged;
-they differ only over `memory.min`:
+The tier's own `MemoryMin` on the `wings.slice` unit file is therefore the whole
+aggregate guarantee, and Rule 5 is the whole arbitration: when the scopes' floors
+sum above what the tier can back, each scope claims `min(usage, floor)` and the
+kernel shares the tier's protection out in proportion to those claims,
+continuously.
 
-| Policy | On overcommit | Use when |
-|---|---|---|
-| `clamp` (default) | The new floor is reduced to what remains, and the reduction is logged. | You sell per-server guarantees. Every granted floor stays literally true; a server that starts late gets less than its egg asks for — **permanently, however busy it is**. |
-| `refuse` | The floor is dropped entirely (logged); the server runs with no floor. | A partial guarantee is worse than none — you would rather see the server unprotected than believe in a number that shrank. |
-| `distribute` | The floor is applied as requested; the overcommit is logged, not corrected. Rule 5 takes over. | Servers co-operate rather than compete (e.g. two instances of one game, one operator). Nobody's floor is an individual guarantee any more — the **tier total** is — but protection follows live load instead of start order. |
+Worked example — two instances of the same game on a 15.6Gi host,
+`wings.slice min=10G`, each server's egg asking `WINGS_CG_MEMORY_MIN=6G`: both
+get `min=6G`. Whichever server is actually resident keeps its memory; when both
+are hot the tier's 10G splits 5G/5G by usage. Nothing is stranded in an idle
+server, and no server's floor is frozen by the order it happened to start in —
+which is what a start-time clamp would have done, permanently.
 
-Worked example — the case `clamp` gets wrong. Two instances of the same game on a
-15.6Gi host, `wings.slice min=10G`, each server's egg asking
-`WINGS_CG_MEMORY_MIN=6G`:
-
-- **`clamp`:** A starts first and gets 6G. B starts and is clamped to the 4G
-  remainder — logged, permanent. If B later becomes the busy one and A idles,
-  B is still capped at a 4G guarantee while A sits on an unused 6G reservation.
-  The split was frozen by start order.
-- **`distribute`:** both get `min=6G`. Whichever server is actually resident
-  keeps its memory; when both are hot the tier's 10G splits 5G/5G by usage
-  (Rule 5). Nothing is stranded in an idle server.
-
-The log line to expect under `distribute`:
+What Wings still does is tell you. If the floors it currently has applied across
+live scopes would sum above `wings.slice`'s own `MemoryMin` — read live from
+systemd, not from configuration — it logs that the node is oversubscribed. One
+informational line, no behaviour attached:
 
 ```
-INFO cgroups: per-server memory.min floors exceed the node budget; policy
-     "distribute" applies them as requested and lets the kernel share the parent
-     slice's protection proportionally to each server's usage
-     slice=wings-<32hex>.slice requested_floor=6442450944 sibling_floors=6442450944 budget=10737418240
+INFO cgroups: per-server memory.min floors exceed the node slice's MemoryMin;
+     applied as requested — the kernel shares the parent's protection in
+     proportion to each server's usage
+     scope=docker-<id>.scope applied_floors=… node_memory_min=10737418240
 ```
 
-Keep `memory_min_budget` set even under `distribute`: the policy changes what
-Wings does about overcommit, not whether it tells you. An unset budget means no
-ledger and no log line — you lose the tripwire that says the node is now
-oversubscribed.
+Read it as a tripwire on the tier's sizing, not as a warning about the server
+that happened to trigger it. The fix, when you want one, is on the `wings.slice`
+unit file.
 
 ## Sizing checklist
 
 - `memory.min` — the working set that must survive host-wide pressure. Sum of
-  all of them ≤ the node slice's `MemoryMin` (or accept Rule 5 via `distribute`).
+  all of them ≤ the node slice's `MemoryMin`, or accept Rule 5's proportional
+  split.
 - `memory.low` — soft protection above `min`, and only meaningful below the same
   cgroup's own `high` (Rule 3).
 - `memory.high` — where this server starts getting squeezed into zswap. If it

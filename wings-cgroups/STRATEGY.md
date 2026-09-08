@@ -289,6 +289,37 @@ set, and specs written for T3b are not portable to it unchanged. Closing it is
 a straight port in the same direction as the original one; it has simply not
 been done, because nothing runs T3a.
 
+**Addendum 2026-09-08 — the per-server slice was retired.** Everything above
+stands as the record of what was decided and shipped in July 2026; this note
+records that its central object no longer exists. Patch 0004 was rewritten:
+placement is flat (`HostConfig.CgroupParent = wings.slice`) and the same
+property set is applied directly to the container's own `docker-<id>.scope` via
+`SetUnitProperties`, immediately after `ContainerStart()`. Wings creates no
+units at all now.
+
+Why: the intermediate slice was never where the pages were charged, so every
+floor it carried depended on the host's `memory_recursiveprot` mount flag to
+reach the container — and that flag drifted three times on the production node
+inside two months, each time silently voiding every per-server floor while
+`systemctl show` kept reporting the configured number (the finding is in
+`TODO.md`). Writing the floors on the leaf removes the dependency outright.
+Three things fell away with the slice and were not replaced: the orphan GC (a
+scope cannot outlive its container), the Transient-vs-adopted discrimination (a
+unit Wings never creates needs no ownership test), and the whole
+`memory_min_budget` / `budget_policy` apparatus — overcommit is now arbitrated
+by cgroup-v2's proportional-by-usage sharing with zero Wings code, which is what
+`budget_policy: distribute` had already amounted to. What was paid for it: the
+properties cannot be applied until after the container starts, because the scope
+does not exist before then, and the per-server slice's bookkeeping role — an
+admin `systemctl show`-ing a server's committed floor while it was stopped — is
+gone with it. Both costs were weighed and accepted.
+
+The shipped series is the table in
+[`v1-legacy/patchstack/README.md`](v1-legacy/patchstack/README.md) (0001–0009,
+contiguous); the retirements of the old 0005 (`io_bfq_weight`) and 0011
+(`WINGS_CG_RAMDISK_UNITS`) are argued in the same file. Note that the links
+elsewhere in this document predate the `v1-legacy/` move and are stale.
+
 ---
 
 ## T4 — Panel-native schema (the product end state, upstream-or-fork-only)

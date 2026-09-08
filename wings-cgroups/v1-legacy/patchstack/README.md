@@ -9,21 +9,70 @@ upstream PRs can cherry-pick, and rebases stay reviewable:
 | 0001 | `Add docker.cgroup_parent to place containers under a systemd slice` | T1 |
 | 0002 | `Support per-server cgroup parent override via WINGS_CGROUP_PARENT` | T2 |
 | 0003 | `Add docker integration tests for cgroup parent placement` | tests (build-tagged; include in PR or drop) |
-| 0004 | `Manage per-server transient slices via systemd D-Bus` | T3b (`docker.per_server_slices`: auto-derived slices, defaults + `WINGS_CG_*` overrides, floor budget with clamp/refuse/distribute, GC; `internal/cgroups`) |
-| 0005 | `Let administrators state IO weights on BFQ's own scale` | T3b follow-up (`io_bfq_weight`/`WINGS_CG_IO_BFQ_WEIGHT`; inverts systemd's IOWeight→io.bfq.weight compression) |
-| 0006 | `Render slice property values in the units they were configured with` | log rendering only; split out because it changes user-visible output independently of any feature |
-| 0007 | `Stage per-server slice properties across server startup` | T3b follow-up (`startup_defaults`/`WINGS_CG_STARTUP_*`; exits on `WINGS_CG_STEADY_MATCH`/`startup.done`/`startup_grace`; steady `memory.high` reached by a self-pacing ramp `steady_ramp_step`; optional `WINGS_CG_PHASE_EVENTS` → Panel activity log) |
-| 0008 | `Report configuration keys discarded while parsing` | standalone diagnostic — strict re-decode warns about unknown/misindented/duplicate keys instead of dropping them silently. No dependency on 0001–0007, and its test fixtures use only upstream-native config keys so it cherry-picks onto stock Wings. |
-| 0009 | `Fix MemoryCurrent D-Bus interface in the memory.high ramp` | bugfix for 0007's ramp — `MemoryCurrent`, like `MemoryMin`, only exists on the D-Bus `Slice` interface, not the generic `Unit` one Wings read it from; every read failed, so the ramp never ran and the ceiling applied in one shot instead of walking down gradually. Confirmed live in production. |
-| 0010 | `Start listed child servers when a server reaches its steady trigger` | `WINGS_CG_CHILD_SERVERS` (admin-only, per-server list of other server UUIDs on this node): when a server reaches its steady trigger (0007's event — the same one `WINGS_CG_STEADY_MATCH` gates), Wings starts each listed child via `HandlePowerAction`, fire-and-forget, never on the grace backstop. Ordinary cluster start-ordering — a dependent server that must not come up until its main is confirmed ready. Also closes two correctness gaps: `WINGS_CG_STEADY_MATCH` is now armed even with no startup band staged (0007 previously ignored it silently in that case), and Wings' own boot sequence (`cmd/root.go`) now defers a child's direct restart to its parent's when both were running across a reboot, instead of racing them — see `internal/cgroups.DeferBootRestart`. |
-| 0011 | `Trigger host ramdisk-setup units via systemd D-Bus before container create` | Phase 0 of the ramdisk-sharing design: `WINGS_CG_RAMDISK_UNITS` (admin-only, per-server, comma-/newline-separated systemd unit names) asks Wings to `systemctl start`-equivalent a pre-existing, host-installed unit — typically a ramdisk-setup `.service` shared by sibling servers — immediately before `ContainerCreate()`. Wings never manages the mount itself; the unit's own script is the only thing that ever touches it. Security: every requested name must also appear in the new node-level `docker.allowed_ramdisk_units` allow-list (mirrors 0002's `allowed_cgroup_parents` pattern) or it is rejected and logged, never acted on — and unlike the cgroup-parent allow-list there is **no built-in fallback namespace**, since a unit name carries no structural marker Wings could trust in its place. `internal/cgroups.StartUnit` deliberately issues systemd's "start" job, never "restart": restarting an already-active oneshot runs `ExecStop` before `ExecStart`, which would tear down a live sibling's bind mount — verified with a real systemd e2e test that starts a unit twice (proving the no-op) and contrasts it against an actual `systemctl restart` on the same unit (proving restart tears down and re-creates it). Fails open throughout. |
+| 0004 | `Manage per-server container scope properties via systemd D-Bus` (title may differ slightly) | T3b (`docker.per_server_slices`: placement stays flat at `cgroup_parent`, and the node-wide `defaults` + `WINGS_CG_*` overrides are applied to the container's own `docker-<id>.scope` with `SetUnitProperties`, right after `ContainerStart()`; `internal/cgroups`) |
+| 0005 | `Render slice property values in the units they were configured with` | log rendering only; split out because it changes user-visible output independently of any feature. *(was 0006)* |
+| 0006 | `Stage per-server slice properties across server startup` | T3b follow-up (`startup_defaults`/`WINGS_CG_STARTUP_*`; exits on `WINGS_CG_STEADY_MATCH`/`startup.done`/`startup_grace`; steady `memory.high` reached by a self-pacing ramp `steady_ramp_step`; optional `WINGS_CG_PHASE_EVENTS` → Panel activity log). Same property sets and same ramp as before; they are applied post-`ContainerStart()` now instead of pre-`ContainerCreate()`. *(was 0007)* |
+| 0007 | `Report configuration keys discarded while parsing` | standalone diagnostic — strict re-decode warns about unknown/misindented/duplicate keys instead of dropping them silently. No dependency on the rest of the series, and its test fixtures use only upstream-native config keys so it cherry-picks onto stock Wings. Doubles as the migration aid for this redesign: the removed keys are named at boot rather than vanishing. *(was 0008)* |
+| 0008 | `Fix MemoryCurrent D-Bus interface in the memory.high ramp` | bugfix for the ramp — `MemoryCurrent`, like `MemoryMin`, only exists on the typed D-Bus interface, not the generic `Unit` one Wings read it from; every read failed, so the ramp never ran and the ceiling applied in one shot instead of walking down gradually. Confirmed live in production. *(was 0009)* |
+| 0009 | `Start listed child servers when a server reaches its steady trigger` | `WINGS_CG_CHILD_SERVERS` (admin-only, per-server list of other server UUIDs on this node): when a server reaches its steady trigger (0006's event — the same one `WINGS_CG_STEADY_MATCH` gates), Wings starts each listed child via `HandlePowerAction`, fire-and-forget, never on the grace backstop. Ordinary cluster start-ordering — a dependent server that must not come up until its main is confirmed ready. Also closes two correctness gaps: `WINGS_CG_STEADY_MATCH` is armed even with no startup band staged (0006 previously ignored it silently in that case), and Wings' own boot sequence (`cmd/root.go`) defers a child's direct restart to its parent's when both were running across a reboot, instead of racing them — see `internal/cgroups.DeferBootRestart`. *(was 0010)* |
 
-The unrelated commit sits **last** on purpose: it makes each planned upstream PR
-a contiguous range (`0001–0003` placement, `0001–0007` stacked slice lifecycle,
-`0008` alone, `0009`–`0011` further slice-lifecycle follow-ups) instead of
-forcing a cherry-pick out of the middle of the series.
+The series is contiguous 0001–0009 with no gaps. The unrelated commit (0007)
+sits mid-stack only because renumbering closed the holes; each planned upstream
+PR is still a contiguous range (`0001–0003` placement, `0001–0006` stacked
+per-server properties, `0007` alone, `0008`–`0009` follow-ups) instead of forcing
+a cherry-pick out of the middle of the series.
 
-Targets: `pterodactyl` (tag `v1.13.1` — what production runs) and `pelican`
+### The 2026-09-08 redesign, and the two retirements
+
+0004 was rewritten. It no longer derives, creates or garbage-collects a
+per-server `wings-<uuid32>.slice`: placement is flat
+(`HostConfig.CgroupParent = wings.slice`) and the identical property set —
+`MemoryMin`/`MemoryLow`/`MemoryHigh`/`MemoryMax`/`CPUWeight`/`IOWeight` — is
+applied with `SetUnitProperties` to the `docker-<id>.scope` that Docker created.
+Wings never calls `StartTransientUnit` and never creates a unit of its own. Four
+things follow, and they are why several notes below moved to the historical
+section:
+
+- properties can only be applied **after** `ContainerStart()`, because the scope
+  does not exist until the container's init process launches. The resulting
+  few-millisecond window is a known, accepted cost, not a defect (`../SETUP.md`
+  §5);
+- no orphan GC at boot — the scope's lifecycle *is* the container's, so there is
+  nothing left that can be orphaned;
+- no Transient-vs-adopted discrimination — that trap existed only because a
+  slice could be implicitly auto-created by systemd before Wings reached it;
+- no budget arithmetic. `memory_min_budget`, `budget_policy`, `clamp` and
+  `refuse` are gone; what remains is what `distribute` already was — apply the
+  requested floors as stated and let cgroup-v2's proportional-by-usage sharing
+  arbitrate (`../../CGROUP-SEMANTICS.md` Rule 5). Wings keeps one informational
+  log line as a tripwire when the applied floors sum above `wings.slice`'s live
+  `MemoryMin`, and never acts on it.
+
+**Retired: the old 0005, `Let administrators state IO weights on BFQ's own
+scale`** (`io_bfq_weight` / `WINGS_CG_IO_BFQ_WEIGHT`). It computed the inverse of
+systemd's `IOWeight`→`io.bfq.weight` compression so an admin could state the
+number BFQ actually schedules on. Retired by operator decision on 2026-09-08:
+one spelling only, the systemd-native `io_weight` / `WINGS_CG_IO_WEIGHT` on the
+1..10000 scale, with the admin doing the BFQ arithmetic by hand from the table
+in `../../CGROUP-SEMANTICS.md` Rule 7. That is consistent with how the node tier
+has always been configured — the live `wings.slice` unit file carries a
+hand-picked `IOWeight=7800` chosen to land on `io.bfq.weight ≈ 800`, for parity
+with its `CPUWeight=800`. One knob, one scale, one place to look it up.
+
+**Retired: the old 0011, `Trigger host ramdisk-setup units via systemd D-Bus
+before container create`** (`WINGS_CG_RAMDISK_UNITS` /
+`docker.allowed_ramdisk_units`). It targeted a ramdisk design —
+`soulmask-pak-ramdisk.service` / `soulmask-static-ramdisk.service` — that was
+superseded in production on 2026-07-29 by `soulmask_tmpfs.service`, a host-level
+unit ordered `Before=docker.service` and toggled by the operator. That is
+strictly earlier than any point Wings could reach, and it is not per-container,
+so the whole trigger-before-create mechanism has nothing left to trigger.
+Confirmed dead rather than merely unused: `allowed_ramdisk_units` appears
+nowhere in the live `/etc/pterodactyl/config.yml`. The `StartUnit` /
+start-never-restart finding it produced is preserved in the historical notes
+below.
+
+Targets: `pterodactyl` (tag `v1.13.3` — what production runs) and `pelican`
 (`main` — the faster-merging upstream; same commits, ported). See `stack.conf`
 for refs, go images, and the `FORK_REPO` placeholder.
 
@@ -35,18 +84,21 @@ for refs, go images, and the `FORK_REPO` placeholder.
 scripts/clone.sh
 scripts/apply.sh pterodactyl
 INTEGRATION=1 scripts/test.sh pterodactyl   # needs /var/run/docker.sock
-scripts/build-image.sh pterodactyl cgroup.10 # -> wings-local:1.13.1-cgroup.10
+scripts/build-image.sh pterodactyl cgroup.1 # -> wings-local:1.13.3-cgroup.1
 ```
 
 **New upstream release (the recurring ~1–2h/release chore)**
 
 ```bash
-scripts/rebase.sh pterodactyl v1.13.2       # rebases commits onto the new tag
+scripts/rebase.sh pterodactyl v1.13.4       # rebases commits onto the new tag
 scripts/export-patches.sh pterodactyl       # refresh committed series
 INTEGRATION=1 scripts/test.sh pterodactyl
-scripts/build-image.sh pterodactyl cgroup.11  # bump the suffix per deployable change
+scripts/build-image.sh pterodactyl cgroup.2   # bump the suffix per deployable change
 # deploy per ../SETUP.md, then commit patches/ changes
 ```
+
+The current deployable image is `wings-local:1.13.3-cgroup.1` — the first build
+after the rebase from `v1.13.1` (which had reached `cgroup.11`).
 
 **Editing the patches** — never edit `.patch` files by hand: change the
 commits on the branch (`git rebase -i` on your own machine / amend), then
@@ -57,7 +109,7 @@ commits on the branch (`git rebase -i` on your own machine / amend), then
 ```bash
 cd ../build/wings-pterodactyl
 git remote add fork git@github.com:OWNER/wings.git
-git push fork cgroup/v1.13.1
+git push fork cgroup/v1.13.3
 ```
 
 CI for the fork lives in `../ci/fork-wings-ci.yml` (copy into the fork as
@@ -73,30 +125,25 @@ CI for the fork lives in `../ci/fork-wings-ci.yml` (copy into the fork as
 - Both series were verified end-to-end in this environment: build + vet +
   unit tests + the `dockerintegration` tests against a real systemd/cgroup-v2
   Docker daemon (placement, accepted override, fail-closed rejection), plus —
-  for 0004/0005 — the `systemdintegration` test of `internal/cgroups` inside the
-  privileged systemd e2e container (`../test/e2e-systemd/`): transient-unit
-  creation, in-place property updates, budget clamp/refuse, orphan GC.
-- The floor budget is a read-modify-write against live systemd state, so 0004
-  serializes it with a package mutex held across the apply and keeps the policy
-  arithmetic in a pure `applyBudget` — the D-Bus path is untestable without a
-  bus, and this is the arithmetic that decides whether an admin's floor is real.
-- Hard-won systemd facts encoded in 0004 (do not "simplify" them away):
-  slice units are loaded on demand, so `LoadState=loaded` is meaningless as an
-  existence check — only `ActiveState=active` means the slice (and its cgroup)
-  exists; and transient units DO have a `FragmentPath`
-  (`/run/systemd/transient/…`), so the `Transient` property is the only safe
-  admin-owned-vs-wings-owned discriminator for GC.
+  for 0004 — the `systemdintegration` test of `internal/cgroups` inside the
+  privileged systemd e2e container (`../test/e2e-systemd/`).
 - Hard-won **kernel** fact (host prerequisite, found the hard way on the prod
-  node 2026-07-17): the floors 0004 sets live on the per-server *slice*, but
-  the container's pages are charged to the `docker-*.scope` *below* it —
-  protection only flows down when cgroup2 is mounted with
-  `memory_recursiveprot`. That is the systemd ≥ 248 boot default, but a
-  runtime remount from the init cgroup namespace can strip it (observed), and
-  then every slice-level `MemoryMin`/`MemoryLow` silently protects nothing.
-  Check `grep cgroup2 /proc/mounts`; fix with
-  `mount -o remount,nsdelegate,memory_recursiveprot /sys/fs/cgroup` (host
+  node 2026-07-17): protection declared on a *slice* only reaches the pages
+  below it — which are charged to the `docker-*.scope` leaf, never to the slice
+  — when cgroup2 is mounted with `memory_recursiveprot`. That is the systemd ≥
+  248 boot default, but a runtime remount from the init cgroup namespace can
+  strip it (observed, three times on this host), and then that slice-level
+  `MemoryMin`/`MemoryLow` silently protects nothing while `systemctl show`
+  still reports the configured number. Check `grep cgroup2 /proc/mounts`; fix
+  with `mount -o remount,nsdelegate,memory_recursiveprot /sys/fs/cgroup` (host
   shell only — the kernel ignores flag changes from non-init cgroup
-  namespaces). Worth documenting in the upstream PR as a deployment note.
+  namespaces). **Since 2026-09-08 this is no longer load-bearing for the floors
+  0004 sets** — it writes them on the scope itself, the leaf that owns the
+  pages, so there is nothing to recurse through. It remains a real prerequisite
+  for the node tier's own `wings.slice` floors (now the entire aggregate
+  guarantee) and for any admin-managed slice reached via 0002's
+  `WINGS_CGROUP_PARENT`. Still worth documenting in the upstream PR as a
+  deployment note.
 - Hard-won **config-plumbing** fact (found in production, 2026-07-17): Wings
   parses `config.yml` with a plain non-strict `yaml.Unmarshal` and rewrites the
   entire file from the parsed struct at boot (`cmd/root.go` →
@@ -110,7 +157,7 @@ CI for the fork lives in `../ci/fork-wings-ci.yml` (copy into the fork as
   file from in-memory state, so on-disk edits made while Wings runs can be
   reverted by an unrelated panel action unless `ignore_panel_config_updates` is
   set. Neither is caused by our patches — 0004 just made the blast radius
-  visible. **0008 is the response**: a strict re-decode used purely as a
+  visible. **0007 is the response**: a strict re-decode used purely as a
   diagnostic, so the discarded key is named in the log instead of vanishing. It
   deliberately warns rather than failing — a full `KnownFields(true)` decode
   would turn a stale key from an older Wings into a boot failure.
@@ -148,11 +195,50 @@ CI for the fork lives in `../ci/fork-wings-ci.yml` (copy into the fork as
   `BlkioWeight`. Running `docker run --blkio-weight 700` writes
   `io.bfq.weight=700` on the container **scope** and leaves `io.weight` at 100 —
   runc targets BFQ's own file, on BFQ's own scale, uncompressed. So upstream's
-  knob works, and it is *complementary* to ours: theirs settles containers
-  under one slice, ours settles slices under the node tier, and the two compose
-  multiplicatively. The hazard is naming — after this series a node has two
-  different things called `io_weight` on two different scales at two different
-  cgroup levels. 0005's `io_bfq_weight` is unambiguous; the slice-level
-  systemd-scale key is not, and the PR should let maintainers pick its name.
-  Related oddity: `blkioWeightSupported()` probes for `io.weight`, the iocost
-  controller's file, which is not the path runc actually takes.
+  knob works. It used to be *complementary* to ours — theirs settling containers
+  under one slice, ours settling slices under the node tier, composing
+  multiplicatively — but since the 2026-09-08 redesign both land on the **same**
+  `docker-<id>.scope`, and Wings' `IOWeight` (which systemd re-derives
+  `io.bfq.weight` from) overwrites what runc wrote. That upgrades the hazard
+  from naming to behaviour, and the PR should say so: after this series a node
+  has two different things called `io_weight`, on two different scales, now
+  writing the same file. With the old 0005 retired there is no longer an
+  unambiguous spelling (`io_bfq_weight`) to point people at, so the PR should
+  let maintainers pick a name for the systemd-scale key and document the
+  overlap with `BlkioWeight` explicitly. Related oddity:
+  `blkioWeightSupported()` probes for `io.weight`, the iocost controller's file,
+  which is not the path runc actually takes.
+
+## Retired notes — true, but no longer load-bearing here
+
+Kept because the facts are real and cost work to find; moved out of the live
+list because the code they describe no longer exists in this series.
+
+- **`LoadState` is meaningless; `Transient` is the only safe GC discriminator.**
+  Slice units are loaded on demand, so `LoadState=loaded` never proved a slice
+  existed — only `ActiveState=active` meant the slice (and its cgroup) was
+  really there; and transient units DO have a `FragmentPath`
+  (`/run/systemd/transient/…`), so the `Transient` property was the only safe
+  admin-owned-vs-Wings-owned discriminator. *No longer applies:* Wings creates
+  no units, so it never has to tell its own from an administrator's. A
+  container scope is `Transient=yes` because Docker made it, which says nothing
+  about Wings.
+- **Orphan GC of derived slices.** 0004 used to stop derived-shape transient
+  slices with no matching server, at boot and on server delete. *No longer
+  applies:* a `docker-<id>.scope` lives and dies with its container, so nothing
+  can be orphaned and there is nothing to sweep.
+- **Serialized budget arithmetic.** The floor budget was a read-modify-write
+  against live systemd state, so 0004 serialized it with a package mutex held
+  across the apply and kept the policy arithmetic in a pure `applyBudget` — the
+  D-Bus path being untestable without a bus, and that arithmetic deciding
+  whether an admin's floor was real. *No longer applies:* there is no budget and
+  no policy; the kernel arbitrates overcommit (`../../CGROUP-SEMANTICS.md`
+  Rule 5) and Wings only logs the tripwire.
+- **`StartUnit` must issue "start", never "restart".** From the retired 0011:
+  restarting an already-active oneshot runs `ExecStop` before `ExecStart`, which
+  for a shared ramdisk-setup unit means tearing down a live sibling's bind
+  mount. Verified with a real systemd e2e test that started a unit twice
+  (proving the no-op) and contrasted it against an actual `systemctl restart` on
+  the same unit (proving restart tears down and re-creates it). *No longer
+  applies here* — Wings triggers no host units — but it is the fact to remember
+  if anything ever asks systemd to run a unit on a server's behalf again.
