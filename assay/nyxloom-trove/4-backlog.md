@@ -7246,18 +7246,49 @@ except (json.JSONDecodeError, ValueError, RecursionError) as exc:
 
 ### Acceptance
 
-- [ ] a pathologically-nested, well-formed, well-under-`MAX_ATTESTATION_BYTES`
+- [x] a pathologically-nested, well-formed, well-under-`MAX_ATTESTATION_BYTES`
       JSON document fed to `parse_attestation` raises
       `AssayError`/`UNREADABLE_ARTIFACT`, not `RecursionError` — red-first
       test mirroring `test_adjudication_provenance_parse.py`'s equivalent;
-- [ ] the fix is proven through the real CLI path (`load_attestation_file`
+- [x] the fix is proven through the real CLI path (`load_attestation_file`
       → `load_attested_evidence` → `cli.py`'s `assay run`), not just the
       bare function, so the refusal a consumer actually sees is confirmed
       clean rather than assumed from the unit-level fix;
-- [ ] a one-time sweep of `attestation.py`, `adjudication.py`, `cli.py` and
+- [x] a one-time sweep of `attestation.py`, `adjudication.py`, `cli.py` and
       `runner.py` for any OTHER `except (..., ValueError)`-without-
       `RecursionError` pattern parsing untrusted JSON, so this does not
       recur a third time — named here even if none are found.
+
+### Resolution — FIXED 2026-09-08 (quick-wins wave). **The sweep was NOT
+### clean: it found a third instance, filed as [B074](#b074).**
+
+`attestation.py:240`'s `except` tuple gains `RecursionError`, with the
+comment naming why (a `RuntimeError` subclass, reached at CPython's real
+C-stack boundary, well inside `MAX_ATTESTATION_BYTES`) and the
+`f0126b35` precedent. Red-first: the 200,000-byte fixture raised
+`RecursionError: Stack overflow (used 8148 kB)` before the change.
+
+Tests: `tests/test_attestation_recursion_depth.py` (6) — the depth fixture,
+a guard that the fixture is genuinely inside the size bound (so it proves
+the PARSER and not the bound), an injected-`RecursionError` test pinning
+*which* exception is being caught (a future CPython raising something else
+would otherwise leave the fix silently inert), the two real consumer hops
+(`load_attestation_file` raising `UNREADABLE_ARTIFACT`, and
+`load_attested_evidence` staging it as that one evidence item's own refusal
+instead of escaping the loader entirely), and a legible-document control.
+
+**Sweep result — widened past the four named modules to all 7
+`json.loads`/`json.load` sites in `src/assay`.** `verify.py:2562`
+(`verify_text`, the parser behind `assay verify`, whose whole job is reading
+a document assay did not write) has the identical narrow guard and was
+confirmed to crash live. NOT fixed here — this wave's binding constraints
+state "`assay verify` is unaffected by every item above" — so it is filed as
+B074 with the full sweep table, including the recorded judgment that
+`provenance.py:137` (the installed distribution's own pip-written
+`direct_url.json`, in an already-best-effort function) is a preference call
+rather than a third defect.
+
+---
 
 ---
 
@@ -7318,3 +7349,87 @@ per-test events without becoming a second verdict format.
       a lane-wide refusal — progress is diagnostic, never load-bearing;
 - [ ] `assay verify` is unaffected, same as every other progress-family
       item — this is diagnostic-only, never evidence.
+
+---
+
+## B074 — `verify.py`'s `verify_text` is the THIRD instance of the uncaught-`RecursionError` gap, and it is on `assay verify`'s own untrusted-input path
+
+**Filed 2026-09-08 by the B072 implementer, from B072's own required sweep**
+("a one-time sweep of `attestation.py`, `adjudication.py`, `cli.py` and
+`runner.py` for any OTHER `except (..., ValueError)`-without-`RecursionError`
+pattern parsing untrusted JSON, so this does not recur a third time — named
+here even if none are found"). **FILED, NOT FIXED** — deliberately: the
+B068-quick-wins wave's binding constraints state "`assay verify` is
+unaffected by every item above", so changing its behavior was out of that
+wave's scope. This entry is the "named here" the acceptance criterion asks
+for.
+
+### What was measured
+
+The sweep was widened past the four named modules to every `json.loads`/
+`json.load` call site in `src/assay` (7 sites). Results:
+
+| site | guard | verdict |
+|---|---|---|
+| `attestation.py:239` | `(JSONDecodeError, ValueError, RecursionError)` | **fixed by B072** |
+| `adjudication.py:154` | `(JSONDecodeError, ValueError, RecursionError)` | already fixed by `f0126b35` |
+| `verify.py:2562` (`verify_text`) | `json.JSONDecodeError` only | **THIS ENTRY** |
+| `mutation.py:838` | `(UnicodeDecodeError, JSONDecodeError)` | assay's OWN mutation-state record, written by assay itself in the same run; not consumer input |
+| `provenance.py:137` | `json.JSONDecodeError` only | the installed distribution's own `direct_url.json` metadata, written by pip; whole function is best-effort and returns `None` on every fault — see "the one judgment call" below |
+| `verdict.py:501` (`load_schema`) | none | assay's own shipped package resource; a failure here is a broken build, not input |
+
+`verify_text` is the only remaining site that parses a document assay did not
+write. Reproduced live against today's `main`:
+
+```
+$ python3 -c "
+from assay import verify
+verify.verify_text('[' * 100000 + ']' * 100000)
+"
+RecursionError: Stack overflow (used 8144 kB) while decoding a JSON array
+```
+
+### Why this one matters more than the other two candidates
+
+`assay verify`'s entire purpose is to read a verdict artifact **produced
+somewhere else** — "independently of how it was produced" is its own
+`--help` text — from a path or from stdin. That is untrusted input by
+definition, and it is the one command a consumer points at an artifact whose
+producer they are trying to check. Its contract for an unparseable document
+is already a returned failure list (`["not valid JSON: ..."]`, exit 1); a
+deeply nested one instead crashes the process with a traceback, which a
+CI caller reads as a tooling fault rather than a bad artifact.
+
+### The one judgment call this entry records rather than hides
+
+`provenance.py:137` has the same narrow guard but was NOT counted as a third
+instance: `direct_url.json` comes from assay's own installed distribution
+metadata, the surrounding function already returns `None` on every fault
+(`OSError`, `ValueError`, non-dict, missing members), and a `RecursionError`
+there is a broken install rather than a consumer's artifact. Someone may
+still decide the cheap widening is worth it for uniformity — that is a
+preference, not a defect, and this paragraph exists so the next sweep does
+not re-derive the distinction.
+
+### Proposed fix
+
+The same one-line shape twice over:
+
+```python
+except (json.JSONDecodeError, RecursionError) as exc:
+```
+
+at `verify.py:2562`, with a red-first test mirroring
+`test_attestation_recursion_depth.py` / `test_adjudication_provenance_parse.py`
+and one proving it through `cmd_verify` (the real exit-1-plus-message path),
+not just the bare function.
+
+### Acceptance
+
+- [ ] a pathologically-nested, well-formed JSON document handed to
+      `assay verify` (both `-` and a file path) exits 1 with a `not valid
+      JSON` line, not a `RecursionError` traceback;
+- [ ] `verify_document`'s behavior on every legible document is unchanged
+      (the widening is a catch, not a validation change);
+- [ ] the `provenance.py` judgment above is either affirmed or reversed in
+      writing at the same time, so the sweep table stays true.

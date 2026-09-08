@@ -237,7 +237,20 @@ def parse_attestation(text: str, *, source_name: str) -> AttestationRecord:
     """
     try:
         payload = json.loads(text, object_pairs_hook=_no_duplicate_pairs)
-    except (json.JSONDecodeError, ValueError) as exc:
+    except (json.JSONDecodeError, ValueError, RecursionError) as exc:
+        # (B072) `RecursionError` is a `RuntimeError` subclass, NOT a
+        # `ValueError` -- CPython raises it from `json.loads`' recursive
+        # descent on a deeply nested document at the real C-stack boundary,
+        # well inside `MAX_ATTESTATION_BYTES`. Attestations are produced
+        # entirely outside assay (the caller's own harness, on the host,
+        # before the container starts), so a truncated-then-repeated write, a
+        # buggy producer, or a shape assay has not seen yet can all reach
+        # this depth without being adversarial. Uncaught, it crashed the
+        # whole `assay run` process instead of producing the judged
+        # `ERROR`/`UNREADABLE_ARTIFACT` refusal a consumer can act on. This
+        # is the identical gap `f0126b35` closed in `adjudication.py`'s
+        # `evaluate_provenance`; "present but unreadable" is the same true
+        # classification here as there.
         raise _unreadable(f"{source_name}: not valid JSON ({exc})") from exc
     if not isinstance(payload, dict):
         raise _unreadable(
