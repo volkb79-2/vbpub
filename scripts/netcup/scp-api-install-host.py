@@ -657,11 +657,14 @@ def _run_login(env_path: Path) -> int:
     try:
         with urllib.request.urlopen(device_req, timeout=30) as resp:
             device = json.loads(resp.read().decode("utf-8", errors="replace"))
-    except (urllib.error.HTTPError, urllib.error.URLError) as e:
+    except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError) as e:
         print(f"❌ ERROR: could not start device login: {e}", file=sys.stderr)
         return 1
 
-    device_code = device["device_code"]
+    device_code = device.get("device_code")
+    if not device_code:
+        print(f"❌ ERROR: device-code response had no device_code: {device}", file=sys.stderr)
+        return 1
     interval = max(1, int(device.get("interval", 5)))
     expires_in = int(device.get("expires_in", 600))
     verification_url = device.get("verification_uri_complete") or device.get("verification_uri")
@@ -690,7 +693,12 @@ def _run_login(env_path: Path) -> int:
             with urllib.request.urlopen(token_req, timeout=30) as resp:
                 token_response = json.loads(resp.read().decode("utf-8", errors="replace"))
         except urllib.error.HTTPError as e:
-            body = json.loads(e.read().decode("utf-8", errors="replace") or "{}")
+            try:
+                body = json.loads(e.read().decode("utf-8", errors="replace") or "{}")
+            except json.JSONDecodeError:
+                # Non-JSON error body (e.g. an HTML gateway-error page) -
+                # still a clean failure, not a crash.
+                body = {}
             error = body.get("error")
             if error == "authorization_pending":
                 continue
@@ -701,6 +709,9 @@ def _run_login(env_path: Path) -> int:
             return 1
         except urllib.error.URLError as e:
             print(f"❌ ERROR: token poll network error: {e}", file=sys.stderr)
+            return 1
+        except json.JSONDecodeError as e:
+            print(f"❌ ERROR: token response was not valid JSON: {e}", file=sys.stderr)
             return 1
 
         refresh_token = token_response.get("refresh_token")
@@ -1677,7 +1688,11 @@ def _run_configure(client: "NetcupSCPClient") -> int:
         return 1
     server_id = servers[0]["id"]
 
-    flavour = _resolve_image_flavour(client, int(server_id), None, interactive=True)
+    try:
+        flavour = _resolve_image_flavour(client, int(server_id), None, interactive=True)
+    except RuntimeError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
     locale = _prompt_text("Locale", INSTALLATION_CONFIG["locale"])
     timezone = _prompt_text("Timezone", INSTALLATION_CONFIG["timezone"])
     root_full_disk = _prompt_yes_no(

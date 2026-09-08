@@ -661,6 +661,74 @@ def test_run_login_fails_on_access_denied(install_host_mod, tmp_path, monkeypatc
     assert not (tmp_path / ".env").exists()
 
 
+def test_run_login_fails_cleanly_when_device_code_missing(install_host_mod, tmp_path, monkeypatch):
+    """Adversarial-review regression: a device response with no device_code
+    must not raise an unhandled KeyError."""
+    device_response = json.dumps({"interval": 0, "expires_in": 60}).encode()
+    monkeypatch.setattr(
+        install_host_mod.urllib.request, "urlopen", lambda req, timeout=30: FakeHTTPResponse(device_response)
+    )
+    rc = install_host_mod._run_login(tmp_path / ".env")
+    assert rc == 1
+    assert not (tmp_path / ".env").exists()
+
+
+def test_run_login_fails_cleanly_on_malformed_device_response(install_host_mod, tmp_path, monkeypatch):
+    """Adversarial-review regression: a non-JSON body from the device-code
+    endpoint must not raise an unhandled JSONDecodeError."""
+    monkeypatch.setattr(
+        install_host_mod.urllib.request, "urlopen", lambda req, timeout=30: FakeHTTPResponse(b"not json")
+    )
+    rc = install_host_mod._run_login(tmp_path / ".env")
+    assert rc == 1
+
+
+def test_run_login_fails_cleanly_on_non_json_error_body(install_host_mod, tmp_path, monkeypatch):
+    """Adversarial-review regression: an HTTPError with a non-JSON body
+    (e.g. an HTML gateway-error page during the poll window) must not raise
+    an unhandled JSONDecodeError from inside the except clause itself."""
+    device_response = json.dumps({
+        "device_code": "dc123", "interval": 0, "expires_in": 60,
+        "verification_uri_complete": "https://example.com/verify",
+    }).encode()
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=30):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeHTTPResponse(device_response)
+        raise urllib.error.HTTPError(req.full_url, 502, "bad gateway", None, io.BytesIO(b"<html>502</html>"))
+
+    monkeypatch.setattr(install_host_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(install_host_mod.time, "sleep", lambda s: None)
+
+    rc = install_host_mod._run_login(tmp_path / ".env")
+    assert rc == 1
+    assert not (tmp_path / ".env").exists()
+
+
+def test_run_login_fails_cleanly_on_malformed_token_response(install_host_mod, tmp_path, monkeypatch):
+    """Adversarial-review regression: a 200-status but non-JSON token
+    response must not raise an unhandled JSONDecodeError."""
+    device_response = json.dumps({
+        "device_code": "dc123", "interval": 0, "expires_in": 60,
+        "verification_uri_complete": "https://example.com/verify",
+    }).encode()
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=30):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeHTTPResponse(device_response)
+        return FakeHTTPResponse(b"not json")
+
+    monkeypatch.setattr(install_host_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(install_host_mod.time, "sleep", lambda s: None)
+
+    rc = install_host_mod._run_login(tmp_path / ".env")
+    assert rc == 1
+
+
 # --- configure (default recipe wizard) --------------------------------------
 
 
@@ -697,6 +765,22 @@ def test_run_configure_requires_server_name(install_host_mod, fake_client, monke
     monkeypatch.setattr(install_host_mod, "SERVER_NAME", None)
     rc = install_host_mod._run_configure(fake_client(allow=()))
     assert rc == 1
+
+
+def test_run_configure_fails_cleanly_with_no_debian_flavours(install_host_mod, tmp_path, fake_client, monkeypatch):
+    """Adversarial-review regression: _resolve_image_flavour() raises a bare
+    RuntimeError when no Debian UEFI images are available -- _run_configure()
+    must turn that into a clean stderr message + rc=1, not an uncaught
+    traceback."""
+    monkeypatch.setattr(install_host_mod, "SERVER_NAME", "test-server")
+    monkeypatch.setattr(install_host_mod, "DEFAULT_RECIPE_PATH", tmp_path / "default-recipe.jsonc")
+    servers = [{"id": 42}]
+    no_debian_flavours = [{"id": 9, "image": {"name": "Ubuntu 24.04 UEFI amd64"}}]
+    client = fake_client(get_responses=[servers, no_debian_flavours], allow=("get",))
+
+    rc = install_host_mod._run_configure(client)
+    assert rc == 1
+    assert not (tmp_path / "default-recipe.jsonc").exists()
 
 
 # --- command positional argument --------------------------------------------
