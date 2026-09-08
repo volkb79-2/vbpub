@@ -63,19 +63,6 @@ items:
   type: bugfix
   component: ops
   context_estimate: small
-- id: B13
-  title: runaway watchdog conflates a persistent-but-acknowledged condition with
-    actively-worsening thrash -- review_rejections_by_area>=2 stays true for the
-    FULL 7-day HISTORY_REJECTION_WINDOW_SECONDS regardless of an operator having
-    already resumed once, so the SAME reconcile-thrash streak re-trips an
-    auto-pause every ~13 reconcile passes (minutes, once unblocked) until the
-    triggering rejections finally age out; needs the thrash-streak to reset (or
-    not count) once an operator has resumed for this specific condition, not
-    just dedupe the notification
-  type: bugfix
-  component: watchdog
-  context_estimate: medium
-  folds_into: F006
 - id: B12
   title: carve-ahead drift/staleness guard -- input_revision is stamped by the
     carver but never re-validated against current main before an implementer
@@ -131,22 +118,6 @@ items:
   component: runtime
   context_estimate: medium
   folds_into: F010
-- id: B25
-  title: 'de-flake + re-land test_transient_throttle_resumes_same_attempt_end_to_end
-    (B24/D-R17 O4), currently xfail(strict=False). It is the only behavioral test that
-    drives a REAL wrapper double-fork (wrapper.launch_detached uses os.fork()) through a
-    transient-classified leg, and os.fork() under load on Python 3.14 is fragile in the
-    tester-unified image: it passed its solo branch gate then failed the certify on the
-    same tree (~50% under full-suite load), while passing ~12/12 in the devcontainer.
-    Re-land it driving the transient leg deterministically (without a real fork), then
-    remove the xfail. NOT a feature defect -- the D-R17 contract is covered by
-    deterministic oracles in test_wrapper/test_reconcile/test_daemon. Also consider
-    skipping wrapper.SESSION_CAPTURE_DELAY entirely when a route declares no
-    session_capture/session_discover (capture can never succeed, so the 5s block is
-    always wasted) -- a real product speedup, not just a test fix.'
-  type: bugfix
-  component: testing
-  context_estimate: small
 - id: B26
   title: 'per-handoff processing-trace artifact: capture each dispatched agent
     summary + insights across legs (implementation, review, gate, merge) as a
