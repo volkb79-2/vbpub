@@ -190,3 +190,36 @@ def test_sniff_is_a_cheap_signature_check_not_a_parse():
     assert coverage_py_json.sniff(BASIC_ARTIFACT) is True
     assert coverage_py_json.sniff("SF:a.c\nend_of_record\n") is False
     assert coverage_py_json.sniff("mode: set\n") is False
+
+
+def test_a_pathologically_deep_document_is_unreadable_not_a_raise():
+    """(B074, second sweep) A target project's `coverage.py` output is
+    produced entirely outside assay, by a tool assay does not control, so a
+    deeply nested document is untrusted input in exactly the sense
+    `attestation.py`'s and `verify.py`'s are.
+
+    `json.loads` is CPython's recursive-descent parser and raises
+    `RecursionError` at the real C-stack boundary -- a `RuntimeError`
+    subclass, NOT a `ValueError` -- so the original `except
+    json.JSONDecodeError` did not catch it and the whole `assay run` process
+    crashed instead of producing this parser's own refusal. Driven through
+    the real `load_coverage_profile` entry point, not the bare parser.
+    """
+    depth = 100_000
+    pathological = "[" * depth + "]" * depth
+    with pytest.raises(AssayError) as excinfo:
+        coverage_py_json.parse(pathological, producer=None)
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert "not valid JSON" in str(excinfo.value)
+
+
+def test_a_pathologically_deep_object_is_refused_through_the_registry():
+    """The same document reshaped so the format sniff accepts it, so the
+    refusal is proven on the path a lane actually takes."""
+    depth = 100_000
+    pathological = '{"files": ' + "[" * depth + "]" * depth + "}"
+    with pytest.raises(AssayError) as excinfo:
+        load_coverage_profile(pathological, declared_format="coverage-py-json")
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert "not valid JSON" in str(excinfo.value)

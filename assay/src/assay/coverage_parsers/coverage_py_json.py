@@ -96,7 +96,16 @@ def parse(text: str, *, producer: str | None) -> CoverageProfile:
     del producer
     try:
         document = json.loads(text)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValueError, RecursionError) as exc:
+        # (B074, second sweep) `RecursionError` is a `RuntimeError` subclass,
+        # NOT a `ValueError`, and CPython raises it from `json.loads`'
+        # recursive descent at the real C-stack boundary. This text is a
+        # TARGET PROJECT's own `coverage.py` output -- produced entirely
+        # outside assay, by a tool assay does not control, on a tree assay
+        # did not write -- so it is untrusted input in exactly the sense
+        # `attestation.py` and `verify.py` are. Uncaught it crashed the whole
+        # `assay run` process instead of producing the judged
+        # `ERROR`/`MALFORMED_COVERAGE` refusal this parser exists to give.
         raise _malformed(f"not valid JSON: {exc}") from exc
     if not isinstance(document, dict):
         raise _malformed(f"top level is {type(document).__name__}, expected object")

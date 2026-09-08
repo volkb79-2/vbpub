@@ -6868,7 +6868,7 @@ copy.
 Applied as a module-level `pytestmark` to `test_python_qualification.py` and
 `test_distribution_build_release.py`, but **per-test** in
 `test_runner_snapshot_selection.py`: only its two embargo tests read the
-monorepo's tagged history, and skipping the ~60 that do not would hide real
+monorepo's tagged history, and skipping the other 11 collected items would hide real
 coverage of assay itself behind an unrelated property of the checkout.
 
 **Measured, from a `cp -r` copy of `assay/` into a scratch directory outside
@@ -7410,18 +7410,22 @@ would otherwise leave the fix silently inert), the two real consumer hops
 `load_attested_evidence` staging it as that one evidence item's own refusal
 instead of escaping the loader entirely), and a legible-document control.
 
-**Sweep result — widened past the four named modules to all 7
-`json.loads`/`json.load` sites in `src/assay`.** `verify.py:2562`
-(`verify_text`, the parser behind `assay verify`, whose whole job is reading
-a document assay did not write) has the identical narrow guard and was
-confirmed to crash live. NOT fixed here — this wave's binding constraints
-state "`assay verify` is unaffected by every item above" — so it is filed as
-B074 with the full sweep table, including the recorded judgment that
-`provenance.py:137` (the installed distribution's own pip-written
-`direct_url.json`, in an already-best-effort function) is a preference call
-rather than a third defect.
+**Sweep result — see [B074](#b074), which owns the complete table.** The
+sweep this entry's acceptance asked for was **run twice**: a first pass
+whose result is retracted, and a correct second pass.
 
----
+> **RETRACTED — the first sweep was wrong, and its number was wrong.** It
+> claimed "all 7 `json.loads`/`json.load` sites in `src/assay`". There are
+> **11**. The grep behind it was `src/assay/*.py`, a glob that does not
+> descend into `adapters/`, `coverage_parsers/` or `mutation_parsers/`, so
+> four sites were never examined — and two of those four (both coverage
+> parsers) were genuinely untrusted and reproducibly crashing. A reviewer
+> found this; it is recorded rather than quietly corrected, because "the
+> sweep is complete" was the claim, and a hand-list presented as a sweep is
+> the same class of defect B072 and B074 exist to catch.
+
+The correct sweep, its full 11-site table, and the disposition of every
+site live in B074's Resolution.
 
 ---
 
@@ -7504,20 +7508,17 @@ acceptance asks to be "named here" — with the resolution at the end.
 
 ### What was measured
 
-The sweep was widened past the four named modules to every `json.loads`/
-`json.load` call site in `src/assay` (7 sites). Results:
+> **The table that stood here claimed 7 sites and is RETRACTED.** It was
+> built from `grep ... src/assay/*.py`, a glob that never descends into
+> `adapters/`, `coverage_parsers/` or `mutation_parsers/`. There are **11**
+> sites; four were never examined, and two of those four were genuinely
+> untrusted and reproducibly crashing. A reviewer caught it. The complete
+> table is in the Resolution at the end of this entry, and the correction is
+> recorded rather than silently applied because "the sweep is complete" was
+> the load-bearing claim.
 
-| site | guard | verdict |
-|---|---|---|
-| `attestation.py:239` | `(JSONDecodeError, ValueError, RecursionError)` | **fixed by B072** |
-| `adjudication.py:154` | `(JSONDecodeError, ValueError, RecursionError)` | already fixed by `f0126b35` |
-| `verify.py:2562` (`verify_text`) | `json.JSONDecodeError` only | **THIS ENTRY** |
-| `mutation.py:838` | `(UnicodeDecodeError, JSONDecodeError)` | assay's OWN mutation-state record, written by assay itself in the same run; not consumer input |
-| `provenance.py:137` | `json.JSONDecodeError` only | the installed distribution's own `direct_url.json` metadata, written by pip; whole function is best-effort and returns `None` on every fault — see "the one judgment call" below |
-| `verdict.py:501` (`load_schema`) | none | assay's own shipped package resource; a failure here is a broken build, not input |
-
-`verify_text` is the only remaining site that parses a document assay did not
-write. Reproduced live against today's `main`:
+`verify_text` was the site this entry was filed for. Reproduced live against
+today's `main`:
 
 ```
 $ python3 -c "
@@ -7602,12 +7603,69 @@ Tests: `tests/test_verify_recursion_depth.py` (8) —
 - a source-level sweep guard asserting all THREE untrusted-JSON sites still
   carry the identical clause, so a fourth variant cannot appear unnoticed.
 
-**The `provenance.py:137` judgment is AFFIRMED, not reversed.** It keeps the
-narrow `except json.JSONDecodeError`. Its input is the installed
-distribution's own pip-written `direct_url.json` metadata — assay's own build
-artifact, not a consumer's document — the enclosing function is best-effort
-and already returns `None` on every fault (`OSError`, `ValueError`,
-non-dict, missing members), and a `RecursionError` there would mean a broken
-install rather than a bad artifact. The sweep table above therefore stands as
-written: three untrusted sites, all three now guarded; one trusted site
-deliberately left alone.
+### Second sweep — the FIRST one was wrong, and this is the complete table
+
+**Found by review, not by me.** The first sweep's grep was
+`src/assay/*.py`, which does not descend into subpackages. It reported 7
+sites. There are **11**. The four it never looked at:
+
+| missed site | why it was missed | disposition |
+|---|---|---|
+| `coverage_parsers/coverage_py_json.py:98` (`parse`) | subpackage | **untrusted, crashed live — FIXED** |
+| `coverage_parsers/coverage_istanbul_json.py:229` (`parse`) | subpackage | **untrusted, crashed live — FIXED** |
+| `adapters/go_stmtpos.py:293` (`_read_document`) | subpackage | **untrusted, crashed live — FIXED** |
+| `mutation_parsers/mutation_report_json.py:123`,`:140` (`sniff`, `parse`) | subpackage | already guarded — and the proof the old guard-test was unfit (below) |
+
+The complete 11-site table, every site accounted for, with a stated reason
+for each one judged trusted:
+
+| site | enclosing fn | guard | disposition |
+|---|---|---|---|
+| `adjudication.py:154` | `evaluate_provenance` | `(JSONDecodeError, ValueError, RecursionError)` | untrusted, fixed by `f0126b35` |
+| `attestation.py:239` | `parse_attestation` | `(JSONDecodeError, ValueError, RecursionError)` | untrusted, fixed by B072 |
+| `verify.py:2583` | `verify_text` | `(JSONDecodeError, ValueError, RecursionError)` | untrusted, fixed by B074 |
+| `coverage_parsers/coverage_py_json.py:98` | `parse` | `(JSONDecodeError, ValueError, RecursionError)` | untrusted — a TARGET PROJECT's `coverage.py` output; **fixed, second sweep** |
+| `coverage_parsers/coverage_istanbul_json.py:229` | `parse` | `(JSONDecodeError, ValueError, RecursionError)` | untrusted — a target project's istanbul output; **fixed, second sweep** |
+| `adapters/go_stmtpos.py:293` | `_read_document` | `(UnicodeDecodeError, JSONDecodeError, ValueError, RecursionError)` | untrusted — a real external `go` subprocess' raw stdout; **fixed, second sweep** |
+| `mutation_parsers/mutation_report_json.py:123` | `sniff` | `(JSONDecodeError, RecursionError, ValueError)` | untrusted — already guarded before this wave |
+| `mutation_parsers/mutation_report_json.py:140` | `parse` | `(JSONDecodeError, RecursionError, ValueError)` | untrusted — already guarded before this wave |
+| `mutation.py:890` | `_load_validated_state_record` | `(UnicodeDecodeError, JSONDecodeError)` | **trusted**: assay's OWN mutation-state record, written by assay earlier in the same run, read back bounded by `MUTATION_STATE_RECORD_LIMIT`; its depth is assay's to control |
+| `provenance.py:137` | `_installed_wheel_digest` | `json.JSONDecodeError` only | **trusted**: the installed distribution's own pip-written `direct_url.json`; the function is best-effort and already returns `None` on every fault, so a failure means a broken install, not a bad artifact |
+| `verdict.py:501` | `load_schema` | none | **trusted**: assay's own shipped package resource; if it will not parse the build is broken, and there is no consumer artifact to refuse |
+
+Line numbers are given as of this entry and **drift**; the guard test keys
+on `(module, enclosing function)` for exactly that reason. (The first
+table's `verify.py:2562` and `mutation.py:838` had already gone stale by the
+time review read them.)
+
+**The `provenance.py` judgment is AFFIRMED, not reversed**, and it is now
+the written bar for the whole allowlist: a site is trusted only when the
+bytes come from assay itself or its own installation — never from a
+consumer's project or an external tool — AND a failure there would mean a
+broken build rather than a bad artifact. `mutation.py` and `verdict.py`
+qualify under that same bar; the eight others do not, and all eight are
+guarded.
+
+### The guard test was ALSO unfit, in a second way
+
+The first version asserted an exact `except (...)` STRING against a
+hard-coded three-element tuple of paths. It could not see a site nobody had
+listed (fault 1, above) — and it could not see a guard written with the same
+three names in a different ORDER. `mutation_parsers/mutation_report_json.py`
+already spelled them `(json.JSONDecodeError, RecursionError, ValueError)`,
+so a "fourth variant" already existed, undetected, by the very test whose
+docstring claimed one could not appear unnoticed.
+
+Replaced by `tests/test_untrusted_json_parse_sweep.py`, which **derives** its
+subject: it walks the AST of every module under `src/assay` (`rglob`, the
+recursive glob whose absence caused fault 1), finds every `json.loads`/
+`json.load` call, and asks whether an enclosing `try` NAMES `RecursionError`
+— never how the clause is spelled. Every site must be guarded or in an
+explicit `TRUSTED_SITES` allowlist carrying its reason; there is no third
+disposition and no way to be silent. Four further guards on the guard: the
+walk must find a plausible population and at least one site in each of the
+three subpackages the old glob missed (so it cannot pass vacuously); no
+allowlist entry may be stale; the eight known-untrusted sites are pinned by
+name so a silent deletion shows up; and the order-independence is proven
+against the real module that differs. Verified red by reverting one guard:
+two independent tests fail, naming the file and function.

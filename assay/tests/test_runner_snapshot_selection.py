@@ -858,7 +858,7 @@ def _carries_wi4_policy_record(ref: str) -> bool:
 
 # (B063) Marked per-test, NOT with a module-level `pytestmark`: only the two
 # tests in this embargo section read the monorepo's own tagged history, and
-# skipping the ~60 that do not would hide real coverage of assay itself
+# skipping the other 11 collected items would hide real coverage of assay
 # behind an unrelated property of the checkout.
 @requires_parent_repository
 def test_every_release_since_wi1_landed_carries_wi4s_policy_record() -> None:

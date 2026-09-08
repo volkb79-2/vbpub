@@ -227,7 +227,13 @@ def sniff(text: str) -> bool:
 def parse(text: str, *, producer: str | None) -> CoverageProfile:
     try:
         document = json.loads(text)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValueError, RecursionError) as exc:
+        # (B074, second sweep) Same gap, same reason as
+        # `coverage_py_json.parse`: this text is a TARGET PROJECT's own
+        # istanbul output, produced outside assay by a tool assay does not
+        # control. `RecursionError` is a `RuntimeError` subclass, not a
+        # `ValueError`, so the narrow clause did not catch it and a deeply
+        # nested document crashed the process instead of being refused.
         raise _malformed(f"not valid JSON: {exc}") from exc
     if not isinstance(document, dict):
         raise _malformed(f"top level is {type(document).__name__}, expected object")

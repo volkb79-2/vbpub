@@ -124,29 +124,10 @@ def test_it_is_the_same_through_cli_main(tmp_path: Path, capsys: pytest.CaptureF
     assert "not valid JSON" in capsys.readouterr().err
 
 
-# --- the sweep this closes -----------------------------------------------------
-
-
-def test_every_untrusted_json_parse_site_now_catches_RecursionError():
-    """B074's own acceptance, mechanised: the three sites that parse a
-    document assay did not write must all carry the same guard, so a fourth
-    variant cannot appear unnoticed.
-
-    Asserted against the SOURCE rather than by calling each function,
-    because the point is the shape a future reader will compare — and
-    because two of the three are already covered behaviourally by their own
-    modules' tests.
-    """
-    from conftest import PROJECT_ROOT
-
-    expected = "except (json.JSONDecodeError, ValueError, RecursionError)"
-    for relative in (
-        "src/assay/verify.py",
-        "src/assay/attestation.py",
-        "src/assay/adjudication.py",
-    ):
-        source = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
-        assert expected in source, (
-            f"{relative} no longer carries the shared untrusted-JSON guard "
-            f"{expected!r} -- see B072/B074"
-        )
+# The estate-wide sweep guard that used to live here (a hard-coded 3-element
+# tuple of file paths, matched by an exact `except (...)` STRING) has moved to
+# `test_untrusted_json_parse_sweep.py` and been rewritten to derive its own
+# site list. It was unfit twice over, and both faults are recorded there: it
+# could not see a site nobody had listed, and it could not see a guard written
+# with the same three names in a different ORDER -- which one module already
+# had.

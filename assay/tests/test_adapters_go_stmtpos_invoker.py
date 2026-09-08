@@ -230,3 +230,37 @@ def test_a_missing_helper_installation_refuses_with_its_own_message(
         )
 
     assert "missing from the installation" in str(caught.value)
+
+
+def test_pathologically_deep_helper_output_is_refused_not_a_raise():
+    """(B074, second sweep) This is the most literally untrusted input in the
+    module: the raw stdout of a real external `go` subprocess, whose bytes a
+    toolchain assay does not control decides.
+
+    `json.loads` raises `RecursionError` at the real C-stack boundary -- a
+    `RuntimeError` subclass, NOT a `ValueError` -- so the previous
+    `except (UnicodeDecodeError, json.JSONDecodeError)` did not catch it and
+    a deeply nested document crashed the process instead of producing this
+    function's own typed refusal. `UnicodeDecodeError` stays first in the
+    clause because the decode can fail before `json.loads` is reached; the
+    test below pins that the other arm still works.
+    """
+    depth = 100_000
+    pathological = ("[" * depth + "]" * depth).encode("utf-8")
+
+    with pytest.raises(AssayError) as caught:
+        _read_document(pathological, ARGS, "/usr/local/go/bin/go")
+
+    assert caught.value.outcome is Outcome.ERROR
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert "not readable JSON" in str(caught.value)
+
+
+def test_undecodable_helper_output_is_still_refused_the_same_way():
+    """The control for the widening: adding two names to the clause must not
+    disturb the `UnicodeDecodeError` arm that was already there."""
+    with pytest.raises(AssayError) as caught:
+        _read_document(b"\xff\xfe not utf-8", ARGS, "/usr/local/go/bin/go")
+
+    assert caught.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert "not readable JSON" in str(caught.value)
