@@ -1,0 +1,88 @@
+# Assay lane for the pterodactyl/wings patch stack — changed-line coverage
+# (R1) over the surface THIS series touches, not over upstream's tree.
+#
+# AUTHORITATIVE COPY. This file lives here, under version control, and is
+# copied to <clone>/assay.toml by patchstack/scripts/coverage.sh on every run.
+# It must NOT be edited inside build/wings-pterodactyl/: that clone is
+# disposable — clone.sh recreates it and apply.sh/rebase.sh rewrite its
+# branch — so anything that only exists there is lost on the next re-clone.
+#
+# Placement rule (assay CONSUMERS.md, Go point 7): assay reads the module path
+# out of the nearest go.mod at or above the directory holding assay.toml, so
+# the file has to sit at the MODULE root when it runs. The module root is the
+# clone root, which is exactly the directory that cannot hold the source of
+# truth — hence "authoritative here, copied there".
+#
+# Rigor: R0 + R1 only. Assay's Go adapter is registered at {"R1"} (A-394);
+# generate_mutation_sites is unconditionally UNSUPPORTED for Go, so R2 and R3
+# are refused ERROR/BAD_LANE_CONFIG. Do not add them.
+schema_version = 2
+
+[lanes.coverage]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+# The unit-test package set from patchstack/scripts/test.sh, verbatim; only
+# the three coverage flags are assay's. -coverpkg=./... is what keeps a
+# package with no test file of its own (cmd/, environment/docker/) in the
+# profile instead of vanishing from it (CONSUMERS.md Go point 8).
+argv = [
+    "go", "test",
+    "./config/...", "./environment/...", "./server/...", "./internal/cgroups/...",
+    "-count=1",
+    "-coverpkg=./...",
+    "-covermode=atomic",
+    "-coverprofile=.assay/cover.out",
+]
+# assay's default_process_runner REPLACES the child environment, so everything
+# the toolchain needs is declared here rather than inherited. GOPROXY=off is
+# safe because coverage.sh runs `go mod download` into the shared module cache
+# before invoking the judge. -buildvcs=false matches common.sh's own setting:
+# the lane command runs inside an assay snapshot, which is not a git checkout.
+env = { GOPROXY = "off", GOFLAGS = "-mod=mod -buildvcs=false", GOTOOLCHAIN = "local", GOWORK = "off" }
+env_passthrough = ["PATH", "HOME", "GOCACHE", "GOMODCACHE"]
+budget = "30m"
+allow_argv_append = false
+
+[lanes.coverage.isolation]
+snapshot_selection = "repository"
+
+[lanes.coverage.judge]
+language = "go"
+# Project-relative, i.e. <module root>/<entry>. These are the directories the
+# 9-patch series adds code to. NOTE: assay's source_roots are DIRECTORIES —
+# a single file is rejected at load ("source root does not exist ... looked
+# for <path>") — so cmd/root.go is expressed as the `cmd` directory. That is
+# not a widening in practice: within base..HEAD, root.go is the only changed
+# file under cmd/.
+#
+# server/ and internal/database/ are deliberately NOT here. The series does
+# touch them (server/slice_phase.go, server/slice_children.go and friends,
+# ~964 changed lines); they are outside the declared judged surface of this
+# lane. Add them in a separate, deliberate step — it will move the number.
+source_roots = ["internal/cgroups", "environment/docker", "config", "cmd"]
+# WHAT THIS NUMBER DOES NOT INCLUDE — read before trusting it.
+#
+# The profile comes from a plain `go test`. internal/cgroups/integration_test.go
+# is `//go:build systemdintegration` and only executes inside the privileged
+# systemd harness at test/e2e-systemd/, whose coverage is NOT merged in here.
+# So the D-Bus/systemd code this whole series exists for — sysd.go (~99
+# uncovered changed lines) and ensure.go (~41) — is counted as UNCOVERED even
+# though the e2e harness does exercise it. cmd/root.go is uncovered outright
+# (~95 lines; the package has no test of its own). Merging the e2e profile in
+# via `go test -c -cover` + GOCOVERDIR + `go tool covdata textfmt` is open
+# follow-up work.
+#
+# Measured floor: 53.8% at the 9-patch tip (677d438). 50.0 is a regression
+# guard sitting just under it, not a quality target. Raise it as coverage
+# improves; never lower it to make a red lane green.
+fail_under = 50.0
+allow_excluded = false
+# The upstream tag this series is based on: PTERODACTYL_REF in stack.conf.
+# base..HEAD is exactly the 9 patches.
+base = "v1.13.3"
+
+[lanes.coverage.judge.coverage]
+format = "go-cover"
+artifact = ".assay/cover.out"
+producer = "go-test"

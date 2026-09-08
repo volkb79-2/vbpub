@@ -3,6 +3,9 @@
 # container. INTEGRATION=1 additionally runs the docker integration tests
 # against the daemon on /var/run/docker.sock (requires a systemd-driver daemon
 # for meaningful slice placement, but any daemon validates the wiring).
+# COVERAGE=1 additionally runs the assay R1 changed-line coverage lane over
+# the patch surface (scripts/coverage.sh); off by default because it re-runs
+# the suite instrumented in a second container.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 resolve_target "${1:-pterodactyl}"
 
@@ -24,5 +27,8 @@ echo "=== docker integration tests ===" && go test -tags dockerintegration -coun
     go_in_container "$SRC_DIR" --docker "$CMD"
 else
     go_in_container "$SRC_DIR" "$CMD"
+fi
+if [[ "${COVERAGE:-0}" == "1" ]]; then
+    "$SCRIPT_DIR/coverage.sh" "$TARGET"
 fi
 echo "test.sh: ALL OK ($TARGET)"

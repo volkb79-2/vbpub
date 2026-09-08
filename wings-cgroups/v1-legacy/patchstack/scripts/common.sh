@@ -35,17 +35,32 @@ resolve_target() {
 # Run a command inside a golang container with the source tree tar-piped in.
 # Needed because this devcontainer's paths are not bind-mountable by the host
 # Docker daemon; also makes the scripts work identically on any docker host.
-# Usage: go_in_container <src-dir> [--docker] <shell command...>
+# Usage: go_in_container <src-dir> [--docker] [--with-git] [--cpus N] <shell command...>
+#   --docker    hand the host docker socket in (integration tests)
+#   --with-git  keep .git in the tar; assay's R1 lane needs the repository to
+#               resolve base..HEAD and to materialise its snapshot
+# Extraction is --no-same-owner on purpose: tar run as root would otherwise
+# restore the HOST uid, and git then refuses the tree as "dubious ownership".
+# That is unfixable from inside for assay's lane, because assay runs every git
+# child with GIT_CONFIG_NOSYSTEM=1 and GIT_CONFIG_GLOBAL=/dev/null, so no
+# `safe.directory` exception can be honoured. The owner has to actually match.
+#   --cpus N    cap the container (house rule: this box is shared with a
+#               production game server; one capped container at a time)
 go_in_container() {
     local src="$1"; shift
     local docker_args=()
-    if [[ "${1:-}" == "--docker" ]]; then
-        docker_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
-        shift
-    fi
+    local tar_args=(--exclude='.git')
+    while :; do
+        case "${1:-}" in
+            --docker)   docker_args+=(-v /var/run/docker.sock:/var/run/docker.sock); shift ;;
+            --with-git) tar_args=(); shift ;;
+            --cpus)     docker_args+=(--cpus "$2"); shift 2 ;;
+            *)          break ;;
+        esac
+    done
     docker volume create wingscg-gocache >/dev/null
-    tar --exclude='.git' -C "$src" -cf - . | docker run --rm -i \
+    tar "${tar_args[@]}" -C "$src" -cf - . | docker run --rm -i \
         -v wingscg-gocache:/go -e GOCACHE=/go/.cache -e GOFLAGS=-buildvcs=false \
         "${docker_args[@]}" "$GO_IMAGE" \
-        sh -c "mkdir -p /src && tar -xf - -C /src && cd /src && $*"
+        sh -c "mkdir -p /src && tar -xf - --no-same-owner -C /src && cd /src && $*"
 }
