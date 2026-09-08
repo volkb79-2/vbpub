@@ -604,3 +604,122 @@ def test_preflight_rejects_holders(tmp_path, monkeypatch):
     monkeypatch.setattr("pathlib.Path.iterdir", lambda self, **kw: iter([Path("/fake/dm-0")]))
     with pytest.raises(RuntimeError, match="active holder"):
         installer._preflight_disk_transaction()
+
+
+# --- controller SSH key install/removal ---------------------------------
+
+_AUTHORIZED_KEYS = "/root/.ssh/authorized_keys"
+_real_path_is_file = Path.is_file
+_real_path_read_text = Path.read_text
+
+
+def _fake_is_file(result):
+    # Scoped to /root/.ssh/authorized_keys only -- a blanket Path.is_file
+    # monkeypatch also breaks StateStore.load()'s own is_file() check, since
+    # _mark_step() (called by both methods under test) reads real state.json.
+    def _fn(self, *a, **kw):
+        if str(self) == _AUTHORIZED_KEYS:
+            return result
+        return _real_path_is_file(self, *a, **kw)
+    return _fn
+
+
+def _fake_read_text(content):
+    def _fn(self, *a, **kw):
+        if str(self) == _AUTHORIZED_KEYS:
+            return content
+        return _real_path_read_text(self, *a, **kw)
+    return _fn
+
+
+def _make_with_pubkey(tmp_path, pubkey=""):
+    from debian_install_v2.actions import PlannedAction
+    from debian_install_v2.tests.test_fake_integration import FakeHostActions
+
+    class _FakeActionsWithSSH(FakeHostActions):
+        # FakeHostActions fakes run()/write_file() but not mkdir() -- these
+        # tests need dry_run=False (to reach _configure_controller_ssh_key's
+        # real, non-dry-run branches), and the real mkdir() would otherwise
+        # try to create /root/.ssh on the test host for real.
+        def mkdir(self, path: str) -> None:
+            self.planned.append(PlannedAction(("/usr/bin/mkdir", "-p", path), f"create directory {path}", True))
+
+    config = Config(
+        state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
+        telegram_bot_token="", telegram_chat_id="",
+        auto_reboot_after_stage1=False,
+        controller_ssh_pubkey=pubkey,
+    )
+    actions = _FakeActionsWithSSH()
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    StateStore(config.state_dir).save_new(StateStore.new(config))
+    return Installer(config, actions), actions
+
+
+def test_configure_controller_ssh_key_skipped_when_not_configured(tmp_path):
+    installer, actions = _make_with_pubkey(tmp_path)
+    installer._configure_controller_ssh_key()
+    assert "/root/.ssh/authorized_keys" not in actions.files
+    assert not any(a.argv[0] == "/usr/bin/mkdir" for a in actions.planned)
+
+
+def test_configure_controller_ssh_key_installs_when_configured(tmp_path, monkeypatch):
+    pubkey = "ssh-ed25519 AAAAtest vbpub-controller-ephemeral-v1001-20260908"
+    installer, actions = _make_with_pubkey(tmp_path, pubkey)
+    monkeypatch.setattr(Path, "is_file", _fake_is_file(False))
+    installer._configure_controller_ssh_key()
+    assert actions.files["/root/.ssh/authorized_keys"].decode() == pubkey + "\n"
+
+
+def test_configure_controller_ssh_key_preserves_existing_entries(tmp_path, monkeypatch):
+    """Regression: Config.controller_ssh_pubkey is meant to be an ADDITIONAL
+    safety net alongside whatever the provider's own key injection already
+    put in authorized_keys (the operator's real, persistent key) -- it must
+    never clobber that."""
+    operator_key = "ssh-ed25519 AAAAoperator operator@laptop"
+    pubkey = "ssh-ed25519 AAAAephemeral vbpub-controller-ephemeral"
+    installer, actions = _make_with_pubkey(tmp_path, pubkey)
+    monkeypatch.setattr(Path, "is_file", _fake_is_file(True))
+    monkeypatch.setattr(Path, "read_text", _fake_read_text(operator_key + "\n"))
+    installer._configure_controller_ssh_key()
+    content = actions.files["/root/.ssh/authorized_keys"].decode()
+    assert operator_key in content
+    assert pubkey in content
+
+
+def test_configure_controller_ssh_key_idempotent(tmp_path, monkeypatch):
+    pubkey = "ssh-ed25519 AAAAtest vbpub-controller-ephemeral"
+    installer, actions = _make_with_pubkey(tmp_path, pubkey)
+    monkeypatch.setattr(Path, "is_file", _fake_is_file(True))
+    monkeypatch.setattr(Path, "read_text", _fake_read_text(pubkey + "\n"))
+    installer._configure_controller_ssh_key()
+    assert "/root/.ssh/authorized_keys" not in actions.files
+
+
+def test_remove_controller_ssh_key_noop_when_not_configured(tmp_path):
+    installer, actions = _make_with_pubkey(tmp_path)
+    installer._remove_controller_ssh_key()
+    assert "/root/.ssh/authorized_keys" not in actions.files
+
+
+def test_remove_controller_ssh_key_strips_only_the_ephemeral_line(tmp_path, monkeypatch):
+    """Regression / design requirement: at the end of stage2, the
+    controller's own ephemeral key must be removed -- no further controller
+    access is needed -- but the operator's own persistent key must survive."""
+    operator_key = "ssh-ed25519 AAAAoperator operator@laptop"
+    pubkey = "ssh-ed25519 AAAAephemeral vbpub-controller-ephemeral"
+    installer, actions = _make_with_pubkey(tmp_path, pubkey)
+    monkeypatch.setattr(Path, "is_file", _fake_is_file(True))
+    monkeypatch.setattr(Path, "read_text", _fake_read_text(f"{operator_key}\n{pubkey}\n"))
+    installer._remove_controller_ssh_key()
+    content = actions.files["/root/.ssh/authorized_keys"].decode()
+    assert operator_key in content
+    assert pubkey not in content
+
+
+def test_remove_controller_ssh_key_skips_when_file_missing(tmp_path, monkeypatch):
+    pubkey = "ssh-ed25519 AAAAtest vbpub-controller-ephemeral"
+    installer, actions = _make_with_pubkey(tmp_path, pubkey)
+    monkeypatch.setattr(Path, "is_file", _fake_is_file(False))
+    installer._remove_controller_ssh_key()
+    assert "/root/.ssh/authorized_keys" not in actions.files

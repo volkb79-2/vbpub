@@ -79,6 +79,15 @@ class Config:
     telegram_chat_id: str = field(default="", repr=False)
     telegram_verbose_progress: bool = False
     credential_mode: Literal["root-storage", "systemd"] = "root-storage"
+    # A one-line `authorized_keys` entry (type + base64 + comment) for the
+    # controller's own ephemeral, per-host, per-run bootstrap key -- installed
+    # into /root/.ssh/authorized_keys as the first stage1 step (so SSH
+    # monitoring works without depending on netcup's own account-level
+    # sshKeyIds injection actually landing) and removed again as the last
+    # stage2 step once no further controller access is needed. Empty means
+    # this feature is off; the operator's own persistent key (via sshKeyIds,
+    # or however else it got there) is never touched either way.
+    controller_ssh_pubkey: str = field(default="", repr=False)
 
 
 _SIZE_RE = re.compile(r"^[0-9]+$")
@@ -116,7 +125,7 @@ def _validate(config: Config) -> None:
             "log_dir", "state_dir", "stage2_output",
             "telegram_bot_token", "telegram_chat_id",
             "docker_log_driver", "docker_log_max_size", "docker_log_max_file",
-            "reboot_window_time",
+            "reboot_window_time", "controller_ssh_pubkey",
         ]
     for name in string_names:
         if not isinstance(getattr(config, name), str):

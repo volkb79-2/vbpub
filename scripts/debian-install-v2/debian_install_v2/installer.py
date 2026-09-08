@@ -1236,7 +1236,51 @@ MaxFileSec=1month
         self._notify("<b>Stage1 complete.</b> Rebooting into stage2.")
         self._run(["/usr/bin/systemctl", "reboot"], "reboot into stage2", dangerous=True)
 
+    def _configure_controller_ssh_key(self) -> None:
+        pubkey_line = self.config.controller_ssh_pubkey.strip()
+        if not pubkey_line:
+            self._mark_step("controller_ssh_key", "skipped", "no controller_ssh_pubkey configured")
+            return
+        # mkdir -p's default mode is not group/other-writable (root's own
+        # umask), which is all sshd's StrictModes actually requires -- no
+        # need for an explicit chmod (neither `install` nor `chmod` is on
+        # actions.py's command allowlist, and shouldn't need to be for this).
+        self.actions.mkdir("/root/.ssh")
+        authorized_keys = Path("/root/.ssh/authorized_keys")
+        existing = "" if self.actions.dry_run or not authorized_keys.is_file() else authorized_keys.read_text(encoding="utf-8")
+        if pubkey_line in existing:
+            self._mark_step("controller_ssh_key", "success", "already present")
+            return
+        combined = existing if (not existing or existing.endswith("\n")) else existing + "\n"
+        self.actions.write_file(str(authorized_keys), combined + pubkey_line + "\n", 0o600)
+        self._mark_step("controller_ssh_key", "success", "controller pubkey installed for stage1/stage2 SSH monitoring")
+
+    def _remove_controller_ssh_key(self) -> None:
+        # Last step of stage2, once everything else has already succeeded --
+        # no further controller access is needed. Removes only the exact
+        # line _configure_controller_ssh_key() installed, so the operator's
+        # own persistent key (however it got there) is never touched.
+        pubkey_line = self.config.controller_ssh_pubkey.strip()
+        if not pubkey_line:
+            return
+        if self.actions.dry_run:
+            self._mark_step("controller_ssh_key_removed", "success", "dry-run: would remove controller pubkey")
+            return
+        authorized_keys = Path("/root/.ssh/authorized_keys")
+        if not authorized_keys.is_file():
+            self._mark_step("controller_ssh_key_removed", "skipped", "authorized_keys not present")
+            return
+        lines = authorized_keys.read_text(encoding="utf-8").splitlines()
+        remaining = [line for line in lines if line.strip() != pubkey_line]
+        if len(remaining) == len(lines):
+            self._mark_step("controller_ssh_key_removed", "skipped", "controller pubkey not found (already removed?)")
+            return
+        content = "\n".join(remaining) + ("\n" if remaining else "")
+        self.actions.write_file(str(authorized_keys), content, 0o600)
+        self._mark_step("controller_ssh_key_removed", "success", "no further controller access needed")
+
     def _stage1(self) -> None:
+        self._configure_controller_ssh_key()
         if self.config.run_apt_config:
             self._configure_apt()
         self._packages(["python3"], "stage1")
@@ -1276,4 +1320,5 @@ MaxFileSec=1month
             self._apply_known_swap_shape()
         self._activate_swap_partitions()
         self._health_gate_swap_devices()
+        self._remove_controller_ssh_key()
         self.state.save(phase="done", status="success")
