@@ -572,19 +572,53 @@ def _make_owner_safety_gate(
     def gate() -> _GateRefusal | None:
         if owner_inspect is None:
             return None
-        from topos.actions import owner_safety
+        from topos.actions import lifecycle_adapters, owner_safety
 
         services = (
             owner_protected_services
             if owner_protected_services is not None
             else owner_safety.default_protected_services()
         )
-        refusal = owner_safety.evaluate(
+        refusal = lifecycle_adapters.evaluate_docker_owner_chain(
             kind, target, inspect=owner_inspect, protected_services=services
         )
         if refusal is None:
             return None
         return _GateRefusal(refusal.message)
+
+    return gate
+
+
+def _make_systemd_owner_gate(
+    kind: str,
+    target: str,
+    owner_lookup: Callable[[str], object] | None,
+) -> Gate:
+    """P93 protocol gate for systemd verbs (start/stop/restart/kill/set-property).
+
+    A no-op today (``owner_lookup`` is always ``None`` in production: no
+    "which higher owner manages this unit" detector exists yet, see
+    ``lifecycle_adapters.SystemdAdapter``). Wiring it as a real post-audit
+    gate -- rather than leaving systemd verbs outside the protocol entirely
+    -- means a future owner-above-systemd adapter (Podman/Quadlet) plugs in
+    here without another migration pass.
+    """
+
+    def gate() -> _GateRefusal | None:
+        if owner_lookup is None:
+            return None
+        from topos.actions.lifecycle import (
+            ChainRefusal,
+            resolve_authoritative_owner,
+        )
+        from topos.actions.lifecycle_adapters import SystemdAdapter
+
+        adapter = SystemdAdapter(owner_lookup=owner_lookup)
+        discovery = adapter.discover(target)
+        resolution = resolve_authoritative_owner(discovery)
+        if isinstance(resolution, ChainRefusal):
+            return _GateRefusal(resolution.message)
+        return None
 
     return gate
 
@@ -793,6 +827,7 @@ def execute_plan(
     plan: ActionPlan | None = None,
     owner_inspect: Callable[[str], object] | None = None,
     owner_protected_services: Collection[str] | None = None,
+    systemd_owner_lookup: Callable[[str], object] | None = None,
 ) -> ExecuteResult:
     """Execute one immutable catalog plan through the production gates.
 
@@ -800,10 +835,17 @@ def execute_plan(
     production CLI supplies no audit path, runner, identity, clock, or root
     override and therefore uses the fixed root-owned policy.
 
-    ``owner_inspect`` (P87) engages the Docker owner / protected-ID safety gate
-    for the ``docker-start``/``docker-stop``/``docker-restart`` kinds. When it
-    is ``None`` the gate is a no-op and the legacy P46 behavior is preserved;
-    the production CLI wires it to a real ``docker inspect`` resolver.
+    ``owner_inspect`` (P87, migrated to the P93 owner-chain protocol in
+    ``lifecycle_adapters.evaluate_docker_owner_chain``) engages the Docker
+    owner / protected-ID safety gate for the ``docker-start``/``docker-stop``/
+    ``docker-restart`` kinds. When it is ``None`` the gate is a no-op and the
+    legacy P46 behavior is preserved; the production CLI wires it to a real
+    ``docker inspect`` resolver.
+
+    ``systemd_owner_lookup`` (P93) is the equivalent seam for the
+    ``systemd-*`` kinds. It is ``None`` in production today -- no owner above
+    a bare systemd unit is detected yet -- so the gate is always a no-op; it
+    exists so a future owner-above-systemd adapter has one place to plug in.
     """
     action_kind: ActionKind | None = None
     current_plan: ActionPlan | None = None
@@ -861,6 +903,7 @@ def execute_plan(
             _make_owner_safety_gate(
                 kind, target, owner_inspect, owner_protected_services
             ),
+            _make_systemd_owner_gate(kind, target, systemd_owner_lookup),
         ),
     )
 
@@ -918,6 +961,7 @@ def execute_set_property(
     timeout: float = 30.0,
     planned_current_value: str | None = None,
     current_value_reader: Callable[[str], str | None] | None = None,
+    systemd_owner_lookup: Callable[[str], object] | None = None,
 ) -> ExecuteResult:
     """Execute a systemd memory.high set-property action through the P46 gates.
 
@@ -929,6 +973,10 @@ def execute_set_property(
     If *planned_current_value* is provided and the fresh read differs, the
     action is refused with ``outcome="stale"`` — the plan was built against a
     value that no longer holds.
+
+    ``systemd_owner_lookup`` (P93) engages the owner-chain protocol gate for
+    ``memory.high`` governance, mirroring ``execute_plan``'s systemd wiring.
+    It is ``None`` in production today, so the gate is a no-op.
 
     The optional fixture parameters are intentionally API-only.  The
     production CLI supplies no audit path, runner, identity, clock, or root
@@ -1032,7 +1080,10 @@ def execute_set_property(
         timeout=timeout,
         build_spec=build_spec,
         pre_audit_gates=(property_gate, unit_gate, value_gate, persistence_gate),
-        post_audit_gates=(stale_revalidation_gate,),
+        post_audit_gates=(
+            stale_revalidation_gate,
+            _make_systemd_owner_gate("systemd-set-property", unit, systemd_owner_lookup),
+        ),
     )
 
 
