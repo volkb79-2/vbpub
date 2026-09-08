@@ -2877,6 +2877,44 @@ real, pre-existing gap RG-41 merely widens exposure to — filed separately
 as **RG-46**, not fixed here (see its own entry for why: it is a design
 question about follower authority, not a rev-38 oversight).
 
+A confirming round-2 review of the round-1 fix above (folded into this SAME
+unreleased rev) found a real bug IN the fix itself, triple-independently
+reproduced: `log_watch.join()` was called on the STALL branch, but a
+stalled container's pump thread is, BY DEFINITION, still blocked reading a
+pipe with nothing more coming (that is what "stalled" means) — nothing
+unblocks that read until `finally`'s `proc.terminate()` runs, AFTER the
+join call. The bounded `join(timeout=2.0)` therefore timed out on EVERY
+single stall, not the rare host-contention case the disclosure was written
+for, printing a confusing (and, separately, malformed — a doubled
+apostrophe from `{lane_name!r}` already quoting the name before a literal
+`'s` was appended) WARNING alongside every genuine STALLED message. Fixed
+by moving the drain+disclosure to the non-stalled completion branch only,
+where the ordering concern it protects against (a trailing container line
+racing this function's own status prints) actually exists — the stalled
+branch's own message prints to stderr and never races the pump's stdout
+lines, so there was nothing to protect there in the first place. A new
+assertion (the WARNING text must be ABSENT) was added to the existing
+silent-lane stall test, red-first proven against the pre-fix code. Two
+further round-2 findings also addressed: `_translate`'s wall-clock-
+translation arithmetic was duplicated verbatim from `ProgressWatch`'s own
+mtime-seeding line — extracted into a single shared `_seed_from_wall_clock`
+helper both watchers now call, so a future correction cannot silently apply
+to only one; and a new construction-level test
+(`test_the_real_docker_logs_call_requests_timestamps`) pins that the real
+`docker logs -f --timestamps` argv is actually issued for a watched command
+lane — closing the blind spot where `TestLogStreamWatch`'s direct
+`FakeContainerProc` construction would never notice the flag silently
+dropped from `await_container`'s own `Popen` call. Two more round-2
+findings (recomputing the wall-clock translation on every line rather than
+once, like `ProgressWatch`; and `_split` trusting docker's `--timestamps`
+prefix without verifying the flag is honored) were considered and
+deliberately NOT changed: the per-line recompute is self-correcting against
+a wall-clock step between lines (a translate-once design would instead
+freeze whatever skew existed at its one seeding moment), and an
+unrecognized `--timestamps` flag fails the whole `docker logs` invocation
+loudly (Docker CLI flag parsing is strict, not silently ignored) rather
+than producing the silent-misparse scenario the finding described.
+
 ## RG-44 — `GONE_SIGNALS` matches docker's "gone" stderr case-sensitively; this docker version emits lowercase and the container-truly-gone case is never recognized
 
 ### Observed mechanism and reproduction

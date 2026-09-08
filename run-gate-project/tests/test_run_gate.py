@@ -8410,6 +8410,25 @@ class TestStallEndToEndCommandLane:
         clean_tree = false
     """
 
+    def test_the_real_docker_logs_call_requests_timestamps(
+            self, tmp_path, monkeypatch, capsys):
+        """Round-2 review: a construction-level pin (this suite's own
+        documented philosophy — "argv proves construction, not
+        acceptance") for the ONE flag `LogStreamWatch._translate`'s whole
+        re-attach-staleness fix depends on. `TestLogStreamWatch` builds
+        `LogStreamWatch` directly against a `FakeContainerProc` and would
+        not notice `--timestamps` silently dropped from `await_container`'s
+        own `Popen` call — this is the one test that would."""
+        repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        log, state = fake_docker_logstream(tmp_path, monkeypatch)
+        assert run_gate.main(["suite"]) == 0
+        logs_calls = [c for c in _docker_calls(log) if c and c[0] == "logs"]
+        assert logs_calls, "no `docker logs` call was recorded"
+        assert any("--timestamps" in c for c in logs_calls), logs_calls
+
     def test_source_is_disclosed_as_log_stream_on_the_fresh_path(
             self, tmp_path, monkeypatch, capsys):
         repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
@@ -8440,6 +8459,13 @@ class TestStallEndToEndCommandLane:
         assert "for 1s (stall_timeout 1s)" in err
         assert "last line seen: (no output yet)" in err
         assert "container logs preserved at" in err
+        # Round-2 review finding, confirmed by direct reproduction: a
+        # stalled container's pump thread is BY DEFINITION still blocked
+        # reading (nothing more is coming until the container is removed),
+        # so joining it on the stall path used to time out on EVERY stall
+        # and print this WARNING — not just under real host contention, the
+        # case it exists to disclose. It must be silent here.
+        assert "log pump did not finish draining" not in err
         # …the container is GONE, same as the assay case: a stall stops the
         # lane, it does not leave the thing that stalled running.
         assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()

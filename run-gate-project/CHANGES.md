@@ -32,7 +32,14 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   backlog as arriving "just now" and silently granted a fresh stall
   window instead of catching the pre-existing silence (found in
   adversarial review, fixed the same way `ProgressWatch` already fixes
-  the analogous gap for a progress file's mtime, RW-27).
+  the analogous gap for a progress file's mtime, RW-27). A confirming
+  second review round then found the fix's own drain-disclosure fired on
+  EVERY stall rather than the rare host-contention case it was written
+  for (it was joining a pump thread still legitimately blocked reading a
+  silent container — nothing unblocks that read until the container is
+  actually removed); moved to the branch where it belongs, and the
+  duplicated wall-clock-translation arithmetic shared with `ProgressWatch`
+  is now a single helper both call.
 
 <!-- cleared 2026-09-08 after the 23.6.0 release, per the standing
      housekeeping rule (see CHANGES.md history for the prior occurrences
