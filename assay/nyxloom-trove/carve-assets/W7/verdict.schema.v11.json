@@ -1523,6 +1523,10 @@
         },
         "require_branch": {
           "type": "boolean"
+        },
+        "allow_test_path_targets": {
+          "description": "B074: the effective judge.allow_test_path_targets policy -- did this lane grade a whole target that assay's own adapter test-path convention would otherwise have refused? OPTIONAL and emitted only when true: a lane that did not opt in writes a verdict byte-identical to one this field never existed for, and this key can only ever appear on a verdict that was impossible to produce before B074 (such a lane refused ERROR/BAD_LANE_CONFIG and emitted no judgment.r1 at all), which is why it is additive rather than a schema-version bump. Constrained to true only, and to whole_target mode by the allOf below, because false is spelled as absence and the flag is read at exactly one site, whole-target target resolution.",
+          "const": true
         }
       },
       "allOf": [
@@ -1546,6 +1550,26 @@
             "not": {
               "required": [
                 "targets"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "const": "whole_target"
+              }
+            }
+          },
+          "then": true,
+          "else": {
+            "not": {
+              "required": [
+                "allow_test_path_targets"
               ]
             }
           }
