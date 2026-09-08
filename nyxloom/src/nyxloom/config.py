@@ -461,6 +461,16 @@ class ProjectConfig:
         # NTFY_URL is -- the env is authoritative over the TOML source only,
         # so a caller constructing NotifyConfig(...) directly keeps the url
         # it passes.
+        #
+        # CAVEAT, stated because "existing configs are unaffected" is
+        # otherwise overclaimed: this IS a new way for the environment to
+        # change an existing project's webhook target. A deployment that
+        # already exports NYXLOOM_WEBHOOK_URL for some unrelated reason now
+        # has it win over a committed webhook_url, where before the toml
+        # value stood. The var is new and nyxloom-namespaced, so no such
+        # deployment is known -- but the guarantee is "unchanged while that
+        # var is unset", not "unchanged unconditionally". Renaming the var
+        # per project (webhook_url_env) is the escape hatch.
         env_webhook = os.environ.get(
             notify_data.get("webhook_url_env") or "NYXLOOM_WEBHOOK_URL", "")
         if env_webhook:

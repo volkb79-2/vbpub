@@ -178,10 +178,12 @@ and the username override is genuinely applied (posts table):
 The devcontainer was attached to the stack's bridge only for that check
 and has been detached.
 
-17 new tests in the file's existing real-HTTP-server style; all 43
-pre-existing notify tests pass unchanged -- that is the ntfy
-no-regression evidence. Includes an anti-drift test tying `_BACKENDS` to
-`config.NOTIFY_BACKENDS` and the schema enum.
+20 new tests in the files' existing real-HTTP-server style (17 in
+`test_notify.py`, 3 in `test_config.py`); all 43 pre-existing notify tests
+pass unchanged -- that is the ntfy no-regression evidence. Includes an
+anti-drift test tying `_BACKENDS` to `config.NOTIFY_BACKENDS` and the
+schema enum, and one that pins ntfy's non-200-does-not-fall-through
+semantics with a webhook actually configured (review C1).
 
 NL-17 got a dated `nyxloom backlog note`, left `open` -- status transition
 is left for merge time.
@@ -214,15 +216,74 @@ cross-contamination.
    `backend = "mattermost"` anywhere committed. Cutover = create the
    webhook (README), export `NYXLOOM_WEBHOOK_URL`, set the selector.
    Deliberately left undone.
-3. **The live stack currently runs from THIS worktree's ciu root.** Re-up
-   from the main checkout after merge so it doesn't depend on a torn-down
-   worktree; the volumes are compose-project-scoped
-   (`nyxloom-prod-mattermost_*`) so data carries over.
-4. **A verification webhook id was created during live testing and is
-   visible in this session's transcript.** Nil exposure while the stack is
-   private, but the reviewer should confirm whether to rotate it
-   (`mmctl --local webhook delete <id>`) as hygiene regardless, especially
-   before any public-exposure flip.
+3. **The live stack currently runs from THIS worktree's ciu root, and the
+   SECRETS do not carry over with the data (review S1 — the one real
+   operational gap the reviewer found).** The only copy of both
+   `postgres_password` and `admin_password` lives in
+   `.worktrees/nyxloom-p106/nyxloom/.ciu/secrets/mattermost/`; the main
+   checkout has no `.ciu/` for nyxloom at all. The volumes are
+   compose-project-scoped (`nyxloom-prod-mattermost_*`) so the DATA carries
+   over, but a from-main `ciu up` would have `GEN_LOCAL` mint a FRESH
+   Postgres password that does not match the `mmuser` role baked into the
+   persisted volume, and the admin password would be lost outright (no
+   SMTP, no recovery path). **Migrate both secret files to the main
+   checkout's store BEFORE the first from-main `ciu up`**, then re-up and
+   re-verify health. Deliberately not done here: it is a post-merge step,
+   sequenced by the controller.
+4. **The verification webhook has been DELETED (review S3).** Its id had
+   appeared in two agent transcripts. `mmctl --local webhook list nyxloom`
+   now reports 0 webhooks, and no committed file referenced the id. It was
+   deliberately not replaced: the cutover step in
+   `nyxloom/mattermost/README.md` creates a fresh one, so the credential
+   that ends up in production is minted at cutover and has never been in a
+   transcript.
 5. **`expose_env` for the DSN** is a real, documented concession -- the
    only alternative found was a custom image with a shell (Mattermost's
    official image ships none).
+6. **`EnableOAuthServiceProvider` is left at Mattermost's default of true
+   (review S4).** Harmless while `expose_public = false` (nothing off-host
+   can reach the OAuth endpoints), and deliberately not changed here so the
+   lockdown set stays the one that was actually verified running. **It must
+   be set to false as part of any public-exposure flip**, in the same edit
+   that sets `expose_public = true` -- add
+   `MM_SERVICESETTINGS_ENABLEOAUTHSERVICEPROVIDER: "false"` to the app
+   service's environment in both `ciu.compose.yml.j2` and the
+   `docker-compose.yml` fallback.
+
+---
+
+## Review round 1 (ACCEPT with nits) — what changed after it
+
+Independent adversarial review accepted the package and raised one
+operational gap plus nits. Fixed in this branch:
+
+- **C1** — a test now pins "an ntfy non-200 does NOT fall through to a
+  configured webhook", the load-bearing half of the no-regression claim.
+  The pre-existing 2xx-non-200 test could not catch a regression there
+  because it configures no `webhook_url` to fall through to.
+- **C6** — `NotifyTransportProbe`'s docstring said `"unconfigured"` meant
+  "neither ntfy nor webhook"; it now describes the resolved-chain rule
+  (including a selected-but-unconfigured backend), and `channel` documents
+  that it carries any registered backend name.
+- **C4** — the plain-compose fallback's header now warns that the VOLUMES
+  diverge with the container names: starting from it yields an empty
+  database and a fresh init, not a second door into the ciu stack's data.
+- **C2** — the "not Markdown-escaped" justification no longer overclaims.
+  A few branches interpolate a payload value that is enum-like by upstream
+  discipline rather than by construction (`SPEC_ATTENTION`'s
+  `payload.reason`); the docstring now says so and bounds the residual
+  blast radius (formatting oddity in a private channel; Mattermost
+  sanitizes HTML; `click` is always a code-owned constant).
+- **C3** — the `NYXLOOM_WEBHOOK_URL` precedence caveat is recorded at the
+  resolution site: the backward-compat guarantee is "unchanged while that
+  var is unset", not unconditional.
+- **C5** — the test count above corrected (20, not 17).
+- **S3** — webhook deleted, see item 4.
+- **S1** — deliberately NOT fixed here; folded into item 3 as the
+  post-merge step it is.
+- **S4** — deliberately NOT fixed here; recorded as item 6, gated on the
+  exposure flip.
+
+Re-gated after the fixes rather than reasoning about whether a test-only
+change needed it: **PASS**, R0 + R1 (100% changed-line), at the commit
+recorded below.

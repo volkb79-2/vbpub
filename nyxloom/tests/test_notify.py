@@ -1366,6 +1366,37 @@ def test_explicit_backend_selection_never_falls_back_to_another_channel():
     ntfy_finish()
 
 
+def test_ntfy_non_200_does_not_fall_through_to_a_configured_webhook():
+    """The load-bearing half of "ntfy's semantics are unchanged" (NL-17).
+
+    Pre-seam `send()` fell through to the webhook ONLY when ntfy RAISED; a
+    2xx-non-200 returned definitively and the webhook was never tried. The
+    seam preserves that with `deliver()`'s None-vs-tuple distinction, and
+    this is the test that would catch it being flattened into "any ntfy
+    failure tries the next backend" -- which would silently duplicate every
+    such notification onto a second channel.
+
+    `test_send_ntfy_2xx_non200_logs_and_fails` above cannot catch it: it
+    configures no webhook_url, so there is nothing to fall through TO.
+    """
+    ntfy_url, ntfy_captured, ntfy_finish = _one_shot_server(status=204)
+    hook_url, hook_captured, hook_finish = _one_shot_server()
+
+    nc = NotifyConfig(ntfy_url=ntfy_url, ntfy_topic="alerts",
+                      webhook_url=f"{hook_url}/hook")
+
+    ok, detail = send(nc, _NOTE)
+    ntfy_finish()
+
+    assert ok is False
+    assert detail == "ntfy returned 204"
+    assert ntfy_captured.get("body") is not None, "ntfy was not actually called"
+    assert hook_captured.get("body") is None, (
+        "a non-200 from ntfy fell through to the webhook -- pre-seam behaviour "
+        "was to stop at the definitive ntfy result")
+    hook_finish()
+
+
 def test_legacy_precedence_is_unchanged_when_no_backend_is_selected():
     """Backward compat: an existing config with both urls set still goes to
     ntfy, exactly as before the seam."""

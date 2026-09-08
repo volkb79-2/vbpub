@@ -123,13 +123,18 @@ class NotifyTransportProbe:
                               DNS failure, or similar. THE case RISK-007
                               names ("the notification channel was
                               crash-looping").
-      * ``"unconfigured"`` -- neither ntfy nor webhook is set up. Not a
-                              fault -- a project may legitimately run with no
-                              push channel at all.
+      * ``"unconfigured"`` -- `resolve_backends` finds no usable backend:
+                              either no selector and neither ntfy nor webhook
+                              set up, or a selected backend (NL-17) whose own
+                              config is absent. Not a fault -- a project may
+                              legitimately run with no push channel at all.
     """
 
     status: NotifyTransportStatus
-    channel: str    # "ntfy" | "webhook" | "" (unconfigured)
+    #: The probed backend's `name` -- any of `_BACKENDS` ("ntfy", "webhook",
+    #: "mattermost", and whatever is registered later) -- or "" when
+    #: unconfigured.
+    channel: str
     detail: str
 
     @property
@@ -478,10 +483,19 @@ def mattermost_payload(nc: NotifyConfig, note: dict) -> dict:
         _tags: decision_
 
     SPEC §13: every part comes from the typed note fields or from the fixed
-    template strings above -- nothing model-authored is interpolated. The
-    text is NOT Markdown-escaped, deliberately: `notification_for` builds
-    titles/bodies from ids, enum values and counts only, so there is no
-    untrusted text here to escape, and escaping would corrupt the ids.
+    template strings above -- nothing model-authored is interpolated.
+
+    The text is NOT Markdown-escaped, deliberately, but the reason is worth
+    stating honestly rather than as an absolute: `notification_for` builds
+    titles and bodies from ids, enum values, counts and costs, and escaping
+    would corrupt the ids. A few branches interpolate a payload value that
+    is enum-like BY UPSTREAM DISCIPLINE rather than by construction (e.g.
+    SPEC_ATTENTION's `payload.reason`), so "there is nothing to escape" is a
+    property of the callers, not of this function. The residual blast radius
+    if one of those ever carried a stray `*` or `_` is a formatting oddity
+    in a private channel: Mattermost sanitizes HTML, `click` is always a
+    code-owned constant (so a Markdown link cannot be redirected), and §13
+    already forbids the free-text sources that would make this interesting.
     """
     lines: list[str] = []
     title = str(note.get("title", "") or "")

@@ -24,6 +24,16 @@
 # Container names differ from the ciu path on purpose (nyxloom-mattermost vs
 # nyxloom-prod-mattermost) so the two cannot silently collide — stop the ciu
 # stack first.
+#
+# The VOLUMES diverge with them, and that one is easy to miss: compose scopes
+# named volumes by project, so this path uses nyxloom-mattermost_* while the
+# ciu path uses nyxloom-prod-mattermost_*. Starting here does NOT read the
+# ciu stack's data — you get an EMPTY database, a fresh Postgres init, no
+# accounts, no channels and no incoming webhook, while the real data sits
+# untouched in the other volume set. This is a fallback for bringing the
+# stack up at all, not a second door into the same instance. To actually
+# reuse the ciu stack's data, pass `-p nyxloom-prod-mattermost` (and expect
+# the container names above to collide with it, so stop it first).
 
 services:
   postgres:
