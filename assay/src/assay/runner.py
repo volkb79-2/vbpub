@@ -76,6 +76,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import tomllib
 from contextlib import contextmanager
@@ -899,6 +900,80 @@ def resolve_run_cwd(root: Path, plan: CommandPlan) -> Path:
     if plan.cwd_declared is None:
         return root
     return root / plan.cwd_declared
+
+
+#: (B064) The default and the floor for ``--progress-heartbeat``. The floor
+#: exists because a misconfigured sub-second interval turns a diagnostic
+#: file into a flood -- an hour-long lane at 1s writes 3,600 records that say
+#: nothing a 60s tick does not.
+PROGRESS_HEARTBEAT_DEFAULT_SECONDS = 60.0
+PROGRESS_HEARTBEAT_FLOOR_SECONDS = 5.0
+
+
+@contextmanager
+def _command_heartbeat(
+    progress: "mutation.ProgressStream | None",
+    *,
+    interval_seconds: float | None,
+    phase: str,
+    monotonic: MonotonicClock = time.monotonic,
+) -> Iterator[None]:
+    """(B064) Tick ``command_running`` on a fixed interval while the lane's
+    own command runs, and stop the instant it returns.
+
+    **A pure time-based tick.** It never reads the child's stdout/stderr,
+    counts its bytes, or knows anything about the tool being run: a
+    per-language "live test progress" adapter is B073, a deliberately
+    separate and much larger item, and building any part of it here would
+    put runner-awareness in the one place that must stay runner-agnostic.
+    Stall detection is likewise NOT here and never will be -- that is the
+    CALLER's job (run-gate RG-36), computed from this stream.
+
+    Started only where a stream was EXPLICITLY handed in, which in practice
+    means the lane's own baseline/direct command. It is deliberately not
+    inside :func:`execute_plan`: ``mutation._execute_mutation_jobs`` calls
+    that once per mutant, *jobs*-way concurrent, so an unconditional
+    heartbeat there would run N threads writing N interleaved ticks about
+    work the per-candidate records already describe one line at a time.
+
+    A write failure stops the heartbeat and nothing else. A diagnostic tick
+    that could kill a measured lane would be worse than no tick at all, so
+    the thread swallows its own error and retires; the lane's real writes
+    still refuse loudly through :func:`~assay.mutation.progress_writer`.
+    """
+    if progress is None or interval_seconds is None:
+        yield
+        return
+    stop = threading.Event()
+    started = monotonic()
+
+    def _tick() -> None:
+        while not stop.wait(interval_seconds):
+            try:
+                progress.emit(
+                    {
+                        "event": "command_running",
+                        "phase": phase,
+                        # (B064's named collision, resolved) `elapsed_s` is
+                        # run-relative on EVERY record, added centrally by
+                        # `ProgressStream`. The heartbeat's own question --
+                        # "how long has THIS command been running" -- is a
+                        # different quantity and gets a different name.
+                        "command_elapsed_s": round(monotonic() - started, 3),
+                    }
+                )
+            except Exception:
+                return
+
+    thread = threading.Thread(
+        target=_tick, name="assay-progress-heartbeat", daemon=True
+    )
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=PROGRESS_HEARTBEAT_FLOOR_SECONDS)
 
 
 def execute_plan(
@@ -2329,6 +2404,15 @@ def _execute_snapshot_unit(
     equivalence_artifact: str | None = None,
     kill_signal_artifact: str | None = None,
     mutation_artifact: str | None = None,
+    #: (B064) The lane-wide progress stream, or ``None``. Passed ONLY by the
+    #: lane's own baseline unit: :mod:`assay.canary`'s control/transform
+    #: halves share this engine and deliberately stay silent, because R3
+    #: per-attempt progress is B007's per-attempt identity to define (B064's
+    #: own entry says so) and inventing a second one here would be the
+    #: duplicate that entry exists to prevent.
+    progress: "mutation.ProgressStream | None" = None,
+    progress_heartbeat_seconds: float | None = None,
+    progress_phase: str = "baseline",
 ) -> SnapshotUnitResult:
     """Run *plan* once inside *snapshot* -- the ONE engine the lane's own
     baseline, :mod:`assay.canary`'s control/transform halves, and (with its
@@ -2543,13 +2627,43 @@ def _execute_snapshot_unit(
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
 
-    result = execute_plan(
-        plan,
-        cwd=snapshot.project_root,
-        timeout=deadline.remaining(),
-        process_runner=process_runner,
-        clock=clock,
-    )
+    # (B064) The lane's command is the long pole -- the nine silent minutes
+    # the entry was filed about -- so it is bracketed by a phase pair and
+    # ticked while it runs.
+    if progress is not None:
+        progress.emit(
+            {
+                "event": "command_started",
+                "phase": progress_phase,
+                "argv": list(plan.argv_effective),
+            }
+        )
+    with _command_heartbeat(
+        progress, interval_seconds=progress_heartbeat_seconds, phase=progress_phase
+    ):
+        result = execute_plan(
+            plan,
+            cwd=snapshot.project_root,
+            timeout=deadline.remaining(),
+            process_runner=process_runner,
+            clock=clock,
+        )
+    if progress is not None:
+        progress.emit(
+            {
+                "event": "command_finished",
+                "phase": progress_phase,
+                "outcome": result.outcome.value,
+                "reason_code": (
+                    result.reason_code.value
+                    if result.reason_code is not None
+                    else None
+                ),
+                "returncode": result.returncode,
+                "started": result.started,
+                "ended": result.ended,
+            }
+        )
 
     # (B053/DA-R8) One `dirty_paths` call and `head_rev` ONLY on the clean
     # branch -- the A-178 observation order is unchanged. What changed is that
@@ -2578,6 +2692,27 @@ def _execute_snapshot_unit(
             )
         except AssayError as exc:
             profile_error = exc
+        if progress is not None:
+            # (B064) R1 lanes only -- `wants_coverage` is exactly the
+            # `r1_declared` disposition one layer up, so a lane with no
+            # coverage judge never emits a phase it does not have. Emitted
+            # whether the parse succeeded or refused: "the artifact was
+            # read and rejected" is a phase boundary a reader needs just as
+            # much as a clean parse, and it is the difference between a
+            # stalled lane and one that is already deciding.
+            progress.emit(
+                {
+                    "event": "coverage_parsed",
+                    "phase": progress_phase,
+                    "parsed": profile is not None,
+                    "reason_code": (
+                        profile_error.reason_code.value
+                        if profile_error is not None
+                        and profile_error.reason_code is not None
+                        else None
+                    ),
+                }
+            )
     if reservation is not None:
         reservation.close()
 
@@ -2959,7 +3094,8 @@ def _run_prepared_lane(
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
-    progress_artifact: Path | None = None,
+    progress_stream: "mutation.ProgressStream | None" = None,
+    progress_heartbeat_seconds: float | None = None,
     diagnostics: "TextIO | None" = None,
 ) -> _PreparedOutcome:
     """Baseline, then R1/R2/R3 as declared -- entirely inside *prepared*'s
@@ -3007,11 +3143,26 @@ def _run_prepared_lane(
     # name. Progress is now OPT-IN and consumer-directed: `assay run
     # --progress PATH` (the same contract `--verdict-json` already has), and
     # `None` -- write nothing at all -- is the default for every lane.
-    progress_path = progress_artifact if r2_declared else None
+    #
+    # (B064) That opt-in is now a WHOLE-LANE stream rather than an R2-only
+    # one. This line used to read `progress_path = progress_artifact if
+    # r2_declared else None`, which is precisely what made `--progress` inert
+    # on the R0/R1 lanes B064 was filed about: a lane that looks hung for
+    # nine minutes got an empty file. The stream is opened once, by
+    # `run_lane`/`cli`, and reaches every tier; the mutation sweep is handed
+    # the same object rather than re-opening the path behind its own back.
     # B006(b): `baseline_snapshot` is always an ephemeral, assay-owned P22
     # checkout -- never the consumer's real worktree -- so this is exactly
     # the "snapshot-running call site" that is allowed to opt in explicitly.
     with prepared.materialize(timeout=deadline.remaining()) as baseline_snapshot:
+        if progress_stream is not None:
+            progress_stream.emit(
+                {
+                    "event": "snapshot_materialized",
+                    "phase": "baseline",
+                    "commit": baseline_snapshot.commit,
+                }
+            )
         unit = _execute_snapshot_unit(
             plan=plan,
             snapshot=baseline_snapshot,
@@ -3026,6 +3177,8 @@ def _run_prepared_lane(
             equivalence_artifact=equivalence_artifact,
             kill_signal_artifact=kill_signal_artifact,
             mutation_artifact=mutation_artifact,
+            progress=progress_stream,
+            progress_heartbeat_seconds=progress_heartbeat_seconds,
         )
         result = unit.result
         r0_claim = build_r0_claim(result)
@@ -3570,7 +3723,7 @@ def _run_prepared_lane(
                         if lane.judge.mutation.budget_per_candidate is not None
                         else None
                     ),
-                    progress_artifact=progress_path,
+                    progress_stream=progress_stream,
                     # A sharded run needs the same authoritative state root
                     # `run_mutation` requires for `resume` (its own guard:
                     # "an ephemeral snapshot cannot own resume evidence") --
@@ -4178,7 +4331,8 @@ def _run_higher_rigor_lane(
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
     infrastructure_source: Path | None = None,
     infrastructure_environment: Mapping[str, str] | None = None,
-    progress_artifact: Path | None = None,
+    progress_stream: "mutation.ProgressStream | None" = None,
+    progress_heartbeat_seconds: float | None = None,
     #: (B019/A-328) `run_lane`'s already-resolved comparison DECLARATION --
     #: the lane's `judge.base` or the gate request's `--request-base`,
     #: whichever the lane's `judge.base_source` named, with every
@@ -4370,7 +4524,8 @@ def _run_higher_rigor_lane(
                         resume=resume,
                         shard_index=shard_index,
                         shard_count=shard_count,
-                        progress_artifact=progress_artifact,
+                        progress_stream=progress_stream,
+                        progress_heartbeat_seconds=progress_heartbeat_seconds,
                         diagnostics=diagnostics,
                     )
                 )
@@ -4473,6 +4628,20 @@ def _run_higher_rigor_lane(
     )
 
 
+def _declared_budget_per_candidate_seconds(lane: Lane) -> float | None:
+    """(B065) The lane's declared per-candidate bound in seconds, or ``None``.
+
+    The progress ``run`` header carries it so a reader knows the bounds the
+    run is operating under WITHOUT opening the lane file -- which is the
+    whole point of a header on an artifact that travels on its own. Under
+    ``budget = "unbounded"`` (B067) it is also the only bound there is.
+    """
+    if lane.judge is None or lane.judge.mutation is None:
+        return None
+    declared = lane.judge.mutation.budget_per_candidate
+    return parse_duration(declared) if declared is not None else None
+
+
 def run_lane(
     lane: Lane,
     *,
@@ -4496,6 +4665,16 @@ def run_lane(
     infrastructure_source: Path | None = None,
     infrastructure_environment: Mapping[str, str] | None = None,
     progress_artifact: Path | None = None,
+    #: (B064) An already-open, lane-wide progress stream. :mod:`assay.cli`
+    #: opens it around BOTH this call and its own ``write_verdict``, because
+    #: ``verdict_written`` -- the R0/R1 stream's terminal record -- happens
+    #: after this function has returned and a writer opened in here could
+    #: never emit it. A caller that passes only *progress_artifact* gets an
+    #: equivalent stream opened here (see the re-entry at the top of the
+    #: body), minus that one terminal record, which is a fact about who
+    #: writes the verdict rather than about this stream.
+    progress_stream: "mutation.ProgressStream | None" = None,
+    progress_heartbeat_seconds: float | None = None,
     #: (B019/A-328) the comparison ref the invoking GATE REQUEST supplies,
     #: for a lane that declared `judge.base_source = "request"`. It is a ref
     #: or an already-resolved commit and goes through the identical merge-base
@@ -4558,6 +4737,55 @@ def run_lane(
     committed and left unrelated dirt has the stronger, unusable tree. Assay
     never cleans the consumer's tree to make a claim true.
     """
+    if progress_stream is None and progress_artifact is not None:
+        # (B064) The library-caller path: nobody upstream owns the stream, so
+        # open it here for the WHOLE lane and re-enter with it. Before this
+        # item the artifact was opened four layers down, inside
+        # `mutation.run_mutation`, which is why `--progress` on an R0/R1 lane
+        # produced an empty file -- the only producer lived at R2.
+        #
+        # Re-entry rather than an enclosing `with` around this function's
+        # body: the body has a dozen early returns across two dispatch
+        # branches, and indenting all of it to gain one context manager buys
+        # a large blast radius for no behaviour. `progress_stream` is set on
+        # the way back in, so the recursion is exactly one level deep.
+        with mutation.progress_writer(Path(progress_artifact)) as raw_write:
+            stream = mutation.ProgressStream(raw_write, clock=clock, monotonic=monotonic)
+            stream.emit_run_header(
+                commit=commit,
+                lane=lane.name,
+                rigor=lane.rigor,
+                budget_s=lane.budget_seconds,
+                budget_per_candidate_s=_declared_budget_per_candidate_seconds(lane),
+            )
+            return run_lane(
+                lane,
+                commit=commit,
+                repo=repo,
+                project_root=project_root,
+                adapter=adapter,
+                assay_version=assay_version,
+                judge_provenance=judge_provenance,
+                argv_append=argv_append,
+                passthrough_source=passthrough_source,
+                process_runner=process_runner,
+                clock=clock,
+                monotonic=monotonic,
+                scratch_root_factory=scratch_root_factory,
+                evidence=evidence,
+                declared_evidence=declared_evidence,
+                deadline=deadline,
+                resume=resume,
+                shard=shard,
+                infrastructure_source=infrastructure_source,
+                infrastructure_environment=infrastructure_environment,
+                progress_artifact=None,
+                progress_stream=stream,
+                progress_heartbeat_seconds=progress_heartbeat_seconds,
+                request_base=request_base,
+                diagnostics=diagnostics,
+            )
+
     _require_evidence_bound_to_lane(lane, declared_evidence, evidence)
 
     # B019/A-328: resolved HERE, above the R0/higher-rigor dispatch, so an
@@ -4886,7 +5114,8 @@ def run_lane(
             shard_count=shard_count,
             evidence=evidence,
             declared_evidence=declared_evidence,
-            progress_artifact=progress_artifact,
+            progress_stream=progress_stream,
+            progress_heartbeat_seconds=progress_heartbeat_seconds,
             base_declaration=base_declaration,
             diagnostics=diagnostics,
         )
@@ -5006,13 +5235,55 @@ def run_lane(
     # exactly as this function's other pre-work refusals do.
     result_holder: list[CommandResult] = []
     try:
-        result = execute_plan(
-            plan,
-            cwd=project_root,
-            timeout=deadline.remaining(),
-            process_runner=process_runner,
-            clock=clock,
-        )
+        # (B064) The DIRECT R0-only path emits `command_started` /
+        # `command_running` / `command_finished` and NOTHING ELSE.
+        #
+        # It must not emit `snapshot_materialized`: this branch measures the
+        # consumer's LIVE tree (A-189) and no snapshot exists anywhere in it.
+        # The vocabulary is closed precisely so a reader can trust a phase
+        # name, and emitting a phase that did not happen -- to make two
+        # dispatch branches look alike -- would be the first lie in an
+        # artifact whose only job is to say what is happening right now.
+        # `coverage_parsed` is absent for the same reason: an R0-only lane
+        # parses no coverage. `verdict_written` still terminates the stream,
+        # from `cli`.
+        if progress_stream is not None:
+            progress_stream.emit(
+                {
+                    "event": "command_started",
+                    "phase": "direct",
+                    "argv": list(plan.argv_effective),
+                }
+            )
+        with _command_heartbeat(
+            progress_stream,
+            interval_seconds=progress_heartbeat_seconds,
+            phase="direct",
+            monotonic=monotonic,
+        ):
+            result = execute_plan(
+                plan,
+                cwd=project_root,
+                timeout=deadline.remaining(),
+                process_runner=process_runner,
+                clock=clock,
+            )
+        if progress_stream is not None:
+            progress_stream.emit(
+                {
+                    "event": "command_finished",
+                    "phase": "direct",
+                    "outcome": result.outcome.value,
+                    "reason_code": (
+                        result.reason_code.value
+                        if result.reason_code is not None
+                        else None
+                    ),
+                    "returncode": result.returncode,
+                    "started": result.started,
+                    "ended": result.ended,
+                }
+            )
         result_holder.append(result)
         return _finish_direct_r0_lane(
             lane,

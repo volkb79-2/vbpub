@@ -400,7 +400,31 @@ def test_progress_goes_exactly_where_the_consumer_asked_and_nowhere_else(
     ]
     assert events[0]["event"] == "run"
     assert len(events[0]["commit"]) == 40
-    assert [event["event"] for event in events[:2]] == ["run", "baseline"]
+    # (B064) The stream is no longer R2-only: the lane's own phase
+    # boundaries bracket the mutation sweep, and `verdict_written` -- emitted
+    # after `write_verdict`, which is why the stream is opened in `_cmd_run`
+    # rather than inside `run_lane` -- terminates it.
+    names = [event["event"] for event in events]
+    assert names[:4] == [
+        "run",
+        "snapshot_materialized",
+        "command_started",
+        "command_finished",
+    ]
+    assert names[-1] == "verdict_written"
+    assert "candidates" in names and "baseline" in names and "end" in names
+    # (B065) Every record carries the two enrichment fields, added centrally
+    # by `ProgressStream` rather than at each producing call site.
+    assert all("emitted_at" in event and "elapsed_s" in event for event in events)
+    assert all(event["emitted_at"].startswith("20") for event in events)
+    assert all(
+        event["elapsed_s"] <= following["elapsed_s"]
+        for event, following in zip(events, events[1:])
+    )
+    # (B064) This lane declares no R1, so the phase that did not happen is
+    # not in the stream: the vocabulary is closed and a name in it is a
+    # measurement, never a shape filled in for symmetry.
+    assert "coverage_parsed" not in names
 
 
 def test_a_progress_destination_that_is_a_directory_refuses_before_any_repository_work(

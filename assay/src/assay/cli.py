@@ -268,7 +268,26 @@ def build_parser() -> argparse.ArgumentParser:
             "writes no progress file at all. Point it OUTSIDE the repository "
             "(or at a gitignored path) -- a progress file inside the work "
             "tree makes the next run of the same lane refuse "
-            "NO_MEASUREMENT/DIRTY_TREE. Ignored by a lane that declares no R2."
+            "NO_MEASUREMENT/DIRTY_TREE. (B064) Every rigor tier writes to "
+            "it now, not only R2: an R0/R1 lane emits its own phase "
+            "boundaries (run, command_started, command_running, "
+            "command_finished, coverage_parsed, verdict_written)."
+        ),
+    )
+    run.add_argument(
+        "--progress-heartbeat",
+        type=str,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "(B064) emit a command_running tick every SECONDS while the "
+            f"lane's own command runs. Default "
+            f"{runner.PROGRESS_HEARTBEAT_DEFAULT_SECONDS:g}s, floor "
+            f"{runner.PROGRESS_HEARTBEAT_FLOOR_SECONDS:g}s (a smaller value "
+            "is refused by name, so a misconfigured interval cannot flood "
+            "the file). A pure time-based tick: it never reads the child's "
+            "output, counts bytes, or knows anything about the tool being "
+            "run. No-op without --progress."
         ),
     )
     run.add_argument(
@@ -623,8 +642,37 @@ def _cmd_run(
     if args.verdict_json is not None:
         destination = reserve_verdict_output(args.verdict_json, stdout=out)
     try:
+        # (B064) The stream is opened HERE, around BOTH `_run_reserved`'s
+        # `run_lane` call and its own `write_verdict`, because
+        # `verdict_written` is the R0/R1 stream's TERMINAL record and the
+        # verdict is written after `run_lane` has already returned. A writer
+        # opened inside `run_lane` could never emit it, which is why B064's
+        # own vocabulary would have been silently one record short.
+        #
+        # The heartbeat interval is resolved and refused before the file is
+        # opened: a floor violation is an operator mistake, and it belongs
+        # with `--progress`'s own destination check rather than surfacing
+        # once the lane is already running.
+        heartbeat_seconds = _resolve_progress_heartbeat(args)
         if (progress_arg := getattr(args, "progress", None)) is not None:
             validate_progress_destination(progress_arg)
+            with mutation.progress_writer(
+                Path(progress_arg).expanduser()
+            ) as raw_write:
+                return _run_reserved(
+                    args,
+                    lane,
+                    lane_file,
+                    appended,
+                    destination,
+                    out,
+                    err,
+                    label_grace_seconds=label_grace_seconds,
+                    progress_stream=mutation.ProgressStream(
+                        raw_write, clock=runner._utc_now
+                    ),
+                    progress_heartbeat_seconds=heartbeat_seconds,
+                )
         return _run_reserved(
             args,
             lane,
@@ -638,6 +686,42 @@ def _cmd_run(
     finally:
         if destination is not None:
             destination.close()
+
+
+def _resolve_progress_heartbeat(args: argparse.Namespace) -> float | None:
+    """(B064) ``--progress-heartbeat`` in seconds, or ``None``.
+
+    ``None`` exactly when ``--progress`` was not passed: the flag is a no-op
+    without a destination, and returning the default there would arm a
+    thread with nowhere to write. Below the floor is refused BY NAME rather
+    than clamped -- silently substituting a different interval than the one
+    an operator asked for is how a configuration mistake survives to become
+    a mystery in someone's log.
+    """
+    if getattr(args, "progress", None) is None:
+        return None
+    raw = getattr(args, "progress_heartbeat", None)
+    if raw is None:
+        return runner.PROGRESS_HEARTBEAT_DEFAULT_SECONDS
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        raise LaneConfigError(
+            f"--progress-heartbeat must be a number of seconds, got {raw!r}"
+        ) from None
+    if not (seconds == seconds and seconds not in (float("inf"), float("-inf"))):
+        raise LaneConfigError(
+            f"--progress-heartbeat must be a finite number of seconds, got {raw!r}"
+        )
+    if seconds < runner.PROGRESS_HEARTBEAT_FLOOR_SECONDS:
+        raise LaneConfigError(
+            f"--progress-heartbeat {raw!r} is below the "
+            f"{runner.PROGRESS_HEARTBEAT_FLOOR_SECONDS:g}s floor -- a "
+            f"sub-floor interval turns a diagnostic stream into a flood "
+            f"(an hour-long lane at 1s writes 3,600 records that say "
+            f"nothing a 60s tick does not)"
+        )
+    return seconds
 
 
 def _declared_evidence(lane: Lane) -> tuple[EvidenceDeclaration, ...]:
@@ -680,6 +764,10 @@ def _run_reserved(
     err: TextIO,
     *,
     label_grace_seconds: float = LABEL_GRACE_SECONDS,
+    #: (B064) The already-open, lane-wide progress stream, or `None`. Opened
+    #: by `_cmd_run` so it spans `run_lane` AND `write_verdict` below.
+    progress_stream: "mutation.ProgressStream | None" = None,
+    progress_heartbeat_seconds: float | None = None,
 ) -> int:
     # P26/A-212: one LaneDeadline, started here -- before HEAD is even
     # resolved -- reaches HEAD, attestation, adapter resolution, and the
@@ -724,6 +812,58 @@ def _run_reserved(
     # deadline-bounded call so the timeout refusal below can render the
     # lane's declared evidence identities exactly as A-213's does.
     declared_evidence = _declared_evidence(lane)
+
+    def _emit_run_header(resolved_commit: str) -> None:
+        """(B064/B065) The stream's first record, emitted the instant the
+        commit label exists -- every earlier refusal has no commit to
+        attribute records to, and a header without one cannot do the one job
+        a header on an append-only file has."""
+        if progress_stream is not None:
+            progress_stream.emit_run_header(
+                commit=resolved_commit,
+                lane=lane.name,
+                rigor=lane.rigor,
+                # (B067) `None` here means and only means `budget =
+                # "unbounded"`; `budget_per_candidate_s` is then the only
+                # bound the run has, which is exactly why a reader needs
+                # both in one place.
+                budget_s=lane.budget_seconds,
+                budget_per_candidate_s=runner._declared_budget_per_candidate_seconds(
+                    lane
+                ),
+            )
+
+    def _emit_verdict_written(final: Verdict) -> None:
+        """(B064) The R0/R1 stream's TERMINAL record, and the reason the
+        stream is opened in `_cmd_run` rather than inside `run_lane`.
+
+        Emitted for every verdict this function returns, including the
+        pre-run refusals -- a reader must be able to tell "the run ended,
+        refusing" from "the process died", and those two look identical from
+        a file that simply stops. `destination` is `null` when the consumer
+        asked for no artifact (A-028's no-artifact mode): the verdict is
+        still final, and saying WHERE it went is the honest way to report
+        that nothing was written."""
+        if progress_stream is None:
+            return
+        progress_stream.emit(
+            {
+                "event": "verdict_written",
+                "outcome": final.outcome.value,
+                "reason_code": (
+                    final.reason_code.value
+                    if final.reason_code is not None
+                    else None
+                ),
+                "exit_code": final.exit_code,
+                "destination": (
+                    getattr(args, "verdict_json", None)
+                    if destination is not None
+                    else None
+                ),
+            }
+        )
+
     try:
         commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
     except AssayError as exc:
@@ -806,11 +946,19 @@ def _run_reserved(
             evidence=_timed_out_evidence(declared_evidence, exc),
             declared_evidence=declared_evidence,
         )
+        _emit_run_header(commit)
         if destination is not None:
             runner.write_verdict(verdict, destination)
+        _emit_verdict_written(verdict)
         if args.verdict_json != "-":
             _print_run_summary(verdict, out)
         return verdict.exit_code
+
+    # (B064) The commit label exists from here on, so the stream gets its
+    # header before any further work -- attestation, adapter resolution and
+    # the lane itself all now have a run to be attributed to. Idempotent, so
+    # the timeout branch above having already emitted one is not a second.
+    _emit_run_header(commit)
 
     # No declaration means no loader call. Otherwise each declared source's
     # own directory exists by config invariant (B004/A-430's PER-SOURCE
@@ -889,6 +1037,7 @@ def _run_reserved(
             )
             if destination is not None:
                 runner.write_verdict(verdict, destination)
+            _emit_verdict_written(verdict)
             if args.verdict_json != "-":
                 _print_run_summary(verdict, out)
             return verdict.exit_code
@@ -979,11 +1128,14 @@ def _run_reserved(
                 # Resolved against the invoking CWD (like every other CLI path
                 # argument), never against the project root, and never derived
                 # from the lane name.
-                progress_artifact=(
-                    Path(progress_arg).expanduser()
-                    if (progress_arg := getattr(args, "progress", None)) is not None
-                    else None
-                ),
+                #
+                # (B064) The FILE is already open -- `_cmd_run` owns it, so
+                # that `verdict_written` can be emitted after `write_verdict`
+                # below -- so what travels here is the stream, not the path.
+                # Passing both would re-open the same destination behind the
+                # stream's back and emit a second `run` header into it.
+                progress_stream=progress_stream,
+                progress_heartbeat_seconds=progress_heartbeat_seconds,
                 # B019/A-328: the gate request's own comparison base, threaded
                 # verbatim. `run_lane` decides whether this lane delegated to
                 # it, and refuses every disagreement -- the CLI does not
@@ -1018,6 +1170,7 @@ def _run_reserved(
         # a run that could not deliver the artifact it was asked for must not
         # also print a line that reads like a completed run (A-181).
         runner.write_verdict(verdict, destination)
+    _emit_verdict_written(verdict)
     if args.verdict_json != "-":
         _print_run_summary(verdict, out)
     return verdict.exit_code

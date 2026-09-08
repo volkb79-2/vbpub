@@ -12,6 +12,37 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Added
 
+- **The progress stream reaches every rigor tier, and ticks while a command
+  runs (B064).** `--progress PATH` had exactly one producer, four layers down
+  inside the mutation sweep, so an R0/R1 lane was handed an empty file and a
+  lane that looked hung for nine minutes stayed illegible. The stream is now
+  opened once for the whole lane and carries a closed phase vocabulary — `run`
+  → `snapshot_materialized` → `command_started` → `command_running` →
+  `command_finished` → `coverage_parsed` → `verdict_written` — the same names
+  at every tier, with a lane simply emitting fewer of them where it has fewer
+  phases. A phase that did not happen is never emitted: the direct R0-only
+  path takes no snapshot and says so by silence. New
+  **`--progress-heartbeat SECONDS`** (default 60, floor 5, refused by name
+  below it, no-op without `--progress`) emits a pure **time-based** tick while
+  the lane's own command runs — it never reads the child's output, counts its
+  bytes or knows which tool is running; that is B073, deliberately separate.
+  Stall detection remains entirely the CALLER's (run-gate RG-36). Diagnostic
+  only: `assay verify` is untouched and no verdict field derives from it.
+
+- **Every progress record carries time, bounds and outcome (B065).** Each
+  record gains `emitted_at` (UTC ISO 8601) and `elapsed_s` (monotonic seconds
+  since the `run` header), added centrally so a producer cannot forget them
+  and two producers cannot disagree about what they measure — which is what
+  lets a reader with ONLY the file compute rate, ETA and last-event age. The
+  `run` header names `lane`, `commit`, `rigor`, `budget_s` (`null` exactly
+  when the lane is unbounded — B067) and `budget_per_candidate_s`, so the
+  bounds travel with the artifact. A new `candidates` record carries
+  `candidate_total`/`selected_total`/`pending_total` the moment they are
+  known, and a new terminal `end` record carries the sweep's bucket counts, so
+  a finished run is distinguishable from a dead one without reading the
+  verdict. The per-candidate record — the one record that never named itself —
+  now carries `event: "candidate"`.
+
 - **`budget = "unbounded"` (B067).** A lane may now decline a lane-wide
   deadline — but only where every unit of its work carries its own bound.
   A native R2 lane must declare `judge.mutation.budget_per_candidate`; an R3

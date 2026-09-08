@@ -313,9 +313,11 @@ tracked files remain dirty regardless of any exclude source.
 ## Resume and shard a long mutation lane
 
 **A consumer gate passes `--resume --progress <path>` on EVERY lane it runs,
-not only its mutation lanes.** Both are no-ops where a lane has nothing to
-checkpoint — `--progress` is ignored without R2, and resume state is touched
-only by the mutation sweep — so a uniform invocation costs nothing and means a
+not only its mutation lanes.** Resume state is still touched only by the
+mutation sweep, so `--resume` is a no-op elsewhere; `--progress` is **no
+longer** R2-only (B064) — every rigor tier writes its own phase boundaries to
+it, and an R0/R1 lane that used to look hung for nine minutes is now legible.
+A uniform invocation costs nothing and means a
 lane that later gains R2 needs no gate change to become resumable and
 observable. Write the progress file outside the tree under judgement: an
 untracked path inside it is a `NO_MEASUREMENT`/`DIRTY_TREE` of the gate's own
@@ -1753,14 +1755,72 @@ the whole suite, so tightening the baseline to it would refuse healthy lanes.
 That one command is covered by the caller's stall detection, not by a bound of
 assay's.
 
+### The progress stream
+
 Progress is opt-in. `assay run worker_lane --progress /tmp/worker.progress.jsonl` appends one compact
-JSON object per line -- a `run` header naming the commit and start time, then one event after the
-baseline and one after every completed candidate, each flushed as it is written, so a monitor can
-tail it live. Without the flag no progress file is written at all, and assay never chooses the
-location itself. Choose a path OUTSIDE the repository (or a gitignored one): assay's own clean-tree
+JSON object per line, each flushed as it is written, so a monitor can tail it live. Without the flag
+no progress file is written at all, and assay never chooses the location itself. Choose a path
+OUTSIDE the repository (or a gitignored one): assay's own clean-tree
 precondition refuses `NO_MEASUREMENT`/`DIRTY_TREE` on the next run of that lane if the progress file
 lands in the work tree. The verdict does not name the destination -- the caller already chose it,
-the same way it does for `--verdict-json`.
+the same way it does for `--verdict-json`. **The stream is diagnostic, never
+evidence:** `assay verify` does not read it, and no verdict field derives from
+it.
+
+**The vocabulary is closed** and identical at every tier — an R0/R1 lane
+simply emits fewer of these names, because it has no per-unit to iterate. A
+phase that did not happen is never emitted: the direct R0-only path takes no
+snapshot, so it never says `snapshot_materialized`, and a lane with no R1
+never says `coverage_parsed`.
+
+| `event` | when | notable fields |
+| --- | --- | --- |
+| `run` | first record of the run, at stream open | `lane`, `commit`, `rigor`, `budget_s`, `budget_per_candidate_s`, `candidate_total`, `started` |
+| `snapshot_materialized` | the committed-object snapshot exists (higher-rigor path only) | `commit` |
+| `command_started` | just before the lane's own command | `argv`, `phase` |
+| `command_running` | the heartbeat tick, while it runs | `command_elapsed_s`, `phase` |
+| `command_finished` | the command returned | `outcome`, `reason_code`, `returncode`, `started`, `ended` |
+| `coverage_parsed` | the R1 artifact was read (R1 lanes only) | `parsed`, `reason_code` |
+| `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total` |
+| `shard` / `resume` | a shard was selected / records were resumed | `selected_total` / `resumed_total` |
+| `baseline` | the sweep's baseline record | `candidate_total` |
+| `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket`, `elapsed_seconds` |
+| `end` | the mutation sweep finished | `buckets` (per-bucket counts) |
+| `verdict_written` | terminal, for every tier | `outcome`, `reason_code`, `exit_code`, `destination` |
+
+**Every record** additionally carries `emitted_at` (UTC ISO 8601) and
+`elapsed_s` (monotonic seconds since the `run` header). Those two are what let
+a reader with ONLY this file compute rate, ETA and last-event age. `elapsed_s`
+is run-relative on every record without exception; the heartbeat's separate
+question — how long *this* command has been running — is `command_elapsed_s`,
+a different name because it is a different quantity.
+
+Two `null`s are meaningful rather than missing. `budget_s` is `null` exactly
+when the lane declares `budget = "unbounded"`, in which case
+`budget_per_candidate_s` is the only bound there is. `candidate_total` is
+`null` on the `run` header because the total cannot be known before a snapshot
+exists and the sites have been collected — the header has to come first, since
+it is what attributes every later record to a run in an append-only file. The
+real total arrives on `candidates`, and rides on `baseline` and every
+`candidate` record.
+
+### `--progress-heartbeat SECONDS`
+
+`--progress-heartbeat` emits a `command_running` tick on a fixed interval
+while the lane's own command runs, and cancels it the moment the command
+returns. **Default 60 s, floor 5 s** — a smaller value is refused by name
+before any work, so a misconfigured interval cannot flood the file. It is a
+no-op without `--progress`.
+
+It is a **pure time-based tick**: it never reads the child's stdout or stderr,
+counts its bytes, tracks activity, or knows which tool is running. A
+per-language live-test-progress adapter is a separate, larger item (B073) and
+is deliberately not part of this. The tick is armed only around the lane's own
+command, never around each mutant — a `jobs`-way concurrent sweep would
+otherwise interleave N tick streams about work the per-candidate records
+already describe one line at a time. A heartbeat write failure stops the
+heartbeat and nothing else; a diagnostic tick must never be able to kill a
+measured lane.
 
 When a command fails or times out, read the optional top-level
 `result_stdout_tail` / `result_stderr_tail` fields for the final error output.

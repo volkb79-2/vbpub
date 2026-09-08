@@ -107,6 +107,7 @@ import math
 import os
 import re
 import tempfile
+import threading
 import time
 from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
@@ -156,6 +157,8 @@ __all__ = [
     "MutationDiscoveryError",
     "MutationSite",
     "MutationTarget",
+    "PROGRESS_EVENTS",
+    "ProgressStream",
     "ProgressWriter",
     "MutationStateError",
     "build_mutation_claim",
@@ -752,6 +755,157 @@ def progress_writer(path: Path) -> Iterator[ProgressWriter]:
         ) from exc
 
 
+#: (B064) The CLOSED progress vocabulary. Every record the stream carries
+#: names its own phase through this table, and
+#: :meth:`ProgressStream.emit` refuses any other name outright -- "the phase
+#: vocabulary is CLOSED and identical across tiers" is B064's own acceptance
+#: criterion, and a table nothing enforces is a comment, not a vocabulary.
+#:
+#: The R0/R1 phase stream and the R2 mutation sweep draw from ONE table: an
+#: R0/R1 lane simply emits far fewer of these names, because it has no
+#: per-unit to iterate. A phase that did not happen is never emitted -- most
+#: pointedly, the DIRECT R0-only path (``runner.run_lane``'s live-tree
+#: branch) has no snapshot at all and therefore never emits
+#: ``snapshot_materialized``. Naming a phase that did not occur would be a
+#: lie told to the one reader the artifact exists for.
+PROGRESS_EVENTS = frozenset(
+    {
+        # --- shared header/terminal ---------------------------------------
+        "run",  # first record of a run; attributes every later record
+        "verdict_written",  # R0/R1 terminal (B064)
+        "end",  # mutation-sweep terminal, with bucket counts (B065)
+        # --- R0/R1 phase boundaries (B064) --------------------------------
+        "snapshot_materialized",
+        "command_started",
+        "command_running",  # the time-based heartbeat tick
+        "command_finished",
+        "coverage_parsed",
+        # --- mutation sweep (B031/A-320, pre-existing) --------------------
+        "candidates",
+        "shard",
+        "resume",
+        "baseline",
+        "candidate",
+        "resume_merged",
+    }
+)
+
+
+class ProgressStream:
+    """(B064/B065) The ONE place a progress record is enriched and written.
+
+    Wraps :func:`progress_writer`'s raw callable so that ``emitted_at`` and
+    ``elapsed_s`` are added centrally, to EVERY record, instead of at each
+    of the call sites scattered across :mod:`assay.cli`,
+    :mod:`assay.runner` and this module. That is what makes B065 nearly free
+    once B064's sites exist, and it is what makes ``elapsed_s`` mean one
+    thing everywhere: **monotonic seconds since this stream was opened**,
+    which is the ``run`` header's own instant.
+
+    The heartbeat (B064) writes from a background thread while the lane's
+    command runs, and the mutation sweep writes from N concurrent worker
+    threads, so the write itself is serialised under a lock. The lock covers
+    only the ``write`` call; the enrichment is computed outside it.
+
+    *clock* is the same UTC clock the rest of the run uses, so ``emitted_at``
+    is in this project's existing ``iso_utc(clock())`` convention rather
+    than a second, independently-skewed time source.
+
+    This is diagnostic output. ``assay verify`` never reads it, no verdict
+    field derives from it, and nothing here is evidence.
+    """
+
+    def __init__(
+        self,
+        write: ProgressWriter,
+        *,
+        clock: Clock,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._write = write
+        self._clock = clock
+        self._monotonic = monotonic
+        self._lock = threading.Lock()
+        self._started_monotonic = monotonic()
+        self._header_emitted = False
+
+    @property
+    def started_monotonic(self) -> float:
+        """The monotonic instant ``elapsed_s`` is measured from."""
+        return self._started_monotonic
+
+    def elapsed(self) -> float:
+        return self._monotonic() - self._started_monotonic
+
+    def emit(self, event: Mapping[str, Any]) -> None:
+        name = event.get("event")
+        if name not in PROGRESS_EVENTS:
+            # A programming error, never a consumer's: the vocabulary is
+            # closed and every producer is in this repository.
+            raise ValueError(
+                f"progress event {name!r} is not in the closed progress "
+                f"vocabulary {sorted(PROGRESS_EVENTS)}"
+            )
+        enriched = {
+            **event,
+            "emitted_at": iso_utc(self._clock()),
+            "elapsed_s": round(self.elapsed(), 3),
+        }
+        with self._lock:
+            self._write(enriched)
+
+    #: A :class:`ProgressStream` IS a :data:`ProgressWriter`, so every
+    #: pre-existing ``write_progress(...)`` call site keeps working and is
+    #: enriched by construction rather than by remembering to be.
+    __call__ = emit
+
+    def emit_run_header(
+        self,
+        *,
+        commit: str | None,
+        lane: str | None = None,
+        rigor: Sequence[str] | None = None,
+        budget_s: float | None = None,
+        budget_per_candidate_s: float | None = None,
+        candidate_total: int | None = None,
+    ) -> None:
+        """Emit the stream's ``run`` header, at most once.
+
+        The header is the FIRST record of a run, because the file is opened
+        for APPEND and never truncated: without it a tailing monitor cannot
+        attribute a later record to a run at all (B031/A-320's original
+        reason). That ordering is also why ``candidate_total`` is ``null``
+        on every lane-driven run -- the total cannot be known before a
+        snapshot exists and the sites have been collected, and a header
+        deferred until it IS known is a header that arrives after the
+        records it is supposed to attribute. The real total arrives, the
+        moment it is known, on the ``candidates`` event (B065), and rides on
+        ``baseline`` and every ``candidate`` record as it always has.
+
+        ``budget_s`` is ``null`` for a lane declaring ``budget =
+        "unbounded"`` (B067). ``lane`` is ``null`` only when the header was
+        emitted by a direct :func:`run_mutation` library call, which has no
+        :class:`~assay.config.Lane` in view; a ``null`` ``lane`` is
+        therefore the reader's signal that the lane-level bounds in this
+        header are UNKNOWN rather than unbounded.
+        """
+        if self._header_emitted:
+            return
+        self._header_emitted = True
+        self.emit(
+            {
+                "event": "run",
+                "lane": lane,
+                "commit": commit,
+                "rigor": list(rigor) if rigor is not None else None,
+                "budget_s": budget_s,
+                "budget_per_candidate_s": budget_per_candidate_s,
+                "candidate_total": candidate_total,
+                "started": iso_utc(self._clock()),
+            }
+        )
+
+
 def _progress_event(
     *, candidate_index: int, candidate_total: int, job: MutantJob
 ) -> dict[str, Any]:
@@ -1332,6 +1486,14 @@ def run_mutation(
     baseline_equivalence: bytes | None = None,
     budget_per_candidate_seconds: float | None = None,
     progress_artifact: Path | str | None = None,
+    #: (B064) An already-open, lane-wide :class:`ProgressStream`. The lane
+    #: runner opens the stream once, high up, so the R0/R1 phase records and
+    #: the ``verdict_written`` terminal share ONE file, ONE ``elapsed_s``
+    #: origin and ONE header with this sweep's own records. When it is
+    #: given, *progress_artifact* is not opened a second time and no second
+    #: ``run`` header is emitted. *progress_artifact* remains for the direct
+    #: library caller, which owns the whole run by itself.
+    progress_stream: "ProgressStream | None" = None,
     state_project_root: Path | str | None = None,
     resume: bool = False,
     shard_index: int | None = None,
@@ -1447,13 +1609,26 @@ def run_mutation(
     if baseline.outcome is not Outcome.PASS:
         return None
 
+    # (B064) The stream is opened HERE only when nobody upstream owns one --
+    # the direct library-caller path. `runner.run_lane` opens it for the
+    # whole lane, so an `assay run --progress` sweep arrives with
+    # *progress_stream* already carrying the R0/R1 phase records that
+    # preceded it.
     progress_context = (
         progress_writer(Path(progress_artifact))
-        if progress_artifact is not None
+        if progress_artifact is not None and progress_stream is None
         else nullcontext[ProgressWriter | None](None)
     )
 
-    with progress_context as write_progress:
+    with progress_context as raw_write:
+        write_progress: ProgressStream | None = progress_stream
+        if write_progress is None and raw_write is not None:
+            write_progress = ProgressStream(raw_write, clock=clock)
+            write_progress.emit_run_header(
+                commit=prepared.spec.commit,
+                lane=None,
+                budget_per_candidate_s=budget_per_candidate_seconds,
+            )
         from .runner import execute_plan
 
         collected = collect_mutation_sites(
@@ -1513,17 +1688,22 @@ def run_mutation(
             pending_jobs = selected_jobs
 
         if write_progress is not None:
-            # B031/A-320: the stream is opened for APPEND and never
-            # truncated, so successive runs share one file. Without this
-            # header a tailing monitor cannot tell which run a
-            # `candidate_index: 0` belongs to -- there was no run id, commit
-            # or timestamp anywhere in the artifact.
+            # (B065) The `run` header is emitted at stream OPEN and carries
+            # `candidate_total: null`, because the total cannot be known
+            # before a snapshot exists and the sites have been collected --
+            # see `ProgressStream.emit_run_header`. This is where it IS
+            # known, so this is where it is announced, together with what
+            # sharding and resume did to it: `selected_total` is this
+            # shard's assignment domain and `pending_total` is what actually
+            # gets executed, so a reader computes rate and ETA against the
+            # work that remains rather than against the whole plan.
             write_progress(
                 {
+                    "event": "candidates",
                     "candidate_total": total,
+                    "selected_total": len(selected_jobs),
+                    "pending_total": len(pending_jobs),
                     "commit": prepared.spec.commit,
-                    "event": "run",
-                    "started": iso_utc(clock()),
                 }
             )
             write_progress(
@@ -1582,6 +1762,30 @@ def run_mutation(
             result_payload = _dataclass_replace(
                 result_payload,
                 candidate_ids=tuple(candidate_id(job) for job in selected_jobs),
+            )
+        if write_progress is not None:
+            # (B065) The sweep's own terminal. Without it a reader cannot
+            # tell a finished sweep from one whose process died between two
+            # candidates -- both look like "records stopped arriving" -- and
+            # the whole point of the artifact is to answer that question
+            # WITHOUT reading the verdict. The counts are the same
+            # vocabulary the verdict's own `judgment.r2` uses, so a reader
+            # that later sees the verdict finds them agreeing rather than
+            # having to reconcile two spellings.
+            #
+            # Emitted only where a sweep actually ran. The three early
+            # returns above (`UNSUPPORTED`, over the candidate cap, no
+            # candidates at all) never began one, and the lane's own
+            # `verdict_written` still terminates the stream for them.
+            write_progress(
+                {
+                    "event": "end",
+                    "candidate_total": total,
+                    "buckets": {
+                        name: len(getattr(result_payload, name))
+                        for name in MUTATION_BUCKETS
+                    },
+                }
             )
         return result_payload
 
@@ -1771,6 +1975,15 @@ def _execute_mutation_jobs(
                 if write_progress is not None:
                     write_progress(
                         {
+                            # (B064) The per-candidate record was the ONE
+                            # record with no `event` key at all, so a reader
+                            # identified it by the absence of a name --
+                            # exactly the thing a closed vocabulary exists
+                            # to remove. Added here rather than inside
+                            # `_progress_event`, which is shared with the
+                            # state record and has no business gaining a
+                            # progress-stream field.
+                            "event": "candidate",
                             **_progress_event(
                                 candidate_index=position,
                                 candidate_total=total,

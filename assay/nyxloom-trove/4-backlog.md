@@ -6489,11 +6489,25 @@ blocked on exactly this.
 
 ### Acceptance
 
-- [ ] a reader with ONLY the progress file computes rate, ETA and
+- [x] a reader with ONLY the progress file computes rate, ETA and
       last-event age; the numbers agree with the verdict's counts and the
       run's measured wall time (real run, not a fixture);
-- [ ] `assay verify` is unaffected (the stream is not evidence);
-- [ ] CONSUMERS' progress paragraph names the fields.
+- [x] `assay verify` is unaffected (the stream is not evidence);
+- [x] CONSUMERS' progress paragraph names the fields.
+
+**IMPLEMENTED 2026-09-08** (progress/resume wave). `emitted_at`/`elapsed_s`
+are added centrally by `mutation.ProgressStream`, so no producer can forget
+them and no two producers can disagree about what `elapsed_s` measures. The
+`run` header carries `lane`/`commit`/`rigor`/`budget_s`/
+`budget_per_candidate_s`; `budget_s` is `null` exactly when B067's
+`budget = "unbounded"` is declared. `candidate_total` is `null` on the
+header and carried by a new `candidates` record instead — the header must be
+the FIRST record in an append-only file, and the total cannot be known
+before a snapshot exists and the sites are collected. New terminal `end`
+record carries the sweep's bucket counts; the per-candidate record now names
+itself (`event: "candidate"`). Acceptance measured in
+`tests/test_progress_phase_stream.py::test_a_reader_with_only_the_progress_file_computes_rate_eta_and_age`
+against a real CLI run and its own verdict.
 
 ## B066 — the state location is derived from `project_root`; there is no way to keep resume state outside an ephemeral worktree
 
@@ -6954,16 +6968,47 @@ B007's A-row must say so in one sentence; nothing here widens B007's scope.
 
 ### Acceptance (for whoever picks this up)
 
-- [ ] a ruling recorded as an A-row on whether the R0/R1 phase stream is
+- [x] a ruling recorded as an A-row on whether the R0/R1 phase stream is
       built, naming the rejected alternatives (nothing; per-tier bespoke
       events; a runner-aware progress that assay must not attempt);
-- [ ] if built, the phase vocabulary is CLOSED and identical across tiers, and
+- [x] if built, the phase vocabulary is CLOSED and identical across tiers, and
       `verify.py` is untouched (progress is diagnostic, never evidence);
 - [ ] R3 progress/resume, if built, reuses B007's per-attempt identity rather
       than inventing a second one — proven by a test that resumes a
       multi-target canary and re-runs only the unattempted targets;
-- [ ] the measured claims above are re-checked, not inherited, at the time of
+- [x] the measured claims above are re-checked, not inherited, at the time of
       building.
+
+**IMPLEMENTED 2026-09-08** (progress/resume wave), R0/R1 half only.
+
+The ruling: **the R0/R1 phase stream is BUILT.** Rejected alternatives, named
+as the entry asks — (a) *nothing*: measured, `--progress` on an R0/R1 lane
+wrote a zero-byte file, and the nine-silent-minutes case the entry was filed
+about stayed illegible; (b) *per-tier bespoke events*: rejected because
+A-429's whole point is a uniform invocation shape, and a second vocabulary
+would make a reader tier-aware for no gain; (c) *runner-aware progress*
+(parsing the child's own output): rejected outright — assay does not know
+which of a foreign runner's tests completed and must not guess. That is
+B073, filed separately and deliberately not started here.
+
+The vocabulary is CLOSED and *enforced*: `mutation.PROGRESS_EVENTS` is the
+single table and `ProgressStream.emit` refuses any name outside it, because
+a table nothing enforces is a comment. It is identical across tiers — an
+R0/R1 lane emits fewer names, never different ones. A phase that did not
+happen is never emitted: the DIRECT R0-only path (`run_lane`'s live-tree
+branch, A-189) takes no snapshot and therefore never says
+`snapshot_materialized`, and a lane with no R1 never says `coverage_parsed`.
+`verify.py` is untouched.
+
+Heartbeat: `--progress-heartbeat SECONDS` (default 60, floor 5, refused by
+name below it, no-op without `--progress`) — a PURE time-based tick, armed
+only around the lane's own command and never around each mutant. It reads
+nothing of the child's output. Stall detection stays with the caller
+(run-gate RG-36).
+
+**R3's half is NOT built** and stays open above: per-attempt progress and
+per-target resume must reuse B007's own per-attempt identity, and inventing
+a second one inside this wave is exactly what this entry warns against.
 
 ---
 

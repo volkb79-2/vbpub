@@ -91,8 +91,27 @@ def test_progress_events_are_emitted_for_baseline_and_every_candidate(tmp_path):
     assert events[0]["event"] == "run"
     assert len(events[0]["commit"]) == 40
     assert events[0]["started"].startswith("20")
-    assert events[0]["candidate_total"] == 2
-    events = events[1:]
+    # (B065) The header is emitted at stream OPEN, before a snapshot exists
+    # and before the sites have been collected, so `candidate_total` is
+    # honestly `null` there -- a header deferred until the total is known is
+    # a header that arrives after the records it exists to attribute. The
+    # real total arrives on `candidates`, the moment it IS known.
+    assert events[0]["candidate_total"] is None
+    # `lane` is `null` on this path and only on this path: a direct
+    # `run_mutation` call has no Lane in view, which is the reader's signal
+    # that the header's lane-level bounds are UNKNOWN, not unbounded.
+    assert events[0]["lane"] is None
+    assert events[1] == {
+        **events[1],
+        "event": "candidates",
+        "candidate_total": 2,
+        "selected_total": 2,
+        "pending_total": 2,
+    }
+    assert events[-1]["event"] == "end"
+    assert events[-1]["buckets"]["killed"] == 1
+    assert events[-1]["buckets"]["survived"] == 1
+    events = events[2:-1]
     assert [event["candidate_index"] for event in events] == [-1, 0, 1]
     assert all(event["candidate_total"] == 2 for event in events[1:])
     assert events[0]["event"] == "baseline"
