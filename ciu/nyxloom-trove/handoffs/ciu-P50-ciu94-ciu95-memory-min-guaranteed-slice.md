@@ -50,9 +50,11 @@ order below — each part depends on the previous one's primitive.
    on this the same way these do.
 5. `src/ciu/deploy.py` — `governance_slice_preflight` (line 1186, its
    `mem_min_required` loop at 1240-1283 is the aggregation you are adding
-   alongside, not replacing), its call sites in `action_deploy` (lines
-   ~4567, ~4598), the per-entry deploy loop around `_run_stack`/
-   `deployed.append(entry["path"])` (~line 1790-1801), and
+   alongside, not replacing), its call sites in `_run()` (deploy.py:4445,
+   NOT `action_deploy` — `action_deploy` is a separate, earlier function
+   containing the per-entry deploy loop referenced next), the per-entry
+   deploy loop around `_run_stack`/`deployed.append(entry["path"])`
+   (~line 1790-1801, inside `action_deploy`), and
    `resolve_selection_health_containers` (~line 1521-1649 — the existing
    pattern for reading a rendered compose file's `container_name`s you
    will reuse for injection's per-service enumeration).
@@ -186,6 +188,17 @@ policy this raises `ValueError` (S10.3 → exit 2) **by default**, matching
 unconditional `raise ValueError(...)` — D6 frames the older S15.G9-1 pattern
 as a not-yet-migrated holdout, not a template for new checks.
 
+**Why ERROR here but the existing ancestor-chain-inadequate finding two
+lines below it stays WARN, even though both say "this declared floor is
+currently a no-op":** blast radius. The ancestor-chain WARN is scoped to
+ONE slice's declared value being inadequate — other slices' `mem_min`
+declarations on the same host are unaffected. A missing
+`memory_recursiveprot` mount flag invalidates EVERY declared `mem_min` on
+the ENTIRE host at once, silently, regardless of how adequate any
+individual ancestor chain reports — a host-wide condition deserves the
+stronger default, the per-slice one does not. State this distinction in
+the S15.22 doc text (Part F) too, not just here.
+
 ## Part C — CIU-94(b): admission control
 
 ```python
@@ -193,6 +206,16 @@ def check_mem_min_admission(
     slice_name: str, candidate_bytes: int, *, cgroup_root: Path = CGROUP_ROOT,
 ) -> tuple[bool | None, str]:
     """Admission decision for ONE candidate about to start under slice_name.
+
+    Gated FIRST by _systemd_is_pid1(), BEFORE either the ceiling read or
+    enumerate_slice_children() -- `_read_memory_min_bytes` itself does not
+    gate (Part A's own contract: callers must gate first), so this function
+    checking host-rootedness only AFTER already reading the ceiling would
+    silently read the devcontainer's own namespace-local cgroup tree instead
+    of aborting, reintroducing the exact false-signal hazard Part 0 exists
+    to prevent. Match Parts A/B/D's identical "gate first, no filesystem
+    access attempted otherwise" shape and test idiom -- do not special-case
+    this one function's ordering.
 
     Ceiling = slice_name's OWN live memory.min
     (_read_memory_min_bytes(slice_cgroup_path(slice_name))) -- reused
@@ -225,9 +248,19 @@ check both live in `deploy.py` precisely so host-state checks stay out of
 the render pipeline (`composefile.py` does no live host probing by design).
 A multi-service stack landing on a guaranteed slice will under-count at
 admission time relative to what Part D actually injects onto each of its
-non-exempt containers. CGROUP-NOTES.md's own motivating cases are
-single-container stacks ("a disposable Postgres", "sql-mutation-gate") —
-reasonable v1 scope, but must be named, not discovered later.
+non-exempt containers — the real consequence is not merely a wrong number in
+a log line: since Part D applies the identical declared `mem_min` to EVERY
+non-exempt service, a stack that clears admission at 1× its declared claim
+actually claims N× that once running, diluting the kernel's proportional
+protection for every OTHER occupant of the same guaranteed slice, not just
+itself. This degrades gracefully (the same proportional-overcommit
+tolerance CGROUP-NOTES.md already accepts for the concurrent-admission
+race) rather than crashing anything, so it does not block the design — but
+say so plainly in the S15.23 doc text (Part F): "dilutes protection for
+every occupant of the slice," not merely "under-counts." CGROUP-NOTES.md's
+own motivating cases are single-container stacks ("a disposable Postgres",
+"sql-mutation-gate") — reasonable v1 scope, but must be named, not
+discovered later.
 
 **Call site:** new function `mem_min_admission_check(repo_root, entry,
 rendered, config)` in `deploy.py`, called from `action_deploy`'s existing
@@ -297,7 +330,14 @@ non-exempt service" precedent for `mem_limit`/`mem_reservation`).
 
 Guarded only by `if not dry_run:` (nothing to inject onto in dry-run) — NOT
 by `no_preflight` (that flag skips static gates; it does not disable
-governance injection itself).
+governance injection itself). Consequence worth stating explicitly: under
+`--no-preflight`, both the format-validating preflight (existing S15.16
+check) and Part C's admission check are skipped, but this function still
+runs and still calls `parse_size_to_bytes(mem_min_raw)` itself — a
+malformed `mem_min` string reaches THIS call site instead, post-`_run_stack`
+with the container already running, and still raises unconditionally (reuse
+`parse_size_to_bytes` as-is; do not swallow or downgrade its exception here
+just because the container already started).
 
 **Severity:** `severity="WARN"`, tagged `[S15.23]` — deliberately the
 opposite of Part C's ERROR. The deploy has already succeeded by this call
@@ -313,6 +353,7 @@ condition.
 | `check_mem_min_admission` → `mem_min_admission_check` | sum(live siblings) + candidate > slice's live ceiling | `warn_policy.warn_or_raise(severity="ERROR")` | raises | 2 |
 | `set_scope_memory_min` → `apply_mem_min_injections` | `systemctl set-property` fails | `warn_policy.warn_or_raise(severity="WARN")` | logs, no raise | n/a unless `ciu.exit_on=WARN` |
 | `parse_size_to_bytes` (existing, reused) | malformed `mem_min` string | unconditional `raise ValueError` | always raises | 2 |
+| `parse_size_to_bytes` reused inside `apply_mem_min_injections`, under `--no-preflight` | same malformed string, but preflight/admission were skipped so this is the first parse attempt | unconditional `raise ValueError` | always raises, post-`_run_stack` (container already running) | 2 |
 
 No new exit-code plumbing anywhere — every new `ValueError` propagates
 through `deploy.main` → `engine._exit_code_for` unchanged.
@@ -322,9 +363,15 @@ through `deploy.main` → `engine._exit_code_for` unchanged.
 - New `docs/SPEC.md` **S15.22** (`memory_recursiveprot` check + downward
   slice enumeration, CIU-95) and **S15.23** (per-container `memory.min`
   injection and admission control, CIU-94), inserted before "Appendix A"
-  (~line 3568), mirroring S15.21's shape/length. S15.23 must document the
-  "one claim per stack, not per compose service" granularity caveat from
-  Part C explicitly — do not let it become an undocumented gap.
+  (~line 3568), mirroring S15.21's shape/length.
+  - S15.22 must state the ERROR-vs-WARN blast-radius distinction from Part
+    B explicitly: a missing `memory_recursiveprot` invalidates every
+    declared `mem_min` host-wide at once, unlike the existing per-slice
+    ancestor-chain-inadequate WARN it sits next to.
+  - S15.23 must document the "one claim per stack, not per compose
+    service" granularity caveat from Part C using the "dilutes protection
+    for every occupant of the slice" phrasing (not merely "under-counts")
+    — do not let either become an undocumented gap.
 - **New `docs/DESIGN-NOTES.md` D9** — the most important doc debt in this
   package, more than the SPEC numbering. It must narrow D2's "verify-only,
   forever" framing: CIU-94(a) is the first write, but a maximally narrow
@@ -407,7 +454,13 @@ testability win):
   implementation, confirm a dedicated exactly-full-slice test (candidate
   brings the sum to EXACTLY the ceiling) flips from admit to reject — an
   exactly-full slice must admit, mirroring `check_slice_memory_min`'s
-  existing `test_exactly_equal_is_adequate`.
+  existing `test_exactly_equal_is_adequate`. **Also required, mirroring the
+  other three new test classes:** not host-rooted → `(None, ...)`, and
+  assert NEITHER the ceiling file NOR `enumerate_slice_children` was
+  touched (monkeypatch `Path.read_text` and `enumerate_slice_children`
+  itself to both raise `AssertionError` if called) — this is the test that
+  actually pins the gating-order requirement in this function's own
+  docstring above (Part C).
 - `TestCheckMemoryRecursiveprot` — fake `/proc/mounts` content with/without
   the flag on the `cgroup2` line; no cgroup2 line at all → `(None, ...)`;
   not host-rooted → `(None, ...)` without reading the file (monkeypatched
@@ -447,16 +500,39 @@ New tests in `tests/tests/test_ciu_deploy_actions.py` (reuse the existing
   config (deliberate asymmetry with the admission-control test above —
   WARN, not ERROR).
 
-**Live verification, mirroring CIU-90/ciu-P49's own method (its whole
-finding was a `docker inspect` value, not a config-shape assertion — close
-the loop the same way):** after the fix, on a host that actually has
-`dev-memory_min_guaranteed.slice` provisioned (or a scratch slice you
-create for the test — do not require a specific operator's host), bring up
-a real governed test-repo service with `governance.mem_min` configured and
-confirm via `systemctl show <scope> --property=MemoryMin` that the value
-was actually applied to the container's own scope, AND that starting a
-second candidate whose claim would exceed the slice's ceiling is genuinely
-refused (not just asserted in a mock).
+**`test-repo/` fixture (in scope — needed for the unit suite above, not
+just for live verification):** add `governance.mem_min` to an existing or
+new `test-repo/` fixture stack, mirroring `ciu-P49` Part B's own "build a
+`test-repo/` fixture" instruction for CIU-90. As of this handoff's writing
+NO fixture under `test-repo/` declares `mem_min` (or `cpus`) at all, and
+there is no CLI/env override for an arbitrary governance TOML key — so any
+test exercising `mem_min_admission_check`/`apply_mem_min_injections`
+against a realistic rendered `entry`/`config` (as opposed to calling
+`governance_mod.check_mem_min_admission`/`set_scope_memory_min` directly,
+already covered above) needs this fixture to exist. Add it to Touch:
+`test-repo/<path-you-choose>` (pick the smallest existing single-container
+fixture stack that doesn't already declare governance in a way this would
+conflict with, or add a new one if none fits — say which in your REPORT).
+
+**Live verification is a POST-MERGE, controller/operator-performed step —
+NOT part of this dispatch's oracle contract.** Part 0 already establishes
+that `_systemd_is_pid1()` is False inside this project's own devcontainer
+(no D-Bus, `CgroupnsMode=private`, cgroup2 mounted `ro`) — unlike CIU-90's
+own live check (a plain `docker inspect` over the shared, DooD-trusted
+`docker.sock`, reachable from inside the devcontainer per D2's own
+analysis), THIS package's mechanism needs genuine host-rooted systemd
+access that your normal dispatch environment does not have and is not
+expected to obtain. Do not attempt to fabricate this step, do not mark it
+skipped-as-if-run, and do not treat its absence as blocking your own
+REPORT — the mutation-tested unit suite above (Parts A-E, run for real
+under this environment) is your actual, complete oracle. State plainly in
+your REPORT that live verification against a real
+`dev-memory_min_guaranteed.slice` (or a scratch slice) is deferred to
+whoever performs the merge with real host access, and leave the exact
+recipe for them: `systemctl show <scope> --property=MemoryMin` on the
+injected container's own scope after a real `ciu deploy`, AND a second
+candidate whose claim would exceed the ceiling genuinely refused (not just
+asserted in a mock).
 
 ---
 
@@ -464,12 +540,15 @@ refused (not just asserted in a mock).
 
 **Touch:** `src/ciu/governance.py`, `src/ciu/deploy.py`,
 `tests/tests/test_ciu_governance.py`, `tests/tests/test_ciu_deploy_actions.py`,
-`docs/SPEC.md`, `docs/DESIGN-NOTES.md`, `docs/CONFIG.md` (only if an existing
-governance worked-example section needs a companion note — check before
-adding a new one), `composefile.py` (comment-only, the one stale line in
-Part F), `CHANGES.md`, `KNOWN_ISSUES_TODO_BACKLOG.md` (flip CIU-94/CIU-95 to
-FIXED at the end, with your own file:line citations — not the
-proposed-contract language they currently carry).
+`test-repo/<path-you-choose>` (the `mem_min` fixture from the Oracles
+section above — a small, targeted addition to an existing or new fixture
+stack, not a restructuring of `test-repo/`), `docs/SPEC.md`,
+`docs/DESIGN-NOTES.md`, `docs/CONFIG.md` (only if an existing governance
+worked-example section needs a companion note — check before adding a new
+one), `composefile.py` (comment-only, the one stale line in Part F),
+`CHANGES.md`, `KNOWN_ISSUES_TODO_BACKLOG.md` (flip CIU-94/CIU-95 to FIXED
+at the end, with your own file:line citations — not the proposed-contract
+language they currently carry).
 
 **Forbid:** `modern-debian-tools-python-debug/` (any path under it —
 host-setup's half is already shipped and out of scope here; a separate
