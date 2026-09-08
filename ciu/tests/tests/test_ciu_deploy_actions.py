@@ -3573,3 +3573,173 @@ def test_apply_mem_min_injections_raises_on_malformed_mem_min(monkeypatch, tmp_p
     monkeypatch.setattr(deploy, "_inspect_state", fail_inspect)
     with pytest.raises(ValueError, match=r"\[S15\.16\]"):
         deploy.apply_mem_min_injections(tmp_path, entry, rendered, _plain_config())
+
+
+def test_mem_min_admission_check_raises_on_malformed_mem_min(monkeypatch, tmp_path):
+    """A typo in the stack's own config is a shape error, not a judgment call:
+    it aborts unconditionally with [S15.16], and never reaches the live
+    admission probe (which would otherwise be asked to compare against a
+    meaningless candidate)."""
+    entry, rendered = _mem_min_entry_rendered("2 gibbibytes")
+
+    def fail_admission(slice_name, candidate):
+        raise AssertionError("a malformed size must abort before the live probe")
+
+    monkeypatch.setattr(deploy.governance_mod, "check_mem_min_admission", fail_admission)
+    with pytest.raises(ValueError) as exc_info:
+        deploy.mem_min_admission_check(tmp_path, entry, rendered, _plain_config())
+    assert "[S15.16]" in str(exc_info.value)
+    assert "applications/app" in str(exc_info.value)
+
+
+def test_apply_mem_min_injections_warns_when_the_rendered_compose_is_unreadable(
+    monkeypatch, tmp_path, capsys,
+):
+    """The compose file is written by `_run_stack` before anything starts, so
+    it should be there — but an unreadable/corrupt one must degrade to a WARN
+    naming the stack, not take down a deploy that already succeeded."""
+    entry, rendered = _mem_min_entry_rendered("128m")
+    stack_dir = tmp_path / "applications/app"
+    stack_dir.mkdir(parents=True)
+    (stack_dir / "ciu.compose.yml").write_text("services: [unclosed\n", encoding="utf-8")
+
+    def fail_inspect(name):
+        raise AssertionError("no container may be inspected when the model cannot be read")
+
+    monkeypatch.setattr(deploy, "_inspect_state", fail_inspect)
+    deploy.apply_mem_min_injections(tmp_path, entry, rendered, _plain_config())  # must not raise
+    out = capsys.readouterr().out
+    assert "[WARN]" in out
+    assert "[S15.23]" in out
+    assert "unreadable" in out
+
+
+def test_apply_mem_min_injections_warns_when_the_compose_declares_no_services(
+    monkeypatch, tmp_path, capsys,
+):
+    entry, rendered = _mem_min_entry_rendered("128m")
+    stack_dir = tmp_path / "applications/app"
+    stack_dir.mkdir(parents=True)
+    (stack_dir / "ciu.compose.yml").write_text("services: {}\n", encoding="utf-8")
+
+    def fail_inspect(name):
+        raise AssertionError("no container may be inspected when there are no services")
+
+    monkeypatch.setattr(deploy, "_inspect_state", fail_inspect)
+    deploy.apply_mem_min_injections(tmp_path, entry, rendered, _plain_config())  # must not raise
+    out = capsys.readouterr().out
+    assert "[WARN]" in out
+    assert "declares no services" in out
+
+
+def test_apply_mem_min_injections_warns_on_a_service_without_a_container_name(
+    monkeypatch, tmp_path, capsys,
+):
+    """Without a concrete container_name there is no way to reach a PID, and
+    therefore no scope to write to. That service is reported and skipped — the
+    stack's OTHER services still get their floor."""
+    entry, rendered = _mem_min_entry_rendered("128m")
+    _write_rendered_compose(tmp_path, "applications/app", {
+        "nameless": {"image": "busybox"},
+        "app": {"container_name": "p-t-app"},
+    })
+
+    monkeypatch.setattr(deploy, "_inspect_state", lambda name: {"Pid": 4242})
+    monkeypatch.setattr(
+        deploy.governance_mod, "container_transient_scope",
+        lambda pid: ("docker-abc.scope", "note"),
+    )
+    applied: list = []
+
+    def record(scope, required):
+        applied.append(scope)
+        return True, "applied"
+
+    monkeypatch.setattr(deploy.governance_mod, "set_scope_memory_min", record)
+    deploy.apply_mem_min_injections(tmp_path, entry, rendered, _plain_config())  # must not raise
+    out = capsys.readouterr().out
+    assert "[WARN]" in out
+    assert "no concrete container_name" in out
+    assert applied == ["docker-abc.scope"]  # the named service was still served
+
+
+# ---------------------------------------------------------------------------
+# S15.23 — the admission check wired into action_deploy's per-entry loop
+# ---------------------------------------------------------------------------
+
+
+def _admission_deploy_profile() -> Profile:
+    return Profile(
+        name=None, phase_keys=None,
+        config=_config_with_phases({
+            "phase_1": {"services": [
+                {"path": "applications/app", "name": "app", "enabled": True, "health": False},
+                {"path": "applications/second", "name": "second", "enabled": True, "health": False},
+            ]},
+            "phase_2": {"services": [
+                {"path": "applications/later", "name": "later", "enabled": True, "health": False},
+            ]},
+        }),
+    )
+
+
+def _admission_rendered() -> dict:
+    gov = {"enabled": True, "cgroup_parent": "dev-memory_min_guaranteed.slice", "mem_min": "128m"}
+    return {
+        "applications/app": {"app": {"governance": dict(gov)}},
+        "applications/second": {"second": {"governance": dict(gov)}},
+        "applications/later": {"later": {"governance": dict(gov)}},
+    }
+
+
+def _patch_admission_deploy(monkeypatch, stub, *, over_ceiling_for: set[str]):
+    _patch_engine(monkeypatch, stub)
+    monkeypatch.setattr(deploy, "provisioning_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "apply_mem_min_injections", lambda *a, **k: None)
+
+    def check(repo_root, entry, rendered, config):
+        if entry["path"] in over_ceiling_for:
+            raise ValueError(f"[S15.23] {entry['path']}: over the ceiling")
+
+    monkeypatch.setattr(deploy, "mem_min_admission_check", check)
+
+
+def test_action_deploy_admission_refusal_never_starts_the_stack_and_stops_the_run(
+    monkeypatch, tmp_path, capsys,
+):
+    """The whole point of admission control is that the container does NOT
+    start: asserting only on the exit code would pass even if the refusal
+    happened after `_run_stack`."""
+    stub = _StubEngine(fail_for=set())
+    _patch_admission_deploy(monkeypatch, stub, over_ceiling_for={"applications/app"})
+
+    rc = deploy.action_deploy(
+        tmp_path, _admission_deploy_profile(),
+        deploy.build_selection(_admission_deploy_profile()),
+        dry_run=False, ignore_errors=False, health_after_phase=False,
+        update_cert_permission=False, rendered=_admission_rendered(),
+    )
+
+    assert rc != 0
+    # Neither the refused stack nor anything after it was started.
+    assert [call["name"] for call in stub.calls] == []
+    assert "[S15.23]" in capsys.readouterr().out
+
+
+def test_action_deploy_admission_refusal_with_ignore_errors_still_starts_the_others(
+    monkeypatch, tmp_path,
+):
+    """--ignore-errors keeps the run going (the return is still nonzero), so a
+    refusal scoped to one stack must not take the rest of the phase with it."""
+    stub = _StubEngine(fail_for=set())
+    _patch_admission_deploy(monkeypatch, stub, over_ceiling_for={"applications/app"})
+
+    rc = deploy.action_deploy(
+        tmp_path, _admission_deploy_profile(),
+        deploy.build_selection(_admission_deploy_profile()),
+        dry_run=False, ignore_errors=True, health_after_phase=False,
+        update_cert_permission=False, rendered=_admission_rendered(),
+    )
+
+    assert rc != 0
+    assert [call["name"] for call in stub.calls] == ["second", "later"]

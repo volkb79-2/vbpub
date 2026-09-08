@@ -1504,6 +1504,20 @@ class TestEnumerateSliceChildren:
         )
         assert children == [("docker-c.scope", 0)]
 
+    def test_unparseable_memory_min_counts_as_zero(self, tmp_path: Path) -> None:
+        """cgroupfs normally holds an integer or "max", but a non-cgroup
+        directory that merely happens to contain a `memory.min` file must not
+        crash the walk — "cannot tell" is the same answer as "no floor" for
+        the only question this value is ever used to answer."""
+        slice_dir = tmp_path / "dev.slice" / "dev-memory_min_guaranteed.slice"
+        child = slice_dir / "docker-junk.scope"
+        child.mkdir(parents=True)
+        (child / "memory.min").write_text("not-a-number", encoding="utf-8")
+        children, _ = gov.enumerate_slice_children(
+            "dev-memory_min_guaranteed.slice", cgroup_root=tmp_path
+        )
+        assert children == [("docker-junk.scope", 0)]
+
     def test_absent_slice_directory_is_a_definitive_empty_not_an_abstention(
         self, tmp_path: Path
     ) -> None:
@@ -1606,6 +1620,20 @@ class TestCheckMemoryRecursiveprot:
         present, note = gov.check_memory_recursiveprot()
         assert present is None
         assert "not a cgroup-v2 host" in note
+
+    def test_unreadable_proc_mounts_abstains_rather_than_accusing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If /proc/mounts cannot be read at all, the flag's state is unknown.
+        Reporting False there would abort a deploy over a question that was
+        never actually answered."""
+        def fake_read_text(self, *a, **k):
+            raise OSError("Permission denied")
+
+        monkeypatch.setattr(Path, "read_text", fake_read_text)
+        present, note = gov.check_memory_recursiveprot()
+        assert present is None
+        assert "could not read /proc/mounts" in note
 
     def test_not_host_rooted_abstains_without_reading_proc_mounts(
         self, monkeypatch: pytest.MonkeyPatch
