@@ -237,9 +237,20 @@ def _resolve_base(repo: str, base: str) -> str:
 
 
 def _git_added_lines(repo: str, base_rev: str, source: str) -> dict[str, set[int]]:
+    # RG-40: diff against the WORKING TREE, not HEAD. The coverage.json this
+    # gate cross-references is generated from whatever bytes are actually on
+    # disk (`--allow-dirty` runs the suite there directly) -- diffing against
+    # committed HEAD instead reports added-line numbers for a DIFFERENT set
+    # of bytes than the ones coverage was measured against, offset by
+    # whatever the working tree added above them (measured live: the same
+    # code read 175/177 (98.9%) dirty vs 153/153 (100.0%) once committed).
+    # A single-ref `git diff <base_rev>` compares base_rev to the working
+    # tree directly (staged + unstaged), which is byte-identical to `base_rev
+    # HEAD` on a CLEAN tree (working tree == HEAD there) and correct on a
+    # dirty one -- unconditional, no dirty/clean branch to keep in sync.
     out = _git(
         repo,
-        ["diff", "--relative", "--unified=0", base_rev, "HEAD", "--", source],
+        ["diff", "--relative", "--unified=0", base_rev, "--", source],
     )
     return parse_added_lines(out)
 
