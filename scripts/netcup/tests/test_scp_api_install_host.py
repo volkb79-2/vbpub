@@ -791,5 +791,71 @@ def test_parse_args_accepts_login_and_configure_commands(install_host_mod, monke
     assert install_host_mod.parse_args().command == "login"
     monkeypatch.setattr("sys.argv", ["scp-api-install-host.py", "configure"])
     assert install_host_mod.parse_args().command == "configure"
+    monkeypatch.setattr("sys.argv", ["scp-api-install-host.py", "build-customscript"])
+    assert install_host_mod.parse_args().command == "build-customscript"
     monkeypatch.setattr("sys.argv", ["scp-api-install-host.py"])
     assert install_host_mod.parse_args().command is None
+
+
+# --- build-customscript wizard -----------------------------------------------
+
+
+def test_build_customscript_expands_every_placeholder(install_host_mod):
+    snippet = install_host_mod._build_customscript(
+        auto_reboot_after_stage1=True,
+        never_reboot=False,
+        telegram_bot_token="123:tok",
+        telegram_chat_id="-100555",
+        controller_pubkey="ssh-ed25519 AAAAtest vbpub-controller-ephemeral",
+    )
+    assert "{{" not in snippet and "}}" not in snippet
+    assert "AUTO_REBOOT_AFTER_STAGE1=yes" in snippet
+    assert "NEVER_REBOOT=no" in snippet
+    assert "TELEGRAM_BOT_TOKEN=123:tok" in snippet
+    assert "TELEGRAM_CHAT_ID=-100555" in snippet
+    assert "CONTROLLER_SSH_PUBKEY='ssh-ed25519 AAAAtest vbpub-controller-ephemeral'" in snippet
+    assert snippet.startswith("curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/")
+    assert snippet.endswith("python3 -")
+
+
+def test_build_customscript_omits_blank_optional_fields(install_host_mod):
+    snippet = install_host_mod._build_customscript(
+        auto_reboot_after_stage1=False,
+        never_reboot=True,
+        telegram_bot_token="",
+        telegram_chat_id="",
+        controller_pubkey="",
+    )
+    assert "AUTO_REBOOT_AFTER_STAGE1=no" in snippet
+    assert "NEVER_REBOOT=yes" in snippet
+    assert "TELEGRAM_BOT_TOKEN" not in snippet
+    assert "TELEGRAM_CHAT_ID" not in snippet
+    assert "CONTROLLER_SSH_PUBKEY" not in snippet
+
+
+def test_run_build_customscript_prints_snippet_without_ssh_key(install_host_mod, capsys, monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: "n")  # decline every yes/no, blank every text
+    rc = install_host_mod._run_build_customscript()
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "curl -fsSL" in out
+    assert "CONTROLLER_SSH_PUBKEY" not in out
+
+
+def test_run_build_customscript_includes_generated_ssh_key(install_host_mod, tmp_path, monkeypatch, capsys):
+    responses = iter(["y", "n", "", "", "y"])  # auto_reboot, never_reboot, tg token, tg chat, include ssh key
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: next(responses))
+    monkeypatch.setattr(install_host_mod, "SERVER_NAME", "test-server")
+    identity_path = tmp_path / "id_ed25519"
+    monkeypatch.setattr(install_host_mod, "SETTINGS", {
+        **install_host_mod.SETTINGS,
+        "ssh.identity_file": str(identity_path),
+        "ssh.controller_fqdn": "controller.example.com",  # avoid a real network call via "automatic"
+    })
+    monkeypatch.setattr(install_host_mod, "_render_identity_file_path", lambda template, server: str(identity_path))
+
+    rc = install_host_mod._run_build_customscript()
+    assert rc == 0
+    assert identity_path.exists()
+    out = capsys.readouterr().out
+    assert "CONTROLLER_SSH_PUBKEY='ssh-ed25519" in out

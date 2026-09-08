@@ -789,6 +789,11 @@ Commands (positional, optional; default is the install flow below):
                        defaults) for $NETCUP_SCP_API_SERVER_NAME and save
                        them as scripts/netcup/default-recipe.jsonc, used as
                        the base for every future interactive-gather install.
+  build-customscript  Interactive wizard: build a ready-to-paste customScript
+                       snippet (no Netcup API calls) for manual use in a
+                       web-hoster's own management UI - covers
+                       AUTO_REBOOT_AFTER_STAGE1/NEVER_REBOOT/TELEGRAM_BOT_TOKEN/
+                       TELEGRAM_CHAT_ID/CONTROLLER_SSH_PUBKEY only.
 
 Modes (pick one; default is interactive gather+install):
   (no mode flags)     Interactive: gather info for $NETCUP_SCP_API_SERVER_NAME, prompt, install.
@@ -843,7 +848,7 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("login", "configure"),
+        choices=("login", "configure", "build-customscript"),
         default=None,
         help="Optional one-shot command; omit for the normal install flow (see Modes above).",
     )
@@ -1714,6 +1719,82 @@ def _run_configure(client: "NetcupSCPClient") -> int:
     return 0
 
 
+_CUSTOMSCRIPT_BASE_URL = (
+    "https://raw.githubusercontent.com/volkb79-2/vbpub/main/scripts/debian-install-v2/bootstrap-remote.py"
+)
+
+
+def _build_customscript(
+    *,
+    auto_reboot_after_stage1: bool,
+    never_reboot: bool,
+    telegram_bot_token: str,
+    telegram_chat_id: str,
+    controller_pubkey: str,
+) -> str:
+    """Build a fully-expanded (no {{PLACEHOLDER}} tokens), one-line
+    customScript shell command - the same shape as
+    INSTALLATION_CONFIG["customScript"], but with every value already
+    resolved to a literal. This script's own API-driven install path
+    resolves {{PLACEHOLDER}} tokens itself (_expand_payload_placeholders);
+    a human pasting this into a web-hoster's own reinstall dialog has no
+    such resolution step available, so nothing here can be a placeholder.
+    """
+    env_parts = [
+        f"AUTO_REBOOT_AFTER_STAGE1={'yes' if auto_reboot_after_stage1 else 'no'}",
+        f"NEVER_REBOOT={'yes' if never_reboot else 'no'}",
+    ]
+    if telegram_bot_token:
+        env_parts.append(f"TELEGRAM_BOT_TOKEN={telegram_bot_token}")
+    if telegram_chat_id:
+        env_parts.append(f"TELEGRAM_CHAT_ID={telegram_chat_id}")
+    if controller_pubkey:
+        env_parts.append(f"CONTROLLER_SSH_PUBKEY='{controller_pubkey}'")
+    return f"curl -fsSL {_CUSTOMSCRIPT_BASE_URL} | " + " ".join(env_parts) + " python3 -"
+
+
+def _run_build_customscript() -> int:
+    """Interactive wizard: build a ready-to-paste customScript snippet for
+    manual use in a web-hoster's own management UI (e.g. netcup SCP's
+    server-reinstall dialog) - covers only the handful of settings
+    INSTALLATION_CONFIG's own customScript template already parameterizes
+    today (AUTO_REBOOT_AFTER_STAGE1, NEVER_REBOOT, TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID, CONTROLLER_SSH_PUBKEY) - not the full ~25 env vars
+    bootstrap-remote.py documents. For anything else, append your own
+    KEY=VALUE pairs (or VBPUB_CONFIG_EXTRA_JSON=...) to the printed snippet
+    by hand before the trailing `python3 -`.
+    """
+    print("=" * 70)
+    print("BUILD CUSTOMSCRIPT (for pasting into a web-hoster management UI)")
+    print("=" * 70)
+
+    auto_reboot = _prompt_yes_no("Auto-reboot after stage1?", True)
+    never_reboot = _prompt_yes_no("Never reboot (overrides the reboot schedule entirely)?", False)
+    telegram_bot_token = _prompt_text("Telegram bot token (blank to skip)", os.environ.get("TELEGRAM_BOT_TOKEN", ""))
+    telegram_chat_id = _prompt_text("Telegram chat id (blank to skip)", os.environ.get("TELEGRAM_CHAT_ID", ""))
+
+    controller_pubkey = ""
+    if _prompt_yes_no("Include a controller SSH key (for early/reliable SSH monitoring access)?", True):
+        identity_template = os.environ.get("NETCUP_SCP_API_SSH_IDENTITY_FILE", SETTINGS["ssh.identity_file"])
+        identity_file = _render_identity_file_path(identity_template, SERVER_NAME)
+        _ensure_local_identity_file_exists(identity_file, SETTINGS["ssh.controller_fqdn"])
+        controller_pubkey = _read_public_key_for_identity(identity_file)
+
+    snippet = _build_customscript(
+        auto_reboot_after_stage1=auto_reboot,
+        never_reboot=never_reboot,
+        telegram_bot_token=telegram_bot_token,
+        telegram_chat_id=telegram_chat_id,
+        controller_pubkey=controller_pubkey,
+    )
+    print()
+    print("Paste this into the customScript field:")
+    print("-" * 70)
+    print(snippet)
+    print("-" * 70)
+    return 0
+
+
 class NetcupSCPClient:
     def __init__(self, access_token: str, refresh_token: Optional[str] = None):
         self.base_url = BASE_URL
@@ -2211,6 +2292,11 @@ def main():
 
     if getattr(args, "command", None) == "login":
         sys.exit(_run_login(_resolve_env_path()))
+
+    if getattr(args, "command", None) == "build-customscript":
+        # Purely local (identity-file generation only) - no Netcup API call,
+        # no refresh token needed, unlike configure.
+        sys.exit(_run_build_customscript())
 
     attach_only = getattr(args, "attach_only", False)
     if getattr(args, "ssh_identity_file", None):
