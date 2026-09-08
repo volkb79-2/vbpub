@@ -60,6 +60,54 @@ else
   warn "dev.slice cgroup absent (no member started yet)"
 fi
 
+echo "== dev-memory_min_guaranteed.slice (opt-in memory.min tier) =="
+# CGROUP-NOTES.md "the one invariant that actually matters": dev.slice's own
+# MemoryMin must equal dev-memory_min_guaranteed.slice's own, EXACTLY. Any
+# surplus at dev.slice beyond what the guaranteed tier claims is handed down
+# by cgroup v2's proportional redistribution to dev-interactive.slice and
+# dev-background.slice too — recreating the exact leak the guaranteed tier
+# exists to prevent, one level up, and silently: `systemctl show` reports
+# both values happily and nothing else notices they have drifted apart.
+# Both are rendered from the SAME DEV_MEMORY_MIN_GUARANTEED_CEILING var, so
+# a mismatch means a hand-edited unit, a partial install, or a stale
+# /etc/systemd/system copy from before a config change.
+gmin=$(systemctl show dev-memory_min_guaranteed.slice -p MemoryMin --value 2>/dev/null)
+gfp=$(systemctl show dev-memory_min_guaranteed.slice -p FragmentPath --value 2>/dev/null)
+case "${gmin:-0}" in
+  0|""|"[not set]") gmin_set=0 ;;
+  *) gmin_set=1 ;;
+esac
+if [ -z "$gfp" ] || [ "$gmin_set" = 0 ]; then
+  # install.sh's render() DROPS a directive whose value resolves to empty, so
+  # an unset DEV_MEMORY_MIN_GUARANTEED_CEILING leaves both slices without a
+  # MemoryMin at all. That is the shipped default and the expected state on
+  # most hosts — the mechanism is opt-in per container, so not opting in is
+  # not a finding. BUT the two units render from the same var and must drift
+  # together — if dev.slice's own MemoryMin is somehow set nonzero while the
+  # guaranteed tier's is unset, that is the maximal form of the exact leak
+  # this check exists to catch (ALL of dev.slice's floor redistributes to
+  # dev-interactive/dev-background, none of it reaches the guaranteed tier),
+  # so check dev.slice too rather than assuming "guaranteed tier unset" means
+  # "mechanism fully inert".
+  dmin=$(systemctl show dev.slice -p MemoryMin --value 2>/dev/null)
+  case "${dmin:-0}" in
+    0|""|"[not set]") dmin_set=0 ;;
+    *) dmin_set=1 ;;
+  esac
+  if [ "$dmin_set" = 1 ]; then
+    fail "MemoryMin MISMATCH: dev.slice=$dmin vs dev-memory_min_guaranteed.slice=<unset> — dev.slice has a floor but the guaranteed tier does not, so the ENTIRE surplus redistributes to dev-interactive.slice/dev-background.slice (the leak the guaranteed tier exists to prevent) and the guaranteed tier's own floor is silently inert. Fix: set DEV_MEMORY_MIN_GUARANTEED_CEILING in $CONF and re-run install.sh (both units render from that one var)"
+  else
+    ok "inert (unit not installed or MemoryMin unset on both slices — the mechanism is opt-in, this is the default and expected state on most hosts)"
+  fi
+else
+  dmin=$(systemctl show dev.slice -p MemoryMin --value 2>/dev/null)
+  if [ "$dmin" = "$gmin" ]; then
+    ok "MemoryMin pinned equal on dev.slice and dev-memory_min_guaranteed.slice ($gmin) — no protection leaks to dev-interactive/dev-background"
+  else
+    fail "MemoryMin MISMATCH: dev.slice=${dmin:-<unset>} vs dev-memory_min_guaranteed.slice=$gmin — these MUST be exactly equal. If dev.slice is HIGHER, the surplus redistributes to dev-interactive.slice/dev-background.slice (the leak the guaranteed tier exists to prevent); if LOWER, the guaranteed tier's own floor is silently inert. Fix: set DEV_MEMORY_MIN_GUARANTEED_CEILING in $CONF and re-run install.sh (both units render from that one var)"
+  fi
+fi
+
 echo "== docker-.scope.d default-limits backstop (D-G8) =="
 if [ -f /etc/systemd/system/docker-.scope.d/50-default-limits.conf ]; then
   ok "backstop drop-in installed"
