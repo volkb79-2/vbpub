@@ -1300,7 +1300,8 @@ def test_send_mattermost_posts_the_translated_payload():
     assert "title" not in body
 
 
-def test_send_mattermost_non_200_is_a_failure():
+def test_send_mattermost_server_error_is_a_failure():
+    """A 5xx: urllib raises HTTPError, so this drives the fault branch."""
     url, _captured, finish = _one_shot_server(status=500)
     nc = NotifyConfig(backend="mattermost", webhook_url=f"{url}/hooks/abc123")
 
@@ -1309,6 +1310,37 @@ def test_send_mattermost_non_200_is_a_failure():
 
     assert ok is False
     assert "mattermost" in detail
+
+
+def test_send_mattermost_2xx_non_200_is_a_failure():
+    """A 2xx that is not 200 does NOT raise, so it is the only way to reach
+    the explicit non-200 branch (the same shape as the ntfy/webhook 2xx tests
+    above). Mattermost answers a good post with exactly 200; anything else is
+    not a delivery we can claim succeeded."""
+    url, _captured, finish = _one_shot_server(status=202)
+    nc = NotifyConfig(backend="mattermost", webhook_url=f"{url}/hooks/abc123")
+
+    ok, detail = send(nc, _NOTE)
+    finish()
+
+    assert ok is False
+    assert detail == "mattermost returned 202"
+
+
+def test_notify_backend_base_class_demands_all_three_methods():
+    """The seam's contract: a backend that forgets one of the three methods
+    fails loudly at the call site rather than silently doing nothing (a
+    half-implemented Telegram/Discord backend later is the real case)."""
+    from nyxloom.notify import NotifyBackend
+
+    incomplete = NotifyBackend()
+    nc = NotifyConfig(webhook_url="http://x")
+    with pytest.raises(NotImplementedError):
+        incomplete.is_configured(nc)
+    with pytest.raises(NotImplementedError):
+        incomplete.deliver(nc, _NOTE)
+    with pytest.raises(NotImplementedError):
+        incomplete.probe(nc, timeout=1.0)
 
 
 def test_send_mattermost_transport_fault_never_raises_and_names_the_channel():
