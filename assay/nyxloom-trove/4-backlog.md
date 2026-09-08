@@ -8237,3 +8237,219 @@ Not a design, just the questions a v12 A-row would have to answer:
 - [ ] a real report carrying a genuine `RuntimeError` mutant, committed with
       its recipe in `tests/fixtures/mutation/PROVENANCE.md`, or an explicit
       A-row recording that no such run could be produced and what that costs.
+
+## B080 — an istanbul `default-arg` branch sits on the function-SIGNATURE line, which the `javascript` adapter's own documented guarantee leaves unattributed — so `FileCoverage`'s "no branch line outside `executed | missing`" invariant refuses a fully-executed file whose arc count is genuinely non-zero
+
+**Proposed by:** dstdns, 2026-09-08, out of the P176 (`ui-design-system-primitives`)
+phase-2 code review and the P177 code review that inherited its consequence.
+**Provenance:** `dstdns/nyxloom-trove/decisions.md` **D-423** (the originating
+finding: `run-gate ui_unit --worktree .../p177-run-lifecycle-gateway --base 5b34ecf5`
+returned FAIL because "4 FILES' branch-arc records self-contradict", all four
+being P176's already-merged components, untouched by P177's own diff) and
+**D-422** (the same session's container-contention lesson, which is what
+established the run was clean). Root cause below was diagnosed afterwards, in
+`dstdns/nyxloom-trove/archive/dstdns-P176-code-review-phase2-r1.md`'s follow-up —
+D-423 recorded the symptom and explicitly left "why these 4 components'
+coverage instrumentation self-contradicts" as an open future look. This entry
+closes that question.
+
+**Observed against assay 5.2.0** (the version dstdns pins), i.e. *after*
+[B054](#b054)'s fix ("a self-contradictory istanbul `branchMap` is one file's
+defect, not the verdict's", `vbpub@c37ca3fb`, shipped in 5.0.0) was already in
+the build. See "Relationship to B054" below — this is a different mechanism,
+not a reopening, but the interaction is worth the maintainer's eye.
+
+### The mechanism, confirmed in assay's own source AND live
+
+Two statements inside assay contradict each other for one specific istanbul
+branch type.
+
+**(1) The `javascript` adapter documents signature lines as legitimately
+unattributed.** `src/assay/adapters/javascript.py:44-52` (A-342, corrected by
+the round-1 review's M2) states the guarantee exactly, and names this case:
+
+> It is NOT "no line of a measured file is unattributed" — that is false, and
+> measured false: in the committed `@vitest/coverage-istanbul` artifact 23
+> non-comment lines across six files sit in neither `executed` nor `missing`,
+> because that instrumenter **records no statement for a function's own
+> signature line**, for a function-level closing brace, or for a `const x =`
+> line whose recorded statement is its initialiser.
+
+**(2) `FileCoverage` hard-raises when a BRANCH lands on such a line.**
+`src/assay/coverage_parsers/model.py:426-430`:
+
+```python
+unconsidered = branch_lines - (self.executed | self.missing)
+if unconsidered:
+    raise ValueError(
+        f"FileCoverage.branches has line(s) "
+        f"{sorted(unconsidered)} that are in neither .executed "
+        f"nor .missing"
+    )
+```
+
+**The collision:** istanbul emits a `default-arg` branch node for every
+defaulted parameter, and places that node's `loc` on the **function signature
+line** — precisely the line (1) has already blessed as carrying no statement.
+So any function with a defaulted parameter puts a branch on an unattributed
+line, and (2) refuses the record. The two invariants cannot both hold for any
+JavaScript/TypeScript file that uses a default parameter value.
+
+This is not a coverage gap wearing a parser's clothes: **every one of these
+arcs has a genuine non-zero hit count.** The file ran, the default was
+exercised, the number is real and correct — assay refuses to read it.
+
+### Live specimens (dstdns `main`, `applications/webapp-ui-react/`)
+
+Reproduced from a `coverage-final.json` produced by
+`run-gate frontend-coverage-direct` (`@vitest/coverage-istanbul` 3.2.7,
+`provider: 'istanbul'`), read directly. All four files are fully executed by
+the suite; all six branch nodes are `type: "default-arg"` with non-zero counts:
+
+| file:line | defaulted parameter | `b` counts |
+|---|---|---|
+| `src/components/ChartCard.tsx:34` | `height = 320` | `[9]` |
+| `src/components/StatCard.tsx:17` | `color = 'blue'` | `[1]` |
+| `src/components/StatTile.tsx:28` | `color = 'blue'` | `[7]` |
+| `src/components/DataTable.tsx:33` | `pageParamKey = 'page'` | `[6]` |
+| `src/components/DataTable.tsx:34` | `pageSizeParamKey = 'per_page'` | `[6]` |
+| `src/components/DataTable.tsx:35` | `defaultPageSize = 20` | `[6]` |
+
+All six are destructured-object parameters with defaults, e.g.
+`export function StatTile({ label, value, ..., color = 'blue' }: StatTileProps)`.
+Reproducing assay's own invariant over that artifact (derive `executed`/`missing`
+from `statementMap` + `s`, then take `branch_lines - (executed | missing)`)
+yields exactly those lines and no others, in exactly those four files — the same
+four D-423 names, independently arrived at.
+
+**Latent tripwire:** `src/routes/domains/tabs/TimelineTab.tsx` has the same
+shape and is currently outside that project's `coverage.include`, so it does
+not trip today and will the moment the include list widens. The trigger is a
+completely ordinary TS/React idiom, so the population is "every component with
+an optional prop that has a default" — this will recur for any JS consumer,
+not just dstdns.
+
+### Why assay owns this, not the consumer
+
+The consumer cannot fix it without deforming its own source. The three
+consumer-side "fixes" are all worse than the defect:
+
+- **Delete the default values** — change shipped runtime behavior to satisfy a
+  measurement tool.
+- **Narrow `coverage.include` to exclude those files** — the B054 workaround,
+  but here it excludes *fully-tested files that are the very subject of the
+  diff being judged*, which is the coverage gate deleting its own evidence.
+  (B054's workaround was tolerable precisely because the offending file was
+  never executed and never in the diff; that escape hatch does not exist here.)
+- **Switch the producer to `v8`** — gives up branch arcs entirely, i.e. gives
+  up `require_branch`, which is the whole point of the lane.
+
+Meanwhile the fix inside assay is small and local, and the adapter has
+*already made the ruling* the model contradicts. This is an internal
+inconsistency between two assay components, both of which are assay's.
+
+### Proposed contract (not pre-decided; the carver's call between two shapes)
+
+**Shape A — teach the invariant about unattributed-but-legitimate lines
+(preferred).** The invariant's real intent is "a branch line must not be
+*unclassifiable*", and its sibling check immediately below it
+(`tampered_missing`: "a line that never ran cannot have taken an arc") is the
+one doing the actual integrity work. Relax invariant 3 so a branch line that is
+outside `executed | missing` but carries a **non-zero** covered-arc count is
+accepted and classified as executed — a line that demonstrably took an arc did
+run, whatever the statement map failed to say. Keep the refusal for a branch
+line outside `executed | missing` with a **zero** count, which is genuinely
+unclassifiable and should still fail closed.
+
+**Shape B — attribute the signature line in the istanbul parser.** When a
+`default-arg` (or any) branch node's line is absent from the statement-derived
+classification, fold it into `executed`/`missing` from the arc counts at parse
+time, so `FileCoverage` receives an already-consistent record and invariant 3
+stays absolute. Narrower blast radius on the model; puts format-specific
+knowledge in the format-specific parser, which is where §11 says it belongs.
+
+Either way the refusal states should stay explicit: this must not become a
+silent widening that lets a genuinely inconsistent artifact through.
+
+### Behavioral oracles (including the controlled wrong implementation)
+
+1. **The real specimen parses.** A fixture istanbul document with a
+   `default-arg` branch on a line absent from `statementMap`, non-zero count →
+   `FileCoverage` constructs, that line classifies as executed, and the arc
+   counts toward `require_branch`. Assert the arc is *counted*, not merely
+   tolerated — a fix that drops the arc silently trades one wrong number for
+   another.
+2. **Fail-closed half preserved.** Same document, count `[0]` on that branch →
+   still refuses (`UNREADABLE_ARTIFACT`), because nothing establishes the line
+   ran. This is the arm that stops shape A becoming a blanket "ignore
+   inconsistency".
+3. **`tampered_missing` still fires.** A branch line explicitly in `.missing`
+   with a non-zero covered-arc count → still raises. The two checks must remain
+   independently reachable, exactly as the existing comment above invariant 4
+   argues for invariants 3 and 4.
+4. **Controlled wrong implementation.** Implement the fix as "drop invariant 3
+   entirely". Oracles 2 and 3 must go RED. If they stay green, the fix has
+   deleted the integrity check rather than narrowed it — which is the specific
+   failure mode this entry is most at risk of, since the easy patch and the
+   correct patch differ by one condition.
+5. **End-to-end.** A `javascript` lane at `require_branch = true`,
+   `mode = "changed_lines"`, over a source file with a defaulted destructured
+   parameter, produces a real PASS/FAIL verdict with a branch number — not
+   `ERROR`/`UNREADABLE_ARTIFACT`. Today this is the reproduction; after the fix
+   it is the regression test.
+
+### Spec sections that own the behavior
+
+- `docs/DESIGN-GUIDE.md` **§11 "Where language-specificity actually lives"** —
+  the `FileCoverage` / `BranchCoverage(by_line)` contract and the
+  `ARC_BEARING_COVERAGE_PRODUCERS` / declared-producer rules (A-344, B045).
+- `src/assay/adapters/javascript.py:38-62` — the `requires_span_attribution =
+  False` guarantee (A-342/M2) that explicitly blesses unattributed signature
+  lines. Whichever shape is chosen, this paragraph and §11 must end up saying
+  the same thing about a branch on such a line; today they do not.
+- `src/assay/coverage_parsers/model.py:407-444` — the four `FileCoverage`
+  branch invariants, and the ordering comment that keeps 3 and 4 independently
+  reachable.
+
+### Relationship to B054, and to B078 / run-gate RG-45
+
+**Distinct from [B054](#b054)**, which this is *not* a reopening of:
+
+| | B054 | B080 (this) |
+|---|---|---|
+| file state | **never executed** (static instrumentation only) | **fully executed**, real tests, non-zero arcs |
+| construct | braceless single-statement `if` (line 215) | `default-arg` on a destructured parameter |
+| in the judged diff? | no — zero overlap with any changed line | **yes** — these are the package's own changed files |
+| consumer escape hatch | narrow `coverage.include` (viable) | none that isn't self-defeating (see above) |
+| assay-internal status | instrumenter quirk on dead code | **two assay components contradicting each other** |
+
+**One interaction worth the maintainer's eye, reported as an observation
+rather than a claim:** B054's fix ("one file's defect, not the verdict's") was
+already shipped in the 5.2.0 build that produced D-423's FAIL, and in P177's
+run these four files were *not* in the judged diff — so file-level scoping
+might have been expected to absorb them and still yield a verdict. It did not.
+I have not read the B054 fix's code or re-run that lane myself (the P177 result
+is D-423's measurement, not mine), so this may be correct-by-design rather than
+a gap — but if file-scoping is meant to cover this, the P177 run is a
+counter-example worth checking before B080 is carved, since the two fixes would
+then overlap.
+
+**Distinct from [B078](#b078) / run-gate RG-45.** This is the **third**
+distinct mechanism this session by which the `ui_unit` / `frontend-unit` lane
+family refused to produce a usable verdict on this host, and it is the only one
+that is assay's own:
+
+1. **RG-45 / B078** — vitest's internal `birpc` `onTaskUpdate` heartbeat times
+   out and flips the process exit code while 177/177 tests pass. R0 trusts the
+   wrapped exit code. **run-gate's / B078's territory.**
+2. **Host contention** (dstdns D-422) — shared-container `/tmp` contention on a
+   host running production workloads alongside gates. **Environmental.**
+3. **This entry** — assay's own coverage-consistency check refusing a correct,
+   fully-measured artifact. **Squarely assay's, and unlike (1) and (2) it is
+   deterministic**: it reproduces byte-identically on every run, is independent
+   of host load, and will not clear on a retry.
+
+Net consumer impact today: `[lanes.ui_unit]` cannot return a verdict for any
+change touching a component with a defaulted parameter, which on dstdns is the
+whole shipped design-system primitive set. Both P176 and P177 had to be
+dispositioned by disclosure rather than by the lane.
