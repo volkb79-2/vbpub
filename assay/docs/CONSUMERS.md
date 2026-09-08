@@ -349,7 +349,27 @@ skipped; this is a signal of a corrupted or hand-edited state file, not an
 expected outcome of normal use. `schema_version` is the one required field
 NOT folded into the candidate id, so it alone gets the opposite disposition:
 a mismatch there is a routine format bump, not corruption, and is treated as
-an absent record — silently rerun, without failing the lane. To combine shard
+an absent record — silently rerun, without failing the lane.
+
+A record whose `outcome_bucket` is `crashed` additionally carries
+`result_stdout_tail` and `result_stderr_tail`: the bounded final 64 KiB of
+each stream from that candidate's own subprocess, exactly as
+`execute_command` captured it. **`crashed` is the only bucket that gets
+them.** A `killed` or `survived` candidate's meaning is already carried by
+the pass/fail split, so a tail there would be bulk answering no question,
+and those records keep the shape and size they have always had;
+`budget_exceeded` is not wired either. For a `crashed` candidate the tail is
+frequently the entire diagnostic trail — the difference between reading why
+a mutated schema failed to apply and reproducing the exact byte-range
+mutation by hand to find out. An empty string means the stream was empty;
+the field is absent only when no tail was captured at all.
+
+These files are **diagnostic state, not evidence**: they are not verified
+artifacts, `assay verify` never reads them, and nothing in a verdict depends
+on them. Treat their content as untrusted subprocess output — it is whatever
+the lane's own command wrote.
+
+To combine shard
 manifests, every manifest must declare the same
 schema version, lane, commit, and shard count, cover every zero-based index
 exactly once, and contain disjoint candidate IDs whose deterministic
