@@ -29,6 +29,55 @@ is no stale hand-authored block to fold in first. Fold this section into its
 release heading at release time, per the process note above.
 
 ### Added
+- **feat(ciu): CIU-93 — `ciu host enroll`, remote host enrollment (SPEC
+  S14.7, ciu-P52).** S14.1–S14.6 all assumed an inventory row that already
+  worked; getting from a bare host to that row was 100% manual (`ssh-keygen`,
+  out-of-band key distribution, `ssh-keyscan`, a hand-written TOML row). One
+  new verb closes that, in two steps with no token, no callback and no
+  listener. **Step 1** — `ciu host enroll <name>` — generates an ed25519 key
+  pair with the platform's own `ssh-keygen` into the existing S14.3a
+  host-secret namespace (`<repo>/.ciu/secrets/hosts/<name>/ssh_key`, dir
+  `0700`, key `0600`) and PRINTS, writing **no** inventory row, the single
+  command the target's admin runs: ciu's own `get.py` installer pinned to the
+  control host's ciu version, with cmru KI-24's `enroll` subcommand. **Step 2**
+  — the same verb with `--ssh-host ADDR --fingerprint SHA256:…` — keyscans the
+  address, refuses unless a scanned key matches the fingerprint the admin read
+  on the target's console (a TTY may confirm interactively; a non-TTY run
+  without the flag is refused, never a silent TOFU), proves the login by
+  running `ciu version` over the new key with that host key pinned for that ONE
+  connection, and only THEN writes `[deploy.hosts.<name>]`. `--replace` is the
+  rotation path; `--abort` removes a pending step-1 key pair. The private half
+  is generated where it is used and is never printed, logged or transmitted;
+  the printed installer URL is always version-pinned, never `latest`; and
+  `CIU_SSH_INSECURE_TOFU` is never set by this verb under any flag combination
+  — the fingerprint confirmation IS the secure alternative to that hatch.
+  `host` is a verb GROUP (like `worktree`), not a rename of `host-secrets`.
+- **feat(ciu): the first round-trip WRITER for `.ciu.hosts.toml`
+  (`hosts.write_host_row`, ciu-P52).** The inventory file has only ever had a
+  reader. Writing a row is now a targeted, **stdlib-only** edit — no new
+  dependency — that appends a new table at end of file (every prior byte
+  copied verbatim) or, for `--replace`, rewrites only the managed keys inside
+  an existing table's own body, preserving its other keys, its sub-tables and
+  even a trailing comment on a rewritten line. `tomlkit` was considered and
+  rejected: it is absent from both ciu's dependency closure and the gate's
+  `tester-unified:local` image, whose venv is built outside this repo. Three
+  safeguards stand in for what tomlkit would have given: a line scanner that
+  tracks multi-line-string state (so a `[table]`-looking line inside a `"""`
+  value is never mistaken for a header), every header and key spelling handed
+  to `tomllib` itself rather than parsed by hand, and a semantic post-check
+  that REFUSES rather than writing anything it cannot prove is a pure
+  single-row edit. The write is atomic (temp sibling + `os.replace`, file mode
+  preserved). Writing into a file that uses the top-level `[hosts.*]` form
+  keeps that form — writing `[deploy.hosts.*]` there would have made the
+  reader stop seeing every existing row.
+- **feat(ciu): `ciu/get.py` is committed and published as a release asset
+  (ciu-P52).** `cmru.toml` gains `[project.installer]` and its push step gains
+  `--extra-asset get.py`, so the version-pinned
+  `releases/download/ciu-v<version>/get.py` URL step 1 prints actually
+  resolves. **Known gap (CIU-99):** ciu publishes a wheel, not a release
+  *bundle*, so `get.py`'s install step has no asset to resolve for ciu yet —
+  `enroll --no-install` (user + key + fingerprints) is the reachable half
+  until that is fixed. Filed rather than papered over.
 - **feat(ciu): CIU-95 — `memory_recursiveprot` mount-flag check and downward
   slice enumeration (SPEC S15.22, ciu-P50).** `governance.py` could only ever
   walk UPWARD from a slice, and it never checked the one host-wide mount flag

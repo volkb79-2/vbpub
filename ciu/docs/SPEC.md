@@ -2811,6 +2811,21 @@ no callback, no listener; the private key never leaves the control host.
   the addresses it sees (unconfirmed), the user, the installed version and
   the exact step-2 command. It never generates keys, calls back, installs
   packages, runs deploy logic or edits `sshd_config`.
+  **Key-line form (cmru KI-24, measured live):** a `--from` restriction is
+  written `from="PATTERN" <type> <base64> <comment>` — the options field is
+  separated from the key by **whitespace, never a comma**. sshd advances past
+  the options field to the first unquoted whitespace, so a comma-joined line
+  puts the key type inside the options and the key is never read (with
+  `from="*",<key>` a real sshd answered `Permission denied (publickey)`; with
+  `from="*" <key>` the same key authenticated). Any text describing this line
+  — here, in `docs/CIU-HOST-ENROLLMENT-PROPOSAL.md`, or in a consumer's docs —
+  uses the whitespace form.
+  **Install-half status (CIU-99):** ciu's own releases publish a wheel, not a
+  `ciu-v<version>.tar.xz` bundle, so `get.py`'s *install* step has no asset to
+  resolve for ciu yet; `enroll --no-install` (key + user + fingerprints) is the
+  reachable half until CIU-99 ships the bundle. `get.py` itself IS published as
+  a release asset (`cmru.toml`'s `[steps.push] --extra-asset get.py`), so the
+  URL S14.7a prints resolves.
 - **S14.7c Step 2 — `ciu host enroll <name> --ssh-host ADDR --fingerprint
   SHA256:… [--port N] [--user U]`**: keyscans `ADDR`; refuses unless a scanned
   key's SHA256 fingerprint equals `--fingerprint` (the one the admin read on

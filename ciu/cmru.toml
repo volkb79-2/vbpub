@@ -29,6 +29,30 @@ git_tag = true
 build_step = "build"
 artifact_dirs = ["dist"]
 
+# S14.7a / CIU-93 — inputs for `cmru get-py --project ciu`, whose rendered
+# output is committed at `ciu/get.py` and published as a release asset (see
+# [steps.push]'s --extra-asset below). `ciu host enroll` prints
+#   https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/get.py
+# as the target admin's one-liner, so this table is what makes that URL real.
+# NOTE (CIU-99): `asset_suffix`/`wheels` describe the release BUNDLE
+# `get.py install` would download. ciu today publishes only a bare wheel
+# (`[steps.push]` → cmru wheel-publish), so no `ciu-v<version>.tar.xz` asset
+# exists yet and the enroll one-liner's INSTALL half is not reachable until
+# that bundle is built; the key-installation half (`enroll --no-install`)
+# works now. Filed as CIU-99 rather than silently pretending otherwise.
+[project.installer]
+install_dir_system = "/opt/ciu"
+install_dir_user = "ciu"
+asset_suffix = ".tar.xz"
+required_commands = ["python3"]
+preserve = []
+manifest_name = "manifest.json"
+signature_name = "manifest.json.minisig"
+
+[[project.installer.wheels]]
+path = "vendor/ciu-*.whl"
+distribution = "ciu"
+
 [steps.run-tests]
 quiet = true
 commands = [
@@ -44,5 +68,8 @@ commands = [
 [steps.push]
 quiet = true
 commands = [
-  { label = "CIU: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "ciu", "--cwd", ".", "--notes-env", "CIU_RELEASE_NOTES"], cwd = "." },
+  # --extra-asset get.py (S14.7a): the enroll one-liner names
+  # releases/download/ciu-v<version>/get.py, so the committed installer must
+  # ride along on every ciu release as its own asset.
+  { label = "CIU: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "ciu", "--cwd", ".", "--notes-env", "CIU_RELEASE_NOTES", "--extra-asset", "get.py"], cwd = "." },
 ]
