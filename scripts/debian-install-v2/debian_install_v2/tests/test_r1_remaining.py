@@ -9,6 +9,7 @@ import urllib.request
 
 import pytest
 
+from debian_install_v2 import installer as installer_mod
 from debian_install_v2.actions import HostActions
 from debian_install_v2.bootstrap import main
 from debian_install_v2.config import Config, ConfigError, load_config
@@ -123,11 +124,46 @@ def test_configure_apt_real_backup_and_policy(tmp_path, monkeypatch):
     sources = Path("/etc/apt/sources.list.d/debian.sources")
     monkeypatch.setattr("pathlib.Path.is_file", lambda self, *a, **kw: True)
     monkeypatch.setattr("shutil.copy2", lambda *a, **kw: None)
+    monkeypatch.setattr(installer_mod.time, "sleep", lambda seconds: None)
     installer.actions.outputs[("/usr/bin/apt-cache", "policy")] = "nothing"
     installer.actions.outputs[("/usr/bin/apt-get", "update", "-qq")] = ""
     installer.actions.outputs[("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "git", "python3")] = ""
     with pytest.raises(RuntimeError, match="APT configuration did not resolve"):
         installer._configure_apt()
+    # Every retry attempt re-ran apt-get update, not just the first.
+    update_calls = [p for p in installer.actions.planned if p.argv == ("/usr/bin/apt-get", "update", "-qq")]
+    assert len(update_calls) == 3
+
+
+def test_configure_apt_retries_transient_suite_resolution_failure(tmp_path, monkeypatch):
+    """Regression for a real bug found live 2026-09-08: apt-get update on a
+    freshly-booted VPS fetched release/updates/security fine but silently
+    dropped backports/testing/unstable on the first pass, then succeeded
+    immediately on a manual retry with no changes at all. _configure_apt
+    must retry rather than hard-fail the whole bootstrap on the first miss.
+    """
+    installer = make_installer(tmp_path, dry_run=False)
+    monkeypatch.setattr("pathlib.Path.is_file", lambda self, *a, **kw: True)
+    monkeypatch.setattr("shutil.copy2", lambda *a, **kw: None)
+    monkeypatch.setattr(installer_mod.time, "sleep", lambda seconds: None)
+    installer.actions.outputs[("/usr/bin/apt-get", "update", "-qq")] = ""
+    installer.actions.outputs[("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "git", "python3")] = ""
+
+    policy_calls = {"n": 0}
+    incomplete_policy = "trixie trixie-updates trixie-security"
+    complete_policy = "trixie trixie-updates trixie-security trixie-backports testing unstable"
+
+    def fake_run(argv, description="", dangerous=False):
+        if tuple(argv) == ("/usr/bin/apt-cache", "policy"):
+            policy_calls["n"] += 1
+            return incomplete_policy if policy_calls["n"] == 1 else complete_policy
+        return installer.actions.outputs.get(tuple(argv), "")
+
+    monkeypatch.setattr(installer.actions, "run", fake_run)
+
+    installer._configure_apt()  # must not raise: second attempt resolves cleanly
+
+    assert policy_calls["n"] == 2
 
 
 def test_docker_unsupported_arch(tmp_path, monkeypatch):

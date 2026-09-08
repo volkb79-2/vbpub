@@ -275,13 +275,37 @@ class Installer:
         self.actions.write_file("/etc/apt/sources.list.d/debian.sources", APT_SOURCES.format(release=self.release))
         self.actions.write_file("/etc/apt/apt.conf.d/custom.conf", APT_CUSTOM)
         self.actions.write_file("/etc/apt/preferences.d/debian-priorities", APT_PRIORITIES.format(release=self.release))
-        self._packages(["ca-certificates", "curl", "git", "python3"], "apt")
-        if not self.actions.dry_run:
+
+        # A freshly-booted VPS's network/DNS isn't always fully settled the
+        # instant customScript starts running - confirmed live 2026-09-08 on
+        # two independent hosts, both first-attempt: apt-get update fetched
+        # the release/updates/security suites fine but silently dropped
+        # backports/testing/unstable, then succeeded immediately on a manual
+        # retry seconds later with no code changes at all. Retry a few times
+        # before treating it as a real configuration failure.
+        expected = [self.release, f"{self.release}-updates", f"{self.release}-security", f"{self.release}-backports", "testing", "unstable"]
+        missing = list(expected)
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            self._run(["/usr/bin/apt-get", "update", "-qq"], "apt: refresh apt metadata")
+            if self.actions.dry_run:
+                missing = []
+                break
             policy = self._run(["/usr/bin/apt-cache", "policy"], "verify apt suites resolve")
-            expected = [self.release, f"{self.release}-updates", f"{self.release}-security", f"{self.release}-backports", "testing", "unstable"]
             missing = [suite for suite in expected if suite not in policy]
-            if missing:
-                raise RuntimeError(f"APT configuration did not resolve suite(s): {', '.join(missing)}")
+            if not missing:
+                break
+            if attempt < max_attempts:
+                print(
+                    f"[WARN] apt-get update did not resolve suite(s) yet: {', '.join(missing)} "
+                    f"(attempt {attempt}/{max_attempts}); retrying in 5s.",
+                    flush=True,
+                )
+                time.sleep(5)
+        if missing:
+            raise RuntimeError(f"APT configuration did not resolve suite(s): {', '.join(missing)}")
+
+        self._packages(["ca-certificates", "curl", "git", "python3"], "apt")
         self._mark_step("apt_config", "success", self.release)
 
     def _configure_users(self) -> None:
