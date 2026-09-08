@@ -13,6 +13,8 @@ renders.
 ## Files
 
 - `ciu.defaults.toml.j2` + `ciu.compose.yml.j2` — ciu v2 stack package.
+- `hooks/post_compose_provision.py` — idempotent team/channel/account/webhook
+  provisioning, run by ciu on every `ciu up` (S9.1 `post_compose`).
 - `docker-compose.yml` — pre-rendered copy for plain-compose deploys, carrying
   ABSOLUTE PHYSICAL host paths (DooD) **and hand-inlined governance caps**.
   Keep in sync with the templates; read its header before using it.
@@ -31,34 +33,87 @@ Containers: `nyxloom-prod-mattermost`, `nyxloom-prod-mattermost-db`.
 > (backlog NL-6). The fallback file inlines the same caps by hand; if you touch
 > one, touch both.
 
-## Provisioning (once, after the first start)
+## Provisioning — automatic and idempotent (nyxloom-P107)
 
-Local mode is enabled, so every step runs over an in-container admin socket —
-no network-exposed admin API, no password typed from memory. ciu generates and
-stores the admin password itself (`GEN_LOCAL`, project store, gitignored):
+There is **no manual recipe any more**. `hooks/post_compose_provision.py` is a
+ciu `post_compose` hook (S9.1) that reconciles the whole account/channel/
+webhook surface on **every** `ciu up`, from the declarations in
+`[mattermost.provision]`. Every mutating step is guarded by a state probe, so
+re-running converges instead of duplicating; a run over an already-correct
+instance prints `channels_created=[] accounts_created=[] memberships_added=0`
+and changes nothing.
+
+Local mode is still what it talks over: an in-container admin socket, no
+network-exposed admin API.
+
+| Account | Role | Channels | Password secret |
+|---|---|---|---|
+| `nyxloom-admin` | system admin — **bootstrap/system only**, not for daily use | `alerts` | `mattermost/admin_password` |
+| `nyxloom-daemon` | regular | `alerts` | `mattermost/daemon_password` |
+| `nyxloom-operator` | system admin — the human operator login | **all** | `mattermost/operator_password` |
+| `nyxloom-installer` | regular — 3rd-party service account | `installs` | `mattermost/installer_password` |
+
+`nyxloom-admin` is deliberately **not** declared in `[mattermost.provision]`:
+the hook never touches an account it does not own, so the P106 bootstrap
+account is left exactly as it is. Log in as `nyxloom-operator` instead.
+
+"Access to all channels" is `all_channels = true`, resolved against the team's
+channel list **at reconcile time** — a channel added to
+`[[mattermost.provision.channels]]` is joined on the same run that creates it.
+A channel created out of band in the UI is joined on the **next** `ciu up`;
+Mattermost has no "member of all future channels" primitive, so that gap is a
+documented caveat, not an oversight.
+
+Two incoming webhooks, one per producer (the operator account is a human login
+and gets none — an unused credential is worse than no credential):
+
+| Secret file | Channel | Posts as | URL base |
+|---|---|---|---|
+| `daemon_webhook_url` | `alerts` | `nyxloom-daemon` | internal bridge address |
+| `installer_webhook_url` | `installs` | `nyxloom-installer` | `MM_SERVICESETTINGS_SITEURL` |
+
+**Where the secrets live — two directories, on purpose.** The generated
+*passwords* are S4 `GEN_LOCAL` directives and land in the **project** store,
+`<ciu-root>/.ciu/secrets/mattermost/`. The *webhook URLs* are persisted by the
+hook through S9.4a and land in the **stack** store,
+`nyxloom/mattermost/.ciu/secrets/`. Both are gitignored by `**/.ciu/`, both are
+0440 `vscode:docker`. The split is ciu's, not a choice: a webhook id does not
+exist until Mattermost mints it, so no directive can express it, and S9.4a is
+the channel for exactly that case.
 
 ```bash
-MM_ADMIN_PW="$(cat /workspaces/vbpub/nyxloom/.ciu/secrets/mattermost/admin_password)"
-
-docker exec nyxloom-prod-mattermost mmctl --local user create \
-    --email admin@nyxloom.local --username nyxloom-admin \
-    --password "$MM_ADMIN_PW" --system-admin
-docker exec nyxloom-prod-mattermost mmctl --local team create \
-    --name nyxloom --display-name "nyxloom"
-docker exec nyxloom-prod-mattermost mmctl --local team users add nyxloom nyxloom-admin
-docker exec nyxloom-prod-mattermost mmctl --local channel create \
-    --team nyxloom --name alerts --display-name "Alerts"
-docker exec nyxloom-prod-mattermost mmctl --local channel users add nyxloom:alerts nyxloom-admin
-
-# The incoming webhook nyxloom posts to. Its URL IS the credential.
-docker exec nyxloom-prod-mattermost mmctl --local webhook create-incoming \
-    --channel nyxloom:alerts --user nyxloom-admin \
-    --display-name "nyxloom" --description "nyxloom operator notifications"
+export NYXLOOM_WEBHOOK_URL="$(cat /workspaces/vbpub/nyxloom/mattermost/.ciu/secrets/daemon_webhook_url)"
 ```
 
-The last command prints an `Id:` — the webhook URL is
-`<site-url>/hooks/<id>`. Rotate it by deleting and recreating the webhook
-(`mmctl --local webhook delete <id>`); nothing else needs to change.
+**Rotating a webhook**: `mmctl --local webhook delete <id>`, then `ciu up`. The
+hook mints a fresh one and re-persists the URL. Do **not** leave two webhooks
+with the same display name — the hook refuses to guess which is current and
+fails the deploy naming the count.
+
+**The `installer_webhook_url` is not yet reachable from an install host.**
+While `expose_public = false` its base is the internal bridge address. The
+credential is provisioned and waiting; it becomes usable in the same edit that
+flips exposure. (`scripts/netcup` / `scripts/debian-install-v2` are out of
+scope here and untouched — that work brings its own payload translator and a
+`notify_backend` selector; this package only puts the Mattermost side in
+place.)
+
+**Why a hook and not a one-shot init container** (both were evaluated): S9.4a
+is the only sanctioned way to get a minted webhook id back into ciu's secret
+store — a sidecar would need a writable bind mount of the credential store to
+avoid using the API for writing to the credential store. `ctx.wait_healthy()`
+already solves readiness, which S9.3 says a hook must not re-implement. And
+`mmctl --local` needs the app container's own local-mode socket, which is not
+on a shared volume: exporting it to a sidecar would *widen* the admin surface
+(anything that can mount the volume gets unauthenticated system-admin) purely
+to avoid `docker exec`. The full argument is in the module docstring.
+
+*Residual exposure, stated rather than buried:* `mmctl user create` takes the
+password as a command-line flag (no stdin, no `*_FILE` form), so a generated
+password is briefly visible in the host process table during account
+**creation**. A reconcile over existing accounts passes no password at all.
+This is strictly less exposure than the recipe it replaces, which also put the
+password in shell history and an exported variable.
 
 Read messages back from the host (useful as a delivery oracle):
 
@@ -68,18 +123,25 @@ docker exec nyxloom-prod-mattermost mmctl --local post list nyxloom:alerts --num
 
 ## nyxloom wiring (consumer project.toml)
 
+nyxloom's own `nyxloom-trove/nyxloom.toml` is **already cut over** (P107):
+
 ```toml
 [notify]
-backend = "mattermost"          # explicit selector — NL-17
-mattermost_username = "nyxloom" # posting identity (override must be enabled — it is)
+backend = "mattermost"          # explicit selector — NL-17; sole channel, no fallback
 mattermost_channel = "alerts"   # optional; the webhook already targets a channel
+# mattermost_username is deliberately NOT set: posts carry the real
+# `nyxloom-daemon` account identity now, not P106's override_username display
+# trick from the system-admin account.
 # webhook_url is NOT committed: the URL is the credential. Export it instead —
 # NYXLOOM_WEBHOOK_URL wins over any toml value (config.py, same shape as NTFY_URL).
 ```
 
 ```bash
-export NYXLOOM_WEBHOOK_URL="http://nyxloom-prod-mattermost:8065/hooks/<id>"
+export NYXLOOM_WEBHOOK_URL="$(cat /workspaces/vbpub/nyxloom/mattermost/.ciu/secrets/daemon_webhook_url)"
 ```
+
+`/workspaces/dstdns`'s own config is a **separate repo and out of scope** —
+it still points at its previous channel and is left for a dstdns-side session.
 
 Anything that must reach Mattermost has to share a network with it. The stack
 owns a private bridge (`nyxloom-prod-mattermost_internal`); attach a consumer
@@ -130,15 +192,101 @@ either way.
   the S4.18 entrypoint-wrapper pattern and Mattermost has no `*_FILE` form for
   its datasource. See the comment in `ciu.defaults.toml.j2`.
 
-## Data / backup
+## Storage — bind-mounted hostdirs + named volumes (nyxloom-P107)
 
-All six volumes are stack-owned named volumes (ciu S6.7(b)) — the images
-initialise ownership themselves, which a DooD bind mount cannot do without a
-root helper. `ciu down` preserves them; **`ciu up --reset` and `ciu clean`
-delete them** (S6.4), taking every account, channel, message and webhook with
-them. Dump first:
+| Path in container | Backing | Ownership | Why |
+|---|---|---|---|
+| `/var/lib/postgresql/data` | hostdir `vol-postgres-data` | `70:DOCKER_GID` `0700` | the data that matters; host-visible for `du`/wipe |
+| `/mattermost/config` | hostdir `vol-mattermost-config` | `2000:DOCKER_GID` `0770` | `config.json` is the file an operator reads and diffs |
+| `/mattermost/logs` | hostdir `vol-mattermost-logs` | `2000:DOCKER_GID` `0770` | grep across restarts; makes the one unbounded-growth surface visible |
+| `/mattermost/data` | named volume | image | file attachments are **disabled** — nothing to read |
+| `/mattermost/plugins`, `/mattermost/client/plugins` | named volumes | image | plugin framework is **off**; these exist only because the image declares `VOLUME` on both paths |
+
+The three hostdirs are ciu-managed (S6.1/S6.3), auto-pathed as
+`<stack>/vol-<service>-<purpose>`, and pre-owned through ciu's S6.5 root
+helper — `vol-*/` is gitignored.
+
+**These are deliberately NOT `external` volumes.** External would *protect*
+them from teardown; the requirement is the opposite — the ability to wipe on
+demand. `ciu down` preserves them; **`ciu up --reset` and `ciu clean` delete
+them** (S6.4, which routes to the PHYSICAL path under DooD and degrades to the
+root helper for the uid-70/uid-2000 subtrees the operator cannot remove
+himself), taking every account, channel, message and webhook with them.
+
+**No init container**, unlike dstdns's `infra/db-core` (`postgres_init`, with
+its `CLEAN_DATA_DIR` wipe gate). That container exists there because db-core
+forces `user: "1000:${DOCKER_GID}"` onto `timescaledb-ha`, removing the
+entrypoint's root phase. Measured on **this** stack's images (P107):
+
+- `postgres:16-alpine` with **no** `user:` override self-initialises a bind
+  mount it does not own — its entrypoint starts as root, chowns to uid **70**
+  (not 999; 999 is the Debian image) and chmods `0700` itself.
+- The same image **with** `user: "70:994"` over a dir it does not own fails
+  exactly as db-core's would: `initdb: error: could not change permissions of
+  directory "/var/lib/postgresql/data": Operation not permitted`.
+- The Mattermost image is the opposite case: its default user **is**
+  `mattermost` (uid 2000) — no root phase, no `/bin/sh` — so it can never fix
+  up a bind mount, and fails with `could not create config file: open
+  /mattermost/config/config.json: permission denied` unless the directory is
+  pre-owned.
+
+So ciu's S6.5 helper does the pre-owning ("stacks SHOULD NOT carry init
+containers for ownership fixes") and the images keep their own startup paths.
+
+**Honest limit:** `postgres` chmods PGDATA to `0700` unconditionally, so
+`vol-postgres-data` is host-*visible* but not host-*readable* — declaring
+S6.7(a)'s suggested `0770` would be a lie `initdb` overwrites, and would then
+fail S6.3's ownership check on the next `ciu up`. Backups still go through
+`pg_dump` in the container:
 
 ```bash
 docker exec nyxloom-prod-mattermost-db sh -c \
   'PGPASSWORD=$(cat /run/secrets/postgres_password) pg_dump -U mmuser mattermost' > mattermost.sql
 ```
+
+### Migrating an EXISTING named-volume deployment to the hostdirs
+
+Required once, from the checkout the stack is deployed from. Verified in
+rehearsal (P107) on a copy of the live data.
+
+```bash
+# 0. dump first, and keep it OUT of the repo
+docker exec nyxloom-prod-mattermost-db sh -c \
+  'PGPASSWORD=$(cat /run/secrets/postgres_password) pg_dump -U mmuser mattermost' > ~/mattermost.sql
+
+# 1. STOP first — a live copy would need crash recovery
+ciu down --define-root /workspaces/vbpub/nyxloom
+docker rm nyxloom-prod-mattermost nyxloom-prod-mattermost-db   # no -v: named volumes survive
+
+# 2. let ciu create the hostdirs with the right ownership
+ciu up --dir nyxloom/mattermost -y --dry-run --define-root /workspaces/vbpub/nyxloom
+
+# 3. copy the data in, then RE-ASSERT the ownership `cp -a` clobbers.
+#    `cp -a /from/. /to/` copies the SOURCE directory's own owner/mode onto
+#    the target, which leaves 70:70 / 2000:2000 — and S6.3 then REFUSES the
+#    hostdir on the next `ciu up` as incompatible. This step is not optional.
+P=/home/vb/volkb79-2/vbpub/nyxloom/mattermost
+docker run --rm -v nyxloom-prod-mattermost_postgres-data:/from:ro \
+  -v "$P/vol-postgres-data":/to alpine:3.20 sh -c 'cp -a /from/. /to/'
+docker run --rm -v nyxloom-prod-mattermost_mattermost-config:/from:ro \
+  -v "$P/vol-mattermost-config":/to alpine:3.20 sh -c 'cp -a /from/. /to/'
+docker run --rm -v "$P":/t alpine:3.20 sh -c '
+  chown 70:994   /t/vol-postgres-data     && chmod 0700 /t/vol-postgres-data
+  chown 2000:994 /t/vol-mattermost-config && chmod 0770 /t/vol-mattermost-config'
+
+# 4. real up, then verify BOTH data and governance — a recreate is exactly
+#    where governance silently drops (P106's own lesson).
+ciu up --dir nyxloom/mattermost -y --define-root /workspaces/vbpub/nyxloom
+docker exec nyxloom-prod-mattermost-db sh -c \
+  'PGPASSWORD=$(cat /run/secrets/postgres_password) psql -U mmuser -d mattermost -tAc \
+   "select (select count(*) from users), (select count(*) from teams), (select count(*) from channels), (select count(*) from posts)"'
+docker inspect nyxloom-prod-mattermost nyxloom-prod-mattermost-db \
+  --format '{{.Name}} {{.HostConfig.CgroupParent}} {{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}'
+docker exec nyxloom-prod-mattermost-db cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/cpu.max
+```
+
+The old named volumes are left in place after step 4 as a rollback point;
+delete them (`docker volume rm nyxloom-prod-mattermost_postgres-data
+nyxloom-prod-mattermost_mattermost-config
+nyxloom-prod-mattermost_mattermost-logs`) only once the bind-mounted stack has
+been healthy for a while.

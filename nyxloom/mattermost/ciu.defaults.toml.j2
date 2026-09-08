@@ -38,6 +38,9 @@ public_host = "mattermost.{{ env.PUBLIC_FQDN }}"
 ingress_network = "ingress_public"
 
 [mattermost.app]
+# `name` exists so S6.1 can auto-generate this service's hostdir paths as
+# <stack>/vol-mattermost-<purpose>; nothing else reads it.
+name = "mattermost"
 # Pinned image; verify the tag exists before bumping (docker manifest
 # inspect). 11.10.1 (2026-08-24) rather than the 11.11.0 cut from
 # 2026-09-07: a one-day-old release is not what a notification channel
@@ -47,7 +50,34 @@ image_tag = "11.10.1"
 # In-container HTTP port; never published on the host.
 port = 8065
 
+# ── Bind-mounted hostdirs (S6.1/S6.3/S6.7(a)) — nyxloom-P107 ────────────────
+# `path = ""` auto-generates <stack>/vol-mattermost-<purpose>, which is what
+# makes these WIPEABLE ON DEMAND: S6.4 removes the stack dir's `vol-*` trees
+# on `ciu up --reset` / `ciu clean`, degrading to the S6.5 root helper (and,
+# under DooD, routing to the PHYSICAL path unconditionally) for subtrees the
+# operator does not own. That is the deliberate OPPOSITE of marking the
+# volumes `external` — the operator asked to keep the ability to wipe.
+#
+# uid 2000 is FORCED by the image, and it is why these hostdirs must be
+# pre-owned rather than left to the container: the mattermost image's default
+# user IS `mattermost` (uid 2000) — there is no root phase at all, and no
+# /bin/sh to add one. Measured on 11.10.1 (nyxloom-P107): a bind mount owned
+# by the operator gives
+#   `failed to load configuration: could not create config file: open
+#    /mattermost/config/config.json: permission denied`
+# while the same dir pre-chowned 2000:<DOCKER_GID> mode 0770 starts cleanly
+# and leaves config.json 0644 — readable from the host through the docker
+# group, which is the whole point of moving off a named volume.
+#
+# `gid` is omitted on purpose: S6.3's default is CONTAINER_UID:DOCKER_GID, so
+# the group is already DOCKER_GID and hardcoding 994 here would rot.
+[mattermost.app.hostdir]
+config = { path = "", uid = 2000, mode = "0770" }
+logs = { path = "", uid = 2000, mode = "0770" }
+
 [mattermost.postgres]
+# See [mattermost.app].name — auto-generates <stack>/vol-postgres-data.
+name = "postgres"
 # Mattermost's REQUIRED database — dedicated to this stack, deliberately
 # NOT shared with dstdns's postgres or any other project's.
 image = "postgres"
@@ -64,6 +94,38 @@ mem_limit = "512m"
 mem_swap_limit = "4g"
 cpus = "0.5"
 
+# ── The data hostdir (S6.1/S6.7(a)) — nyxloom-P107 ─────────────────────────
+# uid 70, NOT 999. `postgres:16-alpine`'s postgres account is uid/gid 70
+# (`postgres:x:70:70:` in the image's /etc/passwd); 999 is the DEBIAN-based
+# `postgres:16` image. The P106 comments said 999 for this alpine image and
+# were simply wrong — harmless while the data lived in a named volume the
+# image initialised itself, load-bearing the moment it becomes a bind mount.
+#
+# mode 0700 matches what postgres ENFORCES, and that matters for more than
+# tidiness: S6.3 accepts a pre-existing hostdir whose owner+group match the
+# declaration, so declaring 0770 here (S6.7(a)'s suggested "operator keeps
+# docker-group access") would be a lie the first `initdb` overwrites — it
+# chmods PGDATA to 0700 unconditionally. Consequence, stated plainly: the
+# postgres hostdir is host-VISIBLE but not host-READABLE; backups still go
+# through `pg_dump` in the container (README), and a wipe goes through S6.4's
+# root helper. That is a real limit of bind-mounting postgres, not a defect.
+#
+# NO init container. dstdns's db-core carries a root `postgres_init` that
+# chowns the bind mount before postgres starts — that is required THERE
+# because it forces `user: "1000:${DOCKER_GID}"` onto timescaledb-ha, which
+# removes the entrypoint's root phase. Tested directly on THIS image
+# (nyxloom-P107): with no `user:` override, `postgres:16-alpine` self-
+# initialises a bind mount it does not own (its entrypoint starts as root,
+# chowns to 70 and chmods 0700 itself); with `user: "70:994"` over a dir it
+# does not own it fails exactly the way dstdns's would —
+#   `initdb: error: could not change permissions of directory
+#    "/var/lib/postgresql/data": Operation not permitted`.
+# So the stack keeps the image's own root->postgres drop and lets ciu S6.5
+# pre-own the directory, which is also what S6.5 asks for: "stacks SHOULD NOT
+# carry init containers for ownership fixes".
+[mattermost.postgres.hostdir]
+data = { path = "", uid = 70, mode = "0700" }
+
 # ── Secrets (S4) ────────────────────────────────────────────────────────
 # GEN_LOCAL: created once, then stable; lands in the PROJECT store
 # <ciu-root>/.ciu/secrets/mattermost/postgres_password (0700 dir, gitignored
@@ -72,9 +134,11 @@ cpus = "0.5"
 # stringified into a template or appears in the rendered output).
 #
 # mode 0444, not the 0440 default: the consumer is a fixed-UID image
-# (postgres, uid 999) that the host-side owner/group of the store file
-# cannot match, and the store DIRECTORY stays 0700, so the widened FILE
-# mode does not widen host access.
+# (postgres, uid 70 in this ALPINE image — not 999, which is the Debian
+# `postgres:16`; this was the second of P106's two "999" slips and the
+# conclusion below is unaffected by which number it is) that the host-side
+# owner/group of the store file cannot match, and the store DIRECTORY stays
+# 0700, so the widened FILE mode does not widen host access.
 #
 # expose_env (S4.19) is ciu's own "discouraged" escape hatch and is used
 # here only because the Mattermost image forces it: it is minimal (no
@@ -90,6 +154,110 @@ postgres_password = { directive = "GEN_LOCAL:mattermost/postgres_password", mode
 # consumed OUTSIDE compose (by `docker exec ... mmctl`), so its
 # "declared but unconsumed" warning stays meaningful for real mistakes.
 mattermost_admin_password = { directive = "GEN_LOCAL:mattermost/admin_password", consumed_by = "hook" }
+# nyxloom-P107: the three non-bootstrap accounts. Same shape and same
+# `consumed_by = "hook"` reason as the admin password — they are consumed by
+# `hooks/post_compose_provision.py` via `docker exec ... mmctl`, never by
+# compose. GEN_LOCAL is "created once, then stable", which is what makes the
+# provisioning hook safe to re-run: the value it would set is the value the
+# account already has.
+mattermost_daemon_password = { directive = "GEN_LOCAL:mattermost/daemon_password", consumed_by = "hook" }
+mattermost_operator_password = { directive = "GEN_LOCAL:mattermost/operator_password", consumed_by = "hook" }
+mattermost_installer_password = { directive = "GEN_LOCAL:mattermost/installer_password", consumed_by = "hook" }
+
+# ── Provisioning (S9.1 post_compose hook) — nyxloom-P107 ────────────────────
+# Replaces the manual `mmctl` recipe P106's README carried. The hook is
+# idempotent by construction: every mutating step is guarded by a state probe,
+# so it runs on EVERY `ciu up` and converges rather than duplicating. Read the
+# module docstring for why a hook beats a one-shot init container here (the
+# short version: S9.4a is the only sanctioned way to get a minted webhook id
+# back into the secret store, and `mmctl --local` needs the app container's
+# own local-mode socket, which is not on a shared volume).
+[mattermost.hooks]
+post_compose = ["hooks/post_compose_provision.py"]
+
+[mattermost.provision]
+team = "nyxloom"
+team_display_name = "nyxloom"
+
+# `alerts` already exists (P106). `installs` is new: the separate channel the
+# 3rd-party service account posts host-provisioning progress into.
+[[mattermost.provision.channels]]
+name = "alerts"
+display_name = "Alerts"
+
+[[mattermost.provision.channels]]
+name = "installs"
+display_name = "Host Installs"
+
+# ── Accounts ───────────────────────────────────────────────────────────────
+# `nyxloom-admin` (P106) is deliberately NOT listed: it is now understood as
+# the BOOTSTRAP/system account, not a daily-use one, and this hook never
+# touches an account it does not declare.
+#
+# nyxloom's own daemon posts as a REGULAR account with its own webhook,
+# replacing P106's `override_username` display trick — a real identity, a
+# credential of its own, and no system-admin rights on the thing that only
+# ever needs to POST.
+[[mattermost.provision.accounts]]
+username = "nyxloom-daemon"
+email = "daemon@nyxloom.local"
+password_secret = "mattermost_daemon_password"
+channels = ["alerts"]
+system_admin = false
+
+# The human operator account. `system_admin = true`: "operator admin" is an
+# account that ADMINISTERS the server — the role `nyxloom-admin` has been
+# doing by accident — and the literal requirement ("access to all channels")
+# is met separately and explicitly by `all_channels`, because system-admin
+# alone does NOT make you a member of a private channel; it only lets you
+# manage one from the console.
+[[mattermost.provision.accounts]]
+username = "nyxloom-operator"
+email = "operator@nyxloom.local"
+password_secret = "mattermost_operator_password"
+all_channels = true
+system_admin = true
+
+# The 3rd-party service account: scripts/netcup + scripts/debian-install-v2
+# host-installation progress. Scoped to `installs` ONLY — it is deliberately
+# not a member of `alerts`, so a compromised install host cannot read nyxloom's
+# own operator traffic. (The blast radius that actually matters is its webhook
+# URL, which is post-only and targets `installs` alone.)
+[[mattermost.provision.accounts]]
+username = "nyxloom-installer"
+email = "installer@nyxloom.local"
+password_secret = "mattermost_installer_password"
+channels = ["installs"]
+system_admin = false
+
+# ── Incoming webhooks ──────────────────────────────────────────────────────
+# Two, not three: the operator account is a HUMAN login and has nothing to
+# post programmatically. Minting an unused credential would be strictly worse
+# than not having one. The URLs are persisted by the hook via S9.4a into the
+# STACK store (<stack>/.ciu/secrets/<name>) — a different directory from the
+# GEN_LOCAL passwords above, which live in the PROJECT store
+# (<ciu-root>/.ciu/secrets/mattermost/). Both are gitignored by `**/.ciu/`.
+[[mattermost.provision.webhooks]]
+secret = "daemon_webhook_url"
+channel = "alerts"
+user = "nyxloom-daemon"
+display_name = "nyxloom-daemon"
+description = "nyxloom operator notifications"
+# nyxloomd reaches Mattermost over the stack's private bridge, so the internal
+# address is correct whether or not the stack is publicly exposed.
+url_base = "internal"
+
+[[mattermost.provision.webhooks]]
+secret = "installer_webhook_url"
+channel = "installs"
+user = "nyxloom-installer"
+display_name = "host-installer"
+description = "scripts/netcup + debian-install-v2 host installation progress"
+# Tracks MM_SERVICESETTINGS_SITEURL. While `expose_public = false` that is the
+# internal address, so this URL is NOT yet reachable from an install host —
+# the credential is provisioned and waiting, and becomes usable in the same
+# edit that flips `expose_public`. Said out loud in the README too.
+url_base = "siteurl"
 
 [mattermost.health]
 # Mattermost's first boot runs the full schema migration before /api/v4/ping
