@@ -1,4 +1,4 @@
-From 3889e1ea37d3db8fc8bd4552116fa338f9857968 Mon Sep 17 00:00:00 2001
+From f7299c5c3811883b7a4eb0df3e0fb41bf5fd1104 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 07:56:59 +0000
 Subject: [PATCH 09/11] Fix MemoryCurrent D-Bus interface in the memory.high

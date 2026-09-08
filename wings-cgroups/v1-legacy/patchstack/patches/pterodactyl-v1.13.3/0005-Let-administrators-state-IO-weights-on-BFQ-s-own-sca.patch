@@ -1,4 +1,4 @@
-From 525f12f295e165175f7cc29ca2073d9d68ee879b Mon Sep 17 00:00:00 2001
+From b3100a7ac98c06b87600e3847dde863542fcd811 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Fri, 17 Jul 2026 10:40:51 +0000
 Subject: [PATCH 05/11] Let administrators state IO weights on BFQ's own scale
@@ -41,10 +41,10 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
  create mode 100644 internal/cgroups/bfq_test.go
 
 diff --git a/config/config_docker.go b/config/config_docker.go
-index fae3e40..b0b791e 100644
+index 1cc1d1f..4f2ea3c 100644
 --- a/config/config_docker.go
 +++ b/config/config_docker.go
-@@ -158,7 +158,17 @@ type DockerSliceDefaults struct {
+@@ -186,7 +186,17 @@ type DockerSliceDefaults struct {
  	MemoryHigh string `default:"" json:"memory_high" yaml:"memory_high"`
  	MemoryMax  string `default:"" json:"memory_max" yaml:"memory_max"`
  	CPUWeight  uint64 `default:"0" json:"cpu_weight" yaml:"cpu_weight"`
@@ -63,7 +63,7 @@ index fae3e40..b0b791e 100644
  }
  
  // PerServerSlicesConfiguration configures automatic per-server slice
-@@ -389,12 +399,13 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
+@@ -417,12 +427,13 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
  func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
  	d := c.PerServerSlices.Defaults
  	return cgroups.Defaults{

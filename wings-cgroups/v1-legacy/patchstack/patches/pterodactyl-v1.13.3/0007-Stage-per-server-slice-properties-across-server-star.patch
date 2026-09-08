@@ -1,4 +1,4 @@
-From 5e6320b1442239e69a5d08999f91ddaccdcd6033 Mon Sep 17 00:00:00 2001
+From ca93d1d231250c10d0c89e3b55cb0e16273271a0 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 03:59:43 +0000
 Subject: [PATCH 07/11] Stage per-server slice properties across server startup
@@ -71,7 +71,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
  create mode 100644 server/slice_phase_test.go
 
 diff --git a/config/config_docker.go b/config/config_docker.go
-index b0b791e..f74aeca 100644
+index 4f2ea3c..ea9a3b2 100644
 --- a/config/config_docker.go
 +++ b/config/config_docker.go
 @@ -7,6 +7,7 @@ import (
@@ -82,7 +82,7 @@ index b0b791e..f74aeca 100644
  
  	"emperror.dev/errors"
  	"github.com/distribution/reference"
-@@ -171,6 +172,16 @@ type DockerSliceDefaults struct {
+@@ -199,6 +200,16 @@ type DockerSliceDefaults struct {
  	IOBFQWeight uint64 `default:"0" json:"io_bfq_weight" yaml:"io_bfq_weight"`
  }
  
@@ -99,7 +99,7 @@ index b0b791e..f74aeca 100644
  // PerServerSlicesConfiguration configures automatic per-server slice
  // management (docker.per_server_slices). Requires CgroupParent to be set:
  // derived slices nest under it via systemd dash naming.
-@@ -191,6 +202,32 @@ type PerServerSlicesConfiguration struct {
+@@ -219,6 +230,32 @@ type PerServerSlicesConfiguration struct {
  	// check.
  	MemoryMinBudget string `default:"" json:"memory_min_budget" yaml:"memory_min_budget"`
  
@@ -132,7 +132,7 @@ index b0b791e..f74aeca 100644
  	// BudgetPolicy decides what happens to a MemoryMin request exceeding the
  	// remaining budget. Every other property is applied unchanged in all
  	// three cases:
-@@ -391,6 +428,27 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
+@@ -419,6 +456,27 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
  	if _, errs := c.SliceDefaults().Props(); len(errs) > 0 {
  		return errors.Wrap(errs[0], "docker.per_server_slices.defaults")
  	}
@@ -160,7 +160,7 @@ index b0b791e..f74aeca 100644
  	return nil
  }
  
-@@ -412,14 +470,57 @@ func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
+@@ -440,14 +498,57 @@ func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
  // SliceEnsureRequest assembles the cgroups.EnsureForServer request for a
  // server whose containers are about to be placed under slice (a value
  // previously returned as managed by ResolveServerCgroupParent).
@@ -225,10 +225,10 @@ index b0b791e..f74aeca 100644
  
  // SliceBudget converts the configured floor budget into the internal/cgroups
 diff --git a/environment/docker/container.go b/environment/docker/container.go
-index 3e0af2e..2311850 100644
+index cfbccf3..670c0d6 100644
 --- a/environment/docker/container.go
 +++ b/environment/docker/container.go
-@@ -178,7 +178,13 @@ func (e *Environment) Create() error {
+@@ -187,7 +187,13 @@ func (e *Environment) Create() error {
  		// container is placed under it; a missing unit would silently
  		// materialize as a limit-less transient slice. Best-effort: failures
  		// are logged and never block container creation.
@@ -244,7 +244,7 @@ index 3e0af2e..2311850 100644
  
  	// Merge user-provided labels with system labels
 diff --git a/environment/docker/power.go b/environment/docker/power.go
-index 7b143a4..770b6a8 100644
+index 34570a3..6b4c071 100644
 --- a/environment/docker/power.go
 +++ b/environment/docker/power.go
 @@ -11,7 +11,9 @@ import (
@@ -1106,10 +1106,10 @@ index c1613ad..5912ad1 100644
  
  // RequestActivity is a wrapper around a LoggedEvent that is able to track additional request
 diff --git a/server/install.go b/server/install.go
-index 64a1ea7..24274fc 100644
+index 16e2c91..8880446 100644
 --- a/server/install.go
 +++ b/server/install.go
-@@ -462,7 +462,7 @@ func (ip *InstallationProcess) Execute() (string, error) {
+@@ -463,7 +463,7 @@ func (ip *InstallationProcess) Execute() (string, error) {
  		ip.Server.Log().WithField("cgroup_parent", cgroupParent).WithError(err).Warn("installer: rejected per-server cgroup parent override")
  	}
  	if managed {

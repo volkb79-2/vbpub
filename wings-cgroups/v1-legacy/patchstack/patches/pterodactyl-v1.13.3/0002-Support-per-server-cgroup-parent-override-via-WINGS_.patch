@@ -1,4 +1,4 @@
-From 4896a7a475d71fac47cfa38da95635d3b5ad2130 Mon Sep 17 00:00:00 2001
+From 1d9974ee7d92fee5bece2c15b2a74fa82448dd53 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Wed, 15 Jul 2026 10:43:10 +0000
 Subject: [PATCH 02/11] Support per-server cgroup parent override via
@@ -28,7 +28,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
  4 files changed, 186 insertions(+), 8 deletions(-)
 
 diff --git a/config/config_docker.go b/config/config_docker.go
-index bf521a0..688c2e6 100644
+index 90930b9..b10f00a 100644
 --- a/config/config_docker.go
 +++ b/config/config_docker.go
 @@ -5,6 +5,7 @@ import (
@@ -39,7 +39,7 @@ index bf521a0..688c2e6 100644
  	"strings"
  
  	"emperror.dev/errors"
-@@ -115,6 +116,20 @@ type DockerConfiguration struct {
+@@ -137,6 +138,20 @@ type DockerConfiguration struct {
  	//     affects containers created after Wings picks up the new config.
  	CgroupParent string `default:"" json:"cgroup_parent" yaml:"cgroup_parent"`
  
@@ -60,7 +60,7 @@ index bf521a0..688c2e6 100644
  	LogConfig struct {
  		Type   string            `default:"local" json:"type" yaml:"type"`
  		Config map[string]string `default:"{\"max-size\":\"5m\",\"max-file\":\"1\",\"compress\":\"false\",\"mode\":\"non-blocking\"}" json:"config" yaml:"config"`
-@@ -162,6 +177,51 @@ func ValidateCgroupParentValue(v string) error {
+@@ -190,6 +205,51 @@ func ValidateCgroupParentValue(v string) error {
  	return nil
  }
  
@@ -223,10 +223,10 @@ index 98c933b..b8d5f1b 100644
 +	}
 +}
 diff --git a/environment/docker/container.go b/environment/docker/container.go
-index 512d1a3..2f95511 100644
+index e3b02d9..d38ddb0 100644
 --- a/environment/docker/container.go
 +++ b/environment/docker/container.go
-@@ -163,6 +163,16 @@ func (e *Environment) Create() error {
+@@ -172,6 +172,16 @@ func (e *Environment) Create() error {
  		}
  	}
  
@@ -243,7 +243,7 @@ index 512d1a3..2f95511 100644
  	// Merge user-provided labels with system labels
  	confLabels := e.Configuration.Labels()
  	labels := make(map[string]string, 2+len(confLabels))
-@@ -259,10 +269,10 @@ func (e *Environment) Create() error {
+@@ -268,10 +278,10 @@ func (e *Environment) Create() error {
  		UsernsMode:  container.UsernsMode(cfg.Docker.UsernsMode),
  	}
  
@@ -258,10 +258,10 @@ index 512d1a3..2f95511 100644
  
  	if _, err := e.client.ContainerCreate(ctx, conf, hostConf, nil, nil, e.Id); err != nil {
 diff --git a/server/install.go b/server/install.go
-index e513d71..39475a5 100644
+index 50461dd..f39c678 100644
 --- a/server/install.go
 +++ b/server/install.go
-@@ -450,11 +450,17 @@ func (ip *InstallationProcess) Execute() (string, error) {
+@@ -451,11 +451,17 @@ func (ip *InstallationProcess) Execute() (string, error) {
  		UsernsMode:  container.UsernsMode(cfg.Docker.UsernsMode),
  	}
  

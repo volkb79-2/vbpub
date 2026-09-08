@@ -1,4 +1,4 @@
-From da8a5dae9d1958a6399eec734604553891ae1815 Mon Sep 17 00:00:00 2001
+From 9c2ce2615afb93a686e30e7af92ae730ff1013dd Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 16:21:46 +0000
 Subject: [PATCH 11/11] Trigger host ramdisk-setup units via systemd D-Bus
@@ -65,10 +65,10 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
  8 files changed, 400 insertions(+), 6 deletions(-)
 
 diff --git a/config/config_docker.go b/config/config_docker.go
-index f74aeca..49e541c 100644
+index ea9a3b2..dbb10c7 100644
 --- a/config/config_docker.go
 +++ b/config/config_docker.go
-@@ -133,6 +133,29 @@ type DockerConfiguration struct {
+@@ -155,6 +155,29 @@ type DockerConfiguration struct {
  	// system.slice.
  	AllowedCgroupParents []string `json:"allowed_cgroup_parents" yaml:"allowed_cgroup_parents"`
  
@@ -98,7 +98,7 @@ index f74aeca..49e541c 100644
  	// PerServerSlices enables automatic per-server slice management: every
  	// server is placed under its own derived slice (see ServerSliceName)
  	// nested inside CgroupParent, and Wings creates/reconciles that slice as
-@@ -341,6 +364,37 @@ func cgroupParentOverride(env []string) string {
+@@ -369,6 +392,37 @@ func cgroupParentOverride(env []string) string {
  	return override
  }
  
@@ -244,10 +244,10 @@ index 24f6a99..d22a058 100644
  	// The installer container path resolves through the identical
  	// config.DockerConfiguration.ResolveCgroupParent helper; the pure
 diff --git a/environment/docker/container.go b/environment/docker/container.go
-index 2311850..09bb321 100644
+index 670c0d6..1e8538f 100644
 --- a/environment/docker/container.go
 +++ b/environment/docker/container.go
-@@ -187,6 +187,41 @@ func (e *Environment) Create() error {
+@@ -196,6 +196,41 @@ func (e *Environment) Create() error {
  		cgroups.EnsureForServer(ctx, e.log(), cfg.Docker.SliceEnsureRequest(e.Id, cgroupParent, evs, cgroups.PhaseSteady), "container create")
  	}
  

@@ -1,4 +1,4 @@
-From 88b846521da07c655b5a921c83e6d2ebc92062fe Mon Sep 17 00:00:00 2001
+From 72cf854897edd71d1dada6f9a741a96b07bd7023 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Mon, 20 Jul 2026 11:51:15 +0000
 Subject: [PATCH 06/11] Render slice property values in the units they were

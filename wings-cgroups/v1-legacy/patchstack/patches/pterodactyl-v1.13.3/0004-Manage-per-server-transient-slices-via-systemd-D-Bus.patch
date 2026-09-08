@@ -1,4 +1,4 @@
-From 07c5fb0f29dcac95b99b676fb6805ba7b399bbc0 Mon Sep 17 00:00:00 2001
+From ebf6ee907b18ed862f785f74cccaf98dd46ace82 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Fri, 17 Jul 2026 06:38:24 +0000
 Subject: [PATCH 04/11] Manage per-server transient slices via systemd D-Bus
@@ -60,7 +60,7 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
  create mode 100644 internal/cgroups/sysd.go
 
 diff --git a/cmd/root.go b/cmd/root.go
-index 00dce6a..8d84ed6 100644
+index a645873..62a0022 100644
 --- a/cmd/root.go
 +++ b/cmd/root.go
 @@ -28,6 +28,7 @@ import (
@@ -117,7 +117,7 @@ index 00dce6a..8d84ed6 100644
  		config.SetDebugViaFlag(debug)
  	}
 diff --git a/config/config_docker.go b/config/config_docker.go
-index 688c2e6..fae3e40 100644
+index b10f00a..1cc1d1f 100644
 --- a/config/config_docker.go
 +++ b/config/config_docker.go
 @@ -12,6 +12,8 @@ import (
@@ -129,7 +129,7 @@ index 688c2e6..fae3e40 100644
  )
  
  type dockerNetworkInterfaces struct {
-@@ -130,12 +132,75 @@ type DockerConfiguration struct {
+@@ -152,6 +154,14 @@ type DockerConfiguration struct {
  	// system.slice.
  	AllowedCgroupParents []string `json:"allowed_cgroup_parents" yaml:"allowed_cgroup_parents"`
  
@@ -144,7 +144,8 @@ index 688c2e6..fae3e40 100644
  	LogConfig struct {
  		Type   string            `default:"local" json:"type" yaml:"type"`
  		Config map[string]string `default:"{\"max-size\":\"5m\",\"max-file\":\"1\",\"compress\":\"false\",\"mode\":\"non-blocking\"}" json:"config" yaml:"config"`
- 	} `json:"log_config" yaml:"log_config"`
+@@ -164,6 +174,61 @@ func (c DockerConfiguration) CpuPeriodMicroseconds() int64 {
+ 	return min(max(c.CpuPeriod, 1_000), 1_000_000)
  }
  
 +// DockerSliceDefaults are the node-wide default resource properties applied
@@ -205,7 +206,7 @@ index 688c2e6..fae3e40 100644
  func (c DockerConfiguration) ContainerLogConfig() container.LogConfig {
  	if c.LogConfig.Type == "" {
  		return container.LogConfig{}
-@@ -196,12 +261,7 @@ const CgroupParentOverrideEnv = "WINGS_CGROUP_PARENT"
+@@ -224,12 +289,7 @@ const CgroupParentOverrideEnv = "WINGS_CGROUP_PARENT"
  // default is returned together with an error describing the rejection so that
  // callers can log it. The returned string is always safe to use.
  func (c DockerConfiguration) ResolveCgroupParent(env []string) (string, error) {
@@ -219,7 +220,7 @@ index 688c2e6..fae3e40 100644
  	if override == "" || override == c.CgroupParent {
  		return c.CgroupParent, nil
  	}
-@@ -222,6 +282,156 @@ func (c DockerConfiguration) ResolveCgroupParent(env []string) (string, error) {
+@@ -250,6 +310,156 @@ func (c DockerConfiguration) ResolveCgroupParent(env []string) (string, error) {
  	return c.CgroupParent, errors.New(CgroupParentOverrideEnv + " override " + strconv.Quote(override) + " is outside the built-in wings-*.slice namespace and docker.allowed_cgroup_parents is not configured")
  }
  
@@ -551,7 +552,7 @@ index 0000000..a86ac5a
 +	}
 +}
 diff --git a/environment/docker/container.go b/environment/docker/container.go
-index 2f95511..3e0af2e 100644
+index d38ddb0..cfbccf3 100644
 --- a/environment/docker/container.go
 +++ b/environment/docker/container.go
 @@ -20,6 +20,7 @@ import (
@@ -562,7 +563,7 @@ index 2f95511..3e0af2e 100644
  	"github.com/pterodactyl/wings/system"
  )
  
-@@ -163,15 +164,22 @@ func (e *Environment) Create() error {
+@@ -172,15 +173,22 @@ func (e *Environment) Create() error {
  		}
  	}
  
@@ -591,7 +592,7 @@ index 2f95511..3e0af2e 100644
  
  	// Merge user-provided labels with system labels
  	confLabels := e.Configuration.Labels()
-@@ -296,6 +304,19 @@ func (e *Environment) Destroy() error {
+@@ -305,6 +313,19 @@ func (e *Environment) Destroy() error {
  
  	e.SetState(environment.ProcessOfflineState)
  
@@ -611,7 +612,7 @@ index 2f95511..3e0af2e 100644
  	// Don't trigger a destroy failure if we try to delete a container that does not
  	// exist on the system. We're just a step ahead of ourselves in that case.
  	//
-@@ -307,6 +328,10 @@ func (e *Environment) Destroy() error {
+@@ -316,6 +337,10 @@ func (e *Environment) Destroy() error {
  	return err
  }
  
@@ -1962,18 +1963,18 @@ index 0000000..79fd3ca
 +	return total, nil
 +}
 diff --git a/server/install.go b/server/install.go
-index 39475a5..64a1ea7 100644
+index f39c678..16e2c91 100644
 --- a/server/install.go
 +++ b/server/install.go
-@@ -20,6 +20,7 @@ import (
- 
+@@ -21,6 +21,7 @@ import (
  	"github.com/pterodactyl/wings/config"
  	"github.com/pterodactyl/wings/environment"
+ 	"github.com/pterodactyl/wings/environment/docker"
 +	"github.com/pterodactyl/wings/internal/cgroups"
  	"github.com/pterodactyl/wings/remote"
  	"github.com/pterodactyl/wings/system"
  )
-@@ -452,13 +453,17 @@ func (ip *InstallationProcess) Execute() (string, error) {
+@@ -453,13 +454,17 @@ func (ip *InstallationProcess) Execute() (string, error) {
  
  	// Keep the installer container under the same cgroup parent as the
  	// server's runtime container so that installation workloads are subject to

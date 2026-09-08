@@ -1,4 +1,4 @@
-From 3787b59e69ecbcb8a01c488222594fd87489ac51 Mon Sep 17 00:00:00 2001
+From b58e1d26201dba80cf179922a27ead5604bec1cb Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 15:49:24 +0000
 Subject: [PATCH 10/11] Start listed child servers when a server reaches its
@@ -108,7 +108,7 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
  create mode 100644 server/slice_children_test.go
 
 diff --git a/cmd/root.go b/cmd/root.go
-index 50aef0c..bf1c92d 100644
+index a687c9b..d6d3767 100644
 --- a/cmd/root.go
 +++ b/cmd/root.go
 @@ -13,6 +13,7 @@ import (

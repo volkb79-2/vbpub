@@ -1,4 +1,4 @@
-From 771bf4b47b574bf25ce332b0606e5b1a3e052385 Mon Sep 17 00:00:00 2001
+From 157008b911bf3c29879ec65cd5e21d9220f6acdc Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 03:59:43 +0000
 Subject: [PATCH 08/11] Report configuration keys discarded while parsing
@@ -30,7 +30,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
  create mode 100644 config/config_discarded_test.go
 
 diff --git a/cmd/root.go b/cmd/root.go
-index 8d84ed6..50aef0c 100644
+index 62a0022..a687c9b 100644
 --- a/cmd/root.go
 +++ b/cmd/root.go
 @@ -50,6 +50,7 @@ var rootCommand = &cobra.Command{
@@ -61,7 +61,7 @@ index 8d84ed6..50aef0c 100644
  	if !filepath.IsAbs(configPath) {
  		d, err := filepath.Abs(configPath)
 diff --git a/config/config.go b/config/config.go
-index b133123..453ed30 100644
+index 230062f..b2b76e6 100644
 --- a/config/config.go
 +++ b/config/config.go
 @@ -330,6 +330,11 @@ type Configuration struct {
@@ -76,7 +76,7 @@ index b133123..453ed30 100644
  	// Determines if wings should be running in debug mode. This value is ignored
  	// if the debug flag is passed through the command line arguments.
  	Debug bool
-@@ -584,6 +589,48 @@ nobody:x:65534:65534::/var/empty:/bin/sh
+@@ -623,6 +628,48 @@ nobody:x:65534:65534::/var/empty:/bin/sh
  	return nil
  }
  
@@ -125,14 +125,14 @@ index b133123..453ed30 100644
  // FromFile reads the configuration from the provided file and stores it in the
  // global singleton for this instance.
  func FromFile(path string) error {
-@@ -599,6 +646,7 @@ func FromFile(path string) error {
+@@ -638,6 +685,7 @@ func FromFile(path string) error {
  	if err := yaml.Unmarshal(b, c); err != nil {
  		return err
  	}
 +	c.discarded = discardedKeys(b)
  
- 	c.Token = Token{
- 		ID:    os.Getenv("WINGS_TOKEN_ID"),
+ 	if err := c.ResolveToken(false); err != nil {
+ 		return err
 diff --git a/config/config_discarded_test.go b/config/config_discarded_test.go
 new file mode 100644
 index 0000000..d12bf06
