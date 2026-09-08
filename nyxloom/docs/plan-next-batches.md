@@ -2,20 +2,35 @@
 
 > **Stale as of 2026-09-08 — read before acting on anything below.** This
 > checkpoint predates the nyxloom-P97 thread (2026-09-03: P98/P99/P100/P101),
-> which retired the GA1/GA4 toolkit this doc's own "State" line below still
-> cites as current. Specifically: **`nyxloom gate verify` (GA1) no longer
-> exists** — `gate` is now a reserved top-level verb with zero subcommands
-> (nyxloom-P98); gate execution and trustworthiness verification live
-> entirely in each project's own `run-gate.py`/Assay lane (Assay's R2/R3
-> supersede GA1's purpose). The GA4 daemon verify-cadence is likewise gone.
-> Everything else below (BATCH A-E) is historical record of what shipped
-> through 2026-07-26 and still accurate for that window; only the "State"
-> line's GA1/gate-verify claim is now wrong. See `nyxloom-trove/archive/
-> nyxloom-P98-retire-toolkit-gate-verify.md` for the full retirement record,
-> and [[nyxloom-p97-testing-code-removal-thread]] / the nyxloom-P100/P101
-> archive entries for the rest of that thread (tier/routes.toml validation,
-> `_TIER_BAND` retirement). This doc has not been re-verified against `main`
-> since; treat anything below as historical narrative, not current state.
+> which retired the GA1/GA4 toolkit. Specifically: **`nyxloom gate verify`
+> (GA1) no longer exists** — `gate` is now a reserved top-level verb with
+> zero subcommands (nyxloom-P98); gate execution and trustworthiness
+> verification live entirely in each project's own `run-gate.py`/Assay lane
+> (Assay's R2/R3 supersede GA1's purpose). The GA4 daemon verify-cadence no
+> longer fires — its `gate_verify_interval_days` knob (`config.py`) and
+> `days_since_gate_verify` input (`reconcile.py`) survive as dead,
+> schema-validated configuration surface a project can still set with no
+> effect (worth its own cleanup backlog entry; not done here).
+>
+> **Every mention of `gate verify` / `cmd_gate_verify` / GA4 below is
+> historical, not current** — do not trust an individual `✅ DONE` marker
+> next to one. Known sites, found by grep, not necessarily exhaustive:
+> the "State" line below; the BATCH B bullet citing `gate_canary.py` +
+> `cmd_gate_verify` (marked `✅ DONE`); the `cmd_gate_verify`
+> `coverage-floor:` line a few lines after it; the whole GA4 bullet
+> describing the `gate_verify_interval_days` cadence + a reconcile item
+> running `gate verify` per project; and a later mention of "the
+> background-thread-plus-drain shape GA4's gate-verify cadence already
+> proved." Everything else below (BATCH A-E) is historical record of what
+> shipped through 2026-07-26 and still accurate for that window.
+>
+> See `nyxloom-trove/archive/nyxloom-P98-retire-toolkit-gate-verify.md`
+> for the full retirement record, and `nyxloom-trove/archive/nyxloom-P99-l10-per-project-thresholds.md`,
+> `nyxloom-trove/archive/nyxloom-P100-tier-routes-toml-validation.md`,
+> `nyxloom-trove/archive/nyxloom-P101-retire-tier-band.md` for the rest of
+> that thread (tier/routes.toml validation, `_TIER_BAND` retirement). This
+> doc has not been re-verified against `main` since; treat anything below
+> as historical narrative, not current state.
 
 **State (as of 2026-07-25, see stale-notice above):** vbpub/nyxloom `main` @
 `8af765b7`, tree clean, daemon `nyxloom-prod-nyxloomd`
