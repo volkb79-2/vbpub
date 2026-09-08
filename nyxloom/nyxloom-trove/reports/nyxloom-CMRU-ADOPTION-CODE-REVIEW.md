@@ -464,3 +464,113 @@ cmru release --project nyxloom --set-version 0.4.0
 
 **Do not run the release before F1 and F2 are resolved.** F1 makes it fail outright; F2 makes it
 succeed at a version that cannot be withdrawn.
+
+---
+
+# ADDENDUM — re-review of branch tip `a85a29bd` (2026-09-08)
+
+Two changes landed after the review above: the branch history was reconstructed (reset+recommit, to
+drop the `!` marker), and the coordinator **overrode this review's finding-5 recommendation** by
+removing the OCI build/push path outright rather than releasing it.
+
+## VERDICT: **ACCEPT**
+
+Clear to merge, push, and run `cmru release --project nyxloom --set-version 0.4.0`, in that order.
+
+## History reconstruction — verified clean
+
+| was | is | tree SHA | verdict |
+|---|---|---|---|
+| `8277ebbd` | `928b7fc2` | `5058d938755486fc69cd9e5c9fd6a3217523d000` (identical) | no drift |
+| `bd93da44` | `20c0c1de` | `d5036ec91d69c8cd97b370c6496daaf959c8cdc3` (identical) | no drift |
+
+`git diff 8277ebbd 928b7fc2` is empty; both reconstructed commits retain the original parent
+`c23967f1`. The only delta is the commit message — `!` dropped from the subject, body updated. The
+pre-surgery commits are still reachable, so this was checked against the real objects, not from
+memory.
+
+## Status of the original findings
+
+| # | Finding | Status at `a85a29bd` |
+|---|---|---|
+| F1 | Not on `origin/main` | **Open — resolved by the stated plan order** (merge+push *before* release) |
+| F2 | `nyxloom-v1.0.0` wrong/unrecoverable | **Resolved** via `--set-version 0.4.0` (see below) |
+| F3 | `artifacts=` is declarative, can't defer OCI | **Applied correctly** — commands removed, not just the label |
+| F4 | Unsafe publish ordering | **Moot** — `[steps.push]` now has one command; tracked in NL-15 |
+| F5 | No `required_env` | **Moot** — the late-failing `require_push_environment()` path is gone |
+| F6 | Uncapped buildx builder | **Moot** — no docker build runs; tracked in NL-15 |
+| F7 | `structlog` 26.1.0 vs `<27`, unpinned in toolkit.txt | **Still open** — not covered by NL-15 |
+| F8 | `nyxloomd` FROM mdt (lagging cycle) | **Moot for release**; latent doc gap |
+| F9 | mdt bakes stale nyxloom 0.2.0 wheel | **Resolved by this release** — moves `nyxloom-latest` to 0.4.0 |
+
+`--set-version 0.4.0` is **mandatory, not optional**, and I verified why: `6abbc2e8
+feat(cmru)!: adopt strict portable project contracts` is already an ancestor of `origin/main`
+(message unfixable) and did touch `nyxloom/cmru.toml`, `nyxloom/build-push.py` and the backlog, so it
+still inflates nyxloom's scan. `cmru status --project nyxloom` on this tip still reports
+`major` → `nyxloom-v1.0.0`.
+
+## Assessment of the override — reasonable, and better than this review's own recommendation
+
+The original review recommended shipping wheel+OCI, de-risked via `cmru build`. **The override is the
+better call**, for four reasons:
+
+1. **It matches the operator's literal ask more closely.** The ask was a wheel "shipped with mdt just
+   like ciu and cmru wheel." Neither `ciu` nor `cmru` declares `oci-image`. Wheel-only *is* the named
+   pattern; the original recommendation would have shipped more than was asked.
+2. **It was implemented the right way.** Setting `artifacts = ["wheel"]` alone would have been a
+   no-op that still pushed images (F3). `a85a29bd` removes the actual `build-push.py` invocations
+   from both steps — the only thing that genuinely defers OCI.
+3. **The original de-risking plan had a hole.** "Rehearse with `cmru build`" would have *executed* the
+   uncapped two-target buildx build on the shared host — i.e. incurred F6's hazard in order to test
+   for it. The override never runs it at all. This review under-weighted that.
+4. **Two MAJOR findings become zero risk instead of mitigated risk**, on a first-ever orchestrated
+   release where the smallest possible surface is correct release engineering.
+
+**Is it overcautious in a way that creates a different problem?** Checked; three consequences, all
+minor and none blocking:
+
+- **(a) Stale GHCR `:latest`.** `ghcr.io/volkb79-2/nyxloomd:latest` and `nyxloom-agent-cli:latest`
+  exist and will now drift permanently from the wheel version. Nothing pulls them (nyxloomd is
+  offline), but a future consumer assuming `:latest` tracks releases would get a pre-0.4.0 image.
+  **Worth appending to NL-15**, which does not currently mention it.
+- **(b) Vestigial `[targets] registry = ["ghcr.io"]`** now names a registry nothing pushes to.
+  Harmless — no `[steps.*].login` table exists, so no login is attempted. Cosmetic.
+- **(c) `build-push.py:8-9` docstring** still claims "cmru's oci-image profile drives --build then
+  --push for release." Stale; self-correcting when NL-15 re-enables.
+
+No "the OCI path will rot" concern: `build-push.py`, `docker-bake.hcl` and the Dockerfiles are
+untouched and still drivable by `ciu` for local builds, and NL-15 carries real oracles plus an honest
+precondition ("nyxloomd actually needs to run somewhere").
+
+## Re-verified on tip `a85a29bd`
+
+- **Gate re-run independently: `tester-unified: PASS (exit 0)`**, verdict artifact `commit:
+  a85a29bd...` matching HEAD exactly, R0 `PASS` + R1 `PASS`, both `verified_by_assay: true`, judge
+  `assay 4.0.0`. (R1 again vacuous — `considered: 0` — since this tip touches only `cmru.toml` and
+  backlog markdown, no `src/`. R0 is what carries.) The first read of the verdict file returned the
+  *previous* run's commit; the result above is from the completed re-run, not that stale artifact.
+- `cmru standards --project nyxloom` → conforms.
+- `cmru dependencies` → PREFLIGHT: PASS, graph unchanged.
+- `nyxloom/cmru.toml` parses: `artifacts = ["wheel"]`, `build_step = "build"` still names a step that
+  retains a real command, `[steps.push]` retains `wheel-publish`, no `[steps.*].login` table.
+- **CHANGES.md trap cleared.** nyxloom has none, though `cmru standards` declares one. `changelog.py:234`
+  reads `path.read_text() if path.exists() else ""` and `:282` writes with `mkdir(parents=True)` —
+  create-if-missing, no error; tls-edge has shipped three releases with no CHANGES.md. Expect a new
+  `CHANGES.md` in the release commit. Because it is created fresh, cmru **KI-23**'s `- UNRELEASED`
+  fold-in gap structurally cannot bite this release.
+
+## Release sequence
+
+```bash
+# 1. merge + push FIRST (F1 -- cmru releases from fetched origin/main, not your tree)
+# 2. optional rehearsal:
+cmru release --project nyxloom --set-version 0.4.0 --dry-run
+# 3. the real thing:
+cmru release --project nyxloom --set-version 0.4.0
+```
+
+Expected, non-surprising side effects: a new `CHANGES.md` in the release commit, and the
+`nyxloom-latest` tag/Release moving off its July 0.2.0 pointer to 0.4.0 (which is what resolves F9).
+
+Remaining open item from this review, not covered by NL-15: **F7** — pin `structlog<27` in
+`modern-debian-tools-python-debug/requirements/toolkit.txt`.
