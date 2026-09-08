@@ -4,8 +4,9 @@ Companion to `assay-WAVE-QUICKWINS-LOG.md` (what was done, per item, with
 hashes). This document is the **acceptance-box status per item** plus the
 findings the controller has to decide something about.
 
-Branch `fix/assay-b068-quickwins-2026-09-08`, tip `b12ec9f2`, 5 commits over
-`a78d0280`.
+Branch `fix/assay-b068-quickwins-2026-09-08`, tip `767393d1`, 7 commits over
+`a78d0280`: the wave prompt's five items, the first LOG/REPORT hand-back, and
+**B074 as a sixth item added by controller ruling** after that hand-back.
 
 ---
 
@@ -69,11 +70,22 @@ skipped, 13 errors in 821.95s`.
 | `assay verify` unaffected | **MET** — no verified artifact, no schema, no wire change |
 | CONSUMERS documents the fields and which buckets populate them | **MET** |
 
+### B074 (item 6) — all three boxes MET
+
+| box | status |
+|---|---|
+| a pathologically-nested document handed to `assay verify` (both `-` and a file path) exits 1 with a `not valid JSON` line, not a `RecursionError` traceback | **MET** — both arms asserted separately, plus `cli.main` |
+| `verify_document`'s behavior on every legible document is unchanged | **MET** — asserted equal to calling `verify_document` directly |
+| the `provenance.py` judgment is affirmed or reversed in writing | **MET — affirmed**, with the reasoning recorded in B074 |
+
+Red-first confirmed by stashing the fix: `RecursionError` from both
+`verify_text` and `cmd_verify`.
+
 ---
 
-## Findings the controller has to decide about
+## Findings — resolved
 
-### 1. B074 filed — a THIRD instance of the `RecursionError` gap, on `assay verify`'s own untrusted-input path
+### 1. B074 — a THIRD instance of the `RecursionError` gap, on `assay verify`'s own untrusted-input path. **FIXED (item 6, `767393d1`).**
 
 B072's required sweep was widened past the four named modules to all 7
 `json.loads`/`json.load` sites in `src/assay`. It was **not clean**:
@@ -94,14 +106,23 @@ document is already a returned failure list; a deeply nested one instead
 crashes with a traceback, which a CI caller reads as a tooling fault rather
 than a bad artifact. Reproduced live.
 
-**Filed, not fixed**, because this wave's binding constraints state
-"`assay verify` is unaffected by every item above". B072's acceptance asks for
-the sweep result to be *named*, which filing satisfies. **Controller decision
-ask: fix it in the next wave, or as a hotfix?** It is the same one-token
-change, with a red-first test and one through `cmd_verify`.
+**Filed-not-fixed at the first hand-back**, on a reading of this wave's
+"`assay verify` is unaffected by every item above" constraint. **The
+controller ruled that reading wrong** — the sentence was the scope guard for
+the five original items' own changes, not a blanket prohibition on fixing a
+live crash found inside `assay verify` — and directed the fix onto this same
+branch as a sixth commit before review. Landed as `767393d1`; B074's backlog
+entry now carries a Resolution section, with the original filing text kept
+above it because that text is the sweep evidence B072's acceptance asks to be
+"named here".
 
-`provenance.py:137` was deliberately NOT counted as a third instance, and the
-reasoning is recorded in B074 so the next sweep does not re-derive it.
+`provenance.py:137` was deliberately NOT counted as a third instance, and
+B074's resolution **affirms** that judgment rather than quietly leaving it
+open: its input is the installed distribution's own pip-written
+`direct_url.json`, the enclosing function already returns `None` on every
+fault, and a `RecursionError` there would mean a broken install rather than a
+bad artifact. The sweep table therefore stands as written — three untrusted
+sites, all three now guarded; one trusted site deliberately left alone.
 
 ### 2. Two pre-existing reds on `main`, repaired here because they block the gate
 
@@ -115,9 +136,8 @@ wave.
 
 Repaired inside the B063 commit (`e426c29f`) with the reason recorded at both
 sites, because the wave prompt forbids cutting on a red gate and these two
-would have kept it red. **They are outside the five items' scope**; the
-controller may prefer them extracted into their own commit before merge, or
-filed retroactively.
+would have kept it red. Outside the five items' scope, but **the controller
+ruled this fine as landed — no extraction needed.**
 
 ### 3. One blurred commit boundary
 
@@ -150,7 +170,10 @@ Launched with `nohup` at load 2.38 with no other gate container or
 `--cpus=3` immediately after it started. **Verdict read from the gate's own
 log markers, in a separate step, never from a piped exit code (LESSONS L4).**
 
-### Verdict: **GREEN**, at `b12ec9f2`
+### Verdict: **GREEN**, at `767393d1` (the B074 tip)
+
+Re-run from scratch after B074 landed — **a new commit is a new judged tip,
+so the earlier green at `b12ec9f2` was not carried over.**
 
 ```
 tester-unified: PASS (exit 0)
@@ -176,19 +199,25 @@ independent-self-hosting-passed
 pyflakes-clean          <-- B062's widened scope, green over src/assay AND tests/
 ```
 
-**One aborted first attempt, disclosed.** The first run returned
+**Three runs in total, all disclosed.** Run 1 aborted (my fault, below); run 2
+was green at `b12ec9f2` and is superseded; run 3 is the green above, at
+`767393d1`, with the same 12 markers and the same zero diagnostics. Every run
+was launched with no other gate container or `tester-unified-gate.sh` process
+present — run 3 additionally waited for host load to fall from 9.51 to 4.52
+before starting — and each gate container was capped to `--cpus=3`
+immediately after it started (verified by `docker inspect`:
+`3000000000` NanoCpus).
+
+**The aborted first attempt.** Run 1 returned
 `NO_MEASUREMENT/DIRTY_TREE (exit 3)` — **my fault, not a product fault**: I
 wrote this REPORT and the LOG into `nyxloom-trove/reports/` *while the lane
 was running*, and assay correctly refused, naming both files and pointing out
 it had observed the tree clean at `b12ec9f2` immediately before starting. The
 refusal message was exactly right and the behaviour is the feature working.
 The two files were moved out of the tree, the tree re-verified clean at the
-same commit, and the gate re-run from scratch — that second run is the green
-above. Both documents were written back only after the gate had exited.
-
-The gate's own container was capped to `--cpus=3` immediately after start on
-both attempts, and both were launched with no other gate container or
-`tester-unified-gate.sh` process running.
+same commit, and the gate re-run from scratch — that was run 2. Both
+documents are written into the tree only after a gate has exited, run 3
+included.
 
 ---
 
@@ -201,5 +230,18 @@ both attempts, and both were launched with no other gate container or
 - No `write_progress` payload change (B071's explicitly out-of-scope half).
 - No `killed`/`survived`/`budget_exceeded` tails.
 - No `gate/` addition to the lint scope.
-- No fix to `verify.py`'s `RecursionError` gap (B074) or to
-  `provenance.py:137`.
+- No change to `provenance.py:137` — affirmed in writing as a trusted input,
+  not a fourth instance of the gap.
+
+## Controller rulings folded in
+
+All four disclosures from the first hand-back were ruled on and are recorded
+above at their own sections rather than only here:
+
+1. **B068's refuted premise** — noted, no action, fix (b) stands.
+2. **B074** — fix it now, on this branch, before review. Done: `767393d1`,
+   same rigor as B072 (red-first, through the real consumer path, backlog
+   entry updated to Resolution rather than left as a filing).
+3. **The two `host`→`bare-host` reds** — fine as landed inside `e426c29f`,
+   no extraction.
+4. **Docker-cpus slip and the blurred commit boundary** — fine, no action.

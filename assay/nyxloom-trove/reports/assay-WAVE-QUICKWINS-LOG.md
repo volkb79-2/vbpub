@@ -5,10 +5,10 @@ Worktree: `/workspaces/vbpub/.worktrees/assay-b068-quickwins`
 Wave prompt: `assay/nyxloom-trove/WAVE-PROMPT-2026-09-08-b068-quickwins.md`
 Base: `a78d0280` (the wave prompt + controller log commit)
 
-Five items, five commits, in the prompt's order. No verdict-schema change:
-`VERDICT_SCHEMA_VERSION` stays 10, `assay.toml`'s `schema_version` stays 2,
-`assay lanes --json`'s `inventory_schema` stays 1. `assay verify` is
-untouched by every item.
+Five items from the wave prompt, plus a sixth added by controller ruling
+after the first hand-back. No verdict-schema change: `VERDICT_SCHEMA_VERSION`
+stays 10, `assay.toml`'s `schema_version` stays 2, `assay lanes --json`'s
+`inventory_schema` stays 1.
 
 | # | item | commit | shape |
 |---|---|---|---|
@@ -17,6 +17,15 @@ untouched by every item.
 | 3 | B062 | `c2d89888` | 31-finding sweep + gate lint-phase widening |
 | 4 | B063 | `e426c29f` | skip-with-a-named-reason + a pre-existing gate-blocking red repaired |
 | 5 | B071 | `b12ec9f2` | `crashed`-only diagnostic tails in the mutation-state record |
+| — | LOG/REPORT | `95177803` | first hand-back, gate green at `b12ec9f2` |
+| 6 | B074 | `767393d1` | the third and last site of the `RecursionError` gap, **on controller ruling** |
+
+**Scope note on the wave's "`assay verify` is unaffected" constraint.** It
+held for items 1-5, which is what it was written for. Item 6 changes
+`assay verify` deliberately: the controller ruled that sentence was the scope
+guard for the five original items' own changes, not a blanket prohibition on
+fixing a live crash bug found inside `assay verify` by item 2's own required
+sweep.
 
 ---
 
@@ -205,15 +214,47 @@ files are diagnostic state whose content is untrusted subprocess output.
 
 ---
 
+## 6. B074 — `767393d1` (added by controller ruling, after the first hand-back)
+
+`verify.py:2562`'s `except` tuple becomes
+`except (json.JSONDecodeError, ValueError, RecursionError)` — the **same three
+names** the other two sites carry, deliberately, so a reader comparing the
+three finds one shape rather than three variants. (`ValueError` is the
+superclass `JSONDecodeError` already belongs to; spelled out for that
+symmetry, not because it adds reach here.)
+
+Red-first, confirmed by stashing the fix and re-running against the tip: both
+`verify_text` and `cmd_verify` raised `RecursionError` on the 200,000-byte
+document.
+
+Tests: `tests/test_verify_recursion_depth.py` (8) — the bare function returns
+a failure list instead of raising; an injected `RecursionError` pins *which*
+exception is caught; two controls (an ordinary syntax error unchanged, and a
+legible-but-wrong-shaped document still reaching `verify_document`, asserted
+equal to calling it directly — the widening is a CATCH, never a validation
+change); and the real consumer path **three ways**, because they are three
+different ways in — `cmd_verify`'s stdin arm, its file-path arm (through
+`_read_file`), and `cli.main(["verify", …])` — each exiting 1 with
+`assay verify: not valid JSON` on stderr. Plus a source-level guard asserting
+all three untrusted-JSON sites still carry the identical clause, so a fourth
+variant cannot appear unnoticed.
+
+`provenance.py:137`'s judgment is **affirmed, not reversed**, and B074's
+resolution says so: its input is the installed distribution's own pip-written
+`direct_url.json`, the enclosing function is already best-effort, and a
+`RecursionError` there would mean a broken install rather than a bad
+artifact.
+
 ## Gate
 
 `./run-gate.py --worktree /workspaces/vbpub/.worktrees/assay-b068-quickwins
-tester-unified`, at `b12ec9f2`: **`tester-unified: PASS (exit 0)`**,
-`ASSAY_REGISTERED_GATE_COMPLETE=1`, all 12 `ASSAY_GATE_PHASE` markers, zero
-`ASSAY_GATE_DIAGNOSTIC` lines. Verdict read from the log's own markers in a
-separate step, never a piped exit code (LESSONS L4). Full detail, including
-the aborted first attempt I caused by writing these two documents into the
-tree mid-run, is in the REPORT's Gate section.
+tester-unified`, **re-run from scratch at `767393d1`** (a new commit is a new
+judged tip — the earlier green at `b12ec9f2` was not carried over):
+**`tester-unified: PASS (exit 0)`**, `ASSAY_REGISTERED_GATE_COMPLETE=1`,
+`run-gate: lane 'tester-unified' exit 0`, all 12 `ASSAY_GATE_PHASE` markers,
+zero `ASSAY_GATE_DIAGNOSTIC` lines. Verdict read from the log's own markers in
+a separate step, never a piped exit code (LESSONS L4). Full detail, including
+both earlier runs, is in the REPORT's Gate section.
 
 ## Bookkeeping notes for the reviewer
 
@@ -221,9 +262,10 @@ tree mid-run, is in the REPORT's Gate section.
   `nyxloom-trove/4-backlog.md` was written before the B063 commit and rode
   along inside `e426c29f`. Content is correct; only the boundary is off by one
   file.
-- **B074 filed** (`verify.py`'s `verify_text` `RecursionError` gap), from
-  B072's own required sweep. Filed, not fixed, on the wave's own
-  "`assay verify` is unaffected" constraint.
+- **B074 filed, then fixed** (`verify.py`'s `verify_text` `RecursionError`
+  gap), from B072's own required sweep. Filed-not-fixed at the first
+  hand-back on the wave's "`assay verify` is unaffected" constraint; the
+  controller overrode that reading and it landed as item 6 (`767393d1`).
 - **Two pre-existing reds repaired** (`host` → `bare-host`), outside the five
   items but inside the gate's blast radius.
 - **Host-load discipline slip, disclosed.** When capping the gate container I
