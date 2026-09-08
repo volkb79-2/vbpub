@@ -30,6 +30,37 @@ stacks = ["ntfy", "nyxloomd"]
 [deploy.profiles.tools]
 stacks = ["pwmcp-instance"]
 
+# Resource governance (ciu S15.10). Copied per root; RETIRED by ciu v8's
+# `[ciu] inherit` (SPEC-V8 draft.5 S3.1.5), which lets one vbpub-root file
+# carry this for every subproject. v7 roots are islands -- nothing inherits
+# between vbpub/nyxloom, vbpub/pwmcp and dstdns -- so until then each root
+# declares its own. See nyxloom-P103 / backlog NL-6.
+#
+# cgroup_parent is EXPLICIT, never "": ciu has no hardcoded slice default, so
+# "" falls back to the AMBIENT $CGROUP_PARENT_DEV_BACKGROUND -- which IS set in
+# this devcontainer's process environment (devcontainer.json containerEnv), and
+# is absent on other hosts and in CI, where it raises [S15.2]. Naming the slice
+# here keeps the committed config host-independent instead of silently
+# depending on an environment variable. dev-background.slice is the
+# installed, in-use host slice; nyxloom.slice was never installed anywhere and
+# a name systemd does not know fails OPEN to an unbounded transient cgroup.
+# The nyxloom-*.slice units in infra/slices/ (D-G1) need an operator install
+# with host root before they can be named here.
+#
+# device is EXPLICIT for the same fail-open reason: ciu's autodetect
+# (`findmnt --target /var/lib/docker`) returns nothing under
+# docker-outside-of-docker, and blkio caps would then be skipped silently.
+#
+# mem_limit is a first-pass ceiling only. Per D-G4
+# (docs/plan-resource-governance.md) absolute limits are HOST-owned and live
+# in the slice unit; the slice's MemoryMax is the real backstop, so a generous
+# per-container value costs nothing. Tighten once docker-stats data exists.
+[governance]
+enabled = true
+cgroup_parent = "dev-background.slice"
+mem_limit = "2g"
+device = "/dev/vda"
+
 [ciu]
 # S1.2 — independent root: refuse to run if $REPO_ROOT points elsewhere
 # (this devcontainer's shell auto-sources a sibling repo's ciu.env).

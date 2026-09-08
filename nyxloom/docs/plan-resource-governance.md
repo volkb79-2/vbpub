@@ -156,6 +156,12 @@ Also: ciu's `mem_reservation` maps to compose's **soft** `memory.low`. It does
 **not** replace the slice unit's `MemoryMin` (a hard, unreclaimable
 reservation) — the two compose.
 
+> **nyxloom-P103 correction (2026-09-08):** as of ciu 7.11.0, `cgroup_parent`
+> has no hardcoded default — `GOVERNANCE_DEFAULTS["cgroup_parent"] = ""` and an
+> unresolvable value is a hard `[S15.2]` error, not a silent `besteffort.slice`.
+> nyxloom-P103 sets the key explicitly regardless. The `device` half above is
+> still true and is why that package pins `/dev/vda`.
+
 ## D-G9 — proposed ciu changes (upstream, vbpub/ciu)
 
 Two preflight checks, catching two different failures. Neither exists today,
@@ -233,6 +239,12 @@ Also: ciu's `mem_reservation` maps to compose's soft `memory.low`, **not**
 `memory.min`. It does not replace the slice unit's `MemoryMin` — they are
 complementary.
 
+> **nyxloom-P103 correction (2026-09-08):** as of ciu 7.11.0, `cgroup_parent`
+> has no hardcoded default — `GOVERNANCE_DEFAULTS["cgroup_parent"] = ""` and an
+> unresolvable value is a hard `[S15.2]` error, not a silent `besteffort.slice`.
+> nyxloom-P103 sets the key explicitly regardless. The `device` half above is
+> still true and is why that package pins `/dev/vda`.
+
 ## D-G2 — Who may do what (the root boundary)
 
 nyxloom **can** set cgroup values: `--cgroup-parent`, `--memory`,
@@ -259,6 +271,12 @@ Answering the dstdns question directly: a project whose gate already declares
 its own placement (dstdns → `ciu` governance → `besteffort.slice`) keeps that
 placement when nyxloom runs it. nyxloom does not and should not override it —
 canonical **L16**: nyxloom requires an *interface*, never mandates infra.
+
+> **nyxloom-P103 correction (2026-09-08):** dstdns's containers run in
+> `dev-background.slice` today, not `besteffort.slice` — measured across every
+> dstdns container on this host. The mechanism described here (placement
+> follows the declaring config) is unaffected; only the slice name in the
+> example is stale.
 
 So **yes: the same image can run in different slices simultaneously**, and that
 is correct. A `tester-unified` container spawned by `ciu` lands in
@@ -297,6 +315,13 @@ governance sets a per-container `mem_limit` as a first-pass ceiling, and its
 own comment records that `besteffort.slice`'s `MemoryMax` "is the real
 host-safety backstop regardless of any per-container value (cgroup v2 accounts
 child usage against the parent slice)."
+
+> **nyxloom-P103 correction (2026-09-08):** dstdns's containers run in
+> `dev-background.slice` today, not `besteffort.slice` — the slice name above
+> is stale (measured across every dstdns container on this host);
+> `dev-background.slice`'s `MemoryMax` is the real host-safety backstop this
+> paragraph describes. nyxloom-P103's own per-container sizing cites this same
+> `dev-background.slice` backstop (8G `MemoryMax`).
 
 Per-container values remain an optional refinement for a project that has
 measured itself; they never substitute for the slice ceiling.

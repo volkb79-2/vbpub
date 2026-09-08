@@ -21,8 +21,6 @@ port = 8080
 ingress_network = "ingress_public"
 
 [ntfy.runtime]
-# systemd slice for the nyxloom service family.
-cgroup_parent = "nyxloom.slice"
 run_as_uid = 1003
 run_as_gid = 1003
 

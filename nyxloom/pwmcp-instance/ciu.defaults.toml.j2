@@ -44,3 +44,10 @@ default_lease_s = 1800
 max_lease_s = 7200
 max_clients = 2
 idle_recycle_s = 30
+
+# nyxloom-P103: 4g, not the root's 2g -- shm_size = "2gb" above is charged to
+# this container's own memory cgroup under cgroup v2. Shallow-merged over the
+# root [governance] (ciu S15.10), so the remaining governance keys still
+# inherit from it.
+[pwmcp.governance]
+mem_limit = "4g"
