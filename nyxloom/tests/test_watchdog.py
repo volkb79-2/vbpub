@@ -452,3 +452,56 @@ def test_log_signals_empty_list_emits_nothing(tmp_path):
         assert records == []
     finally:
         nyx_log.configure(level=nyx_log.CRITICAL, log_dir=None, console=False)
+
+
+# ============================================================================
+# B13 2026-09-08 (nyxloom-P104): resume_baseline -- the post-resume streak
+# baseline. detect_runaways stays untouched (its frozen contract); these are
+# ADDITIVE pure helpers. The pattern-space property (every detector pattern
+# has a working evidence branch, both directions) lives in
+# test_invariants.py's INVARIANT 5; the daemon-integration half (an
+# acknowledged condition no longer re-pauses the project) lives in
+# test_daemon.py. What is left for HERE is the fail-open edge the other two
+# deliberately cannot reach.
+# ============================================================================
+
+def test_resume_baseline_unknown_pattern_fails_open_to_armed():
+    """A RunawaySignal whose pattern this module has no evidence branch for
+    (a future detector, or a caller-constructed signal) must advance the
+    streak unconditionally -- an unrecognised pattern keeps its full
+    pre-B13 escalation power rather than being silently disarmed."""
+    from nyxloom.watchdog import resume_baseline
+
+    base = _utc(2026, 9, 8, 12, 0)
+    sig = RunawaySignal(pattern="some-future-pattern", key="some-future-pattern:x",
+                        detail="7 of something")
+    events = [
+        make_event(1, EventType.PAUSE_CLEARED, base),
+        # An event that is evidence for NO known pattern at all.
+        make_event(2, EventType.CONFIG_CHANGED, base + timedelta(seconds=1)),
+    ]
+    assert resume_baseline(sig, events) == (1, 2)
+
+
+def test_resume_baseline_keyless_pattern_matches_nothing_rather_than_everything():
+    """A malformed key (pattern name with no ':<discriminator>' suffix) must
+    not degrade into 'any event of the right TYPE counts'. The reason/task_id
+    parses out as None, and no real payload reason or task_id is None, so a
+    keyless signal simply finds no evidence -- it holds its streak instead of
+    advancing on unrelated traffic."""
+    from nyxloom.watchdog import resume_baseline
+
+    base = _utc(2026, 9, 8, 12, 0)
+    events = [
+        make_event(1, EventType.PAUSE_CLEARED, base),
+        make_event(2, EventType.SPEC_ATTENTION, base + timedelta(seconds=1),
+                   payload={"reason": "rejections"}),
+        make_event(3, EventType.ATTEMPT_CREATED, base + timedelta(seconds=2),
+                   task_id="demo-P01"),
+    ]
+    assert resume_baseline(
+        RunawaySignal(pattern="reconcile-thrash", key="reconcile-thrash",
+                      detail="d"), events) == (1, None)
+    assert resume_baseline(
+        RunawaySignal(pattern="attempt-loop", key="attempt-loop",
+                      detail="d"), events) == (1, None)

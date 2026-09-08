@@ -1741,3 +1741,94 @@ class TestContainmentGateFailsClosed:
 
         assert wrapper_main(str(spec_path)) == 0
         assert "ran" in (attempt_dir / "attempt.log").read_text()
+
+
+class TestSessionCaptureDelaySkip:
+    """B25 2026-09-08 (nyxloom-P104): SESSION_CAPTURE_DELAY is a REAL 5s
+    wall-clock block inside every wrapper leg -- every dispatch AND every
+    resume -- taken before the wrapper even starts waiting on the child. For
+    a route whose capture can never succeed it bought nothing. The wrapper
+    now skips both the wait and the call when adapters.can_capture_session
+    says so.
+
+    Both tests below patch SESSION_CAPTURE_DELAY to a value FAR larger than
+    production's 5s, so the oracle is unambiguous under load: a skipped wait
+    finishes in well under a second, an honoured one cannot possibly finish
+    inside the assertion window. (The complementary proof that a
+    capture-CAPABLE route still captures for real -- with neither
+    session_capture nor session_discover declared, the claude case -- is
+    TestStreamJsonSessionCapture above, which this change must not and does
+    not disturb.)"""
+
+    HUGE_DELAY = 60.0
+
+    def _run(self, tmp_path, route_def: dict, *, delay: float | None = None) -> tuple[float, list]:
+        """Run one real wrapper leg with a trivial, instantly-exiting child.
+        Returns (elapsed_seconds, capture_session call list)."""
+        project, task_id, attempt_id = "demo", "demo-P01-sample", "att-1"
+        seed(project, task_id, attempt_id)
+
+        attempt_dir = tmp_path / "attempt"
+        attempt_dir.mkdir(parents=True)
+        spec = WrapperSpec(
+            project=project, task_id=task_id, attempt_id=attempt_id,
+            argv=[sys.executable, "-c", "pass"],
+            cwd=str(tmp_path),
+            log_path=str(attempt_dir / "attempt.log"),
+            receipt_path=str(attempt_dir / "receipt.json"),
+            attempt_dir=str(attempt_dir),
+            route_def=route_def,
+        )
+        spec_path = attempt_dir / "spec.json"
+        spec_path.write_text(json.dumps(spec.to_dict()), encoding="utf-8")
+
+        calls: list = []
+
+        def _spy(route, **kw):
+            calls.append(route.route_id)
+            return None
+
+        with patch("nyxloom.wrapper.SESSION_CAPTURE_DELAY",
+                   self.HUGE_DELAY if delay is None else delay), \
+                patch("nyxloom.adapters.capture_session", _spy):
+            start = time.monotonic()
+            exit_code = wrapper_main(str(spec_path))
+            elapsed = time.monotonic() - start
+
+        assert exit_code == 0
+        return elapsed, calls
+
+    def test_no_capture_mechanism_skips_both_the_wait_and_the_call(self, tmp_state, tmp_path):
+        """A non-claude route with neither session_capture nor
+        session_discover: capture_session provably returns None (pinned in
+        test_adapters.py), so the wrapper must not pay the delay at all --
+        and must not make the pointless call either."""
+        elapsed, calls = self._run(tmp_path, {
+            "route_id": "fake-impl", "cli": "fake", "model": "fake-model",
+            "trust": "operator",
+        })
+        assert calls == [], "capture_session must not be called at all for such a route"
+        assert elapsed < self.HUGE_DELAY / 4, (
+            f"the wrapper still paid the capture delay ({elapsed:.1f}s of "
+            f"{self.HUGE_DELAY}s) for a route that can never capture"
+        )
+
+    def test_a_capture_capable_route_still_waits_and_still_calls(self, tmp_state, tmp_path):
+        """The safety half: the skip is NARROW. A route that DOES declare a
+        mechanism keeps the full pre-B25 behaviour -- the wait is honoured
+        and capture_session is called -- because the delay exists precisely
+        to let the CLI write the artifact the capture reads. Measured
+        against a small real delay rather than HUGE_DELAY so the test costs
+        one second, not sixty."""
+        route_def = {
+            "route_id": "discoverable", "cli": "fake", "model": "fake-model",
+            "trust": "operator", "session_discover": ["true"],
+        }
+        elapsed, calls = self._run(tmp_path, route_def, delay=1.0)
+        assert calls == ["discoverable"], (
+            "a route declaring session_discover must still have its session captured"
+        )
+        assert elapsed >= 0.9, (
+            f"a capture-capable route must still honour SESSION_CAPTURE_DELAY "
+            f"(finished in {elapsed:.2f}s of a 1.0s delay)"
+        )

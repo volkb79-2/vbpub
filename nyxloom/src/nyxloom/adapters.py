@@ -79,6 +79,11 @@ INTERFACE CONTRACT (frozen):
     session_discover argv set: run it (timeout 30), parse JSON list, return
       the id field of the entry whose title/dir matches worktree.
     else None.
+- can_capture_session(route) -> bool: whether ANY of capture_session's three
+    branches above is reachable for this route (B25 2026-09-08). False only
+    when cli != 'claude' AND no session_capture AND no session_discover --
+    i.e. capture_session provably returns None. wrapper.py skips both its
+    SESSION_CAPTURE_DELAY wait and the call itself when this is False.
 - extract_usage(route, attempt_dir, log_text) -> types.Usage:
     usage_source 'output-format-json': the LAST '{'-starting line of
       log_text that json-parses and has 'usage' or 'total_cost_usd' ->
@@ -978,6 +983,39 @@ def _stream_json_session_id(log_path: Path) -> str | None:
         return None
     session_id = data.get("session_id")
     return session_id if isinstance(session_id, str) and session_id else None
+
+
+def can_capture_session(route: RouteDef) -> bool:
+    """Could `capture_session` EVER return a handle for this route?
+
+    B25 2026-09-08 (nyxloom-P104). The wrapper blocks for a real
+    wrapper.SESSION_CAPTURE_DELAY (5s) before calling capture_session, on
+    every dispatch and every resume, to give the CLI time to write the
+    artifact the capture reads. For a route with no capture mechanism at
+    all that wait buys nothing -- capture_session falls straight through
+    its three branches to `return None` -- so it is 5 wasted wall-clock
+    seconds per leg, every leg.
+
+    This predicate is the ONE place that "does this route have a capture
+    mechanism" is decided, and it lives here rather than in wrapper.py on
+    purpose: it must be read off the SAME branch structure capture_session
+    itself uses, or a future fourth mechanism would silently reintroduce
+    the bug in the opposite direction (a route that CAN capture, skipped).
+    test_adapters.py couples the two directly rather than trusting this
+    comment.
+
+    False requires all three of capture_session's branches to be
+    unreachable:
+      - `cli != 'claude'`: a claude route reads `session_id` out of the
+        stream-json log's first line and needs NEITHER declared field, so
+        it can succeed with both unset -- the case the backlog text
+        originally missed.
+      - no `session_capture`
+      - no `session_discover`
+    """
+    if route.cli == "claude":
+        return True
+    return bool(route.session_capture) or bool(route.session_discover)
 
 
 def capture_session(route: RouteDef, *, attempt_dir: Path, worktree: str,

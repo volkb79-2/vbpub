@@ -63,6 +63,21 @@ cleanup script`) are unchanged and still accurate. No other row is
 affected: `reference/AUTHORING.md` and `tests/test_lint.py` (this
 package's other touched files) have no row in this document.
 
+Re-measured 2026-09-08 (nyxloom-P104) for `watchdog.py`'s row: 257 -> 395
+lines, the only row this package moved past its tolerance. B13 adds
+`resume_baseline` (plus `last_resume_index` / `has_new_evidence_after`), the
+post-resume streak baseline `daemon.py`'s `_apply_watchdog` now consults --
+additive, and pure in exactly the module's existing sense, so
+`WatchdogConfig`/`RunawaySignal`/`detect_runaways` are untouched and the
+frozen interface contract holds. Most of the growth is docstring: the
+defect, the per-pattern evidence rules, and the four fail-open/ungated
+safety properties are recorded where the functions are, per this module's
+own convention. Ownership and responsibility text are unchanged and still
+accurate -- the backstop stays independent of the engine it watches. No new
+control-plane import (`daemon.py` already imports `watchdog`). The other
+files P104 touched (`daemon.py`, `adapters.py`, `wrapper.py`) all remain
+inside their own tolerances.
+
 ## Mechanical contract (enforced by `tests/test_core_characterization.py`)
 
 This document is checked by tests, so a reader editing it knows what fails and
@@ -149,11 +164,11 @@ so each needs a named owner before that plane is rewritten around it.
 | `src/nyxloom/intake_chat.py` | 423 | CR-01: intake writes handoff documents; document authority rules apply to what it produces |
 | `src/nyxloom/control_auth.py` | 469 | CR-15: the control plane's trust root. Owns the credential store, the operator identity that becomes an event `Actor`, the shared audited-refusal helper, and the notification channel's closed-by-default posture. CR-05 may move the handlers that call it; the auth-before-body/target boundary and the single refusal shape move with them, never around them |
 | `src/nyxloom/commands.py` | 451 | CR-05, CR-16: operator chat-ops are effects; they must route through the same effect boundary and health alarm. CR-15 (2026-08-03) made its mutating verbs an authenticated ingress: they resolve a named channel operator before any project lookup and refuse otherwise |
+| `src/nyxloom/watchdog.py` | 395 | CR-16 (re-measured 2026-09-08, nyxloom-P104): the runaway backstop must remain independent of the engine it watches. Adds pattern (d), `tick-error-streak` -- the one pattern in this module that detects TOO LITTLE activity (every pass raising) rather than too much. B13 adds the post-resume streak baseline (`resume_baseline`) beside, never inside, the frozen detector contract |
 | `src/nyxloom/log.py` | 372 | CR-14: structured logging is the trace substrate. Reserved-key traps (`event=`, `level=`) are documented in `nyxloom-trove/DOCTRINE.md`; renaming a field is a behavioural change |
 | `src/nyxloom/backlog_items.py` | 324 | CR-12: auto-tick on merge is product evidence; it must read the typed merge record, not re-parse markdown |
 | `src/nyxloom/carver_session.py` | 291 | CR-06, CR-07: the carver session projector is planner input; keep it pure when the planner is rewritten |
 | `src/nyxloom/frontmatter.py` | 281 | CR-01, CR-07: handoff parsing is the workflow compiler's front end; schema changes land here with the compiler, not before |
-| `src/nyxloom/watchdog.py` | 257 | CR-16 (re-measured 2026-08-03): the runaway backstop must remain independent of the engine it watches. Adds pattern (d), `tick-error-streak` -- the one pattern in this module that detects TOO LITTLE activity (every pass raising) rather than too much |
 | `src/nyxloom/findings.py` | 207 | CR-14: advisory system-to-user channel; never an authority input |
 | `src/nyxloom/leases.py` (see above) | 114 | CR-05 |
 | `src/nyxloom/gate_runner.py` | 110 | CR-02, CR-12: shared gate execution primitive; its result is typed evidence bound to a commit |

@@ -2824,3 +2824,68 @@ def test_doctrine_manifest_is_skipped_when_it_would_eat_argv_headroom():
     )
     assert "reference/DOCTRINE.md" not in prompt
     assert "Handoff:" in prompt          # the real prompt still built
+
+
+# ===========================================================================
+# B25 2026-09-08 (nyxloom-P104): can_capture_session -- the predicate
+# wrapper.py uses to skip SESSION_CAPTURE_DELAY (a real 5s wall-clock block
+# per dispatch AND per resume) for routes whose capture can never succeed.
+# ===========================================================================
+
+def _route(**kw) -> RouteDef:
+    base = dict(route_id="r1", cli="fake", model="m")
+    base.update(kw)
+    return RouteDef(**base)
+
+
+CANNOT_CAPTURE = [
+    pytest.param(_route(), id="bare-non-claude"),
+    pytest.param(_route(session_capture=None, session_discover=[]), id="both-explicitly-empty"),
+    pytest.param(_route(cli="codex", usage_source="exec-output-footer"), id="codex-no-capture"),
+]
+
+CAN_CAPTURE = [
+    pytest.param(_route(cli="claude"), id="claude-needs-neither-field"),
+    pytest.param(_route(session_capture="newest-jsonl"), id="newest-jsonl"),
+    pytest.param(_route(session_discover=["true"]), id="session-discover"),
+    pytest.param(_route(cli="claude", session_capture="newest-jsonl"), id="claude-and-field"),
+]
+
+
+@pytest.mark.parametrize("route", CANNOT_CAPTURE)
+def test_can_capture_session_false_for_routes_with_no_mechanism(route):
+    assert adapters.can_capture_session(route) is False
+
+
+@pytest.mark.parametrize("route", CAN_CAPTURE)
+def test_can_capture_session_true_when_any_branch_is_reachable(route):
+    """Note `claude-needs-neither-field`: a claude route captures from the
+    stream-json log's FIRST LINE and declares NEITHER session_capture nor
+    session_discover, so "neither field is set" alone is NOT a safe skip
+    condition. Skipping there would silently stop capturing resume handles
+    for the estate's main route -- the whole reason this predicate lives
+    beside capture_session rather than being spelled out in wrapper.py."""
+    assert adapters.can_capture_session(route) is True
+
+
+@pytest.mark.parametrize("route", CANNOT_CAPTURE)
+def test_capture_session_really_returns_none_when_can_capture_is_false(route, tmp_path):
+    """The COUPLING, so the predicate can never drift from the function it
+    predicts: for every route shape can_capture_session calls impossible,
+    the real capture_session must actually return None. Without this, a
+    future fourth capture mechanism added to capture_session but not to the
+    predicate would have its handle silently dropped by wrapper.py's skip,
+    with nothing failing."""
+    assert adapters.can_capture_session(route) is False
+    # Give it every chance to succeed: a real attempt dir, a real log file
+    # with a valid stream-json first line (which a CLAUDE route would
+    # capture from), and a launched_at in the past.
+    log_path = tmp_path / "attempt.log"
+    log_path.write_text('{"type":"system","session_id":"would-have-worked"}\n', encoding="utf-8")
+    assert adapters.capture_session(
+        route,
+        attempt_dir=tmp_path,
+        worktree=str(tmp_path),
+        launched_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+        log_path=log_path,
+    ) is None

@@ -50,6 +50,12 @@ INTERFACE CONTRACT (frozen):
        spec.log_path lets capture_session read a claude route's stream-json
        first line directly for the CURRENT run's actual log file — correct
        on both first dispatch and resume, where the log path differs.)
+       B25 2026-09-08: BOTH the 5s wait and the call are skipped outright
+       when adapters.can_capture_session(route) is False (a non-claude cli
+       with neither session_capture nor session_discover declared), since
+       capture_session then provably returns None — 5 wasted wall-clock
+       seconds per leg. Purely subtractive; the None path already did
+       nothing.
     6. Install SIGTERM/SIGINT handler: forward SIGTERM to the child's
        process group, wait up to spec.term_grace_seconds (default 30), then
        SIGKILL the group; classify as interrupted. For a CONTAINED leg the
@@ -539,11 +545,27 @@ def wrapper_main(spec_path: str) -> int:
                 except OSError:
                     pass
 
-            # Step 5: Capture session after delay (interruptible)
-            capture_deadline = time.monotonic() + SESSION_CAPTURE_DELAY
-            while not interrupted and time.monotonic() < capture_deadline:
-                time.sleep(0.05)
-            if not interrupted:
+            # Step 5: Capture session after delay (interruptible).
+            #
+            # B25 2026-09-08 (P104): SKIP the wait AND the call outright for a
+            # route with no capture mechanism at all. The delay exists to give
+            # the CLI time to write the artifact capture_session reads; a route
+            # whose capture_session provably returns None
+            # (adapters.can_capture_session -- non-claude cli, no
+            # session_capture, no session_discover) has no artifact to wait
+            # for, so the 5 seconds were pure wall-clock loss on EVERY dispatch
+            # and EVERY resume of that route. Purely subtractive: the skipped
+            # call could only ever have returned None, and the None path
+            # already does nothing.
+            capture_possible = adapters.can_capture_session(route_def)
+            if capture_possible:
+                capture_deadline = time.monotonic() + SESSION_CAPTURE_DELAY
+                while not interrupted and time.monotonic() < capture_deadline:
+                    time.sleep(0.05)
+            else:
+                log.debug("session-capture-skipped", project=spec.project, task=spec.task_id,
+                          attempt=spec.attempt_id, route=route_def.route_id)
+            if capture_possible and not interrupted:
                 try:
                     # P05a (§5): a provider call -> DEBUG.
                     log.debug("session-capture-attempt", project=spec.project, task=spec.task_id,

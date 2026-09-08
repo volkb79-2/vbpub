@@ -55,8 +55,11 @@ INTERFACE CONTRACT (frozen):
        ALWAYS drops the matching repeating action(s) from THIS pass, and
        once the same signal.key has persisted for
        RUNAWAY_PERSIST_AFTER_CYCLES consecutive passes (in-memory streak,
-       disposable), auto-pauses the project ('drain-agents') — see
-       _apply_watchdog's own docstring for the full contract.
+       disposable), auto-pauses the project ('drain-agents'). That streak
+       is frozen while the project is already paused (P49) and, past the
+       operator's most recent PAUSE_CLEARED, advances only on NEW evidence
+       of the signal's own shape (B13/P104) — see _apply_watchdog's own
+       docstring for the full contract.
     3. execute(project, action) for each — see EXECUTION MAP below.
     4. render.render_all(...) if any event was appended this pass.
     5. Wrap the whole pass in try/except: append TICK_ERROR (bounded repr)
@@ -425,6 +428,29 @@ HISTORY_REJECTION_WINDOW_SECONDS = 7 * 24 * 3600
 # never a wrong-direction outcome.
 RUNAWAY_PERSIST_AFTER_CYCLES = 3
 
+
+@dataclass(frozen=True)
+class _RunawayStreak:
+    """Per-(project, RunawaySignal.key) watchdog ladder state (B13 2026-09-08).
+
+    Disposable in-memory only -- the same convention as the bare-int streak it
+    replaces, and as _stall_cache's two-pass CPU cache. A restart re-reads the
+    resume and the evidence from the event log on the very next pass, so
+    losing it costs at most one extra baseline reset, never a wrong direction.
+
+    streak            consecutive qualifying passes; RUNAWAY_PERSIST_AFTER_
+                      CYCLES of them grade the remedy up to auto-pause.
+    resume_marker     `sequence` of the PAUSE_CLEARED this streak is counted
+                      from (None = no operator resume in the window).
+    counted_evidence  `sequence` of the newest event-shaped evidence already
+                      counted, so the SAME event cannot advance the streak
+                      twice (the strict-not-monotone rule; see
+                      _apply_watchdog).
+    """
+    streak: int = 0
+    resume_marker: int | None = None
+    counted_evidence: int | None = None
+
 # B21 2026-07-23 (D-R16 §3, scope-amendment escalation; D-B21-2): the bounded
 # cap on mid-flight scope.touch widenings PER TASK -- a module constant, not a
 # config.Policy field (Policy is frozen for this package, same reasoning as
@@ -716,7 +742,14 @@ class Daemon:
         # graduated remedy (see _apply_watchdog); the human-facing
         # escalation itself is deduped via the persisted event log instead
         # (restart-safe), not via this dict.
-        self._runaway_streak: dict[str, int] = {}
+        # B13 2026-09-08 (P104) widened the VALUE from a bare int to
+        # _RunawayStreak so the resume marker and the already-counted evidence
+        # sequence live on the SAME key with the SAME lifetime -- deliberately
+        # one dict rather than three, so B13 adds no new unbounded-growth
+        # surface of its own. (The dict is still never pruned; its keys are
+        # bounded by the distinct RunawaySignal.keys a project has ever
+        # produced, and that pre-existing shape is out of B13's scope.)
+        self._runaway_streak: dict[str, _RunawayStreak] = {}
         # F018 P3d: set of project_ids that already got their enablement-guard
         # WARN in this daemon instance (emit once per daemon lifetime).
         self._carver_enablement_warned: set[str] = set()
@@ -2792,6 +2825,33 @@ class Daemon:
         instant re-trip, while still re-pausing if the condition is
         genuinely still active rather than silently disabling the
         watchdog.
+
+        B13 2026-09-08 (P104) completes that fix on the RESUME side. P49
+        only stopped the streak climbing WHILE PAUSED; it left "N passes
+        have gone by since the resume" enough to climb it again, because
+        detect_runaways re-detects a persistent-but-acknowledged condition
+        (a 7-day-windowed rejection history, a still-trailing
+        reconcile-thrash run) identically on every pass. So the watchdog
+        auto-re-paused a few cycles after EVERY resume until the condition
+        finally aged out. Fix: past the most recent PAUSE_CLEARED
+        (watchdog.resume_baseline -- pure, one branch per detector
+        pattern), the streak advances only on a pass carrying FRESH
+        evidence, which is either an action this signal would suppress
+        appearing in THIS pass's plan, or an event of this signal's own
+        shape newer than the one already counted. The first source is
+        load-bearing, not belt-and-braces: for reconcile-thrash and
+        attempt-loop the event is exactly what suppression prevents, so on
+        events alone the ladder was unreachable forever after any resume
+        (review F1). The per-pass comparison is STRICT, so one new event
+        cannot re-arm a whole RUNAWAY_PERSIST_AFTER_CYCLES climb. The full
+        reasoning, including why the suppression source cannot resurrect
+        the original bug, is inline at the decision below.
+
+        Escalation (i) and suppression (ii) stay UNGATED, so the repeating
+        action is still dropped every pass; only the pause ladder (iii)
+        needs fresh evidence. A genuinely still-worsening condition still
+        re-pauses after RUNAWAY_PERSIST_AFTER_CYCLES fresh passes.
+
         Returns (filtered_actions, new_events) -- both empty/unchanged when
         no runaway is detected (the overwhelmingly common case).
 
@@ -2800,6 +2860,26 @@ class Daemon:
         advisory-degradation, justified in the handler comment -- because a
         detector crash must not become a reason to skip the actions the
         planner already decided are correct."""
+        # B13 FAIL-OPEN LIFETIME (review F4). This 500-event slice is the
+        # window BOTH detect_runaways and watchdog.resume_baseline see, so it
+        # also bounds how long a resume keeps protecting the project: once the
+        # anchoring PAUSE_CLEARED is pushed out by newer events,
+        # resume_baseline reports no resume and the pre-B13 unconditional
+        # advance returns. That is the deliberately safe direction (fail-open
+        # toward an ARMED watchdog, never toward a silently disabled one), but
+        # it is a real bound and it is SHORTER than the conditions it protects
+        # against: HISTORY_REJECTION_WINDOW_SECONDS keeps a rejection history
+        # true for 7 days, while 500 events is ~5 days at the measured organic
+        # rate of ~70-110 events/project/day -- and much less on a busy
+        # project. A project that stays noisy after a resume can therefore
+        # start re-pausing on passes alone again once the acknowledgment
+        # scrolls out. Widening it means widening the detector's own window
+        # too (they must stay the same slice, or a signal could be detected
+        # from events its own resume anchor can no longer be compared
+        # against), which is a change to P44's frozen contract -- deliberately
+        # not made here. Note that the SAME 500-event window is what makes the
+        # suppression-based evidence source safe (see the decision below), so
+        # the two cannot be tuned independently.
         recent_events = list(self._require_events(project, events))[-500:]
         try:
             signals = watchdog.detect_runaways(recent_events, watchdog.WatchdogConfig())
@@ -2821,11 +2901,8 @@ class Daemon:
             streak_key = f"{project}:{sig.key}"
 
             if project_paused:
-                self._runaway_streak[streak_key] = 0
+                self._runaway_streak[streak_key] = _RunawayStreak()
                 continue
-
-            streak = self._runaway_streak.get(streak_key, 0) + 1
-            self._runaway_streak[streak_key] = streak
 
             if not self._runaway_recently_escalated(project, sig.key,
                                                      events=recent_events):
@@ -2835,7 +2912,98 @@ class Daemon:
                      "detail": sig.detail},
                 ))
 
+            # Suppression is measured against THIS PASS'S ORIGINAL plan, not
+            # against the progressively-filtered list: two signals routinely
+            # come from ONE condition (a 6x SpecAttention run trips both
+            # 'reconcile-thrash' and the per-reason 'notification-storm'), and
+            # whichever ran first would otherwise have eaten the only action
+            # the second one could have seen, reporting it as "nothing to
+            # suppress" purely from iteration order.
+            would_suppress = len(self._suppress_runaway_action(actions, sig)) < len(actions)
             filtered = self._suppress_runaway_action(filtered, sig)
+
+            state = self._runaway_streak.get(streak_key, _RunawayStreak())
+            resume_marker, newest_evidence = watchdog.resume_baseline(sig, recent_events)
+
+            # B13 2026-09-08 (P104), three parts -- see watchdog.resume_baseline:
+            #
+            # (1) BASELINE SHIFT. An operator resume this key has not counted
+            #     from yet drops its streak back to 0, exactly once per resume
+            #     (identified by the PAUSE_CLEARED sequence). P49's paused-pass
+            #     reset does not fire at all in the common shape -- the
+            #     operator resumes before another pass runs while paused, so
+            #     the streak is still sitting AT the threshold and the very
+            #     first post-resume pass re-pauses.
+            if state.resume_marker != resume_marker:
+                state = _RunawayStreak(resume_marker=resume_marker)
+
+            # (2) WHAT COUNTS AS FRESH EVIDENCE. Two sources, OR'd:
+            #
+            #     (a) `would_suppress` -- this pass's plan contained an action
+            #         this signal suppresses. Live proof, THIS pass, that the
+            #         planner is still trying to re-run the thing the watchdog
+            #         is blocking.
+            #     (b) an event of this signal's own shape, newer than the one
+            #         already counted.
+            #
+            #     (a) is not an optimisation, it is the load-bearing half
+            #     (review F1). For 'reconcile-thrash:<reason>' and
+            #     'attempt-loop:<task_id>' the event (b) looks for is EXACTLY
+            #     what _suppress_runaway_action stops from ever being appended
+            #     again -- the report is the thing suppressed -- so on (b)
+            #     alone a condition that is ACTIVELY worsening produces no
+            #     evidence at all, the streak freezes at 0 and the project can
+            #     never re-pause. That made auto-pause permanently unreachable
+            #     after any resume for the two patterns the watchdog most
+            #     exists to catch.
+            #
+            #     (a) cannot resurrect the original B13 bug, and the reason is
+            #     structural rather than lucky: every SpecAttention branch in
+            #     rules_attention.py is gated on an "already open in the recent
+            #     window" flag (_spec_attention_recently_emitted, the same
+            #     500-event window this method reads). A STALE, acknowledged
+            #     'reconcile-thrash:<reason>' is by construction a trailing run
+            #     of >5 SPEC_ATTENTION{reason} events INSIDE that window, so
+            #     the flag is necessarily set, the rule does not re-plan, and
+            #     there is nothing to suppress -- `would_suppress` stays False
+            #     and the streak stays put, which is the whole point of B13.
+            #     It goes True only when the planner genuinely re-plans the
+            #     action anyway, which is not stale history by definition.
+            #
+            # (3) STRICT, NOT MONOTONE. Advancing needs evidence on THIS pass.
+            #     (b) therefore compares against the newest evidence sequence
+            #     already counted, not merely "something after the resume":
+            #     the latter let ONE new event re-arm a full
+            #     RUNAWAY_PERSIST_AFTER_CYCLES climb on passes alone -- a
+            #     miniature of the bug B13 exists to kill. Nothing is lost:
+            #     the streak never decays, so a genuinely intermittent runaway
+            #     still reaches the threshold, just over more elapsed passes.
+            #
+            # Escalation (above) and suppression (above) stay UNGATED by all
+            # of this: an acknowledgment must never re-arm the repeating
+            # action, it only stops the pause LADDER re-climbing on stale
+            # history.
+            if resume_marker is None:
+                # No resume in the window: B13 does not govern this project
+                # yet. P44's own contract stands unchanged -- N consecutive
+                # passes with the condition detected auto-pause it.
+                fresh = True
+            else:
+                fresh = would_suppress or (
+                    newest_evidence is not None
+                    and (state.counted_evidence is None
+                         or newest_evidence > state.counted_evidence)
+                )
+
+            if fresh:
+                state = _RunawayStreak(
+                    streak=state.streak + 1,
+                    resume_marker=resume_marker,
+                    counted_evidence=(newest_evidence if newest_evidence is not None
+                                      else state.counted_evidence),
+                )
+            self._runaway_streak[streak_key] = state
+            streak = state.streak
 
             if streak >= RUNAWAY_PERSIST_AFTER_CYCLES:
                 pause_ev = self._auto_pause_for_runaway(project, cfg, states, sig)
