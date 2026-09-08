@@ -124,7 +124,8 @@ def test_configure_apt_real_backup_and_policy(tmp_path, monkeypatch):
     sources = Path("/etc/apt/sources.list.d/debian.sources")
     monkeypatch.setattr("pathlib.Path.is_file", lambda self, *a, **kw: True)
     monkeypatch.setattr("shutil.copy2", lambda *a, **kw: None)
-    monkeypatch.setattr(installer_mod.time, "sleep", lambda seconds: None)
+    sleep_calls = []
+    monkeypatch.setattr(installer_mod.time, "sleep", lambda seconds: sleep_calls.append(seconds))
     installer.actions.outputs[("/usr/bin/apt-cache", "policy")] = "nothing"
     installer.actions.outputs[("/usr/bin/apt-get", "update", "-qq")] = ""
     installer.actions.outputs[("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "git", "python3")] = ""
@@ -133,6 +134,10 @@ def test_configure_apt_real_backup_and_policy(tmp_path, monkeypatch):
     # Every retry attempt re-ran apt-get update, not just the first.
     update_calls = [p for p in installer.actions.planned if p.argv == ("/usr/bin/apt-get", "update", "-qq")]
     assert len(update_calls) == 3
+    # Regression: must sleep between attempts 1->2 and 2->3 (2 sleeps), but
+    # NOT after the final (3rd) attempt before raising -- there's no point
+    # backing off before giving up for good.
+    assert len(sleep_calls) == 2
 
 
 def test_configure_apt_retries_transient_suite_resolution_failure(tmp_path, monkeypatch):

@@ -49,6 +49,25 @@ def test_cli_install_dry_run(tmp_path, capsys):
     assert plan["result"] == "planned"
 
 
+def test_cli_install_dry_run_via_inline_config_json(tmp_path, capsys):
+    """--config-json (inline, no file) is the mechanism a user pastes into a
+    web-hoster's custom-command field would need -- it has existed since
+    build_parser() added it but had zero test coverage."""
+    data = {**BASE_CONFIG,
+            "state_dir": str(tmp_path / "state"),
+            "log_dir": str(tmp_path / "logs")}
+    rc = main(["--action", "install", "--config-json", json.dumps(data), "--dry-run"])
+    assert rc == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["result"] == "planned"
+
+
+def test_cli_config_and_config_json_mutually_exclusive(tmp_path):
+    cfg = write_config(tmp_path)
+    with pytest.raises(SystemExit):
+        main(["--action", "install", "--config", cfg, "--config-json", "{}", "--dry-run"])
+
+
 def test_cli_status_requires_state(tmp_path):
     cfg = write_config(tmp_path)
     rc = main(["--action", "status", "--config", cfg, "--dry-run"])
