@@ -11,6 +11,11 @@ read only after my own view had formed.
 
 ## Verdict: **ACCEPT-conditional** — 3 blockers, 3 non-blocking observations
 
+> Amended after filing: the confirmatory full-suite run for BLOCKER 3's
+> implementation mutant landed and it **survives** (4257 passed, 77 skipped,
+> exit 0, with `Verdict._check_discarded_disposition` disabled entirely).
+> BLOCKER 3 is strengthened accordingly; nothing else changed.
+
 The design is right and the execution is unusually careful. Shape 1 as an array
 of `mutant_outcome` records is the correct call and the reasoning for it
 (LOG §1) survives adversarial reading; the four re-derivations are real
@@ -240,19 +245,25 @@ disclosure says "both `Verdict` and `verify.py` refuse an unattributed one, in
 both producer directions", and for the *status pairing* that is not what the
 code does.
 
-Separately, `Verdict._check_discarded_disposition` looks untested as a distinct
-witness. With its body replaced by an immediate `return` in a throwaway copy,
-`test_runner_ingested_r2`, `test_verify_ingested_r2`,
-`test_verdict_mutation_payload`, `test_mutation_judge`, `test_verdict_judgment`
-and W7's locked acceptance suite all still pass (**335 passed**). I scope that
-claim to those six modules — the confirmatory whole-`tests/` run for this
-particular mutant was still in flight when I wrote up, and I did not want to
-hold the review for it, since the substantive finding above (the model accepting
-both mislabels) is established independently by direct reconstruction. The fix
-verifier should re-run this mutant across the full suite; if it also survives
-there, the model half of the fourth re-derivation is carrying no test weight at
-all and the two tests prescribed below are load-bearing rather than
-belt-and-braces.
+**Separately, and measured: `Verdict._check_discarded_disposition` carries no
+test weight at all.** With its entire body replaced by an immediate `return` in
+a throwaway copy — i.e. the model half of B070's fourth re-derivation deleted
+outright, disjointness, line rule, arithmetic and the native-residual refusal
+together:
+
+* `test_runner_ingested_r2`, `test_verify_ingested_r2`,
+  `test_verdict_mutation_payload`, `test_mutation_judge`,
+  `test_verdict_judgment` and W7's locked acceptance suite: **335 passed**;
+* the whole local suite, `python3 -m pytest tests/ -q -p no:randomly`:
+  **4257 passed, 77 skipped, exit 0** in 430 s.
+
+So the method is entirely shadowed by `verify.py`'s independently-worded raw
+checks as far as the test suite is concerned. That is the opposite of the
+two-independent-witnesses discipline this project applies everywhere else (and
+which this very wave was careful about for the RAW-vs-model ordering wording —
+the negatives there deliberately assert the raw checker's phrasing so the model's
+refusal is not counted twice). The prescription below therefore closes two things
+at once: it gives the method a rule only it can state, and gives it tests.
 
 **Prescription.** In `_check_discarded_disposition`, which already receives the
 policy and whose caller (`verdict.py:4358-4361`) has `r2_claim` in hand, re-derive
