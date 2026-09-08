@@ -728,8 +728,15 @@ are fixed.
 
 ## Probe log (carver-run, ciu 7.11.0, `input_revision` + the proposed edits)
 
-Run at carve time, then fully reverted (`git status` clean, generated artifacts
-removed, the `--dry-run`-created docker network disconnected and deleted).
+Run at carve time, then fully reverted: `git status` clean, generated artifacts
+removed, and the ONE network the probe created — `pwmcp-<instance>-network`, from
+pwmcp's `auto_connect_network = true` — disconnected from the devcontainer and
+deleted (confirmed: `docker network ls` shows no `pwmcp` network).
+**Not probe debris, and must NOT be deleted:** the worktree's own
+`<logical-name>-<instance>-network`, created by `ciu worktree create` and recorded
+in `ciu.worktree-instance.json` under `runtime.network`. It predates any probe
+(identical creation timestamp to the instance record) and the devcontainer is
+attached to it by design.
 
 - Baseline, no governance: `nyxloomd` overlay **absent entirely**; `ntfy` overlay
   carried only its configfile bind; `ntfy/ciu.compose.yml:14` =
@@ -793,9 +800,16 @@ cd ../pwmcp && ciu up --dir . --dry-run --define-root "$PWD" # O3
 **Mandatory teardown and hygiene** (an oracle run that skips these is incomplete):
 
 1. `ciu up --dir .` on pwmcp CREATES a docker network and connects the
-   devcontainer (`auto_connect_network = true`). Remove it:
-   `docker network disconnect <net> dstdns-devcontainer-vb && docker network rm <net>`.
-   Confirm with `docker network ls`.
+   devcontainer (`auto_connect_network = true`). Remove **that** one:
+   `docker network disconnect <net> dstdns-devcontainer-vb && docker network rm <net>`,
+   then confirm with `docker network ls`. It is the network whose name starts
+   `pwmcp-`.
+   **DO NOT delete the worktree's own network.** `ciu worktree create` provisions
+   `<logical-name>-<instance>-network` and records it in
+   `ciu.worktree-instance.json` under `runtime.network`; the devcontainer is
+   attached to it by design and removing it breaks the instance. Read that file
+   (or `ciu worktree inspect <logical-name> --json`) and leave the name it lists
+   alone. Only a `pwmcp-`-prefixed network is yours to remove.
 2. `ciu render`/`ciu up` REWRITE the tracked `nyxloomd/ciu.toml`. After every run,
    `git diff -- nyxloom/nyxloomd/ciu.toml` and `git checkout --` it, then re-apply
    Work item 3e's deletion by hand. **TWO diff hunks are EXPECTED and must be
@@ -873,11 +887,12 @@ carve time; an ERROR, or a warning outside the classes below, is drift.
   project-prefixed or absolute in oracle prose, which L13's matcher does not
   recognise as the same path — the prefix is deliberate, because O2(iii)'s globs
   are repo-root-relative and MUST be run from the worktree root; (c) the rendered
-  compose, gitignored; (d) read-only source/SPEC citations and forbidden paths.
+  compose, gitignored; (d) read-only source/SPEC citations, the host-setup
+  slice-unit citation, and forbidden paths.
 - **L7 — all expected**: the read-only dstdns reference for the `[governance]`
   shape, the sibling `pwmcp` root this package's second half edits (see the
-  `scope.touch` path caveat and Work item 7), the relative pointers inside Work
-  item 3b's pinned YAML comment, and the host-setup slice-unit citation.
+  `scope.touch` path caveat and Work item 7), and the relative pointers inside Work
+  item 3b's pinned YAML comment.
 
 ## Scope / forbid
 
