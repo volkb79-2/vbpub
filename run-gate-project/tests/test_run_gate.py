@@ -1713,7 +1713,7 @@ class TestExecInnerWiring:
 def test_assay_inner_has_git_config_global():
     inner = run_gate.build_assay_inner(
         {"assay_lane": "x", "assay_command": ["assay"], "pins": {}},
-        Path("/proj"))
+        Path("/proj"), Path("/repo"))
     assert "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig" in inner
 
 
@@ -1731,7 +1731,7 @@ class TestPinVersionVerify:
                 "pins": {"assay": pin}}
 
     def test_declared_version_probed_in_lane(self):
-        inner = run_gate.build_assay_inner(self._lane("3.1.0"), Path("/proj"))
+        inner = run_gate.build_assay_inner(self._lane("3.1.0"), Path("/proj"), Path("/repo"))
         assert "./tools/assay/assay.pyz --version" in inner
         assert '[ "$tok" = 3.1.0 ]' in inner and "version mismatch" in inner
 
@@ -1743,7 +1743,7 @@ class TestPinVersionVerify:
         assert "version mismatch" in proc.stderr
 
     def test_undeclared_version_never_probes(self):  # controlled wrong impl
-        inner = run_gate.build_assay_inner(self._lane(None), Path("/proj"))
+        inner = run_gate.build_assay_inner(self._lane(None), Path("/proj"), Path("/repo"))
         assert "--version" not in inner
 
     def _live_proj(self, tmp_path, reported_version: str) -> Path:
@@ -1762,7 +1762,7 @@ class TestPinVersionVerify:
 
     def _run_inner(self, tmp_path, declared_version, reported_version):
         proj = self._live_proj(tmp_path, reported_version)
-        inner = run_gate.build_assay_inner(self._lane(declared_version), proj)
+        inner = run_gate.build_assay_inner(self._lane(declared_version), proj, tmp_path)
         proc = subprocess.run(["bash", "-c", inner], cwd=proj,
                               capture_output=True, text=True)
         return proc
@@ -6192,17 +6192,20 @@ class TestResumeAndProgressAlways:
              "assay_command": ["./tools/assay/assay.pyz"], "pins": {}}
 
     def test_inner_carries_both_flags_after_the_verdict(self):
-        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"))
+        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"), Path("/repo"))
         assert ("run sql_mutation --file assay.toml "
                 "--verdict-json .assay/verdict-sql_mutation.json "
                 "--resume --progress .assay/progress-sql_mutation.jsonl") in inner
 
     def test_request_base_still_comes_last(self):
         """RG-26's flag keeps its position: appended only for a delegating
-        lane, after everything the lane always gets."""
-        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"),
+        lane, after everything the lane always gets (including RG-38's
+        --state-dir, which sits between --progress and --request-base)."""
+        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"), Path("/repo"),
                                            request_base="deadbeef")
+        assert inner.rstrip().endswith("--request-base deadbeef")
         assert ("--progress .assay/progress-sql_mutation.jsonl "
+                "--state-dir /repo/.run-gate/assay-state/proj "
                 "--request-base deadbeef") in inner
 
     def test_progress_lands_in_the_directory_the_inner_creates(self):
@@ -6211,10 +6214,22 @@ class TestResumeAndProgressAlways:
         adopter git-ignores (R-32). A progress file anywhere in the judged
         tree would make assay refuse NO_MEASUREMENT/DIRTY_TREE on the lane's
         NEXT run, so the location is not a style choice."""
-        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"))
+        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"), Path("/repo"))
         assert inner.index("mkdir -p .assay") < inner.index(
             "--progress .assay/progress-sql_mutation.jsonl")
         assert "--progress .assay/" in inner and "--progress /" not in inner
+
+    def test_state_dir_is_created_and_points_outside_the_judged_tree(self):
+        """RG-38: --state-dir is rooted at `repo` (the checkout owning the
+        shared .git, durable across an ephemeral judged worktree), never at
+        `project_dir` -- pointing it there would reproduce the exact bug
+        this entry exists to fix the moment the worktree is torn down."""
+        inner = run_gate.build_assay_inner(self._LANE, Path("/proj"), Path("/repo"))
+        state_dir = "/repo/.run-gate/assay-state/proj"
+        assert f"mkdir -p {state_dir}" in inner
+        assert f"--state-dir {state_dir}" in inner
+        assert inner.index(f"mkdir -p {state_dir}") < inner.index(
+            f"--state-dir {state_dir}")
 
     def test_the_executed_judge_receives_both_flags(
             self, tmp_path, monkeypatch, capfd):
@@ -6236,9 +6251,11 @@ class TestResumeAndProgressAlways:
         """)
         assert run_gate.main(["ui-unit", "--base", "deadbeef"]) == 0
         out = capfd.readouterr().out
+        state_dir = tmp_path / "repo" / ".run-gate" / "assay-state" / "proj"
         assert ("JUDGE-ARGV: run ui_unit --file assay.toml "
                 "--verdict-json .assay/verdict-ui_unit.json "
                 "--resume --progress .assay/progress-ui_unit.jsonl "
+                f"--state-dir {state_dir} "
                 "--request-base deadbeef") in out
 
     def test_dry_run_docker_argv_discloses_both_flags(
@@ -6267,7 +6284,7 @@ class TestResumeAndProgressAlways:
         version, floor and remedy — never inside the container under
         assay's own `unrecognized arguments` line."""
         with pytest.raises(run_gate.GateError) as exc:
-            run_gate.build_assay_inner(self._pinned("2.3.0"), Path("/proj"))
+            run_gate.build_assay_inner(self._pinned("2.3.0"), Path("/proj"), Path("/repo"))
         msg = str(exc.value)
         assert "lane 'sql_mutation': pin 'assay' declares assay 2.3.0" in msg
         assert "below 2.4.1" in msg and "--resume" in msg and "--progress" in msg
@@ -6275,21 +6292,21 @@ class TestResumeAndProgressAlways:
 
     @pytest.mark.parametrize("declared", ["2.4.1", "v2.4.1", "3.2.0", "4.1.0"])
     def test_a_pin_at_or_above_the_floor_carries_the_flags(self, declared):
-        inner = run_gate.build_assay_inner(self._pinned(declared), Path("/proj"))
+        inner = run_gate.build_assay_inner(self._pinned(declared), Path("/proj"), Path("/repo"))
         assert "--resume --progress .assay/progress-sql_mutation.jsonl" in inner
 
     def test_a_short_claim_below_the_floor_still_refuses(self):
         """`2.4` is a claim of the 2.4 line; the tuple order says it is
         below 2.4.1, and the message names what was declared verbatim."""
         with pytest.raises(run_gate.GateError) as exc:
-            run_gate.build_assay_inner(self._pinned("2.4"), Path("/proj"))
+            run_gate.build_assay_inner(self._pinned("2.4"), Path("/proj"), Path("/repo"))
         assert "declares assay 2.4," in str(exc.value)
 
     @pytest.mark.parametrize("declared", [None, "", "latest", "4.1.0rc1"])
     def test_no_comparable_claim_is_not_held_to_the_floor(self, declared):
         """No declared version, or one that is not dotted integers, is no
         claim; the flags still go, and an old judge fails loudly by itself."""
-        inner = run_gate.build_assay_inner(self._pinned(declared), Path("/proj"))
+        inner = run_gate.build_assay_inner(self._pinned(declared), Path("/proj"), Path("/repo"))
         assert "--resume --progress" in inner
 
     @pytest.mark.parametrize("declared, expected", [
@@ -6958,6 +6975,41 @@ class TestInflightRecordDecisions:
         head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
                               capture_output=True, text=True).stdout.strip()
         assert written == [("aborted", head), ("pass", head)], written
+
+    def test_a_gone_container_is_recognized_regardless_of_docker_stderr_casing(
+            self, tmp_path, monkeypatch, capsys):
+        """RG-44: `GONE_SIGNALS` was written against one docker version's
+        exact casing ("No such object"); this host's real docker emits
+        lowercase ("error: no such object: NAME"), which the old exact-case
+        comparison never matched — a genuinely gone container then read as
+        an AMBIGUOUS failure (fail_infra), leaving the inflight record
+        untouched and wedging the lane for every future invocation until a
+        human deletes the record by hand. The fix folds case on the match;
+        this reproduces the exact reported wording and asserts the SAME
+        recovery path the exact-case `No such object` test above proves —
+        cleared, reported, and the lane runs fresh — not merely that the
+        case-folded comparison returns true in isolation."""
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        record = plant_inflight(proj, repo, state, status=None)
+        shim = shim_dir_of(monkeypatch) / "docker"
+        original = shim.read_text()
+        # Only the `inspect` branch's "gone" wording changes -- every other
+        # verb (run/logs/wait/rm) stays the real shim so the rest of the
+        # fixture's machinery (e.g. `main(["suite"])`'s fresh run afterward)
+        # is unaffected.
+        lowered = original.replace(
+            "echo \"Error: No such object: $name\" >&2; exit 1",
+            "echo \"error: no such object: $name\" >&2; exit 1",
+        )
+        assert lowered != original, "shim's gone-container line not found to lower-case"
+        shim.write_text(lowered)
+        shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+        assert run_gate.main(["suite"]) == 0
+        assert ("run-gate: inflight record names run-gate-planted (started "
+                "2026-09-02T11:00:00Z) but no such container exists"
+                ) in capsys.readouterr().out
+        assert len(lane_runs(log)) == 1        # ran fresh, exactly once
+        assert not record.exists()
 
     def test_a_record_for_another_commit_refuses_and_names_both(
             self, tmp_path, monkeypatch, capsys):
@@ -8555,7 +8607,33 @@ class TestFreshFlagScope:
         assert ("--fresh is honored on the run path only"
                 in capsys.readouterr().err)
 
-    def test_a_host_lane_refuses_it(self, tmp_path, monkeypatch, capsys):
+    def test_a_bare_host_lane_refuses_it(self, tmp_path, monkeypatch, capsys):
+        """RG-43 (rev 36): 'host' now resolves to a non-empty synthetic env
+        and runs through run_container_lane() like any named environment --
+        it is 'bare-host' that runs directly in this process with no
+        container of its own now, so THAT is the lane shape this refusal
+        must exercise (the old 'host'-named version of this test silently
+        stopped testing the refusal at all once RG-43 shipped, since a
+        `not env` check no longer fires for it)."""
+        self._project(tmp_path, monkeypatch, """\
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        assert run_gate.main(["suite", "--fresh"]) == 2
+        err = capsys.readouterr().err
+        assert "the built-in 'bare-host' environment" in err
+        assert "nothing to re-attach to or replace" in err
+
+    def test_a_host_lane_no_longer_refuses_it(self, tmp_path, monkeypatch):
+        """RG-43 (rev 36): 'host' now routes through run_container_lane(),
+        which has full RG-35 inflight-tracking/--fresh support like any
+        named environment -- confirms the refusal genuinely does NOT fire
+        for 'host' post-RG-43 (a regression guard against re-widening the
+        `not env` check to catch it again by accident)."""
         self._project(tmp_path, monkeypatch, """\
             schema_version = 1
             [lanes.suite]
@@ -8564,10 +8642,8 @@ class TestFreshFlagScope:
             argv = ["true"]
             clean_tree = false
         """)
-        assert run_gate.main(["suite", "--fresh"]) == 2
-        err = capsys.readouterr().err
-        assert "the built-in host environment" in err
-        assert "nothing to re-attach to or replace" in err
+        fake_docker_executing(tmp_path, monkeypatch)
+        assert run_gate.main(["suite", "--fresh"]) == 0
 
     def test_an_exec_lane_refuses_it(self, tmp_path, monkeypatch, capsys):
         self._project(tmp_path, monkeypatch, EXEC_LANE)

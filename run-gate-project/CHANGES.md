@@ -9,6 +9,38 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
+### Fixed
+- **RG-44**: `GONE_SIGNALS` matched docker's "gone" stderr case-sensitively;
+  this host's real docker emits it lowercase (`error: no such object:
+  NAME`), which the exact-case comparison never matched — a genuinely gone
+  container read as an AMBIGUOUS failure and left a stale inflight record
+  that wedged the lane for every future invocation until a human deleted
+  it by hand. Fixed by case-folding the match.
+- **RG-40**: `tools/coverage_gate.py`'s diff-coverage floor diffed
+  committed `base_rev HEAD`, while the coverage.json it cross-references
+  is generated from whatever bytes are ON DISK (`--allow-dirty` runs the
+  suite there directly) — an uncommitted edit above a committed change
+  silently offset that change's reported line number from its real one.
+  Now diffs `base_rev` alone (working tree, not HEAD): byte-identical to
+  the old behavior on a clean tree, correct on a dirty one.
+
+### Added
+- **RG-38**: assay mutation-lane resume state now survives an ephemeral
+  judged worktree (a cmru release transaction, a Mode-B instance) — every
+  assay-kind lane, on all three runners (container, exec, bare-host), now
+  passes `--state-dir <repo>/.run-gate/assay-state/<project>/` (assay
+  B066, >= 5.2.0 required; an older pin refuses by name, same class as
+  RG-33's existing `--resume`/`--progress` floor). `repo` — the checkout
+  owning the shared `.git` — is durable by construction even when the
+  judged worktree is not.
+
+### Adoption / Migration Notes
+Every assay-kind lane's pinned judge must be >= 5.2.0 to pick up RG-38's
+`--state-dir`; an older pin now refuses at argv construction, loudly,
+before the container starts — the same shape RG-33 already established
+for `--resume`/`--progress`. RG-44 and RG-40 are pure bugfixes, safe to
+adopt with no config change.
+
 <!-- cleared 2026-09-03 after the 23.5.0 release, per the standing
      housekeeping rule (see CHANGES.md history for the two prior
      occurrences this recurred on this project): cmru's generator produces

@@ -106,3 +106,44 @@ def test_malformed_coverage_record_raises():
     with pytest.raises(coverage_gate.CoverageGateError):
         coverage_gate.evaluate(added, coverage_files,
                                source_prefix="run-gate-project/run-gate.py")
+
+
+def test_git_added_lines_reports_the_working_trees_own_line_numbers_dirty(tmp_path):
+    """RG-40: coverage.json is generated from whatever bytes are ON DISK
+    (--allow-dirty runs the suite there directly), so the added-line numbers
+    this gate cross-references against it must come from the SAME bytes —
+    not from committed HEAD, which a dirty tree has already outgrown.
+    Reproduces the exact mechanism: a committed change (`d`, line 4 at
+    HEAD) is pushed to a DIFFERENT line (6) by two uncommitted lines
+    prepended above it. The old `base_rev HEAD` diff would report line 4 —
+    coverage.json, keyed to the dirty tree, actually has `c` there, not
+    `d` — silently checking the wrong line's coverage status."""
+    import subprocess
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                        check=True, capture_output=True, text=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "test")
+    (tmp_path / "demo.py").write_text("a\nb\nc\n", encoding="utf-8")
+    git("add", "demo.py")
+    git("commit", "-q", "-m", "base")
+    base_rev = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True).stdout.strip()
+
+    # A committed change: `d` lands at line 4 relative to base.
+    (tmp_path / "demo.py").write_text("a\nb\nc\nd\n", encoding="utf-8")
+    git("add", "demo.py")
+    git("commit", "-q", "-m", "add d")
+
+    # An UNCOMMITTED edit on top: two lines prepended push `d` to line 6.
+    (tmp_path / "demo.py").write_text("x\ny\na\nb\nc\nd\n", encoding="utf-8")
+
+    added = coverage_gate._git_added_lines(str(tmp_path), base_rev, "demo.py")
+    # `d`'s REAL on-disk position is 6, not the committed diff's 4 -- and the
+    # two prepended uncommitted lines are correctly reported too, at 1 and 2,
+    # since they are equally new relative to base_rev.
+    assert added == {"demo.py": {1, 2, 6}}, added
