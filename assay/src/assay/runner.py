@@ -1617,6 +1617,15 @@ def evaluate_r1(
                 source_root_paths=judge.source_root_paths,
                 fail_under=judge.fail_under,
                 allow_excluded=judge.allow_excluded,
+                # B074: absent means False, resolved here beside
+                # `effective_mode`/`effective_require_branch` -- the loader
+                # stores what the file said and this is the one place the
+                # effective policy is derived.
+                allow_test_path_targets=(
+                    judge.allow_test_path_targets
+                    if judge.allow_test_path_targets is not None
+                    else False
+                ),
             )
         else:
             diff_text = git.run(
@@ -3454,6 +3463,16 @@ def _run_prepared_lane(
                         mode=r1_effective_mode,
                         targets=lane.judge.targets,
                         require_branch=r1_effective_require_branch,
+                        # B074: the EFFECTIVE opt-out, recorded the same way
+                        # `require_branch` beside it is. Emitted into the
+                        # artifact only when true (`JudgmentR1.to_dict`), so a
+                        # verdict from a lane that did not opt in is
+                        # byte-identical to one this field never existed for.
+                        allow_test_path_targets=(
+                            lane.judge.allow_test_path_targets
+                            if lane.judge.allow_test_path_targets is not None
+                            else False
+                        ),
                     )
                 if added_holder:
                     added = added_holder[0]

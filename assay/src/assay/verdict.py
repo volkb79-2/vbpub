@@ -2049,6 +2049,21 @@ class JudgmentR1:
     #: defaults to ``False``, the value every lane declared before this
     #: field existed.
     require_branch: bool = False
+    #: (B074) the EFFECTIVE ``judge.allow_test_path_targets`` policy -- did
+    #: this lane grade a target assay's own test-path convention would
+    #: otherwise have refused? ``False``, the value every lane declared
+    #: before this field existed, for every lane that did not opt in.
+    #:
+    #: **Emitted only when true** (:meth:`to_dict`), for the reason the field
+    #: is additive rather than a schema-version bump: the key can appear ONLY
+    #: on a verdict that was impossible to produce at all before B074 -- a
+    #: whole-target lane naming a test path refused ``ERROR``/
+    #: ``BAD_LANE_CONFIG`` and therefore emitted no ``judgment.r1`` -- so no
+    #: artifact any existing consumer already reads gains a key, and every
+    #: verdict from a lane that did not opt in stays byte-identical. A
+    #: consumer that DOES opt in is by construction on the assay that grew
+    #: the flag. See ``docs/CONSUMERS.md``.
+    allow_test_path_targets: bool = False
 
     def __post_init__(self) -> None:
         _check_nonempty(self.coverage_format, "judgment.r1.coverage_format")
@@ -2084,6 +2099,24 @@ class JudgmentR1:
             raise ValueError(
                 f"judgment.r1.require_branch must be a boolean, got "
                 f"{self.require_branch!r}"
+            )
+        if not isinstance(self.allow_test_path_targets, bool):
+            raise ValueError(
+                f"judgment.r1.allow_test_path_targets must be a boolean, got "
+                f"{self.allow_test_path_targets!r}"
+            )
+        if self.allow_test_path_targets and self.mode != "whole_target":
+            # B074's own half of the `targets`/`mode` correspondence below:
+            # the flag is read at exactly one site, whole-target target
+            # resolution, so recording it true under changed-line mode would
+            # claim a relaxation that never applied. The lane loader refuses
+            # the same pairing; this is the independent artifact-side gate
+            # (A-182/A-317: a reconstructed verdict is verified, not trusted).
+            raise ValueError(
+                f"judgment.r1.allow_test_path_targets is true but mode is "
+                f"{self.mode!r}, not 'whole_target' -- the flag relaxes only "
+                f"the whole-target target-resolution gate, so it describes "
+                f"nothing outside that mode"
             )
         if self.mode == "whole_target":
             if (
@@ -2127,6 +2160,12 @@ class JudgmentR1:
             payload["coverage_producer"] = self.coverage_producer
         if self.targets is not None:
             payload["targets"] = list(self.targets)
+        # B074: present iff true (A-051's omitted-never-null rule, applied to
+        # a boolean whose false value is also its historical value). See the
+        # field's own comment for why this is additive rather than a
+        # schema-version bump.
+        if self.allow_test_path_targets:
+            payload["allow_test_path_targets"] = True
         return payload
 
 

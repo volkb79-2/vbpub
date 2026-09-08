@@ -79,6 +79,35 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   RG-36): assay gains no stall threshold of its own. No verdict-schema change
   — the lane's budget is a declaration, never wire evidence.
 
+- **A declared whole-target entry can name deployed library code that lives
+  under `tests/` (B074).** `judge.targets` is an explicit, reviewed, per-lane
+  declaration, but assay refused ANY entry its adapter called a test path —
+  including a file that matches only on the `tests/` *directory* segment. Any
+  project whose deployed helper libraries live under a test tree (harness
+  modules `COPY`-ed into a container image and run as a real service is the
+  reproduced case) could therefore not put them under a whole-target judge at
+  all, and the only remedies were to move the file or leave the code ungraded.
+  New **`judge.allow_test_path_targets = true`** (default `false`, legal only
+  on an R1 lane in `whole_target` mode) lets the lane assert "the paths I named
+  are library code despite their location". It relaxes exactly one gate and
+  only its directory half: the changed-line sweep's own test-path exclusion is
+  untouched and takes no such parameter; the other five target gates (symlink,
+  source-root containment, regular-file, excluded-directory,
+  adapter-recognised-source) still apply; whole-target **R2** still refuses a
+  test-path target by its own gate, because mutating a file is a different
+  claim from measuring it; and a target whose own FILENAME is a test filename
+  (`test_foo.py`, `conftest.py`, `foo.test.ts`, `bar_test.go`) is still refused
+  *with* the flag set, in every adapter — grading a test file is the vacuity
+  whole-target mode exists to close. The effective policy is recorded as
+  `judgment.r1.allow_test_path_targets`, so a reviewer can see from the
+  artifact alone that a graded target was one assay would otherwise have
+  refused. **No verdict-schema version bump**: the key is emitted only when
+  true, so a lane that did not opt in writes a byte-identical verdict, and the
+  key can appear only on a verdict that was impossible to produce before this
+  change (such a lane refused `ERROR`/`BAD_LANE_CONFIG` and emitted no
+  `judgment.r1` at all). `assay verify` accepts the new key and refuses it
+  under `changed_lines` mode or spelled as an explicit `false`.
+
 ### Changed
 
 - **BREAKING (verdict schema v10 → v11): `judgment.r2.discarded` LISTS the

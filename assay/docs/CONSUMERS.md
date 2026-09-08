@@ -310,6 +310,75 @@ live outside the committed tree, so a personal ignore rule there could hide
 real untracked source with nothing else reporting it. Modified and staged
 tracked files remain dirty regardless of any exclude source.
 
+### When your deployed library code lives under `tests/`: `judge.allow_test_path_targets`
+
+Assay refuses to whole-target-judge a file its language adapter calls a test
+path — for Python that is anything under a `tests/` segment, plus any
+`test_*.py` or `conftest.py`. Grading the tests is exactly the vacuity
+`whole_target` exists to close, so that veto is right for a path swept out of
+a diff, where nobody has vouched for it.
+
+A `judge.targets` entry is not a swept path. If your repository keeps
+**deployed library code** under a `tests/` tree — harness modules that are
+`COPY`-ed into a container image and run as a real service, a fixture-contract
+library other services import — that code is production-shaped, has no test
+runner of its own, and is therefore the code most likely to accumulate
+unexercised branches. Declaring `judge.allow_test_path_targets = true` asserts
+"the paths I named are library code despite their location":
+
+```toml
+schema_version = 2
+
+[lanes.harness_lib]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["python", "-m", "pytest", "tests/unit/test_harness_lib.py", "-q", "--cov=tests._harness.seeded_targets.variety", "--cov-branch", "--cov-report=json:.assay/coverage.json"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "10m"
+allow_argv_append = false
+
+[lanes.harness_lib.isolation]
+snapshot_selection = "repository"
+
+[lanes.harness_lib.judge]
+language = "python"
+source_roots = ["tests"]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+mode = "whole_target"
+targets = ["tests/_harness/seeded_targets/variety.py"]
+# Without this line the lane refuses ERROR/BAD_LANE_CONFIG naming the target
+# and the test-path gate -- `variety.py` matches on the `tests/` SEGMENT, not
+# on any test-filename convention.
+allow_test_path_targets = true
+
+[lanes.harness_lib.judge.coverage]
+format = "coverage-py-json"
+artifact = ".assay/coverage.json"
+```
+
+The resulting verdict's `judgment.r1` carries `allow_test_path_targets: true`
+beside `mode` and `targets`, so a reviewer reading the artifact alone can see
+that a graded target was one assay would otherwise have refused. A lane that
+does not set the flag writes no such key at all — `false` is spelled as
+absence, and every verdict written before this flag existed stays valid
+unchanged.
+
+Four things the flag deliberately does **not** do:
+
+| | |
+|---|---|
+| It does not relax the **changed-line sweep**. | A `changed_lines` lane over a diff touching the same file still skips it. Those paths come from a diff and nobody vouched for them; there is no argument you can pass to change that. |
+| It does not admit a file whose own **filename** is a test filename. | `tests/_harness/test_lib.py` and `tests/_harness/conftest.py` are still refused *with* the flag set, and the refusal says so. The flag is a claim about a directory's contents, never about a file that names itself a test. Same split in every adapter: `__tests__/helper.ts` yes, `helper.test.ts` no. |
+| It does not relax the **other five** target gates. | Symlink, source-root containment, regular-file, excluded-directory and adapter-recognised-source all still apply, with or without it. |
+| It does not reach **R2**. | Whole-target mutation (`rigor = ["R0","R1","R2"]` under `mode = "whole_target"`) applies its own test-path gate and still refuses a test-path target by name. Mutating a file to see whether a suite notices is a different claim from measuring that file's coverage, and B074 relaxed only the second. Declare such a lane R1-only, or move the file. |
+
+The flag is legal only on an **R1 lane in `whole_target` mode** — declaring it
+anywhere else is refused at load, because nothing there would read it.
+
 ## Resume and shard a long mutation lane
 
 **A consumer gate passes `--resume --progress <path>` on EVERY lane it runs,
