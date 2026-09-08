@@ -1,0 +1,49 @@
+# scp-api-install-host.toml
+#
+# Settings for scp-api-install-host.py. Every key here is REQUIRED - the
+# script refuses to start if any key is missing, and also refuses to start
+# if this file contains any key NOT listed here (typo/stale-key protection).
+# There is no Python-side fallback for any of these: this file is the single
+# source of truth for tunable defaults. CLI flags and the NETCUP_SCP_API_*
+# env vars documented in --help override these values per-run; nothing below
+# is meant to be edited per-run.
+
+[api]
+base_url = "https://www.servercontrolpanel.de/scp-core"
+keycloak_url = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect"
+
+[ssh]
+# Static, shared "day-0 bootstrap" key, reused across every install (NOT a
+# per-host production key - bootstrap stage2 generates and Telegrams you a
+# separate, unique key per host for that; see ../ssh-keygen-deploy.py). Kept
+# under ~/.ssh-host/ (matches the same mount convention already used by the
+# sibling netcup-api-filter devcontainer). Auto-generated on first use if
+# missing - see _ensure_local_identity_file_exists().
+identity_file = "~/.ssh-host/vbpub-netcup-installation-ed25519"
+user = "root"
+
+# Embedded as the *comment* on the auto-generated key above (the filename
+# stays static - see identity_file). This comment lives in authorized_keys
+# on the INSTALLED HOST, not here - so what's meaningful is how that host
+# sees us: the public IP we connect from, reverse-DNS'd if possible. Not
+# this controller's own internal/container hostname, which means nothing to
+# anyone looking at authorized_keys on a different machine.
+#
+# "automatic" (the default below) detects our public IP the same way
+# netcup-api-filter's own shell aliases do (`alias myip='curl -s
+# ifconfig.me'`, .devcontainer/finalize.post.d/10-netcup-setup.sh) and
+# reverse-DNS's it; falls back to the bare IP if there's no PTR record, and
+# only as a last resort (no network egress at all) to this machine's own
+# local hostname (socket.getfqdn()) - see _resolve_controller_fqdn()'s
+# docstring for the full fallback chain. Set an explicit hostname instead of
+# "automatic" if you'd rather not depend on an external IP-lookup service,
+# or want a stable identity that doesn't depend on network state at
+# key-generation time. Either way, an empty value or one ending in
+# .invalid/.example.invalid is treated as unset and refuses to generate a
+# new key.
+controller_fqdn = "automatic"
+
+poll_interval = 5.0
+attach_initial_delay = 0.0
+attach_max_wait_seconds = 300.0
+stage2_wait_seconds = 1800.0

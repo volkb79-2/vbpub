@@ -1,0 +1,14 @@
+# scp-api-monitor-task.toml
+#
+# Settings for scp-api-monitor-task.py. Every key here is REQUIRED - the
+# script refuses to start if any key is missing, and also refuses to start
+# if this file contains any key NOT listed here (typo/stale-key protection).
+# There is no Python-side fallback for any of these. CLI flags (--poll)
+# override this per-run.
+
+[api]
+base_url = "https://www.servercontrolpanel.de/scp-core"
+keycloak_url = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect"
+
+[monitor]
+poll_interval = 5.0

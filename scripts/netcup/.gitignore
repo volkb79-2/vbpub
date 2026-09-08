@@ -1,4 +1,4 @@
-install-debian.json
+target-host.jsonc
 remote-logs/
 
 # Local Telegram setup artifacts (contain secrets / offsets)

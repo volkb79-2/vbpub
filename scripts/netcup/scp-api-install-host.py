@@ -2,10 +2,17 @@
 """
 Consume the netcup SCP API to automate the installation of Debian on a server.
 
-netcup SCP API docs (see `netcup-scp-openapi.json`): 
-``` 
+netcup SCP API docs (see `netcup-scp-openapi.json`, last synced 2026-09-07 from
+upstream version 2026.0902.083309 - re-fetch periodically, the endpoint below
+is public/unauthenticated despite the header in this example):
+```
 curl 'https://www.servercontrolpanel.de/scp-core/api/v1/openapi' -H "Authorization: Bearer ${ACCESS_TOKEN}"
 ```
+As of the 2026-09-07 sync, the diff from the prior stored spec (2025.1230.142745)
+was purely additive and non-breaking for the endpoints this script uses: new
+`GET /api/v1/servers/{serverId}/guest-agent/status`, new
+`GET /api/v1/servers/{serverId}/gpu-driver`, a new `firewallPolicyId` filter on
+`GET /api/v1/servers`, and a new `gpuDriverAvailable` field on `Server`.
 
 Get API access / Authentication:
 
@@ -57,10 +64,11 @@ import argparse
 import subprocess
 import threading
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Set
 from datetime import datetime
 from pathlib import Path
 
@@ -100,13 +108,126 @@ def _read_public_key_for_identity(identity_file: str) -> str:
     return result.stdout.strip()
 
 
+_PLACEHOLDER_CONTROLLER_FQDN_SUFFIXES = (".invalid", ".example.invalid")
+
+# Same service netcup-api-filter's own shell aliases use for this
+# (`alias myip='curl -s ifconfig.me'`, .devcontainer/finalize.post.d/10-netcup-setup.sh) -
+# reused here so "automatic" resolves the same way a human checking manually would.
+_PUBLIC_IP_SERVICE_URL = "https://ifconfig.me/ip"
+
+
+def _detect_public_ip(timeout: float = 5.0) -> Optional[str]:
+    """Best-effort: this controller's own public/outbound IPv4.
+
+    Returns None on any failure (no network, service down, unexpected body) -
+    callers fall back to something else rather than raising.
+    """
+    try:
+        req = urllib.request.Request(_PUBLIC_IP_SERVICE_URL, headers={"User-Agent": "curl/8"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            ip = resp.read().decode("utf-8", errors="replace").strip()
+        if ip.count(".") == 3 and all(part.isdigit() for part in ip.split(".")):
+            return ip
+    except Exception:
+        pass
+    return None
+
+
+def _reverse_dns(ip: str) -> Optional[str]:
+    try:
+        return socket.gethostbyaddr(ip)[0]
+    except Exception:
+        return None
+
+
+def _resolve_controller_fqdn(controller_fqdn: str) -> str:
+    """Resolve scp-api-install-host.toml's [ssh] controller_fqdn setting.
+
+    The key this produces a comment for lives in *authorized_keys on the
+    installed host* - so what's actually meaningful there is how that host
+    sees us: the public IP we'll connect from, reverse-DNS'd if possible.
+    Not this controller's own internal/container hostname, which means
+    nothing to anyone looking at authorized_keys on a different machine.
+
+    "automatic" therefore: (1) detects our public IP the same way a human
+    would (`curl -s ifconfig.me`, see _detect_public_ip), (2) reverse-DNS's
+    it; if that PTR lookup comes back empty (common - many ISPs/cloud
+    providers don't set one), the bare IP is still a meaningful identifier on
+    its own, so that's used instead; (3) only if we couldn't even determine
+    our public IP (no network egress) does this fall back to
+    socket.getfqdn() - purely local, so it always answers, but it's a
+    same-machine-only name if that's not where the install is even reachable
+    from, so treat it as a last resort, not the primary answer.
+    """
+    if controller_fqdn != "automatic":
+        return controller_fqdn
+
+    ip = _detect_public_ip()
+    if ip:
+        hostname = _reverse_dns(ip)
+        if hostname:
+            print(f"[ssh] controller_fqdn=automatic: {ip} reverse-DNS's to {hostname}")
+            return hostname
+        print(f"[ssh] controller_fqdn=automatic: no reverse DNS for {ip}; using the IP itself")
+        return ip
+
+    local = socket.getfqdn()
+    print(
+        f"[ssh] controller_fqdn=automatic: could not determine our public IP "
+        f"(no network egress?); falling back to local hostname {local}"
+    )
+    return local
+
+
+def _ensure_local_identity_file_exists(identity_file: str, controller_fqdn: str) -> None:
+    """Generate the local SSH identity key if it doesn't exist yet.
+
+    The filename is static (shared day-0 bootstrap key, reused across every
+    install - see scp-api-install-host.toml's [ssh] comment). Only the key's
+    *comment* is dynamic: it embeds `controller_fqdn` (resolved via
+    _resolve_controller_fqdn - "automatic" or an explicit value) so anyone
+    looking at authorized_keys on a host this key touches can tell who/why
+    put it there.
+    """
+    identity_path = Path(identity_file).expanduser()
+    if identity_path.exists():
+        return
+
+    resolved_fqdn = _resolve_controller_fqdn(controller_fqdn)
+    if not resolved_fqdn or any(
+        resolved_fqdn.endswith(suffix) for suffix in _PLACEHOLDER_CONTROLLER_FQDN_SUFFIXES
+    ):
+        raise SystemExit(
+            "ERROR: scp-api-install-host.toml's [ssh] controller_fqdn is still the "
+            "placeholder - set it to this controller's own real hostname (or \"automatic\") "
+            f"before a new identity key can be generated (would-be key: {identity_path})."
+        )
+
+    identity_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    print(f"[ssh] No local identity file at {identity_path}; generating one now.")
+    subprocess.run(
+        [
+            "ssh-keygen", "-t", "ed25519", "-N", "",
+            "-f", str(identity_path),
+            "-C", f"vbpub-netcup-installation@{resolved_fqdn}",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    print(f"[ssh] Generated new identity: {identity_path}")
+
+
 def _ensure_netcup_ssh_key_id_for_identity(
     client: "NetcupSCPClient",
     identity_file: str,
+    *,
+    dry_run: bool = False,
 ) -> int:
     """Return a netcup sshKeyId matching the given identity file.
 
-    If no matching key exists in the account, create one.
+    If no matching key exists in the account, create one (unless dry_run).
     """
     user_id = client.get_user_info()["id"]
     public_key = _read_public_key_for_identity(identity_file)
@@ -117,6 +238,10 @@ def _ensure_netcup_ssh_key_id_for_identity(
         existing_key = key.get("key")
         if isinstance(existing_key, str) and _normalize_ssh_public_key(existing_key) == normalized:
             return int(key["id"])
+
+    if dry_run:
+        print(f"[dry-run] Would create a new netcup SSH key for identity file: {identity_file}")
+        return -1
 
     # Create a new SSH key in netcup SCP.
     name_base = Path(identity_file).name
@@ -271,9 +396,61 @@ def load_env_file() -> None:
 
 load_env_file()
 
+
+def _flatten_toml(data: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+    flat: Dict[str, Any] = {}
+    for k, v in data.items():
+        key = f"{prefix}{k}"
+        if isinstance(v, dict):
+            flat.update(_flatten_toml(v, prefix=f"{key}."))
+        else:
+            flat[key] = v
+    return flat
+
+
+def _load_settings(path: Path, expected_keys: Set[str]) -> Dict[str, Any]:
+    """Load a settings TOML file against a closed schema.
+
+    Every key in `expected_keys` must be present, and any key present that is
+    NOT in `expected_keys` is also an error (typo/stale-key protection). There
+    is no Python-side fallback for any of these values: a missing key is a
+    hard error naming it, not a silently-assumed default.
+    """
+    if not path.exists():
+        raise SystemExit(f"ERROR: missing settings file: {path}")
+    with path.open("rb") as f:
+        data = tomllib.load(f)
+    flat = _flatten_toml(data)
+    missing = expected_keys - flat.keys()
+    unknown = flat.keys() - expected_keys
+    errors = []
+    if missing:
+        errors.append(f"missing required settings: {', '.join(sorted(missing))}")
+    if unknown:
+        errors.append(f"unknown/unexpected settings: {', '.join(sorted(unknown))}")
+    if errors:
+        raise SystemExit(f"ERROR: {path} failed validation:\n  - " + "\n  - ".join(errors))
+    return flat
+
+
+_SETTINGS_EXPECTED_KEYS = {
+    "api.base_url",
+    "api.keycloak_url",
+    "ssh.identity_file",
+    "ssh.user",
+    "ssh.controller_fqdn",
+    "ssh.poll_interval",
+    "ssh.attach_initial_delay",
+    "ssh.attach_max_wait_seconds",
+    "ssh.stage2_wait_seconds",
+}
+
+SETTINGS_PATH = Path(__file__).resolve().parent / "scp-api-install-host.toml"
+SETTINGS = _load_settings(SETTINGS_PATH, _SETTINGS_EXPECTED_KEYS)
+
 # Configuration
-BASE_URL = "https://www.servercontrolpanel.de/scp-core"
-KEYCLOAK_URL = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect"
+BASE_URL = SETTINGS["api.base_url"]
+KEYCLOAK_URL = SETTINGS["api.keycloak_url"]
 
 # Server configuration
 # Example server info from `/servers` API:
@@ -289,29 +466,37 @@ KEYCLOAK_URL = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-con
 #    }
 #  }
 
-SERVER_NAME = os.environ.get("SERVER_NAME")    # v1001.vxxu.de
+SERVER_NAME = os.environ.get("NETCUP_SCP_API_SERVER_NAME")    # v1001.vxxu.de
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# Installation settings (hostname will be set dynamically from server info)
+# Installation settings (hostname will be set dynamically from server info).
+# customScript targets debian-install-v2's remote bootstrap entrypoint
+# (scripts/debian-install-v2/bootstrap-remote.py), piped to `python3 -` (not
+# `bash` - v2's CLI is a different interpreter/contract than v1's bootstrap.sh).
+# `volkb79-2/vbpub` is v2's own documented default org (bootstrap-remote.py's
+# REPO_URL_DEFAULT) - not a typo for v1's `volkb79`, a deliberate separate repo.
+# AUTO_REBOOT_AFTER_STAGE1/NEVER_REBOOT are passed explicitly because v2 has no
+# "auto" tristate (unlike v1) and rejects it outright - yes/no only. Every
+# other v2 knob (SWAP_*/ZSWAP_*/DOCKER_*/RUN_* stage toggles) is deliberately
+# left unset here so v2's own built-in defaults apply; those are exactly what
+# gets tuned by iterating installs against a live host next.
 INSTALLATION_CONFIG = {
     "locale": "en_US.UTF-8",
     "timezone": "Europe/Berlin",
-    # Stage1 may need a reboot to apply offline resize/repartition steps and to start stage2.
-    # Our bootstrap script handles cloud-init contexts safely by scheduling a delayed reboot.
-    # Keep DEBUG_MODE off by default to avoid leaking secrets via bash xtrace.
     "customScript": (
-        "curl -fsSL https://raw.githubusercontent.com/volkb79/vbpub/main/scripts/debian-install/bootstrap.sh | "
-        "DEBUG_MODE=no BOOTSTRAP_STAGE=stage1 AUTO_REBOOT_AFTER_STAGE1=auto NEVER_REBOOT=no "
-        "TELEGRAM_BOT_TOKEN={{TELEGRAM_BOT_TOKEN}} TELEGRAM_CHAT_ID={{TELEGRAM_CHAT_ID}} bash"
+        "curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/scripts/debian-install-v2/bootstrap-remote.py | "
+        "AUTO_REBOOT_AFTER_STAGE1=yes NEVER_REBOOT=no "
+        "TELEGRAM_BOT_TOKEN={{TELEGRAM_BOT_TOKEN}} TELEGRAM_CHAT_ID={{TELEGRAM_CHAT_ID}} "
+        "python3 -"
     ),
     "rootPartitionFullDiskSize": False,
     "sshPasswordAuthentication": False,
     "emailToExecutingUser": True,
 }
 
-# Debug mode
-DEBUG = os.environ.get("DEBUG", "no").lower() in ("yes", "true", "1")
+# Debug mode: NETCUP_SCP_API_DEBUG env var, OR'd with --debug in main().
+DEBUG = os.environ.get("NETCUP_SCP_API_DEBUG", "no").lower() in ("yes", "true", "1")
 
 
 def log_debug(message: str):
@@ -415,27 +600,65 @@ def parse_args():
         description="Netcup Server Control Panel - Automated Debian Installation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Modes (pick one; default is interactive gather+install):
+  (no mode flags)     Interactive: gather info for $NETCUP_SCP_API_SERVER_NAME, prompt, install.
+  --payload FILE      Direct install from a JSON/JSONC payload file (no gathering).
+  --attach-only       SSH-attach + tail bootstrap logs only; no Netcup API calls.
+  --poweroff          Power off $NETCUP_SCP_API_SERVER_NAME and exit.
+
 Examples:
+  # Preview everything (server lookup, image flavour, payload) without
+  # calling any mutating API (install/poweroff/ssh-key-create):
+  %(prog)s --payload=target-host.jsonc --dry-run
+
   # Interactive mode (gather information and prompt for confirmation):
   %(prog)s
-  
-  # Direct installation from payload file (skip gathering):
-  %(prog)s --payload=install-debian.json
-  
-Environment Variables:
-  NETCUP_REFRESH_TOKEN    Required: Netcup API refresh token
-  SERVER_NAME             Server name to install (default: v2202511209318402047)
-  TELEGRAM_BOT_TOKEN      Optional: Telegram bot token for notifications
-  TELEGRAM_CHAT_ID        Optional: Telegram chat ID for notifications
-  DEBUG                   Enable debug output (yes/true/1)
 
-These can be set in a .env file in the current directory.
+  # Direct installation from payload file, then watch it to completion:
+  %(prog)s --payload=target-host.jsonc --monitor
+
+  # Non-interactive (e.g. driven by another script/agent) - auto-confirms:
+  %(prog)s --payload=target-host.jsonc --yes --monitor
+
+  # Reattach SSH log tailing to an already-installing/installed host:
+  %(prog)s --attach-only --ssh-host=1.2.3.4
+
+  # Power off the configured server:
+  %(prog)s --poweroff
+
+Settings (scp-api-install-host.toml, next to this script):
+  Every operational default (SSH identity path/user, poll interval, attach/
+  stage2 wait timeouts, API base URLs) lives there, not in this script - see
+  that file's comments. CLI flags below override it per-run; nothing in this
+  script falls back to a bare literal if a setting is missing.
+
+Environment Variables (see .env.example):
+  NETCUP_SCP_API_REFRESH_TOKEN     Required (not needed for --attach-only): OAuth2 refresh token.
+  NETCUP_SCP_API_SERVER_NAME       Required for interactive mode and --poweroff; NOT required
+                                   for --payload or --attach-only (no default - must be set).
+  NETCUP_SCP_API_SSH_HOST          Default for --ssh-host.
+  NETCUP_SCP_API_SSH_USER          Overrides scp-api-install-host.toml's ssh.user for --ssh-user.
+  NETCUP_SCP_API_SSH_IDENTITY_FILE Overrides scp-api-install-host.toml's ssh.identity_file for --ssh-identity-file.
+  TELEGRAM_BOT_TOKEN               Optional: forwarded into the bootstrap customScript.
+  TELEGRAM_CHAT_ID                 Optional: forwarded into the bootstrap customScript.
+  NETCUP_SCP_API_DEBUG             Enable verbose request/response logging (yes/true/1); same as --debug.
+
+These can be set in a .env file in the current directory (see scripts/netcup/.env.example).
 """
     )
     parser.add_argument(
         "--payload",
         metavar="FILE",
         help="Path to JSON payload file for direct installation (skips interactive gathering)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Resolve and validate everything (server lookup, image flavour, SSH keys, payload "
+            "shape) and print what would be sent, but do not call any mutating Netcup API "
+            "(install-image POST, poweroff PATCH, ssh-key create POST)."
+        ),
     )
 
     parser.add_argument(
@@ -466,22 +689,22 @@ These can be set in a .env file in the current directory.
     parser.add_argument(
         "--attach-initial-delay",
         type=float,
-        default=0.0,
-        help="In --attach-only mode, wait N seconds before the first SSH probe (default: 0).",
+        default=SETTINGS["ssh.attach_initial_delay"],
+        help="In --attach-only mode, wait N seconds before the first SSH probe (default: from scp-api-install-host.toml).",
     )
     parser.add_argument(
         "--attach-max-wait-seconds",
         type=float,
-        default=300.0,
-        help="In --attach-only mode, wait up to N seconds for SSH to become usable (default: 300).",
+        default=SETTINGS["ssh.attach_max_wait_seconds"],
+        help="In --attach-only mode, wait up to N seconds for SSH to become usable (default: from scp-api-install-host.toml).",
     )
     parser.add_argument(
         "--stage2-wait-seconds",
         type=float,
-        default=1800.0,
+        default=SETTINGS["ssh.stage2_wait_seconds"],
         help=(
-            "In --attach-only mode, also wait for /var/lib/vbpub/bootstrap/stage2_done (default: 1800). "
-            "Set to 0 to disable waiting."
+            "In --attach-only mode, also wait for /var/lib/vbpub/bootstrap/stage2_done "
+            "(default: from scp-api-install-host.toml). Set to 0 to disable waiting."
         ),
     )
 
@@ -504,8 +727,13 @@ These can be set in a .env file in the current directory.
     parser.add_argument(
         "--poll-interval",
         type=float,
-        default=5.0,
-        help="Polling interval in seconds for --monitor (default: 5)."
+        default=SETTINGS["ssh.poll_interval"],
+        help="Polling interval in seconds for --monitor (default: from scp-api-install-host.toml)."
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable verbose request/response logging. Same as NETCUP_SCP_API_DEBUG=yes.",
     )
 
     parser.add_argument(
@@ -523,21 +751,22 @@ These can be set in a .env file in the current directory.
     )
     parser.add_argument(
         "--ssh-host",
-        default=os.environ.get("NETCUP_SSH_HOST"),
-        help="SSH host/IP to attach to (default: detected server IPv4; override via NETCUP_SSH_HOST)."
+        default=os.environ.get("NETCUP_SCP_API_SSH_HOST"),
+        help="SSH host/IP to attach to (default: detected server IPv4; override via NETCUP_SCP_API_SSH_HOST)."
     )
     parser.add_argument(
         "--ssh-user",
-        default=os.environ.get("NETCUP_SSH_USER", "root"),
-        help="SSH user for attaching to the freshly installed system (default: root; override via NETCUP_SSH_USER)."
+        default=os.environ.get("NETCUP_SCP_API_SSH_USER", SETTINGS["ssh.user"]),
+        help="SSH user for attaching to the freshly installed system (default: from scp-api-install-host.toml; override via NETCUP_SCP_API_SSH_USER)."
     )
     parser.add_argument(
         "--ssh-identity-file",
-        default=os.environ.get("NETCUP_SSH_IDENTITY_FILE"),
+        default=os.environ.get("NETCUP_SCP_API_SSH_IDENTITY_FILE", SETTINGS["ssh.identity_file"]),
         help=(
-            "Path to LOCAL SSH identity file used for attach/monitoring (optional; override via "
-            "NETCUP_SSH_IDENTITY_FILE). This should be the client key pre-seeded during install, "
-            "not the host-generated key from bootstrap stage2."
+            "Path to LOCAL SSH identity file used for attach/monitoring (default: from "
+            "scp-api-install-host.toml; override via NETCUP_SCP_API_SSH_IDENTITY_FILE). This is "
+            "the shared client key pre-seeded during install (auto-generated if missing), "
+            "not the host-generated per-host key from bootstrap stage2."
         )
     )
     return parser.parse_args()
@@ -871,7 +1100,7 @@ class _SSHBootstrapFollower:
                             _log(f"[attach] SSH not ready/auth failed: {reason_txt}", lf)
                             if not self.identity_file:
                                 _log(
-                                    "[attach] Hint: pass --ssh-identity-file or set NETCUP_SSH_IDENTITY_FILE if this is a key auth issue.",
+                                    "[attach] Hint: pass --ssh-identity-file or set NETCUP_SCP_API_SSH_IDENTITY_FILE if this is a key auth issue.",
                                     lf,
                                 )
                     except Exception as e:
@@ -1023,7 +1252,7 @@ def monitor_task(
     if attach_bootstrap and not ssh_identity_file:
         print(
             "[attach] NOTE: no --ssh-identity-file provided; attempting SSH attach using default ssh identities/agent. "
-            "For deterministic behavior, pass --ssh-identity-file (or set NETCUP_SSH_IDENTITY_FILE)."
+            "For deterministic behavior, pass --ssh-identity-file (or set NETCUP_SCP_API_SSH_IDENTITY_FILE)."
         )
 
     # Start attach early (about 10s after installation kickoff) and retry until SSH becomes usable.
@@ -1136,7 +1365,6 @@ def monitor_task(
 
         # Sleep
         try:
-            import time
             time.sleep(max(0.5, float(poll_interval)))
         except KeyboardInterrupt:
             print("\nInterrupted; task continues server-side.")
@@ -1155,36 +1383,34 @@ def save_payload_with_comments(
     hostname_method: Optional[str] = None,
 ):
     """Save installation payload to JSONC file with helpful comments"""
-    with open(filepath, "w") as f:
-        f.write("{\n")
-        for key, value in payload.items():
-            # Add comments for IDs to make them more understandable
-            if key == "serverId":
-                f.write(f'  // Server ID for: {server_name}\n')
-            elif key == "hostname":
-                if hostname_method:
-                    f.write(f'  // Hostname determined by: {hostname_method}\n')
-            elif key == "imageFlavourId":
-                f.write(f'  // Image: {image_name}\n')
-            elif key == "sshKeyIds":
-                f.write(f'  // SSH key IDs for user {user_id}\n')
-                if ssh_key_names:
-                    for key_name in ssh_key_names:
-                        f.write(f'  //   - {key_name}\n')
-            
-            # Write the actual key-value pair
-            if isinstance(value, str):
-                f.write(f'  "{key}": {json.dumps(value)},\n')
-            elif isinstance(value, bool):
-                f.write(f'  "{key}": {str(value).lower()},\n')
-            elif isinstance(value, list):
-                f.write(f'  "{key}": {json.dumps(value)},\n')
-            else:
-                f.write(f'  "{key}": {value},\n')
-        
-        # Remove trailing comma from last line
-        f.seek(f.tell() - 2)
-        f.write('\n}\n')
+    lines: List[str] = ["{"]
+    items = list(payload.items())
+    for idx, (key, value) in enumerate(items):
+        # Add comments for IDs to make them more understandable
+        if key == "serverId":
+            lines.append(f'  // Server ID for: {server_name}')
+        elif key == "hostname":
+            if hostname_method:
+                lines.append(f'  // Hostname determined by: {hostname_method}')
+        elif key == "imageFlavourId":
+            lines.append(f'  // Image: {image_name}')
+        elif key == "sshKeyIds":
+            lines.append(f'  // SSH key IDs for user {user_id}')
+            if ssh_key_names:
+                for key_name in ssh_key_names:
+                    lines.append(f'  //   - {key_name}')
+
+        # Format the actual key-value pair
+        if isinstance(value, bool):
+            value_str = str(value).lower()
+        else:
+            value_str = json.dumps(value)
+        suffix = "," if idx < len(items) - 1 else ""
+        lines.append(f'  "{key}": {value_str}{suffix}')
+
+    lines.append("}")
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 class NetcupSCPClient:
@@ -1273,6 +1499,190 @@ class NetcupSCPClient:
         return result
 
 
+def _prompt_choice(items_desc: List[str], default_index: int, prompt_label: str) -> int:
+    """Print a numbered list and prompt for a 1-based selection.
+
+    Returns a 0-based index into items_desc. Enter (empty input) accepts
+    default_index. Only call this when the caller has already confirmed the
+    run is interactive.
+    """
+    for i, desc in enumerate(items_desc):
+        marker = " (default)" if i == default_index else ""
+        print(f"   [{i + 1}] {desc}{marker}")
+    while True:
+        raw = input(f"{prompt_label} [1-{len(items_desc)}, Enter for default]: ").strip()
+        if not raw:
+            return default_index
+        try:
+            choice = int(raw)
+        except ValueError:
+            print("   Please enter a number.")
+            continue
+        if 1 <= choice <= len(items_desc):
+            return choice - 1
+        print(f"   Please enter a number between 1 and {len(items_desc)}.")
+
+
+def _resolve_image_flavour(
+    client: "NetcupSCPClient",
+    server_id: int,
+    preselected: Optional[Dict[str, Any]],
+    *,
+    interactive: bool,
+) -> Dict[str, Any]:
+    """Resolve the image flavour to install: use `preselected` as-is if given
+    (payload already had `imageFlavourId`), else query and pick.
+
+    Filters to Debian+UEFI images (this tool's whole purpose). Interactive
+    runs get a numbered prompt (default: newest); non-interactive runs keep
+    auto-selecting newest, matching this tool's prior behavior.
+
+    Returns {"id": int, "name": str}.
+    """
+    if preselected is not None:
+        return preselected
+
+    image_flavours = client.get(f"/api/v1/servers/{server_id}/imageflavours")
+    debian_images = [
+        img for img in image_flavours
+        if "Debian" in img["image"]["name"] and "UEFI" in img["image"]["name"]
+    ]
+    if not debian_images:
+        raise RuntimeError("No Debian UEFI image flavours available for this server")
+
+    print("   Available Debian UEFI images:")
+    for img in debian_images:
+        print(f"   - ID: {img['id']:3d} | {img['image']['name']}")
+
+    # Sort by version number (extract version from name like "Debian 13.2.0 UEFI amd64").
+    debian_images_sorted = sorted(
+        debian_images,
+        key=lambda img: [int(x) if x.isdigit() else x for x in img["image"]["name"].split() if any(c.isdigit() for c in x)],
+        reverse=True,
+    )
+
+    if interactive:
+        descs = [f"ID {img['id']:3d} | {img['image']['name']}" for img in debian_images_sorted]
+        idx = _prompt_choice(descs, default_index=0, prompt_label="   Select image")
+        chosen = debian_images_sorted[idx]
+    else:
+        chosen = debian_images_sorted[0]
+        print(f"   ✓ Auto-selected newest (non-interactive): {chosen['image']['name']}")
+
+    print(f"   ✓ Using imageFlavourId {chosen['id']} ({chosen['image']['name']})")
+    return {"id": chosen["id"], "name": chosen["image"]["name"]}
+
+
+def _resolve_ssh_key_ids(
+    client: "NetcupSCPClient",
+    user_id: int,
+    preselected_ids: Optional[List[int]],
+    identity_file: Optional[str],
+    *,
+    interactive: bool,
+    dry_run: bool = False,
+) -> Optional[List[int]]:
+    """Resolve sshKeyIds: use preselected_ids as-is if given (payload already
+    had sshKeyIds), else query and pick/derive.
+
+    With an identity file: ensure/derive its netcup key id and merge it with
+    every existing key already on the account (so the pre-seeded default key
+    stays authorized alongside the deterministic-attach key) - matches this
+    tool's prior behavior exactly. Without one: interactive runs get a
+    numbered prompt over the account's existing keys; non-interactive runs
+    keep the first key, also matching prior behavior.
+    """
+    if preselected_ids is not None:
+        return preselected_ids
+
+    ssh_keys = client.get(f"/api/v1/users/{user_id}/ssh-keys") or []
+    if ssh_keys:
+        print("   Available SSH keys:")
+        for key in ssh_keys:
+            print(f"   - ID: {key['id']:3d} | {key.get('name', '')}")
+    else:
+        print("   ⚠ WARNING: No SSH keys found on this netcup account!")
+
+    if identity_file:
+        ssh_key_id = _ensure_netcup_ssh_key_id_for_identity(client, identity_file, dry_run=dry_run)
+        if not ssh_keys:
+            print(f"   ✓ Using sshKeyId matching identity file: {ssh_key_id}")
+            return [ssh_key_id]
+
+        ordered_ids: List[int] = []
+        seen_ids: set = set()
+        for key in ssh_keys:
+            try:
+                key_id = int(key["id"])
+            except Exception:
+                continue
+            if key_id not in seen_ids:
+                ordered_ids.append(key_id)
+                seen_ids.add(key_id)
+        if ssh_key_id not in seen_ids:
+            ordered_ids.append(ssh_key_id)
+            seen_ids.add(ssh_key_id)
+
+        if len(ordered_ids) == 1:
+            print(f"   ✓ Using sshKeyId matching identity file: {ordered_ids[0]}")
+        else:
+            print(f"   ✓ Using SSH Key IDs (existing + identity): {', '.join(str(x) for x in ordered_ids)}")
+        return ordered_ids
+
+    if not ssh_keys:
+        return None
+
+    if interactive:
+        descs = [f"ID {k['id']:3d} | {k.get('name', '')}" for k in ssh_keys]
+        idx = _prompt_choice(descs, default_index=0, prompt_label="   Select SSH key")
+        chosen = ssh_keys[idx]
+    else:
+        chosen = ssh_keys[0]
+        print(f"   ✓ Auto-selected first key (non-interactive): {chosen.get('name', '')}")
+
+    print(f"   ✓ Using SSH Key ID: {chosen['id']}")
+    return [int(chosen["id"])]
+
+
+def _validate_installation_payload(payload: Dict[str, Any]) -> List[str]:
+    """Local, offline structural checks for an install-image payload.
+
+    This cannot catch invalid IDs (those only fail once netcup validates them),
+    but it catches missing/mistyped fields before we ever call the API - the
+    kind of mistake that otherwise only surfaces as an opaque 422 or 404.
+
+    'imageFlavourId' and 'sshKeyIds' may be absent - install_from_payload()
+    resolves those interactively (or auto-selects, non-interactively) when
+    they're missing, rather than requiring them upfront.
+    """
+    errors: List[str] = []
+
+    if "serverId" not in payload and not payload.get("hostname"):
+        errors.append("must contain either 'serverId' (int) or a resolvable 'hostname'")
+    if "serverId" in payload and not isinstance(payload["serverId"], int):
+        errors.append(f"'serverId' must be an int, got {type(payload['serverId']).__name__}")
+
+    if "imageFlavourId" in payload and not isinstance(payload["imageFlavourId"], int):
+        errors.append(f"'imageFlavourId' must be an int, got {type(payload['imageFlavourId']).__name__}")
+
+    if "diskName" not in payload:
+        errors.append("missing required 'diskName' (e.g. 'vda')")
+    elif not isinstance(payload["diskName"], str):
+        errors.append(f"'diskName' must be a string, got {type(payload['diskName']).__name__}")
+
+    ssh_key_ids = payload.get("sshKeyIds")
+    if ssh_key_ids is not None and not (
+        isinstance(ssh_key_ids, list) and all(isinstance(x, int) for x in ssh_key_ids)
+    ):
+        errors.append("'sshKeyIds' must be a list of ints (or omitted)")
+
+    custom_script = payload.get("customScript")
+    if custom_script is not None and not isinstance(custom_script, str):
+        errors.append("'customScript' must be a string")
+
+    return errors
+
+
 def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argparse.Namespace):
     """Install directly from a payload JSON file.
 
@@ -1280,10 +1690,10 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
     can be stored safely. Placeholders are expanded only for the API request.
     """
     print("=" * 70)
-    print("DIRECT INSTALLATION MODE")
+    print("DIRECT INSTALLATION MODE" + ("  [DRY RUN]" if getattr(args, "dry_run", False) else ""))
     print("=" * 70)
     print()
-    
+
     # Load payload
     print(f"Loading payload from: {payload_path}")
     try:
@@ -1296,13 +1706,16 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
     except json.JSONDecodeError as e:
         print(f"❌ ERROR: Invalid JSON in payload file: {e}", file=sys.stderr)
         sys.exit(1)
-    
+
     print("✓ Payload loaded successfully")
     print()
 
-    # Expand placeholders only for the API request, while keeping the loaded
-    # payload safe-to-print/save.
-    installation_payload_to_send = _expand_payload_placeholders(installation_payload)
+    validation_errors = _validate_installation_payload(installation_payload)
+    if validation_errors:
+        print("❌ ERROR: payload failed preflight validation:", file=sys.stderr)
+        for err in validation_errors:
+            print(f"  - {err}", file=sys.stderr)
+        sys.exit(1)
 
     # Resolve server ID.
     server_id = None
@@ -1328,12 +1741,41 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
     except Exception:
         pass
 
+    # Fill in any fields the payload left out by querying the API and, when
+    # interactive, letting the operator pick - rather than silently guessing.
+    interactive = not is_noninteractive(args)
+    if "imageFlavourId" not in installation_payload:
+        print("imageFlavourId not set in payload:")
+        flavour = _resolve_image_flavour(client, int(server_id), None, interactive=interactive)
+        installation_payload["imageFlavourId"] = flavour["id"]
+        print()
+    if "sshKeyIds" not in installation_payload:
+        print("sshKeyIds not set in payload:")
+        user_id = client.get_user_info()["id"]
+        installation_payload["sshKeyIds"] = _resolve_ssh_key_ids(
+            client, user_id, None,
+            getattr(args, "ssh_identity_file", None),
+            interactive=interactive,
+            dry_run=getattr(args, "dry_run", False),
+        )
+        print()
+
+    # Expand placeholders only for the API request, while keeping the loaded
+    # payload safe-to-print/save.
+    installation_payload_to_send = _expand_payload_placeholders(installation_payload)
+
     # Display payload summary.
     print("=" * 70)
     print("PAYLOAD SUMMARY")
     print("=" * 70)
     print(json.dumps(_redact_for_log(installation_payload), indent=2))
     print()
+
+    if getattr(args, "dry_run", False):
+        print("=" * 70)
+        print(f"[dry-run] Preflight OK. NOT calling POST /api/v1/servers/{server_id}/image.")
+        print("=" * 70)
+        return
 
     # Ask for confirmation (unless non-interactive)
     if not is_noninteractive(args):
@@ -1364,14 +1806,14 @@ def install_from_payload(client: NetcupSCPClient, payload_path: str, args: argpa
             print(f"Task UUID: {task_uuid}")
             print()
             print("Monitor progress with:")
-            print(f"  python3 monitor-task.py {task_uuid}")
+            print(f"  python3 scp-api-monitor-task.py {task_uuid}")
             if getattr(args, "monitor", False) or is_noninteractive(args):
                 monitor_task(
                     client,
                     task_uuid,
-                    poll_interval=getattr(args, "poll_interval", 5.0),
+                    poll_interval=args.poll_interval,
                     ssh_host=(getattr(args, "ssh_host", None) or ip_address),
-                    ssh_user=getattr(args, "ssh_user", "root"),
+                    ssh_user=args.ssh_user,
                     ssh_identity_file=getattr(args, "ssh_identity_file", None),
                     attach_bootstrap=getattr(args, "attach_bootstrap", True),
                 )
@@ -1399,7 +1841,7 @@ def _expand_payload_placeholders(payload: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(cs, str) and "{{" in cs and "}}" in cs:
             token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
             chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
-            server_name = os.environ.get("SERVER_NAME", "")
+            server_name = os.environ.get("NETCUP_SCP_API_SERVER_NAME", "")
 
             if "{{TELEGRAM_BOT_TOKEN}}" in cs and not token:
                 print("⚠ WARNING: TELEGRAM_BOT_TOKEN not set; notifications will be disabled")
@@ -1417,38 +1859,38 @@ def _expand_payload_placeholders(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def main():
-    global args
+    global args, DEBUG
     args = parse_args()
+    DEBUG = DEBUG or getattr(args, "debug", False)
 
-    if not SERVER_NAME:
-        print("ERROR: missing $SERVER_NAME (set it in scripts/netcup/.env)", file=sys.stderr)
-        sys.exit(1)
+    if getattr(args, "ssh_identity_file", None):
+        _ensure_local_identity_file_exists(args.ssh_identity_file, SETTINGS["ssh.controller_fqdn"])
 
     if getattr(args, "attach_only", False):
         if not getattr(args, "ssh_host", None):
-            print("ERROR: --attach-only requires --ssh-host (or NETCUP_SSH_HOST)", file=sys.stderr)
+            print("ERROR: --attach-only requires --ssh-host (or NETCUP_SCP_API_SSH_HOST)", file=sys.stderr)
             sys.exit(2)
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         attach_task_uuid = getattr(args, "attach_task_uuid", None) or f"attach-only-{ts}"
         follower = _SSHBootstrapFollower(
             task_uuid=attach_task_uuid,
             host=getattr(args, "ssh_host"),
-            user=getattr(args, "ssh_user", "root"),
+            user=args.ssh_user,
             identity_file=getattr(args, "ssh_identity_file", None),
-            poll_interval=getattr(args, "poll_interval", 5.0),
-            initial_delay=getattr(args, "attach_initial_delay", 0.0),
-            max_wait_seconds=getattr(args, "attach_max_wait_seconds", 300.0),
+            poll_interval=args.poll_interval,
+            initial_delay=args.attach_initial_delay,
+            max_wait_seconds=args.attach_max_wait_seconds,
             simulate_disconnect_seconds=getattr(args, "simulate_disconnect_seconds", None),
         )
         follower.start()
         try:
-            wait_seconds = float(getattr(args, "stage2_wait_seconds", 0.0) or 0.0)
+            wait_seconds = float(args.stage2_wait_seconds or 0.0)
             if wait_seconds > 0:
                 _wait_for_stage2_done(
                     host=getattr(args, "ssh_host"),
-                    user=getattr(args, "ssh_user", "root"),
+                    user=args.ssh_user,
                     identity_file=getattr(args, "ssh_identity_file", None),
-                    poll_interval=getattr(args, "poll_interval", 5.0),
+                    poll_interval=args.poll_interval,
                     max_wait_seconds=wait_seconds,
                     monitor_log_path=follower.local_log_path,
                 )
@@ -1463,10 +1905,10 @@ def main():
         return
     
     # Check for refresh token
-    refresh_token = os.environ.get("NETCUP_REFRESH_TOKEN")
+    refresh_token = os.environ.get("NETCUP_SCP_API_REFRESH_TOKEN")
     if not refresh_token:
-        print("ERROR: missing $NETCUP_REFRESH_TOKEN", file=sys.stderr)
-        print("Usage: export NETCUP_REFRESH_TOKEN='your-refresh-token' && python3 <this script>")
+        print("ERROR: missing $NETCUP_SCP_API_REFRESH_TOKEN", file=sys.stderr)
+        print("Usage: export NETCUP_SCP_API_REFRESH_TOKEN='your-refresh-token' && python3 <this script>")
         sys.exit(1)
 
     try:
@@ -1477,11 +1919,18 @@ def main():
         sys.exit(1)
 
     client = NetcupSCPClient(access_token, refresh_token=refresh_token)
-    
+
     # If payload file is provided, use direct installation mode
     if args.payload:
         install_from_payload(client, args.payload, args)
         return
+
+    # Only the interactive gather+install path (and --poweroff, below) need a
+    # configured target server name; --attach-only and --payload do not.
+    if not SERVER_NAME:
+        print("ERROR: missing $SERVER_NAME (set it in scripts/netcup/.env)", file=sys.stderr)
+        print("Hint: not required for --attach-only or --payload modes.", file=sys.stderr)
+        sys.exit(1)
 
     print("=" * 70)
     print(f"Gathering installation information for server:   {SERVER_NAME}")
@@ -1505,6 +1954,9 @@ def main():
             print("=" * 70)
             print("POWER OFF SERVER")
             print("=" * 70)
+            if getattr(args, "dry_run", False):
+                print(f"[dry-run] Would PATCH /api/v1/servers/{server_id} state=OFF stateOption=POWEROFF")
+                return
             result = client.patch(
                 f"/api/v1/servers/{server_id}",
                 {"state": "OFF"},
@@ -1644,36 +2096,12 @@ def main():
         print(f"   ✓ Primary Disk: {disk_dev} ({disk_capacity_gib:.0f} GiB)")
         print()
 
-        # 3. Find newest Debian UEFI image flavour
-        print("3. Finding newest Debian UEFI image flavour...")
-        image_flavours = client.get(f"/api/v1/servers/{server_id}/imageflavours")
-
-        print("   Available Debian images:")
-        debian_images = [
-            img for img in image_flavours
-            if "Debian" in img["image"]["name"] and "UEFI" in img["image"]["name"]
-        ]
-        
-        if not debian_images:
-            print("   ❌ ERROR: No Debian UEFI images found!")
-            sys.exit(1)
-        
-        for img in debian_images:
-            print(f"   - ID: {img['id']:3d} | {img['image']['name']}")
-        print()
-
-        # Sort by version number (extract version from name like "Debian 13.2.0 UEFI amd64")
-        # Select the newest version
-        debian_images_sorted = sorted(
-            debian_images,
-            key=lambda img: [int(x) if x.isdigit() else x for x in img["image"]["name"].split() if any(c.isdigit() for c in x)],
-            reverse=True
-        )
-        newest_debian = debian_images_sorted[0]
-
-        image_flavour_id = newest_debian["id"]
-        print(f"   ✓ Selected newest: {newest_debian['image']['name']}")
-        print(f"   ✓ Image Flavour ID: {image_flavour_id}")
+        # 3. Resolve image flavour (interactive: numbered prompt; else: newest)
+        print("3. Resolving Debian UEFI image flavour...")
+        interactive = not is_noninteractive(args)
+        flavour = _resolve_image_flavour(client, int(server_id), None, interactive=interactive)
+        image_flavour_id = flavour["id"]
+        image_flavour_name = flavour["name"]
         print()
 
         # 4. Get user ID
@@ -1683,51 +2111,15 @@ def main():
         print(f"   ✓ User ID: {user_id}")
         print()
 
-        # 5. Get SSH keys
-        print("5. Getting SSH keys...")
-        ssh_keys = client.get(f"/api/v1/users/{user_id}/ssh-keys")
-
-        ssh_key_names = []
-        if not ssh_keys:
-            print("   ⚠ WARNING: No SSH keys found!")
-        else:
-            for key in ssh_keys:
-                print(f"   - ID: {key['id']:3d} | {key['name']}")
-                ssh_key_names.append(key.get('name', ''))
-
-        ssh_identity = getattr(args, "ssh_identity_file", None)
-        if ssh_identity:
-            ssh_key_id = _ensure_netcup_ssh_key_id_for_identity(client, ssh_identity)
-            if ssh_keys:
-                # Preserve existing SSH keys (including the pre-seeded/default one)
-                # while also adding the identity-file key for deterministic attach.
-                ordered_ids: List[int] = []
-                seen_ids = set()
-                for key in ssh_keys:
-                    try:
-                        key_id = int(key["id"])
-                    except Exception:
-                        continue
-                    if key_id not in seen_ids:
-                        ordered_ids.append(key_id)
-                        seen_ids.add(key_id)
-                if ssh_key_id not in seen_ids:
-                    ordered_ids.append(ssh_key_id)
-                    seen_ids.add(ssh_key_id)
-                ssh_key_ids = ordered_ids
-                if len(ssh_key_ids) == 1:
-                    print(f"   ✓ Using sshKeyId matching identity file: {ssh_key_ids[0]}")
-                else:
-                    print(f"   ✓ Using SSH Key IDs (existing + identity): {', '.join(str(x) for x in ssh_key_ids)}")
-            else:
-                ssh_key_ids = [ssh_key_id]
-                print(f"   ✓ Using sshKeyId matching identity file: {ssh_key_id}")
-        else:
-            if not ssh_keys:
-                ssh_key_ids = None
-            else:
-                ssh_key_ids = [ssh_keys[0]["id"]]
-                print(f"   ✓ Using SSH Key ID: {ssh_key_ids[0]}")
+        # 5. Resolve SSH keys (identity-file key merged with existing keys;
+        # interactive: numbered prompt over existing keys when no identity file)
+        print("5. Resolving SSH keys...")
+        ssh_key_ids = _resolve_ssh_key_ids(
+            client, user_id, None,
+            getattr(args, "ssh_identity_file", None),
+            interactive=interactive,
+            dry_run=getattr(args, "dry_run", False),
+        )
         print()
 
         # 6. Prepare installation payload
@@ -1754,15 +2146,21 @@ def main():
         # 8. Save payload to file with comments
         save_payload_with_comments(
             installation_payload,
-            "install-debian.json",
+            "target-host.jsonc",
             SERVER_NAME,
-            newest_debian['image']['name'],
+            image_flavour_name,
             user_id,
-            ssh_key_names=[ssh_key_names[0]] if ssh_key_names else None,
+            ssh_key_names=None,
             hostname_method=hostname_method
         )
-        print("✓ Installation payload saved to:  install-debian.json")
+        print("✓ Installation payload saved to:  target-host.jsonc")
         print()
+
+        if getattr(args, "dry_run", False):
+            print("=" * 70)
+            print(f"[dry-run] Preflight OK. NOT calling POST /api/v1/servers/{server_id}/image.")
+            print("=" * 70)
+            return
 
         # 9. Ask for confirmation (unless non-interactive)
         if not is_noninteractive(args):
@@ -1792,15 +2190,15 @@ def main():
                 print(f"Task UUID: {task_uuid}")
                 print()
                 print("Monitor progress with:")
-                print(f"  python3 monitor-task.py {task_uuid}")
+                print(f"  python3 scp-api-monitor-task.py {task_uuid}")
                 if getattr(args, "monitor", False) or is_noninteractive(args):
                     ssh_identity = getattr(args, "ssh_identity_file", None)
                     monitor_task(
                         client,
                         task_uuid,
-                        poll_interval=getattr(args, "poll_interval", 5.0),
+                        poll_interval=args.poll_interval,
                         ssh_host=(getattr(args, "ssh_host", None) or ip_address),
-                        ssh_user=getattr(args, "ssh_user", "root"),
+                        ssh_user=args.ssh_user,
                         ssh_identity_file=ssh_identity,
                         attach_bootstrap=getattr(args, "attach_bootstrap", True),
                     )
@@ -1825,16 +2223,16 @@ def main():
                             monitor_task(
                                 client,
                                 task_uuid,
-                                poll_interval=getattr(args, "poll_interval", 5.0),
+                                poll_interval=args.poll_interval,
                                 ssh_host=(getattr(args, "ssh_host", None) or ip_address),
-                                ssh_user=getattr(args, "ssh_user", "root"),
+                                ssh_user=args.ssh_user,
                                 ssh_identity_file=ssh_identity,
                                 attach_bootstrap=getattr(args, "attach_bootstrap", True),
                             )
                             return
 
                         print("Monitor progress with:")
-                        print(f"  python3 monitor-task.py {task_uuid}")
+                        print(f"  python3 scp-api-monitor-task.py {task_uuid}")
                         return
             raise
 
