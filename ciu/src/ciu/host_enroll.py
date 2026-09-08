@@ -146,13 +146,25 @@ def _one_liner(
     url: str, public_key: str, controller: str, name: str,
     user: str, from_pattern: str | None, docker: bool,
 ) -> str:
-    """The command the TARGET's admin runs (S14.7a / proposal §4)."""
+    """The command the TARGET's admin runs (S14.7a / proposal §4).
+
+    CIU-99 (confirmed, unfixed): ciu's release process currently publishes a
+    bare wheel, not the bundle ``get.py install`` expects, so WITHOUT
+    ``--no-install`` this command's install step calls ``fatal()`` before the
+    key is ever appended -- the whole enrollment aborts, every time, on
+    every real host, until CIU-99 ships. ``--no-install`` is added here so
+    the printed command actually works today; the caller (``enroll_step1``)
+    prints a loud, explicit warning explaining the tradeoff (ciu is NOT
+    installed on the target by this command right now) rather than letting
+    the gap be silent.
+    """
     args = [
         "enroll",
         "--authorized-key", public_key,
         "--controller", controller,
         "--user", user,
         "--name", name,
+        "--no-install",
     ]
     if from_pattern:
         args += ["--from", from_pattern]
@@ -188,6 +200,20 @@ def enroll_step1(
             f"key (the row's ssh_key/known_host are overwritten at step 2), or "
             f"pick another name."
         )
+    if not replace:
+        pending_private, _pending_public = key_paths(repo_root, name)
+        if pending_private.exists():
+            raise EnrollError(
+                f"[S14.7] host '{name}' already has a PENDING key pair at "
+                f"{pending_private.parent} (step 1 already ran for this name and "
+                f"step 2 hasn't completed it yet). Re-running step 1 would silently "
+                f"regenerate the key, orphaning whatever the target's admin already "
+                f"installed from the FIRST one-liner. Finish enrollment with step 2, "
+                f"remove the pending pair first with "
+                f"'ciu host enroll {name} --abort', or pass --replace if you mean to "
+                f"rotate an already-completed enrollment."
+            )
+
     controller_name = resolve_controller(controller, config)
     url = installer_url_override or installer_url(version)
     project = str(config.get("deploy", {}).get("project_name") or "ciu")
@@ -216,6 +242,16 @@ def enroll_step1(
     out("Step 1 — the target's admin runs ONE command on the bare host:")
     out("")
     out(_one_liner(url, public_key, controller_name, name, user, from_pattern, docker))
+    out("")
+    out(
+        "WARNING [CIU-99]: this command passes --no-install. ciu's own release "
+        "process does not yet publish the bundle 'get.py install' expects, so "
+        "WITHOUT --no-install the install step fails and the whole enrollment "
+        "aborts before the key is ever appended. ciu is therefore NOT installed "
+        "on the target by this command — install it there yourself by some "
+        "other means before running 'ciu up --host' against this name. Remove "
+        "--no-install yourself once CIU-99 ships."
+    )
     out("")
     out("Step 2 — then, back here, with the fingerprint the admin read on the console:")
     out("")
@@ -377,8 +413,12 @@ def prove_login(
         return
     if code == 127:
         raise EnrollError(
-            f"[S14.7] {name}: key accepted but ciu is not installed; run get.py "
-            f"enroll again without --no-install. Nothing written."
+            f"[S14.7] {name}: key accepted but ciu is not installed on the "
+            f"target — expected, since the printed one-liner passes "
+            f"--no-install (CIU-99: ciu's own release wheel isn't yet "
+            f"consumable by 'get.py install'). Install ciu on the target "
+            f"yourself by some other means, then re-run this step-2 command. "
+            f"Nothing written."
         )
     raise EnrollError(
         f"[S14.7] {name}: could not run 'ciu version' over the new key (ssh exit "

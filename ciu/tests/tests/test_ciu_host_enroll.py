@@ -180,9 +180,12 @@ class TestStep1:
         assert not hosts_file.exists()
         assert load_hosts(repo) == {}
 
-    def test_o1_second_step1_without_replace_is_refused_and_changes_nothing(
+    def test_o1_second_step1_on_an_already_enrolled_host_is_refused_and_changes_nothing(
         self, repo, config
     ):
+        """The name has a REAL inventory row already (a completed, live
+        enrollment) -- distinct from the PENDING case below, which the
+        adversarial review found this test was accidentally standing in for."""
         _step1(repo, config)
         private, public = host_enroll.key_paths(repo, "rs1002")
         write_host_row(
@@ -199,6 +202,30 @@ class TestStep1:
         assert (repo / ".ciu.hosts.toml").read_bytes() == before
         assert private.read_bytes() == before_key
         assert public.exists()
+
+    def test_o1_second_step1_with_a_pending_key_is_refused_and_never_regenerates_it(
+        self, repo, config
+    ):
+        """The PENDING case (adversarial review finding, ciu-P52): step 1 ran
+        once, step 2 has NOT run yet, so ``name`` is NOT in the inventory at
+        all -- ``load_hosts`` is empty. A naive re-run would sail past the
+        (correctly-scoped) already-enrolled check above and silently
+        regenerate the key pair via ``generate_key_pair``'s own
+        unconditional stale-key unlink, orphaning whatever the target's
+        admin already installed from the FIRST one-liner. Must be refused,
+        and the original key bytes must survive untouched."""
+        _step1(repo, config)
+        private, public = host_enroll.key_paths(repo, "rs1002")
+        assert load_hosts(repo) == {}  # genuinely pending, not enrolled
+        before_private = private.read_bytes()
+        before_public = public.read_bytes()
+
+        with pytest.raises(EnrollError, match=r"\[S14.7\].*[Pp]ending"):
+            _step1(repo, config)
+
+        assert private.read_bytes() == before_private
+        assert public.read_bytes() == before_public
+        assert load_hosts(repo) == {}
 
     def test_replace_rotates_the_key_pair(self, repo, config):
         _step1(repo, config)
@@ -418,10 +445,24 @@ class TestSelectHostKey:
 
 class TestProveLogin:
     def test_success_returns_quietly(self):
-        host_enroll.prove_login(
+        """Not just 'did not raise' (AUTHORING §3b C) -- assert the actual
+        observable contract: exec_fn is invoked with the host_cfg it was
+        given and the exact 'ciu version' argv, and the call returns None."""
+        calls = []
+
+        def spy(host_cfg, argv, **kwargs):
+            calls.append((host_cfg, argv, kwargs))
+            return 0
+
+        result = host_enroll.prove_login(
             {"ssh_user": "ciu"}, config={}, repo_root=Path("/"), name="h",
-            exec_fn=lambda *a, **k: 0,
+            exec_fn=spy,
         )
+        assert result is None
+        assert len(calls) == 1
+        host_cfg, argv, _kwargs = calls[0]
+        assert host_cfg == {"ssh_user": "ciu"}
+        assert argv == ["ciu", "version"]
 
     def test_missing_ciu_binary_names_the_reinstall_flag(self):
         with pytest.raises(EnrollError, match="--no-install"):
@@ -930,7 +971,13 @@ class TestControlledWrongImplementations:
 
         assert first_line == "-----BEGIN OPENSSH PRIVATE KEY-----"
         assert first_line not in haystack
-        assert body[:40] not in haystack
+        # body[:40] is the base64 of the CONSTANT "openssh-key-v1\0" magic +
+        # "none" cipher + "none" kdf -- identical across every unencrypted
+        # ed25519 key, so it is not a leak canary at all (adversarial review,
+        # ciu-P52: measured identical across two freshly generated keys).
+        # Divergence between keys starts around byte 82; use a slice that is
+        # actually unique to THIS key's material.
+        assert body[100:140] not in haystack
         # the PATH is fine to print (S14.4b logs paths, never material)
         assert str(private) in haystack
 

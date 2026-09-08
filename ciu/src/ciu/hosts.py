@@ -426,7 +426,13 @@ def _atomic_write_text(path: Path, text: str) -> None:
     mode = path.stat().st_mode & 0o777 if path.exists() else None
     fd, tmp_path = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        # newline="" (adversarial review, ciu-P52): the read side already
+        # preserves the file's own line endings verbatim (see write_host_row's
+        # read_text(..., newline="")) -- writing in default text mode here
+        # would translate every "\r\n" already in `text` back down to "\n"
+        # on write, silently normalizing CRLF to LF and breaking the
+        # byte-for-byte round-trip claim this whole module makes.
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
             fh.write(text)
         if mode is not None:
             os.chmod(tmp_path, mode)
@@ -522,7 +528,18 @@ def write_host_row(
     ``[S14.7]`` — and writes NOTHING on any refusal.
     """
     hosts_path = Path(hosts_path)
-    before_text = hosts_path.read_text(encoding="utf-8") if hosts_path.exists() else ""
+    # newline="" (adversarial review, ciu-P52): default text-mode read
+    # applies universal-newline translation, silently turning every "\r\n"
+    # in an existing file into "\n" before this function ever sees it --
+    # the byte-for-byte round-trip claim above would then be false for any
+    # CRLF file even though the write side was careful. Read raw, let
+    # tomllib parse either line-ending convention (both are valid TOML),
+    # and carry the ORIGINAL bytes through untouched for everything this
+    # function doesn't itself rewrite.
+    before_text = (
+        hosts_path.read_text(encoding="utf-8", newline="")
+        if hosts_path.exists() else ""
+    )
     try:
         doc = tomllib.loads(before_text)
     except tomllib.TOMLDecodeError as exc:
