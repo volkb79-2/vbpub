@@ -354,7 +354,35 @@ reason; noted so a reviewer does not read the gate's green as covering it.
 run against the committed tree (the gate refuses a dirty one), verdict read in
 a separate step per LESSONS L4.
 
-**VERDICT: _(filled in below)_**
+**VERDICT: `ciu: PASS (exit 0)` at commit `7917dca5`** —
+`run-gate: lane 'ciu' exit 0`. Read afterwards from the verdict artifact
+`.assay/verdict-ciu.json` in its own step: `outcome PASS`, **R0 PASS** (the
+full `run-ciu-tests.py` suite) and **R1 PASS** at `pct=100.0`,
+`branches=210/210` on the changed lines. The suite itself:
+`3854 passed, 2 skipped` (the two skips are the O6 byte-identity test and the
+end-to-end container class, both explained above).
+
+**The first gate run was RED, and the fix is worth reading.** At commit
+`b8b174b1` the gate reported `FAIL/COMMAND_FAILED`, with exactly four
+failures — every `TestHostVerbDispatch` test that drives step 1 through the
+CLI — while coverage already passed at 100%. Cause: those tests depended on
+how the interpreter running the suite got its ciu. Locally that is an
+installed wheel reporting `7.11.0`, so the verb prints a real release-asset
+URL; the gate's container runs from source, `get_cli_version()` returns a
+setuptools-scm `.dev` version, and `installer_url` **correctly refused**
+(S14.7d — never print a URL that 404s), exit 2. The product behaviour was
+right and the tests were environment-dependent, so the tests changed: a
+`pinned_version` fixture fixes the reported version for the dispatch tests,
+and both real behaviours are now pinned on their own — an unreleased control
+host refuses naming `--installer-url`, and passing `--installer-url` makes it
+usable again. `_VERB_HELP["host"]` documents the requirement.
+
+Two things that let this slip past the local run are worth a reviewer's
+attention: (a) `test_the_verb_never_sets_the_tofu_escape_hatch` was calling
+`_cli` without asserting its exit codes, so it passed while the verb underneath
+it was exiting 2 — it now asserts them; and (b) nothing in the local
+environment reproduces the gate's from-source version, which is precisely why
+the pin is a fixture rather than a hope.
 
 ---
 

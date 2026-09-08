@@ -84,10 +84,24 @@ taken on trust; one held and one did not — both are written up in the REPORT.
   is `docker update --cpus=1`-capped the moment it starts, per the shared-host
   rule.
 * **Gate**: `./run-gate.py ciu --worktree /workspaces/vbpub/.worktrees/
-  ciu-p51-bundle`. First attempt refused a dirty tree ("commit or pass
-  --allow-dirty"), so the implementation was committed first and the gate run
-  against the commit. Verdict read in a separate step (LESSONS L4), recorded
-  in the REPORT.
+  ciu-p51-bundle`, three invocations.
+  1. Refused a dirty tree ("commit or pass --allow-dirty") — so the
+     implementation was committed first (`b8b174b1`) and the gate run against
+     the commit.
+  2. **RED** at `b8b174b1`: `FAIL/COMMAND_FAILED`, four failures, all
+     `TestHostVerbDispatch` tests that drive step 1 through the CLI. R1
+     coverage already passed at 100%. Cause and fix in the REPORT §5.6 — in
+     short, the tests depended on whether the running ciu reported a released
+     or a from-source version, and the verb's refusal on an unreleased version
+     was correct. Fixed as `2f7d1b09`.
+  3. Refused a dirty tree again because the LOG/REPORT were untracked; they
+     were committed (`7917dca5`) and the gate re-run.
+  4. **GREEN** at `7917dca5`: `ciu: PASS (exit 0)`, `run-gate: lane 'ciu' exit
+     0`. Verdict read afterwards from `.assay/verdict-ciu.json` in a separate
+     step (LESSONS L4): `outcome PASS`, R0 PASS, R1 PASS `pct=100.0`
+     `branches=210/210`.
+  The gate container was capped `docker update --cpus=3` immediately after
+  each launch, and only ever one at a time.
 
 ## 4. Host-load discipline
 
