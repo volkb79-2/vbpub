@@ -2188,12 +2188,21 @@ INGESTED_STATUS_BUCKETS: Mapping[str, str] = MappingProxyType(
     }
 )
 
-#: (B046) Statuses counted in `judgment.r2.discarded` and excluded from the
-#: `pct` denominator: an invalid mutant assay's native engine never emits at
+#: (B046, RESHAPED by B070 at schema v11) Statuses whose mutants are LISTED on
+#: `judgment.r2.discarded` -- by identity, one entry each -- and excluded from
+#: the `pct` denominator: invalid mutants assay's native engine never emits at
 #: all. Excluded because a mutant that could not compile tested nothing;
-#: COUNTED because a report that could not compile most of its own mutants
-#: measured far less than its score implies, and a bare percentage cannot say
-#: so.
+#: RECORDED rather than dropped because a report that could not build most of
+#: its own mutants measured far less than its score implies, and a bare
+#: percentage cannot say so. Through v10 they were only COUNTED, which is
+#: exactly why the count could never be verified: see B070.
+#:
+#: The two members are folded into one undifferentiated list, and the sentence
+#: above says "could not build" rather than "could not compile" for that
+#: reason -- `CompileError` (a mutant that never built) and `RuntimeError` (a
+#: mutant that crashed the runner) are materially different facts and the
+#: record does not currently carry which is which. Filed as B078; deliberately
+#: out of B070's scope, which was bound to exactly one wire decision.
 _INGESTED_DISCARDED_STATUSES: frozenset[str] = frozenset(
     {"CompileError", "RuntimeError"}
 )

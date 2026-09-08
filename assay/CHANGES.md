@@ -116,6 +116,26 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   mutation SCORE changes: it has always been `killed / (killed + survived)`
   over the buckets, and discarded mutants have never been in them.
 
+  *And one bound moved with it, in the permissive direction.* Since
+  `candidate_count` now counts an ingested report's discarded mutants too, the
+  ceiling on it had to stop being `judge.mutation.max_mutants + 1` (10,001) —
+  that number defends against a malicious *declared* cap, which an ingested
+  lane does not have. An ingested payload's `candidate_count`, and
+  `judgment.r2.discarded`'s own length, are bounded instead by the **document
+  ceiling of 100,000**, the most `assay` reads from one report. A truthful
+  report of 48 attempted and 9,954 invalid mutants therefore ingests; left
+  under the native ceiling it would have been refused for discarding too
+  much, which is the failure mode this whole item exists to end. A **native**
+  lane is unaffected: `max_mutants` is still `1..10,000` and a native payload
+  over `max_mutants + 1` is still refused by name.
+
+  *Read "refused by name" precisely:* the list is audited against the document
+  it sits in, not against the foreign tool's original report. A producer that
+  inflates `discarded` **and** moves `candidate_count` to match still passes —
+  the same declared-by-artifact tier every `Mutation` bucket has always sat
+  in. What ends is the case where `discarded` could contradict the payload
+  beside it with no check able to tell.
+
   **Migration:** re-pin to this release and re-run the lane — a v10 document
   is refused with one version-only diagnostic, never upgraded in place. In
   consumer code, replace `judgment.r2.discarded` (an `int`) with

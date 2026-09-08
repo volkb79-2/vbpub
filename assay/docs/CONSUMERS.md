@@ -1415,6 +1415,15 @@ quantity — an inflated list is refused **by name**, and a truthful
 high-discard report (905 candidates, 5 attempted, 900 listed) passes, because
 905 − 5 *is* 900.
 
+Read "refused by name" precisely: the list is audited against **the document
+it sits in**, not against the foreign tool's original report. A producer that
+inflates `discarded` *and* moves `mutation.candidate_count` to match still
+passes, exactly as a producer that fabricates a `killed` entry and increments
+`total` always has. That is the same declared-by-artifact tier every
+`Mutation` bucket sits in, and v11 does not claim to leave it — what it ends
+is the case where `discarded` could contradict the payload beside it and no
+check could tell.
+
 **What is still declared, not verified: the un-listed half.** A tool that
 drops candidates *before* reporting them at all emits a document
 indistinguishable from one that never generated them. No artifact assay
@@ -2042,6 +2051,19 @@ is precisely `len(judgment.r2.discarded)`. If you compute anything from
 `candidate_count` on an ingested document, that is the line to look at. The
 mutation score is untouched: it has always been `killed / (killed +
 survived)` over the buckets, and discarded mutants have never been in them.
+
+**And one bound moved with it, in the permissive direction.** Because
+`candidate_count` now counts the discarded mutants too, the ceiling that
+applies to it had to stop being `judge.mutation.max_mutants + 1` (10,001) —
+that number is a defence against a malicious *declared* cap, and an ingested
+lane declares none. An ingested payload's `candidate_count`, and
+`judgment.r2.discarded`'s own length, are bounded instead by the **document
+ceiling of 100,000**: the most mutants `assay` will read from one report,
+which is where an ingested lane's size limit has always actually lived. So an
+honest report of 48 attempted and 9,954 invalid mutants — refused if the
+native ceiling had been left in place — ingests. Nothing about a **native**
+lane's ceiling changes: `max_mutants` is still declared in `1..10,000` and a
+native payload over `max_mutants + 1` is still refused, by name.
 
 **Migration:** re-pin to a v11 assay and re-run the lane; there is no
 in-place upgrade of a v10 document. In your own consumer code, replace

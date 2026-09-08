@@ -8072,3 +8072,89 @@ mirroring the diagnostic-message discipline `_linked_worktree_gap()`
 - [ ] a regression test reproduces the reviewer's exact repro (a symlink
       inside the tree pointing at a gitignored location, both
       `--state-dir` and `--progress`) and confirms the new message.
+
+---
+
+## B078 — `judgment.r2.discarded` folds `CompileError` and `RuntimeError` into one undifferentiated list, while the sentence that justifies the field says "could not COMPILE"
+
+**Filed 2026-09-08** by the B070 fix round, on the round-1 reviewer's **OBS 3**
+and the implementer's own REPORT §9.3, as the explicit residual of
+[B070](#b070). **v12 CANDIDATE — FILE, DO NOT BUILD.** It is a wire change
+(a new field inside `judgment.r2.discarded[]`, and with it a new closed
+vocabulary), and B070's binding constraint was exactly ONE wire decision.
+
+**Leaving it out of B070 was the right call and the review confirmed it**:
+none of B070's four re-derivations needs the distinction, `mutant_outcome`'s
+grammar has no status field, and adding one means a second wire decision
+inside a cut whose whole discipline was to make one. This entry exists so the
+reasoning is captured while it is fresh rather than rediscovered later —
+exactly the disposition B070 itself received as a residual of B051.
+
+### The problem
+
+`_INGESTED_DISCARDED_STATUSES` (`mutation.py`) is
+`frozenset({"CompileError", "RuntimeError"})`, and `ingest_mutation_report`
+records both onto one list with nothing distinguishing them. But the sentence
+that justifies the field's existence — repeated near-verbatim in
+`docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md` §11, `verdict.py`'s field
+docstring, the shipped schema's own description and `mutation.py`'s
+`_INGESTED_DISCARDED_STATUSES` comment — is:
+
+> a report that could not **compile** most of its own mutants measured far
+> less than its score implies
+
+That sentence leans on a distinction the record does not carry. The two
+statuses are materially different facts about the run:
+
+* **`CompileError`** — the mutant never built. Nothing ran; the tool's own
+  toolchain rejected the mutated source. This is what the justifying sentence
+  is about, and it is usually a statement about the MUTATION OPERATOR being
+  wrong for that site (a type-checked language mutated as if untyped).
+* **`RuntimeError`** — the mutant built and then the runner failed on it in a
+  way the tool declined to call a kill. This is a statement about the TEST
+  HARNESS, not about the mutant's validity, and it is much closer to assay's
+  own `crashed` bucket in meaning than to "invalid mutant".
+
+Folding them means a consumer reading `len(discarded)` cannot tell "this
+project's operators do not fit its language" from "this project's test runner
+is unstable", and the second is arguably a `crashed`-shaped fact that should
+never have been outside the denominator at all. The B070 fixture makes the
+asymmetry concrete: all 40 of its discards are `CompileError` (StrykerJS's
+`statusReason` carries the real `tsc` diagnostics), so the project currently
+has **no real artifact carrying a `RuntimeError` mutant at all** — the very
+gap A-334 exists to name.
+
+### What a fix would have to decide
+
+Not a design, just the questions a v12 A-row would have to answer:
+
+1. a `status` (or `reason`) field on the discarded record, with a CLOSED
+   vocabulary — and whether that vocabulary is assay's own two-value one or
+   the upstream `MutantStatus` spelling copied verbatim (the `stryker:`
+   operator namespace's precedent argues for copying foreign DATA and
+   namespacing it, not translating it);
+2. whether `RuntimeError` belongs on `discarded` at all, or whether it is
+   closer to `crashed` — which would make this a bucket-mapping change with a
+   denominator consequence, not merely an added field, and would need
+   DA-R23's "the denominator is unaffected by construction" re-argued;
+3. whether the tool's own free-text `statusReason` (present in the committed
+   typescript-checker fixture, absent from the first one) should reach the
+   wire beside it, under `claim.detail`'s declared-not-verified discipline;
+4. a real fixture carrying a genuine `RuntimeError` mutant — which this
+   project does not currently have, and which (like the `CompileError` one)
+   needs a real tool run rather than a hand-authored status.
+
+### Acceptance
+
+- [ ] a v12 A-row answers question 2 first, because it decides whether this
+      is an additive field or a bucket-mapping change;
+- [ ] the justifying sentence is corrected in all five places it lives, so it
+      no longer claims a distinction the record does not carry (B070's fix
+      round already softened `mutation.py`'s copy to "could not build" and
+      pointed it here; the other four still say "compile");
+- [ ] if a `status` field lands, it is closed in the schema, the model and
+      the raw verifier — the 2.4.0 three-place lesson — and forked on
+      `producer` like every other ingested-only fact;
+- [ ] a real report carrying a genuine `RuntimeError` mutant, committed with
+      its recipe in `tests/fixtures/mutation/PROVENANCE.md`, or an explicit
+      A-row recording that no such run could be produced and what that costs.

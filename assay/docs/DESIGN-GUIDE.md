@@ -2037,6 +2037,29 @@ as saying otherwise. What never changed either way is that this field carries
 no judgment weight: these mutants never enter the mutation buckets, so the
 score's denominator is unaffected by construction.
 
+**And the verification is INTERNAL consistency, which is a real thing but a
+bounded one.** The list is re-derived against the payload it sits beside,
+never against the foreign tool's original report, so a producer that inflates
+`discarded` and moves `candidate_count` to match still passes — exactly as a
+producer that fabricates a `killed` entry and increments `total` always has.
+That is the tier every `Mutation` bucket lives in and v11 does not pretend to
+leave it. What v11 ends is narrower and worth saying plainly: the case where
+`discarded` could contradict the document it sits in and no check could tell.
+
+**One consequence had to be fixed after the fact, and it is worth recording
+because it is the same mistake in miniature.** Making `candidate_count` count
+the discarded mutants put an ingested payload under `MAX_CANDIDATE_CEILING`
+(`max_mutants + 1`) — a ceiling documented as a defence against a malicious
+*declared* cap, which an ingested lane does not have. While `candidate_count`
+was the bucket sum the conflation was invisible; the moment it was not, a
+truthful report started being refused for discarding too much: DA-R26's own
+route 3, at a higher threshold and misattributed to a field the lane never
+declared. The ceiling is now producer-aware — native payloads keep
+`max_mutants + 1`, enforced where the producer is visible, and an ingested
+payload is bounded by the document ceiling that already governs how much
+assay will read. The transferable lesson is that a bound inherited from
+another producer's policy is a bound waiting to refuse the wrong document.
+
 **The cost sentence, kept because it is the transferable lesson.** Adding
 this quantity before 5.0.0 shipped would have been free — it would have ridden
 the v10 cut that was already breaking the wire. The design question surfaced
