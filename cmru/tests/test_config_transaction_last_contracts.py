@@ -138,12 +138,14 @@ def test_transaction_retention_empty_and_collision_outputs_are_refused(tmp_path)
     transaction.remove_workspace(workspace)
 
 
-def test_transaction_discard_build_rejects_release_branch_and_missing_artifacts(tmp_path):
+def test_transaction_discard_build_rejects_release_branch_and_skips_undeclared_artifacts(tmp_path):
     root = repo(tmp_path); workspace = transaction.create_workspace(root, base=git(root, "rev-parse", "HEAD"), purpose="release")
     with pytest.raises(RuntimeError, match="retained cmru build"):
         transaction.discard_build_workspace(root, workspace.path, dry_run=True)
     transaction.remove_workspace(workspace)
     ws = transaction.ReleaseWorkspace(root, root, "cmru/release/x", "a" * 40)
     project = SimpleNamespace(project_root=root / "demo", artifact_dirs=[])
-    with pytest.raises(RuntimeError, match="artifact_dirs"):
-        transaction.retain_success_outputs(root, ws, {"demo": project}, {"demo": "tag"}, retain_logs=False, retain_artifacts=True)
+    # No declared artifact_dirs -> nothing to retain, not an error (retention
+    # is the release default now, applied even to projects with no build output).
+    retained = transaction.retain_success_outputs(root, ws, {"demo": project}, {"demo": "tag"}, retain_logs=False, retain_artifacts=True)
+    assert retained == []

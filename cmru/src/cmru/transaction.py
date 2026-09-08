@@ -701,8 +701,12 @@ def retain_success_outputs(
 
     Destinations are project-local and immutable by coordinate.  Existing targets
     are an error: overwriting a retained record would turn provenance into a
-    mutable cache.  A missing declared artifact directory is also an error when
-    retention was requested; configuration must describe a real build output.
+    mutable cache.  Artifact retention is best-effort per project: a project that
+    declares no ``project.release.artifact_dirs`` simply has nothing to retain and
+    is skipped without error (retention is now the release default, applied across
+    every orchestrated project, not all of which build a local artifact). A
+    project that DOES declare ``artifact_dirs`` and then fails to produce one is a
+    real build defect and still raises.
     """
     retained: list[Path] = []
     for name, immutable_id in results.items():
@@ -725,10 +729,12 @@ def retain_success_outputs(
         artifact_sources: list[tuple[str, Path, Path]] = []
         if retain_artifacts:
             artifact_dirs = tuple(getattr(project, "artifact_dirs", ()) or ())
-            if not artifact_dirs:
-                raise RuntimeError(
-                    f"{name}: --retain-artifacts-on-release requires project.release.artifact_dirs"
-                )
+        # Retention is the release default now, applied uniformly across every
+        # orchestrated project -- a project that declares no artifact_dirs has
+        # nothing to retain and is silently skipped, not an error (unlike a
+        # declared directory that fails to actually appear, below).
+        attempt_artifacts = retain_artifacts and bool(artifact_dirs)
+        if attempt_artifacts:
             if target_root.exists():
                 raise RuntimeError(f"{name}: retained artifact destination already exists: {target_root}")
             seen_names: set[str] = set()
@@ -756,7 +762,7 @@ def retain_success_outputs(
             # All destination creation is deliberately before the first move.
             if retain_logs and source_logs.exists():
                 log_parent.mkdir(parents=True, exist_ok=True)
-            if retain_artifacts:
+            if attempt_artifacts:
                 artifact_parent.mkdir(parents=True, exist_ok=True)
                 target_root.mkdir()
                 created_target_root = True
@@ -766,7 +772,7 @@ def retain_success_outputs(
                 moved_sources.append((source_logs, target_logs))
                 moved_logs = True
             moved: list[dict[str, object]] = []
-            if retain_artifacts:
+            if attempt_artifacts:
                 for target_name, source, target in artifact_sources:
                     shutil.move(str(source), str(target))
                     moved_sources.append((source, target))
@@ -783,7 +789,7 @@ def retain_success_outputs(
                 )
             if moved_logs:
                 retained.append(target_logs)
-            if retain_artifacts:
+            if attempt_artifacts:
                 retained.append(target_root)
         except Exception:
             rollback_errors: list[Exception] = []

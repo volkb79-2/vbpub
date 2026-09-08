@@ -4,6 +4,23 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+### Changed
+- `cmru release` now retains project logs and artifacts by DEFAULT on a
+  successful release, instead of requiring opt-in. `--retain-logs-on-release`
+  / `--retain-artifacts-on-release` are replaced by
+  `--discard-logs-on-release` / `--discard-artifacts-on-release`, which opt
+  OUT of either half. A project declaring no `project.release.artifact_dirs`
+  now has nothing to retain and is silently skipped for the artifact half
+  (previously an error) -- necessary because retention now applies uniformly
+  across every orchestrated project, not all of which build a local
+  artifact (e.g. OCI-image-only projects). The repo-root `cmru.release.sh`
+  wrapper no longer needs to force these flags and now passes user args
+  straight through. A project whose declared `artifact_dirs` fails to
+  actually appear after a successful build still raises -- that stays a real
+  build defect, not a config gap.
+
 ## [5.1.0] - 2026-09-08
 <!-- cmru: generated -->
 <!-- cmru: source-end=34d0717ae7f4039111b8aade8f132f16ea2a5a53 -->

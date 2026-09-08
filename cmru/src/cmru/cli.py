@@ -1811,7 +1811,7 @@ def usage() -> str:
         "    release  [--config C] [--project P] [--minor|--major|--set-version V] [--dry-run]\n"
         "             [--no-build] [--resume WORKTREE|--abandon WORKTREE|all-previous]\n"
         "             [--allow-uncommitted] [--show-run-details] [--log-append]\n"
-        "             [--retain-logs-on-release] [--retain-artifacts-on-release]\n"
+        "             [--discard-logs-on-release] [--discard-artifacts-on-release]\n"
         "                                                  isolated source-first transaction\n"
         "    changelog --config C --project P --backfill-tag TAG\n"
         "                                                  catalog an already-published tagged release\n"
@@ -2216,12 +2216,15 @@ def main(argv: Optional[List[str]] = None) -> None:
             help="Append a divider and retain existing stable per-step logs",
         )
         parser.add_argument(
-            "--retain-logs-on-release", action="store_true",
-            help="After a successful release, move project logs into <project>/logs/cmru-release/<tag>",
+            "--discard-logs-on-release", action="store_true",
+            help="After a successful release, do NOT move project logs into "
+                 "<project>/logs/cmru-release/<tag> -- retained by default.",
         )
         parser.add_argument(
-            "--retain-artifacts-on-release", action="store_true",
-            help="After a successful release, move declared artifacts into <project>/artifacts/<tag>",
+            "--discard-artifacts-on-release", action="store_true",
+            help="After a successful release, do NOT move declared artifacts into "
+                 "<project>/artifacts/<tag> -- retained by default when "
+                 "project.release.artifact_dirs is declared.",
         )
         vargs = parser.parse_args(rest)
         _apply_output_options(vargs)
@@ -2331,14 +2334,16 @@ def main(argv: Optional[List[str]] = None) -> None:
                     rc = transaction.run_child(workspace, child_args)
                     if rc == 0:
                         retained: list[Path] = []
-                        if vargs.retain_logs_on_release or vargs.retain_artifacts_on_release:
+                        retain_logs = not vargs.discard_logs_on_release
+                        retain_artifacts = not vargs.discard_artifacts_on_release
+                        if retain_logs or retain_artifacts:
                             retained = transaction.retain_success_outputs(
                                 repo_root,
                                 workspace,
                                 configs,
                                 transaction.read_release_results(repo_root, workspace),
-                                retain_logs=vargs.retain_logs_on_release,
-                                retain_artifacts=vargs.retain_artifacts_on_release,
+                                retain_logs=retain_logs,
+                                retain_artifacts=retain_artifacts,
                             )
                         for path in retained:
                             log_info(f"Retained release output: {path}")

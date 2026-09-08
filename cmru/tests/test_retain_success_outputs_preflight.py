@@ -46,6 +46,24 @@ def test_missing_artifact_preflight_does_not_move_logs_or_create_destinations(tm
     assert not (root / "demo" / "artifacts" / "tag").exists()
 
 
+def test_no_declared_artifact_dirs_skips_artifacts_without_error(tmp_path):
+    root = repo(tmp_path)
+    workspace = transaction.ReleaseWorkspace(root, root / "release", "cmru/release/x", "a" * 40)
+    child = workspace.path / "demo"
+    (child / "logs").mkdir(parents=True)
+    (child / "logs" / "step.log").write_text("log", encoding="utf-8")
+    project = SimpleNamespace(project_root=root / "demo", artifact_dirs=())
+
+    retained = transaction.retain_success_outputs(
+        root, workspace, {"demo": project}, {"demo": "tag"},
+        retain_logs=True, retain_artifacts=True,
+    )
+
+    assert retained == [root / "demo" / "logs" / "cmru-release" / "tag"]
+    assert (root / "demo" / "logs" / "cmru-release" / "tag" / "step.log").is_file()
+    assert not (root / "demo" / "artifacts" / "tag").exists()
+
+
 def test_duplicate_artifact_basenames_preflight_does_not_move_any_source(tmp_path):
     root = repo(tmp_path)
     workspace = transaction.ReleaseWorkspace(root, root / "release", "cmru/release/x", "a" * 40)

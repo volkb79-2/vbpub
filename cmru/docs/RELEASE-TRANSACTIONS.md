@@ -100,12 +100,14 @@ can be inspected, deliberately corrected, re-gated, and resumed there:
 ```
 
 Do not copy generated files back into the caller's dirty checkout. A successful
-transaction removes the ephemeral branch/worktree by default. Add
-`--retain-logs-on-release` to move logs into
-`<project>/logs/cmru-release/<immutable-id>/`, or
-`--retain-artifacts-on-release` to move explicitly declared artifact directories into
-`<project>/artifacts/<immutable-id>/` with a `release.json` SHA-256 inventory before
-the worktree is removed.
+transaction removes the ephemeral branch/worktree, but retains its project logs
+and artifacts by default first: logs move into
+`<project>/logs/cmru-release/<immutable-id>/`, and any explicitly declared
+artifact directories move into `<project>/artifacts/<immutable-id>/` with a
+`release.json` SHA-256 inventory. Pass `--discard-logs-on-release` and/or
+`--discard-artifacts-on-release` to opt out of either half. A project that
+declares no `project.release.artifact_dirs` simply has nothing to retain and is
+skipped for the artifact half, not an error.
 
 `cmru build` uses the same fetched snapshot but stops before every release action. A successful
 build copies logs into `<project>/logs/<commit-date>_<full-commit>/` and declared artifact

@@ -5,7 +5,7 @@ import pytest
 from cmru import cli, transaction
 
 
-def test_resumed_release_retains_requested_outputs_and_reports_each_path(monkeypatch, tmp_path, capsys):
+def _dispatch_fixture(monkeypatch, tmp_path, retained):
     project = cli.ProjectConfig("demo", {}, {}, project_root=tmp_path / "demo", prefix="demo-v", github_token="token")
     config = (
         tmp_path, {"demo": project}, ["demo"], ["demo"], ["demo"], "project-first", {},
@@ -13,7 +13,6 @@ def test_resumed_release_retains_requested_outputs_and_reports_each_path(monkeyp
         cli.ReleaseEnvConfig({}, None),
     )
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "retained", "cmru/release/resume", "a" * 40)
-    retained = [tmp_path / "demo" / "logs" / "cmru-release" / "demo-v1"]
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: config)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
@@ -29,9 +28,41 @@ def test_resumed_release_retains_requested_outputs_and_reports_each_path(monkeyp
     monkeypatch.setattr(cli.transaction, "remove_workspace", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "sync_local_main", lambda *args: True)
+    return workspace, seen
+
+
+def test_resumed_release_retains_by_default_with_no_flags(monkeypatch, tmp_path, capsys):
+    retained = [tmp_path / "demo" / "logs" / "cmru-release" / "demo-v1", tmp_path / "demo" / "artifacts" / "demo-v1"]
+    workspace, seen = _dispatch_fixture(monkeypatch, tmp_path, retained)
     with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--resume", str(workspace.path), "--retain-logs-on-release", "--config", str(tmp_path / "cmru.toml")])
+        cli.main(["release", "--resume", str(workspace.path), "--config", str(tmp_path / "cmru.toml")])
+    assert exc.value.code == 0
+    assert seen[0][0][3] == {"demo": "demo-v1"}
+    assert seen[0][1] == {"retain_logs": True, "retain_artifacts": True}
+    out = capsys.readouterr().out
+    assert f"Retained release output: {retained[0]}" in out
+    assert f"Retained release output: {retained[1]}" in out
+
+
+def test_resumed_release_discard_artifacts_flag_keeps_logs_only(monkeypatch, tmp_path, capsys):
+    retained = [tmp_path / "demo" / "logs" / "cmru-release" / "demo-v1"]
+    workspace, seen = _dispatch_fixture(monkeypatch, tmp_path, retained)
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["release", "--resume", str(workspace.path), "--discard-artifacts-on-release", "--config", str(tmp_path / "cmru.toml")])
     assert exc.value.code == 0
     assert seen[0][0][3] == {"demo": "demo-v1"}
     assert seen[0][1] == {"retain_logs": True, "retain_artifacts": False}
     assert f"Retained release output: {retained[0]}" in capsys.readouterr().out
+
+
+def test_resumed_release_both_discard_flags_skip_retention_entirely(monkeypatch, tmp_path, capsys):
+    workspace, seen = _dispatch_fixture(monkeypatch, tmp_path, [])
+    with pytest.raises(SystemExit) as exc:
+        cli.main([
+            "release", "--resume", str(workspace.path),
+            "--discard-logs-on-release", "--discard-artifacts-on-release",
+            "--config", str(tmp_path / "cmru.toml"),
+        ])
+    assert exc.value.code == 0
+    assert seen == []
+    assert "Retained release output:" not in capsys.readouterr().out

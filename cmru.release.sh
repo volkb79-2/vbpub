@@ -48,11 +48,11 @@ export CMRU_RUN_LOG="$log_file"
 # orchestration output. Quiet project detail is appended directly to CMRU_RUN_LOG
 # by the runner, so this is a complete debug transcript without console noise.
 exec > >(tee -a "$log_file") 2>&1
-# Mirror each released project's artifact + logs into <project>/artifacts/<id>/
-# and <project>/logs/cmru-release/<id>/ on success, by default. The GitHub
-# Release stays authoritative; these are a local convenience/audit copy. Safe
-# for every estate project because all declare project.release.artifact_dirs
-# (--retain-artifacts-on-release errors only when that is missing). Both are
-# no-ops under --dry-run. User args follow, so nothing here blocks a flag.
-exec "$cmru_bin" release --config "$repo_dir/cmru.orchestration.toml" \
-    --retain-artifacts-on-release --retain-logs-on-release "${args[@]}"
+# `cmru release` retains each released project's logs + artifacts by default
+# (mirrored into <project>/logs/cmru-release/<id>/ and <project>/artifacts/<id>/
+# on success — the GitHub Release stays authoritative, these are a local
+# convenience/audit copy). A project with no declared project.release.artifact_dirs
+# (e.g. an OCI-image-only project) is simply skipped for the artifact half, never
+# an error. Pass --discard-logs-on-release / --discard-artifacts-on-release
+# (through the user args below) to opt out. Both are no-ops under --dry-run.
+exec "$cmru_bin" release --config "$repo_dir/cmru.orchestration.toml" "${args[@]}"

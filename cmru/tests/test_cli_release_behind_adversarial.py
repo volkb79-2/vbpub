@@ -29,7 +29,10 @@ def test_release_uses_fetched_origin_when_local_main_is_behind(monkeypatch, tmp_
     monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "sync_local_main", lambda *args: True)
     with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--project", "demo", "--config", str(tmp_path / "cmru.toml")])
+        cli.main([
+            "release", "--project", "demo", "--config", str(tmp_path / "cmru.toml"),
+            "--discard-logs-on-release", "--discard-artifacts-on-release",
+        ])
     assert exc.value.code == 0
     assert workspace_args == {"base": "b" * 40, "scope": "demo"}
     output = capsys.readouterr().out

@@ -389,11 +389,17 @@ cwd = "alpha"
     monkeypatch.setattr(transaction, "sync_local_main", lambda _root: calls.append("synced") or True)
 
     with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--config", str(config), "--project", "alpha"])
+        cli.main([
+            "release", "--config", str(config), "--project", "alpha",
+            "--discard-logs-on-release", "--discard-artifacts-on-release",
+        ])
 
     assert exc.value.code == 0
     assert not any(isinstance(call, tuple) for call in calls)
-    assert ["--project", "alpha", "--config", "cmru.toml"] in calls
+    assert [
+        "--project", "alpha", "--discard-logs-on-release", "--discard-artifacts-on-release",
+        "--config", "cmru.toml",
+    ] in calls
     assert "backup-removed" in calls
     assert "synced" in calls
     assert "removed" in calls
@@ -560,6 +566,7 @@ cwd = "beta"
     with pytest.raises(SystemExit) as exc:
         cli.main([
             "release", "--config", str(config), "--project", "alpha", "--abandon", "all-previous",
+            "--discard-logs-on-release", "--discard-artifacts-on-release",
         ])
 
     assert exc.value.code == 0
@@ -617,7 +624,10 @@ cwd = "beta"
     monkeypatch.setattr(transaction, "sync_local_main", lambda _root: True)
 
     with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--config", str(config), "--abandon", "all-previous"])
+        cli.main([
+            "release", "--config", str(config), "--abandon", "all-previous",
+            "--discard-logs-on-release", "--discard-artifacts-on-release",
+        ])
 
     assert exc.value.code == 0
     assert ("abandon_previous", ["alpha", "beta"]) in calls
@@ -671,6 +681,7 @@ cwd = "alpha"
     with pytest.raises(SystemExit) as exc:
         cli.main([
             "release", "--config", str(config), "--abandon", str(tmp_path / "stale"),
+            "--discard-logs-on-release", "--discard-artifacts-on-release",
         ])
 
     assert exc.value.code == 0

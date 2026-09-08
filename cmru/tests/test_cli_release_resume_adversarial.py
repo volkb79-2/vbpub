@@ -27,9 +27,15 @@ def test_release_resume_cleans_workspace_and_reports_sync_conflict(monkeypatch, 
     monkeypatch.setattr(cli.transaction, "forget_release_scope", lambda *args: calls.append("forget"))
     monkeypatch.setattr(cli.transaction, "sync_local_main", lambda *args: False)
     with pytest.raises(SystemExit) as exc:
-        cli.main(["release", "--resume", str(workspace.path), "--config", str(tmp_path / "cmru.toml")])
+        cli.main([
+            "release", "--resume", str(workspace.path), "--config", str(tmp_path / "cmru.toml"),
+            "--discard-logs-on-release", "--discard-artifacts-on-release",
+        ])
     assert exc.value.code == 0
-    assert calls[:2] == ["copy", ("child", ["--config", "cmru.toml"], {})]
+    assert calls[:2] == [
+        "copy",
+        ("child", ["--discard-logs-on-release", "--discard-artifacts-on-release", "--config", "cmru.toml"], {}),
+    ]
     assert calls[2:] == ["backup", "workspace", "forget"]
     output = capsys.readouterr().out
     assert "Could not sync local main automatically" in output

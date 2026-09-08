@@ -670,11 +670,15 @@ three severity tokens green/yellow/red; redirected stdout/stderr is deliberately
 the stable logs and machine consumers retain plain text.
 
 **S3.5 — Transaction evidence lifecycle.** Release failure MUST retain its worktree, logs,
-and artifacts for inspection/resume. Successful release MUST remove the worktree by default.
-`--retain-logs-on-release` moves its project logs to
-`<project>/logs/cmru-release/<immutable-id>/`; `--retain-artifacts-on-release` moves the
-declared `project.release.artifact_dirs` to `<project>/artifacts/<immutable-id>/` and writes
-`release.json` with source commit and SHA-256 inventory. `cmru build` MUST use an isolated
+and artifacts for inspection/resume. Successful release MUST remove the worktree, but MUST
+retain its project logs and artifacts by default before doing so: logs move to
+`<project>/logs/cmru-release/<immutable-id>/`, and any declared `project.release.artifact_dirs`
+move to `<project>/artifacts/<immutable-id>/` with a `release.json` recording source commit and
+SHA-256 inventory. `--discard-logs-on-release` / `--discard-artifacts-on-release` opt out of
+either half. A project declaring no `artifact_dirs` has nothing to retain and is skipped for
+the artifact half without error — retention applies uniformly across every orchestrated
+project, not all of which build a local artifact (S15 first-party tool consumers and
+OCI-image-only projects are the common case). `cmru build` MUST use an isolated
 `cmru-build-<YYYYMMDD_HHMMSS>-<scope>-<uuid8>` worktree (S-CLI.5b). On child success it MUST copy that project's logs to
 `<project>/logs/<commit-date>_<full-commit>/` and every declared
 `project.release.artifact_dirs` directory to

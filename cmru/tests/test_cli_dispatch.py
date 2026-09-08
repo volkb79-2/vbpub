@@ -342,8 +342,8 @@ def test_help_lists_every_public_option():
     for option in (
         "--config", "--project", "--minor", "--major", "--set-version", "--dry-run",
         "--no-build", "--resume", "--abandon", "--allow-uncommitted",
-        "--show-run-details", "--log-append", "--retain-logs-on-release",
-        "--retain-artifacts-on-release", "--backfill-tag", "--update", "--json",
+        "--show-run-details", "--log-append", "--discard-logs-on-release",
+        "--discard-artifacts-on-release", "--backfill-tag", "--update", "--json",
         "--run-tests", "--build", "--push", "--validate", "--remove-assets",
         "--format", "--prefix", "--output", "--delete-unmanaged-release-tag",
         "--delete-build-output", "--discard-build-worktree", "--yes", "--step", "--write",
