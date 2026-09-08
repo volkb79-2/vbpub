@@ -698,6 +698,40 @@ class TestRoundTripWriter:
         with pytest.raises(ValueError, match=r"\[S14.7\].*--replace"):
             write_host_row(path, "h", {"ssh_host": "b"})
 
+    def test_replace_on_a_crlf_file_keeps_crlf_not_just_the_append_path(
+        self, tmp_path
+    ):
+        """Adversarial review round 2, ciu-P52: the first CRLF fix (newline=""
+        on both read and write) covered the APPEND path (a brand-new host,
+        never split), but the --replace/in-place-edit path independently
+        stripped every line ending via str.splitlines() and rejoined with a
+        bare "\\n" -- silently laundering a CRLF file to LF specifically when
+        REPLACING an existing row, the one case this fixture-free append-path
+        test above can't catch."""
+        path = tmp_path / ".ciu.hosts.toml"
+        content = (
+            '[deploy.hosts.h]\r\n'
+            'ssh_host = "a"\r\n'
+            '# a comment\r\n'
+            '\r\n'
+            '[registry.x]\r\n'
+            'url = "u"\r\n'
+        )
+        path.write_bytes(content.encode("utf-8"))
+
+        write_host_row(path, "h", {"ssh_host": "b"}, replace=True)
+
+        after = path.read_bytes()
+        assert b"\r\n" in after, "CRLF file must not be silently normalized to LF"
+        assert b"\n\r" not in after.replace(b"\r\n", b"")  # no mixed endings
+        # every untouched line (the comment, the blank separator, the OTHER
+        # table) survives with its original CRLF ending
+        assert b"# a comment\r\n" in after
+        assert b"[registry.x]\r\n" in after
+        assert b'url = "u"\r\n' in after
+        doc = tomllib.loads(after.decode("utf-8"))
+        assert doc["deploy"]["hosts"]["h"]["ssh_host"] == "b"
+
     def test_a_managed_key_the_row_no_longer_sets_is_dropped(self, tmp_path):
         path = tmp_path / ".ciu.hosts.toml"
         path.write_text(

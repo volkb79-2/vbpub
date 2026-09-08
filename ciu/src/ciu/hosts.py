@@ -585,7 +585,14 @@ def write_host_row(
                 f"and re-run."
             )
         after_lines = _replace_row_body(lines, classified, header_idx, row_lines)
-        after_text = "\n".join(after_lines) + "\n"
+        # str.splitlines() above strips EVERY line ending, CRLF included, so
+        # rejoining with a bare "\n" here would silently launder a CRLF file
+        # back down to LF on the in-place-edit (--replace) path specifically
+        # -- the append path a few lines up never hits this, since it never
+        # splits before_text at all (adversarial review, ciu-P52 round 2:
+        # the first CRLF fix only covered I/O, not this reconstruction).
+        newline = "\r\n" if "\r\n" in before_text else "\n"
+        after_text = newline.join(after_lines) + newline
 
     _verify_round_trip(before_text, after_text, path, row)
     _atomic_write_text(hosts_path, after_text)
