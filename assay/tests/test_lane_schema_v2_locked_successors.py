@@ -46,7 +46,6 @@ five is itself testing omission mode.
 
 from __future__ import annotations
 
-import json
 import subprocess
 import tomllib
 from pathlib import Path

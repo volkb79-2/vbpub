@@ -108,16 +108,46 @@ PYEOF
 # placeholders); it carries no style opinions, so there is no rule selection to
 # get wrong and no configuration file to drift.
 #
-# Scope is `src/assay` only. Measured at B024's landing: `src/assay` and
-# `gate/` are pyflakes-clean; `tests/` reports 31 findings across 19 modules
-# and contains `tests/fixtures/mutation/python/broken.py`, a DELIBERATELY
-# unparseable fixture that pyflakes can never pass. Widening the scope is a
-# separate sweep with its own evidence (B062), not a side effect of wiring
-# the phase.
+# Scope is `src/assay` AND `tests/` (B062). It used to be `src/assay` alone:
+# at B024's landing `tests/` reported 31 findings across 19 modules, and
+# widening the scope was deliberately deferred to its own sweep with its own
+# evidence rather than wired in as a side effect. B062 was that sweep -- all
+# 31 are gone (25 unused imports, 5 dead locals, 1 redefinition), so the
+# scope follows.
+#
+# `tests/fixtures/` is EXCLUDED, permanently and by name, because
+# `tests/fixtures/mutation/python/broken.py` is a DELIBERATELY unparseable
+# file: the mutation suite needs it in order to prove how assay reports a
+# source file it cannot parse. pyflakes reports it as `invalid syntax` and
+# can never pass over it, so a fixture tree is not a place this phase can
+# judge -- the exclusion is a fact about the fixture's purpose, not a
+# tolerance for findings.
+#
+# pyflakes has no exclude flag, so the exclusion is expressed as an explicit
+# file list from `find`. `-print0`/`mapfile -d ''` because a path this gate
+# does not control could contain anything but a NUL.
+#
+# `gate/` stays out of scope: it was measured clean at B024 and is still, but
+# B062's acceptance widened this phase to `tests/`, and adding a third tree
+# on the way past would be exactly the unevidenced scope drift the original
+# deferral existed to prevent.
 run_lint_phase() {
   local scratch="$1"
-  "$scratch/lint-venv/bin/python" -m pyflakes "$scratch/clone/assay/src/assay" \
-    || die 'pyflakes reported findings in src/assay (see the lines above)'
+  local -a test_sources
+  # `-H` resolves the named root (and only the named root), so the phase does
+  # not care whether the clone's `tests/` is a real directory -- as it is in
+  # the container -- or a symlink to one. Nothing inside the tree is followed.
+  mapfile -d '' -t test_sources < <(
+    find -H "$scratch/clone/assay/tests" \
+      -path "$scratch/clone/assay/tests/fixtures" -prune -o \
+      -type f -name '*.py' -print0
+  )
+  [[ ${#test_sources[@]} -gt 0 ]] \
+    || die 'lint phase found no test sources to lint -- the tests/ tree is missing from the clone'
+  "$scratch/lint-venv/bin/python" -m pyflakes \
+    "$scratch/clone/assay/src/assay" \
+    "${test_sources[@]}" \
+    || die 'pyflakes reported findings in src/assay or tests/ (see the lines above)'
   echo 'ASSAY_GATE_PHASE=pyflakes-clean'
 }
 

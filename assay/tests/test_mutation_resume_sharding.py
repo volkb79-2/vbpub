@@ -10,7 +10,7 @@ import pytest
 from conftest import GitRepo, make_deadline, make_lane, make_plan, prepared_snapshot
 
 from assay.adapters.python import PythonAdapter
-from assay.errors import Outcome, ReasonCode
+from assay.errors import Outcome
 from assay.mutation import (
     MutationStateError,
     MutationTarget,

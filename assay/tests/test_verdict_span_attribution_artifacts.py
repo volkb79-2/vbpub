@@ -20,18 +20,16 @@ key, a dropped field, or a laundered outcome shows up as an inequality here.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
 
-import pytest
 from conftest import span_verdict_fixture, why_invalid
 from jsonschema import Draft202012Validator
 
 from assay.adapters.python import PythonAdapter
 from assay.coverage_parsers.model import CoverageProfile, FileCoverage
 from assay.diff import AddedLines
-from assay.errors import Outcome, ReasonCode
+from assay.errors import Outcome
 from assay.evaluate import CoverageEvaluation, evaluate_coverage
 from assay.verdict import (
     Claim,

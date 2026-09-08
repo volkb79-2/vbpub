@@ -37,8 +37,6 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-import sys
-from pathlib import Path
 
 import pytest
 from conftest import FakeAdapter, GitRepo, make_lane, make_r1_judge

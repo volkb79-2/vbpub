@@ -653,6 +653,12 @@ def test_the_lint_closure_is_a_third_venv_and_never_the_build_or_run_venv() -> N
     # The judged bytes are the private exact-OID clone's, never the caller's
     # bind-mounted worktree.
     assert "$scratch/clone/assay/src/assay" in run_fn
+    # (B062) `tests/` joined the scope, and `tests/fixtures/` is pruned out of
+    # it by name -- both are asserted here so a future edit cannot quietly
+    # drop either half back to B024's narrow scope.
+    assert "$scratch/clone/assay/tests" in run_fn
+    assert "$scratch/clone/assay/tests/fixtures" in run_fn
+    assert "-prune" in run_fn
 
 
 def test_the_lint_phase_runs_after_the_suite_and_marks_itself() -> None:
@@ -664,6 +670,18 @@ def test_the_lint_phase_runs_after_the_suite_and_marks_itself() -> None:
     witness = inner.index("run_independent_witness")
     lint = inner.index("run_lint_phase")
     assert self_host < witness < lint
+
+
+def _seed_clean_tests_tree(scratch: Path) -> Path:
+    """(B062) The lint phase now lints `tests/` too and refuses a clone that
+    has none, so every scratch clone in this module needs one. Returns the
+    directory so a caller can plant into it."""
+    tests = scratch / "clone" / "assay" / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_seed.py").write_text(
+        "def test_seed() -> None:\n    assert True\n", encoding="utf-8"
+    )
+    return tests
 
 
 def test_a_planted_unused_import_reddens_the_lint_phase(
@@ -679,6 +697,7 @@ def test_a_planted_unused_import_reddens_the_lint_phase(
     (package / "__init__.py").write_text("", encoding="utf-8")
     module = package / "config.py"
     module.write_text("import json\n\n\ndef load(text: str) -> object:\n    return json.loads(text)\n", encoding="utf-8")
+    _seed_clean_tests_tree(scratch)
     shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
 
     clean = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
@@ -713,11 +732,88 @@ def test_an_undefined_name_reddens_the_lint_phase(
         "    return reason\n",
         encoding="utf-8",
     )
+    _seed_clean_tests_tree(scratch)
     shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
 
     proc = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
     assert proc.returncode != 0
     assert "undefined name 'REASON_TABLE'" in proc.stdout + proc.stderr
+
+
+def test_a_planted_unused_import_in_a_TEST_module_reddens_the_lint_phase(
+    tmp_path: Path, gate_functions: Path, lint_venv: Path
+) -> None:
+    """(B062) The proof the widened scope is real and not decorative: the
+    identical plant, in `tests/` instead of `src/assay`, has to redden the
+    phase too. Before B062 this passed, because the phase never looked."""
+    scratch = tmp_path / "scratch"
+    package = scratch / "clone" / "assay" / "src" / "assay"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    tests = _seed_clean_tests_tree(scratch)
+    shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
+
+    clean = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
+    assert clean.returncode == 0, clean.stderr
+    assert clean.stdout.count("ASSAY_GATE_PHASE=pyflakes-clean") == 1
+
+    (tests / "test_seed.py").write_text(
+        "import os\n\n\ndef test_seed() -> None:\n    assert True\n", encoding="utf-8"
+    )
+    planted = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
+    assert planted.returncode != 0
+    assert "ASSAY_GATE_PHASE=pyflakes-clean" not in planted.stdout
+    assert "'os' imported but unused" in planted.stdout + planted.stderr
+    assert "test_seed.py" in planted.stdout + planted.stderr
+
+
+def test_the_fixtures_tree_is_pruned_and_an_unparseable_fixture_stays_green(
+    tmp_path: Path, gate_functions: Path, lint_venv: Path
+) -> None:
+    """(B062) `tests/fixtures/mutation/python/broken.py` is DELIBERATELY
+    unparseable -- the mutation suite needs it to prove how assay reports a
+    source file it cannot parse -- so pyflakes can never pass over it. The
+    prune is what makes widening the scope possible at all; without it the
+    phase would be permanently red on a file whose brokenness is the point.
+
+    The fixture planted here is byte-identical in KIND to the real one (a
+    `def` with a syntax error), so this test measures the prune rather than
+    a hand-picked file's happenstance."""
+    scratch = tmp_path / "scratch"
+    package = scratch / "clone" / "assay" / "src" / "assay"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    tests = _seed_clean_tests_tree(scratch)
+    broken = tests / "fixtures" / "mutation" / "python"
+    broken.mkdir(parents=True)
+    (broken / "broken.py").write_text("def broken(:\n    pass\n", encoding="utf-8")
+    # A plain unused import in the same pruned tree: the prune is a scope
+    # decision, not a syntax-error exemption.
+    (broken / "unused.py").write_text("import os\n", encoding="utf-8")
+    shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
+
+    proc = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout.count("ASSAY_GATE_PHASE=pyflakes-clean") == 1
+    assert "invalid syntax" not in proc.stdout + proc.stderr
+
+
+def test_a_clone_with_no_tests_tree_refuses_rather_than_linting_nothing(
+    tmp_path: Path, gate_functions: Path, lint_venv: Path
+) -> None:
+    """(B062) The failure mode a `find`-built file list invites: if `tests/`
+    is missing or renamed, an empty expansion would lint `src/assay` alone
+    and still emit the clean marker -- the widened scope silently gone. The
+    phase refuses instead."""
+    scratch = tmp_path / "scratch"
+    package = scratch / "clone" / "assay" / "src" / "assay"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
+
+    proc = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions)
+    assert proc.returncode != 0
+    assert "ASSAY_GATE_PHASE=pyflakes-clean" not in proc.stdout
 
 
 def test_the_shipped_source_tree_is_pyflakes_clean(
@@ -726,10 +822,15 @@ def test_the_shipped_source_tree_is_pyflakes_clean(
     """The gate's own assertion, brought forward into the ordinary suite so a
     finding is visible in `pytest tests` instead of only after a nine-minute
     container run. Runs the identical locked pyflakes over the identical
-    package the gate lints."""
+    package the gate lints.
+
+    (B062) `tests/` is symlinked in alongside `src/assay`, so this is now the
+    in-suite guard for BOTH trees -- a new unused import in a test module
+    turns this red in seconds instead of in the container."""
     scratch = tmp_path / "scratch"
     (scratch / "clone" / "assay" / "src").mkdir(parents=True)
     (scratch / "clone" / "assay" / "src" / "assay").symlink_to(PROJECT_ROOT / "src" / "assay")
+    (scratch / "clone" / "assay" / "tests").symlink_to(PROJECT_ROOT / "tests")
     shutil.copytree(lint_venv / "lint-venv", scratch / "lint-venv", symlinks=True)
 
     proc = run_bash(f'run_lint_phase "{scratch}"', gate_functions=gate_functions, timeout=180)

@@ -6724,16 +6724,61 @@ a pass that reads each site, not in a lint-wiring commit.
 
 ### Acceptance
 
-- [ ] the 31 findings are fixed (or, per site, justified in writing and
+- [x] the 31 findings are fixed (or, per site, justified in writing and
       silenced deliberately — never a blanket `# noqa`);
-- [ ] `tests/fixtures/` is excluded by an explicit, commented rule that names
+- [x] `tests/fixtures/` is excluded by an explicit, commented rule that names
       `broken.py` as the reason;
-- [ ] `run_lint_phase` (`tools/tester-unified-gate.sh:117`) is widened to
+- [x] `run_lint_phase` (`tools/tester-unified-gate.sh:117`) is widened to
       cover `tests/`, and the widening is proven by planting an unused import
       in a test module and watching the phase go red;
-- [ ] the scope comment at `tools/tester-unified-gate.sh:111-116`, which
+- [x] the scope comment at `tools/tester-unified-gate.sh:111-116`, which
       records today's measurement as the reason for the narrow scope, is
       updated rather than left to rot.
+
+### Resolution — FIXED 2026-09-08 (quick-wins wave). **Both "needs judgement"
+### classes turned out to be EMPTY, and that was verified, not assumed.**
+
+All 31 findings deleted; `python -m pyflakes tests` now reports exactly one
+line, `tests/fixtures/mutation/python/broken.py:8:12: invalid syntax`, which
+is the deliberate fixture and not a finding.
+
+**The `pytest.importorskip`-shaped availability probe: does not exist.**
+`grep -rn importorskip tests/` returns nothing — there is not one such probe
+anywhere in the suite, so every one of the 25 unused imports was genuinely
+dead and every one was deleted. (Two were `import pytest` in modules that
+never call it; six more were names left behind by an earlier edit, including
+a function-local `from assay.errors import AssayError` sitting directly above
+a `pytest.raises(Exception)` that had stopped using it.)
+
+**The assigned-never-read local that is "the point of the assertion above
+it": also does not exist.** Read one by one: one (`lane` in
+`test_mutation_executor_bound.py`) was simply dead — `run_mutation` takes no
+lane — and the other four are `head_rev = git_repo.commit_all(...)`, where
+the CALL is load-bearing (it creates the commit) and only the BINDING is
+dead. So the honest fix is dropping the binding and keeping the call, and
+**no site needed `_ = value` or any other deliberate silencing**; nothing was
+suppressed anywhere. (For the record, the suite's only pre-existing `# noqa`
+precedent is one `E402` in `test_distribution_build_release.py`.)
+
+**Gate widening.** `run_lint_phase` now lints `src/assay` and `tests/`.
+pyflakes has no exclude flag, so `tests/fixtures/` is pruned by an explicit
+`find -H … -prune` file list, and the phase **refuses an empty expansion** —
+a renamed or absent `tests/` would otherwise shrink the scope back to B024's
+while still emitting `ASSAY_GATE_PHASE=pyflakes-clean`. The scope comment
+above the function and `docs/DESIGN-GUIDE.md` §14's scope sentence were both
+rewritten rather than left to rot. `gate/` stays out: measured clean, but
+adding a third tree on the way past would be the unevidenced drift the
+original deferral existed to prevent.
+
+Tests, all in `tests/test_distribution_gate.py`: a planted unused import in a
+TEST module reddens the phase (the widening's proof — before B062 this
+passed, because the phase never looked); a planted unparseable fixture AND a
+plain unused import under `tests/fixtures/` both stay green (the prune is a
+scope decision, not a syntax-error exemption); a clone with no `tests/` tree
+refuses instead of linting nothing; and
+`test_the_shipped_source_tree_is_pyflakes_clean` now symlinks `tests/` in
+alongside `src/assay`, so a new unused import anywhere turns the ORDINARY
+suite red in seconds instead of only after a nine-minute container run.
 
 ---
 

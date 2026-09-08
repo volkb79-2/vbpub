@@ -24,7 +24,6 @@ from __future__ import annotations
 from pathlib import Path
 from types import MappingProxyType
 
-import pytest
 from conftest import FakeAdapter
 
 from assay.coverage_parsers.model import CoverageProfile, FileCoverage
