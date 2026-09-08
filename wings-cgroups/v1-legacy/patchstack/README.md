@@ -9,11 +9,11 @@ upstream PRs can cherry-pick, and rebases stay reviewable:
 | 0001 | `Add docker.cgroup_parent to place containers under a systemd slice` | T1 |
 | 0002 | `Support per-server cgroup parent override via WINGS_CGROUP_PARENT` | T2 |
 | 0003 | `Add docker integration tests for cgroup parent placement` | tests (build-tagged; include in PR or drop) |
-| 0004 | `Manage per-server container scope properties via systemd D-Bus` (title may differ slightly) | T3b (`docker.per_server_slices`: placement stays flat at `cgroup_parent`, and the node-wide `defaults` + `WINGS_CG_*` overrides are applied to the container's own `docker-<id>.scope` with `SetUnitProperties`, right after `ContainerStart()`; `internal/cgroups`) |
+| 0004 | `Manage per-server container scope properties via systemd D-Bus` | T3b (`docker.per_server_slices`: placement stays flat at `cgroup_parent`, and the node-wide `defaults` + `WINGS_CG_*` overrides are applied to the container's own `docker-<id>.scope` with `SetUnitProperties`, right after `ContainerStart()`; `internal/cgroups`) |
 | 0005 | `Render slice property values in the units they were configured with` | log rendering only; split out because it changes user-visible output independently of any feature. *(was 0006)* |
-| 0006 | `Stage per-server slice properties across server startup` | T3b follow-up (`startup_defaults`/`WINGS_CG_STARTUP_*`; exits on `WINGS_CG_STEADY_MATCH`/`startup.done`/`startup_grace`; steady `memory.high` reached by a self-pacing ramp `steady_ramp_step`; optional `WINGS_CG_PHASE_EVENTS` → Panel activity log). Same property sets and same ramp as before; they are applied post-`ContainerStart()` now instead of pre-`ContainerCreate()`. *(was 0007)* |
+| 0006 | `Stage per-server scope properties across server startup` | T3b follow-up (`startup_defaults`/`WINGS_CG_STARTUP_*`; exits on `WINGS_CG_STEADY_MATCH`/`startup.done`/`startup_grace`; steady `memory.high` reached by a self-pacing ramp `steady_ramp_step`; optional `WINGS_CG_PHASE_EVENTS` → Panel activity log). Same property sets and same ramp as before; they are applied post-`ContainerStart()` now instead of pre-`ContainerCreate()`. *(was 0007)* |
 | 0007 | `Report configuration keys discarded while parsing` | standalone diagnostic — strict re-decode warns about unknown/misindented/duplicate keys instead of dropping them silently. No dependency on the rest of the series, and its test fixtures use only upstream-native config keys so it cherry-picks onto stock Wings. Doubles as the migration aid for this redesign: the removed keys are named at boot rather than vanishing. *(was 0008)* |
-| 0008 | `Fix MemoryCurrent D-Bus interface in the memory.high ramp` | bugfix for the ramp — `MemoryCurrent`, like `MemoryMin`, only exists on the typed D-Bus interface, not the generic `Unit` one Wings read it from; every read failed, so the ramp never ran and the ceiling applied in one shot instead of walking down gradually. Confirmed live in production. *(was 0009)* |
+| 0008 | `Fix MemoryCurrent D-Bus interface in the memory.high ramp` | bugfix for the ramp — resource-control properties exist only on the unit's **type-specific** D-Bus interface, not the generic `Unit` one Wings read `MemoryCurrent` from; every read failed, so the ramp never ran and the ceiling applied in one shot instead of walking down gradually. Confirmed live in production. Note the interface name is **not** shared across the package: the ramp reads `MemoryCurrent` from `Scope` (it walks a container scope), while the overcommit tripwire reads the tier's `MemoryMin` from `Slice`. A wrong interface name is not a compile error and produces no partial behaviour — the call just always fails — which is why `internal/cgroups`' systemd e2e reads both back from real units rather than trusting the constants. *(was 0009; retargeted from `Slice` to `Scope` by the 2026-09-08 redesign)* |
 | 0009 | `Start listed child servers when a server reaches its steady trigger` | `WINGS_CG_CHILD_SERVERS` (admin-only, per-server list of other server UUIDs on this node): when a server reaches its steady trigger (0006's event — the same one `WINGS_CG_STEADY_MATCH` gates), Wings starts each listed child via `HandlePowerAction`, fire-and-forget, never on the grace backstop. Ordinary cluster start-ordering — a dependent server that must not come up until its main is confirmed ready. Also closes two correctness gaps: `WINGS_CG_STEADY_MATCH` is armed even with no startup band staged (0006 previously ignored it silently in that case), and Wings' own boot sequence (`cmd/root.go`) defers a child's direct restart to its parent's when both were running across a reboot, instead of racing them — see `internal/cgroups.DeferBootRestart`. *(was 0010)* |
 
 The series is contiguous 0001–0009 with no gaps. The unrelated commit (0007)
@@ -122,11 +122,18 @@ CI for the fork lives in `../ci/fork-wings-ci.yml` (copy into the fork as
   (like this devcontainer) and pins the toolchain per target.
 - `go vet` runs strict except for packages with pre-existing upstream findings
   (`VET_EXCLUDE_RE` in stack.conf): our patches must add zero new warnings.
-- Both series were verified end-to-end in this environment: build + vet +
-  unit tests + the `dockerintegration` tests against a real systemd/cgroup-v2
-  Docker daemon (placement, accepted override, fail-closed rejection), plus —
-  for 0004 — the `systemdintegration` test of `internal/cgroups` inside the
-  privileged systemd e2e container (`../test/e2e-systemd/`).
+- The **pterodactyl** series was verified end-to-end in this environment on
+  2026-09-08 against upstream `v1.13.3`: build + vet + unit tests + the
+  `dockerintegration` tests against a real systemd/cgroup-v2 Docker daemon
+  (placement, accepted override, fail-closed rejection), plus — for 0004/0008 —
+  the `systemdintegration` tests of `internal/cgroups` inside the privileged
+  systemd e2e container (`../test/e2e-systemd/`, `E2E: ALL PASS`), which stand a
+  real process up in a transient `docker-<64 hex>.scope` and read the applied
+  properties back off the `Scope` D-Bus interface.
+- **The `pelican-main` series is stale.** It is still the pre-rebase,
+  pre-redesign 11-patch series and has NOT been ported to `v1.13.3` or to the
+  scope redesign. Do not treat the two series as equivalent until it is; see
+  `../CONTINUATION-2026-09-08-scope-redesign.md`.
 - Hard-won **kernel** fact (host prerequisite, found the hard way on the prod
   node 2026-07-17): protection declared on a *slice* only reaches the pages
   below it — which are charged to the `docker-*.scope` leaf, never to the slice
