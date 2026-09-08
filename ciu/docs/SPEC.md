@@ -2811,6 +2811,21 @@ no callback, no listener; the private key never leaves the control host.
   the addresses it sees (unconfirmed), the user, the installed version and
   the exact step-2 command. It never generates keys, calls back, installs
   packages, runs deploy logic or edits `sshd_config`.
+  **Key-line form (cmru KI-24, measured live):** a `--from` restriction is
+  written `from="PATTERN" <type> <base64> <comment>` — the options field is
+  separated from the key by **whitespace, never a comma**. sshd advances past
+  the options field to the first unquoted whitespace, so a comma-joined line
+  puts the key type inside the options and the key is never read (with
+  `from="*",<key>` a real sshd answered `Permission denied (publickey)`; with
+  `from="*" <key>` the same key authenticated). Any text describing this line
+  — here, in `docs/CIU-HOST-ENROLLMENT-PROPOSAL.md`, or in a consumer's docs —
+  uses the whitespace form.
+  **Install-half status (CIU-99):** ciu's own releases publish a wheel, not a
+  `ciu-v<version>.tar.xz` bundle, so `get.py`'s *install* step has no asset to
+  resolve for ciu yet; `enroll --no-install` (key + user + fingerprints) is the
+  reachable half until CIU-99 ships the bundle. `get.py` itself IS published as
+  a release asset (`cmru.toml`'s `[steps.push] --extra-asset get.py`), so the
+  URL S14.7a prints resolves.
 - **S14.7c Step 2 — `ciu host enroll <name> --ssh-host ADDR --fingerprint
   SHA256:… [--port N] [--user U]`**: keyscans `ADDR`; refuses unless a scanned
   key's SHA256 fingerprint equals `--fingerprint` (the one the admin read on
@@ -3723,31 +3738,60 @@ this one must reflect state as earlier entries in *this same run* come up.
 > it is a real limitation of this version, named here rather than discovered
 > later.
 
-> **Known v1 limitation — a redeploy double-counts the entry's own prior
-> instance.** `check_mem_min_admission` sums every CURRENT occupant of the
-> slice, with no notion of "this candidate is a replacement for an occupant
-> already in that sum" — and `mem_min_admission_check` runs before
-> `_run_stack` stops the entry's own previous container. So redeploying an
-> already-running guaranteed-slice stack (an ordinary config/image update via
-> `ciu deploy`, not a fresh start — arguably the MORE common case for a
-> continuously-processing workload than a first deploy) counts the outgoing
-> instance's own live claim AND the incoming candidate's claim at once. A
-> slice sized correctly for its intended occupant(s) — exactly what
-> `CGROUP-NOTES.md`'s own sizing doctrine calls for, and exactly what "an
-> exactly-full slice admits" above is designed to allow — will therefore
-> spuriously REFUSE every redeploy of a stack that already fully claims its
-> ceiling, even though the net claim across the whole operation never
-> changes. This is a different failure shape from the concurrent-admission
-> race `CGROUP-NOTES.md`'s alternatives table already accepts (that one is a
-> graceful over-admit; this is a spurious hard refuse of a no-net-change
-> redeploy). **Operational workaround until fixed:** provision the slice's
-> ceiling with headroom for the redeploying stack's own claim, or run `ciu
-> down` before `ciu deploy` for stacks on this slice. Tracked for a proper
-> fix as `CIU-96` (excluding an entry's own current occupant from the sum
-> needs correlating a live cgroup child back to a specific CIU entry —
-> container-name or compose-label based — which is not available at this
-> call site as currently architected; real follow-up work, not a one-line
-> patch).
+**A redeploy does not double-count the entry's own outgoing instance
+(`CIU-96`, ciu-P51).** Admission runs before `_run_stack` stops the entry's
+own previous container, so that container is still a live occupant of the
+slice. Counting it alongside the candidate replacing it made a slice sized
+correctly for its intended occupant(s) — exactly what `CGROUP-NOTES.md`'s
+sizing doctrine calls for, and exactly what "an exactly-full slice admits"
+above is designed to allow — spuriously REFUSE every redeploy of a stack that
+already fully claims its ceiling, even though the net claim across the whole
+operation never changes. An ordinary config/image-update `ciu deploy` of a
+continuously-processing workload is arguably the MORE common path than a
+first deploy, so this was a hard refuse on the common case.
+
+`deploy._entry_prior_instance_scopes` supplies the missing correlation, and
+`check_mem_min_admission` takes it as `exclude_scopes`. It reads the entry's
+PRIOR rendered `ciu.compose.yml` — still on disk at this point, because the
+render happens inside `_run_stack`, after the check — and for each non-exempt
+service walks the same chain `apply_mem_min_injections` walks in the other
+direction: `container_name` → `docker inspect .State.Pid` →
+`governance.container_transient_scope(pid)`. That lands on the same
+`docker-<id>.scope` unit names `enumerate_slice_children` reports as the
+slice's child cgroups, so the outgoing occupants can be dropped from the sum
+by name. Only THIS entry's own outgoing scopes are excluded: an unrelated
+stack, or a second concurrent instance of the same stack, stays in the sum
+and can still be refused.
+
+It fails closed in every direction that matters. No prior compose file (a
+genuine first deploy), unreadable/malformed YAML, a stale file naming
+containers that no longer exist, a stopped container, a name Docker cannot
+resolve — each yields no scope, so nothing is excluded and admission behaves
+exactly as it did before. **The dangerous direction is NOT unreachable in
+principle** — Docker's name uniqueness only guarantees at most one container
+holds a name at a given instant, not that the container currently holding a
+name read out of a possibly-stale prior compose file is still THIS entry's.
+Over-exclusion needs two things at once: a stale prior compose whose
+`container_name` has since been claimed by a DIFFERENT entry (a renamed
+stack, a changed `project_name`, a copy-pasted stack), AND that entry's
+container living in the SAME guaranteed slice (exclusion is by intersection
+against `enumerate_slice_children`, so a container in any other slice can
+never be dropped regardless). CIU's `{project}-{env}-{service}` naming
+convention makes the collision unlikely, but does not rule it out — a known,
+low-probability residual risk, not a proven-impossible one. A label filter
+(`docker ps --filter label=...`) would survive a stale compose file, but CIU
+injects no identifying label onto governed containers — `build_injections`
+emits only
+`cgroup_parent`/`mem_limit`/`memswap_limit`/`mem_reservation`/`cpus`/
+`blkio_config` (plus the KSM `environment`/`volumes` opt-in — still nothing
+label-shaped) — so that route would mean inventing a labeling scheme, a
+strictly larger change than the defect warranted.
+
+> **Still open — the concurrent-admission race.** Two DIFFERENT stacks
+> admitting at the same time can still jointly over-claim: there is no
+> cross-CIU-root lock, and `CGROUP-NOTES.md`'s alternatives table accepts
+> that graceful over-admit deliberately. That is a distinct failure shape
+> from the CIU-96 refuse fixed above, and it is unchanged here.
 
 **(b) Injection — after the stack starts, `[S15.23]`, WARN.**
 `deploy.apply_mem_min_injections` runs right after a successful `_run_stack`.

@@ -40,7 +40,7 @@ CGROUP_ROOT            : Path             — cgroup2 mount point (overridable p
 slice_cgroup_path(slice_name, cgroup_root=CGROUP_ROOT) -> Path             — S15.22, pure derivation
 enumerate_slice_children(slice_name, *, cgroup_root=CGROUP_ROOT) -> (list[tuple[str, int]] | None, str) — S15.22, downward walk
 check_memory_recursiveprot() -> (bool | None, str)                         — S15.22, host-wide mount flag
-check_mem_min_admission(slice_name, candidate_bytes, *, cgroup_root=CGROUP_ROOT) -> (bool | None, str) — S15.23
+check_mem_min_admission(slice_name, candidate_bytes, *, cgroup_root=CGROUP_ROOT, exclude_scopes=None) -> (bool | None, str) — S15.23 (CIU-96: exclude_scopes drops the entry's own outgoing instance)
 container_transient_scope(pid) -> (str | None, str)                        — S15.23, docker-<id>.scope unit name
 set_scope_memory_min(scope_unit, required_bytes) -> (bool, str)            — S15.23, the ONE write (D9)
 build_injections(compose_services, config) -> (dict[str, dict], list[str])
@@ -59,7 +59,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 # ---------------------------------------------------------------------------
 # S15.2 — code-level defaults (the stack's [<root>.governance] table overrides)
@@ -1168,7 +1168,11 @@ def check_memory_recursiveprot() -> tuple[bool | None, str]:
 
 
 def check_mem_min_admission(
-    slice_name: str, candidate_bytes: int, *, cgroup_root: Path = CGROUP_ROOT,
+    slice_name: str,
+    candidate_bytes: int,
+    *,
+    cgroup_root: Path = CGROUP_ROOT,
+    exclude_scopes: Iterable[str] | None = None,
 ) -> tuple[bool | None, str]:
     """Admission decision for ONE candidate about to start under *slice_name*
     (S15.23).
@@ -1195,7 +1199,22 @@ def check_mem_min_admission(
     nothing can drift from it.
 
     Currently-claimed: the sum of every current occupant's own live
-    ``memory.min`` (:func:`enumerate_slice_children`).
+    ``memory.min`` (:func:`enumerate_slice_children`), MINUS any occupant
+    named in *exclude_scopes*.
+
+    *exclude_scopes* (CIU-96, ciu-P51) is the set of transient scope unit
+    names — ``docker-<id>.scope``, exactly the child-directory names
+    :func:`enumerate_slice_children` returns — belonging to the OUTGOING
+    instance the candidate is about to replace. Admission runs before
+    ``_run_stack`` stops that instance, so without this the sum counts the
+    outgoing claim AND the incoming candidate at once and spuriously refuses
+    every no-net-change redeploy of a stack that already fills its ceiling.
+    The caller (:func:`deploy._entry_prior_instance_scopes`) is the only party
+    that can say which live scopes belong to a given CIU entry; this function
+    deliberately takes the answer rather than guessing it, so a name it does
+    not recognise simply stays in the sum. A scope listed here that is not
+    actually an occupant is a harmless no-op — the exclusion is by
+    intersection, never by subtracting an assumed value.
 
     Returns ``(admit, note)``:
 
@@ -1232,21 +1251,33 @@ def check_mem_min_admission(
             "the declared floor as a no-op)"
         )
     children, children_note = enumerate_slice_children(slice_name, cgroup_root=cgroup_root)
-    occupants = children or []
+    all_occupants = children or []
+    excluded_names = set(exclude_scopes or ())
+    outgoing = [(name, value) for name, value in all_occupants if name in excluded_names]
+    occupants = [(name, value) for name, value in all_occupants if name not in excluded_names]
     current_sum = sum(value for _, value in occupants)
+    if outgoing:
+        outgoing_breakdown = ", ".join(f"{name}={value}" for name, value in outgoing)
+        outgoing_note = (
+            f" (excluding this entry's own outgoing instance, about to be "
+            f"replaced: {outgoing_breakdown} — CIU-96/S15.23)"
+        )
+    else:
+        outgoing_note = ""
     total = current_sum + candidate_bytes
     if total <= ceiling:
         return True, (
             f"{slice_name}: ceiling={ceiling} bytes, currently claimed="
-            f"{current_sum} bytes across {len(occupants)} occupant(s), "
-            f"candidate={candidate_bytes} bytes -> {total} <= {ceiling}, admitted"
+            f"{current_sum} bytes across {len(occupants)} occupant(s)"
+            f"{outgoing_note}, candidate={candidate_bytes} bytes -> "
+            f"{total} <= {ceiling}, admitted"
         )
     breakdown = ", ".join(f"{name}={value}" for name, value in occupants) or "(none)"
     return False, (
         f"{slice_name}: ceiling={ceiling} bytes, currently claimed="
-        f"{current_sum} bytes, candidate={candidate_bytes} bytes -> "
-        f"{total} exceeds the ceiling by {total - ceiling} bytes. Current "
-        f"occupants: {breakdown}. {children_note}"
+        f"{current_sum} bytes{outgoing_note}, candidate={candidate_bytes} "
+        f"bytes -> {total} exceeds the ceiling by {total - ceiling} bytes. "
+        f"Current occupants: {breakdown}. {children_note}"
     )
 
 

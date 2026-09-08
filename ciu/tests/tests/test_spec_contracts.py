@@ -57,6 +57,15 @@ SRC_REDIS = TEST_REPO / "infra" / "redis-core"
 SRC_DB = TEST_REPO / "infra" / "db-core"
 SRC_APP = TEST_REPO / "applications" / "app-config"
 
+# CIU-91/CIU-58 — module-wide, not per-test: EVERY test in this file builds its
+# hermetic copy out of the shared, committed ``test-repo/`` tree (``build_repo``
+# copy2's the demo global defaults; ``add_stack`` copytrees a demo stack), and
+# ``test_ciu_test_repo.py`` renders into and unlinks inside that same physical
+# directory from a different xdist worker. This is the SHARED half of the lock
+# (see tests/conftest.py) — it costs nothing against the other reader files and
+# only ever waits on an in-place writer.
+pytestmark = pytest.mark.ciu_test_repo_reader
+
 
 # ===========================================================================
 # Autouse environment fixture (the inherited-env hazard + no-docker knobs)

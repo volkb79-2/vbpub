@@ -126,6 +126,10 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
                                 host-scoped local secrets (S14.3a, explicit-only)
 
   REMOTE (requires hosts file — see .ciu.hosts.toml)
+    host enroll <name> [...]                    enroll a bare host: generate a key +
+                                                print the target one-liner (step 1);
+                                                --ssh-host/--fingerprint pins and
+                                                writes the row (step 2, S14.7)
     ssh <host> [--admin] [-- cmd...]            remote shell or command (access plane)
     render --host <name> [selection flags]      render on a remote host
     up  --host <name> [selection flags]         push-deploy: bundle-sync + render-on-target
@@ -418,6 +422,55 @@ ciu secrets reset [-d PATH] [--name N] [-y] [--define-root PATH]
   --name N       restrict reset to one secret name
   -y, --yes      assume yes to prompts
 """,
+    "host": """\
+ciu host enroll <name> [--user U] [--port N] [--controller FQDN] [--from PATTERN]
+                       [--docker] [--installer-url URL] [--replace] [--define-root PATH]
+ciu host enroll <name> --ssh-host ADDR [--fingerprint SHA256:...] [--port N]
+                       [--user U] [--replace] [--define-root PATH]
+ciu host enroll <name> --abort
+  Enroll a bare remote host into .ciu.hosts.toml (S14.7 / CIU-93). Two steps,
+  ONE verb — which one runs is decided by whether --ssh-host/--fingerprint are
+  present, because step 2 is only meaningful once the target has the key.
+
+  STEP 1 (no --ssh-host): generates an ed25519 key pair with ssh-keygen into
+  <repo>/.ciu/secrets/hosts/<name>/ssh_key (dir 0700, key 0600) and PRINTS the
+  public key plus the one command the target's admin runs — ciu's own get.py
+  installer, pinned to THIS host's ciu version, with `enroll --authorized-key
+  '<pubkey>' --controller <FQDN> --user <U> --name <name>`. NOTHING is written
+  to the inventory: a partial enrollment leaves only the key files.
+
+  STEP 2 (--ssh-host ADDR): ssh-keyscans ADDR, refuses unless a scanned key's
+  SHA256 fingerprint equals --fingerprint (the one the admin read on the
+  target's console — TOFU with a second channel; without the flag a TTY is
+  asked to confirm and a non-TTY run is refused), connects with the generated
+  key and that host key pinned for ONE connection, runs `ciu version` on the
+  target as proof, and only THEN writes [deploy.hosts.<name>] with a
+  round-trip edit that leaves every other table and comment untouched.
+
+  --user U          deploy user on the target (default ciu)
+  --port N          ssh port (default 22; written as ssh_port and pinned in the
+                    S14.4c [ADDR]:N known-hosts form only when it is not 22)
+  --controller FQDN name for the key comment; defaults to
+                    topology.external.public_fqdn and is REQUIRED when that is
+                    not declared — CIU never guesses a controller hostname
+  --from PATTERN    add an authorized_keys from="PATTERN" restriction to the
+                    printed key line (opt-in: OpenSSH matches from= against the
+                    client's source address, which differs behind NAT/a mesh)
+  --docker          ask the installer to add the deploy user to the docker group
+  --installer-url URL   override the pinned release-asset URL (a mirror, or a
+                    commit-pinned raw URL). Nothing ever falls back to `latest`.
+                    REQUIRED when this control host runs an UNRELEASED ciu (a
+                    setuptools-scm `.dev`/local version, i.e. a source
+                    checkout): there is no release asset to pin, so step 1
+                    refuses rather than print a URL that 404s.
+  --replace         rotate: regenerate the key and overwrite an existing row's
+                    ssh_key/known_host at step 2
+  --abort           remove a pending (step-1-only) key pair
+  --define-root PATH override repo root (alias: --root-folder)
+
+  CIU_SSH_INSECURE_TOFU is never set by this verb under any flag combination —
+  the fingerprint confirmation IS the secure alternative to that escape hatch.
+""",
     "host-secrets": """\
 ciu host-secrets <host> [--materialize | --list | --path NAME] [-y] [--define-root PATH]
   Host-scoped local secrets (S14.3a / CIU-35): ASK_EXTERNAL / GEN_LOCAL
@@ -534,11 +587,12 @@ def _resolve_repo_root_cli(define_root: Path | str | None, start_dir: Path) -> P
 
 def _extract_define_root(rest: list[str]) -> tuple[Path | None, list[str]]:
     """Pull ``--define-root``/``--root-folder`` out of *rest* first, before any
-    other local parsing on one of CIU-54's 8 fixed sites (S1.1): the
+    other local parsing on one of CIU-54's fixed sites (S1.1): the
     ``--host`` branches of ``render``/``up``/``down``/``health``, ``up
-    --layout``, ``layouts``, ``host-secrets``, ``ssh``.
+    --layout``, ``layouts``, ``host-secrets``, ``ssh``, and (S14.7, CIU-93)
+    ``host``.
 
-    Consumed here, NOT left in the returned remainder. Every one of these 8
+    Consumed here, NOT left in the returned remainder. Every one of these
     sites either forwards its remainder verbatim into a REMOTE argv
     (``render``/``up``/``down``/``health --host``'s ``ssh_exec``/
     ``_push_host`` calls, ``ssh``'s ``cmd_argv``) or hands it to a stricter
@@ -1754,6 +1808,88 @@ def _worktree(rest: list[str]) -> int:
         return 2
 
 
+def _host(rest: list[str]) -> int:
+    """S14.7 — the `host` verb GROUP (`ciu host enroll`).
+
+    A GROUPED verb, not a third hyphenated flat one. The proposal's §6
+    comparison table settles the naming ("a `host` group beside the flat
+    `host-secrets`"), and `worktree` (S16, `_worktree` above) is this file's
+    own established precedent for a verb that takes its own subcommand — so
+    this is the smallest possible addition: one `elif` in `main`, one
+    argparse subparser here, and `host-secrets` left exactly where it is
+    (renaming a shipped verb is not this package's business).
+
+    Steps 1 and 2 are the SAME subcommand, disambiguated by whether
+    `--ssh-host`/`--fingerprint` are present, because step 2 is only
+    meaningful once the target already carries the step-1 key.
+    """
+    import argparse as _ap
+
+    from .host_enroll import EnrollError, enroll_abort, enroll_step1, enroll_step2
+
+    define_root, rest = _extract_define_root(rest)
+    p = _ap.ArgumentParser(prog="ciu host", add_help=False)
+    sub = p.add_subparsers(dest="action", required=True)
+    p_enroll = sub.add_parser("enroll", add_help=False)
+    p_enroll.add_argument("name")
+    p_enroll.add_argument("--user", default="ciu")
+    p_enroll.add_argument("--port", type=int, default=22)
+    p_enroll.add_argument("--controller", default=None)
+    p_enroll.add_argument("--from", dest="from_pattern", default=None, metavar="PATTERN")
+    p_enroll.add_argument("--docker", action="store_true", default=False)
+    p_enroll.add_argument("--installer-url", dest="installer_url", default=None)
+    p_enroll.add_argument("--replace", action="store_true", default=False)
+    p_enroll.add_argument("--abort", action="store_true", default=False)
+    p_enroll.add_argument("--ssh-host", dest="ssh_host", default=None, metavar="ADDR")
+    p_enroll.add_argument("--fingerprint", default=None, metavar="SHA256:...")
+    opts = p.parse_args(rest)
+
+    repo_root = _resolve_repo_root_deploy(define_root)
+    config = _load_remote_config(repo_root)
+    try:
+        if opts.abort:
+            if opts.ssh_host or opts.fingerprint or opts.replace:
+                print(
+                    "[S14.7] --abort removes a pending key pair and takes no other "
+                    "enrollment flags.",
+                    file=sys.stderr,
+                )
+                return 2
+            return enroll_abort(repo_root, opts.name)
+        if opts.ssh_host or opts.fingerprint:
+            if not opts.ssh_host:
+                print(
+                    "[S14.7] --fingerprint is a step-2 flag and needs --ssh-host "
+                    "ADDR; there is nothing to keyscan without an address.",
+                    file=sys.stderr,
+                )
+                return 2
+            return enroll_step2(
+                repo_root, opts.name,
+                config=config,
+                ssh_host=opts.ssh_host,
+                port=opts.port,
+                user=opts.user,
+                fingerprint=opts.fingerprint,
+                replace=opts.replace,
+            )
+        return enroll_step1(
+            repo_root, opts.name,
+            config=config,
+            version=get_cli_version(),
+            user=opts.user,
+            port=opts.port,
+            controller=opts.controller,
+            from_pattern=opts.from_pattern,
+            docker=opts.docker,
+            installer_url_override=opts.installer_url,
+            replace=opts.replace,
+        )
+    except EnrollError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 2
+
+
 def main() -> None:
     raw = consume_cli_flags(sys.argv[1:])
 
@@ -2129,6 +2265,9 @@ def main() -> None:
     elif verb == "secrets":
         from .engine import main as engine_main
         raise SystemExit(engine_main(["secrets"] + rest))
+
+    elif verb == "host":
+        raise SystemExit(_host(rest))
 
     elif verb == "host-secrets":
         # S14.3a / CIU-35 — host-scoped local secrets. Explicit-only: values

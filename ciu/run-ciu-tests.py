@@ -42,6 +42,12 @@ def main() -> None:
         "--cov-report=term-missing",
         "--cov-report=json:coverage.json",
         f"--cov-fail-under={COV_FAIL_UNDER}",
+        # -rs: name every SKIPPED test in the summary (adversarial review,
+        # ciu-P52) -- a bare "N skipped" count silently hides which oracles
+        # (e.g. a docker-requiring end-to-end test, or a byte-identity check
+        # against an artifact this environment can't build) never actually
+        # ran, letting a gate PASS look stronger than the coverage it earned.
+        "-rs",
         *argv,
     ]
     subprocess.run(cmd, check=True, cwd=str(ROOT))

@@ -3360,7 +3360,7 @@ def test_mem_min_admission_check_raises_when_over_ceiling(monkeypatch, tmp_path)
 
     monkeypatch.setattr(
         deploy.governance_mod, "check_mem_min_admission",
-        lambda slice_name, candidate: (
+        lambda slice_name, candidate, exclude_scopes=(): (
             False,
             f"{slice_name}: ceiling=167772160 bytes, currently claimed=83886080 bytes, "
             f"candidate={candidate} bytes",
@@ -3380,7 +3380,7 @@ def test_mem_min_admission_check_passes_when_under_ceiling(monkeypatch, tmp_path
 
     monkeypatch.setattr(
         deploy.governance_mod, "check_mem_min_admission",
-        lambda slice_name, candidate: (True, f"{slice_name}: {candidate} admitted"),
+        lambda slice_name, candidate, exclude_scopes=(): (True, f"{slice_name}: {candidate} admitted"),
     )
     deploy.mem_min_admission_check(tmp_path, entry, rendered, config)  # must not raise
     out = capsys.readouterr().out
@@ -3396,7 +3396,7 @@ def test_mem_min_admission_check_passes_the_declared_size_in_bytes(monkeypatch, 
     entry, rendered = _mem_min_entry_rendered("128m")
     seen: list = []
 
-    def record(slice_name, candidate):
+    def record(slice_name, candidate, exclude_scopes=()):
         seen.append((slice_name, candidate))
         return True, "ok"
 
@@ -3413,7 +3413,7 @@ def test_mem_min_admission_check_skips_when_no_ceiling_configured(monkeypatch, t
 
     monkeypatch.setattr(
         deploy.governance_mod, "check_mem_min_admission",
-        lambda slice_name, candidate: (None, f"{slice_name}: no live memory.min of its own"),
+        lambda slice_name, candidate, exclude_scopes=(): (None, f"{slice_name}: no live memory.min of its own"),
     )
     deploy.mem_min_admission_check(tmp_path, entry, rendered, _plain_config())  # must not raise
     out = capsys.readouterr().out
@@ -3424,7 +3424,7 @@ def test_mem_min_admission_check_skips_when_no_ceiling_configured(monkeypatch, t
 def test_mem_min_admission_check_skips_entirely_when_mem_min_not_declared(monkeypatch, tmp_path):
     entry, rendered = _mem_min_entry_rendered("")
 
-    def fail_admission(slice_name, candidate):
+    def fail_admission(slice_name, candidate, exclude_scopes=()):
         raise AssertionError("admission must not be checked when no mem_min is declared")
 
     monkeypatch.setattr(deploy.governance_mod, "check_mem_min_admission", fail_admission)
@@ -3436,7 +3436,7 @@ def test_mem_min_admission_check_skips_entirely_when_governance_disabled(monkeyp
         "dev-memory_min_guaranteed.slice", "128m", enabled=False,
     )
 
-    def fail_admission(slice_name, candidate):
+    def fail_admission(slice_name, candidate, exclude_scopes=()):
         raise AssertionError("admission must not be checked when governance is disabled")
 
     monkeypatch.setattr(deploy.governance_mod, "check_mem_min_admission", fail_admission)
@@ -3456,6 +3456,189 @@ def _write_rendered_compose(tmp_path, rel: str, services: dict) -> None:
     (stack_dir / "ciu.compose.yml").write_text(
         yaml.safe_dump({"services": services}), encoding="utf-8",
     )
+
+
+# ---------------------------------------------------------------------------
+# CIU-96 (ciu-P51) — _entry_prior_instance_scopes: correlate the entry's OWN
+# outgoing containers back to their transient scopes, so admission can drop
+# them from the sum instead of double-counting a redeploy.
+# ---------------------------------------------------------------------------
+
+
+def _running_scopes(monkeypatch, *, running: set[str] | None = None):
+    """Stub the docker->scope chain: *running* names get a pid, others don't."""
+    live = running if running is not None else None
+
+    def _inspect(name):
+        if live is not None and name not in live:
+            return None
+        return {"Pid": abs(hash(name)) % 90000 + 1000}
+
+    monkeypatch.setattr(deploy, "_inspect_state", _inspect)
+    monkeypatch.setattr(
+        deploy.governance_mod, "container_transient_scope",
+        lambda pid: (
+            (f"docker-{pid}.scope", f"pid {pid}") if pid > 0
+            else (None, "no usable PID")
+        ),
+    )
+
+
+def test_prior_instance_scopes_finds_the_outgoing_containers_scopes(
+    monkeypatch, tmp_path,
+):
+    """THE CORRELATION. The prior deploy's own ciu.compose.yml is still on
+    disk at admission time (the render happens inside _run_stack, AFTER the
+    check), so its container_names name this entry's outgoing containers."""
+    entry, rendered = _mem_min_entry_rendered("128m")
+    _write_rendered_compose(tmp_path, "applications/app", {
+        "app": {"container_name": "p-t-app"},
+        "worker": {"container_name": "p-t-worker"},
+    })
+    _running_scopes(monkeypatch)
+
+    gov_cfg = rendered["applications/app"]["app"]["governance"]
+    scopes, note = deploy._entry_prior_instance_scopes(tmp_path, entry, gov_cfg)
+    assert len(scopes) == 2
+    assert all(s.startswith("docker-") and s.endswith(".scope") for s in scopes)
+    assert "applications/app" in note
+    assert "excluded from the admission sum" in note
+
+
+def test_prior_instance_scopes_is_empty_on_a_genuine_first_deploy(
+    monkeypatch, tmp_path,
+):
+    """FAILS CLOSED. No prior compose file at all — nothing is excluded and
+    admission behaves exactly as it did before CIU-96."""
+    entry, rendered = _mem_min_entry_rendered("128m")
+    _running_scopes(monkeypatch)
+    gov_cfg = rendered["applications/app"]["app"]["governance"]
+    scopes, note = deploy._entry_prior_instance_scopes(tmp_path, entry, gov_cfg)
+    assert scopes == []
+    assert "first deploy" in note
+
+
+def test_prior_instance_scopes_is_empty_when_the_prior_compose_is_malformed(
+    monkeypatch, tmp_path,
+):
+    """FAILS CLOSED on unparseable YAML rather than propagating an exception
+    into an admission decision."""
+    entry, rendered = _mem_min_entry_rendered("128m")
+    stack_dir = tmp_path / "applications/app"
+    stack_dir.mkdir(parents=True)
+    (stack_dir / "ciu.compose.yml").write_text("services: [unclosed\n", encoding="utf-8")
+    _running_scopes(monkeypatch)
+    gov_cfg = rendered["applications/app"]["app"]["governance"]
+    scopes, note = deploy._entry_prior_instance_scopes(tmp_path, entry, gov_cfg)
+    assert scopes == []
+    assert "no readable prior" in note
+
+
+def test_prior_instance_scopes_is_empty_when_the_prior_compose_declares_no_services(
+    monkeypatch, tmp_path,
+):
+    entry, rendered = _mem_min_entry_rendered("128m")
+    stack_dir = tmp_path / "applications/app"
+    stack_dir.mkdir(parents=True)
+    (stack_dir / "ciu.compose.yml").write_text("services: {}\n", encoding="utf-8")
+    _running_scopes(monkeypatch)
+    gov_cfg = rendered["applications/app"]["app"]["governance"]
+    scopes, note = deploy._entry_prior_instance_scopes(tmp_path, entry, gov_cfg)
+    assert scopes == []
+    assert "declares no services" in note
+
+
+def test_prior_instance_scopes_skips_exempt_services(monkeypatch, tmp_path):
+    """Mirrors apply_mem_min_injections' own exempt filter: CIU never applied
+    a floor to an exempt service, so it must not credit itself with removing
+    one at admission time."""
+    entry, rendered = _mem_min_entry_rendered("128m")
+    rendered["applications/app"]["app"]["governance"]["exempt_services"] = ["sidecar"]
+    _write_rendered_compose(tmp_path, "applications/app", {
+        "app": {"container_name": "p-t-app"},
+        "sidecar": {"container_name": "p-t-sidecar"},
+    })
+    _running_scopes(monkeypatch)
+    gov_cfg = rendered["applications/app"]["app"]["governance"]
+    scopes, _ = deploy._entry_prior_instance_scopes(tmp_path, entry, gov_cfg)
+    assert len(scopes) == 1
+
+
+def test_prior_instance_scopes_skips_unusable_service_blocks(monkeypatch, tmp_path):
+    """A service with no concrete container_name, a blank one, or a non-dict
+    definition contributes nothing — an unnameable container cannot be
+    correlated, so it stays in the sum."""
+    entry, rendered = _mem_min_entry_rendered("128m")
+    _write_rendered_compose(tmp_path, "applications/app", {
+        "app": {"container_name": "p-t-app"},
+        "nameless": {"image": "x"},
+        "blank": {"container_name": "   "},
+        "scalar": "not-a-mapping",
+    })
+    _running_scopes(monkeypatch)
+    gov_cfg = rendered["applications/app"]["app"]["governance"]
+    scopes, _ = deploy._entry_prior_instance_scopes(tmp_path, entry, gov_cfg)
+    assert len(scopes) == 1
+
+
+def test_prior_instance_scopes_is_empty_when_the_prior_containers_are_gone(
+    monkeypatch, tmp_path,
+):
+    """FAILS CLOSED on a stale compose file: the names no longer resolve to a
+    running container, so nothing is excluded."""
+    entry, rendered = _mem_min_entry_rendered("128m")
+    _write_rendered_compose(
+        tmp_path, "applications/app", {"app": {"container_name": "p-t-app"}},
+    )
+    _running_scopes(monkeypatch, running=set())
+    gov_cfg = rendered["applications/app"]["app"]["governance"]
+    scopes, note = deploy._entry_prior_instance_scopes(tmp_path, entry, gov_cfg)
+    assert scopes == []
+    assert "no currently-running prior instance" in note
+
+
+def test_mem_min_admission_check_threads_the_outgoing_scopes_into_governance(
+    monkeypatch, tmp_path, capsys,
+):
+    """THE WIRING ORACLE. `mem_min_admission_check` must hand the correlated
+    scopes to `check_mem_min_admission` — the governance half is already
+    covered by TestMemMinAdmissionExcludesOutgoingInstance, but a fix that
+    computes the scopes and forgets to pass them would still leave CIU-96
+    open."""
+    entry, rendered = _mem_min_entry_rendered("128m")
+    _write_rendered_compose(
+        tmp_path, "applications/app", {"app": {"container_name": "p-t-app"}},
+    )
+    monkeypatch.setattr(deploy, "_inspect_state", lambda name: {"Pid": 4242})
+    monkeypatch.setattr(
+        deploy.governance_mod, "container_transient_scope",
+        lambda pid: ("docker-outgoing.scope", f"pid {pid}"),
+    )
+    seen: list = []
+
+    def record(slice_name, candidate, exclude_scopes=()):
+        seen.append(list(exclude_scopes or ()))
+        return True, f"{slice_name}: admitted"
+
+    monkeypatch.setattr(deploy.governance_mod, "check_mem_min_admission", record)
+    deploy.mem_min_admission_check(tmp_path, entry, rendered, _plain_config())
+    assert seen == [["docker-outgoing.scope"]]
+    out = capsys.readouterr().out
+    assert "docker-outgoing.scope" in out
+    assert "CIU-96" in out
+
+
+def test_mem_min_admission_check_logs_nothing_extra_on_a_first_deploy(
+    monkeypatch, tmp_path, capsys,
+):
+    """No prior instance -> no exclusion line. The common path stays quiet."""
+    entry, rendered = _mem_min_entry_rendered("128m")
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_mem_min_admission",
+        lambda slice_name, candidate, exclude_scopes=(): (True, f"{slice_name}: admitted"),
+    )
+    deploy.mem_min_admission_check(tmp_path, entry, rendered, _plain_config())
+    assert "CIU-96" not in capsys.readouterr().out
 
 
 def test_apply_mem_min_injections_warns_not_raises_on_set_property_failure(
@@ -3582,7 +3765,7 @@ def test_mem_min_admission_check_raises_on_malformed_mem_min(monkeypatch, tmp_pa
     meaningless candidate)."""
     entry, rendered = _mem_min_entry_rendered("2 gibbibytes")
 
-    def fail_admission(slice_name, candidate):
+    def fail_admission(slice_name, candidate, exclude_scopes=()):
         raise AssertionError("a malformed size must abort before the live probe")
 
     monkeypatch.setattr(deploy.governance_mod, "check_mem_min_admission", fail_admission)

@@ -588,7 +588,7 @@ def test_cutover_leaves_the_generated_record_as_the_only_load_bearing_one(
 
 
 @pytest.fixture
-def verb_repo(monkeypatch, tmp_path):
+def verb_repo(monkeypatch, tmp_path, shared_test_repo_read_lock):
     """A real, really-generated workspace carrying the shipped demo config.
 
     Uses the repo's own `test-repo` global defaults — the file that actually

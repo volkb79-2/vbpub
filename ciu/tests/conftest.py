@@ -50,14 +50,27 @@ Two mechanisms, both defined below:
 A test that must exercise the real gated path asks for the
 ``real_network_side_effects`` fixture, which lifts mechanism 1 for that test
 only and leaves mechanism 2 armed.
+
+Shared ``test-repo/`` serialization (ciu-P51, CIU-91/CIU-58)
+-----------------------------------------------------------
+``--dist loadfile`` keeps one FILE's tests on one worker but says nothing
+about two different files, and ``test-repo/`` is one physical directory that
+one test file renders into in place while three others copy out of. The
+``ciu_test_repo_inplace`` / ``ciu_test_repo_reader`` marks and the autouse
+``_serialize_shared_test_repo_access`` fixture below close that cross-worker
+TOCTOU with an ``fcntl`` writer/reader lock; see that section's own comment
+for why ``pytest.mark.xdist_group`` cannot be used here.
 """
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
 
 import pytest
 
@@ -84,6 +97,142 @@ _AMBIENT_ENV_VARS = (
     "CIU_EXIT_ON",
     "CIU_KSM",
 )
+
+
+# ---------------------------------------------------------------------------
+# CIU-91 / CIU-58 — cross-worker serialization of the shared `test-repo/` tree
+# ---------------------------------------------------------------------------
+#
+# `test-repo/` is BOTH the committed reference fixture and a tree several tests
+# render INTO IN PLACE (`.gitignore`'s own comment: "ciu-P47. The integration
+# suite generates into the committed test-repo/"). Two disjoint test FILES
+# therefore share one physical directory:
+#
+#   * writers — `test_ciu_test_repo.py` renders `ciu.toml` / `ciu.toml.j2` /
+#     `.ciu/` / `vol-*` directly into the committed stacks, and its
+#     `_clean_stack_artifacts` `.unlink()`s those same paths as prep;
+#   * readers — `test_ciu_render_selection_context.py`,
+#     `test_spec_contracts.py` and `test_ciu_identity_cutover_ciu75.py` each
+#     `shutil.copytree` a stack subtree OUT of that same directory into their
+#     own `tmp_path`.
+#
+# `run-ciu-tests.py`'s `--dist loadfile` only keeps ONE FILE's tests on one
+# worker; it says nothing about two different files. So a reader's
+# `shutil.copytree` can have its `os.scandir` snapshot list `ciu.toml`, and a
+# writer in a DIFFERENT worker process can unlink that file before the copy's
+# own `copy_function` reaches it a few lines later — the confirmed CIU-91
+# TOCTOU, observed as `shutil.Error: [Errno 2] No such file or directory`.
+#
+# **Why not `pytest.mark.xdist_group`** (CIU-91's own fix direction (b), first
+# half): that marker is honoured ONLY by the `loadgroup` scheduler. Measured
+# on this suite's own pinned pytest-xdist 3.8.0: four tests carrying the same
+# `xdist_group` name landed on four DIFFERENT workers under `--dist loadfile`
+# and on one worker under `--dist loadgroup` (`xdist/remote.py`'s group-suffix
+# rewrite is guarded by `if config.getvalue("loadgroup")`). Moving the runner
+# to `--dist loadgroup` would make every UNMARKED test its own work unit —
+# i.e. plain `load` distribution — which is exactly the non-deterministic
+# coverage split CIU-56 adopted `loadfile` to fix. So this uses direction
+# (b)'s OTHER named alternative, a lock. It must be a FILESYSTEM lock rather
+# than the "module-scoped lock" CIU-91's wording suggests: xdist workers are
+# separate PROCESSES, so an in-process lock would serialize nothing.
+#
+# Readers take `LOCK_SH` and writers `LOCK_EX` on one lockfile keyed by the
+# resolved `test-repo/` path, so readers never block each other and a writer
+# never overlaps a reader. The lockfile lives in the system temp dir, not in
+# the repo: `test-repo/` itself is forbidden fixture content, and a repo-root-
+# keyed name still gives two DIFFERENT checkouts (or worktrees) their own
+# independent locks while covering two concurrent pytest runs against the SAME
+# checkout.
+#
+# Opt in with `@pytest.mark.ciu_test_repo_inplace` (writer) or
+# `@pytest.mark.ciu_test_repo_reader` (reader) — both registered below, since
+# neither is a pytest/xdist built-in. The lock is held for the whole test,
+# which is what a writer needs anyway (`_clean_stack_artifacts` at the start,
+# the render mid-body), and keeps the reader side to one decorator rather than
+# threading a context manager through helpers that ~20 tests call.
+
+_TEST_REPO_DIR = Path(__file__).resolve().parent.parent / "test-repo"
+
+_TEST_REPO_INPLACE_MARK = "ciu_test_repo_inplace"
+_TEST_REPO_READER_MARK = "ciu_test_repo_reader"
+
+
+def _test_repo_lock_path() -> Path:
+    digest = hashlib.sha256(str(_TEST_REPO_DIR).encode("utf-8")).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"ciu-test-repo-inplace-{digest}.lock"
+
+
+def _hold_test_repo_lock(mode: int) -> Iterator[None]:
+    """Hold *mode* (``fcntl.LOCK_SH``/``LOCK_EX``) on the shared lockfile."""
+    lock_path = _test_repo_lock_path()
+    # "a+" never truncates, so two workers racing to create the file cannot
+    # clobber each other's open descriptor mid-flight.
+    handle = open(lock_path, "a+")  # noqa: SIM115 — released in the finally below
+    try:
+        fcntl.flock(handle.fileno(), mode)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        f"{_TEST_REPO_INPLACE_MARK}: this test MUTATES the shared, committed "
+        "test-repo/ tree in place (CIU-91/CIU-58) — hold the cross-worker "
+        "exclusive lock for its whole body.",
+    )
+    config.addinivalue_line(
+        "markers",
+        f"{_TEST_REPO_READER_MARK}: this test WALKS/COPIES the shared, "
+        "committed test-repo/ tree out of place (CIU-91/CIU-58) — hold the "
+        "cross-worker shared lock for its whole body.",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _serialize_shared_test_repo_access(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Serialize marked tests against the one on-disk ``test-repo/`` tree.
+
+    A writer's exclusive lock outranks a reader's shared one when a test
+    somehow carries both marks — the writer's own mutations are the thing that
+    must not be observed half-applied.
+
+    **Self-deadlock hazard, verified live (ciu-P51 adversarial review):** this
+    covers the mark+mark case, but NOT a test that carries
+    ``@pytest.mark.ciu_test_repo_inplace`` (this fixture, autouse, acquires
+    ``LOCK_EX``) while ALSO requesting the ``shared_test_repo_read_lock``
+    fixture directly (a second, independent ``LOCK_SH`` acquisition). Both
+    locks are held by the SAME process on separate file descriptors —
+    ``fcntl`` locking is per-process/per-fd, not reentrant — so the second
+    acquisition blocks on the first FOREVER (measured: ``LOCK_NB`` on that
+    combination raises immediately rather than granting, confirming the
+    would-be blocking call never returns). No test currently does this. If
+    you ever need both a writer mark and the read-lock fixture on one test,
+    do NOT request ``shared_test_repo_read_lock`` — the ``LOCK_EX`` this
+    fixture already holds covers reads too (exclusive subsumes shared).
+    """
+    if request.node.get_closest_marker(_TEST_REPO_INPLACE_MARK) is not None:
+        yield from _hold_test_repo_lock(fcntl.LOCK_EX)
+    elif request.node.get_closest_marker(_TEST_REPO_READER_MARK) is not None:
+        yield from _hold_test_repo_lock(fcntl.LOCK_SH)
+    else:
+        yield
+
+
+@pytest.fixture
+def shared_test_repo_read_lock() -> Iterator[None]:
+    """Explicitly-requested form of the ``ciu_test_repo_reader`` mark.
+
+    Same shared lock, for the case where the copy out of ``test-repo/`` lives
+    in a FIXTURE rather than in a test body: a fixture cannot carry a mark, and
+    listing this as one of its own parameters is both shorter and harder to
+    forget than decorating every test that happens to request that fixture.
+    """
+    yield from _hold_test_repo_lock(fcntl.LOCK_SH)
 
 
 @pytest.fixture(autouse=True)

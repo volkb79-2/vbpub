@@ -133,12 +133,14 @@ def test_test_repo_exists() -> None:
     assert not (TEST_REPO / "infra" / "consul-core").exists()
 
 
+@pytest.mark.ciu_test_repo_inplace  # CIU-91: mutates the shared test-repo/ tree in place
 def test_bootstrap_workspace_env_generates_env_file(monkeypatch) -> None:
     _set_env_defaults()
     _bootstrap(monkeypatch)
     assert (TEST_REPO / "ciu.env").exists()
 
 
+@pytest.mark.ciu_test_repo_inplace  # CIU-91: mutates the shared test-repo/ tree in place
 def test_render_global_and_stack_configs(monkeypatch) -> None:
     _set_env_defaults()
     _bootstrap(monkeypatch)
@@ -154,6 +156,7 @@ def test_render_global_and_stack_configs(monkeypatch) -> None:
         assert (stack_path / "ciu.toml").exists()
 
 
+@pytest.mark.ciu_test_repo_inplace  # CIU-91: mutates the shared test-repo/ tree in place
 def test_app_config_full_pipeline_runs_under_dry_run(monkeypatch) -> None:
     # app-config's four directives avoid Vault by design, so the ENTIRE engine
     # pipeline (pre_compose hook -> configfile -> leak scan -> overlay) runs
@@ -195,6 +198,7 @@ def test_app_config_full_pipeline_runs_under_dry_run(monkeypatch) -> None:
     assert "/etc/app" in overlay
 
 
+@pytest.mark.ciu_test_repo_inplace  # CIU-91: mutates the shared test-repo/ tree in place
 def test_app_config_secrets_list(monkeypatch) -> None:
     # `ciu secrets list` reports name/kind/locator/store/exists — never values
     # (S4.25). All four directive kinds appear.
@@ -302,6 +306,7 @@ def test_render_entrypoint_no_guard_for_non_standalone_root(monkeypatch) -> None
         deploy._run(args, ["--render-toml"])
 
 
+@pytest.mark.ciu_test_repo_reader  # CIU-91: copies the shared test-repo/ tree out of place
 def test_deploy_render_all_configs_respects_phases(monkeypatch, tmp_path) -> None:
     """Phase selection must not inherit another xdist worker's rendered state.
 
@@ -354,6 +359,7 @@ def test_deploy_render_all_configs_respects_phases(monkeypatch, tmp_path) -> Non
     assert not app_rendered.exists()
 
 
+@pytest.mark.ciu_test_repo_inplace  # CIU-91: mutates the shared test-repo/ tree in place
 def test_deploy_profiles_and_phases_match_spec(monkeypatch) -> None:
     # Pin the global profile/phase wiring authored in ciu.global.defaults.toml.j2
     # (S7.1 numeric phases, S7.4 profiles, S7.5a topology_overrides).
@@ -377,6 +383,7 @@ def test_deploy_profiles_and_phases_match_spec(monkeypatch) -> None:
     assert workers_topo["internal_host"] == "ciudemo-dev-vault"
 
 
+@pytest.mark.ciu_test_repo_inplace  # CIU-91: mutates the shared test-repo/ tree in place
 def test_shipped_profiles_filter_flags_and_deduplicate_extra_stacks(monkeypatch) -> None:
     """Exercise selection composition from the committed demo profiles."""
     _set_env_defaults()
@@ -434,6 +441,7 @@ def test_shipped_profiles_filter_flags_and_deduplicate_extra_stacks(monkeypatch)
 WORKERS_STACK = TEST_REPO / "applications" / "workers"
 
 
+@pytest.mark.ciu_test_repo_inplace  # CIU-91: mutates the shared test-repo/ tree in place
 def test_workers_stack_configfile_fans_out_and_dev_profile(monkeypatch) -> None:
     """Living example for V8-PREP-6 unified instances fan-out (ciu-P24) +
     CIU-5 (dev profile).
