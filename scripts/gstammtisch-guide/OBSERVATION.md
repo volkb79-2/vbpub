@@ -19,19 +19,130 @@ On this kernel (7.0.10) the writable knobs are:
 | `enabled` | `Y` | zswap on |
 | `compressor` | `zstd` | active compressor. **If it reads `lzo`, the zstd post-boot fix didn't run** — see [MEMORY-ARCHITECTURE.md §3](MEMORY-ARCHITECTURE.md). |
 | `max_pool_percent` | `30` | *ceiling* on pool size (% of RAM). Not a reservation — grows only to hold pages that would otherwise hit disk. |
-| `accept_threshold_percent` | `90` | once the pool hits its limit, stop accepting new pages until it shrinks to this % — damps fill/evict thrash. |
-| `shrinker_enabled` | `Y` | proactively writes coldest compressed pages to disk before the pool is exhausted. **OFF by default** — must be set. |
+| `accept_threshold_percent` | `90` | only matters once the pool has already hit its ceiling: resume accepting new pages once usage falls back to this % *of the ceiling*. It does not do anything before the ceiling is reached, and it is not a general fill target. |
+| `shrinker_enabled` | **it depends — see below** | proactively writes compressed pages to disk before the pool fills. Not a "Want Y" default; read the caveat before flipping it on a live host. |
 
 > All five are runtime-writable, so the whole config is driven post-boot by
 > `zswap-config.service` (no GRUB tokens). The early `dmesg` line
 > `zswap: compressor zstd not available, using default lzo` is **expected and
 > cosmetic** — what matters is the value above after boot.
 
+**Disk overflow itself is intentional, by design — this is not a bug to
+"fix" toward zero disk swap.** The tiering this whole guide builds is RAM →
+zswap (compressed, fast) → real disk (last resort). `memory.zswap.writeback=1`
+on the game slices deliberately lets the genuinely-cold tail spill past zswap
+once the pool has nothing colder to evict (see `instance-defaults.env`'s own
+`SOULMASK_WRITEBACK` comment and M3/M4 below) — the design goal is *some*
+pages on disk, not none. What actually matters is whether the pages that
+land there stay cold once they're there.
+
+**`shrinker_enabled` has no "keep the pool at ~80%" middle ground — it is
+all-or-nothing per cgroup, confirmed live 2026-09-08.** There is no kernel
+knob that says "evict cold pages down to a target fill level, then stop."
+The three knobs above are the entire menu: `max_pool_percent` is a ceiling,
+`accept_threshold_percent` only fires after the ceiling is already hit, and
+`shrinker_enabled` is a generic, pressure-driven, cross-memcg LRU shrinker
+with no per-cgroup floor and no target percentage — it keeps writing back
+whatever it judges coldest, for as long as memory pressure exists, with
+nothing to stop it at a partial point. Live incident evidence, twice in one session (2026-09-08): enabling it on a
+genuinely memory-constrained two-instance host first fully drained one
+instance's zswap pool from ~650-680M to **0** over about seven minutes while
+the other, busier instance's pool was untouched in the same window — then,
+re-enabled later to see if the untouched instance would eventually go the
+same way, it drained that instance's much larger ~2.7G pool to **0 in about
+2.5 minutes**, this time with a directly-observed severe stall (in-game FPS
+crashed to 8.3, `rfd/s` peaked past 45,000/s, `disk_sw` jumped ~5.5G in the
+same window). Two for two: it is not one unlucky memcg, it reliably
+evacuates whichever pool it currently judges coldest, all the way to zero,
+with real player-facing impact while doing it. Turning it back off (`N`)
+stops the drain immediately; it does not un-drain what's already on disk. If you
+need this smoothing behavior without the all-or-nothing risk, the only real
+option is a small userspace watcher toggling `shrinker_enabled` around a
+target band — not shipped anywhere yet, filed as a debian-install-v2 feature
+request (search its backlog for "zswap governor").
+
 Confirm GRUB actually passed any cmdline you set, and what the kernel booted with:
 ```bash
 cat /proc/cmdline
 dmesg | grep -i zswap
 ```
+
+### What the post-drain state incidentally revealed — the actual design target
+
+Historically, a player login that touches a large previously-cold region
+(their account/inventory/nearby-world state) has been one of the worst
+trigger points on this host: it's exactly the "big, sudden anon-memory
+touch" shape that produces a refault storm, and the player-visible result
+has usually been bad enough that the first login attempt drops and a second
+try is needed.
+
+**2026-09-08, same session as the two shrinker-drain incidents above:**
+MAIN's zswap pool had been sitting at a flat **0M** for roughly 20 minutes
+(the aftermath of the second drain, `shrinker_enabled` left off since) when
+a player logged into MAIN while CLIENT already had players connected. The
+login produced a real, measurable refault burst — `rfd/s` (anon refault
+from disk) peaked at 1135/s around the same few seconds MAIN's `RAM`/`anon`
+climbed by roughly 100-150M (4873M→4982M) — but this time the game's own
+FPS only dipped into the high-teens/low-20s (from a ~22-24 baseline) and
+recovered within seconds. No `—` (RCON-unresponsive) marker appears
+anywhere in the monitor output for MAIN across this entire ~19-minute
+window. No disconnect, no second attempt needed.
+
+**Why this isn't "empty pool = good, full pool = bad" — it's about waste,
+not just timing.** The zswap pool, in its normal working-as-designed steady
+state (pegged near its ceiling — see §2's `pool_limit_hit` counter), is
+mostly holding pages that operator experience with this game says will
+**never be touched again**: dead entity/building/inventory state for
+players and areas that are no longer active. Compression (~3x observed
+ratio) shrinks that dead weight, but does not zero it — a genuinely-dead
+90% of the pool is still occupying real RAM for zero future benefit,
+permanently, as long as it sits there. Writing it to real disk instead
+costs nothing further once it's there (it is, by definition, never read
+back), while whatever small fraction *is* still warm simply refaults back
+in on demand — the only way to actually learn which pages were warm is to
+let them prove it by being touched again. Net effect: pushing everything to
+disk and letting only the genuinely-warm subset refault back naturally ends
+up holding **less** total RAM resident than continuously keeping a
+compressed pile of mostly-dead pages parked in zswap. That is a standing
+RAM-occupancy cost, independent of whether a login ever creates contention
+with it at all — the contention framing in an earlier draft of this section
+undersold it: even with no login ever happening, a pool full of guaranteed-
+dead pages is wasted RAM the whole time it sits there.
+
+**This does not mean "drain zswap to zero" is the fix — the two incidents
+directly above show the drain *itself* causes exactly the kind of severe
+stall this section is worried about (MAIN's FPS crashed to 8.3 during the
+act of draining, not after).** The actual design target this observation
+points at is: keep the pool comfortably *below* its ceiling at all times,
+continuously, by gradually evicting only genuinely old/cold pages to disk
+in the background — so there is always headroom available before a login
+spike ever arrives — while protecting recently-touched ("warm") pages from
+ever being swept up in that eviction, so the pages a player is actually
+about to touch again aren't the ones being pushed to disk. That is exactly
+the combination (target fill percentage + minimum page age + paced,
+non-bursty eviction) already filed as the zswap-governor feature request
+and researched in the feasibility report:
+[`scripts/debian-install-v2/TODO.md`](../debian-install-v2/TODO.md) /
+[`zswap-shrinker-threshold-feasibility.md`](../debian-install-v2/zswap-shrinker-threshold-feasibility.md).
+This live login is the concrete "here's what good looks like" evidence for
+why that fix is worth building, not just "here's what bad looks like."
+
+**Interim mitigations, until the real fix exists:**
+- **Manual full-drain reset** (`shrinker_enabled=Y` briefly, then back to
+  `N`, let the pool re-populate from scratch with only what's genuinely
+  touched going forward) — a coarse, manual version of the target-fill
+  governor. Only do this during a deliberately-chosen low-traffic window,
+  never with players actively online: the drain itself is the damaging
+  part (both incidents above), not a side effect of the *result* being
+  empty.
+- **Lower `accept_threshold_percent`** (currently 95) as a cheap, safe,
+  independent lever worth testing — but understand what it actually does
+  before expecting much from it: it only governs *resuming* acceptance
+  after the pool has already hit `max_pool_percent` once, requiring it to
+  shrink further (via ordinary refault, no shrinker involved) before
+  refilling. It slows *future* accumulation of dead weight per cycle; it
+  does nothing to the dead pages already resident right now. Complementary
+  to the manual reset above, not a substitute for it.
 
 ---
 
