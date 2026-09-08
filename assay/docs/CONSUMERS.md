@@ -1361,7 +1361,7 @@ applied; that refusal is gone with the field that replaced it, and only the
 | `Survived` | `survived` | — |
 | `NoCoverage` | `survived`, **and** listed in `judgment.r2.survived_uncovered` | a mutant no test exercised is not killed — and it is the worst kind of survivor, so it is listed by position rather than buried in a count |
 | `Timeout` | `budget_exceeded` | Stryker's per-mutant timeout IS the per-candidate budget. Never `killed`: a mutant that hung is not one the suite caught |
-| `CompileError`, `RuntimeError` | counted in `judgment.r2.discarded` | an invalid mutant assay's native engine never emits. Excluded from the score's denominator, and counted — a report that could not compile most of its mutants measured far less than its score implies |
+| `CompileError`, `RuntimeError` | **listed** in `judgment.r2.discarded`, and counted in `mutation.candidate_count` but not `mutation.total` | an invalid mutant assay's native engine never emits. Excluded from the score's denominator, and recorded rather than dropped — a report that could not compile most of its mutants measured far less than its score implies. Listed by identity since v11 (B070); an integer count before that |
 | `Ignored` | **refuses the lane** | see below |
 | `Pending` | **refuses the report** | pending means the run did not finish; incomplete evidence is not weaker evidence |
 
@@ -1379,28 +1379,58 @@ move the line out of the lane's declared scope.
 from the report and **declared by artifact, not verified** — it is not a
 `helpers[]` entry, because `helpers[]` records tools assay itself invoked;
 `survived_uncovered` (untested lines, by position, deduplicated — it lists
-places, not mutants); `discarded`; `lines_without_candidates` (in-scope
-non-blank lines the tool produced no mutant for at all).
+places, not mutants); `discarded` (invalid mutants, by identity — it lists
+mutants, not places, because two invalid mutants on one line are two mutants
+that did not compile); `lines_without_candidates` (in-scope non-blank lines
+the tool produced no mutant for at all).
 
-**`discarded` is declared, not verified — read it as the tool's word, not as
-assay's finding.** Assay derives the number at ingest, by counting the
-`CompileError`/`RuntimeError` mutants the report itself *lists*; `assay
-verify` then checks that the wire value is an integer and is not negative,
-and nothing else. That is the whole check, and it is deliberate (**B051**,
-schema v10 — see the [migration notes](#migration-notes-v9--v10)). A
-discarded mutant is, by that same
-"listed" definition, absent from the document: it is in no mutation bucket,
-it is in neither `candidate_count` nor `total`, and its line is not in
-`lines_without_candidates` — so a truthful report that discarded 900 mutants
-looks byte-for-byte like a truthful one that discarded none, and any upper
-bound assay could impose would refuse the honest high-discard report rather
-than an inflated one. Concretely: this field set to `9999` on a 109-mutant
-ingested document passes `assay verify` clean. **What it cannot do is move a
-status.** `discarded` is a count beside the payload and never enters the
-mutation buckets, so the score's denominator is unaffected by construction —
-an inflated value understates how much was measured, it can never manufacture
-a green. If you consume this number, treat it the way you treat
-`producer_tool`: evidence about the foreign tool, on the foreign tool's word.
+**`discarded` LISTS the invalid mutants, and `assay verify` re-derives it
+against the payload** (**B070**, schema v11 — see the
+[migration notes](#migration-notes-v10--v11)). It is an array of mutant
+records, one per mutant the report marked `CompileError`/`RuntimeError`,
+carrying the same identity a bucketed mutant carries
+(`path`, `lineno`, `start_byte`, `end_byte`, `replacement_sha256`,
+`operator`, `description`), ascending and unique by that identity, and
+required-possibly-empty exactly as `survived_uncovered` is.
+
+Four things are now checked, and none of them is an upper bound:
+
+* every entry's identity is **disjoint** from all five mutation buckets — a
+  discarded mutant was never run, so it cannot also have an outcome;
+* no entry's line appears in `lines_without_candidates` — the tool *did*
+  produce a candidate there, it merely produced an invalid one;
+* the list is ordered and free of duplicates, by the mutant identity;
+* **`mutation.candidate_count - mutation.total == len(discarded)`** — the
+  fifth-disposition arithmetic. Every candidate the report listed was either
+  attempted (and is in a bucket) or discarded (and is listed here).
+
+That last one is what changed. Through v10 this field was an integer count
+and was *declared, not verified*: `candidate_count` and `total` were both the
+bucket sum, so a truthful report that discarded 900 mutants looked
+byte-for-byte like a truthful one that discarded none, and the field set to
+`9999` on a 109-mutant document passed `assay verify` clean. It is now
+`candidate_count` that carries the observed candidates and `total` that
+carries the attempted ones, so the difference between them is a real
+quantity — an inflated list is refused **by name**, and a truthful
+high-discard report (905 candidates, 5 attempted, 900 listed) passes, because
+905 − 5 *is* 900.
+
+Read "refused by name" precisely: the list is audited against **the document
+it sits in**, not against the foreign tool's original report. A producer that
+inflates `discarded` *and* moves `mutation.candidate_count` to match still
+passes, exactly as a producer that fabricates a `killed` entry and increments
+`total` always has. That is the same declared-by-artifact tier every
+`Mutation` bucket sits in, and v11 does not claim to leave it — what it ends
+is the case where `discarded` could contradict the payload beside it and no
+check could tell.
+
+**What is still declared, not verified: the un-listed half.** A tool that
+drops candidates *before* reporting them at all emits a document
+indistinguishable from one that never generated them. No artifact assay
+receives witnesses that, so it stays where `producer_tool` sits — evidence on
+the foreign tool's word. **And `discarded` still cannot move a status:** these
+mutants never enter the mutation buckets, so the score's denominator is
+unaffected by construction.
 `kill_attribution` is `"unattributed"` and cannot be anything else: a killed
 mutant here proves the foreign tool's test command failed, not that it failed
 for the reason the mutant created. Every mutant carries its operator as
@@ -1969,6 +1999,83 @@ commit in between either runs a v1 assay against a v2 file (rejected as an unkno
 assay against your still-v1 file (rejected as a missing `[isolation]` table) — a self-inflicted
 outage with a one-line fix that is obvious only once you already know why the gate went red.
 
+## Migration notes (v10 → v11)
+
+Verdict schema v11 is a **hard cut**, exactly as v10 was over v9: `assay
+verify` refuses a v10 document with one version-only diagnostic and reads
+nothing downstream of it. No dual-version verifier, no compatibility writer,
+no upgrade-in-place. Every consumer pins its own release, so nothing
+re-points until it re-pins.
+
+**`assay.toml` does not move.** Lane `schema_version` stays **2**, `assay
+lanes --json`'s `inventory_schema` stays **1**, and every lane file that loads
+today loads byte-unchanged. This cut carries exactly ONE change, and it
+touches exactly one field.
+
+**If you do not ingest a foreign mutation report, re-pin and you are done.**
+Nothing else in the document moves. A Python, Go or SQL lane running R0/R1/R2
+natively, an R3 canary lane, an R4 lane — all of them produce byte-identical
+documents apart from the `schema_version` number itself. `judgment.r2` under
+`producer = "native"` is unchanged in every field: it never carried
+`discarded` and still does not.
+
+### If you ingest a mutation report: `judgment.r2.discarded` is now an array
+
+**What changed.** `judgment.r2.discarded` was an integer count of the mutants
+the report marked `CompileError`/`RuntimeError`. It is now an **array of
+mutant records**, one per such mutant, in the same shape the five
+`mutation.*` buckets use (`path`, `lineno`, `start_byte`, `end_byte`,
+`replacement_sha256`, `operator`, `description`; never `kill_signal`, because
+nothing refused a mutant that never ran). It is ascending and unique by the
+mutant identity, and required-possibly-empty under `producer = "ingested"`,
+exactly as `survived_uncovered` and `lines_without_candidates` are. It stays
+**forbidden** under `"native"`.
+
+**Why.** As a count it could not be verified at all, and this document said
+so in three places: a discarded mutant was outside the document it would have
+to be derived from, so the field set to `9999` on a real 109-mutant ingested
+document verified clean, and every upper bound that would have caught that
+would equally have refused the honest high-discard report the field exists to
+surface. Listing the mutants supplies the missing quantity. `assay verify`
+now re-derives the field against the payload — disjointness from all five
+buckets, the line rule against `lines_without_candidates`, ordering and
+uniqueness, and the arithmetic below.
+
+**One more field moves with it, and it is the one to read carefully.**
+`mutation.candidate_count` on an INGESTED payload is now `attempted +
+discarded` rather than `attempted`. `mutation.total` is unchanged — it is
+still exactly the sum of the five buckets. So on an ingested document
+`candidate_count` and `total` may now legitimately differ, where the model
+previously forbade it outside the native limit sentinel, and the difference
+is precisely `len(judgment.r2.discarded)`. If you compute anything from
+`candidate_count` on an ingested document, that is the line to look at. The
+mutation score is untouched: it has always been `killed / (killed +
+survived)` over the buckets, and discarded mutants have never been in them.
+
+**And one bound moved with it, in the permissive direction.** Because
+`candidate_count` now counts the discarded mutants too, the ceiling that
+applies to it had to stop being `judge.mutation.max_mutants + 1` (10,001) —
+that number is a defence against a malicious *declared* cap, and an ingested
+lane declares none. An ingested payload's `candidate_count`, and
+`judgment.r2.discarded`'s own length, are bounded instead by the **document
+ceiling of 100,000**: the most mutants `assay` will read from one report,
+which is where an ingested lane's size limit has always actually lived. So an
+honest report of 48 attempted and 9,954 invalid mutants — refused if the
+native ceiling had been left in place — ingests. Nothing about a **native**
+lane's ceiling changes: `max_mutants` is still declared in `1..10,000` and a
+native payload over `max_mutants + 1` is still refused, by name.
+
+**Migration:** re-pin to a v11 assay and re-run the lane; there is no
+in-place upgrade of a v10 document. In your own consumer code, replace
+`judgment.r2.discarded` (an `int`) with `len(judgment.r2.discarded)` (an
+array) wherever you read the quantity — and, if you want the mutants rather
+than the number, they are now there to read. If you were treating the number
+as unverified tool-word evidence on the strength of the v10 notes below, you
+no longer need to: the listed half is now checked. The **un-listed** half —
+candidates a tool drops before reporting them at all — is still not
+recoverable from any artifact assay receives, and remains declared, not
+verified.
+
 ## Migration notes (v9 → v10)
 
 Verdict schema v10 is a **hard cut**, exactly as v9 was over v8: `assay verify`
@@ -2029,6 +2136,12 @@ foreign report itself lists and copies the number; `assay verify` checks that
 it is a non-negative integer and nothing else. Read it as the tool's word. It
 can never move a status — it is outside the score's denominator by
 construction.
+
+> **Superseded at v11 (B070).** This paragraph describes the v10 contract and
+> is kept because it is what a consumer who pinned v10 actually read. At v11
+> the field became an ARRAY of the discarded mutants and `assay verify`
+> re-derives it against the payload; the un-listed half stays declared. See
+> [Migration notes (v10 → v11)](#migration-notes-v10--v11) for what to change.
 
 **Two refusals are new, and both can turn a lane that was green on v9 red on
 v10 without your product changing:**

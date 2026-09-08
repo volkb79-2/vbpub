@@ -27,12 +27,14 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from conftest import GitRepo
 
 from assay import runner
 from assay.adapters.javascript import JavaScriptAdapter
+from assay.errors import Outcome
 from assay.verify import verify_document
 
 from test_runner_ingested_r2 import (  # the same real-artifact harness
@@ -146,87 +148,192 @@ def test_a_missing_producer_tool_is_caught(ingested_document: dict):
     _named(document, "with no producer_tool")
 
 
-def test_a_negative_discarded_count_is_caught(ingested_document: dict):
-    document = copy.deepcopy(ingested_document)
-    document["judgment"]["r2"]["discarded"] = -1
-    _named(document, "cannot be negative")
-
-
-def test_an_inflated_discarded_count_is_ACCEPTED_deliberately(
+def test_an_integer_discarded_is_caught_with_the_v10_shape_NAMED(
     ingested_document: dict,
 ):
-    """B051/DA-D4/DA-R26 — the one place in this module where the assertion
-    is that a mutated document is **accepted**, and the reason is written
-    down rather than left as an absence.
+    """(B070, schema v11) The migration's own diagnostic. Through v10 this
+    field was an integer count; the refusal says what it became and why, so a
+    consumer hand-editing a document is not left to infer it."""
+    document = copy.deepcopy(ingested_document)
+    document["judgment"]["r2"]["discarded"] = 0
+    _named(document, "must be an ARRAY of the mutants")
 
-    ``discarded`` is DECLARED, NOT VERIFIED, in ``producer_tool``'s own words
-    (A-230a). Assay derives it at ingest from the statuses the report itself
-    LISTS (DA-D4), and the raw layer then asserts only integer-and-
-    non-negative. It can assert no more: a discarded mutant is by those same
-    semantics outside this document — in no bucket, in neither
-    ``candidate_count`` nor ``total``, and its line not in
-    ``lines_without_candidates`` — so a truthful high-discard report is
-    byte-indistinguishable from a truthful zero-discard one, and every upper
-    bound that would catch this inflation would also refuse the honest report
-    the field exists to surface. **B070** is the v11 candidate that would
-    supply the missing quantity.
 
-    This test is the record that the acceptance is a ruling, not an oversight:
-    if a future change starts refusing this document, that change owes B070's
-    wire field first.
+def test_the_A437_reproduction_now_REFUSES_by_name(ingested_document: dict):
+    """**B070, and the inversion of the ruling this module used to record.**
+
+    A-437 recorded, as a deliberately accepted gap, that
+    ``judgment.r2.discarded = 9999`` on the real 109-mutant ingested document
+    verified clean. The reason was a missing quantity rather than a missing
+    check: as a bare count, a discarded mutant was outside the document it
+    would have to be derived from, and every upper bound that caught the
+    inflation (``discarded <= total``, ``<= candidate_count``) equally refused
+    the honest high-discard report the field exists to surface — which is why
+    DA-R26 rejected one (route 3).
+
+    v11 lists the mutants instead, so the residual
+    ``candidate_count - total`` is a real quantity the list must equal. The
+    v11 spelling of A-437's forgery is a 9999-entry list, and it is now
+    refused with a message naming BOTH numbers.
+
+    The control that keeps this from being the rejected clamp is
+    ``test_a_truthful_high_discard_document_is_ACCEPTED`` in
+    ``test_runner_ingested_r2.py`` (and the frozen
+    ``high-discard-r2-v11-template.json``): 40 discarded mutants beside 48
+    attempted, accepted in full.
     """
     document = copy.deepcopy(ingested_document)
     payload = next(
         claim for claim in document["claims"] if claim["rigor"] == "R2"
     )["mutation"]
-    assert document["judgment"]["r2"]["discarded"] == 0
-    document["judgment"]["r2"]["discarded"] = 9999
+    assert document["judgment"]["r2"]["discarded"] == []
+    assert payload["candidate_count"] == payload["total"]
+
+    document["judgment"]["r2"]["discarded"] = [
+        {
+            "path": "app/src/format.ts",
+            "lineno": 1 + index % 30,
+            "start_byte": 100_000 + index * 8,
+            "end_byte": 100_004 + index * 8,
+            "replacement_sha256": f"{index:064x}",
+            "operator": "stryker:Fabricated",
+            "description": "a mutant this payload does not contain",
+        }
+        for index in range(9999)
+    ]
     assert 9999 > payload["total"], (
         "the reproduction must inflate BEYOND the whole payload, or it is not "
-        "the case B051 filed"
+        "the case A-437 recorded"
     )
-    assert _failures(document) == [], (
-        "discarded is declared-not-verified by DA-R26; refusing this document "
-        "would mean refusing a truthful high-discard report too"
-    )
+    failures = _failures(document)
+    assert any(
+        "judgment.r2.discarded lists 9999 mutant(s)" in failure
+        and "a residual of 0" in failure
+        for failure in failures
+    ), failures
 
 
-def test_an_inflated_discarded_count_cannot_move_the_R2_status(
+def test_a_discarded_mutant_that_is_also_in_a_bucket_is_caught(
     ingested_document: dict,
 ):
-    """DA-R23's sentence as an assertion: ``discarded`` is a COUNT beside the
-    payload, never enters the ``Mutation`` buckets, so the denominator is
-    unaffected by construction. That is what keeps the unverified field
-    proportionate — it can understate how much was measured, never
-    manufacture a green."""
+    """Disjointness (B070). Without it the arithmetic alone could be satisfied
+    by listing one mutant twice — once as caught, once as invalid."""
+    document = copy.deepcopy(ingested_document)
+    claim = next(item for item in document["claims"] if item["rigor"] == "R2")
+    killed = copy.deepcopy(claim["mutation"]["killed"][0])
+    document["judgment"]["r2"]["discarded"] = [killed]
+    # Pay for the entry so the ARITHMETIC is satisfied and the disjointness
+    # rule is the only thing left to catch it -- otherwise this test would
+    # pass on the residual message and prove nothing about overlap.
+    claim["mutation"]["candidate_count"] += 1
+    _named(document, "which the R2 payload also records in one of its five buckets")
+
+
+def test_a_discarded_mutants_line_may_not_be_reported_as_barren(
+    ingested_document: dict,
+):
+    """The exact converse of ``lines_without_candidates``' own rule (B070):
+    the tool DID produce a candidate there, it merely produced an invalid
+    one."""
+    document = copy.deepcopy(ingested_document)
+    claim = next(item for item in document["claims"] if item["rigor"] == "R2")
+    barren = document["judgment"]["r2"]["lines_without_candidates"][0]
+    document["judgment"]["r2"]["discarded"] = [
+        {
+            "path": barren["path"],
+            "lineno": barren["lineno"],
+            "start_byte": 100_000,
+            "end_byte": 100_004,
+            "replacement_sha256": "b" * 64,
+            "operator": "stryker:Fabricated",
+            "description": "an invalid mutant on a line reported as barren",
+        }
+    ]
+    claim["mutation"]["candidate_count"] += 1
+    _named(document, "judgment.r2.discarded records a mutant starting on that exact line")
+
+
+def test_an_out_of_order_discarded_list_is_caught_by_the_RAW_layer(
+    ingested_document: dict,
+):
+    """The raw layer's own ordering witness, worded differently from the
+    model's for the reason the three position lists already state: asserting
+    only that the document is refused would count one witness twice."""
+    document = copy.deepcopy(ingested_document)
+    claim = next(item for item in document["claims"] if item["rigor"] == "R2")
+    document["judgment"]["r2"]["discarded"] = [
+        {
+            "path": "app/src/format.ts",
+            "lineno": 3,
+            "start_byte": 200,
+            "end_byte": 204,
+            "replacement_sha256": "c" * 64,
+            "operator": "stryker:Fabricated",
+            "description": "the LATER identity, placed first",
+        },
+        {
+            "path": "app/src/format.ts",
+            "lineno": 2,
+            "start_byte": 100,
+            "end_byte": 104,
+            "replacement_sha256": "b" * 64,
+            "operator": "stryker:Fabricated",
+            "description": "the EARLIER identity, placed second",
+        },
+    ]
+    claim["mutation"]["candidate_count"] += 2
+    _named(document, "judgment.r2.discarded must be strictly ascending")
+
+
+def test_an_inflated_discarded_list_still_cannot_move_the_R2_status(
+    ingested_document: dict,
+):
+    """DA-R23's sentence, unchanged by v11: a discarded mutant never enters
+    the ``Mutation`` buckets, so the mutation score's denominator is
+    unaffected by construction. What changed at v11 is that the forgery is now
+    REFUSED as well — it was always powerless, and it is now also visible."""
     document = copy.deepcopy(ingested_document)
     claim = next(item for item in document["claims"] if item["rigor"] == "R2")
     payload = claim["mutation"]
     buckets = ("killed", "survived", "budget_exceeded", "equivalent")
     bucketed = sum(len(payload.get(name, [])) for name in buckets)
 
-    # The structural half: the field is not IN the payload at all, and the
-    # payload's own arithmetic is the bucket sum with nothing subtracted.
+    # The structural half: the list is not IN the payload at all, and the
+    # payload's own total is the bucket sum with nothing subtracted.
     assert "discarded" not in payload
     assert payload["total"] == bucketed
-    assert payload["candidate_count"] == bucketed
 
-    # The behavioural half: the raw verifier re-derives this claim's status
-    # through `judge_mutation` (A-379), and inflating `discarded` past the
-    # whole payload leaves that re-derivation agreeing with the recorded
-    # status -- i.e. nothing downstream of the count moved.
-    document["judgment"]["r2"]["discarded"] = 9999
-    assert _failures(document) == []
-    assert claim["status"] == next(
-        item for item in ingested_document["claims"] if item["rigor"] == "R2"
-    )["status"]
+    # The behavioural half: `judge_mutation` re-derives the status from the
+    # buckets (A-379), and it is the SAME status whatever this field holds.
+    from assay.mutation import judge_mutation
+    from assay.verdict import Mutation, MutantOutcome
+
+    rebuilt = Mutation(
+        candidate_count=payload["candidate_count"],
+        total=payload["total"],
+        **{
+            name: tuple(
+                MutantOutcome(**{k: v for k, v in entry.items()})
+                for entry in payload.get(name, [])
+            )
+            for name in ("killed", "survived", "crashed", "budget_exceeded", "equivalent")
+        },
+    )
+    baseline = SimpleNamespace(outcome=Outcome.PASS, reason_code=None)
+    status, reason = judge_mutation(baseline, rebuilt, fail_under=100.0)
+    inflated_status, inflated_reason = judge_mutation(
+        baseline, rebuilt, fail_under=100.0, discarded=9999
+    )
+    assert (status, reason) == (inflated_status, inflated_reason)
+    assert status.value == claim["status"]
 
 
-def test_the_schema_says_discarded_is_declared_not_verified():
-    """The three-place discipline ``producer_tool`` already carries (B051's
-    own acceptance criterion): the schema description must SAY the field is
-    unverified, in the same words, so a consumer reading the contract alone
-    cannot mistake a range check for an audit. DESIGN-GUIDE §11 and
+def test_the_schema_says_what_discarded_still_does_NOT_verify():
+    """The three-place discipline ``producer_tool`` carries, carried over to
+    B070's own residual: v11 verifies the LISTED half, and the schema must say
+    plainly that the UN-LISTED half — candidates a tool drops before reporting
+    them at all — is still declared, so a consumer reading the contract alone
+    cannot read a green bar as more than it is. DESIGN-GUIDE §11 and
     CONSUMERS' ingested-lane section carry the other two statements."""
     schema = json.loads(
         (
@@ -240,7 +347,8 @@ def test_the_schema_says_discarded_is_declared_not_verified():
     described = schema["$defs"]["judgment_r2"]["properties"]["discarded"][
         "description"
     ]
-    assert "DECLARED, NOT VERIFIED" in described
+    assert "declared-not-verified" in described
+    assert "un-listed half" in described.lower()
     assert "B070" in described
     tool = schema["$defs"]["mutation_producer_tool"]["description"]
     assert "NOT VERIFIED" in tool
@@ -354,7 +462,7 @@ def test_a_misspelled_producer_does_not_silently_pass_the_ingested_checks(
     failure must be there to carry the document to a red bar on its own."""
     document = copy.deepcopy(ingested_document)
     document["judgment"]["r2"]["producer"] = "INGESTED"
-    document["judgment"]["r2"]["discarded"] = -1
+    document["judgment"]["r2"]["discarded"] = 7
     _named(document, "is not one of ['ingested', 'native']")
 
 

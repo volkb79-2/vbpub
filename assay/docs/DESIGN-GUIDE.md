@@ -1989,28 +1989,83 @@ recorded in `judgment.r2.producer_tool`, copied verbatim from the report and
 documented as **declared by artifact, not verified** — it is not a `helpers[]`
 entry, because `helpers[]` records tools Assay itself invoked.
 
-**`judgment.r2.discarded` stands beside `producer_tool` in exactly that tier,
-and this is a ruling rather than an omission** (B051, DA-D4 as completed by
-DA-R26). Assay *derives* the count at ingest — it lists the report's own
+**`judgment.r2.discarded` used to stand beside `producer_tool` in exactly that
+tier. Since schema v11 it does not, and how it got out is the more useful
+half of the story** (B051/DA-D4/DA-R26, completed by **B070**).
+
+Assay always *derived* the fact at ingest — it lists the report's own
 `CompileError`/`RuntimeError` mutants, DA-D4's `listed` semantics, never
-`encountered` — and `assay verify` then asserts only that the wire value is an
-integer and non-negative. No re-derivation is available to it, because under
-those same semantics a discarded mutant is outside the document it would have
-to be derived from: it is in no mutation bucket, it is in neither
-`candidate_count` nor `total` (which `Mutation`'s arithmetic requires to be
-equal outside the limit sentinel), and its line is absent from
-`lines_without_candidates` because the tool *did* produce a candidate there.
-A truthful document with 900 discarded mutants is byte-indistinguishable from
-a truthful one with 0, so every upper bound that would refuse an inflated
-count would equally refuse the honest high-discard report the field exists to
-surface. Saying "checked" about the half that is easy, while the half that
-matters stays unchecked, is worse than saying nothing — so the document says
-nothing, out loud, in three places. The field carries no judgment weight while
-it is unverified: it is a COUNT beside the payload, never enters the mutation
-buckets, so the score's denominator is unaffected by construction. **B070** is
-the v11 candidate that would put the missing quantity on the wire and turn
-this into a difference the raw layer can take; it would have been free before
-5.0.0 shipped and is a schema bump after.
+`encountered`. What it could not do was re-derive it in `assay verify`, and
+the reason was a **missing quantity, not a missing check**: as a bare COUNT, a
+discarded mutant was outside the document it would have to be derived from. It
+was in no mutation bucket; it was in neither `candidate_count` nor `total`,
+which were both the bucket sum and which `Mutation`'s own arithmetic then
+required to be *equal* outside the limit sentinel; and its line was absent
+from `lines_without_candidates`, correctly, because the tool *did* produce a
+candidate there. A truthful document with 900 discarded mutants was
+byte-indistinguishable from a truthful one with 0. Every upper bound that
+would have refused an inflated count (`discarded <= total`, `<=
+candidate_count`) would equally have refused the honest high-discard report
+the field exists to surface — which is why DA-R26 rejected one, and why the
+field spent v9 and v10 saying "declared, not verified" out loud in three
+places rather than claiming an audit it did not perform.
+
+v11 supplies the quantity instead of the clamp. `discarded` LISTS the mutants,
+with the same identity a bucketed one carries, so three re-derivations exist
+that did not before: identity **disjointness** from all five buckets (a
+discarded mutant was never run, so it cannot also have an outcome), the
+**line rule** against `lines_without_candidates` (the exact converse of that
+field's own), and the **fifth-disposition arithmetic**
+`candidate_count - total == len(discarded)`. That last one is the load-bearing
+one, and it is the reason the change cost a schema version rather than being a
+defect fix: `Mutation._check_arithmetic` FORBADE that difference, so the fix
+was not "add a check" but "revise a rule written when the buckets were the
+only dispositions in existence". `candidate_count` keeps its meaning (what
+discovery observed) and `total` keeps its own (what was attempted); what is
+new is that a candidate can be observed and never attempted, and that the
+residual must be accounted for — by `judgment.r2.discarded`'s length under
+`ingested`, and by nothing at all under `native`, which has no discard
+concept. An inflated list now refuses by name; the honest 900-discard report
+passes, because 905 − 5 *is* 900.
+
+**One half stays exactly where it was**, and the guide says so for the same
+reason it said the whole thing before: a tool that drops candidates *before*
+reporting them at all emits a document indistinguishable from one that never
+generated them. Nothing in any artifact assay receives witnesses that. It
+remains A-230a's declared-by-artifact tier, and a green bar must not be read
+as saying otherwise. What never changed either way is that this field carries
+no judgment weight: these mutants never enter the mutation buckets, so the
+score's denominator is unaffected by construction.
+
+**And the verification is INTERNAL consistency, which is a real thing but a
+bounded one.** The list is re-derived against the payload it sits beside,
+never against the foreign tool's original report, so a producer that inflates
+`discarded` and moves `candidate_count` to match still passes — exactly as a
+producer that fabricates a `killed` entry and increments `total` always has.
+That is the tier every `Mutation` bucket lives in and v11 does not pretend to
+leave it. What v11 ends is narrower and worth saying plainly: the case where
+`discarded` could contradict the document it sits in and no check could tell.
+
+**One consequence had to be fixed after the fact, and it is worth recording
+because it is the same mistake in miniature.** Making `candidate_count` count
+the discarded mutants put an ingested payload under `MAX_CANDIDATE_CEILING`
+(`max_mutants + 1`) — a ceiling documented as a defence against a malicious
+*declared* cap, which an ingested lane does not have. While `candidate_count`
+was the bucket sum the conflation was invisible; the moment it was not, a
+truthful report started being refused for discarding too much: DA-R26's own
+route 3, at a higher threshold and misattributed to a field the lane never
+declared. The ceiling is now producer-aware — native payloads keep
+`max_mutants + 1`, enforced where the producer is visible, and an ingested
+payload is bounded by the document ceiling that already governs how much
+assay will read. The transferable lesson is that a bound inherited from
+another producer's policy is a bound waiting to refuse the wrong document.
+
+**The cost sentence, kept because it is the transferable lesson.** Adding
+this quantity before 5.0.0 shipped would have been free — it would have ridden
+the v10 cut that was already breaking the wire. The design question surfaced
+mid-cut, the window closed, and it became a v11 bump with its own hard cut,
+its own `W7` generation and its own migration notes. That is not a mistake
+anyone made; it is what a design question surfacing mid-cut costs.
 
 The operators
 the tool actually applied are not lost by any of this: they are on the wire,

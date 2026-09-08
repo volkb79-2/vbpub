@@ -2188,12 +2188,22 @@ INGESTED_STATUS_BUCKETS: Mapping[str, str] = MappingProxyType(
     }
 )
 
-#: (B046) Statuses counted in `judgment.r2.discarded` and excluded from the
-#: `pct` denominator: an invalid mutant assay's native engine never emits at
+#: (B046, RESHAPED by B070 at schema v11) Statuses whose mutants are LISTED on
+#: `judgment.r2.discarded` -- by identity, one entry each -- and excluded from
+#: the `pct` denominator: invalid mutants assay's native engine never emits at
 #: all. Excluded because a mutant that could not compile tested nothing;
-#: COUNTED because a report that could not compile most of its own mutants
-#: measured far less than its score implies, and a bare percentage cannot say
-#: so.
+#: RECORDED rather than dropped because a report that could not build most of
+#: its own mutants measured far less than its score implies, and a bare
+#: percentage cannot say so. Through v10 they were only COUNTED, which is
+#: exactly why the count could never be verified: see B070.
+#:
+#: The two members are folded into one undifferentiated list, and the sentence
+#: above says "could not build" rather than "could not compile" for that
+#: reason -- `CompileError` (a mutant that never built) and `RuntimeError` (a
+#: mutant that crashed the runner) are materially different facts and the
+#: record does not currently carry which is which. Filed as B079 (renumbered
+#: from B078 at merge time -- collided with main's own B078); deliberately
+#: out of B070's scope, which was bound to exactly one wire decision.
 _INGESTED_DISCARDED_STATUSES: frozenset[str] = frozenset(
     {"CompileError", "RuntimeError"}
 )
@@ -2206,15 +2216,25 @@ class IngestedMutationResult:
 
     A separate type from :class:`Mutation` because the payload and the
     judgment are two different objects on the wire with two different owners
-    -- and because bundling `discarded` into `Mutation` would put a number in
-    the CLAIM that no bucket accounts for, which is the arithmetic
-    `Mutation._check_arithmetic` exists to keep total.
+    -- and because bundling `discarded` into `Mutation` would put a SIXTH
+    bucket in the CLAIM for mutants that were never attempted, which is not
+    what the buckets mean.
+
+    **B070 (schema v11): `discarded` is now the mutants, not a count of
+    them.** The count could never be a difference OF anything, which is why it
+    spent two schema versions declared-not-verified; the list is auditable
+    against the very payload it sits beside. `Mutation._check_arithmetic`
+    stays the keeper of the CLAIM's own totals -- what it no longer does is
+    forbid a residual, because the residual is now exactly this list's length
+    and `Verdict._check_discarded_disposition` is what proves it.
     """
 
     mutation: Mutation
     producer_tool: MutationProducerTool
     survived_uncovered: tuple[SourcePosition, ...]
-    discarded: int
+    #: (B070, schema v11) The discarded mutants THEMSELVES, sorted by identity,
+    #: not a count of them. See :attr:`assay.verdict.JudgmentR2.discarded`.
+    discarded: tuple[MutantOutcome, ...]
     lines_without_candidates: tuple[SourcePosition, ...]
 
 
@@ -2309,7 +2329,11 @@ def ingest_mutation_report(
     # mutants. The real committed report has exactly this shape (ten
     # NoCoverage mutants share `src/format.ts` line 34).
     survived_uncovered: set[tuple[str, int]] = set()
-    discarded = 0
+    # (B070, schema v11) A LIST of the discarded mutants, not a count. Through
+    # v10 this loop `continue`d past a `CompileError`/`RuntimeError` mutant
+    # with no record of it anywhere in the document, which is precisely why
+    # `judgment.r2.discarded` had nothing to be checked against.
+    discarded: list[MutantOutcome] = []
     mutated_lines: set[tuple[str, int]] = set()
 
     for mutant in report.mutants:
@@ -2339,16 +2363,6 @@ def ingest_mutation_report(
                 reason_code=ReasonCode.UNREADABLE_ARTIFACT,
             )
         mutated_lines.add((wire_path, mutant.lineno))
-        if mutant.status in _INGESTED_DISCARDED_STATUSES:
-            discarded += 1
-            continue
-        bucket = INGESTED_STATUS_BUCKETS.get(mutant.status)
-        if bucket is None:  # pragma: no cover - the parser closes the set
-            raise AssayError(
-                f"mutation report carries unmapped status {mutant.status!r}",
-                outcome=Outcome.ERROR,
-                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
-            )
         outcome = MutantOutcome(
             path=wire_path,
             lineno=mutant.lineno,
@@ -2358,16 +2372,40 @@ def ingest_mutation_report(
             operator=mutant.operator,
             description=mutant.description,
         )
+        if mutant.status in _INGESTED_DISCARDED_STATUSES:
+            # B070: RECORDED, not dropped. The record is built above, before
+            # the fork, so a discarded mutant carries byte-for-byte the same
+            # identity a bucketed one does -- which is what lets
+            # `Verdict._check_discarded_disposition` ask whether the two sets
+            # overlap at all.
+            discarded.append(outcome)
+            continue
+        bucket = INGESTED_STATUS_BUCKETS.get(mutant.status)
+        if bucket is None:  # pragma: no cover - the parser closes the set
+            raise AssayError(
+                f"mutation report carries unmapped status {mutant.status!r}",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.UNREADABLE_ARTIFACT,
+            )
         buckets[bucket].append(outcome)
         if mutant.status == "NoCoverage":
             survived_uncovered.add((wire_path, mutant.lineno))
 
     for name in MUTATION_BUCKETS:
         buckets[name].sort(key=lambda item: item.identity)
+    discarded.sort(key=lambda item: item.identity)
     attempted = sum(len(items) for items in buckets.values())
     try:
         payload = Mutation(
-            candidate_count=attempted,
+            # B070 (schema v11): `candidate_count` is "the candidate site
+            # descriptors discovery actually observed", and an invalid mutant
+            # WAS observed -- the report listed it, with a full identity. So
+            # the in-scope candidates the report listed is `attempted +
+            # discarded`, and the difference between the two fields is the
+            # quantity `judgment.r2.discarded` is checked against. Through v10
+            # both were `attempted`, which is what made an inflated count
+            # undetectable (A-437).
+            candidate_count=attempted + len(discarded),
             total=attempted,
             **{name: tuple(buckets[name]) for name in MUTATION_BUCKETS},
         )
@@ -2389,7 +2427,7 @@ def ingest_mutation_report(
             SourcePosition(path=path, lineno=lineno)
             for path, lineno in sorted(survived_uncovered)
         ),
-        discarded=discarded,
+        discarded=tuple(discarded),
         lines_without_candidates=_lines_without_candidates(
             report,
             wire_paths=wire_paths,
@@ -2717,6 +2755,7 @@ def judge_mutation(
     mutation: Mutation | Literal["UNSUPPORTED"] | None,
     *,
     fail_under: float = 100.0,
+    discarded: int = 0,
 ) -> tuple[Outcome, ReasonCode | None]:
     """A-117's outcome/reason-code mapping, using only already-existing
     ``ReasonCode``s (``errors.py`` stays forbidden, A-121): baseline
@@ -2777,6 +2816,20 @@ def judge_mutation(
     for precisely this reason; that refusal is gone with the wire field that
     replaced it, and only the ``0.0 <= fail_under <= 100.0`` range check
     remains.
+
+    **``discarded`` is B070/v11's fifth disposition, and it is here for one
+    branch only.** It is the length of ``judgment.r2.discarded`` — zero for
+    every native lane, which has no discard concept at all — and it is
+    subtracted from ``candidate_count`` before the limit-sentinel question is
+    asked. Without it, an ingested report whose in-scope mutants were ALL
+    invalid (``total 0``, five empty buckets, ``candidate_count`` equal to the
+    discard count) reaches the identical bytes a native pre-submission refusal
+    has, and would be judged ``BUDGET_EXCEEDED``/``MUTANT_LIMIT_EXCEEDED`` —
+    a flat lie about a lane that declared no candidate cap and declined
+    nothing. With it that document falls through to
+    ``INCONCLUSIVE``/``NO_MUTANTS``, which is what a run that attempted no
+    mutant honestly is, and a native document is byte-unchanged because its
+    ``discarded`` is zero by contract.
     """
     if mutation is None:
         return baseline.outcome, baseline.reason_code
@@ -2785,10 +2838,15 @@ def judge_mutation(
     # zero/zero payload would assert an analysis that never ran.
     if mutation == UNSUPPORTED:
         return Outcome.INCONCLUSIVE, ReasonCode.MUTATION_UNSUPPORTED
-    if mutation.is_limit_sentinel:
+    if mutation.total == 0 and mutation.candidate_count - discarded > 0:
         # A-163: the refusal happened BEFORE submission, so this is not a
         # budget the run exhausted while working -- it is one it declined to
         # start against. `LANE_TIMEOUT` would misname it.
+        #
+        # B070/v11: `- discarded` is what keeps this branch NATIVE. See the
+        # docstring; `Mutation.is_limit_sentinel` is the same test with the
+        # subtraction fixed at zero, which is correct for every caller that
+        # can only see the payload.
         return Outcome.BUDGET_EXCEEDED, ReasonCode.MUTANT_LIMIT_EXCEEDED
     if mutation.total == 0:
         return Outcome.INCONCLUSIVE, ReasonCode.NO_MUTANTS
@@ -2832,6 +2890,7 @@ def build_mutation_claim(
     mutation: Mutation | Literal["UNSUPPORTED"] | None,
     *,
     fail_under: float = 100.0,
+    discarded: int = 0,
 ) -> Claim:
     """The R2 :class:`~assay.verdict.Claim` from :func:`run_mutation`'s own
     return — the exact mapping ``assay.runner.build_r0_claim`` /
@@ -2849,8 +2908,15 @@ def build_mutation_claim(
     ``runner._build_ingested_judgment_r2`` writes onto the wire -- one value,
     one read, so the document cannot record a floor other than the one that
     judged it.
+
+    ``discarded`` (B070/v11) travels the same one-value-one-read path: it is
+    ``len(IngestedMutationResult.discarded)``, supplied by the same ingested
+    branch that writes the list onto ``judgment.r2``, and it defaults to zero
+    so every native call site is byte-unchanged.
     """
-    status, reason_code = judge_mutation(baseline, mutation, fail_under=fail_under)
+    status, reason_code = judge_mutation(
+        baseline, mutation, fail_under=fail_under, discarded=discarded
+    )
     payload = None if mutation == UNSUPPORTED else mutation
     return Claim(
         rigor="R2",

@@ -57,11 +57,34 @@ __all__ = [
     "INGESTED_OPERATOR_NAMESPACES",
     "INGESTED_OPERATOR_RE",
     "is_ingested_operator",
+    "MAX_INGESTED_MUTANTS",
     "MUTATION_OPERATORS",
     "MUTATION_OPERATORS_BY_LANGUAGE",
     "WITHDRAWN_MUTATION_OPERATORS",
     "operator_language",
 ]
+
+#: (B070/A-437 fix round 1) A fixed ceiling on how many mutants ONE INGESTED
+#: REPORT may carry. It lives in this leaf, not beside its enforcement, for
+#: `INGESTED_OPERATOR_NAMESPACES`' own reason one screen down: three layers now
+#: need it and they may not drift. :mod:`assay.mutation_parsers.
+#: mutation_report_json` enforces it at the document boundary (a report over
+#: this many mutants is refused before a single one is bucketed);
+#: :class:`assay.verdict.Mutation` uses it as the widest `candidate_count` any
+#: producer can legally reach; :class:`assay.verdict.JudgmentR2` uses it as the
+#: bound on `discarded`'s own length.
+#:
+#: **It is NOT :data:`assay.verdict.MAX_CANDIDATE_CEILING`, and conflating the
+#: two was a real defect** (found by the B070 round-1 review). That constant is
+#: `max_mutants + 1` and is documented as "a defence against a malicious
+#: DECLARED cap" -- a NATIVE concern, since an ingested lane declares no cap at
+#: all (A-360). While `candidate_count` was `attempted` the conflation was
+#: invisible; the moment B070 made it `attempted + discarded`, the native
+#: ceiling started refusing truthful ingested reports for discarding too much
+#: -- which is exactly the failure mode DA-R26 rejected route 3 for, at a
+#: higher threshold. This bound is a resource bound on reading a document,
+#: which is a different thing with a different owner.
+MAX_INGESTED_MUTANTS = 100_000
 
 #: Operators that are still SPELLABLE in a schema-v7 artifact but that no
 #: lane may declare and no adapter produces (B034/A-326).

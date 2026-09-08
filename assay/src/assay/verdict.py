@@ -73,6 +73,7 @@ from .config import (
 from .errors import EXIT_CODES, REASON_CODES, Outcome, ReasonCode
 from .vocabulary import (
     INGESTED_OPERATOR_RE,
+    MAX_INGESTED_MUTANTS,
     MUTATION_OPERATORS,
     MUTATION_OPERATORS_BY_LANGUAGE,
     is_ingested_operator,
@@ -284,7 +285,46 @@ __all__ = [
 #:
 #: Same rule again: producers emit v10, and `assay verify` refuses v9 exactly
 #: as v9 refused v8.
-VERDICT_SCHEMA_VERSION = 10
+#:
+#: **v11 (B070, the discarded-mutants cut).** ONE change, and it is a wire
+#: change rather than a defect fix, which is the whole reason it costs a
+#: version:
+#:
+#: * `judgment.r2.discarded` stops being an integer COUNT and becomes a LIST of
+#:   mutant identities, on `survived_uncovered`'s footing (B070, shape 1 of the
+#:   two the backlog entry weighed). Through v10 the field was DECLARED, NOT
+#:   VERIFIED by ruling (B051/DA-D4/DA-R26): under `listed` semantics a
+#:   discarded mutant is outside the document it would have to be derived
+#:   from -- in no bucket, in neither `candidate_count` nor `total`, and its
+#:   line absent from `lines_without_candidates` -- so a truthful document with
+#:   900 discarded mutants was byte-indistinguishable from a truthful one with
+#:   0, and the count set to `9999` on a real 109-mutant document verified
+#:   clean (A-437). Listing the mutants supplies the missing quantity, and with
+#:   it three re-derivations `verify.py` could not previously take: identity
+#:   disjointness from all five buckets, the line-carries-a-candidate rule
+#:   against `lines_without_candidates`, and the FIFTH-DISPOSITION arithmetic
+#:   `candidate_count - total == len(discarded)`.
+#: * That arithmetic is the second half of the same change. Through v10
+#:   `Mutation._check_arithmetic` FORBADE `candidate_count != total` outside
+#:   the limit sentinel -- a rule written when four (then five) buckets were
+#:   the only dispositions a candidate could have. `candidate_count` keeps its
+#:   documented meaning ("the candidate site descriptors discovery actually
+#:   observed") and `total` keeps its own ("attempted"); what changes is that
+#:   the two may now differ by a residual that a disposition OUTSIDE the
+#:   buckets accounts for. The residual is never left unexplained: `Verdict`
+#:   and `assay verify` both require it to equal `len(judgment.r2.discarded)`
+#:   under `producer = "ingested"`, and to be zero outside the limit sentinel
+#:   under `"native"`, where assay's own engine has no discard concept at all.
+#:
+#: What v11 does NOT close, said out loud so a green bar cannot be misread: a
+#: tool that drops candidates BEFORE reporting them emits a document
+#: indistinguishable from one that never generated them. That half is not
+#: recoverable from any artifact assay receives and stays in A-230a's
+#: declared-by-artifact tier.
+#:
+#: Same rule again: producers emit v11, and `assay verify` refuses v10 exactly
+#: as v10 refused v9.
+VERDICT_SCHEMA_VERSION = 11
 
 #: (P21/A-183) the closed R1 exclusion-capability vocabulary, restoring A-008's
 #: distinction inside the artifact. `"unavailable"` means the coverage FORMAT
@@ -603,6 +643,15 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 #: The hard product ceiling on candidate discovery (A-163). `max_mutants` is
 #: declared in `1..10_000`, so a bounded observation is at most `max + 1`.
 #: This is a defence against a malicious declared cap, not a policy knob.
+#:
+#: **(B070 fix round 1) NATIVE only.** A declared cap is something only a
+#: native lane has; an ingested lane declares none (A-360), so this ceiling
+#: defends against nothing there. It is applied by
+#: :meth:`Verdict._check_mutation_cardinality`, which is reached only when
+#: `judgment.r2.max_mutants` is present -- i.e. only under `producer =
+#: "native"`. `Mutation` alone, which cannot see the producer, bounds
+#: `candidate_count` at :data:`~assay.vocabulary.MAX_INGESTED_MUTANTS`
+#: instead: the widest any producer may legally reach.
 MAX_CANDIDATE_CEILING = 10_001
 
 #: (B012 remediation, N-2) The hard ceiling on a `--shard` COUNT -- a
@@ -1615,11 +1664,26 @@ class Mutation:
                 raise ValueError(f"mutation.{name} must be an integer, got {value!r}")
             if value < 0:
                 raise ValueError(f"mutation.{name} must not be negative, got {value}")
-        if self.candidate_count > MAX_CANDIDATE_CEILING:
+        # (B070 fix round 1) The bound this object can state alone is the
+        # WIDEST any producer may legally reach, because a `Mutation` cannot
+        # see `judgment.r2.producer`. The tighter NATIVE ceiling
+        # (`MAX_CANDIDATE_CEILING`, `max_mutants + 1`) is a defence against a
+        # malicious DECLARED cap, and an ingested lane declares none at all
+        # (A-360); it is enforced one level up, where the producer is visible,
+        # by `Verdict._check_mutation_cardinality`.
+        #
+        # Applying the native ceiling here was a real defect: while
+        # `candidate_count` was `attempted` it was invisible, but the moment
+        # B070 made it `attempted + discarded` a truthful ingested report of
+        # 48 attempted and 9,954 invalid mutants -- a tenth of what the parser
+        # will read -- started being refused for DISCARDING TOO MUCH, which is
+        # the failure mode DA-R26 rejected route 3 for, at a higher threshold
+        # and misattributed to `max_mutants` besides.
+        if self.candidate_count > MAX_INGESTED_MUTANTS:
             raise ValueError(
                 f"mutation.candidate_count ({self.candidate_count}) exceeds the "
-                f"product ceiling {MAX_CANDIDATE_CEILING}; discovery stops at "
-                f"max_mutants + 1 and max_mutants is bounded at 10,000"
+                f"document ceiling {MAX_INGESTED_MUTANTS:,}; no producer may "
+                f"observe more candidates than assay will read from one report"
             )
         for name in MUTATION_BUCKETS:
             _check_mutant_outcome_tuple(getattr(self, name), f"mutation.{name}")
@@ -1684,35 +1748,91 @@ class Mutation:
                     )
 
     def _check_arithmetic(self) -> None:
-        """Exactly two legal shapes (A-163), and nothing between them."""
+        """(A-163, revised for the FIFTH DISPOSITION at v11/B070.)
+
+        ``total`` is still exactly the bucket sum, and ``candidate_count`` is
+        still "the candidate site descriptors discovery actually observed" —
+        neither word changes. What changes is that a candidate can now be
+        observed and yet be in no bucket: the ingested path records a mutant
+        the foreign tool marked ``CompileError``/``RuntimeError`` on
+        ``judgment.r2.discarded`` instead of dropping it, and that mutant was
+        genuinely a candidate and genuinely never attempted. Through v10 this
+        method forbade ``candidate_count != total`` outside the limit
+        sentinel, which is a rule written when the buckets were the only
+        dispositions in existence; enforcing it now would make the honest
+        ingested document illegal (B070's own diagnosis of why the count could
+        never be verified).
+
+        So the RESIDUAL ``candidate_count - total`` becomes legal here, and
+        **only here** — this object cannot see what accounts for it. It is
+        never left unexplained: :meth:`Verdict._check_judgment_matches_claims`
+        requires it to equal ``len(judgment.r2.discarded)`` under
+        ``producer = "ingested"`` and to be zero outside the limit sentinel
+        under ``"native"``, and :mod:`assay.verify` states the same rule
+        independently at the raw layer. That split is the same one
+        ``kill_attribution`` already lives under: the model owns the field's
+        own grammar, the layer that can see both objects owns their agreement.
+
+        Three legal shapes, therefore, and nothing outside them:
+
+        1. ``candidate_count == total`` — every observed candidate was
+           attempted, the shape every native payload and every zero-discard
+           ingested payload has;
+        2. the pre-submission limit sentinel: ``total == 0`` with a positive
+           ``candidate_count``, i.e. candidates were observed and NOTHING was
+           attempted, deliberately (A-163);
+        3. ``candidate_count > total > 0`` — a residual awaiting attribution
+           one level up.
+
+        Shape 2 and shape 3 do not overlap: shape 2 requires ``total == 0``
+        and shape 3 requires ``total > 0``. An ingested payload whose in-scope
+        mutants were ALL discarded lands on shape 2's bytes, which is why the
+        producer fork above it, not this method, is what tells a wholly
+        discarded ingested run from a native pre-submission refusal.
+        """
         attempted = sum(len(getattr(self, name)) for name in MUTATION_BUCKETS)
         if self.total != attempted:
             raise ValueError(
                 f"mutation.total ({self.total}) must equal the number of "
                 f"recorded identities across all five buckets ({attempted})"
             )
-        if self.total == self.candidate_count:
-            return
-        # The only other legal shape is the pre-submission limit sentinel:
-        # candidates were observed, nothing was attempted.
-        if self.total == 0 and 1 <= self.candidate_count <= MAX_CANDIDATE_CEILING:
-            return
-        raise ValueError(
-            f"mutation records {self.candidate_count} candidate(s) but "
-            f"{self.total} attempted mutant(s); a payload is either normal "
-            f"(candidate_count == total == sum of the five buckets) or the "
-            f"pre-submission limit sentinel (total 0, five empty buckets, "
-            f"candidate_count in 1..{MAX_CANDIDATE_CEILING})"
-        )
+        if self.candidate_count < self.total:
+            raise ValueError(
+                f"mutation records {self.candidate_count} candidate(s) but "
+                f"{self.total} attempted mutant(s); a mutant that was "
+                f"attempted was first observed as a candidate, so "
+                f"candidate_count is never below total"
+            )
+        if self.candidate_count > MAX_INGESTED_MUTANTS:  # pragma: no cover
+            # Already refused in __post_init__; restated so this method's own
+            # three-shape statement is closed rather than resting on a caller.
+            raise ValueError(
+                f"mutation.candidate_count ({self.candidate_count}) exceeds "
+                f"the document ceiling {MAX_INGESTED_MUTANTS:,}"
+            )
 
     @property
     def is_limit_sentinel(self) -> bool:
-        """True for the pre-submission ``max_mutants + 1`` refusal shape.
+        """True for the pre-submission ``max_mutants + 1`` refusal SHAPE.
 
         A zero/zero payload is NOT a sentinel: it is a supported analysis
         that genuinely observed no candidates (``NO_MUTANTS``). The two are
         distinguished by ``candidate_count`` alone, which is why the field
         is required rather than derived.
+
+        **B070/v11: this is the shape, not the conclusion.** One other
+        producer now reaches the identical bytes — an INGESTED report whose
+        in-scope mutants were ALL invalid, which observes candidates, attempts
+        none, and accounts for every one of them on
+        ``judgment.r2.discarded``. That document is honestly
+        ``INCONCLUSIVE``/``NO_MUTANTS``; assay declined nothing and has no
+        candidate cap to have declined against. Telling the two apart needs
+        the residual's attribution, which this object cannot see, so it is
+        done where it can be: :func:`assay.mutation.judge_mutation` takes the
+        discarded count and subtracts it before asking this question, and
+        :mod:`assay.verify` re-derives the same way. Callers that only need
+        the SHAPE (:meth:`Verdict._check_mutation_cardinality`, which is
+        native-only by its own early return) keep using this directly.
         """
         return self.total == 0 and self.candidate_count > 0
 
@@ -2132,12 +2252,37 @@ class JudgmentR2:
     #: says); `None` -- absent -- under `"native"`, where assay's own engine
     #: has no `NoCoverage` concept at all.
     survived_uncovered: tuple[SourcePosition, ...] | None = None
-    #: (B046) How many mutants the report marked `CompileError`/`RuntimeError`
-    #: -- invalid mutants the native engine never emits. Excluded from the
-    #: `pct` denominator and COUNTED, because a report that could not compile
-    #: most of its own mutants measured far less than its score implies.
-    #: Required (possibly `0`) under `"ingested"`, `None` under `"native"`.
-    discarded: int | None = None
+    #: (B046, RESHAPED by B070 at schema v11) The mutants the report marked
+    #: `CompileError`/`RuntimeError` -- invalid mutants the native engine never
+    #: emits -- LISTED BY IDENTITY, one entry per mutant, on
+    #: :attr:`survived_uncovered`'s own footing. Required (possibly EMPTY)
+    #: under `"ingested"`, `None` -- absent -- under `"native"`, where assay's
+    #: own engine has no discard concept at all.
+    #:
+    #: **Through v10 this was an integer count, and it was DECLARED, NOT
+    #: VERIFIED by ruling** (B051/DA-D4/DA-R26). The reason was a missing
+    #: quantity rather than a missing check: under DA-D4's `listed` semantics a
+    #: discarded mutant is outside the document it would have to be derived
+    #: from, so `9999` on a real 109-mutant document verified clean (A-437) and
+    #: every upper bound that caught it equally refused the honest high-discard
+    #: report the field exists to surface. Listing the mutants supplies the
+    #: quantity, and three re-derivations come with it, all owned one level up
+    #: or by :mod:`assay.verify` because each spans two objects: identity
+    #: DISJOINTNESS from all five `Mutation` buckets (a discarded mutant was
+    #: never attempted, so it cannot also be killed); the line rule against
+    #: :attr:`lines_without_candidates` (the tool DID produce a candidate
+    #: there); and the fifth-disposition arithmetic
+    #: `mutation.candidate_count - mutation.total == len(discarded)`, which is
+    #: what makes an inflated list refuse BY NAME while a truthful 900-entry
+    #: one passes.
+    #:
+    #: A discarded mutant carries no `kill_signal` -- nothing refused it --
+    #: exactly as the four non-killed buckets do. It stays outside the
+    #: mutation-score denominator by construction, never entering a bucket, so
+    #: no value here can move a status. What is still declared-not-verified is
+    #: the strictly smaller UN-LISTED half: candidates a tool drops before
+    #: reporting at all, which no artifact assay receives can witness.
+    discarded: tuple[MutantOutcome, ...] | None = None
     #: (B050/DA-D6, A-427, schema v10) the mutation-score floor this judgment
     #: applied, **REQUIRED under `producer = "ingested"` and FORBIDDEN under
     #: `"native"`**. Spelled byte-identically to
@@ -2445,13 +2590,35 @@ class JudgmentR2:
                 f"judgment.r2.producer_tool must be a MutationProducerTool, "
                 f"got {self.producer_tool!r}"
             )
-        if isinstance(self.discarded, bool) or not isinstance(self.discarded, int):
+        # B070 (schema v11): the same grammar the five `Mutation` buckets
+        # carry, reached through the same helper rather than a second
+        # hand-written copy of it -- ordering by identity and within-list
+        # uniqueness are exactly the properties that make the disjointness
+        # re-derivation one level up meaningful.
+        _check_mutant_outcome_tuple(self.discarded, "judgment.r2.discarded")
+        assert self.discarded is not None  # _check_producer_fork
+        # (B070 fix round 1) Bounded by the DOCUMENT ceiling, not by
+        # `max_mutants`' 10,000. This field exists only under `producer =
+        # "ingested"`, so a native cap was never the concern it could be
+        # protecting against; carrying `max_mutants`' number here would have
+        # refused a truthful report with more than 10,000 invalid mutants
+        # outright, on the same mistake `Mutation`'s own ceiling made.
+        if len(self.discarded) > MAX_INGESTED_MUTANTS:
             raise ValueError(
-                f"judgment.r2.discarded must be an integer, got {self.discarded!r}"
+                f"judgment.r2.discarded holds {len(self.discarded)} entries, "
+                f"over the {MAX_INGESTED_MUTANTS:,} document ceiling -- assay "
+                f"reads no more mutants than that from one report, so it can "
+                f"have discarded no more than that either"
             )
-        if not 0 <= self.discarded <= 10_000:
+        signalled = [
+            item.identity for item in self.discarded if item.kill_signal is not None
+        ]
+        if signalled:
             raise ValueError(
-                f"judgment.r2.discarded must be in 0..10,000, got {self.discarded}"
+                f"judgment.r2.discarded entry/entries {signalled} carry a "
+                f"kill_signal, but a kill signal names the mechanism that "
+                f"refused a mutant -- a discarded mutant was never run, so "
+                f"nothing refused it"
             )
         # B050/A-427: byte-identical to `judgment.r1.fail_under`'s own two
         # checks, deliberately -- the same quantity at a different tier, and
@@ -2514,7 +2681,11 @@ class JudgmentR2:
             payload["survived_uncovered"] = [
                 item.to_dict() for item in self.survived_uncovered or ()
             ]
-            payload["discarded"] = self.discarded
+            # B070 (schema v11): a LIST, emitted the way `survived_uncovered`
+            # one line up is -- always present under `ingested`, empty when the
+            # report discarded nothing, which is the positive statement "assay
+            # looked and found none" rather than `None`'s silence.
+            payload["discarded"] = [item.to_dict() for item in self.discarded or ()]
             payload["lines_without_candidates"] = [
                 item.to_dict() for item in self.lines_without_candidates or ()
             ]
@@ -3234,15 +3405,33 @@ class Claim:
                     f"happened"
                 )
         if self.mutation is not None and self.mutation.is_limit_sentinel:
-            if (self.status, self.reason_code) != (
-                Outcome.BUDGET_EXCEEDED,
-                ReasonCode.MUTANT_LIMIT_EXCEEDED,
+            # B070/v11: the sentinel SHAPE now has two producers, and a
+            # `Claim` cannot see which one it came from -- the discriminator
+            # is `judgment.r2.discarded`, one level up. A native
+            # pre-submission refusal is BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED
+            # as it always was; an INGESTED report whose in-scope mutants were
+            # all invalid observes candidates, attempts none, accounts for
+            # every one of them as discarded, and is honestly
+            # INCONCLUSIVE/NO_MUTANTS. Admitting both HERE is not a weakening:
+            # the converse rule immediately below still requires the shape for
+            # MUTANT_LIMIT_EXCEEDED, `Verdict._check_discarded_disposition`
+            # requires the residual to be attributed, and
+            # `assay.mutation.judge_mutation` -- which `assay verify` re-runs
+            # against every document (A-379) -- subtracts the discarded before
+            # choosing between the two, so a native document cannot report the
+            # milder terminal and a wholly discarded ingested one cannot
+            # report the harsher.
+            if (self.status, self.reason_code) not in (
+                (Outcome.BUDGET_EXCEEDED, ReasonCode.MUTANT_LIMIT_EXCEEDED),
+                (Outcome.INCONCLUSIVE, ReasonCode.NO_MUTANTS),
             ):
                 raise ValueError(
-                    f"claim[{self.rigor}]: a pre-submission limit sentinel "
-                    f"(candidate_count "
-                    f"{self.mutation.candidate_count}, zero attempted) is only "
-                    f"legal as BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED, got "
+                    f"claim[{self.rigor}]: a payload recording candidates "
+                    f"({self.mutation.candidate_count}) with zero attempted is "
+                    f"legal only as BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED (a "
+                    f"native pre-submission limit refusal) or as "
+                    f"INCONCLUSIVE/NO_MUTANTS (an ingested report whose "
+                    f"candidates were all discarded), got "
                     f"{self.status.value}/"
                     f"{None if self.reason_code is None else self.reason_code.value}"
                 )
@@ -4202,6 +4391,10 @@ class Verdict:
             self._check_mutation_cardinality(r2_claim.mutation, judgment_r2)
             self._check_equivalence_pairing(r2_claim.mutation, judgment_r2)
             self._check_kill_attribution(r2_claim.mutation, judgment_r2)
+            # (B070 fix round 1) Takes the CLAIM, not just its payload: since
+            # the sentinel-disposition rule moved here it needs the claim's own
+            # `(status, reason_code)` beside the producer.
+            self._check_discarded_disposition(r2_claim, judgment_r2)
 
         r3_claim = next((claim for claim in self.claims if claim.rigor == "R3"), None)
         r3_judged = r3_claim is not None and r3_claim.canary is not None
@@ -4435,6 +4628,158 @@ class Verdict:
                 f"nothing else, so it has no mechanism to name"
             )
 
+    def _check_discarded_disposition(self, claim: Claim, policy: JudgmentR2) -> None:
+        """(B070, schema v11) The FIFTH DISPOSITION, closed across both
+        objects — the check :meth:`Mutation._check_arithmetic` explicitly
+        hands up because a payload cannot see what accounts for its own
+        residual.
+
+        **Fix round 1: it also carries the SENTINEL DISPOSITION**, the rule
+        :meth:`Claim._check_mutation_terminal_correspondence` had to give up.
+        A `Claim` cannot see `producer`, so once a wholly discarded ingested
+        payload started reaching the sentinel BYTES, that rule had to admit
+        two `(status, reason_code)` pairings for one shape. Left there, the
+        model would have accepted a relabelled native limit sentinel AND the
+        exact ingested latent lie B070 says it closed, handing the whole
+        burden to :mod:`assay.verify` — the opposite of this project's
+        two-independent-witnesses discipline. This method is where the
+        narrowing belongs, because it is the one place that sees BOTH the
+        claim's terminal and `judgment.r2`'s producer:
+
+        * under ``producer = "native"``, a sentinel-shaped payload is
+          ``BUDGET_EXCEEDED``/``MUTANT_LIMIT_EXCEEDED`` and nothing else —
+          the v10 rule, restored;
+        * under ``producer = "ingested"`` with ``total == 0`` and every
+          observed candidate accounted for as discarded, the claim is
+          ``INCONCLUSIVE``/``NO_MUTANTS`` and nothing else — assay declined
+          nothing and the lane declared no cap to decline against.
+
+        The same subtraction :func:`assay.mutation.judge_mutation` performs,
+        stated here independently and in the model's own words.
+
+        Three further statements, each a re-derivation rather than a bound.
+        A bound is what DA-R26 rejected (route 3): ``discarded <= total``
+        catches the inflated report and refuses the honest one in the same
+        breath, which is why the field spent v9 and v10 unverified.
+
+        1. **The arithmetic.** ``candidate_count - total`` is the number of
+           candidates observed and never attempted, and under
+           ``producer = "ingested"`` that number IS ``len(discarded)``,
+           exactly. Under ``"native"`` there is no discard concept at all, so
+           the residual must be zero — with the one documented exception of
+           the pre-submission limit sentinel, whose whole evidence is a
+           residual assay declined to attempt (A-163). This is what makes the
+           A-437 reproduction refuse BY NAME: a list inflated past the
+           candidates the payload records no longer agrees with the payload it
+           sits beside.
+        2. **Disjointness.** A discarded mutant was never run, so its identity
+           may not also appear in any of the five buckets. Without this the
+           arithmetic alone could be satisfied by listing a killed mutant
+           twice — once as caught, once as invalid.
+        3. **The line rule**, the exact converse of
+           :attr:`lines_without_candidates`' own: the tool DID produce a
+           candidate on a discarded mutant's line, so that line cannot also be
+           recorded as carrying none. (The raw verifier states this one
+           independently, against the payload's own line set.)
+        """
+        mutation = claim.mutation
+        assert mutation is not None  # the caller checks `r2_judged`
+        terminal = (claim.status, claim.reason_code)
+        residual = mutation.candidate_count - mutation.total
+        if policy.discarded is None:
+            # `producer = "native"`: `_check_producer_fork` has already proved
+            # the field is absent, and assay's own engine attempts every
+            # candidate it observes -- except at the limit sentinel, which is
+            # the ONE native shape whose residual is the refusal itself.
+            if residual and not mutation.is_limit_sentinel:
+                raise ValueError(
+                    f"claim[R2].mutation records {mutation.candidate_count} "
+                    f"candidate(s) against {mutation.total} attempted, but "
+                    f"judgment.r2.producer is 'native' -- assay's own engine "
+                    f"attempts every candidate it observes, and the only "
+                    f"native shape with an unattempted residual is the "
+                    f"pre-submission limit sentinel (zero attempted)"
+                )
+            if mutation.is_limit_sentinel and terminal != (
+                Outcome.BUDGET_EXCEEDED,
+                ReasonCode.MUTANT_LIMIT_EXCEEDED,
+            ):
+                raise ValueError(
+                    f"claim[R2] reports {claim.status.value}/"
+                    f"{None if claim.reason_code is None else claim.reason_code.value}"
+                    f" over a payload recording {mutation.candidate_count} "
+                    f"candidate(s) with zero attempted, under producer "
+                    f"'native' -- that is assay's own PRE-SUBMISSION limit "
+                    f"refusal and it is BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED "
+                    f"and nothing else (A-163). The milder INCONCLUSIVE/"
+                    f"NO_MUTANTS pairing exists only for an INGESTED report "
+                    f"whose candidates were all discarded"
+                )
+            return
+        if residual != len(policy.discarded):
+            raise ValueError(
+                f"judgment.r2.discarded lists {len(policy.discarded)} "
+                f"mutant(s), but claim[R2].mutation records "
+                f"{mutation.candidate_count} candidate(s) against "
+                f"{mutation.total} attempted -- a residual of {residual}. "
+                f"Every candidate the ingested report listed was either "
+                f"attempted (and is in one of the five buckets) or discarded "
+                f"(and is listed here), so these two numbers are the same "
+                f"number written twice"
+            )
+        bucketed = {
+            item.identity
+            for name in MUTATION_BUCKETS
+            for item in getattr(mutation, name)
+        }
+        overlapping = sorted(
+            item.identity for item in policy.discarded if item.identity in bucketed
+        )
+        if overlapping:
+            raise ValueError(
+                f"judgment.r2.discarded names mutant(s) {overlapping} that the "
+                f"R2 payload also records in a bucket -- a discarded mutant "
+                f"was never run, so it cannot also have an outcome"
+            )
+        if policy.lines_without_candidates is not None:
+            barren = {item.sort_key for item in policy.lines_without_candidates}
+            contradicted = sorted(
+                {
+                    (item.path, item.lineno)
+                    for item in policy.discarded
+                    if (item.path, item.lineno) in barren
+                }
+            )
+            if contradicted:
+                raise ValueError(
+                    f"judgment.r2.lines_without_candidates names "
+                    f"{contradicted}, but judgment.r2.discarded records a "
+                    f"mutant starting on that exact line -- the tool DID "
+                    f"produce a candidate there, it merely produced an invalid "
+                    f"one"
+                )
+        # The ingested half of the sentinel disposition, last because it reads
+        # a residual the checks above have just proved is the discarded list's
+        # own length. `total == 0` with every observed candidate accounted for
+        # as discarded is a report that ATTEMPTED nothing -- INCONCLUSIVE/
+        # NO_MUTANTS, exactly what `judge_mutation` derives once the discarded
+        # count is subtracted. Reporting it as the native limit refusal is the
+        # latent lie B070 closed at the raw layer; this is the model saying it
+        # too, in its own words, so the two witnesses really are two.
+        if mutation.total == 0 and mutation.candidate_count == len(policy.discarded):
+            if terminal != (Outcome.INCONCLUSIVE, ReasonCode.NO_MUTANTS):
+                raise ValueError(
+                    f"claim[R2] reports {claim.status.value}/"
+                    f"{None if claim.reason_code is None else claim.reason_code.value}"
+                    f" over an INGESTED payload that attempted no mutant and "
+                    f"accounts for all {mutation.candidate_count} of its "
+                    f"candidates as discarded -- an ingested lane declares no "
+                    f"candidate cap (A-360) and assay declined nothing, so the "
+                    f"honest terminal is INCONCLUSIVE/NO_MUTANTS. "
+                    f"BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED would name a "
+                    f"pre-submission refusal that never happened"
+                )
+
     def _check_mutation_cardinality(
         self, mutation: Mutation, policy: JudgmentR2
     ) -> None:
@@ -4457,6 +4802,22 @@ class Verdict:
         """
         if policy.max_mutants is None:
             return
+        # (B070 fix round 1) The NATIVE product ceiling, applied HERE rather
+        # than in `Mutation.__post_init__` -- this method is reached only when
+        # `max_mutants` is present, i.e. only under `producer = "native"`,
+        # which is the only producer a declared cap can be a defence against.
+        # The two checks below already imply it (`candidate_count ==
+        # max_mutants + 1` at the sentinel, `total <= max_mutants` otherwise
+        # with a residual of zero required by
+        # `_check_discarded_disposition`), so this states the bound the
+        # constant is NAMED for rather than leaving it to be re-derived.
+        if mutation.candidate_count > MAX_CANDIDATE_CEILING:
+            raise ValueError(
+                f"claim[R2].mutation records {mutation.candidate_count} "
+                f"candidate(s) under producer 'native', over the product "
+                f"ceiling {MAX_CANDIDATE_CEILING}; discovery stops at "
+                f"max_mutants + 1 and max_mutants is bounded at 10,000"
+            )
         if mutation.is_limit_sentinel:
             expected = policy.max_mutants + 1
             if mutation.candidate_count != expected:

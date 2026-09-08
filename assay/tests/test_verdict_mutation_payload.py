@@ -28,6 +28,7 @@ import dataclasses
 import pytest
 
 from assay.verdict import MAX_CANDIDATE_CEILING, Mutation, MutantOutcome
+from assay.vocabulary import MAX_INGESTED_MUTANTS
 
 #: sha256(b"<=") and sha256(b"or"), hand-computed rather than read back from
 #: the code under test (A-067).
@@ -168,29 +169,102 @@ def test_the_limit_sentinel_records_observation_without_attempt():
         # total must equal the recorded identities
         ({"candidate_count": 2, "total": 3, "killed": (_outcome(),)}, "must equal"),
         ({"candidate_count": 1, "total": 0, "killed": (_outcome(),)}, "must equal"),
-        # neither normal nor sentinel: attempted work with a mismatched count
+        # (B070/v11) fewer candidates than attempted: a mutant that was
+        # attempted was first observed as a candidate, so this direction stays
+        # refused. The OTHER direction -- `candidate_count > total` -- became
+        # legal at v11 and is asserted below rather than here: a candidate can
+        # now be observed and never attempted (the discarded disposition), and
+        # attributing that residual is `Verdict`'s job, not this object's.
         (
-            {"candidate_count": 5, "total": 1, "killed": (_outcome(),)},
-            "either normal",
-        ),
-        # a sentinel may not carry identities
-        (
-            {"candidate_count": 51, "total": 1, "killed": (_outcome(),)},
-            "either normal",
+            {"candidate_count": 0, "total": 1, "killed": (_outcome(),)},
+            "candidate_count is never below total",
         ),
         ({"candidate_count": -1, "total": 0}, "must not be negative"),
         ({"candidate_count": "2", "total": 2}, "must be an integer"),
         ({"candidate_count": True, "total": 1}, "must be an integer"),
         ({"total": -1, "candidate_count": 0}, "must not be negative"),
+        # (B070 fix round 1) The bound `Mutation` alone can state is the
+        # DOCUMENT ceiling, not the native product ceiling: this object cannot
+        # see `judgment.r2.producer`, and `MAX_CANDIDATE_CEILING` defends
+        # against a malicious DECLARED cap that only a native lane has.
+        # `MAX_CANDIDATE_CEILING + 1` is now a legal ingested payload -- see
+        # `test_the_payload_ceiling_is_the_document_bound_not_the_native_one`
+        # below -- and the refusal here is at the document bound.
         (
-            {"candidate_count": MAX_CANDIDATE_CEILING + 1, "total": 0},
-            "product ceiling",
+            {"candidate_count": MAX_INGESTED_MUTANTS + 1, "total": 0},
+            "document ceiling",
         ),
     ],
 )
 def test_a_payload_between_the_two_legal_shapes_is_refused(kwargs: dict, match: str):
     with pytest.raises(ValueError, match=match):
         Mutation(**kwargs)
+
+
+def test_the_payload_ceiling_is_the_document_bound_not_the_native_one():
+    """(B070 fix round 1) The boundary, both sides, at the level the bound
+    lives.
+
+    `MAX_CANDIDATE_CEILING` is `max_mutants + 1` and is documented as a
+    defence against a malicious DECLARED cap — something only a native lane
+    has (A-360). While `candidate_count` was the bucket sum, applying it here
+    was harmless; the moment B070 made it `attempted + discarded`, it started
+    refusing a truthful ingested report for DISCARDING too much, which is the
+    failure DA-R26 rejected route 3 for. The native ceiling now lives one
+    level up, in `Verdict._check_mutation_cardinality`, where the producer is
+    visible.
+    """
+    one = _outcome()
+
+    # The review's own reproduction, scaled: over the NATIVE ceiling, and
+    # legal here because this object cannot know it is not ingested.
+    over_native = Mutation(
+        candidate_count=MAX_CANDIDATE_CEILING + 1, total=1, killed=(one,)
+    )
+    assert over_native.candidate_count == 10_002
+
+    # ACCEPTED exactly at the document bound...
+    at_bound = Mutation(candidate_count=MAX_INGESTED_MUTANTS, total=1, killed=(one,))
+    assert at_bound.candidate_count == 100_000
+
+    # ...and REFUSED one past it. (The parametrised row above asserts the
+    # message; this asserts the boundary is where it is claimed to be.)
+    with pytest.raises(ValueError, match="document ceiling"):
+        Mutation(candidate_count=MAX_INGESTED_MUTANTS + 1, total=1, killed=(one,))
+
+
+def test_a_residual_is_now_LEGAL_in_the_payload_and_attributed_one_level_up():
+    """(B070, schema v11) The rule this method used to enforce, and why it
+    could not survive the fifth disposition.
+
+    Through v10 ``candidate_count != total`` outside the limit sentinel was
+    refused HERE — a rule written when the five buckets were the only
+    dispositions a candidate could have. An ingested report now records the
+    mutants it marked ``CompileError``/``RuntimeError`` on
+    ``judgment.r2.discarded`` instead of dropping them, and those mutants
+    genuinely WERE candidates and genuinely were never attempted, so the
+    honest document has a residual. Refusing it here would make the honest
+    document illegal, which is B070's own diagnosis of why the old
+    ``discarded`` count could never be verified.
+
+    The residual is never left unexplained: ``Verdict.
+    _check_discarded_disposition`` requires it to equal
+    ``len(judgment.r2.discarded)`` under ``producer = "ingested"`` and to be
+    zero outside the limit sentinel under ``"native"``, and ``assay.verify``
+    states the same rule independently at the raw layer. This test asserts
+    only the half this object owns.
+    """
+    payload = Mutation(candidate_count=5, total=1, killed=(_outcome(),))
+
+    assert payload.candidate_count - payload.total == 4
+    assert not payload.is_limit_sentinel, (
+        "a residual beside attempted work is not the pre-submission sentinel; "
+        "the sentinel attempts NOTHING"
+    )
+
+    # And the sentinel's own shape is untouched by the widening.
+    sentinel = Mutation(candidate_count=51, total=0)
+    assert sentinel.is_limit_sentinel
 
 
 @pytest.mark.parametrize("bucket", ["killed", "survived", "crashed", "budget_exceeded"])

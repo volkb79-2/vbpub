@@ -337,7 +337,7 @@ def test_write_lane_refuses_an_unknown_lane_schema_version(tmp_path: Path) -> No
 #: `normalize_artifact` now refuses anything that is not `schema_version: 10`,
 #: so a stale root here would fail loudly rather than silently -- but it would
 #: fail in this consumer instead of in the thing under test.
-P25_V10_EXPECTED_ROOT = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W6" / "expected"
+P25_V11_EXPECTED_ROOT = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "W7" / "expected"
 
 #: (B018/A-327) The harness now REQUIRES a judge identity, because the
 #: qualification it drives runs an installed wheel, which always has one. The
@@ -356,7 +356,7 @@ _A_COMPLETE_JUDGE_IDENTITY = {
 
 def _pass_template_actual() -> tuple[dict, dict[str, object]]:
     template = json.loads(
-        (P25_V10_EXPECTED_ROOT / "p25-pass-v10-template.json").read_text()
+        (P25_V11_EXPECTED_ROOT / "p25-pass-v11-template.json").read_text()
     )
     actual = json.loads(json.dumps(template))
     actual["judge_provenance"] = dict(_A_COMPLETE_JUDGE_IDENTITY)
