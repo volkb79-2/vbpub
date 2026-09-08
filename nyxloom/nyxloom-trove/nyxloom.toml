@@ -184,7 +184,30 @@ http_port = 8942
 #     ntfy_url is NOT set here (P39): the ntfy server is deployment-
 #     authoritative for its own URL via the NTFY_URL env var (set alongside
 #     NTFY_TOKEN in the nyxloomd deployment env).
+#
+# --- CUTOVER to Mattermost (nyxloom-P107, NL-17). ntfy is retired but NOT
+#     deleted: the keys below stay so `backend = "ntfy"` remains a one-word
+#     rollback. Naming a backend makes it the SOLE channel (config.py), so
+#     there is no implicit fallback to guess at any more.
 [notify]
+backend = "mattermost"
+
+# The webhook URL is NOT here, and must never be: it IS the credential.
+# `NYXLOOM_WEBHOOK_URL` wins over any toml value (config.py, same shape as
+# NTFY_URL). ciu's provisioning hook mints the webhook and persists the URL
+# to the stack secret store; export it from there:
+#
+#   export NYXLOOM_WEBHOOK_URL="$(cat nyxloom/mattermost/.ciu/secrets/daemon_webhook_url)"
+#
+# It posts as the `nyxloom-daemon` account (a real, non-admin identity with
+# its own credential) — which is why `mattermost_username` is deliberately
+# NOT set here any more. P106 used the incoming webhook's
+# `override_username` display trick from the `nyxloom-admin` account; a
+# posting identity that only exists as a string on the wire is not an
+# identity, and it meant the daemon posted as a system admin.
+mattermost_channel = "alerts"
+
+# --- ntfy (RETIRED — kept for rollback, see `backend` above) -----------------
 notifications_topic = "notifications"   # any progress update (write-only token)
 feedback_topic = "feedback"             # decisions + escalation Q&A, bidirectional (rw token)
 

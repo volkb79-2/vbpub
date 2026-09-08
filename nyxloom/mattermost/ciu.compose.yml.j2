@@ -35,7 +35,13 @@ services:
     secrets:
       - postgres_password
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      # nyxloom-P107: a ciu HOSTDIR (S6.1/S6.2), not a named volume — the
+      # value is already the ABSOLUTE PHYSICAL host path, which is what makes
+      # it correct under DooD. ciu pre-owns it 70:<DOCKER_GID> 0700 through
+      # the S6.5 root helper, so the image's own root->postgres drop finds a
+      # directory it already owns and no init container is needed. See
+      # `[mattermost.postgres.hostdir]` for the measurements behind that.
+      - {{ mattermost.postgres.hostdir.data }}:/var/lib/postgresql/data
     expose:
       - "{{ mattermost.postgres.port }}"
     networks:
@@ -136,9 +142,29 @@ services:
       MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
       MM_LOGSETTINGS_CONSOLELEVEL: "INFO"
     volumes:
-      - mattermost-config:/mattermost/config
+      # nyxloom-P107 — hostdirs where host visibility PAYS FOR ITSELF, named
+      # volumes where it does not. Reasoning is recorded per line rather than
+      # applied wholesale, because each extra bind is another directory whose
+      # ownership has to be right before the container can start (uid 2000,
+      # no root phase, no shell — see the hostdir tables).
+      #   config: the file an operator actually needs to read and diff.
+      #           ciu owns the dir 2000:<DOCKER_GID> 0770 and Mattermost
+      #           writes config.json 0644 inside it, so the docker group can
+      #           read it from the host without a helper container.
+      - {{ mattermost.app.hostdir.config }}:/mattermost/config
+      #   logs: worth host-visibility for grepping across restarts, and it
+      #         makes the one unbounded-growth surface in this stack visible
+      #         to `du` instead of hidden under /var/lib/docker.
+      - {{ mattermost.app.hostdir.logs }}:/mattermost/logs
+      #   data: file attachments are DISABLED
+      #         (MM_FILESETTINGS_ENABLEFILEATTACHMENTS=false), so this holds
+      #         nothing an operator would open. Named volume.
       - mattermost-data:/mattermost/data
-      - mattermost-logs:/mattermost/logs
+      #   plugins / client-plugins: the plugin framework is off entirely
+      #         (MM_PLUGINSETTINGS_ENABLE=false). These two exist ONLY because
+      #         the image declares VOLUME on both paths — dropping them would
+      #         hand Docker two anonymous volumes per recreate instead. Named
+      #         volumes, deliberately.
       - mattermost-plugins:/mattermost/plugins
       - mattermost-client-plugins:/mattermost/client/plugins
     expose:
@@ -183,15 +209,18 @@ networks:
 {% endif %}
 
 volumes:
-  # Stack-owned named volumes (S6.7(b)): the images initialise ownership
-  # themselves (postgres uid 999, Mattermost uid 2000), which a bind mount
-  # under DooD cannot do without a root helper. `ciu down` PRESERVES them;
-  # `ciu up --reset` and `ciu clean` DELETE them (S6.4) — see the README's
-  # backup note before running either.
-  postgres-data:
-  mattermost-config:
+  # What is left after nyxloom-P107 moved postgres-data / mattermost-config /
+  # mattermost-logs to ciu hostdirs. These three stay named volumes (S6.7(b))
+  # for the reasons recorded beside their mounts above: nothing in them is
+  # worth reading from the host. `ciu down` PRESERVES them; `ciu up --reset`
+  # and `ciu clean` DELETE them (S6.4) — the same verbs that now also wipe the
+  # `vol-*` hostdirs, so one command still means one consistent state.
+  #
+  # The P106 note here said "postgres uid 999" — wrong for `postgres:16-alpine`,
+  # whose postgres account is uid 70; 999 is the Debian-based image. Corrected
+  # rather than deleted, because the claim it supported (that a named volume
+  # avoids the ownership problem) is still true for the three below.
   mattermost-data:
-  mattermost-logs:
   mattermost-plugins:
   mattermost-client-plugins:
 

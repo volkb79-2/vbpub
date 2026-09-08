@@ -25,15 +25,43 @@
 # nyxloom-prod-mattermost) so the two cannot silently collide — stop the ciu
 # stack first.
 #
-# The VOLUMES diverge with them, and that one is easy to miss: compose scopes
-# named volumes by project, so this path uses nyxloom-mattermost_* while the
-# ciu path uses nyxloom-prod-mattermost_*. Starting here does NOT read the
-# ciu stack's data — you get an EMPTY database, a fresh Postgres init, no
-# accounts, no channels and no incoming webhook, while the real data sits
-# untouched in the other volume set. This is a fallback for bringing the
-# stack up at all, not a second door into the same instance. To actually
-# reuse the ciu stack's data, pass `-p nyxloom-prod-mattermost` (and expect
-# the container names above to collide with it, so stop it first).
+# STORAGE — READ THIS, it CHANGED in nyxloom-P107. The three bind mounts
+# below (vol-postgres-data / vol-mattermost-config / vol-mattermost-logs) are
+# absolute host paths, so THIS PATH AND THE CIU PATH NOW SHARE THEM. The
+# pre-P106 warning that starting here gives you "an EMPTY database in a
+# separate volume set" is no longer true for those three, and relying on it
+# would be dangerous rather than merely wrong. "Stop the ciu stack first" is
+# now a HARD requirement, not tidiness. (Postgres's own postmaster.pid
+# refuses a second postmaster on one PGDATA, which is a backstop, not a
+# licence to try.)
+#
+# The remaining three named volumes (mattermost-data / -plugins /
+# -client-plugins) DO still diverge by compose project — nyxloom-mattermost_*
+# here vs nyxloom-prod-mattermost_* under ciu. All three are empty in practice
+# (attachments and the plugin framework are both disabled), so the divergence
+# is inert; it is recorded rather than fixed because giving a fallback path
+# its own copy of nothing is harmless.
+#
+# HOSTDIR OWNERSHIP IS NOT AUTOMATIC HERE. Under ciu, S6.5 pre-owns those
+# three directories with a root helper container. Plain compose has no such
+# step, and the Mattermost image cannot fix it up itself (its default user IS
+# uid 2000 — no root phase, no /bin/sh), so a from-scratch run on this path
+# fails with `could not create config file: ... permission denied`. Create
+# them first:
+#
+#   P=/home/vb/volkb79-2/vbpub/nyxloom/mattermost
+#   docker run --rm -v "$P":/t alpine:3.20 sh -c '
+#     mkdir -p /t/vol-postgres-data /t/vol-mattermost-config /t/vol-mattermost-logs
+#     chown 70:994   /t/vol-postgres-data     && chmod 0700 /t/vol-postgres-data
+#     chown 2000:994 /t/vol-mattermost-config && chmod 0770 /t/vol-mattermost-config
+#     chown 2000:994 /t/vol-mattermost-logs   && chmod 0770 /t/vol-mattermost-logs'
+#
+# (994 is DOCKER_GID on this host; uid 70 is postgres in the ALPINE image —
+# not 999, which is the Debian one.)
+#
+# There is also NO PROVISIONING on this path: the team/channels/accounts/
+# webhooks come from ciu's post_compose hook (hooks/post_compose_provision.py),
+# which plain compose never runs.
 
 services:
   postgres:
@@ -65,7 +93,8 @@ services:
     secrets:
       - postgres_password
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      # nyxloom-P107: bind mount, SHARED with the ciu path (see header).
+      - /home/vb/volkb79-2/vbpub/nyxloom/mattermost/vol-postgres-data:/var/lib/postgresql/data
     expose:
       - "5432"
     networks:
@@ -137,9 +166,11 @@ services:
       MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
       MM_LOGSETTINGS_CONSOLELEVEL: "INFO"
     volumes:
-      - mattermost-config:/mattermost/config
+      # nyxloom-P107: config + logs are bind mounts, SHARED with the ciu
+      # path (see header); data stays a project-scoped named volume.
+      - /home/vb/volkb79-2/vbpub/nyxloom/mattermost/vol-mattermost-config:/mattermost/config
+      - /home/vb/volkb79-2/vbpub/nyxloom/mattermost/vol-mattermost-logs:/mattermost/logs
       - mattermost-data:/mattermost/data
-      - mattermost-logs:/mattermost/logs
       - mattermost-plugins:/mattermost/plugins
       - mattermost-client-plugins:/mattermost/client/plugins
     expose:
@@ -163,10 +194,9 @@ networks:
     driver: bridge
 
 volumes:
-  postgres-data:
-  mattermost-config:
+  # nyxloom-P107: postgres-data / mattermost-config / mattermost-logs are
+  # bind mounts now (header). These three carry nothing an operator reads.
   mattermost-data:
-  mattermost-logs:
   mattermost-plugins:
   mattermost-client-plugins:
 
