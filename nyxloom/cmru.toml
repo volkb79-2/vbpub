@@ -17,7 +17,11 @@ id = "nyxloom"
 description = "Files-first daemon-supervised development control plane."
 template_revision = 4
 prefix = "nyxloom-v"
-artifacts = ["wheel", "oci-image"]
+# OCI image publishing deliberately deferred (see nyxloom-CMRU-ADOPTION-CODE-REVIEW.md
+# findings on build-push.py: uncapped buildx builder + an unsafe irreversible-GitHub-
+# Release-before-image-push ordering, NL-15) until nyxloomd has a real deployment
+# need -- nyxloom is currently offline, no forcing function to publish images for it yet.
+artifacts = ["wheel"]
 scm_dist = "nyxloom"
 
 [project.version]
@@ -45,12 +49,14 @@ commands = [
 quiet = true
 commands = [
   { label = "nyxloom: build wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-build", "--cwd", "."], cwd = "." },
-  { label = "nyxloom: build OCI images", argv = ["python3", "build-push.py", "--build"], cwd = "." },
+  # OCI image build/push (build-push.py) deliberately NOT invoked here -- see
+  # [project] artifacts comment above. Re-enable only after fixing the
+  # uncapped buildx builder and the push-ordering finding (NL-15), and only
+  # once nyxloomd has a real consumer (nyxloom is currently offline).
 ]
 
 [steps.push]
 quiet = true
 commands = [
   { label = "nyxloom: publish wheel", argv = ["python3", "-m", "cmru.handlers", "wheel-publish", "--prefix", "nyxloom", "--cwd", ".", "--notes-env", "NYXLOOM_RELEASE_NOTES"], cwd = "." },
-  { label = "nyxloom: push OCI images", argv = ["python3", "build-push.py", "--push"], cwd = "." },
 ]
