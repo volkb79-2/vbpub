@@ -66,10 +66,19 @@ def read(raw: bytes) -> ReportSummary:
         document = json.loads(raw.decode("utf-8"))
     except UnicodeDecodeError as exc:
         raise ReportUnusable(f"{FORMAT} report is not valid UTF-8: {exc}") from exc
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, RecursionError) as exc:
+        # `RecursionError` belongs in the SAME clause (the estate-wide rule
+        # `tests/test_untrusted_json_parse_sweep.py` enforces): a deeply
+        # nested document blows CPython's stack inside the decoder, and this
+        # is an untrusted third-party artifact. Here it is not merely a
+        # crash-vs-refusal question -- an uncaught `RecursionError` would
+        # escape R0's own terminal mapping entirely, turning a hostile report
+        # into an unhandled exception where every other malformed shape is a
+        # quiet fallback to A-073.
         raise ReportUnusable(
-            f"{FORMAT} report is not well-formed JSON (a truncated or "
-            f"partially-written report lands here): {exc}"
+            f"{FORMAT} report is not well-formed JSON (a truncated, "
+            f"partially-written or pathologically nested report lands here): "
+            f"{exc}"
         ) from exc
     if not isinstance(document, dict):
         raise ReportUnusable(

@@ -99,7 +99,19 @@ DECLARED_LANE_ARGV = [
 #: really does lie -- the realistic shape of a "universal PASS" bug, and the
 #: one `assay verify`'s own internal-consistency-only contract structurally
 #: cannot catch.
-_MUTATION_OLD = "        outcome=Outcome.FAIL,\n        reason_code=ReasonCode.COMMAND_FAILED,\n"
+#:
+#: (B078) The target text moved with the code, not the meaning. R0's non-PASS
+#: terminal is now built from one conditional pair -- the same branch, the
+#: same two fields, the same "a real non-zero exit reports an unconditional
+#: PASS" mutation -- because the structured-report tiebreak made
+#: `Outcome.PASS` reachable from this constructor for a legitimate reason
+#: (a verified-complete, zero-failure report over a non-zero exit). Collapsing
+#: the conditional to its PASS arm is exactly the universal-PASS bug the
+#: original text described, and is still a unique, one-line-surgical edit.
+_MUTATION_OLD = (
+    "        outcome=Outcome.PASS if passed else Outcome.FAIL,\n"
+    "        reason_code=None if passed else ReasonCode.COMMAND_FAILED,\n"
+)
 _MUTATION_NEW = "        outcome=Outcome.PASS,\n        reason_code=None,\n"
 
 

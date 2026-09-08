@@ -1232,14 +1232,18 @@ def _execute_plan_inner(
     # requested"), and `Claim.detail` deliberately is NOT used here -- that
     # field is forbidden on a PASS claim, which is precisely the direction
     # worth annotating, so an asymmetric FAIL-only note would be noise.
+    # The reason code stays A-073's own, unchanged in MEANING (B078 changes
+    # WHEN `COMMAND_FAILED` fires, never what it means) -- no new `ReasonCode`
+    # member, so the closed vocabulary A-050 guards is untouched. The two
+    # fields below are also `tests/test_self_hosting.py`'s pinned mutation
+    # target (A-131), which is why they sit adjacent with no comment between
+    # them: that test collapses this conditional pair to its PASS arm to prove
+    # `assay verify` alone cannot catch a universal-PASS producer bug.
     stdout_tail, stdout_dropped_bytes = _bounded_tail(proc.stdout)
     stderr_tail, stderr_dropped_bytes = _bounded_tail(proc.stderr)
     return CommandResult(
         plan=plan,
         outcome=Outcome.PASS if passed else Outcome.FAIL,
-        # A-073's own reason code, unchanged in MEANING (B078 changes when it
-        # fires, never what it means) -- and no new `ReasonCode` member, so
-        # the closed vocabulary A-050 guards is untouched.
         reason_code=None if passed else ReasonCode.COMMAND_FAILED,
         returncode=proc.returncode,
         stdout_tail=stdout_tail,

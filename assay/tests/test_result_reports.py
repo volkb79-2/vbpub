@@ -129,6 +129,21 @@ def test_the_reader_refuses_every_unusable_document(raw: bytes, expected: str):
     assert expected in str(caught.value)
 
 
+def test_a_pathologically_nested_document_refuses_instead_of_crashing():
+    """The untrusted-JSON rule this codebase sweeps for
+    (``tests/test_untrusted_json_parse_sweep.py``): a report is a third-party
+    artifact, and a deeply nested one blows CPython's stack inside the
+    decoder. An uncaught ``RecursionError`` would escape R0's terminal mapping
+    entirely, where every other malformed shape is a quiet fallback to
+    A-073."""
+    hostile = (b"[" * 200_000) + (b"]" * 200_000)
+
+    with pytest.raises(ReportUnusable) as caught:
+        read(hostile)
+
+    assert "well-formed JSON" in str(caught.value)
+
+
 # --- the registry composition point -----------------------------------------
 
 
