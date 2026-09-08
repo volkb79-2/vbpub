@@ -56,7 +56,7 @@ memory_swap = "16g"
 [lanes.mutation]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/cmru && BASE=$(git describe --tags --abbrev=0 --match 'cmru-v*' 2>/dev/null || echo origin/main) && if git diff --quiet \"$BASE\"..HEAD -- src; then echo \"mutation: no changed source since $BASE — nothing to mutate, skipping\"; exit 0; fi && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-zipapp tools/assay/assay-5.2.0.pyz --repo-root {worktree} --project-root . --base \"$BASE\" --max-mutants 10000 --evidence .assay/mutation-cmru.json --require-candidates -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
+argv = ["bash", "-c", "cd {worktree}/cmru && BASE=$(git describe --tags --abbrev=0 --match 'cmru-v*' 2>/dev/null || echo origin/main) && if git diff --quiet \"$BASE\"..HEAD -- src; then echo \"mutation: no changed source since $BASE — nothing to mutate, skipping\"; mkdir -p .assay; printf '{\"status\": \"skipped\", \"reason\": \"no-changed-source\", \"base\": \"%s\"}\\n' \"$BASE\" > .assay/mutation-cmru.json; exit 0; fi && mkdir -p .assay && exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-zipapp tools/assay/assay-5.2.0.pyz --repo-root {worktree} --project-root . --base \"$BASE\" --max-mutants 10000 --evidence .assay/mutation-cmru.json --require-candidates -- /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json"]
 budget = "4h"
 artifacts = [".assay/mutation-cmru.json"]
 
@@ -75,6 +75,30 @@ artifacts = [".assay/coverage-canary-cmru.json"]
 memory = "1g"
 memory_swap = "16g"
 
+# KI-25: get.py enroll's security-critical container oracles (O2/O3) -- real
+# user creation, authorized_keys writes, file permissions/ownership, a
+# fingerprint cross-check against a REAL sshd -- spin up their own
+# disposable docker containers from inside the test process itself
+# (tests/test_installer.py TestEnrollAgainstRealSystem / _enroll_container).
+# tester-unified has no docker-socket mount (the same RG-43-class gap
+# already fixed elsewhere for other docker-launching lanes), so this runs
+# bare-host, same reasoning as [lanes.gate] below: real docker access, on
+# this invoking shell's own python/pytest -- no /opt/tester-venv/ path
+# here, that venv exists only inside the tester-unified image. The fixture
+# chain self-skips (not errors) when docker or CGROUP_PARENT_DEV_BACKGROUND
+# are genuinely unavailable (_docker_unavailable_reason); on the real
+# bare-host gate environment both are present, so this lane actually
+# EXERCISES O2/O3 instead of skipping past them -- closing the gap the
+# other, tester-unified-scoped sub-lanes above could never close on their
+# own. No [lanes.enroll.resources]: the containers this spawns are
+# self-capped by the test fixture itself (--cgroup-parent/--cpus/--memory),
+# the same reason [lanes.gate] itself declares none.
+[lanes.enroll]
+kind = "command"
+environment = "bare-host"
+argv = ["bash", "-c", "cd {worktree}/cmru && exec python3 -m pytest tests/test_installer.py -k TestEnrollAgainstRealSystem -q"]
+budget = "20m"
+
 # The implementation/release gate: every consumer (cmru release steps, agents,
 # humans) runs THIS lane; none duplicates the sub-lane sequence. Bare-host,
 # not "host" (run-gate RG-43 estate-wide sweep, 2026-09-03): as of rev 36,
@@ -90,6 +114,6 @@ memory_swap = "16g"
 [lanes.gate]
 kind = "command"
 environment = "bare-host"
-argv = ["bash", "-c", "cd {worktree}/cmru && ./run-gate.py --worktree {worktree} assay && ./run-gate.py --worktree {worktree} coverage && ./run-gate.py --worktree {worktree} mutation && ./run-gate.py --worktree {worktree} canary"]
+argv = ["bash", "-c", "cd {worktree}/cmru && ./run-gate.py --worktree {worktree} assay && ./run-gate.py --worktree {worktree} coverage && ./run-gate.py --worktree {worktree} mutation && ./run-gate.py --worktree {worktree} canary && ./run-gate.py --worktree {worktree} enroll"]
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
 budget = "5h"

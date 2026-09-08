@@ -680,10 +680,14 @@ release had to run through the source engine. The clean resolution is to bootstr
 wheel first — `cmru/build-initial-standalone.sh` builds it without a pre-installed cmru — then
 `pip install` it so the installed command matches the source before running `cmru.release.sh`.
 
-### KI-19 — the mutation lane's skip path emits no evidence artifact — *open*
-**Status:** open (filed 2026-08-22, adversarial review of the run-gate
-adoption wave `vbpub@4c6eb2b6..91959b3a`; finding 4 of the correctness
-review).
+### KI-19 — the mutation lane's skip path emits no evidence artifact — *FIXED 2026-09-08*
+**Status:** FIXED 2026-09-08 (filed 2026-08-22, adversarial review of the
+run-gate adoption wave `vbpub@4c6eb2b6..91959b3a`; finding 4 of the
+correctness review). The skip path now writes `.assay/mutation-cmru.json`
+with `{"status": "skipped", "reason": "no-changed-source", "base": "<ref>"}`
+before exiting 0 (the proposed contract, as-is), verified in isolation
+(the real lane could not be exercised without exercising the full mutation
+campaign, since this same session's other changes touch `src/`).
 **Mechanism.** Since KI-18's fix moved into `cmru/run-gate.toml`
 `[lanes.mutation]`, the lane short-circuits when the source diff against the
 resolved base tag is empty:
@@ -736,9 +740,16 @@ itself as evidence via `--evidence`.
 - Non-skip run → real campaign payload, unchanged shape.
 - Controlled wrong implementation: today's bare `exit 0` fails oracle 1.
 
-### KI-20 — `status`/`release`'s "ahead of origin" check reads the shared local `main` ref, with no way to target a different one — *open*
-**Status:** open (filed 2026-08-25, live-hit operating vbpub's own shared
+### KI-20 — `status`/`release`'s "ahead of origin" check reads the shared local `main` ref, with no way to target a different one — *FIXED 2026-09-08*
+**Status:** FIXED (filed 2026-08-25, live-hit operating vbpub's own shared
 `.git` from the controller session running the ciu-P30/P31/P32 release).
+`status`/`release` accept `--ref REF` (default `HEAD`/`main` respectively,
+preserving today's exact behavior when omitted): `release` threads it into
+`assert_local_main_not_ahead`'s comparison, `status` threads it into
+`detect_changed_projects`' changed-since-last-tag preview via a new
+`end_ref` parameter on `_git_log`. The release snapshot commit itself was
+already `origin/main` unconditionally (`fetch_origin_main`), never the
+local `main` ref, so it needed no change.
 
 **Mechanism.** `cmru status --project ciu` / `cmru release --project ciu`
 silently compute their diff-since-last-tag and ahead-of-origin refusal
@@ -793,11 +804,16 @@ cannot express today.
   target project's path → the refusal still fires, now against the
   caller-named target instead of the implicit local `main`.
 
-### KI-21 — `cmru worktrees` crashes on a retained release worktree whose branch has no `/`
+### KI-21 — `cmru worktrees` crashes on a retained release worktree whose branch has no `/` — *FIXED 2026-09-08*
 
-**Status:** open (filed 2026-08-31, live-hit operating vbpub's own shared `.git` from the
+**Status:** FIXED (filed 2026-08-31, live-hit operating vbpub's own shared `.git` from the
 controller session running the ciu+run-gate backlog wave, while recovering a run-gate-project
 release from a build-step failure — see KI-22, filed alongside this from the same incident).
+New `transaction.workspace_purpose()` recognizes both naming schemes (flat
+`cmru-<purpose>-...`, no `/` at all, and legacy nested `cmru/<purpose>/...`)
+without index-splitting; an unrecognized legacy-nested branch still extracts
+its middle segment (old behavior, preserved), an unrecognized flat branch
+falls back to the raw name instead of raising.
 
 **Mechanism.** `cmru worktrees` and `cmru worktrees --json` both crash:
 
@@ -870,9 +886,9 @@ against the SAME tag (fix a), or (b) refuses/re-prepares rather than silently re
 "Unchanged, skipping" (fix b) — never the latter with no operator-visible signal that nothing
 was ever actually published for that tag.
 
-### KI-23 — a hand-authored pre-release CHANGES.md draft (`## [X.Y.Z] - UNRELEASED`) is silently duplicated, never folded, by `generate_release_changelog`
+### KI-23 — a hand-authored pre-release CHANGES.md draft (`## [X.Y.Z] - UNRELEASED`) is silently duplicated, never folded, by `generate_release_changelog` — *FIXED 2026-09-08 (minimal fix a)*
 
-**Status:** open (filed 2026-09-02, from `vbpub`'s own `ciu` project — 6 recurrences found and hand-fixed this session; no consumer repo involved, this is CMRU misbehaving against its own estate sibling).
+**Status:** FIXED via proposed fix (a) (filed 2026-09-02, from `vbpub`'s own `ciu` project — 6 recurrences found and hand-fixed this session; no consumer repo involved, this is CMRU misbehaving against its own estate sibling). `generate_release_changelog` now raises the same `RuntimeError` class as the existing dated-collision guard when `CHANGES.md` already has a hand-authored `## [<pending-version>] - UNRELEASED` section, refusing the release until it is folded by hand. Fix (b) (auto-splice + rename the heading) remains undone -- deliberately the smaller, existing-precedent-matching fix, per the entry's own recommendation.
 
 **Mechanism.** `generate_release_changelog` (`src/cmru/changelog.py:215-284`) inserts its
 freshly-generated `## [<heading>] - <date>` section immediately after the
@@ -1057,9 +1073,14 @@ CIU-HOST-ENROLLMENT-PROPOSAL.md` rev 2 (the full design), dstdns D-097/D-358
 (origin). The self-hosted *wheel* download backend D-097 wished for stays a
 separate, optional item (ciu proposal §4.10 item 27) — not required here.
 
-### KI-25 — `get.py enroll`'s security-critical container oracles (O2/O3) are structurally invisible to the automated gate
+### KI-25 — `get.py enroll`'s security-critical container oracles (O2/O3) are structurally invisible to the automated gate — *FIXED 2026-09-08*
 
-**Status:** open (filed 2026-09-08 by KI-24's own adversarial reviewer).
+**Status:** FIXED (filed 2026-09-08 by KI-24's own adversarial reviewer). A
+new bare-host `[lanes.enroll]` runs `TestEnrollAgainstRealSystem` directly
+(real docker access, no `/opt/tester-venv/` -- that venv exists only inside
+the tester-unified image) and is now part of `[lanes.gate]`'s own
+conjunction. Verified live: all 8 O2/O3 tests pass for real against live
+docker containers, no leftovers.
 
 KI-24 shipped `enroll` — a subcommand that creates a real Linux user,
 writes to `authorized_keys`, and sets file permissions. Its behavioral

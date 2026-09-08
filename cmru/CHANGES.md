@@ -21,6 +21,43 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   actually appear after a successful build still raises -- that stays a real
   build defect, not a config gap.
 
+### Fixed
+- KI-21: `cmru worktrees` no longer crashes (`IndexError`) on a retained
+  flat `cmru-release-<ts>-<project>-<hash>` / `cmru-build-...` worktree,
+  which has zero `/` characters -- the exact shape every current transaction
+  creates. A naive `branch.split("/", 2)[1]` assumed the old nested
+  `cmru/<purpose>/...` scheme; the new `transaction.workspace_purpose()`
+  recognizes both.
+- KI-19: `run-gate.toml`'s `[lanes.mutation]` skip path (no changed `src/`
+  since the last tag) now writes `.assay/mutation-cmru.json` with a closed
+  `{"status": "skipped", "reason": "no-changed-source", "base": "<ref>"}`
+  shape before exiting 0, instead of leaving the declared evidence file
+  entirely absent -- absence used to be indistinguishable from "never ran".
+- KI-23: `generate_release_changelog` now refuses to release (same
+  `RuntimeError` class as the existing dated-collision guard) when
+  `CHANGES.md` already has a hand-authored `## [<pending-version>] -
+  UNRELEASED` section -- the estate's own documented pre-release-draft
+  convention, which the collision guard's `_HEADING_RE` (dated headings
+  only) never matched, letting it silently duplicate into two un-merged
+  headers instead of blocking. Recurred on 6 consecutive `ciu` releases
+  before this fix.
+- KI-20: `status`/`release` accept `--ref REF` to evaluate against something
+  other than the local `main` branch -- in a repo with many worktrees,
+  `refs/heads/main` is one object-store-wide ref, unrelated to which
+  worktree/commit the invoking checkout actually has checked out. `release`
+  uses it for the ahead-of-origin refusal (`assert_local_main_not_ahead`);
+  `status` uses it for the changed-since-last-tag preview. Defaults preserve
+  today's exact behavior (`main` for release, `HEAD` for status) when
+  omitted.
+- KI-25: `get.py enroll`'s security-critical container oracles (O2/O3 --
+  real user creation, `authorized_keys` writes, file permissions, a
+  fingerprint cross-check against a real `sshd`) now run inside `./run-gate.py
+  gate`'s own conjunction via a new bare-host `[lanes.enroll]`, instead of
+  silently skipping in `tester-unified` (no docker-socket mount) -- the one
+  place whose PASS is actually trusted as "the gate said so." Verified: all 8
+  `TestEnrollAgainstRealSystem` tests pass for real against live docker
+  containers.
+
 ## [5.1.0] - 2026-09-08
 <!-- cmru: generated -->
 <!-- cmru: source-end=34d0717ae7f4039111b8aade8f132f16ea2a5a53 -->

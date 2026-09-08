@@ -28,6 +28,12 @@ _HISTORY_MARKER = "<!-- cmru: release history -->"
 _GENERATED_MARKER = "<!-- cmru: generated -->"
 _SOURCE_END_MARKER_RE = re.compile(r"<!-- cmru: source-end=([0-9a-f]{40}) -->")
 _HEADING_RE = re.compile(r"^## \[([^\]]+)\] - \d{4}-\d{2}-\d{2}$", re.MULTILINE)
+# KI-23: a hand-authored pre-release draft is conventionally headed
+# `## [X.Y.Z] - UNRELEASED` (renamed to a dated heading and folded at release
+# time). _HEADING_RE never matches it (UNRELEASED is not a date), so it was
+# invisible to the collision guard below and got silently duplicated instead
+# of blocking the release -- recurred on six consecutive ciu releases.
+_UNRELEASED_HEADING_RE = re.compile(r"^## \[([^\]]+)\] - UNRELEASED$", re.MULTILINE)
 _CONVENTIONAL_TYPE_RE = re.compile(r"^([a-z]+)(?:\([^)]+\))?!?:", re.IGNORECASE)
 
 
@@ -247,6 +253,13 @@ def generate_release_changelog(
     if version is None and not groups and not _generated_outputs_changed(repo_root, project):
         return False
     heading = version if version is not None else f"source-{source_end[:12]}"
+    if heading in set(_UNRELEASED_HEADING_RE.findall(existing)):
+        raise RuntimeError(
+            f"{project.name}: {path} already has a hand-authored [{heading}] - UNRELEASED "
+            "section (KI-23); CMRU refuses to create a second, un-merged heading for the "
+            "same version -- fold it into the generated section by hand first, then rename "
+            "its heading to match (or remove it)"
+        )
     existing_versions = set(_HEADING_RE.findall(existing))
     if heading in existing_versions:
         expected = f"## [{heading}]"

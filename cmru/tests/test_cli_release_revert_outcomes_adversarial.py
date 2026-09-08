@@ -30,7 +30,7 @@ def test_release_failure_reports_distinct_revert_outcome(monkeypatch, tmp_path, 
     monkeypatch.setattr(cli.transaction, "release_lock", lambda _: nullcontext())
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *args: {})
     monkeypatch.setattr(cli.transaction, "fetch_origin_main", lambda *_: "a" * 40)
-    monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_: 0)
+    monkeypatch.setattr(cli.transaction, "assert_local_main_not_ahead", lambda *_, **__: 0)
     monkeypatch.setattr(cli.transaction, "create_workspace", lambda *args, **kwargs: workspace)
     monkeypatch.setattr(cli.transaction, "copy_secret_overlays", lambda *args: None)
     monkeypatch.setattr(cli.transaction, "run_child", lambda *args, **kwargs: 1)

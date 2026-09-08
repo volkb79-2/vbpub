@@ -59,10 +59,16 @@ _RELEASE_CONTROL_EXCLUDES = (
 )
 
 
-def _git_log(repo_root: Path, since_ref: str, *paths: str) -> List[str]:
-    """Commit messages reachable from HEAD but not from since_ref, touching paths
-    (release-control files excluded)."""
-    cmd = ["git", "log", f"{since_ref}..HEAD", "--format=%s"]
+def _git_log(repo_root: Path, since_ref: str, *paths: str, end_ref: str = "HEAD") -> List[str]:
+    """Commit messages reachable from ``end_ref`` but not from ``since_ref``,
+    touching paths (release-control files excluded).
+
+    KI-20: ``end_ref`` defaults to ``"HEAD"`` -- today's behavior, and already
+    worktree-correct (each worktree's own HEAD, not the shared local ``main``
+    ref). Override it (e.g. ``"origin/main"``) to preview as if the invoking
+    checkout's HEAD were somewhere else, without needing to actually update it.
+    """
+    cmd = ["git", "log", f"{since_ref}..{end_ref}", "--format=%s"]
     if paths:
         cmd += ["--"] + list(paths) + list(_RELEASE_CONTROL_EXCLUDES)
     result = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True)
@@ -497,6 +503,7 @@ def detect_changed_projects(
     require_pushed_baseline: bool = False,
     check_tag_at_head: bool = False,
     allow_tag_ahead_of_head: bool = False,
+    end_ref: str = "HEAD",
 ) -> List[Tuple[str, Any, Optional[str], str]]:
     """Return [(name, config, last_tag_or_None, bump)] for projects with changes.
 
@@ -531,6 +538,12 @@ def detect_changed_projects(
     folds back into today's plain silent skip -- ``allow_tag_ahead_of_head``
     is meaningless without it, and callers that want the old silent preview
     (``cmru status``, ``cmru changelog``) are unaffected.
+
+    ``end_ref`` (KI-20) defaults to ``"HEAD"`` -- today's behavior, already
+    worktree-correct. ``cmru status --ref origin/main`` passes
+    ``end_ref="origin/main"`` to preview as if the invoking checkout's HEAD
+    were origin/main's tip, without requiring the checkout to actually be
+    there.
     """
     changed = []
     for name, proj in projects.items():
@@ -538,7 +551,7 @@ def detect_changed_projects(
         paths = getattr(proj, "paths", None) or [getattr(proj, "cwd", None) or name]
         last_tag = _latest_tag_for_prefix(repo_root, prefix, require_pushed=require_pushed_baseline)
         if last_tag:
-            messages = _git_log(repo_root, last_tag, *paths)
+            messages = _git_log(repo_root, last_tag, *paths, end_ref=end_ref)
             if not messages:
                 if check_tag_at_head:
                     relationship = _tag_head_relationship(repo_root, last_tag)
@@ -582,9 +595,15 @@ def status_cmd(
     minor: bool = False,
     major: bool = False,
     set_version: Optional[str] = None,
+    ref: str = "HEAD",
 ) -> None:
-    """Print a table of changed projects and their proposed next versions (S12.7 status)."""
-    changed = detect_changed_projects(repo_root, projects)
+    """Print a table of changed projects and their proposed next versions (S12.7 status).
+
+    ``ref`` (KI-20) defaults to ``"HEAD"`` -- today's behavior. Pass e.g.
+    ``"origin/main"`` to preview against something other than this
+    invocation's own checkout state.
+    """
+    changed = detect_changed_projects(repo_root, projects, end_ref=ref)
     if not changed:
         print("[INFO] No projects with changes since last release.")
         return

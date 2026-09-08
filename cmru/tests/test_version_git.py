@@ -196,6 +196,23 @@ class TestDetectChangedProjects(unittest.TestCase):
             changed = detect_changed_projects(repo, projects)
             self.assertIn("ciu", [n for n, *_ in changed])
 
+    def test_end_ref_overrides_head_ki20(self):
+        """KI-20: end_ref lets a caller preview against something other than
+        this checkout's own HEAD -- here, a branch a detached checkout has
+        left behind."""
+        with _TempRepo() as repo:
+            branch = _git("rev-parse", "--abbrev-ref", "HEAD", cwd=repo)
+            _commit(repo, "feat: initial ciu", {"ciu/main.py": "# ciu"})
+            _tag(repo, "ciu-v0.1.0")
+            _commit(repo, "fix: patch something", {"ciu/main.py": "# patched"})
+            _git("checkout", "--detach", "HEAD~1", cwd=repo)  # HEAD is now back at the tag
+            projects = {"ciu": _ProjCfg("ciu-v", "ciu", paths=["ciu"])}
+            # Default (HEAD): the detached checkout has no new commits.
+            self.assertEqual(detect_changed_projects(repo, projects), [])
+            # end_ref=<branch>: the branch left behind still has the fix commit.
+            changed = detect_changed_projects(repo, projects, end_ref=branch)
+            self.assertIn("ciu", [n for n, *_ in changed])
+
     def test_bump_conventional_feat(self):
         with _TempRepo() as repo:
             _commit(repo, "chore: init pkg", {"pkg/init.py": ""})

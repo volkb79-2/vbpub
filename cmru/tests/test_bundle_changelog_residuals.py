@@ -53,3 +53,43 @@ def test_changelog_rejects_hand_authored_duplicate_generated_heading(tmp_path, m
     monkeypatch.setattr(changelog, "_subject_groups", lambda *a, **k: {"Fixed": ["fix: issue"]})
     with pytest.raises(RuntimeError, match="hand-authored"):
         changelog.generate_release_changelog(tmp_path, project)
+
+
+def test_changelog_rejects_hand_authored_unreleased_heading_for_the_pending_version(tmp_path, monkeypatch):
+    # KI-23: `## [X.Y.Z] - UNRELEASED` is the estate's own documented
+    # pre-release-draft convention -- _HEADING_RE (dated only) never matched
+    # it, so this collision went undetected and silently duplicated instead
+    # of raising, on six consecutive real releases before this fix.
+    project_root = tmp_path / "demo"; project_root.mkdir()
+    path = project_root / "CHANGES.md"
+    original = (
+        "# Changelog\n\n<!-- cmru: release history -->\n"
+        "## [1.0.1] - UNRELEASED\n\n"
+        "### Added\n- hand-authored prose describing the change in detail\n"
+    )
+    path.write_text(original, encoding="utf-8")
+    project = SimpleNamespace(name="demo", cwd="demo", paths=["demo"], prefix="demo-v", git_tag=True, changelog="CHANGES.md", version=SimpleNamespace(strategy="scm"))
+    monkeypatch.setattr(changelog, "_project_release_plan", lambda *a, **k: ("1.0.1", "demo-v1.0.0"))
+    monkeypatch.setattr(changelog, "_git", lambda *a, **k: "a" * 40)
+    monkeypatch.setattr(changelog, "_subject_groups", lambda *a, **k: {"Fixed": ["fix: issue"]})
+    with pytest.raises(RuntimeError, match="UNRELEASED"):
+        changelog.generate_release_changelog(tmp_path, project)
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_changelog_unreleased_heading_for_a_DIFFERENT_version_does_not_block(tmp_path, monkeypatch):
+    # An UNRELEASED draft for some OTHER future version must not false-positive
+    # block release of the version actually being cut right now.
+    project_root = tmp_path / "demo"; project_root.mkdir()
+    path = project_root / "CHANGES.md"
+    path.write_text(
+        "# Changelog\n\n<!-- cmru: release history -->\n"
+        "## [2.0.0] - UNRELEASED\n\n### Added\n- future work, not this release\n",
+        encoding="utf-8",
+    )
+    project = SimpleNamespace(name="demo", cwd="demo", paths=["demo"], prefix="demo-v", git_tag=True, changelog="CHANGES.md", version=SimpleNamespace(strategy="scm"))
+    monkeypatch.setattr(changelog, "_project_release_plan", lambda *a, **k: ("1.0.1", "demo-v1.0.0"))
+    monkeypatch.setattr(changelog, "_git", lambda *a, **k: "a" * 40)
+    monkeypatch.setattr(changelog, "_subject_groups", lambda *a, **k: {"Fixed": ["fix: issue"]})
+    assert changelog.generate_release_changelog(tmp_path, project) is True
+    assert "## [1.0.1] - " in path.read_text(encoding="utf-8")

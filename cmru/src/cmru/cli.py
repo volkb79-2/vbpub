@@ -1811,7 +1811,7 @@ def usage() -> str:
         "    release  [--config C] [--project P] [--minor|--major|--set-version V] [--dry-run]\n"
         "             [--no-build] [--resume WORKTREE|--abandon WORKTREE|all-previous]\n"
         "             [--allow-uncommitted] [--show-run-details] [--log-append]\n"
-        "             [--discard-logs-on-release] [--discard-artifacts-on-release]\n"
+        "             [--discard-logs-on-release] [--discard-artifacts-on-release] [--ref REF]\n"
         "                                                  isolated source-first transaction\n"
         "    changelog --config C --project P --backfill-tag TAG\n"
         "                                                  catalog an already-published tagged release\n"
@@ -1927,7 +1927,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         if vargs.json:
             print(json.dumps([
                 {
-                    "purpose": workspace.branch.split("/", 2)[1],
+                    "purpose": transaction.workspace_purpose(workspace.branch),
                     "branch": workspace.branch,
                     "path": str(workspace.path),
                     "source_commit": workspace.base or None,
@@ -1940,7 +1940,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         else:
             config_hint = _config_hint(repo_root)
             for workspace in workspaces:
-                purpose = workspace.branch.split("/", 2)[1]
+                purpose = transaction.workspace_purpose(workspace.branch)
                 source = workspace.base[:12] if workspace.base else "unavailable from this filesystem view"
                 print(f"{purpose}: {workspace.branch}\n  path: {workspace.path}\n  source: {source}")
                 if purpose == "release" and workspace.path.is_dir():
@@ -2226,6 +2226,16 @@ def main(argv: Optional[List[str]] = None) -> None:
                  "<project>/artifacts/<tag> -- retained by default when "
                  "project.release.artifact_dirs is declared.",
         )
+        parser.add_argument(
+            "--ref", metavar="REF",
+            help="Evaluate against REF instead of the local main branch (KI-20): for "
+                 "release, the ahead-of-origin refusal; for status, the "
+                 "changed-since-last-tag preview. Any git-resolvable ref, e.g. "
+                 "origin/main or HEAD (\"whatever this invocation's own checkout has\"). "
+                 "Default: main for release (today's behavior), HEAD for status "
+                 "(today's behavior) -- unrelated to which worktree the invoking shell "
+                 "is actually sitting in when omitted.",
+        )
         vargs = parser.parse_args(rest)
         _apply_output_options(vargs)
         if getattr(vargs, "resume", None) and getattr(vargs, "abandon", None):
@@ -2254,6 +2264,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             status_cmd(
                 repo_root, status_projects,
                 minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+                ref=vargs.ref or "HEAD",
             )
             return
 
@@ -2314,7 +2325,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                         workspace = transaction.resume_workspace(repo_root, Path(vargs.resume))
                     else:
                         base = transaction.fetch_origin_main(repo_root)
-                        behind = transaction.assert_local_main_not_ahead(repo_root)
+                        behind = transaction.assert_local_main_not_ahead(repo_root, ref=vargs.ref or "main")
                         if behind:
                             log_warn(
                                 f"Local main is {behind} commit(s) behind origin/main; "

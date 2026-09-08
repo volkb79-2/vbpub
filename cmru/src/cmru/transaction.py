@@ -84,31 +84,43 @@ def fetch_origin_main(repo_root: Path) -> str:
     return _git(repo_root, "rev-parse", "origin/main")
 
 
-def local_main_divergence(repo_root: Path) -> tuple[int, int]:
-    """Return commits ``(ahead, behind)`` for local main relative to origin/main."""
+def local_main_divergence(repo_root: Path, *, ref: str = "main") -> tuple[int, int]:
+    """Return commits ``(ahead, behind)`` for ``ref`` relative to origin/main.
+
+    KI-20: ``ref`` always reads the SHARED ``refs/heads/main`` unless a caller
+    overrides it -- in a repo with many worktrees, ``refs/heads/main`` is one
+    object-store-wide ref, unrelated to which worktree/commit the invoking
+    checkout actually has checked out. Pass ``ref="origin/main"`` (or any
+    git-resolvable ref, including ``"HEAD"`` for "whatever this invocation's
+    own checkout has") to evaluate against something other than the literal
+    local ``main`` branch.
+    """
     try:
-        counts = _git(repo_root, "rev-list", "--left-right", "--count", "main...origin/main")
+        counts = _git(repo_root, "rev-list", "--left-right", "--count", f"{ref}...origin/main")
         ahead, behind = counts.split()
         return int(ahead), int(behind)
     except (RuntimeError, ValueError) as exc:
+        label = "local main" if ref == "main" else repr(ref)
         raise RuntimeError(
-            "Cannot compare local main with origin/main; fetch/repair the local main ref "
-            "before starting a release."
+            f"Cannot compare {label} with origin/main; fetch/repair the ref, or pass a "
+            "different --ref, before starting a release."
         ) from exc
 
 
-def assert_local_main_not_ahead(repo_root: Path) -> int:
-    """Reject commits local-only commits that an origin/main snapshot would omit.
+def assert_local_main_not_ahead(repo_root: Path, *, ref: str = "main") -> int:
+    """Reject commits under ``ref`` that an origin/main snapshot would omit.
 
-    A behind local checkout is harmless because ``origin/main`` is deliberately
+    A behind ``ref`` is harmless because ``origin/main`` is deliberately
     authoritative; the caller receives that count so it can be reported.
+    See :func:`local_main_divergence` for the ``ref`` override (KI-20).
     """
-    ahead, behind = local_main_divergence(repo_root)
+    ahead, behind = local_main_divergence(repo_root, ref=ref)
     if ahead:
+        label = "Local main" if ref == "main" else repr(ref)
         raise RuntimeError(
-            f"Local main is {ahead} commit(s) ahead of origin/main. "
-            "Push those commits (or explicitly base the intended change on origin/main) "
-            "before release; an isolated release snapshots origin/main and would omit them."
+            f"{label} is {ahead} commit(s) ahead of origin/main. Push those commits (or "
+            "explicitly base the intended change on origin/main) before release; an "
+            "isolated release snapshots origin/main and would omit them."
         )
     return behind
 
@@ -154,6 +166,24 @@ def _is_build_branch(branch: str) -> bool:
 
 def _is_transaction_branch(branch: str) -> bool:
     return _is_release_branch(branch) or _is_build_branch(branch)
+
+
+def workspace_purpose(branch: str) -> str:
+    """The transaction purpose ("release" or "build") ``branch`` belongs to,
+    under EITHER naming scheme (KI-21). A flat ``cmru-<purpose>-...`` branch
+    has no ``/`` at all -- callers must use this instead of index-splitting
+    the branch string, which crashes on exactly that shape. This is a display
+    helper, not a validity check: an unrecognized legacy nested
+    ``cmru/<kind>/<token>`` branch still has a middle segment worth showing
+    (preserving the old ``split("/", 2)[1]`` behavior for exactly that
+    shape); an unrecognized flat branch has no separator to extract from and
+    falls back to the raw branch name."""
+    if _is_release_branch(branch):
+        return "release"
+    if _is_build_branch(branch):
+        return "build"
+    parts = branch.split("/", 2)
+    return parts[1] if len(parts) >= 2 else branch
 
 
 def _new_transaction_branch(purpose: str, scope: str | None) -> str:

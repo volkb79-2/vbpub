@@ -348,7 +348,7 @@ def test_help_lists_every_public_option():
         "--format", "--prefix", "--output", "--delete-unmanaged-release-tag",
         "--delete-build-output", "--discard-build-worktree", "--yes", "--step", "--write",
         "--log-prefix-time-short", "--help",
-        "--allow-stale-tool-deps", "--refresh", "--timeout",
+        "--allow-stale-tool-deps", "--refresh", "--timeout", "--ref",
     ):
         assert option in text, f"{option} missing from usage()"
 
@@ -386,7 +386,7 @@ def test_status_uses_current_directory_orchestration_without_a_shim(tmp_path, mo
 
     cli.main(["status", "--project", "alpha"])
 
-    assert calls == [(tmp_path, ["alpha"], {"minor": False, "major": False, "set_version": None})]
+    assert calls == [(tmp_path, ["alpha"], {"minor": False, "major": False, "set_version": None, "ref": "HEAD"})]
 
 
 def test_unknown_verb_exits_2():
@@ -429,6 +429,55 @@ def test_worktrees_is_config_free_read_only_discovery(tmp_path, monkeypatch):
         "source_commit": "a" * 40,
         "visible": False,
     }]
+
+
+def test_worktrees_json_lists_a_flat_branch_with_no_slash_without_crashing(tmp_path, monkeypatch):
+    # KI-21: a real release-transaction branch (cmru-release-<ts>-<project>-<hash>)
+    # has zero "/" characters -- the old `branch.split("/", 2)[1]` crashed with
+    # IndexError on exactly this shape, the one `cmru worktrees` exists to list.
+    workspace = SimpleNamespace(
+        branch="cmru-release-20260101_000000-ciu-abcd1234", path=tmp_path / "retained-release", base="a" * 40,
+    )
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=f"{tmp_path}\n"),
+    )
+    monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda root: [workspace])
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        cli.main(["worktrees", "--json"])
+
+    assert json.loads(out.getvalue()) == [{
+        "branch": "cmru-release-20260101_000000-ciu-abcd1234",
+        "path": str(workspace.path),
+        "purpose": "release",
+        "source_commit": "a" * 40,
+        "visible": False,
+    }]
+
+
+def test_worktrees_plain_lists_a_flat_branch_with_no_slash_without_crashing(tmp_path, monkeypatch):
+    workspace_path = tmp_path / "retained-release"
+    workspace_path.mkdir()
+    workspace = SimpleNamespace(
+        branch="cmru-release-20260101_000000-ciu-abcd1234", path=workspace_path, base="a" * 40,
+    )
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=f"{tmp_path}\n"),
+    )
+    monkeypatch.setattr(cli.transaction, "list_cmru_workspaces", lambda root: [workspace])
+
+    out = io.StringIO()
+    with redirect_stdout(out):
+        cli.main(["worktrees"])
+
+    text = out.getvalue()
+    assert "release: cmru-release-20260101_000000-ciu-abcd1234" in text
+    assert f"resume: cmru release --resume {workspace_path}" in text
 
 
 def test_worktrees_recovery_advice_includes_the_repository_config(tmp_path, monkeypatch):

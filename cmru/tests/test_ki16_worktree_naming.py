@@ -159,6 +159,30 @@ def test_worktree_dirname_maps_a_legacy_nested_branch_slashes_to_dashes():
     )
 
 
+def test_workspace_purpose_reads_a_flat_branch_with_no_separator_to_split_on():
+    """KI-21: the flat scheme has zero ``/`` characters -- a naive
+    ``branch.split("/", 2)[1]`` crashes with IndexError on exactly this shape."""
+    assert transaction.workspace_purpose("cmru-release-20260818_195012-assay-a3ae580d") == "release"
+    assert transaction.workspace_purpose("cmru-build-20260818_195012-all-7f2c1b04") == "build"
+
+
+def test_workspace_purpose_still_reads_a_legacy_nested_branch():
+    assert transaction.workspace_purpose("cmru/release/20260818-195012-assay-a3ae580d") == "release"
+    assert transaction.workspace_purpose("cmru/build/20260818-195012-all-7f2c1b04") == "build"
+
+
+def test_workspace_purpose_extracts_the_middle_segment_of_an_unrecognized_nested_branch():
+    """A legacy `cmru/<kind>/<token>` branch of an unrecognized kind still has a
+    middle segment worth showing -- preserves the pre-KI-21 `split("/", 2)[1]`
+    behavior for exactly this shape (test_worktrees_unknown_purpose_existing_path
+    _has_no_action_hint's own fixture, `cmru/other/x`)."""
+    assert transaction.workspace_purpose("cmru/other/x") == "other"
+
+
+def test_workspace_purpose_falls_back_to_the_raw_branch_for_anything_unrecognized_with_no_slash():
+    assert transaction.workspace_purpose("feature-unrelated-branch") == "feature-unrelated-branch"
+
+
 @pytest.mark.parametrize(
     ("branch", "expected_token"),
     [

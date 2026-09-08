@@ -62,7 +62,7 @@ def test_version_file_strategy_is_idempotent_when_version_unchanged(monkeypatch,
 
 
 def test_status_reports_external_and_no_tag_policies(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(version, "detect_changed_projects", lambda *a: [
+    monkeypatch.setattr(version, "detect_changed_projects", lambda *a, **k: [
         ("external", SimpleNamespace(prefix="ext-v", version=SimpleNamespace(strategy="external:V"), git_tag=True), "ext-v1.0.0", "patch"),
         ("image", SimpleNamespace(prefix="img-v", version=SimpleNamespace(strategy="scm"), git_tag=False), None, "patch"),
     ])
