@@ -8,7 +8,7 @@
 #
 # Idempotent. First run seeds /etc/mdt/host-setup.env from the example (review
 # it, then re-run to apply your edits). --wizard walks that seeding step
-# interactively instead (scripts/mdt-host-setup-wizard.py) — sizes the tiers
+# interactively instead (mdt-host-setup-wizard.py, alongside this script) — sizes the tiers
 # against THIS host's own /proc/meminfo rather than the example's fixed
 # numbers, then falls through into the same render/apply logic below either
 # way. --with-baseline additionally runs the fio benchmark (~4 min of
@@ -72,7 +72,7 @@ if [ "$WIZARD" = 1 ]; then
     cp /etc/mdt/host-setup.env "$backup"
     echo "--wizard: backed up existing config to $backup before regenerating it interactively"
   fi
-  python3 "$HERE/scripts/mdt-host-setup-wizard.py" \
+  python3 "$HERE/mdt-host-setup-wizard.py" \
     --example "$HERE/host-setup.env.example" \
     --output /etc/mdt/host-setup.env \
     --io-baseline-script "$HERE/scripts/mdt-io-baseline.py" \
