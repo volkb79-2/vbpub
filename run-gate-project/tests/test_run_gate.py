@@ -6507,24 +6507,27 @@ def fake_docker_logstream(tmp_path, monkeypatch) -> tuple[Path, Path]:
             for a in "$@"; do [ "$a" = "-f" ] && streaming=yes; done
             stream="$S/$name.stream"
             pos=0
+            # ONE read per check (`tail`'s own output is both what gets
+            # emitted AND what `pos` advances by) — a SEPARATE `wc -l`
+            # before the `tail` (the prior version) reads the file TWICE,
+            # and a line appended between those two reads is emitted by
+            # `tail` but not counted into `pos`, so it is re-emitted on the
+            # next iteration.
+            emit_new() {{
+              [ -f "$stream" ] || return 0
+              new=$(tail -n "+$((pos + 1))" "$stream")
+              if [ -n "$new" ]; then
+                printf '%s\\n' "$new"
+                pos=$((pos + $(printf '%s\\n' "$new" | wc -l)))
+              fi
+            }}
             if [ "$streaming" = yes ]; then
               while [ -f "$S/.hang" ]; do
-                if [ -f "$stream" ]; then
-                  total=$(wc -l < "$stream")
-                  if [ "$total" -gt "$pos" ]; then
-                    tail -n "+$((pos + 1))" "$stream"
-                    pos="$total"
-                  fi
-                fi
+                emit_new
                 sleep 0.05
               done
             fi
-            if [ -f "$stream" ]; then
-              total=$(wc -l < "$stream")
-              if [ "$total" -gt "$pos" ]; then
-                tail -n "+$((pos + 1))" "$stream"
-              fi
-            fi
+            emit_new
             ;;
           wait)
             [ -f "$S/$1" ] || {{ echo "Error: No such container" >&2; exit 1; }}
@@ -8052,23 +8055,37 @@ class TestLogStreamWatch:
     lane's progress file, sourced from a command lane's own log stream
     instead — the only bound available where no progress file exists."""
 
-    def _watch(self, stall=None):
-        clock = FakeClock()
-        proc = FakeContainerProc()
-        watch = run_gate.LogStreamWatch(proc, stall, "suite", clock)
-        return watch, proc.stdout, clock
+    @pytest.fixture
+    def make_watch(self):
+        """A factory instead of a plain helper method: every `(watch,
+        stream)` this test creates is torn down in fixture teardown — ALWAYS
+        run, including on an assertion failure mid-test — rather than by a
+        trailing `stream.close(); watch.join()` at the end of each test body,
+        which an earlier assertion failing would skip, leaking a daemon pump
+        thread blocked forever on its `FakeLogStream` queue."""
+        created = []
 
-    def test_no_stall_timeout_never_checks_anything(self):
-        watch, stream, clock = self._watch(stall=None)
+        def _factory(stall=None):
+            clock = FakeClock()
+            proc = FakeContainerProc()
+            watch = run_gate.LogStreamWatch(proc, stall, "suite", clock)
+            created.append((watch, proc.stdout))
+            return watch, proc.stdout, clock
+
+        yield _factory
+        for watch, stream in created:
+            stream.close()
+            watch.join(timeout=2.0)
+
+    def test_no_stall_timeout_never_checks_anything(self, make_watch):
+        watch, stream, clock = make_watch(stall=None)
         stream.push("line one")
         assert _wait_until(lambda: watch._last_line == "line one")
         clock.advance(10**9)
         assert watch.poll() is None
-        stream.close()
-        watch.join()
 
-    def test_a_line_that_keeps_arriving_never_stalls(self):
-        watch, stream, clock = self._watch(stall=900)
+    def test_a_line_that_keeps_arriving_never_stalls(self, make_watch):
+        watch, stream, clock = make_watch(stall=900)
         stream.push("building...")
         assert _wait_until(lambda: watch._last_line == "building...")
         assert watch.poll() is None
@@ -8078,11 +8095,10 @@ class TestLogStreamWatch:
         assert _wait_until(lambda: watch._last_line == "still going")
         clock.advance(899)                          # 1798s total, 899 silent
         assert watch.poll() is None
-        stream.close()
-        watch.join()
 
-    def test_silence_past_the_window_stalls_naming_the_age_and_last_line(self):
-        watch, stream, clock = self._watch(stall=900)
+    def test_silence_past_the_window_stalls_naming_the_age_and_last_line(
+            self, make_watch):
+        watch, stream, clock = make_watch(stall=900)
         stream.push("last thing printed")
         assert _wait_until(lambda: watch._last_line == "last thing printed")
         clock.advance(899)
@@ -8093,25 +8109,23 @@ class TestLogStreamWatch:
         assert "still RUNNING" in stalled
         assert "has printed nothing for 900s (stall_timeout 900s)" in stalled
         assert "last line seen: 'last thing printed'" in stalled
-        stream.close()
-        watch.join()
 
-    def test_silence_before_any_line_stalls_naming_no_output_yet(self):
+    def test_silence_before_any_line_stalls_naming_no_output_yet(
+            self, make_watch):
         """A container that never prints anything is silent from the moment
         it starts — the SAME rule as a lane whose progress file never gets
         its first event, applied to the other signal."""
-        watch, stream, clock = self._watch(stall=900)
+        watch, stream, clock = make_watch(stall=900)
         clock.advance(900)
         stalled = watch.poll()
         assert stalled is not None
         assert "last line seen: (no output yet)" in stalled
-        stream.close()
-        watch.join()
 
-    def test_the_pump_re_prints_every_line_live_and_in_order(self, capsys):
+    def test_the_pump_re_prints_every_line_live_and_in_order(
+            self, make_watch, capsys):
         """The pass-through must stay live, never captured-then-replayed —
         RW-9's own stated cost of this item."""
-        watch, stream, clock = self._watch(stall=None)
+        watch, stream, clock = make_watch(stall=None)
         stream.push("alpha")
         stream.push("beta")
         stream.push("gamma")
@@ -8120,12 +8134,13 @@ class TestLogStreamWatch:
         out = capsys.readouterr().out
         assert out == "alpha\nbeta\ngamma\n"
 
-    def test_join_drains_output_still_in_flight_before_returning(self, capsys):
+    def test_join_drains_output_still_in_flight_before_returning(
+            self, make_watch, capsys):
         """`await_container` calls this BEFORE printing its own status lines
         — without it, 'lane X exit 0' can print ahead of the container's own
         last few lines, an ordering regression the plain inherited-stdout
         path never had."""
-        watch, stream, clock = self._watch(stall=None)
+        watch, stream, clock = make_watch(stall=None)
         stream.push("first")
         assert _wait_until(lambda: watch._last_line == "first")
         stream.push("last line before close")
@@ -8133,30 +8148,95 @@ class TestLogStreamWatch:
         watch.join()
         assert capsys.readouterr().out == "first\nlast line before close\n"
 
-    def test_a_closed_stream_stops_the_pump_thread_cleanly(self):
-        watch, stream, clock = self._watch(stall=900)
+    def test_a_closed_stream_stops_the_pump_thread_cleanly(self, make_watch):
+        watch, stream, clock = make_watch(stall=900)
         stream.close()
-        assert watch.join(timeout=2.0) is None
+        assert watch.join(timeout=2.0) is True    # the drain DID finish
         assert not watch._thread.is_alive()
+
+    def test_join_reports_false_when_the_drain_does_not_finish_in_time(
+            self, make_watch):
+        """The disclosure `await_container` acts on (finding 2, round-2
+        review): a pump still blocked reading when the bounded wait expires
+        must say so, not silently look identical to a clean drain."""
+        watch, stream, clock = make_watch(stall=None)
+        # Nothing pushed, stream never closed: the pump thread stays parked
+        # in FakeLogStream.__next__'s blocking queue.get() for the life of
+        # this test — exactly the "still draining" state under real host
+        # contention this return value exists to disclose.
+        assert watch.join(timeout=0.05) is False
+        assert watch._thread.is_alive()
 
     @pytest.mark.parametrize("exc", [OSError("read error"), ValueError("I/O op"
                                      " on closed file")])
-    def test_a_severed_pipe_ends_the_pump_quietly(self, exc):
+    def test_a_severed_pipe_ends_the_pump_quietly(self, make_watch, exc):
         """The process was torn down while `_pump` was blocked reading —
         NOT this background thread's decision to raise into a caller that
         never expected an exception from it. `await_container`'s own
         stall/exit-code logic is what actually ends the lane; the pump's
         only job here is to stop, not to fail loudly."""
-        watch, stream, clock = self._watch(stall=900)
+        watch, stream, clock = make_watch(stall=900)
         stream.push("last line before the pipe died")
         assert _wait_until(
             lambda: watch._last_line == "last line before the pipe died")
         stream.sever(exc)
-        assert watch.join(timeout=2.0) is None      # no exception escapes
+        assert watch.join(timeout=2.0) is True      # no exception escapes
         assert not watch._thread.is_alive()
         # …and the last recorded line survives — a torn pipe is silence
         # from here on, not a fact eraser.
         assert watch._last_line == "last line before the pipe died"
+
+    def test_a_line_with_no_docker_timestamp_prefix_falls_back_to_arrival(
+            self, make_watch):
+        """No `--timestamps` prefix (a line that happens to contain a space
+        but not a docker stamp, or none at all) degrades to the ORIGINAL
+        "arrival = this watch's own clock" behavior for that one line —
+        exercised already by every other test above (none of their pushed
+        lines carry a real docker stamp); named explicitly here as the
+        `_split`/`_translate` fallback path this fix adds."""
+        watch, stream, clock = make_watch(stall=900)
+        stream.push("plain output, no timestamp prefix at all")
+        assert _wait_until(lambda: watch._last_line ==
+                           "plain output, no timestamp prefix at all")
+        assert watch.poll() is None       # "just now" by this watch's clock
+
+    def test_a_replayed_stale_line_is_recognized_as_already_silent(
+            self, make_watch):
+        """RG-41 round-2 fix (review finding 1, CONFIRMED by direct
+        reproduction). `docker logs -f` REPLAYS a hung container's entire
+        backlog in a burst on re-attach — every replayed line arrives at
+        this watch within milliseconds of each other, so timing them by
+        THIS watch's own (here, driven-and-frozen) clock would report
+        `age == 0` and silently grant a lane that has been silent for hours
+        a brand-new full stall window. Docker's own `--timestamps` prefix on
+        the line carries the TRUE wall-clock time; `_translate` must use it
+        instead — the identical mechanism RW-27 already proved correct for
+        `ProgressWatch`'s file mtime."""
+        watch, stream, clock = make_watch(stall=900)
+        two_hours_ago = time.strftime(
+            "%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 7200))
+        stream.push(f"{two_hours_ago}.000000000Z the last thing it printed")
+        assert _wait_until(lambda: watch._last_line ==
+                           "the last thing it printed")
+        # The watch's own (fake, frozen-since-construction) clock has not
+        # moved AT ALL — a naive "arrival = now" implementation reports
+        # `age == 0` here and never stalls. The translated age must reflect
+        # the REAL ~7200s gap regardless.
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "last line seen: 'the last thing it printed'" in stalled
+        age = int(re.search(r"printed nothing for (\d+)s", stalled).group(1))
+        assert 7100 < age < 7300, stalled     # real-clock jitter tolerance
+
+    def test_the_docker_timestamp_prefix_is_stripped_before_printing(
+            self, make_watch, capsys):
+        """The pass-through must stay byte-identical to a lane declaring no
+        `stall_timeout` at all — the operator never sees docker's own
+        `--timestamps` prefix, only ever the container's real output."""
+        watch, stream, clock = make_watch(stall=None)
+        stream.push("2026-09-08T21:30:00.123456789Z hello world")
+        assert _wait_until(lambda: watch._last_line == "hello world")
+        assert capsys.readouterr().out == "hello world\n"
 
 
 class ProgressWatchFixture:
@@ -8397,9 +8477,33 @@ class TestStallEndToEndCommandLane:
             stop.set()
             mover.join(timeout=10)
         out = capsys.readouterr().out
-        assert "tick 1" in out and "tick 12" in out
-        assert out.index("tick 1") < out.index("tick 12")   # printed IN ORDER
+        ticks = re.findall(r"^tick (\d+)$", out, re.MULTILINE)
+        # Exact, not substring: the shim's own read-then-emit race (fixed in
+        # round 2 of the RG-41 review) could otherwise re-emit a line the
+        # PREVIOUS check had already counted — this is the one assertion
+        # that would have caught it, where a looser "contains tick N" check
+        # would not.
+        assert ticks == [str(i) for i in range(1, 13)], out
         assert "STALLED" not in out
+
+    def test_an_incomplete_drain_is_disclosed_not_silently_swallowed(
+            self, tmp_path, monkeypatch, capsys):
+        """Round-2 review finding 2: under real host CPU contention the
+        pump's bounded `join()` can expire while it is still draining a
+        trailing burst. `await_container` must say so rather than silently
+        risk the exact ordering regression `join()` exists to prevent."""
+        repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        log, state = fake_docker_logstream(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate.LogStreamWatch, "join",
+                            lambda self, timeout=2.0: False)
+        assert run_gate.main(["suite"]) == 0
+        err = capsys.readouterr().err
+        assert "WARNING: lane 'suite'" in err
+        assert "did not finish draining" in err
+        assert "may still be in flight" in err
 
 
 class TestDoctorNamesUnprefixedScriptPaths:

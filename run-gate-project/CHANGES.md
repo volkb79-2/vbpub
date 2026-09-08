@@ -25,7 +25,14 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   flight before `await_container`'s own status lines print. The source is
   disclosed by name, never inferred, on the fresh, re-attach and follow
   paths alike: `(source: progress file)` vs `(source: log stream)`. An
-  assay lane's behavior is unchanged.
+  assay lane's behavior is unchanged. `docker logs -f --timestamps` is
+  used for a watched command lane specifically so silence can be measured
+  from the CONTAINER's own per-line clock, not the watching client's —
+  without it, a re-attach to an already-hung lane read the replayed
+  backlog as arriving "just now" and silently granted a fresh stall
+  window instead of catching the pre-existing silence (found in
+  adversarial review, fixed the same way `ProgressWatch` already fixes
+  the analogous gap for a progress file's mtime, RW-27).
 
 <!-- cleared 2026-09-08 after the 23.6.0 release, per the standing
      housekeeping rule (see CHANGES.md history for the prior occurrences
