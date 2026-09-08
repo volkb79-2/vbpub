@@ -65,7 +65,7 @@ def _health_response() -> str:
             "state_change_count": 0,
             "error": None,
         }
-        for name in ("collector", "bpf_snapshot_bridge", "paddr_lifecycle")
+        for name in ("collector", "bpf_snapshot_bridge", "paddr_lifecycle", "persistent_history")
     ]
     return json.dumps(
         {
@@ -91,7 +91,7 @@ def test_no_timeout_transport_paths_do_not_set_a_socket_timeout(
     assert client.stream_batch(limit=1).frames == ()
 
     _install_socket(monkeypatch, _health_response())
-    assert len(client.request_health().snapshots) == 3
+    assert len(client.request_health().snapshots) == 4
 
     _install_socket(monkeypatch, '{"type":"end","count":0}\n')
     assert client.request_frames({"op": "current"}) == []

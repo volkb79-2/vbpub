@@ -269,7 +269,7 @@ def test_health_snapshot_to_jsonable() -> None:
 
     j = reg.snapshot().to_jsonable()
     assert j["schema_version"] == 1
-    assert len(j["components"]) == 3
+    assert len(j["components"]) == 4
     by_name = {c["name"]: c for c in j["components"]}
     assert by_name["collector"]["state"] == "healthy"
     assert by_name["bpf_snapshot_bridge"]["state"] == "failed"
@@ -297,6 +297,7 @@ def test_concurrent_updates_deterministic() -> None:
         threading.Thread(target=_worker, args=("collector", 50)),
         threading.Thread(target=_worker, args=("bpf_snapshot_bridge", 50)),
         threading.Thread(target=_worker, args=("paddr_lifecycle", 50)),
+        threading.Thread(target=_worker, args=("persistent_history", 50)),
     ]
     for t in threads:
         t.start()
@@ -305,7 +306,7 @@ def test_concurrent_updates_deterministic() -> None:
 
     # Snapshot should be valid after concurrent updates
     snap = reg.snapshot()
-    assert len(snap.snapshots) == 3
+    assert len(snap.snapshots) == 4
     for cs in snap.snapshots:
         assert cs.state is ComponentState.HEALTHY or cs.state is ComponentState.FAILED
 
@@ -328,7 +329,7 @@ def test_concurrent_reads_and_writes() -> None:
     def _reader() -> None:
         while not stop_event.is_set():
             snap = reg.snapshot()
-            assert len(snap.snapshots) == 3
+            assert len(snap.snapshots) == 4
             for cs in snap.snapshots:
                 assert cs.name in COMPONENT_NAMES
 
@@ -352,7 +353,7 @@ def test_build_health_response_shape() -> None:
     assert resp["type"] == "health"
     assert resp["schema_version"] == 1
     assert resp["capability"] == "health-v1"
-    assert len(resp["components"]) == 3
+    assert len(resp["components"]) == 4
 
 
 def test_broker_health_op_with_registry(tmp_path: Path) -> None:
@@ -365,7 +366,7 @@ def test_broker_health_op_with_registry(tmp_path: Path) -> None:
     resp = result[0]
     assert resp["type"] == "health"
     assert resp["capability"] == "health-v1"
-    assert len(resp["components"]) == 3
+    assert len(resp["components"]) == 4
     by_name = {c["name"]: c for c in resp["components"]}
     assert by_name["collector"]["state"] == "healthy"
 
@@ -863,7 +864,7 @@ def test_cli_health_via_main_daemon(tmp_path: Path) -> None:
         assert code == 0, f"expected 0, got {code}"
         payload = json.loads(output)
         assert payload["schema_version"] == 1
-        assert len(payload["components"]) == 3
+        assert len(payload["components"]) == 4
         collector = [c for c in payload["components"] if c["name"] == "collector"][0]
         assert collector["state"] == "healthy"
     finally:

@@ -100,7 +100,7 @@ def test_health_component_error_without_code_preserves_none() -> None:
             "state_change_count": 0,
             "error": None,
         }
-        for name in ("collector", "bpf_snapshot_bridge", "paddr_lifecycle")
+        for name in ("collector", "bpf_snapshot_bridge", "paddr_lifecycle", "persistent_history")
     ]
     components[0]["error"] = {"message": "collector delayed"}
 

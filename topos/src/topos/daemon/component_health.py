@@ -33,6 +33,7 @@ COMPONENT_NAMES: tuple[str, ...] = (
     "collector",
     "bpf_snapshot_bridge",
     "paddr_lifecycle",
+    "persistent_history",
 )
 
 _SENSITIVE_ASSIGNMENT = re.compile(

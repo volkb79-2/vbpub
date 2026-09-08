@@ -270,7 +270,7 @@ def read_segment_frames(path: Path) -> list[Frame]:
     except Exception as exc:
         if _ZstdError is not None and isinstance(exc, _ZstdError):
             raise PersistStoreError(f"corrupt or truncated segment {path.name}: {exc}") from None
-        raise
+        raise  # pragma: no cover - defensive: some exception neither listed above nor zstd's own
     return frames
 
 
@@ -569,7 +569,14 @@ class PersistentHistoryStore:
                 try:
                     self._publish_active_locked()
                 except OSError as exc:
-                    if self._active is not None:
+                    # _publish_active_locked() always clears self._active to
+                    # None as its first action, before any fallible I/O, and
+                    # flush() (unlike append()) has no other call into it
+                    # that could raise with an active writer still live --
+                    # so this guard can never be True while holding
+                    # self._lock. Kept for structural symmetry with
+                    # append()'s handler below, where it IS reachable.
+                    if self._active is not None:  # pragma: no cover - unreachable, see above
                         self._active.abort()
                         self._active = None
                     self._mark_degraded(exc)

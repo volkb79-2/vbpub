@@ -87,10 +87,25 @@ def test_persist_config_rejects_unknown_compression():
         PersistConfig(compression="lz4")
 
 
+def test_persist_config_rejects_non_positive_segment_frames():
+    with pytest.raises(ValueError):
+        PersistConfig(segment_frames=0)
+
+
+def test_persist_config_rejects_non_positive_checkpoint_frames():
+    with pytest.raises(ValueError):
+        PersistConfig(checkpoint_frames=0)
+
+
 def test_persist_config_defaults_are_disabled_pending_measurement():
     # Required contract 6: ship configured off until the resource budget is
     # recorded as met.
     assert PersistConfig().enabled is False
+
+
+def test_store_construction_rejects_a_non_persistconfig():
+    with pytest.raises(TypeError):
+        PersistentHistoryStore(object())
 
 
 def test_history_config_ram_default_reconciled_to_five_minutes():
@@ -279,6 +294,26 @@ def test_o3_age_cap_alone_does_not_let_an_over_byte_segment_survive(tmp_path):
     assert stats.evicted_segments > 0
 
 
+def test_evict_locked_can_publish_the_index_directly(tmp_path):
+    """``_evict_locked(publish_index=True)`` is available for callers other
+    than the two current internal call sites (recovery and post-publish),
+    which always pass ``False`` and republish the index themselves
+    unconditionally right afterward regardless of whether eviction fired."""
+    cfg = _cfg(tmp_path, segment_frames=1)
+    store = PersistentHistoryStore(cfg)
+    store.append(_frame_at(time.time()))
+    store.append(_frame_at(time.time()))
+    assert store.stats().segment_count == 2
+
+    future = store._now() + 400 * 86400  # well past the default 365-day age cap
+    store._now = lambda: future
+    changed = store._evict_locked(publish_index=True)
+
+    assert changed is True
+    index = json.loads(store.index_path.read_text())
+    assert len(index["segments"]) == 0
+
+
 # ---------------------------------------------------------------------------
 # O4 — restart recovery never exceeds either cap
 # ---------------------------------------------------------------------------
@@ -447,6 +482,23 @@ def test_o7_disk_full_recovers_once_space_returns(tmp_path):
     assert stats.segment_count == 1
 
 
+def test_o7_flush_time_disk_failure_degrades_without_raising(tmp_path):
+    """Distinct from the publish-time failure above: here the segment is
+    still below segment_frames (append alone never triggers a publish), so
+    the failure is only reached via an explicit flush() call."""
+    cfg = _cfg(tmp_path, segment_frames=10)
+    store = PersistentHistoryStore(cfg)
+    store.append(_frame_at(time.time()))
+    assert store.stats().segment_count == 0
+
+    with mock.patch("os.replace", side_effect=OSError(28, "No space left on device")):
+        store.flush()  # must not raise
+
+    stats = store.stats()
+    assert stats.degraded is True
+    assert stats.segment_count == 0
+
+
 def test_o7_readonly_directory_degrades_without_raising(tmp_path):
     cfg = _cfg(tmp_path, segment_frames=1)
     with mock.patch(
@@ -529,6 +581,27 @@ def test_o9_compressed_round_trip_is_byte_deterministic(tmp_path):
         assert frame_to_jsonable(original) == frame_to_jsonable(back)
 
 
+def test_o9_compressed_writer_emits_mid_stream_chunks_before_flush(tmp_path):
+    """A single active segment large enough to force the zstd compressor to
+    emit output before ``finalize()``'s own flush -- distinct from the
+    round-trip test above, whose 2-frame segments are too small to ever fill
+    the compressor's internal buffer before it is finalized."""
+    pytest.importorskip("zstandard")
+    cfg = _cfg(tmp_path, segment_frames=400, compression="zstd")
+    store = PersistentHistoryStore(cfg)
+    now = time.time()
+    originals = [_frame_at(now + i) for i in range(400)]
+    for frame in originals:
+        store.append(frame)
+    store.flush()
+
+    store2 = PersistentHistoryStore(cfg)
+    recovered = [frame for _, frame, _ in store2.read_frames()]
+    assert len(recovered) == len(originals)
+    for original, back in zip(originals, recovered):
+        assert frame_to_jsonable(original) == frame_to_jsonable(back)
+
+
 # ---------------------------------------------------------------------------
 # Contract 4 — daemon-owned files, explicit permissions
 # ---------------------------------------------------------------------------
@@ -561,6 +634,224 @@ def test_read_segment_frames_raises_typed_error_on_corrupt_input(tmp_path):
         read_segment_frames(segment)
 
 
+def test_read_segment_frames_rejects_a_missing_segment_header(tmp_path):
+    segment = tmp_path / "seg-000000.jsonl"
+    segment.write_text('{"type": "frame", "ts": 1.0}\n')
+    with pytest.raises(PersistStoreError):
+        read_segment_frames(segment)
+
+
+def test_read_segment_frames_rejects_an_unexpected_record_type(tmp_path):
+    segment = tmp_path / "seg-000000.jsonl"
+    segment.write_text(
+        '{"type": "segment_header", "schema_version": 1, "segment_id": 0}\n'
+        '{"type": "checkpoint"}\n'
+    )
+    with pytest.raises(PersistStoreError):
+        read_segment_frames(segment)
+
+
+def test_read_segment_frames_raises_when_zstd_unavailable_for_a_compressed_segment(tmp_path):
+    from topos.daemon import persist as persist_module
+
+    segment = tmp_path / "seg-000000.jsonl.zst"
+    segment.write_bytes(b"irrelevant-bytes-never-decoded")
+    with mock.patch.object(persist_module, "_zstd", None):
+        with pytest.raises(PersistStoreError, match="zstandard"):
+            read_segment_frames(segment)
+
+
+def test_read_segment_frames_raises_typed_error_on_corrupt_compressed_data(tmp_path):
+    pytest.importorskip("zstandard")
+    cfg = _cfg(tmp_path, segment_frames=1, compression="zstd")
+    store = PersistentHistoryStore(cfg)
+    store.append(_frame_at(time.time()))
+    store.flush()
+    segment = next(store.segments_dir.glob("seg-*.zst"))
+    original = segment.read_bytes()
+    # Flip every byte after the 4-byte zstd frame magic so the decompressor
+    # itself rejects the stream (distinct from the JSON/UTF-8 level failures
+    # covered above) -- exercises the ZstdError branch, not the generic one.
+    corrupted = original[:4] + bytes(b ^ 0xFF for b in original[4:])
+    segment.write_bytes(corrupted)
+    with pytest.raises(PersistStoreError):
+        read_segment_frames(segment)
+
+
+# ---------------------------------------------------------------------------
+# Recovery internals not exercised by the O1-O9 restart/corruption scenarios
+# ---------------------------------------------------------------------------
+
+
+def test_recovery_ignores_files_that_do_not_match_the_segment_name_pattern(tmp_path):
+    cfg = _cfg(tmp_path, segment_frames=1)
+    store = PersistentHistoryStore(cfg)
+    store.append(_frame_at(time.time()))
+    store.flush()
+    (store.segments_dir / "not-a-segment.txt").write_text("junk")
+
+    store2 = PersistentHistoryStore(cfg)
+    assert store2.stats().segment_count == 1
+    assert [f for _, f, _ in store2.read_frames()]
+
+
+def test_recovery_reparses_an_orphan_segment_missing_from_the_index(tmp_path):
+    """A segment durably published but whose index update was lost before a
+    crash has no recorded checksum -- recovery falls back to a full re-parse
+    (P91-REPORT.md "Deviations": the index-write-lost-mid-crash path)."""
+    cfg = _cfg(tmp_path, segment_frames=1)
+    store = PersistentHistoryStore(cfg)
+    frame = _frame_at(time.time())
+    store.append(frame)
+    store.flush()
+    # Simulate the index update never landing: drop this segment's entry
+    # from the on-disk index, as if the crash happened between the segment
+    # rename and the index republish.
+    index = json.loads(store.index_path.read_text())
+    index["segments"] = []
+    store.index_path.write_text(json.dumps(index))
+
+    store2 = PersistentHistoryStore(cfg)
+    recovered = [f for _, f, _ in store2.read_frames()]
+    assert len(recovered) == 1
+    assert frame_to_jsonable(recovered[0]) == frame_to_jsonable(frame)
+
+
+def test_recovery_quarantines_an_orphan_segment_that_fails_to_reparse(tmp_path):
+    cfg = _cfg(tmp_path, segment_frames=1)
+    store = PersistentHistoryStore(cfg)
+    store.append(_frame_at(time.time()))
+    store.flush()
+    index = json.loads(store.index_path.read_text())
+    index["segments"] = []
+    store.index_path.write_text(json.dumps(index))
+    segment = next(store.segments_dir.glob("seg-*"))
+    segment.write_bytes(b"not a valid segment at all\n")
+
+    store2 = PersistentHistoryStore(cfg)
+    assert store2.stats().segment_count == 0
+    assert store2.stats().quarantined_segments == 1
+    assert not segment.exists()
+
+
+# ---------------------------------------------------------------------------
+# Quarantine internals not exercised by O6's single-corruption scenarios
+# ---------------------------------------------------------------------------
+
+
+def test_quarantine_disambiguates_a_filename_collision(tmp_path):
+    cfg = _cfg(tmp_path, segment_frames=1)
+    store = PersistentHistoryStore(cfg)
+    store.append(_frame_at(time.time()))
+    store.flush()
+    segment = next(store.segments_dir.glob("seg-*"))
+    store.quarantine_dir.mkdir(parents=True, exist_ok=True)
+    leftover = store.quarantine_dir / segment.name
+    leftover.write_bytes(b"leftover from an earlier quarantine")
+
+    store._quarantine(segment, reason="test")
+
+    assert not segment.exists()
+    assert leftover.read_bytes() == b"leftover from an earlier quarantine"  # untouched
+    disambiguated = [p for p in store.quarantine_dir.glob(f"{segment.name}.*")]
+    assert len(disambiguated) == 1
+
+
+def test_quarantine_swallows_a_rename_failure(tmp_path):
+    cfg = _cfg(tmp_path, segment_frames=1)
+    store = PersistentHistoryStore(cfg)
+    store.append(_frame_at(time.time()))
+    store.flush()
+    segment = next(store.segments_dir.glob("seg-*"))
+    before = store._quarantined_this_run
+
+    with mock.patch("pathlib.Path.rename", side_effect=OSError(13, "Permission denied")):
+        store._quarantine(segment, reason="test")  # must not raise
+
+    assert store._quarantined_this_run == before + 1
+    assert segment.exists()  # rename failed, so the original file is left in place
+
+
+# ---------------------------------------------------------------------------
+# Active-writer failure handling distinct from O7's publish-time OSError
+# ---------------------------------------------------------------------------
+
+
+def test_append_aborts_the_active_writer_on_a_mid_write_failure(tmp_path):
+    """A disk error while writing to the still-open active segment (as
+    opposed to O7's publish-time failure, where the active writer has
+    already been cleared) must abort and drop that writer, not leak it."""
+    from topos.daemon import persist as persist_module
+
+    cfg = _cfg(tmp_path, segment_frames=5)  # large enough that publish never triggers
+    store = PersistentHistoryStore(cfg)
+    with mock.patch.object(
+        persist_module._SegmentWriter, "write_frame", side_effect=OSError(28, "No space left on device")
+    ):
+        store.append(_frame_at(time.time()))  # must not raise
+
+    assert store.stats().degraded is True
+    assert store._active is None
+
+
+def test_store_close_flushes_a_pending_partial_segment(tmp_path):
+    cfg = _cfg(tmp_path, segment_frames=10)
+    store = PersistentHistoryStore(cfg)
+    store.append(_frame_at(time.time()))  # below segment_frames: stays active
+    assert store.stats().segment_count == 0
+
+    store.close()
+
+    assert store._closed is True
+    assert store.stats().segment_count == 1  # close() flushed the partial segment
+    store.append(_frame_at(time.time() + 1))  # a closed store ignores further writes
+    assert store.stats().segment_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Reading internals not exercised by the O1-O9 scenarios
+# ---------------------------------------------------------------------------
+
+
+def test_iter_segments_returns_retained_segments_in_ascending_order(tmp_path):
+    cfg = _cfg(tmp_path, segment_frames=1)
+    store = PersistentHistoryStore(cfg)
+    now = time.time()
+    for i in range(3):
+        store.append(_frame_at(now + i))
+    segments = store.iter_segments()
+    assert [s.segment_id for s in segments] == [0, 1, 2]
+
+
+def test_read_frames_honors_the_since_and_until_ts_window(tmp_path):
+    cfg = _cfg(tmp_path, segment_frames=1)
+    store = PersistentHistoryStore(cfg)
+    now = time.time()
+    for i in range(5):
+        store.append(_frame_at(now + i))
+
+    windowed = store.read_frames(since_ts=now + 1, until_ts=now + 4)
+    assert [f.ts for _, f, _ in windowed] == [now + 1.0, now + 2.0, now + 3.0]
+
+
+def test_read_frames_skips_a_segment_corrupted_after_recovery(tmp_path):
+    """Documented narrow race (P91-REPORT.md "Deviations"): a segment
+    corrupted after recovery but before a live read_frames() call is skipped
+    rather than crashing the query path; the next restart's recovery is what
+    quarantines it and reports the gap."""
+    cfg = _cfg(tmp_path, segment_frames=1)
+    store = PersistentHistoryStore(cfg)
+    now = time.time()
+    store.append(_frame_at(now))
+    store.append(_frame_at(now + 1))
+    segments = sorted(store.segments_dir.glob("seg-*"))  # filenames sort by segment_id
+    assert len(segments) == 2
+    segments[0].write_bytes(b"corrupted after recovery, not yet re-validated\n")
+
+    frames = store.read_frames()
+    assert [f.ts for _, f, _ in frames] == [now + 1.0]
+
+
 # ---------------------------------------------------------------------------
 # Daemon lifecycle wiring: the RAM tier (FrameBroker) and the disk tier see
 # the same canonical frame stream exactly once (Contract 2).
@@ -585,3 +876,147 @@ def test_persisting_frame_stream_feeds_both_ram_and_disk_tiers(tmp_path):
     disk_frames = [frame for _, frame, _ in store.read_frames()]
     assert [f.ts for f in ram_frames] == [f.ts for f in raw_frames]
     assert [f.ts for f in disk_frames] == [f.ts for f in raw_frames]
+
+
+# ---------------------------------------------------------------------------
+# `topos daemon serve` CLI wiring: startup health reporting, the
+# _persisting_frame_stream tee, and the shutdown flush -- exercised through
+# _main_daemon end-to-end, one server.serve_forever() iteration at a time
+# (matches the pattern in test_cli_daemon_lifecycle_boundaries.py's
+# _wire_one_shot_server, duplicated locally to keep this file self-contained).
+# ---------------------------------------------------------------------------
+
+
+def _wire_one_shot_daemon(monkeypatch, cli, observed: dict, broker_cls: type):
+    class FakeServer:
+        def __init__(self, broker) -> None:
+            self._broker = broker
+
+        def serve_forever(self) -> None:
+            # Capture health state while "running", before shutdown mutates
+            # it further (mark_stopping/mark_stopped happen in the finally).
+            component = self._broker.health_registry.snapshot().by_name("persistent_history")
+            observed["mid_run_state"] = component.state.value if component is not None else None
+            observed["mid_run_detail"] = component.detail if component is not None else None
+            raise KeyboardInterrupt
+
+        def server_close(self) -> None:
+            observed["closed"] = True
+
+    def make_broker(*args, **kwargs):
+        broker = broker_cls(*args, **kwargs)
+        observed["broker"] = broker
+        return broker
+
+    monkeypatch.setattr(cli, "FrameBroker", make_broker)
+    monkeypatch.setattr(cli, "DaemonApi", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli, "serve_versioned_unix_socket", lambda _path, broker, api=None: FakeServer(broker)
+    )
+
+
+class _FakeCliBroker:
+    def __init__(self, frames, *, health_registry, **_kwargs) -> None:
+        self.health_registry = health_registry
+        self._frames = frames
+        self.events: list[str] = []
+
+    def start(self) -> None:
+        # Never drained (matching test_cli_daemon_lifecycle_boundaries.py's
+        # _FakeBroker): this suite only asserts _main_daemon's wiring and
+        # health-reporting around the store, not frame delivery through a
+        # live collector loop -- that is
+        # test_persisting_frame_stream_feeds_both_ram_and_disk_tiers' job,
+        # against a real FrameBroker and a real (non-CLI) frame source.
+        self.events.append("start")
+
+    def stop(self) -> None:
+        self.events.append("stop")
+
+    def join(self, *, timeout: float) -> None:
+        self.events.append("join")
+
+
+def test_cli_daemon_serve_reports_healthy_persistent_history_and_flushes_on_shutdown(
+    tmp_path, monkeypatch
+):
+    import topos.cli as cli
+    from topos.config import HistoryConfig, PersistConfig, ToposConfig
+
+    history_dir = tmp_path / "history"
+    config = ToposConfig(
+        cgroup_root=tmp_path / "cgroup",
+        history=HistoryConfig(daemon=PersistConfig(enabled=True, dir=history_dir, segment_frames=1)),
+    )
+
+    class FakeCollector:
+        def __init__(self, cgroup_root, config) -> None:
+            self.cgroup_root = cgroup_root or config.cgroup_root
+            self.network_providers = ()
+
+    observed: dict = {}
+    _wire_one_shot_daemon(monkeypatch, cli, observed, _FakeCliBroker)
+    monkeypatch.setattr(cli, "load", lambda _path: config)
+    monkeypatch.setattr(cli, "Collector", FakeCollector)
+
+    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+
+    assert observed["closed"] is True
+    assert observed["mid_run_state"] == "healthy"
+    assert "recovery_state=" in observed["mid_run_detail"]
+    assert history_dir.exists()  # the real store was constructed, not bypassed
+    final = observed["broker"].health_registry.snapshot().by_name("persistent_history")
+    assert final.state.value == "stopped"
+    assert final.detail == "persistent history flushed"
+
+
+def test_cli_daemon_serve_reports_degraded_persistent_history_at_startup(tmp_path, monkeypatch):
+    import topos.cli as cli
+    from topos.config import HistoryConfig, PersistConfig, ToposConfig
+
+    history_dir = tmp_path / "history"
+    config = ToposConfig(
+        cgroup_root=tmp_path / "cgroup",
+        history=HistoryConfig(daemon=PersistConfig(enabled=True, dir=history_dir, segment_frames=1)),
+    )
+
+    class FakeCollector:
+        def __init__(self, cgroup_root, config) -> None:
+            self.cgroup_root = cgroup_root or config.cgroup_root
+            self.network_providers = ()
+
+    observed: dict = {}
+    _wire_one_shot_daemon(monkeypatch, cli, observed, _FakeCliBroker)
+    monkeypatch.setattr(cli, "load", lambda _path: config)
+    monkeypatch.setattr(cli, "Collector", FakeCollector)
+
+    with mock.patch("pathlib.Path.mkdir", side_effect=PermissionError(13, "Permission denied")):
+        assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+
+    assert observed["closed"] is True
+    assert observed["mid_run_state"] == "degraded"
+    assert "persistent history degraded at startup" in observed["mid_run_detail"]
+
+
+def test_cli_daemon_serve_marks_persistent_history_disabled_when_not_enabled(tmp_path, monkeypatch):
+    import topos.cli as cli
+    from topos.config import ToposConfig
+
+    config = ToposConfig(cgroup_root=tmp_path / "cgroup")  # history.daemon.enabled defaults to False
+
+    class FakeCollector:
+        def __init__(self, cgroup_root, config) -> None:
+            self.cgroup_root = cgroup_root or config.cgroup_root
+            self.network_providers = ()
+
+    observed: dict = {}
+    _wire_one_shot_daemon(monkeypatch, cli, observed, _FakeCliBroker)
+    monkeypatch.setattr(cli, "load", lambda _path: config)
+    monkeypatch.setattr(cli, "Collector", FakeCollector)
+
+    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+
+    assert observed["closed"] is True
+    assert observed["mid_run_state"] == "disabled"
+    final = observed["broker"].health_registry.snapshot().by_name("persistent_history")
+    assert final.state.value == "disabled"  # shutdown flush is skipped entirely when disabled
