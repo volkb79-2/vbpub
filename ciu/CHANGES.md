@@ -21,6 +21,56 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.12.0] - 2026-09-08
+<!-- cmru: generated -->
+<!-- cmru: source-end=412c99eda22fecb10dba95cc03726582c85fdd23 -->
+
+### Added
+- feat(ciu): P52 -- CIU-93, `ciu host enroll` (S14.7 v7 backport) (b8b174b1)
+- feat(ciu): CIU-94 + CIU-95 -- per-container memory.min admission control, injection, and the memory_recursiveprot/downward-enumeration primitives (ciu-P50) (a4f5aa94)
+
+### Fixed
+- fix(ciu backlog): renumber flake finding CIU-98 -> CIU-101 (collision with main) (086ad929)
+- fix(ciu): P52 round-2 review fix -- CRLF also stripped on the --replace/in-place-edit path (97a6eec4)
+- fix(ciu): P52 review fixes -- pending-key guard, CIU-99 --no-install, CRLF round-trip, test fixes (0cdcb017)
+- fix(ciu): P52 -- pin the control version in the `host enroll` CLI tests (2f7d1b09)
+- fix(ciu): P51 -- CIU-96, exclude a redeploying entry's own outgoing instance from mem_min admission (7e5ddc4c)
+- fix(ciu): P51 -- CIU-91+CIU-58, serialize shared test-repo/ access across xdist workers (d59ac689)
+- fix(ciu backlog): renumber known_host doc entry CIU-96 -> CIU-97 (second ID collision) (f5366cdd)
+- fix(ciu backlog): renumber known_host doc entry CIU-88 -> CIU-96 (ID collision) (cdfe431e)
+
+### Changed
+- merge(ciu): CIU-91+CIU-58, CIU-96, CIU-88, CIU-93 -- combined bundle (412c99ed)
+- chore(ciu): P51 -- flip CIU-91/CIU-58/CIU-96 to FIXED; close CIU-88 as fixed upstream by nyxloom NL-4 (4e6c2f62)
+- merge(ciu): CIU-94/CIU-95 -- per-container memory.min admission control + injection, recursiveprot preflight (063b9caf)
+- merge(assay): B068 + quick-wins -- linked-worktree gap named, 3 RecursionError sites closed, tests/ pyflakes-clean, honest skips outside a repo, crash diagnostics kept (B068/B072/B062/B063/B071/B074) (309bedca)
+
+### Documentation
+- docs(ciu backlog): CIU-98 -- plain worktree identity never syncs with the shared test-runner container run-gate actually uses (5bab8eb8)
+- docs(ciu): P52 -- record the gate verdict (PASS at 7917dca5) (cc27fd13)
+- docs(ciu): P52 -- implementer LOG + REPORT (7917dca5)
+- docs(ciu): carve ciu-P52 (CIU-93 -- ciu host enroll, v7 backport S14.7) (976ec42f)
+- docs(ciu): ciu-P51 review fixes -- correct the over-exclusion overclaim, file CIU-98 (c7c3fe5d)
+- docs(ciu): P51 -- implementer LOG + REPORT (865d9da3)
+- docs(ciu): carve ciu-P51 (CIU-91+CIU-58 xdist race, CIU-96 redeploy double-count, CIU-88 schema violation) (2bcdd708)
+- docs(ciu): ciu-P50 review fixes — document the redeploy double-count gap, file CIU-96 (4805d8d9)
+- docs(ciu): ciu-P50 -- record the real gate verdict and commit self-hashes in the LOG/REPORT (5bf45161)
+- docs(ciu): apply adversarial carve-review fixes to ciu-P50 (25d82dfa)
+- docs(ciu): carve ciu-P50 (CIU-94 mem_min injection+admission, CIU-95 recursiveprot+downward enumeration) (a6d96284)
+- docs(backlog): CIU-95 -- memory.min preflight doesn't check recursiveprot or walk downward (c7c04a0f)
+- docs(backlog): CIU-94 -- per-container memory.min injection + admission control (90bd898b)
+- docs(ciu,cmru): host enrollment rev 2 for both lines -- ciu host enroll (two steps, no token/callback), v8 SPEC-V8 draft.7 S7.2.4 + V8-29, v7 SPEC.md S14.7 backport, cmru KI-24 get.py enroll subcommand, proposal rev 3.4, round-4 review prompt (b19880bc)
+- docs(ciu): CIU-93 — design proposal for remote host enrollment via get.py (f6ce5c5b)
+- docs(ciu): v8 design set rev 3.3 / SPEC-V8 draft.6 -- round-3 review received and folded (T3-01..T3-10): state root outside releases, activation manifest + prepare/apply/health/receipt/switch, lock matrix + lock-free lease records, cold moves, inherit/build-context reach = worktree, random run ids, consumer-vantage probes, per-reference image map, mandatory memory_max; demo host-file split + examples/monorepo fixture (c3730525)
+- docs(ciu): v8 design set rev 3.2 / SPEC-V8 draft.5 -- round-2 delta audit folded (T2-01..T2-10 + every incomplete/broke audit row), canonical lock keys + ciu lease, [ciu] inherit, ciu8 decision recorded; demo ciu.toml files re-included in git (v7 **/ciu.toml rule hid them); RG-39 annotated as buildable; nyxloom NL-6 filed (ccbc02bf)
+- docs(ciu): v8 round-2 delta review received (T2-01..T2-10), round-2 reviewer prompt, handoff note with the lease-primitive and monorepo-governance design answers (196e39b1)
+- docs(ciu): v8 design set rev 3.1 / SPEC-V8 draft.4 -- third-party review folded in (T-01..T-35) (858afaff)
+- docs(ciu): third-party adversarial review prompt for the v8 design set (rev 3.0 / draft.3) (f10cbcfb)
+- docs(ciu): v8 design set rev 3.0 / SPEC-V8 draft.3 -- adversarial review, fresh proposal + spec, demo rewritten (286a4bc0)
+
+### Testing
+- test(ciu): ciu-P50 -- close the changed-line coverage gaps the first gate run found (b57cc41c)
+
 ## [Unreleased]
 
 Checked before adding (cmru KI-23): the section below it is `## [7.11.0] -
