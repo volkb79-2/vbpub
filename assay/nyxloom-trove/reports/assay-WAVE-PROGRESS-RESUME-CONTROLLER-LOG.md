@@ -21,3 +21,21 @@ own pin → cleanup) is to run the same way Wave 1 did, without pausing for
 confirmation at each step. B070 (v11 schema) is explicitly Wave 3, not
 this wave's scope; B073 (live-test-progress adapter) is filed and
 deliberately deferred, not this wave's scope either.
+
+## PR-R2 — E-008 checkpoint after B067, fresh successor dispatched
+
+2026-09-08. Implementer landed B067 (`7f2ba056`) — real design work: a new
+`LaneDeadline.tightened()` mechanism, four `math.inf`-to-"no timeout"
+conversion boundaries, a new `judge.canary.budget_per_attempt` key. Filed
+**B076** in passing (an unbounded R2 lane's own baseline run is still the
+one unbounded command -- deliberate, three options, none chosen, correctly
+left unfixed as out of this wave's scope). Crossed the checkpoint
+threshold there, cut cleanly per the wave prompt's own clause: commit,
+clean tree, gate independently re-verified GREEN by the controller from
+the gate's own log markers before trusting the report. Continuation
+brief committed at `8bc6b9ad`, very thorough (located seams for all three
+remaining items, a sharpened DIRTY_TREE lesson from a genuine mid-run
+mistake it made and disclosed, host-load discipline notes from a real
+load-17 saturation event). **Fresh successor dispatched** (never a
+resume -- per E-008, a checkpoint hand-off gets a fresh agent) seeded with
+the brief, scoped to B064, then B065, then B066.
