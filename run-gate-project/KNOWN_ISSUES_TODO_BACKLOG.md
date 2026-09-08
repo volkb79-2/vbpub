@@ -2915,6 +2915,55 @@ unrecognized `--timestamps` flag fails the whole `docker logs` invocation
 loudly (Docker CLI flag parsing is strict, not silently ignored) rather
 than producing the silent-misparse scenario the finding described.
 
+A round-3 confirming review of the round-2 fix (folded into this SAME
+unreleased rev) explicitly ACCEPTED the join()-relocation as correct —
+independently reproduced the round-2 bug via mutation testing (reverting
+only that hunk reproduces the exact spurious WARNING, doubled apostrophe
+included) and confirmed the negative test and the new construction-level
+`--timestamps` test are both real, not decorative — and confirmed both
+"deliberately not fixed" round-2 items hold up independently. Its own
+requested broader sweep surfaced real residual gaps, all addressed here:
+(1) the stall branch never joined the pump thread even AFTER `finally`'s
+`proc.terminate()`/`proc.wait()` had genuinely unblocked its read, leaving
+thread lifecycle unsynchronized with this function's return — sharpest
+under IN-PROCESS reuse (this project's own test suite calling `main()`
+repeatedly in one interpreter, where a straggler thread can land a line in
+the NEXT test's capture). `finally` now joins unconditionally (no
+disclosure needed there — by that point the process really is gone).
+Proven by tracking the CALL rather than thread liveness afterward: against
+this fixture's own fast teardown the thread often finishes on its own
+before anything checks, which the reviewer's own empirical check already
+found (PLAUSIBLE, not reproduced live) — a call-tracking test is
+deterministic where a liveness-diff test is not. (2) `LogStreamWatch._pump`'s
+`except (OSError, ValueError): pass` also catches `UnicodeDecodeError` (a
+`ValueError` subclass) from `text=True`'s STRICT decoding — a single
+non-UTF-8 byte anywhere in a container's real output silently ends the
+pump thread, freezing its liveness signal so a perfectly healthy lane
+eventually reads as falsely stalled with nothing pointing at the real
+cause. Fixed with `errors="replace"` on the `Popen` construction (never
+fatal on something the container did, the same discipline
+`ProgressWatch`'s torn-line handling already uses); proven against a REAL
+subprocess (the `FakeContainerProc` unit tests bypass Python's
+text-decoding machinery entirely, since their `stdout` is already an
+in-memory string iterator). (3) `join()`'s own docstring now names its
+CALLER PRECONDITION explicitly (only safe once the process feeding the
+pipe is confirmed no longer producing output) — named for RG-46's own
+future follower stall detection, a concrete next caller that cannot copy
+`await_container`'s terminate-then-join structure (RW-14 forbids a
+follower from `terminate()`ing a container it does not own) and would
+otherwise have no way to discover the constraint from the class itself.
+Two nits also fixed: a stale `__revision__` comment still claiming the two
+watches "are never both armed" (the in-code comment already correctly
+qualified this in round 1) now matches; the new construction-level test's
+unused `capsys` fixture param (a copy-paste artifact) was removed, and the
+stall test's WARNING-absence assertion now checks both stdout and stderr,
+not stderr alone. One finding was assessed and left as pre-existing,
+out of scope: `_seed_from_wall_clock`'s clamp only guards one direction of
+clock skew (source clock ahead of this host) — a pre-existing property of
+`ProgressWatch`'s own RW-27 mechanism this round only extracted into a
+shared function, not introduced by it, and affecting both watchers
+equally; not filed separately given how narrow and pre-existing it is.
+
 ## RG-44 — `GONE_SIGNALS` matches docker's "gone" stderr case-sensitively; this docker version emits lowercase and the container-truly-gone case is never recognized
 
 ### Observed mechanism and reproduction

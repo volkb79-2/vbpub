@@ -8186,6 +8186,32 @@ class TestLogStreamWatch:
         # from here on, not a fact eraser.
         assert watch._last_line == "last line before the pipe died"
 
+    def test_a_non_utf8_byte_does_not_kill_the_pump_thread(self):
+        """Round-3 review: `text=True`'s STRICT decoding turns one
+        non-UTF-8 byte anywhere in a container's real output into a
+        `UnicodeDecodeError` — a `ValueError` subclass `_pump`'s own
+        `except (OSError, ValueError)` swallows, silently ending the
+        thread and freezing `_last_line_at`. A perfectly healthy,
+        still-producing lane then reads as stalled with nothing pointing
+        at the real cause. `await_container`'s own `Popen` construction
+        passes `errors="replace"` to close this — proven here against a
+        REAL subprocess, since the `FakeContainerProc` unit tests above
+        bypass Python's text-decoding machinery entirely (their `stdout`
+        is already an in-memory string iterator, never raw bytes)."""
+        proc = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys; b = sys.stdout.buffer; "
+             "b.write(b'before \\xff\\xfe after\\n'); "
+             "b.write(b'still alive\\n'); b.flush()"],
+            stdout=subprocess.PIPE, text=True, bufsize=1, errors="replace")
+        clock = FakeClock()
+        watch = run_gate.LogStreamWatch(proc, None, "suite", clock)
+        try:
+            assert _wait_until(lambda: watch._last_line == "still alive")
+        finally:
+            watch.join(timeout=5.0)
+            proc.wait(timeout=5.0)
+
     def test_a_line_with_no_docker_timestamp_prefix_falls_back_to_arrival(
             self, make_watch):
         """No `--timestamps` prefix (a line that happens to contain a space
@@ -8411,7 +8437,7 @@ class TestStallEndToEndCommandLane:
     """
 
     def test_the_real_docker_logs_call_requests_timestamps(
-            self, tmp_path, monkeypatch, capsys):
+            self, tmp_path, monkeypatch):
         """Round-2 review: a construction-level pin (this suite's own
         documented philosophy — "argv proves construction, not
         acceptance") for the ONE flag `LogStreamWatch._translate`'s whole
@@ -8453,7 +8479,7 @@ class TestStallEndToEndCommandLane:
         log, state = fake_docker_logstream(tmp_path, monkeypatch)
         (state / ".hang").write_text("")          # `logs -f` never returns
         assert run_gate.main(["suite"]) == 3
-        err = capsys.readouterr().err
+        out, err = capsys.readouterr()
         assert "lane 'suite' STALLED" in err
         assert "still RUNNING but has printed nothing" in err
         assert "for 1s (stall_timeout 1s)" in err
@@ -8464,11 +8490,48 @@ class TestStallEndToEndCommandLane:
         # reading (nothing more is coming until the container is removed),
         # so joining it on the stall path used to time out on EVERY stall
         # and print this WARNING — not just under real host contention, the
-        # case it exists to disclose. It must be silent here.
+        # case it exists to disclose. It must be silent here — on EITHER
+        # stream (round-3 review: a regression that leaked it onto stdout
+        # instead would not be caught by an err-only assertion).
         assert "log pump did not finish draining" not in err
+        assert "log pump did not finish draining" not in out
         # …the container is GONE, same as the assay case: a stall stops the
         # lane, it does not leave the thing that stalled running.
         assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
+
+    def test_the_pump_thread_is_joined_even_on_a_stall(
+            self, tmp_path, monkeypatch, capsys):
+        """Round-3 review: the stall branch never joined the pump thread
+        even AFTER `finally`'s `proc.terminate()`/`proc.wait()` had
+        genuinely unblocked its pipe read, leaving the thread's own
+        lifecycle entirely unsynchronized with this function's return —
+        sharpest under IN-PROCESS reuse (this suite's own repeated
+        `main()` calls in one interpreter). `finally` now joins it
+        unconditionally.
+
+        Proven by tracking the CALL rather than diffing live threads
+        afterward: against this fixture's own fast, in-process container
+        teardown the pump thread often finishes on its own well before
+        anything checks, which would make a thread-liveness assertion
+        pass whether or not the join actually happened — exactly what
+        made this gap hard to catch live in the first place."""
+        repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
+        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.2)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        log, state = fake_docker_logstream(tmp_path, monkeypatch)
+        (state / ".hang").write_text("")
+        calls = []
+        real_join = run_gate.LogStreamWatch.join
+
+        def _tracked_join(self, timeout=2.0):
+            calls.append(timeout)
+            return real_join(self, timeout)
+
+        monkeypatch.setattr(run_gate.LogStreamWatch, "join", _tracked_join)
+        assert run_gate.main(["suite"]) == 3
+        assert calls, "log_watch.join() was never called on the stall path"
 
     def test_a_command_lane_that_keeps_printing_is_never_stopped(
             self, tmp_path, monkeypatch, capsys):

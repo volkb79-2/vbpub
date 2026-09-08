@@ -39,7 +39,14 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   silent container — nothing unblocks that read until the container is
   actually removed); moved to the branch where it belongs, and the
   duplicated wall-clock-translation arithmetic shared with `ProgressWatch`
-  is now a single helper both call.
+  is now a single helper both call. A third review round then closed two
+  more gaps: a single non-UTF-8 byte anywhere in a container's own output
+  used to silently end the pump thread (`text=True`'s strict decoding),
+  freezing liveness so a healthy lane eventually read as falsely stalled —
+  fixed with `errors="replace"`; and the pump thread now joins
+  unconditionally in `finally` too (thread-lifecycle hygiene, no
+  disclosure needed there), so it cannot outlive `await_container`'s own
+  return under in-process reuse.
 
 <!-- cleared 2026-09-08 after the 23.6.0 release, per the standing
      housekeeping rule (see CHANGES.md history for the prior occurrences
