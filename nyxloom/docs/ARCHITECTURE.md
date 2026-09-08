@@ -233,10 +233,15 @@ structurally: the renderer copies allowlisted excerpts, links nothing else).
 
 ## 8. Notifications and the decision loop (F8)
 
-Deterministic events → notification hooks; the reference adapter is **ntfy**
-(self-hosted topic or ntfy.sh) → phone/desktop push with a click-through URL
-into the dashboard. Email/webhook adapters are the same interface. Delivery
-failure never mutates workflow truth (draft 1 rule, kept).
+Deterministic events → notification hooks. Every channel is a
+`NotifyBackend` (notify.py) that owns translating the typed note into its own
+payload shape; `[notify] backend` names the active one explicitly. Shipping
+today: **mattermost** (the live channel since 2026-09-08, self-hosted — see
+`nyxloom/mattermost/`), **ntfy** (the original reference adapter, retired but
+kept selectable — `nyxloom/ntfy/`), and a raw **webhook** passthrough for
+receivers built against nyxloom's own note schema. Telegram/Discord are
+future backends, not built. Delivery failure never mutates workflow truth
+(draft 1 rule, kept).
 
 Event classes pushed by default: `DECISION_OPENED`, `TASK_BLOCKED`,
 `PROVIDER_LIMITED`, `BUDGET_WARNING/EXHAUSTED`, `STALL_CONFIRMED`,

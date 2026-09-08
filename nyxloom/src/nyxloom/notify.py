@@ -537,7 +537,11 @@ class MattermostBackend(NotifyBackend):
                 log.warning("notification channel failed", channel="mattermost",
                             status=response.status)
                 return (False, f"mattermost returned {response.status}")
-        except Exception as e:
+        except Exception as e:  # census: advisory-degradation (NL-17)
+            # Broad on purpose and classified rather than inherited as debt:
+            # SPEC §13 says a delivery failure never raises into the caller,
+            # so every fault this channel can produce -- HTTP, socket, DNS,
+            # a malformed URL -- degrades to a recorded (False, detail).
             log.warning("notification channel failed", channel="mattermost",
                         error=type(e).__name__)
             return (False, f"mattermost failed: {type(e).__name__}")
