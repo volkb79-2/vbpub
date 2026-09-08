@@ -55,6 +55,52 @@ instead of restating environment recipes per-handoff (single source;
 recipes rot fast). First adopter: dstdns (multi-stack environment rules,
 2026-07-16).
 
+### REQUIRED: the repo-root `AGENTS.md` pointer block
+
+**Every adopting project MUST add a pointer block to its repo-root `AGENTS.md`.**
+This is not optional polish — it is the only thing that makes the doc set
+reachable on the **hand-started** path.
+
+Two kinds of agent work on a project, and they discover documents differently:
+
+| How the agent started | How it finds the docs |
+|---|---|
+| Dispatched by `nyxloomd` | the daemon injects a read-first manifest into the dispatch prompt |
+| **Started manually** (a developer runs `codex` / `opencode` / `claude` in the repo) | **only `AGENTS.md`** — nothing else is loaded automatically |
+
+So a document that only the daemon knows how to find **does not exist for half
+its audience.** Wiring only the dispatched path is how project knowledge silently
+becomes daemon-only, and how hand-started agents rediscover environment rules the
+expensive way.
+
+`AGENTS.md` stays lean and tool-agnostic: it carries the **pointer**, not the
+content. Copy this block and adapt the project name:
+
+```markdown
+## nyxloom — where the rules live
+
+Canonical doctrine ships WITH the nyxloom product and is read from there
+(never copied here, so it cannot go stale):
+`reference/AUTHORING.md` (handoff contract) · `reference/STANDARD.md`
+(trove spec) · `reference/DOCTRINE.md` (gates, evidence, review, merge).
+
+Project-specific additions/overrides live in the same-named sibling under
+`nyxloom-trove/` — read canonical first, then ours, which refines (never
+replaces) it.
+
+**If you were started manually (not dispatched by nyxloomd), read these
+yourself — nothing loads them for you:**
+1. `nyxloom-trove/README.md` — what this trove carries.
+2. `nyxloom-trove/GUIDE.md` — how to operate this project's environment.
+3. every same-named sibling present (`ls nyxloom-trove/*.md`).
+4. the canonical set above, from the nyxloom product.
+```
+
+**Enumerate, do not assume.** Step 3 says *list the directory* rather than name a
+fixed set: the sibling set is per-project and grows over time, so a hard-coded
+list goes stale the first time a project adds one. `nyxloom init` stamps a
+`README.md` reminding you to add this block.
+
 ## Where nyxloom's data lives — the trove vs. the state volume
 
 Two homes, chosen by what the data *is*:
