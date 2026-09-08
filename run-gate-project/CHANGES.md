@@ -28,11 +28,18 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - **RG-38**: assay mutation-lane resume state now survives an ephemeral
   judged worktree (a cmru release transaction, a Mode-B instance) — every
   assay-kind lane, on all three runners (container, exec, bare-host), now
-  passes `--state-dir <repo>/.run-gate/assay-state/<project>/` (assay
-  B066, >= 5.2.0 required; an older pin refuses by name, same class as
-  RG-33's existing `--resume`/`--progress` floor). `repo` — the checkout
-  owning the shared `.git` — is durable by construction even when the
-  judged worktree is not.
+  passes `--state-dir <repo>/.run-gate/assay-state/<project's path
+  relative to repo>/` (assay B066, >= 5.2.0 required; an older pin
+  refuses by name, same class as RG-33's existing `--resume`/`--progress`
+  floor, which this raises `ASSAY_FLAG_FLOOR` to cover too). `repo` — the
+  checkout owning the shared `.git` — is durable by construction even
+  when the judged worktree is not; the key is the project's full path
+  relative to `repo` (falling back to a filesystem-safe full resolved
+  path when a `--worktree` override relocates the project outside
+  `repo`), not a bare directory basename, so two projects that happen to
+  share a basename never collide on one shared state store. The state
+  directory is disclosed alongside the verdict/progress paths (RG-10)
+  after every assay-kind lane run.
 
 ### Adoption / Migration Notes
 Every assay-kind lane's pinned judge must be >= 5.2.0 to pick up RG-38's

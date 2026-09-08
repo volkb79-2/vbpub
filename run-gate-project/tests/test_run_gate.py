@@ -701,17 +701,17 @@ class TestArgvConstruction:
             assay_lane = "ciu"
             environment = "tester-unified"
             assay_command = ["/opt/tester-venv/bin/python",
-                             "tools/assay/assay-3.1.0.pyz"]
+                             "tools/assay/assay-6.1.0.pyz"]
 
             [lanes.ciu.pins.assay]
-            version = "3.1.0"
-            sha256 = "tools/assay/assay-3.1.0.pyz.sha256"
+            version = "6.1.0"
+            sha256 = "tools/assay/assay-6.1.0.pyz.sha256"
         """)
         # Load-time sidecar existence is checked for project lanes too; the
         # docker shim only records argv, so a placeholder suffices.
-        sidecar = proj / "tools/assay/assay-3.1.0.pyz.sha256"
+        sidecar = proj / "tools/assay/assay-6.1.0.pyz.sha256"
         sidecar.parent.mkdir(parents=True, exist_ok=True)
-        sidecar.write_text("0" * 64 + "  assay-3.1.0.pyz\n")
+        sidecar.write_text("0" * 64 + "  assay-6.1.0.pyz\n")
         commit_all(repo, "vendor sidecar")
         log = fake_docker(tmp_path, monkeypatch)
         monkeypatch.setattr(run_gate, "physical_path",
@@ -720,12 +720,12 @@ class TestArgvConstruction:
         assert proc.returncode == 0, proc.stderr
         inner = lane_runs(log)[0][-1]
         # pin verified FROM the pin's own directory, bare filename (P07 trap)
-        assert f"(cd {proj}/tools/assay && sha256sum -c assay-3.1.0.pyz.sha256)" \
+        assert f"(cd {proj}/tools/assay && sha256sum -c assay-6.1.0.pyz.sha256)" \
             in inner
         assert f"cd {proj}" in inner          # assay runs from the PROJECT dir
         assert "mkdir -p .assay" in inner
         assert "--file assay.toml --verdict-json .assay/verdict-ciu.json" in inner
-        assert "/opt/tester-venv/bin/python tools/assay/assay-3.1.0.pyz run ciu" \
+        assert "/opt/tester-venv/bin/python tools/assay/assay-6.1.0.pyz run ciu" \
             in inner
         assert f"verdict artifact: {proj}/.assay/verdict-ciu.json" in proc.stdout
 
@@ -893,11 +893,11 @@ class TestEffectiveTreeExecution:
         assay_lane = "ciu"
         environment = "tester-unified"
         assay_command = ["/opt/tester-venv/bin/python",
-                         "tools/assay/assay-3.1.0.pyz"]
+                         "tools/assay/assay-6.1.0.pyz"]
 
         [lanes.ciu.pins.assay]
-        version = "3.1.0"
-        sha256 = "tools/assay/assay-3.1.0.pyz.sha256"
+        version = "6.1.0"
+        sha256 = "tools/assay/assay-6.1.0.pyz.sha256"
     """
 
     def _repo_with_worktree(self, tmp_path, config: str | None = None):
@@ -906,9 +906,9 @@ class TestEffectiveTreeExecution:
         # The pin sidecar must exist in the JUDGED tree (load-time existence
         # check is symmetric for project lanes now); content is irrelevant —
         # the docker shim only records the assembled command.
-        sidecar = proj / "tools/assay/assay-3.1.0.pyz.sha256"
+        sidecar = proj / "tools/assay/assay-6.1.0.pyz.sha256"
         sidecar.parent.mkdir(parents=True, exist_ok=True)
-        sidecar.write_text("0" * 64 + "  assay-3.1.0.pyz\n")
+        sidecar.write_text("0" * 64 + "  assay-6.1.0.pyz\n")
         commit_all(repo, "vendor sidecar")
         wt = tmp_path / "w1"
         git(repo, "worktree", "add", "-q", "-b", "w1", str(wt))
@@ -925,7 +925,7 @@ class TestEffectiveTreeExecution:
         # cd target AND pin verification relocated INTO the selected tree…
         assert f"cd {wt}/proj" in inner
         assert f"(cd {wt}/proj/tools/assay && " \
-            f"sha256sum -c assay-3.1.0.pyz.sha256)" in inner
+            f"sha256sum -c assay-6.1.0.pyz.sha256)" in inner
         # …and the invocation checkout appears NOWHERE in the judged command
         # (controlled wrong implementation: pre-RG-15 built this exact string)
         assert str(proj) not in inner
@@ -1731,14 +1731,14 @@ class TestPinVersionVerify:
                 "pins": {"assay": pin}}
 
     def test_declared_version_probed_in_lane(self):
-        inner = run_gate.build_assay_inner(self._lane("3.1.0"), Path("/proj"), Path("/repo"))
+        inner = run_gate.build_assay_inner(self._lane("6.1.0"), Path("/proj"), Path("/repo"))
         assert "./tools/assay/assay.pyz --version" in inner
-        assert '[ "$tok" = 3.1.0 ]' in inner and "version mismatch" in inner
+        assert '[ "$tok" = 6.1.0 ]' in inner and "version mismatch" in inner
 
     def test_prefix_version_never_matches_longer_reported(self, tmp_path):
-        """Review fix: the old substring glob let declared '3.1' pass for a
-        reported '3.11.0' — a claim the artifact never made."""
-        proc = self._run_inner(tmp_path, "3.1", "assay 3.11.0")
+        """Review fix: the old substring glob let declared '6.1' pass for a
+        reported '6.11.0' — a claim the artifact never made."""
+        proc = self._run_inner(tmp_path, "6.1", "assay 6.11.0")
         assert proc.returncode != 0
         assert "version mismatch" in proc.stderr
 
@@ -1768,19 +1768,19 @@ class TestPinVersionVerify:
         return proc
 
     def test_mismatched_version_refuses_naming_both_values(self, tmp_path):
-        proc = self._run_inner(tmp_path, "3.1.0", "assay 9.9.9")
+        proc = self._run_inner(tmp_path, "6.1.0", "assay 9.9.9")
         assert proc.returncode != 0
         assert "version mismatch" in proc.stderr
-        assert "3.1.0" in proc.stderr and "9.9.9" in proc.stderr
+        assert "6.1.0" in proc.stderr and "9.9.9" in proc.stderr
 
     def test_matching_version_runs_silently(self, tmp_path):
-        proc = self._run_inner(tmp_path, "3.1.0", "assay 3.1.0")
+        proc = self._run_inner(tmp_path, "6.1.0", "assay 6.1.0")
         assert proc.returncode == 0, proc.stderr
 
     def test_punctuated_report_still_matches(self, tmp_path):
-        """Trailing punctuation (v3.1.0,) or a leading bracket must not
+        """Trailing punctuation (v6.1.0,) or a leading bracket must not
         break the whole-token match."""
-        proc = self._run_inner(tmp_path, "3.1.0", "(assay) reports: v3.1.0, ok")
+        proc = self._run_inner(tmp_path, "6.1.0", "(assay) reports: v6.1.0, ok")
         assert proc.returncode == 0, proc.stderr
 
     def test_empty_version_declaration_rejected(self, tmp_path):
@@ -6231,6 +6231,44 @@ class TestResumeAndProgressAlways:
         assert inner.index(f"mkdir -p {state_dir}") < inner.index(
             f"--state-dir {state_dir}")
 
+    def test_assay_state_dir_uses_the_full_relative_path_not_a_bare_basename(self):
+        """Review finding (P05 round 2): a bare `project_dir.name` key would
+        let two projects that happen to SHARE a directory basename (e.g. two
+        nested `backend/` projects under one repo) collide on one shared
+        mutation-resume-state store. The full path relative to `repo`
+        avoids it -- both siblings below prove distinct state dirs despite
+        the identical basename."""
+        repo = Path("/repo")
+        a = run_gate.assay_state_dir(repo, repo / "services" / "backend")
+        b = run_gate.assay_state_dir(repo, repo / "tools" / "backend")
+        assert a != b
+        assert a == repo / ".run-gate" / "assay-state" / "services" / "backend"
+        assert b == repo / ".run-gate" / "assay-state" / "tools" / "backend"
+
+    def test_assay_state_dir_falls_back_to_a_safe_key_outside_repo(self):
+        """A --worktree override can relocate project_dir entirely outside
+        `repo` (Mode-B); relative_to() then raises, and the fallback (full
+        resolved path, filesystem-safe) must still be a real, usable,
+        collision-resistant directory name, not raise itself."""
+        repo = Path("/repo")
+        outside = Path("/elsewhere/proj")
+        state_dir = run_gate.assay_state_dir(repo, outside)
+        assert state_dir.parent == repo / ".run-gate" / "assay-state"
+        assert "/" not in state_dir.name  # a single, real path segment
+        assert state_dir.name == "elsewhere-proj"
+
+    def test_print_lane_artifacts_discloses_the_state_directory(
+            self, capsys):
+        """Review finding (P05 round 2): RG-10's own rule is unconditional
+        evidence-path disclosure after every run; the state directory a
+        lane's own inner script creates and writes to was silently absent
+        from it until this fix."""
+        run_gate.print_lane_artifacts(
+            {**self._LANE, "kind": "assay"}, "sql_mutation",
+            Path("/proj"), Path("/repo"), Path("/proj"))
+        out = capsys.readouterr().out
+        assert "run-gate: state directory: /repo/.run-gate/assay-state/proj" in out
+
     def test_the_executed_judge_receives_both_flags(
             self, tmp_path, monkeypatch, capfd):
         """RG-28's echo oracle: the judge prints the argv it was EXECUTED
@@ -6287,10 +6325,11 @@ class TestResumeAndProgressAlways:
             run_gate.build_assay_inner(self._pinned("2.3.0"), Path("/proj"), Path("/repo"))
         msg = str(exc.value)
         assert "lane 'sql_mutation': pin 'assay' declares assay 2.3.0" in msg
-        assert "below 2.4.1" in msg and "--resume" in msg and "--progress" in msg
-        assert "re-pin the judge to >= 2.4.1" in msg
+        assert "below 5.2.0" in msg and "--resume" in msg and "--progress" in msg
+        assert "--state-dir" in msg
+        assert "re-pin the judge to >= 5.2.0" in msg
 
-    @pytest.mark.parametrize("declared", ["2.4.1", "v2.4.1", "3.2.0", "4.1.0"])
+    @pytest.mark.parametrize("declared", ["5.2.0", "v5.2.0", "5.2.1", "6.0.0"])
     def test_a_pin_at_or_above_the_floor_carries_the_flags(self, declared):
         inner = run_gate.build_assay_inner(self._pinned(declared), Path("/proj"), Path("/repo"))
         assert "--resume --progress .assay/progress-sql_mutation.jsonl" in inner
@@ -8306,7 +8345,7 @@ class TestOwnerLivenessAndFollowEdges:
         shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
         return run_gate.follow_container(str(shim), "run-gate-x",
                                          {"kind": "command"}, "suite",
-                                         tmp_path, tmp_path, **kw)
+                                         tmp_path, tmp_path, tmp_path, **kw)
 
     def _dead_owner_record(self, tmp_path, container="run-gate-x") -> Path:
         """An inflight record whose owner does NOT exist — the state the
@@ -8460,11 +8499,13 @@ class TestInflightRecordStore:
     def test_an_assay_lane_records_its_verdict_and_progress_paths(self):
         lane = {"kind": "assay", "assay_lane": "sql_mutation",
                 "assay_command": ["./a.pyz"]}
-        verdict, progress = run_gate.assay_artifact_paths(lane, Path("/p"))
+        verdict, progress, state_dir = run_gate.assay_artifact_paths(
+            lane, Path("/p"), Path("/repo"))
         assert verdict == "/p/.assay/verdict-sql_mutation.json"
         assert progress == "/p/.assay/progress-sql_mutation.jsonl"
+        assert state_dir == "/repo/.run-gate/assay-state/p"
         assert run_gate.assay_artifact_paths(
-            {"kind": "command"}, Path("/p")) == (None, None)
+            {"kind": "command"}, Path("/p"), Path("/repo")) == (None, None, None)
 
     def test_an_unignored_store_disables_re_attach_but_not_the_lane(
             self, tmp_path, monkeypatch, capsys):

@@ -2611,17 +2611,35 @@ ships.
 runners — `run_container_lane`, `run_exec_lane`, `run_bare_host_lane` — the
 last of which did not carry `repo` at all before this, added here) and
 unconditionally appends `--state-dir <repo>/.run-gate/assay-state/
-<project_dir.name>/` to every assay-kind lane's `run` argv, right after
-`--progress` and before RG-26's `--request-base`. `mkdir -p` runs on that
-directory in the same inner script that already creates `.assay`. Proven
-via `TestResumeAndProgressAlways::test_state_dir_is_created_and_points_
-outside_the_judged_tree` (builder-level) and `test_the_executed_judge_
-receives_both_flags` (real subprocess execution against a real repo/proj
-git fixture, asserting the EXACT computed path in the judge's own echoed
-argv). Full suite green (638 passed, one pre-existing unrelated failure
-— `TestFreshFlagScope::test_a_host_lane_refuses_it`, reproduces identically
-on a clean, unmodified checkout, an environment-dependent docker-pull
-assumption unrelated to this fix).
+<project's path relative to repo>/` to every assay-kind lane's `run` argv,
+right after `--progress` and before RG-26's `--request-base`. `mkdir -p`
+runs on that directory in the same inner script that already creates
+`.assay`. Proven via `TestResumeAndProgressAlways::test_state_dir_is_
+created_and_points_outside_the_judged_tree` (builder-level) and
+`test_the_executed_judge_receives_both_flags` (real subprocess execution
+against a real repo/proj git fixture, asserting the EXACT computed path in
+the judge's own echoed argv). Full suite green (638 passed, one
+pre-existing unrelated failure — `TestFreshFlagScope::test_a_host_lane_
+refuses_it`, reproduces identically on a clean, unmodified checkout, an
+environment-dependent docker-pull assumption unrelated to this fix — since
+fixed in the same batch, see the RG-43 table note).
+
+**Round-2 adversarial review found three real gaps, all fixed same-batch:**
+(1) `ASSAY_FLAG_FLOOR` had not actually been raised to 5.2.0 despite this
+note already claiming it was — a pin between 2.4.1 and 5.1.x cleared the
+stale floor and failed inside the already-started container instead of at
+construction. (2) the state-dir key was a bare `project_dir.name` — two
+projects sharing a directory basename could collide on one shared store;
+now keyed by the project's full path relative to `repo` via a new
+`assay_state_dir()`, which `build_assay_inner` and the extended (now
+3-tuple) `assay_artifact_paths()` both call, so the two constructions can
+never drift apart. (3) the state directory was absent from RG-10's own
+unconditional evidence-disclosure (`print_lane_artifacts`) — `repo`
+threaded through it and its two callers (`await_container`,
+`follow_container`); every assay-kind lane run now prints `run-gate: state
+directory: <path>`. Three new regression tests added; full suite green
+again (643 passed); real gate (`./run-gate.py selftest`) green on the
+clean committed tree (diff-coverage 100%).
 
 ## RG-40 — `coverage_gate.py` reports misleading uncovered lines on a dirty tree
 
