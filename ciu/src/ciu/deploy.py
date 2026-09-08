@@ -1233,6 +1233,97 @@ def _resolve_entry_governance(
     return gov_cfg, slice_name
 
 
+def _entry_prior_instance_scopes(
+    repo_root: Path, entry: dict, gov_cfg: dict,
+) -> tuple[list[str], str]:
+    """Transient scope units of *entry*'s OWN currently-running instance (CIU-96).
+
+    S15.23 admission runs BEFORE ``_run_stack``, so a redeploy's outgoing
+    containers are still up and still counted as occupants of the guaranteed
+    slice. Without correlating them back to this entry, the sum carries the
+    outgoing claim AND the incoming candidate at once and spuriously refuses a
+    redeploy whose net claim never changes.
+
+    The correlation reuses what is already on disk and already proven: the
+    ``ciu.compose.yml`` rendered by this entry's PREVIOUS deploy. Nothing in
+    ``action_deploy`` removes or rewrites it before the admission check — the
+    render happens inside ``_run_stack``, after — so on a redeploy it is the
+    previous invocation's own file, naming the previous invocation's own
+    containers. From each non-exempt service's ``container_name`` this walks
+    the identical chain :func:`apply_mem_min_injections` already walks in the
+    other direction (``docker inspect .State.Pid`` →
+    :func:`governance.container_transient_scope`), landing on the same
+    ``docker-<id>.scope`` unit names :func:`governance.enumerate_slice_children`
+    reports as the slice's child cgroups.
+
+    **Why not a label filter.** A live ``docker ps --filter label=...`` would
+    survive a stale compose file, but CIU injects no identifying label onto
+    governed containers today — ``governance.build_injections`` emits only
+    ``cgroup_parent``/``mem_limit``/``memswap_limit``/``mem_reservation``/
+    ``cpus``/``blkio_config`` — so that route means inventing a whole labeling
+    scheme, a strictly larger change than the defect warrants.
+
+    **Fails closed by construction.** Every failure mode — no prior compose
+    file (a genuine FIRST deploy), unreadable or malformed YAML, a stale
+    compose naming containers that no longer exist, a container that is not
+    running, a name Docker cannot resolve — yields no scope for that service,
+    so nothing is excluded and admission behaves exactly as it did before this
+    fix. The dangerous direction (excluding an occupant that is NOT this
+    entry's) is unreachable through a name: Docker enforces container-name
+    uniqueness daemon-wide, so a name read out of THIS entry's compose file
+    can only ever resolve to THIS entry's container.
+
+    Exempt services are skipped, mirroring
+    :func:`apply_mem_min_injections`' own filter: CIU never applied a floor to
+    them, so it must not credit itself with removing one.
+
+    Returns ``(scope_units, note)``. Never raises, and never warns: a missing
+    prior instance is the overwhelmingly common case (every first deploy), not
+    a condition worth reporting.
+    """
+    import yaml
+
+    from .config_constants import CIU_COMPOSE_OUTPUT
+
+    compose_path = (repo_root / entry["path"]).resolve() / CIU_COMPOSE_OUTPUT
+    try:
+        compose = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return [], (
+            f"no readable prior {CIU_COMPOSE_OUTPUT} for {entry['path']} — "
+            "treating this as a first deploy with no outgoing instance"
+        )
+    services = compose.get("services") if isinstance(compose, dict) else None
+    if not isinstance(services, dict) or not services:
+        return [], (
+            f"the prior {CIU_COMPOSE_OUTPUT} for {entry['path']} declares no "
+            "services — no outgoing instance to exclude"
+        )
+
+    exempt = set(gov_cfg.get("exempt_services") or [])
+    scopes: list[str] = []
+    for compose_service, definition in services.items():
+        if compose_service in exempt or not isinstance(definition, dict):
+            continue
+        cname = definition.get("container_name")
+        if not isinstance(cname, str) or not cname.strip():
+            continue
+        state = _inspect_state(cname.strip())
+        pid = int(state.get("Pid") or 0) if isinstance(state, dict) else 0
+        scope, _note = governance_mod.container_transient_scope(pid)
+        if scope is not None:
+            scopes.append(scope)
+    if not scopes:
+        return [], (
+            f"{entry['path']} has no currently-running prior instance to "
+            "exclude from the admission sum"
+        )
+    return scopes, (
+        f"{entry['path']}'s outgoing instance occupies "
+        f"{', '.join(scopes)} — excluded from the admission sum (CIU-96)"
+    )
+
+
 def mem_min_admission_check(
     repo_root: Path,
     entry: dict,
@@ -1265,6 +1356,15 @@ def mem_min_admission_check(
     `CGROUP-NOTES.md` already accepts for the concurrent-admission race — and
     is documented as a known v1 limitation in SPEC.md S15.23.
 
+    **Redeploys (CIU-96, ciu-P51).** This runs before ``_run_stack`` stops the
+    entry's own previous container, so that outgoing instance is still a live
+    occupant of the slice. :func:`_entry_prior_instance_scopes` resolves its
+    transient scope units from the PRIOR deploy's own rendered compose file
+    and they are excluded from the sum, so a no-net-change redeploy of a stack
+    that already fills its ceiling admits. Only that entry's own outgoing
+    scopes are excluded — an unrelated occupant, or a second concurrent
+    instance of the same stack, still counts and can still be refused.
+
     Silently a no-op when governance is off, no ``mem_min`` is declared, or
     ``cgroup_parent`` does not resolve to a slice.
 
@@ -1291,7 +1391,19 @@ def mem_min_admission_check(
             f"is not a valid size: {exc}"
         ) from exc
 
-    admit, note = governance_mod.check_mem_min_admission(slice_name, candidate)
+    # CIU-96 — the entry's OWN outgoing instance is still running at this
+    # point (`_run_stack` stops it below), so it would otherwise be counted
+    # alongside the candidate that is about to replace it. Exclude exactly
+    # those scopes, nothing else: a different stack, or a second concurrent
+    # instance of this one, stays in the sum and can still be refused.
+    exclude_scopes, exclude_note = _entry_prior_instance_scopes(
+        repo_root, entry, gov_cfg
+    )
+    admit, note = governance_mod.check_mem_min_admission(
+        slice_name, candidate, exclude_scopes=exclude_scopes
+    )
+    if exclude_scopes:
+        info(f"[INFO] [S15.23] {exclude_note}")
     if admit is None:
         info(f"[INFO] [S15.23] {note}")
         return

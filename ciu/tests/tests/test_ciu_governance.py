@@ -1774,6 +1774,142 @@ class TestCheckMemMinAdmission:
         assert "not PID 1" in note
 
 
+class TestMemMinAdmissionExcludesOutgoingInstance:
+    """CIU-96 (ciu-P51) — a redeploy must not double-count the entry's own
+    outgoing instance.
+
+    Admission runs BEFORE ``_run_stack`` stops the entry's previous container,
+    so that container is still a live occupant of the slice. `exclude_scopes`
+    carries the outgoing scopes the CALLER correlated back to this entry
+    (``deploy._entry_prior_instance_scopes``); everything else stays in the
+    sum. The three oracles below are exactly the three cases S15.23 must
+    separate: first deploy, redeploy, and an unrelated stack.
+    """
+
+    CEILING = "167772160"   # 160 MiB — the whole slice
+    FULL_CLAIM = 167772160  # a stack that alone fills it
+
+    @pytest.fixture(autouse=True)
+    def _systemd_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov, "_systemd_is_pid1", lambda: True)
+
+    @staticmethod
+    def _build(tmp_path: Path, ceiling: str, occupants: dict[str, str]) -> None:
+        slice_dir = tmp_path / "dev.slice" / "dev-memory_min_guaranteed.slice"
+        slice_dir.mkdir(parents=True)
+        (slice_dir / "memory.min").write_text(ceiling, encoding="utf-8")
+        for name, value in occupants.items():
+            child = slice_dir / name
+            child.mkdir()
+            (child / "memory.min").write_text(value, encoding="utf-8")
+
+    def _admit(self, tmp_path: Path, candidate: int, exclude_scopes=None):
+        return gov.check_mem_min_admission(
+            "dev-memory_min_guaranteed.slice", candidate,
+            cgroup_root=tmp_path, exclude_scopes=exclude_scopes,
+        )
+
+    def test_first_deploy_of_a_stack_that_fills_the_ceiling_still_admits(
+        self, tmp_path: Path
+    ) -> None:
+        """REGRESSION GUARD. Nothing running, nothing to exclude — the
+        pre-CIU-96 behaviour of an exactly-full first deploy is unchanged."""
+        self._build(tmp_path, self.CEILING, {})
+        admit, note = self._admit(tmp_path, self.FULL_CLAIM)
+        assert admit is True
+        assert "excluding this entry's own outgoing instance" not in note
+
+    def test_redeploy_excluding_the_outgoing_instance_admits(
+        self, tmp_path: Path
+    ) -> None:
+        """THE FIX. The stack already claims the entire ceiling; its
+        replacement claims exactly the same. Before CIU-96 the sum was
+        160 MiB + 160 MiB and this was a hard refuse, even though the net
+        claim across the whole operation never changes."""
+        self._build(tmp_path, self.CEILING, {"docker-outgoing.scope": self.CEILING})
+        admit, note = self._admit(
+            tmp_path, self.FULL_CLAIM, exclude_scopes=["docker-outgoing.scope"],
+        )
+        assert admit is True
+        assert "claimed=0 bytes across 0 occupant(s)" in note
+        assert "docker-outgoing.scope=167772160" in note
+        assert "excluding this entry's own outgoing instance" in note
+
+    def test_redeploy_without_the_exclusion_is_the_defect_being_fixed(
+        self, tmp_path: Path
+    ) -> None:
+        """CONTROLLED WRONG IMPLEMENTATION, pinned as a test rather than run
+        by hand: the SAME slice state with `exclude_scopes` dropped is the
+        spurious refuse CIU-96 filed. If a future change stops threading the
+        exclusion through, the test above goes red and this one stays green —
+        the pair localises the regression to the wiring."""
+        self._build(tmp_path, self.CEILING, {"docker-outgoing.scope": self.CEILING})
+        admit, note = self._admit(tmp_path, self.FULL_CLAIM)
+        assert admit is False
+        assert "exceeds the ceiling by 167772160 bytes" in note
+
+    def test_a_different_stacks_occupant_is_never_excluded(
+        self, tmp_path: Path
+    ) -> None:
+        """REGRESSION GUARD, the one that matters most. Stack A holds the
+        whole ceiling; stack B is a DIFFERENT entry, so it correlates no
+        outgoing scope of its own and must still be refused. A fix that
+        excluded 'whatever is running' would silently turn admission control
+        off."""
+        self._build(tmp_path, self.CEILING, {"docker-stack-a.scope": self.CEILING})
+        admit, note = self._admit(tmp_path, self.FULL_CLAIM, exclude_scopes=[])
+        assert admit is False
+        assert "docker-stack-a.scope=167772160" in note
+
+    def test_a_second_concurrent_instance_of_the_same_stack_is_still_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """The exclusion is by NAME intersection, not by subtracting an
+        assumed value: excluding the one outgoing scope leaves a second,
+        genuinely concurrent occupant in the sum, and the ceiling is still
+        enforced against it."""
+        self._build(tmp_path, self.CEILING, {
+            "docker-outgoing.scope": "83886080",
+            "docker-second.scope": "83886080",
+        })
+        admit, note = self._admit(
+            tmp_path, self.FULL_CLAIM, exclude_scopes=["docker-outgoing.scope"],
+        )
+        assert admit is False
+        # The SUM is the oracle: only the second occupant's 80 MiB survives
+        # the exclusion, so 80 + 160 still blows the 160 MiB ceiling.
+        assert "claimed=83886080 bytes" in note
+        assert "docker-second.scope=83886080" in note
+        assert "exceeds the ceiling by 83886080 bytes" in note
+        # The raw enumerate_slice_children note is appended verbatim for
+        # diagnosis and DOES still list the outgoing scope — deliberately: an
+        # operator reading a refusal wants the slice's real occupancy, not a
+        # filtered view of it.
+        assert "docker-outgoing.scope=83886080" in note
+
+    def test_excluding_a_scope_that_is_not_an_occupant_changes_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """A stale compose file can name a container whose scope is long gone.
+        Excluding a name that is not in the slice must be an exact no-op, not
+        a credit against the sum."""
+        self._build(tmp_path, self.CEILING, {"docker-stack-a.scope": self.CEILING})
+        admit, note = self._admit(
+            tmp_path, self.FULL_CLAIM, exclude_scopes=["docker-vanished.scope"],
+        )
+        assert admit is False
+        assert "excluding this entry's own outgoing instance" not in note
+
+    def test_exclude_scopes_none_is_identical_to_an_empty_exclusion(
+        self, tmp_path: Path
+    ) -> None:
+        self._build(tmp_path, self.CEILING, {"docker-a.scope": "83886080"})
+        assert (
+            self._admit(tmp_path, 83886080, exclude_scopes=None)
+            == self._admit(tmp_path, 83886080, exclude_scopes=[])
+        )
+
+
 class TestContainerTransientScope:
     """S15.23 — the mdt-apply-dev-caps.sh cgroup-derivation, ported."""
 
