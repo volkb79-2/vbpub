@@ -41,6 +41,7 @@ from assay.config import (
     JudgeConfig,
     Lane,
     MutationConfig,
+    ResultReportConfig,
 )
 
 #: The `assay/` project directory, derived from this file's own location — the
@@ -682,6 +683,11 @@ def make_lane(
     #: absent, the only value that existed before v9 -- so every test written
     #: before this key is unchanged.
     cwd: str | None = None,
+    #: (B078) the lane's opt-in structured test-report declaration. Defaults
+    #: to `None` -- absent -- for the same reason `cwd` does: A-073's
+    #: exit-code rule is what every test written before this key expects, and
+    #: this default is what keeps them all saying so.
+    result_report: "ResultReportConfig | None" = None,
 ) -> Lane:
     if isolation is _ISOLATION_UNSET:
         # (B006a/A-269 WI-2) `run_lane` now enforces the SAME R0/R1+
@@ -715,6 +721,7 @@ def make_lane(
         isolation=isolation,
         infrastructure=None if infrastructure is None else MappingProxyType(dict(infrastructure)),
         cwd=cwd,
+        result_report=result_report,
     )
 
 
