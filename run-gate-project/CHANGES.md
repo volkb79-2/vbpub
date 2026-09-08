@@ -57,6 +57,31 @@ adopt with no config change.
 
 <!-- cmru: release history -->
 
+## [23.6.0] - 2026-09-08
+<!-- cmru: generated -->
+<!-- cmru: source-end=36eddc76a590c167655de44faa05ba1e06a810ec -->
+
+### Added
+- feat(run-gate): 'host' becomes a container default, 'bare-host' is the literal old behavior (rev 24, R-38*) (e7d5cd7c)
+
+### Fixed
+- fix(run-gate): round-2 adversarial review -- ASSAY_FLAG_FLOOR, state-dir keying, disclosure (06ba982f)
+- fix(run-gate): RG-44/RG-38/RG-40, plus an RG-43 sweep gap found closing the gate (6075a645)
+- fix(debian-install-v2): adversarial review batch 2 -- SystemExit boundary, real-dump parsing, RG-43 docs cleanup (d0bb64ea)
+- fix(run-gate): fix 10 of main's own tests that assumed host=bare execution, post-merge (01e58c4c)
+
+### Changed
+- Merge remote-tracking branch 'origin/main' into debian-install-update (2161b7d3)
+- Merge remote-tracking branch 'origin/main' into debian-install-update (6aa14599)
+
+### Documentation
+- docs(assay,run-gate): design R0 structured-report tiebreak, file B078, move RG-45's disposition (10a413c1)
+- docs(run-gate): RG-38 -- note assay B066's shipped, blocker cleared (555cc95c)
+- docs(run-gate): RG-45 -- note 5th reproduction, now under quiet host load too (ab946258)
+- docs(run-gate): RG-45 -- vitest RPC heartbeat can spuriously fail a lane under host-wide multi-tenant CPU contention (897df443)
+- docs(run-gate): RG-44 -- GONE_SIGNALS case-sensitivity vs this docker version's lowercase stderr (dd8beda6)
+- docs(run-gate): renumber the host/bare-host flip -- real collision with main's RG-39/R-39, filed as RG-43/R-42 (eb759ba5)
+
 ## [23.5.0] - 2026-09-03
 <!-- cmru: generated -->
 <!-- cmru: source-end=7cd835a06bf1bc66c2d0d0e612c56df178fc970b -->
