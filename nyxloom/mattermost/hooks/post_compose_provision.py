@@ -45,6 +45,7 @@ already-existing accounts passes no password at all.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -142,11 +143,104 @@ def _team_exists(container: str, team: str) -> bool:
     return rc == 0
 
 
-def _channel_names(container: str, team: str) -> list[str]:
-    """Every non-archived channel name in *team* (public and private).
+_COUNT_RE = re.compile(r"^there are (\d+) \w+ on local instance", re.IGNORECASE)
+_EMPTY_SENTINELS = ("no users found", "no channels found", "no webhooks found")
 
-    `mmctl channel list` prints one name per line plus a trailing count
-    sentence; private channels are prefixed with `*` for a local-mode admin.
+
+def _refuse_unrecognised(unrecognised: int, *, what: str, fix: str) -> None:
+    """Refuse when mmctl printed rows this parser did not recognise.
+
+    This is the guard the nyxloom-P107 review (F1) correctly identified as
+    missing. The webhook incident was NOT "saw two, picked wrong" — it was
+    `_incoming_webhooks` returning an EMPTY list because mmctl's `Incoming:`
+    prefix was not stripped. Against an empty parse, an ambiguity check on
+    `len(found) > 1` can never fire: the caller concludes "nothing exists",
+    creates, and does it again on the next `ciu up`, unbounded and silent.
+
+    The invariant enforced instead is **every non-empty stdout row must be
+    recognised**. It fires on the SECOND run — the first on which a duplicate
+    could be minted — instead of whenever somebody happens to look, and it is
+    applied to every list parser here, not just the webhook one.
+
+    WHY NOT mmctl's own `There are N <things> on local instance` sentence,
+    which was the obvious candidate and the first thing tried: **that N counts
+    PRINTED LINES, not entities.** Measured on 11.10.1 against an empty
+    private channel:
+
+        stdout: No users found
+        stderr: There are 1 userss on local instance
+
+    One "user" reported, zero users. Cross-checking a parsed entity count
+    against it therefore refuses a perfectly healthy empty channel — which is
+    exactly what it did on the live instance before this rewrite. (The
+    sentence is also on STDERR while the rows are on stdout, so a stdout-only
+    scan finds no count line at all and refuses everything. Both mistakes were
+    made and caught here.) Since N is just the printed-line count, it carries
+    no information the line-recognition invariant does not already have, and
+    it is no longer consulted.
+
+    The refusal names the COUNT only, never a sample row: for
+    `_incoming_webhooks` a row carries a webhook id, which is half the
+    credential (S4.23).
+    """
+    if unrecognised:
+        raise ProvisionError(
+            f"mmctl printed {unrecognised} row(s) this hook could not parse "
+            f"while listing {what}; the output format has changed and the "
+            f"parse can no longer be trusted. Refusing rather than treating "
+            f"an unrecognised list as 'nothing exists' and creating "
+            f"duplicates. {fix}"
+        )
+
+
+def _is_noise(line: str) -> bool:
+    """True for a line that is mmctl chatter rather than a data row.
+
+    The count sentence and the `Unable to list outgoing webhooks` warning both
+    go to STDERR in 11.10.1, so neither normally reaches a stdout parser; they
+    are matched anyway because that placement is mmctl's choice, not a
+    contract, and a future version moving one to stdout must not read as an
+    unrecognised row and start refusing deploys.
+    """
+    low = line.lower()
+    return (
+        bool(_COUNT_RE.match(line))
+        or low in _EMPTY_SENTINELS
+        or low.startswith("unable to list outgoing")
+    )
+
+
+def _channel_names(container: str, team: str) -> list[str]:
+    """Every ACTIVE channel name in *team*, public and private.
+
+    Real `mmctl channel list` output (11.10.1, verified against the running
+    server rather than assumed) — note the stream split:
+
+        stdout: alerts
+                installs
+                p107-probe-arch (archived)
+                p107-probe-priv (private)
+        stderr: There are 6 channels on local instance
+
+    So: private channels carry a ` (private)` SUFFIX and archived ones a
+    ` (archived)` suffix. There is no `*` prefix — an earlier revision of this
+    function stripped one, defending against a format that does not exist
+    while missing the two that do. Both suffixes must come off, and archived
+    channels must be DROPPED, because both feed straight into callers that
+    use the name verbatim:
+
+    * `_ensure_channels` would not match `foo (private)` against declared
+      `foo`, would try to re-create it, and `_must` would abort the deploy —
+      permanently, on every subsequent run. `private = true` is a supported
+      option this hook already emits `--private` for, so this is reachable
+      from the shipped config surface.
+    * `_ensure_memberships`' `all_channels = true` (which `nyxloom-operator`
+      uses) would call `_channel_members(team, "foo (archived)")`, mmctl would
+      fail, and again every later `ciu up` aborts. Archiving a channel in the
+      UI is enough to trigger it.
+
+    Neither showed up in live testing only because all four current channels
+    are public and unarchived.
     """
     rc, out, err = _mmctl(container, "channel", "list", team)
     if rc != 0:
@@ -155,11 +249,32 @@ def _channel_names(container: str, team: str) -> list[str]:
             f"{(err or out).strip()[:400]}"
         )
     names: list[str] = []
+    unrecognised = 0
     for raw in out.splitlines():
-        line = raw.strip().lstrip("*").strip()
-        if not line or line.lower().startswith("there are "):
+        line = raw.strip()
+        if not line or _is_noise(line):
+            continue
+        if line.endswith(" (archived)"):
+            continue
+        if line.endswith(" (private)"):
+            names.append(line[: -len(" (private)")].strip())
+            continue
+        # A bare name is the normal case. An UNKNOWN parenthesised suffix is
+        # not: mmctl marks channel kinds that way, so a future ` (shared)` or
+        # ` (deleted)` would otherwise be silently treated as part of the
+        # channel's name — matching nothing, and sending `_ensure_channels`
+        # off to re-create a channel that already exists.
+        if line.endswith(")") and " (" in line:
+            unrecognised += 1
             continue
         names.append(line)
+    _refuse_unrecognised(
+        unrecognised,
+        what=f"channels of team {team!r}",
+        fix="Compare `mmctl --local channel list <team>` against "
+        "_channel_names() — a new ` (<kind>)` suffix has to be classified as "
+        "active or skipped.",
+    )
     return names
 
 
@@ -172,24 +287,38 @@ def _channel_members(container: str, team: str, channel: str) -> set[str]:
     this wrong is silent: a whole-line set never matches a username, the
     membership guard never fires, and the hook re-adds every member on every
     run (observed once during nyxloom-P107, hence this note).
+
+    `--all` is REQUIRED, not cosmetic: `channel users list` pages at 200 by
+    default (`--per-page`), so past 200 members an unpaged read silently
+    under-reports and re-triggers the very re-add loop this function's parsing
+    fix closed. Harmless at four accounts; free to get right now.
     """
-    rc, out, err = _mmctl(container, "channel", "users", "list", f"{team}:{channel}")
+    rc, out, err = _mmctl(
+        container, "channel", "users", "list", f"{team}:{channel}", "--all"
+    )
     if rc != 0:
         raise ProvisionError(
             f"cannot list members of {team}:{channel} (rc={rc}): "
             f"{(err or out).strip()[:400]}"
         )
     members: set[str] = set()
+    unrecognised = 0
     for raw in out.splitlines():
         line = raw.strip()
-        if not line or line.lower().startswith("there are "):
+        if not line or _is_noise(line):
             continue
-        _id, _, rest = line.partition(": ")
-        if not rest:
-            continue
+        _id, sep, rest = line.partition(": ")
         username, _, _tail = rest.partition(" (")
-        if username:
-            members.add(username.strip())
+        if not sep or not username.strip():
+            unrecognised += 1
+            continue
+        members.add(username.strip())
+    _refuse_unrecognised(
+        unrecognised,
+        what=f"members of {team}:{channel}",
+        fix="Compare `mmctl --local channel users list <team>:<chan> --all` "
+        "against _channel_members().",
+    )
     return members
 
 
@@ -218,16 +347,29 @@ def _incoming_webhooks(container: str, team: str) -> list[dict]:
             f"{(err or out).strip()[:400]}"
         )
     hooks: list[dict] = []
+    unrecognised = 0
     for raw in out.splitlines():
         line = raw.strip()
-        if not line or line.lower().startswith("there are "):
+        if not line or _is_noise(line):
             continue
-        if not line.lower().startswith("incoming:"):
+        # `Outgoing:` rows are skipped, not counted as drift: this stack
+        # disables outgoing webhooks, but re-enabling them must not start
+        # failing deploys over rows this function was never meant to read.
+        if line.lower().startswith("outgoing:"):
             continue
-        body = line.split(":", 1)[1].strip()
+        body = line.split(":", 1)[1].strip() if line.lower().startswith("incoming:") else ""
         if body.endswith(")") and " (" in body:
             display, _, ident = body.rpartition(" (")
             hooks.append({"display_name": display.strip(), "id": ident[:-1].strip()})
+            continue
+        unrecognised += 1
+    _refuse_unrecognised(
+        unrecognised,
+        what=f"incoming webhooks of team {team!r}",
+        fix="Compare `mmctl --local webhook list <team>` against "
+        "_incoming_webhooks(). Do NOT re-run the hook until it parses — each "
+        "run over an unparseable list mints another webhook.",
+    )
     return hooks
 
 
@@ -411,7 +553,11 @@ def _ensure_memberships(container: str, prov: dict) -> int:
             if channel not in all_channels:
                 raise ProvisionError(
                     f"account {username!r} asks for channel {channel!r} "
-                    f"which does not exist in team {team!r}"
+                    f"which is not an active channel of team {team!r} — it "
+                    "does not exist, or it has been ARCHIVED (archived "
+                    "channels are excluded from the active list on purpose; "
+                    "unarchive it or drop it from "
+                    "[[mattermost.provision.channels]])"
                 )
             if username in _channel_members(container, team, channel):
                 continue
@@ -447,6 +593,11 @@ def _ensure_webhooks(container: str, config: dict, prov: dict) -> dict[str, str]
         display = spec["display_name"]
         found = existing.get(display, [])
         if len(found) > 1:
+            # Cleans up AFTER a duplication; it does not prevent one. The
+            # prevention lives in `_incoming_webhooks`' `_parse_or_refuse`
+            # cross-check, because the incident that produced six webhooks was
+            # an EMPTY parse, which this branch can never see. Both are needed.
+            #
             # Never guess which of several same-named webhooks is "the" one:
             # persisting the wrong id would point a producer at a credential
             # an operator may be about to delete. Naming the count (not the

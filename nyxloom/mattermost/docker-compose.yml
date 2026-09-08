@@ -59,6 +59,17 @@
 # (994 is DOCKER_GID on this host; uid 70 is postgres in the ALPINE image —
 # not 999, which is the Debian one.)
 #
+# THIS FILE IS MAIN-CHECKOUT-ONLY. The three bind paths above are hardcoded
+# absolutes under `/home/vb/volkb79-2/vbpub/nyxloom/mattermost/`, because a
+# pre-rendered fallback has no ciu render context to resolve a stack-relative
+# path with. The ciu path resolves its hostdirs RELATIVE to whichever stack
+# directory it is invoked from, so running THIS file from a worktree writes
+# into the MAIN checkout's `vol-*` directories — the exact inverse of the
+# worktree-path trap the P107 report describes for the ciu side, and just as
+# easy to miss. Do not run this file from a worktree. If a worktree ever needs
+# the fallback path, re-render it from `ciu.compose.yml.j2` for that stack dir
+# rather than editing these paths by hand.
+#
 # There is also NO PROVISIONING on this path: the team/channels/accounts/
 # webhooks come from ciu's post_compose hook (hooks/post_compose_provision.py),
 # which plain compose never runs.

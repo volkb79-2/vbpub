@@ -134,9 +134,11 @@ data = { path = "", uid = 70, mode = "0700" }
 # stringified into a template or appears in the rendered output).
 #
 # mode 0444, not the 0440 default: the consumer is a fixed-UID image
-# (postgres, uid 999) that the host-side owner/group of the store file
-# cannot match, and the store DIRECTORY stays 0700, so the widened FILE
-# mode does not widen host access.
+# (postgres, uid 70 in this ALPINE image — not 999, which is the Debian
+# `postgres:16`; this was the second of P106's two "999" slips and the
+# conclusion below is unaffected by which number it is) that the host-side
+# owner/group of the store file cannot match, and the store DIRECTORY stays
+# 0700, so the widened FILE mode does not widen host access.
 #
 # expose_env (S4.19) is ciu's own "discouraged" escape hatch and is used
 # here only because the Mattermost image forces it: it is minimal (no
