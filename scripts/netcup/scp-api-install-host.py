@@ -16,48 +16,14 @@ was purely additive and non-breaking for the endpoints this script uses: new
 
 Get API access / Authentication:
 
-1. Get a device_code and activate it
-```
-curl -X POST 'https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/auth/device' \
-  -d "client_id=scp" \
-  -d 'scope=offline_access openid' | jq
-```
+Run `%(prog)s login` - it automates the whole OAuth2 device-code dance below
+and writes the resulting refresh token straight into .env. See _run_login()'s
+own docstring for the manual curl-by-curl equivalent (useful if you ever
+need to debug the flow itself, or the automated version breaks).
 
-1.2. extract link in "verification_uri_complete", open it, login with SCP credentials, confirm grant access
-1.3. extract the "device_code" : e.g. "BqCuANW2nKFwCtdf5HcbYRIEZ_RrklqiSF40r9AQH0k"
-
-2. Use activated `device-token` to get long-term `refresh_token` to generate `access_token` for API access
-```bash
-device_code=<device-code-from-first-curl-reply>
-curl -X POST 'https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/token' \
-  -d 'grant_type=urn:ietf:params:oauth:grant-type:device_code' \
-  -d "device_code=$device_code" \
-  -d 'client_id=scp' | jq
-```
-
-Notes: 
-- Use access token within the next 300 seconds to access the API. See "Refresh access token" how to obtain a new access token.
-- The offline refresh token can be used multiple times and does not expire as long as it is used at least once every 30 days.
-- If the refresh token is leaked or no longer needed it could be revoked.
-- Forgotten refresh tokens can be revoked in the Account Console: 
-   https://www.servercontrolpanel.de/realms/scp/account
-
-3. Make API calls:
-3.1. Get fresh access token
-ACCESS_TOKEN=$(curl -s 'https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/token' \
-  -d 'client_id=scp' \
-  -d "refresh_token=${REFRESH_TOKEN}" \
-  -d 'grant_type=refresh_token' | jq -r '.access_token')
-
-3.2. Make API calls with access token
-curl 'https://www.servercontrolpanel.de/scp-core/api/v1/servers?limit=10' \
-  -H "Authorization: Bearer ${ACCESS_TOKEN}"
-
-4. refresh flow: 
-curl 'https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/token' \
-  -d 'client_id=scp' \
-  -d 'refresh_token=<refresh_token>' \
-  -d 'grant_type=refresh_token'
+Once a refresh token exists (in .env or $NETCUP_SCP_API_REFRESH_TOKEN), this
+script handles getting/refreshing short-lived access tokens itself for every
+other mode - no further manual steps needed.
 """
 
 import os
@@ -76,6 +42,57 @@ import urllib.request
 from typing import Optional, Dict, Any, List, Set
 from datetime import datetime
 from pathlib import Path
+
+
+def _load_env_file(path: Path) -> Dict[str, str]:
+    """Minimal .env parser (keeps behavior predictable; no shell expansion).
+
+    Mirrors scripts/telegram/telegram_setup.py's own _load_env_file() -
+    duplicated rather than imported, since this script is otherwise a
+    standalone, dependency-free file (no cross-directory import).
+    """
+    if not path.exists():
+        return {}
+    out: Dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+            value = value[1:-1]
+        out[key] = value
+    return out
+
+
+def _write_env_file(path: Path, updates: Dict[str, str]) -> None:
+    """Update/add keys in a .env file while preserving unknown lines.
+
+    Mirrors scripts/telegram/telegram_setup.py's own _write_env_file().
+    """
+    existing_lines: List[str] = []
+    if path.exists():
+        existing_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    remaining = dict(updates)
+    new_lines: List[str] = []
+    for raw_line in existing_lines:
+        stripped = raw_line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in remaining:
+                new_lines.append(f"{key}={remaining.pop(key)}")
+                continue
+        new_lines.append(raw_line)
+    for key, value in remaining.items():
+        new_lines.append(f"{key}={value}")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
 
 
 def _normalize_ssh_public_key(public_key: str) -> str:
@@ -368,6 +385,21 @@ def _strip_jsonc_comments(text: str) -> str:
 
     return "".join(out)
 
+def _resolve_env_path() -> Path:
+    """Which .env file is (or would be) in effect - same search order as
+    load_env_file(), but returns a path even when none of the candidates
+    exist yet: the canonical scripts/netcup/.env, so `login` has somewhere
+    sensible to create it.
+    """
+    script_dir = Path(__file__).resolve().parent
+    candidates = [
+        Path.cwd() / ".env",
+        script_dir / ".env",
+        script_dir.parent.parent / ".env",
+    ]
+    return next((p for p in candidates if p.exists()), script_dir / ".env")
+
+
 # Load .env file if it exists
 def load_env_file() -> None:
     """Load environment variables from a local .env file (no external deps).
@@ -576,6 +608,113 @@ def get_access_token(refresh_token: str) -> str:
     return access_token
 
 
+def _run_login(env_path: Path) -> int:
+    """Automate the OAuth2 device-code grant and write the resulting
+    refresh token into env_path (NETCUP_SCP_API_REFRESH_TOKEN).
+
+    Equivalent manual flow, for reference / debugging if this ever breaks:
+
+    1. Get a device_code and activate it
+    ```
+    curl -X POST 'https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/auth/device' \\
+      -d "client_id=scp" \\
+      -d 'scope=offline_access openid' | jq
+    ```
+    1.2. extract link in "verification_uri_complete", open it, login with SCP credentials, confirm grant access
+    1.3. extract the "device_code" : e.g. "BqCuANW2nKFwCtdf5HcbYRIEZ_RrklqiSF40r9AQH0k"
+
+    2. Use activated `device-token` to get long-term `refresh_token`
+    ```bash
+    device_code=<device-code-from-first-curl-reply>
+    curl -X POST 'https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/token' \\
+      -d 'grant_type=urn:ietf:params:oauth:grant-type:device_code' \\
+      -d "device_code=$device_code" \\
+      -d 'client_id=scp' | jq
+    ```
+
+    Notes:
+    - Use access token within the next 300 seconds to access the API. See
+      get_access_token() for how this script refreshes it as needed.
+    - The offline refresh token can be used multiple times and does not
+      expire as long as it is used at least once every 30 days.
+    - If the refresh token is leaked or no longer needed it could be
+      revoked. Forgotten refresh tokens can be revoked in the Account
+      Console: https://www.servercontrolpanel.de/realms/scp/account
+    """
+    print("=" * 70)
+    print("LOGIN (netcup SCP OAuth2 device-code flow)")
+    print("=" * 70)
+
+    device_data = urllib.parse.urlencode(
+        {"client_id": "scp", "scope": "offline_access openid"}
+    ).encode("utf-8")
+    device_req = urllib.request.Request(
+        f"{KEYCLOAK_URL}/auth/device",
+        data=device_data,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        with urllib.request.urlopen(device_req, timeout=30) as resp:
+            device = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except (urllib.error.HTTPError, urllib.error.URLError) as e:
+        print(f"❌ ERROR: could not start device login: {e}", file=sys.stderr)
+        return 1
+
+    device_code = device["device_code"]
+    interval = max(1, int(device.get("interval", 5)))
+    expires_in = int(device.get("expires_in", 600))
+    verification_url = device.get("verification_uri_complete") or device.get("verification_uri")
+
+    print(f"1. Open this URL and log in with your SCP credentials:\n   {verification_url}")
+    if not device.get("verification_uri_complete") and device.get("user_code"):
+        print(f"   Enter code: {device['user_code']}")
+    print("2. Waiting for you to complete login (Ctrl-C to cancel)...")
+
+    deadline = time.monotonic() + expires_in
+    while time.monotonic() < deadline:
+        time.sleep(interval)
+        token_req = urllib.request.Request(
+            f"{KEYCLOAK_URL}/token",
+            data=urllib.parse.urlencode(
+                {
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    "device_code": device_code,
+                    "client_id": "scp",
+                }
+            ).encode("utf-8"),
+            method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        try:
+            with urllib.request.urlopen(token_req, timeout=30) as resp:
+                token_response = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except urllib.error.HTTPError as e:
+            body = json.loads(e.read().decode("utf-8", errors="replace") or "{}")
+            error = body.get("error")
+            if error == "authorization_pending":
+                continue
+            if error == "slow_down":
+                interval += 5
+                continue
+            print(f"❌ ERROR: {error or e}: {body.get('error_description', '')}", file=sys.stderr)
+            return 1
+        except urllib.error.URLError as e:
+            print(f"❌ ERROR: token poll network error: {e}", file=sys.stderr)
+            return 1
+
+        refresh_token = token_response.get("refresh_token")
+        if not refresh_token:
+            print("❌ ERROR: token response had no refresh_token", file=sys.stderr)
+            return 1
+        _write_env_file(env_path, {"NETCUP_SCP_API_REFRESH_TOKEN": refresh_token})
+        print(f"✓ Logged in. Wrote NETCUP_SCP_API_REFRESH_TOKEN to {env_path}")
+        return 0
+
+    print("❌ ERROR: login timed out waiting for browser confirmation", file=sys.stderr)
+    return 1
+
+
 class HTTPStatusError(RuntimeError):
     def __init__(self, status: int, message: str, body: str = ""):
         super().__init__(message)
@@ -630,6 +769,16 @@ def parse_args():
         description="Netcup Server Control Panel - Automated Debian Installation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Commands (positional, optional; default is the install flow below):
+  login               Automate the OAuth2 device-code login flow and write
+                       the resulting refresh token to .env. No other flags
+                       needed.
+  configure           Interactive wizard: resolve the latest Debian UEFI
+                       image flavour (and other account/image-level
+                       defaults) for $NETCUP_SCP_API_SERVER_NAME and save
+                       them as scripts/netcup/default-recipe.jsonc, used as
+                       the base for every future interactive-gather install.
+
 Modes (pick one; default is interactive gather+install):
   (no mode flags)     Interactive: gather info for $NETCUP_SCP_API_SERVER_NAME, prompt, install.
   --payload FILE      Direct install from a JSON/JSONC payload file (no gathering).
@@ -637,6 +786,10 @@ Modes (pick one; default is interactive gather+install):
   --poweroff          Power off $NETCUP_SCP_API_SERVER_NAME and exit.
 
 Examples:
+  # First-time setup: log in, then build a default recipe:
+  %(prog)s login
+  %(prog)s configure
+
   # Preview everything (server lookup, image flavour, payload) without
   # calling any mutating API (install/poweroff/ssh-key-create):
   %(prog)s --payload=target-host.jsonc --dry-run
@@ -675,6 +828,13 @@ Environment Variables (see .env.example):
 
 These can be set in a .env file in the current directory (see scripts/netcup/.env.example).
 """
+    )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=("login", "configure"),
+        default=None,
+        help="Optional one-shot command; omit for the normal install flow (see Modes above).",
     )
     parser.add_argument(
         "--payload",
@@ -1446,6 +1606,99 @@ def save_payload_with_comments(
         f.write("\n".join(lines) + "\n")
 
 
+DEFAULT_RECIPE_PATH = Path(__file__).resolve().parent / "default-recipe.jsonc"
+
+
+def save_recipe_with_comments(recipe: Dict[str, Any], filepath: str, image_name: str) -> None:
+    """Save a `configure`-produced default recipe to JSONC, with comments.
+
+    Same visual convention as save_payload_with_comments(), for a different
+    (server-independent) field set: no serverId/hostname/sshKeyIds here -
+    those stay per-run, resolved fresh each install.
+    """
+    lines: List[str] = [
+        "// Default install recipe - generated by `%s configure`." % Path(__file__).name,
+        "// Used as the base payload for interactive-gather installs when present;",
+        "// delete this file (or re-run `configure`) to reset to built-in defaults.",
+        "{",
+    ]
+    items = list(recipe.items())
+    for idx, (key, value) in enumerate(items):
+        if key == "imageFlavourId":
+            lines.append(f"  // Image: {image_name}")
+        if isinstance(value, bool):
+            value_str = str(value).lower()
+        else:
+            value_str = json.dumps(value)
+        suffix = "," if idx < len(items) - 1 else ""
+        lines.append(f'  "{key}": {value_str}{suffix}')
+    lines.append("}")
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def _load_default_recipe(recipe_path: Optional[Path] = None) -> Dict[str, Any]:
+    """The base install config: a `configure`-produced recipe if one exists
+    (see save_recipe_with_comments()), else the script's own built-in
+    INSTALLATION_CONFIG defaults.
+
+    recipe_path defaults to DEFAULT_RECIPE_PATH looked up at CALL time (not
+    bound as a mutable default argument) so tests can monkeypatch the
+    module-level constant and have callers like main() pick it up.
+    """
+    recipe_path = recipe_path or DEFAULT_RECIPE_PATH
+    if recipe_path.is_file():
+        return json.loads(_strip_jsonc_comments(recipe_path.read_text(encoding="utf-8")))
+    return dict(INSTALLATION_CONFIG)
+
+
+def _run_configure(client: "NetcupSCPClient") -> int:
+    """Interactive wizard: resolve account/image-level defaults (currently
+    just the latest Debian UEFI image flavour, queried live) and write them
+    to DEFAULT_RECIPE_PATH for every future interactive-gather install to
+    use as its base - see _load_default_recipe(). Per-run fields (serverId,
+    hostname, sshKeyIds) are deliberately never part of this recipe.
+    """
+    if not SERVER_NAME:
+        print(
+            "ERROR: missing $NETCUP_SCP_API_SERVER_NAME (needed to query that "
+            "server's available image flavours)",
+            file=sys.stderr,
+        )
+        return 1
+
+    print("=" * 70)
+    print("CONFIGURE (write a default install recipe)")
+    print("=" * 70)
+
+    servers = client.get("/api/v1/servers", params={"name": SERVER_NAME})
+    if not servers:
+        print(f"ERROR: server '{SERVER_NAME}' not found", file=sys.stderr)
+        return 1
+    server_id = servers[0]["id"]
+
+    flavour = _resolve_image_flavour(client, int(server_id), None, interactive=True)
+    locale = _prompt_text("Locale", INSTALLATION_CONFIG["locale"])
+    timezone = _prompt_text("Timezone", INSTALLATION_CONFIG["timezone"])
+    root_full_disk = _prompt_yes_no(
+        "Full-disk root partition (rootPartitionFullDiskSize)?",
+        INSTALLATION_CONFIG["rootPartitionFullDiskSize"],
+    )
+
+    recipe = {
+        "locale": locale,
+        "timezone": timezone,
+        "customScript": INSTALLATION_CONFIG["customScript"],
+        "rootPartitionFullDiskSize": root_full_disk,
+        "sshPasswordAuthentication": INSTALLATION_CONFIG["sshPasswordAuthentication"],
+        "emailToExecutingUser": INSTALLATION_CONFIG["emailToExecutingUser"],
+        "imageFlavourId": flavour["id"],
+    }
+    save_recipe_with_comments(recipe, str(DEFAULT_RECIPE_PATH), flavour["name"])
+    print(f"✓ Wrote default recipe to {DEFAULT_RECIPE_PATH}")
+    return 0
+
+
 class NetcupSCPClient:
     def __init__(self, access_token: str, refresh_token: Optional[str] = None):
         self.base_url = BASE_URL
@@ -1554,6 +1807,21 @@ def _prompt_choice(items_desc: List[str], default_index: int, prompt_label: str)
         if 1 <= choice <= len(items_desc):
             return choice - 1
         print(f"   Please enter a number between 1 and {len(items_desc)}.")
+
+
+def _prompt_text(label: str, default: str) -> str:
+    """Prompt for a free-text value; Enter (empty input) accepts default."""
+    raw = input(f"{label} [{default}]: ").strip()
+    return raw or default
+
+
+def _prompt_yes_no(label: str, default: bool) -> bool:
+    """Prompt for a yes/no value; Enter (empty input) accepts default."""
+    hint = "Y/n" if default else "y/N"
+    raw = input(f"{label} [{hint}]: ").strip().lower()
+    if not raw:
+        return default
+    return raw in ("y", "yes")
 
 
 def _resolve_image_flavour(
@@ -1926,6 +2194,9 @@ def main():
     args = parse_args()
     DEBUG = DEBUG or getattr(args, "debug", False)
 
+    if getattr(args, "command", None) == "login":
+        sys.exit(_run_login(_resolve_env_path()))
+
     attach_only = getattr(args, "attach_only", False)
     if getattr(args, "ssh_identity_file", None):
         if not attach_only:
@@ -2002,6 +2273,9 @@ def main():
         sys.exit(1)
 
     client = NetcupSCPClient(access_token, refresh_token=refresh_token)
+
+    if getattr(args, "command", None) == "configure":
+        sys.exit(_run_configure(client))
 
     # If payload file is provided, use direct installation mode
     if args.payload:
@@ -2206,13 +2480,18 @@ def main():
         print()
 
         # 6. Prepare installation payload
+        # Recipe fields go FIRST (defaults only) and the freshly, live-
+        # resolved fields below win by coming last -- a recipe's own
+        # imageFlavourId (if `configure` was ever run against a stale
+        # image catalog) must never override the imageFlavourId this run
+        # just resolved live two steps above.
         installation_payload = {
+            **_load_default_recipe(),
             "serverId": server_id,  # Include for --payload mode
             "hostname": hostname,  # Use reverse DNS hostname from server info
             "imageFlavourId": image_flavour_id,
             "diskName": disk_dev,
             "sshKeyIds": ssh_key_ids,
-            **INSTALLATION_CONFIG
         }
 
         # Expand placeholders only for the API request, while keeping the

@@ -7,6 +7,7 @@ import io
 import json
 import types
 import urllib.error
+from pathlib import Path
 
 import pytest
 
@@ -512,3 +513,199 @@ def test_main_interactive_dry_run_does_not_create_target_host_jsonc(
     install_host_mod.main()
 
     assert not (tmp_path / "target-host.jsonc").exists(), "dry-run must not create target-host.jsonc"
+
+
+def test_main_interactive_recipe_never_overrides_freshly_resolved_image_flavour(
+    install_host_mod, tmp_path, fake_client, monkeypatch, capsys
+):
+    """Regression: a default-recipe.jsonc's own (possibly stale)
+    imageFlavourId must never win over the imageFlavourId this run just
+    resolved live -- see the reordering fix in main()'s interactive-gather
+    payload construction."""
+    monkeypatch.chdir(tmp_path)
+    recipe_path = tmp_path / "default-recipe.jsonc"
+    recipe_path.write_text('{\n  "imageFlavourId": 999,\n  "locale": "de_DE.UTF-8"\n}\n')
+    monkeypatch.setattr(install_host_mod, "DEFAULT_RECIPE_PATH", recipe_path)
+
+    identity_file = _write_fake_identity(tmp_path)
+    client = _fake_gather_client(fake_client)
+    args = types.SimpleNamespace(
+        attach_only=False, payload=None, poweroff=False, dry_run=True, yes=True,
+        ssh_identity_file=str(identity_file),
+    )
+    _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
+
+    install_host_mod.main()
+
+    out = capsys.readouterr().out
+    summary = out.split("INSTALLATION PARAMETERS SUMMARY")[1]
+    json_text = summary.split("{", 1)[1].rsplit("}", 1)[0]
+    payload = json.loads("{" + json_text + "}")
+    assert payload["imageFlavourId"] == 2  # freshly resolved, not the recipe's stale 999
+    assert payload["locale"] == "de_DE.UTF-8"  # non-conflicting recipe defaults still apply
+
+
+# --- .env read/write -------------------------------------------------------
+
+
+def test_load_env_file_missing_returns_empty(install_host_mod, tmp_path):
+    assert install_host_mod._load_env_file(tmp_path / "nope.env") == {}
+
+
+def test_env_file_round_trip_preserves_unknown_lines(install_host_mod, tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("# a comment\nKEEP_ME=1\nNETCUP_SCP_API_REFRESH_TOKEN=old\n")
+    install_host_mod._write_env_file(path, {"NETCUP_SCP_API_REFRESH_TOKEN": "new-token"})
+    content = path.read_text()
+    assert "# a comment" in content
+    assert "KEEP_ME=1" in content
+    assert "NETCUP_SCP_API_REFRESH_TOKEN=new-token" in content
+    assert "NETCUP_SCP_API_REFRESH_TOKEN=old" not in content
+    assert install_host_mod._load_env_file(path)["NETCUP_SCP_API_REFRESH_TOKEN"] == "new-token"
+
+
+def test_write_env_file_appends_new_key(install_host_mod, tmp_path):
+    path = tmp_path / ".env"
+    install_host_mod._write_env_file(path, {"NEW_KEY": "value"})
+    assert install_host_mod._load_env_file(path)["NEW_KEY"] == "value"
+
+
+def test_resolve_env_path_prefers_cwd_then_falls_back_to_script_dir(install_host_mod, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    # Nothing exists yet: falls back to the canonical script-dir path.
+    resolved = install_host_mod._resolve_env_path()
+    assert resolved == Path(install_host_mod.__file__).resolve().parent / ".env"
+
+    cwd_env = tmp_path / ".env"
+    cwd_env.write_text("X=1\n")
+    assert install_host_mod._resolve_env_path() == cwd_env
+
+
+# --- login (device-code OAuth flow) -----------------------------------------
+
+
+def test_run_login_writes_refresh_token_on_first_poll(install_host_mod, tmp_path, monkeypatch):
+    device_response = json.dumps({
+        "device_code": "dc123", "user_code": "ABCD-EFGH",
+        "verification_uri_complete": "https://example.com/verify?code=ABCD-EFGH",
+        "interval": 0, "expires_in": 60,
+    }).encode()
+    token_response = json.dumps({"refresh_token": "brand-new-refresh-token"}).encode()
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=30):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeHTTPResponse(device_response)
+        return FakeHTTPResponse(token_response)
+
+    monkeypatch.setattr(install_host_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(install_host_mod.time, "sleep", lambda s: None)
+
+    env_path = tmp_path / ".env"
+    rc = install_host_mod._run_login(env_path)
+    assert rc == 0
+    assert install_host_mod._load_env_file(env_path)["NETCUP_SCP_API_REFRESH_TOKEN"] == "brand-new-refresh-token"
+
+
+def test_run_login_keeps_polling_through_authorization_pending(install_host_mod, tmp_path, monkeypatch):
+    device_response = json.dumps({
+        "device_code": "dc123", "interval": 0, "expires_in": 60,
+        "verification_uri_complete": "https://example.com/verify",
+    }).encode()
+    token_response = json.dumps({"refresh_token": "eventual-token"}).encode()
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=30):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeHTTPResponse(device_response)
+        if calls["n"] in (2, 3):
+            raise urllib.error.HTTPError(
+                req.full_url, 400, "pending", None,
+                io.BytesIO(json.dumps({"error": "authorization_pending"}).encode()),
+            )
+        return FakeHTTPResponse(token_response)
+
+    monkeypatch.setattr(install_host_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(install_host_mod.time, "sleep", lambda s: None)
+
+    env_path = tmp_path / ".env"
+    rc = install_host_mod._run_login(env_path)
+    assert rc == 0
+    assert install_host_mod._load_env_file(env_path)["NETCUP_SCP_API_REFRESH_TOKEN"] == "eventual-token"
+    assert calls["n"] == 4
+
+
+def test_run_login_fails_on_access_denied(install_host_mod, tmp_path, monkeypatch):
+    device_response = json.dumps({
+        "device_code": "dc123", "interval": 0, "expires_in": 60,
+        "verification_uri_complete": "https://example.com/verify",
+    }).encode()
+    calls = {"n": 0}
+
+    def fake_urlopen(req, timeout=30):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeHTTPResponse(device_response)
+        raise urllib.error.HTTPError(
+            req.full_url, 400, "denied", None,
+            io.BytesIO(json.dumps({"error": "access_denied"}).encode()),
+        )
+
+    monkeypatch.setattr(install_host_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(install_host_mod.time, "sleep", lambda s: None)
+
+    rc = install_host_mod._run_login(tmp_path / ".env")
+    assert rc == 1
+    assert not (tmp_path / ".env").exists()
+
+
+# --- configure (default recipe wizard) --------------------------------------
+
+
+def test_load_default_recipe_falls_back_to_installation_config(install_host_mod, tmp_path, monkeypatch):
+    monkeypatch.setattr(install_host_mod, "DEFAULT_RECIPE_PATH", tmp_path / "missing.jsonc")
+    recipe = install_host_mod._load_default_recipe()
+    assert recipe == install_host_mod.INSTALLATION_CONFIG
+
+
+def test_load_default_recipe_reads_existing_jsonc_with_comments(install_host_mod, tmp_path):
+    path = tmp_path / "default-recipe.jsonc"
+    path.write_text('// a comment\n{\n  "locale": "de_DE.UTF-8" // inline\n}\n')
+    recipe = install_host_mod._load_default_recipe(path)
+    assert recipe == {"locale": "de_DE.UTF-8"}
+
+
+def test_run_configure_writes_recipe_with_resolved_flavour(install_host_mod, tmp_path, fake_client, monkeypatch):
+    monkeypatch.setattr(install_host_mod, "SERVER_NAME", "test-server")
+    monkeypatch.setattr(install_host_mod, "DEFAULT_RECIPE_PATH", tmp_path / "default-recipe.jsonc")
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: "")  # accept every default
+    servers = [{"id": 42}]
+    flavours = [{"id": 2, "image": {"name": "Debian 13.2 UEFI amd64"}}]
+    client = fake_client(get_responses=[servers, flavours], allow=("get",))
+
+    rc = install_host_mod._run_configure(client)
+    assert rc == 0
+    recipe = install_host_mod._load_default_recipe(tmp_path / "default-recipe.jsonc")
+    assert recipe["imageFlavourId"] == 2
+    assert recipe["locale"] == install_host_mod.INSTALLATION_CONFIG["locale"]
+    assert recipe["timezone"] == install_host_mod.INSTALLATION_CONFIG["timezone"]
+
+
+def test_run_configure_requires_server_name(install_host_mod, fake_client, monkeypatch):
+    monkeypatch.setattr(install_host_mod, "SERVER_NAME", None)
+    rc = install_host_mod._run_configure(fake_client(allow=()))
+    assert rc == 1
+
+
+# --- command positional argument --------------------------------------------
+
+
+def test_parse_args_accepts_login_and_configure_commands(install_host_mod, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["scp-api-install-host.py", "login"])
+    assert install_host_mod.parse_args().command == "login"
+    monkeypatch.setattr("sys.argv", ["scp-api-install-host.py", "configure"])
+    assert install_host_mod.parse_args().command == "configure"
+    monkeypatch.setattr("sys.argv", ["scp-api-install-host.py"])
+    assert install_host_mod.parse_args().command is None
