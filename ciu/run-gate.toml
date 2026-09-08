@@ -12,15 +12,14 @@ schema_version = 1
 kind = "assay"
 assay_lane = "ciu"                  # -> assay.toml [lanes.ciu]
 environment = "tester-unified"
-assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-5.2.0.pyz"]
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-6.0.0.pyz"]
 budget = "30m"
 
-# Re-pinned 3.2.0 -> 5.2.0 on 2026-09-08 via `cmru tool-deps --refresh assay`
-# (ciu now declares assay as a cmru.toml tool_dependency for the first time --
-# it and nyxloom previously pinned a zipapp here with nothing tracking its
-# freshness at all, three majors stale by the time this was found). KI-27:
-# --refresh does not itself rewrite this file's own pin/argv -- manual
-# follow-up here, same recurring gap as cmru's own project.
+# Re-pinned 5.2.0 -> 6.0.0 on 2026-09-08 via `cmru tool-deps --refresh assay`
+# (assay B070: verdict schema v10 -> v11, a hard cut -- functionally
+# unchanged for this project's native R0/R1 lane, see assay's own
+# "Migration notes (v10 -> v11)"). KI-27: --refresh does not itself rewrite
+# this file's own pin/argv -- manual follow-up here, same recurring gap.
 [lanes.ciu.pins.assay]
-version = "5.2.0"
-sha256 = "tools/assay/assay-5.2.0.pyz.sha256"
+version = "6.0.0"
+sha256 = "tools/assay/assay-6.0.0.pyz.sha256"
