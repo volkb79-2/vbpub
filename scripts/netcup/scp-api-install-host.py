@@ -2143,6 +2143,16 @@ def main():
         print(json.dumps(_redact_for_log(installation_payload), indent=2))
         print()
 
+        if getattr(args, "dry_run", False):
+            print("=" * 70)
+            print(
+                "[dry-run] NOT saving to target-host.jsonc (would overwrite any existing "
+                "file, and any not-yet-created SSH key above is only a placeholder id)."
+            )
+            print(f"[dry-run] Preflight OK. NOT calling POST /api/v1/servers/{server_id}/image.")
+            print("=" * 70)
+            return
+
         # 8. Save payload to file with comments
         save_payload_with_comments(
             installation_payload,
@@ -2155,12 +2165,6 @@ def main():
         )
         print("✓ Installation payload saved to:  target-host.jsonc")
         print()
-
-        if getattr(args, "dry_run", False):
-            print("=" * 70)
-            print(f"[dry-run] Preflight OK. NOT calling POST /api/v1/servers/{server_id}/image.")
-            print("=" * 70)
-            return
 
         # 9. Ask for confirmation (unless non-interactive)
         if not is_noninteractive(args):

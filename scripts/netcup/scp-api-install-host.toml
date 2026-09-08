@@ -16,10 +16,12 @@ keycloak_url = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-con
 # Static, shared "day-0 bootstrap" key, reused across every install (NOT a
 # per-host production key - bootstrap stage2 generates and Telegrams you a
 # separate, unique key per host for that; see ../ssh-keygen-deploy.py). Kept
-# under ~/.ssh-host/ (matches the same mount convention already used by the
-# sibling netcup-api-filter devcontainer). Auto-generated on first use if
-# missing - see _ensure_local_identity_file_exists().
-identity_file = "~/.ssh-host/vbpub-netcup-installation-ed25519"
+# under ~/.ssh/ - the devcontainer's writable, mdt-managed SSH dir (see
+# .devcontainer/devcontainer.json), NOT ~/.ssh-host (the host's *native*
+# ~/.ssh, bind-mounted readonly for known_hosts/reference - writing there
+# fails with "Read-only file system", confirmed live 2026-09-08). Auto-
+# generated on first use if missing - see _ensure_local_identity_file_exists().
+identity_file = "~/.ssh/vbpub-netcup-installation-ed25519"
 user = "root"
 
 # Embedded as the *comment* on the auto-generated key above (the filename

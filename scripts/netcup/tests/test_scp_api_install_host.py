@@ -340,3 +340,104 @@ def test_install_from_payload_rejects_invalid_payload(install_host_mod, tmp_path
 
     with pytest.raises(SystemExit):
         install_host_mod.install_from_payload(client, str(payload_path), args)
+
+
+def test_install_from_payload_missing_file_exits_cleanly(install_host_mod, tmp_path, fake_client, capsys):
+    """--payload pointing at a file that doesn't exist must fail with a clear
+    message and sys.exit(1), never a raw traceback."""
+    missing_path = tmp_path / "does-not-exist.jsonc"
+    client = fake_client(allow=())
+    args = types.SimpleNamespace(dry_run=True, yes=True, ssh_identity_file=None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        install_host_mod.install_from_payload(client, str(missing_path), args)
+
+    assert exc_info.value.code == 1
+    err = capsys.readouterr().err
+    assert "not found" in err.lower()
+    assert str(missing_path) in err
+
+
+# --- main() interactive-gather path: --dry-run must never touch disk -----
+#
+# Regression coverage for a real bug found 2026-09-08 live-testing against a
+# real netcup host: step 8 (save_payload_with_comments, unconditional) ran
+# BEFORE the dry-run early-return, so `--dry-run` (no --payload) silently
+# overwrote an existing target-host.jsonc, and could even bake in the
+# dry-run-only "-1" placeholder sshKeyId sentinel (from
+# _ensure_netcup_ssh_key_id_for_identity's dry_run branch) as if it were a
+# real, install-ready id. Fixed by moving the dry-run check before the save.
+
+def _write_fake_identity(tmp_path):
+    identity = tmp_path / "id_ed25519"
+    identity.write_text("fake-private-key-material\n")
+    identity.with_suffix(identity.suffix + ".pub").write_text(
+        "ssh-ed25519 AAAAFAKEFAKEFAKE test@fake\n"
+    )
+    return identity
+
+
+def _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args):
+    monkeypatch.setattr(install_host_mod, "SERVER_NAME", "test-server")
+    monkeypatch.setattr(install_host_mod, "get_access_token", lambda rt: "fake-token")
+    monkeypatch.setattr(install_host_mod, "NetcupSCPClient", lambda *a, **kw: client)
+    monkeypatch.setattr(install_host_mod, "parse_args", lambda: args)
+    monkeypatch.setenv("NETCUP_SCP_API_REFRESH_TOKEN", "fake-refresh-token")
+
+
+def _fake_gather_client(fake_client, *, user_id=7):
+    servers = [{"id": 42}]
+    server_details = {
+        "serverLiveInfo": {"disks": [{"dev": "vda", "capacityInMiB": 524288}]},
+        "hostname": "target.example",
+    }
+    flavours = [{"id": 2, "image": {"name": "Debian 13.2 UEFI amd64"}}]
+    ssh_keys: list = []  # empty account: no match -> forces the dry-run "-1" sentinel path
+    return fake_client(
+        get_responses=[servers, server_details, flavours, ssh_keys, ssh_keys],
+        user_info={"id": user_id},
+        allow=("get", "get_user_info"),
+    )
+
+
+def test_main_interactive_dry_run_preserves_existing_target_host_jsonc(
+    install_host_mod, tmp_path, fake_client, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    existing = tmp_path / "target-host.jsonc"
+    existing_content = '{\n  "serverId": 1,\n  "hostname": "keep-me.example"\n}\n'
+    existing.write_text(existing_content)
+
+    identity_file = _write_fake_identity(tmp_path)
+    client = _fake_gather_client(fake_client)
+    args = types.SimpleNamespace(
+        attach_only=False, payload=None, poweroff=False, dry_run=True, yes=True,
+        ssh_identity_file=str(identity_file),
+    )
+    _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
+
+    install_host_mod.main()
+
+    assert existing.read_text() == existing_content, "dry-run must not touch an existing target-host.jsonc"
+    assert not any(c[0] == "post" for c in client.calls)
+    out = capsys.readouterr().out
+    assert "NOT saving to target-host.jsonc" in out
+
+
+def test_main_interactive_dry_run_does_not_create_target_host_jsonc(
+    install_host_mod, tmp_path, fake_client, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    assert not (tmp_path / "target-host.jsonc").exists()
+
+    identity_file = _write_fake_identity(tmp_path)
+    client = _fake_gather_client(fake_client)
+    args = types.SimpleNamespace(
+        attach_only=False, payload=None, poweroff=False, dry_run=True, yes=True,
+        ssh_identity_file=str(identity_file),
+    )
+    _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
+
+    install_host_mod.main()
+
+    assert not (tmp_path / "target-host.jsonc").exists(), "dry-run must not create target-host.jsonc"
