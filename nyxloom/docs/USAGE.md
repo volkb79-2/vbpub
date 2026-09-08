@@ -163,7 +163,7 @@ them as worked examples.
 | `project add <id> <root>` | Register a project path in the registry. |
 | `project list` | Print the registry table. |
 | `lint [path…]` | Lint registered projects / specific handoff files (the quality gate). |
-| `doctor [--project] [--rebuild [--write]]` | Integrity findings + dashboard URL. |
+| `doctor [--project] [--rebuild [--write]] [--liveness]` | Integrity findings + dashboard URL (`--liveness`: CR-16 fast healthcheck path). |
 | `status [--project]` | Per-task state / since / route / cost / notes. |
 | `resync <project> [--apply] [--apply-content-merges]` | Re-baseline state against ground truth (post manual-merge drift). |
 | `render` | Render the read-only `www/` dashboard. |
@@ -171,23 +171,23 @@ them as worked examples.
 | `daemon [--foreground]` | Run the resident reconcile daemon. |
 | `auth show \| bootstrap [--operator] \| rotate [--operator] [--force]` | Show / initialize / rotate the daemon's operator-auth store. |
 | `tick [--project]` | One reconcile pass (degraded/debug mode). |
-| `decide <project> <D-id> --choose` | Resolve a `D-NNN` product decision. |
+| `decide <project> <D-id> --choose [--note]` | Resolve a `D-NNN` product decision. |
 | `discuss <project> <D-id>` | Print the decision-chat command. |
 | `intake <project> <intake_id> <msg>` | Advance a feature-intake chat turn. |
 | `reject <project> <task> [--note]` | Merge-gate rejection. |
-| `merge <project> <task> [--commit]` | Record a manual merge. |
+| `merge <project> <task> [--commit] [--force]` | Record a manual merge (`--force`: operator override to record it even if the pre-merge gate fails). |
 | `gate` | Reserved namespace, no subcommands today — GA1's `verify` was retired in nyxloom-P98; gate execution now lives entirely in each project's own `run-gate.py`/Assay lane. |
-| `pause` / `resume <project> [task]` | Set / clear the pause flag. |
+| `pause` / `resume <project> [task] [--force]` | Set / clear the pause flag (`resume --force`: RP03 operator override to clear a project-level pause despite drift; no effect on task-level resume). |
 | `leases` | Show mutex (flock) holders. |
 | `digest <project> [--since]` | Notification digest. |
 | `events <project> [--since --type --tail --json]` | Dump the event store as JSONL. |
 | `init <project_folder>` | Scaffold a `nyxloom-trove/` from templates. |
-| `onboard <project_folder> [--maturity --docs --mode --scan --questionnaire --check-gate]` | Guided onboarding (see §3). |
-| `free-models list \| refresh` | Discover currently-free models & refresh routes (see §5). |
+| `onboard <project_folder> [--maturity --docs --mode --scan-path --scan --questionnaire --check-gate --scaffold-gate]` | Guided onboarding (see §3). `--scaffold-gate`: if no gate is declared, write a reviewable gate-runner Dockerfile + `[gates.*]` skeleton — a review skeleton, not a guaranteed-working gate; adopt run-gate+assay after adjusting it. |
+| `free-models list [--source] \| refresh [--source] [--dry-run]` | Discover currently-free models & refresh routes (see §5). |
 | `capability-map refresh [--dry-run] [--emit-findings PROJECT]` | Refresh `routes.toml`'s model catalog from a live capability probe; optionally record `cost_crossover` findings under a registered project. |
 | `route doctor [--no-probe]` | Validate `routes.toml` and live-probe each declared route (`--no-probe`: schema-only, offline-safe). |
 | `finding record --project --kind --title [--body] [--field KEY=VALUE]... [--task-id] [--severity] \| list [--project] [--kind]` | Record / list structured findings against a registered project (FN-4). |
-| `backlog new <title> [--type --severity --priority --component --provenance --filed-by --spec-owner --body-from] \| promote <inbox-id> \| note <id> <text> \| set-status <id> <status> [--reason] \| list [--status] \| show <id> \| index` | Managed per-entry backlog (`docs/backlog-entries-spec.md`); `INDEX.md` is generated — always via `index`, never hand-edited. |
+| `backlog [--project] new <title> [--type --severity --priority --component --provenance --filed-by --spec-owner --body-from] \| promote <inbox-id> \| note <id> <text> \| set-status <id> <status> [--reason] \| list [--status] \| show <id> \| index` | Managed per-entry backlog (`docs/backlog-entries-spec.md`); `INDEX.md` is generated — always via `index`, never hand-edited. `--project` (default: discover from cwd) applies to every subcommand. |
 | `version` | Print the version. |
 
 Against the deployed daemon, run any verb through the container wrapper:
