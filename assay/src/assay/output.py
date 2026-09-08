@@ -45,6 +45,7 @@ from .errors import AssayError, Outcome, ReasonCode
 __all__ = [
     "VerdictOutput",
     "reserve_verdict_output",
+    "resolve_state_directory",
     "validate_progress_destination",
 ]
 
@@ -407,3 +408,42 @@ def validate_progress_destination(target: str) -> None:
             f"ordinary regular file; assay only appends to a file it can "
             f"account for"
         )
+
+
+def resolve_state_directory(target: str) -> str:
+    """(B066) Validate ``--state-dir`` and return its absolute spelling.
+
+    The directory sibling of :func:`validate_progress_destination`, and
+    deliberately the same shape: cheap, non-reserving, run BEFORE any
+    repository work, catching the mistakes visible without doing anything
+    irreversible. It differs in exactly one way, because the object differs
+    -- a state store is a DIRECTORY, so an existing non-directory is the
+    refusal here, and the directory itself is created on demand later by the
+    writer rather than required to preexist.
+
+    It does NOT decide the git question. Whether the directory sits inside
+    the judged tree, and whether git can see it there, needs a repository
+    and belongs with the caller that has one (`cli._cmd_run`).
+    """
+    absolute = _normalized_absolute(os.path.expanduser(target))
+    directory, name = os.path.split(absolute)
+    if not name or name in (os.curdir, os.pardir):
+        raise _refuse(
+            f"the state directory {target!r} does not name a directory "
+            f"(resolved to {absolute!r})"
+        )
+    try:
+        info: os.stat_result | None = os.stat(absolute, follow_symlinks=False)
+    except FileNotFoundError:
+        return absolute
+    except OSError as exc:
+        raise _refuse(
+            f"cannot inspect the state directory {target!r}: {exc}"
+        ) from exc
+    if not stat.S_ISDIR(info.st_mode):
+        raise _refuse(
+            f"the state directory {target!r} exists and is not a directory; "
+            f"resume records are files inside it, so assay will not write "
+            f"them beside something it cannot account for"
+        )
+    return absolute

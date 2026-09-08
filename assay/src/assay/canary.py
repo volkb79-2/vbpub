@@ -483,6 +483,30 @@ def run_isolated_canary(
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
 
+    # (B067) ONE attempt = this target's whole probe: its control
+    # materialisation, its control run, its transform materialisation and its
+    # transformed run. `judge.canary.budget_per_attempt` bounds exactly that,
+    # and `tightened` never widens -- a numeric lane `budget` still wins when
+    # it is the nearer of the two, so every lane written before this field
+    # existed (`budget_per_attempt is None`) gets `self` back unchanged.
+    #
+    # Rebinding `deadline` here rather than threading a second name is
+    # deliberate: every remainder sampled below this line, in both halves and
+    # in `_judge_unit`'s own Git work, must be the SAME deadline, or the
+    # per-attempt bound would apply to some of the attempt and not the rest.
+    #
+    # Expiry of a per-attempt bound is the SAME terminal a lane-wide expiry
+    # already is (`BUDGET_EXCEEDED`/`LANE_TIMEOUT`), which is what keeps
+    # `verify.py` untouched: `run_multi_target_canary` records the probe and
+    # every LATER probe `not_attempted`/`budget_exhausted`, and that trailing
+    # run is exactly the shape the verifier already enforces (R-2/SF-1). A
+    # per-attempt expiry that let later probes run would break it.
+    deadline = deadline.tightened(
+        lane.judge.canary.budget_per_attempt_seconds
+        if lane.judge is not None and lane.judge.canary is not None
+        else None
+    )
+
     prefix = prepared.spec.project_prefix
     canary_repo_path = (
         PurePosixPath(target) if str(prefix) == "." else prefix / PurePosixPath(target)
@@ -728,7 +752,7 @@ def run_isolated_canaries(
                     target,
                     "budget_exhausted",
                     detail=(
-                        f"the lane-wide deadline expired during this probe, "
+                        f"the deadline in force expired during this probe, "
                         f"which produced no run to report ({ran} of "
                         f"{len(declared)} declared targets had already run)"
                     ),
@@ -740,8 +764,8 @@ def run_isolated_canaries(
                         later,
                         "budget_exhausted",
                         detail=(
-                            f"the lane-wide deadline was already gone before "
-                            f"this probe's control materialisation ({ran} of "
+                            f"an earlier probe ended on an expired deadline, "
+                            f"so this one was never started ({ran} of "
                             f"{len(declared)} declared targets had run)"
                         ),
                     )

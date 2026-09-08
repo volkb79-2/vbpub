@@ -78,10 +78,12 @@ def _repo(tmp_path: Path) -> GitRepo:
 
 
 def _records(state_root: Path) -> list[dict]:
-    directory = state_root / ".assay" / "mutation-state"
+    """(B066) Records live directly under the caller's own *state_root*. The
+    `.assay/mutation-state/` tail is only the DEFAULT root `run_lane`
+    composes when no `--state-dir` is given."""
     return [
         json.loads(path.read_text(encoding="utf-8"))
-        for path in sorted(directory.glob("*.json"))
+        for path in sorted(state_root.glob("*.json"))
     ]
 
 
@@ -125,7 +127,7 @@ def _run(
             operators=("python:bool-const-flip",),
             process_runner=process_runner,
             clock=lambda: datetime.now(timezone.utc),
-            state_project_root=state_root,
+            state_root=state_root,
             resume=True,
             **extra,
         )

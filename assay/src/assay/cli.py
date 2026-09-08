@@ -89,7 +89,12 @@ from .adapters.python import PythonAdapter
 from .adapters.sql import SqlAdapter
 from .config import Lane, LaneFile, find_lane_file, load_lane_file, parse_duration
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
-from .output import VerdictOutput, reserve_verdict_output, validate_progress_destination
+from .output import (
+    VerdictOutput,
+    reserve_verdict_output,
+    resolve_state_directory,
+    validate_progress_destination,
+)
 from .verdict import Evidence, EvidenceDeclaration, Verdict
 from .vocabulary import MUTATION_OPERATORS, WITHDRAWN_MUTATION_OPERATORS
 from .verify import build_verify_parser, cmd_verify
@@ -268,7 +273,45 @@ def build_parser() -> argparse.ArgumentParser:
             "writes no progress file at all. Point it OUTSIDE the repository "
             "(or at a gitignored path) -- a progress file inside the work "
             "tree makes the next run of the same lane refuse "
-            "NO_MEASUREMENT/DIRTY_TREE. Ignored by a lane that declares no R2."
+            "NO_MEASUREMENT/DIRTY_TREE. (B064) Every rigor tier writes to "
+            "it now, not only R2: an R0/R1 lane emits its own phase "
+            "boundaries (run, command_started, command_running, "
+            "command_finished, coverage_parsed, verdict_written)."
+        ),
+    )
+    run.add_argument(
+        "--progress-heartbeat",
+        type=str,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "(B064) emit a command_running tick every SECONDS while the "
+            f"lane's own command runs. Default "
+            f"{runner.PROGRESS_HEARTBEAT_DEFAULT_SECONDS:g}s, floor "
+            f"{runner.PROGRESS_HEARTBEAT_FLOOR_SECONDS:g}s (a smaller value "
+            "is refused by name, so a misconfigured interval cannot flood "
+            "the file). A pure time-based tick: it never reads the child's "
+            "output, counts bytes, or knows anything about the tool being "
+            "run. No-op without --progress."
+        ),
+    )
+    run.add_argument(
+        "--state-dir",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "(B066) keep mutation resume records in PATH instead of "
+            "<project-root>/.assay/mutation-state/. Created on demand. A "
+            "run whose worktree is ephemeral -- a fresh checkout per run -- "
+            "carries its default store away with it, so --resume is inert "
+            "there; point this at a durable directory and --resume works "
+            "across worktrees. Candidate ids fold the source file's exact "
+            "bytes, span, replacement and operator, so a shared store is "
+            "safe by construction: a record either matches or is ignored. "
+            "A PATH inside the judged tree that git can see is refused "
+            "before any work, because it would make the lane's next run "
+            "NO_MEASUREMENT/DIRTY_TREE."
         ),
     )
     run.add_argument(
@@ -623,8 +666,42 @@ def _cmd_run(
     if args.verdict_json is not None:
         destination = reserve_verdict_output(args.verdict_json, stdout=out)
     try:
+        # (B064) The stream is opened HERE, around BOTH `_run_reserved`'s
+        # `run_lane` call and its own `write_verdict`, because
+        # `verdict_written` is the R0/R1 stream's TERMINAL record and the
+        # verdict is written after `run_lane` has already returned. A writer
+        # opened inside `run_lane` could never emit it, which is why B064's
+        # own vocabulary would have been silently one record short.
+        #
+        # The heartbeat interval is resolved and refused before the file is
+        # opened: a floor violation is an operator mistake, and it belongs
+        # with `--progress`'s own destination check rather than surfacing
+        # once the lane is already running.
+        heartbeat_seconds = _resolve_progress_heartbeat(args)
+        state_dir = _resolve_state_dir(args, lane_file.project_root)
         if (progress_arg := getattr(args, "progress", None)) is not None:
             validate_progress_destination(progress_arg)
+            _refuse_a_visible_progress_destination(
+                progress_arg, lane_file.project_root
+            )
+            with mutation.progress_writer(
+                Path(progress_arg).expanduser()
+            ) as raw_write:
+                return _run_reserved(
+                    args,
+                    lane,
+                    lane_file,
+                    appended,
+                    destination,
+                    out,
+                    err,
+                    label_grace_seconds=label_grace_seconds,
+                    progress_stream=mutation.ProgressStream(
+                        raw_write, clock=runner._utc_now
+                    ),
+                    progress_heartbeat_seconds=heartbeat_seconds,
+                    state_dir=state_dir,
+                )
         return _run_reserved(
             args,
             lane,
@@ -634,10 +711,205 @@ def _cmd_run(
             out,
             err,
             label_grace_seconds=label_grace_seconds,
+            progress_heartbeat_seconds=heartbeat_seconds,
+            state_dir=state_dir,
         )
     finally:
         if destination is not None:
             destination.close()
+
+
+def _resolve_state_dir(
+    args: argparse.Namespace, project_root: Path
+) -> "Path | None":
+    """(B066) Resolve and refuse ``--state-dir`` BEFORE any work starts.
+
+    Two refusals, both cheap and both before a single command runs:
+
+    * the destination is not a directory (:func:`output.resolve_state_directory`);
+    * the destination is inside the judged tree and git can SEE it there.
+
+    The second is the one the entry's own acceptance names, and the reason
+    is measured rather than theoretical: an untracked path inside the work
+    tree makes ``git.dirty_paths`` report it, which turns the NEXT run of
+    the same lane into `NO_MEASUREMENT`/`DIRTY_TREE`. That is exactly the
+    failure B031 measured for the progress artifact, and the same trap is
+    open here the moment a consumer can choose the location. A gitignored
+    path inside the tree is fine -- git cannot see it, so nothing goes
+    dirty -- and so is any path outside the tree.
+    """
+    raw = getattr(args, "state_dir", None)
+    if raw is None:
+        return None
+    resolved = Path(resolve_state_directory(raw))
+    for root, inside in _containments(resolved, project_root):
+        _refuse_a_visible_store_inside_the_tree(
+            raw,
+            flag="--state-dir",
+            what="those records",
+            root=root,
+            # A representative record name, because the directory itself
+            # does not exist yet -- see the helper's own docstring.
+            probe=inside / f"{'0' * 64}.json",
+        )
+    return resolved
+
+
+def _refuse_a_visible_progress_destination(raw: str, project_root: Path) -> None:
+    """(Round-1 SF-5) The same git-visibility preflight `--state-dir` has.
+
+    B064 made `--progress` write on EVERY rigor tier. Before it, a
+    destination inside a non-ignored work tree was harmless on an R0/R1 lane
+    -- nothing was written, because the producer only existed at R2 -- and
+    after it the lane refuses ITSELF on its very first run, with a bare
+    `NO_MEASUREMENT`/`DIRTY_TREE` that names neither the flag nor the fix.
+
+    That asymmetry was created in one commit range: the same wave gave
+    `--state-dir` a preflight that refuses before any work and left the flag
+    it had just made universal without one. Both flags now ask the identical
+    question through the identical helper.
+    """
+    destination = Path(os.path.normpath(os.path.abspath(os.path.expanduser(raw))))
+    for root, relative in _containments(destination, project_root):
+        # The progress destination IS a file, so it is its own probe --
+        # never a representative sibling, which would answer the wrong
+        # question for a `.gitignore` that matches by extension.
+        _refuse_a_visible_store_inside_the_tree(
+            raw,
+            flag="--progress",
+            what="the progress file",
+            root=root,
+            probe=relative,
+        )
+
+
+def _containments(target: Path, project_root: Path) -> "list[tuple[Path, Path]]":
+    """(Round-1 SF-1) Every way *target* can be said to land inside the
+    judged tree, as ``(root, relative)`` pairs.
+
+    The shipped check compared ONE pair, and the two halves of it came from
+    two different path namespaces: `output.resolve_state_directory` is
+    lexical by design (`normpath`, never `realpath`, because resolving
+    against the filesystem would follow symlinks that the descriptor walk
+    exists to refuse), while `project_root.resolve()` does follow them. When
+    they disagreed `relative_to` raised and the caller read that as
+    "outside the tree, nothing to check" -- a containment check that fails
+    OPEN, reproduced twice by the reviewer with records landing inside the
+    real work tree.
+
+    Both namespaces are now asked, in both directions, and ANY of them
+    saying "inside" is enough to refuse. Fail-closed is the only safe
+    disposition for this question: a false refusal costs an operator one
+    clear message naming the path, while a false accept costs them a work
+    tree that refuses its own next run.
+    """
+    candidates: list[Path] = [target]
+    fully_resolved = _resolve_through_existing_prefix(target)
+    if fully_resolved != target:
+        candidates.append(fully_resolved)
+    roots: list[Path] = [project_root]
+    real_root = project_root.resolve()
+    if real_root != project_root:
+        roots.append(real_root)
+
+    found: list[tuple[Path, Path]] = []
+    for root in roots:
+        for candidate in candidates:
+            try:
+                relative = candidate.relative_to(root)
+            except ValueError:
+                continue
+            if (root, relative) not in found:
+                found.append((root, relative))
+    return found
+
+
+def _resolve_through_existing_prefix(target: Path) -> Path:
+    """*target* with every symlink in its existing prefix resolved.
+
+    `Path.resolve()` is non-strict, so a not-yet-created directory (which
+    `--state-dir` and `--progress` both routinely are) resolves its existing
+    ancestors and keeps the remainder verbatim -- exactly what a containment
+    question needs. Wrapped so an `OSError` (a resolution loop, a permission
+    failure mid-walk) leaves the lexical spelling standing rather than
+    crashing a preflight.
+    """
+    try:
+        return target.resolve()
+    except OSError:
+        return target
+
+
+def _refuse_a_visible_store_inside_the_tree(
+    raw: str, *, flag: str, what: str, root: Path, probe: Path
+) -> None:
+    """Refuse *raw* when git can see the file(s) it names inside the tree.
+
+    *probe* is always a FILE that assay would actually write, never a
+    directory: `git check-ignore` cannot tell that a not-yet-existing path
+    is a directory, so a perfectly ordinary directory-only `.gitignore` line
+    (`resume-store/`) would answer "not ignored" and refuse a
+    correctly-configured consumer. `--state-dir` therefore probes a
+    representative record name under the directory; `--progress` probes the
+    destination itself, which already is the file.
+    """
+    # (Round-1 N2) `path_is_ignored` runs without `--literal-pathspecs`,
+    # because `check-ignore` refuses that flag outright -- so git would parse
+    # a leading `:` as pathspec magic and answer with a raw `fatal:` that
+    # reached the operator as `ERROR/GIT_FAILED`, the exact shape B068 was
+    # fixed to stop emitting. Named here instead, before git is asked.
+    if any(component.startswith(":") for component in probe.parts):
+        raise LaneConfigError(
+            f"{flag} {raw!r} has a path component beginning with ':', which "
+            f"git reads as pathspec magic rather than as a filename, so "
+            f"assay cannot ask whether it is ignored. Choose a path whose "
+            f"components do not begin with ':'"
+        )
+    if not git.path_is_ignored(root, probe.as_posix()):
+        raise LaneConfigError(
+            f"{flag} {raw!r} resolves inside the judged tree at "
+            f"{root / probe} and is not git-ignored -- assay's own "
+            f"clean-tree precondition would then report {what} as "
+            f"uncommitted and refuse the NEXT run of this lane "
+            f"NO_MEASUREMENT/DIRTY_TREE. Point it outside the repository, "
+            f"or add {probe.as_posix()!r} to a committed .gitignore"
+        )
+
+
+def _resolve_progress_heartbeat(args: argparse.Namespace) -> float | None:
+    """(B064) ``--progress-heartbeat`` in seconds, or ``None``.
+
+    ``None`` exactly when ``--progress`` was not passed: the flag is a no-op
+    without a destination, and returning the default there would arm a
+    thread with nowhere to write. Below the floor is refused BY NAME rather
+    than clamped -- silently substituting a different interval than the one
+    an operator asked for is how a configuration mistake survives to become
+    a mystery in someone's log.
+    """
+    if getattr(args, "progress", None) is None:
+        return None
+    raw = getattr(args, "progress_heartbeat", None)
+    if raw is None:
+        return runner.PROGRESS_HEARTBEAT_DEFAULT_SECONDS
+    try:
+        seconds = float(raw)
+    except (TypeError, ValueError):
+        raise LaneConfigError(
+            f"--progress-heartbeat must be a number of seconds, got {raw!r}"
+        ) from None
+    if not (seconds == seconds and seconds not in (float("inf"), float("-inf"))):
+        raise LaneConfigError(
+            f"--progress-heartbeat must be a finite number of seconds, got {raw!r}"
+        )
+    if seconds < runner.PROGRESS_HEARTBEAT_FLOOR_SECONDS:
+        raise LaneConfigError(
+            f"--progress-heartbeat {raw!r} is below the "
+            f"{runner.PROGRESS_HEARTBEAT_FLOOR_SECONDS:g}s floor -- a "
+            f"sub-floor interval turns a diagnostic stream into a flood "
+            f"(an hour-long lane at 1s writes 3,600 records that say "
+            f"nothing a 60s tick does not)"
+        )
+    return seconds
 
 
 def _declared_evidence(lane: Lane) -> tuple[EvidenceDeclaration, ...]:
@@ -680,6 +952,13 @@ def _run_reserved(
     err: TextIO,
     *,
     label_grace_seconds: float = LABEL_GRACE_SECONDS,
+    #: (B064) The already-open, lane-wide progress stream, or `None`. Opened
+    #: by `_cmd_run` so it spans `run_lane` AND `write_verdict` below.
+    progress_stream: "mutation.ProgressStream | None" = None,
+    progress_heartbeat_seconds: float | None = None,
+    #: (B066) The already-resolved, already-refused `--state-dir`, or `None`
+    #: for today's `<project_root>/.assay/mutation-state/`.
+    state_dir: "Path | None" = None,
 ) -> int:
     # P26/A-212: one LaneDeadline, started here -- before HEAD is even
     # resolved -- reaches HEAD, attestation, adapter resolution, and the
@@ -724,6 +1003,58 @@ def _run_reserved(
     # deadline-bounded call so the timeout refusal below can render the
     # lane's declared evidence identities exactly as A-213's does.
     declared_evidence = _declared_evidence(lane)
+
+    def _emit_run_header(resolved_commit: str) -> None:
+        """(B064/B065) The stream's first record, emitted the instant the
+        commit label exists -- every earlier refusal has no commit to
+        attribute records to, and a header without one cannot do the one job
+        a header on an append-only file has."""
+        if progress_stream is not None:
+            progress_stream.emit_run_header(
+                commit=resolved_commit,
+                lane=lane.name,
+                rigor=lane.rigor,
+                # (B067) `None` here means and only means `budget =
+                # "unbounded"`; `budget_per_candidate_s` is then the only
+                # bound the run has, which is exactly why a reader needs
+                # both in one place.
+                budget_s=lane.budget_seconds,
+                budget_per_candidate_s=runner._declared_budget_per_candidate_seconds(
+                    lane
+                ),
+            )
+
+    def _emit_verdict_written(final: Verdict) -> None:
+        """(B064) The R0/R1 stream's TERMINAL record, and the reason the
+        stream is opened in `_cmd_run` rather than inside `run_lane`.
+
+        Emitted for every verdict this function returns, including the
+        pre-run refusals -- a reader must be able to tell "the run ended,
+        refusing" from "the process died", and those two look identical from
+        a file that simply stops. `destination` is `null` when the consumer
+        asked for no artifact (A-028's no-artifact mode): the verdict is
+        still final, and saying WHERE it went is the honest way to report
+        that nothing was written."""
+        if progress_stream is None:
+            return
+        progress_stream.emit(
+            {
+                "event": "verdict_written",
+                "outcome": final.outcome.value,
+                "reason_code": (
+                    final.reason_code.value
+                    if final.reason_code is not None
+                    else None
+                ),
+                "exit_code": final.exit_code,
+                "destination": (
+                    getattr(args, "verdict_json", None)
+                    if destination is not None
+                    else None
+                ),
+            }
+        )
+
     try:
         commit = git.head_rev(lane_file.project_root, remaining=deadline.remaining)
     except AssayError as exc:
@@ -806,11 +1137,19 @@ def _run_reserved(
             evidence=_timed_out_evidence(declared_evidence, exc),
             declared_evidence=declared_evidence,
         )
+        _emit_run_header(commit)
         if destination is not None:
             runner.write_verdict(verdict, destination)
+        _emit_verdict_written(verdict)
         if args.verdict_json != "-":
             _print_run_summary(verdict, out)
         return verdict.exit_code
+
+    # (B064) The commit label exists from here on, so the stream gets its
+    # header before any further work -- attestation, adapter resolution and
+    # the lane itself all now have a run to be attributed to. Idempotent, so
+    # the timeout branch above having already emitted one is not a second.
+    _emit_run_header(commit)
 
     # No declaration means no loader call. Otherwise each declared source's
     # own directory exists by config invariant (B004/A-430's PER-SOURCE
@@ -889,6 +1228,7 @@ def _run_reserved(
             )
             if destination is not None:
                 runner.write_verdict(verdict, destination)
+            _emit_verdict_written(verdict)
             if args.verdict_json != "-":
                 _print_run_summary(verdict, out)
             return verdict.exit_code
@@ -979,11 +1319,15 @@ def _run_reserved(
                 # Resolved against the invoking CWD (like every other CLI path
                 # argument), never against the project root, and never derived
                 # from the lane name.
-                progress_artifact=(
-                    Path(progress_arg).expanduser()
-                    if (progress_arg := getattr(args, "progress", None)) is not None
-                    else None
-                ),
+                #
+                # (B064) The FILE is already open -- `_cmd_run` owns it, so
+                # that `verdict_written` can be emitted after `write_verdict`
+                # below -- so what travels here is the stream, not the path.
+                # Passing both would re-open the same destination behind the
+                # stream's back and emit a second `run` header into it.
+                progress_stream=progress_stream,
+                progress_heartbeat_seconds=progress_heartbeat_seconds,
+                state_dir=state_dir,
                 # B019/A-328: the gate request's own comparison base, threaded
                 # verbatim. `run_lane` decides whether this lane delegated to
                 # it, and refuses every disagreement -- the CLI does not
@@ -1018,6 +1362,7 @@ def _run_reserved(
         # a run that could not deliver the artifact it was asked for must not
         # also print a line that reads like a completed run (A-181).
         runner.write_verdict(verdict, destination)
+    _emit_verdict_written(verdict)
     if args.verdict_json != "-":
         _print_run_summary(verdict, out)
     return verdict.exit_code
@@ -1247,10 +1592,17 @@ def _render_lanes(lane_file: LaneFile, out: TextIO) -> None:
     for name, lane in lane_file.lanes.items():
         judge = lane.judge
         judged = "none" if judge is None else (judge.language or "declared")
+        # (B067) An unbounded lane has no seconds to render, so it renders
+        # none -- never "0s", and never a large finite stand-in.
+        budget_render = (
+            lane.budget
+            if lane.budget_seconds is None
+            else f"{lane.budget} ({lane.budget_seconds:g}s)"
+        )
         print(
             f"  {name}  scope={lane.scope}  rigor={','.join(lane.rigor)}  "
             f"enforcement={lane.enforcement}  "
-            f"budget={lane.budget} ({lane.budget_seconds:g}s)  "
+            f"budget={budget_render}  "
             f"allow_argv_append={str(lane.allow_argv_append).lower()}  "
             f"judge={judged}",
             file=out,

@@ -81,6 +81,7 @@ package's ``scope.touch``).
 
 from __future__ import annotations
 
+import math
 import os
 import selectors
 import shutil
@@ -203,10 +204,23 @@ def _sample_remaining(remaining: Remaining | None) -> float | None:
     (``AssayError``/``BUDGET_EXCEEDED``/``LANE_TIMEOUT``) propagates
     unmodified -- this is the ONE object every abnormal-cleanup path below
     re-raises, never a fresh exception of assay's own.
+
+    **(B067)** An UNBOUNDED lane's deadline returns ``math.inf``, which means
+    exactly what ``None`` already means to every caller of this function:
+    wait, with no timeout. Collapsing the two here -- at the ONE place a lane
+    remainder becomes a :mod:`selectors` / :meth:`subprocess.Popen.wait`
+    timeout for a Git child -- is what keeps every call site below unchanged.
+    It is not an approximation: ``selector.select(None)`` and
+    ``proc.wait()`` are the same unbounded wait an infinity would denote, and
+    an infinity passed through instead raises ``OverflowError`` inside
+    :mod:`selectors` (``math.ceil(inf)``), which is not a timeout at all.
     """
     if remaining is None:
         return None
-    return remaining()
+    sampled = remaining()
+    if sampled == math.inf:
+        return None
+    return sampled
 
 
 def _kill_owned_group(proc: subprocess.Popen[bytes]) -> None:
@@ -562,7 +576,10 @@ def run(repo: Path, *args: str, remaining: Remaining | None = None) -> str:
 
 
 def _run_raw(
-    repo: Path, *args: str, remaining: Remaining | None = None
+    repo: Path,
+    *args: str,
+    remaining: Remaining | None = None,
+    literal_pathspecs: bool = True,
 ) -> tuple[int, bytes, bytes]:
     """Resolve *repo* and run *args* against it, returning the RAW
     ``(returncode, stdout, stderr)`` without interpreting a non-zero exit.
@@ -582,7 +599,13 @@ def _run_raw(
         str(git_executable),
         "--no-pager",
         "--no-optional-locks",
-        "--literal-pathspecs",
+        # (B066) `--literal-pathspecs` sets GIT_LITERAL_PATHSPECS, and
+        # `check-ignore` refuses outright ("pathspec magic not supported by
+        # this command: 'literal'") rather than ignoring it. That ONE
+        # subcommand opts out; every other call in this module keeps the
+        # anchor, because a pathspec silently reinterpreted as a glob is a
+        # real hazard for the calls that pass repository paths.
+        *(("--literal-pathspecs",) if literal_pathspecs else ()),
         f"--git-dir={resolved.git_dir}",
         f"--work-tree={resolved.repo_top}",
         *_FIXED_CONFIG,
@@ -813,6 +836,41 @@ def dirty_paths(repo: Path, *, remaining: Remaining | None = None) -> tuple[str,
 # lane-owned, never a legacy non-lane helper.
 
 
+def path_is_ignored(
+    repo: Path, relative_path: str, *, remaining: Remaining | None = None
+) -> bool:
+    """(B066) Is *relative_path* ignored by the repository's committed rules?
+
+    Answers exactly the question ``--state-dir`` needs answered before any
+    work starts: a store inside the judged tree that git can SEE is a
+    `NO_MEASUREMENT`/`DIRTY_TREE` waiting to happen on the next run of the
+    same lane -- the identical failure B031 measured for the progress file.
+    An ignored path is invisible to `dirty_paths` and therefore harmless.
+
+    Uses :func:`_run_raw` rather than :func:`_run_bytes` because THIS caller
+    owns what the exit codes mean: `check-ignore -q` is 0 for ignored, 1 for
+    not ignored, and anything else is a real git fault. `_run_bytes` would
+    turn the ordinary "not ignored" answer into `GIT_FAILED`.
+    """
+    returncode, _stdout, stderr = _run_raw(
+        repo,
+        "check-ignore",
+        "-q",
+        "--",
+        relative_path,
+        remaining=remaining,
+        literal_pathspecs=False,
+    )
+    if returncode == 0:
+        return True
+    if returncode == 1:
+        return False
+    raise _git_failed(
+        f"git check-ignore {relative_path} failed ({returncode}): "
+        f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
+    )
+
+
 def verify_exact_commit(repo: Path, oid: str, *, remaining: Remaining) -> None:
     """Require that *oid* resolves to itself as an exact commit.
 
@@ -1013,6 +1071,13 @@ class _P22Deadline:
     to the whole lane, not to each subprocess). Converting it once, here,
     is what stops a duration from being handed to child after child and
     silently multiplying into N x the declared budget.
+
+    **(B067)** *seconds* may be ``math.inf`` (an unbounded lane's remainder),
+    and :meth:`remaining` then returns ``None`` -- the "no timeout" spelling
+    both consumers below already accept (``selector.select(None)`` blocks
+    until an event; ``proc.wait(timeout=None)`` blocks until exit). An
+    infinity handed to either raises ``OverflowError``, so the conversion
+    happens here rather than at each call site.
     """
 
     __slots__ = ("_expiry",)
@@ -1020,7 +1085,9 @@ class _P22Deadline:
     def __init__(self, seconds: float) -> None:
         self._expiry = time.monotonic() + seconds
 
-    def remaining(self, what: str) -> float:
+    def remaining(self, what: str) -> float | None:
+        if self._expiry == math.inf:
+            return None
         left = self._expiry - time.monotonic()
         if left <= 0:
             raise _p22_timeout(what)

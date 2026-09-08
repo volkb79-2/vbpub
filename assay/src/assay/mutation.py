@@ -107,6 +107,7 @@ import math
 import os
 import re
 import tempfile
+import threading
 import time
 from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
@@ -156,6 +157,8 @@ __all__ = [
     "MutationDiscoveryError",
     "MutationSite",
     "MutationTarget",
+    "PROGRESS_EVENTS",
+    "ProgressStream",
     "ProgressWriter",
     "MutationStateError",
     "build_mutation_claim",
@@ -166,6 +169,11 @@ __all__ = [
     "line_for_offset",
     "merge_mutations",
     "merge_mutation_shards",
+    # (Round-1 N6) Both are cross-module API -- `runner` composes the default
+    # store from `default_state_root`, and `mutation_state_record_name` is
+    # the identity-to-filename rule `--state-dir` addresses records by.
+    "default_state_root",
+    "mutation_state_record_name",
     "mutation_state_record_path",
     "resolve_mutation_targets",
     "run_mutation",
@@ -752,6 +760,167 @@ def progress_writer(path: Path) -> Iterator[ProgressWriter]:
         ) from exc
 
 
+#: (B064) The CLOSED progress vocabulary. Every record the stream carries
+#: names its own phase through this table, and
+#: :meth:`ProgressStream.emit` refuses any other name outright -- "the phase
+#: vocabulary is CLOSED and identical across tiers" is B064's own acceptance
+#: criterion, and a table nothing enforces is a comment, not a vocabulary.
+#:
+#: The R0/R1 phase stream and the R2 mutation sweep draw from ONE table: an
+#: R0/R1 lane simply emits far fewer of these names, because it has no
+#: per-unit to iterate. A phase that did not happen is never emitted -- most
+#: pointedly, the DIRECT R0-only path (``runner.run_lane``'s live-tree
+#: branch) has no snapshot at all and therefore never emits
+#: ``snapshot_materialized``. Naming a phase that did not occur would be a
+#: lie told to the one reader the artifact exists for.
+PROGRESS_EVENTS = frozenset(
+    {
+        # --- shared header/terminal ---------------------------------------
+        "run",  # first record of a run; attributes every later record
+        "verdict_written",  # R0/R1 terminal (B064)
+        "end",  # mutation-sweep terminal, with bucket counts (B065)
+        # --- R0/R1 phase boundaries (B064) --------------------------------
+        "snapshot_materialized",
+        "command_started",
+        "command_running",  # the time-based heartbeat tick
+        "command_finished",
+        "coverage_parsed",
+        # --- mutation sweep (B031/A-320, pre-existing) --------------------
+        "candidates",
+        "shard",
+        "resume",
+        "baseline",
+        "candidate",
+        "resume_merged",
+    }
+)
+
+
+class ProgressStream:
+    """(B064/B065) The ONE place a progress record is enriched and written.
+
+    Wraps :func:`progress_writer`'s raw callable so that ``emitted_at`` and
+    ``elapsed_s`` are added centrally, to EVERY record, instead of at each
+    of the call sites scattered across :mod:`assay.cli`,
+    :mod:`assay.runner` and this module. That is what makes B065 nearly free
+    once B064's sites exist, and it is what makes ``elapsed_s`` mean one
+    thing everywhere: **monotonic seconds since this stream was opened**,
+    which is the ``run`` header's own instant.
+
+    The heartbeat (B064) writes from a background thread while the lane's
+    command runs, and the mutation sweep writes from N concurrent worker
+    threads, so the write itself is serialised under a lock. The lock covers
+    only the ``write`` call; the enrichment is computed outside it.
+
+    *clock* is the same UTC clock the rest of the run uses, so ``emitted_at``
+    is in this project's existing ``iso_utc(clock())`` convention rather
+    than a second, independently-skewed time source.
+
+    This is diagnostic output. ``assay verify`` never reads it, no verdict
+    field derives from it, and nothing here is evidence.
+    """
+
+    def __init__(
+        self,
+        write: ProgressWriter,
+        *,
+        clock: Clock,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._write = write
+        self._clock = clock
+        self._monotonic = monotonic
+        self._lock = threading.Lock()
+        self._started_monotonic = monotonic()
+        self._header_emitted = False
+
+    @property
+    def started_monotonic(self) -> float:
+        """The monotonic instant ``elapsed_s`` is measured from."""
+        return self._started_monotonic
+
+    def elapsed(self) -> float:
+        return self._monotonic() - self._started_monotonic
+
+    def emit(self, event: Mapping[str, Any]) -> None:
+        name = event.get("event")
+        if name not in PROGRESS_EVENTS:
+            # A programming error, never a consumer's: the vocabulary is
+            # closed and every producer is in this repository.
+            raise ValueError(
+                f"progress event {name!r} is not in the closed progress "
+                f"vocabulary {sorted(PROGRESS_EVENTS)}"
+            )
+        # (Round-1 N1) The two timestamps are computed INSIDE the lock, not
+        # before it. Outside it, the heartbeat thread and a `jobs`-way
+        # concurrent sweep could stamp in one order and win the lock in the
+        # other, so a reader tailing the file would see `elapsed_s` go
+        # backwards between consecutive lines -- and run-gate's own
+        # `_rate_per_min` reads that field off the newest candidate record.
+        # Under the lock, stamp order and write order are the same order by
+        # construction. The cost is two clock reads inside a critical
+        # section that already does a `write` and a `flush`.
+        with self._lock:
+            self._write(
+                {
+                    **event,
+                    "emitted_at": iso_utc(self._clock()),
+                    "elapsed_s": round(self.elapsed(), 3),
+                }
+            )
+
+    #: A :class:`ProgressStream` IS a :data:`ProgressWriter`, so every
+    #: pre-existing ``write_progress(...)`` call site keeps working and is
+    #: enriched by construction rather than by remembering to be.
+    __call__ = emit
+
+    def emit_run_header(
+        self,
+        *,
+        commit: str | None,
+        lane: str | None = None,
+        rigor: Sequence[str] | None = None,
+        budget_s: float | None = None,
+        budget_per_candidate_s: float | None = None,
+        candidate_total: int | None = None,
+    ) -> None:
+        """Emit the stream's ``run`` header, at most once.
+
+        The header is the FIRST record of a run, because the file is opened
+        for APPEND and never truncated: without it a tailing monitor cannot
+        attribute a later record to a run at all (B031/A-320's original
+        reason). That ordering is also why ``candidate_total`` is ``null``
+        on every lane-driven run -- the total cannot be known before a
+        snapshot exists and the sites have been collected, and a header
+        deferred until it IS known is a header that arrives after the
+        records it is supposed to attribute. The real total arrives, the
+        moment it is known, on the ``candidates`` event (B065), and rides on
+        ``baseline`` and every ``candidate`` record as it always has.
+
+        ``budget_s`` is ``null`` for a lane declaring ``budget =
+        "unbounded"`` (B067). ``lane`` is ``null`` only when the header was
+        emitted by a direct :func:`run_mutation` library call, which has no
+        :class:`~assay.config.Lane` in view; a ``null`` ``lane`` is
+        therefore the reader's signal that the lane-level bounds in this
+        header are UNKNOWN rather than unbounded.
+        """
+        if self._header_emitted:
+            return
+        self._header_emitted = True
+        self.emit(
+            {
+                "event": "run",
+                "lane": lane,
+                "commit": commit,
+                "rigor": list(rigor) if rigor is not None else None,
+                "budget_s": budget_s,
+                "budget_per_candidate_s": budget_per_candidate_s,
+                "candidate_total": candidate_total,
+                "started": iso_utc(self._clock()),
+            }
+        )
+
+
 def _progress_event(
     *, candidate_index: int, candidate_total: int, job: MutantJob
 ) -> dict[str, Any]:
@@ -794,13 +963,37 @@ def candidate_id(job: MutantJob) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
-def mutation_state_record_path(candidate: str) -> str:
-    """Return the canonical project-relative state-file spelling."""
+def mutation_state_record_name(candidate: str) -> str:
+    """Return one candidate's state-file NAME, with no directory at all.
+
+    (B066) The identity-to-filename rule, split out from
+    :func:`mutation_state_record_path` so the store's ROOT and a record's
+    NAME are two separate decisions. The root became a caller's choice with
+    ``--state-dir``; the name did not, and must not -- it folds the
+    candidate's path, source bytes, span, replacement and operator, which is
+    exactly what makes a SHARED store safe by construction: a record either
+    matches its identity or is ignored.
+    """
     if not isinstance(candidate, str) or _CANDIDATE_ID_RE.fullmatch(candidate) is None:
         raise ValueError(
             f"candidate id must be a 64-character hexadecimal digest, got {candidate!r}"
         )
-    return f".assay/mutation-state/{candidate.lower()}.json"
+    return f"{candidate.lower()}.json"
+
+
+def mutation_state_record_path(candidate: str) -> str:
+    """Return the canonical project-relative state-file spelling.
+
+    (B066) The DEFAULT spelling -- what a run with no ``--state-dir`` uses.
+    A run that supplies one addresses ``<state-dir>/<name>`` instead, with
+    the same name from :func:`mutation_state_record_name`.
+    """
+    return f".assay/mutation-state/{mutation_state_record_name(candidate)}"
+
+
+def default_state_root(project_root: Path) -> Path:
+    """(B066) Where resume records live when no ``--state-dir`` is given."""
+    return Path(project_root) / ".assay" / "mutation-state"
 
 
 def _crash_diagnostic_tails(
@@ -855,10 +1048,19 @@ def _crash_diagnostic_tails(
     return tails
 
 
-def _write_mutation_state_record(project_root: Path, payload: Mapping[str, Any]) -> None:
-    relative_path = PurePosixPath(mutation_state_record_path(payload["candidate_id"]))
-    parent = project_root.joinpath(*relative_path.parts[:-1])
-    destination = parent / relative_path.parts[-1]
+def _write_mutation_state_record(state_root: Path, payload: Mapping[str, Any]) -> None:
+    """(B066) Write one record into *state_root*, whatever root that is.
+
+    The parameter used to be the project root and the ``.assay/
+    mutation-state/`` tail was joined on here, which is precisely why resume
+    was inert exactly where budget-capped retries happen most: an ephemeral
+    per-run worktree carries its own empty store away with it. The root is
+    now the caller's, so a durable directory can be shared across worktrees;
+    the record's NAME is unchanged and still folds the candidate's full
+    identity, so a shared store stays safe by construction.
+    """
+    parent = Path(state_root)
+    destination = parent / mutation_state_record_name(payload["candidate_id"])
     parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=".state-", dir=parent)
     try:
@@ -876,12 +1078,16 @@ def _write_mutation_state_record(project_root: Path, payload: Mapping[str, Any])
 
 
 def _load_validated_state_record(
-    project_root: Path, job: MutantJob
+    state_root: Path, job: MutantJob
 ) -> Mapping[str, Any] | None:
     identity = candidate_id(job)
+    # (B066) `read_bounded_input` takes ANY root and needs no git repository
+    # -- it is a descriptor walk, not a repository query -- so relocating
+    # the store is a change of root plus a one-component relative name, with
+    # the O_NOFOLLOW/bounded-read discipline entirely unchanged.
     raw = safeio.read_bounded_input(
-        project_root,
-        mutation_state_record_path(identity),
+        Path(state_root),
+        mutation_state_record_name(identity),
         limit=MUTATION_STATE_RECORD_LIMIT,
     )
     if raw is None:
@@ -1332,7 +1538,22 @@ def run_mutation(
     baseline_equivalence: bytes | None = None,
     budget_per_candidate_seconds: float | None = None,
     progress_artifact: Path | str | None = None,
-    state_project_root: Path | str | None = None,
+    #: (B064) An already-open, lane-wide :class:`ProgressStream`. The lane
+    #: runner opens the stream once, high up, so the R0/R1 phase records and
+    #: the ``verdict_written`` terminal share ONE file, ONE ``elapsed_s``
+    #: origin and ONE header with this sweep's own records. When it is
+    #: given, *progress_artifact* is not opened a second time and no second
+    #: ``run`` header is emitted. *progress_artifact* remains for the direct
+    #: library caller, which owns the whole run by itself.
+    progress_stream: "ProgressStream | None" = None,
+    #: (B066) The DIRECTORY resume records live in -- the caller's
+    #: authoritative store, never an ephemeral snapshot's. It used to be
+    #: named ``state_project_root`` and the ``.assay/mutation-state/`` tail
+    #: was joined on inside, which is exactly why ``--resume`` was inert in a
+    #: fresh-worktree-per-run consumer (cmru's release transaction, dstdns
+    #: Mode-B instances): the store went away with the worktree. It is a
+    #: root, not a project root, and it is named for what it is.
+    state_root: Path | str | None = None,
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
@@ -1432,42 +1653,80 @@ def run_mutation(
     if not isinstance(resume, bool):
         raise ValueError(f"run_mutation resume must be a boolean, got {resume!r}")
     shard_specified = shard_index is not None or shard_count is not None
-    if state_project_root is None and (resume or shard_specified):
+    if state_root is None and (resume or shard_specified):
         raise ValueError(
             "run_mutation resume requires the caller's authoritative "
-            "state_project_root; an ephemeral snapshot cannot own resume evidence"
+            "state_root; an ephemeral snapshot cannot own resume evidence"
         )
     if shard_specified and (shard_index is None or shard_count is None):
         raise ValueError("run_mutation requires both shard_index and shard_count")
     if shard_specified:
         select_mutation_shard((), index=shard_index, count=shard_count)
-    if state_project_root is not None:
-        Path(state_project_root).mkdir(parents=True, exist_ok=True)
+    if state_root is not None:
+        Path(state_root).mkdir(parents=True, exist_ok=True)
 
     if baseline.outcome is not Outcome.PASS:
         return None
 
+    # (B064) The stream is opened HERE only when nobody upstream owns one --
+    # the direct library-caller path. `runner.run_lane` opens it for the
+    # whole lane, so an `assay run --progress` sweep arrives with
+    # *progress_stream* already carrying the R0/R1 phase records that
+    # preceded it.
     progress_context = (
         progress_writer(Path(progress_artifact))
-        if progress_artifact is not None
+        if progress_artifact is not None and progress_stream is None
         else nullcontext[ProgressWriter | None](None)
     )
 
-    with progress_context as write_progress:
+    with progress_context as raw_write:
+        write_progress: ProgressStream | None = progress_stream
+        if write_progress is None and raw_write is not None:
+            write_progress = ProgressStream(raw_write, clock=clock)
+            write_progress.emit_run_header(
+                commit=prepared.spec.commit,
+                lane=None,
+                budget_per_candidate_s=budget_per_candidate_seconds,
+            )
         from .runner import execute_plan
 
         collected = collect_mutation_sites(
             targets, adapter=adapter, operators=operators, limit=max_mutants + 1
         )
+        # (Round-1 N4) Each of the three returns below ends the sweep without
+        # running one candidate, and each used to emit NOTHING. Under the
+        # lane path `verdict_written` still terminated the stream, but a
+        # DIRECT `run_mutation` library caller has no `verdict_written` at
+        # all -- so those runs were indistinguishable from a process that
+        # died mid-sweep, which is the exact question `end` was added to
+        # answer. `end` is now the sweep's terminal on every path out, and
+        # `reason` says which one: `null` for a sweep that actually ran.
+        def _end(
+            buckets: Mapping[str, int], *, reason: str | None, total: int
+        ) -> None:
+            if write_progress is not None:
+                write_progress(
+                    {
+                        "event": "end",
+                        "candidate_total": total,
+                        "buckets": dict(buckets),
+                        "reason": reason,
+                    }
+                )
+
+        _no_buckets = {name: 0 for name in MUTATION_BUCKETS}
         if collected == UNSUPPORTED:
+            _end(_no_buckets, reason="unsupported", total=0)
             return UNSUPPORTED
 
         job_list = collected
         candidate_count = len(job_list)
         if candidate_count > max_mutants:
+            _end(_no_buckets, reason="over_candidate_cap", total=candidate_count)
             return Mutation(candidate_count=candidate_count, total=0)
         total = candidate_count
         if total == 0:
+            _end(_no_buckets, reason="no_candidates", total=0)
             return Mutation(candidate_count=0, total=0)
 
         selected_indices = list(range(total))
@@ -1492,9 +1751,9 @@ def run_mutation(
         selected_jobs = tuple(job_list[index] for index in selected_indices)
         resumed_records: list[Mapping[str, Any]] = []
         if resume:
-            assert isinstance(state_project_root, Path)
+            assert isinstance(state_root, Path)
             for job in selected_jobs:
-                record = _load_validated_state_record(state_project_root, job)
+                record = _load_validated_state_record(state_root, job)
                 if record is not None:
                     resumed_records.append(record)
             resumed_ids = {record["candidate_id"] for record in resumed_records}
@@ -1513,17 +1772,22 @@ def run_mutation(
             pending_jobs = selected_jobs
 
         if write_progress is not None:
-            # B031/A-320: the stream is opened for APPEND and never
-            # truncated, so successive runs share one file. Without this
-            # header a tailing monitor cannot tell which run a
-            # `candidate_index: 0` belongs to -- there was no run id, commit
-            # or timestamp anywhere in the artifact.
+            # (B065) The `run` header is emitted at stream OPEN and carries
+            # `candidate_total: null`, because the total cannot be known
+            # before a snapshot exists and the sites have been collected --
+            # see `ProgressStream.emit_run_header`. This is where it IS
+            # known, so this is where it is announced, together with what
+            # sharding and resume did to it: `selected_total` is this
+            # shard's assignment domain and `pending_total` is what actually
+            # gets executed, so a reader computes rate and ETA against the
+            # work that remains rather than against the whole plan.
             write_progress(
                 {
+                    "event": "candidates",
                     "candidate_total": total,
+                    "selected_total": len(selected_jobs),
+                    "pending_total": len(pending_jobs),
                     "commit": prepared.spec.commit,
-                    "event": "run",
-                    "started": iso_utc(clock()),
                 }
             )
             write_progress(
@@ -1556,7 +1820,7 @@ def run_mutation(
             write_progress=write_progress,
             total=len(pending_jobs),
             candidate_count=len(pending_jobs),
-            state_project_root=state_project_root,
+            state_root=state_root,
         )
 
         if resumed_records:
@@ -1583,6 +1847,26 @@ def run_mutation(
                 result_payload,
                 candidate_ids=tuple(candidate_id(job) for job in selected_jobs),
             )
+        if write_progress is not None:
+            # (B065) The sweep's own terminal. Without it a reader cannot
+            # tell a finished sweep from one whose process died between two
+            # candidates -- both look like "records stopped arriving" -- and
+            # the whole point of the artifact is to answer that question
+            # WITHOUT reading the verdict. The counts are the same
+            # vocabulary the verdict's own `judgment.r2` uses, so a reader
+            # that later sees the verdict finds them agreeing rather than
+            # having to reconcile two spellings.
+            #
+            # `reason: null` -- a sweep that actually ran. The three early
+            # returns above name their own reason instead (round-1 N4).
+            _end(
+                {
+                    name: len(getattr(result_payload, name))
+                    for name in MUTATION_BUCKETS
+                },
+                reason=None,
+                total=total,
+            )
         return result_payload
 
 
@@ -1604,7 +1888,7 @@ def _execute_mutation_jobs(
     execute_plan: Callable[..., CommandResult],
     total: int,
     candidate_count: int,
-    state_project_root: Path | str | None = None,
+    state_root: Path | str | None = None,
 ) -> Mutation:
 
     def _run_one(index: int) -> _MutantRun:
@@ -1771,6 +2055,15 @@ def _execute_mutation_jobs(
                 if write_progress is not None:
                     write_progress(
                         {
+                            # (B064) The per-candidate record was the ONE
+                            # record with no `event` key at all, so a reader
+                            # identified it by the absence of a name --
+                            # exactly the thing a closed vocabulary exists
+                            # to remove. Added here rather than inside
+                            # `_progress_event`, which is shared with the
+                            # state record and has no business gaining a
+                            # progress-stream field.
+                            "event": "candidate",
                             **_progress_event(
                                 candidate_index=position,
                                 candidate_total=total,
@@ -1780,9 +2073,9 @@ def _execute_mutation_jobs(
                             "elapsed_seconds": round(run.elapsed_seconds, 3),
                         }
                     )
-                if state_project_root is not None:
+                if state_root is not None:
                     _write_mutation_state_record(
-                        Path(state_project_root),
+                        Path(state_root),
                         {
                             **_progress_event(
                                 candidate_index=position,

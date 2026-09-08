@@ -313,14 +313,45 @@ tracked files remain dirty regardless of any exclude source.
 ## Resume and shard a long mutation lane
 
 **A consumer gate passes `--resume --progress <path>` on EVERY lane it runs,
-not only its mutation lanes.** Both are no-ops where a lane has nothing to
-checkpoint — `--progress` is ignored without R2, and resume state is touched
-only by the mutation sweep — so a uniform invocation costs nothing and means a
+not only its mutation lanes.** Resume state is still touched only by the
+mutation sweep, so `--resume` is a no-op elsewhere; `--progress` is **no
+longer** R2-only (B064) — every rigor tier writes its own phase boundaries to
+it, and an R0/R1 lane that used to look hung for nine minutes is now legible.
+A uniform invocation costs nothing and means a
 lane that later gains R2 needs no gate change to become resumable and
 observable. Write the progress file outside the tree under judgement: an
 untracked path inside it is a `NO_MEASUREMENT`/`DIRTY_TREE` of the gate's own
 making. (assay's own registered gate does this to itself, in
 `tools/tester-unified-gate.sh`.)
+
+### Where resume state lives: `--state-dir PATH`
+
+By default, mutation resume records live in
+`<project-root>/.assay/mutation-state/`. That works for a persistent worktree
+and is inert for an **ephemeral** one — a fresh checkout per run (cmru's
+release transaction, a Mode-B instance) carries its own empty store away with
+it, so `--resume` had nothing to resume from exactly where budget-capped
+retries happen most.
+
+```sh
+assay run <lane> --resume --state-dir /var/lib/assay-state/<repo>
+```
+
+The directory is created on demand. Sharing one across worktrees is **safe by
+construction, not by policy**: a candidate id folds the source file's exact
+bytes, its span, its replacement and its operator, so a record from another
+worktree either matches its identity or is ignored, and a record that
+contradicts the identity it is filed under still fails the lane
+`UNREADABLE_ARTIFACT`. Edit a source file and that file's candidates get new
+identities, so they are re-executed rather than resumed.
+
+A `--state-dir` **inside the judged tree that git can see is refused before
+any work**, naming the reason: those records would be reported uncommitted and
+the lane's next run would refuse `NO_MEASUREMENT`/`DIRTY_TREE` — the same trap
+the progress file has. A gitignored path inside the tree is fine, and so is
+any path outside it. Verify and refusal semantics are otherwise unchanged:
+this relocates *where* resume state lives, never *what* it contains, and
+`assay verify` does not read it either way.
 
 Preview a subset without executing it:
 
@@ -1699,14 +1730,157 @@ but note two consequences:
 A candidate that exceeds this bound is recorded in `budget_exceeded`; the lane continues with other
 candidates.
 
+### `budget = "unbounded"`: the recommended shape for a long mutation lane (B067)
+
+Guessing a lane-wide total for a mutation sweep is the failure mode this
+setting removes. `budget` normally takes a duration; it also takes the single
+literal `"unbounded"`, which says **"there is no lane-wide bound; every unit
+of this lane's work carries its own, and liveness is judged by the caller."**
+
+`"unbounded"` is admitted **only where every unit really is bounded**, and
+refused at load, by name, everywhere else. The question is about the lane's
+own **top-level command** — the `argv` every lane runs once, which `budget` is
+the only thing that ever bounds — so it is decided **independently of which
+other tiers the lane declares**:
+
+| lane | `budget = "unbounded"` |
+| --- | --- |
+| R0/R1 | **refused** — one command, whose only bound *is* `budget` |
+| ingested R2 (`judge.mutation.format`) | **refused** — likewise one command; assay runs no units of its own |
+| either of the above **plus R3** | **still refused** — see below |
+| native R2 | **admitted**; requires `judge.mutation.budget_per_candidate` |
+| native R2 **plus R3** | **admitted**; requires both `budget_per_candidate` and `judge.canary.budget_per_attempt` |
+
+**Declaring an R3 canary does not make a lane unbounded.**
+`judge.canary.budget_per_attempt` bounds one canary *probe* and nothing else —
+it never bounds the lane's own command, which is what produces the R0 status
+and the R1 coverage artifact. So an R0/R1+R3 lane is refused on exactly the
+same grounds an R0/R1 lane is, and the refusal says so. `budget_per_attempt`
+is *necessary* for an unbounded R3 lane and is not *sufficient* on its own.
+
+A native R2 sweep is the one admissible shape because the part whose length
+genuinely cannot be guessed — the sweep — is bounded per unit. The single
+command it still leaves unbounded is the pre-sweep baseline, described below.
+
+The recommended shape, with the caller supplying the liveness half:
+
+<!-- assay-doc-example:skip reason="lane fragment; the surrounding lane supplies schema_version and the rest of the closed lane grammar" -->
+```toml
+[lanes.worker_lane]
+budget = "unbounded"
+
+[lanes.worker_lane.judge.mutation]
+jobs = 4
+max_mutants = 100
+operators = ["python:compare-swap"]
+budget_per_candidate = "300s"
+```
+
+…invoked with a progress file, and watched by the caller (run-gate's
+`stall_timeout`, RG-36):
+
+```bash
+assay run worker_lane --progress /tmp/worker.progress.jsonl --resume
+```
+
+**Assay does not detect its own stalls, and gains no stall threshold of its
+own.** Its job stops at emitting a stream rich enough for an external watcher
+to compute staleness; a hung *unit* is already caught by that unit's own
+bound. `judge.canary.budget_per_attempt` bounds one canary probe end to end —
+its control materialisation, its control run, and its transformed run — and
+is re-derived fresh for each declared target. Both per-unit bounds also work
+under a numeric `budget`, where they simply tighten it: the lane budget still
+wins whenever it is the nearer of the two.
+
+**One command is deliberately left unbounded** on an unbounded R2 lane: the
+lane's own *baseline* run, executed once before any mutant to prove the suite
+is green. `budget_per_candidate` is a per-*mutant* bound, and a baseline runs
+the whole suite, so tightening the baseline to it would refuse healthy lanes.
+That one command is covered by the caller's stall detection, not by a bound of
+assay's.
+
+### The progress stream
+
 Progress is opt-in. `assay run worker_lane --progress /tmp/worker.progress.jsonl` appends one compact
-JSON object per line -- a `run` header naming the commit and start time, then one event after the
-baseline and one after every completed candidate, each flushed as it is written, so a monitor can
-tail it live. Without the flag no progress file is written at all, and assay never chooses the
-location itself. Choose a path OUTSIDE the repository (or a gitignored one): assay's own clean-tree
-precondition refuses `NO_MEASUREMENT`/`DIRTY_TREE` on the next run of that lane if the progress file
-lands in the work tree. The verdict does not name the destination -- the caller already chose it,
-the same way it does for `--verdict-json`.
+JSON object per line, each flushed as it is written, so a monitor can tail it live. Without the flag
+no progress file is written at all, and assay never chooses the location itself. Choose a path
+OUTSIDE the repository (or a gitignored one): a progress file git can see inside the work tree
+would make the lane refuse `NO_MEASUREMENT`/`DIRTY_TREE`. **A destination inside the judged tree
+that git can see is refused before any work**, naming the cause and the fix — the same preflight
+`--state-dir` gets, and for the same reason. A gitignored path inside the tree is fine, and so is
+any path outside it. The verdict does not name the destination -- the caller already chose it,
+the same way it does for `--verdict-json`. **The stream is diagnostic, never
+evidence:** `assay verify` does not read it, and no verdict field derives from
+it.
+
+**The vocabulary is closed** and identical at every tier — an R0/R1 lane
+simply emits fewer of these names, because it has no per-unit to iterate. A
+phase that did not happen is never emitted: the direct R0-only path takes no
+snapshot, so it never says `snapshot_materialized`, and a lane with no R1
+never says `coverage_parsed`.
+
+| `event` | when | notable fields |
+| --- | --- | --- |
+| `run` | first record of the run, at stream open | `lane`, `commit`, `rigor`, `budget_s`, `budget_per_candidate_s`, `candidate_total`, `started` |
+| `snapshot_materialized` | the committed-object snapshot exists (higher-rigor path only) | `commit` |
+| `command_started` | just before the lane's own command | `argv`, `phase` |
+| `command_running` | the heartbeat tick, while it runs | `command_elapsed_s`, `phase` |
+| `command_finished` | the command returned | `outcome`, `reason_code`, `returncode`, `started`, `ended` |
+| `coverage_parsed` | the R1 artifact was read (R1 lanes only) | `parsed`, `reason_code` |
+| `candidates` | the mutation sweep's sizes are known | `candidate_total`, `selected_total`, `pending_total` |
+| `shard` / `resume` | a shard was selected / records were resumed | `selected_total` / `resumed_total` |
+| `baseline` | the sweep's baseline record | `candidate_total` |
+| `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket`, `elapsed_seconds` |
+| `end` | the mutation sweep ended, on every path out | `buckets` (per-bucket counts), `reason` |
+| `verdict_written` | terminal, for every tier | `outcome`, `reason_code`, `exit_code`, `destination` |
+
+**Every record** additionally carries `emitted_at` (UTC ISO 8601) and
+`elapsed_s` (monotonic seconds since the `run` header). Those two are what let
+a reader with ONLY this file compute rate, ETA and last-event age. `elapsed_s`
+is run-relative on every record without exception.
+
+**Three field names sit close together and mean three different things**, so
+read them carefully:
+
+| field | on | means |
+| --- | --- | --- |
+| `elapsed_s` | every record | seconds since the `run` header — the *run*'s age |
+| `command_elapsed_s` | `command_running` | seconds since *this command* started |
+| `elapsed_seconds` | `candidate` | how long *that one mutant* took |
+
+`end`'s `reason` is `null` for a sweep that actually ran, and otherwise names
+why none did: `"unsupported"` (the adapter has no mutation implementation),
+`"over_candidate_cap"` (more candidates than `max_mutants`), or
+`"no_candidates"`. It is emitted on every path out of the sweep, so a reader
+of a direct-library run — which has no `verdict_written` — can still tell a
+finished run from a dead process.
+
+Two `null`s are meaningful rather than missing. `budget_s` is `null` exactly
+when the lane declares `budget = "unbounded"`, in which case
+`budget_per_candidate_s` is the only bound there is. `candidate_total` is
+`null` on the `run` header because the total cannot be known before a snapshot
+exists and the sites have been collected — the header has to come first, since
+it is what attributes every later record to a run in an append-only file. The
+real total arrives on `candidates`, and rides on `baseline` and every
+`candidate` record.
+
+### `--progress-heartbeat SECONDS`
+
+`--progress-heartbeat` emits a `command_running` tick on a fixed interval
+while the lane's own command runs, and cancels it the moment the command
+returns. **Default 60 s, floor 5 s** — a smaller value is refused by name
+before any work, so a misconfigured interval cannot flood the file. It is a
+no-op without `--progress`.
+
+It is a **pure time-based tick**: it never reads the child's stdout or stderr,
+counts its bytes, tracks activity, or knows which tool is running. A
+per-language live-test-progress adapter is a separate, larger item (B073) and
+is deliberately not part of this. The tick is armed only around the lane's own
+command, never around each mutant — a `jobs`-way concurrent sweep would
+otherwise interleave N tick streams about work the per-candidate records
+already describe one line at a time. A heartbeat write failure stops the
+heartbeat and nothing else; a diagnostic tick must never be able to kill a
+measured lane.
 
 When a command fails or times out, read the optional top-level
 `result_stdout_tail` / `result_stderr_tail` fields for the final error output.

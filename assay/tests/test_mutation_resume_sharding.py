@@ -70,7 +70,7 @@ def _run(repo, tmp_path, *, state_root):
             operators=("python:bool-const-flip",),
             process_runner=decide,
             clock=lambda: datetime.now(timezone.utc),
-            state_project_root=state_root,
+            state_root=state_root,
             resume=True,
         )
 
@@ -109,7 +109,7 @@ def test_completed_candidates_are_resumed_without_reexecution(tmp_path):
             operators=("python:bool-const-flip",),
             process_runner=counting_runner,
             clock=lambda: datetime.now(timezone.utc),
-            state_project_root=state_root,
+            state_root=state_root,
             resume=True,
         )
 
@@ -133,7 +133,7 @@ def test_a_record_whose_source_hash_contradicts_its_own_filename_raises(tmp_path
     repo = _repo(tmp_path)
     state_root = tmp_path / "state"
     _run(repo, tmp_path, state_root=state_root)
-    record = next((state_root / ".assay/mutation-state").glob("*.json"))
+    record = next(state_root.glob("*.json"))
     payload = json.loads(record.read_text(encoding="utf-8"))
     payload["source_sha256"] = "0" * 64
     record.write_text(json.dumps(payload), encoding="utf-8")

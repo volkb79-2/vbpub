@@ -91,8 +91,27 @@ def test_progress_events_are_emitted_for_baseline_and_every_candidate(tmp_path):
     assert events[0]["event"] == "run"
     assert len(events[0]["commit"]) == 40
     assert events[0]["started"].startswith("20")
-    assert events[0]["candidate_total"] == 2
-    events = events[1:]
+    # (B065) The header is emitted at stream OPEN, before a snapshot exists
+    # and before the sites have been collected, so `candidate_total` is
+    # honestly `null` there -- a header deferred until the total is known is
+    # a header that arrives after the records it exists to attribute. The
+    # real total arrives on `candidates`, the moment it IS known.
+    assert events[0]["candidate_total"] is None
+    # `lane` is `null` on this path and only on this path: a direct
+    # `run_mutation` call has no Lane in view, which is the reader's signal
+    # that the header's lane-level bounds are UNKNOWN, not unbounded.
+    assert events[0]["lane"] is None
+    assert events[1] == {
+        **events[1],
+        "event": "candidates",
+        "candidate_total": 2,
+        "selected_total": 2,
+        "pending_total": 2,
+    }
+    assert events[-1]["event"] == "end"
+    assert events[-1]["buckets"]["killed"] == 1
+    assert events[-1]["buckets"]["survived"] == 1
+    events = events[2:-1]
     assert [event["candidate_index"] for event in events] == [-1, 0, 1]
     assert all(event["candidate_total"] == 2 for event in events[1:])
     assert events[0]["event"] == "baseline"
@@ -194,11 +213,12 @@ def test_resume_reuses_completed_records_without_rerunning(tmp_path):
             process_runner=decide,
             clock=lambda: datetime.now(timezone.utc),
             progress_artifact=progress_path,
-            state_project_root=state_root,
+            state_root=state_root,
             resume=True,
         )
     assert first.total == 2
-    assert len(list((state_root / ".assay" / "mutation-state").glob("*.json"))) == 2
+    # (B066) records live directly under the caller's own state root now.
+    assert len(list(state_root.glob("*.json"))) == 2
     assert len(calls) == 2
 
     calls.clear()
@@ -218,7 +238,7 @@ def test_resume_reuses_completed_records_without_rerunning(tmp_path):
             ),
             clock=lambda: datetime.now(timezone.utc),
             progress_artifact=None,
-            state_project_root=state_root,
+            state_root=state_root,
             resume=True,
         )
 
@@ -275,11 +295,11 @@ def test_resume_raises_on_a_state_record_whose_source_hash_contradicts_its_own_f
             operators=("python:bool-const-flip",),
             process_runner=decide,
             clock=lambda: datetime.now(timezone.utc),
-            state_project_root=state_root,
+            state_root=state_root,
             resume=True,
         )
 
-    stale_path = next((state_root / ".assay" / "mutation-state").glob("*.json"))
+    stale_path = next(state_root.glob("*.json"))
     stale = json.loads(stale_path.read_text(encoding="utf-8"))
     stale["source_sha256"] = "0" * 64
     stale_path.write_text(json.dumps(stale), encoding="utf-8")
@@ -298,7 +318,7 @@ def test_resume_raises_on_a_state_record_whose_source_hash_contradicts_its_own_f
                 operators=("python:bool-const-flip",),
                 process_runner=decide,
                 clock=lambda: datetime.now(timezone.utc),
-                state_project_root=state_root,
+                state_root=state_root,
                 resume=True,
             )
 
@@ -310,8 +330,9 @@ def test_resume_reruns_a_state_record_after_a_routine_schema_version_bump(tmp_pa
     corrupt -- a routine bump of `MUTATION_STATE_SCHEMA_VERSION`. That must
     be a silent rerun (a cache miss), never a lane-wide failure -- the
     pre-B021 disposition raised here, which meant every consumer's existing
-    `.assay/mutation-state/` became `ERROR`/`UNREADABLE_ARTIFACT` on their
-    very next `--resume` after an upgrade, until they manually deleted it."""
+    resume store (`.assay/mutation-state/` then; wherever `--state-dir` puts
+    it since B066) became `ERROR`/`UNREADABLE_ARTIFACT` on their very next
+    `--resume` after an upgrade, until they manually deleted it."""
     repo = _repo(tmp_path)
     state_root = tmp_path / "state-root"
     state_root.mkdir()
@@ -341,11 +362,11 @@ def test_resume_reruns_a_state_record_after_a_routine_schema_version_bump(tmp_pa
             operators=("python:bool-const-flip",),
             process_runner=decide,
             clock=lambda: datetime.now(timezone.utc),
-            state_project_root=state_root,
+            state_root=state_root,
             resume=True,
         )
 
-    stale_path = next((state_root / ".assay" / "mutation-state").glob("*.json"))
+    stale_path = next(state_root.glob("*.json"))
     stale = json.loads(stale_path.read_text(encoding="utf-8"))
     stale["schema_version"] = stale["schema_version"] + 1000
     stale_path.write_text(json.dumps(stale), encoding="utf-8")
@@ -370,7 +391,7 @@ def test_resume_reruns_a_state_record_after_a_routine_schema_version_bump(tmp_pa
             operators=("python:bool-const-flip",),
             process_runner=deciding_recorder,
             clock=lambda: datetime.now(timezone.utc),
-            state_project_root=state_root,
+            state_root=state_root,
             resume=True,
         )
 

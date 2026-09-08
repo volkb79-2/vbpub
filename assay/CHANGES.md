@@ -10,6 +10,117 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      from the commit range but does not clear this hand-written block, so
      leaving content here republishes shipped work as "unreleased". -->
 
+### Added
+
+- **The progress stream reaches every rigor tier, and ticks while a command
+  runs (B064).** `--progress PATH` had exactly one producer, four layers down
+  inside the mutation sweep, so an R0/R1 lane was handed an empty file and a
+  lane that looked hung for nine minutes stayed illegible. The stream is now
+  opened once for the whole lane and carries a closed phase vocabulary — `run`
+  → `snapshot_materialized` → `command_started` → `command_running` →
+  `command_finished` → `coverage_parsed` → `verdict_written` — the same names
+  at every tier, with a lane simply emitting fewer of them where it has fewer
+  phases. A phase that did not happen is never emitted: the direct R0-only
+  path takes no snapshot and says so by silence. New
+  **`--progress-heartbeat SECONDS`** (default 60, floor 5, refused by name
+  below it, no-op without `--progress`) emits a pure **time-based** tick while
+  the lane's own command runs — it never reads the child's output, counts its
+  bytes or knows which tool is running; that is B073, deliberately separate.
+  Stall detection remains entirely the CALLER's (run-gate RG-36). Diagnostic
+  only: `assay verify` is untouched and no verdict field derives from it.
+
+- **Every progress record carries time, bounds and outcome (B065).** Each
+  record gains `emitted_at` (UTC ISO 8601) and `elapsed_s` (monotonic seconds
+  since the `run` header), added centrally so a producer cannot forget them
+  and two producers cannot disagree about what they measure — which is what
+  lets a reader with ONLY the file compute rate, ETA and last-event age. The
+  `run` header names `lane`, `commit`, `rigor`, `budget_s` (`null` exactly
+  when the lane is unbounded — B067) and `budget_per_candidate_s`, so the
+  bounds travel with the artifact. A new `candidates` record carries
+  `candidate_total`/`selected_total`/`pending_total` the moment they are
+  known, and a new terminal `end` record carries the sweep's bucket counts, so
+  a finished run is distinguishable from a dead one without reading the
+  verdict. The per-candidate record — the one record that never named itself —
+  now carries `event: "candidate"`. **One part of this is not additive — see
+  "Changed" below.**
+
+- **`--state-dir PATH`: resume state that outlives its worktree (B066).**
+  Mutation resume records were fixed under
+  `<project_root>/.assay/mutation-state/`, so `--resume` was inert in exactly
+  the consumers that need it most — a fresh worktree per run carried its own
+  empty store away with it. The store's ROOT is now the consumer's choice
+  (default unchanged, byte-for-byte); the record's NAME is not, and still
+  folds the source file's exact bytes, span, replacement and operator, which
+  is what makes a SHARED store safe by construction: a record from another
+  worktree either matches its identity or is ignored, and an edited source
+  file's candidates get new identities and are re-executed. A `--state-dir`
+  inside the judged tree that git can see is refused **before any work**,
+  naming the `NO_MEASUREMENT`/`DIRTY_TREE` it would cause on the lane's next
+  run; a gitignored path inside the tree, or any path outside it, is fine.
+  What the records contain is unchanged, and `assay verify` does not read
+  them either way.
+
+- **`budget = "unbounded"` (B067).** A lane may now decline a lane-wide
+  deadline — but only where every unit of its work carries its own bound.
+  The one admissible shape is a **native R2 sweep**, which must declare
+  `judge.mutation.budget_per_candidate`; a lane also declaring R3 must
+  additionally declare the new `judge.canary.budget_per_attempt`, which bounds
+  one canary probe end to end (control materialisation, control run,
+  transformed run) and is re-derived fresh per declared target. An R0/R1 lane
+  — and an *ingested* R2 lane, which is likewise one command — is refused at
+  load **by name**, because its only liveness bound *is* `budget`, and
+  **declaring R3 does not change that**: `budget_per_attempt` bounds a canary
+  probe, never the lane's own top-level command.
+  `budget_per_attempt` also works under a numeric `budget`, where it simply
+  tightens it; a lane declaring neither per-unit bound is byte-unchanged. Note
+  that an expired per-attempt bound abandons every *later* target too, so that
+  a per-attempt expiry produces the same trailing-run shape `verify.py`
+  already enforces. Stall detection stays entirely with the CALLER (run-gate
+  RG-36): assay gains no stall threshold of its own. No verdict-schema change
+  — the lane's budget is a declaration, never wire evidence.
+
+### Changed
+
+- **BREAKING (progress artifact): the `run` header's `candidate_total` is now
+  always `null` (B065).** It used to carry the mutation sweep's real total.
+  The header is emitted at stream open — it has to be the first record in an
+  append-only file, since it is what attributes every later record to a run —
+  and the total cannot be known before a snapshot exists and the sites have
+  been collected. **Migration:** read `candidate_total` from the new
+  `candidates` record instead; it is also still on `baseline` and on every
+  per-candidate record, unchanged. `candidate_index` is unaffected. The
+  progress artifact is diagnostic, not evidence, so no verdict or `assay
+  verify` behaviour changes with it.
+
+- **`--progress` at a git-visible path inside the judged tree is now refused
+  before any work (B064/B066).** Because the stream now writes on every rigor
+  tier, a destination that git can see inside the work tree would make the
+  lane refuse `NO_MEASUREMENT`/`DIRTY_TREE` on its very first run — where
+  before this release an R0/R1 lane wrote nothing there and passed. Rather
+  than let that surface as a bare `DIRTY_TREE` with no mention of the flag
+  that caused it, `--progress` now gets the same named preflight
+  `--state-dir` has. A gitignored path inside the tree, or any path outside
+  it, is unaffected; the estate's own convention (run-gate RG-33/RG-13's
+  gitignore obligation) already keeps `.assay/` ignored.
+
+### Fixed
+
+- **`budget = "unbounded"` was voidable by declaring R3.** Both arms of the
+  refusal were conditioned on the *absence* of R3, so an R0/R1+R3 lane — and
+  an ingested-R2+R3 lane, whose entire R2 evidence is that one command — was
+  admitted and ran its own evidence-producing command with no bound at all,
+  which is the exact state the refusal's message calls impossible. The
+  predicate is now about the lane's own top-level command and is independent
+  of which other tiers are declared. Found by adversarial review.
+
+- **The `--state-dir` containment check failed open across a symlink.** The
+  "inside the judged tree" test compared a lexically-normalised destination
+  against a fully-resolved project root; when the two disagreed the path was
+  silently classified "outside the tree" and resume records were written into
+  the real work tree, leaving it dirty. Both namespaces are now checked, in
+  both directions, and any of them saying "inside" refuses. Found by
+  adversarial review.
+
 <!-- cmru: release history -->
 
 ## [5.1.0] - 2026-09-08

@@ -6489,11 +6489,25 @@ blocked on exactly this.
 
 ### Acceptance
 
-- [ ] a reader with ONLY the progress file computes rate, ETA and
+- [x] a reader with ONLY the progress file computes rate, ETA and
       last-event age; the numbers agree with the verdict's counts and the
       run's measured wall time (real run, not a fixture);
-- [ ] `assay verify` is unaffected (the stream is not evidence);
-- [ ] CONSUMERS' progress paragraph names the fields.
+- [x] `assay verify` is unaffected (the stream is not evidence);
+- [x] CONSUMERS' progress paragraph names the fields.
+
+**IMPLEMENTED 2026-09-08** (progress/resume wave). `emitted_at`/`elapsed_s`
+are added centrally by `mutation.ProgressStream`, so no producer can forget
+them and no two producers can disagree about what `elapsed_s` measures. The
+`run` header carries `lane`/`commit`/`rigor`/`budget_s`/
+`budget_per_candidate_s`; `budget_s` is `null` exactly when B067's
+`budget = "unbounded"` is declared. `candidate_total` is `null` on the
+header and carried by a new `candidates` record instead — the header must be
+the FIRST record in an append-only file, and the total cannot be known
+before a snapshot exists and the sites are collected. New terminal `end`
+record carries the sweep's bucket counts; the per-candidate record now names
+itself (`event: "candidate"`). Acceptance measured in
+`tests/test_progress_phase_stream.py::test_a_reader_with_only_the_progress_file_computes_rate_eta_and_age`
+against a real CLI run and its own verdict.
 
 ## B066 — the state location is derived from `project_root`; there is no way to keep resume state outside an ephemeral worktree
 
@@ -6522,12 +6536,35 @@ per-repo directory at that path (RG-38).
 
 ### Acceptance
 
-- [ ] two runs of one commit from two different worktrees with the same
+- [x] two runs of one commit from two different worktrees with the same
       `--state-dir`: the second resumes (`event: resume`, `resumed_total`
       > 0); a source edit between them re-executes the touched file's
       candidates;
-- [ ] a `--state-dir` inside the judged tree and not git-ignored refuses
+- [x] a `--state-dir` inside the judged tree and not git-ignored refuses
       before any work, naming the reason (the DIRTY_TREE it would cause).
+
+**IMPLEMENTED 2026-09-08** (progress/resume wave). The store's ROOT became a
+caller's choice; the record's NAME did not (`mutation_state_record_name`,
+split out from `mutation_state_record_path`, which stays as the default
+project-relative spelling). `run_mutation`'s `state_project_root` is renamed
+`state_root` — it is a root, not a project root, and the old name was the
+bug's own shape. Both acceptance boxes are measured in
+`tests/test_state_dir_resume.py` on two REAL worktrees of one repository (the
+second `--detach`, which is also the honest model of the ephemeral consumers
+this exists for), not on a fixture.
+
+Two implementation notes worth keeping:
+
+* the git-visibility check asks `git check-ignore` about a **representative
+  record name** under the directory, not about the directory itself. The
+  directory does not exist yet (it is created on demand) and `check-ignore`
+  cannot tell a not-yet-existing path is a directory, so an ordinary
+  directory-only `resume-store/` line in `.gitignore` would have answered
+  "not ignored" and refused a correctly-configured consumer;
+* `git.path_is_ignored` is the ONE call in `git.py` that runs without
+  `--literal-pathspecs`. `check-ignore` refuses that flag outright
+  ("pathspec magic not supported by this command: 'literal'") rather than
+  ignoring it; every other call keeps the anchor.
 
 ## B067 — `budget` is the only liveness bound a lane has; "unbounded by convention" needs per-unit bounds first
 
@@ -6556,12 +6593,45 @@ its own stall, and a hung unit is already caught by its unit bound.
 
 ### Acceptance
 
-- [ ] `unbounded` with a missing unit bound refuses at load naming the unit;
-- [ ] an unbounded R2 lane with `budget_per_candidate` runs to completion
+- [x] `unbounded` with a missing unit bound refuses at load naming the unit;
+- [x] an unbounded R2 lane with `budget_per_candidate` runs to completion
       with no `LANE_TIMEOUT` path reachable (measured on a real lane);
-- [ ] CONSUMERS' worked mutation lane shows the recommended shape:
+- [x] CONSUMERS' worked mutation lane shows the recommended shape:
       `budget = "unbounded"` + `budget_per_candidate` + run-gate
       `stall_timeout`.
+
+**IMPLEMENTED 2026-09-08** (progress/resume wave), shipped in `7f2ba056` and
+**corrected in round-1 fixes** — box 1 was NOT met by the first cut, and the
+entry is marked done only now, after the correction. Ruling recorded as
+A-447; the mechanism half is A-444's sibling in the same session block.
+
+**The correction, because the original framing above is what caused it.**
+This entry's own prose says "R3 ... require the per-attempt bound", and the
+shipped predicate followed it literally: `if (not r2 and not r3) or
+(ingested_r2 and not r3)`, so declaring an R3 canary switched BOTH refusal
+arms off. But `judge.canary.budget_per_attempt` bounds one canary probe and
+never the lane's own top-level command — the `argv` that produces the R0
+status and the R1 coverage artifact. An unbounded `["R0","R1","R3"]` lane was
+therefore admitted and ran its own evidence-producing command with
+`timeout=None`, which is the exact state this refusal's message calls
+impossible; the ingested-R2+R3 shape was worse, since that one command is the
+lane's entire R2 evidence. Found by round-1 adversarial review (blocker B1),
+reproduced end to end through the real CLI.
+
+The predicate is now about the lane's own top-level command and is
+**orthogonal to which other tiers are declared**: a NATIVE R2 sweep is the one
+admissible shape, because it is the one where the unguessable bulk is bounded
+per unit. `budget_per_attempt` is still required of an unbounded R3 lane — it
+is necessary, and it is not sufficient — and the refusal says so by name
+whenever R3 is in play.
+
+Two things worth carrying forward. The defect survived 29 tests because every
+tier was tested **in isolation** and nothing asked what a **combination**
+does; the regression now asserts the whole admissibility table in one place
+AND instruments `subprocess.run` to prove no child of such a lane is launched
+without a timeout. And B076 — an unbounded native-R2 lane's own baseline — is
+a genuinely different question and stays open: there the sweep, the part whose
+length cannot be guessed, IS bounded per unit.
 
 ## B068 — `assay run` (R0/R1 mock/coverage target) hard-fails `GIT_FAILED` in a Mode-B linked worktree, unconditionally of `clean_tree`
 
@@ -6954,16 +7024,52 @@ B007's A-row must say so in one sentence; nothing here widens B007's scope.
 
 ### Acceptance (for whoever picks this up)
 
-- [ ] a ruling recorded as an A-row on whether the R0/R1 phase stream is
+- [x] a ruling recorded as an A-row on whether the R0/R1 phase stream is
       built, naming the rejected alternatives (nothing; per-tier bespoke
       events; a runner-aware progress that assay must not attempt);
-- [ ] if built, the phase vocabulary is CLOSED and identical across tiers, and
+- [x] if built, the phase vocabulary is CLOSED and identical across tiers, and
       `verify.py` is untouched (progress is diagnostic, never evidence);
 - [ ] R3 progress/resume, if built, reuses B007's per-attempt identity rather
       than inventing a second one — proven by a test that resumes a
       multi-target canary and re-runs only the unattempted targets;
-- [ ] the measured claims above are re-checked, not inherited, at the time of
+- [x] the measured claims above are re-checked, not inherited, at the time of
       building.
+
+**IMPLEMENTED 2026-09-08** (progress/resume wave), R0/R1 half only.
+
+The ruling is recorded as **A-row A-444** in `nyxloom-trove/decisions.md`
+(added in the round-1 fixes: the first cut ticked this box with the LOG and
+this entry as its evidence, and the box asks for an A-row by name — round-1
+SF-3). A-445/A-446/A-447 cover B065, B066 and B067's corrected predicate.
+
+The ruling: **the R0/R1 phase stream is BUILT.** Rejected alternatives, named
+as the entry asks — (a) *nothing*: measured, `--progress` on an R0/R1 lane
+wrote a zero-byte file, and the nine-silent-minutes case the entry was filed
+about stayed illegible; (b) *per-tier bespoke events*: rejected because
+A-429's whole point is a uniform invocation shape, and a second vocabulary
+would make a reader tier-aware for no gain; (c) *runner-aware progress*
+(parsing the child's own output): rejected outright — assay does not know
+which of a foreign runner's tests completed and must not guess. That is
+B073, filed separately and deliberately not started here.
+
+The vocabulary is CLOSED and *enforced*: `mutation.PROGRESS_EVENTS` is the
+single table and `ProgressStream.emit` refuses any name outside it, because
+a table nothing enforces is a comment. It is identical across tiers — an
+R0/R1 lane emits fewer names, never different ones. A phase that did not
+happen is never emitted: the DIRECT R0-only path (`run_lane`'s live-tree
+branch, A-189) takes no snapshot and therefore never says
+`snapshot_materialized`, and a lane with no R1 never says `coverage_parsed`.
+`verify.py` is untouched.
+
+Heartbeat: `--progress-heartbeat SECONDS` (default 60, floor 5, refused by
+name below it, no-op without `--progress`) — a PURE time-based tick, armed
+only around the lane's own command and never around each mutant. It reads
+nothing of the child's output. Stall detection stays with the caller
+(run-gate RG-36).
+
+**R3's half is NOT built** and stays open above: per-attempt progress and
+per-target resume must reuse B007's own per-attempt identity, and inventing
+a second one inside this wave is exactly what this entry warns against.
 
 ---
 
@@ -7815,3 +7921,141 @@ allowlist entry may be stale; the eight known-untrusted sites are pinned by
 name so a silent deletion shows up; and the order-independence is proven
 against the real module that differs. Verified red by reverting one guard:
 two independent tests fail, naming the file and function.
+
+---
+
+## B076 — an unbounded R2 lane's own BASELINE run is the one command B067 leaves with no bound at all
+
+**Filed 2026-09-08 by the progress/resume wave's implementer, from building
+B067 rather than from a review. Recorded because B067's own rule —
+"`unbounded` only when every unit of the lane's work carries its own bound" —
+is not literally true of one command, and a reader should find that stated
+rather than discover it.**
+
+### What was measured
+
+`tests/test_config_unbounded_budget.py::
+test_a_real_unbounded_R2_lane_runs_every_candidate_with_no_lane_timeout`
+records every timeout the `ProcessRunner` boundary is handed on a real
+`budget = "unbounded"` R2 lane with `budget_per_candidate = "45s"`:
+
+```
+timeouts == [None, 45.0]
+```
+
+`None` is the BASELINE — the single pre-sweep run every R2 lane executes once
+to prove the suite is green before any mutant is built. `45.0` is the one
+mutant. Every mutant is bounded, exactly as B067 requires; the baseline is
+bounded by nothing.
+
+### Why B067 shipped it that way, deliberately
+
+`judge.mutation.budget_per_candidate` is a per-MUTANT bound. A mutant runs
+the suite once with one byte-range replaced; a baseline runs the same suite
+with nothing replaced, but it is the run that pays for cold caches, fixture
+setup and any first-run compilation. Tightening the baseline to the
+per-candidate value would refuse lanes that are perfectly healthy, and it
+would do so with a `LANE_TIMEOUT` that names a bound the lane never intended
+for that command. So B067 did NOT do it, and said so in
+`_refuse_unbounded_without_unit_bounds`' docstring and in CONSUMERS.md.
+
+### Why it is worth a decision rather than a footnote
+
+`budget = "unbounded"` exists so a caller can stop guessing a total. Today
+the caller's stall detection (run-gate RG-36) is the only thing covering the
+baseline, which is coherent with this wave's settled ruling — **assay does
+not watch itself** — but it means an unbounded lane's *first* command is
+exactly as unwatched by assay as an R0/R1 lane's would be, and an R0/R1 lane
+is refused `unbounded` for precisely that reason. The two rules are
+defensible together only because the R2 sweep, not the baseline, is the part
+whose length cannot be guessed. That is a judgment, and it should be recorded
+as one.
+
+### The options, none of them chosen here
+
+- **(a) Leave it.** The caller already watches; B064's `command_running`
+  heartbeat makes a stalled baseline legible in the progress stream. Costs
+  nothing, states the gap in the docs (what shipped).
+- **(b) `judge.mutation.budget_per_baseline`.** A third per-unit key, only
+  meaningful under `unbounded`. Honest, and it makes B067's rule literally
+  true — at the cost of a key most lanes would have to guess a value for,
+  which is the failure mode `unbounded` was introduced to remove.
+- **(c) Reuse `budget` as the baseline bound.** i.e. `budget = "unbounded"`
+  means "unbounded for the SWEEP", and a lane declares a numeric duration
+  that applies to the baseline alone. Compact, but it gives one key two
+  meanings depending on rigor, which is exactly the kind of overload
+  DESIGN-GUIDE §5 refuses elsewhere.
+
+### Acceptance (for whoever picks this up)
+
+- [ ] a ruling recorded, naming the rejected options above;
+- [ ] if (b) or (c) is built: an unbounded R2 lane's baseline is observably
+      bounded at the process boundary (the `timeouts` assertion above flips
+      from `None` to the declared value), and a baseline that exceeds it is
+      a NAMED terminal rather than a bare `LANE_TIMEOUT` a reader would
+      misattribute to the sweep;
+- [ ] `assay verify` untouched either way — none of this is evidence.
+
+---
+
+## B077 — a `--state-dir`/`--progress` destination reached through a symlink INSIDE the judged tree fails closed with a raw, opaque `GIT_FAILED` passthrough
+
+**Filed 2026-09-08 by the progress/resume wave's round-2 reviewer**, found
+while re-deriving SF-1's fix (report:
+`nyxloom-trove/reports/assay-WAVE-PROGRESS-RESUME-REVIEW-round2-fixverify.md`).
+**Not fixed** — the reviewer's own word: "does not hold the merge," filed
+so the fix has a home rather than getting lost.
+
+### What was measured
+
+A `--state-dir` (or `--progress`) path that resolves to a location INSIDE
+the judged tree via a symlink — even when the actual target is correctly
+gitignored, i.e. a consumer who configured this exactly right — raises
+git's own raw stderr rather than a named refusal:
+
+```
+fatal: pathspec '<path>' is beyond a symbolic link
+```
+
+surfaced as `ERROR`/`GIT_FAILED`, the generic git-boundary passthrough,
+not a message naming "your `--state-dir`/`--progress` destination is
+reached through a symlink and git refuses to pathspec through it."
+
+**Mostly pre-existing, not a regression.** The reviewer confirmed the
+shipped B066 code already formed the identical pair and hit the same git
+error before this wave's SF-1 fix — only the `--progress` half of this
+pairing is new (B064). SF-1's containment fix is unrelated and correct;
+this is a DIFFERENT failure mode (git's own pathspec resolution, not
+assay's own containment check) that neither round of review targeted
+until round 2 went looking specifically at symlink traversal.
+
+### Why it's the same family as an already-fixed nit
+
+Round 1's N2 (fixed in `b5532895`) named a comparable case before asking
+git, rather than surfacing git's own opaque error. This is architecturally
+the same shape: a real, fail-closed refusal (tree stays clean, nothing is
+measured incorrectly) with a message that does not tell a correctly-
+configured consumer what to do about it.
+
+### Proposed fix (not prescribed — the same shape as N2's, likely reusable)
+
+Before letting git's own pathspec resolution raise, probe whether the
+resolved destination traverses a symlink whose target is inside the
+judged tree, and if so refuse `ERROR`/`GIT_FAILED` (or a more specific
+reason code, if one exists for "destination configuration is unreachable
+through git, not just unsafe") naming the symlink and the traversal,
+mirroring the diagnostic-message discipline `_linked_worktree_gap()`
+(B068) and N2 both established this same wave/the prior one.
+
+### Acceptance
+
+- [ ] a `--state-dir`/`--progress` destination reached through a symlink
+      whose target is INSIDE the judged tree (and correctly gitignored)
+      refuses with a message naming the symlink and the traversal, not a
+      raw `fatal: pathspec ... is beyond a symbolic link` passthrough;
+- [ ] the two ALREADY-correct outcomes stay correct: a destination
+      genuinely outside the repository, and one reached with no symlink
+      involved, are both unaffected;
+- [ ] a regression test reproduces the reviewer's exact repro (a symlink
+      inside the tree pointing at a gitignored location, both
+      `--state-dir` and `--progress`) and confirms the new message.

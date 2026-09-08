@@ -888,13 +888,20 @@ def _remove_owned_tree(path: Path) -> None:
 
 
 def _check_timeout(timeout: float) -> None:
+    # (B067) `math.inf` is admitted -- and ONLY `math.inf` -- because it is
+    # what an unbounded lane's `LaneDeadline.remaining()` reports. It reaches
+    # `_git._P22Deadline`, which converts it to the "no timeout" spelling its
+    # own two consumers accept. Every other non-finite value (NaN, -inf) is
+    # refused exactly as before.
     if (
         isinstance(timeout, bool)
         or not isinstance(timeout, (int, float))
-        or not math.isfinite(timeout)
+        or (not math.isfinite(timeout) and timeout != math.inf)
         or timeout <= 0
     ):
-        raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
+        raise ValueError(
+            f"timeout must be a positive finite number or math.inf, got {timeout!r}"
+        )
 
 
 def _decode(raw: bytes) -> str:
