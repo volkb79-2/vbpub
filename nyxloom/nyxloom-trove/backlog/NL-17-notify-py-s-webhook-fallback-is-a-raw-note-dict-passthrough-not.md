@@ -35,11 +35,30 @@ per-backend translation step; `send()` has exactly one webhook code path
 serving every possible receiver identically.
 
 Operator, in a live session (2026-09-08), while nyxloom-P103's own follow-up
-was pending (the live `nyxloom-ntfy` container still needs a redeploy to
+was pending (the live `nyxloom-ntfy` container still needed a redeploy to
 pick up P103's governance fix — see NL-6/NL-8..11), asked to "plan to remove
 ntfy - deactivate paths to it, do not delete it yet. communication to ntfy
 should go through an adapter so we can switch the backend/service to use
-e.g. against mattermost."
+e.g. against mattermost." Follow-up in the same session, once this entry was
+filed: "just disable ntfy. NL17 the adapter just needs to work for
+mattermost now, but plan to integrate telegram and discord as well" plus a
+directive to stand up a Mattermost instance as its own ciu-managed stack
+(mirroring `nyxloom/ntfy/`'s pattern) in parallel — see nyxloom-P106.
+
+**Status update, same session**: `nyxloom-ntfy` (the live, ungoverned
+fallback container) was stopped (`docker stop nyxloom-ntfy`, reversible —
+not removed) rather than redeployed under P103's governance fix, since it
+is being replaced rather than kept running. dstdns's own
+`nyxloom-trove/nyxloom.toml` also references this same ntfy instance, but
+no `nyxloomd` container was running there at the time, so nothing was
+actively depending on it live.
+
+This entry is now **implementation-ready, not just design-tracking**:
+scope is Mattermost-only for the real backend build (nyxloom-P106); the
+`NotifyBackend` seam should be shaped so Telegram and Discord backends can
+be added later without a redesign, but those two are explicitly NOT built
+now — no forcing function for them yet, per the estate's standing
+don't-build-ahead-of-a-forcing-function discipline.
 
 ## Why nyxloom owns it
 
@@ -56,24 +75,28 @@ Sketch, per the operator's own framing:
    dispatches to, where each backend owns translating the typed `note` dict
    into ITS OWN expected payload shape — not a shared raw-JSON passthrough.
    The existing ntfy header-POST logic becomes one such backend, unchanged
-   in behavior. A new Mattermost-compatible backend maps `note` into
-   Mattermost's incoming-webhook shape (`text` built from `title`+`body`,
-   optionally `username`/`icon_url`), so `webhook_url` actually renders
-   somewhere real instead of failing silently against Mattermost specifically
-   (today's `send()` still reports `(True, "webhook ok")` on any 200
-   response — a Mattermost webhook may well 200 on a payload it can't
-   render, so this failure mode would currently go undetected).
-2. Deactivate ntfy as the ACTIVE default backend once a replacement (e.g.
-   Mattermost) is configured and verified — but do not delete ntfy support.
-   Keep it as one selectable backend behind the same seam, per the
-   operator's explicit "deactivate paths to it, do not delete it yet."
+   in behavior. **Build one real new backend now: Mattermost**, mapping
+   `note` into Mattermost's incoming-webhook shape (`text` built from
+   `title`+`body`, optionally `username`/`icon_url`), so `webhook_url`
+   actually renders somewhere real instead of failing silently against
+   Mattermost specifically (today's `send()` still reports
+   `(True, "webhook ok")` on any 200 response — a Mattermost webhook may
+   well 200 on a payload it can't render, so this failure mode would
+   currently go undetected). Shape the seam so Telegram and Discord
+   backends can be added later as additional `NotifyBackend`
+   implementations without touching `send()`'s dispatch logic — but do NOT
+   build those two now, no forcing function yet.
+2. ntfy is now stopped (see status update above). Keep its backend
+   implementation in the seam (selectable, not deleted) per the operator's
+   "deactivate paths to it, do not delete it yet" — just not the active
+   default once Mattermost is verified working.
 3. Config shape (`NotifyConfig`) needs an explicit backend selector rather
    than the current implicit "ntfy wins if both configured" precedence,
    so switching backends is a declared config change, not a side effect of
    which URLs happen to be set.
-4. Sequencing note: the live `nyxloom-ntfy` container (NL-6's governance
-   fix) still needs a redeploy independent of this entry — that is existing,
-   narrower work, not blocked on this design.
+4. Depends on nyxloom-P106 (parallel track) actually standing up a live
+   Mattermost instance as a ciu-managed stack, mirroring `nyxloom/ntfy/`'s
+   pattern, to configure/verify the new backend against.
 
 ## Oracles
 
