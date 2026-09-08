@@ -147,3 +147,102 @@ from the design.
 that does not read the real format — the same rule the coverage PROVENANCE
 already states for its eight documents. If Stryker's output shape genuinely
 changes, regenerate the whole file by the recipe above and update the table.
+
+---
+
+# `mutation-report-json.probe-js-stryker-typecheck.json` — real StrykerJS output with a type checker (B070)
+
+The **second** real StrykerJS artifact, and the one B070 owed. The first one
+above discards nothing: without a checker plugin every mutant Stryker builds
+is syntactically valid TypeScript, so `CompileError` never occurs and
+`judgment.r2.discarded` was zero in every real document this project had.
+That is precisely why the field could be inflated to `9999` and verify clean
+(A-437) with no fixture able to contradict it.
+
+This document is the same StrykerJS 10.0.0 over the same `probe-js` sources
+with `@stryker-mutator/typescript-checker` enabled. The checker type-checks
+each mutant before running it and marks the ones that do not compile
+`CompileError` — so **40 of its 88 mutants are genuinely discarded**, by the
+tool, for the reason the field names. DA-D4's witness clause, waived for a
+declared field by DA-R26 and owed again the moment B070 made the field
+verified.
+
+## Versions — measured, not assumed
+
+| what | version | where it is recorded |
+|---|---|---|
+| `framework.name` | `StrykerJS` | the artifact's own `framework` object |
+| `framework.version` | `10.0.0` | the artifact's own `framework` object |
+| `schemaVersion` | `1.0` | the artifact's own top-level key |
+| `@stryker-mutator/core` | `10.0.0` | `probe-js-stryker-typecheck/package-lock.json` |
+| `@stryker-mutator/vitest-runner` | `10.0.0` | `probe-js-stryker-typecheck/package-lock.json` |
+| `@stryker-mutator/typescript-checker` | `10.0.0` | the artifact's own `framework.dependencies`, and the lockfile |
+| `typescript` | `5.8.3` | the artifact's own `framework.dependencies`, and the lockfile |
+| `vitest` | `3.2.4` | inherited from `probe-js/package.json` |
+| `node` | `v26.5.1` | this devcontainer, 2026-09-08 |
+
+## How it was produced
+
+```sh
+# 1. a scratch copy of the probe-js project, sources untouched
+cp -r assay/tests/fixtures/coverage/probe-js/. /tmp/stryker-tc/
+cd /tmp/stryker-tc
+
+# 2. the first fixture's own package.json + package-lock.json, then the
+#    checker on top. The resulting pair is committed as
+#    `probe-js-stryker-typecheck/package.json` / `package-lock.json`.
+cp assay/tests/fixtures/mutation/probe-js-stryker/package*.json .
+npm ci --no-audit --no-fund
+npm install --no-audit --no-fund --save-dev \
+    @stryker-mutator/typescript-checker@10.0.0
+
+# 3. `probe-js-stryker-typecheck/tsconfig.json` and
+#    `probe-js-stryker-typecheck/stryker.config.json`, both committed verbatim
+npx stryker run                      # exit 0
+
+# 4. the report Stryker's own `json` reporter wrote
+cp reports/mutation/mutation.json \
+   assay/tests/fixtures/mutation/mutation-report-json.probe-js-stryker-typecheck.json
+```
+
+## The config, and why it differs from the first fixture's
+
+`stryker.config.json` adds exactly two keys to the first fixture's:
+`"checkers": ["typescript"]` and `"tsconfigFile": "tsconfig.json"`.
+`thresholds.break` stays `null` for B046 non-repudiation rule (ii)'s reason,
+unchanged.
+
+`mutate` is narrowed to `src/roles.ts`, `src/format.ts` and `src/branchy.ts`,
+and the committed `tsconfig.json` `include`s only the `.ts` files (plus
+`src/types.d.ts`). Both narrowings are about the CHECKER, not about the
+result: `@stryker-mutator/typescript-checker` requires the baseline project
+to type-check cleanly, and `src/Badge.tsx` needs a JSX/React program the
+coverage fixtures never had to declare. Nothing about the narrowing
+manufactures a `CompileError` — the checker decides that per mutant, and the
+40 it found are its verdicts, not the config's.
+
+## What it proves — the facts B070's design depends on
+
+Every number below is read back from the committed document.
+
+1. **`CompileError` is a status a real tool really emits**, 40 times in one
+   88-mutant run. Before this artifact the status existed in the upstream
+   schema's enum and in synthetic test documents only, which is exactly the
+   A-334 gap this file exists to close.
+2. **The discarded mutants carry full identities** — `location`, `mutatorName`
+   and `replacement` are present on a `CompileError` mutant exactly as they
+   are on a `Killed` one. That is what makes B070's shape-1 listing possible
+   at all: an entry with no identity could be neither ordered, deduplicated,
+   nor checked for overlap with the buckets.
+3. **The discards are not confined to one file** (`format.ts` 34,
+   `roles.ts` 5, `branchy.ts` 1), so the fixture exercises the ordering rule
+   across paths rather than within a single one.
+4. **`Killed` 11, `Survived` 6, `NoCoverage` 31** — 48 bucketed mutants
+   against 40 discarded ones, i.e. `candidate_count 88 - total 48 == 40`,
+   the fifth-disposition arithmetic on real bytes.
+
+## What the implementer must not do
+
+**Do not edit this artifact**, for the first one's reason. If it is
+regenerated, `test_the_real_report_carries_forty_genuine_compile_errors` is
+the test that fails first and names what changed.
