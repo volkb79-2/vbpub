@@ -9,49 +9,49 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
-### Fixed
-- **RG-44**: `GONE_SIGNALS` matched docker's "gone" stderr case-sensitively;
-  this host's real docker emits it lowercase (`error: no such object:
-  NAME`), which the exact-case comparison never matched — a genuinely gone
-  container read as an AMBIGUOUS failure and left a stale inflight record
-  that wedged the lane for every future invocation until a human deleted
-  it by hand. Fixed by case-folding the match.
-- **RG-40**: `tools/coverage_gate.py`'s diff-coverage floor diffed
-  committed `base_rev HEAD`, while the coverage.json it cross-references
-  is generated from whatever bytes are ON DISK (`--allow-dirty` runs the
-  suite there directly) — an uncommitted edit above a committed change
-  silently offset that change's reported line number from its real one.
-  Now diffs `base_rev` alone (working tree, not HEAD): byte-identical to
-  the old behavior on a clean tree, correct on a dirty one.
-
 ### Added
-- **RG-38**: assay mutation-lane resume state now survives an ephemeral
-  judged worktree (a cmru release transaction, a Mode-B instance) — every
-  assay-kind lane, on all three runners (container, exec, bare-host), now
-  passes `--state-dir <repo>/.run-gate/assay-state/<project's path
-  relative to repo>/` (assay B066, >= 5.2.0 required; an older pin
-  refuses by name, same class as RG-33's existing `--resume`/`--progress`
-  floor, which this raises `ASSAY_FLAG_FLOOR` to cover too). `repo` — the
-  checkout owning the shared `.git` — is durable by construction even
-  when the judged worktree is not; the key is the project's full path
-  relative to `repo` (falling back to a filesystem-safe full resolved
-  path when a `--worktree` override relocates the project outside
-  `repo`), not a bare directory basename, so two projects that happen to
-  share a basename never collide on one shared state store. The state
-  directory is disclosed alongside the verdict/progress paths (RG-10)
-  after every assay-kind lane run.
+- **RG-41**: a `kind = "command"` container lane can now declare
+  `stall_timeout` too — previously refused at load, judged only from an
+  assay lane's progress file (R-40c), leaving the lane shape most likely
+  to hang on a shared host (an arbitrary consumer command, a pytest
+  suite, a gate-conjunction of sub-lanes) with no bound but a `budget`
+  run-gate only prints and never enforces. Judged instead from the SAME
+  log stream `await_container` already tails (`docker logs -f`): a new
+  `LogStreamWatch` times the arrival of the container's own last line,
+  the same "silence, never total elapsed" rule `ProgressWatch`/R-40c
+  already gives a progress file's mtime, one signal over. The pass-through
+  stays live and in order (never captured-then-replayed) — a background
+  thread re-prints each line as it arrives and drains anything still in
+  flight before `await_container`'s own status lines print. The source is
+  disclosed by name, never inferred, on the fresh, re-attach and follow
+  paths alike: `(source: progress file)` vs `(source: log stream)`. An
+  assay lane's behavior is unchanged. `docker logs -f --timestamps` is
+  used for a watched command lane specifically so silence can be measured
+  from the CONTAINER's own per-line clock, not the watching client's —
+  without it, a re-attach to an already-hung lane read the replayed
+  backlog as arriving "just now" and silently granted a fresh stall
+  window instead of catching the pre-existing silence (found in
+  adversarial review, fixed the same way `ProgressWatch` already fixes
+  the analogous gap for a progress file's mtime, RW-27). A confirming
+  second review round then found the fix's own drain-disclosure fired on
+  EVERY stall rather than the rare host-contention case it was written
+  for (it was joining a pump thread still legitimately blocked reading a
+  silent container — nothing unblocks that read until the container is
+  actually removed); moved to the branch where it belongs, and the
+  duplicated wall-clock-translation arithmetic shared with `ProgressWatch`
+  is now a single helper both call. A third review round then closed two
+  more gaps: a single non-UTF-8 byte anywhere in a container's own output
+  used to silently end the pump thread (`text=True`'s strict decoding),
+  freezing liveness so a healthy lane eventually read as falsely stalled —
+  fixed with `errors="replace"`; and the pump thread now joins
+  unconditionally in `finally` too (thread-lifecycle hygiene, no
+  disclosure needed there), so it cannot outlive `await_container`'s own
+  return under in-process reuse.
 
-### Adoption / Migration Notes
-Every assay-kind lane's pinned judge must be >= 5.2.0 to pick up RG-38's
-`--state-dir`; an older pin now refuses at argv construction, loudly,
-before the container starts — the same shape RG-33 already established
-for `--resume`/`--progress`. RG-44 and RG-40 are pure bugfixes, safe to
-adopt with no config change.
-
-<!-- cleared 2026-09-03 after the 23.5.0 release, per the standing
-     housekeeping rule (see CHANGES.md history for the two prior
-     occurrences this recurred on this project): cmru's generator produces
-     the dated entry below from the commit range but does not clear this
+<!-- cleared 2026-09-08 after the 23.6.0 release, per the standing
+     housekeeping rule (see CHANGES.md history for the prior occurrences
+     this recurred on this project): cmru's generator produces the dated
+     entry below from the commit range but does not clear this
      hand-written block, so leaving content here republishes shipped work
      as "unreleased". -->
 
