@@ -7995,3 +7995,67 @@ as one.
       a NAMED terminal rather than a bare `LANE_TIMEOUT` a reader would
       misattribute to the sweep;
 - [ ] `assay verify` untouched either way — none of this is evidence.
+
+---
+
+## B077 — a `--state-dir`/`--progress` destination reached through a symlink INSIDE the judged tree fails closed with a raw, opaque `GIT_FAILED` passthrough
+
+**Filed 2026-09-08 by the progress/resume wave's round-2 reviewer**, found
+while re-deriving SF-1's fix (report:
+`nyxloom-trove/reports/assay-WAVE-PROGRESS-RESUME-REVIEW-round2-fixverify.md`).
+**Not fixed** — the reviewer's own word: "does not hold the merge," filed
+so the fix has a home rather than getting lost.
+
+### What was measured
+
+A `--state-dir` (or `--progress`) path that resolves to a location INSIDE
+the judged tree via a symlink — even when the actual target is correctly
+gitignored, i.e. a consumer who configured this exactly right — raises
+git's own raw stderr rather than a named refusal:
+
+```
+fatal: pathspec '<path>' is beyond a symbolic link
+```
+
+surfaced as `ERROR`/`GIT_FAILED`, the generic git-boundary passthrough,
+not a message naming "your `--state-dir`/`--progress` destination is
+reached through a symlink and git refuses to pathspec through it."
+
+**Mostly pre-existing, not a regression.** The reviewer confirmed the
+shipped B066 code already formed the identical pair and hit the same git
+error before this wave's SF-1 fix — only the `--progress` half of this
+pairing is new (B064). SF-1's containment fix is unrelated and correct;
+this is a DIFFERENT failure mode (git's own pathspec resolution, not
+assay's own containment check) that neither round of review targeted
+until round 2 went looking specifically at symlink traversal.
+
+### Why it's the same family as an already-fixed nit
+
+Round 1's N2 (fixed in `b5532895`) named a comparable case before asking
+git, rather than surfacing git's own opaque error. This is architecturally
+the same shape: a real, fail-closed refusal (tree stays clean, nothing is
+measured incorrectly) with a message that does not tell a correctly-
+configured consumer what to do about it.
+
+### Proposed fix (not prescribed — the same shape as N2's, likely reusable)
+
+Before letting git's own pathspec resolution raise, probe whether the
+resolved destination traverses a symlink whose target is inside the
+judged tree, and if so refuse `ERROR`/`GIT_FAILED` (or a more specific
+reason code, if one exists for "destination configuration is unreachable
+through git, not just unsafe") naming the symlink and the traversal,
+mirroring the diagnostic-message discipline `_linked_worktree_gap()`
+(B068) and N2 both established this same wave/the prior one.
+
+### Acceptance
+
+- [ ] a `--state-dir`/`--progress` destination reached through a symlink
+      whose target is INSIDE the judged tree (and correctly gitignored)
+      refuses with a message naming the symlink and the traversal, not a
+      raw `fatal: pathspec ... is beyond a symbolic link` passthrough;
+- [ ] the two ALREADY-correct outcomes stay correct: a destination
+      genuinely outside the repository, and one reached with no symlink
+      involved, are both unaffected;
+- [ ] a regression test reproduces the reviewer's exact repro (a symlink
+      inside the tree pointing at a gitignored location, both
+      `--state-dir` and `--progress`) and confirms the new message.
