@@ -540,6 +540,55 @@ def test_preflight_rejects_unexpected_mounts(tmp_path):
         installer._preflight_disk_transaction()
 
 
+def test_preflight_allows_lower_numbered_boot_partitions(tmp_path):
+    """Regression for a real bug found live 2026-09-08 on a freshly
+    provisioned netcup trixie host: a standard UEFI/GPT layout (ESP +
+    /boot + root, all on one disk) always has vda1/vda2 mounted alongside
+    root. _write_sfdisk_plan()'s own `kept` pass already leaves every
+    partition numbered below root_number byte-for-byte untouched, so their
+    being mounted is not a hazard and must not abort the transaction --
+    the original allowlist-only-root check refused every single run on
+    this (extremely common) layout.
+    """
+    from debian_install_v2.tests.test_fake_integration import FakeHostActions
+    config = Config(
+        state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
+        telegram_bot_token="", telegram_chat_id="",
+        auto_reboot_after_stage1=False,
+    )
+    actions = FakeHostActions()
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE")] = (
+        "/dev/vda1 /boot/efi vfat\n/dev/vda2 /boot ext4\n/dev/vda3 / ext4\n"
+    )
+    installer = Installer(config, actions)
+    preflight = installer._preflight_disk_transaction()
+    assert preflight["holders"] == []
+    assert len(preflight["mounts"]) == 3
+
+
+def test_preflight_still_rejects_higher_numbered_mount_alongside_boot_partitions(tmp_path):
+    """A partition numbered ABOVE root (e.g. a leftover swap partition
+    still mounted from a previous attempt) is exactly what
+    _write_sfdisk_plan() would append new entries after / could clobber --
+    it must still be rejected even when normal lower-numbered boot
+    partitions are also mounted."""
+    from debian_install_v2.tests.test_fake_integration import FakeHostActions
+    config = Config(
+        state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
+        telegram_bot_token="", telegram_chat_id="",
+        auto_reboot_after_stage1=False,
+    )
+    actions = FakeHostActions()
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    actions.outputs[("/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE")] = (
+        "/dev/vda1 /boot/efi vfat\n/dev/vda2 /boot ext4\n/dev/vda3 / ext4\n/dev/vda4 /mnt ext4\n"
+    )
+    installer = Installer(config, actions)
+    with pytest.raises(RuntimeError, match="partitions are mounted"):
+        installer._preflight_disk_transaction()
+
+
 def test_preflight_rejects_holders(tmp_path, monkeypatch):
     from debian_install_v2.tests.test_fake_integration import FakeHostActions
     config = Config(

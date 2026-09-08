@@ -639,7 +639,23 @@ MaxFileSec=1month
             if source == f"/dev/{self.root_disk}" or (source.startswith(prefix) and source[len(prefix):].isdigit()):
                 forbidden.append(line)
         allowed = {self.root_partition_path}
-        unexpected_mounts = [line for line in forbidden if line.split()[0] not in allowed]
+        unexpected_mounts = []
+        for line in forbidden:
+            source = line.split()[0]
+            if source in allowed:
+                continue
+            suffix = source[len(prefix):] if source.startswith(prefix) else ""
+            # Partitions numbered below root_number (e.g. the ESP and a
+            # separate /boot on a standard UEFI/GPT layout) are left
+            # byte-for-byte unchanged by _write_sfdisk_plan()'s own `kept`
+            # pass -- their being mounted is normal on every real host this
+            # tool targets and poses no risk to this transaction. Confirmed
+            # live 2026-09-08: this check's original allowlist-only-root
+            # form refused every run on a stock netcup trixie host, which
+            # always mounts vda1 (/boot/efi) and vda2 (/boot) alongside root.
+            if suffix.isdigit() and int(suffix) < self.root_number:
+                continue
+            unexpected_mounts.append(line)
         if unexpected_mounts:
             raise RuntimeError("refusing disk transaction: partitions are mounted:\n" + "\n".join(unexpected_mounts))
         return {"holders": holder_names, "mounts": forbidden}
