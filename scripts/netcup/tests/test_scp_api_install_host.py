@@ -863,9 +863,10 @@ def test_run_build_customscript_prints_snippet_without_ssh_key(install_host_mod,
 
 
 def test_run_build_customscript_includes_generated_ssh_key(install_host_mod, tmp_path, monkeypatch, capsys):
-    responses = iter(["y", "n", "", "", "y"])  # auto_reboot, never_reboot, tg token, tg chat, include ssh key
+    # auto_reboot, never_reboot, tg token, tg chat, include ssh key, host label
+    responses = iter(["y", "n", "", "", "y", "test-server"])
     monkeypatch.setattr("builtins.input", lambda *a, **kw: next(responses))
-    monkeypatch.setattr(install_host_mod, "SERVER_NAME", "test-server")
+    monkeypatch.setattr(install_host_mod, "SERVER_NAME", None)  # must not be required
     identity_path = tmp_path / "id_ed25519"
     monkeypatch.setattr(install_host_mod, "SETTINGS", {
         **install_host_mod.SETTINGS,
@@ -879,3 +880,18 @@ def test_run_build_customscript_includes_generated_ssh_key(install_host_mod, tmp
     assert identity_path.exists()
     out = capsys.readouterr().out
     assert "CONTROLLER_SSH_PUBKEY='ssh-ed25519" in out
+
+
+def test_run_build_customscript_requires_host_label_for_ssh_key(install_host_mod, monkeypatch, capsys):
+    """Adversarial-review regression: without SERVER_NAME set and no host
+    label typed, every invocation would otherwise silently collapse onto
+    the same "unknown-host" key regardless of target -- must refuse
+    instead."""
+    responses = iter(["y", "n", "", "", "y", ""])  # blank host label
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: next(responses))
+    monkeypatch.setattr(install_host_mod, "SERVER_NAME", None)
+
+    rc = install_host_mod._run_build_customscript()
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "CONTROLLER_SSH_PUBKEY" not in out

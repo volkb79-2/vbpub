@@ -1782,10 +1782,24 @@ def _run_build_customscript() -> int:
 
     controller_pubkey = ""
     if _prompt_yes_no("Include a controller SSH key (for early/reliable SSH monitoring access)?", True):
+        # Adversarial-review finding, 2026-09-08: this command is explicitly
+        # meant to be usable without $NETCUP_SCP_API_SERVER_NAME set (a
+        # manual web-UI install may never touch this script's own .env at
+        # all) -- silently falling back to SERVER_NAME (possibly None,
+        # rendering to the generic "unknown-host" label) would collapse
+        # every host built this way, on the same calendar day, onto the
+        # SAME keypair -- exactly the failure mode the per-host redesign
+        # exists to prevent, and it would happen with no visible warning.
+        # Always ask, defaulting to SERVER_NAME only if it's already set.
+        host_label = _prompt_text("Target hostname/server name (for a unique per-host key)", SERVER_NAME or "")
+        if not host_label:
+            print("ERROR: a target hostname is required to generate a per-host key", file=sys.stderr)
+            return 1
         identity_template = os.environ.get("NETCUP_SCP_API_SSH_IDENTITY_FILE", SETTINGS["ssh.identity_file"])
-        identity_file = _render_identity_file_path(identity_template, SERVER_NAME)
+        identity_file = _render_identity_file_path(identity_template, host_label)
         _ensure_local_identity_file_exists(identity_file, SETTINGS["ssh.controller_fqdn"])
         controller_pubkey = _read_public_key_for_identity(identity_file)
+        print(f"   ✓ Using identity: {identity_file}")
 
     snippet = _build_customscript(
         auto_reboot_after_stage1=auto_reboot,
