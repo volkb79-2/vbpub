@@ -7245,26 +7245,39 @@ predecessor landed.
 
 ### Acceptance
 
-- [ ] a v11 A-row picks shape 1 or shape 2 and states what the rejected one
+**FIXED 2026-09-08** — schema v10 → v11, **shape 1** (list the discarded
+mutants). Every box below is ticked; see
+`nyxloom-trove/reports/assay-WAVE-B070-REPORT.md` for the evidence per item.
+
+- [x] a v11 A-row picks shape 1 or shape 2 and states what the rejected one
       would have bought, including whether the un-listed half is being left
-      declared;
-- [ ] the chosen quantity is on the wire in all three places (schema,
+      declared — **shape 1**, as an array of `mutant_outcome` records (NOT
+      position-only: two invalid mutants on one line are two mutants that did
+      not compile, and a deduplicated position list would silently become a
+      disguised count again). Shape 2 (an ingested-only in-scope count) would
+      have bought a smaller change with no record-shape decision and no
+      arithmetic-rule revision, at the price of saying nothing about WHICH
+      mutants were invalid; the un-listed half stays declared under both, and
+      is stated as such in the schema, DESIGN-GUIDE §11, CONSUMERS and
+      `verify.py`'s own docstring;
+- [x] the chosen quantity is on the wire in all three places (schema,
       dataclass, `verify.py` — the 2.4.0 lesson), forked on `producer` the way
       every other ingested-only field is;
-- [ ] `verify._check_ingested_r2_agrees_with_its_payload` gains a FOURTH real
+- [x] `verify._check_ingested_r2_agrees_with_its_payload` gains a FOURTH real
       re-derivation, and its "what this function does NOT check" section shrinks
       to the un-listed half only;
-- [ ] the `9999` reproduction, which A-437 records as deliberately accepted,
+- [x] the `9999` reproduction, which A-437 records as deliberately accepted,
       becomes a NAMED refusal — and a truthful high-discard document is
       committed alongside it as the control that proves the new bound does not
       refuse the honest report (this control is the point; without it the bound
       is route 3, which DA-R26 rejected);
-- [ ] a real report carrying a non-zero `discarded` (a deliberately
+- [x] a real report carrying a non-zero `discarded` (a deliberately
       uncompilable mutant is easy to produce with Stryker), committed as a
-      fixture and frozen in the v11 `W<n>` generation — DA-D4's original
-      witness clause, waived for a declared field by DA-R26 and owed again the
-      moment the field is verified;
-- [ ] CONSUMERS' declared-not-verified paragraph and DESIGN-GUIDE §11's
+      fixture and frozen in the v11 `W<n>` generation — **W7**, and the fixture
+      is a real StrykerJS 10.0.0 run with `@stryker-mutator/typescript-checker`
+      enabled: 88 mutants, 40 genuine `CompileError`s
+      (`tests/fixtures/mutation/mutation-report-json.probe-js-stryker-typecheck.json`);
+- [x] CONSUMERS' declared-not-verified paragraph and DESIGN-GUIDE §11's
       matching paragraph are rewritten, not merely deleted: consumers who read
       A-437's statement need to be told what replaced it, in the v11 migration
       notes.

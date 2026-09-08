@@ -81,6 +81,52 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Changed
 
+- **BREAKING (verdict schema v10 → v11): `judgment.r2.discarded` LISTS the
+  invalid mutants instead of counting them, and `assay verify` now re-derives
+  it (B070).** The field is an array of mutant records — the same shape the
+  five `mutation.*` buckets use — required possibly-empty under
+  `producer = "ingested"` and still forbidden under `"native"`, ascending and
+  unique by the mutant identity, and never carrying a `kill_signal` (nothing
+  refused a mutant that never ran).
+
+  *Why.* As an integer count the field could not be verified at all, and the
+  document said so in three places: under DA-D4's `listed` semantics a
+  discarded mutant is outside the document it would have to be derived from,
+  so `discarded = 9999` on a real 109-mutant ingested document verified clean
+  (A-437), and every upper bound that would have caught that — `discarded <=
+  total`, `<= candidate_count` — would equally have refused the honest
+  high-discard report the field exists to surface. Listing the mutants
+  supplies the missing quantity. `assay verify` now checks bucket
+  **disjointness**, the **line rule** against `lines_without_candidates`,
+  ordering and uniqueness, and the **fifth-disposition arithmetic**
+  `mutation.candidate_count - mutation.total == len(discarded)`. The
+  9999-entry forgery is refused by name; a truthful 40-discard verdict — a
+  real StrykerJS run with its TypeScript checker, frozen as
+  `carve-assets/W7/expected/high-discard-r2-v11-template.json` — is accepted
+  in full, which is the proof this is a re-derivation and not the clamp
+  DA-R26 rejected. What stays declared, not verified is the strictly smaller
+  **un-listed** half: candidates a tool drops before reporting them at all,
+  which no artifact assay receives can witness.
+
+  *One more field moves with it.* `mutation.candidate_count` on an INGESTED
+  payload is now `attempted + discarded` rather than `attempted`;
+  `mutation.total` is unchanged and is still exactly the bucket sum. So the
+  two may now legitimately differ on an ingested document, where the model
+  previously forbade it outside the native limit sentinel. Nothing about the
+  mutation SCORE changes: it has always been `killed / (killed + survived)`
+  over the buckets, and discarded mutants have never been in them.
+
+  **Migration:** re-pin to this release and re-run the lane — a v10 document
+  is refused with one version-only diagnostic, never upgraded in place. In
+  consumer code, replace `judgment.r2.discarded` (an `int`) with
+  `len(judgment.r2.discarded)` (an array) wherever you read the quantity, and
+  re-check anything derived from `candidate_count` on an ingested document.
+  A lane that does not ingest a foreign mutation report needs no changes at
+  all: `assay.toml`'s `schema_version` stays **2**, `assay lanes --json`'s
+  `inventory_schema` stays **1**, and every native document is byte-identical
+  apart from its `schema_version`. Full notes: `docs/CONSUMERS.md`,
+  "Migration notes (v10 → v11)".
+
 - **BREAKING (progress artifact): the `run` header's `candidate_total` is now
   always `null` (B065).** It used to carry the mutation sweep's real total.
   The header is emitted at stream open — it has to be the first record in an
