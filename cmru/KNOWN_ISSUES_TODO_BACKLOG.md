@@ -958,7 +958,45 @@ post-release file has exactly one header for that version.
 
 ### KI-24 — `get.py` needs an `enroll` subcommand (install + authorized key + host-key fingerprint) so ciu can enroll a bare host without a token, a callback or a self-hosted backend
 
-**Status:** open (filed 2026-09-03 from the ciu v8 design session; operator direction of the same day, ciu CIU-93 revision 2, `vbpub/ciu/docs/CIU-HOST-ENROLLMENT-PROPOSAL.md` §4 and oracles O2/O3/O6).
+**Status:** FIXED 2026-09-08 on `cmru-ki24-get-py-enroll` (filed 2026-09-03 from
+the ciu v8 design session; operator direction of the same day, ciu CIU-93
+revision 2, `vbpub/ciu/docs/CIU-HOST-ENROLLMENT-PROPOSAL.md` §4 and oracles
+O2/O3/O6).
+
+**Fix.** `templates/get.py.tmpl`: helper section
+`# ─── Host enrollment helpers` at L824 — `_parse_authorized_key` (L849,
+EXIT_CONFIG on anything that is not `<type> <base64>[ <comment>]`),
+`_ak_split_line` (L895, quote-aware options/key split), `_build_key_line`
+(L950), `_find_sshd` (L970), `_enroll_check_prerequisites` (L979, root + sshd +
+key parse, EXIT_PREREQ naming `openssh-server`), `_enroll_ensure_user` (L1004,
+`useradd --create-home --shell /bin/bash` only when absent; docker-group
+existence refused with EXIT_PREREQ *before* any user is created),
+`_enroll_install_key` (L1061, 0700/0600 + ownership, appended once, EXIT_CONFIG
+on same-key-different-options), `_host_key_fingerprints` (L1125, shells out to
+`ssh-keygen -lf`), `_host_addresses` (L1148, `hostname -I`, labelled
+UNCONFIRMED); `do_enroll` at L1373; parser at L1540; dispatch at L1572. Tests:
+`tests/test_installer.py` L1336-2290 (`TestEnrollCLIShape`,
+`TestEnrollKeyParsing`, `TestEnrollAuthorizedKeysLine`, `TestEnrollOrdering`,
+`TestEnrollInstallStep`, `TestEnrollReport`, `TestEnrollHostProbes`, and
+`TestEnrollAgainstRealSystem` at L2097 — the repo's first container-backed
+"run the installer for real and assert on real system state" oracle; its fixture
+image is built and torn down by the test file itself and the group SKIPS where
+docker or `$CGROUP_PARENT_DEV_BACKGROUND` is absent, which is the case inside
+the gate's own tester-unified container). `src/cmru/getpy.py` needed no change:
+the template is placeholder-substituted, not parsed.
+
+**Contract correction (one deviation, measured).** The clause above spells the
+restricted line `from="PATTERN",<type> <base64> <comment>`. That form is
+REJECTED by OpenSSH: sshd advances past the options field to the first unquoted
+whitespace, so a comma-joined line puts the key type inside the options and the
+key is never read. Measured on a real sshd in the fixture container — with
+`from="*",<key>` the client got `Permission denied (publickey)`; with
+`from="*" <key>` the same key authenticated. The installer therefore writes
+`from="PATTERN" <type> <base64> <comment>` (whitespace, not comma), and
+`_ak_split_line` still RECOGNISES the comma form on read so a pre-existing
+malformed entry is seen as a conflict rather than silently duplicated. Any
+consumer quoting KI-24's line — ciu CIU-93 / `SPEC.md` S14.7 included — should
+be corrected the same way.
 
 **Mechanism.** `templates/get.py.tmpl` renders a transactional installer with
 `install|update|status|rollback` subcommands and a `bootstrap|apply|health|
@@ -1018,3 +1056,33 @@ re-run must fail O2.
 CIU-HOST-ENROLLMENT-PROPOSAL.md` rev 2 (the full design), dstdns D-097/D-358
 (origin). The self-hosted *wheel* download backend D-097 wished for stays a
 separate, optional item (ciu proposal §4.10 item 27) — not required here.
+
+### KI-25 — `get.py enroll`'s security-critical container oracles (O2/O3) are structurally invisible to the automated gate
+
+**Status:** open (filed 2026-09-08 by KI-24's own adversarial reviewer).
+
+KI-24 shipped `enroll` — a subcommand that creates a real Linux user,
+writes to `authorized_keys`, and sets file permissions. Its behavioral
+proof (`tests/test_installer.py`'s `TestEnrollAgainstRealSystem`, O2/O3)
+spins up a real container with `openssh-server` and asserts on real
+system state. `./run-gate.py gate`'s `coverage` lane runs in
+`tester-unified`, which has no docker socket (confirmed by reading
+`run-gate.toml`'s `[environments.tester-unified]` — no socket/mount
+declared, same RG-43-class gap already fixed elsewhere in the estate for
+other projects) — so those tests SKIP in the one place whose PASS is
+actually trusted as "the gate said so." KI-24's own merge evidence is a
+manual, independently-reproduced run outside the gate, not gate output —
+correct for THAT package's own dispatch (Touch list correctly excluded
+`run-gate.toml`), but it means this repo's real, standing gate currently
+certifies nothing about the most security-sensitive code it ships.
+
+Proposed fix: a new `run-gate.toml` lane (or an environment variant of the
+existing `coverage`/`assay` lane) that runs with real docker access —
+mirroring whatever pattern the estate's own RG-43 sweep already
+established for other docker-launching orchestrator lanes (`bare-host`,
+per that sweep's own resolution — see the memory/decision record for the
+2026-09-03 debian-install-v2/RG-43 pass across the estate) rather than
+`tester-unified`. Scope: get `TestEnrollAgainstRealSystem`'s O2/O3 classes
+actually running and asserted-on inside `./run-gate.py gate`'s own
+conjunction, not just locally reproducible by a human/agent with direct
+docker access.
