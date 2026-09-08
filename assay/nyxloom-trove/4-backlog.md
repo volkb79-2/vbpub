@@ -8453,3 +8453,343 @@ Net consumer impact today: `[lanes.ui_unit]` cannot return a verdict for any
 change touching a component with a defaulted parameter, which on dstdns is the
 whole shipped design-system primitive set. Both P176 and P177 had to be
 dispositioned by disclosure rather than by the lane.
+
+## B081 — a "dubious ownership" `GIT_FAILED` passes through git's own remedy, which `_REPLACEMENT_ENV` has made unreachable by construction: the message sends the consumer to a fix assay guarantees cannot work
+
+**Proposed by:** `wings-cgroups`, 2026-09-08, while wiring an assay 6.0.0 Go R1
+changed-line-coverage lane into the `pterodactyl/wings` patch stack
+(`vbpub/wings-cgroups/v1-legacy/patchstack/`). Working lane at `vbpub@bfb2077b`;
+the worked lane file is `patchstack/assay/assay.toml`.
+**Not a blocker** — the consumer found a workaround and the lane is green
+(PASS, 336/624 changed lines, 53.85%). Filed because the *message* is
+actively misleading, not because the refusal is wrong.
+
+### What was measured
+
+Judging a tree whose owner uid differs from the running user fails during
+repository bootstrap. Git's ownership check fires inside
+`git rev-parse --absolute-git-dir` (`git.py:_resolve_repo`), and assay
+surfaces git's stderr verbatim as `ERROR`/`GIT_FAILED`. Git's own sentence
+tells the reader to run:
+
+```
+git config --global --add safe.directory <path>
+```
+
+That remedy cannot succeed under assay, ever. `_REPLACEMENT_ENV`
+(`src/assay/git.py:125` — verified at this revision) REPLACES the child
+environment entirely and sets:
+
+```
+"GIT_CONFIG_NOSYSTEM": "1",
+"GIT_CONFIG_SYSTEM": os.devnull,
+"GIT_CONFIG_GLOBAL": os.devnull,
+```
+
+so the system and global config files git would consult are both
+`/dev/null`, and `HOME`/`XDG_*` never cross the boundary either, so
+`~/.gitconfig` is unreachable by a second route. `safe.directory` is
+respected only in *protected* configuration (system/global) — a repo-local
+`safe.directory` in `.git/config` is readable but grants no exception — so
+there is no config file left that could carry it. Nothing in `src/assay`
+sets `safe.directory` on the command line either (`grep` over `src/assay`:
+zero hits).
+
+Measured directly, under exactly that environment (git 2.55.0):
+
+```console
+$ env -i LC_ALL=C.UTF-8 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+      git config --global --add safe.directory /tmp/x
+error: could not lock config file /dev/null: Permission denied   # exit 255
+```
+
+The suggested command does not merely fail to take effect — it cannot even
+be written.
+
+### Why this is assay's, not the consumer's
+
+The hardened environment is assay's own deliberate design (A-173: no ambient
+`GIT_*`/`HOME`/config-selector crosses the child boundary), and it is correct.
+The defect is that assay hardened away the remedy and then kept forwarding a
+message that prescribes it. A consumer following the printed instruction burns
+a cycle discovering it is inert, and the real precondition — *the tree's owner
+uid must equal the running user's* — is stated nowhere.
+
+### This is the same family as B068 and B077, and B068 already built the seam
+
+B068 (`fix(assay)` `96973575`, shipped) established exactly the pattern this
+needs: `_linked_worktree_gap()` (`git.py:418`) is a **diagnostic-only** probe
+consulted solely on `_resolve_repo`'s bootstrap-failure path
+(`git.py:~525`), which NAMES the one cause the project has measured in the
+field and prepends it to — never replaces — the raw git `fatal:`. B077 filed
+the third instance of the same shape (a symlink destination surfacing as a
+raw pathspec passthrough). This entry is the fourth, and the cheapest,
+because the failure lands on the identical code path B068 already
+instrumented.
+
+### Proposed contract
+
+On `_resolve_repo`'s bootstrap-failure path, when git's stderr is the
+ownership refusal, prepend an assay-owned sentence naming the real
+precondition and the real remedy — e.g. "the judged tree's owner uid (N) is
+not the running user (M); assay runs git with `GIT_CONFIG_NOSYSTEM=1` and
+`GIT_CONFIG_GLOBAL=/dev/null` (A-173), so `safe.directory` cannot be granted
+from any config file — make the tree's ownership match the running user
+instead" — keeping git's own `fatal:` after it as primary evidence, exactly
+as `_linked_worktree_gap()` does. Whether the probe reads the stderr text or
+independently `stat`s the tree is the implementer's call; `_linked_worktree_gap`
+chose to ask the filesystem rather than git, and the same argument applies
+here.
+
+### Consumer workaround (for the record, and as evidence the diagnosis is right)
+
+`patchstack/scripts/common.sh:42-46` extracts the source tar into the
+container with `tar -xf - --no-same-owner`, with a comment recording exactly
+this finding: *"tar run as root would otherwise … a `safe.directory`
+exception can be honoured. The owner has to actually match."* Fixing the
+ownership is the only thing that works.
+
+### Acceptance
+
+- [ ] a tree whose owner uid differs from the running user refuses with an
+      assay-composed sentence naming the ownership mismatch and the fact that
+      `safe.directory` is unreachable under assay's replacement environment,
+      with git's own `fatal:` retained after it;
+- [ ] the message does NOT propose `git config --global --add safe.directory`
+      as a remedy anywhere;
+- [ ] a healthy resolution is unchanged and the probe is never consulted on
+      it (B068's diagnostic-only contract);
+- [ ] the OTHER bootstrap failures stay exactly as they are — the linked-
+      worktree gap (B068) still wins where it applies, and an unrecognised
+      cause still passes through unchanged;
+- [ ] a regression test pins the new sentence.
+
+## B082 — a lane's own `assay.toml` cannot be untracked, and for a Go lane whose module root is a vendored or disposable checkout that forces committing the lane file into a throwaway tree; `docs/CONSUMERS.md` never says so
+
+**Proposed by:** `wings-cgroups`, 2026-09-08, same session and lane as
+[B081](#b081) (`vbpub@bfb2077b`, `patchstack/assay/assay.toml`).
+**Docs ask. The behaviour is correct and deliberate — nothing here proposes
+changing it.**
+
+### What was measured, and why the two halves compose badly
+
+Two independently-correct rules meet in a place the documentation does not
+cover.
+
+**Half one — the tree guard is whole-repo, not source-root-scoped.** There are
+two distinct dirty-tree checks in the codebase and only one of them is scoped:
+
+- `measurability.check_dirty_tree` (`src/assay/measurability.py:45`) filters
+  `git.dirty_paths` to *`source_roots`* by resolved path;
+- but the guards a real `assay run` actually hits are unscoped —
+  `runner.py:4448` (the higher-rigor snapshot path, "N uncommitted file(s) in
+  `<repo>`") and `runner.py:5166` (the direct-R0 path) both pass the whole
+  repository to `git.dirty_paths` with no source-root filter at all.
+
+So an untracked `assay.toml` sitting at a module root that is *outside* every
+declared `source_root` still refuses `NO_MEASUREMENT`/`DIRTY_TREE`.
+
+**Half two — `.git/info/exclude` cannot exempt it, on purpose.**
+`git.dirty_paths` (`src/assay/git.py:738`) unions `git status --porcelain` with
+`ls-files --others --exclude-per-directory=.gitignore` and deliberately does
+NOT use `--exclude-standard`, because that would honor `.git/info/exclude` — a
+repository-local, unversioned file reported by nothing else. That is A-177's
+ruling, re-affirmed by **A-290** after B017 shipped `--exclude-standard` and an
+adversarial review found it opened a real hole (a personal ignore rule hiding a
+brand-new untracked source file with no self-reporting trail); it was reverted
+and the regression test `test_git_info_exclude_cannot_hide_untracked_dirt`
+pins it. **Both decisions are right and this entry does not contest either.**
+
+**The consequence.** `docs/CONSUMERS.md`'s Go section, point 7, says *"Put
+`assay.toml` at your module root"* — and assay reads the module path from the
+nearest `go.mod` at or above the lane file, with no lane key and no CLI flag to
+override it (deliberately, A-404). Combine that with the two halves above and
+the rule for a whole class of consumer is:
+
+> **If your Go module root is a vendored, generated, or disposable checkout,
+> you must commit `assay.toml` into that throwaway checkout on every run.**
+> Only a *committed* `.gitignore` can exempt a path, and a disposable clone by
+> definition does not carry your commits.
+
+That constraint is real, it is a consequence of three separate documented
+decisions, and it appears in none of them. CONSUMERS.md documents the adjacent
+cases well — "leave the tree clean", "keep assay's own output out of the repo
+under test", "gitignore every declared artifact" — but every one of those is
+about *output assay or your command produces*. None covers *the lane file
+itself*, which the consumer naturally thinks of as configuration living
+outside the judged material.
+
+### Why it is assay's to document
+
+The rule is emergent from assay's own guards and assay's own placement
+requirement; no consumer can derive it from any single documented statement,
+and the failure mode it produces (`DIRTY_TREE` naming your config file) reads
+as a bug rather than as a rule.
+
+### Proposed fix — documentation only
+
+Add a bullet to `docs/CONSUMERS.md`'s Go section beside point 7's existing two
+"consequences worth planning around", saying that the lane file participates
+in the whole-tree cleanliness check like any other path; that it must be
+tracked (or covered by a *committed* `.gitignore` — `.git/info/exclude` will
+not do it, and link A-177/A-290/B017 for why); and that a module root which is
+a disposable or vendored checkout therefore needs the lane file staged and
+committed into that checkout per run. The worked pattern below is available to
+copy.
+
+### The consumer's worked pattern (offered as the doc's example)
+
+`patchstack/assay/assay.toml` is the authoritative copy, under version control
+*outside* the disposable clone, carrying its own header explaining why. Per run
+`patchstack/scripts/coverage.sh` copies it to `<clone>/assay.toml` (line 52),
+then inside the container `git add -- assay.toml` and commits it (line ~97,
+with `-c commit.gpgSign=false`) before invoking the judge; `cleanup()` removes
+the staged copy (line 47). The lane file's own header records the reason:
+*"the file has to sit at the MODULE root when it runs. The module root is the
+clone root, which is exactly the directory that cannot hold the source of
+truth — hence 'authoritative here, copied there'."*
+
+### Acceptance
+
+- [ ] `docs/CONSUMERS.md`'s Go section states that `assay.toml` is subject to
+      the whole-tree cleanliness guard and must be tracked or committed-
+      `.gitignore`d;
+- [ ] it states explicitly that `.git/info/exclude` cannot exempt it, and says
+      why (A-177/A-290), so a reader does not try it;
+- [ ] it names the vendored/generated/disposable-module-root case and shows
+      the authoritative-copy-plus-stage-in pattern;
+- [ ] no source change; the guards and A-177/A-290 stand exactly as they are.
+
+## B083 — assay refuses a shallow clone, correctly, but the Go section's gotcha list does not mention it and a `--depth N` clone is the normal case for a patch stack or a CI build
+
+**Proposed by:** `wings-cgroups`, 2026-09-08, same session and lane as
+[B081](#b081)/[B082](#b082) (`vbpub@bfb2077b`).
+**Docs ask. The refusal is correct and defensible; nothing here proposes
+relaxing it.**
+
+### What was measured
+
+```
+assay: ERROR/GIT_FAILED: /src/.git/shallow exists; refusing a grafted or
+shallow source
+```
+
+The check is `src/assay/git.py:1539-1542` — it rejects a repository whose
+common dir holds `info/grafts` or `shallow`, because (git.py:1515-1518)
+objects that "live outside the recorded source identity" would make the
+recorded commit a claim assay cannot back. That reasoning is sound and this
+entry accepts it.
+
+### The gap
+
+The refusal is documented **only** in `docs/DESIGN-GUIDE.md:933`, which lists
+grafts/shallow/promisor/non-SHA-1 stores among the hardening properties. A
+consumer adopting a Go lane reads `README.md` and `docs/CONSUMERS.md`'s Go
+section — and `grep -n "shallow\|grafted\|depth"` over both returns **zero**
+hits. Meanwhile that same Go section carefully spells out every other
+adoption gotcha: interpreter/toolchain discovery (point 6), module-path
+resolution and one-module-per-lane (point 7), `go.work` not supported, the
+`default_process_runner` environment replacement, `-coverpkg` (point 8). A
+`git clone --depth 50` is completely ordinary for a patch stack or a CI
+checkout, so this belongs in that list.
+
+### Why it is assay's to document
+
+The refusal is assay's own policy; the consumer only discovers it after
+building a lane, and `GIT_FAILED` gives no hint that the fix is a property of
+how the tree was *cloned* rather than of the lane configuration.
+
+### Proposed fix — documentation only
+
+One line in `docs/CONSUMERS.md`'s Go gotcha list (and, since README's Go
+paragraph summarises the same points, a clause there): a shallow or grafted
+clone is refused `ERROR`/`GIT_FAILED`; a `--depth N` checkout must be
+`git fetch --unshallow`'d before the judge runs. Worth stating alongside it
+that this is *not* Go-specific — it applies to every language — but the Go
+section is where the CI-checkout reader is.
+
+### Consumer workaround (and its cost, which is the argument for documenting it)
+
+`patchstack/scripts/coverage.sh:77-78` runs `git fetch --unshallow --quiet
+origin` inside the container copy on **every** run. That is a full-history
+fetch per lane invocation. A consumer who knew about the constraint up front
+could clone at full depth once instead; discovering it late is what produces
+the per-run cost.
+
+### Acceptance
+
+- [ ] `docs/CONSUMERS.md`'s Go gotcha list names the shallow/grafted refusal,
+      its `ERROR`/`GIT_FAILED` shape, and `git fetch --unshallow` as the fix;
+- [ ] it says the constraint is language-independent, so a JS/Python adopter
+      reading only their own section is not misled into thinking it is a Go
+      rule;
+- [ ] no source change — `git.py:1539`'s refusal is unchanged.
+
+## B084 — Go-section drift: `golang:1.25` reads as a requirement when it is one measured example, and the "how consumers actually get the judge" table is stale against the real pins
+
+**Proposed by:** `wings-cgroups`, 2026-09-08, same session as
+[B081](#b081)–[B083](#b083). **Minor; docs only. Two unrelated small items
+kept in one entry because both are one-line fixes in the same file.**
+
+### (a) `golang:1.25` is stated as the measured case and reads as the required one
+
+`docs/CONSUMERS.md:2850` (Go point 6) and `README.md:209` both say *"a
+`golang:1.25`-based image already carries `/usr/bin/python3` 3.13.5"*. The
+surrounding prose is honest — it is presented as a measurement, and the
+`docker run` example uses `<your-go-gate-image>` — but 1.25 is the only
+version ever named, and a reader planning an image pin takes it as the floor.
+
+**Measured counter-example:** `golang:1.24` also ships `/usr/bin/python3`
+(3.13.5) and runs the zipapp fine; the wings-cgroups lane is green on it
+(`patchstack/scripts/coverage.sh:11` records exactly this). The real
+requirement is assay's own `requires-python = ">=3.11"` plus a python3 in the
+image — nothing about the Go version.
+
+**Ask:** soften to name the requirement rather than the version — "any
+`golang` image carrying a `python3` at or above assay's `>=3.11` floor;
+measured on `golang:1.25` (3.13.5) and `golang:1.24` (3.13.5)" — so the
+measurement is kept and the false floor is not implied.
+
+### (b) the consumer-pin table is stale, and it is the one table that claims to be measured
+
+`docs/CONSUMERS.md:39-49`, "How consumers actually get the judge, **as of
+2026-09-02**", explicitly says *"Stated as MEASURED rather than as intended,
+because the two have differed."* Checked 2026-09-08:
+
+| consumer | table says | actually vendors |
+|---|---|---|
+| `ciu` | `assay-6.0.0.pyz` | `assay-6.0.0.pyz` ✓ |
+| `cmru` | `assay-6.0.0.pyz` | `assay-6.0.0.pyz` ✓ |
+| `nyxloom` | `assay-6.0.0.pyz` | `assay-6.0.0.pyz` ✓ |
+| `dstdns` | `assay-4.0.0.pyz` | **`assay-5.2.0.pyz`** ✗ |
+
+The dstdns row is two releases behind reality, and the table's own date header
+(2026-09-02) is now internally inconsistent with three rows naming 6.0.0, a
+release cut 2026-09-08. A table that advertises itself as measured is exactly
+the one that must not drift.
+
+**Ask:** correct the dstdns row to `assay-5.2.0.pyz`, restamp the header date,
+and — since this table has now drifted once — consider whether it wants a
+cheap check (a `tools/` script, or a note that it is refreshed at release time)
+rather than manual upkeep.
+
+### What did NOT hold, recorded so it is not re-filed
+
+The originating report also suspected that "README/CONSUMERS still say 5.x"
+somewhere. **It does not reproduce.** `grep` over `README.md` and
+`docs/CONSUMERS.md` finds no stale 5.x self-version claim: the only 5.x
+mentions are correct historical statements ("Up to assay 4.1.0 that read as …
+**From 5.0.0** it is `ERROR`/`UNREADABLE_ARTIFACT`", `CONSUMERS.md:773-777`).
+Separately confirmed that **6.0.0 is genuinely the current released artifact**
+(`CHANGES.md` `## [6.0.0] - 2026-09-08`; `artifacts/assay-v6.0.0/dist/`
+carries the 6.0.0 wheel and `.pyz` with sidecars) — an earlier second-hand
+claim that the current release was "5.2" is wrong.
+
+### Acceptance
+
+- [ ] the Go-image sentence names the python3 requirement, not a Go version,
+      and keeps both measurements;
+- [ ] the consumer-pin table's dstdns row and date header are correct as of
+      the edit;
+- [ ] no other 5.x/6.x self-version claim in `README.md` or
+      `docs/CONSUMERS.md` is left disagreeing with `CHANGES.md`.
