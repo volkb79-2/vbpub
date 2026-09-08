@@ -28,6 +28,33 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
+- feat(cmru): `get.py enroll` — every project that renders `get.py` gains a
+  host-enrollment subcommand, so a bare untrusted host can bootstrap itself into
+  something a controller may start trusting (cmru KI-24; unblocks ciu CIU-93 /
+  `SPEC.md` S14.7). Shape:
+  `enroll --authorized-key 'KEY' --controller FQDN [--user USER] [--name NAME]
+  [--from PATTERN] [--docker] [--no-install] [--scope system]`. Strict
+  fail-fast order, idempotent on re-run: prerequisites BEFORE any network I/O
+  (Linux, root, an `sshd` on PATH or at `/usr/sbin/sshd` — absent is
+  `EXIT_PREREQ` naming `openssh-server`, and enroll never installs system
+  packages itself — then the key line parsed as `<type> <base64> [comment]`
+  with the type in `ssh-ed25519 | ecdsa-sha2-* | sk-* | ssh-rsa`, else
+  `EXIT_CONFIG`); `install --scope <scope>` run verbatim through the existing
+  `do_install` (skipped by `--no-install`); the deploy user (default `ciu`)
+  created with `useradd --create-home --shell /bin/bash` when absent and left
+  untouched when present, `--docker` refused with `EXIT_PREREQ` before any user
+  is created when there is no `docker` group; `~USER/.ssh` 0700 and
+  `authorized_keys` 0600, both owned by the user, with the key appended exactly
+  ONCE — an identical entry is reported rather than duplicated, and the same key
+  material under different options is `EXIT_CONFIG`, never a second line; then a
+  report of every `/etc/ssh/ssh_host_*_key.pub` fingerprint (`ssh-keygen -lf`),
+  the `hostname -I` addresses explicitly labelled UNCONFIRMED, the user, the
+  installed version, and the exact `ciu host enroll …` completion command.
+  `enroll` never generates keys, calls anything back, opens a listener, edits
+  `sshd_config`, or runs an adapter verb. NOTE: the restricted line is written
+  `from="P" <type> …` (whitespace), not KI-24's literal `from="P",<type> …` —
+  the comma-joined form is rejected by a real sshd; see KI-24's own entry for
+  the measured evidence, and correct any consumer that quotes the old text
 - feat(cmru): `cmru init` guided scaffolding (single project / monorepo) —
   generates loader-valid cmru.toml contracts and (monorepo)
   cmru.orchestration.toml with the estate env block (${NAME:-default}

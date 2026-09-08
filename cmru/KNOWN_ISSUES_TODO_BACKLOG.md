@@ -958,7 +958,45 @@ post-release file has exactly one header for that version.
 
 ### KI-24 — `get.py` needs an `enroll` subcommand (install + authorized key + host-key fingerprint) so ciu can enroll a bare host without a token, a callback or a self-hosted backend
 
-**Status:** open (filed 2026-09-03 from the ciu v8 design session; operator direction of the same day, ciu CIU-93 revision 2, `vbpub/ciu/docs/CIU-HOST-ENROLLMENT-PROPOSAL.md` §4 and oracles O2/O3/O6).
+**Status:** FIXED 2026-09-08 on `cmru-ki24-get-py-enroll` (filed 2026-09-03 from
+the ciu v8 design session; operator direction of the same day, ciu CIU-93
+revision 2, `vbpub/ciu/docs/CIU-HOST-ENROLLMENT-PROPOSAL.md` §4 and oracles
+O2/O3/O6).
+
+**Fix.** `templates/get.py.tmpl`: helper section
+`# ─── Host enrollment helpers` at L824 — `_parse_authorized_key` (L849,
+EXIT_CONFIG on anything that is not `<type> <base64>[ <comment>]`),
+`_ak_split_line` (L895, quote-aware options/key split), `_build_key_line`
+(L950), `_find_sshd` (L970), `_enroll_check_prerequisites` (L979, root + sshd +
+key parse, EXIT_PREREQ naming `openssh-server`), `_enroll_ensure_user` (L1004,
+`useradd --create-home --shell /bin/bash` only when absent; docker-group
+existence refused with EXIT_PREREQ *before* any user is created),
+`_enroll_install_key` (L1061, 0700/0600 + ownership, appended once, EXIT_CONFIG
+on same-key-different-options), `_host_key_fingerprints` (L1125, shells out to
+`ssh-keygen -lf`), `_host_addresses` (L1148, `hostname -I`, labelled
+UNCONFIRMED); `do_enroll` at L1373; parser at L1540; dispatch at L1572. Tests:
+`tests/test_installer.py` L1336-2290 (`TestEnrollCLIShape`,
+`TestEnrollKeyParsing`, `TestEnrollAuthorizedKeysLine`, `TestEnrollOrdering`,
+`TestEnrollInstallStep`, `TestEnrollReport`, `TestEnrollHostProbes`, and
+`TestEnrollAgainstRealSystem` at L2097 — the repo's first container-backed
+"run the installer for real and assert on real system state" oracle; its fixture
+image is built and torn down by the test file itself and the group SKIPS where
+docker or `$CGROUP_PARENT_DEV_BACKGROUND` is absent, which is the case inside
+the gate's own tester-unified container). `src/cmru/getpy.py` needed no change:
+the template is placeholder-substituted, not parsed.
+
+**Contract correction (one deviation, measured).** The clause above spells the
+restricted line `from="PATTERN",<type> <base64> <comment>`. That form is
+REJECTED by OpenSSH: sshd advances past the options field to the first unquoted
+whitespace, so a comma-joined line puts the key type inside the options and the
+key is never read. Measured on a real sshd in the fixture container — with
+`from="*",<key>` the client got `Permission denied (publickey)`; with
+`from="*" <key>` the same key authenticated. The installer therefore writes
+`from="PATTERN" <type> <base64> <comment>` (whitespace, not comma), and
+`_ak_split_line` still RECOGNISES the comma form on read so a pre-existing
+malformed entry is seen as a conflict rather than silently duplicated. Any
+consumer quoting KI-24's line — ciu CIU-93 / `SPEC.md` S14.7 included — should
+be corrected the same way.
 
 **Mechanism.** `templates/get.py.tmpl` renders a transactional installer with
 `install|update|status|rollback` subcommands and a `bootstrap|apply|health|

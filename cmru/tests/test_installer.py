@@ -9,15 +9,23 @@ Covers:
   - Transaction: install/update/rollback round-trip; interrupted update leaves current live.
   - Adapter: stub invoked with correct argv; non-zero adapter exit aborts before swap.
   - Scope: system vs user scope produce correct paths.
+  - Enroll (KI-24): CLI shape, key parsing, authorized_keys line handling, the
+    fail-fast ORDER, and — in a fixture container this file builds and tears
+    down itself — the real effects on a real system (user, key, modes,
+    ownership, host-key fingerprints).
 
-Stdlib + tmp files only — no network, no git side effects.
+Stdlib + tmp files only — no network, no git side effects. The enroll container
+tests are integration tests by nature; they run against a fixture image this
+file owns, never a live host, and skip (never fail) where docker is absent.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -26,7 +34,7 @@ import tarfile
 import tempfile
 import textwrap
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple
 from unittest import mock
 
 import pytest
@@ -1301,3 +1309,971 @@ class TestNormalizeTag:
         # str.lstrip('v') would strip BOTH leading v's → 'demo-v1.0.0'; a single
         # prefix-strip preserves the inner 'v' → 'demo-vv1.0.0'.
         assert self._ns()["normalize_tag"]("vv1.0.0") == "demo-vv1.0.0"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# enroll — host enrollment (cmru KI-24 / CIU S14.7)
+# ═════════════════════════════════════════════════════════════════════════════
+
+# A syntactically real ed25519 public key line (32-byte key blob, base64) — it
+# is never used to authenticate anything, only appended and read back.
+ENROLL_TEST_KEY = (
+    "ssh-ed25519 "
+    "AAAAC3NzaC1lZDI1NTE5AAAAIJ4tOoyRAvbBiHFB5zFCFtOijSMxU9BzM3sB0K9RRppQ"
+    " ciu@control.example"
+)
+ENROLL_TEST_KEY_TYPE = "ssh-ed25519"
+ENROLL_TEST_KEY_B64 = ENROLL_TEST_KEY.split()[1]
+
+# Exactly the flags KI-24's proposed contract names, and nothing else (O6).
+ENROLL_EXPECTED_FLAGS = {
+    "-h", "--help",
+    "--authorized-key", "--controller", "--user", "--name", "--from",
+    "--docker", "--no-install", "--scope",
+}
+
+
+def _render_enroll_ns(**kw) -> dict:
+    """Render get.py and exec it, returning its module namespace."""
+    from cmru.getpy import render_get_py
+    defaults = dict(
+        project_name="demo", repo_owner="o", repo_name="r",
+        tag_prefix="demo-v", install_dir_system="/opt/demo",
+        install_dir_user="demo", required_commands=[],
+    )
+    defaults.update(kw)
+    src = render_get_py(**defaults)
+    ns: dict = {}
+    exec(compile(src, "<rendered-get.py>", "exec"), ns)
+    return ns
+
+
+def _enroll_args(**kw):
+    """A fully-populated enroll Namespace (argparse defaults spelled out)."""
+    import argparse as _argparse
+    values = dict(
+        command="enroll",
+        authorized_key=ENROLL_TEST_KEY,
+        controller="control.example.net",
+        user="ciu",
+        name=None,
+        from_pattern=None,
+        docker=False,
+        no_install=False,
+        scope="system",
+        manifest_pubkey=None,
+        version=None,
+        variant=None,
+        config=None,
+    )
+    values.update(kw)
+    return _argparse.Namespace(**values)
+
+
+class TestEnrollCLIShape:
+    """O6: a rendered script's ``enroll --help`` lists exactly KI-24's flags."""
+
+    def _write_rendered(self, tmp_path: Path, source: str) -> Path:
+        script = tmp_path / "get.py"
+        script.write_text(source, encoding="utf-8")
+        return script
+
+    def _help(self, script: Path, *argv: str) -> str:
+        result = subprocess.run(
+            [sys.executable, str(script), *argv],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    def _flags_in(self, help_text: str) -> set:
+        # argparse wraps long help; a flag is only a flag at a token boundary.
+        return set(re.findall(r"(?<![\w-])(--?[A-Za-z][A-Za-z0-9-]*)", help_text))
+
+    def test_enroll_help_lists_exactly_the_contract_flags(self, tmp_path):
+        from cmru.getpy import render_get_py
+        src = render_get_py(
+            project_name="demo", repo_owner="o", repo_name="r",
+            tag_prefix="demo-v", install_dir_system="/opt/demo",
+            install_dir_user="demo", required_commands=[],
+        )
+        script = self._write_rendered(tmp_path, src)
+        # The usage line, which is where a missing/extra flag shows first.
+        text = self._help(script, "enroll", "--help")
+        usage = text.split("options:")[0]
+        assert self._flags_in(usage) | {"-h", "--help"} == ENROLL_EXPECTED_FLAGS
+        assert self._flags_in(text) == ENROLL_EXPECTED_FLAGS
+
+    def test_enroll_required_flags_are_required(self, tmp_path):
+        from cmru.getpy import render_get_py
+        src = render_get_py(
+            project_name="demo", repo_owner="o", repo_name="r",
+            tag_prefix="demo-v", install_dir_system="/opt/demo",
+            install_dir_user="demo", required_commands=[],
+        )
+        script = self._write_rendered(tmp_path, src)
+        text = self._help(script, "enroll", "--help")
+        usage = text.split("options:")[0]
+        # required ⇒ unbracketed; optional ⇒ bracketed
+        assert "--authorized-key KEY" in usage
+        assert "[--authorized-key" not in usage
+        assert "--controller FQDN" in usage
+        assert "[--controller" not in usage
+        for optional in ("--user USER", "--name NAME", "--from PATTERN",
+                         "--docker", "--no-install"):
+            assert f"[{optional}]" in usage, usage
+
+    def test_enroll_defaults_documented(self, tmp_path):
+        from cmru.getpy import render_get_py
+        src = render_get_py(
+            project_name="demo", repo_owner="o", repo_name="r",
+            tag_prefix="demo-v", install_dir_system="/opt/demo",
+            install_dir_user="demo", required_commands=[],
+        )
+        script = self._write_rendered(tmp_path, src)
+        text = self._help(script, "enroll", "--help")
+        assert "default: ciu" in text
+        assert "default: system" in text
+        assert "{system,user}" in text
+
+    def test_top_level_help_lists_enroll_beside_the_others(self, tmp_path):
+        from cmru.getpy import render_get_py
+        src = render_get_py(
+            project_name="demo", repo_owner="o", repo_name="r",
+            tag_prefix="demo-v", install_dir_system="/opt/demo",
+            install_dir_user="demo", required_commands=[],
+        )
+        script = self._write_rendered(tmp_path, src)
+        text = self._help(script, "--help")
+        assert "enroll" in text
+        for existing in ("install", "update", "status", "rollback"):
+            assert existing in text
+
+    def test_main_dispatches_enroll_with_the_parsed_args_and_token(self, monkeypatch):
+        """main() routes `enroll` to do_enroll, exactly as it routes the other four."""
+        ns = _render_enroll_ns()
+        seen: dict = {}
+        ns["do_enroll"] = lambda args, token: seen.update(args=args, token=token)
+        for other in ("do_install", "do_update", "do_rollback", "do_status"):
+            ns[other] = lambda *a, **k: pytest.fail("wrong subcommand dispatched")
+        monkeypatch.setenv("CMRU_GITHUB_TOKEN", "tok")
+        argv = ["get.py", "enroll",
+                "--authorized-key", ENROLL_TEST_KEY,
+                "--controller", "control.example.net",
+                "--user", "deploy", "--name", "web-01",
+                "--from", "10.0.0.0/8", "--docker", "--no-install",
+                "--scope", "user"]
+        with mock.patch.object(sys, "argv", argv):
+            ns["main"]()
+        args = seen["args"]
+        assert seen["token"] == "tok"
+        assert (args.command, args.user, args.name, args.scope) == (
+            "enroll", "deploy", "web-01", "user")
+        assert args.from_pattern == "10.0.0.0/8"
+        assert args.docker is True and args.no_install is True
+        assert args.authorized_key == ENROLL_TEST_KEY
+        assert args.controller == "control.example.net"
+
+    def test_enroll_defaults_when_only_required_flags_given(self, monkeypatch):
+        ns = _render_enroll_ns()
+        seen: dict = {}
+        ns["do_enroll"] = lambda args, token: seen.update(args=args)
+        monkeypatch.delenv("CMRU_GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        argv = ["get.py", "enroll",
+                "--authorized-key", ENROLL_TEST_KEY,
+                "--controller", "control.example.net"]
+        with mock.patch.object(sys, "argv", argv):
+            ns["main"]()
+        args = seen["args"]
+        assert args.user == "ciu"
+        assert args.scope == "system"
+        assert args.name is None and args.from_pattern is None
+        assert args.docker is False and args.no_install is False
+
+    def test_get_py_cli_render_carries_enroll(self, tmp_path):
+        """The `cmru get-py --project <name>` path (O6's own entry point)."""
+        toml = _minimal_toml("""
+[project.installer]
+install_dir_system = "/opt/demo"
+install_dir_user   = "demo"
+""")
+        cfg_path = _write(tmp_path, toml)
+        from cmru.getpy import getpy_main
+        out_file = tmp_path / "rendered-get.py"
+        getpy_main([
+            "--project", "demo", "--config", str(cfg_path),
+            "--output", str(out_file),
+        ])
+        text = self._help(out_file, "enroll", "--help")
+        assert self._flags_in(text) == ENROLL_EXPECTED_FLAGS
+
+    def test_real_project_config_renders_enroll(self, capsys):
+        """The one [project.installer] this monorepo actually ships renders it too.
+
+        tls-edge declares required_commands, and ``main()`` runs
+        check_prerequisites BEFORE parse_args, so the parser is exercised in
+        process with that (pre-existing, unrelated) gate stubbed out rather than
+        by shelling out on a host that may lack docker.
+        """
+        real = Path(__file__).resolve().parents[2] / "tls-edge" / "cmru.toml"
+        if not real.exists():
+            pytest.skip(f"no real installer config at {real}")
+        from cmru.getpy import render_from_config
+        src = render_from_config("tls-edge", real)
+        ns: dict = {}
+        exec(compile(src, "<tls-edge-get.py>", "exec"), ns)
+        ns["check_prerequisites"] = lambda: None
+        with mock.patch.object(sys, "argv", ["get.py", "enroll", "--help"]):
+            with pytest.raises(SystemExit) as exc:
+                ns["main"]()
+        assert exc.value.code == 0
+        assert self._flags_in(capsys.readouterr().out) == ENROLL_EXPECTED_FLAGS
+
+
+class TestEnrollKeyParsing:
+    """KI-24 step 1: the --authorized-key value must parse, or EXIT_CONFIG."""
+
+    def _parse(self, ns, raw):
+        return ns["_parse_authorized_key"](raw)
+
+    @pytest.fixture()
+    def ns(self):
+        return _render_enroll_ns()
+
+    @pytest.mark.parametrize("ktype", [
+        "ssh-ed25519",
+        "ssh-rsa",
+        "ecdsa-sha2-nistp256",
+        "ecdsa-sha2-nistp521",
+        "sk-ssh-ed25519@openssh.com",
+        "sk-ecdsa-sha2-nistp256@openssh.com",
+    ])
+    def test_accepted_key_types(self, ns, ktype):
+        parsed = self._parse(ns, f"{ktype} AAAAB3NzaC1kZXN0 someone@somewhere")
+        assert parsed == (ktype, "AAAAB3NzaC1kZXN0", "someone@somewhere")
+
+    def test_comment_is_optional(self, ns):
+        assert self._parse(ns, "ssh-ed25519 AAAAB3NzaC1kZXN0") == (
+            "ssh-ed25519", "AAAAB3NzaC1kZXN0", "")
+
+    def test_multiword_comment_preserved(self, ns):
+        assert self._parse(ns, "ssh-ed25519 AAAAB3NzaC1kZXN0 my laptop key")[2] == (
+            "my laptop key")
+
+    def test_surrounding_whitespace_tolerated(self, ns):
+        assert self._parse(ns, "  ssh-ed25519 AAAAB3NzaC1kZXN0  \n")[0] == "ssh-ed25519"
+
+    @pytest.mark.parametrize("bad", [
+        "",
+        "   ",
+        "ssh-ed25519",
+        "ssh-dss AAAAB3NzaC1kZXN0",
+        "not-a-key-type AAAAB3NzaC1kZXN0",
+        "ssh-ed25519 not+valid+base64!!",
+        'from="10.0.0.1",ssh-ed25519 AAAAB3NzaC1kZXN0',
+        "ssh-ed25519 AAAAB3NzaC1kZXN0\nssh-ed25519 AAAAB3NzaC1kZXN1",
+    ])
+    def test_rejected_with_exit_config(self, ns, bad):
+        with pytest.raises(SystemExit) as exc:
+            self._parse(ns, bad)
+        assert exc.value.code == 2, bad
+
+    def test_options_rejection_names_the_from_flag(self, ns, capsys):
+        with pytest.raises(SystemExit):
+            self._parse(ns, 'from="10.0.0.1",ssh-ed25519 AAAAB3NzaC1kZXN0')
+        assert "--from" in capsys.readouterr().err
+
+
+class TestEnrollAuthorizedKeysLine:
+    """The line this subcommand writes, and the reader that decides idempotency."""
+
+    @pytest.fixture()
+    def ns(self):
+        return _render_enroll_ns()
+
+    def test_line_without_from(self, ns):
+        assert ns["_build_key_line"]("ssh-ed25519", "AAAA", "c@h", None) == (
+            "ssh-ed25519 AAAA c@h")
+
+    def test_line_with_from_separates_options_by_whitespace_not_comma(self, ns):
+        """A comma-joined options field makes the key unreadable to sshd.
+
+        KI-24's text spells this ``from="P",<type> …``; OpenSSH advances past the
+        options to the first unquoted whitespace, so that form hides the key type
+        inside the options and public-key auth fails. See _build_key_line's own
+        docstring for the measured sshd result behind this assertion.
+        """
+        assert ns["_build_key_line"]("ssh-ed25519", "AAAA", "c@h", "10.0.0.0/8") == (
+            'from="10.0.0.0/8" ssh-ed25519 AAAA c@h')
+
+    def test_line_without_comment(self, ns):
+        assert ns["_build_key_line"]("ssh-rsa", "AAAA", "", None) == "ssh-rsa AAAA"
+
+    def test_split_plain_line(self, ns):
+        assert ns["_ak_split_line"]("ssh-ed25519 AAAA c@h") == (
+            "", "ssh-ed25519", "AAAA", "c@h")
+
+    def test_split_line_with_options(self, ns):
+        assert ns["_ak_split_line"]('from="10.0.0.1" ssh-ed25519 AAAA c@h') == (
+            'from="10.0.0.1"', "ssh-ed25519", "AAAA", "c@h")
+
+    def test_split_tolerates_the_malformed_comma_joined_form_on_read(self, ns):
+        """We never WRITE this shape, but a pre-existing one must still be seen."""
+        assert ns["_ak_split_line"]('from="10.0.0.1",ssh-ed25519 AAAA c@h') == (
+            'from="10.0.0.1"', "ssh-ed25519", "AAAA", "c@h")
+
+    def test_split_comma_form_with_several_options(self, ns):
+        assert ns["_ak_split_line"](
+            'no-pty,from="10.0.0.1",ssh-ed25519 AAAA') == (
+            'no-pty,from="10.0.0.1"', "ssh-ed25519", "AAAA", "")
+
+    def test_split_comma_form_needs_key_material_after_it(self, ns):
+        assert ns["_ak_split_line"]('from="10.0.0.1",ssh-ed25519') is None
+
+    def test_split_is_quote_aware(self, ns):
+        """An options field may hold whitespace inside quotes; str.split() tears it."""
+        line = 'command="/bin/echo hi there",from="10.0.0.1" ssh-ed25519 AAAA c@h'
+        assert ns["_ak_split_line"](line) == (
+            'command="/bin/echo hi there",from="10.0.0.1"',
+            "ssh-ed25519", "AAAA", "c@h")
+
+    def test_split_honours_backslash_escapes_inside_quotes(self, ns):
+        line = 'command="echo \\" x" ssh-ed25519 AAAA'
+        assert ns["_ak_split_line"](line) == (
+            'command="echo \\" x"', "ssh-ed25519", "AAAA", "")
+
+    @pytest.mark.parametrize("ignored", [
+        "", "   ", "# a comment", "\t# indented comment",
+        "garbage-with-no-key", 'from="x" also-garbage',
+    ])
+    def test_uninteresting_lines_are_skipped(self, ns, ignored):
+        assert ns["_ak_split_line"](ignored) is None
+
+
+class TestEnrollOrdering:
+    """O3 and the fail-fast order: nothing happens before the prerequisites pass."""
+
+    def _poison(self, ns, calls):
+        """Replace every step after the prerequisites with a tripwire."""
+        def tripwire(label):
+            def _fail(*_a, **_kw):
+                calls.append(label)
+                raise AssertionError(
+                    f"{label} ran before/despite a failing prerequisite check")
+            return _fail
+        ns["do_install"] = tripwire("do_install")
+        ns["_enroll_ensure_user"] = tripwire("_enroll_ensure_user")
+        ns["_enroll_install_key"] = tripwire("_enroll_install_key")
+        ns["_gh_request"] = tripwire("_gh_request")
+        ns["resolve_latest_tag"] = tripwire("resolve_latest_tag")
+        ns["_host_key_fingerprints"] = tripwire("_host_key_fingerprints")
+
+    def test_missing_ssh_server_exits_prereq_names_openssh_server(self, capsys):
+        ns = _render_enroll_ns()
+        calls: list = []
+        self._poison(ns, calls)
+        ns["_find_sshd"] = lambda: None
+        with mock.patch.object(os, "geteuid", return_value=0):
+            with pytest.raises(SystemExit) as exc:
+                ns["do_enroll"](_enroll_args(), token=None)
+        assert exc.value.code == 3
+        assert "openssh-server" in capsys.readouterr().err
+        assert calls == [], f"steps reached before the prerequisite gate: {calls}"
+
+    def test_missing_ssh_server_reaches_no_network_call(self):
+        """Zero network I/O: urllib itself is poisoned, not merely unasserted."""
+        ns = _render_enroll_ns()
+        calls: list = []
+        self._poison(ns, calls)
+        ns["_find_sshd"] = lambda: None
+
+        def no_network(*_a, **_kw):
+            raise AssertionError("network I/O attempted before prerequisites passed")
+
+        with mock.patch.object(ns["urllib"].request, "build_opener", new=no_network), \
+                mock.patch.object(ns["urllib"].request, "urlopen", new=no_network), \
+                mock.patch.object(os, "geteuid", return_value=0):
+            with pytest.raises(SystemExit) as exc:
+                ns["do_enroll"](_enroll_args(), token=None)
+        assert exc.value.code == 3
+
+    def test_non_root_exits_prereq_before_anything_else(self, capsys):
+        ns = _render_enroll_ns()
+        calls: list = []
+        self._poison(ns, calls)
+        ns["_find_sshd"] = lambda: "/usr/sbin/sshd"
+        with mock.patch.object(os, "geteuid", return_value=1000):
+            with pytest.raises(SystemExit) as exc:
+                ns["do_enroll"](_enroll_args(), token=None)
+        assert exc.value.code == 3
+        assert "root" in capsys.readouterr().err
+        assert calls == []
+
+    def test_unparsable_key_exits_config_before_install(self, capsys):
+        ns = _render_enroll_ns()
+        calls: list = []
+        self._poison(ns, calls)
+        ns["_find_sshd"] = lambda: "/usr/sbin/sshd"
+        with mock.patch.object(os, "geteuid", return_value=0):
+            with pytest.raises(SystemExit) as exc:
+                ns["do_enroll"](_enroll_args(authorized_key="ssh-dss AAAA"), token=None)
+        assert exc.value.code == 2
+        assert calls == []
+
+
+class TestEnrollInstallStep:
+    """KI-24 step 2: install runs verbatim, before the user, unless --no-install."""
+
+    def _instrument(self, ns):
+        order: list = []
+        seen: dict = {}
+
+        def fake_install(args, token):
+            order.append("install")
+            seen["scope"] = args.scope
+            seen["pubkey"] = args.manifest_pubkey
+            seen["token"] = token
+
+        class _Entry:
+            pw_dir = "/home/ciu"
+            pw_uid = 1001
+            pw_gid = 1001
+            pw_shell = "/bin/bash"
+
+        def fake_user(user, want_docker):
+            order.append("user")
+            seen["user"] = user
+            seen["docker"] = want_docker
+            return _Entry()
+
+        def fake_key(entry, parsed, from_pattern):
+            order.append("key")
+            seen["parsed"] = parsed
+            seen["from"] = from_pattern
+            return Path("/home/ciu/.ssh/authorized_keys")
+
+        ns["do_install"] = fake_install
+        ns["_enroll_ensure_user"] = fake_user
+        ns["_enroll_install_key"] = fake_key
+        ns["_find_sshd"] = lambda: "/usr/sbin/sshd"
+        ns["_host_key_fingerprints"] = lambda: [
+            ("/etc/ssh/ssh_host_ed25519_key.pub",
+             "256 SHA256:abc root@h (ED25519)", "SHA256:abc"),
+        ]
+        ns["_host_addresses"] = lambda: ["10.1.2.3"]
+        ns["_current_version"] = lambda root: "demo-v1.2.3"
+        return order, seen
+
+    def test_install_runs_before_user_and_key(self, capsys):
+        ns = _render_enroll_ns()
+        order, seen = self._instrument(ns)
+        with mock.patch.object(os, "geteuid", return_value=0):
+            ns["do_enroll"](_enroll_args(scope="system", manifest_pubkey="RWS1"),
+                            token="tok")
+        assert order == ["install", "user", "key"]
+        assert seen["scope"] == "system"
+        assert seen["pubkey"] == "RWS1"
+        assert seen["token"] == "tok"
+
+    def test_scope_is_propagated_to_install(self):
+        ns = _render_enroll_ns()
+        order, seen = self._instrument(ns)
+        with mock.patch.object(os, "geteuid", return_value=0):
+            ns["do_enroll"](_enroll_args(scope="user"), token=None)
+        assert seen["scope"] == "user"
+
+    def test_no_install_skips_install_but_still_enrolls(self, capsys):
+        ns = _render_enroll_ns()
+        order, seen = self._instrument(ns)
+        with mock.patch.object(os, "geteuid", return_value=0):
+            ns["do_enroll"](_enroll_args(no_install=True), token=None)
+        assert order == ["user", "key"]
+        assert "skipping the install step" in capsys.readouterr().out
+
+    def test_defaults_user_ciu_and_passes_from_pattern(self):
+        ns = _render_enroll_ns()
+        order, seen = self._instrument(ns)
+        with mock.patch.object(os, "geteuid", return_value=0):
+            ns["do_enroll"](_enroll_args(no_install=True, from_pattern="10.0.0.0/8"),
+                            token=None)
+        assert seen["user"] == "ciu"
+        assert seen["from"] == "10.0.0.0/8"
+        assert seen["parsed"] == (ENROLL_TEST_KEY_TYPE, ENROLL_TEST_KEY_B64,
+                                  "ciu@control.example")
+
+
+class TestEnrollReport:
+    """KI-24 step 5: what enroll prints is what the operator confirms."""
+
+    def _instrument(self, ns, *, addresses, fingerprints):
+        class _Entry:
+            pw_dir = "/home/ciu"
+            pw_uid = 1001
+            pw_gid = 1001
+            pw_shell = "/bin/bash"
+
+        ns["do_install"] = lambda args, token: None
+        ns["_enroll_ensure_user"] = lambda user, want_docker: _Entry()
+        ns["_enroll_install_key"] = (
+            lambda entry, parsed, from_pattern: Path("/home/ciu/.ssh/authorized_keys"))
+        ns["_find_sshd"] = lambda: "/usr/sbin/sshd"
+        ns["_host_key_fingerprints"] = lambda: fingerprints
+        ns["_host_addresses"] = lambda: addresses
+        ns["_current_version"] = lambda root: "demo-v1.2.3"
+
+    FPS = [
+        ("/etc/ssh/ssh_host_ecdsa_key.pub", "256 SHA256:ecdsafp root@h (ECDSA)",
+         "SHA256:ecdsafp"),
+        ("/etc/ssh/ssh_host_ed25519_key.pub", "256 SHA256:edfp root@h (ED25519)",
+         "SHA256:edfp"),
+    ]
+
+    def test_prints_every_host_key_addresses_user_version(self, capsys):
+        ns = _render_enroll_ns()
+        self._instrument(ns, addresses=["10.1.2.3", "192.168.0.9"], fingerprints=self.FPS)
+        with mock.patch.object(os, "geteuid", return_value=0):
+            ns["do_enroll"](_enroll_args(name="web-01"), token=None)
+        out = capsys.readouterr().out
+        assert "SHA256:ecdsafp" in out and "SHA256:edfp" in out
+        assert "10.1.2.3" in out and "192.168.0.9" in out
+        assert "UNCONFIRMED" in out
+        assert "demo-v1.2.3" in out
+        assert "control.example.net" in out
+
+    def test_completion_command_uses_ed25519_fingerprint_and_name(self, capsys):
+        ns = _render_enroll_ns()
+        self._instrument(ns, addresses=["10.1.2.3"], fingerprints=self.FPS)
+        with mock.patch.object(os, "geteuid", return_value=0):
+            ns["do_enroll"](_enroll_args(name="web-01"), token=None)
+        out = capsys.readouterr().out
+        assert ("ciu host enroll web-01 --ssh-host 10.1.2.3 "
+                "--fingerprint SHA256:edfp") in out
+
+    def test_no_name_prints_a_placeholder_never_a_guess(self, capsys):
+        ns = _render_enroll_ns()
+        self._instrument(ns, addresses=["10.1.2.3"], fingerprints=self.FPS)
+        with mock.patch.object(os, "geteuid", return_value=0):
+            ns["do_enroll"](_enroll_args(name=None), token=None)
+        out = capsys.readouterr().out
+        assert "ciu host enroll <NAME> --ssh-host 10.1.2.3" in out
+        assert "replace <NAME>" in out
+
+    def test_no_addresses_prints_a_placeholder(self, capsys):
+        ns = _render_enroll_ns()
+        self._instrument(ns, addresses=[], fingerprints=self.FPS)
+        with mock.patch.object(os, "geteuid", return_value=0):
+            ns["do_enroll"](_enroll_args(name="web-01"), token=None)
+        out = capsys.readouterr().out
+        assert "--ssh-host <ADDRESS>" in out
+        assert "replace <ADDRESS>" in out
+
+    def test_no_host_keys_warns_and_keeps_the_command_substitutable(self, capsys):
+        ns = _render_enroll_ns()
+        self._instrument(ns, addresses=["10.1.2.3"], fingerprints=[])
+        with mock.patch.object(os, "geteuid", return_value=0):
+            ns["do_enroll"](_enroll_args(name="web-01"), token=None)
+        captured = capsys.readouterr()
+        assert "ssh_host_*_key.pub" in captured.err
+        assert "--fingerprint SHA256:<ed25519 fingerprint>" in captured.out
+
+
+class TestEnrollHostProbes:
+    """The two shell-outs enroll makes: ssh-keygen -lf and hostname -I."""
+
+    @pytest.fixture()
+    def ns(self):
+        return _render_enroll_ns()
+
+    def test_fingerprints_shell_out_to_ssh_keygen(self, ns, tmp_path, monkeypatch):
+        pub = tmp_path / "ssh_host_ed25519_key.pub"
+        pub.write_text("ssh-ed25519 AAAA root@h\n")
+        monkeypatch.setattr(ns["_glob"], "glob", lambda pat: [str(pub)])
+
+        def fake_run(cmd, **kw):
+            assert cmd == ["ssh-keygen", "-lf", str(pub)]
+            r = mock.MagicMock()
+            r.returncode = 0
+            r.stdout = "256 SHA256:deadbeef root@h (ED25519)\n"
+            return r
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            assert ns["_host_key_fingerprints"]() == [
+                (str(pub), "256 SHA256:deadbeef root@h (ED25519)", "SHA256:deadbeef"),
+            ]
+
+    def test_fingerprint_failure_warns_and_skips_that_key(self, ns, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(ns["_glob"], "glob", lambda pat: ["/etc/ssh/broken.pub"])
+
+        def fake_run(cmd, **kw):
+            r = mock.MagicMock()
+            r.returncode = 1
+            r.stdout = ""
+            r.stderr = "is not a public key file"
+            return r
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            assert ns["_host_key_fingerprints"]() == []
+        assert "ssh-keygen" in capsys.readouterr().err
+
+    def test_addresses_from_hostname_dash_i(self, ns):
+        def fake_run(cmd, **kw):
+            assert cmd == ["hostname", "-I"]
+            r = mock.MagicMock()
+            r.returncode = 0
+            r.stdout = "10.1.2.3 192.168.0.9 \n"
+            return r
+
+        with mock.patch.object(shutil, "which", return_value="/bin/hostname"), \
+                mock.patch("subprocess.run", side_effect=fake_run):
+            assert ns["_host_addresses"]() == ["10.1.2.3", "192.168.0.9"]
+
+    def test_addresses_absent_hostname_warns_and_returns_empty(self, ns, capsys):
+        with mock.patch.object(shutil, "which", return_value=None):
+            assert ns["_host_addresses"]() == []
+        assert "hostname" in capsys.readouterr().err
+
+    def test_addresses_failed_hostname_warns_and_returns_empty(self, ns, capsys):
+        def fake_run(cmd, **kw):
+            r = mock.MagicMock()
+            r.returncode = 1
+            r.stdout = ""
+            r.stderr = "boom"
+            return r
+
+        with mock.patch.object(shutil, "which", return_value="/bin/hostname"), \
+                mock.patch("subprocess.run", side_effect=fake_run):
+            assert ns["_host_addresses"]() == []
+        assert "hostname -I failed" in capsys.readouterr().err
+
+    def test_find_sshd_prefers_path(self, ns):
+        with mock.patch.object(shutil, "which", return_value="/usr/local/sbin/sshd"):
+            assert ns["_find_sshd"]() == "/usr/local/sbin/sshd"
+
+    def test_find_sshd_falls_back_to_usr_sbin(self, ns, monkeypatch):
+        real_exists = Path.exists
+
+        def fake_exists(self):
+            if str(self) == "/usr/sbin/sshd":
+                return True
+            return real_exists(self)
+
+        with mock.patch.object(shutil, "which", return_value=None), \
+                mock.patch.object(Path, "exists", fake_exists):
+            assert ns["_find_sshd"]() == "/usr/sbin/sshd"
+
+    def test_find_sshd_absent_is_none(self, ns):
+        real_exists = Path.exists
+
+        def fake_exists(self):
+            if str(self) == "/usr/sbin/sshd":
+                return False
+            return real_exists(self)
+
+        with mock.patch.object(shutil, "which", return_value=None), \
+                mock.patch.object(Path, "exists", fake_exists):
+            assert ns["_find_sshd"]() is None
+
+
+# ─── enroll: real execution against real system state (O2 / O3) ───────────────
+#
+# There is no prior "spin up a container, run the installer, assert on real
+# system state" pattern in this repo; this is it. The fixture image is built and
+# owned here (never a live host), every container is torn down in a finally, and
+# the whole group SKIPS — never fails — where docker or the estate's cgroup tier
+# is unavailable, which is exactly the case inside the gate's own tester-unified
+# container (no docker socket is mounted into it).
+
+ENROLL_FIXTURE_IMAGE = "cmru-enroll-fixture:local"
+ENROLL_FIXTURE_DOCKERFILE = """\
+FROM debian:bookworm-slim
+RUN apt-get update \\
+ && apt-get install -y --no-install-recommends \\
+        openssh-server python3 iproute2 hostname passwd \\
+ && rm -rf /var/lib/apt/lists/* \\
+ && ssh-keygen -A
+"""
+
+
+def _docker_unavailable_reason() -> Optional[str]:
+    if shutil.which("docker") is None:
+        return "docker CLI not present"
+    probe = subprocess.run(["docker", "info"], capture_output=True, text=True)
+    if probe.returncode != 0:
+        return f"docker daemon unreachable: {probe.stderr.strip()[:200]}"
+    # AGENTS.md "Host cgroup placement": no hardcoded fallback slice — a
+    # container we cannot place on the host's dev-background tier is one we do
+    # not start next to production.
+    if not os.environ.get("CGROUP_PARENT_DEV_BACKGROUND", "").strip():
+        return "CGROUP_PARENT_DEV_BACKGROUND unset — refusing an unplaced container"
+    return None
+
+
+@pytest.fixture(scope="session")
+def enroll_fixture_image() -> str:
+    reason = _docker_unavailable_reason()
+    if reason:
+        pytest.skip(f"enroll container oracle needs docker ({reason})")
+    present = subprocess.run(
+        ["docker", "image", "inspect", ENROLL_FIXTURE_IMAGE],
+        capture_output=True, text=True,
+    )
+    if present.returncode != 0:
+        with tempfile.TemporaryDirectory() as ctx:
+            (Path(ctx) / "Dockerfile").write_text(ENROLL_FIXTURE_DOCKERFILE)
+            built = subprocess.run(
+                ["docker", "build", "-t", ENROLL_FIXTURE_IMAGE, ctx],
+                capture_output=True, text=True, timeout=900,
+            )
+            if built.returncode != 0:
+                pytest.skip(
+                    "could not build the enroll fixture image: "
+                    f"{built.stderr.strip()[-400:]}"
+                )
+    return ENROLL_FIXTURE_IMAGE
+
+
+@pytest.fixture()
+def rendered_get_py(tmp_path) -> Path:
+    from cmru.getpy import render_get_py
+    src = render_get_py(
+        project_name="demo", repo_owner="o", repo_name="r",
+        tag_prefix="demo-v", install_dir_system="/opt/demo",
+        install_dir_user="demo", required_commands=[],
+    )
+    script = tmp_path / "get.py"
+    script.write_text(src, encoding="utf-8")
+    return script
+
+
+@contextlib.contextmanager
+def _enroll_container(image: str, script: Path, *, network: str = "bridge") -> Iterator[str]:
+    """A short-lived fixture container carrying the rendered installer.
+
+    Placed on the estate's dev-background cgroup tier and capped, per the shared
+    production host's rules; removed in a finally so a failing assertion never
+    leaves one running.
+    """
+    slice_name = os.environ["CGROUP_PARENT_DEV_BACKGROUND"]
+    started = subprocess.run(
+        ["docker", "run", "-d",
+         f"--cgroup-parent={slice_name}",
+         "--cpus=3", "--memory=1g", "--memory-swap=4g",
+         f"--network={network}",
+         image, "sleep", "600"],
+        capture_output=True, text=True,
+    )
+    assert started.returncode == 0, started.stderr
+    container = started.stdout.strip()
+    try:
+        copied = subprocess.run(
+            ["docker", "cp", str(script), f"{container}:/tmp/get.py"],
+            capture_output=True, text=True,
+        )
+        assert copied.returncode == 0, copied.stderr
+        yield container
+    finally:
+        subprocess.run(["docker", "rm", "-f", container], capture_output=True)
+
+
+def _cexec(container: str, *argv: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["docker", "exec", container, *argv],
+        capture_output=True, text=True, timeout=300,
+    )
+
+
+def _enroll_in(container: str, *extra: str) -> subprocess.CompletedProcess:
+    return _cexec(
+        container, "python3", "/tmp/get.py", "enroll",
+        "--no-install",                       # the install step needs GitHub; kept hermetic
+        "--controller", "test.example",
+        "--user", "deployer",
+        "--authorized-key", ENROLL_TEST_KEY,
+        *extra,
+    )
+
+
+class TestEnrollAgainstRealSystem:
+    """O2/O3 — the rendered enroll run for real, asserted on real system state."""
+
+    def test_o2_user_key_modes_ownership_and_fingerprint(
+        self, enroll_fixture_image, rendered_get_py
+    ):
+        with _enroll_container(enroll_fixture_image, rendered_get_py) as c:
+            first = _enroll_in(c)
+            assert first.returncode == 0, first.stdout + first.stderr
+
+            # the user exists for real
+            ident = _cexec(c, "id", "-u", "deployer")
+            assert ident.returncode == 0, ident.stderr
+
+            # exactly one matching line
+            keys = _cexec(c, "cat", "/home/deployer/.ssh/authorized_keys")
+            assert keys.returncode == 0, keys.stderr
+            lines = [ln for ln in keys.stdout.splitlines() if ln.strip()]
+            assert lines == [ENROLL_TEST_KEY]
+
+            # modes + ownership, read off the real filesystem
+            stat_out = _cexec(
+                c, "stat", "-c", "%a %U %G %n",
+                "/home/deployer/.ssh", "/home/deployer/.ssh/authorized_keys",
+            )
+            assert stat_out.returncode == 0, stat_out.stderr
+            assert stat_out.stdout.splitlines() == [
+                "700 deployer deployer /home/deployer/.ssh",
+                "600 deployer deployer /home/deployer/.ssh/authorized_keys",
+            ]
+
+            # the printed fingerprint equals ssh-keygen run independently HERE
+            independent = _cexec(
+                c, "ssh-keygen", "-lf", "/etc/ssh/ssh_host_ed25519_key.pub")
+            assert independent.returncode == 0, independent.stderr
+            expected_fp = next(
+                tok for tok in independent.stdout.split() if tok.startswith("SHA256:"))
+            assert expected_fp in first.stdout
+            assert f"--fingerprint {expected_fp}" in first.stdout
+            assert "/etc/ssh/ssh_host_ed25519_key.pub" in first.stdout
+
+            # the addresses are printed and explicitly UNCONFIRMED
+            addrs = _cexec(c, "hostname", "-I")
+            assert addrs.returncode == 0, addrs.stderr
+            for addr in addrs.stdout.split():
+                assert addr in first.stdout
+            assert "UNCONFIRMED" in first.stdout
+
+            # re-run: still exactly one line, reported, not an error
+            second = _enroll_in(c)
+            assert second.returncode == 0, second.stdout + second.stderr
+            keys_again = _cexec(c, "cat", "/home/deployer/.ssh/authorized_keys")
+            assert [ln for ln in keys_again.stdout.splitlines() if ln.strip()] == [
+                ENROLL_TEST_KEY]
+            assert "not duplicated" in second.stdout
+            assert "already exists" in second.stdout
+
+    def test_o2_from_pattern_written_and_conflicting_options_refused(
+        self, enroll_fixture_image, rendered_get_py
+    ):
+        with _enroll_container(enroll_fixture_image, rendered_get_py) as c:
+            first = _enroll_in(c, "--from", "10.0.0.0/8")
+            assert first.returncode == 0, first.stdout + first.stderr
+            keys = _cexec(c, "cat", "/home/deployer/.ssh/authorized_keys")
+            assert [ln for ln in keys.stdout.splitlines() if ln.strip()] == [
+                f'from="10.0.0.0/8" {ENROLL_TEST_KEY}']
+
+            # identical re-run is a no-op
+            same = _enroll_in(c, "--from", "10.0.0.0/8")
+            assert same.returncode == 0, same.stdout + same.stderr
+            still = _cexec(c, "cat", "/home/deployer/.ssh/authorized_keys")
+            assert [ln for ln in still.stdout.splitlines() if ln.strip()] == [
+                f'from="10.0.0.0/8" {ENROLL_TEST_KEY}']
+            assert "not duplicated" in same.stdout
+
+            # same key material, DIFFERENT options → a refusal, not a second line
+            conflict = _enroll_in(c, "--from", "192.168.0.0/16")
+            assert conflict.returncode == 2, conflict.stdout + conflict.stderr
+            assert "DIFFERENT options" in conflict.stderr
+            after = _cexec(c, "cat", "/home/deployer/.ssh/authorized_keys")
+            assert [ln for ln in after.stdout.splitlines() if ln.strip()] == [
+                f'from="10.0.0.0/8" {ENROLL_TEST_KEY}']
+
+            # dropping --from entirely is the same conflict, not a silent append
+            dropped = _enroll_in(c)
+            assert dropped.returncode == 2, dropped.stdout + dropped.stderr
+            after2 = _cexec(c, "cat", "/home/deployer/.ssh/authorized_keys")
+            assert len([ln for ln in after2.stdout.splitlines() if ln.strip()]) == 1
+
+    def test_written_key_actually_authenticates_against_a_real_sshd(
+        self, enroll_fixture_image, rendered_get_py
+    ):
+        """The point of the whole subcommand: the controller can now log in.
+
+        This is also the oracle behind the one deviation from KI-24's literal
+        text — the restricted line is written `from="P" <type> …`, not
+        `from="P",<type> …`. The comma-joined form fails here (measured:
+        "Permission denied (publickey)"), because sshd reads everything up to
+        the first unquoted whitespace as options.
+        """
+        with _enroll_container(enroll_fixture_image, rendered_get_py) as c:
+            keygen = _cexec(c, "ssh-keygen", "-q", "-t", "ed25519", "-N", "",
+                            "-f", "/root/id_probe")
+            assert keygen.returncode == 0, keygen.stderr
+            pub = _cexec(c, "cat", "/root/id_probe.pub")
+            assert pub.returncode == 0, pub.stderr
+            public_key = pub.stdout.strip()
+
+            enrolled = _cexec(
+                c, "python3", "/tmp/get.py", "enroll", "--no-install",
+                "--controller", "test.example", "--user", "deployer",
+                "--from", "127.0.0.1", "--authorized-key", public_key,
+            )
+            assert enrolled.returncode == 0, enrolled.stdout + enrolled.stderr
+
+            started = _cexec(c, "sh", "-c",
+                             "mkdir -p /run/sshd && /usr/sbin/sshd -p 2222")
+            assert started.returncode == 0, started.stderr
+            login = _cexec(
+                c, "ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes",
+                "-o", "ConnectionAttempts=10",
+                "-i", "/root/id_probe", "-p", "2222", "deployer@127.0.0.1",
+                "echo", "ENROLLED_LOGIN_OK",
+            )
+            assert login.returncode == 0, login.stdout + login.stderr
+            assert "ENROLLED_LOGIN_OK" in login.stdout
+
+    def test_o3_no_ssh_server_exits_prereq_and_changes_nothing(
+        self, enroll_fixture_image, rendered_get_py
+    ):
+        # --network none: this container cannot reach anything, so a run that
+        # exits EXIT_PREREQ here also proves nothing was fetched on the way.
+        with _enroll_container(enroll_fixture_image, rendered_get_py,
+                               network="none") as c:
+            removed = _cexec(c, "rm", "-f", "/usr/sbin/sshd")
+            assert removed.returncode == 0, removed.stderr
+            assert _cexec(c, "test", "-e", "/usr/sbin/sshd").returncode != 0
+
+            result = _enroll_in(c)
+            assert result.returncode == 3, result.stdout + result.stderr
+            assert "openssh-server" in result.stderr
+
+            # and it did NOT do any of the later steps
+            assert _cexec(c, "id", "-u", "deployer").returncode != 0
+            assert _cexec(c, "test", "-e", "/home/deployer").returncode != 0
+
+    def test_docker_flag_refused_when_the_group_is_absent(
+        self, enroll_fixture_image, rendered_get_py
+    ):
+        with _enroll_container(enroll_fixture_image, rendered_get_py) as c:
+            assert _cexec(c, "getent", "group", "docker").returncode != 0
+
+            result = _enroll_in(c, "--docker")
+            assert result.returncode == 3, result.stdout + result.stderr
+            assert "docker" in result.stderr
+            # refused BEFORE creating the user — no half-enrolled host
+            assert _cexec(c, "id", "-u", "deployer").returncode != 0
+
+    def test_docker_flag_adds_the_user_when_the_group_exists(
+        self, enroll_fixture_image, rendered_get_py
+    ):
+        with _enroll_container(enroll_fixture_image, rendered_get_py) as c:
+            created = _cexec(c, "groupadd", "docker")
+            assert created.returncode == 0, created.stderr
+
+            result = _enroll_in(c, "--docker")
+            assert result.returncode == 0, result.stdout + result.stderr
+            groups = _cexec(c, "id", "-nG", "deployer")
+            assert "docker" in groups.stdout.split(), groups.stdout
+
+    def test_existing_user_is_left_untouched(
+        self, enroll_fixture_image, rendered_get_py
+    ):
+        with _enroll_container(enroll_fixture_image, rendered_get_py) as c:
+            made = _cexec(c, "useradd", "--create-home", "--shell", "/bin/sh",
+                          "deployer")
+            assert made.returncode == 0, made.stderr
+
+            result = _enroll_in(c)
+            assert result.returncode == 0, result.stdout + result.stderr
+            shell = _cexec(c, "getent", "passwd", "deployer")
+            assert shell.stdout.strip().endswith("/bin/sh"), shell.stdout
+            assert "already exists" in result.stdout
