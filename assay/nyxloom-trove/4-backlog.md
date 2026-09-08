@@ -7274,3 +7274,136 @@ per-test events without becoming a second verdict format.
       a lane-wide refusal — progress is diagnostic, never load-bearing;
 - [ ] `assay verify` is unaffected, same as every other progress-family
       item — this is diagnostic-only, never evidence.
+
+---
+
+## B074 — a lane cannot put DEPLOYED LIBRARY CODE under a whole-target judge when it lives under a `tests/` segment; `is_test_path` has no per-target opt-out
+
+**Proposed by:** dstdns, 2026-09-08, out of package P171 (seeded-infra
+program) Phase C.
+**Provenance:** `dstdns/nyxloom-trove/reports/dstdns-P171-REPORT.md` § "F-C1";
+measurement trail in `dstdns/nyxloom-trove/reports/dstdns-P171-LOG.md`
+§ "Phase C — F-C1". Reproduced at `dstdns@1e41dc3c`.
+**Type:** feature (a declaration gap) · **Component:** evaluate/adapters ·
+**Context estimate:** small.
+**Observed against:** assay 4.0.0 (the pin dstdns runs); the mechanism is
+UNCHANGED on assay's current main — `_TEST_FILE_RE` and the veto below are
+both present at HEAD, so this is not already fixed in 5.0.0.
+
+### What was measured
+
+A `judge.mode = "whole_target"` lane declared exactly as its consumer's oracle
+words it —
+
+```toml
+[lanes.p171_seeded_variety.judge]
+language = "python"
+fail_under = 100.0
+require_branch = true
+allow_excluded = false
+mode = "whole_target"
+targets = ["tests/_harness/seeded_targets/variety.py"]
+```
+
+— returns:
+
+```
+p171_seeded_variety: ERROR/BAD_LANE_CONFIG (exit 2)
+```
+
+with the verdict's own claims showing **R0 `PASS`** (the lane command ran green
+and wrote a valid artifact reporting 150/150 lines and 28/28 branches) and
+**R1 `ERROR`/`BAD_LANE_CONFIG`**. So it is the DECLARATION being refused, not
+the code being under-covered.
+
+The refusal site, read from source rather than inferred:
+
+| site | behaviour |
+|---|---|
+| `src/assay/evaluate.py:1044` | `_resolve_whole_target` raises `BAD_LANE_CONFIG` when `adapter.is_test_path(rel_to_project)` |
+| `src/assay/adapters/python.py` | `_TEST_FILE_RE = (^\|/)(tests/\|test_[^/]*\.py$\|conftest\.py$)` |
+
+`tests/_harness/seeded_targets/variety.py` matches on the FIRST alternative
+(the `tests/` segment), not on either filename convention. Confirmed directly:
+
+```python
+>>> _TEST_FILE_RE.search("tests/_harness/seeded_targets/variety.py") is not None
+True
+```
+
+There is no escape hatch: `grep -rn "allow_test\|test_path" src/assay/config.py`
+returns nothing, and `is_test_path` has no allow-list, no per-lane flag and no
+per-target override anywhere in the package. `project_root = file_path.parent`
+(`config.py:1086`) means the only workaround is a SECOND `assay.toml` placed
+under `tests/`, which also relocates coverage-artifact and git-root resolution
+— rejected by the consumer as unsound rather than used.
+
+### Why assay owns this, not the consumer
+
+The veto is CORRECT for genuine test code: grading the tests is exactly the
+vacuity `whole_target` exists to close, and the same regex is right in the
+changed-line sweep, where paths arrive from a diff and nobody has vouched for
+them.
+
+But a `judge.targets` entry is not a swept path. It is an explicit, reviewed,
+per-lane declaration — the consumer has already asserted "this file is the
+thing I want graded whole". The current rule silently equates "sits under a
+directory named `tests/`" with "is test code", and that is a repo-layout
+assumption assay should not be making on the consumer's behalf.
+
+In dstdns it is measurably false. `tests/_harness/` holds harness LIBRARY
+modules that are `COPY`-ed into a container image
+(`tests/_harness/seeded_targets/Dockerfile`) and executed as the deployed
+`seeded-dns` / `seeded-http` services; `tests/_harness/fixture_contract.py` has
+the same standing. That is production-shaped code with no test-runner of its
+own — which is exactly the code most likely to accumulate unexercised branches,
+because nothing else grades it. Any project whose deployed helper libraries
+live under a `tests/` tree is today unable to put them under a whole-target
+judge at all, and the only remedies are (a) move the file, which the consuming
+handoff may fix by contract, or (b) leave the code ungraded.
+
+The consumer's own fallback shows the shape of the loss: dstdns replaced the
+lane with a hand-rolled `kind = "command"` run-gate lane that runs `coverage`
+and then re-reads its own JSON to enforce `fail_under` / `require_branch` /
+`allow_excluded` by hand. It works, and it is green — but every one of those
+three properties is now a bespoke assertion in a consumer's argv rather than a
+judged claim in a verdict, which is precisely the "bolted on with
+`--cov-fail-under`, invisible to the verdict" failure B005 was filed to end.
+
+### Proposed change
+
+Let an EXPLICITLY DECLARED target opt out of the test-path veto, while the
+changed-line sweep keeps today's behaviour untouched. Two shapes, either
+acceptable; the first is smaller:
+
+1. **`judge.allow_test_path_targets = true`** (default `false`). Applies only
+   inside `_resolve_whole_target`; `evaluate.py:428`'s sweep-side
+   `is_test_path` check and `mutation.py:470`'s are unchanged. A lane that sets
+   it is saying "the paths I named are library code despite their location",
+   and the flag's presence in the verdict makes that claim auditable.
+2. **Drop the veto for `judge.targets` entries entirely**, on the reasoning
+   that an explicit target IS the declaration. Simpler, but it removes a
+   guard-rail against the genuine mistake of naming a test file as a target,
+   so (1) is preferred.
+
+Either way the OTHER four `_resolve_whole_target` gates (symlink, source-root
+containment, regular-file, adapter-recognised-source) must still apply — those
+catch real declaration errors and are not what this entry asks to relax.
+
+### Acceptance
+
+- A `whole_target` lane naming `tests/<...>/lib.py` with the opt-out set is
+  JUDGED, reaching a real `PASS`/`FAIL` on its coverage floor rather than
+  `BAD_LANE_CONFIG`.
+- The SAME lane WITHOUT the opt-out still refuses `BAD_LANE_CONFIG` with a
+  message naming the target and the test-path gate — the controlled wrong
+  implementation, proving the flag is what changed the outcome.
+- A `changed_lines` lane over a diff touching that same file still SKIPS it
+  (the sweep-side behaviour is untouched), proving the relaxation is scoped to
+  explicit targets and did not widen the diff path.
+- A target that is a genuine test file (`test_foo.py`, `conftest.py`) still
+  refuses even WITH the flag, if shape (1) is chosen with the filename
+  alternatives kept — or, if not, the decision to allow it is recorded
+  deliberately rather than falling out by accident.
+- The flag appears in the verdict's resolved judgment, so a reviewer can see
+  that a graded target was one assay would otherwise have refused.
