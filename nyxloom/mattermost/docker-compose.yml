@@ -1,0 +1,167 @@
+# ─── PRE-RENDERED from ciu.compose.yml.j2 (defaults) — keep in sync ─────────
+# Plain-compose FALLBACK only. The PRIMARY, supported deploy path is
+# `ciu up --dir nyxloom/mattermost -y` (see README.md): that is the path
+# that applies the governance overlay. This file exists for the case ntfy's
+# sibling documents — a stale workspace ciu.env — and carries ABSOLUTE
+# PHYSICAL host paths, because compose here runs against the HOST docker
+# daemon from a devcontainer (DooD) and container-side /workspaces/... paths
+# do not exist for that daemon.
+#
+# nyxloom-P106 / NL-6: this path receives NO ciu governance overlay, so every
+# cap below is INLINE and MUST be kept in step BY HAND with
+# [mattermost.governance] in ciu.defaults.toml.j2 and the root
+# [governance] table in ../ciu.global.defaults.toml.j2. Starting this stack
+# from here while believing the ciu governance config applies is exactly the
+# ntfy incident (NL-6): weeks of an unconfined container on a shared host.
+#
+# Before running this path, export the DB password from ciu's own store
+# (the ciu path injects it via the S4.19 expose_env hatch; plain compose has
+# no such injection):
+#
+#   export MM_DB_PASSWORD="$(sudo cat /home/vb/volkb79-2/vbpub/nyxloom/.ciu/secrets/mattermost/postgres_password)"
+#   docker compose -f docker-compose.yml -p nyxloom-mattermost up -d
+#
+# Container names differ from the ciu path on purpose (nyxloom-mattermost vs
+# nyxloom-prod-mattermost) so the two cannot silently collide — stop the ciu
+# stack first.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nyxloom-mattermost-db
+    hostname: nyxloom-mattermost-db
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    # ── governance, inlined (see header) ──
+    cgroup_parent: dev-background.slice
+    mem_limit: 512m
+    memswap_limit: 4g
+    mem_reservation: 256m
+    blkio_config:
+      device_read_iops:
+        - path: /dev/vda
+          rate: 200
+      device_write_iops:
+        - path: /dev/vda
+          rate: 400
+    cpus: 0.5
+    environment:
+      TZ: "UTC"
+      POSTGRES_DB: "mattermost"
+      POSTGRES_USER: "mmuser"
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mmuser -d mattermost"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mattermost:
+    image: mattermost/mattermost-team-edition:11.10.1
+    container_name: nyxloom-mattermost
+    hostname: nyxloom-mattermost
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # ── governance, inlined (see header) ──
+    cgroup_parent: dev-background.slice
+    mem_limit: 2g
+    memswap_limit: 18g
+    mem_reservation: 256m
+    blkio_config:
+      device_read_iops:
+        - path: /dev/vda
+          rate: 200
+      device_write_iops:
+        - path: /dev/vda
+          rate: 400
+    cpus: 1.5
+    environment:
+      TZ: "UTC"
+      MM_SQLSETTINGS_DRIVERNAME: "postgres"
+      MM_SQLSETTINGS_DATASOURCE: "postgres://mmuser:${MM_DB_PASSWORD}@nyxloom-mattermost-db:5432/mattermost?sslmode=disable&connect_timeout=10"
+      MM_SERVICESETTINGS_LISTENADDRESS: ":8065"
+      MM_SERVICESETTINGS_SITEURL: "http://nyxloom-mattermost:8065"
+      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
+      MM_SERVICESETTINGS_LOCALMODESOCKETLOCATION: "/var/tmp/mattermost_local.socket"
+      MM_TEAMSETTINGS_ENABLEOPENSERVER: "false"
+      MM_TEAMSETTINGS_ENABLEUSERCREATION: "true"
+      MM_TEAMSETTINGS_ENABLEUSERDEACTIVATION: "false"
+      MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: "true"
+      MM_EMAILSETTINGS_REQUIREEMAILVERIFICATION: "false"
+      MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS: "false"
+      MM_EMAILSETTINGS_ENABLEEMAILBATCHING: "false"
+      MM_SERVICESETTINGS_ENABLEINCOMINGWEBHOOKS: "true"
+      MM_SERVICESETTINGS_ENABLEOUTGOINGWEBHOOKS: "false"
+      MM_SERVICESETTINGS_ENABLECOMMANDS: "false"
+      MM_SERVICESETTINGS_ENABLEPOSTUSERNAMEOVERRIDE: "true"
+      MM_SERVICESETTINGS_ENABLEPOSTICONOVERRIDE: "true"
+      MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "false"
+      MM_SERVICESETTINGS_ENABLEDEVELOPER: "false"
+      MM_SERVICESETTINGS_ENABLETESTING: "false"
+      MM_FILESETTINGS_ENABLEFILEATTACHMENTS: "false"
+      MM_PLUGINSETTINGS_ENABLE: "false"
+      MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"
+      MM_PLUGINSETTINGS_ENABLEMARKETPLACE: "false"
+      MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
+      MM_LOGSETTINGS_CONSOLELEVEL: "INFO"
+    volumes:
+      - mattermost-config:/mattermost/config
+      - mattermost-data:/mattermost/data
+      - mattermost-logs:/mattermost/logs
+      - mattermost-plugins:/mattermost/plugins
+      - mattermost-client-plugins:/mattermost/client/plugins
+    expose:
+      - "8065"
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "/mattermost/bin/mmctl", "system", "status", "--local"]
+      interval: 20s
+      timeout: 10s
+      retries: 6
+      start_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  mattermost-config:
+  mattermost-data:
+  mattermost-logs:
+  mattermost-plugins:
+  mattermost-client-plugins:
+
+secrets:
+  # ABSOLUTE PHYSICAL host path (DooD). ciu's GEN_LOCAL project store, as
+  # materialized from the MAIN checkout's ciu root.
+  postgres_password:
+    file: /home/vb/volkb79-2/vbpub/nyxloom/.ciu/secrets/mattermost/postgres_password

@@ -1,0 +1,203 @@
+# ─── Mattermost + dedicated Postgres — nyxloom notification channel ──────
+# Rendered by ciu; the sibling docker-compose.yml is the pre-rendered copy
+# for plain-compose deploys (keep both in sync: edit HERE, re-render or
+# hand-sync — and remember the plain path gets NO governance overlay, so its
+# caps are inlined there).
+#
+# GOVERNANCE (NL-6, the incident this stack must not repeat): the app
+# service emits NO cgroup_parent / mem_limit / memswap_limit / cpus /
+# blkio_config of its own, because ciu skips any governance key the author
+# already set (S15.3) — that silent skip is what left the live ntfy
+# container unconfined. Only `postgres` sets its own mem/cpu keys, and only
+# to NARROW them below the stack ceiling; it still inherits cgroup_parent
+# and blkio from the overlay.
+
+services:
+  postgres:
+    image: {{ mattermost.postgres.image }}:{{ mattermost.postgres.image_tag }}
+    container_name: {{ mattermost.container_prefix }}-mattermost-db
+    # CIU-48/49: qualify `hostname` the same way `container_name` is, so a
+    # second ciu instance on a shared network cannot hijack DNS resolution.
+    hostname: {{ mattermost.container_prefix }}-mattermost-db
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: "UTC"
+      POSTGRES_DB: "{{ mattermost.postgres.db }}"
+      POSTGRES_USER: "{{ mattermost.postgres.user }}"
+      # S4.17: the *_FILE convention — the value never reaches the compose
+      # file or the process environment, only the mounted secret file.
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      # Mattermost needs a deterministic collation; C is stable across
+      # image upgrades where the host locale is not.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    expose:
+      - "{{ mattermost.postgres.port }}"
+    networks:
+      - internal
+    # Author-set (S15.3): narrows THIS service below the stack ceiling.
+    # mem_limit and memswap_limit are set as a coherent PAIR on purpose —
+    # setting only mem_limit would leave governance injecting the app's
+    # 18g combined total onto a 512m container.
+    mem_limit: {{ mattermost.postgres.mem_limit }}
+    memswap_limit: {{ mattermost.postgres.mem_swap_limit }}
+    cpus: {{ mattermost.postgres.cpus }}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ mattermost.postgres.user }} -d {{ mattermost.postgres.db }}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "{{ mattermost.logging.max_size }}"
+        max-file: "{{ mattermost.logging.max_file }}"
+
+  mattermost:
+    image: {{ mattermost.app.image }}:{{ mattermost.app.image_tag }}
+    container_name: {{ mattermost.container_prefix }}-mattermost
+    hostname: {{ mattermost.container_prefix }}-mattermost
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: "UTC"
+      MM_SQLSETTINGS_DRIVERNAME: "postgres"
+      # The DSN's password comes from compose `${...}` interpolation, fed by
+      # ciu's S4.19 `expose_env` on the SAME GEN_LOCAL secret Postgres reads
+      # from /run/secrets. S4.19 calls that escape hatch discouraged, and it
+      # is used here only because this image forces it: the 11.x
+      # mattermost-team-edition image is minimal (NO /bin/sh — verified:
+      # `exec: "/bin/sh": stat /bin/sh: no such file or directory`), so the
+      # S4.18 entrypoint-wrapper pattern that would read /run/secrets and
+      # assemble the DSN in-container cannot run, and Mattermost has no
+      # *_FILE form for MM_SQLSETTINGS_DATASOURCE. The rendered compose
+      # holds only the `${MM_DB_PASSWORD}` placeholder (so the S4.22 leak
+      # scan stays meaningful); the trade-off is that the resolved DSN is
+      # visible in this container's env to anyone who can already talk to
+      # the docker daemon.
+      MM_SQLSETTINGS_DATASOURCE: "postgres://{{ mattermost.postgres.user }}:${MM_DB_PASSWORD}@{{ mattermost.container_prefix }}-mattermost-db:{{ mattermost.postgres.port }}/{{ mattermost.postgres.db }}?sslmode=disable&connect_timeout=10"
+      MM_SERVICESETTINGS_LISTENADDRESS: ":{{ mattermost.app.port }}"
+{% if mattermost.expose_public %}
+      MM_SERVICESETTINGS_SITEURL: "https://{{ mattermost.public_host }}"
+{% else %}
+      MM_SERVICESETTINGS_SITEURL: "http://{{ mattermost.container_prefix }}-mattermost:{{ mattermost.app.port }}"
+{% endif %}
+      # Local mode = an admin socket inside the container, so provisioning
+      # (admin user, team, channel, incoming webhook) runs through
+      # `docker exec ... mmctl --local` with NO network-exposed admin API
+      # and no password on a command line.
+      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
+      MM_SERVICESETTINGS_LOCALMODESOCKETLOCATION: "/var/tmp/mattermost_local.socket"
+      # ── Safe-governance baseline, mirroring ntfy's server.yml posture ──
+      # No open server / no self-signup: accounts are admin-created only.
+      MM_TEAMSETTINGS_ENABLEOPENSERVER: "false"
+      MM_TEAMSETTINGS_ENABLEUSERCREATION: "true"
+      MM_TEAMSETTINGS_ENABLEUSERDEACTIVATION: "false"
+      MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: "true"
+      MM_EMAILSETTINGS_REQUIREEMAILVERIFICATION: "false"
+      # No SMTP is configured; sending would only produce error noise.
+      MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS: "false"
+      MM_EMAILSETTINGS_ENABLEEMAILBATCHING: "false"
+      # Incoming webhooks are the whole point; outgoing ones are an egress
+      # surface nyxloom does not use.
+      MM_SERVICESETTINGS_ENABLEINCOMINGWEBHOOKS: "true"
+      MM_SERVICESETTINGS_ENABLEOUTGOINGWEBHOOKS: "false"
+      MM_SERVICESETTINGS_ENABLECOMMANDS: "false"
+      # notify.py's Mattermost backend may set username/icon_url on a post;
+      # Mattermost ignores both unless these overrides are enabled.
+      MM_SERVICESETTINGS_ENABLEPOSTUSERNAMEOVERRIDE: "true"
+      MM_SERVICESETTINGS_ENABLEPOSTICONOVERRIDE: "true"
+      MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "false"
+      MM_SERVICESETTINGS_ENABLEDEVELOPER: "false"
+      MM_SERVICESETTINGS_ENABLETESTING: "false"
+      # nyxloom notifications are typed text only (SPEC §13) — the same
+      # reason ntfy runs with attachments disabled.
+      MM_FILESETTINGS_ENABLEFILEATTACHMENTS: "false"
+      # The whole plugin framework is off: the image ships prepackaged
+      # plugins (playbooks, the AI agent) that start their own processes and
+      # run their own DB migrations on first boot — none of which a
+      # notification sink needs, all of which are charged to this
+      # container's 2g memory cgroup on a shared host.
+      MM_PLUGINSETTINGS_ENABLE: "false"
+      MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"
+      MM_PLUGINSETTINGS_ENABLEMARKETPLACE: "false"
+      MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
+      MM_LOGSETTINGS_CONSOLELEVEL: "INFO"
+    volumes:
+      - mattermost-config:/mattermost/config
+      - mattermost-data:/mattermost/data
+      - mattermost-logs:/mattermost/logs
+      - mattermost-plugins:/mattermost/plugins
+      - mattermost-client-plugins:/mattermost/client/plugins
+    expose:
+      - "{{ mattermost.app.port }}"
+    networks:
+      - internal
+{% if mattermost.expose_public %}
+      - ingress
+{% endif %}
+    healthcheck:
+      # The image ships no shell and no curl, so this is mmctl over the
+      # local-mode socket (the image's own built-in healthcheck), re-declared
+      # here with this stack's intervals rather than inherited silently.
+      test: ["CMD", "/mattermost/bin/mmctl", "system", "status", "--local"]
+      interval: {{ mattermost.health.interval }}
+      timeout: {{ mattermost.health.timeout }}
+      retries: {{ mattermost.health.retries }}
+      start_period: {{ mattermost.health.start_period }}
+{% if mattermost.expose_public %}
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: "{{ mattermost.ingress_network }}"
+      traefik.http.routers.nyxloom-mattermost.rule: "Host(`{{ mattermost.public_host }}`)"
+      traefik.http.routers.nyxloom-mattermost.entrypoints: "websecure"
+      traefik.http.services.nyxloom-mattermost.loadbalancer.server.port: "{{ mattermost.app.port }}"
+{% endif %}
+    logging:
+      driver: json-file
+      options:
+        max-size: "{{ mattermost.logging.max_size }}"
+        max-file: "{{ mattermost.logging.max_file }}"
+
+networks:
+  # Private, stack-owned bridge: Postgres is reachable ONLY from this
+  # stack's own app service, never from the shared ingress network.
+  internal:
+    driver: bridge
+{% if mattermost.expose_public %}
+  ingress:
+    external: true
+    name: {{ mattermost.ingress_network }}
+{% endif %}
+
+volumes:
+  # Stack-owned named volumes (S6.7(b)): the images initialise ownership
+  # themselves (postgres uid 999, Mattermost uid 2000), which a bind mount
+  # under DooD cannot do without a root helper. `ciu down` PRESERVES them;
+  # `ciu up --reset` and `ciu clean` DELETE them (S6.4) — see the README's
+  # backup note before running either.
+  postgres-data:
+  mattermost-config:
+  mattermost-data:
+  mattermost-logs:
+  mattermost-plugins:
+  mattermost-client-plugins:
+
+# NOTE: no top-level `secrets:` block here on purpose. S4.17 — ciu's
+# generated overlay declares `secrets.postgres_password.file` with the
+# ABSOLUTE PHYSICAL host path; declaring a relative one here would resolve
+# to the LOGICAL devcontainer path under DooD (the same class of failure
+# ntfy's server.yml bind hit on 2026-07-15). The plain-compose fallback in
+# docker-compose.yml carries the physical path explicitly instead.

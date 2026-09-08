@@ -1,0 +1,131 @@
+# ─── Mattermost stack configuration — nyxloom notification channel ───────
+# ciu v2 stack package (S3.1: this file is the tracked, author-owned FULL
+# defaults; a sibling `ciu.toml.j2` may carry a tracked SPARSE override —
+# non-secret only — and ciu renders both into the gitignored `ciu.toml`).
+# A pre-rendered docker-compose.yml ships alongside (the ntfy/tls-edge
+# dual-mode pattern) so the stack also deploys with plain compose; it
+# receives NO ciu overlay, so its governance caps are inlined by hand and
+# MUST be kept in step with the [mattermost.governance] table below.
+#
+# Replaces ntfy as nyxloom's live notification channel (NL-17/nyxloom-P106).
+# ntfy is kept, stopped and still selectable — not deleted.
+#
+# Root key `mattermost` (S3.5: exactly one non-reserved top-level key;
+# S3.7: not one of ciu's reserved global namespaces).
+
+[mattermost]
+name = "mattermost"
+container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deploy.environment_tag }}{% else %}nyxloom{% endif %}"
+
+# ── Network exposure — DELIBERATELY OFF BY DEFAULT ──────────────────────
+# false: no tls-edge router labels, no ingress_public join, no host ports —
+# the stack is reachable only from its own private bridge network. This is
+# the safe default for a NEW public endpoint nobody has confirmed yet; it
+# is also enough for nyxloom's own delivery path once nyxloomd runs on the
+# same network, since the incoming webhook is a plain HTTP POST.
+# true: publishes `public_host` through tls-edge exactly like ntfy does
+# (needed for mobile/desktop clients and off-host browser access — the same
+# reason ntfy had to be publicly reachable). Flipping it is an operator
+# decision: the hostname must exist in DNS (the wildcard A record covers
+# it) and Mattermost then faces the internet with the locked-down posture
+# below (no open server, no self-signup, no attachments, no plugin
+# uploads/marketplace, no personal access tokens).
+expose_public = false
+# Public hostname routed by tls-edge when expose_public = true. Same domain
+# convention as ntfy's nyxloom.{{ env.PUBLIC_FQDN }}.
+public_host = "mattermost.{{ env.PUBLIC_FQDN }}"
+# tls-edge shared ingress network (external) — joined only when exposed.
+ingress_network = "ingress_public"
+
+[mattermost.app]
+# Pinned image; verify the tag exists before bumping (docker manifest
+# inspect). 11.10.1 (2026-08-24) rather than the 11.11.0 cut from
+# 2026-09-07: a one-day-old release is not what a notification channel
+# should be pinned to.
+image = "mattermost/mattermost-team-edition"
+image_tag = "11.10.1"
+# In-container HTTP port; never published on the host.
+port = 8065
+
+[mattermost.postgres]
+# Mattermost's REQUIRED database — dedicated to this stack, deliberately
+# NOT shared with dstdns's postgres or any other project's.
+image = "postgres"
+image_tag = "16-alpine"
+port = 5432
+db = "mattermost"
+user = "mmuser"
+# Per-service governance narrowing (S15.3 author precedence): these are
+# emitted by the compose template onto the postgres service, so ciu's
+# stack-wide [mattermost.governance] values below apply to the Mattermost
+# app service only. A dedicated single-tenant Postgres with one small
+# schema does not need the app's ceiling.
+mem_limit = "512m"
+mem_swap_limit = "4g"
+cpus = "0.5"
+
+# ── Secrets (S4) ────────────────────────────────────────────────────────
+# GEN_LOCAL: created once, then stable; lands in the PROJECT store
+# <ciu-root>/.ciu/secrets/mattermost/postgres_password (0700 dir, gitignored
+# via `**/.ciu/`). Never in this file, never in the rendered ciu.toml
+# (S4.24), never in the compose (S4.21/S4.22 abort if a resolved value is
+# stringified into a template or appears in the rendered output).
+#
+# mode 0444, not the 0440 default: the consumer is a fixed-UID image
+# (postgres, uid 999) that the host-side owner/group of the store file
+# cannot match, and the store DIRECTORY stays 0700, so the widened FILE
+# mode does not widen host access.
+#
+# expose_env (S4.19) is ciu's own "discouraged" escape hatch and is used
+# here only because the Mattermost image forces it: it is minimal (no
+# /bin/sh at all, verified live), so the S4.18 entrypoint-wrapper that
+# would read /run/secrets in-container cannot run, and Mattermost has no
+# *_FILE form for its SQL datasource. Postgres still consumes the FILE;
+# only the app service gets the env copy.
+[mattermost.secrets]
+postgres_password = { directive = "GEN_LOCAL:mattermost/postgres_password", mode = "0444", expose_env = "MM_DB_PASSWORD" }
+# The system-admin account's password. Generated and stored by ciu so the
+# provisioning step (README) never invents a credential by hand and never
+# commits one; `consumed_by = "hook"` tells S4.20 this one is deliberately
+# consumed OUTSIDE compose (by `docker exec ... mmctl`), so its
+# "declared but unconsumed" warning stays meaningful for real mistakes.
+mattermost_admin_password = { directive = "GEN_LOCAL:mattermost/admin_password", consumed_by = "hook" }
+
+[mattermost.health]
+# Mattermost's first boot runs the full schema migration before /api/v4/ping
+# answers; start_period is sized for that, not for a steady-state restart.
+interval = "20s"
+timeout = "10s"
+retries = 6
+start_period = "120s"
+
+[mattermost.logging]
+max_size = "10m"
+max_file = "3"
+
+# ── Resource governance (ciu S15) ───────────────────────────────────────
+# S15.10: this table is SHALLOW-MERGED over the root's top-level
+# [governance] (../ciu.global.defaults.toml.j2), last-wins — `enabled`,
+# `cgroup_parent` (dev-background.slice) and `device` (/dev/vda) inherit and
+# MUST NOT be restated here. (Restating one key no longer drops the rest:
+# CIU-13, fixed 2026-08-03.)
+#
+# The compose template deliberately emits NO cgroup_parent/mem_limit/cpus
+# for the app service: ciu never overwrites a key the author already set
+# (S15.3), which is exactly how the live ntfy container ended up pinned to
+# a fictional `nyxloom.slice` and running unconfined for weeks (NL-6).
+#
+# mem_limit 2g: Mattermost's own hardware guidance for a small deployment is
+# 1 vCPU / 2GB RAM for the whole machine, of which the server process is the
+# bulk; this host is SHARED with a live production game server (8 cores,
+# has hit load 85 from uncapped containers), so the ceiling is set at that
+# documented figure rather than above it. Interim value pending real
+# docker-stats measurement, exactly like nyxloomd's (NL-11).
+# mem_swap_limit is Docker's COMBINED mem+swap total (S15.1), i.e. 2g RAM +
+# 16g swap headroom on this swap-rich dev tier.
+# cpus 1.5: explicit, because ciu never defaults a CPU cap (S15.21) and an
+# uncapped Go server on a shared host is the load-85 failure mode.
+[mattermost.governance]
+mem_limit = "2g"
+mem_swap_limit = "18g"
+cpus = "1.5"

@@ -1,5 +1,14 @@
 # ntfy — nyxloom notification channel
 
+> **RETIRED as the active channel (2026-09-08, backlog NL-17 / nyxloom-P106),
+> kept intact and selectable.** [mattermost/](../mattermost/) is the live
+> channel now; the `nyxloom-ntfy` container was STOPPED (not removed) and this
+> stack moved out of the root's default `ciu up` profile into
+> `[deploy.profiles.legacy]`. `notify.py` still carries a full ntfy backend,
+> behaviour unchanged — `backend = "ntfy"` (or no selector at all, which keeps
+> the historical ntfy-first precedence) reactivates it. Bring the stack back
+> with `ciu up --profile legacy` or `ciu up --dir nyxloom/ntfy`.
+
 Self-hosted ntfy behind [tls-edge](../../tls-edge/) at
 `https://nyxloom.gstammtisch.dchive.de` (decided 2026-07-15). Safe-governance
 baseline: **deny-all auth** (every publish/subscribe needs a user or token),
