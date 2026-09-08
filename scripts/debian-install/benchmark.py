@@ -176,9 +176,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-# Optional telegram client import (for --telegram flag)
+# Optional telegram client import (for --telegram flag).
+# telegram_client.py lives in the sibling scripts/telegram/ directory (moved
+# there so it has its own tests/run-gate) - not scripts/debian-install/ itself.
 try:
-    sys.path.insert(0, str(Path(__file__).parent))
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "telegram"))
     from telegram_client import TelegramClient
     TELEGRAM_AVAILABLE = True
 except ImportError:

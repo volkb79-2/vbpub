@@ -43,7 +43,9 @@ merged in last (wins over the named vars above):
              RUN_APT_AUTO_UPGRADE, RUN_AUTO_REBOOT
   Reboot:    AUTO_REBOOT_AFTER_STAGE1, NEVER_REBOOT
   Telegram:  TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, CREDENTIAL_MODE
-             (root-storage|systemd)
+             (root-storage|systemd), TELEGRAM_VERBOSE_PROGRESS (yes/no -
+             also notify on every internal step, not just the stage-boundary
+             start/reboot/resume/success/failure messages sent by default)
   Paths:     STATE_DIR, LOG_DIR, STAGE2_OUTPUT
 
   DRY_RUN=yes    — pass --dry-run through to the installer
@@ -112,6 +114,7 @@ _BOOL_FIELDS = {
     "RUN_DOCKER_CLEANUP": "run_docker_cleanup",
     "RUN_APT_AUTO_UPGRADE": "run_apt_auto_upgrade",
     "RUN_AUTO_REBOOT": "run_auto_reboot",
+    "TELEGRAM_VERBOSE_PROGRESS": "telegram_verbose_progress",
 }
 
 

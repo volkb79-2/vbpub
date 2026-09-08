@@ -11,6 +11,9 @@ from pathlib import Path
 
 # Add current directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
+# telegram_client.py lives in the sibling scripts/telegram/ directory (moved
+# there so it has its own tests/run-gate) - system_info/geekbench_runner stay here.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "telegram"))
 
 try:
     from telegram_client import TelegramClient
@@ -18,7 +21,7 @@ try:
     from geekbench_runner import GeekbenchRunner
 except ImportError as e:
     print(f"Error importing modules: {e}")
-    print("Ensure telegram_client.py, system_info.py, and geekbench_runner.py are in the same directory")
+    print("Ensure telegram_client.py is in scripts/telegram/, and system_info.py/geekbench_runner.py are in this directory")
     sys.exit(1)
 
 

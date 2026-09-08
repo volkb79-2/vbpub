@@ -77,6 +77,7 @@ class Config:
     reboot_window_time: str = "03:00"
     telegram_bot_token: str = field(default="", repr=False)
     telegram_chat_id: str = field(default="", repr=False)
+    telegram_verbose_progress: bool = False
     credential_mode: Literal["root-storage", "systemd"] = "root-storage"
 
 

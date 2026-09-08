@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,7 @@ class StateStore:
             "config": {key: value for key, value in asdict(config).items() if not key.startswith("telegram_bot_token")},
             "steps": {},
             "telegram_thread_id": "",
+            "started_at": datetime.now(timezone.utc).isoformat(),
         }
 
     def load(self) -> dict[str, Any]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -15,6 +16,7 @@ import urllib.request
 from . import inuse_partition_editor
 from .actions import HostActions
 from .config import Config, ConfigError
+from .host_facts import _code, collect_host_facts, format_facts_html
 from .state import StateStore
 from .templates import (
     APT_CUSTOM,
@@ -48,6 +50,33 @@ from .templates import (
 
 SUPPORTED_RELEASES = {"trixie", "forky"}
 SWAP_TYPE_GUID = "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f"
+
+TELEGRAM_MESSAGE_LIMIT = 4096
+
+
+def _split_for_telegram(message: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
+    """Split `message` into <= `limit`-char chunks for Telegram's sendMessage.
+
+    Prefers the last blank-line boundary within the limit (keeps sections/
+    headings together), falls back to the last single newline, and only
+    hard-splits mid-line if neither boundary exists in the current window.
+    """
+    if len(message) <= limit:
+        return [message]
+    chunks: list[str] = []
+    remaining = message
+    while len(remaining) > limit:
+        window = remaining[:limit]
+        split_at = window.rfind("\n\n")
+        if split_at < limit // 2:
+            split_at = window.rfind("\n")
+        if split_at < limit // 2:
+            split_at = limit
+        chunks.append(remaining[:split_at].rstrip())
+        remaining = remaining[split_at:].lstrip("\n")
+    if remaining:
+        chunks.append(remaining)
+    return chunks
 
 
 class Installer:
@@ -91,9 +120,48 @@ class Installer:
     def _partition_base(self) -> str:
         return f"/dev/{self.root_disk}p" if any(char.isdigit() for char in self.root_disk) else f"/dev/{self.root_disk}"
 
+    def _duration_since_start(self) -> str:
+        try:
+            started_raw = self.state.load().get("started_at")
+            if not started_raw:
+                return "unknown"
+            started = datetime.fromisoformat(started_raw)
+            elapsed = datetime.now(timezone.utc) - started
+            total_seconds = int(elapsed.total_seconds())
+            minutes, seconds = divmod(total_seconds, 60)
+            hours, minutes = divmod(minutes, 60)
+            return (f"{hours}h" if hours else "") + f"{minutes}m{seconds}s"
+        except Exception:
+            return "unknown"
+
+    def _initial_report_message(self) -> str:
+        facts_html = format_facts_html(collect_host_facts(self))
+        plan = self.show_plan()
+        plan_lines = [
+            "<b>Install plan</b>",
+            f"Release: {_code(self.release)} | Root: {_code(plan['root_device'])} "
+            f"-> {plan['new_root_size_sectors']} sectors",
+        ]
+        for swap in plan["swap_partitions"]:
+            plan_lines.append(f"Swap partition: {_code(swap['device'])} ({swap['sectors']} sectors)")
+        plan_lines.append(f"sfdisk plan:\n<pre>{plan['sfdisk_plan']}</pre>")
+        return "<b>Starting debian-install-v2</b>\n\n" + facts_html + "\n\n" + "\n".join(plan_lines)
+
+    @property
+    def _notifications_enabled(self) -> bool:
+        return bool(self.config.telegram_bot_token) and bool(self.config.telegram_chat_id) and not self.actions.dry_run
+
     def install(self) -> None:
         self.state.save_new(StateStore.new(self.config))
-        self._stage1()
+        if self._notifications_enabled:
+            self._notify(self._initial_report_message())
+        try:
+            self._stage1()
+        except BaseException as exc:
+            if not self.actions.dry_run:
+                self.state.save(status="failed", phase="stage1", last_error=str(exc))
+            self._notify(f"<b>Install FAILED</b> during stage1: {_code(str(exc))}")
+            raise
 
     def resume(self) -> None:
         saved = self.state.load()
@@ -117,13 +185,19 @@ class Installer:
             if thread_id.isdigit():
                 self.state.save(telegram_thread_id=thread_id)
         self.state.save(phase="stage2", status="running")
+        self._notify("<b>Resumed stage2</b> after reboot.")
         try:
             self._stage2()
             self.state.save(status="success", phase="done")
             if not self.actions.dry_run:
                 Path(self.config.state_dir, "stage2_done").touch(mode=0o600)
+            if self._notifications_enabled:
+                duration = self._duration_since_start()
+                facts_html = format_facts_html(collect_host_facts(self))
+                self._notify(f"<b>Install complete</b> (duration: {duration})\n\n{facts_html}")
         except BaseException as exc:
             self.state.save(status="failed", phase="stage2", last_error=str(exc))
+            self._notify(f"<b>Install FAILED</b> during stage2: {_code(str(exc))}")
             raise
 
     def status(self) -> dict[str, object]:
@@ -185,13 +259,13 @@ class Installer:
         marker = Path(self.config.state_dir) / "stage2_done"
         if not self.actions.dry_run:
             marker.touch(mode=0o600)
-        self.state.mark_step("stage2", "disabled", "unit disabled and completion marker set")
+        self._mark_step("stage2", "disabled", "unit disabled and completion marker set")
 
     def _packages(self, packages: list[str], stage: str) -> None:
         self._run(["/usr/bin/apt-get", "update", "-qq"], f"{stage}: refresh apt metadata")
         argv = ["/usr/bin/apt-get", "install", "-y", "--no-install-recommends", *packages]
         self._run(argv, f"{stage}: install packages", dangerous=True)
-        self.state.mark_step(f"{stage}_packages", "success", " ".join(packages))
+        self._mark_step(f"{stage}_packages", "success", " ".join(packages))
 
     def _configure_apt(self) -> None:
         sources_path = Path("/etc/apt/sources.list.d/debian.sources")
@@ -208,7 +282,7 @@ class Installer:
             missing = [suite for suite in expected if suite not in policy]
             if missing:
                 raise RuntimeError(f"APT configuration did not resolve suite(s): {', '.join(missing)}")
-        self.state.mark_step("apt_config", "success", self.release)
+        self._mark_step("apt_config", "success", self.release)
 
     def _configure_users(self) -> None:
         packages = ["htop", "iftop", "less", "man-db", "mc", "nano"]
@@ -224,7 +298,7 @@ class Installer:
         ])
         self.actions.write_file("/root/.nanorc", nanorc, 0o600)
         self.actions.write_file("/root/.bash_aliases", aliases, 0o600)
-        self.state.mark_step("user_config", "success", ", ".join(packages))
+        self._mark_step("user_config", "success", ", ".join(packages))
 
     def _configure_journald(self) -> None:
         content = """[Journal]
@@ -238,7 +312,7 @@ MaxFileSec=1month
 """
         self.actions.write_file("/etc/systemd/journald.conf.d/99-vbpub-v2.conf", content)
         self._run(["/usr/bin/systemctl", "restart", "systemd-journald"], "restart journald", dangerous=True)
-        self.state.mark_step("journald_config", "success", "persistent 200M journal")
+        self._mark_step("journald_config", "success", "persistent 200M journal")
 
     def _install_docker(self) -> None:
         arch = platform.machine()
@@ -284,7 +358,7 @@ MaxFileSec=1month
         existing["userland-proxy"] = False
         self.actions.write_file("/etc/docker/daemon.json", json.dumps(existing, indent=2) + "\n", 0o644)
         self._run(["/usr/bin/systemctl", "enable", "--now", "docker"], "enable Docker", dangerous=True)
-        self.state.mark_step("docker_install", "success", apt_arch)
+        self._mark_step("docker_install", "success", apt_arch)
 
     def _read_json_for_merge(self, path: str) -> dict:
         # Dry-run never touches the real filesystem for a read either — same
@@ -311,14 +385,14 @@ MaxFileSec=1month
         existing["log-opts"]["max-size"] = self.config.docker_log_max_size
         existing["log-opts"]["max-file"] = self.config.docker_log_max_file
         self.actions.write_file("/etc/docker/daemon.json", json.dumps(existing, indent=2) + "\n", 0o644)
-        self.state.mark_step("docker_daemon_config", "success", self.config.docker_log_driver)
+        self._mark_step("docker_daemon_config", "success", self.config.docker_log_driver)
 
     def _install_notify_helper(self) -> None:
         # Unconditional, like cgroup2-flags: harmless if Telegram isn't
         # configured (the script itself no-ops when credentials are absent),
         # and vbpub-reboot-check/vbpub-apt-check depend on it existing.
         self.actions.write_file("/usr/local/sbin/vbpub-notify", NOTIFY_SCRIPT, 0o755)
-        self.state.mark_step("notify_helper", "success", "/usr/local/sbin/vbpub-notify")
+        self._mark_step("notify_helper", "success", "/usr/local/sbin/vbpub-notify")
 
     def _configure_docker_cleanup(self) -> None:
         self.actions.write_file(
@@ -331,7 +405,7 @@ MaxFileSec=1month
             ["/usr/bin/systemctl", "enable", "--now", "vbpub-docker-cleanup.timer"],
             "enable docker cleanup timer", dangerous=True,
         )
-        self.state.mark_step(
+        self._mark_step(
             "docker_cleanup", "success",
             f"weekly, age>={self.config.docker_cleanup_max_age_hours}h, images+containers+build-cache only",
         )
@@ -362,7 +436,7 @@ MaxFileSec=1month
                 ["/usr/bin/systemctl", "enable", "--now", "vbpub-apt-check.timer"],
                 "enable apt notify-only check", dangerous=True,
             )
-            self.state.mark_step("apt_auto_upgrade", "success", "notify-only")
+            self._mark_step("apt_auto_upgrade", "success", "notify-only")
             return
         self._packages(["unattended-upgrades", "needrestart"], "apt-auto-upgrade")
         origins = self._unattended_upgrade_origins()
@@ -376,7 +450,7 @@ MaxFileSec=1month
             ["/usr/bin/systemctl", "enable", "--now", "apt-daily.timer", "apt-daily-upgrade.timer"],
             "enable apt auto-upgrade timers", dangerous=True,
         )
-        self.state.mark_step("apt_auto_upgrade", "success", self.config.apt_auto_upgrade_mode)
+        self._mark_step("apt_auto_upgrade", "success", self.config.apt_auto_upgrade_mode)
 
     def _configure_cgroup2_flags(self) -> None:
         # Default ON, no config flag — memory_recursiveprot missing silently
@@ -396,13 +470,13 @@ MaxFileSec=1month
             ["/usr/bin/systemctl", "enable", "--now", "cgroup2-flags.service"],
             "enable cgroup2 mount-flags unit", dangerous=True,
         )
-        self.state.mark_step("cgroup2_flags", "success", "memory_recursiveprot+nsdelegate")
+        self._mark_step("cgroup2_flags", "success", "memory_recursiveprot+nsdelegate")
 
     def _configure_ksm(self) -> None:
         self.actions.write_file("/etc/systemd/system/ksm-config.service", KSM_SERVICE)
         self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
         self._run(["/usr/bin/systemctl", "enable", "ksm-config.service"], "enable KSM unit")
-        self.state.mark_step("ksm_config", "success", "ksmd enabled host-wide, opt-in per process")
+        self._mark_step("ksm_config", "success", "ksmd enabled host-wide, opt-in per process")
 
     def _configure_oomd(self) -> None:
         self.actions.mkdir("/etc/systemd/oomd.conf.d")
@@ -412,7 +486,7 @@ MaxFileSec=1month
             ["/usr/bin/systemctl", "enable", "--now", "systemd-oomd"],
             "enable systemd-oomd with vbpub thresholds", dangerous=True,
         )
-        self.state.mark_step("oomd_config", "success", "SwapUsedLimit=90%, pressure=60%/20s")
+        self._mark_step("oomd_config", "success", "SwapUsedLimit=90%, pressure=60%/20s")
 
     def _configure_fstrim(self) -> None:
         self.actions.mkdir("/etc/systemd/system/fstrim.timer.d")
@@ -422,7 +496,7 @@ MaxFileSec=1month
             ["/usr/bin/systemctl", "enable", "--now", "fstrim.timer"],
             "enable daily fstrim", dangerous=True,
         )
-        self.state.mark_step("fstrim_config", "success", "daily, whole-disk")
+        self._mark_step("fstrim_config", "success", "daily, whole-disk")
 
     def _configure_auto_reboot(self) -> None:
         self.actions.write_file("/usr/local/sbin/vbpub-reboot-check", REBOOT_CHECK_SCRIPT, 0o755)
@@ -441,7 +515,7 @@ MaxFileSec=1month
             ["/usr/bin/systemctl", "enable", "vbpub-boot-notify.service"],
             "enable post-reboot notice", dangerous=True,
         )
-        self.state.mark_step("auto_reboot", "success", self.config.reboot_window_time)
+        self._mark_step("auto_reboot", "success", self.config.reboot_window_time)
 
     def _configure_zswap(self) -> None:
         self.actions.write_file(
@@ -468,7 +542,7 @@ MaxFileSec=1month
         self.actions.write_file("/etc/systemd/system/thp-config.service", THP_SERVICE)
         self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
         self._run(["/usr/bin/systemctl", "enable", "zswap-config.service", "thp-config.service"], "enable early tuning units")
-        self.state.mark_step("zswap_config", "success", self.config.zswap_compressor)
+        self._mark_step("zswap_config", "success", self.config.zswap_compressor)
 
     def _disk_facts(self) -> tuple[int, int, int]:
         if self.actions.dry_run:
@@ -670,7 +744,7 @@ MaxFileSec=1month
             if "disk lacks space for known swap shape" not in str(exc):
                 raise
         else:
-            self.state.mark_step("root_shrink", "not_needed", "existing free space already covers the planned swap shape")
+            self._mark_step("root_shrink", "not_needed", "existing free space already covers the planned swap shape")
             return
 
         self._packages(["e2fsprogs"], "stage1")
@@ -747,7 +821,7 @@ MaxFileSec=1month
             0o755,
         )
         self._run(["/usr/sbin/update-initramfs", "-u"], "rebuild initramfs with the root-shrink hook", dangerous=True)
-        self.state.mark_step(
+        self._mark_step(
             "root_shrink", "planned",
             f"target root {target_root_sectors} sectors (was {root_size}); hook installed",
         )
@@ -784,7 +858,7 @@ MaxFileSec=1month
             return False
         disk_sectors, root_start, root_size = self._disk_facts()
         if self.actions.dry_run:
-            self.state.mark_step("root_shrink", "success", "dry-run: assumed the hook succeeded")
+            self._mark_step("root_shrink", "success", "dry-run: assumed the hook succeeded")
             return False
         plan_env = Path("/etc/vbpub/root-shrink-plan.env")
         target_sectors = None
@@ -807,13 +881,12 @@ MaxFileSec=1month
             self._run(
                 ["/usr/sbin/update-initramfs", "-u"], "rebuild initramfs without the root-shrink hook", dangerous=True
             )
-            self.state.mark_step("root_shrink", "success", f"root shrunk to {root_size} sectors (target {target_sectors})")
+            self._mark_step("root_shrink", "success", f"root shrunk to {root_size} sectors (target {target_sectors})")
             return True
-        self.state.mark_step("root_shrink", "failed", f"root is still {root_size} sectors, target was {target_sectors}")
-        self._notify(
-            f"vbpub: root shrink did not complete (still {root_size} sectors, wanted <= {target_sectors}); "
-            f"swap was not configured, host is otherwise healthy"
-        )
+        self._mark_step("root_shrink", "failed", f"root is still {root_size} sectors, target was {target_sectors}")
+        # No _notify() here: this raises, and resume()'s own except block already
+        # sends a single failure notification covering this (and every other)
+        # stage2 failure - a second message here would just be a duplicate.
         raise RuntimeError(
             f"root shrink did not complete: root is still {root_size} sectors (target {target_sectors}); "
             f"stopping before swap placement rather than guessing"
@@ -946,7 +1019,7 @@ MaxFileSec=1month
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
             0o600,
         )
-        self.state.mark_step("partitions", "planned" if self.actions.dry_run else "success", plan_path)
+        self._mark_step("partitions", "planned" if self.actions.dry_run else "success", plan_path)
 
     def _health_gate_swap_devices(self) -> None:
         expected_numbers = range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1)
@@ -975,7 +1048,7 @@ MaxFileSec=1month
         output_file = Path(self.config.stage2_output)
         if not self.actions.dry_run and not (output_file.is_file() and output_file.stat().st_size >= 0):
             raise RuntimeError(f"health gate failed: stage2 log does not exist: {output_file}")
-        self.state.mark_step("health_gate", "planned" if self.actions.dry_run else "success", f"{self.config.swap_file_count} swaps verified")
+        self._mark_step("health_gate", "planned" if self.actions.dry_run else "success", f"{self.config.swap_file_count} swaps verified")
 
     def _activate_swap_partitions(self) -> None:
         prefix = self._partition_base
@@ -998,7 +1071,7 @@ MaxFileSec=1month
                 raise RuntimeError(f"PARTUUID disappeared after mkswap: {path}")
             fstab_entries.append(f"PARTUUID={refreshed} none swap sw,pri={self.config.swap_priority}{discard} 0 0")
         self._persist_fstab(fstab_entries)
-        self.state.mark_step("swap_partitions", "planned" if self.actions.dry_run else "success", f"{self.config.swap_file_count} native GPT swaps, labeled vbpub-swapN")
+        self._mark_step("swap_partitions", "planned" if self.actions.dry_run else "success", f"{self.config.swap_file_count} native GPT swaps, labeled vbpub-swapN")
 
     def _persist_fstab(self, entries: list[str]) -> None:
         fstab_path = Path("/etc/fstab")
@@ -1070,29 +1143,52 @@ MaxFileSec=1month
             marker.touch(mode=0o600)
         self._run(["/usr/bin/systemctl", "daemon-reload"], "reload stage2 unit")
         self._run(["/usr/bin/systemctl", "enable", "vbpub-bootstrap-stage2.service"], "enable stage2 unit")
-        self.state.mark_step("stage2_unit", "success", f"{self.config.stage2_output}; {credential_note}")
+        self._mark_step("stage2_unit", "success", f"{self.config.stage2_output}; {credential_note}")
+
+    def _mark_step(self, name: str, status: str, detail: str = "") -> None:
+        """Record a step, and - only when telegram_verbose_progress is on -
+        also send a one-line Telegram notification for it. The default
+        (non-verbose) path stays silent here; the handful of stage-boundary
+        messages are separate explicit _notify() calls, not routed through
+        this wrapper.
+        """
+        self.state.mark_step(name, status, detail)
+        if self.config.telegram_verbose_progress:
+            self._notify(f"<b>{name}</b>: {status}" + (f" — {detail}" if detail else ""))
 
     def _notify(self, message: str) -> None:
         token = self.config.telegram_bot_token
         chat_id = self.config.telegram_chat_id
         if not token or not chat_id or self.actions.dry_run:
             return
-        data = urllib.parse.urlencode({
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "HTML",
-        }).encode("utf-8")
-        request = urllib.request.Request(f"https://api.telegram.org/bot{urllib.parse.quote(token)}/sendMessage", data=data)
+        thread_id = None
         try:
-            urllib.request.urlopen(request, timeout=15).close()
-        except OSError as exc:
-            print(f"[WARN] Telegram notification failed: {exc}", flush=True)
+            thread_id = self.state.load().get("telegram_thread_id") or None
+        except Exception:
+            pass
+        for index, chunk in enumerate(_split_for_telegram(message)):
+            if index > 0:
+                time.sleep(0.3)  # basic rate-limit courtesy between multi-part sends
+            payload = {"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"}
+            if thread_id:
+                payload["message_thread_id"] = thread_id
+            data = urllib.parse.urlencode(payload).encode("utf-8")
+            request = urllib.request.Request(
+                f"https://api.telegram.org/bot{urllib.parse.quote(token)}/sendMessage", data=data
+            )
+            try:
+                urllib.request.urlopen(request, timeout=15).close()
+            except OSError as exc:
+                print(f"[WARN] Telegram notification failed: {exc}", flush=True)
+                break  # don't send later chunks out of order after a failure
 
     def _reboot(self) -> None:
         if self.config.never_reboot or not self.config.auto_reboot_after_stage1:
-            self.state.mark_step("reboot", "deferred", "disabled by configuration")
+            self._mark_step("reboot", "deferred", "disabled by configuration")
+            self._notify("<b>Stage1 complete.</b> Reboot is disabled by configuration - stage2 requires a manual resume.")
             return
-        self.state.mark_step("reboot", "scheduled", "stage2 resumes on next boot")
+        self._mark_step("reboot", "scheduled", "stage2 resumes on next boot")
+        self._notify("<b>Stage1 complete.</b> Rebooting into stage2.")
         self._run(["/usr/bin/systemctl", "reboot"], "reboot into stage2", dangerous=True)
 
     def _stage1(self) -> None:
