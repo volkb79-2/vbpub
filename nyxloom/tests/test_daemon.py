@@ -4083,9 +4083,11 @@ def test_watchdog_streak_frozen_while_already_paused_not_unbounded(
         d.run_pass(project)
     assert paths.pause_flag(project).exists()
 
-    # Operator resumes (matches this project's own pause-flag convention:
-    # remove the file for 'run' mode).
-    paths.pause_flag(project).unlink()
+    # Operator resumes the way every real surface does it -- the pause flag
+    # removed AND a PAUSE_CLEARED acknowledgment appended (B13 review F2: a
+    # bare unlink takes B13's fail-open branch and stops covering the
+    # realistic path this pin exists for).
+    _operator_resume(project)
     assert not paths.pause_flag(project).exists()
 
     for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES - 1):
@@ -4102,16 +4104,20 @@ def test_watchdog_repauses_after_fresh_persist_cycles_if_condition_still_open(
     disabled by the fix -- if the SAME condition is still genuinely open
     after an operator resumes, exactly RUNAWAY_PERSIST_AFTER_CYCLES fresh
     passes re-pauses it (a real window, not an instant re-trip, but not a
-    permanent bypass either)."""
+    permanent bypass either).
+
+    B13 review F2, two amendments, neither weakening the pin:
+      - the resume now goes through a real PAUSE_CLEARED (a bare unlink took
+        B13's fail-open branch, so post-B13 this pin covered nothing);
+      - "still genuinely open" is now MADE genuinely open -- one NEW
+        ATTEMPT_CREATED per pass, i.e. the attempt loop really is still
+        spinning. Before B13 a frozen event log counted as "still open"
+        purely because detect_runaways kept re-reporting it; that is exactly
+        the conflation B13 exists to end, so the pin has to supply real
+        ongoing evidence to still mean what its name says."""
     project = "demo"
     task_id = "demo-attempt-loop-task"
-    now = utc_now()
-    for i in range(7):
-        storage.append_and_apply(
-            project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
-            type=EventType.ATTEMPT_CREATED, payload={}, task_id=task_id,
-            timestamp=now - timedelta(seconds=(7 - i)),
-        )
+    _seed_attempt_loop(project, task_id)
 
     monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
     d = daemon.Daemon({"demo": sample_project.root})
@@ -4120,9 +4126,14 @@ def test_watchdog_repauses_after_fresh_persist_cycles_if_condition_still_open(
         d.run_pass(project)
     assert paths.pause_flag(project).exists()
 
-    paths.pause_flag(project).unlink()
+    _operator_resume(project)
 
     for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES):
+        # The loop is still spinning: a genuinely new attempt every pass.
+        storage.append_and_apply(
+            project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.ATTEMPT_CREATED, payload={}, task_id=task_id,
+        )
         d.run_pass(project)
     assert paths.pause_flag(project).exists(), (
         "a genuinely still-open condition must still re-pause -- the fix "
@@ -4239,9 +4250,17 @@ def test_watchdog_repauses_after_a_resume_when_genuinely_new_evidence_arrives(
         tmp_state, sample_project, patch_siblings, monkeypatch):
     """Safety symmetry for B13: the fix narrows WHEN the streak may climb,
     it does not disable the watchdog. Same acknowledged attempt-loop, then
-    ONE genuinely new ATTEMPT_CREATED for that task after the resume -- the
-    ladder re-opens and RUNAWAY_PERSIST_AFTER_CYCLES fresh passes re-pause
-    the project."""
+    genuinely new ATTEMPT_CREATED events for that task after the resume --
+    the ladder re-opens and the project is re-paused.
+
+    Also pins STRICT (not monotone) counting, the review's judgement call:
+    ONE new event advances the streak exactly ONCE, no matter how many
+    passes follow it. Monotone counting -- "something happened after the
+    resume, so climb for the next N passes" -- would re-arm a whole
+    threshold-worth of climbing from a single event, a miniature of the
+    passes-since-resume bug B13 exists to kill. Nothing is lost: the streak
+    never decays, so an intermittent runaway still reaches the threshold,
+    just over more elapsed passes."""
     project = "demo"
     task_id = "demo-attempt-loop-task"
     _seed_attempt_loop(project, task_id)
@@ -4258,20 +4277,179 @@ def test_watchdog_repauses_after_a_resume_when_genuinely_new_evidence_arrives(
         d.run_pass(project)
     assert not paths.pause_flag(project).exists(), "sanity: stale condition held"
 
-    # The condition genuinely worsens: a NEW attempt for the same task.
+    # ONE new attempt, then many passes: strict counting means this advances
+    # the streak once and then stops, so the ladder does NOT complete.
     storage.append_and_apply(
         project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
         type=EventType.ATTEMPT_CREATED, payload={}, task_id=task_id,
     )
-
-    for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES - 1):
+    for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES * 3):
         d.run_pass(project)
     assert not paths.pause_flag(project).exists(), (
-        "new evidence re-opens the ladder but must not short-circuit it"
+        "one new event must advance the streak ONCE, not re-arm a whole "
+        "RUNAWAY_PERSIST_AFTER_CYCLES climb on passes alone"
     )
-    d.run_pass(project)
+
+    # The remaining fresh evidence, one event per pass, completes the ladder.
+    for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES - 1):
+        storage.append_and_apply(
+            project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.ATTEMPT_CREATED, payload={}, task_id=task_id,
+        )
+        d.run_pass(project)
     assert paths.pause_flag(project).exists(), (
         "a condition that is genuinely still worsening must still re-pause"
+    )
+
+
+# --------------------------------------------------------------------------
+# B13 review F1 (BLOCKING, fixed 2026-09-08): auto-pause was permanently
+# unreachable after a resume for the two patterns the watchdog most exists to
+# catch. The evidence B13 originally required was an event of the signal's own
+# shape -- but for 'reconcile-thrash:<reason>' that is a SPEC_ATTENTION with
+# that reason, which is EXACTLY the action _suppress_runaway_action drops from
+# the plan on every pass the signal is detected. The report is the thing
+# suppressed, so no fresh evidence could ever be appended, the streak froze at
+# 0, and a genuinely runaway project never re-paused. Same shape for
+# 'attempt-loop:<task_id>' (its ATTEMPT_CREATED comes from the dispatch/resume
+# actions suppression drops).
+#
+# The fix adds a second evidence source that suppression cannot silence: an
+# action THIS SIGNAL WOULD SUPPRESS appearing in THIS pass's plan.
+
+def test_watchdog_repauses_after_resume_while_the_planner_keeps_replanning(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """THE F1 REGRESSION PIN. Drives the FULL suppression-active loop for
+    reconcile-thrash: plan -> watchdog suppresses -> next pass plans it
+    again. The planner never stops wanting to raise
+    SpecAttention('rejections'), so the condition is actively, continuously
+    runaway -- and because the watchdog suppresses that action every pass,
+    NO new SPEC_ATTENTION event can ever reach the log. Event-shaped
+    evidence is therefore permanently silent here by construction; only the
+    suppression-based source can see this, which is precisely why it is
+    load-bearing rather than belt-and-braces.
+
+    Against the pre-fix source this test hangs at "never re-pauses" no
+    matter how many passes run."""
+    project = "demo"
+    now = utc_now()
+    for i in range(6):
+        storage.append_and_apply(
+            project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.SPEC_ATTENTION, payload={"reason": "rejections", "detail": None},
+            timestamp=now - timedelta(seconds=(6 - i)),
+        )
+    _operator_resume(project)
+
+    # plan_project keeps re-planning the very action the watchdog suppresses.
+    monkeypatch.setattr(
+        reconcile, "plan_project",
+        lambda inp: [reconcile.SpecAttention(reason="rejections", detail=None)])
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES - 1):
+        assert d.run_pass(project) == 0, "the repeating action is suppressed every pass"
+    assert not paths.pause_flag(project).exists(), (
+        "the ladder must not short-circuit -- RUNAWAY_PERSIST_AFTER_CYCLES "
+        "passes are still required"
+    )
+
+    d.run_pass(project)
+    assert paths.pause_flag(project).exists(), (
+        "a condition the planner is still actively re-planning every pass must "
+        "re-pause the project -- suppressing the report must not also erase the "
+        "evidence that the condition is alive (review F1)"
+    )
+    assert paths.pause_flag(project).read_text(encoding="utf-8").strip() == "drain-agents"
+
+    # The whole point: not one new SPEC_ATTENTION reached the log, so the
+    # event-shaped evidence source really was silent throughout.
+    spec_events = [e for e in storage.iter_events(project)
+                   if e.type is EventType.SPEC_ATTENTION]
+    assert len(spec_events) == 6, (
+        "suppression means no new SPEC_ATTENTION was ever appended -- if this "
+        "grew, the test is not exercising the starvation it exists to pin"
+    )
+
+
+def test_watchdog_repauses_after_resume_while_dispatch_keeps_being_suppressed(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """The same F1 starvation for the OTHER affected pattern, attempt-loop:
+    the planner keeps re-planning DispatchImplementer for the looping task
+    and the watchdog drops it every pass, so no new ATTEMPT_CREATED can
+    reach the log either."""
+    project = "demo"
+    task_id = "demo-attempt-loop-task"
+    _seed_attempt_loop(project, task_id)
+    _operator_resume(project)
+
+    monkeypatch.setattr(
+        reconcile, "plan_project",
+        lambda inp: [reconcile.DispatchImplementer(task_id=task_id)])
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES - 1):
+        assert d.run_pass(project) == 0
+    assert not paths.pause_flag(project).exists()
+
+    d.run_pass(project)
+    assert paths.pause_flag(project).exists(), (
+        "a dispatch loop the planner keeps re-planning must still re-pause "
+        "after a resume (review F1)"
+    )
+    created = [e for e in storage.iter_events(project)
+               if e.type is EventType.ATTEMPT_CREATED]
+    assert len(created) == 7, "no new attempt was ever actually dispatched"
+
+
+def test_watchdog_suppression_evidence_stays_quiet_for_a_deduped_condition(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Why F1's fix cannot resurrect the original B13 bug, pinned rather than
+    argued. The suppression-based evidence source can only fire when the
+    planner actually re-plans the action -- and for the STALE, acknowledged
+    case it structurally cannot: every SpecAttention branch in
+    rules_attention.py is gated on an 'already open in the recent window'
+    flag computed from the SAME 500-event window the watchdog reads, and a
+    stale reconcile-thrash IS a trailing run of >5 SPEC_ATTENTION events
+    inside that window. So the flag is necessarily set and the rule emits
+    nothing.
+
+    This test runs the REAL planner (no plan_project monkeypatch) over
+    exactly that state, and asserts both halves: the rule really does not
+    re-plan the action, and the project really is not re-paused."""
+    project = "demo"
+    now = utc_now()
+    for i in range(6):
+        storage.append_and_apply(
+            project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.SPEC_ATTENTION, payload={"reason": "rejections", "detail": None},
+            timestamp=now - timedelta(seconds=(6 - i)),
+        )
+    _operator_resume(project)
+
+    planned: list[list] = []
+    real_plan = reconcile.plan_project
+
+    def _recording_plan(inp):
+        out = real_plan(inp)
+        planned.append([a for a in out
+                        if isinstance(a, reconcile.SpecAttention) and a.reason == "rejections"])
+        return out
+
+    monkeypatch.setattr(reconcile, "plan_project", _recording_plan)
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES * 4):
+        d.run_pass(project)
+
+    assert planned, "sanity: the real planner ran"
+    assert all(p == [] for p in planned), (
+        "the dedup flag (rejections_already_open) must keep the real planner "
+        "from re-planning the acknowledged SpecAttention -- if this fires, the "
+        "suppression-based evidence source would see a stale condition as live"
+    )
+    assert not paths.pause_flag(project).exists(), (
+        "an acknowledged, deduped condition must still never re-pause (B13)"
     )
 
 
@@ -7578,4 +7756,3 @@ def test_gate_diagnosis_architectural_routes_to_carve_end_to_end(tmp_state, samp
     transitions = [a for a in actions
                    if isinstance(a, reconcile.Transition) and a.task_id == task_id]
     assert any(t.to is TaskState.READY_TO_CARVE for t in transitions)
-

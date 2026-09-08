@@ -82,9 +82,9 @@ INTERFACE CONTRACT (frozen except for CR-16's (d), see above):
   storms sorted by (type, reason), then (b) thrash, then (c) attempt-loop
   sorted by task_id, then (d) the tick-error streak.
 
-B13 2026-09-08 (nyxloom-P104) ADDS `resume_baseline` (and its two pure
-helpers `last_resume_index` / `has_new_evidence_after`) BELOW the frozen
-trio above. They are ADDITIVE -- WatchdogConfig, RunawaySignal and
+B13 2026-09-08 (nyxloom-P104) ADDS `resume_baseline` (and its private
+helpers `_last_resume_index` / `_is_evidence_for` / `_newest_evidence_after`)
+BELOW the frozen trio above. They are ADDITIVE -- WatchdogConfig, RunawaySignal and
 detect_runaways are untouched, byte-for-byte, and the new functions are
 just as pure (no I/O, no imports beyond .types). See `resume_baseline`'s
 own docstring for the defect they fix.
@@ -244,7 +244,7 @@ def detect_runaways(recent_events: list[Event], cfg: WatchdogConfig) -> list[Run
 _SELF_ESCALATION_REASON = "runaway"
 
 
-def last_resume_index(recent_events: list[Event]) -> int | None:
+def _last_resume_index(recent_events: list[Event]) -> int | None:
     """Index of the most recent PAUSE_CLEARED in `recent_events`, or None.
 
     PAUSE_CLEARED is the one event every operator resume surface appends --
@@ -271,10 +271,22 @@ def _is_evidence_for(sig: RunawaySignal, ev: Event) -> bool:
     One branch per detector, deriving the discriminator from the SAME parse
     of `RunawaySignal.key` the detector used to build it (and that
     daemon.py's `_suppress_runaway_action` uses to pick the action to drop),
-    because the three patterns rest on different underlying event shapes.
+    because the four patterns rest on different underlying event shapes.
     An unrecognised pattern returns True (fail-open: an unknown detector
     keeps its full pre-B13 escalation power rather than being silently
-    disarmed)."""
+    disarmed).
+
+    IMPORTANT (B13 review F1): this is only HALF of the evidence a caller
+    needs, and for two patterns it is the half that can go permanently
+    silent. For `reconcile-thrash:<reason>` and `attempt-loop:<task_id>`
+    the event named here is exactly the one daemon.py's
+    `_suppress_runaway_action` prevents from ever being appended again --
+    the report is what gets suppressed, so the underlying condition can
+    keep worsening while producing no event of this shape at all. The
+    caller MUST also count "this pass would have suppressed an action for
+    this signal" as evidence; see daemon.py `_apply_watchdog` and
+    `resume_baseline`'s own note.
+    """
     payload = ev.payload or {}
     if ev.type is EventType.NEEDS_OPERATOR and payload.get("reason") == _SELF_ESCALATION_REASON:
         return False
@@ -302,16 +314,25 @@ def _is_evidence_for(sig: RunawaySignal, ev: Event) -> bool:
     return True
 
 
-def has_new_evidence_after(sig: RunawaySignal, recent_events: list[Event],
-                           index: int) -> bool:
-    """True if any event AFTER position `index` is fresh evidence for `sig`."""
-    return any(_is_evidence_for(sig, ev) for ev in recent_events[index + 1:])
+def _newest_evidence_after(sig: RunawaySignal, recent_events: list[Event],
+                           index: int) -> int | None:
+    """`sequence` of the NEWEST event after position `index` that is fresh
+    evidence for `sig`, or None if there is none.
+
+    A sequence rather than a bool so the caller can tell evidence it has
+    ALREADY counted from evidence that arrived since -- which is what makes
+    a STRICT per-pass streak possible (see `resume_baseline`)."""
+    newest: int | None = None
+    for ev in recent_events[index + 1:]:
+        if _is_evidence_for(sig, ev) and (newest is None or ev.sequence > newest):
+            newest = ev.sequence
+    return newest
 
 
 def resume_baseline(sig: RunawaySignal,
-                    recent_events: list[Event]) -> tuple[int | None, bool]:
+                    recent_events: list[Event]) -> tuple[int | None, int | None]:
     """The per-signal post-resume streak baseline. Returns
-    ``(resume_marker, has_new_evidence)``:
+    ``(resume_marker, newest_evidence)``:
 
     - ``resume_marker``: the ``sequence`` of the most recent PAUSE_CLEARED in
       `recent_events`, or None if the operator has never resumed within it.
@@ -319,9 +340,10 @@ def resume_baseline(sig: RunawaySignal,
       caller can tell "the same resume I already counted from" apart from
       "a resume that has happened since my last pass" and reset its streak
       exactly once per resume.
-    - ``has_new_evidence``: whether any event AFTER that resume is a fresh
-      instance of this signal's own condition. Always True when
-      ``resume_marker`` is None (nothing to be new relative to).
+    - ``newest_evidence``: the ``sequence`` of the newest event AFTER that
+      resume that is a fresh instance of this signal's own condition, or
+      None if there is none. Scanned over the WHOLE window when
+      ``resume_marker`` is None (there is no resume to be new relative to).
 
     B13 (the defect this exists for): P49 froze the streak at 0 for every
     pass spent ALREADY PAUSED. It did NOT cover the passes AFTER a resume.
@@ -341,26 +363,35 @@ def resume_baseline(sig: RunawaySignal,
     to zero, and past that resume only genuinely NEW evidence may climb it
     again.
 
+    THIS FUNCTION IS NOT THE WHOLE EVIDENCE TEST (review F1). Event-shaped
+    evidence is necessary but NOT sufficient, because for
+    `reconcile-thrash:<reason>` and `attempt-loop:<task_id>` the event it
+    looks for is precisely the one `_suppress_runaway_action` stops from
+    ever being appended again -- so a condition that is ACTIVELY worsening
+    produces none, the streak freezes at 0, and the project can never
+    re-pause. daemon.py's `_apply_watchdog` therefore ORs this with
+    "this pass's plan contained an action this signal would suppress",
+    which is live-this-pass proof that the planner is still trying to
+    re-run the very thing the watchdog is blocking. See `_apply_watchdog`
+    for why that second source cannot resurrect the original B13 bug.
+
     Safety-symmetric, deliberately:
       - Suppression is NOT gated by this. daemon.py still drops the matching
         repeating action on EVERY pass a signal is detected, resumed or not
         -- an acknowledgment must never re-arm a harmful action.
       - Escalation is NOT gated by this either (it has its own
         once-per-condition dedup).
-      - A condition that IS still worsening still re-pauses: one new
-        qualifying event re-opens the ladder and RUNAWAY_PERSIST_AFTER_CYCLES
-        fresh passes still auto-pause. This narrows WHEN the streak may
-        climb; it never disables the watchdog.
+      - A condition that IS still worsening still re-pauses.
       - No PAUSE_CLEARED in the window at all (never paused, or the resume
         has aged out of the caller's ~500-event slice) => pre-B13 behaviour,
         unconditional advance. Fail-open toward staying armed.
       - The watchdog's own NEEDS_OPERATOR{reason:'runaway'} escalation never
         counts as evidence (see _SELF_ESCALATION_REASON).
     """
-    idx = last_resume_index(recent_events)
+    idx = _last_resume_index(recent_events)
     if idx is None:
-        return None, True
-    return recent_events[idx].sequence, has_new_evidence_after(sig, recent_events, idx)
+        return None, _newest_evidence_after(sig, recent_events, -1)
+    return recent_events[idx].sequence, _newest_evidence_after(sig, recent_events, idx)
 
 
 def log_signals(signals: list[RunawaySignal]) -> None:

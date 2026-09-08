@@ -480,7 +480,7 @@ def test_resume_baseline_unknown_pattern_fails_open_to_armed():
         # An event that is evidence for NO known pattern at all.
         make_event(2, EventType.CONFIG_CHANGED, base + timedelta(seconds=1)),
     ]
-    assert resume_baseline(sig, events) == (1, True)
+    assert resume_baseline(sig, events) == (1, 2)
 
 
 def test_resume_baseline_keyless_pattern_matches_nothing_rather_than_everything():
@@ -501,7 +501,7 @@ def test_resume_baseline_keyless_pattern_matches_nothing_rather_than_everything(
     ]
     assert resume_baseline(
         RunawaySignal(pattern="reconcile-thrash", key="reconcile-thrash",
-                      detail="d"), events) == (1, False)
+                      detail="d"), events) == (1, None)
     assert resume_baseline(
         RunawaySignal(pattern="attempt-loop", key="attempt-loop",
-                      detail="d"), events) == (1, False)
+                      detail="d"), events) == (1, None)
