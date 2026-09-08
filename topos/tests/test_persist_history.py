@@ -688,7 +688,10 @@ def test_recovery_ignores_files_that_do_not_match_the_segment_name_pattern(tmp_p
     store = PersistentHistoryStore(cfg)
     store.append(_frame_at(time.time()))
     store.flush()
-    (store.segments_dir / "not-a-segment.txt").write_text("junk")
+    # Must still start with "seg-" to reach the regex check at all -- the
+    # glob("seg-*") itself already filters out anything else (e.g. a bare
+    # "not-a-segment.txt" never even reaches _SEGMENT_NAME_RE.match()).
+    (store.segments_dir / "seg-not-a-valid-id.jsonl").write_text("junk")
 
     store2 = PersistentHistoryStore(cfg)
     assert store2.stats().segment_count == 1
@@ -732,6 +735,119 @@ def test_recovery_quarantines_an_orphan_segment_that_fails_to_reparse(tmp_path):
     assert store2.stats().segment_count == 0
     assert store2.stats().quarantined_segments == 1
     assert not segment.exists()
+
+
+# ---------------------------------------------------------------------------
+# _inspect_segment_file: the orphan-segment re-parser's structural checks,
+# unit-tested directly rather than only indirectly through a full recovery
+# (each of these is a distinct "syntactically valid JSON, semantically
+# wrong" shape that the corrupt-JSON test above never reaches).
+# ---------------------------------------------------------------------------
+
+
+def _header_line(segment_id: int) -> str:
+    return json.dumps({"type": "segment_header", "schema_version": 1, "segment_id": segment_id})
+
+
+def test_inspect_segment_file_skips_blank_lines_between_records(tmp_path):
+    from topos.daemon.persist import _inspect_segment_file
+
+    frame_payload = {"type": "frame", **frame_to_jsonable(_frame_at(BASE_TS))}
+    path = tmp_path / "seg-00000000.jsonl"
+    path.write_text(_header_line(0) + "\n\n" + json.dumps(frame_payload) + "\n")
+
+    result = _inspect_segment_file(path, expected_segment_id=0)
+    assert result is not None
+    frame_count, _first_ts, _last_ts, _raw_bytes = result
+    assert frame_count == 1
+
+
+def test_inspect_segment_file_rejects_a_first_line_that_is_not_a_header(tmp_path):
+    from topos.daemon.persist import _inspect_segment_file
+
+    path = tmp_path / "seg-00000000.jsonl"
+    path.write_text(json.dumps({"type": "frame", "ts": 1.0}) + "\n")
+    assert _inspect_segment_file(path, expected_segment_id=0) is None
+
+
+def test_inspect_segment_file_rejects_a_segment_id_mismatch(tmp_path):
+    from topos.daemon.persist import _inspect_segment_file
+
+    path = tmp_path / "seg-00000000.jsonl"
+    path.write_text(_header_line(99) + "\n")
+    assert _inspect_segment_file(path, expected_segment_id=0) is None
+
+
+def test_inspect_segment_file_rejects_an_unexpected_record_type(tmp_path):
+    from topos.daemon.persist import _inspect_segment_file
+
+    path = tmp_path / "seg-00000000.jsonl"
+    path.write_text(_header_line(0) + "\n" + json.dumps({"type": "checkpoint"}) + "\n")
+    assert _inspect_segment_file(path, expected_segment_id=0) is None
+
+
+def test_inspect_segment_file_rejects_a_header_only_segment_with_no_frames(tmp_path):
+    from topos.daemon.persist import _inspect_segment_file
+
+    path = tmp_path / "seg-00000000.jsonl"
+    path.write_text(_header_line(0) + "\n")
+    assert _inspect_segment_file(path, expected_segment_id=0) is None
+
+
+# ---------------------------------------------------------------------------
+# _load_index_cache: recovery's best-effort checksum cache, direct edge
+# cases beyond the missing/malformed-JSON path _validate_segment already
+# proves is never trusted for correctness (every segment is re-hashed
+# regardless).
+# ---------------------------------------------------------------------------
+
+
+def test_recovery_ignores_an_index_with_the_wrong_schema_version(tmp_path):
+    cfg = _cfg(tmp_path, segment_frames=1)
+    store = PersistentHistoryStore(cfg)
+    store.append(_frame_at(time.time()))
+    store.flush()
+    index = json.loads(store.index_path.read_text())
+    index["schema_version"] = 999
+    store.index_path.write_text(json.dumps(index))
+
+    # Recovery must still succeed by fully re-deriving from the segment
+    # files themselves, not trust (or crash on) the unrecognized index.
+    store2 = PersistentHistoryStore(cfg)
+    assert store2.stats().segment_count == 1
+
+
+def test_recovery_ignores_a_non_dict_entry_in_the_index_segments_list(tmp_path):
+    cfg = _cfg(tmp_path, segment_frames=1)
+    store = PersistentHistoryStore(cfg)
+    store.append(_frame_at(time.time()))
+    store.flush()
+    index = json.loads(store.index_path.read_text())
+    index["segments"].append("not-a-dict-entry")
+    store.index_path.write_text(json.dumps(index))
+
+    store2 = PersistentHistoryStore(cfg)
+    assert store2.stats().segment_count == 1
+
+
+def test_recovery_quarantines_a_segment_that_becomes_unreadable_mid_scan(tmp_path):
+    """A segment listed by the directory glob but that fails to stat/hash by
+    the time recovery reaches it (e.g. removed by a concurrent operator
+    action) is quarantined rather than crashing recovery."""
+    from topos.daemon import persist as persist_module
+
+    cfg = _cfg(tmp_path, segment_frames=1)
+    store = PersistentHistoryStore(cfg)
+    store.append(_frame_at(time.time()))
+    store.flush()
+
+    with mock.patch.object(
+        persist_module, "_file_sha256", side_effect=OSError(2, "No such file or directory")
+    ):
+        store2 = PersistentHistoryStore(cfg)
+
+    assert store2.stats().segment_count == 0
+    assert store2.stats().quarantined_segments == 1
 
 
 # ---------------------------------------------------------------------------
