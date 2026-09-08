@@ -188,3 +188,189 @@ file list is exactly right; no cross-contamination from other projects.
    operator interview locked in (safety-forward reading). The stricter
    alternative (require fresh evidence every single pass) was considered
    and rejected; flagging in case a reviewer wants the tighter semantics.
+   **SUPERSEDED by the review round below — strict is now implemented.**
+
+---
+
+# Review round 1 — REJECT addressed (2026-09-08)
+
+Commit `c90faf82` `fix(nyxloom): B13 review round -- F1 suppression
+starvation, strict streak`. Everything below amends the report above; the
+core B13 design (baseline shift to resume, anchored on `PAUSE_CLEARED`)
+is unchanged.
+
+## F1 (BLOCKING) — auto-pause was permanently unreachable after a resume
+
+### The mechanism
+
+B13 shipped with ONE evidence source: an event of the signal's own shape,
+emitted after the resume. For two of the four patterns that event is
+exactly what the watchdog itself prevents:
+
+| Signal | Evidence B13 required | What `_suppress_runaway_action` drops |
+|---|---|---|
+| `reconcile-thrash:<reason>` | `SPEC_ATTENTION{reason}` | the `SpecAttention(reason)` action that would append it |
+| `attempt-loop:<task_id>` | `ATTEMPT_CREATED` for the task | `DispatchImplementer`/`ResumeAttempt` for the task |
+
+**The report is the thing suppressed.** So once the watchdog engaged, no
+qualifying event could ever be appended again, `newest_evidence` stayed
+`None` on every pass, the streak froze at 0, and the project never
+re-paused — for a condition that was actively, continuously worsening.
+`notification-storm:total` was partially starved (some notification
+sources survive suppression); `tick-error-streak` was unaffected
+(nothing is suppressed for it). The reviewer is right, and this directly
+contradicted my own docstring claim that "a condition that IS still
+worsening still re-pauses".
+
+### I checked the reviewer's premise rather than adopting it
+
+The suggested direction — count "this pass suppressed an action for this
+signal" as evidence — is what I implemented, but the reviewer's stated
+*reason* needed verification, and it is sharper than they put it:
+
+- `rules_attention.py` gates **every** `SpecAttention` branch on an
+  "already open in the recent window" flag (`rejections_already_open`
+  etc.), computed by `effects.spec_attention_recently_emitted` over the
+  last **500 events**.
+- `_apply_watchdog` reads the **same** 500-event slice, and detector (b)
+  only reports `reconcile-thrash:<reason>` when a trailing run of **>5**
+  `SPEC_ATTENTION{reason}` events sits **inside that window**.
+- Therefore, whenever `reconcile-thrash:<reason>` is detected, the dedup
+  flag is *necessarily* set, the rule *cannot* re-plan, and there is
+  nothing to suppress.
+
+So the new source is structurally silent in exactly the stale case B13
+exists for — not by luck, by a window-identity argument. Note the
+corollary the reviewer's phrasing missed: this also means their own
+reproduction (a `SpecAttention('rejections')` re-emitted every pass) is
+**not reachable through the real planner** — it requires monkeypatching
+`plan_project`. That does not weaken the finding: the watchdog must not
+depend on a dedup invariant living in another module, and the *same*
+starvation is reachable through the real planner for `attempt-loop`
+(dispatch rules have no such dedup). Both are now pinned.
+
+### The fix
+
+`fresh = would_suppress or (newest_evidence is not None and newest_evidence
+> counted_evidence)`.
+
+`would_suppress` is computed against **this pass's original action list**,
+not the progressively-filtered one — two signals routinely come from one
+condition (a 6× `SpecAttention` run trips both `reconcile-thrash` and the
+per-reason `notification-storm`), and whichever ran first would otherwise
+have eaten the only action the second could have seen, reporting "nothing
+to suppress" purely from iteration order. This is also the reviewer's own
+fallback hint ("computed before suppression runs").
+
+Escalation and suppression remain ungated, unchanged.
+
+### How I verified it no longer starves
+
+Three new tests in `test_daemon.py`, all driving the **full** loop
+(plan → suppress → next pass), not injecting events behind it:
+
+- `test_watchdog_repauses_after_resume_while_the_planner_keeps_replanning`
+  — reconcile-thrash. Asserts `run_pass` returns 0 actions every pass (the
+  suppression really is active), that the ladder does **not** short-circuit
+  (`N-1` passes → no pause), that pass `N` **does** pause with
+  `drain-agents`, and — the load-bearing assertion — that the log still
+  holds exactly **6** `SPEC_ATTENTION` events, i.e. the event-shaped source
+  was silent throughout, so the test genuinely exercises the starvation.
+- `test_watchdog_repauses_after_resume_while_dispatch_keeps_being_suppressed`
+  — the same for `attempt-loop`, asserting no new `ATTEMPT_CREATED` ever
+  landed (still exactly 7).
+- `test_watchdog_suppression_evidence_stays_quiet_for_a_deduped_condition`
+  — the anti-regression side, run against the **REAL planner** (no
+  `plan_project` monkeypatch): records what the planner actually emits over
+  `N*4` passes and asserts it never re-plans the acknowledged
+  `SpecAttention`, **and** that the project is never re-paused. This pins
+  the window-identity argument above as behaviour rather than prose.
+
+**Non-hollow**: stashing only `daemon.py` + `watchdog.py` (tests kept), the
+two F1 pins **FAIL** against the rejected HEAD, as does the strict pin. The
+two safety pins pass on both, as they should.
+
+Plus a pattern-space property in `test_invariants.py`
+(`test_a_signal_the_watchdog_keeps_suppressing_still_reaches_the_threshold`)
+asserting for **every** pattern that a suppressed-every-pass signal still
+reaches the threshold — so a future fifth detector cannot inherit the
+starvation.
+
+## F2 — tests bypassed the coupling that breaks
+
+- Both P49 pins now resume through `_operator_resume` (flag removed **and**
+  `PAUSE_CLEARED` appended). A bare `unlink()` took B13's fail-open branch,
+  so post-B13 they covered nothing.
+- `test_watchdog_repauses_after_fresh_persist_cycles_if_condition_still_open`
+  additionally now *makes* the condition genuinely open — one new
+  `ATTEMPT_CREATED` per pass — instead of relying on a frozen log that
+  `detect_runaways` merely keeps re-reporting. That reliance was the exact
+  conflation B13 exists to end, so the pin had to supply real ongoing
+  evidence to still mean what its name says. Neither change weakens it.
+- The new suppression-loop tests above are the "system still produces
+  evidence under the suppression regime" coverage that was missing.
+
+## F3 / F4 / F5 / F6 / F7
+
+- **F3**: `daemon.py` docstring cited `watchdog.streak_should_advance`
+  (never existed) → `resume_baseline`, and the surrounding paragraph now
+  describes the two-source rule.
+- **F4**: the `[-500:]` fail-open lifetime is documented at the slice
+  itself: it bounds how long a resume protects the project (~5 days at the
+  measured 70–110 events/project/day, against a 7-day
+  `HISTORY_REJECTION_WINDOW_SECONDS`), why fail-open-toward-armed is the
+  safe direction, why the window cannot be widened without widening the
+  detector's (they must be the same slice), and that the same window
+  identity is what makes the new suppression evidence safe.
+- **F5**: rather than adding a second dict, the resume marker and the
+  counted-evidence sequence moved **onto** `_runaway_streak` as a frozen
+  `_RunawayStreak` value. B13 now adds **zero** new unbounded-growth
+  surface. The pre-existing never-pruned shape of that one dict is noted
+  in place and left out of scope (its keys are bounded by the distinct
+  `RunawaySignal.key`s a project has ever produced).
+- **F6**: `last_resume_index` / `has_new_evidence_after` are now
+  `_last_resume_index` / `_newest_evidence_after`, consistent with
+  `_is_evidence_for`. `resume_baseline` is the only public addition.
+- **F7**: trailing blank line removed from `test_daemon.py`.
+
+## Judgement call — strict adopted
+
+`resume_baseline` now returns the newest qualifying event's `sequence`
+instead of a bool, and the daemon compares it against the sequence it has
+already counted. One new event advances the streak **once**, not
+`RUNAWAY_PERSIST_AFTER_CYCLES` times.
+
+One scoping decision the controller should sanity-check: **strict applies
+to the post-resume regime only.** With no `PAUSE_CLEARED` in the window the
+advance stays unconditional. Applying strict there too would have broken
+P44's own oracle
+(`test_watchdog_persistent_runaway_auto_pauses_project_single_escalation`:
+a frozen 7-event attempt-loop with `plan_project → []`, which under strict
+would produce evidence on pass 1 only and never pause). That contract is
+P44's, predates B13, and is not B13's to change — B13's mandate is "do not
+re-climb on stale history *after an acknowledgment*". Flagging rather than
+silently narrowing.
+
+Strictness is pinned in both layers: `test_invariants.py`'s
+`test_new_evidence_after_a_resume_advances_the_streak_exactly_once` (over
+every pattern) and `test_daemon.py`'s
+`test_watchdog_repauses_after_a_resume_when_genuinely_new_evidence_arrives`
+(one event + `N*3` passes ⇒ still no pause; then one event per pass ⇒
+pause).
+
+## Gate (review round)
+
+```
+tester-unified: PASS (exit 0)   commit c90faf828fba3dc3b63ccd29ec4d9df6213eceb0
+  R0 PASS   R1 PASS  100.0%, 83/83 changed executable lines across 4 source files
+```
+
+Green on the first attempt this round. Same host discipline: `docker ps`
+checked for a live sibling lane before launching (none — the P106 lane had
+finished), the container `docker update --cpus=3`'d immediately after
+launch, one gate container on the host, ad-hoc pytest serial under
+`nice -n 10`.
+
+`watchdog.py` grew 395 → 426 lines, which stays **inside** its declared
+inventory tolerance (`max(40, 10%) = 42`), so no further inventory
+re-measure was needed this round.
