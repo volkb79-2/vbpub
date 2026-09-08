@@ -3,32 +3,43 @@
 Branch `nyxloom-P107`, worktree `/workspaces/vbpub/.worktrees/nyxloom-p107`.
 NOT merged, no PR. Follow-up to nyxloom-P106 (`ff2b33c3` + `3d299917`).
 
-## Commits (2, merge-base with main is `ff2b33c3`'s descendant `cb3886f5`)
+## Commits (merge-base with main is `ff2b33c3`'s descendant `cb3886f5`)
 
 | Commit | What |
 |---|---|
 | `83d311cc` | bind-mount hostdirs, provisioning hook, cutover |
 | `702f16a8` | unit tests pinning the two parser bugs found live |
+| `69f0589d` | this report |
+| `e5d954f0` | **review round 1 fixes (F1-F6)** — see the section at the end |
 
 ## Gate
 
-`python nyxloom/run-gate.py tester-unified` (run-gate rev 37, assay 5.2.0) at
-`702f16a8`:
+`python nyxloom/run-gate.py tester-unified` (run-gate rev 37, assay 5.2.0),
+re-run after the review-fix round, at `e5d954f0`:
 
 ```
 tester-unified: PASS (exit 0)
   R0 PASS   R1 PASS  pct=100.0 considered=0 missing={}
 ```
 
+(The pre-review gate was PASS at `702f16a8` with the same claims.) Verdict read
+from `.assay/verdict-tester-unified.json` in a separate step, not off a pipe
+tail. This commit itself touches only the report, so that gate stands for the
+whole code change.
+
 `considered=0` is honest and worth a reviewer's attention: nothing under
 `src/nyxloom` changed, so assay's changed-line judge had nothing to judge. The
-new hook module sits at `nyxloom/mattermost/hooks/`, **outside** the lane's
+hook module sits at `nyxloom/mattermost/hooks/`, **outside** the lane's
 `--cov=src/nyxloom` scope, and is therefore invisible to the coverage gate.
-That is exactly why `702f16a8` adds 16 tests for it as a deliberate act.
+That is exactly why its 33 tests are a deliberate act — and the review round
+proved the point: every finding it raised was in code the gate cannot see.
 
-Host discipline: both gate runs launched with no other gate container up,
+Host discipline: every gate run launched with no other gate container up,
 `nice -n 10 ionice -c2 -n7`, `docker update --cpus=3` on each container right
-after launch. Load at launch 1.8 and 7.2 respectively.
+after launch. Load at launch 1.8, 7.2 and 5.9. One run was wasted on
+`NO_MEASUREMENT/DIRTY_TREE` — `run-gate --allow-dirty` does not bypass assay's
+own clean-tree requirement, since a higher-rigor lane measures the resolved
+commit from a snapshot.
 
 ---
 
@@ -326,8 +337,17 @@ Posted by nyxloom's own notify.send() as the nyxloom-daemon account.
 
 and the identity confirmed in the posts table — the row's `userid` resolves to
 `nyxloom-daemon`, with `{"from_webhook": "true", "override_username":
-"nyxloom-daemon", ...}`. The devcontainer was attached to the stack's bridge
-only for that check and has been detached.
+"nyxloom-daemon", ...}`. The devcontainer was attached to the stack's own
+bridge (`nyxloom-prod-mattermost_internal`) only for that check and **has**
+been detached from it — verified.
+
+(Correcting this report's own earlier wording, review F9: that sentence
+originally read as if *all* attachments had been undone. The devcontainer is
+still attached to the ciu **workspace identity** networks my `ciu` invocations
+created — `nyxloom-885472-network` and `nyxloom-p107-791abb-network`, alongside
+two older ones from previous nyxloom worktrees. Those are workspace-scoped
+bridges, not the stack's data path; no security impact, and judgment item 7
+already lists them as teardown-time cleanup.)
 
 ---
 
@@ -380,3 +400,110 @@ data: 6 users · 1 team · 4 channels · 17 posts · 2 live incoming webhooks
    `nyxloom-885472-network` bridge and a devcontainer attachment to it, plus
    the worktree's own `.ciu/` store. `ciu worktree rm` at teardown, not bare
    `git worktree remove`.
+
+---
+
+## Review round 1 (ACCEPT with nits) — what changed after it
+
+Independent adversarial review accepted the package and raised two MEDIUM
+findings in the exact bug class this package exists to prevent, plus four
+cheap ones. All six are fixed here; F7/F8/F10 were explicitly the controller's
+to carry and are untouched.
+
+### F1 — the duplication guard did not defend against the actual failure mode
+
+Correct and important. `_ensure_webhooks`' ambiguity refusal only fires at
+`len(found) > 1`; the incident that minted six webhooks was the parser
+returning `[]`, which that branch can never see. The fix went through three
+cuts, and the two failed ones are worth recording because both were caught on
+the LIVE instance rather than by reasoning:
+
+1. **Cut 1 — cross-check the parsed count against mmctl's `There are N ... on
+   local instance` sentence, scanned on stdout.** Refused every deploy: that
+   sentence is on **stderr**, while the rows are on stdout
+   (`mmctl --local channel list nyxloom 2>/dev/null` prints only names;
+   `2>&1 1>/dev/null` prints only the sentence).
+2. **Cut 2 — same cross-check, scanning both streams.** Refused every *empty*
+   channel. `N` is a printed-LINE count, not an entity count: an empty private
+   channel prints `No users found` on stdout and reports
+   `There are 1 userss on local instance` on stderr. One "user", zero users.
+   Caught by a live private-channel probe, which is also how F2 got its
+   end-to-end test.
+3. **Cut 3, shipped — `_refuse_unrecognised`: every non-empty stdout row must
+   be recognised by the parser.** Needs no count sentence, so neither of the
+   above can recur. It catches the original bug on the second run (six
+   `Incoming:` rows, zero recognised → refuse), tolerates a genuinely empty
+   list, skips `Outgoing:` rows rather than calling them drift, and names only
+   the row COUNT in its message because a webhook row carries an id (S4.23).
+   `_channel_names` additionally refuses an UNKNOWN ` (<kind>)` suffix, which
+   is the shape F2's bug took.
+
+### F2 — `_channel_names` mis-parsed private and archived channels
+
+Correct, and both consequences the reviewer derived are real. Verified against
+the running server rather than accepted on description: private channels carry
+a ` (private)` **suffix**, archived a ` (archived)` suffix, and there is no
+`*` prefix at all — the old `lstrip("*")` defended against a format mmctl does
+not emit. Fixed: both suffixes handled, archived dropped, docstring corrected
+with the real output.
+
+Verified end-to-end on the live instance, which is the evidence that matters
+here since neither case was reachable with the four existing channels:
+
+```
+create private channel out of band  -> memberships_added=1 (operator joined it)
+re-run                              -> memberships_added=0   (idempotent)
+archive it                          -> run succeeds, channel correctly dropped
+delete it, re-run                   -> back to baseline
+```
+
+Pre-fix, run 1 would have tried to re-create `p107-f2-priv` and aborted the
+deploy permanently; post-archive, `_channel_members(team, "x (archived)")`
+would have aborted every subsequent `ciu up`. Also improves the error text when
+a *declared* channel goes missing, so "archived" is named as a cause.
+
+### F3 — `channel users list` pagination
+
+`--all` added. Pages at 200 by default; past that an unpaged read
+under-reports and re-triggers the membership re-add loop. Pinned by a test that
+asserts the flag is actually passed.
+
+### F4 — the second P106 "uid 999"
+
+Fixed. `ciu.defaults.toml.j2`'s secrets comment said "postgres, uid 999" while
+the compose file's copy had been corrected — the package's own headline
+correction sitting uncorrected in the file that makes it. The conclusion it
+supports (file mode 0444) is unaffected by the number, and says so now.
+
+### F5 — the compose fallback's hardcoded absolute paths
+
+Disclosed in the header rather than re-templatised. The three bind paths are
+absolutes under the MAIN checkout, so running that file from a worktree writes
+into main's `vol-*` — the inverse of the worktree-path trap this report
+describes for the ciu side. The header now says so and says not to do it.
+
+### F6 — real ids in test fixtures
+
+Swapped for synthetic (`aaaadaemon…`, `ddddinstaller…`). They were revoked and
+non-live, but the file already used a synthetic style elsewhere.
+
+### F9 — this report contradicted itself
+
+Fixed in Workstream 3 above: the devcontainer *was* detached from the stack's
+own bridge; it is still attached to the ciu workspace-identity networks, which
+judgment item 7 already covers as teardown cleanup.
+
+### Test coverage after the round
+
+16 tests → **33**. The new ones cover: empty-parse drift refusal end-to-end
+(`_ensure_webhooks` must abort, not mint), the `No users found` sentinel that
+broke cut 2, noise-line classification, `Outgoing:` rows not counting as drift,
+the private/archived suffixes, an unknown kind suffix, an empty team, `--all`,
+and the archived-channel error text. Every one of them corresponds to a
+failure that actually occurred against the live server during this round.
+
+### Live state after the fix round
+
+Unchanged from hand-off and re-verified: 6 users, 4 channels
+(`alerts installs off-topic town-square`), **2** incoming webhooks, both
+containers healthy, no container recreated, no storage touched.
