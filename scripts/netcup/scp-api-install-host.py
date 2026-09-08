@@ -184,12 +184,36 @@ def _resolve_controller_fqdn(controller_fqdn: str) -> str:
     return local
 
 
+_UNKNOWN_HOST_LABEL = "unknown-host"
+_IDENTITY_FILE_LABEL_RE = re.compile(r"[^A-Za-z0-9.\-]")
+
+
+def _render_identity_file_path(template: str, server_name: Optional[str]) -> str:
+    """Render {host}/{date} placeholders in an ssh.identity_file template.
+
+    A literal path with no placeholders passes through unchanged (backward
+    compatible with a CLI/env override that doesn't want per-host naming).
+    `server_name` is sanitized to safe filename characters; falls back to
+    _UNKNOWN_HOST_LABEL if unset, so a template can still render to a
+    concrete (if less useful) path outside the interactive-gather flow.
+    """
+    host_label = _IDENTITY_FILE_LABEL_RE.sub("-", server_name) if server_name else _UNKNOWN_HOST_LABEL
+    date_label = datetime.now().strftime("%Y%m%d")
+    return template.replace("{host}", host_label).replace("{date}", date_label)
+
+
 def _ensure_local_identity_file_exists(identity_file: str, controller_fqdn: str) -> None:
     """Generate the local SSH identity key if it doesn't exist yet.
 
-    The filename is static (shared day-0 bootstrap key, reused across every
-    install - see scp-api-install-host.toml's [ssh] comment). Only the key's
-    *comment* is dynamic: it embeds `controller_fqdn` (resolved via
+    One keypair per (already-rendered, per-host/per-date) identity_file path
+    - see _render_identity_file_path(), called before this - not a single
+    shared file reused across every install (confirmed live 2026-09-08: that
+    let SSH monitoring for one host silently pick up a key netcup had
+    actually registered for a different one). The key's *comment* embeds a
+    stable "vbpub-controller-ephemeral" marker (so debian-install-v2's own
+    end-of-stage2 authorized_keys cleanup - and any human auditing a host's
+    authorized_keys - can identify it unambiguously), the same host/date
+    labels as the filename, and `controller_fqdn` (resolved via
     _resolve_controller_fqdn - "automatic" or an explicit value) so anyone
     looking at authorized_keys on a host this key touches can tell who/why
     put it there.
@@ -214,7 +238,7 @@ def _ensure_local_identity_file_exists(identity_file: str, controller_fqdn: str)
         [
             "ssh-keygen", "-t", "ed25519", "-N", "",
             "-f", str(identity_path),
-            "-C", f"vbpub-netcup-installation@{resolved_fqdn}",
+            "-C", f"vbpub-controller-ephemeral-{identity_path.name}@{resolved_fqdn}",
         ],
         check=True,
         capture_output=True,
@@ -493,6 +517,7 @@ INSTALLATION_CONFIG = {
         "curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/scripts/debian-install-v2/bootstrap-remote.py | "
         "AUTO_REBOOT_AFTER_STAGE1=yes NEVER_REBOOT=no "
         "TELEGRAM_BOT_TOKEN={{TELEGRAM_BOT_TOKEN}} TELEGRAM_CHAT_ID={{TELEGRAM_CHAT_ID}} "
+        "CONTROLLER_SSH_PUBKEY='{{CONTROLLER_SSH_PUBKEY}}' "
         "python3 -"
     ),
     "rootPartitionFullDiskSize": False,
@@ -1847,15 +1872,22 @@ def _expand_payload_placeholders(payload: Dict[str, Any]) -> Dict[str, Any]:
             token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
             chat_id = os.environ.get("TELEGRAM_CHAT_ID", "")
             server_name = os.environ.get("NETCUP_SCP_API_SERVER_NAME", "")
+            controller_pubkey = os.environ.get("CONTROLLER_SSH_PUBKEY", "")
 
             if "{{TELEGRAM_BOT_TOKEN}}" in cs and not token:
                 print("⚠ WARNING: TELEGRAM_BOT_TOKEN not set; notifications will be disabled")
             if "{{TELEGRAM_CHAT_ID}}" in cs and not chat_id:
                 print("⚠ WARNING: TELEGRAM_CHAT_ID not set; notifications will be disabled")
+            if "{{CONTROLLER_SSH_PUBKEY}}" in cs and not controller_pubkey:
+                print(
+                    "⚠ WARNING: CONTROLLER_SSH_PUBKEY not set; debian-install-v2 will rely "
+                    "solely on netcup's own sshKeyIds injection for SSH access"
+                )
 
             cs = cs.replace("{{TELEGRAM_BOT_TOKEN}}", token)
             cs = cs.replace("{{TELEGRAM_CHAT_ID}}", chat_id)
             cs = cs.replace("{{SERVER_NAME}}", server_name)
+            cs = cs.replace("{{CONTROLLER_SSH_PUBKEY}}", controller_pubkey)
             expanded["customScript"] = cs
     except Exception:
         pass
@@ -1868,10 +1900,28 @@ def main():
     args = parse_args()
     DEBUG = DEBUG or getattr(args, "debug", False)
 
+    attach_only = getattr(args, "attach_only", False)
     if getattr(args, "ssh_identity_file", None):
+        if not attach_only:
+            # Per-host/per-date identity, rendered now that SERVER_NAME (this
+            # run's target host) is known - see _render_identity_file_path().
+            # --attach-only intentionally skips rendering: it means to
+            # reconnect with an already-known, already-generated key (passed
+            # explicitly via --ssh-identity-file /
+            # NETCUP_SCP_API_SSH_IDENTITY_FILE), not to silently generate a
+            # fresh one that would never match anything on the host it's
+            # attaching to.
+            args.ssh_identity_file = _render_identity_file_path(args.ssh_identity_file, SERVER_NAME)
         _ensure_local_identity_file_exists(args.ssh_identity_file, SETTINGS["ssh.controller_fqdn"])
+        if not attach_only:
+            # Consumed by _expand_payload_placeholders() (mirrors the
+            # TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID pattern) so debian-install-v2
+            # can install this exact key into authorized_keys itself, rather
+            # than depending solely on netcup's own account-level sshKeyIds
+            # injection actually landing on the host.
+            os.environ["CONTROLLER_SSH_PUBKEY"] = _read_public_key_for_identity(args.ssh_identity_file)
 
-    if getattr(args, "attach_only", False):
+    if attach_only:
         if not getattr(args, "ssh_host", None):
             print("ERROR: --attach-only requires --ssh-host (or NETCUP_SCP_API_SSH_HOST)", file=sys.stderr)
             sys.exit(2)

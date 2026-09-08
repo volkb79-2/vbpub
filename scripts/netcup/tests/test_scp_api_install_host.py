@@ -41,6 +41,20 @@ def test_redact_for_log_masks_custom_script_by_length(install_host_mod):
     assert "len=5" in redacted["customScript"]
 
 
+def test_expand_payload_placeholders_substitutes_controller_ssh_pubkey(install_host_mod, monkeypatch):
+    monkeypatch.setenv("CONTROLLER_SSH_PUBKEY", "ssh-ed25519 AAAAtest vbpub-controller-ephemeral")
+    payload = {"customScript": "CONTROLLER_SSH_PUBKEY='{{CONTROLLER_SSH_PUBKEY}}' python3 -"}
+    expanded = install_host_mod._expand_payload_placeholders(payload)
+    assert expanded["customScript"] == "CONTROLLER_SSH_PUBKEY='ssh-ed25519 AAAAtest vbpub-controller-ephemeral' python3 -"
+
+
+def test_expand_payload_placeholders_warns_when_controller_ssh_pubkey_missing(install_host_mod, monkeypatch, capsys):
+    monkeypatch.delenv("CONTROLLER_SSH_PUBKEY", raising=False)
+    payload = {"customScript": "CONTROLLER_SSH_PUBKEY='{{CONTROLLER_SSH_PUBKEY}}' python3 -"}
+    install_host_mod._expand_payload_placeholders(payload)
+    assert "CONTROLLER_SSH_PUBKEY not set" in capsys.readouterr().out
+
+
 def test_normalize_ssh_public_key_drops_comment(install_host_mod):
     assert install_host_mod._normalize_ssh_public_key("ssh-ed25519 AAAA... user@host") == "ssh-ed25519 AAAA..."
 
@@ -56,6 +70,37 @@ def test_extract_primary_ipv4_from_server_live_info(install_host_mod):
 
 def test_extract_primary_ipv4_none_when_absent(install_host_mod):
     assert install_host_mod._extract_primary_ipv4({}) is None
+
+
+def test_render_identity_file_path_substitutes_host_and_date(install_host_mod, monkeypatch):
+    class _FixedDatetime(install_host_mod.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 9, 8)
+
+    monkeypatch.setattr(install_host_mod, "datetime", _FixedDatetime)
+    rendered = install_host_mod._render_identity_file_path(
+        "~/.ssh/vbpub-netcup-{host}-{date}-ed25519", "v1001.vxxu.de"
+    )
+    assert rendered == "~/.ssh/vbpub-netcup-v1001.vxxu.de-20260908-ed25519"
+
+
+def test_render_identity_file_path_falls_back_to_unknown_host(install_host_mod):
+    rendered = install_host_mod._render_identity_file_path("~/.ssh/vbpub-netcup-{host}-{date}-ed25519", None)
+    assert "unknown-host" in rendered
+    assert "{host}" not in rendered
+
+
+def test_render_identity_file_path_passthrough_when_no_placeholders(install_host_mod):
+    literal = "~/.ssh/some-explicit-key"
+    assert install_host_mod._render_identity_file_path(literal, "v1001.vxxu.de") == literal
+
+
+def test_render_identity_file_path_sanitizes_unsafe_host_characters(install_host_mod):
+    rendered = install_host_mod._render_identity_file_path("{host}", "v1001/../vxxu de")
+    assert rendered == "v1001-..-vxxu-de"
+    assert "/" not in rendered
+    assert " " not in rendered
 
 
 def test_build_ssh_cmd_base_with_identity(install_host_mod):
@@ -160,7 +205,9 @@ def test_ensure_local_identity_generates_key_when_missing(install_host_mod, tmp_
     assert key_path.exists()
     pub = key_path.with_suffix(".pub")
     assert pub.exists()
-    assert "vbpub-netcup-installation@controller.example.com" in pub.read_text()
+    comment = pub.read_text()
+    assert "vbpub-controller-ephemeral" in comment
+    assert "key@controller.example.com" in comment
 
 
 def test_resolve_controller_fqdn_passes_through_explicit_value(install_host_mod):
@@ -191,7 +238,9 @@ def test_ensure_local_identity_automatic_uses_reverse_dns(install_host_mod, tmp_
     key_path = tmp_path / "key"
     install_host_mod._ensure_local_identity_file_exists(str(key_path), "automatic")
     pub = key_path.with_suffix(".pub")
-    assert "vbpub-netcup-installation@controller.example.net" in pub.read_text()
+    comment = pub.read_text()
+    assert "vbpub-controller-ephemeral" in comment
+    assert "key@controller.example.net" in comment
 
 
 def test_ensure_local_identity_automatic_refuses_when_everything_fails(install_host_mod, tmp_path, monkeypatch):

@@ -13,23 +13,35 @@ base_url = "https://www.servercontrolpanel.de/scp-core"
 keycloak_url = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect"
 
 [ssh]
-# Static, shared "day-0 bootstrap" key, reused across every install (NOT a
-# per-host production key - bootstrap stage2 generates and Telegrams you a
-# separate, unique key per host for that; see ../ssh-keygen-deploy.py). Kept
-# under ~/.ssh/ - the devcontainer's writable, mdt-managed SSH dir (see
+# Ephemeral, per-host "day-0 bootstrap" key -- one keypair per install, NOT
+# a shared file reused across hosts (confirmed live 2026-09-08: a shared key
+# meant SSH monitoring for one host could silently pick up a key netcup had
+# actually registered for a *different* host). `{host}`/`{date}` are
+# rendered from the target server name (falls back to "unknown-host" if
+# unset) and today's UTC date before use -- see _render_identity_file_path().
+# Matches netcup-api-filter's own `<service>-<host-id>-<algorithm>` naming
+# convention (.devcontainer/finalize.post.d/10-netcup-setup.sh's SSH_KEYS),
+# with a date segment added per the operator's own request. Kept under
+# ~/.ssh/ - the devcontainer's writable, mdt-managed SSH dir (see
 # .devcontainer/devcontainer.json), NOT ~/.ssh-host (the host's *native*
 # ~/.ssh, bind-mounted readonly for known_hosts/reference - writing there
 # fails with "Read-only file system", confirmed live 2026-09-08). Auto-
 # generated on first use if missing - see _ensure_local_identity_file_exists().
-identity_file = "~/.ssh/vbpub-netcup-installation-ed25519"
+# This is separate from the per-host *production* access key stage2 itself
+# generates on the host and Telegrams back -- this key is transient: it's
+# also passed through to debian-install-v2 (CONTROLLER_SSH_PUBKEY) so it can
+# be installed into authorized_keys directly and removed again once stage2
+# finishes, independent of whether netcup's own sshKeyIds injection worked.
+identity_file = "~/.ssh/vbpub-netcup-{host}-{date}-ed25519"
 user = "root"
 
-# Embedded as the *comment* on the auto-generated key above (the filename
-# stays static - see identity_file). This comment lives in authorized_keys
-# on the INSTALLED HOST, not here - so what's meaningful is how that host
-# sees us: the public IP we connect from, reverse-DNS'd if possible. Not
-# this controller's own internal/container hostname, which means nothing to
-# anyone looking at authorized_keys on a different machine.
+# Feeds into the *comment* on the auto-generated key above, alongside the
+# "vbpub-controller-ephemeral" marker and the same {host}/{date} identity_file
+# uses (see _ensure_local_identity_file_exists()). This comment lives in
+# authorized_keys on the INSTALLED HOST, not here - so what's meaningful is
+# how that host sees us: the public IP we connect from, reverse-DNS'd if
+# possible. Not this controller's own internal/container hostname, which
+# means nothing to anyone looking at authorized_keys on a different machine.
 #
 # "automatic" (the default below) detects our public IP the same way
 # netcup-api-filter's own shell aliases do (`alias myip='curl -s
