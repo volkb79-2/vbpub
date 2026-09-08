@@ -8059,3 +8059,72 @@ mirroring the diagnostic-message discipline `_linked_worktree_gap()`
 - [ ] a regression test reproduces the reviewer's exact repro (a symlink
       inside the tree pointing at a gitignored location, both
       `--state-dir` and `--progress`) and confirms the new message.
+
+## B078 — R0 trusts only the wrapped target's exit code, which a test framework's own internal machinery can flip independent of test correctness (run-gate RG-45)
+
+### What was measured
+
+run-gate-project's own backlog RG-45 (filed 2026-09-08, cross-repo
+convention: a finding about a TOOL made while working in dstdns is filed
+in the tool's own backlog) reproduced 5/5 identical: dstdns P176's
+`frontend-unit`/`ui_unit` vitest lanes exiting non-zero with every actual
+test green (140/140 or 154/154), caused by vitest 3.2.7's own internal
+worker↔orchestrator RPC heartbeat (hardcoded 60s, no config path) tripping
+under host-wide multi-tenant CPU contention — traced to the actual
+upstream source (`vitest/dist/chunks/index.B521nVV-.js`), not guessed.
+`[lanes.ui_unit]` is already `kind = "assay"` and reproduced identically,
+confirming assay's own R0 evaluation has the same blind spot: `runner.py`'s
+`execute_command` (A-073) reads only the wrapped process's raw exit code
+— "0 is PASS; anything else is FAIL/COMMAND_FAILED... never a universal
+PASS" — with no path to the test framework's own structured, more
+truthful report.
+
+### Why this isn't `Outcome`/`EXIT_CODES`
+
+The operator's own first framing was "assay's default exit code becomes
+non-zero, forcing verdict reads" — checked against the actual code
+(`src/assay/errors.py`) and found already true: `Outcome`/`EXIT_CODES` is
+already a closed, frozen, six-value vocabulary where "the exit code IS the
+verdict" is the documented design intent (A-021). The defect sits one
+layer inside that, in A-073's rule for the WRAPPED target, not in assay's
+own output contract — see the design doc for the full trace.
+
+### Proposed fix (designed, not yet carved)
+
+Full design: `nyxloom-trove/R0-STRUCTURED-REPORT-DESIGN.md`. Summary: an
+opt-in per-lane `result_report` declaration naming a structured test-report
+path + format (vitest's native `--reporter=json`, `pytest-json-report` for
+Python per operator direction — use the plugin, do less ourselves — and
+`go test -json` for Go); when present AND verified complete (well-formed,
+carries the format's own "finished" marker, non-zero test count), the
+report's own pass/fail count becomes R0's determination in EITHER
+direction, overriding a disagreeing exit code; absent/malformed/incomplete
+falls back to today's A-073 rule unchanged. A-073 stays the default for
+every lane that doesn't opt in. No change to `Outcome`/`EXIT_CODES`, no
+`run-gate.py` change required (traced explicitly in the design doc — this
+was also a corrected assumption from the operator's first framing).
+
+### Acceptance (for the carve, sequenced per SR-5)
+
+- [ ] Checkpoint 1 (vitest, the confirmed live repro): a lane declaring
+      `result_report` with a verified-complete, zero-failure vitest JSON
+      report and a non-zero wrapped-process exit code is judged `PASS`;
+      a truncated/malformed/absent report falls back to A-073 unchanged;
+      a verified-complete report naming real failures is judged `FAIL`
+      regardless of exit code; a lane not declaring `result_report` is
+      byte-for-byte unaffected.
+- [ ] Checkpoint 2: `pytest-json-report` reader, same completeness
+      contract.
+- [ ] Checkpoint 3: `go test -json` reader (NDJSON-specific completeness
+      design, deferred in SR-4c).
+- [ ] Fault-injection regression tests for every completeness-check
+      failure shape (truncated write, wrong shape, zero-test report).
+
+### Cross-reference
+
+run-gate RG-45 (`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md`) stays
+open there, pointing here — this is the actual fix location, not
+run-gate's. RG-44 (same day, a different case-sensitive-string-match
+fragility in run-gate's own `GONE_SIGNALS`) is cited in the design doc's
+SR-3 as the reason a language-specific stderr-signature allowlist was
+rejected in favor of the report-completeness approach.
