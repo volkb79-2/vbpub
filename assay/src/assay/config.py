@@ -328,6 +328,22 @@ _DURATION_RE = re.compile(
 )
 _DURATION_HINT = "expected a duration such as '90s', '5m' or '1h30m'"
 
+#: (B067) The ONE non-duration spelling ``budget`` accepts: "there is no
+#: lane-wide bound; every unit of this lane's work carries its own, and
+#: liveness is judged by the CALLER from the progress stream". It is a
+#: closed literal, not a family (no ``"none"``, no ``""``, no ``0``), and
+#: :func:`parse_duration` is never asked to interpret it -- the lane loader
+#: branches on it BEFORE parsing, so the duration grammar stays exactly what
+#: it was.
+#:
+#: **Admissible only where every unit is bounded** (see
+#: :func:`_refuse_unbounded_without_unit_bounds`): an R0/R1 lane is ONE
+#: command whose only bound IS ``budget``, so it is refused there by name.
+#: Stall detection is NOT assay's -- assay's job stops at emitting a rich
+#: enough progress stream (B064/B065) for an external watcher (run-gate
+#: RG-36) to compute staleness. assay gains no stall threshold of its own.
+UNBOUNDED_BUDGET = "unbounded"
+
 
 def parse_duration(text: str) -> float:
     """Parse a duration string to seconds (A-052 — at LOAD, not at run time).
@@ -557,7 +573,13 @@ class MutationConfig:
         return payload
 
 
-_CANARY_FIELDS: tuple[str, ...] = ("mechanism", "target", "targets", "aggregation")
+_CANARY_FIELDS: tuple[str, ...] = (
+    "mechanism",
+    "target",
+    "targets",
+    "aggregation",
+    "budget_per_attempt",
+)
 
 
 @dataclass(frozen=True)
@@ -599,6 +621,19 @@ class CanaryConfig:
     targets: tuple[str, ...] | None = None
     #: (B007/A-432) ``"any"`` or ``"all"``, present iff :attr:`targets` is.
     aggregation: str | None = None
+    #: (B067) The declared per-ATTEMPT wall-clock bound: one attempt is one
+    #: declared target's whole probe -- its control materialisation, its
+    #: control run, and its transformed run -- which is the unit
+    #: :func:`assay.canary.run_isolated_canary` owns end to end and the unit
+    #: :class:`~assay.verdict.CanaryAttempt` records. ``None`` preserves the
+    #: pre-B067 behaviour exactly (every attempt bounded only by the lane
+    #: deadline); a declared value tightens the deadline in force FOR THAT
+    #: ATTEMPT to whichever of the two is nearer, so a numeric ``budget``
+    #: still wins when it is the smaller. **Required when the lane declares
+    #: ``budget = "unbounded"`` and R3** -- that is the whole point of the
+    #: field: ``unbounded`` is admissible only where every unit carries its
+    #: own bound.
+    budget_per_attempt: str | None = None
 
     def __post_init__(self) -> None:
         # A structural invariant, not a config diagnostic: the LOADER states
@@ -640,7 +675,27 @@ class CanaryConfig:
         else:
             payload["targets"] = list(self.targets or ())
             payload["aggregation"] = self.aggregation
+        # (B067) Declared value or omitted, never null (A-051) -- so an R3
+        # lane written before this field existed still round-trips
+        # BYTE-unchanged through `as_declared`.
+        if self.budget_per_attempt is not None:
+            payload["budget_per_attempt"] = self.budget_per_attempt
         return payload
+
+    @property
+    def budget_per_attempt_seconds(self) -> float | None:
+        """(B067) :attr:`budget_per_attempt` in seconds, or ``None``.
+
+        Parsed on demand rather than stored beside the declaration: the
+        loader has already proven the string parses (it refuses the lane
+        otherwise), and keeping ONE field means a declaration and its
+        derived number can never disagree the way ``budget``/
+        ``budget_seconds`` deliberately can (A-052 keeps that pair only
+        because the verbatim declaration is itself recorded).
+        """
+        if self.budget_per_attempt is None:
+            return None
+        return parse_duration(self.budget_per_attempt)
 
 
 @dataclass(frozen=True)
@@ -948,11 +1003,16 @@ class Lane:
     argv: tuple[str, ...]
     env: Mapping[str, str]
     env_passthrough: tuple[str, ...]
-    #: the declared duration string, verbatim
+    #: the declared duration string, verbatim -- or (B067) the closed literal
+    #: :data:`UNBOUNDED_BUDGET`
     budget: str
     #: ...and its parsed value, which is ADDITIONAL to the declaration, not a
-    #: replacement for it (A-052)
-    budget_seconds: float
+    #: replacement for it (A-052). (B067) ``None`` -- and ONLY ``None`` --
+    #: means the lane declared :data:`UNBOUNDED_BUDGET`: there is no
+    #: lane-wide deadline, and every unit of the lane's work carries its own
+    #: bound (the loader refuses the declaration otherwise). It is never a
+    #: "not yet computed" or "defaulted" value.
+    budget_seconds: float | None
     allow_argv_append: bool
     judge: JudgeConfig | None
     #: §7: WHERE is data assay parses and never interprets.
@@ -1330,16 +1390,28 @@ def _load_lane(
         )
 
     budget = _as_str(table["budget"], where, "budget")
-    try:
-        budget_seconds = parse_duration(budget)
-    except ValueError as exc:
-        raise LaneConfigError(f"{where}: 'budget' {exc}") from exc
+    budget_seconds: float | None
+    if budget == UNBOUNDED_BUDGET:
+        # (B067) The declaration stays VERBATIM on `Lane.budget` (A-052's own
+        # rule: the parsed value is additional to the declaration, never a
+        # replacement for it), and the parsed side becomes `None` -- the one
+        # value that cannot be confused with a duration. The admissibility
+        # check needs `judge`, which is loaded below, so it runs there.
+        budget_seconds = None
+    else:
+        try:
+            budget_seconds = parse_duration(budget)
+        except ValueError as exc:
+            raise LaneConfigError(f"{where}: 'budget' {exc}") from exc
 
     allow_argv_append = _as_bool(
         table["allow_argv_append"], where, "allow_argv_append"
     )
 
     judge = _load_judge(table.get("judge"), rigor, where, project_root)
+
+    if budget_seconds is None:
+        _refuse_unbounded_without_unit_bounds(rigor, judge, where)
 
     if (
         judge is not None
@@ -1676,6 +1748,88 @@ def _load_targets(value: Any, where: str) -> tuple[str, ...]:
         seen.add(raw)
         validated.append(raw)
     return tuple(validated)
+
+
+def _refuse_unbounded_without_unit_bounds(
+    rigor: Iterable[str], judge: "JudgeConfig | None", where: str
+) -> None:
+    """(B067) ``budget = "unbounded"`` is admissible ONLY when every unit of
+    the lane's work carries its own bound. Refuse at LOAD otherwise, naming
+    the unit that has none.
+
+    The two admissible shapes, and why:
+
+    * a NATIVE R2 lane, whose work is N independent mutant commands, each
+      already boundable by ``judge.mutation.budget_per_candidate``;
+    * an R3 lane, whose work is one probe per declared canary target, each
+      boundable by ``judge.canary.budget_per_attempt`` (B067's own addition
+      -- B007/A-432 shipped the ordered multi-target STRUCTURE but no
+      per-attempt bound).
+
+    Everything else is refused BY NAME:
+
+    * an R0/R1 lane is ONE command. Its only liveness bound IS ``budget``,
+      there is no sub-unit to require a bound of, and ``unbounded`` would
+      leave the lane with no bound at all rather than with per-unit ones.
+    * an INGESTED R2 lane (``judge.mutation.format``) is likewise ONE
+      command -- the lane's own argv runs the foreign mutation tool and
+      assay ingests its report -- and ``budget_per_candidate`` is refused
+      there already (assay chose none of that run's execution policy). So it
+      falls under the same one-command reason, said in its own words rather
+      than as a confusing "declare a key you are not allowed to declare".
+
+    **What this does NOT claim.** An unbounded native-R2 lane's own BASELINE
+    run -- the single pre-sweep command every R2 lane executes once to prove
+    the suite is green before any mutant -- is not covered by
+    ``budget_per_candidate`` and is deliberately NOT bounded by it here:
+    a baseline runs the whole suite while a mutant runs it once under a
+    per-mutant bound, so tightening the baseline to the per-candidate value
+    would refuse healthy lanes. On an unbounded lane that one command is
+    therefore bounded only by the caller's own stall detection, for which
+    B064's ``command_running`` heartbeat is the signal. Recorded here rather
+    than left for a reader to discover, and filed as its own backlog entry.
+    """
+    rigor = tuple(rigor)
+    r2 = "R2" in rigor
+    r3 = "R3" in rigor
+    ingested_r2 = (
+        r2
+        and judge is not None
+        and judge.mutation is not None
+        and judge.mutation.is_ingested
+    )
+    if (not r2 and not r3) or (ingested_r2 and not r3):
+        which = "an ingested R2" if ingested_r2 else "an R0/R1"
+        raise LaneConfigError(
+            f"{where}: budget = {UNBOUNDED_BUDGET!r} is refused on this lane: "
+            f"{which} lane is ONE command, so it has no per-unit bound to "
+            f"require and 'budget' is its only liveness bound; declaring "
+            f"{UNBOUNDED_BUDGET!r} would leave it with none at all. Declare a "
+            f"duration (rigor declared here: {list(rigor)})"
+        )
+    missing: list[str] = []
+    if (
+        r2
+        and not ingested_r2
+        and (
+            judge is None
+            or judge.mutation is None
+            or judge.mutation.budget_per_candidate is None
+        )
+    ):
+        missing.append("judge.mutation.budget_per_candidate (one mutant command)")
+    if r3 and (
+        judge is None
+        or judge.canary is None
+        or judge.canary.budget_per_attempt is None
+    ):
+        missing.append("judge.canary.budget_per_attempt (one canary probe)")
+    if missing:
+        raise LaneConfigError(
+            f"{where}: budget = {UNBOUNDED_BUDGET!r} requires every unit of "
+            f"the lane's work to carry its own bound; this lane declares no "
+            f"bound for: {', '.join(missing)}"
+        )
 
 
 def _required_judge_fields(rigor: Iterable[str]) -> tuple[str, ...]:
@@ -2877,12 +3031,34 @@ def _load_canary(
                 f"one of {list(CANARY_AGGREGATIONS)}"
             )
 
+    # (B067) Validated on exactly the shape `judge.mutation.budget_per_candidate`
+    # already uses one table over -- a non-empty duration string -- so a lane
+    # author writes the two per-unit bounds identically.
+    budget_per_attempt = value.get("budget_per_attempt")
+    if budget_per_attempt is not None:
+        if not isinstance(budget_per_attempt, str) or not budget_per_attempt:
+            raise LaneConfigError(
+                f"{where}: 'judge.canary.budget_per_attempt' must be a "
+                f"non-empty string, got {_type_name(budget_per_attempt)}"
+            )
+        try:
+            parse_duration(budget_per_attempt)
+        except ValueError as exc:
+            raise LaneConfigError(
+                f"{where}: 'judge.canary.budget_per_attempt' {exc}"
+            ) from exc
+
     if singular:
-        return CanaryConfig(mechanism=mechanism, target=declared[0])
+        return CanaryConfig(
+            mechanism=mechanism,
+            target=declared[0],
+            budget_per_attempt=budget_per_attempt,
+        )
     return CanaryConfig(
         mechanism=mechanism,
         targets=tuple(declared),
         aggregation=aggregation,
+        budget_per_attempt=budget_per_attempt,
     )
 
 

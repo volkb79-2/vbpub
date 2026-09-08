@@ -7815,3 +7815,77 @@ allowlist entry may be stale; the eight known-untrusted sites are pinned by
 name so a silent deletion shows up; and the order-independence is proven
 against the real module that differs. Verified red by reverting one guard:
 two independent tests fail, naming the file and function.
+
+---
+
+## B076 — an unbounded R2 lane's own BASELINE run is the one command B067 leaves with no bound at all
+
+**Filed 2026-09-08 by the progress/resume wave's implementer, from building
+B067 rather than from a review. Recorded because B067's own rule —
+"`unbounded` only when every unit of the lane's work carries its own bound" —
+is not literally true of one command, and a reader should find that stated
+rather than discover it.**
+
+### What was measured
+
+`tests/test_config_unbounded_budget.py::
+test_a_real_unbounded_R2_lane_runs_every_candidate_with_no_lane_timeout`
+records every timeout the `ProcessRunner` boundary is handed on a real
+`budget = "unbounded"` R2 lane with `budget_per_candidate = "45s"`:
+
+```
+timeouts == [None, 45.0]
+```
+
+`None` is the BASELINE — the single pre-sweep run every R2 lane executes once
+to prove the suite is green before any mutant is built. `45.0` is the one
+mutant. Every mutant is bounded, exactly as B067 requires; the baseline is
+bounded by nothing.
+
+### Why B067 shipped it that way, deliberately
+
+`judge.mutation.budget_per_candidate` is a per-MUTANT bound. A mutant runs
+the suite once with one byte-range replaced; a baseline runs the same suite
+with nothing replaced, but it is the run that pays for cold caches, fixture
+setup and any first-run compilation. Tightening the baseline to the
+per-candidate value would refuse lanes that are perfectly healthy, and it
+would do so with a `LANE_TIMEOUT` that names a bound the lane never intended
+for that command. So B067 did NOT do it, and said so in
+`_refuse_unbounded_without_unit_bounds`' docstring and in CONSUMERS.md.
+
+### Why it is worth a decision rather than a footnote
+
+`budget = "unbounded"` exists so a caller can stop guessing a total. Today
+the caller's stall detection (run-gate RG-36) is the only thing covering the
+baseline, which is coherent with this wave's settled ruling — **assay does
+not watch itself** — but it means an unbounded lane's *first* command is
+exactly as unwatched by assay as an R0/R1 lane's would be, and an R0/R1 lane
+is refused `unbounded` for precisely that reason. The two rules are
+defensible together only because the R2 sweep, not the baseline, is the part
+whose length cannot be guessed. That is a judgment, and it should be recorded
+as one.
+
+### The options, none of them chosen here
+
+- **(a) Leave it.** The caller already watches; B064's `command_running`
+  heartbeat makes a stalled baseline legible in the progress stream. Costs
+  nothing, states the gap in the docs (what shipped).
+- **(b) `judge.mutation.budget_per_baseline`.** A third per-unit key, only
+  meaningful under `unbounded`. Honest, and it makes B067's rule literally
+  true — at the cost of a key most lanes would have to guess a value for,
+  which is the failure mode `unbounded` was introduced to remove.
+- **(c) Reuse `budget` as the baseline bound.** i.e. `budget = "unbounded"`
+  means "unbounded for the SWEEP", and a lane declares a numeric duration
+  that applies to the baseline alone. Compact, but it gives one key two
+  meanings depending on rigor, which is exactly the kind of overload
+  DESIGN-GUIDE §5 refuses elsewhere.
+
+### Acceptance (for whoever picks this up)
+
+- [ ] a ruling recorded, naming the rejected options above;
+- [ ] if (b) or (c) is built: an unbounded R2 lane's baseline is observably
+      bounded at the process boundary (the `timeouts` assertion above flips
+      from `None` to the declared value), and a baseline that exceeds it is
+      a NAMED terminal rather than a bare `LANE_TIMEOUT` a reader would
+      misattribute to the sweep;
+- [ ] `assay verify` untouched either way — none of this is evidence.

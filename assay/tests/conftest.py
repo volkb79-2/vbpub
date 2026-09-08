@@ -409,7 +409,7 @@ def make_plan(
     )
 
 
-def make_deadline(*, budget_seconds: float = 60.0, monotonic=None):
+def make_deadline(*, budget_seconds: float | None = 60.0, monotonic=None):
     """One :class:`~assay.runner.LaneDeadline`, real monotonic clock by
     default -- a test proving injected-clock expiry supplies its own."""
     import time as _time
@@ -672,7 +672,8 @@ def make_lane(
     env: Mapping[str, str] = MappingProxyType({}),
     env_passthrough: tuple[str, ...] = (),
     budget: str = "5m",
-    budget_seconds: float = 300.0,
+    #: (B067) `None` -- and only `None` -- is `budget = "unbounded"`.
+    budget_seconds: float | None = 300.0,
     allow_argv_append: bool = False,
     judge: "JudgeConfig | None" = None,
     isolation: "IsolationConfig | None" = _ISOLATION_UNSET,  # type: ignore[assignment]

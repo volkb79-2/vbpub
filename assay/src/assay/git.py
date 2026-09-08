@@ -81,6 +81,7 @@ package's ``scope.touch``).
 
 from __future__ import annotations
 
+import math
 import os
 import selectors
 import shutil
@@ -203,10 +204,23 @@ def _sample_remaining(remaining: Remaining | None) -> float | None:
     (``AssayError``/``BUDGET_EXCEEDED``/``LANE_TIMEOUT``) propagates
     unmodified -- this is the ONE object every abnormal-cleanup path below
     re-raises, never a fresh exception of assay's own.
+
+    **(B067)** An UNBOUNDED lane's deadline returns ``math.inf``, which means
+    exactly what ``None`` already means to every caller of this function:
+    wait, with no timeout. Collapsing the two here -- at the ONE place a lane
+    remainder becomes a :mod:`selectors` / :meth:`subprocess.Popen.wait`
+    timeout for a Git child -- is what keeps every call site below unchanged.
+    It is not an approximation: ``selector.select(None)`` and
+    ``proc.wait()`` are the same unbounded wait an infinity would denote, and
+    an infinity passed through instead raises ``OverflowError`` inside
+    :mod:`selectors` (``math.ceil(inf)``), which is not a timeout at all.
     """
     if remaining is None:
         return None
-    return remaining()
+    sampled = remaining()
+    if sampled == math.inf:
+        return None
+    return sampled
 
 
 def _kill_owned_group(proc: subprocess.Popen[bytes]) -> None:
@@ -1013,6 +1027,13 @@ class _P22Deadline:
     to the whole lane, not to each subprocess). Converting it once, here,
     is what stops a duration from being handed to child after child and
     silently multiplying into N x the declared budget.
+
+    **(B067)** *seconds* may be ``math.inf`` (an unbounded lane's remainder),
+    and :meth:`remaining` then returns ``None`` -- the "no timeout" spelling
+    both consumers below already accept (``selector.select(None)`` blocks
+    until an event; ``proc.wait(timeout=None)`` blocks until exit). An
+    infinity handed to either raises ``OverflowError``, so the conversion
+    happens here rather than at each call site.
     """
 
     __slots__ = ("_expiry",)
@@ -1020,7 +1041,9 @@ class _P22Deadline:
     def __init__(self, seconds: float) -> None:
         self._expiry = time.monotonic() + seconds
 
-    def remaining(self, what: str) -> float:
+    def remaining(self, what: str) -> float | None:
+        if self._expiry == math.inf:
+            return None
         left = self._expiry - time.monotonic()
         if left <= 0:
             raise _p22_timeout(what)

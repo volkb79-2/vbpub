@@ -174,7 +174,10 @@ class ProcessRunner(Protocol):
         *,
         env: Mapping[str, str],
         cwd: Path,
-        timeout: float,
+        #: (B067) ``None`` means "no timeout" -- :mod:`subprocess`' own
+        #: spelling for it, and the ONLY way an unbounded lane's child is
+        #: launched. Never a large finite stand-in.
+        timeout: float | None,
     ) -> subprocess.CompletedProcess[str]: ...
 
 
@@ -189,23 +192,46 @@ MonotonicClock = Callable[[], float]
 
 @dataclass(frozen=True, kw_only=True)
 class LaneDeadline:
-    """One lane-wide monotonic deadline; no lower layer chooses a clock."""
+    """One lane-wide monotonic deadline; no lower layer chooses a clock.
+
+    **(B067) ``expires_at`` may be ``math.inf``**, and only for a lane that
+    declared ``budget = "unbounded"``. :meth:`remaining` then returns
+    ``math.inf`` rather than raising, which is the honest answer to "how much
+    time is left" and NOT a large finite number pretending to be one. Every
+    place that turns a remainder into a real child-process timeout converts
+    ``math.inf`` to "no timeout" at its own boundary
+    (:func:`execute_plan` here, :func:`assay.git._sample_remaining` and
+    :class:`assay.git._P22Deadline` for Git, :func:`assay.isolation.
+    _check_timeout` for P22 materialisation) -- an infinity handed straight
+    to :mod:`selectors` or :meth:`subprocess.Popen.wait` raises
+    ``OverflowError``, so the conversion is load-bearing, not cosmetic.
+
+    An unbounded deadline never raises ``BUDGET_EXCEEDED``/``LANE_TIMEOUT``,
+    which is exactly what the lane declared. Liveness for such a lane is the
+    CALLER's job, from the progress stream (B064/B065); assay does not watch
+    itself.
+    """
 
     expires_at: float
     monotonic: MonotonicClock
 
     @classmethod
     def start(
-        cls, *, budget_seconds: float, monotonic: MonotonicClock
+        cls, *, budget_seconds: float | None, monotonic: MonotonicClock
     ) -> "LaneDeadline":
-        if (
+        """Start one lane deadline. (B067) *budget_seconds* is ``None`` --
+        and only ``None`` -- for ``budget = "unbounded"``; every other
+        invalid value is refused exactly as before.
+        """
+        if budget_seconds is not None and (
             isinstance(budget_seconds, bool)
             or not isinstance(budget_seconds, (int, float))
             or not math.isfinite(budget_seconds)
             or budget_seconds <= 0
         ):
             raise ValueError(
-                f"budget_seconds must be a positive finite number, got {budget_seconds!r}"
+                f"budget_seconds must be a positive finite number or None, "
+                f"got {budget_seconds!r}"
             )
         started = monotonic()
         if (
@@ -214,9 +240,49 @@ class LaneDeadline:
             or not math.isfinite(started)
         ):
             raise ValueError(f"monotonic clock returned invalid value {started!r}")
+        if budget_seconds is None:
+            return cls(expires_at=math.inf, monotonic=monotonic)
         return cls(expires_at=started + float(budget_seconds), monotonic=monotonic)
 
+    @property
+    def unbounded(self) -> bool:
+        """(B067) Whether this deadline can never expire."""
+        return self.expires_at == math.inf
+
+    def tightened(self, seconds: float | None) -> "LaneDeadline":
+        """(B067) A deadline for ONE sub-unit: this one, or *seconds* from
+        now, whichever is NEARER -- so a numeric lane ``budget`` still wins
+        when it is the smaller of the two, and an unbounded lane's unit gets
+        exactly its own declared bound.
+
+        ``None`` returns ``self`` unchanged, which is what makes every
+        pre-B067 call site (no per-unit bound declared) byte-identical.
+        Never widens: a per-unit bound larger than what the lane has left
+        does not buy the unit more time.
+        """
+        if seconds is None:
+            return self
+        if (
+            isinstance(seconds, bool)
+            or not isinstance(seconds, (int, float))
+            or not math.isfinite(seconds)
+            or seconds <= 0
+        ):
+            raise ValueError(
+                f"tightened seconds must be a positive finite number or None, "
+                f"got {seconds!r}"
+            )
+        return type(self)(
+            expires_at=min(self.expires_at, self.monotonic() + float(seconds)),
+            monotonic=self.monotonic,
+        )
+
     def remaining(self) -> float:
+        if self.unbounded:
+            # (B067) The one non-finite return, and it is the truth: this
+            # lane declared no total bound. Converted to "no timeout" by
+            # whichever boundary turns a remainder into a child's timeout.
+            return math.inf
         remaining = self.expires_at - self.monotonic()
         if not math.isfinite(remaining) or remaining <= 0:
             raise AssayError(
@@ -237,7 +303,7 @@ def default_scratch_root() -> Iterator[Path]:
 
 
 def default_process_runner(
-    argv: Sequence[str], *, env: Mapping[str, str], cwd: Path, timeout: float
+    argv: Sequence[str], *, env: Mapping[str, str], cwd: Path, timeout: float | None
 ) -> subprocess.CompletedProcess[str]:
     """The real boundary: an actual child process, the seam's default.
 
@@ -621,7 +687,10 @@ class CommandPlan:
     env_effective: Mapping[str, str]
     env_passthrough: tuple[str, ...]
     allow_argv_append: bool
-    budget_seconds: float
+    #: (B067) ``None`` -- and only ``None`` -- when the lane declared
+    #: ``budget = "unbounded"``; :func:`execute_command` turns it into
+    #: ``math.inf`` at the one place it is used as a timeout.
+    budget_seconds: float | None
     project_prefix: PurePosixPath | None
     #: (B043, schema v9) the lane's declared ``cwd``, verbatim, or ``None``.
     #:
@@ -840,14 +909,26 @@ def execute_plan(
     process_runner: ProcessRunner = default_process_runner,
     clock: Clock = _utc_now,
 ) -> CommandResult:
-    """Execute one already-frozen command plan with a required remainder."""
+    """Execute one already-frozen command plan with a required remainder.
+
+    (B067) *timeout* may be ``math.inf`` -- the remainder an unbounded lane's
+    :class:`LaneDeadline` reports -- and is converted HERE, at the one
+    boundary that hands it to a child, into :mod:`subprocess`' own "no
+    timeout" spelling (``None``). Passing an infinity through instead raises
+    ``OverflowError`` inside :mod:`selectors`, so this conversion is what
+    makes an unbounded lane run at all. Every other non-finite or
+    non-positive value is refused exactly as before.
+    """
     if (
         isinstance(timeout, bool)
         or not isinstance(timeout, (int, float))
-        or not math.isfinite(timeout)
+        or (not math.isfinite(timeout) and timeout != math.inf)
         or timeout <= 0
     ):
-        raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
+        raise ValueError(
+            f"timeout must be a positive finite number or math.inf, got {timeout!r}"
+        )
+    child_timeout: float | None = None if timeout == math.inf else timeout
     started_at = clock()
     if plan.argv_appended and not plan.allow_argv_append:
         return CommandResult(
@@ -870,7 +951,7 @@ def execute_plan(
             # the lane command, every R2 candidate and every R3 canary run
             # in the same place by construction.
             cwd=resolve_run_cwd(cwd, plan),
-            timeout=timeout,
+            timeout=child_timeout,
         )
     except subprocess.TimeoutExpired as exc:
         # (B027) `TimeoutExpired.stdout`/`.stderr` carry whatever partial
@@ -994,7 +1075,9 @@ def execute_command(
     return execute_plan(
         plan,
         cwd=cwd,
-        timeout=plan.budget_seconds,
+        # (B067) `math.inf` for an unbounded lane -- `execute_plan` owns the
+        # one conversion to `subprocess`' own "no timeout" spelling.
+        timeout=math.inf if plan.budget_seconds is None else plan.budget_seconds,
         process_runner=process_runner,
         clock=clock,
     )

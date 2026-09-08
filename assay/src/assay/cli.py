@@ -1247,10 +1247,17 @@ def _render_lanes(lane_file: LaneFile, out: TextIO) -> None:
     for name, lane in lane_file.lanes.items():
         judge = lane.judge
         judged = "none" if judge is None else (judge.language or "declared")
+        # (B067) An unbounded lane has no seconds to render, so it renders
+        # none -- never "0s", and never a large finite stand-in.
+        budget_render = (
+            lane.budget
+            if lane.budget_seconds is None
+            else f"{lane.budget} ({lane.budget_seconds:g}s)"
+        )
         print(
             f"  {name}  scope={lane.scope}  rigor={','.join(lane.rigor)}  "
             f"enforcement={lane.enforcement}  "
-            f"budget={lane.budget} ({lane.budget_seconds:g}s)  "
+            f"budget={budget_render}  "
             f"allow_argv_append={str(lane.allow_argv_append).lower()}  "
             f"judge={judged}",
             file=out,

@@ -10,6 +10,22 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      from the commit range but does not clear this hand-written block, so
      leaving content here republishes shipped work as "unreleased". -->
 
+### Added
+
+- **`budget = "unbounded"` (B067).** A lane may now decline a lane-wide
+  deadline — but only where every unit of its work carries its own bound.
+  A native R2 lane must declare `judge.mutation.budget_per_candidate`; an R3
+  lane must declare the new `judge.canary.budget_per_attempt`, which bounds
+  one canary probe end to end (control materialisation, control run,
+  transformed run) and is re-derived fresh per declared target. An R0/R1 lane
+  — and an *ingested* R2 lane, which is likewise one command — is refused at
+  load **by name**, because its only liveness bound *is* `budget`.
+  `budget_per_attempt` also works under a numeric `budget`, where it simply
+  tightens it; a lane declaring neither per-unit bound is byte-unchanged.
+  Stall detection stays entirely with the CALLER (run-gate RG-36): assay
+  gains no stall threshold of its own. No verdict-schema change — the lane's
+  budget is a declaration, never wire evidence.
+
 <!-- cmru: release history -->
 
 ## [5.1.0] - 2026-09-08

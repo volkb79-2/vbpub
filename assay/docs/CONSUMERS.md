@@ -1699,6 +1699,60 @@ but note two consequences:
 A candidate that exceeds this bound is recorded in `budget_exceeded`; the lane continues with other
 candidates.
 
+### `budget = "unbounded"`: the recommended shape for a long mutation lane (B067)
+
+Guessing a lane-wide total for a mutation sweep is the failure mode this
+setting removes. `budget` normally takes a duration; it also takes the single
+literal `"unbounded"`, which says **"there is no lane-wide bound; every unit
+of this lane's work carries its own, and liveness is judged by the caller."**
+
+`"unbounded"` is admitted **only where every unit really is bounded**, and
+refused at load, by name, everywhere else:
+
+| lane | `budget = "unbounded"` |
+| --- | --- |
+| R0/R1 | **refused** — one command, whose only bound *is* `budget` |
+| ingested R2 (`judge.mutation.format`) | **refused** — likewise one command; assay runs no units of its own |
+| native R2 | requires `judge.mutation.budget_per_candidate` |
+| R3 | requires `judge.canary.budget_per_attempt` |
+
+The recommended shape, with the caller supplying the liveness half:
+
+<!-- assay-doc-example:skip reason="lane fragment; the surrounding lane supplies schema_version and the rest of the closed lane grammar" -->
+```toml
+[lanes.worker_lane]
+budget = "unbounded"
+
+[lanes.worker_lane.judge.mutation]
+jobs = 4
+max_mutants = 100
+operators = ["python:compare-swap"]
+budget_per_candidate = "300s"
+```
+
+…invoked with a progress file, and watched by the caller (run-gate's
+`stall_timeout`, RG-36):
+
+```bash
+assay run worker_lane --progress /tmp/worker.progress.jsonl --resume
+```
+
+**Assay does not detect its own stalls, and gains no stall threshold of its
+own.** Its job stops at emitting a stream rich enough for an external watcher
+to compute staleness; a hung *unit* is already caught by that unit's own
+bound. `judge.canary.budget_per_attempt` bounds one canary probe end to end —
+its control materialisation, its control run, and its transformed run — and
+is re-derived fresh for each declared target. Both per-unit bounds also work
+under a numeric `budget`, where they simply tighten it: the lane budget still
+wins whenever it is the nearer of the two.
+
+**One command is deliberately left unbounded** on an unbounded R2 lane: the
+lane's own *baseline* run, executed once before any mutant to prove the suite
+is green. `budget_per_candidate` is a per-*mutant* bound, and a baseline runs
+the whole suite, so tightening the baseline to it would refuse healthy lanes.
+That one command is covered by the caller's stall detection, not by a bound of
+assay's.
+
 Progress is opt-in. `assay run worker_lane --progress /tmp/worker.progress.jsonl` appends one compact
 JSON object per line -- a `run` header naming the commit and start time, then one event after the
 baseline and one after every completed candidate, each flushed as it is written, so a monitor can

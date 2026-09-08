@@ -88,12 +88,22 @@ def _lane(
     targets: tuple[str, ...] = TARGETS,
     aggregation: str | None = "any",
     mechanism: str = "import-break",
+    budget_per_attempt: str | None = None,
+    budget: str = "5m",
+    budget_seconds: float | None = 300.0,
 ):
     canary = (
-        CanaryConfig(mechanism=mechanism, target=targets[0])
+        CanaryConfig(
+            mechanism=mechanism,
+            target=targets[0],
+            budget_per_attempt=budget_per_attempt,
+        )
         if aggregation is None
         else CanaryConfig(
-            mechanism=mechanism, targets=targets, aggregation=aggregation
+            mechanism=mechanism,
+            targets=targets,
+            aggregation=aggregation,
+            budget_per_attempt=budget_per_attempt,
         )
     )
     return make_lane(
@@ -104,6 +114,8 @@ def _lane(
             canary=canary,
         ),
         argv=("check",),
+        budget=budget,
+        budget_seconds=budget_seconds,
     )
 
 
@@ -114,10 +126,15 @@ class _Gate:
 
     def __init__(self, *, catches: bool = True) -> None:
         self.cwds: list[Path] = []
+        #: (B067) every timeout this boundary was handed, in order -- the one
+        #: place a per-attempt bound is observable as a fact rather than as
+        #: elapsed time.
+        self.timeouts: list[float | None] = []
         self.catches = catches
 
     def __call__(self, argv, *, env, cwd, timeout):
         self.cwds.append(Path(cwd))
+        self.timeouts.append(timeout)
         broken = self.catches and any(
             _MARKER in (Path(cwd) / name).read_text()
             for name in TARGETS
@@ -543,6 +560,55 @@ def test_a_payload_under_a_refusal_other_than_the_budget_is_refused(
         "only non-judged status that may is BUDGET_EXCEEDED" in failure
         for failure in failures
     ), failures
+
+
+# --- B067: `judge.canary.budget_per_attempt`, the R3 per-unit bound ---------
+
+
+def test_every_probe_runs_under_the_declared_per_attempt_bound(git_repo: GitRepo):
+    """B067's R3 half. ONE attempt is ONE declared target's whole probe --
+    control materialisation, control run, transformed run -- so the bound
+    applies to every command of that probe and is re-derived FRESH for the
+    next target rather than shared across the loop.
+
+    Measured at the process boundary: each command's timeout is at most the
+    declared 30 s even though the lane's own budget is 300 s, and the loop's
+    later probe is not left with whatever the earlier one had spent.
+    """
+    _seed(git_repo)
+    lane = _lane(git_repo, aggregation="all", budget_per_attempt="30s")
+    gate = _Gate(catches=False)
+    verdict, _ = _run(git_repo, lane, gate=gate)
+
+    claim = _r3(verdict)
+    assert claim.canary is not None
+    # The lane's own baseline runs FIRST and is NOT a canary attempt, so it
+    # keeps the lane's own remainder -- `budget_per_attempt` bounds a probe,
+    # not the command the lane would have run anyway.
+    baseline, probes = gate.timeouts[0], gate.timeouts[1:]
+    assert baseline is not None and baseline > 100.0
+    # Two targets under `all`, neither caught -> 2 probes x 2 halves = 4 runs.
+    assert len(probes) == 4
+    assert all(0 < seen <= 30.0 for seen in probes), gate.timeouts
+    # The bound is re-derived FRESH per attempt: the second probe's halves
+    # are not left with what the first one had already spent, so the last
+    # run still sees very nearly the whole 30 s.
+    assert probes[-1] > 25.0
+
+
+def test_a_lane_declaring_no_per_attempt_bound_is_byte_unchanged(git_repo: GitRepo):
+    """The pre-B067 call site: `tightened(None)` returns the SAME deadline,
+    so every probe still sees the lane's own remainder."""
+    _seed(git_repo)
+    gate = _Gate(catches=False)
+    verdict, _ = _run(git_repo, _lane(git_repo, aggregation="all"), gate=gate)
+
+    # One baseline plus 2 probes x 2 halves.
+    assert len(gate.timeouts) == 5
+    # The lane budget is 300 s and nothing tightened it, so every child saw
+    # (very nearly) the whole remainder.
+    assert all(seen > 100.0 for seen in gate.timeouts), gate.timeouts
+    _accepted(verdict)
 
 
 @pytest.mark.parametrize("aggregation", ["any", "all"])
