@@ -48,7 +48,7 @@ import re
 from typing import Any, Mapping
 
 from ..errors import AssayError, Outcome, ReasonCode
-from ..vocabulary import INGESTED_OPERATOR_NAMESPACES
+from ..vocabulary import INGESTED_OPERATOR_NAMESPACES, MAX_INGESTED_MUTANTS
 from .model import (
     INGESTED_MUTANT_STATUSES,
     IngestedMutant,
@@ -81,7 +81,13 @@ SUPPORTED_REPORT_SCHEMA_MAJORS: frozenset[str] = frozenset({"1"})
 #: assay's own declared ceiling on a discovery assay performs, and an ingested
 #: lane declares none at all (A-360). This is a resource bound on parsing a
 #: document, which is a different thing with a different owner.
-MAX_INGESTED_MUTANTS = 100_000
+#:
+#: (B070 fix round 1) The VALUE moved to :mod:`assay.vocabulary` and is
+#: re-exported here under its own name, unchanged. It is imported rather than
+#: spelled because the model now needs the same number -- `Mutation`'s
+#: `candidate_count` ceiling and `JudgmentR2.discarded`'s length bound -- and
+#: `assay.vocabulary` is the leaf both sides can reach without a cycle, exactly
+#: as `_NAMESPACE` below already does for the operator namespace.
 
 #: The namespace prefix ingested operators are qualified with. Derived from
 #: `assay.vocabulary` rather than spelled here, so this module, the model, the

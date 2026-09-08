@@ -1518,12 +1518,29 @@ def _check_mutation_payload_shapes(document: dict, failures: list[str]) -> None:
                 f"the R2 payload has the pre-submission refusal shape but the "
                 f"claim reports {reason!r} rather than MUTANT_LIMIT_EXCEEDED"
             )
-    elif isinstance(total, int) and not isinstance(total, bool) and total > max_mutants:
-        failures.append(
-            f"the R2 payload attempted {total} mutant(s) against a declared "
-            f"ceiling of {max_mutants}; a completed run above the cap means "
-            f"the cap bounded nothing"
-        )
+    elif isinstance(total, int) and not isinstance(total, bool):
+        if total > max_mutants:
+            failures.append(
+                f"the R2 payload attempted {total} mutant(s) against a declared "
+                f"ceiling of {max_mutants}; a completed run above the cap means "
+                f"the cap bounded nothing"
+            )
+        # (B070 fix round 1) The NATIVE residual, at the raw layer. `max_mutants`
+        # is present only under `producer = "native"` (A-360), and assay's own
+        # engine attempts every candidate it observes -- so outside the
+        # pre-submission sentinel handled above, these two numbers are equal.
+        # Through v10 `Mutation._check_arithmetic` held this for every producer;
+        # B070 had to relax it there (an ingested payload legitimately carries a
+        # residual), so the raw layer states the native half itself rather than
+        # letting the model be its only witness.
+        if candidate_count != total:
+            failures.append(
+                f"the R2 payload observed {candidate_count} candidate(s) and "
+                f"attempted {total} under a declared ceiling of {max_mutants}; "
+                f"a native run attempts every candidate it observes, and the "
+                f"only native shape with an unattempted remainder is the "
+                f"pre-submission refusal (zero attempted)"
+            )
 
 
 def _check_identities_are_unique(
