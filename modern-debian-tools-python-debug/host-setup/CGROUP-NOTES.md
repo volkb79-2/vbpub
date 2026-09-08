@@ -556,25 +556,9 @@ cat /sys/fs/cgroup/wings.slice/io.weight             # what io.cost reads direct
 
 ---
 
-## Per-container `memory.min` guarantees — the `dev-memory_min_guaranteed` tier
+## Per-container `memory.min` guarantees — the `dev-memory_min_guaranteed` tier (not built, documentation only)
 
-**Status (corrected 2026-09-08 — this section previously said "not built,
-documentation only," which stopped being true across three separate
-changes and was never updated):** the mechanism described below is fully
-built and shipped. The slice unit template
-(`units/dev-memory_min_guaranteed.slice.in`) and the matching
-`dev.slice.in` addition landed in `c4caaee9`; `install.sh`'s `RENDER_VARS`
-omission that left `DEV_MEMORY_MIN_GUARANTEED_CEILING` unsubstituted (a
-real bug — the rendered units would have carried the literal broken token
-`MemoryMin=@DEV_MEMORY_MIN_GUARANTEED_CEILING@`) is fixed; the interactive
-`mdt-host-setup-wizard.py` walks an operator through sizing the ceiling
-(see "Quick start" in `README.md`); and ciu's consumer-side half —
-admission control and per-container injection — shipped as CIU-94/CIU-95
-(`ciu/docs/SPEC.md` S15.22/S15.23). **What has NOT happened yet: no
-specific host has actually run the wizard and set a nonzero
-`DEV_MEMORY_MIN_GUARANTEED_CEILING`** — the mechanism stays fully inert
-(by design, see "Chose (2)" below) until an operator deliberately opts a
-host in. Researched in depth during dstdns's P165 sql-mutation-gate
+Not installed today. Researched in depth during dstdns's P165 sql-mutation-gate
 incident (2026-09-03 — a disposable Postgres's 3GB `shared_buffers` produced
 periodic zswap-refault CPU bursts that stalled the production game server's
 network for several seconds every ~4 minutes) while designing a way to give a
@@ -696,15 +680,13 @@ a reason to add reconciliation machinery.
 | Dynamic per-start/stop reconciliation (Option 1 above) | Works, but needs new host-systemd privilege for the consumer (ciu) and a periodic-GC-pass class of bug for out-of-band stops | Deferred — revisit only if the static ceiling proves too limiting in practice; tracked as ciu backlog `CIU-94` |
 | A race between two concurrent admission checks against the shared ceiling (two custom-managed containers starting at once, no cross-root lock) | `memory.min` overcommit degrades gracefully — the kernel's own proportional formula divides an oversubscribed claim across more claimants than intended, so each gets a smaller-than-requested floor, never a hard failure, crash, or OOM | Accepted as a known, low-stakes limitation — not worth a cross-ciu-root lock (operator decision, 2026-09-03) |
 
-### The shipped slice (`units/dev-memory_min_guaranteed.slice.in`)
+### Sketch of the new slice (documentation only — not rendered/installed)
 
 Following `dev-background.slice.in`'s own pattern (a dash-nested child of
-`dev.slice`, no explicit `[Slice] Parent=` needed). This is the real,
-shipped file (abridged here — see the file itself for the full comments),
-not a proposal:
+`dev.slice`, no explicit `[Slice] Parent=` needed):
 
 ```ini
-# units/dev-memory_min_guaranteed.slice.in
+# units/dev-memory_min_guaranteed.slice.in (PROPOSED, not yet added)
 [Unit]
 Description=Individually-governed containers with a real memory.min floor (sql-mutation-gate, similar continuously-processing workloads)
 Before=slices.target
@@ -723,10 +705,10 @@ MemoryMin=@DEV_MEMORY_MIN_GUARANTEED_CEILING@
 # min floor which requires ancestor cooperation).
 ```
 
-Plus the matching, already-shipped addition to `dev.slice.in`:
+Plus the matching addition to `dev.slice.in`:
 
 ```ini
-# in units/dev.slice.in:
+# ADDED to units/dev.slice.in (PROPOSED):
 MemoryMin=@DEV_MEMORY_MIN_GUARANTEED_CEILING@  # same value/env var as above, pinned equal, always
 ```
 

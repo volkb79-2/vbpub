@@ -479,7 +479,7 @@ def test_evaluate_r1_reads_real_file_text_for_a_file_missing_from_coverage(
     git_repo.write("pkg/mod.zzz", "BASE\n")
     base_rev = git_repo.commit_all("add pkg base")
     git_repo.write("pkg/newfile.zzz", "def real(): return 1\n")
-    head_rev = git_repo.commit_all("add pkg newfile")
+    git_repo.commit_all("add pkg newfile")
 
     write_coverage_json(git_repo.path / "cov.json", {"pkg/mod.zzz": {}})
     judge = make_r1_judge(source_root_paths=(git_repo.path / "pkg",))
@@ -750,7 +750,7 @@ def test_evaluate_r1_renders_unreadable_artifact_for_a_source_read_failure(
     git_repo.write("pkg/mod.zzz", "BASE\n")
     base_rev = git_repo.commit_all("add pkg base")
     git_repo.write("pkg/unreadable.zzz", "def real(): return 1\n")
-    head_rev = git_repo.commit_all("add a file that will fail to read")
+    git_repo.commit_all("add a file that will fail to read")
     # A dummy entry keeps the artifact non-empty (clearing check_empty_coverage)
     # without naming "pkg/unreadable.zzz" -- read_source_text must be reached
     # to answer has_executable_code for it.

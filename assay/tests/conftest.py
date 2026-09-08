@@ -52,6 +52,72 @@ assert (PROJECT_ROOT / "pyproject.toml").is_file(), (
     f"pyproject.toml there"
 )
 
+#: The monorepo checkout `assay/` sits in — a real repository only when the
+#: tree is IN that checkout (B063).
+REPO_ROOT = PROJECT_ROOT.parent
+
+
+def _parent_repository_toplevel() -> Path | None:
+    """:data:`REPO_ROOT`'s own git work-tree top, or ``None`` when
+    :data:`REPO_ROOT` is not the top of a real work tree (B063).
+
+    Asks git rather than looking for a ``.git`` marker, because a linked
+    worktree's marker is a gitfile and a submodule's is a redirect — "is
+    there a repository here" is git's question to answer, not a filesystem
+    heuristic's.
+
+    The toplevel is compared, not merely tested for existence: a module that
+    needs THIS monorepo (to read `cmru/assay.toml`, to `git archive` the
+    pinned commit, to walk sibling projects) is not served by assay having
+    been copied into some unrelated repository's subdirectory, where every
+    such read would fail confusingly instead of skipping honestly.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return Path(proc.stdout.strip()).resolve()
+    except OSError:  # pragma: no cover - a path git printed but we cannot resolve
+        return None
+
+
+#: (B063) Apply as ``pytestmark`` in any module that shells out to
+#: ``git -C REPO_ROOT``. Three modules did so unconditionally, and R-1
+#: measured the cost from a ``cp -r`` copy of ``assay/`` outside the vbpub
+#: checkout: **11 failed, 13 errors**, constant on every copy, all 24 in
+#: those three modules — a noisy floor a real regression would have had to be
+#: spotted against, which is exactly what happened during Wave D's mutation
+#: testing.
+#:
+#: **Skip-with-a-named-reason, not resolve-from-context.** The rejected
+#: alternative was `git rev-parse --show-toplevel` from ``PROJECT_ROOT`` to
+#: find *some* repository to use instead. It was rejected because these
+#: modules are testing a property of the CHECKOUT — that assay sits inside
+#: the monorepo whose other projects and whose history they read — not a
+#: property of assay. When that property is false, "there is no repository
+#: here" is the true answer; reaching further up the tree to find a
+#: different repository would answer a question nobody asked, and would make
+#: the result depend on what happened to be above the copy.
+_PARENT_TOPLEVEL = _parent_repository_toplevel()
+requires_parent_repository = pytest.mark.skipif(
+    _PARENT_TOPLEVEL != REPO_ROOT.resolve(),
+    reason=(
+        f"this module reads the monorepo checkout at {REPO_ROOT} with real git "
+        f"commands, and it is not the top of a git work tree here (git reported "
+        f"{_PARENT_TOPLEVEL}); assay is being run from a copy or a bind of the "
+        f"project directory alone, so there is no parent repository to read "
+        f"(B063)"
+    ),
+)
+
 #: P09's canary fixture (`tests/fixtures/canary/python/`) is a real, committed
 #: pytest project — `pkg/greet.py` + `tests/test_greet.py` — that
 #: `assay.canary`'s Python orchestration materialises into a disposable

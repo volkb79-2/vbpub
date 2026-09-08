@@ -6623,12 +6623,56 @@ rather than a bare `fatal:` git stderr passthrough.
 
 ### Acceptance
 
-- [ ] `assay run <R0-or-R1-lane>` inside a genuine linked-worktree Mode-B
+- [x] `assay run <R0-or-R1-lane>` inside a genuine linked-worktree Mode-B
       container (main repo's `.git` not mounted) either succeeds or fails
       with a clear, actionable `ERROR/GIT_FAILED` message naming the
       resolution gap, not a raw git stderr passthrough;
-- [ ] a regression test pins the R0/R1-vs-R2 discriminator above so it
+- [x] a regression test pins the R0/R1-vs-R2 discriminator above so it
       cannot silently regress back to today's split behavior unexplained.
+
+### Resolution — FIXED 2026-09-08 (quick-wins wave), option (b). **The
+### "discriminator" this entry was filed on is REFUTED.**
+
+Source-confirmed first, then reproduced end to end, exactly as the entry
+asked. **There is no caller R0/R1 reaches that R2 does not.** `cli._cmd_run`
+→ `cli._run_reserved` calls `git.head_rev(lane_file.project_root)` **once,
+unconditionally** (`cli.py:728`), before the reservation-then-HEAD-then-
+adapter order reaches anything tier-specific — so `_resolve_repo` runs
+identically at R0, R1, R2 and R3, and no rigor level can tolerate what
+another refuses. Measured in a real severed linked worktree (a genuine
+`git worktree add`, then the main repository's `.git` moved away): an
+`rigor = ["R0"]` lane and an `rigor = ["R0","R1","R2"]` lane in the SAME
+worktree produce the byte-identical refusal from the same call site.
+
+The field observation that produced the discriminator (an R2 `sql-mutation`
+lane running 9+ hours while the `mock` lane died) was therefore a difference
+in the two containers' **mounts**, not in assay's code — worth knowing for
+dstdns, but not an assay defect and not fixable in assay.
+
+That refutation is what closed the (a)/(b) fork: **(a) was never available**
+(there is nothing tolerant to copy), and it is also not desirable — git
+resolution is load-bearing for R0/R1's own semantics (the commit label every
+verdict carries, the dirty set behind `clean_tree`, the comparison base), and
+a worktree whose object store is absent can supply none of them. So (b):
+`git.py`'s `_resolve_repo` bootstrap-failure path now consults a new
+diagnostic-only helper `_linked_worktree_gap()`, which asks the FILESYSTEM
+(git has already declined to answer) whether `repo_top/.git` is a gitfile
+whose `gitdir:` target is absent, and when it is, prefixes the refusal with a
+sentence naming the worktree, the missing git directory, the usual cause (a
+container carrying the subtree without the main `.git`), the fact that no
+lane setting — `clean_tree` explicitly — routes around it, and two remedies.
+The raw git `fatal:` is **kept, not replaced**: it is the primary evidence,
+and in the measured case it is `not a git repository: (null)`, which is
+exactly why it needed a sentence in front of it rather than a rewrite.
+
+Regression tests: `tests/test_git_linked_worktree_gap.py` (14 tests) — the
+tier-independence above is pinned as a parametrized CLI test so a future
+per-rigor git bypass turns it red, plus the message contract and every
+`_linked_worktree_gap` branch (healthy worktree, plain `.git` directory,
+relative `gitdir:`, non-gitfile marker, empty target, oversized marker,
+non-UTF-8 marker, unreadable marker → says nothing rather than raising on top
+of the failure it is explaining). One test asserts the real `git` binary
+still writes the `gitdir: <path>` shape the helper parses.
 
 ---
 
@@ -6680,16 +6724,61 @@ a pass that reads each site, not in a lint-wiring commit.
 
 ### Acceptance
 
-- [ ] the 31 findings are fixed (or, per site, justified in writing and
+- [x] the 31 findings are fixed (or, per site, justified in writing and
       silenced deliberately — never a blanket `# noqa`);
-- [ ] `tests/fixtures/` is excluded by an explicit, commented rule that names
+- [x] `tests/fixtures/` is excluded by an explicit, commented rule that names
       `broken.py` as the reason;
-- [ ] `run_lint_phase` (`tools/tester-unified-gate.sh:117`) is widened to
+- [x] `run_lint_phase` (`tools/tester-unified-gate.sh:117`) is widened to
       cover `tests/`, and the widening is proven by planting an unused import
       in a test module and watching the phase go red;
-- [ ] the scope comment at `tools/tester-unified-gate.sh:111-116`, which
+- [x] the scope comment at `tools/tester-unified-gate.sh:111-116`, which
       records today's measurement as the reason for the narrow scope, is
       updated rather than left to rot.
+
+### Resolution — FIXED 2026-09-08 (quick-wins wave). **Both "needs judgement"
+### classes turned out to be EMPTY, and that was verified, not assumed.**
+
+All 31 findings deleted; `python -m pyflakes tests` now reports exactly one
+line, `tests/fixtures/mutation/python/broken.py:8:12: invalid syntax`, which
+is the deliberate fixture and not a finding.
+
+**The `pytest.importorskip`-shaped availability probe: does not exist.**
+`grep -rn importorskip tests/` returns nothing — there is not one such probe
+anywhere in the suite, so every one of the 25 unused imports was genuinely
+dead and every one was deleted. (Two were `import pytest` in modules that
+never call it; six more were names left behind by an earlier edit, including
+a function-local `from assay.errors import AssayError` sitting directly above
+a `pytest.raises(Exception)` that had stopped using it.)
+
+**The assigned-never-read local that is "the point of the assertion above
+it": also does not exist.** Read one by one: one (`lane` in
+`test_mutation_executor_bound.py`) was simply dead — `run_mutation` takes no
+lane — and the other four are `head_rev = git_repo.commit_all(...)`, where
+the CALL is load-bearing (it creates the commit) and only the BINDING is
+dead. So the honest fix is dropping the binding and keeping the call, and
+**no site needed `_ = value` or any other deliberate silencing**; nothing was
+suppressed anywhere. (For the record, the suite's only pre-existing `# noqa`
+precedent is one `E402` in `test_distribution_build_release.py`.)
+
+**Gate widening.** `run_lint_phase` now lints `src/assay` and `tests/`.
+pyflakes has no exclude flag, so `tests/fixtures/` is pruned by an explicit
+`find -H … -prune` file list, and the phase **refuses an empty expansion** —
+a renamed or absent `tests/` would otherwise shrink the scope back to B024's
+while still emitting `ASSAY_GATE_PHASE=pyflakes-clean`. The scope comment
+above the function and `docs/DESIGN-GUIDE.md` §14's scope sentence were both
+rewritten rather than left to rot. `gate/` stays out: measured clean, but
+adding a third tree on the way past would be the unevidenced drift the
+original deferral existed to prevent.
+
+Tests, all in `tests/test_distribution_gate.py`: a planted unused import in a
+TEST module reddens the phase (the widening's proof — before B062 this
+passed, because the phase never looked); a planted unparseable fixture AND a
+plain unused import under `tests/fixtures/` both stay green (the prune is a
+scope decision, not a syntax-error exemption); a clone with no `tests/` tree
+refuses instead of linting nothing; and
+`test_the_shipped_source_tree_is_pyflakes_clean` now symlinks `tests/` in
+alongside `src/assay`, so a new unused import anywhere turns the ORDINARY
+suite red in seconds instead of only after a nine-minute container run.
 
 ---
 
@@ -6746,14 +6835,66 @@ failure of assay.
 
 ### Acceptance
 
-- [ ] a `cp -r` copy of `assay/` outside the vbpub checkout runs the suite
+- [x] a `cp -r` copy of `assay/` outside the vbpub checkout runs the suite
       with **zero** failures and **zero** errors attributable to the missing
       parent repository (measure it, quote the numbers);
-- [ ] whichever of skip-with-a-reason or resolve-from-context is chosen, the
+- [x] whichever of skip-with-a-reason or resolve-from-context is chosen, the
       choice is stated at the seam with the rejected alternative;
-- [ ] the three modules still measure what they measure today when the tree
+- [x] the three modules still measure what they measure today when the tree
       IS in the vbpub checkout — proven by running them in place, unchanged
       results.
+
+### Resolution — FIXED 2026-09-08 (quick-wins wave), skip-with-a-named-reason.
+
+`conftest.py` gains one shared `REPO_ROOT` (replacing three independent
+`PROJECT_ROOT.parent` hops) and a `requires_parent_repository` skip mark. It
+asks **git**, not the filesystem — a linked worktree's marker is a gitfile
+and a submodule's is a redirect, so "is there a repository here" is git's
+question — and it compares the reported **toplevel** against `REPO_ROOT`
+rather than merely testing for existence: a module that needs THIS monorepo
+is not served by assay having been copied into some unrelated repository's
+subdirectory, where every read would fail confusingly instead of skipping
+honestly.
+
+The rejected alternative (`git rev-parse --show-toplevel` from
+`PROJECT_ROOT`, i.e. resolve-from-context) is stated at the seam, with its
+reason: these modules test a property of the CHECKOUT — that assay sits
+inside the monorepo whose sibling projects and whose tagged history they read
+— not a property of assay. When that is false, "there is no repository here"
+is the true answer; reaching further up the tree would answer a question
+nobody asked and make the result depend on whatever happened to be above the
+copy.
+
+Applied as a module-level `pytestmark` to `test_python_qualification.py` and
+`test_distribution_build_release.py`, but **per-test** in
+`test_runner_snapshot_selection.py`: only its two embargo tests read the
+monorepo's tagged history, and skipping the other 11 collected items would hide real
+coverage of assay itself behind an unrelated property of the checkout.
+
+**Measured, from a `cp -r` copy of `assay/` into a scratch directory outside
+any git repository** (`git rev-parse` from there: `fatal: not a git
+repository ... up to mount point /`):
+
+```
+4178 passed, 77 skipped, 1 warning in 366.71s (0:06:06)
+```
+
+versus R-1's `11 failed, 3956 passed, 18 skipped, 13 errors in 821.95s`.
+**Zero failures, zero errors.**
+
+Re-measured at the wave's final tip. The figure first recorded here —
+`2 failed, 4143 passed, 77 skipped in 446.07s` — was taken BEFORE the two
+repairs described next, so quoting it beside a "zero failures" claim was an
+inconsistency; review caught it. Both of those failures were
+`assert lane["environment"] == "host"` (`test_cgroup_parent.py:110`,
+`test_self_hosting.py:461`), unrelated to B063, failing IN PLACE on `main`
+too: run-gate rev 36's RG-43 sweep (`f62642c6`) moved this lane to
+`bare-host` and neither copy of the assertion followed. Repaired in this wave
+as a gate-blocking pre-existing regression, since a red gate blocks the wave.
+
+In place, the three modules are unchanged: 68 passed, 9 skipped, and all 9
+skips are the pre-existing `requires the tester-unified image's own
+/opt/tester-venv` ones — none from B063.
 
 ---
 
@@ -7119,17 +7260,57 @@ larger decision this entry does not make.
 
 ### Acceptance
 
-- [ ] a `crashed` candidate's `mutation-state/<id>.json` carries
+- [x] a `crashed` candidate's `mutation-state/<id>.json` carries
       `result_stderr_tail` (and `result_stdout_tail` when non-empty) reading
       the actual subprocess failure, verified on a real run (the
       `uq_work_units_id_operation` case above is a ready-made fixture);
-- [ ] a `killed` candidate's record is unaffected in size/shape by default
+- [x] a `killed` candidate's record is unaffected in size/shape by default
       (tails are opt-in by bucket, not universal, unless the design session
       decides the cost is worth it for all four buckets);
-- [ ] `assay verify` is unaffected — this is diagnostic-only, like B065's
+- [x] `assay verify` is unaffected — this is diagnostic-only, like B065's
       progress stream, never evidence;
-- [ ] CONSUMERS' mutation-state paragraph documents the new field(s) and
+- [x] CONSUMERS' mutation-state paragraph documents the new field(s) and
       which buckets populate them.
+
+### Resolution — FIXED 2026-09-08 (quick-wins wave), `crashed` bucket only.
+
+`_write_mutation_state_record`'s payload gains
+`result_stdout_tail`/`result_stderr_tail` — the names `verdict.py:3778-3779`
+already defines and `verify.py:1853-1859` already round-trips for other claim
+types, so a future verdict-level surfacing needs no new vocabulary — through
+a new `_crash_diagnostic_tails(outcome_bucket, result)` helper that returns
+`{}` for every bucket but `crashed`.
+
+**Scope held deliberately narrow**, per this entry's own priority ask and the
+wave's ruling: `killed`/`survived`/`budget_exceeded` are NOT wired, and
+`write_progress`'s payload is untouched (still a possible follow-up, still
+not carved). No schema or wire change: the mutation-state file is diagnostic
+state, not a verified artifact, and `_load_validated_state_record` validates
+named keys while tolerating extra ones, so an older record without these
+fields resumes exactly as before.
+
+An empty tail is written as `""` rather than omitted — "the stream was empty"
+is itself a diagnosis, and not the same fact as a record from a build that
+had no tails at all. A `None` tail is omitted rather than written as `null`.
+
+Tests: `tests/test_mutation_state_crash_tails.py` (8). The headline one
+reproduces this entry's own `uq_work_units_id_operation` shape rather than
+asserting synthetically — an `equivalence_artifact` lane whose mutated DDL
+fails to apply and therefore writes no artifact, which is exactly what lands
+the candidate in `crashed` instead of `killed` — and asserts the real
+Postgres sentence (`there is no unique constraint matching given keys for
+referenced table "work_units"`) is in the record. Then: `killed` and
+`survived` records carry neither field; a crashed record still resumes
+without re-execution; and the size argument is PINNED rather than left as
+arithmetic in a comment — two maximal 64 KiB tails of the most
+expensive-to-escape character `json.dump`'s default `ensure_ascii=True` has
+still serialize under `MUTATION_STATE_RECORD_LIMIT` (1 MiB), so the reader
+can never be handed a record it would refuse as oversized.
+
+`docs/CONSUMERS.md`'s mutation-state paragraph documents the fields, names
+`crashed` as the only bucket that populates them and why, and states that
+these files are diagnostic state whose content is untrusted subprocess
+output.
 
 ---
 
@@ -7202,18 +7383,53 @@ except (json.JSONDecodeError, ValueError, RecursionError) as exc:
 
 ### Acceptance
 
-- [ ] a pathologically-nested, well-formed, well-under-`MAX_ATTESTATION_BYTES`
+- [x] a pathologically-nested, well-formed, well-under-`MAX_ATTESTATION_BYTES`
       JSON document fed to `parse_attestation` raises
       `AssayError`/`UNREADABLE_ARTIFACT`, not `RecursionError` — red-first
       test mirroring `test_adjudication_provenance_parse.py`'s equivalent;
-- [ ] the fix is proven through the real CLI path (`load_attestation_file`
+- [x] the fix is proven through the real CLI path (`load_attestation_file`
       → `load_attested_evidence` → `cli.py`'s `assay run`), not just the
       bare function, so the refusal a consumer actually sees is confirmed
       clean rather than assumed from the unit-level fix;
-- [ ] a one-time sweep of `attestation.py`, `adjudication.py`, `cli.py` and
+- [x] a one-time sweep of `attestation.py`, `adjudication.py`, `cli.py` and
       `runner.py` for any OTHER `except (..., ValueError)`-without-
       `RecursionError` pattern parsing untrusted JSON, so this does not
       recur a third time — named here even if none are found.
+
+### Resolution — FIXED 2026-09-08 (quick-wins wave). **The sweep was NOT
+### clean: it found a third instance, filed as [B074](#b074).**
+
+`attestation.py:240`'s `except` tuple gains `RecursionError`, with the
+comment naming why (a `RuntimeError` subclass, reached at CPython's real
+C-stack boundary, well inside `MAX_ATTESTATION_BYTES`) and the
+`f0126b35` precedent. Red-first: the 200,000-byte fixture raised
+`RecursionError: Stack overflow (used 8148 kB)` before the change.
+
+Tests: `tests/test_attestation_recursion_depth.py` (6) — the depth fixture,
+a guard that the fixture is genuinely inside the size bound (so it proves
+the PARSER and not the bound), an injected-`RecursionError` test pinning
+*which* exception is being caught (a future CPython raising something else
+would otherwise leave the fix silently inert), the two real consumer hops
+(`load_attestation_file` raising `UNREADABLE_ARTIFACT`, and
+`load_attested_evidence` staging it as that one evidence item's own refusal
+instead of escaping the loader entirely), and a legible-document control.
+
+**Sweep result — see [B074](#b074), which owns the complete table.** The
+sweep this entry's acceptance asked for was **run twice**: a first pass
+whose result is retracted, and a correct second pass.
+
+> **RETRACTED — the first sweep was wrong, and its number was wrong.** It
+> claimed "all 7 `json.loads`/`json.load` sites in `src/assay`". There are
+> **11**. The grep behind it was `src/assay/*.py`, a glob that does not
+> descend into `adapters/`, `coverage_parsers/` or `mutation_parsers/`, so
+> four sites were never examined — and two of those four (both coverage
+> parsers) were genuinely untrusted and reproducibly crashing. A reviewer
+> found this; it is recorded rather than quietly corrected, because "the
+> sweep is complete" was the claim, and a hand-list presented as a sweep is
+> the same class of defect B072 and B074 exist to catch.
+
+The correct sweep, its full 11-site table, and the disposition of every
+site live in B074's Resolution.
 
 ---
 
@@ -7407,3 +7623,195 @@ catch real declaration errors and are not what this entry asks to relax.
   deliberately rather than falling out by accident.
 - The flag appears in the verdict's resolved judgment, so a reviewer can see
   that a graded target was one assay would otherwise have refused.
+---
+
+## B075 — `verify.py`'s `verify_text` is the THIRD instance of the uncaught-`RecursionError` gap, and it is on `assay verify`'s own untrusted-input path
+
+**Renumbered from B074 to B075 at merge time (2026-09-08):** this wave's
+own commits and its LOG/REPORT/REVIEW narrative all name this finding
+"B074" throughout, since that was the next free id when the wave was
+dispatched. A concurrent dstdns-filed entry claimed B074 first on `main`
+in the meantime (the whole-target test-path veto, above) — kept as the
+true B074, this entry renumbered rather than the other way round, since
+main's filing landed first. The wave's own documents are left saying
+"B074" as an honest record of what it was called during the work; only
+this live backlog entry's own number changes.
+
+**Filed 2026-09-08 by the B072 implementer, from B072's own required sweep**
+("a one-time sweep of `attestation.py`, `adjudication.py`, `cli.py` and
+`runner.py` for any OTHER `except (..., ValueError)`-without-`RecursionError`
+pattern parsing untrusted JSON, so this does not recur a third time — named
+here even if none are found").
+
+**Filed and then FIXED in the same wave, on a controller ruling.** It was
+first filed-not-fixed on a reading of the wave's "`assay verify` is
+unaffected by every item above" constraint; the controller ruled that
+sentence was the scope guard for the FIVE ORIGINAL items' own changes, not a
+blanket prohibition on fixing a live crash found inside `assay verify`, and
+directed the fix onto the same branch as a sixth commit. The original
+filing text is kept below unchanged — it is the sweep evidence B072's
+acceptance asks to be "named here" — with the resolution at the end.
+
+### What was measured
+
+> **The table that stood here claimed 7 sites and is RETRACTED.** It was
+> built from `grep ... src/assay/*.py`, a glob that never descends into
+> `adapters/`, `coverage_parsers/` or `mutation_parsers/`. There are **11**
+> sites; four were never examined, and two of those four were genuinely
+> untrusted and reproducibly crashing. A reviewer caught it. The complete
+> table is in the Resolution at the end of this entry, and the correction is
+> recorded rather than silently applied because "the sweep is complete" was
+> the load-bearing claim.
+
+`verify_text` was the site this entry was filed for. Reproduced live against
+today's `main`:
+
+```
+$ python3 -c "
+from assay import verify
+verify.verify_text('[' * 100000 + ']' * 100000)
+"
+RecursionError: Stack overflow (used 8144 kB) while decoding a JSON array
+```
+
+### Why this one matters more than the other two candidates
+
+`assay verify`'s entire purpose is to read a verdict artifact **produced
+somewhere else** — "independently of how it was produced" is its own
+`--help` text — from a path or from stdin. That is untrusted input by
+definition, and it is the one command a consumer points at an artifact whose
+producer they are trying to check. Its contract for an unparseable document
+is already a returned failure list (`["not valid JSON: ..."]`, exit 1); a
+deeply nested one instead crashes the process with a traceback, which a
+CI caller reads as a tooling fault rather than a bad artifact.
+
+### The one judgment call this entry records rather than hides
+
+`provenance.py:137` has the same narrow guard but was NOT counted as a third
+instance: `direct_url.json` comes from assay's own installed distribution
+metadata, the surrounding function already returns `None` on every fault
+(`OSError`, `ValueError`, non-dict, missing members), and a `RecursionError`
+there is a broken install rather than a consumer's artifact. Someone may
+still decide the cheap widening is worth it for uniformity — that is a
+preference, not a defect, and this paragraph exists so the next sweep does
+not re-derive the distinction.
+
+### Proposed fix
+
+The same one-line shape twice over:
+
+```python
+except (json.JSONDecodeError, RecursionError) as exc:
+```
+
+at `verify.py:2562`, with a red-first test mirroring
+`test_attestation_recursion_depth.py` / `test_adjudication_provenance_parse.py`
+and one proving it through `cmd_verify` (the real exit-1-plus-message path),
+not just the bare function.
+
+### Acceptance
+
+- [x] a pathologically-nested, well-formed JSON document handed to
+      `assay verify` (both `-` and a file path) exits 1 with a `not valid
+      JSON` line, not a `RecursionError` traceback;
+- [x] `verify_document`'s behavior on every legible document is unchanged
+      (the widening is a catch, not a validation change);
+- [x] the `provenance.py` judgment above is either affirmed or reversed in
+      writing at the same time, so the sweep table stays true.
+
+### Resolution — FIXED 2026-09-08 (quick-wins wave, sixth commit).
+
+`verify.py:2562`'s `except` tuple becomes
+`except (json.JSONDecodeError, ValueError, RecursionError)` — the **same
+three names** `attestation.py`'s `parse_attestation` and `adjudication.py`'s
+`evaluate_provenance` carry, deliberately so: this is the third site of one
+gap, and a reader comparing them should find one shape rather than three
+variants. (`ValueError` is the superclass `JSONDecodeError` already belongs
+to; it is spelled out for that cross-site symmetry, not because it adds
+reach here.)
+
+Red-first, confirmed by stashing the fix and running against today's tip:
+both `verify_text` and `cmd_verify` raised `RecursionError` on the
+200,000-byte document.
+
+Tests: `tests/test_verify_recursion_depth.py` (8) —
+- the bare function returns a failure list rather than raising;
+- an injected `RecursionError` pins *which* exception is caught, so a future
+  CPython raising something else cannot leave the fix silently inert;
+- two controls: an ordinary syntax error is unchanged, and a legible but
+  wrong-shaped document still reaches `verify_document` (asserted equal to
+  calling `verify_document` directly) — the widening is a CATCH, never a
+  validation change;
+- the real consumer path three ways, because they are three different ways
+  in: `cmd_verify`'s **stdin** arm, `cmd_verify`'s **file-path** arm (which
+  goes through `_read_file`), and `cli.main(["verify", …])` — each exiting 1
+  with `assay verify: not valid JSON` on stderr;
+- a source-level sweep guard asserting all THREE untrusted-JSON sites still
+  carry the identical clause, so a fourth variant cannot appear unnoticed.
+
+### Second sweep — the FIRST one was wrong, and this is the complete table
+
+**Found by review, not by me.** The first sweep's grep was
+`src/assay/*.py`, which does not descend into subpackages. It reported 7
+sites. There are **11**. The four it never looked at:
+
+| missed site | why it was missed | disposition |
+|---|---|---|
+| `coverage_parsers/coverage_py_json.py:98` (`parse`) | subpackage | **untrusted, crashed live — FIXED** |
+| `coverage_parsers/coverage_istanbul_json.py:229` (`parse`) | subpackage | **untrusted, crashed live — FIXED** |
+| `adapters/go_stmtpos.py:293` (`_read_document`) | subpackage | **untrusted, crashed live — FIXED** |
+| `mutation_parsers/mutation_report_json.py:123`,`:140` (`sniff`, `parse`) | subpackage | already guarded — and the proof the old guard-test was unfit (below) |
+
+The complete 11-site table, every site accounted for, with a stated reason
+for each one judged trusted:
+
+| site | enclosing fn | guard | disposition |
+|---|---|---|---|
+| `adjudication.py:154` | `evaluate_provenance` | `(JSONDecodeError, ValueError, RecursionError)` | untrusted, fixed by `f0126b35` |
+| `attestation.py:239` | `parse_attestation` | `(JSONDecodeError, ValueError, RecursionError)` | untrusted, fixed by B072 |
+| `verify.py:2583` | `verify_text` | `(JSONDecodeError, ValueError, RecursionError)` | untrusted, fixed by B075 (filed during the wave as B074, renumbered at merge) |
+| `coverage_parsers/coverage_py_json.py:98` | `parse` | `(JSONDecodeError, ValueError, RecursionError)` | untrusted — a TARGET PROJECT's `coverage.py` output; **fixed, second sweep** |
+| `coverage_parsers/coverage_istanbul_json.py:229` | `parse` | `(JSONDecodeError, ValueError, RecursionError)` | untrusted — a target project's istanbul output; **fixed, second sweep** |
+| `adapters/go_stmtpos.py:293` | `_read_document` | `(UnicodeDecodeError, JSONDecodeError, ValueError, RecursionError)` | untrusted — a real external `go` subprocess' raw stdout; **fixed, second sweep** |
+| `mutation_parsers/mutation_report_json.py:123` | `sniff` | `(JSONDecodeError, RecursionError, ValueError)` | untrusted — already guarded before this wave |
+| `mutation_parsers/mutation_report_json.py:140` | `parse` | `(JSONDecodeError, RecursionError, ValueError)` | untrusted — already guarded before this wave |
+| `mutation.py:890` | `_load_validated_state_record` | `(UnicodeDecodeError, JSONDecodeError)` | **trusted**: assay's OWN mutation-state record, written by assay earlier in the same run, read back bounded by `MUTATION_STATE_RECORD_LIMIT`; its depth is assay's to control |
+| `provenance.py:137` | `_installed_wheel_digest` | `json.JSONDecodeError` only | **trusted**: the installed distribution's own pip-written `direct_url.json`; the function is best-effort and already returns `None` on every fault, so a failure means a broken install, not a bad artifact |
+| `verdict.py:501` | `load_schema` | none | **trusted**: assay's own shipped package resource; if it will not parse the build is broken, and there is no consumer artifact to refuse |
+
+Line numbers are given as of this entry and **drift**; the guard test keys
+on `(module, enclosing function)` for exactly that reason. (The first
+table's `verify.py:2562` and `mutation.py:838` had already gone stale by the
+time review read them.)
+
+**The `provenance.py` judgment is AFFIRMED, not reversed**, and it is now
+the written bar for the whole allowlist: a site is trusted only when the
+bytes come from assay itself or its own installation — never from a
+consumer's project or an external tool — AND a failure there would mean a
+broken build rather than a bad artifact. `mutation.py` and `verdict.py`
+qualify under that same bar; the eight others do not, and all eight are
+guarded.
+
+### The guard test was ALSO unfit, in a second way
+
+The first version asserted an exact `except (...)` STRING against a
+hard-coded three-element tuple of paths. It could not see a site nobody had
+listed (fault 1, above) — and it could not see a guard written with the same
+three names in a different ORDER. `mutation_parsers/mutation_report_json.py`
+already spelled them `(json.JSONDecodeError, RecursionError, ValueError)`,
+so a "fourth variant" already existed, undetected, by the very test whose
+docstring claimed one could not appear unnoticed.
+
+Replaced by `tests/test_untrusted_json_parse_sweep.py`, which **derives** its
+subject: it walks the AST of every module under `src/assay` (`rglob`, the
+recursive glob whose absence caused fault 1), finds every `json.loads`/
+`json.load` call, and asks whether an enclosing `try` NAMES `RecursionError`
+— never how the clause is spelled. Every site must be guarded or in an
+explicit `TRUSTED_SITES` allowlist carrying its reason; there is no third
+disposition and no way to be silent. Four further guards on the guard: the
+walk must find a plausible population and at least one site in each of the
+three subpackages the old glob missed (so it cannot pass vacuously); no
+allowlist entry may be stale; the eight known-untrusted sites are pinned by
+name so a silent deletion shows up; and the order-independence is proven
+against the real module that differs. Verified red by reverting one guard:
+two independent tests fail, naming the file and function.

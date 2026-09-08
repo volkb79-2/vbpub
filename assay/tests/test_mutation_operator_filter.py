@@ -19,10 +19,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
-
 from assay.adapters.python import PythonAdapter
-from assay.errors import Outcome
 from assay.mutation import MutationTarget, collect_mutation_sites, run_mutation
 from assay.runner import execute_command
 

@@ -458,7 +458,10 @@ def test_the_cgroup_helper_wiring_is_present_in_the_restructured_gate_script():
         "lanes"
     ]["tester-unified"]
     driver = GATE_DRIVER.read_text(encoding="utf-8")
-    assert lane["environment"] == "host"
+    # `bare-host`, not `host` -- see the identical note in
+    # `test_cgroup_parent.py`: run-gate RG-43 (`f62642c6`) moved this lane and
+    # neither copy of this assertion followed, leaving both red on `main`.
+    assert lane["environment"] == "bare-host"
     assert lane["argv"][0] == "bash"
     assert lane["argv"][1] == "{worktree}/assay/tools/tester-unified-gate.sh"
     assert '"$worktree/assay/tools/cgroup-parent.sh"' in driver

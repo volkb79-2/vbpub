@@ -282,7 +282,6 @@ def test_jobs_validated_even_when_the_baseline_never_passed(tmp_path: Path):
     from assay.runner import CommandPlan, CommandResult
     from pathlib import PurePosixPath
 
-    lane = make_lane(argv=("pytest", "-q"))
     baseline = CommandResult(
         plan=CommandPlan(
             argv_declared=("pytest", "-q"),

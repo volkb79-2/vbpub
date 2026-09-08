@@ -3357,6 +3357,106 @@ their creation timestamps are 0.5 s apart, the signature of
 that they were a co-tenant's has been withdrawn. `^(test-)?repo-` on this host
 is now **0**.
 
+## CIU-88 — `docs/CONFIG.md`'s own `known_host` "format" prose contradicts its own worked examples (and the source), and caused a downstream consumer doc defect
+
+**Filed by:** dstdns, 2026-09-08, during dstdns-P171's adversarial code review
+(`dstdns/nyxloom-trove/decisions.md` D-395 finding 1). The review verified the
+mechanism against ciu 7.11.0's installed source before filing here, per the
+estate's "verify against source, not paraphrase" discipline — this is exactly
+the doc that broke that discipline in the first place.
+
+### Observed mechanism and reproduction
+
+`docs/CONFIG.md` §S14.3 ("Host Inventory File") is internally inconsistent
+about what the `known_host` host-table key contains:
+
+- Three worked examples in the same file (lines 1319, 1348, 1452 as of this
+  filing) all correctly show `known_host = "ssh-ed25519 AAAA…"` — key
+  material ONLY, no hostname.
+- Immediately after the second of those examples, the prose at lines
+  1374-1377 says:
+
+  > **`known_host` format.** For the default port (22) use the bare hostname
+  > form (`hostname ssh-ed25519 AAAA…`). For non-default ports use the
+  > bracketed form: `[hostname]:port ssh-ed25519 AAAA…`. CIU constructs the
+  > temp known-hosts file accordingly so OpenSSH's strict host-key check
+  > passes.
+
+  This directly contradicts the three examples immediately around it: it
+  describes `known_host` itself as containing a hostname token (bare or
+  bracketed depending on port), when the actual value ciu wants in that key
+  is key material only.
+
+**Source ground truth** (`src/ciu/transport_ssh.py`, `_known_hosts_file`):
+
+```python
+host_token = ssh_host if ssh_port == 22 else f"[{ssh_host}]:{ssh_port}"
+line = f"{host_token} {known_host}\n"
+```
+
+`host_token` — the hostname/port token described in the "format" paragraph
+above — is built by ciu itself from `ssh_host`/`ssh_port` and is NEVER
+supplied by the operator. `known_host` is only ever the second half of the
+line: the SSH key type + base64 data. The "format" paragraph conflates the
+two, describing `host_token`'s construction as if it were `known_host`'s own
+"format".
+
+**Downstream consequence (why this is more than a doc nit):** dstdns's
+`docs/DEPLOYMENT-GUIDE.md` worked example was authored by generalizing from
+this exact paragraph rather than the source, and its `known_host` value
+embedded the hostname a second time —
+`known_host = "core1.example.internal ssh-ed25519 AAAA...redacted-placeholder..."`.
+Had that value been used as-is, the resulting known_hosts line would be
+`{host_token} {hostname} ssh-ed25519 ...` — three space-separated fields
+instead of two — which is not a valid `known_hosts(5)` entry and fails
+`StrictHostKeyChecking=yes` for every SSH-based ciu verb (`ciu ssh`,
+`ciu up --host`, `ciu render --host`, `ciu down --host`, `ciu health --host`).
+This was caught by an adversarial code review before it reached a real
+deployment, not by ciu's own docs.
+
+### Why ciu owns it
+
+The worked examples are already correct; the prose contradicting them is
+ciu's own documentation defect, not a consumer misreading. A consumer who
+reads only the "format" paragraph (plausible — it is the one paragraph
+explicitly titled with the key's name) reproduces the defect exactly as
+dstdns did.
+
+### Proposed fix
+
+Rewrite the "`known_host` format" paragraph to state the mechanism the way
+`transport_ssh.py` actually implements it, e.g.:
+
+> **What ciu writes to the temp known_hosts file.** ciu builds the line as
+> `{host_token} {known_host}`. `host_token` is derived entirely by ciu from
+> `ssh_host`/`ssh_port` — `ssh_host` verbatim when `ssh_port` is 22, or
+> `[ssh_host]:ssh_port` otherwise — and is never something you write.
+> `known_host` is always the SSH key material alone (key-type prefix +
+> base64 data, e.g. `ssh-ed25519 AAAA…`), regardless of port; it never
+> contains a hostname in any form.
+
+Also worth an explicit one-line callout right after the first worked example
+(line ~1319-1320) saying "this is key material only, see below" so a reader
+skimming top-to-bottom hits the correct framing before the contradictory
+paragraph, not after.
+
+### Behavioral oracle for the fix
+
+A doc-lint style check (mirroring what dstdns added at
+`tests/config/test_p171_locks.py::TestOE1RemoteHostDocAgreement::test_known_host_values_are_key_material_only`)
+that parses every `known_host = "..."` value out of `docs/CONFIG.md`'s fenced
+TOML examples and asserts each splits into exactly two space-separated
+fields, with the first matching a known SSH key-type prefix
+(`ssh-ed25519`, `ssh-rsa`, `ecdsa-sha2-*`, etc.) — a value shaped like
+`<hostname> <key>` would fail it. Consumers can copy the same pattern for
+their own generalized docs.
+
+**Severity:** Medium — a docs-only defect, but one that reproducibly
+produces an invalid, silently-broken deploy config for any consumer who
+authors from prose rather than source, with a fail-closed (not silent)
+failure mode (`StrictHostKeyChecking` refuses the connection) — annoying but
+not a security hole in itself.
+
 ## Compact resolved index
 
 Detailed history for closed work lives in the normative SPEC, release notes,

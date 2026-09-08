@@ -180,6 +180,17 @@ MAX_GIT_OUTPUT_BYTES = 64 * 1024 * 1024
 #: characters at every call site), so it needs far less headroom than stdout.
 _MAX_GIT_STDERR_BYTES = 64 * 1024
 
+#: A linked worktree's ``.git`` is a one-line gitfile (``gitdir: <path>``).
+#: The bound exists only so a malformed or hostile marker cannot make the
+#: DIAGNOSTIC path (:func:`_linked_worktree_gap`) allocate without limit --
+#: it never decides a verdict, it decides how much of a broken marker gets
+#: quoted back at the operator.
+_MAX_GITFILE_BYTES = 8 * 1024
+
+#: The ``.git`` gitfile's only recognised directive (``git-worktree(5)``,
+#: ``gitrepository-layout(5)``).
+_GITFILE_PREFIX = "gitdir:"
+
 
 def _git_failed(message: str) -> AssayError:
     return AssayError(message, outcome=Outcome.ERROR, reason_code=ReasonCode.GIT_FAILED)
@@ -390,6 +401,80 @@ def _nearest_git_marker(start: Path) -> Path:
         candidate = parent
 
 
+def _linked_worktree_gap(repo_top: Path) -> str | None:
+    """Return a sentence naming the LINKED-WORKTREE resolution gap when
+    *repo_top* is a linked worktree whose gitfile points at a git directory
+    that is not present on this filesystem, or ``None`` when the bootstrap
+    failure has some other cause (B068).
+
+    **Diagnostic only.** This is never consulted on a healthy resolution and
+    never changes what resolves; it runs solely on
+    :func:`_resolve_repo`'s bootstrap-failure path, to replace a bare git
+    ``fatal:`` passthrough with the one fact that explains it. The
+    filesystem, not git, is asked -- the whole point is that git has already
+    declined to answer -- and the ``.git`` marker was proven to be a
+    directory or a regular file by :func:`_nearest_git_marker` before we got
+    here, so a regular file means a gitfile redirect and nothing else.
+
+    B068 measured this shape in a container that mounts a linked worktree's
+    subtree WITHOUT the main checkout's ``.git`` (dstdns Mode-B): git answers
+    ``fatal: not a git repository: <the missing path>`` or, worse, ``fatal:
+    not a git repository: (null)``, neither of which names the mount that is
+    absent or says what to do about it.
+    """
+    marker = repo_top / ".git"
+    try:
+        if not marker.is_file():
+            return None
+        with marker.open("rb") as handle:
+            raw = handle.read(_MAX_GITFILE_BYTES + 1)
+    except OSError:
+        return None
+    if len(raw) > _MAX_GITFILE_BYTES:
+        return (
+            f"{marker} is a git worktree marker file larger than "
+            f"{_MAX_GITFILE_BYTES} bytes, which no valid one is"
+        )
+    try:
+        text = raw.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return f"{marker} is a git worktree marker file that is not valid UTF-8"
+    if not text.startswith(_GITFILE_PREFIX):
+        return (
+            f"{marker} is a regular file but does not begin with "
+            f"{_GITFILE_PREFIX!r}, so it is not a usable git worktree marker"
+        )
+    target_text = text[len(_GITFILE_PREFIX) :].strip()
+    if not target_text:
+        return f"{marker} names an empty {_GITFILE_PREFIX} path"
+    target = Path(target_text)
+    if not target.is_absolute():
+        target = repo_top / target
+    try:
+        present = target.is_dir()
+    except OSError:
+        present = False
+    if present:
+        # The redirect target IS here; whatever git objected to is something
+        # else (a corrupt git dir, a permissions fault, a bad `commondir`).
+        # Say nothing rather than blame the wrong thing.
+        return None
+    return (
+        f"{repo_top} is a LINKED git worktree whose {marker} redirects to "
+        f"{target}, which does not exist on this filesystem -- the main "
+        f"checkout's git directory is not present here (the usual cause: a "
+        f"container or a copy that carries the worktree subtree without the "
+        f"main repository's .git). assay reads the commit label, the dirty "
+        f"set and the comparison base from git on EVERY lane at EVERY rigor, "
+        f"before any tier-specific work starts, so no lane setting -- "
+        f"`clean_tree` included -- routes around this. Remedies: make {target} "
+        f"visible to this process (mount or restore the main checkout's .git), "
+        f"or run assay against a standalone checkout whose .git is a real "
+        f"directory (`git clone`, or a worktree whose main repository is "
+        f"present)"
+    )
+
+
 def _resolve_repo(
     repo: Path, git_executable: Path, *, remaining: Remaining | None = None
 ) -> _ResolvedRepo:
@@ -417,9 +502,21 @@ def _resolve_repo(
     ]
     returncode, stdout, stderr = _run_bounded(argv, remaining=remaining)
     if returncode != 0:
+        detail = stderr.decode("utf-8", errors="replace").strip()[:200]
+        # (B068) The bare git `fatal:` is kept -- it is the primary evidence
+        # and must not be renamed -- but when the cause is the one this
+        # project has actually measured in the field, it is NAMED first,
+        # because the raw passthrough can be as useless as `not a git
+        # repository: (null)`.
+        gap = _linked_worktree_gap(repo_top)
+        if gap is not None:
+            raise _git_failed(
+                f"{gap}. git rev-parse --absolute-git-dir failed resolving "
+                f"{repo_top} ({returncode}): {detail}"
+            )
         raise _git_failed(
             f"git rev-parse --absolute-git-dir failed resolving {repo_top} "
-            f"({returncode}): {stderr.decode('utf-8', errors='replace').strip()[:200]}"
+            f"({returncode}): {detail}"
         )
     git_dir_text = _decode_or_reject(stdout, "the resolved git directory").strip()
     git_dir = Path(git_dir_text)

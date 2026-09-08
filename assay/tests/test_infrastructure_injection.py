@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from assay.config import LaneConfigError, load_lane_file
-from assay.errors import AssayError, Outcome, ReasonCode
+from assay.errors import AssayError, Outcome
 from assay.runner import resolve_command_plan, run_lane
 from conftest import make_lane
 
@@ -128,7 +128,6 @@ def test_required_env_resolves_and_missing_or_empty_refuses_named_key(tmp_path):
     )
     assert plan.env_effective["network"] == "infra-network"
 
-    from assay.errors import AssayError
     with pytest.raises(Exception) as missing:
         resolve_command_plan(lane, passthrough_source={}, infrastructure_source=tmp_path)
     assert "NETWORK_SOURCE" in str(missing.value)

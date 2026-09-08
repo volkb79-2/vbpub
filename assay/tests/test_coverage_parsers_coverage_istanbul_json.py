@@ -444,3 +444,31 @@ def test_fields_this_parser_does_not_read_are_ignored_not_rejected():
     profile = load_coverage_profile(text, declared_format=FORMAT)
     assert set(profile.files) == {"/repo/src/a.ts"}
     assert profile.files["/repo/src/a.ts"].executed == frozenset({1})
+
+
+def test_a_pathologically_deep_document_is_unreadable_not_a_raise():
+    """(B074, second sweep) Istanbul's output is a target project's own
+    tool output -- untrusted in exactly the sense `attestation.py`'s and
+    `verify.py`'s inputs are. `json.loads` raises `RecursionError` (a
+    `RuntimeError` subclass, NOT a `ValueError`) at the real C-stack
+    boundary, so the original `except json.JSONDecodeError` did not catch it
+    and the process crashed instead of refusing.
+    """
+    depth = 100_000
+    pathological = "[" * depth + "]" * depth
+    with pytest.raises(AssayError) as excinfo:
+        coverage_istanbul_json.parse(pathological, producer=None)
+    assert excinfo.value.outcome is Outcome.ERROR
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert "not valid JSON" in str(excinfo.value)
+
+
+def test_a_pathologically_deep_object_is_refused_through_the_registry():
+    """Shaped so the sniff accepts it, so the refusal is proven on the path a
+    lane actually takes rather than only on the bare parser."""
+    depth = 100_000
+    pathological = '{"statementMap": ' + "[" * depth + "]" * depth + "}"
+    with pytest.raises(AssayError) as excinfo:
+        load_coverage_profile(pathological, declared_format=FORMAT)
+    assert excinfo.value.reason_code is ReasonCode.UNREADABLE_ARTIFACT
+    assert "not valid JSON" in str(excinfo.value)

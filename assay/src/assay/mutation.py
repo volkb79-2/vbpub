@@ -803,6 +803,58 @@ def mutation_state_record_path(candidate: str) -> str:
     return f".assay/mutation-state/{candidate.lower()}.json"
 
 
+def _crash_diagnostic_tails(
+    outcome_bucket: str, result: "CommandResult"
+) -> dict[str, str]:
+    """(B071) The captured subprocess output a ``crashed`` candidate's state
+    record carries, keyed by the names :mod:`assay.verdict` already defines
+    (``result_stdout_tail``/``result_stderr_tail``, ``verdict.py:3778-3779``,
+    round-tripped by ``verify.py`` for other claim types) — so a future
+    verdict-level surfacing, if it is ever wanted, needs no new vocabulary.
+
+    **``crashed`` only.** ``killed`` and ``survived`` are already fully
+    carried by the pass/fail split, so a tail there would be bulk with no
+    question it answers; ``budget_exceeded`` holds whatever was captured
+    before the timeout, genuinely useful but lower priority and not in this
+    change's scope. ``crashed`` is the one bucket where the tail is the
+    ENTIRE diagnostic trail: B071 was filed after a real
+    ``uq_work_units_id_operation`` candidate landed ``crashed`` with nothing
+    retained but its identity fields, and recovering the actual reason
+    (``ERROR: there is no unique constraint matching given keys for
+    referenced table "work_units"``) took a manual by-hand re-run of the exact
+    byte-range mutation — text ``execute_command`` had already captured
+    during the ORIGINAL run and then dropped when ``run.result`` went out of
+    scope.
+
+    Emitted whenever the tail EXISTS, including as the empty string: ``""``
+    means "the stream was empty", which is itself a diagnosis, and is not the
+    same fact as a record written by a build that had no tails at all.
+
+    Size: both tails are already bounded at ``COMMAND_TAIL_BYTES`` (64 KiB of
+    encoded bytes each, ``runner.py``), so no new bound is introduced here.
+    The worst case still fits the reader's own
+    :data:`MUTATION_STATE_RECORD_LIMIT` (1 MiB): ``json.dump`` defaults to
+    ``ensure_ascii=True``, whose most expensive escape is 6 bytes per
+    character, and 65,536 bytes can decode to at most 65,536 characters, so
+    two maximal tails cost at most ~768 KiB alongside a few hundred bytes of
+    identity fields. Pinned by a test rather than left as arithmetic in a
+    comment.
+
+    This file is diagnostic state, NOT a verified artifact: nothing about
+    ``assay verify``, the verdict wire format, or resume validation changes.
+    ``_load_validated_state_record`` checks named keys and tolerates extra
+    ones, so an older record without these fields resumes exactly as before.
+    """
+    if outcome_bucket != "crashed":
+        return {}
+    tails: dict[str, str] = {}
+    if result.stdout_tail is not None:
+        tails["result_stdout_tail"] = result.stdout_tail
+    if result.stderr_tail is not None:
+        tails["result_stderr_tail"] = result.stderr_tail
+    return tails
+
+
 def _write_mutation_state_record(project_root: Path, payload: Mapping[str, Any]) -> None:
     relative_path = PurePosixPath(mutation_state_record_path(payload["candidate_id"]))
     parent = project_root.joinpath(*relative_path.parts[:-1])
@@ -1747,6 +1799,7 @@ def _execute_mutation_jobs(
                                 "lineno": job_list[position].site.lineno,
                                 "description": job_list[position].site.description,
                                 "outcome_bucket": outcome_bucket,
+                                **_crash_diagnostic_tails(outcome_bucket, run.result),
                             },
                         )
             index = wave[-1] + 1

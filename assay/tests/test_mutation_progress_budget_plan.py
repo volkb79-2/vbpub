@@ -5,15 +5,13 @@ import io
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-import time
 import pytest
 
 from conftest import GitRepo, Project, make_deadline, make_lane, make_plan, prepared_snapshot
 
 from assay.adapters.python import PythonAdapter
-from assay.config import LaneConfigError, parse_duration
+from assay.config import LaneConfigError
 from assay.errors import AssayError, Outcome, ReasonCode
-from assay.verify import verify_document
 from assay import mutation
 from assay.mutation import (
     Mutation,
@@ -23,7 +21,6 @@ from assay.mutation import (
     run_mutation,
 )
 from assay import mutation as mutation_module
-from assay.mutation import collect_mutation_sites
 from assay.runner import execute_command
 
 

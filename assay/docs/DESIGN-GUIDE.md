@@ -2544,8 +2544,17 @@ the tests have spoken buys a five-second answer at the cost of the one the
 reviewer needs. The rule set is pyflakes' whole rule set, which is exactly the
 F-rule set other tools re-implement — undefined names, unused imports and
 locals, redefinitions, placeholder-free f-strings — so there is no rule
-selection to configure and none to drift. Scope is `src/assay`; `tests/` is
-excluded on a recorded measurement (B062), not on taste.
+selection to configure and none to drift. Scope is `src/assay` **and**
+`tests/`: it was `src/assay` alone while `tests/` carried 31 findings, on a
+recorded measurement rather than on taste, and it widened when B062 swept
+them. `tests/fixtures/` is pruned out permanently and by name, because
+`tests/fixtures/mutation/python/broken.py` is a *deliberately* unparseable
+file the mutation suite needs in order to prove how assay reports a source
+file it cannot parse — pyflakes can never pass over it, so a fixture tree is
+not a place this phase can judge. pyflakes has no exclude flag, so the prune
+is an explicit `find` file list, and the phase **refuses** an empty one:
+otherwise a renamed or absent `tests/` would silently shrink the scope back
+while still emitting the clean marker.
 
 ## 15. Real Python-project qualification harness (P25)
 

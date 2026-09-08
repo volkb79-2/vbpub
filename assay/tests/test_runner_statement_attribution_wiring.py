@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 
-import pytest
 from conftest import GitRepo, make_lane, make_r1_judge
 
 from assay import runner

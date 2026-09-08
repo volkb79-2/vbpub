@@ -29,7 +29,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
 from conftest import GitRepo, make_lane, make_r2_judge, make_r3_judge
 
 from assay import runner

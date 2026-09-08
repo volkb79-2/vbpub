@@ -110,7 +110,7 @@ def test_require_branch_renders_branch_unavailable_before_mode_dispatch(
 ):
     base_rev = _seed_one_commit(git_repo)
     git_repo.write("pkg/mod.zzz", "BASE\nLINE2\nLINE3\n")
-    head_rev = git_repo.commit_all("extend pkg")
+    git_repo.commit_all("extend pkg")
     # No `executed_branches`/`missing_branches` at all -- `derive_branch_
     # capability` reads this as `"unavailable"` for the whole artifact.
     write_coverage_json(
@@ -143,7 +143,7 @@ def test_require_branch_false_is_unaffected_by_an_unavailable_artifact(
     guard, not the artifact, is what refused."""
     base_rev = _seed_one_commit(git_repo)
     git_repo.write("pkg/mod.zzz", "BASE\nLINE2\nLINE3\n")
-    head_rev = git_repo.commit_all("extend pkg")
+    git_repo.commit_all("extend pkg")
     write_coverage_json(
         git_repo.path / "cov.json",
         {"pkg/mod.zzz": {"executed_lines": [2, 3]}},

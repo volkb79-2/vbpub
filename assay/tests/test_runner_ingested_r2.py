@@ -31,7 +31,7 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import GitRepo, make_lane, make_r2_judge
+from conftest import GitRepo, make_lane
 
 from assay import runner
 from assay.adapters.javascript import JavaScriptAdapter
