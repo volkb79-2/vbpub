@@ -166,10 +166,11 @@ Launched with `nohup` at load 2.38 with no other gate container or
 `--cpus=3` immediately after it started. **Verdict read from the gate's own
 log markers, in a separate step, never from a piped exit code (LESSONS L4).**
 
-### Verdict: **GREEN**, at `767393d1` (the B074 tip)
+### Verdict: **GREEN**, at `001a1f24` (the post-review tip)
 
-Re-run from scratch after B074 landed — **a new commit is a new judged tip,
-so the earlier green at `b12ec9f2` was not carried over.**
+Re-run from scratch after the review-blocker fix and its doc corrections
+landed — **a new commit is a new judged tip; neither the `b12ec9f2` nor the
+`767393d1` green was carried over.** Run 4 of 4.
 
 ```
 tester-unified: PASS (exit 0)
@@ -195,14 +196,14 @@ independent-self-hosting-passed
 pyflakes-clean          <-- B062's widened scope, green over src/assay AND tests/
 ```
 
-**Three runs in total, all disclosed.** Run 1 aborted (my fault, below); run 2
-was green at `b12ec9f2` and is superseded; run 3 is the green above, at
-`767393d1`, with the same 12 markers and the same zero diagnostics. Every run
-was launched with no other gate container or `tester-unified-gate.sh` process
-present — run 3 additionally waited for host load to fall from 9.51 to 4.52
-before starting — and each gate container was capped to `--cpus=3`
-immediately after it started (verified by `docker inspect`:
-`3000000000` NanoCpus).
+**Four runs in total, all disclosed.** Run 1 aborted (my fault, below); run 2
+green at `b12ec9f2`; run 3 green at `767393d1`; run 4 is the green above, at
+`001a1f24` — each with the same 12 markers and the same zero diagnostics, and
+each superseding the last rather than being carried over. Every run was
+launched with no other gate container or `tester-unified-gate.sh` process
+present; run 3 waited for host load to fall from 9.51 to 4.52 first, run 4
+started at 2.93; and each gate container was capped to `--cpus=3` immediately
+after it started (verified by `docker inspect`: `3000000000` NanoCpus).
 
 **The aborted first attempt.** Run 1 returned
 `NO_MEASUREMENT/DIRTY_TREE (exit 3)` — **my fault, not a product fault**: I

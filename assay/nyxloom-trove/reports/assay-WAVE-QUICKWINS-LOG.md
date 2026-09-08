@@ -314,13 +314,20 @@ in `4-backlog.md` is gone.
 ## Gate
 
 `./run-gate.py --worktree /workspaces/vbpub/.worktrees/assay-b068-quickwins
-tester-unified`, **re-run from scratch at `767393d1`** (a new commit is a new
-judged tip — the earlier green at `b12ec9f2` was not carried over):
-**`tester-unified: PASS (exit 0)`**, `ASSAY_REGISTERED_GATE_COMPLETE=1`,
-`run-gate: lane 'tester-unified' exit 0`, all 12 `ASSAY_GATE_PHASE` markers,
-zero `ASSAY_GATE_DIAGNOSTIC` lines. Verdict read from the log's own markers in
-a separate step, never a piped exit code (LESSONS L4). Full detail, including
-both earlier runs, is in the REPORT's Gate section.
+tester-unified`, **re-run from scratch at `001a1f24`** — a new commit is a
+new judged tip, so neither the `b12ec9f2` nor the `767393d1` green was
+carried over:
+
+```
+tester-unified: PASS (exit 0)
+ASSAY_REGISTERED_GATE_COMPLETE=1
+run-gate: lane 'tester-unified' exit 0
+```
+
+All 12 `ASSAY_GATE_PHASE` markers, zero `ASSAY_GATE_DIAGNOSTIC` lines.
+Verdict read from the log's own markers in a separate step, never a piped
+exit code (LESSONS L4). Four runs in total; the REPORT's Gate section
+accounts for all of them, including the one I aborted myself.
 
 ## Bookkeeping notes for the reviewer
 
