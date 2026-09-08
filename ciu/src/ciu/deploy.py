@@ -1183,6 +1183,265 @@ def _image_revision_label(image: str) -> str:
 # ===========================================================================
 
 
+def _resolve_entry_governance(
+    entry: dict,
+    rendered: dict[str, dict],
+    config: dict,
+) -> Optional[tuple[dict, str]]:
+    """Re-resolve ONE selection entry's effective governance table and the
+    slice it would place containers under.
+
+    Shared by :func:`governance_slice_preflight` (which needs it for every
+    entry up front) and the two per-entry S15.23 functions below (which need
+    it again at deploy time, one entry at a time) — the resolution chain is
+    identical and non-obvious enough that two copies would drift.
+
+    Returns ``(gov_cfg, slice_name)``, or ``None`` when this entry has nothing
+    to govern: a shipped stack (S8.6 — no CIU config at all), a stack that was
+    not rendered, a stack whose rendered shape does not validate, one with no
+    ``[<root>.governance]`` table, one with governance disabled, or one whose
+    resolved ``cgroup_parent`` is not a ``.slice`` name (S15.8 places under a
+    slice; anything else is not a governed slice placement).
+
+    Propagates ``ValueError`` from
+    :func:`governance.resolve_cgroup_parent` — a stack that neither names a
+    slice nor picks up the ambient env var is exactly the "misconfigured, must
+    not deploy" case the preflight exists to catch, so it is never swallowed
+    here.
+    """
+    rel = entry["path"]
+    if phases_pkg.service_shipped(entry["service"]):
+        return None
+    if rel not in rendered:
+        return None
+    try:
+        root_key = config_model.validate_stack_shape(rendered[rel])
+    except ValueError:
+        return None
+    merged = config_model.deep_merge(config, rendered[rel])
+    raw_governance = governance_mod.resolve_stack_governance(
+        merged.get(root_key, {}).get("governance"), config
+    )
+    if raw_governance is None:
+        return None
+    gov_cfg = governance_mod.resolve_config(raw_governance)
+    if not gov_cfg.get("enabled"):
+        return None
+    slice_name = governance_mod.resolve_cgroup_parent(str(gov_cfg.get("cgroup_parent") or ""))
+    if not slice_name.endswith(".slice"):
+        return None
+    return gov_cfg, slice_name
+
+
+def mem_min_admission_check(
+    repo_root: Path,
+    entry: dict,
+    rendered: dict[str, dict],
+    config: dict,
+) -> None:
+    """S15.23 (CIU-94b) — admission control for ONE stack about to start.
+
+    Unlike :func:`governance_slice_preflight` (a one-time, up-front check of
+    slice EXISTENCE and DECLARED-floor adequacy — an unrelated question, and
+    deliberately not merged with this one), this is a LIVE, per-entry check
+    run immediately before the stack starts, so it reflects state as earlier
+    entries in *this same run* come up. Sum the guaranteed slice's current
+    occupants' own live ``memory.min`` values, add this stack's declared
+    claim, and refuse if the total would exceed the slice's own
+    host-provisioned ceiling (`CGROUP-NOTES.md`'s "static ceiling + admission
+    control" design).
+
+    **Granularity — one claim per STACK, not per compose service.** The
+    candidate is this stack's single declared ``mem_min``, matching
+    :func:`governance_slice_preflight`'s own existing aggregation. This is
+    forced by architecture: at this call site the compose YAML has not been
+    rendered to disk yet, and host-state probing deliberately lives in
+    ``deploy.py`` rather than the render pipeline. A multi-service stack
+    therefore under-counts here relative to what
+    :func:`apply_mem_min_injections` actually applies (the same declared value
+    on EVERY non-exempt service), which dilutes the kernel's proportional
+    protection for every OTHER occupant of the slice, not just this stack.
+    That degrades gracefully — the same proportional-overcommit tolerance
+    `CGROUP-NOTES.md` already accepts for the concurrent-admission race — and
+    is documented as a known v1 limitation in SPEC.md S15.23.
+
+    Silently a no-op when governance is off, no ``mem_min`` is declared, or
+    ``cgroup_parent`` does not resolve to a slice.
+
+    Raises
+    ------
+    ValueError
+        ``[S15.23]`` when admitting this stack would exceed the slice's live
+        ceiling, via ``warn_policy.warn_or_raise(severity="ERROR")`` — under
+        the default ``ciu.exit_on = "ERROR"`` that raises (S10.3 → exit 2).
+        Also ``[S15.16]`` for a malformed ``mem_min`` size string, unchanged.
+    """
+    resolved = _resolve_entry_governance(entry, rendered, config)
+    if resolved is None:
+        return
+    gov_cfg, slice_name = resolved
+    mem_min_raw = str(gov_cfg.get("mem_min") or "")
+    if not mem_min_raw:
+        return
+    try:
+        candidate = governance_mod.parse_size_to_bytes(mem_min_raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"[S15.16] {entry['path']}: [<root>.governance].mem_min={mem_min_raw!r} "
+            f"is not a valid size: {exc}"
+        ) from exc
+
+    admit, note = governance_mod.check_mem_min_admission(slice_name, candidate)
+    if admit is None:
+        info(f"[INFO] [S15.23] {note}")
+        return
+    if admit:
+        info(f"[INFO] [S15.23] mem_min admission OK — {note}")
+        return
+    warn_policy.warn_or_raise(
+        f"[S15.23] {entry['path']}: admitting this stack's declared mem_min "
+        f"({mem_min_raw}) would push the live sum of guaranteed claims under "
+        f"'{slice_name}' past that slice's own provisioned MemoryMin ceiling. "
+        "The ceiling is a deliberate, human-set total (host-setup's "
+        "DEV_MEMORY_MIN_GUARANTEED_CEILING) for everything guaranteed there "
+        "combined — starting anyway would not grant this container its floor, "
+        "it would shrink every current occupant's. Stop an occupant, lower "
+        "this stack's mem_min, or raise the slice's ceiling host-side. "
+        f"{note}",
+        severity="ERROR", config=config,
+    )
+
+
+def apply_mem_min_injections(
+    repo_root: Path,
+    entry: dict,
+    rendered: dict[str, dict],
+    config: dict,
+) -> None:
+    """S15.23 (CIU-94a) — apply a declared ``mem_min`` to each of this stack's
+    now-running containers, on the container's OWN transient scope.
+
+    Runs immediately after a successful ``_run_stack``: by that point the
+    containers are genuinely running AND the compose file has been rendered to
+    disk, so this can enumerate the stack's ACTUAL services and their concrete
+    ``container_name``s (the same ``yaml.safe_load`` →
+    ``services[...]["container_name"]`` pattern
+    :func:`resolve_selection_health_containers` already uses) rather than
+    guessing a name. For each non-exempt service:
+    ``docker inspect .State.Pid`` → :func:`governance.container_transient_scope`
+    → :func:`governance.set_scope_memory_min`.
+
+    The same declared value goes onto EVERY non-exempt service, matching
+    ``governance.build_injections``' existing precedent for
+    ``mem_limit``/``mem_reservation`` (see S15.23 for the admission-time
+    consequence of that).
+
+    **This is CIU's only host write** — see docs/DESIGN-NOTES.md D9. It is
+    gated inside :func:`governance.set_scope_memory_min` by the identical
+    ``_systemd_is_pid1()`` check every S15.16/S15.22 probe uses (a silent
+    no-op in CIU's own devcontainer), and it only ever touches the ONE
+    transient scope Docker just created for a container THIS deploy started —
+    never a shared slice, no privilege escalation, no daemon, no helper
+    container.
+
+    Reports every failure at ``[WARN]`` (``[S15.23]``), deliberately the
+    opposite of :func:`mem_min_admission_check`'s ERROR: the deploy has
+    already succeeded by this point, and "the declared floor did not apply" is
+    the same "declared intent unfulfilled" severity class S15.16 already
+    treats as a warning, not a new deploy-blocking condition.
+
+    Raises
+    ------
+    ValueError
+        Only for a malformed ``mem_min`` size string (``[S15.16]``,
+        :func:`governance.parse_size_to_bytes`, unchanged and never softened).
+        Under ``--no-preflight`` both the preflight and the admission check
+        are skipped, so this is the FIRST parse attempt — the raise then lands
+        here, after ``_run_stack``, with the container already running. That
+        is deliberate: a typo in the stack's own config is a shape error, and
+        swallowing it just because a container already started would leave the
+        typo silently unreported.
+    """
+    import yaml
+
+    from .config_constants import CIU_COMPOSE_OUTPUT
+
+    resolved = _resolve_entry_governance(entry, rendered, config)
+    if resolved is None:
+        return
+    gov_cfg, slice_name = resolved
+    mem_min_raw = str(gov_cfg.get("mem_min") or "")
+    if not mem_min_raw:
+        return
+    try:
+        required = governance_mod.parse_size_to_bytes(mem_min_raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"[S15.16] {entry['path']}: [<root>.governance].mem_min={mem_min_raw!r} "
+            f"is not a valid size: {exc}"
+        ) from exc
+
+    rel = entry["path"]
+    compose_path = (repo_root / rel).resolve() / CIU_COMPOSE_OUTPUT
+    try:
+        compose = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        warn_policy.warn_or_raise(
+            f"[S15.23] {rel}: declared mem_min={mem_min_raw} could not be applied — "
+            f"the rendered {CIU_COMPOSE_OUTPUT} is unreadable ({exc}), so this "
+            "stack's containers cannot be enumerated",
+            severity="WARN", config=config,
+        )
+        return
+    services = compose.get("services") if isinstance(compose, dict) else None
+    if not isinstance(services, dict) or not services:
+        warn_policy.warn_or_raise(
+            f"[S15.23] {rel}: declared mem_min={mem_min_raw} could not be applied — "
+            f"the rendered {CIU_COMPOSE_OUTPUT} declares no services",
+            severity="WARN", config=config,
+        )
+        return
+
+    exempt = set(gov_cfg.get("exempt_services") or [])
+    for compose_service, definition in services.items():
+        if compose_service in exempt or not isinstance(definition, dict):
+            continue
+        cname = definition.get("container_name")
+        if not isinstance(cname, str) or not cname.strip():
+            warn_policy.warn_or_raise(
+                f"[S15.23] {rel}: service '{compose_service}' has no concrete "
+                f"container_name, so its declared mem_min={mem_min_raw} could "
+                "not be applied to a scope",
+                severity="WARN", config=config,
+            )
+            continue
+        cname = cname.strip()
+        state = _inspect_state(cname)
+        pid = int(state.get("Pid") or 0) if isinstance(state, dict) else 0
+        scope, scope_note = governance_mod.container_transient_scope(pid)
+        if scope is None:
+            warn_policy.warn_or_raise(
+                f"[S15.23] {rel}: could not resolve a transient scope for "
+                f"container '{cname}', so its declared mem_min={mem_min_raw} "
+                f"was not applied — {scope_note}",
+                severity="WARN", config=config,
+            )
+            continue
+        applied, note = governance_mod.set_scope_memory_min(scope, required)
+        if applied:
+            info(
+                f"[INFO] [S15.23] mem_min applied — {rel}/{compose_service} "
+                f"({cname}) under {slice_name}: {note}"
+            )
+        else:
+            warn_policy.warn_or_raise(
+                f"[S15.23] {rel}: declared mem_min={mem_min_raw} was NOT applied "
+                f"to container '{cname}' — the container is running WITHOUT the "
+                f"floor its stack declared. {note}",
+                severity="WARN", config=config,
+            )
+
+
 def governance_slice_preflight(
     repo_root: Path,
     profile: profiles_pkg.Profile,
@@ -1243,31 +1502,16 @@ def governance_slice_preflight(
 
     for entry in selection:
         rel = entry["path"]
-        # Shipped stacks (S8.6) have no CIU config — nothing to resolve.
-        if phases_pkg.service_shipped(entry["service"]):
-            continue
-        if rel not in rendered:
-            continue
-        try:
-            root_key = config_model.validate_stack_shape(rendered[rel])
-        except ValueError:
-            continue
-        merged = config_model.deep_merge(config, rendered[rel])
-        raw_governance = governance_mod.resolve_stack_governance(
-            merged.get(root_key, {}).get("governance"), config
-        )
-        if raw_governance is None:
-            continue
-        gov_cfg = governance_mod.resolve_config(raw_governance)
-        if not gov_cfg.get("enabled"):
-            continue
-        # May raise ValueError (no hardcoded fallback) if this stack neither
+        # Shipped stacks (S8.6, no CIU config), unrendered/invalid stacks, and
+        # stacks with no enabled governance table resolve to None here. This
+        # may raise ValueError (no hardcoded fallback) if a stack neither
         # names a slice explicitly nor picks up the ambient env var — that is
         # exactly the "misconfigured, must not deploy" case this preflight
         # exists to catch, so let it propagate.
-        slice_name = governance_mod.resolve_cgroup_parent(str(gov_cfg.get("cgroup_parent") or ""))
-        if not slice_name.endswith(".slice"):
+        resolved = _resolve_entry_governance(entry, rendered, config)
+        if resolved is None:
             continue
+        gov_cfg, slice_name = resolved
         checked.setdefault(slice_name, []).append(rel)
 
         mem_min_raw = str(gov_cfg.get("mem_min") or "")
@@ -1297,6 +1541,42 @@ def governance_slice_preflight(
         else:
             missing.append(f"  '{slice_name}' (used by: {', '.join(stacks)}) — {note}")
             missing_slice_names.add(slice_name)
+
+    # S15.22 (CIU-95) — the host-wide mount flag every declared mem_min
+    # depends on. Evaluated ONCE, and only when some stack actually declares
+    # a floor for it to matter to: it is a property of /proc/mounts, not of
+    # any slice, so folding it into the per-ancestor walk below would re-run
+    # an identical, slice-independent check once per ancestor per slice for
+    # zero additional information.
+    if mem_min_required:
+        recursiveprot, rp_note = governance_mod.check_memory_recursiveprot()
+        if recursiveprot is None:
+            info(f"[INFO] [S15.22] {rp_note}")
+        elif recursiveprot:
+            info(f"[INFO] [S15.22] memory_recursiveprot OK — {rp_note}")
+        else:
+            # ERROR, not WARN — deliberately stronger than the [S15.16]
+            # ancestor-chain finding immediately below, and the difference is
+            # blast radius, not confidence. An inadequate ancestor chain
+            # scopes to ONE slice's declared value; other slices' floors on
+            # the same host are unaffected. A missing memory_recursiveprot
+            # invalidates EVERY declared mem_min on the ENTIRE host at once,
+            # silently, no matter how adequate any individual chain reports.
+            # This matches mdt-host-check.sh's own FAIL-not-WARN treatment of
+            # the identical flag.
+            warn_policy.warn_or_raise(
+                "[S15.22] cgroup2 is mounted WITHOUT memory_recursiveprot — every "
+                "declared mem_min on this host is currently a NO-OP even where "
+                "MemoryMin= is correctly set and the ancestor chain is otherwise "
+                "adequate (CGROUP-NOTES.md §5: a slice's protection never reaches "
+                "the container pages below it, while `systemctl show` keeps "
+                "reporting the value you set). Remount /sys/fs/cgroup with "
+                "memory_recursiveprot (it is normally systemd's own default — a "
+                "runtime remount elsewhere is the usual cause of it going "
+                "missing), or remove the mem_min declarations that depend on it. "
+                f"{rp_note}",
+                severity="ERROR", config=config,
+            )
 
     # S15.16 (D-G9 check 3) — only meaningful for slices that DO exist; a
     # missing slice is already reported (and about to abort) above.
@@ -1787,6 +2067,25 @@ def action_deploy(
 
             shipped_note = " [shipped]" if shipped else ""
             info(f"--- deploying {entry['path']} (service '{entry['name']}'){shipped_note} ---")
+
+            # S15.23 (CIU-94b) — LIVE mem_min admission control, immediately
+            # before this stack starts, so it sees occupants that earlier
+            # entries in THIS run have already brought up. Guarded exactly the
+            # way the per-phase provisioning_preflight above is: nothing to
+            # admit into in dry-run, and --no-preflight skips it as a static
+            # gate the operator explicitly broke glass on.
+            if rendered is not None and not no_preflight and not dry_run:
+                try:
+                    mem_min_admission_check(repo_root, entry, rendered, profile.config)
+                except ValueError as exc:
+                    error(str(exc))
+                    failed.append(entry["path"])
+                    had_failure = True
+                    phase_failed = True
+                    if not ignore_errors:
+                        stop_remaining = True
+                    continue
+
             ok = _run_stack(
                 stack_dir,
                 env=svc_env,
@@ -1799,6 +2098,14 @@ def action_deploy(
             if ok:
                 deployed.append(entry["path"])
                 started_in_phase.append(entry)
+                # S15.23 (CIU-94a) — the containers are running and the
+                # compose file is on disk, so the declared floor can now be
+                # applied to each container's OWN transient scope. Guarded
+                # only by dry_run (nothing to inject onto), deliberately NOT
+                # by no_preflight: that flag skips static GATES, it does not
+                # disable governance injection itself.
+                if rendered is not None and not dry_run:
+                    apply_mem_min_injections(repo_root, entry, rendered, profile.config)
             else:
                 failed.append(entry["path"])
                 had_failure = True

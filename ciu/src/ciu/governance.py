@@ -36,6 +36,13 @@ parse_size_to_bytes(value) -> int                                          — S
 check_slice_memory_min(slice_name, required_bytes) -> (bool | None, str)   — D-G9 check 3, S15.16
 slice_ancestor_chain(slice_name) -> list[str]                              — S15.16 (systemd dash-naming)
 check_memory_min_ancestor_chain(slice_name, required_bytes) -> (bool | None, str) — S15.16, walks the chain
+CGROUP_ROOT            : Path             — cgroup2 mount point (overridable per-call in tests)
+slice_cgroup_path(slice_name, cgroup_root=CGROUP_ROOT) -> Path             — S15.22, pure derivation
+enumerate_slice_children(slice_name, *, cgroup_root=CGROUP_ROOT) -> (list[tuple[str, int]] | None, str) — S15.22, downward walk
+check_memory_recursiveprot() -> (bool | None, str)                         — S15.22, host-wide mount flag
+check_mem_min_admission(slice_name, candidate_bytes, *, cgroup_root=CGROUP_ROOT) -> (bool | None, str) — S15.23
+container_transient_scope(pid) -> (str | None, str)                        — S15.23, docker-<id>.scope unit name
+set_scope_memory_min(scope_unit, required_bytes) -> (bool, str)            — S15.23, the ONE write (D9)
 build_injections(compose_services, config) -> (dict[str, dict], list[str])
 parse_fio_json(text) -> int
 select_fio_engine(fio_bin="fio") -> (str, str | None)
@@ -135,14 +142,24 @@ GOVERNANCE_DEFAULTS: dict[str, Any] = {
     # S15.16 — declared memory FLOOR (cgroup-v2 `memory.min`-equivalent), a
     # Docker size string ("2g", "512m") or "" (not declared). There is no
     # Docker/compose field for a per-container memory.min, so this is never
-    # injected into the overlay: it is a stated INTENT, checked at deploy time
-    # (governance_slice_preflight, S15.16) against the resolved cgroup_parent
-    # slice's own live `MemoryMin=`. CIU only PLACES a container under a named
-    # slice (S15.8); it never configures that slice's own resource
-    # properties — a declared mem_min only means anything once the slice unit
-    # itself carries a matching MemoryMin=, provisioned host-side (a static
-    # .slice unit, or an optional companion such as
+    # injected into the COMPOSE OVERLAY: it is a stated INTENT, checked at
+    # deploy time (governance_slice_preflight, S15.16) against the resolved
+    # cgroup_parent slice's own live `MemoryMin=`. CIU only PLACES a container
+    # under a named slice (S15.8); it never configures that SLICE's own
+    # resource properties — a declared mem_min only means anything once the
+    # slice unit itself carries a matching MemoryMin=, provisioned host-side
+    # (a static .slice unit, or an optional companion such as
     # modern-debian-tools-python-debug's host-setup — never a CIU dependency).
+    # UPDATED (S15.23, CIU-94): "never injected into the overlay" is still
+    # exactly true, but "CIU makes no mem_min-related host write at all" is
+    # no longer true. Once a container is actually running, CIU applies the
+    # declared floor to THAT CONTAINER'S OWN transient scope
+    # (`deploy.apply_mem_min_injections` -> `systemctl set-property --runtime
+    # docker-<id>.scope MemoryMin=<bytes>`) — a different mechanism from the
+    # overlay, on a unit Docker just created for this deploy, never on a
+    # shared slice, and a silent no-op wherever systemd is not PID 1
+    # (docs/DESIGN-NOTES.md D9). S15.23 additionally admission-checks the
+    # declared claim against the slice's own live ceiling before starting.
     # WARNING (S15.16, read it): a "MemoryMin= OK" preflight verdict on that
     # ONE slice does not mean the container is protected — cgroup v2 bounds
     # effective protection by EVERY ancestor's own MemoryMin, and this
@@ -283,6 +300,11 @@ INJECTED_KEYS: tuple[str, ...] = (
 # tier (see AGENTS.md) — a stack's own explicit governance.cgroup_parent
 # still always wins.
 CGROUP_PARENT_ENV_VAR = "CGROUP_PARENT_DEV_BACKGROUND"
+
+# S15.22 — the cgroup2 unified-hierarchy mount point. Module-level so tests can
+# build a fake tree under `tmp_path` and pass it as the `cgroup_root=` keyword
+# of the walk functions below; production callers never pass it.
+CGROUP_ROOT: Path = Path("/sys/fs/cgroup")
 
 
 def resolve_cgroup_parent(configured: str) -> str:
@@ -950,6 +972,374 @@ def check_memory_min_ancestor_chain(slice_name: str, required_bytes: int) -> tup
     return True, (
         f"{slice_name}: full ancestor chain ({', '.join(chain)}) all meet "
         f">= {required_bytes} bytes"
+    )
+
+
+# ---------------------------------------------------------------------------
+# S15.22 — downward slice enumeration + the memory_recursiveprot mount flag
+# (CIU-95)
+# ---------------------------------------------------------------------------
+#
+# Everything in this block reads straight from cgroupfs/procfs with `pathlib`
+# — no `systemctl` per child, no `docker` call. That is the mechanism
+# `CGROUP-NOTES.md` §"Per-container memory.min guarantees" itself names ("read
+# straight from cgroupfs ... no systemd interaction needed"), and
+# `host-setup/scripts/mdt-slice-audit.py` is working prior art for the exact
+# walk. Only the WRITE in S15.23 (:func:`set_scope_memory_min`) needs
+# `systemctl`: systemd re-applies its own recorded properties to a scope on
+# every `daemon-reload`, silently wiping raw cgroupfs writes — reads have no
+# such hazard.
+#
+# Every function here gates on :func:`_systemd_is_pid1` exactly the way
+# :func:`check_slice_unit`/:func:`check_slice_memory_min` already do, and for a
+# sharper reason than "no systemctl": an isolated devcontainer
+# (`CgroupnsMode=private`, no host cgroupfs bind — see docs/DESIGN-NOTES.md D2)
+# has its OWN namespace-local `/sys/fs/cgroup` root and its OWN
+# `/proc/mounts`. Walking those would not enumerate a smaller version of the
+# host's real tree; it would enumerate a DIFFERENT tree and report the answer
+# as if it were the host's. An abstention (`None`) is the only honest verdict
+# there, so the gate comes first, before any filesystem access at all.
+
+
+def slice_cgroup_path(slice_name: str, cgroup_root: Path = CGROUP_ROOT) -> Path:
+    """Derive *slice_name*'s cgroupfs directory from its name alone (S15.22).
+
+    systemd's dash-naming (``systemd.slice(5)``) makes a slice's own name its
+    full ancestor path, and the cgroupfs layout mirrors it as nested
+    directories: ``dev-background.slice`` lives at
+    ``<cgroup_root>/dev.slice/dev-background.slice``. This reverses
+    :func:`slice_ancestor_chain` (nearest-first) into that outermost-first
+    nesting rather than re-deriving the dash rule a second time — one place
+    owns that convention.
+
+    Pure derivation: no I/O, no existence check (the directory only exists
+    while the slice is active). Raises ``ValueError`` via
+    :func:`slice_ancestor_chain` for a name that is not a slice.
+    """
+    chain = slice_ancestor_chain(slice_name)
+    path = cgroup_root
+    for segment in reversed(chain):  # outermost ancestor first
+        path = path / segment
+    return path
+
+
+def _read_memory_min_bytes(cgroup_dir: Path) -> int:
+    """Read *cgroup_dir*'s own live ``memory.min``, in bytes (S15.22).
+
+    ``0`` for unset, the literal ``"max"``, an unreadable file, or a directory
+    that is not a real cgroup at all — same semantics (and same reasoning) as
+    ``mdt-slice-audit.py``'s ``read_protection()``, scoped to ``memory.min``:
+    every caller here is only ever asking "does this claim protection", and
+    "cannot tell" is the same answer as "no" for that question.
+
+    Does NOT gate on :func:`_systemd_is_pid1` — this is the raw primitive, and
+    its callers gate before they ever construct a path to hand it. Never
+    raises.
+    """
+    try:
+        text = (cgroup_dir / "memory.min").read_text(encoding="utf-8").strip()
+    except OSError:
+        return 0
+    if text in ("", "max"):
+        return 0
+    try:
+        return int(text)
+    except ValueError:
+        return 0
+
+
+def enumerate_slice_children(
+    slice_name: str, *, cgroup_root: Path = CGROUP_ROOT,
+) -> tuple[list[tuple[str, int]] | None, str]:
+    """Enumerate every immediate child cgroup currently under *slice_name*
+    (S15.22), each paired with its OWN live ``memory.min`` in bytes.
+
+    This is the downward walk CIU-95 filed as missing: `governance.py` could
+    only ever walk UPWARD (:func:`check_memory_min_ancestor_chain`), so there
+    was no way to answer "who else is currently sharing this slice's
+    protection" — the proportional-surplus-redistribution question
+    `CGROUP-NOTES.md` describes. It is also the primitive S15.23's admission
+    control sums over (:func:`check_mem_min_admission`).
+
+    Returns ``(children, note)``:
+
+    - ``children is None`` — this environment cannot see the host's real
+      cgroup tree (:func:`_systemd_is_pid1` is False). An isolated
+      devcontainer's own ``/sys/fs/cgroup`` is ITS OWN namespace-local root,
+      not the host's; walking it would silently enumerate the WRONG tree, not
+      a smaller version of the right one. Abstain, never guess.
+    - ``children == []`` — a definitive "zero occupants": the slice is
+      inactive (no cgroup directory — systemd removes it when the last
+      occupant exits) or active but genuinely empty. This matches
+      ``mdt-slice-audit.py``'s own "not a dir -> nothing found" treatment; it
+      is an answer, not an abstention.
+    - a non-empty list — ``(child_directory_name, its own memory.min bytes)``
+      pairs, sorted by name so output and notes are stable across runs.
+
+    Never raises: an unreadable/vanished directory mid-walk (a scope can exit
+    at any moment) reads as no children rather than an exception.
+    """
+    if not _systemd_is_pid1():
+        return None, (
+            "systemd is not PID 1 in this mount namespace (no "
+            "/run/systemd/system — common in devcontainers, whose "
+            "/sys/fs/cgroup is their OWN namespace-local root, not the "
+            f"host's) — cannot enumerate {slice_name}'s occupants from here"
+        )
+    slice_dir = slice_cgroup_path(slice_name, cgroup_root)
+    try:
+        entries = sorted(p for p in slice_dir.iterdir() if p.is_dir())
+    except OSError:
+        return [], (
+            f"{slice_name}: no cgroup directory at {slice_dir} — the slice is "
+            "not active (systemd removes it when the last occupant exits), so "
+            "it currently has zero occupants"
+        )
+    children = [(p.name, _read_memory_min_bytes(p)) for p in entries]
+    if not children:
+        return [], f"{slice_name}: active but currently has zero child cgroups"
+    breakdown = ", ".join(f"{name}={value}" for name, value in children)
+    return children, f"{slice_name}: {len(children)} occupant(s) — {breakdown}"
+
+
+def check_memory_recursiveprot() -> tuple[bool | None, str]:
+    """Is cgroup2 mounted with the ``memory_recursiveprot`` option (S15.22)?
+
+    Without that mount flag a slice's ``memory.min``/``memory.low`` does not
+    reach the container pages below it: every floor in every tier silently
+    protects nothing, while ``systemctl show`` happily reports the value that
+    was set. `CGROUP-NOTES.md` §5 records this happening for real (game host,
+    2026-07-17, a runtime remount stripped it), and `mdt-host-check.sh`
+    already treats its absence as FAIL rather than a warning.
+
+    This is a HOST-WIDE property, not a per-slice or per-ancestor one, which
+    is why it is a separate function called ONCE by the preflight rather than
+    folded into :func:`check_slice_memory_min`/
+    :func:`check_memory_min_ancestor_chain`: embedding it there would re-run
+    an identical, slice-independent check once per ancestor per slice for
+    exactly zero additional information.
+
+    Reads ``/proc/mounts`` directly rather than shelling to ``findmnt`` (as
+    `mdt-host-check.sh` does) — no external tool, nothing to mock but a file.
+
+    Returns ``(present, note)``:
+
+    - ``present is None`` — systemd is not PID 1 here (a devcontainer's own
+      ``/proc/mounts`` reflects ITS mount namespace, not the host's), or
+      ``/proc/mounts`` is unreadable, or it carries no ``cgroup2`` line at
+      all (a pure cgroup-v1 host: the flag does not exist there, so "missing"
+      would be a false accusation).
+    - ``present is True`` / ``False`` — the flag is / is not among the
+      cgroup2 mount's options.
+
+    Never raises.
+    """
+    if not _systemd_is_pid1():
+        return None, (
+            "systemd is not PID 1 in this mount namespace (no "
+            "/run/systemd/system) — /proc/mounts here describes this "
+            "container's own mount namespace, not the host's; skipping the "
+            "memory_recursiveprot check"
+        )
+    try:
+        mounts = Path("/proc/mounts").read_text(encoding="utf-8")
+    except OSError as exc:
+        return None, f"could not read /proc/mounts ({exc}) — skipping the memory_recursiveprot check"
+    for line in mounts.splitlines():
+        fields = line.split()
+        if len(fields) < 4 or fields[2] != "cgroup2":
+            continue
+        options = fields[3].split(",")
+        if "memory_recursiveprot" in options:
+            return True, f"cgroup2 at {fields[1]} is mounted with memory_recursiveprot"
+        return False, (
+            f"cgroup2 at {fields[1]} is mounted WITHOUT memory_recursiveprot "
+            f"(options: {fields[3]})"
+        )
+    return None, (
+        "no cgroup2 mount line in /proc/mounts — this is not a cgroup-v2 "
+        "host, so the memory_recursiveprot flag does not apply; skipping"
+    )
+
+
+# ---------------------------------------------------------------------------
+# S15.23 — per-container memory.min admission control and injection (CIU-94)
+# ---------------------------------------------------------------------------
+
+
+def check_mem_min_admission(
+    slice_name: str, candidate_bytes: int, *, cgroup_root: Path = CGROUP_ROOT,
+) -> tuple[bool | None, str]:
+    """Admission decision for ONE candidate about to start under *slice_name*
+    (S15.23).
+
+    This is the consumer half of `CGROUP-NOTES.md`'s chosen design ("static
+    ceiling + admission control, not dynamic reconciliation"): host-setup
+    provisions a fixed ``MemoryMin=`` on the guaranteed slice once, as a human
+    decision about the total ever guaranteed across every container placed
+    there; CIU refuses to start a container whose own declared claim would
+    push the live sum past it. Nothing is recomputed or written host-side, so
+    there is no drift class of bug from an out-of-band container stop.
+
+    Gated FIRST by :func:`_systemd_is_pid1`, BEFORE either the ceiling read or
+    :func:`enumerate_slice_children`. :func:`_read_memory_min_bytes` does not
+    gate on its own (its callers do), so checking host-rootedness only AFTER
+    reading the ceiling would silently read the devcontainer's own
+    namespace-local cgroup tree and treat that as the host's answer —
+    reintroducing exactly the false-signal hazard this block's gating exists
+    to prevent.
+
+    Ceiling: *slice_name*'s OWN live ``memory.min``, read from cgroupfs. It is
+    deliberately never mirrored as a second CIU-side config value — the one
+    number host-setup actually provisioned is the one number consulted, so
+    nothing can drift from it.
+
+    Currently-claimed: the sum of every current occupant's own live
+    ``memory.min`` (:func:`enumerate_slice_children`).
+
+    Returns ``(admit, note)``:
+
+    - ``admit is None`` — not host-rooted, OR the slice carries no live
+      ``memory.min`` of its own (``0``/unset): there is no real ceiling to
+      admit INTO, so admission control does not apply. S15.16's existing
+      ancestor-chain WARN already covers "this declared floor is a no-op"
+      from the DECLARATION side; blocking a container over guarantee
+      infrastructure that was never provisioned would be a second, worse
+      answer to the same question.
+    - ``admit is True`` — ``current_sum + candidate_bytes <= ceiling``. An
+      EXACTLY full slice admits (mirroring :func:`check_slice_memory_min`'s
+      own ``>=`` treatment of an exactly-equal floor): the ceiling is the
+      total that may be guaranteed, not one byte less than it.
+    - ``admit is False`` — the sum would exceed the ceiling; *note* carries
+      the ceiling, the current sum, the candidate, and the per-occupant
+      breakdown, so an operator can see WHICH occupants consumed it.
+
+    Never raises.
+    """
+    if not _systemd_is_pid1():
+        return None, (
+            "systemd is not PID 1 in this mount namespace (no "
+            "/run/systemd/system) — this container's /sys/fs/cgroup is its "
+            f"own namespace-local root, not the host's; skipping {slice_name} "
+            "mem_min admission control"
+        )
+    ceiling = _read_memory_min_bytes(slice_cgroup_path(slice_name, cgroup_root))
+    if ceiling <= 0:
+        return None, (
+            f"{slice_name}: no live memory.min of its own (unset/max) — there "
+            "is no provisioned ceiling to admit into, so admission control "
+            "does not apply (S15.16's ancestor-chain check already reports "
+            "the declared floor as a no-op)"
+        )
+    children, children_note = enumerate_slice_children(slice_name, cgroup_root=cgroup_root)
+    occupants = children or []
+    current_sum = sum(value for _, value in occupants)
+    total = current_sum + candidate_bytes
+    if total <= ceiling:
+        return True, (
+            f"{slice_name}: ceiling={ceiling} bytes, currently claimed="
+            f"{current_sum} bytes across {len(occupants)} occupant(s), "
+            f"candidate={candidate_bytes} bytes -> {total} <= {ceiling}, admitted"
+        )
+    breakdown = ", ".join(f"{name}={value}" for name, value in occupants) or "(none)"
+    return False, (
+        f"{slice_name}: ceiling={ceiling} bytes, currently claimed="
+        f"{current_sum} bytes, candidate={candidate_bytes} bytes -> "
+        f"{total} exceeds the ceiling by {total - ceiling} bytes. Current "
+        f"occupants: {breakdown}. {children_note}"
+    )
+
+
+def container_transient_scope(pid: int) -> tuple[str | None, str]:
+    """Derive the systemd transient scope UNIT NAME owning *pid* (S15.23).
+
+    A Python port of ``mdt-apply-dev-caps.sh``'s own derivation: read
+    ``/proc/<pid>/cgroup``, take the ``0::`` line (the unified cgroup-v2
+    hierarchy — absent on a pure cgroup-v1 host), and trim to the FIRST
+    ``.scope`` path component. buildkitd-style workloads nest their own
+    sub-cgroups INSIDE the container's scope, and a property set on the scope
+    covers the whole subtree, so the trim is what makes the answer the unit
+    systemd actually knows about.
+
+    Returns the UNIT NAME (e.g. ``"docker-<hex>.scope"``), not a path — that
+    is what ``systemctl set-property`` takes.
+
+    Returns ``(scope, note)`` with ``scope is None`` when *pid* is not a
+    positive number, ``/proc/<pid>/cgroup`` is unreadable (the process already
+    exited — a container can die between ``docker inspect`` and this call),
+    there is no ``0::`` line, or no ``.scope`` component appears in the path
+    (the process is not under a transient scope at all). Never raises.
+    """
+    if pid <= 0:
+        return None, f"no usable PID ({pid}) — the container is not running"
+    try:
+        raw = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8")
+    except OSError as exc:
+        return None, f"could not read /proc/{pid}/cgroup ({exc}) — the process may have exited"
+    for line in raw.splitlines():
+        if not line.startswith("0::"):
+            continue
+        cgroup_path = line.split(":", 2)[2]
+        for component in cgroup_path.split("/"):
+            if component.endswith(".scope"):
+                return component, f"pid {pid} -> {component} (from {cgroup_path})"
+        return None, (
+            f"pid {pid}: no .scope component in its cgroup path ({cgroup_path}) "
+            "— not running under a systemd transient scope"
+        )
+    return None, (
+        f"pid {pid}: no '0::' line in /proc/{pid}/cgroup — no unified "
+        "(cgroup-v2) hierarchy on this host"
+    )
+
+
+def set_scope_memory_min(scope_unit: str, required_bytes: int) -> tuple[bool, str]:
+    """Set ``MemoryMin=`` on a container's own transient scope unit (S15.23).
+
+    ``systemctl set-property --runtime <scope_unit> MemoryMin=<bytes>`` —
+    never a raw cgroupfs write. systemd re-applies its own recorded properties
+    to a scope on every ``daemon-reload``, so a routine ``apt install``
+    elsewhere on the host would silently wipe a raw write; ``--runtime`` is
+    the reload-safe mechanism `CGROUP-NOTES.md` establishes as doctrine and
+    ``mdt-apply-dev-caps.sh`` already uses against this same kind of
+    ``docker-*.scope`` unit for its IO caps.
+
+    Gated FIRST by :func:`_systemd_is_pid1`: not host-rooted means no write is
+    even attempted. That is a correctness requirement, not only hygiene — the
+    *pid* this scope was derived from came from ``docker inspect
+    .State.Pid``, a HOST PID-namespace number, meaningless inside an isolated
+    devcontainer's own ``/proc``.
+
+    Returns ``(applied, note)``. Unlike the probes in this module, the failure
+    verdict is ``False`` rather than ``None``: the caller (S15.23's
+    post-deploy injection) treats "could not apply the declared floor" the
+    same way whether the cause was an unreachable systemd or an insufficient
+    privilege — both are "declared intent unfulfilled", reported at WARN. A
+    nonzero ``systemctl`` exit (typically insufficient privilege) is caught
+    and surfaced in *note* with its stderr; this never raises.
+    """
+    if not _systemd_is_pid1():
+        return False, (
+            "systemd is not PID 1 in this mount namespace (no "
+            "/run/systemd/system) — a transient scope's MemoryMin cannot be "
+            f"set from inside this container; {scope_unit} left unchanged"
+        )
+    try:
+        result = subprocess.run(
+            ["systemctl", "set-property", "--runtime", scope_unit,
+             f"MemoryMin={required_bytes}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"systemctl set-property failed to run ({exc}) — {scope_unit} left unchanged"
+    if result.returncode == 0:
+        return True, f"{scope_unit}: MemoryMin={required_bytes} bytes applied (--runtime)"
+    return False, (
+        f"{scope_unit}: systemctl set-property exited {result.returncode} — "
+        f"{(result.stderr or '').strip() or '(no stderr)'}"
     )
 
 

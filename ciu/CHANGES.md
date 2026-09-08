@@ -21,6 +21,125 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+Checked before adding (cmru KI-23): the section below it is `## [7.11.0] -
+2026-09-02` — a real heading with a date, not a bare `- UNRELEASED`, so there
+is no stale hand-authored block to fold in first. Fold this section into its
+release heading at release time, per the process note above.
+
+### Added
+- **feat(ciu): CIU-95 — `memory_recursiveprot` mount-flag check and downward
+  slice enumeration (SPEC S15.22, ciu-P50).** `governance.py` could only ever
+  walk UPWARD from a slice, and it never checked the one host-wide mount flag
+  that decides whether ANY declared floor reaches container pages at all.
+  Two additions close that. `check_memory_recursiveprot()` reads
+  `/proc/mounts` (no `findmnt` subprocess) and is called ONCE per
+  `ciu deploy`, only when some stack in the selection declares `mem_min`. Its
+  severity is **ERROR** — it raises under the default `ciu.exit_on`, unlike
+  the `[S15.16]` ancestor-chain WARN it sits beside, because the blast radius
+  is different in kind: an inadequate ancestor chain scopes to ONE slice,
+  while a missing `memory_recursiveprot` silently invalidates EVERY declared
+  `mem_min` on the entire host at once, no matter how green each individual
+  chain reports. `enumerate_slice_children()` adds the first downward walk:
+  every immediate child cgroup under a slice with its own live `memory.min`,
+  read straight from cgroupfs. A pure cgroup-v1 host, or any environment
+  where systemd is not PID 1, abstains rather than reporting a false finding.
+- **feat(ciu): CIU-94 — per-container `memory.min` admission control and
+  injection (SPEC S15.23, ciu-P50).** `governance.mem_min` has been
+  declared-intent-only since it was introduced: checked against the slice,
+  never applied to anything. It now does both halves of what its backlog
+  entry asked for, following `CGROUP-NOTES.md`'s "static ceiling + admission
+  control" design. **Before a stack starts**, CIU sums the live claims of its
+  target slice's current occupants and refuses (`[S15.23]`, ERROR, exit 2) if
+  admitting this stack's declared floor would push the total past the slice's
+  own host-provisioned `MemoryMin=` ceiling — the ceiling is read live from
+  cgroupfs, never mirrored into CIU config, so it cannot drift from what
+  host-setup actually provisioned. An exactly-full slice still admits.
+  **After the containers are running**, CIU applies the declared floor to each
+  non-exempt container's OWN transient scope via `systemctl set-property
+  --runtime docker-<id>.scope MemoryMin=<bytes>` (never a raw cgroupfs write —
+  a routine `daemon-reload` would silently wipe that). Failures there are
+  `[WARN]`, deliberately not ERROR: the deploy has already succeeded, and "the
+  declared floor did not apply" is the severity class S15.16 already treats as
+  a warning.
+
+### Changed
+- `governance.mem_min`'s documented contract is amended, not replaced.
+  "Never injected into the compose **overlay**" and "CIU never configures a
+  **slice**'s own resource properties" both remain exactly true. What is no
+  longer true is the broader reading that CIU makes no `mem_min`-related host
+  write at all — S15.23 makes one, on a different object (the container's own
+  transient scope, which Docker just created for a container this invocation
+  started). SPEC S15.16, `GOVERNANCE_DEFAULTS["mem_min"]`'s comment block, and
+  `composefile.generate_overlay`'s docstring are all updated in place rather
+  than left to contradict the new section.
+- `deploy.governance_slice_preflight`'s governance re-resolution is factored
+  into `deploy._resolve_entry_governance`, now shared with the two new
+  per-entry functions. Behavior is unchanged; this exists so the resolution
+  chain has one owner rather than three copies to drift.
+
+### Documentation
+- **New `docs/DESIGN-NOTES.md` D9** — the design debt this package would
+  otherwise have left. D2 recommended "verify-only, forever," and CIU-94(a) is
+  the first write CIU has ever made, so D9 records what actually changed:
+  D2's options A/B/C were all ways to obtain privilege for writing to a
+  **slice**, none is built and none is in scope; the write shipped here is to
+  a **transient scope** Docker created for this deploy's own container, gated
+  by the identical `_systemd_is_pid1()` check every existing probe uses (a
+  silent no-op inside CIU's own devcontainer), needing no new privilege and
+  escalating to nothing when denied. D9 also states the line explicitly, so a
+  later package cannot widen it by accident: writing to a slice, creating a
+  unit, mounting D-Bus, spawning a privileged helper, or persisting a drop-in
+  that outlives the container each re-opens D2's table on its own merits.
+- `docs/CONFIG.md` gains a `mem_min` paragraph (the key had none), including
+  the point that a floor only means anything on a slice provisioned as a
+  guaranteed tier — declaring one against a shared, heterogeneous tier like
+  `dev-background.slice` would have its protection redistributed across every
+  unrelated container living there.
+- `test-repo/infra/db-core` declares `governance.mem_min` as the worked
+  example — the "disposable Postgres" case from the incident that filed
+  CIU-94.
+
+### Known limitations (named deliberately, not discovered later)
+- **Admission counts one claim per STACK; injection applies the declared value
+  to EVERY non-exempt service.** At the admission call site the stack's compose
+  YAML has not been rendered yet (live host probing deliberately stays out of
+  the render pipeline), so a multi-service stack clears admission at 1× its
+  declared claim and then claims N× once running. The consequence is not just
+  a wrong number in a log line: it dilutes the kernel's proportional
+  protection for every OTHER occupant of the same guaranteed slice. It
+  degrades gracefully rather than failing, and `CGROUP-NOTES.md`'s motivating
+  cases are single-container stacks — but it is a real v1 limitation,
+  documented in S15.23.
+- **The concurrent-admission race stays unlocked**, as `CGROUP-NOTES.md`'s own
+  alternatives table already accepted: two stacks admitted simultaneously can
+  oversubscribe the ceiling, which cgroup v2 resolves by dividing protection
+  across more claimants than intended — smaller floors, never a crash.
+- **A redeploy double-counts the entry's own prior instance and can be
+  spuriously refused.** Admission sums every CURRENT occupant of the slice
+  with no notion of "this candidate replaces an occupant already in that
+  sum," and runs before the entry's own previous container is stopped. A
+  slice sized correctly for its intended occupant(s) — exactly what
+  `CGROUP-NOTES.md`'s sizing doctrine calls for — will therefore refuse an
+  ordinary config/image-update redeploy of a stack that already fully
+  claims its ceiling, even though the net claim never changes. Workaround
+  until fixed: provision headroom for the redeploying stack's own claim, or
+  `ciu down` before `ciu deploy` for stacks on a guaranteed slice. Tracked
+  as `CIU-96` (excluding an entry's own occupant needs correlating a live
+  cgroup child back to a specific CIU entry, unavailable at this call site
+  as currently architected — real follow-up work).
+- **`[S15.22]`'s recursiveprot check runs before the pre-existing
+  `[S15.G9-1]` missing-slice check** in the same preflight function — a host
+  with both problems only reports the first per `ciu deploy` run. Both are
+  independently fatal and actionable; this is report ordering, not a masked
+  finding.
+- **Live verification is not part of this change's evidence.** The
+  implementing environment has no host-rooted systemd, so `systemctl show
+  <scope> --property=MemoryMin` after a real deploy, and a genuine
+  over-ceiling refusal, remain to be confirmed on a host with a real
+  `dev-memory_min_guaranteed.slice`.
+
 ## [7.11.0] - 2026-09-02
 <!-- cmru: generated -->
 <!-- cmru: source-end=9e86e8585f489ce9006adacbfd8c6208ad8e2c93 -->

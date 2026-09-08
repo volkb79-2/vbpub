@@ -852,6 +852,36 @@ quota (memory/IO capped, CPU previously unbounded) must opt in explicitly.
 or a non-numeric string all refuse at render time. See
 [SPEC S15.21](SPEC.md#s1521--cpu-quota-cpus-ciu-90-ciu-p49).
 
+`mem_min` (default `""` = not declared) declares a cgroup-v2 `memory.min`
+FLOOR — a Docker-style size string, e.g. `"128m"`. It is the one governance
+key with no compose field behind it, so it is never injected into the
+overlay; instead CIU (a) checks the resolved slice's whole ancestor chain
+before deploying (S15.16), (b) refuses to start the stack if admitting its
+claim would push the live sum of that slice's occupants past the slice's own
+provisioned `MemoryMin=` ceiling (S15.23 admission control, `[S15.23]`,
+ERROR — raises by default), and (c) once the container is running, applies
+the floor to that container's own transient scope via `systemctl
+set-property --runtime` (S15.23 injection, failures reported at `[WARN]`).
+Every one of those is a silent, informational no-op wherever CIU is not
+running host-rooted (no systemd as PID 1 — a devcontainer, a CI runner, a
+non-systemd host), so declaring it is safe everywhere.
+
+**A floor only means something on a slice provisioned as a guaranteed tier.**
+Point `cgroup_parent` at one explicitly (`test-repo/infra/db-core` is the
+worked example: `cgroup_parent = "dev-memory_min_guaranteed.slice"`,
+`mem_min = "128m"`). A shared, heterogeneous tier such as
+`dev-background.slice` deliberately carries no `MemoryMin` at all — cgroup v2
+redistributes a parent's protection across every child currently using
+memory, so a floor there would silently be shared out to every unrelated
+container in the same slice. Note also that the admission check counts ONE
+claim per stack while injection applies the declared value to EVERY
+non-exempt service, so a multi-service stack on a guaranteed slice dilutes
+protection for the slice's other occupants — see the granularity note in
+[SPEC S15.23](SPEC.md#s1523--per-container-memorymin-admission-control-and-injection-ciu-94-ciu-p50),
+and [S15.22](SPEC.md#s1522--memory_recursiveprot-check-and-downward-slice-enumeration-ciu-95-ciu-p50)
+for the host-wide `memory_recursiveprot` mount flag every declared floor
+depends on.
+
 ### `[<root>.hooks]` — hook points [S9.1]
 
 ```toml

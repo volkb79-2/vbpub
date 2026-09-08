@@ -3473,6 +3473,18 @@ under (S15.8), and CIU's `cgroup_parent` only PLACES a container there — it
 never configures that slice's own resource properties. `mem_min` is
 therefore stated intent, checked rather than enforced.
 
+> **Amended by S15.23 (CIU-94).** "Never injected into the **overlay**"
+> remains exactly true, and so does "CIU never configures that **slice**'s
+> own resource properties." What is no longer true is the broader reading
+> that CIU makes NO `mem_min`-related host write at all. S15.23 adds one, by
+> a different mechanism and at a different level: once a container is
+> actually running, CIU applies the declared floor to **that container's own
+> transient scope** (`systemctl set-property --runtime docker-<id>.scope
+> MemoryMin=<bytes>`) — a unit Docker just created for a container *this*
+> deploy started, never a shared slice, and a silent no-op wherever systemd
+> is not PID 1. See S15.23 and `docs/DESIGN-NOTES.md` D9 (which narrows D2's
+> "verify-only, forever" framing to admit exactly this one write).
+
 `governance_slice_preflight` (`deploy.py`, the same function that runs
 S15.12's slice-existence check) additionally collects every enabled stack's
 declared `mem_min`, converts it to bytes (`governance.parse_size_to_bytes`
@@ -3564,6 +3576,236 @@ own S15.14 reasoning: `docker compose up` would otherwise reject a garbage
 <container>` on a governed container with `governance.cpus = "2"` configured
 reports `2000000000` (Docker's internal `NanoCpus` = `cpus * 1e9`); `0` means
 no quota is applied, matching the unset default.
+
+### S15.22 — `memory_recursiveprot` check and downward slice enumeration (CIU-95, ciu-P50)
+
+Two gaps S15.16's upward ancestor walk could not close, both filed as
+CIU-95.
+
+**(a) The mount flag every declared floor depends on.**
+`governance.check_memory_recursiveprot()` reads `/proc/mounts` (no external
+tool — unlike `mdt-host-check.sh`, which shells to `findmnt`), finds the
+`cgroup2` line, and reports whether `memory_recursiveprot` is among its
+mount options. `governance_slice_preflight` calls it ONCE per run, and only
+when some stack in the selection actually declares `mem_min` — it is a
+host-wide property of the mount, not of any slice or ancestor, so folding it
+into the per-ancestor walk would re-run an identical, slice-independent
+check once per ancestor per slice for zero additional information.
+
+Without that flag, a slice's `memory.min`/`memory.low` never reaches the
+container pages below it: every floor in every tier silently protects
+nothing while `systemctl show` keeps reporting the value that was set.
+`CGROUP-NOTES.md` §5 records this happening for real (a runtime remount
+stripped it, 2026-07-17).
+
+Outcomes:
+
+- **Not host-rooted, `/proc/mounts` unreadable, or no `cgroup2` line at
+  all** — `[INFO]` skip. A devcontainer's own `/proc/mounts` describes ITS
+  mount namespace, not the host's; a pure cgroup-v1 host has no such flag to
+  be missing, so reporting it absent there would be a false accusation.
+- **Flag present** — one `[INFO]` line.
+- **Flag absent** — `[S15.22]` via `warn_policy.warn_or_raise` with
+  `severity="ERROR"`, so under the DEFAULT `ciu.exit_on = "ERROR"` it
+  **raises** (`ValueError`, S10.3 → exit 2). `ciu.exit_on = "NEVER"`
+  suppresses it, like every other S10.6 site.
+
+**Why ERROR here, when the `[S15.16]` ancestor-chain finding immediately
+below it in the same function stays WARN** — even though both say "this
+declared floor is currently a no-op": **blast radius**, not confidence. The
+ancestor-chain WARN is scoped to ONE slice's declared value being
+inadequate; other slices' `mem_min` declarations on the same host are
+unaffected, and an operator who already knows about that host-side gap may
+legitimately proceed. A missing `memory_recursiveprot` invalidates EVERY
+declared `mem_min` on the ENTIRE host at once, silently, no matter how
+adequate any individual ancestor chain reports itself to be. A host-wide
+condition deserves the stronger default; a per-slice one does not. This
+also matches `mdt-host-check.sh`'s own FAIL-not-warn treatment of the
+identical flag.
+
+**Ordering note.** This check runs before the pre-existing `[S15.G9-1]`
+missing-slice-unit check in the same preflight function, so on a host with
+BOTH problems at once, one `ciu deploy` run only ever reports the S15.22
+failure — an operator who fixes it and redeploys may then be surprised by a
+previously-invisible `[S15.G9-1]` failure. Both are independently fatal and
+actionable; this is a one-problem-at-a-time report order, not a masked or
+dropped finding.
+
+**(b) Downward enumeration.** Before this section `governance.py` could only
+walk UPWARD (S15.16), so there was no way to answer "who else is currently
+sharing this slice's protection" — the proportional-surplus-redistribution
+hazard `CGROUP-NOTES.md` describes for a shared tier.
+`governance.enumerate_slice_children(slice_name)` lists every immediate
+child cgroup currently under a slice, each with its own live `memory.min` in
+bytes, reading straight from cgroupfs with `pathlib` (`governance.CGROUP_ROOT`,
+`governance.slice_cgroup_path` — a pure reversal of S15.16's
+`slice_ancestor_chain` into the cgroupfs's nested-directory layout). No
+`systemctl` per child, no `docker` call: that is the mechanism
+`CGROUP-NOTES.md` itself names, and `host-setup/scripts/mdt-slice-audit.py`
+is working prior art for the same walk.
+
+Its return contract distinguishes two things that must never be conflated:
+
+- `None` — **abstention.** systemd is not PID 1 here, so this environment
+  cannot see the host's real cgroup tree at all. An isolated devcontainer's
+  own `/sys/fs/cgroup` is ITS OWN namespace-local root, not a smaller view of
+  the host's; walking it would enumerate the WRONG tree and report the answer
+  as if it were the host's. No filesystem access is attempted in this case.
+- `[]` — **a definitive zero.** The slice is inactive (systemd removes the
+  cgroup directory when the last occupant exits) or active but genuinely
+  empty. This is an answer, matching `mdt-slice-audit.py`'s own "not a dir →
+  nothing found" treatment.
+
+Every function in this section is gated by the same `_systemd_is_pid1()`
+check S15.12/S15.16's probes already use, degrades the same way
+(`None`/informational skip), and never raises.
+
+### S15.23 — Per-container `memory.min` admission control and injection (CIU-94, ciu-P50)
+
+The consumer half of `CGROUP-NOTES.md` §"Per-container `memory.min`
+guarantees" — its **static ceiling + admission control** design (chosen over
+a dynamic parent-reconciling script, which would need new host-systemd
+privilege for CIU and carries a drift class of bug for out-of-band container
+stops). host-setup provisions a fixed `MemoryMin=` on a dedicated
+`dev-memory_min_guaranteed.slice` once, as a human decision about the total
+ever guaranteed across every container placed there; CIU does the two things
+that make that number mean something.
+
+**(a) Admission control — before the stack starts, `[S15.23]`, ERROR.**
+`deploy.mem_min_admission_check` runs in `action_deploy`'s per-entry loop
+immediately before `_run_stack`, guarded exactly the way the per-phase
+`provisioning_preflight` call is (`rendered is not None and not
+no_preflight and not dry_run`). It re-resolves this entry's governance
+(`deploy._resolve_entry_governance`, shared with
+`governance_slice_preflight`), parses the declared `mem_min`
+(`governance.parse_size_to_bytes`), and calls
+`governance.check_mem_min_admission(slice_name, candidate_bytes)`, which:
+
+- reads the slice's OWN live `memory.min` as the ceiling — never a mirrored
+  CIU-side config value, so nothing can drift from what host-setup actually
+  provisioned;
+- sums every current occupant's own live `memory.min` (S15.22's downward
+  walk);
+- admits when `current_sum + candidate <= ceiling`. An **exactly full** slice
+  admits: the ceiling is the total that may be guaranteed, not one byte less
+  than it (mirroring `check_slice_memory_min`'s `>=` treatment of an
+  exactly-equal floor).
+
+Outcomes: not host-rooted, or the slice carries no live `memory.min` of its
+own (`0`/unset) → `[INFO]` skip. There is no real ceiling to admit INTO in
+that second case, and S15.16's ancestor-chain WARN already reports "this
+declared floor is a no-op" from the DECLARATION side — inventing a second,
+deploy-blocking reason for the same condition would be worse, not safer.
+Over the ceiling → `warn_policy.warn_or_raise(severity="ERROR")`, which
+raises by default and fails the phase; the message carries the ceiling, the
+live sum, the candidate, and the per-occupant breakdown.
+
+This is deliberately a **live, per-entry** check, NOT merged into
+`governance_slice_preflight`: that function stays a one-time, up-front check
+of slice existence and declared-floor adequacy (a different question), while
+this one must reflect state as earlier entries in *this same run* come up.
+
+> **Known v1 granularity limitation — one claim per STACK, not per compose
+> service.** The candidate is the stack's single declared `mem_min`, matching
+> `governance_slice_preflight`'s own existing aggregation (max across stacks
+> sharing a slice). This is forced by architecture: at this call site the
+> stack's compose YAML has not been rendered yet, and live host-state probing
+> deliberately stays out of the render pipeline (`composefile.py` does no
+> host probing by design). Since (b) below applies the identical declared
+> value to EVERY non-exempt service, a multi-service stack that clears
+> admission at 1× its declared claim actually claims N× that once running —
+> which **dilutes the kernel's proportional protection for every other
+> occupant of the slice**, not merely under-counting in a log line. It
+> degrades gracefully (the same proportional-overcommit tolerance
+> `CGROUP-NOTES.md` already accepts for the concurrent-admission race, which
+> has no cross-CIU-root lock either) rather than failing hard, and
+> `CGROUP-NOTES.md`'s own motivating cases are single-container stacks — but
+> it is a real limitation of this version, named here rather than discovered
+> later.
+
+> **Known v1 limitation — a redeploy double-counts the entry's own prior
+> instance.** `check_mem_min_admission` sums every CURRENT occupant of the
+> slice, with no notion of "this candidate is a replacement for an occupant
+> already in that sum" — and `mem_min_admission_check` runs before
+> `_run_stack` stops the entry's own previous container. So redeploying an
+> already-running guaranteed-slice stack (an ordinary config/image update via
+> `ciu deploy`, not a fresh start — arguably the MORE common case for a
+> continuously-processing workload than a first deploy) counts the outgoing
+> instance's own live claim AND the incoming candidate's claim at once. A
+> slice sized correctly for its intended occupant(s) — exactly what
+> `CGROUP-NOTES.md`'s own sizing doctrine calls for, and exactly what "an
+> exactly-full slice admits" above is designed to allow — will therefore
+> spuriously REFUSE every redeploy of a stack that already fully claims its
+> ceiling, even though the net claim across the whole operation never
+> changes. This is a different failure shape from the concurrent-admission
+> race `CGROUP-NOTES.md`'s alternatives table already accepts (that one is a
+> graceful over-admit; this is a spurious hard refuse of a no-net-change
+> redeploy). **Operational workaround until fixed:** provision the slice's
+> ceiling with headroom for the redeploying stack's own claim, or run `ciu
+> down` before `ciu deploy` for stacks on this slice. Tracked for a proper
+> fix as `CIU-96` (excluding an entry's own current occupant from the sum
+> needs correlating a live cgroup child back to a specific CIU entry —
+> container-name or compose-label based — which is not available at this
+> call site as currently architected; real follow-up work, not a one-line
+> patch).
+
+**(b) Injection — after the stack starts, `[S15.23]`, WARN.**
+`deploy.apply_mem_min_injections` runs right after a successful `_run_stack`.
+By that point the containers are genuinely running AND the compose file is on
+disk, so it enumerates the stack's ACTUAL services and their concrete
+`container_name`s (the same `yaml.safe_load` →
+`services[...]["container_name"]` pattern `resolve_selection_health_containers`
+uses). For each non-exempt service: `docker inspect .State.Pid` →
+`governance.container_transient_scope(pid)` (reads `/proc/<pid>/cgroup`, takes
+the `0::` unified line, trims to the FIRST `.scope` component so buildkitd-style
+nested sub-cgroups resolve to the unit systemd actually knows about — a port of
+`mdt-apply-dev-caps.sh`'s own derivation) →
+`governance.set_scope_memory_min(scope_unit, bytes)`, i.e. `systemctl
+set-property --runtime <scope> MemoryMin=<bytes>`.
+
+`--runtime`, never a raw cgroupfs write: systemd re-applies its own recorded
+properties to a scope on every `daemon-reload`, so an unrelated `apt install`
+elsewhere on the host would silently wipe a raw write. This is the same
+reload-safe mechanism `mdt-apply-dev-caps.sh` already uses against the same
+kind of `docker-*.scope` unit for its IO caps.
+
+The declared value goes onto every non-exempt service identically, matching
+`build_injections`' existing precedent for `mem_limit`/`mem_reservation`
+(and see the granularity note above for the admission-time consequence).
+
+Guarded only by `not dry_run` — deliberately **not** by `no_preflight`: that
+flag skips static gates, it does not disable governance injection itself.
+One consequence worth stating: under `--no-preflight` both S15.16's
+format-validating preflight and (a)'s admission check are skipped, so a
+malformed `mem_min` size string reaches THIS call site as the first parse
+attempt, and still raises unconditionally (`[S15.16]`) — post-`_run_stack`,
+with the container already running. That is deliberate: a typo in the
+stack's own config is a shape error, and swallowing it just because a
+container already started would leave it silently unreported.
+
+**Severity: WARN, deliberately the opposite of (a)'s ERROR.** By this call
+site the deploy has already succeeded. "The declared floor did not apply" —
+whether because systemd is unreachable, `set-property` was denied, the
+container already exited, or no `.scope` resolved — is "declared intent
+unfulfilled", the same severity class S15.16 already treats as a warning, not
+a new deploy-blocking condition. Each failure names the container and the
+declared value.
+
+**This is CIU's only host write**, and its narrowness is the whole argument:
+gated by the identical `_systemd_is_pid1()` check every S15.16/S15.22 probe
+uses (a silent no-op inside CIU's own devcontainer), touching only the ONE
+transient scope Docker just created for a container this deploy started —
+never a shared slice, no privilege escalation attempted, no daemon, no helper
+container. `docs/DESIGN-NOTES.md` **D9** records how this narrows D2's
+"verify-only, forever" recommendation without overturning it (D2's options
+A/B/C remain explicitly out of scope).
+
+**Verification (host-rooted only).** After a real `ciu deploy` of a stack
+declaring `governance.mem_min` onto a provisioned guaranteed slice:
+`systemctl show <docker-<id>.scope> --property=MemoryMin` on the container's
+own scope reports the declared byte count. A second stack whose claim would
+exceed the slice's ceiling is genuinely refused before it starts, with the
+`[S15.23]` breakdown naming the current occupants.
 
 ---
 
