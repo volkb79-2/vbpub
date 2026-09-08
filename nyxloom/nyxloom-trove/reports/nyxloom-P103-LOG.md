@@ -279,10 +279,29 @@ confirmed genuinely active via `docker exec ... ps aux` -- real pytest with
 one-gate-container rule. See the REPORT's "Gate run" section for the wait
 and the verdict, read as a separate step from the run per LESSONS L4.
 
+Ran `python3 run-gate.py tester-unified` from `<worktree>/nyxloom` against
+the clean tree at `3a94ca9f`. `docker update --cpus=3` applied within
+seconds. Host memory pressure spiked heavily from unrelated concurrent
+sessions during the wait (`free -h` down to 236Mi available, load 24.93);
+two of this session's own background wait loops were killed by the system's
+low-memory task reaper as a result, but the gate container itself was
+unaffected -- confirmed via a direct `docker ps`/`docker exec` check (not an
+assumption) that it was still genuinely running `pytest ... -n auto` before
+re-arming a targeted wait via the Monitor tool. Verdict read as a SEPARATE
+step from the run (LESSONS L4): `tester-unified: PASS (exit 0)`, commit
+`3a94ca9f459cb29700a8397496ea491751531572`. `.assay/verdict-tester-unified.json`
+independently confirms `"outcome": "PASS"`, R0 (`tests-pass`) PASS, R1
+(`changed-line-coverage`) PASS with `considered: 0, executable: 0, covered:
+0, pct: 100.0` -- the vacuous case the handoff predicted, made concrete: zero
+Python lines changed under `src/`, so the coverage check asserted nothing
+about this package's actual content. Full verdict content in the REPORT.
+
 ## Conclusion
 
 All 9 numbered Work items complete (including the 4th backlog filing, see
 the discrepancy note above). O1-O5 all have direct, hand-run evidence with
-verbatim command output (REPORT). No `escalate_if` trigger fired. Not merged
-and not claimed ready-to-merge -- a fresh adversarial reviewer's
-determination, per doctrine.
+verbatim command output (REPORT). The `tester-unified` regression check is
+PASS (exit 0, commit `3a94ca9f`), confirming no Python was disturbed --
+consistent with, not a substitute for, the O1-O5 evidence above. No
+`escalate_if` trigger fired. Not merged and not claimed ready-to-merge -- a
+fresh adversarial reviewer's determination, per doctrine.

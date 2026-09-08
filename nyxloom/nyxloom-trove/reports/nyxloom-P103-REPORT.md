@@ -498,14 +498,98 @@ confirmed genuinely active via `docker exec ... ps aux` -- real pytest with
 `--cov-fail-under=100`, not hung) to clear, per the standing
 one-gate-container rule (shared host, also runs production game servers).
 
-[Gate section completed below once the wait clears -- see the LOG for the
-wait mechanism.]
+Ran from `<worktree>/nyxloom` (no `--worktree` flag, already cwd'd inside the
+target tree):
+
+```
+$ python3 run-gate.py tester-unified
+```
+
+`docker update --cpus=3` applied to the new container
+(`run-gate-vbpub-tester-unified-1588937-1788844006`) within seconds of it
+starting; confirmed via `docker inspect --format '{{.HostConfig.NanoCpus}}'`
+-> `3000000000`. Confirmed via `docker exec ... ps aux` mid-run that it was
+genuinely executing `pytest tests -n auto -q --cov=src/nyxloom` with an
+active xdist worker, not hung. The host hit heavy memory pressure during the
+wait from unrelated concurrent sessions (`free -h` showed as little as
+236Mi free RAM, load average 24.93; two background wait loops in this
+session were killed by the system's own low-memory task reaper as a result)
+-- this did not affect the gate container itself, which is a different
+process the reaper did not target, and was confirmed still genuinely
+running via a direct `docker ps`/`docker exec` check immediately afterward.
+A THIRD-PARTY package's gate container also started and finished
+concurrently at one point (`run-gate-vbpub-assay-1602268-...`) -- not this
+session's to manage; this package's own gate ran to completion independently.
+
+**Verdict read as a SEPARATE step from running the gate** (the run's own log
+was read directly via a file, not piped/tailed; the verdict JSON was then
+read independently as a second source, per LESSONS L4):
+
+```
+run-gate: rev 36 | lane tester-unified | env [environments.tester-unified] in central .../run-gate.toml | slice dev-background.slice ($CGROUP_PARENT_DEV_BACKGROUND)
+run-gate: budget 30m (advisory)
+assay-4.0.0.pyz: OK
+run-gate: progress tester-unified: no candidate events (not an R2 lane, or the judge writes none)
+tester-unified: PASS (exit 0)
+  commit: 3a94ca9f459cb29700a8397496ea491751531572
+  argv: /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-report=json:coverage.json
+run-gate: verdict artifact: /workspaces/vbpub/.worktrees/nyxloom-p103-ciu-governance/nyxloom/.assay/verdict-tester-unified.json
+run-gate: lane 'tester-unified' exit 0
+```
+
+`.assay/verdict-tester-unified.json` (read independently, full content
+below):
+
+```json
+"outcome": "PASS",
+"exit_code": 0,
+"commit": "3a94ca9f459cb29700a8397496ea491751531572",
+"claims": [
+  {"rigor": "R0", "status": "PASS", "verified_by_assay": true},
+  {"rigor": "R1", "status": "PASS", "verified_by_assay": true,
+   "coverage": {"pct": 100.0, "considered": 0, "executable": 0, "covered": 0}}
+]
+```
+
+R0 = `tests-pass` (the full `pytest tests -n auto -q` suite passed inside the
+actual container). R1 = `changed-line-coverage`, resolved against merge-base
+`ff3d5303`, `source_roots: ["src"]` -- and here is the handoff's own claim
+made concrete: **`considered: 0, executable: 0, covered: 0`**. Zero Python
+statement lines changed under `src/` since the branch diverged from main, so
+the coverage check has nothing to consider at all; `pct: 100.0` is the
+trivial 0/0 case, not evidence of anything this package did. This is
+`tester-unified`'s real, declared `asserts`
+(`nyxloom-trove/nyxloom.toml:91`: `["tests-pass", "changed-line-coverage",
+"canary-verified"]`) proving, in the verdict artifact itself, exactly the
+"Gate argv" section's claim: **a green `tester-unified` run is not evidence
+for any oracle in this package** -- it proves no Python was disturbed
+(R0/tests-pass) and nothing more.
+
+The judged commit, `3a94ca9f`, is this package's LOG+REPORT commit made
+immediately before this run (the tree had to be clean for `run-gate.py` to
+accept it). The gate's own container was gone from `docker ps -a`
+immediately after the run finished -- `run-gate.py` tears its own container
+down; confirmed independently via a direct `docker ps` check (not merely
+inferred from the run's own log) before reading the verdict.
 
 ## Conclusion
 
-All 9 Work items complete. O1-O5 all have direct, hand-run evidence with
-verbatim command output above -- this is the real proof for a package the
-registered gate cannot verify (zero Python changed, `changed-line-coverage`
-vacuous, nothing in `tester-unified`'s `asserts` touches a governance key).
-No `escalate_if` trigger fired. Not merged and not claimed ready-to-merge --
-that determination is a fresh adversarial reviewer's, per doctrine.
+**GREEN, in the sense available to this package.** All 9 Work items complete.
+O1-O5 all have direct, hand-run evidence with verbatim command output above
+-- this is the real proof, since the registered gate cannot verify any
+oracle here (confirmed by the verdict itself: R1's `considered: 0` proves
+the coverage check was vacuous, exactly as the handoff predicted). The
+`tester-unified` regression check itself is PASS (exit 0, commit
+`3a94ca9f`), confirming no Python was disturbed.
+
+No `escalate_if` trigger fired at any point. Five deviations/ambiguities are
+recorded above for the reviewer, none of which affected the pinned
+TOML/YAML content (all reproduced byte-for-byte, verified programmatically).
+
+Not merged and not claimed ready-to-merge -- that determination is a fresh
+adversarial reviewer's, per doctrine. This package's implementer role stops
+here.
+
+Final commit range: `6322251b..<this LOG/REPORT gate-run update commit>`
+(the freeze tip through this file's own final commit -- see the LOG's last
+entry for the exact hash).
