@@ -60,6 +60,7 @@ SPEC §9.
 | RG-41 | a container `kind = "command"` lane has NO liveness signal at all: `stall_timeout` is refused there (rev 34, R-40c — it is judged from a progress file only an assay lane writes), so the lane shape most likely to hang is the one run-gate cannot bound except by a `budget` it never enforces | Major | OPEN 2026-09-02 — RW-9: judge silence from the LOG STREAM run-gate already tails (`docker logs -f`), same "silence, never elapsed" semantics as `R-40`, with the SOURCE of the signal disclosed at start (`progress file` vs `log stream`); E-3 candidate (23.5.0) |
 | RG-40 | `tools/coverage_gate.py` takes its changed-line numbers from `git diff base..HEAD` (committed) but its coverage from the file ON DISK, so running the `selftest` lane with `--allow-dirty` over an uncommitted change reports lines as uncovered that are covered — the two are offset by whatever the working tree added above them | Medium | OPEN 2026-09-02 — measured twice in the rev-34 wave (`175/177 (98.9%)` dirty → `153/153 (100.0%)` on the same code once committed); either diff the WORKING TREE when the tree is dirty, or refuse/disclose the mismatch instead of printing a number nobody can act on |
 | RG-38 | resume state lives under the JUDGED project root, so a fresh worktree per run (cmru release transaction, Mode-B instances) loses it and a retry restarts from mutant #1 despite `--resume` | Medium | OPEN 2026-09-02 — bind-mount a per-repo durable `.run-gate/assay-state/<project>/` at the state path; needs assay B066 (`--state-dir`); copy-in/out fallback until then |
+| RG-45 | a `vitest`-backed lane (`kind = "command"` or `kind = "assay"` coverage) can exit non-zero purely from vitest's own internal worker/main RPC heartbeat (birpc, hardcoded 60s timeout, no config path in any pool type) tripping under HOST-WIDE multi-tenant CPU contention across DIFFERENT repos' containers — RG-39's exec lock only serializes SAME-container access within one tool, it does not bound the SUM of concurrently-active gate containers' CPU quotas against the host's real core count | Major | OPEN 2026-09-08 — reproduced 4/4 identical (dstdns P176, `frontend-unit`+`ui_unit`, all real tests green every time); see prose section below |
 | RG-39 | run-gate has no internal mutual exclusion around the `docker exec`/`docker run` it performs into a resolved container, so every consumer must remember to wrap each invocation in its own `flock` (dstdns `GUIDE.md` §1) or two lanes racing the SAME container silently contaminate each other's evidence — but `resolve_container_name()` (the same function RG-37 tracks) already computes the exact container identity BEFORE that exec, every single call, so the tool already has everything it needs to serialize itself | Medium | FIXED 2026-09-03 (rev 35, SPEC `R-41`) — refinements (1) and (2) below, built exactly as specified; refinement (3) deliberately NOT built (RG-37, the v8 `ciu.resolved.toml` container-identity path, doesn't exist yet). New `acquire_exec_lock()` takes `/tmp/run-gate-exec-<container>.lock` (RG-20's `_open_lockfile()` discipline, now factored into a shared helper) on the container name `resolve_container_name()` resolves — resolved ONCE in `main()`, threaded into `run_exec_lane()` (no longer re-derived there) so the lock key and the `docker exec` target can never drift apart. Acquired strictly after `acquire_shared_locks()`'s locks in `main()`'s dispatch, released from the SAME `finally` (`exec_lock_fd`, closed before the shared-infra fds — LIFO, not load-bearing). `LOCK_EX` blocking with a `waiting for container '<name>' — another gate holds <path>` line; `--dry-run` prints the planned lock (name + path) and never blocks. Five new tests in `TestExecModeMutex`: same-container serialization (thread-raced, proven genuinely red pre-fix — a leaked lock fd on that test's own assertion failure path self-deadlocked the NEXT test via flock()'s per-open-file-description semantics, fixed with a try/finally, unrelated to the shipped fix itself), isolated containers never contend, `--dry-run` never blocks, the lock releases even when the lane raises (finally path), and a direct ordering assertion (shared-infra locks acquired before the exec lock); a sixth test (added after the first `selftest` run below caught it uncovered) exercises `acquire_exec_lock()`'s OSError branch, in-process (a `run_tool()` subprocess, RG-20's own precedent's pattern, is invisible to this suite's coverage instrumentation). Red-first proven: a scoped `git stash` of `run-gate.py` alone (fix reverted, tests kept) reproduced 3/5 new tests failing for the expected reasons before the fix, restored clean after. `./run-gate.py selftest` green (post-commit `2c6b2bbc` + a same-day coverage follow-up): 495 passed, 2 skipped, diff-coverage 25/25 = 100.0% (≥ 100.0% floor), exit 0. Originally filed from dstdns (D-321/D-339/D-321-correction): acquire an internal `flock` keyed by the resolved container name (or `${project_name}-${environment_tag}`, the same pair `resolve_container_name()` already reads) around the exec/run call itself, so a caller-side `flock` is no longer required for correctness, only for pre-emptive scheduling (e.g. a caller who wants to skip a busy container rather than block). A genuinely independent container (different `project_name`/`environment_tag`, including a Mode-B instance) naturally gets a distinct lock name and runs unblocked; two consumers that resolve to the SAME container (main's shared instance, or ciu's `--shared-infra-ref-services`) naturally serialize correctly with no caller coordination needed. Cross-reference RG-37: whichever container-identity resolution path RG-37 adds for `ciu.resolved.toml` (v8) should feed the SAME lock key, not a second scheme. **2026-09-03 (ciu v8 design, SPEC-V8 draft.5 / proposal rev 3.2 §4.11 N22): buildable as described, with three refinements.** (1) Exec mode only — an ephemeral `docker run` container is per invocation, there is nothing to serialize. (2) Take the lock AFTER `acquire_shared_locks()`' sorted shared-infra locks and release it in the same `finally` — a fixed global order (shared-infra, then the exec target) so no ABBA with RG-20 is possible; `/tmp/run-gate-exec-<container>.lock` with RG-20's 0600+O_NOFOLLOW discipline, LOCK_EX blocking with a "waiting for container X — another gate holds …" line, dry runs plan but never block (`acquire_shared_locks` is the pattern to copy); hold across the whole `run_exec_lane()` including evidence collection, and keep `flush_run_record` outside it (RG-27). (3) Alignment with v8: once RG-37 reads `ciu.resolved.toml`, key the lock on the owning Realization's **stack directory** (`[realization.<R>] location` of the container's owner, `flock` on the directory) instead of a name — draft.5 S14.4.7 declares the checkout root and the stack directory the ONLY canonical lock keys, `ciu gate` exec lanes take that same directory lock (S16.5.7) and `ciu lease acquire --realization` exposes it, so v7 run-gate and v8 ciu serialize against each other during the cutover; the name-keyed `/tmp` file is the v7-only form. The caller-side `flock` of dstdns GUIDE §1 stays valid as an outer lock (always acquired first → consistent order) and becomes optional for correctness |
 
 ---
@@ -2838,5 +2839,117 @@ owner-pid hardening); this project's own `KNOWN_ISSUES_TODO_BACKLOG.md`.
 Found during nyxloom-P103's post-merge gate verification, 2026-09-08 — not
 nyxloom's own bug, filed here per estate cross-repo convention rather than
 worked around locally and forgotten.
+
+### Status — OPEN 2026-09-08
+
+## RG-45 — a vitest-backed lane can spuriously fail from vitest's own internal RPC heartbeat under host-wide multi-tenant CPU contention, independent of test correctness
+
+### Observed mechanism
+
+vitest 3.2.7's own internal worker/main RPC channel (`birpc`, the same
+one every `[vitest-worker]: Timeout calling "..."` message names) has a
+hardcoded `DEFAULT_TIMEOUT = 6e4` (60s, `vitest/dist/chunks/index.B521nVV-.js:3`)
+with no path through any documented `vitest.config.ts` option for either
+pool type — traced `createRuntimeRpc` (`rpc.-pEldfrD.js`) →
+`worker.getRpcOptions(ctx)` (`worker.js`) → both `createThreadsRpcOptions`
+and `createForksRpcOptions` (`utils.CAioKnHs.js`): neither sets a `timeout`
+field, so the 60s default always applies. When a worker's periodic
+`onTaskUpdate` progress-report call to the main/orchestrator process isn't
+acknowledged within 60s, vitest throws this as an "Unhandled Error" and
+`process.exitCode = 1` — **regardless of whether every actual test in the
+run passed.** A `dangerouslyIgnoreUnhandledErrors` config option exists but
+is a blanket, config-wide suppressor of ALL unhandled errors (including
+genuine async application bugs — the same channel that surfaces a real
+leaked-promise/re-entrant-callback defect), so a consuming project
+disabling it to work around this specific benign case would also blind
+itself to real future defects of the same shape.
+
+### Reproduction (dstdns P176, 2026-09-08)
+
+Reproduced 4/4 identical failures in one session against dstdns's
+`[lanes.frontend-unit]` (`kind = "command"`, `npm ci && npm run typecheck
+&& npx vitest run`) and `[lanes.ui_unit]` (`kind = "assay"`, coverage mode,
+`npx --no-install vitest run --coverage`): 1 full `run-gate gate` composite
+run + 3 standalone `frontend-unit` retries + 1 standalone `ui_unit`
+attempt, **every single one** showing all real tests green (140/140 or
+154/154 depending on merge state) with exactly the same 1-2 unhandled
+`onTaskUpdate` timeout errors and a non-zero exit. This is not an
+occasional flake under current host conditions — it was deterministic
+across every attempt made.
+
+Root-caused past the point of "the container's own CPU quota is too low"
+(the package's own `vitest.config.ts` already caps `poolOptions.threads.
+maxThreads` to match the container's real `cpu.max` cgroup quota — a
+genuine, separate, measured improvement, but insufficient alone):
+
+1. Snapshotted `/sys/fs/cgroup/cpu.stat` immediately before/after an
+   isolated, failing single-file run (99.25s wall clock): `nr_throttled`
+   and `throttled_usec` had **zero delta** — the container was never
+   actually throttled by its own quota during this specific failure.
+2. `node --cpu-prof`'d the actual test-execution process during a failing
+   run: **99.3% of sampled time was `(idle)`** — the process was waiting
+   on a pending RPC/timer callback, not CPU-bound computation.
+3. Confirmed a concrete, independently-running sibling gate from a
+   DIFFERENT repo (this repo's own `tester-unified` lane, via a `cmru
+   release` invocation) active via `ps`/`pgrep` during one dstdns failure,
+   coincident with a load-average spike to 13.15 on an 8-core host.
+
+### Why run-gate (not vitest, not the consuming project) is the right layer
+
+vitest's own timeout is out of any consumer's reach and unlikely to change
+upstream on this project's timeline. The consuming project (dstdns) cannot
+fix host-wide CPU oversubscription from inside a single package's
+`vitest.config.ts` — it already did everything available to it (matching
+its OWN container's thread pool to its OWN cgroup quota). What's missing is
+coordination ABOVE the single-container level: RG-39's `acquire_exec_lock()`
+already serializes access to the SAME resolved container (same
+project/environment), so two lanes racing one container never contaminate
+each other — but it has no notion of the SUM of CPU quotas across
+DIFFERENT containers (different repos, different `project_name`s) exceeding
+the host's real core count. Each container's own quota is individually
+correct and individually respected (point 1 above proves this); the
+oversubscription happens ACROSS containers, a dimension no single
+container's `cpu.max` can see or bound.
+
+### Candidate directions (not prescribing — flagging for judgment)
+
+1. A lane-level "retry on this specific failure signature" policy,
+   distinct from RG-33's existing mutation-lane `--resume` (that is a
+   mutation-STATE concept; this is a plain process-exit-code retry): detect
+   the `[vitest-worker]: Timeout calling` signature in a `kind = "command"`
+   or `kind = "assay"` lane's stderr, and — ONLY when every reported test
+   count shows 0 failures — offer a single automatic re-run rather than a
+   hard fail, disclosed as a retry in the report (never silent).
+2. A host-level (not per-repo) coordination primitive above RG-39's
+   per-container exec lock: something that tracks the SUM of active gate
+   containers' declared CPU quotas against the host's real core count
+   across REPOS (dstdns, this repo, groop, nyxloom, ...), and either queues
+   or warns before oversubscribing — RG-39's lock key is `resolve_container_
+   name()`'s per-project identity, which is exactly the wrong granularity
+   for this (it prevents same-container races, not cross-container
+   oversubscription).
+3. Nothing to fix in `run-gate` itself if the estate's operating model is
+   "the operator manages host-wide concurrency by policy, not tooling" (the
+   host is documented as intentionally shared, per dstdns's own "Host
+   shared with prod game server" / D-338 3-core-per-gate-container cap) —
+   in that case this entry's value is purely the disclosure + evidence
+   trail for future triage, so a future occurrence is recognized instantly
+   rather than re-diagnosed from scratch.
+
+### SPEC ownership
+
+Not yet assigned a SPEC section — this is a genuinely new dimension (cross-
+container host CPU oversubscription) that RG-39/R-41 (same-container mutual
+exclusion) and RG-36/R-40/RG-41 (assay-lane liveness/stall signals) do not
+cover; a maintainer call on whether this belongs in SPEC §9's async-long-
+lanes tracking or a new section.
+
+### Provenance
+
+`dstdns` P176 (`nyxloom-trove/reports/dstdns-P176-LOG.md`, entries dated
+2026-09-08 "CPU-quota mismatch diagnosed and fixed..." and "First full
+composite gate run..."), filed here per the estate cross-repo convention
+(findings about a TOOL are filed in the tool's own backlog, never worked
+around locally and forgotten).
 
 ### Status — OPEN 2026-09-08
