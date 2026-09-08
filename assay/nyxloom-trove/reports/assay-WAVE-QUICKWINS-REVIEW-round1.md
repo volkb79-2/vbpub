@@ -447,3 +447,182 @@ per item above.
 
 Nothing in this review asks for a change to shipped behaviour. The six fixes
 themselves are all correct as landed.
+
+---
+---
+
+# Fix-verification (round 1 blocker) — 2026-09-08
+
+Same reviewer, same independent worktree
+(`/workspaces/vbpub/.worktrees/assay-b068-review`), updated in place to the
+new tip. Scope: `7ec114c6..12b4a3ed` — `93e6f7fc` (the fix), `001a1f24` and
+`12b4a3ed` (the record).
+
+## Verdict: **ACCEPT**
+
+BLOCKER-1 is discharged, and discharged wider than I raised it. The sweep is
+now genuinely complete, the guard test genuinely cannot pass vacuously, the
+retraction is in writing rather than silently applied, and my own
+from-scratch registered-gate run is GREEN at `12b4a3ed`.
+
+Nothing is left outstanding. Two cosmetic nits are recorded at the end; both
+are comment text, neither blocks anything.
+
+## 1. Is the sweep actually complete? — re-derived, not read
+
+I wrote my **own** AST walk (independent of theirs: different algorithm —
+nearest-enclosing-`Try`-by-parent-map rather than a handler stack, and it
+also matches a bare `loads`/`load` name that theirs does not) over
+`src/assay/**/*.py`. Result:
+
+**11 parse call sites. 8 guarded. 3 trusted with written reasons. Zero
+unaccounted.**
+
+| site | enclosing fn | catches `RecursionError`? |
+|---|---|---|
+| `adapters/go_stmtpos.py:293` | `_read_document` | yes (**new**) |
+| `adjudication.py:154` | `evaluate_provenance` | yes |
+| `attestation.py:239` | `parse_attestation` | yes |
+| `coverage_parsers/coverage_istanbul_json.py:229` | `parse` | yes (**new**) |
+| `coverage_parsers/coverage_py_json.py:98` | `parse` | yes (**new**) |
+| `mutation_parsers/mutation_report_json.py:123` | `sniff` | yes (pre-existing) |
+| `mutation_parsers/mutation_report_json.py:140` | `parse` | yes (pre-existing) |
+| `verify.py:2583` | `verify_text` | yes |
+| `mutation.py:890` | `_load_validated_state_record` | no — **TRUSTED**, reason stated |
+| `provenance.py:137` | `_installed_wheel_digest` | no — **TRUSTED**, reason stated |
+| `verdict.py:501` | `load_schema` | no (no `try` at all) — **TRUSTED**, reason stated |
+
+My enumeration and theirs agree site-for-site, function-for-function. The
+backlog's new 11-row table matches both. I also confirmed there is **no**
+aliased import anywhere in `src/assay` (`from json import …`, `import json as
+…`, `orjson`/`ujson`/`simplejson`: all absent), so the collector's
+`json.loads`/`json.load` attribute match covers the entire real population
+today, not just the part it happens to look at.
+
+The three trusted dispositions hold up on inspection: `verdict.py` reads
+assay's own shipped package resource, `provenance.py` reads pip's own
+`direct_url.json` (affirmed twice now), and `mutation.py:890` reads a record
+assay itself wrote via `_write_mutation_state_record` earlier in the same
+run, bounded by `MUTATION_STATE_RECORD_LIMIT`. B071's new tails are JSON
+*strings*, so they add at most one level of depth — they do not make that
+file a depth risk.
+
+## 2. Are the three new fixes real? — reproduced against the pre-fix code
+
+Extracted `main`'s versions of the three parsers into a scratch tree and ran
+each against a 100,000-deep document:
+
+```
+coverage-py-json        -> *** RecursionError ESCAPED ***     (via load_coverage_profile)
+coverage-istanbul-json  -> *** RecursionError ESCAPED ***     (via load_coverage_profile)
+go_stmtpos._read_document -> *** RecursionError ESCAPED ***
+```
+
+Same three on the branch tip:
+
+```
+coverage-py-json        -> AssayError  ERROR / UNREADABLE_ARTIFACT
+coverage-istanbul-json  -> AssayError  ERROR / UNREADABLE_ARTIFACT
+go_stmtpos              -> AssayError  ERROR / UNREADABLE_ARTIFACT
+```
+
+The `go_stmtpos.py` site the controller found independently is **confirmed
+real** — it was catching `(UnicodeDecodeError, json.JSONDecodeError)` and a
+`RecursionError` walked straight through it. Keeping `UnicodeDecodeError`
+first is correct (the `.decode("utf-8")` runs before `json.loads`), and
+`test_undecodable_helper_output_is_still_refused_the_same_way` pins that arm
+— it is a genuine control, and it passes against the pre-fix code, which is
+exactly what a control should do.
+
+Red-first, measured by reverting the three parsers to `main` in a scratch
+copy of the branch: **9 failed / 86 passed** across the four affected test
+modules. All five new behavioural tests are red without the fix; four sweep
+assertions go red too.
+
+## 3. Can the guard test pass vacuously? — five mutation experiments
+
+I did not take the AST walk's word for itself. Baseline on the tip:
+`12 passed`. Then, one mutation at a time, each reverted after:
+
+| # | mutation | expected | observed |
+|---|---|---|---|
+| A | strip `RecursionError` from `coverage_py_json.parse`'s clause | red | **red** — `test_every_untrusted_json_parse_site_catches_RecursionError` + the by-name pin `[identity3]` |
+| B | re-order `verify.py`'s clause to `(RecursionError, JSONDecodeError, ValueError)` | green (order-independent) | **green**, 12 passed |
+| C | add a brand-new `src/assay/newpkg/newparser.py` with `except json.JSONDecodeError` — *the exact blind spot the old test had* | red, naming the new file | **red**: `src/assay/newpkg/newparser.py:6 (in parse_something)` |
+| D | remove the `try` around `coverage_istanbul_json.parse`'s `json.loads` while keeping the function name | red | **red** — derived sweep **and** the by-name pin `[identity4]` |
+| E | silently widen a TRUSTED site (`provenance.py`) so its allowlist entry is stale | red | **red** — `test_no_trusted_entry_is_stale` |
+
+(A sixth attempt — renaming the guarded `parse` function — fails even harder:
+the format registry raises `AttributeError` at import, so the whole suite
+cannot collect. Loud, if not via this test.)
+
+Experiment **C** is the one that matters: it is precisely the failure the
+original hard-coded tuple could not see, and the rewritten guard sees it and
+names the file and function. `test_the_sweep_finds_a_plausible_population`
+(`>= 10` sites, plus one from each of the three subpackages the old glob
+missed) closes the vacuous-walk hole. **The guard is real.**
+
+One residual, theoretical only: a future site written as `from json import
+loads; loads(x)` would evade the collector's attribute match. There is no
+such import in `src/assay` today and the project style is uniform, so this is
+a note for the next person, not a finding.
+
+## 4. The record
+
+The retraction is written where the false claim stood, not applied silently
+— block quotes marked `RETRACTED` in both B072's and B074's resolutions, the
+root cause named (`src/assay/*.py` does not descend), the corrected 11-row
+table with a per-site disposition, and the trust bar written down as a
+uniform rule instead of a per-site judgment call. The LOG even retracts its
+own commit message ("the third and **last** site") rather than rewriting
+history. That is the right handling.
+
+All four of my should-fix nits are done and I verified each: `~60` → "the
+other 11 collected items"; the drifted line numbers corrected *and* the table
+now says why they drift (which is why `TRUSTED_SITES` keys on `(module,
+function)` instead); the B063 numbers re-measured at the final tip
+(`4178 passed, 77 skipped, 0 failed, 0 errors` — consistent with my own
+`4161 passed, 77 skipped` at the previous tip plus exactly the 17 tests this
+commit adds); and the duplicated `---` at `4-backlog.md` is gone (re-checked
+with an adjacency scan — no adjacent rules anywhere in the file).
+
+## 5. My own gate — **GREEN at `12b4a3ed`**
+
+Run from scratch in my own worktree; no other gate container or
+`tester-unified-gate.sh` process was present at launch (a peer `ciu` gate had
+finished first and I waited for it); my container (`competent_dhawan`) capped
+to `--cpus=3` immediately after start (`docker inspect` →
+`NanoCpus=3000000000`); no peer container touched. Verdict read from the
+log's own markers **in a separate step**:
+
+```
+ASSAY_REGISTERED_GATE_COMPLETE=1
+run-gate: lane 'tester-unified' exit 0
+```
+
+All **12** `ASSAY_GATE_PHASE` markers, in order, **zero**
+`ASSAY_GATE_DIAGNOSTIC` lines. `pyflakes-clean` is included — which now also
+covers the four new/changed test modules under B062's widened scope, and I
+separately confirmed `python -m pyflakes tests` still emits only the
+deliberate `broken.py` line.
+
+## Remaining nits (cosmetic, non-blocking, no re-review needed)
+
+1. `src/assay/coverage_parsers/coverage_py_json.py:104` — the new comment
+   says the refusal is `ERROR`/`MALFORMED_COVERAGE`. There is no
+   `MALFORMED_COVERAGE` reason code; `_malformed()` raises
+   `ERROR`/`UNREADABLE_ARTIFACT`, which is what the test correctly asserts.
+   Comment text only.
+2. `tests/test_coverage_parsers_coverage_py_json.py` — the docstring on
+   `test_a_pathologically_deep_document_is_unreadable_not_a_raise` ends
+   "Driven through the real `load_coverage_profile` entry point, not the bare
+   parser", but that test calls the bare parser; it is the *next* test that
+   drives the registry. The sentence is in the wrong docstring.
+
+## ACCEPT
+
+The blocker is discharged, the fix is wider and better-evidenced than what I
+raised, the guard that replaces the unfit one is proven by mutation rather
+than asserted, the record retracts its own error in writing, and the
+registered gate is green on my own independent run. **This is my merge
+signal.**
