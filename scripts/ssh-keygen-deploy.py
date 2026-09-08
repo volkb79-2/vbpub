@@ -196,11 +196,11 @@ class SSHKeyManager:
         self.telegram_client = self._find_telegram_client()
 
     def _find_telegram_client(self) -> Optional[Path]:
-        """Find telegram_client.py script"""
+        """Find telegram_client.py script (moved to scripts/telegram/ - has its own tests/run-gate now)"""
         possible_paths = [
-            Path('/opt/vbpub/scripts/debian-install/telegram_client.py'),
-            Path(__file__).parent / 'debian-install' / 'telegram_client.py',
-            Path(__file__).parent.parent / 'scripts' / 'debian-install' / 'telegram_client.py'
+            Path('/opt/vbpub/scripts/telegram/telegram_client.py'),
+            Path(__file__).parent / 'telegram' / 'telegram_client.py',
+            Path(__file__).parent.parent / 'scripts' / 'telegram' / 'telegram_client.py'
         ]
         
         for path in possible_paths:
