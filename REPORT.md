@@ -285,5 +285,7 @@ operational gap plus nits. Fixed in this branch:
   exposure flip.
 
 Re-gated after the fixes rather than reasoning about whether a test-only
-change needed it: **PASS**, R0 + R1 (100% changed-line), at the commit
-recorded below.
+change needed it (C7's "probably fine to skip"): `run-gate.py
+tester-unified` at `2a98da5c` — **PASS (exit 0)**, R0 PASS, R1 PASS
+`pct=100.0 considered=3 missing={}`. This commit itself only re-touches
+REPORT.md with the verdict, so the gate stands for the whole code change.
