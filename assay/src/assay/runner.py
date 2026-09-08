@@ -3696,6 +3696,12 @@ def _run_prepared_lane(
                     result,
                     ingested_r2.mutation,
                     fail_under=lane.judge.mutation.fail_under,
+                    # B070/v11: the fifth disposition, from the same object
+                    # `_build_ingested_judgment_r2` writes onto the wire two
+                    # lines down -- one value, one read, so the number that
+                    # judged the claim and the list the document records can
+                    # never disagree.
+                    discarded=len(ingested_r2.discarded),
                 )
                 claims += (r2_claim,)
                 if r2_claim.mutation is not None:
