@@ -6623,12 +6623,56 @@ rather than a bare `fatal:` git stderr passthrough.
 
 ### Acceptance
 
-- [ ] `assay run <R0-or-R1-lane>` inside a genuine linked-worktree Mode-B
+- [x] `assay run <R0-or-R1-lane>` inside a genuine linked-worktree Mode-B
       container (main repo's `.git` not mounted) either succeeds or fails
       with a clear, actionable `ERROR/GIT_FAILED` message naming the
       resolution gap, not a raw git stderr passthrough;
-- [ ] a regression test pins the R0/R1-vs-R2 discriminator above so it
+- [x] a regression test pins the R0/R1-vs-R2 discriminator above so it
       cannot silently regress back to today's split behavior unexplained.
+
+### Resolution — FIXED 2026-09-08 (quick-wins wave), option (b). **The
+### "discriminator" this entry was filed on is REFUTED.**
+
+Source-confirmed first, then reproduced end to end, exactly as the entry
+asked. **There is no caller R0/R1 reaches that R2 does not.** `cli._cmd_run`
+→ `cli._run_reserved` calls `git.head_rev(lane_file.project_root)` **once,
+unconditionally** (`cli.py:728`), before the reservation-then-HEAD-then-
+adapter order reaches anything tier-specific — so `_resolve_repo` runs
+identically at R0, R1, R2 and R3, and no rigor level can tolerate what
+another refuses. Measured in a real severed linked worktree (a genuine
+`git worktree add`, then the main repository's `.git` moved away): an
+`rigor = ["R0"]` lane and an `rigor = ["R0","R1","R2"]` lane in the SAME
+worktree produce the byte-identical refusal from the same call site.
+
+The field observation that produced the discriminator (an R2 `sql-mutation`
+lane running 9+ hours while the `mock` lane died) was therefore a difference
+in the two containers' **mounts**, not in assay's code — worth knowing for
+dstdns, but not an assay defect and not fixable in assay.
+
+That refutation is what closed the (a)/(b) fork: **(a) was never available**
+(there is nothing tolerant to copy), and it is also not desirable — git
+resolution is load-bearing for R0/R1's own semantics (the commit label every
+verdict carries, the dirty set behind `clean_tree`, the comparison base), and
+a worktree whose object store is absent can supply none of them. So (b):
+`git.py`'s `_resolve_repo` bootstrap-failure path now consults a new
+diagnostic-only helper `_linked_worktree_gap()`, which asks the FILESYSTEM
+(git has already declined to answer) whether `repo_top/.git` is a gitfile
+whose `gitdir:` target is absent, and when it is, prefixes the refusal with a
+sentence naming the worktree, the missing git directory, the usual cause (a
+container carrying the subtree without the main `.git`), the fact that no
+lane setting — `clean_tree` explicitly — routes around it, and two remedies.
+The raw git `fatal:` is **kept, not replaced**: it is the primary evidence,
+and in the measured case it is `not a git repository: (null)`, which is
+exactly why it needed a sentence in front of it rather than a rewrite.
+
+Regression tests: `tests/test_git_linked_worktree_gap.py` (14 tests) — the
+tier-independence above is pinned as a parametrized CLI test so a future
+per-rigor git bypass turns it red, plus the message contract and every
+`_linked_worktree_gap` branch (healthy worktree, plain `.git` directory,
+relative `gitdir:`, non-gitfile marker, empty target, oversized marker,
+non-UTF-8 marker, unreadable marker → says nothing rather than raising on top
+of the failure it is explaining). One test asserts the real `git` binary
+still writes the `gitdir: <path>` shape the helper parses.
 
 ---
 
