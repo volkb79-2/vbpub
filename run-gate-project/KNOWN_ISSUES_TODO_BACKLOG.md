@@ -2581,6 +2581,29 @@ per-unit bounds). R0/R1 lanes are one command each and cannot resume below
 that grain by construction; canary (R3) and red-first (R4) have mutation's
 per-unit shape and get the same mechanism through assay B064/B066.
 
+### Note (dstdns controller, 2026-09-08) — the blocking dependency has shipped, this is now buildable
+
+Assay **B066 (`--state-dir PATH`) shipped in assay-v5.2.0** (2026-09-08,
+`CHANGES.md` "`--state-dir PATH`: resume state that outlives its
+worktree"): the store's ROOT is now the consumer's choice (default
+unchanged, byte-for-byte), the record's NAME still folds the source
+file's exact bytes/span/replacement/operator (so a shared store is safe
+by construction, exactly as this entry's own "Proposed fix" already
+assumed), and a `--state-dir` inside the judged tree that git can see is
+refused before any work (never a silent `DIRTY_TREE` surprise on the
+NEXT run). Confirmed this session that run-gate's own mutation-lane argv
+construction (`run-gate.py`'s RG-33 site, `run_argv = [..., "run", ...,
+"--resume", "--progress", progress]`) still does NOT pass `--state-dir` —
+`.assay/` under the judged worktree remains the hardcoded root, so this
+entry's actual defect is unchanged and still live. The dependency this
+entry was explicitly waiting on is the only thing that changed: nothing
+upstream blocks implementing the proposed fix (bind-mount a per-repo
+durable directory + pass `--state-dir` in the same argv construction)
+anymore. Flagged for priority — dstdns has hit the exact symptom this
+entry describes multiple times (`sql-mutation`, three retries, state
+never written, cited above) and would adopt the fix immediately once it
+ships.
+
 ## RG-40 — `coverage_gate.py` reports misleading uncovered lines on a dirty tree
 
 **Found 2026-09-02** while implementing the rev-34 wave, twice, each time
