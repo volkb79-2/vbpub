@@ -1086,3 +1086,64 @@ per that sweep's own resolution — see the memory/decision record for the
 actually running and asserted-on inside `./run-gate.py gate`'s own
 conjunction, not just locally reproducible by a human/agent with direct
 docker access.
+
+### KI-26 — `cmru get-py` cannot render ANY project's `get.py` from an installed `cmru` — only from a source checkout
+
+**Status:** open (found 2026-09-08 by ciu-P52's adversarial reviewer while
+verifying a related claim; independently confirmed by the controller with
+a live check against the actual installed `cmru-5.1.0`).
+
+**Mechanism.** `src/cmru/getpy.py:23`:
+```python
+_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "get.py.tmpl"
+```
+This assumes a SOURCE-CHECKOUT layout (`cmru/src/cmru/getpy.py` →
+`parents[2]` → `cmru/`, where `templates/get.py.tmpl` genuinely sits two
+directories up). Once installed as a real wheel, `__file__` resolves to
+something like `.../site-packages/cmru/getpy.py`, and `parents[2]` lands
+outside the package entirely (verified live: `.venv/lib/python3.14/`, a
+directory that trivially has no `templates/` of its own) — `cmru get-py`
+fails outright from any installed `cmru`, not just with a stale template,
+confirmed by a live traceback during ciu-P52's own work (they had to
+render via `PYTHONPATH` pointed at the cmru SOURCE checkout as a
+workaround, not `cmru get-py` itself).
+
+**Compounding, independent bug**: even fixing the path would not help —
+`pyproject.toml:42`'s `[tool.setuptools.package-data]` is
+`cmru = ["templates/*.toml"]`, a glob that matches ONLY `.toml` files.
+`templates/get.py.tmpl` is never included in the built wheel at all;
+`find` over the installed package's `site-packages/cmru/` confirms zero
+`.tmpl` files present.
+
+**Consequence:** `cmru get-py --project <any>` — the estate's own
+documented installer-generation path (`docs/CONSUMERS.md`, the same
+command ciu-P52's own `[project.installer]` work depends on) — has never
+actually worked from a `pip install cmru`; it only ever worked by
+coincidence for whoever ran it from inside this monorepo's own `cmru/`
+source checkout, where `parents[2]` happens to still resolve correctly
+AND the template file is present on disk regardless of what the wheel
+ships. This is exactly the kind of "masked default" `vbpub/AGENTS.md`
+warns about (§ "Defaults and fallbacks are hazards") — the failure is
+invisible in every context anyone has actually exercised the command
+from, and only surfaces the first time someone runs it against a real
+installed release.
+
+**Proposed fix** (per the finding's own suggestion, mirroring
+`src/cmru/scaffold.py:18-26`'s existing pattern for a similar problem):
+resolve the template via `importlib.resources` (package-relative, works
+identically whether running from source or an installed wheel) instead of
+a `parents[N]`-from-`__file__` filesystem walk, AND move/duplicate
+`get.py.tmpl` into `src/cmru/templates/` (inside the actual package
+directory `importlib.resources` can address) rather than the current
+repo-root-relative `cmru/templates/`, AND widen `package-data` to include
+`templates/*.tmpl` (widening the glob alone, without also fixing
+`_TEMPLATE_PATH`'s resolution logic and the file's location relative to
+the package, does nothing — both parts of this bug must be fixed
+together).
+
+**Cross-references.** ciu CIU-93/ciu-P52 (`vbpub/ciu/nyxloom-trove/
+reports/ciu-P52-REPORT.md`), which worked around this by rendering
+`ciu/get.py` from the cmru SOURCE checkout via `PYTHONPATH` rather than
+`cmru get-py` itself — a one-time workaround, not a fix, and every OTHER
+project relying on `cmru get-py` against an installed `cmru` (not this
+monorepo's own dev environment) is equally broken today.
