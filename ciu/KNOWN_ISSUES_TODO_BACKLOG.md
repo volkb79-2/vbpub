@@ -3458,6 +3458,117 @@ authors from prose rather than source, with a fail-closed (not silent)
 failure mode (`StrictHostKeyChecking` refuses the connection) — annoying but
 not a security hole in itself.
 
+## CIU-98 — a plain `ciu worktree add` worktree's generated identity never syncs with the shared-infra container `run-gate` actually uses, silently defeating GUIDE.md's own lock-naming recipe
+
+**Filed by:** dstdns, 2026-09-08, during dstdns-P176's checkpoint-resume
+session, while following `nyxloom-trove/GUIDE.md`'s own documented
+gate-concurrency recipe verbatim before running `run-gate gate`. Verified
+against ciu 7.11.0's installed source and live Docker state, not paraphrased.
+
+### Observed mechanism and reproduction
+
+A dstdns worktree created via the plain, universally-documented recipe
+(`ciu worktree add NAME --base main` — no `--shared-infra-ref-services`, no
+`ciu worktree up`; the handoff declares `stack: none`, i.e. it is never
+separately deployed) gets its own independent generated identity at creation
+time. `.worktrees/p176-ui-design-system-primitives/ciu.instance.generated.toml`
+holds `repo_name = "p176-ui-design-system-primitives"`,
+`instance_id = "6b0a6e"`, `network = "p176-ui-design-system-primitives-6b0a6e-network"`
+(mirrored in the legacy `ciu.env` export). No Docker resource with that
+identity has ever existed for this worktree (`docker ps -a --filter
+name=6b0a6e` / `name=p176` both empty throughout the session).
+
+`run-gate <lane> --worktree <that path>` for `environment = "test-runner"`
+lanes, however, correctly and consistently resolves to the PRIMARY
+checkout's own shared, persistent container — `docker exec ... dstdns-98535c-test-runner
+...` — and its own verbose log line names the source: `container
+dstdns-98535c-test-runner (ciu.global.toml deploy.project_name+environment_tag
+(repo: /workspaces/dstdns/ciu.global.toml))`. run-gate derives container
+identity from the PRIMARY checkout's `ciu.global.toml`, never from the target
+worktree's own generated facts. This dual path is deliberate, not a fluke:
+two sibling worktrees active in the same session (`p172-...`,
+`p175-...`) DO carry their own dedicated `<identity>-test-runner` containers
+(a genuine Mode-B bring-up per GUIDE.md §3.4b), confirming that a worktree
+either gets its own stack explicitly, or — the overwhelmingly common case,
+since most dstdns packages ship `stack: none` — falls back to the primary's
+shared one with NO identity reconciliation in between.
+
+`ciu env print` (`read_generated_facts`, CIU-75's now-canonical overlay-TOML
+read) has no way to reflect this: it reports whatever identity was assigned
+at `ciu worktree add`/`ciu env generate` time, with no liveness check against
+which container a consumer like run-gate will actually use.
+
+### Why ciu owns it
+
+`nyxloom-trove/GUIDE.md`'s consumer-side flock lock-naming recipe is built
+explicitly on a guarantee only ciu can provide:
+
+> "This also makes sharing correct automatically: if a worktree ever
+> attaches to another instance's test-runner (ciu's
+> `--shared-infra-ref-services`, §3.4b) rather than getting its own, it
+> naturally resolves the SAME `REPO_NAME-INSTANCE_ID` pair and therefore the
+> SAME lock — real mutual exclusion when containers are genuinely shared."
+
+That guarantee does not hold for a worktree that was simply never given its
+own stack via an explicit attach step — the default dstdns case. Following
+the documented recipe verbatim (`eval "$(ciu env print)"; flock
+"/tmp/${REPO_NAME}-${INSTANCE_ID}-testrunner.lock" run-gate gate --worktree
+"$(pwd)"`) from inside such a worktree silently produces a lock keyed to an
+identity with zero live holders/waiters: **no actual mutual exclusion at
+all** against a concurrent gate run (from a different worktree, or main)
+that also falls back to the same shared `dstdns-98535c-test-runner`
+container. `flock` still "succeeds" — nothing else holds that specific,
+uniquely-named lock file — so there is no error and no warning; the
+protection is simply absent. This is a consumer-side recipe built on an
+identity primitive only ciu defines and assigns, so ciu is the only party
+that can close the gap (a consumer cannot derive "is my generated identity
+live" from anything it owns itself).
+
+### Proposed fix
+
+Not mutually exclusive:
+
+1. `ciu env print` (or a new flag on it) reports the PRIMARY checkout's
+   identity by default for a worktree that has no live containers of its own
+   for a given lane's `environment`, rather than always vending its own
+   `ciu.instance.generated.toml` unconditionally.
+2. A stable, scriptable way to ask "what identity will lane X's `environment`
+   actually resolve to for worktree Y" — run-gate's own verbose log line
+   already computes the right answer; expose the equivalent from ciu itself
+   (e.g. `ciu env print --for-environment test-runner`) so consumer-side lock
+   recipes key off that instead of the raw generated facts.
+3. At minimum, `ciu worktree inspect` / a new `ciu env print --live` warns
+   when the generated identity's declared network/expected container has no
+   live Docker match, so a consumer relying on it for lock-naming is not
+   silently unprotected.
+
+### Behavioral oracle for the fix
+
+A worktree created via the plain `ciu worktree add` recipe (no shared-infra
+attach, no dedicated `ciu worktree up`), with `run-gate <lane> --worktree
+<path>` verified (via its own log line) to target the primary checkout's
+shared container: `ciu env print`'s reported `REPO_NAME`/`INSTANCE_ID` MUST
+equal the primary checkout's own (or the fix must otherwise make the
+consumer-side lock recipe correct by construction). Today it instead reports
+the worktree's own independent, never-deployed identity. A fix that only
+changes cosmetics (e.g. renaming a field) without closing this equality gap
+does not resolve the finding.
+
+**Workaround used for the originating gate run:** derived
+`REPO_NAME=dstdns`/`INSTANCE_ID=98535c` from the PRIMARY checkout's own
+`/workspaces/dstdns/ciu.env` instead of the worktree's, confirmed correct via
+run-gate's own log line naming the container it actually used.
+
+**Owning SPEC section:** S3.1c (CIU-75's identity-source precedence) is the
+closest existing section; this finding is that S3.1c has no clause for "does
+the generated identity correspond to anything live," which is the missing
+piece a consumer-side lock recipe needs.
+
+**Severity:** Medium — silent loss of a safety mechanism (mutual exclusion
+on a shared container) rather than a functional break; the failure mode is
+contention/flakiness under concurrent dispatch, not a hard error, which is
+exactly why it went unnoticed until traced by hand.
+
 ## Compact resolved index
 
 Detailed history for closed work lives in the normative SPEC, release notes,
