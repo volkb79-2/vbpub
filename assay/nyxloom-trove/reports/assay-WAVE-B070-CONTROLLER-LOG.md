@@ -133,3 +133,36 @@ Same implementer resumed via SendMessage (not a fresh agent — this is a
 fix round, not a checkpoint hand-off) with the ruling and all three
 blockers' prescriptions. Next: await repair commit + still-green gate,
 then resume the SAME reviewer (never a different one) for fix-verification.
+
+## PR-R4 — fix round returned, gate independently re-verified GREEN, fix-verification dispatched
+
+2026-09-08. Repair range `efd3920a..f23d6420` (6 commits): BLOCKER 1
+fixed as ruled (route a — `MAX_INGESTED_MUTANTS` moved to
+`assay.vocabulary` as a shared leaf with a drift-guard test, ceiling
+forked by `producer`; native-only `max_mutants + 1` moved into
+`Verdict._check_mutation_cardinality`), plus an unprompted extra
+(`verify.py`'s raw layer now states the native residual rule itself,
+closing the same gap BLOCKER 3 named one layer over). BLOCKERS 2+3 fixed
+with new tests proven against implementation mutants (the full-suite
+mutant run requested in the fix dispatch was reported unusable against a
+bare-copied tree — 519 unrelated errors — implementer substituted a
+targeted differential instead; reviewer told explicitly to independently
+confirm this substitution is sound, not accept it). OBS1/2/3 fixed,
+including filing a NEW backlog entry for OBS3 (compile-vs-runtime
+distinction). Gate independently re-verified GREEN by the controller from
+`gate2.log`'s own markers (`tester-unified: PASS (exit 0)`,
+`ASSAY_REGISTERED_GATE_COMPLETE=1`) on `05df0450`, worktree clean at
+`f23d6420`.
+
+**Controller ruling on an implementer-flagged item**: the fix widens two
+schema ceiling numbers without a version bump. Ruled: no bump needed —
+`VERDICT_SCHEMA_VERSION` 11 has not shipped/released anywhere yet, so
+refining what v11 means before it is ever frozen is exactly what a
+pre-merge review cycle is for; the hard-cut discipline protects an
+ALREADY-RELEASED schema's meaning, which does not apply here.
+
+Same reviewer resumed via SendMessage (never a fresh reviewer for
+fix-verification — this is settled dispatch-skill doctrine) with the
+ruling and explicit instructions to re-derive independently rather than
+accept the implementer's account, especially the full-suite-mutant-run
+substitution. Next: await ACCEPT (or further blockers) before merging.
