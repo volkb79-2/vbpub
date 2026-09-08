@@ -865,6 +865,9 @@ def _refuse_a_visible_store_inside_the_tree(
             f"assay cannot ask whether it is ignored. Choose a path whose "
             f"components do not begin with ':'"
         )
+    _refuse_a_destination_reached_through_a_symlink(
+        raw, flag=flag, what=what, root=root, probe=probe
+    )
     if not git.path_is_ignored(root, probe.as_posix()):
         raise LaneConfigError(
             f"{flag} {raw!r} resolves inside the judged tree at "
@@ -873,6 +876,60 @@ def _refuse_a_visible_store_inside_the_tree(
             f"uncommitted and refuse the NEXT run of this lane "
             f"NO_MEASUREMENT/DIRTY_TREE. Point it outside the repository, "
             f"or add {probe.as_posix()!r} to a committed .gitignore"
+        )
+
+
+def _refuse_a_destination_reached_through_a_symlink(
+    raw: str, *, flag: str, what: str, root: Path, probe: Path
+) -> None:
+    """(B077) Refuse *raw* when *probe* is reached through a symlinked
+    DIRECTORY inside the judged tree, naming the link and the traversal.
+
+    Git refuses to resolve a pathspec through a symlink at all --
+    ``fatal: pathspec '<path>' is beyond a symbolic link``, exit 128 -- so
+    :func:`assay.git.path_is_ignored` cannot answer the ignore question here
+    in either direction. Without this guard that fatal reached the operator
+    verbatim as ``ERROR``/``GIT_FAILED``, a repository-failure shape for
+    what is actually a destination-configuration mistake, and one a consumer
+    who had gitignored the real location correctly could hit while doing
+    everything right. That is the same "a real, fail-closed refusal with a
+    message that does not tell a correctly-configured consumer what to do"
+    shape ``_linked_worktree_gap()`` (B068) and the round-1 N2 guard
+    immediately above both exist to close; this is the third instance, and
+    it is answered in the same place and the same way -- BEFORE git is
+    asked, rather than by dressing up git's own error afterwards.
+
+    ``ERROR``/``BAD_LANE_CONFIG`` (via :class:`~assay.errors.
+    LaneConfigError`), not ``ERROR``/``GIT_FAILED``: the backlog entry's own
+    "or a more specific reason code, if one already exists" clause is
+    answered by the two sibling refusals in this very function, which use it
+    for exactly this class of before-any-work destination mistake. Git did
+    not fail; the destination cannot be asked about.
+
+    Only DIRECTORY components are probed (``probe.parts[:-1]``). A symlink
+    in the final position is not "beyond" anything -- ``check-ignore``
+    answers about the link entry itself, normally and correctly -- so
+    including it would refuse a case that works today.
+    """
+    walked = root
+    for component in probe.parts[:-1]:
+        walked = walked / component
+        if not walked.is_symlink():
+            continue
+        try:
+            points_to = os.readlink(walked)
+        except OSError:  # pragma: no cover - raced away between the two calls
+            points_to = "<unreadable>"
+        real = _resolve_through_existing_prefix(walked)
+        raise LaneConfigError(
+            f"{flag} {raw!r} is reached through the symlink {walked} -> "
+            f"{points_to} inside the judged tree. Git refuses to resolve a "
+            f"pathspec through a symlink at all ('fatal: pathspec ... is "
+            f"beyond a symbolic link'), so assay cannot ask whether {what} "
+            f"would be visible to it there -- neither answer is available, "
+            f"so the destination is refused rather than guessed at. Pass the "
+            f"link's own destination instead ({real}), which assay checks "
+            f"normally, or point {flag} outside the repository"
         )
 
 

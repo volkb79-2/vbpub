@@ -422,6 +422,19 @@ any path outside it. Verify and refusal semantics are otherwise unchanged:
 this relocates *where* resume state lives, never *what* it contains, and
 `assay verify` does not read it either way.
 
+**Give both flags a real path, not one that goes through a symlinked
+directory inside the tree.** Git refuses to resolve a pathspec through a
+symlink at all — `fatal: pathspec '<path>' is beyond a symbolic link` — so
+`--state-dir <repo>/store-link/records` (where `store-link` is a symlink) is a
+destination assay cannot ask the ignore question about in *either* direction,
+even when the link's target is gitignored and everything else is configured
+correctly. That is refused before any work with a message naming the link, its
+target, and the real path to pass instead; it is deliberately not the raw git
+error, which reads as a repository failure rather than a flag you can fix. A
+symlink in the *final* position is a different matter and has its own older
+refusal: `--state-dir` requires a directory and `--progress` an ordinary
+regular file, and a symlink is neither.
+
 Preview a subset without executing it:
 
 ```sh
@@ -1907,7 +1920,9 @@ OUTSIDE the repository (or a gitignored one): a progress file git can see inside
 would make the lane refuse `NO_MEASUREMENT`/`DIRTY_TREE`. **A destination inside the judged tree
 that git can see is refused before any work**, naming the cause and the fix — the same preflight
 `--state-dir` gets, and for the same reason. A gitignored path inside the tree is fine, and so is
-any path outside it. The verdict does not name the destination -- the caller already chose it,
+any path outside it; a path reached *through a symlinked directory* inside the tree is refused by
+name, because git cannot answer the ignore question through a symlink at all (see `--state-dir`
+above). The verdict does not name the destination -- the caller already chose it,
 the same way it does for `--verdict-json`. **The stream is diagnostic, never
 evidence:** `assay verify` does not read it, and no verdict field derives from
 it.

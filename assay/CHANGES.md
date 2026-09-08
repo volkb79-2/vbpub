@@ -216,6 +216,25 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   both directions, and any of them saying "inside" refuses. Found by
   adversarial review.
 
+- **A `--state-dir`/`--progress` destination reached through a symlink inside
+  the judged tree surfaced git's raw stderr (B077).** Git refuses to resolve a
+  pathspec through a symlink at all — `fatal: pathspec '<path>' is beyond a
+  symbolic link`, exit 128 — so the ignore question has no answer in *either*
+  direction there. That fatal reached the operator verbatim as
+  `ERROR`/`GIT_FAILED`, a repository-failure shape for what is a
+  destination-configuration mistake, and one a consumer whose real location was
+  correctly gitignored could hit while doing everything right. It is now
+  refused before any work as `ERROR`/`BAD_LANE_CONFIG`, naming the symlink, its
+  target, and the real path to pass instead — the same diagnostic discipline
+  `_linked_worktree_gap()` (B068) and the round-1 pathspec-magic guard beside
+  it already established, and answered in the same place: before git is asked,
+  not by dressing up its error afterwards. The two already-correct outcomes are
+  unchanged: a destination genuinely outside the repository, and one reached
+  with no symlink involved. A symlink in the *final* position is a different
+  mistake and keeps its own older, earlier refusal (`--state-dir` requires a
+  directory, `--progress` an ordinary regular file). Filed by the
+  progress/resume wave's round-2 reviewer.
+
 <!-- cmru: release history -->
 
 ## [5.2.0] - 2026-09-08
