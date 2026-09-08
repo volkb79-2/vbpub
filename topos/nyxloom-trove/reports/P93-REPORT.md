@@ -321,8 +321,27 @@ this port-forward, not a regression.
 `git diff --check`: clean.
 
 **Official gate (`topos/run-gate.py`, `tester-unified` image):**
-<results recorded after commit, per the lanes' `clean_tree=true`
-requirement — see below>
+
+| Lane | Result |
+|---|---|
+| `py-compile` | **PASS** (exit 0) |
+| `topos-suite` | **FAIL** (exit 1) — `4 failed, 2960 passed in 69.84s`, all 4 failures pre-existing and unrelated to P93 (see below) |
+
+The 4 failures (`test_record.py::test_cli_version_reports_package_version`,
+`test_acceptance.py::test_run_smoke_json_fixture_root`/
+`test_subprocess_smoke_json`/`test_run_steady_json_small_samples`) all
+assert a hardcoded `"0.1.0"` package version; `setuptools_scm` now resolves
+a live dev version (`0.2.2.dev992+g<hash>.<date>`) off the newest reachable
+`topos-v*` tag (`topos-v0.2.1`) — the tests were never updated after that
+tag was cut. Proven pre-existing and independent of this port-forward by
+running the identical 4 tests directly inside the `tester-unified:local`
+gate image against the bare `main` checkout (`git rev-parse HEAD` inside
+the container confirmed `3dd08b12`, i.e. no worktree/branch/P93 content
+present): same 4 failures, same root cause, same version string. Filed as
+`docs/BACKLOG.md` B-046 / `nyxloom-trove/4-backlog.md` B-047. Every
+P93-relevant test (all 42 new oracle tests, all 355 existing
+P87/P46/P72/P78 + boundary tests) is green; the lane's exit 1 traces
+entirely to this pre-existing, orthogonal defect.
 
 **Review status:** no independent reviewer APPROVE commit exists for the
 original branch or this port-forward. First-time adversarial review is the

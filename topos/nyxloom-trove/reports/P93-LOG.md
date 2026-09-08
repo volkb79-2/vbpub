@@ -330,6 +330,33 @@ a clean `main` checkout, to separate P93 effects from environment effects.
   `tester-unified` image.
 - `git diff --check` on the staged changes: clean.
 - Official gate lanes (`topos/run-gate.py`, `tester-unified` image, exact
-  `topos-suite`/`py-compile` argv from `topos/run-gate.toml`): results
-  recorded in P93-REPORT.md's validation addendum (run after commit, per
-  the lanes' `clean_tree=true`).
+  `topos-suite`/`py-compile` argv from `topos/run-gate.toml`, run after
+  committing per the lanes' `clean_tree=true`):
+  - `python3 topos/run-gate.py py-compile` -> exit 0, `py-compile: OK`.
+  - `python3 topos/run-gate.py topos-suite` -> exit 1: `4 failed, 2960
+    passed in 69.84s`, THE SAME 4 tests as the local run above, for the
+    same reason.
+  - Control proof that these 4 failures are pre-existing and unrelated to
+    P93, not a symptom of the port-forward or the reconciliation: ran the
+    identical 4 tests directly inside the `tester-unified:local` image
+    against the BARE `main` checkout (`git rev-parse HEAD` inside the
+    container printed `3dd08b12...`, i.e. zero worktree/branch/P93 content
+    present at all) -- same 4 failures, same root cause, same version
+    string. Root cause identified: `pyproject.toml`'s `setuptools_scm`
+    (`tag_regex = "^topos-v(?P<version>[0-9].*)$"`) now resolves off the
+    newest reachable `topos-v*` tag (`topos-v0.2.1`; `git tag` lists
+    `topos-v0.1.0`/`topos-v0.2.0`/`topos-v0.2.1`), producing a live dev
+    version (`0.2.2.dev992+g<hash>.<date>`); the 4 failing tests hardcode
+    the literal `"0.1.0"` and were never updated after the first real
+    `topos-v` tag was cut -- pure test staleness, orthogonal to P93 (P93
+    touches no version/packaging code). Filed as
+    `docs/BACKLOG.md`/`nyxloom-trove/4-backlog.md` B-046/B-047 (numbered
+    per each file's own existing max, since the two backlogs were already
+    out of sync before this session) so it does not block or confuse
+    review of this port-forward, and so it is visible to whoever gates
+    the sibling P91 port-forward (same `topos-suite` lane, same failure
+    expected there too).
+  - Every P93-relevant test (all 42 new oracle tests, all 355 existing
+    P87/P46/P72/P78 + boundary tests, and every other test in the 2960
+    that DID pass) is green; the lane's overall exit 1 is attributable
+    entirely to the 4 pre-existing, unrelated failures above.
