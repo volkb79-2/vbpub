@@ -356,6 +356,71 @@ def _positions_are_ascending(
             return
 
 
+def _raw_mutant_identity(entry: object) -> tuple | None:
+    """(B070/v11) One raw ``mutant_outcome`` object's A-180 wire identity
+    ``(path, start_byte, end_byte, replacement_sha256, operator)``, or ``None``
+    when the object is too malformed to have one.
+
+    Read straight off the untrusted document rather than off a reconstructed
+    :class:`~assay.verdict.MutantOutcome`, which is this module's whole
+    premise: the raw layer must be able to refuse a document with no help from
+    the model layer (A-182/A-317). ``None`` rather than a partial tuple —
+    half an identity would silently compare equal to another half identity,
+    which is the opposite of what an identity is for; a malformed entry is
+    already refused by the schema and by the model, and this function's
+    callers simply have nothing to say about it.
+    """
+    if not isinstance(entry, dict):
+        return None
+    fields = (
+        entry.get("path"),
+        entry.get("start_byte"),
+        entry.get("end_byte"),
+        entry.get("replacement_sha256"),
+        entry.get("operator"),
+    )
+    if not isinstance(fields[0], str) or not isinstance(fields[3], str):
+        return None
+    if not isinstance(fields[4], str):
+        return None
+    for value in (fields[1], fields[2]):
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+    return fields
+
+
+def _mutant_identities_are_ascending(
+    values: object, what: str, failures: list[str]
+) -> None:
+    """(B070/v11) One ``mutant_outcome`` array is strictly ascending by the
+    A-180 identity — the exact ordering
+    :func:`assay.verdict._check_mutant_outcome_tuple` enforces in the model,
+    stated here independently.
+
+    The sibling of :func:`_positions_are_ascending`, and separate from it for
+    that function's own stated reason: a different order over different
+    things, and a shared helper would let one edit weaken both. Strictly
+    ascending, not merely non-descending: two entries that compare equal under
+    the site identity ARE the same experiment recorded twice.
+    """
+    if not isinstance(values, list):
+        return
+    keys: list[tuple] = []
+    for entry in values:
+        identity = _raw_mutant_identity(entry)
+        if identity is None:
+            return
+        keys.append(identity)
+    for previous, current in zip(keys, keys[1:]):
+        if not previous < current:
+            failures.append(
+                f"{what} must be strictly ascending by (path, start_byte, "
+                f"end_byte, replacement_sha256, operator); {previous} is not "
+                f"before {current}"
+            )
+            return
+
+
 def _check_snapshot_policy(document: dict, failures: list[str]) -> None:
     """(B006(a)/A-269, §5.1/§5.3) ``snapshot_policy`` is present iff
     ``declared_rigor`` contains R1, R2 or R3 -- and, when present, obeys its
@@ -848,8 +913,9 @@ def _check_resolved_language_owns_every_operator(
 def _check_ingested_r2_agrees_with_its_payload(
     document: dict, failures: list[str]
 ) -> None:
-    """(B046) Re-derive an INGESTED ``judgment.r2``'s three derived facts from
-    the R2 mutation payload, at the RAW layer.
+    """(B046, FOURTH re-derivation added by B070/v11) Re-derive an INGESTED
+    ``judgment.r2``'s derived facts from the R2 mutation payload, at the RAW
+    layer.
 
     **This closes a real hole rather than adding belt-and-braces.** Before
     B046 the raw layer said NOTHING about an ingested document: every existing
@@ -873,35 +939,38 @@ def _check_ingested_r2_agrees_with_its_payload(
        payload: a ``NoCoverage`` mutant maps to ``survived`` and to nothing
        else, so an entry matching a killed mutant's position would be
        laundering a kill into the worst-survivor list;
-    4. ``discarded`` is a count of mutants deliberately NOT in the payload, so
-       it must not be contradicted by the arithmetic ``Mutation`` already
-       enforces -- checked here as "present and non-negative", the only part
-       of it a document can be wrong about on its own.
+    4. **(B070/v11) ``discarded`` is re-derived against the payload in three
+       ways at once**, now that it lists the mutants instead of counting
+       them. Its entries are ascending and unique by mutant identity; their
+       identities are DISJOINT from all five buckets (a discarded mutant was
+       never run, so it cannot also have an outcome); no entry's LINE appears
+       in ``lines_without_candidates`` (the tool DID produce a candidate
+       there, it merely produced an invalid one); and the FIFTH-DISPOSITION
+       arithmetic ``candidate_count - total == len(discarded)`` holds, because
+       every candidate the report listed was either attempted -- and is in a
+       bucket -- or discarded, and is listed here.
 
-    **What this function does NOT check, stated so a green bar cannot be
-    misread (B051/DA-D4/DA-R26).** ``discarded`` is **DECLARED, NOT
-    VERIFIED**, in ``producer_tool``'s own words (A-230a). Item 4 above is
-    the whole of it: a range check, not a re-derivation, and no fourth
-    re-derivation exists to be written. Under DA-D4's ``listed`` semantics
-    -- which :func:`assay.mutation.ingest_mutation_report` implements at
-    ingest -- a discarded mutant is by construction outside this document:
-    ``ingest_mutation_report`` ``continue``s past the bucket assignment, so
-    it is in no bucket; ``candidate_count`` and ``total`` are both the bucket
-    sum and :meth:`assay.verdict.Mutation._check_arithmetic` forbids them to
-    differ outside the limit sentinel, so ``discarded`` is not their
-    difference either; and its LINE is absent from
-    ``lines_without_candidates`` because the tool did produce a candidate
-    there. A truthful document with 900 discarded mutants is therefore
-    byte-indistinguishable from a truthful one with 0, and every upper bound
-    that would catch an inflated count (``discarded <= total``, ``<=
-    candidate_count``) would also refuse the honest high-discard report the
-    field exists to surface -- the failure B051 was filed to avoid. A count
-    set to ``9999`` on a real 109-mutant ingested document verifies clean,
-    deliberately and by ruling. The field carries no judgment weight while it
-    stays unverified: it is a COUNT beside the payload, never enters the
-    ``Mutation`` buckets, so the score's denominator is unaffected by
-    construction. **B070** is the v11 candidate that would put the missing
-    quantity on the wire and make this a difference this function could take.
+    **The arithmetic is the load-bearing one, and it is a re-derivation, not
+    a bound.** Through schema v10 this field was an integer count and was
+    DECLARED, NOT VERIFIED by ruling (B051/DA-D4/DA-R26): a discarded mutant
+    was outside the document it would have to be derived from, ``9999`` on a
+    real 109-mutant document verified clean (A-437), and every upper bound
+    that caught that (``discarded <= total``, ``<= candidate_count``) equally
+    refused the honest high-discard report the field exists to surface --
+    which is exactly why DA-R26 rejected one. Listing the mutants supplies
+    the missing quantity: an inflated list no longer agrees with the payload
+    beside it and refuses BY NAME, while a truthful report with 900 discarded
+    mutants and 905 candidates passes, because 905 - 5 IS 900.
+
+    **What this function still does NOT check, stated so a green bar cannot
+    be misread.** The UN-LISTED half: a tool that drops candidates before
+    reporting them at all emits a document indistinguishable from one that
+    never generated them. Nothing in any artifact assay receives witnesses
+    that, so it stays in A-230a's declared-by-artifact tier -- the same tier
+    ``producer_tool`` sits in. Note also what is NOT at stake either way:
+    ``discarded`` never enters the ``Mutation`` buckets, so the mutation
+    score's denominator is unaffected by construction (DA-R23) and no value
+    of this field can manufacture a green.
 
     The MUTATION SCORE itself (``killed / (killed + survived)``) is re-derived
     by :func:`_check_r2_rederivation` through
@@ -946,12 +1015,20 @@ def _check_ingested_r2_agrees_with_its_payload(
 
     survived: set[tuple[str, int]] = set()
     every: set[tuple[str, int]] = set()
+    # B070/v11: the bucketed IDENTITIES, for the disjointness re-derivation.
+    # Built from the raw entries here rather than from the reconstructed model
+    # for this module's whole reason for existing: the raw layer must be able
+    # to refuse a document with no help from the model layer.
+    bucketed_identities: set[tuple] = set()
     for bucket, entry in _mutant_entries(payload):
         path = entry.get("path")
         lineno = entry.get("lineno")
         if not isinstance(path, str) or not isinstance(lineno, int):
             continue
         every.add((path, lineno))
+        identity = _raw_mutant_identity(entry)
+        if identity is not None:
+            bucketed_identities.add(identity)
         if bucket == "survived":
             survived.add((path, lineno))
 
@@ -1008,22 +1085,67 @@ def _check_ingested_r2_agrees_with_its_payload(
                     f"candidate and carry one"
                 )
 
-    # DECLARED, NOT VERIFIED (B051/DA-D4/DA-R26). This is the whole of the
-    # check and the docstring says why no more is constructible: a discarded
-    # mutant is outside the document, so an upper bound here would refuse the
-    # honest high-discard report rather than the inflated one. B070 is the
-    # v11 candidate that would supply the missing quantity.
+    # B070/v11: the FOURTH re-derivation. See the docstring for why the three
+    # statements below are a difference this function can take and an upper
+    # bound is not.
     discarded = r2.get("discarded")
-    if isinstance(discarded, bool) or not isinstance(discarded, int):
+    if not isinstance(discarded, list):
         failures.append(
-            f"judgment.r2.discarded is required on an ingested judgment and "
-            f"must be an integer, got {discarded!r}"
+            f"judgment.r2.discarded is required on an ingested judgment "
+            f"(possibly empty) and must be an ARRAY of the mutants the report "
+            f"marked CompileError/RuntimeError, got {discarded!r}. Through "
+            f"schema v10 it was an integer count; a count has nothing in the "
+            f"document to be a difference of, which is why it could never be "
+            f"verified (B051/B070)"
         )
-    elif discarded < 0:
-        failures.append(
-            f"judgment.r2.discarded is {discarded}; a count of invalid mutants "
-            f"cannot be negative"
+    else:
+        _mutant_identities_are_ascending(
+            discarded, "judgment.r2.discarded", failures
         )
+        barren = {
+            (position.get("path"), position.get("lineno"))
+            for position in (without if isinstance(without, list) else [])
+            if isinstance(position, dict)
+        }
+        for entry in discarded:
+            if not isinstance(entry, dict):
+                continue
+            identity = _raw_mutant_identity(entry)
+            if identity is not None and identity in bucketed_identities:
+                failures.append(
+                    f"judgment.r2.discarded names {entry.get('path')}"
+                    f":{entry.get('lineno')} ({entry.get('operator')}), which "
+                    f"the R2 payload also records in one of its five buckets; "
+                    f"a discarded mutant was never run, so it cannot also have "
+                    f"an outcome"
+                )
+            pair = (entry.get("path"), entry.get("lineno"))
+            if pair in barren:
+                failures.append(
+                    f"judgment.r2.lines_without_candidates names {pair[0]}"
+                    f":{pair[1]}, but judgment.r2.discarded records a mutant "
+                    f"starting on that exact line; the tool DID produce a "
+                    f"candidate there, it merely produced an invalid one"
+                )
+        total = payload.get("total")
+        candidate_count = payload.get("candidate_count")
+        if (
+            isinstance(total, int)
+            and not isinstance(total, bool)
+            and isinstance(candidate_count, int)
+            and not isinstance(candidate_count, bool)
+        ):
+            residual = candidate_count - total
+            if residual != len(discarded):
+                failures.append(
+                    f"judgment.r2.discarded lists {len(discarded)} mutant(s), "
+                    f"but the R2 payload records {candidate_count} candidate(s) "
+                    f"against {total} attempted -- a residual of {residual}. "
+                    f"Every candidate the ingested report listed was either "
+                    f"attempted (and is in one of the five buckets) or "
+                    f"discarded (and is listed here), so these two numbers are "
+                    f"the same number written twice"
+                )
 
     tool = r2.get("producer_tool")
     if not isinstance(tool, dict):
@@ -1558,6 +1680,23 @@ def _reconstruct_source_positions(
     return tuple(positions)
 
 
+def _reconstruct_discarded(raw: dict) -> tuple[MutantOutcome, ...] | None:
+    """(B070, schema v11) ``judgment.r2.discarded``, or ``None`` when the key
+    is absent.
+
+    The same empty-vs-absent rule :func:`_reconstruct_source_positions` states
+    one function up, and for the same reason: absent means ``producer =
+    "native"``, where assay's own engine has no discard concept at all, while
+    an EMPTY list is the positive statement "the ingested path looked and
+    found none". Through schema v10 this key held an integer; a v10 document
+    reaching here at all is already impossible — :func:`verify_document`
+    refuses a foreign ``schema_version`` before any reconstruction runs.
+    """
+    if "discarded" not in raw:
+        return None
+    return tuple(_reconstruct_mutant_outcome(item) for item in raw["discarded"])
+
+
 def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
     # B031/A-323: `shard_index`/`shard_count` are REGISTERED here. They were
     # not, from `7a4f6333` (which added them to the dataclass and the schema)
@@ -1583,7 +1722,13 @@ def _reconstruct_judgment_r2(raw: dict) -> JudgmentR2:
         survived_uncovered=_reconstruct_source_positions(
             raw, "survived_uncovered"
         ),
-        discarded=raw.get("discarded"),
+        # B070 (schema v11): a LIST of mutant identities, rebuilt through the
+        # very same `_reconstruct_mutant_outcome` the five buckets go through
+        # -- one reader, so a discarded entry and a bucketed one cannot be
+        # validated by two implementations that drift. `.get` because the key
+        # is absent by contract under `producer = "native"`; `JudgmentR2`'s own
+        # producer fork decides whether that absence is legal.
+        discarded=_reconstruct_discarded(raw),
         lines_without_candidates=_reconstruct_source_positions(
             raw, "lines_without_candidates"
         ),
@@ -2200,7 +2345,19 @@ def _check_r2_rederivation(verdict: Verdict, failures: list[str]) -> None:
     judgment_r2 = verdict.judgment.r2 if verdict.judgment is not None else None
     recorded_floor = getattr(judgment_r2, "fail_under", None)
     fail_under = 100.0 if recorded_floor is None else float(recorded_floor)
-    expected = judge_mutation(baseline, claim.mutation, fail_under=fail_under)
+    # B070/v11: the fifth disposition, read from the artifact for the floor's
+    # own reason. It matters on exactly one branch -- a payload with zero
+    # attempted and a positive `candidate_count` -- where subtracting it is
+    # what tells a NATIVE pre-submission limit refusal from an INGESTED report
+    # whose in-scope mutants were all invalid. `None` on every native
+    # document, whose producer fork forbids the field.
+    recorded_discarded = getattr(judgment_r2, "discarded", None)
+    expected = judge_mutation(
+        baseline,
+        claim.mutation,
+        fail_under=fail_under,
+        discarded=0 if recorded_discarded is None else len(recorded_discarded),
+    )
     if (claim.status, claim.reason_code) != expected:
         failures.append(
             f"R2 claim status {_fmt(claim.status, claim.reason_code)} "
