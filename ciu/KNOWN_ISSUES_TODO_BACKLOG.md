@@ -3357,7 +3357,7 @@ their creation timestamps are 0.5 s apart, the signature of
 that they were a co-tenant's has been withdrawn. `^(test-)?repo-` on this host
 is now **0**.
 
-## CIU-88 — `docs/CONFIG.md`'s own `known_host` "format" prose contradicts its own worked examples (and the source), and caused a downstream consumer doc defect
+## CIU-96 — `docs/CONFIG.md`'s own `known_host` "format" prose contradicts its own worked examples (and the source), and caused a downstream consumer doc defect
 
 **Filed by:** dstdns, 2026-09-08, during dstdns-P171's adversarial code review
 (`dstdns/nyxloom-trove/decisions.md` D-395 finding 1). The review verified the
