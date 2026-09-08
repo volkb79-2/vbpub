@@ -1,4 +1,5 @@
 target-host.jsonc
+target-host-*.jsonc
 remote-logs/
 
 # Local Telegram setup artifacts (contain secrets / offsets)

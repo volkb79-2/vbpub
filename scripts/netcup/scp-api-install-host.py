@@ -16,19 +16,24 @@ was purely additive and non-breaking for the endpoints this script uses: new
 
 Get API access / Authentication:
 
-1. Get a device_code and activate it 
+1. Get a device_code and activate it
+```
 curl -X POST 'https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/auth/device' \
   -d "client_id=scp" \
   -d 'scope=offline_access openid' | jq
+```
 
 1.2. extract link in "verification_uri_complete", open it, login with SCP credentials, confirm grant access
 1.3. extract the "device_code" : e.g. "BqCuANW2nKFwCtdf5HcbYRIEZ_RrklqiSF40r9AQH0k"
 
 2. Use activated `device-token` to get long-term `refresh_token` to generate `access_token` for API access
+```bash
+device_code=<device-code-from-first-curl-reply>
 curl -X POST 'https://www.servercontrolpanel.de/realms/scp/protocol/openid-connect/token' \
   -d 'grant_type=urn:ietf:params:oauth:grant-type:device_code' \
-  -d 'device_code=<device-code>' \
+  -d "device_code=$device_code" \
   -d 'client_id=scp' | jq
+```
 
 Notes: 
 - Use access token within the next 300 seconds to access the API. See "Refresh access token" how to obtain a new access token.
