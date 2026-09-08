@@ -39,3 +39,30 @@ mistake it made and disclosed, host-load discipline notes from a real
 load-17 saturation event). **Fresh successor dispatched** (never a
 resume -- per E-008, a checkpoint hand-off gets a fresh agent) seeded with
 the brief, scoped to B064, then B065, then B066.
+
+## PR-R3 — all four items returned, gate GREEN first try, review dispatched
+
+2026-09-08. Successor implementer landed B064+B065 together (`940b5ba2`,
+same lines touched) and B066 (`243de634`), then LOG+REPORT (`48561aba`).
+Registered gate GREEN on the FIRST attempt this time (prior wave's
+DIRTY_TREE lesson correctly applied — LOG/REPORT drafted outside the tree,
+moved in only after the verdict). Controller independently re-verified
+from the gate's own log markers before trusting the report — confirmed
+`tester-unified: PASS (exit 0)` / `ASSAY_REGISTERED_GATE_COMPLETE=1` at
+`243de634`, matching exactly.
+
+Two things disclosed honestly by the implementer, noted for the reviewer
+rather than acted on unilaterally: (1) B064's R3/canary half is
+deliberately left unimplemented (needs to reuse B007's per-attempt
+identity), acceptance box correctly left unticked, not claimed done;
+(2) a process deviation — a Python `write_text` script was used for two
+mechanical multi-site edits before the implementer caught itself and
+switched back to Edit-tool-shaped edits for the rest. Both flagged to the
+reviewer explicitly rather than pre-judged.
+
+**Fresh adversarial reviewer dispatched** (never fork) against the full
+branch diff, told to independently re-derive every claim (the four
+`math.inf` boundaries, the closed-vocabulary enforcement, B066's
+git-ignore-check oddity, the two-worktree resume behavior) rather than
+trust the LOG/REPORT/BRIEF. Report expected at
+`assay/nyxloom-trove/reports/assay-WAVE-PROGRESS-RESUME-REVIEW-round1.md`.
