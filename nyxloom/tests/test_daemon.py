@@ -4419,6 +4419,20 @@ def test_watchdog_suppression_evidence_stays_quiet_for_a_deduped_condition(
     re-plan the action, and the project really is not re-paused."""
     project = "demo"
     now = utc_now()
+    # Fix-verification round 2, N1: the rejections branch this test claims to
+    # pin (rules_attention.spec_health's `if not inp.rejections_already_open`)
+    # reads inp.review_rejections_by_area, which _history derives from
+    # REVIEW_RECORDED{result:'rejected'} events -- NOT from the SPEC_ATTENTION
+    # events below. Without these, review_rejections_by_area stays {} and the
+    # rule never emits regardless of the dedup flag, making the assertion
+    # below vacuously true (reviewer PROBE: dedup_flag=True,
+    # rejections_by_area={} -- caught the gap in round-2 review).
+    for i in range(3):
+        storage.append_and_apply(
+            project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.REVIEW_RECORDED, payload={"result": "rejected", "area": "core"},
+            timestamp=now - timedelta(seconds=60 - i),
+        )
     for i in range(6):
         storage.append_and_apply(
             project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
