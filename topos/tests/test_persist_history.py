@@ -634,6 +634,23 @@ def test_read_segment_frames_raises_typed_error_on_corrupt_input(tmp_path):
         read_segment_frames(segment)
 
 
+def test_read_segment_frames_skips_blank_lines(tmp_path):
+    frame_payload = {"type": "frame", **frame_to_jsonable(_frame_at(BASE_TS))}
+    segment = tmp_path / "seg-00000000.jsonl"
+    segment.write_text(_header_line(0) + "\n\n" + json.dumps(frame_payload) + "\n")
+    frames = read_segment_frames(segment)
+    assert len(frames) == 1
+
+
+def test_segment_writer_abort_swallows_a_close_failure(tmp_path):
+    from topos.daemon.persist import _SegmentWriter
+
+    writer = _SegmentWriter(tmp_path / "seg.tmp", 0, compress=False)
+    with mock.patch.object(writer._fh, "close", side_effect=OSError(5, "I/O error")):
+        writer.abort()  # must not raise
+    assert not writer.tmp_path.exists()
+
+
 def test_read_segment_frames_rejects_a_missing_segment_header(tmp_path):
     segment = tmp_path / "seg-000000.jsonl"
     segment.write_text('{"type": "frame", "ts": 1.0}\n')
