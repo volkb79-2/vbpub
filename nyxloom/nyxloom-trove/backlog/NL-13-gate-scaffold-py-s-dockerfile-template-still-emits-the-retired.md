@@ -37,7 +37,7 @@ it emits, which is generated output handed to end users, not just
 internal documentation.
 
 Found during the retroactive adversarial review of nyxloom-P102
-(`nyxloom-trove/archive/nyxloom-P102-CODE-REVIEW-RETROACTIVE.md`, F6),
+(`nyxloom-trove/reports/nyxloom-P102-CODE-REVIEW-RETROACTIVE.md`, F6),
 which was itself prompted by the operator asking whether every package
 this session had a real adversarial review.
 
