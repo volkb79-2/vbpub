@@ -57,6 +57,19 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [23.6.1] - 2026-09-08
+<!-- cmru: generated -->
+<!-- cmru: source-end=ec0bc47fc05f487c5518ed57ff9393745d83383b -->
+
+### Fixed
+- fix(run-gate): RG-41 round-3 review -- thread lifecycle on stall, non-UTF-8 byte resilience (c1735aa4)
+- fix(run-gate): RG-41 round-2 review -- join() fired on every stall, not just contention (085eff02)
+- fix(run-gate): RG-41 round-1 review -- log-stream re-attach staleness, join disclosure, RG-46 filed (db8e46a6)
+- fix(run-gate): RG-41 -- container command-lane liveness from log-stream silence (8055e4e6)
+
+### Testing
+- test(run-gate): RG-41 round-4 review -- pin errors=replace at the real call site (238edccf)
+
 ## [23.6.0] - 2026-09-08
 <!-- cmru: generated -->
 <!-- cmru: source-end=36eddc76a590c167655de44faa05ba1e06a810ec -->
