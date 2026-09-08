@@ -44,3 +44,33 @@ data = { path = "", uid = 70, mode = "0770" }
 # GEN_TO_VAULT into vault.paths.postgres_password (S4.2/S4.11); token via S4.16.
 [db_core.secrets]
 postgres_password = "GEN_TO_VAULT:{{ vault.paths.postgres_password }}"
+
+# S15.23 worked example (CIU-94): the motivating case from CGROUP-NOTES.md
+# §"Per-container memory.min guarantees" — a continuously-processing Postgres
+# that wants a real memory floor against thrashing, not just a ceiling.
+#
+# Unlike redis-core (which turns governance on and leans on the ambient
+# CGROUP_PARENT_DEV_BACKGROUND default), this stack names its slice
+# EXPLICITLY: `mem_min` is only meaningful on a slice provisioned as a
+# guaranteed tier. A shared, heterogeneous tier like dev-background.slice
+# deliberately carries no MemoryMin at all — cgroup v2 redistributes a
+# parent's protection across every child currently using memory, so a floor
+# there would silently be shared out to every unrelated gate/test-runner
+# container living in the same slice.
+#
+# Two things follow from this declaration, both at deploy time only (nothing
+# is injected into the compose overlay — no Docker/compose field exists for a
+# per-container memory.min):
+#   1. S15.23 admission control: before this stack starts, the live sum of
+#      dev-memory_min_guaranteed.slice's current occupants' own memory.min
+#      values plus this claim must fit the slice's own provisioned ceiling.
+#   2. S15.23 injection: once the container is running, the declared floor is
+#      applied to that container's OWN transient scope via
+#      `systemctl set-property --runtime docker-<id>.scope MemoryMin=...`.
+# Both are silent no-ops wherever CIU is not running host-rooted (S15.22 /
+# docs/DESIGN-NOTES.md D9), which is why this fixture is safe to render
+# anywhere.
+[db_core.governance]
+enabled = true
+cgroup_parent = "dev-memory_min_guaranteed.slice"
+mem_min = "128m"

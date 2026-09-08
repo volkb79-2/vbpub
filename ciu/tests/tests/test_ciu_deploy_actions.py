@@ -1117,6 +1117,15 @@ def test_governance_slice_preflight_mem_min_inadequate_warns_by_default(
     profile = Profile(name=None, phase_keys=None, config=_plain_config())
     selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
 
+    # S15.22 (CIU-95): this preflight now also probes the host-wide
+    # memory_recursiveprot mount flag whenever any stack declares mem_min.
+    # Pin it to "present" so these S15.16 assertions describe the ancestor-
+    # chain finding they are about, on any host, rather than inheriting
+    # whatever /proc/mounts the suite happens to run against.
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_memory_recursiveprot",
+        lambda: (True, "cgroup2 at /sys/fs/cgroup is mounted with memory_recursiveprot"),
+    )
     monkeypatch.setattr(
         deploy.governance_mod, "check_slice_unit",
         lambda name: (True, f"{name}: LoadState=loaded"),
@@ -1143,6 +1152,15 @@ def test_governance_slice_preflight_raises_when_mem_min_inadequate_and_exit_on_w
     profile = Profile(name=None, phase_keys=None, config=config)
     selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
 
+    # S15.22 (CIU-95): this preflight now also probes the host-wide
+    # memory_recursiveprot mount flag whenever any stack declares mem_min.
+    # Pin it to "present" so these S15.16 assertions describe the ancestor-
+    # chain finding they are about, on any host, rather than inheriting
+    # whatever /proc/mounts the suite happens to run against.
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_memory_recursiveprot",
+        lambda: (True, "cgroup2 at /sys/fs/cgroup is mounted with memory_recursiveprot"),
+    )
     monkeypatch.setattr(
         deploy.governance_mod, "check_slice_unit",
         lambda name: (True, f"{name}: LoadState=loaded"),
@@ -1162,6 +1180,15 @@ def test_governance_slice_preflight_passes_when_mem_min_adequate(monkeypatch, tm
     profile = Profile(name=None, phase_keys=None, config=_plain_config())
     selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
 
+    # S15.22 (CIU-95): this preflight now also probes the host-wide
+    # memory_recursiveprot mount flag whenever any stack declares mem_min.
+    # Pin it to "present" so these S15.16 assertions describe the ancestor-
+    # chain finding they are about, on any host, rather than inheriting
+    # whatever /proc/mounts the suite happens to run against.
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_memory_recursiveprot",
+        lambda: (True, "cgroup2 at /sys/fs/cgroup is mounted with memory_recursiveprot"),
+    )
     monkeypatch.setattr(
         deploy.governance_mod, "check_slice_unit",
         lambda name: (True, f"{name}: LoadState=loaded"),
@@ -1198,6 +1225,15 @@ def test_governance_slice_preflight_mem_min_skipped_when_slice_missing(monkeypat
     profile = Profile(name=None, phase_keys=None, config=_plain_config())
     selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
 
+    # S15.22 (CIU-95): this preflight now also probes the host-wide
+    # memory_recursiveprot mount flag whenever any stack declares mem_min.
+    # Pin it to "present" so these S15.16 assertions describe the ancestor-
+    # chain finding they are about, on any host, rather than inheriting
+    # whatever /proc/mounts the suite happens to run against.
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_memory_recursiveprot",
+        lambda: (True, "cgroup2 at /sys/fs/cgroup is mounted with memory_recursiveprot"),
+    )
     monkeypatch.setattr(
         deploy.governance_mod, "check_slice_unit",
         lambda name: (False, f"{name}: LoadState=not-found"),
@@ -1263,6 +1299,15 @@ def test_governance_slice_preflight_mem_min_skips_on_non_systemd_host(monkeypatc
     profile = Profile(name=None, phase_keys=None, config=_plain_config())
     selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
 
+    # S15.22 (CIU-95): this preflight now also probes the host-wide
+    # memory_recursiveprot mount flag whenever any stack declares mem_min.
+    # Pin it to "present" so these S15.16 assertions describe the ancestor-
+    # chain finding they are about, on any host, rather than inheriting
+    # whatever /proc/mounts the suite happens to run against.
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_memory_recursiveprot",
+        lambda: (True, "cgroup2 at /sys/fs/cgroup is mounted with memory_recursiveprot"),
+    )
     monkeypatch.setattr(
         deploy.governance_mod, "check_slice_unit",
         lambda name: (True, f"{name}: LoadState=loaded"),
@@ -3207,3 +3252,324 @@ def test_check_reports_unparseable_compose_without_aborting_the_run(tmp_path, ca
     assert "not parseable YAML" in finding["message"]
     # The healthy stack was still checked — one bad render does not end the run.
     assert _stage(doc, "compose-render")["status"] == "pass"
+
+
+# ===========================================================================
+# S15.22 — memory_recursiveprot preflight (CIU-95)
+# ===========================================================================
+
+
+def test_governance_slice_preflight_raises_when_recursiveprot_missing_and_mem_min_declared(
+    monkeypatch, tmp_path,
+):
+    """[S15.22] is ERROR, not WARN — and under the DEFAULT config (no
+    ciu.exit_on set at all) an ERROR raises. That asymmetry with the [S15.16]
+    ancestor-chain WARN two lines below it in the same function is blast
+    radius, not confidence: an inadequate chain scopes to ONE slice, while a
+    missing memory_recursiveprot invalidates EVERY declared mem_min on the
+    whole host at once, silently.
+
+    CONTROLLED WRONG IMPLEMENTATION: reverting the call site's
+    severity="ERROR" to "WARN" makes exactly this test fail (the raise stops
+    happening) — the severity choice is load-bearing and pinned, not
+    incidental."""
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
+
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda name: (True, f"{name}: LoadState=loaded"),
+    )
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_memory_recursiveprot",
+        lambda: (False, "cgroup2 at /sys/fs/cgroup is mounted WITHOUT memory_recursiveprot"),
+    )
+
+    def fail_chain(name, required):
+        raise AssertionError(
+            "the host-wide flag is fatal on its own; the per-slice chain walk "
+            "must not be reached"
+        )
+
+    monkeypatch.setattr(deploy.governance_mod, "check_memory_min_ancestor_chain", fail_chain)
+    with pytest.raises(ValueError, match=r"\[S15\.22\]"):
+        deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)
+
+
+def test_governance_slice_preflight_recursiveprot_present_does_not_raise(monkeypatch, tmp_path):
+    """The flag being present is the normal case: an [INFO] line, nothing more
+    — proving the raise above is caused by the finding, not by the check
+    merely running."""
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered_mem_min("nyxloom-daemon.slice", "2g")
+
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda name: (True, f"{name}: LoadState=loaded"),
+    )
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_memory_recursiveprot",
+        lambda: (True, "cgroup2 at /sys/fs/cgroup is mounted with memory_recursiveprot"),
+    )
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_memory_min_ancestor_chain",
+        lambda name, required: (True, f"{name}: chain OK"),
+    )
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+
+
+def test_governance_slice_preflight_skips_recursiveprot_check_when_no_mem_min_declared(
+    monkeypatch, tmp_path,
+):
+    """The flag only matters to a host where SOMETHING declares a floor. With
+    no mem_min anywhere in the selection the check must not even be called —
+    not merely 'not raise'."""
+    profile = Profile(name=None, phase_keys=None, config=_plain_config())
+    selection, rendered = _governance_selection_rendered("nyxloom-daemon.slice")  # no mem_min
+
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_slice_unit",
+        lambda name: (True, f"{name}: LoadState=loaded"),
+    )
+
+    def fail_recursiveprot():
+        raise AssertionError(
+            "check_memory_recursiveprot must not be called when no stack declares mem_min"
+        )
+
+    monkeypatch.setattr(deploy.governance_mod, "check_memory_recursiveprot", fail_recursiveprot)
+    deploy.governance_slice_preflight(tmp_path, profile, selection, rendered)  # must not raise
+
+
+# ===========================================================================
+# S15.23 — admission control (CIU-94b)
+# ===========================================================================
+
+
+def _mem_min_entry_rendered(mem_min: str = "128m", *, cgroup_parent: str = "dev-memory_min_guaranteed.slice"):
+    selection, rendered = _governance_selection_rendered_mem_min(cgroup_parent, mem_min)
+    return selection[0], rendered
+
+
+def test_mem_min_admission_check_raises_when_over_ceiling(monkeypatch, tmp_path):
+    """[S15.23] admission is ERROR: under the DEFAULT config this raises and
+    the stack never starts. Deliberately the opposite of the post-start
+    injection WARN below."""
+    entry, rendered = _mem_min_entry_rendered("128m")
+    config = _plain_config()
+
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_mem_min_admission",
+        lambda slice_name, candidate: (
+            False,
+            f"{slice_name}: ceiling=167772160 bytes, currently claimed=83886080 bytes, "
+            f"candidate={candidate} bytes",
+        ),
+    )
+    with pytest.raises(ValueError) as exc_info:
+        deploy.mem_min_admission_check(tmp_path, entry, rendered, config)
+    message = str(exc_info.value)
+    assert "[S15.23]" in message
+    assert "dev-memory_min_guaranteed.slice" in message
+    assert "applications/app" in message
+
+
+def test_mem_min_admission_check_passes_when_under_ceiling(monkeypatch, tmp_path, capsys):
+    entry, rendered = _mem_min_entry_rendered("128m")
+    config = _plain_config()
+
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_mem_min_admission",
+        lambda slice_name, candidate: (True, f"{slice_name}: {candidate} admitted"),
+    )
+    deploy.mem_min_admission_check(tmp_path, entry, rendered, config)  # must not raise
+    out = capsys.readouterr().out
+    assert "[S15.23]" in out
+    assert "[WARN]" not in out
+    assert "[ERROR]" not in out
+
+
+def test_mem_min_admission_check_passes_the_declared_size_in_bytes(monkeypatch, tmp_path):
+    """The candidate handed to governance is the PARSED byte count, not the
+    raw Docker size string — comparing "128m" against a byte ceiling would
+    silently admit anything."""
+    entry, rendered = _mem_min_entry_rendered("128m")
+    seen: list = []
+
+    def record(slice_name, candidate):
+        seen.append((slice_name, candidate))
+        return True, "ok"
+
+    monkeypatch.setattr(deploy.governance_mod, "check_mem_min_admission", record)
+    deploy.mem_min_admission_check(tmp_path, entry, rendered, _plain_config())
+    assert seen == [("dev-memory_min_guaranteed.slice", 128 * 1024 ** 2)]
+
+
+def test_mem_min_admission_check_skips_when_no_ceiling_configured(monkeypatch, tmp_path, capsys):
+    """A slice with no provisioned MemoryMin abstains (None) — S15.16's
+    ancestor-chain WARN already reports that gap from the declaration side, so
+    admission control must not invent a second, deploy-blocking reason."""
+    entry, rendered = _mem_min_entry_rendered("128m")
+
+    monkeypatch.setattr(
+        deploy.governance_mod, "check_mem_min_admission",
+        lambda slice_name, candidate: (None, f"{slice_name}: no live memory.min of its own"),
+    )
+    deploy.mem_min_admission_check(tmp_path, entry, rendered, _plain_config())  # must not raise
+    out = capsys.readouterr().out
+    assert "no live memory.min" in out
+    assert "[WARN]" not in out
+
+
+def test_mem_min_admission_check_skips_entirely_when_mem_min_not_declared(monkeypatch, tmp_path):
+    entry, rendered = _mem_min_entry_rendered("")
+
+    def fail_admission(slice_name, candidate):
+        raise AssertionError("admission must not be checked when no mem_min is declared")
+
+    monkeypatch.setattr(deploy.governance_mod, "check_mem_min_admission", fail_admission)
+    deploy.mem_min_admission_check(tmp_path, entry, rendered, _plain_config())  # must not raise
+
+
+def test_mem_min_admission_check_skips_entirely_when_governance_disabled(monkeypatch, tmp_path):
+    selection, rendered = _governance_selection_rendered_mem_min(
+        "dev-memory_min_guaranteed.slice", "128m", enabled=False,
+    )
+
+    def fail_admission(slice_name, candidate):
+        raise AssertionError("admission must not be checked when governance is disabled")
+
+    monkeypatch.setattr(deploy.governance_mod, "check_mem_min_admission", fail_admission)
+    deploy.mem_min_admission_check(tmp_path, selection[0], rendered, _plain_config())
+
+
+# ===========================================================================
+# S15.23 — post-start injection (CIU-94a)
+# ===========================================================================
+
+
+def _write_rendered_compose(tmp_path, rel: str, services: dict) -> None:
+    import yaml
+
+    stack_dir = tmp_path / rel
+    stack_dir.mkdir(parents=True, exist_ok=True)
+    (stack_dir / "ciu.compose.yml").write_text(
+        yaml.safe_dump({"services": services}), encoding="utf-8",
+    )
+
+
+def test_apply_mem_min_injections_warns_not_raises_on_set_property_failure(
+    monkeypatch, tmp_path, capsys,
+):
+    """Deliberate asymmetry with the admission-control ERROR above: by this
+    call site the deploy has already succeeded, so 'the declared floor did not
+    apply' is the same 'declared intent unfulfilled' class S15.16 already
+    treats as a WARN — not a new deploy-blocking condition."""
+    entry, rendered = _mem_min_entry_rendered("128m")
+    _write_rendered_compose(
+        tmp_path, "applications/app", {"app": {"container_name": "p-t-app"}},
+    )
+
+    monkeypatch.setattr(deploy, "_inspect_state", lambda name: {"Pid": 4242})
+    monkeypatch.setattr(
+        deploy.governance_mod, "container_transient_scope",
+        lambda pid: ("docker-abc.scope", f"pid {pid} -> docker-abc.scope"),
+    )
+    monkeypatch.setattr(
+        deploy.governance_mod, "set_scope_memory_min",
+        lambda scope, required: (False, f"{scope}: systemctl set-property exited 1 — Access denied"),
+    )
+    deploy.apply_mem_min_injections(tmp_path, entry, rendered, _plain_config())  # must not raise
+    out = capsys.readouterr().out
+    assert "[WARN]" in out
+    assert "[S15.23]" in out
+    assert "p-t-app" in out
+    assert "Access denied" in out
+
+
+def test_apply_mem_min_injections_applies_the_parsed_bytes_to_every_non_exempt_service(
+    monkeypatch, tmp_path, capsys,
+):
+    """The same declared value goes onto EVERY non-exempt service (matching
+    build_injections' precedent for mem_limit/mem_reservation) — this is the
+    behaviour whose admission-time consequence S15.23 documents as 'dilutes
+    protection for every occupant of the slice'."""
+    selection, rendered = _governance_selection_rendered_mem_min(
+        "dev-memory_min_guaranteed.slice", "128m",
+    )
+    rendered["applications/app"]["app"]["governance"]["exempt_services"] = ["sidecar"]
+    _write_rendered_compose(tmp_path, "applications/app", {
+        "app": {"container_name": "p-t-app"},
+        "worker": {"container_name": "p-t-worker"},
+        "sidecar": {"container_name": "p-t-sidecar"},
+    })
+
+    monkeypatch.setattr(deploy, "_inspect_state", lambda name: {"Pid": 4242})
+    monkeypatch.setattr(
+        deploy.governance_mod, "container_transient_scope",
+        lambda pid: (f"docker-{pid}.scope", "note"),
+    )
+    applied: list = []
+
+    def record(scope, required):
+        applied.append((scope, required))
+        return True, f"{scope}: MemoryMin={required} bytes applied (--runtime)"
+
+    monkeypatch.setattr(deploy.governance_mod, "set_scope_memory_min", record)
+    deploy.apply_mem_min_injections(tmp_path, selection[0], rendered, _plain_config())
+    assert applied == [
+        ("docker-4242.scope", 128 * 1024 ** 2),
+        ("docker-4242.scope", 128 * 1024 ** 2),
+    ]
+    out = capsys.readouterr().out
+    assert "p-t-app" in out and "p-t-worker" in out
+    assert "p-t-sidecar" not in out  # exempt_services is honored
+
+
+def test_apply_mem_min_injections_warns_when_no_scope_resolves(monkeypatch, tmp_path, capsys):
+    """A container that died between `_run_stack` and this call has no scope
+    to write to — that is a WARN naming the container, never a crash."""
+    entry, rendered = _mem_min_entry_rendered("128m")
+    _write_rendered_compose(tmp_path, "applications/app", {"app": {"container_name": "p-t-app"}})
+
+    monkeypatch.setattr(deploy, "_inspect_state", lambda name: None)
+
+    def fail_set(scope, required):
+        raise AssertionError("nothing may be written when no scope resolved")
+
+    monkeypatch.setattr(deploy.governance_mod, "set_scope_memory_min", fail_set)
+    deploy.apply_mem_min_injections(tmp_path, entry, rendered, _plain_config())  # must not raise
+    out = capsys.readouterr().out
+    assert "[WARN]" in out
+    assert "[S15.23]" in out
+    assert "p-t-app" in out
+
+
+def test_apply_mem_min_injections_is_a_noop_when_mem_min_not_declared(monkeypatch, tmp_path):
+    """No declared floor means nothing to inject — and, importantly, no
+    docker inspect for every container of every governed stack on every
+    deploy."""
+    entry, rendered = _mem_min_entry_rendered("")
+
+    def fail_inspect(name):
+        raise AssertionError("no container may be inspected when no mem_min is declared")
+
+    monkeypatch.setattr(deploy, "_inspect_state", fail_inspect)
+    deploy.apply_mem_min_injections(tmp_path, entry, rendered, _plain_config())
+
+
+def test_apply_mem_min_injections_raises_on_malformed_mem_min(monkeypatch, tmp_path):
+    """Under --no-preflight both the S15.16 preflight and the S15.23 admission
+    check are skipped, so THIS is the first parse attempt — post-_run_stack,
+    with the container already running. parse_size_to_bytes still raises
+    unconditionally: a typo in the stack's own config is a shape error, and
+    swallowing it because a container already started would leave it silently
+    unreported."""
+    entry, rendered = _mem_min_entry_rendered("128 gigabytes")
+
+    def fail_inspect(name):
+        raise AssertionError("the malformed size must abort before any container is inspected")
+
+    monkeypatch.setattr(deploy, "_inspect_state", fail_inspect)
+    with pytest.raises(ValueError, match=r"\[S15\.16\]"):
+        deploy.apply_mem_min_injections(tmp_path, entry, rendered, _plain_config())

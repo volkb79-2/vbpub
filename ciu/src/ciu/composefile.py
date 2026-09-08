@@ -1195,7 +1195,10 @@ def generate_overlay(
     ``mem_min`` (S15.16) is declared intent only — no compose field exists
     for a per-container memory floor, so it is never injected here; it is
     checked against the resolved slice's live properties at deploy time
-    (``deploy.governance_slice_preflight``). One summary line is always
+    (``deploy.governance_slice_preflight``) and, once the container starts,
+    injected onto its own transient scope by
+    ``deploy.apply_mem_min_injections`` (S15.23) — a separate, post-compose-up
+    code path this function has no part in. One summary line is always
     logged when *governance* is not ``None`` (S15.7).
 
     *image_revisions* (S17.4, CIU-21) is an optional ``{service: revision}``

@@ -526,3 +526,68 @@ itself comes from (the same build-and-cache question as CIU-17's `ciu ksm build`
 rebuild it); and whether `jvm_heap`/`go_memlimit` belong in governance at all or
 are simply service env, which is a real boundary question and not obviously
 CIU's to own.
+
+---
+
+## D9 — CIU's first cgroup write, and why it does not overturn D2 (2026-09-08)
+
+D2 surveyed four options for CIU writing a cgroup value Docker cannot express
+and recommended **D: verify-only, forever** — "until/unless that changes."
+CIU-94 (S15.23, ciu-P50) is the first write CIU has ever made. This note
+records what actually changed, because the honest answer is "less than D2's
+framing suggests," and leaving that unstated would make S15.23 read as a
+quiet reversal of a recommendation that in fact still stands.
+
+**What D2 was actually about.** Every one of D2's options A/B/C is a way to
+obtain privilege CIU does not have: a helper container over `docker.sock`
+(A), a root-owned companion daemon with its own socket and protocol (B), or a
+sudoers/polkit-delegated wrapper (C). The concrete capability all three were
+being weighed for was *creating or reconfiguring a **slice*** — a shared,
+host-level, multi-tenant arbitration object, as D2's own worked example says
+("create/reconfigure a per-container slice under `dev-background.slice` with
+this `MemoryMin=`"). **None of A, B or C is built, and none is in scope
+here.** D2's recommendation not to build B speculatively is unchanged, and
+its DooD/DinD analysis is unchanged.
+
+**What S15.23 actually writes.** One `systemctl set-property --runtime
+docker-<id>.scope MemoryMin=<bytes>` against the **transient scope Docker
+itself just created** for a container that *this* `ciu deploy` invocation
+started. Not a slice. Not a shared object. Not a unit that outlives the
+container — a transient scope ceases to exist when its container does, which
+is why `--runtime` (not a persistent drop-in) is the right verb and also why
+there is nothing to leak, drift, or garbage-collect. CIU still never
+configures a slice's own resource properties: the guaranteed slice's ceiling
+remains host-setup's to provision, and S15.23 only ever *reads* it (as the
+admission ceiling).
+
+**The gate is the same gate.** `set_scope_memory_min` is gated FIRST by the
+identical `_systemd_is_pid1()` check every D-G9 probe (S15.12, S15.16,
+S15.22) already uses, and no `systemctl` runs at all when it is False. Inside
+this project's own devcontainer — `CgroupnsMode=private`, no D-Bus socket, a
+`systemctl` shim, cgroup2 mounted `ro`, exactly the environment D2 described
+— the write is a silent no-op that reports "not applied" at WARN. It is live
+only when CIU runs genuinely host-rooted, which is the same execution model
+`mdt-apply-dev-caps.sh` already has for its own `set-property` calls against
+this same kind of `docker-*.scope` unit. There is a second, mechanical reason
+the gate must come first: the PID the scope was derived from came from
+`docker inspect .State.Pid`, a host PID-namespace number, meaningless inside
+an isolated container's own `/proc`.
+
+**Why this needed no new privilege, when D2 assumed a write would.** D2's
+framing implicitly assumed the target was a slice — an object no unprivileged
+process has any claim on. A container's own transient scope is different in
+kind: it is created on this deploy's behalf, for this deploy's container, and
+setting a property on it is within reach of whatever privilege the caller
+already used to start the container. Where that privilege is absent,
+`systemctl` exits nonzero, S15.23 reports it at WARN, and nothing escalates,
+retries, or falls back to a helper container. That is the whole delta: not "D2
+was wrong to recommend verify-only," but "the write CIU turned out to need was
+narrower than the one D2 was pricing."
+
+**The line, stated so a future package cannot drift past it accidentally.**
+S15.23 may write `MemoryMin=` on a `docker-*.scope` unit belonging to a
+container this invocation started, gated on `_systemd_is_pid1()`, failing to
+WARN. Anything wider — writing to a slice, creating a unit, mounting D-Bus,
+spawning a privileged helper, or persisting a drop-in that survives the
+container — is a new decision that must re-open D2's options table on its own
+merits, not an incremental extension of this one.

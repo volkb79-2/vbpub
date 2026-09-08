@@ -1419,3 +1419,480 @@ class TestKsmOptinInjection:
         injections, notes = gov.build_injections({"redis": {"image": "redis"}}, cfg)
         assert "environment" not in injections.get("redis", {})
         assert any("ksm_optin=off" in n for n in notes)
+
+
+# ===========================================================================
+# S15.22 — downward slice enumeration + memory_recursiveprot (CIU-95)
+# ===========================================================================
+
+
+class TestSliceCgroupPath:
+    """Pure derivation — reverses `slice_ancestor_chain` (TestSliceAncestorChain
+    covers that rule itself) into the cgroupfs's nested-directory layout."""
+
+    def test_dash_named_slice_nests_under_its_parent(self, tmp_path: Path) -> None:
+        assert gov.slice_cgroup_path("dev-background.slice", tmp_path) == (
+            tmp_path / "dev.slice" / "dev-background.slice"
+        )
+
+    def test_single_segment_slice_sits_directly_under_the_root(self, tmp_path: Path) -> None:
+        assert gov.slice_cgroup_path("wings.slice", tmp_path) == tmp_path / "wings.slice"
+
+    def test_multi_dash_slice_nests_every_level(self, tmp_path: Path) -> None:
+        assert gov.slice_cgroup_path("a-b-c.slice", tmp_path) == (
+            tmp_path / "a.slice" / "a-b.slice" / "a-b-c.slice"
+        )
+
+    def test_default_root_is_the_real_cgroup2_mount_point(self) -> None:
+        """The production default must be /sys/fs/cgroup — a wrong default here
+        would silently walk the wrong tree on a real host, which no
+        tmp_path-parameterised test would ever catch."""
+        assert gov.CGROUP_ROOT == Path("/sys/fs/cgroup")
+        assert gov.slice_cgroup_path("dev-background.slice") == (
+            Path("/sys/fs/cgroup") / "dev.slice" / "dev-background.slice"
+        )
+
+    def test_non_slice_name_raises(self) -> None:
+        with pytest.raises(ValueError, match="not a slice name"):
+            gov.slice_cgroup_path("not-a-slice")
+
+
+class TestEnumerateSliceChildren:
+    """S15.22 — the downward walk CIU-95 filed as entirely missing."""
+
+    @pytest.fixture(autouse=True)
+    def _systemd_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov, "_systemd_is_pid1", lambda: True)
+
+    @staticmethod
+    def _build_tree(tmp_path: Path) -> Path:
+        slice_dir = tmp_path / "dev.slice" / "dev-memory_min_guaranteed.slice"
+        for name, value in (("docker-a.scope", "83886080"), ("docker-b.scope", "max")):
+            child = slice_dir / name
+            child.mkdir(parents=True)
+            (child / "memory.min").write_text(value, encoding="utf-8")
+        return slice_dir
+
+    def test_lists_each_child_with_its_own_memory_min(self, tmp_path: Path) -> None:
+        self._build_tree(tmp_path)
+        children, note = gov.enumerate_slice_children(
+            "dev-memory_min_guaranteed.slice", cgroup_root=tmp_path
+        )
+        assert children == [("docker-a.scope", 83886080), ("docker-b.scope", 0)]
+        assert "docker-a.scope=83886080" in note
+
+    def test_ignores_non_directory_entries(self, tmp_path: Path) -> None:
+        """A slice directory is full of cgroup interface FILES (memory.min,
+        cgroup.procs, ...) alongside its child cgroups; only the directories
+        are occupants."""
+        slice_dir = self._build_tree(tmp_path)
+        (slice_dir / "memory.min").write_text("209715200", encoding="utf-8")
+        (slice_dir / "cgroup.procs").write_text("", encoding="utf-8")
+        children, _ = gov.enumerate_slice_children(
+            "dev-memory_min_guaranteed.slice", cgroup_root=tmp_path
+        )
+        assert [name for name, _ in children] == ["docker-a.scope", "docker-b.scope"]
+
+    def test_unreadable_memory_min_counts_as_zero_not_a_crash(self, tmp_path: Path) -> None:
+        """A child cgroup with no memory.min file at all (the normal case for
+        an occupant that declared nothing) must read as 0, definitively — this
+        is the value the admission sum below depends on."""
+        slice_dir = tmp_path / "dev.slice" / "dev-memory_min_guaranteed.slice"
+        (slice_dir / "docker-c.scope").mkdir(parents=True)
+        children, _ = gov.enumerate_slice_children(
+            "dev-memory_min_guaranteed.slice", cgroup_root=tmp_path
+        )
+        assert children == [("docker-c.scope", 0)]
+
+    def test_absent_slice_directory_is_a_definitive_empty_not_an_abstention(
+        self, tmp_path: Path
+    ) -> None:
+        """An inactive slice has no cgroup directory at all — systemd removes
+        it when the last occupant exits. That is a real 'zero occupants'
+        answer, NOT the None abstention reserved for 'cannot see the host's
+        tree'; conflating the two would make an empty guaranteed slice
+        un-admittable."""
+        children, note = gov.enumerate_slice_children(
+            "dev-memory_min_guaranteed.slice", cgroup_root=tmp_path
+        )
+        assert children == []
+        assert "not active" in note
+
+    def test_not_host_rooted_abstains_without_touching_the_filesystem(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A devcontainer's own /sys/fs/cgroup is its OWN namespace-local root,
+        not a smaller view of the host's — walking it would enumerate the wrong
+        tree and report it as the right one."""
+        self._build_tree(tmp_path)
+        monkeypatch.setattr(gov, "_systemd_is_pid1", lambda: False)
+
+        def fail_iterdir(self):
+            raise AssertionError("no filesystem access may be attempted when not host-rooted")
+
+        monkeypatch.setattr(Path, "iterdir", fail_iterdir)
+        children, note = gov.enumerate_slice_children(
+            "dev-memory_min_guaranteed.slice", cgroup_root=tmp_path
+        )
+        assert children is None
+        assert "not PID 1" in note
+
+
+class TestCheckMemoryRecursiveprot:
+    """S15.22 — the host-wide mount flag CIU-95 filed: without it every
+    declared mem_min on the host is inert while `systemctl show` keeps
+    reporting the value that was set."""
+
+    @pytest.fixture(autouse=True)
+    def _systemd_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov, "_systemd_is_pid1", lambda: True)
+
+    @staticmethod
+    def _mounts(monkeypatch: pytest.MonkeyPatch, content: str) -> None:
+        real_read_text = Path.read_text
+
+        def fake_read_text(self, *a, **k):
+            if str(self) == "/proc/mounts":
+                return content
+            return real_read_text(self, *a, **k)
+
+        monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+    _WITH_FLAG = (
+        "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n"
+        "cgroup2 /sys/fs/cgroup cgroup2 rw,nosuid,nodev,noexec,relatime,"
+        "nsdelegate,memory_recursiveprot 0 0\n"
+    )
+    _WITHOUT_FLAG = (
+        "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n"
+        "cgroup2 /sys/fs/cgroup cgroup2 rw,nosuid,nodev,noexec,relatime,nsdelegate 0 0\n"
+    )
+
+    def test_flag_present_reports_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._mounts(monkeypatch, self._WITH_FLAG)
+        present, note = gov.check_memory_recursiveprot()
+        assert present is True
+        assert "/sys/fs/cgroup" in note
+
+    def test_flag_absent_reports_false_with_the_options_it_did_see(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._mounts(monkeypatch, self._WITHOUT_FLAG)
+        present, note = gov.check_memory_recursiveprot()
+        assert present is False
+        assert "WITHOUT memory_recursiveprot" in note
+        assert "nsdelegate" in note
+
+    def test_substring_lookalike_option_is_not_a_match(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Options are compared as whole comma-separated tokens: a naive
+        `"memory_recursiveprot" in line` would pass on `nomemory_recursiveprot`
+        and report a host as protected when it is not."""
+        self._mounts(
+            monkeypatch,
+            "cgroup2 /sys/fs/cgroup cgroup2 rw,nsdelegate,nomemory_recursiveprot 0 0\n",
+        )
+        present, _ = gov.check_memory_recursiveprot()
+        assert present is False
+
+    def test_no_cgroup2_line_abstains(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A pure cgroup-v1 host has no such flag to be missing — reporting
+        False there would be a false accusation, not a finding."""
+        self._mounts(
+            monkeypatch,
+            "cgroup /sys/fs/cgroup/memory cgroup rw,nosuid,memory 0 0\n",
+        )
+        present, note = gov.check_memory_recursiveprot()
+        assert present is None
+        assert "not a cgroup-v2 host" in note
+
+    def test_not_host_rooted_abstains_without_reading_proc_mounts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(gov, "_systemd_is_pid1", lambda: False)
+
+        def fail_read_text(self, *a, **k):
+            raise AssertionError("/proc/mounts must not be read when not host-rooted")
+
+        monkeypatch.setattr(Path, "read_text", fail_read_text)
+        present, note = gov.check_memory_recursiveprot()
+        assert present is None
+        assert "not PID 1" in note
+
+
+# ===========================================================================
+# S15.23 — admission control + per-container injection (CIU-94)
+# ===========================================================================
+
+
+class TestCheckMemMinAdmission:
+    """S15.23 — CGROUP-NOTES.md's 'static ceiling + admission control' consumer
+    half: sum the live occupants' own claims, refuse a candidate that would
+    push the total past the slice's own provisioned ceiling."""
+
+    @pytest.fixture(autouse=True)
+    def _systemd_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov, "_systemd_is_pid1", lambda: True)
+
+    @staticmethod
+    def _build(tmp_path: Path, ceiling: str, occupants: dict[str, str]) -> Path:
+        slice_dir = tmp_path / "dev.slice" / "dev-memory_min_guaranteed.slice"
+        slice_dir.mkdir(parents=True)
+        (slice_dir / "memory.min").write_text(ceiling, encoding="utf-8")
+        for name, value in occupants.items():
+            child = slice_dir / name
+            child.mkdir()
+            (child / "memory.min").write_text(value, encoding="utf-8")
+        return slice_dir
+
+    def test_no_ceiling_configured_abstains(self, tmp_path: Path) -> None:
+        """An unset ceiling means the guarantee infrastructure was never
+        provisioned. S15.16's ancestor-chain WARN already reports that from
+        the declaration side — blocking a container over it here would be a
+        second, worse answer to the same question."""
+        self._build(tmp_path, "max", {"docker-a.scope": "83886080"})
+        admit, note = gov.check_mem_min_admission(
+            "dev-memory_min_guaranteed.slice", 8388608, cgroup_root=tmp_path
+        )
+        assert admit is None
+        assert "no live memory.min of its own" in note
+
+    def test_under_ceiling_admits(self, tmp_path: Path) -> None:
+        self._build(tmp_path, "209715200", {"docker-a.scope": "83886080"})
+        admit, note = gov.check_mem_min_admission(
+            "dev-memory_min_guaranteed.slice", 83886080, cgroup_root=tmp_path
+        )
+        assert admit is True
+        assert "admitted" in note
+
+    def test_exactly_full_slice_still_admits(self, tmp_path: Path) -> None:
+        """CONTROLLED WRONG IMPLEMENTATION guard: flipping the implementation's
+        `<=` to `<` flips exactly this case from admit to reject. The ceiling
+        is the total that MAY be guaranteed, not one byte less than it —
+        mirroring check_slice_memory_min's own `>=` treatment of an
+        exactly-equal floor (test_exactly_equal_is_adequate)."""
+        self._build(
+            tmp_path, "167772160",
+            {"docker-a.scope": "83886080"},
+        )
+        admit, _ = gov.check_mem_min_admission(
+            "dev-memory_min_guaranteed.slice", 83886080, cgroup_root=tmp_path
+        )
+        assert admit is True
+
+    def test_one_byte_over_ceiling_refuses_with_a_full_breakdown(self, tmp_path: Path) -> None:
+        self._build(tmp_path, "167772160", {"docker-a.scope": "83886080"})
+        admit, note = gov.check_mem_min_admission(
+            "dev-memory_min_guaranteed.slice", 83886081, cgroup_root=tmp_path
+        )
+        assert admit is False
+        assert "ceiling=167772160" in note        # the ceiling
+        assert "claimed=83886080" in note         # the live sum
+        assert "candidate=83886081" in note       # the candidate
+        assert "docker-a.scope=83886080" in note  # per-occupant breakdown
+
+    def test_empty_slice_admits_a_candidate_that_fits_the_whole_ceiling(
+        self, tmp_path: Path
+    ) -> None:
+        """An inactive slice enumerates as a definitive [] (not an
+        abstention), so its full ceiling is available to the first claimant."""
+        slice_dir = tmp_path / "dev.slice" / "dev-memory_min_guaranteed.slice"
+        slice_dir.mkdir(parents=True)
+        (slice_dir / "memory.min").write_text("167772160", encoding="utf-8")
+        admit, _ = gov.check_mem_min_admission(
+            "dev-memory_min_guaranteed.slice", 167772160, cgroup_root=tmp_path
+        )
+        assert admit is True
+
+    def test_occupants_with_no_declared_claim_do_not_consume_the_ceiling(
+        self, tmp_path: Path
+    ) -> None:
+        """A child with memory.min unset claims 0 as its own base value (the
+        surplus it may still absorb under contention is the kernel's business,
+        not an admission-time claim) — counting it as anything else would
+        make the ceiling unreachable."""
+        self._build(
+            tmp_path, "167772160",
+            {"docker-a.scope": "83886080", "docker-idle.scope": "max"},
+        )
+        admit, _ = gov.check_mem_min_admission(
+            "dev-memory_min_guaranteed.slice", 83886080, cgroup_root=tmp_path
+        )
+        assert admit is True
+
+    def test_not_host_rooted_abstains_before_reading_ceiling_or_enumerating(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The gating-order requirement, pinned. `_read_memory_min_bytes` does
+        NOT gate on its own, so checking host-rootedness only AFTER reading
+        the ceiling would silently read the devcontainer's OWN namespace-local
+        cgroup tree and treat that as the host's answer."""
+        self._build(tmp_path, "167772160", {"docker-a.scope": "83886080"})
+        monkeypatch.setattr(gov, "_systemd_is_pid1", lambda: False)
+
+        def fail_read_text(self, *a, **k):
+            raise AssertionError("the ceiling must not be read when not host-rooted")
+
+        def fail_enumerate(*a, **k):
+            raise AssertionError("children must not be enumerated when not host-rooted")
+
+        monkeypatch.setattr(Path, "read_text", fail_read_text)
+        monkeypatch.setattr(gov, "enumerate_slice_children", fail_enumerate)
+        admit, note = gov.check_mem_min_admission(
+            "dev-memory_min_guaranteed.slice", 83886080, cgroup_root=tmp_path
+        )
+        assert admit is None
+        assert "not PID 1" in note
+
+
+class TestContainerTransientScope:
+    """S15.23 — the mdt-apply-dev-caps.sh cgroup-derivation, ported."""
+
+    @staticmethod
+    def _proc_cgroup(monkeypatch: pytest.MonkeyPatch, pid: int, content: str) -> None:
+        real_read_text = Path.read_text
+
+        def fake_read_text(self, *a, **k):
+            if str(self) == f"/proc/{pid}/cgroup":
+                return content
+            return real_read_text(self, *a, **k)
+
+        monkeypatch.setattr(Path, "read_text", fake_read_text)
+
+    def test_returns_the_scope_unit_name_not_a_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`systemctl set-property` takes a UNIT NAME; handing it the cgroup
+        path would fail on every real host."""
+        self._proc_cgroup(
+            monkeypatch, 4242,
+            "0::/dev.slice/dev-memory_min_guaranteed.slice/docker-abc123.scope\n",
+        )
+        scope, note = gov.container_transient_scope(4242)
+        assert scope == "docker-abc123.scope"
+        assert "4242" in note
+
+    def test_trims_buildkitd_style_nested_subcgroups_to_the_scope(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """buildkitd nests its own sub-cgroups INSIDE the container's scope; a
+        property set on the scope covers the whole subtree, and the nested path
+        is not a unit systemd knows about."""
+        self._proc_cgroup(
+            monkeypatch, 77,
+            "0::/dev.slice/docker-deadbeef.scope/buildkit/xyz\n",
+        )
+        scope, _ = gov.container_transient_scope(77)
+        assert scope == "docker-deadbeef.scope"
+
+    def test_ignores_cgroup_v1_controller_lines_and_uses_the_unified_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._proc_cgroup(
+            monkeypatch, 9,
+            "12:memory:/docker/notascope\n"
+            "0::/dev.slice/docker-cafe01.scope\n",
+        )
+        scope, _ = gov.container_transient_scope(9)
+        assert scope == "docker-cafe01.scope"
+
+    def test_cgroup_v1_only_host_has_no_unified_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._proc_cgroup(monkeypatch, 5, "12:memory:/docker/abc\n11:cpu:/docker/abc\n")
+        scope, note = gov.container_transient_scope(5)
+        assert scope is None
+        assert "no '0::' line" in note
+
+    def test_no_scope_component_in_the_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._proc_cgroup(monkeypatch, 6, "0::/user.slice/user-1000.slice\n")
+        scope, note = gov.container_transient_scope(6)
+        assert scope is None
+        assert "no .scope component" in note
+
+    def test_nonpositive_pid_never_touches_proc(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`docker inspect .State.Pid` reports 0 for a container that is not
+        running; /proc/0/cgroup is not a thing to go looking for."""
+        def fail_read_text(self, *a, **k):
+            raise AssertionError("/proc must not be read for a non-positive pid")
+
+        monkeypatch.setattr(Path, "read_text", fail_read_text)
+        scope, note = gov.container_transient_scope(0)
+        assert scope is None
+        assert "not running" in note
+
+    def test_vanished_process_is_reported_not_raised(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A container can die between `docker inspect` and this call."""
+        def fake_read_text(self, *a, **k):
+            raise OSError("No such file or directory")
+
+        monkeypatch.setattr(Path, "read_text", fake_read_text)
+        scope, note = gov.container_transient_scope(31337)
+        assert scope is None
+        assert "may have exited" in note
+
+
+class TestSetScopeMemoryMin:
+    """S15.23 — the ONE write CIU makes (docs/DESIGN-NOTES.md D9)."""
+
+    @pytest.fixture(autouse=True)
+    def _systemd_running(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gov, "_systemd_is_pid1", lambda: True)
+
+    def test_not_host_rooted_never_calls_subprocess(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """D9's narrowness, pinned: inside CIU's own devcontainer this is a
+        silent no-op, not an attempted write. The pid the scope came from is a
+        HOST pid-namespace number and is meaningless here anyway."""
+        monkeypatch.setattr(gov, "_systemd_is_pid1", lambda: False)
+
+        def fail_run(*a, **k):
+            raise AssertionError("systemctl must not run when systemd is not PID 1")
+
+        monkeypatch.setattr(gov.subprocess, "run", fail_run)
+        applied, note = gov.set_scope_memory_min("docker-abc.scope", 83886080)
+        assert applied is False
+        assert "not PID 1" in note
+
+    def test_success_uses_set_property_runtime_with_the_byte_count(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`--runtime` is not decoration: systemd re-applies its own recorded
+        properties to a scope on every daemon-reload, so a raw cgroupfs write
+        would be silently wiped by an unrelated `apt install`."""
+        seen: list[list[str]] = []
+
+        def fake_run(cmd, **k):
+            seen.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        applied, note = gov.set_scope_memory_min("docker-abc.scope", 83886080)
+        assert applied is True
+        assert seen == [[
+            "systemctl", "set-property", "--runtime",
+            "docker-abc.scope", "MemoryMin=83886080",
+        ]]
+        assert "83886080" in note
+
+    def test_nonzero_exit_surfaces_stderr_and_does_not_raise(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake_run(cmd, **k):
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout="",
+                stderr="Failed to set unit properties: Access denied\n",
+            )
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        applied, note = gov.set_scope_memory_min("docker-abc.scope", 83886080)
+        assert applied is False
+        assert "Access denied" in note
+        assert "exited 1" in note
+
+    def test_subprocess_failure_is_reported_not_raised(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake_run(cmd, **k):
+            raise OSError("systemctl vanished")
+
+        monkeypatch.setattr(gov.subprocess, "run", fake_run)
+        applied, note = gov.set_scope_memory_min("docker-abc.scope", 1)
+        assert applied is False
+        assert "systemctl vanished" in note
