@@ -213,11 +213,12 @@ def test_resume_reuses_completed_records_without_rerunning(tmp_path):
             process_runner=decide,
             clock=lambda: datetime.now(timezone.utc),
             progress_artifact=progress_path,
-            state_project_root=state_root,
+            state_root=state_root,
             resume=True,
         )
     assert first.total == 2
-    assert len(list((state_root / ".assay" / "mutation-state").glob("*.json"))) == 2
+    # (B066) records live directly under the caller's own state root now.
+    assert len(list(state_root.glob("*.json"))) == 2
     assert len(calls) == 2
 
     calls.clear()
@@ -237,7 +238,7 @@ def test_resume_reuses_completed_records_without_rerunning(tmp_path):
             ),
             clock=lambda: datetime.now(timezone.utc),
             progress_artifact=None,
-            state_project_root=state_root,
+            state_root=state_root,
             resume=True,
         )
 
@@ -294,11 +295,11 @@ def test_resume_raises_on_a_state_record_whose_source_hash_contradicts_its_own_f
             operators=("python:bool-const-flip",),
             process_runner=decide,
             clock=lambda: datetime.now(timezone.utc),
-            state_project_root=state_root,
+            state_root=state_root,
             resume=True,
         )
 
-    stale_path = next((state_root / ".assay" / "mutation-state").glob("*.json"))
+    stale_path = next(state_root.glob("*.json"))
     stale = json.loads(stale_path.read_text(encoding="utf-8"))
     stale["source_sha256"] = "0" * 64
     stale_path.write_text(json.dumps(stale), encoding="utf-8")
@@ -317,7 +318,7 @@ def test_resume_raises_on_a_state_record_whose_source_hash_contradicts_its_own_f
                 operators=("python:bool-const-flip",),
                 process_runner=decide,
                 clock=lambda: datetime.now(timezone.utc),
-                state_project_root=state_root,
+                state_root=state_root,
                 resume=True,
             )
 
@@ -360,11 +361,11 @@ def test_resume_reruns_a_state_record_after_a_routine_schema_version_bump(tmp_pa
             operators=("python:bool-const-flip",),
             process_runner=decide,
             clock=lambda: datetime.now(timezone.utc),
-            state_project_root=state_root,
+            state_root=state_root,
             resume=True,
         )
 
-    stale_path = next((state_root / ".assay" / "mutation-state").glob("*.json"))
+    stale_path = next(state_root.glob("*.json"))
     stale = json.loads(stale_path.read_text(encoding="utf-8"))
     stale["schema_version"] = stale["schema_version"] + 1000
     stale_path.write_text(json.dumps(stale), encoding="utf-8")
@@ -389,7 +390,7 @@ def test_resume_reruns_a_state_record_after_a_routine_schema_version_bump(tmp_pa
             operators=("python:bool-const-flip",),
             process_runner=deciding_recorder,
             clock=lambda: datetime.now(timezone.utc),
-            state_project_root=state_root,
+            state_root=state_root,
             resume=True,
         )
 

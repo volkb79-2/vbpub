@@ -948,13 +948,37 @@ def candidate_id(job: MutantJob) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
-def mutation_state_record_path(candidate: str) -> str:
-    """Return the canonical project-relative state-file spelling."""
+def mutation_state_record_name(candidate: str) -> str:
+    """Return one candidate's state-file NAME, with no directory at all.
+
+    (B066) The identity-to-filename rule, split out from
+    :func:`mutation_state_record_path` so the store's ROOT and a record's
+    NAME are two separate decisions. The root became a caller's choice with
+    ``--state-dir``; the name did not, and must not -- it folds the
+    candidate's path, source bytes, span, replacement and operator, which is
+    exactly what makes a SHARED store safe by construction: a record either
+    matches its identity or is ignored.
+    """
     if not isinstance(candidate, str) or _CANDIDATE_ID_RE.fullmatch(candidate) is None:
         raise ValueError(
             f"candidate id must be a 64-character hexadecimal digest, got {candidate!r}"
         )
-    return f".assay/mutation-state/{candidate.lower()}.json"
+    return f"{candidate.lower()}.json"
+
+
+def mutation_state_record_path(candidate: str) -> str:
+    """Return the canonical project-relative state-file spelling.
+
+    (B066) The DEFAULT spelling -- what a run with no ``--state-dir`` uses.
+    A run that supplies one addresses ``<state-dir>/<name>`` instead, with
+    the same name from :func:`mutation_state_record_name`.
+    """
+    return f".assay/mutation-state/{mutation_state_record_name(candidate)}"
+
+
+def default_state_root(project_root: Path) -> Path:
+    """(B066) Where resume records live when no ``--state-dir`` is given."""
+    return Path(project_root) / ".assay" / "mutation-state"
 
 
 def _crash_diagnostic_tails(
@@ -1009,10 +1033,19 @@ def _crash_diagnostic_tails(
     return tails
 
 
-def _write_mutation_state_record(project_root: Path, payload: Mapping[str, Any]) -> None:
-    relative_path = PurePosixPath(mutation_state_record_path(payload["candidate_id"]))
-    parent = project_root.joinpath(*relative_path.parts[:-1])
-    destination = parent / relative_path.parts[-1]
+def _write_mutation_state_record(state_root: Path, payload: Mapping[str, Any]) -> None:
+    """(B066) Write one record into *state_root*, whatever root that is.
+
+    The parameter used to be the project root and the ``.assay/
+    mutation-state/`` tail was joined on here, which is precisely why resume
+    was inert exactly where budget-capped retries happen most: an ephemeral
+    per-run worktree carries its own empty store away with it. The root is
+    now the caller's, so a durable directory can be shared across worktrees;
+    the record's NAME is unchanged and still folds the candidate's full
+    identity, so a shared store stays safe by construction.
+    """
+    parent = Path(state_root)
+    destination = parent / mutation_state_record_name(payload["candidate_id"])
     parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=".state-", dir=parent)
     try:
@@ -1030,12 +1063,16 @@ def _write_mutation_state_record(project_root: Path, payload: Mapping[str, Any])
 
 
 def _load_validated_state_record(
-    project_root: Path, job: MutantJob
+    state_root: Path, job: MutantJob
 ) -> Mapping[str, Any] | None:
     identity = candidate_id(job)
+    # (B066) `read_bounded_input` takes ANY root and needs no git repository
+    # -- it is a descriptor walk, not a repository query -- so relocating
+    # the store is a change of root plus a one-component relative name, with
+    # the O_NOFOLLOW/bounded-read discipline entirely unchanged.
     raw = safeio.read_bounded_input(
-        project_root,
-        mutation_state_record_path(identity),
+        Path(state_root),
+        mutation_state_record_name(identity),
         limit=MUTATION_STATE_RECORD_LIMIT,
     )
     if raw is None:
@@ -1494,7 +1531,14 @@ def run_mutation(
     #: ``run`` header is emitted. *progress_artifact* remains for the direct
     #: library caller, which owns the whole run by itself.
     progress_stream: "ProgressStream | None" = None,
-    state_project_root: Path | str | None = None,
+    #: (B066) The DIRECTORY resume records live in -- the caller's
+    #: authoritative store, never an ephemeral snapshot's. It used to be
+    #: named ``state_project_root`` and the ``.assay/mutation-state/`` tail
+    #: was joined on inside, which is exactly why ``--resume`` was inert in a
+    #: fresh-worktree-per-run consumer (cmru's release transaction, dstdns
+    #: Mode-B instances): the store went away with the worktree. It is a
+    #: root, not a project root, and it is named for what it is.
+    state_root: Path | str | None = None,
     resume: bool = False,
     shard_index: int | None = None,
     shard_count: int | None = None,
@@ -1594,17 +1638,17 @@ def run_mutation(
     if not isinstance(resume, bool):
         raise ValueError(f"run_mutation resume must be a boolean, got {resume!r}")
     shard_specified = shard_index is not None or shard_count is not None
-    if state_project_root is None and (resume or shard_specified):
+    if state_root is None and (resume or shard_specified):
         raise ValueError(
             "run_mutation resume requires the caller's authoritative "
-            "state_project_root; an ephemeral snapshot cannot own resume evidence"
+            "state_root; an ephemeral snapshot cannot own resume evidence"
         )
     if shard_specified and (shard_index is None or shard_count is None):
         raise ValueError("run_mutation requires both shard_index and shard_count")
     if shard_specified:
         select_mutation_shard((), index=shard_index, count=shard_count)
-    if state_project_root is not None:
-        Path(state_project_root).mkdir(parents=True, exist_ok=True)
+    if state_root is not None:
+        Path(state_root).mkdir(parents=True, exist_ok=True)
 
     if baseline.outcome is not Outcome.PASS:
         return None
@@ -1667,9 +1711,9 @@ def run_mutation(
         selected_jobs = tuple(job_list[index] for index in selected_indices)
         resumed_records: list[Mapping[str, Any]] = []
         if resume:
-            assert isinstance(state_project_root, Path)
+            assert isinstance(state_root, Path)
             for job in selected_jobs:
-                record = _load_validated_state_record(state_project_root, job)
+                record = _load_validated_state_record(state_root, job)
                 if record is not None:
                     resumed_records.append(record)
             resumed_ids = {record["candidate_id"] for record in resumed_records}
@@ -1736,7 +1780,7 @@ def run_mutation(
             write_progress=write_progress,
             total=len(pending_jobs),
             candidate_count=len(pending_jobs),
-            state_project_root=state_project_root,
+            state_root=state_root,
         )
 
         if resumed_records:
@@ -1808,7 +1852,7 @@ def _execute_mutation_jobs(
     execute_plan: Callable[..., CommandResult],
     total: int,
     candidate_count: int,
-    state_project_root: Path | str | None = None,
+    state_root: Path | str | None = None,
 ) -> Mutation:
 
     def _run_one(index: int) -> _MutantRun:
@@ -1993,9 +2037,9 @@ def _execute_mutation_jobs(
                             "elapsed_seconds": round(run.elapsed_seconds, 3),
                         }
                     )
-                if state_project_root is not None:
+                if state_root is not None:
                     _write_mutation_state_record(
-                        Path(state_project_root),
+                        Path(state_root),
                         {
                             **_progress_event(
                                 candidate_index=position,

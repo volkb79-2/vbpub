@@ -3096,6 +3096,7 @@ def _run_prepared_lane(
     shard_count: int | None = None,
     progress_stream: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
+    state_dir: Path | None = None,
     diagnostics: "TextIO | None" = None,
 ) -> _PreparedOutcome:
     """Baseline, then R1/R2/R3 as declared -- entirely inside *prepared*'s
@@ -3732,8 +3733,19 @@ def _run_prepared_lane(
                     # with no `--resume` still gets persisted candidate
                     # records, even though this particular invocation never
                     # reads them back.
-                    state_project_root=(
-                        project_root if (resume or shard_index is not None) else None
+                    #
+                    # (B066) The root is `--state-dir` when the consumer
+                    # named one, and otherwise the unchanged default under
+                    # the project root -- so an existing consumer's records
+                    # are found exactly where they already are.
+                    state_root=(
+                        (
+                            state_dir
+                            if state_dir is not None
+                            else mutation.default_state_root(project_root)
+                        )
+                        if (resume or shard_index is not None)
+                        else None
                     ),
                     resume=resume,
                     shard_index=shard_index,
@@ -4333,6 +4345,7 @@ def _run_higher_rigor_lane(
     infrastructure_environment: Mapping[str, str] | None = None,
     progress_stream: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
+    state_dir: Path | None = None,
     #: (B019/A-328) `run_lane`'s already-resolved comparison DECLARATION --
     #: the lane's `judge.base` or the gate request's `--request-base`,
     #: whichever the lane's `judge.base_source` named, with every
@@ -4526,6 +4539,7 @@ def _run_higher_rigor_lane(
                         shard_count=shard_count,
                         progress_stream=progress_stream,
                         progress_heartbeat_seconds=progress_heartbeat_seconds,
+                        state_dir=state_dir,
                         diagnostics=diagnostics,
                     )
                 )
@@ -4675,6 +4689,12 @@ def run_lane(
     #: writes the verdict rather than about this stream.
     progress_stream: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
+    #: (B066) Where mutation resume records live. `None` keeps today's
+    #: `<project_root>/.assay/mutation-state/`, byte-for-byte. A consumer
+    #: whose worktree is ephemeral -- cmru's release transaction, a Mode-B
+    #: instance -- points this at a durable directory so `--resume` stops
+    #: being inert exactly where budget-capped retries happen most.
+    state_dir: Path | None = None,
     #: (B019/A-328) the comparison ref the invoking GATE REQUEST supplies,
     #: for a lane that declared `judge.base_source = "request"`. It is a ref
     #: or an already-resolved commit and goes through the identical merge-base
@@ -4782,6 +4802,7 @@ def run_lane(
                 progress_artifact=None,
                 progress_stream=stream,
                 progress_heartbeat_seconds=progress_heartbeat_seconds,
+                state_dir=state_dir,
                 request_base=request_base,
                 diagnostics=diagnostics,
             )
@@ -5116,6 +5137,7 @@ def run_lane(
             declared_evidence=declared_evidence,
             progress_stream=progress_stream,
             progress_heartbeat_seconds=progress_heartbeat_seconds,
+            state_dir=state_dir,
             base_declaration=base_declaration,
             diagnostics=diagnostics,
         )

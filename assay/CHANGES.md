@@ -43,6 +43,22 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   verdict. The per-candidate record — the one record that never named itself —
   now carries `event: "candidate"`.
 
+- **`--state-dir PATH`: resume state that outlives its worktree (B066).**
+  Mutation resume records were fixed under
+  `<project_root>/.assay/mutation-state/`, so `--resume` was inert in exactly
+  the consumers that need it most — a fresh worktree per run carried its own
+  empty store away with it. The store's ROOT is now the consumer's choice
+  (default unchanged, byte-for-byte); the record's NAME is not, and still
+  folds the source file's exact bytes, span, replacement and operator, which
+  is what makes a SHARED store safe by construction: a record from another
+  worktree either matches its identity or is ignored, and an edited source
+  file's candidates get new identities and are re-executed. A `--state-dir`
+  inside the judged tree that git can see is refused **before any work**,
+  naming the `NO_MEASUREMENT`/`DIRTY_TREE` it would cause on the lane's next
+  run; a gitignored path inside the tree, or any path outside it, is fine.
+  What the records contain is unchanged, and `assay verify` does not read
+  them either way.
+
 - **`budget = "unbounded"` (B067).** A lane may now decline a lane-wide
   deadline — but only where every unit of its work carries its own bound.
   A native R2 lane must declare `judge.mutation.budget_per_candidate`; an R3

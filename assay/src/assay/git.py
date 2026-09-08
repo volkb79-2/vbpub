@@ -576,7 +576,10 @@ def run(repo: Path, *args: str, remaining: Remaining | None = None) -> str:
 
 
 def _run_raw(
-    repo: Path, *args: str, remaining: Remaining | None = None
+    repo: Path,
+    *args: str,
+    remaining: Remaining | None = None,
+    literal_pathspecs: bool = True,
 ) -> tuple[int, bytes, bytes]:
     """Resolve *repo* and run *args* against it, returning the RAW
     ``(returncode, stdout, stderr)`` without interpreting a non-zero exit.
@@ -596,7 +599,13 @@ def _run_raw(
         str(git_executable),
         "--no-pager",
         "--no-optional-locks",
-        "--literal-pathspecs",
+        # (B066) `--literal-pathspecs` sets GIT_LITERAL_PATHSPECS, and
+        # `check-ignore` refuses outright ("pathspec magic not supported by
+        # this command: 'literal'") rather than ignoring it. That ONE
+        # subcommand opts out; every other call in this module keeps the
+        # anchor, because a pathspec silently reinterpreted as a glob is a
+        # real hazard for the calls that pass repository paths.
+        *(("--literal-pathspecs",) if literal_pathspecs else ()),
         f"--git-dir={resolved.git_dir}",
         f"--work-tree={resolved.repo_top}",
         *_FIXED_CONFIG,
@@ -825,6 +834,41 @@ def dirty_paths(repo: Path, *, remaining: Remaining | None = None) -> tuple[str,
 # mandatory ``--literal-pathspecs`` global option -- rather than launching a
 # bespoke child. *remaining* is REQUIRED (never defaulted): every caller is
 # lane-owned, never a legacy non-lane helper.
+
+
+def path_is_ignored(
+    repo: Path, relative_path: str, *, remaining: Remaining | None = None
+) -> bool:
+    """(B066) Is *relative_path* ignored by the repository's committed rules?
+
+    Answers exactly the question ``--state-dir`` needs answered before any
+    work starts: a store inside the judged tree that git can SEE is a
+    `NO_MEASUREMENT`/`DIRTY_TREE` waiting to happen on the next run of the
+    same lane -- the identical failure B031 measured for the progress file.
+    An ignored path is invisible to `dirty_paths` and therefore harmless.
+
+    Uses :func:`_run_raw` rather than :func:`_run_bytes` because THIS caller
+    owns what the exit codes mean: `check-ignore -q` is 0 for ignored, 1 for
+    not ignored, and anything else is a real git fault. `_run_bytes` would
+    turn the ordinary "not ignored" answer into `GIT_FAILED`.
+    """
+    returncode, _stdout, stderr = _run_raw(
+        repo,
+        "check-ignore",
+        "-q",
+        "--",
+        relative_path,
+        remaining=remaining,
+        literal_pathspecs=False,
+    )
+    if returncode == 0:
+        return True
+    if returncode == 1:
+        return False
+    raise _git_failed(
+        f"git check-ignore {relative_path} failed ({returncode}): "
+        f"{stderr.decode('utf-8', errors='replace').strip()[:200]}"
+    )
 
 
 def verify_exact_commit(repo: Path, oid: str, *, remaining: Remaining) -> None:

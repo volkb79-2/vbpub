@@ -6536,12 +6536,35 @@ per-repo directory at that path (RG-38).
 
 ### Acceptance
 
-- [ ] two runs of one commit from two different worktrees with the same
+- [x] two runs of one commit from two different worktrees with the same
       `--state-dir`: the second resumes (`event: resume`, `resumed_total`
       > 0); a source edit between them re-executes the touched file's
       candidates;
-- [ ] a `--state-dir` inside the judged tree and not git-ignored refuses
+- [x] a `--state-dir` inside the judged tree and not git-ignored refuses
       before any work, naming the reason (the DIRTY_TREE it would cause).
+
+**IMPLEMENTED 2026-09-08** (progress/resume wave). The store's ROOT became a
+caller's choice; the record's NAME did not (`mutation_state_record_name`,
+split out from `mutation_state_record_path`, which stays as the default
+project-relative spelling). `run_mutation`'s `state_project_root` is renamed
+`state_root` — it is a root, not a project root, and the old name was the
+bug's own shape. Both acceptance boxes are measured in
+`tests/test_state_dir_resume.py` on two REAL worktrees of one repository (the
+second `--detach`, which is also the honest model of the ephemeral consumers
+this exists for), not on a fixture.
+
+Two implementation notes worth keeping:
+
+* the git-visibility check asks `git check-ignore` about a **representative
+  record name** under the directory, not about the directory itself. The
+  directory does not exist yet (it is created on demand) and `check-ignore`
+  cannot tell a not-yet-existing path is a directory, so an ordinary
+  directory-only `resume-store/` line in `.gitignore` would have answered
+  "not ignored" and refused a correctly-configured consumer;
+* `git.path_is_ignored` is the ONE call in `git.py` that runs without
+  `--literal-pathspecs`. `check-ignore` refuses that flag outright
+  ("pathspec magic not supported by this command: 'literal'") rather than
+  ignoring it; every other call keeps the anchor.
 
 ## B067 — `budget` is the only liveness bound a lane has; "unbounded by convention" needs per-unit bounds first
 

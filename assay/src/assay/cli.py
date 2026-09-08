@@ -89,7 +89,12 @@ from .adapters.python import PythonAdapter
 from .adapters.sql import SqlAdapter
 from .config import Lane, LaneFile, find_lane_file, load_lane_file, parse_duration
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
-from .output import VerdictOutput, reserve_verdict_output, validate_progress_destination
+from .output import (
+    VerdictOutput,
+    reserve_verdict_output,
+    resolve_state_directory,
+    validate_progress_destination,
+)
 from .verdict import Evidence, EvidenceDeclaration, Verdict
 from .vocabulary import MUTATION_OPERATORS, WITHDRAWN_MUTATION_OPERATORS
 from .verify import build_verify_parser, cmd_verify
@@ -288,6 +293,25 @@ def build_parser() -> argparse.ArgumentParser:
             "the file). A pure time-based tick: it never reads the child's "
             "output, counts bytes, or knows anything about the tool being "
             "run. No-op without --progress."
+        ),
+    )
+    run.add_argument(
+        "--state-dir",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "(B066) keep mutation resume records in PATH instead of "
+            "<project-root>/.assay/mutation-state/. Created on demand. A "
+            "run whose worktree is ephemeral -- a fresh checkout per run -- "
+            "carries its default store away with it, so --resume is inert "
+            "there; point this at a durable directory and --resume works "
+            "across worktrees. Candidate ids fold the source file's exact "
+            "bytes, span, replacement and operator, so a shared store is "
+            "safe by construction: a record either matches or is ignored. "
+            "A PATH inside the judged tree that git can see is refused "
+            "before any work, because it would make the lane's next run "
+            "NO_MEASUREMENT/DIRTY_TREE."
         ),
     )
     run.add_argument(
@@ -654,6 +678,7 @@ def _cmd_run(
         # with `--progress`'s own destination check rather than surfacing
         # once the lane is already running.
         heartbeat_seconds = _resolve_progress_heartbeat(args)
+        state_dir = _resolve_state_dir(args, lane_file.project_root)
         if (progress_arg := getattr(args, "progress", None)) is not None:
             validate_progress_destination(progress_arg)
             with mutation.progress_writer(
@@ -672,6 +697,7 @@ def _cmd_run(
                         raw_write, clock=runner._utc_now
                     ),
                     progress_heartbeat_seconds=heartbeat_seconds,
+                    state_dir=state_dir,
                 )
         return _run_reserved(
             args,
@@ -682,10 +708,61 @@ def _cmd_run(
             out,
             err,
             label_grace_seconds=label_grace_seconds,
+            progress_heartbeat_seconds=heartbeat_seconds,
+            state_dir=state_dir,
         )
     finally:
         if destination is not None:
             destination.close()
+
+
+def _resolve_state_dir(
+    args: argparse.Namespace, project_root: Path
+) -> "Path | None":
+    """(B066) Resolve and refuse ``--state-dir`` BEFORE any work starts.
+
+    Two refusals, both cheap and both before a single command runs:
+
+    * the destination is not a directory (:func:`output.resolve_state_directory`);
+    * the destination is inside the judged tree and git can SEE it there.
+
+    The second is the one the entry's own acceptance names, and the reason
+    is measured rather than theoretical: an untracked path inside the work
+    tree makes ``git.dirty_paths`` report it, which turns the NEXT run of
+    the same lane into `NO_MEASUREMENT`/`DIRTY_TREE`. That is exactly the
+    failure B031 measured for the progress artifact, and the same trap is
+    open here the moment a consumer can choose the location. A gitignored
+    path inside the tree is fine -- git cannot see it, so nothing goes
+    dirty -- and so is any path outside the tree.
+    """
+    raw = getattr(args, "state_dir", None)
+    if raw is None:
+        return None
+    resolved = Path(resolve_state_directory(raw))
+    root = project_root.resolve()
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError:
+        # Outside the judged tree: git never sees it, nothing to check.
+        return resolved
+    # Ask about a RECORD, not about the directory. The directory does not
+    # exist yet (it is created on demand), and `git check-ignore` cannot tell
+    # a not-yet-existing path is a directory -- so a perfectly ordinary
+    # `resume-store/` line in `.gitignore`, which is directory-only, would
+    # answer "not ignored" and refuse a correctly-configured consumer. A
+    # representative record name answers the question that actually matters:
+    # will the files assay is about to write be visible to git?
+    probe = (relative / f"{'0' * 64}.json").as_posix()
+    if not git.path_is_ignored(project_root, probe):
+        raise LaneConfigError(
+            f"--state-dir {raw!r} resolves inside the judged tree at "
+            f"{resolved} and is not git-ignored -- assay's own clean-tree "
+            f"precondition would then report those records as uncommitted "
+            f"and refuse the NEXT run of this lane "
+            f"NO_MEASUREMENT/DIRTY_TREE. Point it outside the repository, "
+            f"or add {relative.as_posix()!r} to a committed .gitignore"
+        )
+    return resolved
 
 
 def _resolve_progress_heartbeat(args: argparse.Namespace) -> float | None:
@@ -768,6 +845,9 @@ def _run_reserved(
     #: by `_cmd_run` so it spans `run_lane` AND `write_verdict` below.
     progress_stream: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
+    #: (B066) The already-resolved, already-refused `--state-dir`, or `None`
+    #: for today's `<project_root>/.assay/mutation-state/`.
+    state_dir: "Path | None" = None,
 ) -> int:
     # P26/A-212: one LaneDeadline, started here -- before HEAD is even
     # resolved -- reaches HEAD, attestation, adapter resolution, and the
@@ -1136,6 +1216,7 @@ def _run_reserved(
                 # stream's back and emit a second `run` header into it.
                 progress_stream=progress_stream,
                 progress_heartbeat_seconds=progress_heartbeat_seconds,
+                state_dir=state_dir,
                 # B019/A-328: the gate request's own comparison base, threaded
                 # verbatim. `run_lane` decides whether this lane delegated to
                 # it, and refuses every disagreement -- the CLI does not

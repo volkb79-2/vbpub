@@ -324,6 +324,35 @@ untracked path inside it is a `NO_MEASUREMENT`/`DIRTY_TREE` of the gate's own
 making. (assay's own registered gate does this to itself, in
 `tools/tester-unified-gate.sh`.)
 
+### Where resume state lives: `--state-dir PATH`
+
+By default, mutation resume records live in
+`<project-root>/.assay/mutation-state/`. That works for a persistent worktree
+and is inert for an **ephemeral** one — a fresh checkout per run (cmru's
+release transaction, a Mode-B instance) carries its own empty store away with
+it, so `--resume` had nothing to resume from exactly where budget-capped
+retries happen most.
+
+```sh
+assay run <lane> --resume --state-dir /var/lib/assay-state/<repo>
+```
+
+The directory is created on demand. Sharing one across worktrees is **safe by
+construction, not by policy**: a candidate id folds the source file's exact
+bytes, its span, its replacement and its operator, so a record from another
+worktree either matches its identity or is ignored, and a record that
+contradicts the identity it is filed under still fails the lane
+`UNREADABLE_ARTIFACT`. Edit a source file and that file's candidates get new
+identities, so they are re-executed rather than resumed.
+
+A `--state-dir` **inside the judged tree that git can see is refused before
+any work**, naming the reason: those records would be reported uncommitted and
+the lane's next run would refuse `NO_MEASUREMENT`/`DIRTY_TREE` — the same trap
+the progress file has. A gitignored path inside the tree is fine, and so is
+any path outside it. Verify and refusal semantics are otherwise unchanged:
+this relocates *where* resume state lives, never *what* it contains, and
+`assay verify` does not read it either way.
+
 Preview a subset without executing it:
 
 ```sh
