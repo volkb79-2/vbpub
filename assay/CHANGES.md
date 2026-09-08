@@ -123,6 +123,29 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [5.2.0] - 2026-09-08
+<!-- cmru: generated -->
+<!-- cmru: source-end=763c14b4ee3ae3d5666c3b6fa7d21a0dfd90187e -->
+
+### Added
+- feat(assay): --state-dir -- resume state that outlives its worktree (B066) (243de634)
+- feat(assay): the progress stream reaches every tier, ticks, and carries time (B064/B065) (940b5ba2)
+- feat(assay): budget = "unbounded", admissible only where every unit is bounded (B067) (7f2ba056)
+
+### Fixed
+- fix(assay): round-1 review -- B1 blocker, SF-1/5/6, six nits (B067/B064/B065/B066) (b5532895)
+
+### Documentation
+- docs(assay/backlog): B077 -- symlink-into-judged-tree destinations fail closed with a raw git passthrough, not a named refusal (6ea26609)
+- docs(assay): fix-verification round 2 of the progress/resume wave -- ACCEPT (078e3703)
+- docs(assay): LOG/REPORT for round-1 fixes -- gate GREEN from scratch at b5532895 (e1db9655)
+- docs(assay): adversarial review round 1 of the progress/resume wave -- NOT ACCEPT (842921ef)
+- docs(assay): Wave 2 controller log -- PR-R3, all items landed gate GREEN, review dispatched (9ffd56c7)
+- docs(assay): progress/resume wave LOG + REPORT -- all four items, gate GREEN (48561aba)
+- docs(assay): Wave 2 controller log -- PR-R2, checkpoint verified, fresh successor dispatched (845f1502)
+- docs(assay): E-008 checkpoint after B067 -- continuation brief, gate GREEN at 7f2ba056 (8bc6b9ad)
+- docs(assay): Wave 2 (progress/resume) dispatched -- wave prompt + controller log (651b9ffa)
+
 ## [5.1.0] - 2026-09-08
 <!-- cmru: generated -->
 <!-- cmru: source-end=309bedca062a76a08ae5d626f6604597a6ca58bd -->
