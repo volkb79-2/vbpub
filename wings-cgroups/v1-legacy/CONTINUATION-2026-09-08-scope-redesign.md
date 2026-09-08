@@ -46,6 +46,22 @@ Plus a docs commit (see `git log wings-cgroups/`).
     `"Slice"`, this fails.
   - `TestApplyRefusesASliceIntegration` — the guard against ever pointing a
     container property write at a slice.
+- `patchstack/scripts/coverage.sh pterodactyl` (or `COVERAGE=1 test.sh`) —
+  assay 6.0.0 R1 changed-line coverage: **PASS**, 336/624 changed lines =
+  **53.85%**, floor 50.0. R0+R1 only; assay's Go adapter is registered at
+  `{"R1"}` and mutation testing is unconditionally UNSUPPORTED for Go, so this
+  is coverage, **not** mutation testing — do not claim more.
+
+  **What that number excludes.** It is a plain `go test` profile, so the
+  `systemdintegration` tests are not in it: `sysd.go` (~99 uncovered changed
+  lines) and `ensure.go` (~41) — the D-Bus code this series exists for — count
+  as uncovered even though the e2e harness above does exercise them and
+  passes. `cmd/root.go` is uncovered outright (~95 lines, no test in the
+  package); excluding `cmd/` the same run is 63.5%. `server/` and
+  `internal/database/` (~964 changed lines) are deliberately outside
+  `source_roots`. Merging the e2e profile in (`go test -c -cover` +
+  `GOCOVERDIR` + `go tool covdata textfmt`) touches `run-e2e.sh`, the e2e
+  Dockerfile and the artifact hand-off, and is open follow-up.
 
 ## NOT verified — the honest gaps
 
@@ -132,6 +148,8 @@ to a middle patch.
 
 ## Still to do
 
+- [ ] Merge the e2e coverage profile into the assay lane (see above) — the
+      lane's headline number understates the series precisely where it matters
 - [ ] Port the pelican series
 - [ ] Independent adversarial review of both commits (estate rule: **every**
       merged change gets one, no size exception)
