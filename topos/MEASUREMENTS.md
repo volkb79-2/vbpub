@@ -804,6 +804,101 @@ PYTHONPATH=topos/src /tmp/p43-clean-venv/bin/python -m pytest topos/tests -q -W 
 Full-source `py_compile` and `git diff --check` clean. This is fixture and
 concurrency evidence, not a live systemd-daemon performance certification.
 
+## P91 Persistent Capped History — 24h Synthetic Workload (O10, 2026-07-15)
+
+Measured against the `groop/` tree before the 2026-07-16 groop->topos rename;
+ported forward unchanged (`nyxloom-trove/reports/P91-LOG.md` port-forward
+addendum, 2026-09-08) since `PersistentHistoryStore`'s design, defaults and
+workload are byte-identical across the rename — only paths and module names
+changed. The `cd`/script paths below are updated to the current `topos/` tree;
+the recorded numbers are the original measurement, not re-run.
+
+Required Contract 6: measure real compression/bytes-written/write-amplification
+against an accepted budget *before* persistence is enabled by default. This is
+a one-shot recorded measurement, not a per-commit regression gate (24h of
+simulated collection would make every test run take minutes).
+
+**Method:** `PersistentHistoryStore` at default `PersistConfig` (5s interval →
+17280 appends, 24h age cap, 256 MiB byte cap, zstd, 360-frame segments) fed a
+synthetic frame with small per-metric jitter (`random.Random` fixed seed, ±3%
+numeric noise) so consecutive frames are realistic-but-similar, not
+byte-identical (a literal repeated frame compresses ~2260x, which would
+overstate the real ratio). An injected clock advances the store's `now()` in
+lockstep with each frame's `ts` so the whole simulated day runs in wall-clock
+seconds instead of 24 real hours.
+
+Two frame scales were measured:
+
+1. **Fixture scale** — the `gstammtisch-once.jsonl` fixture as-is (8 entities,
+   ~42.7 KB/frame raw).
+2. **D-005 production scale** — the same fixture with entities replicated
+   under renamed keys until the frame reaches D-005's stated ~447 KiB
+   (88 entities, 459,794 bytes/frame raw), approximating the real gstammtisch
+   host D-005 was based on.
+
+```bash
+cd topos
+python3 nyxloom-trove/reports/P91-measure-history.py
+python3 nyxloom-trove/reports/P91-measure-history-scaled.py
+```
+
+### Fixture scale (8 entities, ~42.7 KB/frame raw)
+
+| Metric | Value |
+|---|---|
+| Frames simulated | 17,280 (24h @ 5s) |
+| Wall time | 22.40s |
+| User+sys CPU | 20.38s (0.0236% of a real 24h day) |
+| Max RSS | 28,772 KB |
+| Final on-disk bytes | 19,411,830 (18.5 MiB) |
+| Final raw (uncompressed) bytes | 689,623,929 (657.6 MiB) |
+| Compression ratio | 35.5x |
+| Index rewrite overhead | 311,098 bytes cumulative (1.6% of segment bytes) |
+| Evicted segments/frames | 0 / 0 (24h of data fits under both caps) |
+| Within byte cap | Yes (18.5 MiB / 256 MiB) |
+
+### D-005 production scale (88 entities, ~449 KiB/frame raw)
+
+| Metric | Value |
+|---|---|
+| Frames simulated | 17,280 (24h @ 5s) |
+| Wall time | 200.4s |
+| User+sys CPU | 196.8s (0.228% of a real 24h day) |
+| Max RSS | 30,504 KB |
+| Final on-disk bytes | 169,023,891 (161.2 MiB) |
+| Final raw (uncompressed) bytes | 7,414,676,118 (6.9 GiB) — matches D-005's "~7.5 GiB/day before compression" estimate |
+| Compression ratio | 43.9x |
+| Index rewrite overhead | 313,450 bytes cumulative (0.19% of segment bytes) |
+| Evicted segments/frames | 0 / 0 (24h fits under the 256 MiB cap even at production scale) |
+| Within byte cap | Yes (161.2 MiB / 256 MiB, 63% headroom) |
+
+### Interpretation against the accepted budget
+
+- **CPU:** both scales stay under 0.25% of one core averaged over a real day —
+  two to three orders of magnitude under any reasonable daemon CPU budget
+  (TUI-SPEC §9's "<5% of one CPU core" is the whole daemon's *steady-state*
+  budget, so persistence's share must be a small fraction of that).
+- **RSS:** 28.8–30.5 MB max, measured as a worst-case burst (all 17,280
+  appends run back-to-back with no idle time, unlike real 5s-paced
+  collection, so this over-states steady-state RSS if anything).
+- **Bytes/compression:** the store never exceeds the 256 MiB byte cap at
+  either scale; at the production scale the raw daily volume matches D-005's
+  own ~7.5 GiB/day estimate, and zstd compression brings that down to ~161 MiB
+  (63% cap headroom) with no eviction needed for a full 24h window.
+- **Write amplification:** segments are write-once (published exactly once,
+  never rewritten — `lifetime_bytes_written == final on-disk bytes` here
+  since nothing was evicted). The only rewrite overhead is the small
+  `index.json` republished after every segment publish, which stays under 2%
+  of segment bytes at both scales.
+
+**Conclusion:** the measured resource cost is comfortably within an accepted
+budget at both fixture and D-005 production scale. Per Required Contract 6,
+this measurement is now recorded; `PersistConfig.enabled` nonetheless ships
+`False` by default in this delivery (see P91-REPORT.md "Deviations /
+decisions" — flipping a disk-write-by-default daemon behavior is treated as a
+separate, explicit product decision, not something this measurement alone
+authorizes).
+
 ## Release Signoff Template
 
 - Release/tag:

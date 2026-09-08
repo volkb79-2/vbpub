@@ -28,6 +28,7 @@ from .semantics import ValueSemantic, canonical_semantic, resolve_semantic
 from .source import (
     DaemonHistoryFrameSource,
     FrameSource,
+    PersistentHistoryFrameSource,
     RecordingFrameSource,
     SourceFrame,
     SourceProvenance,
@@ -54,6 +55,7 @@ __all__ = [
     "FrameSource",
     "RecordingFrameSource",
     "DaemonHistoryFrameSource",
+    "PersistentHistoryFrameSource",
     "SourceFrame",
     "SourceProvenance",
 ]
