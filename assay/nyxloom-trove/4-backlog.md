@@ -7491,11 +7491,16 @@ per-test events without becoming a second verdict format.
 ("a one-time sweep of `attestation.py`, `adjudication.py`, `cli.py` and
 `runner.py` for any OTHER `except (..., ValueError)`-without-`RecursionError`
 pattern parsing untrusted JSON, so this does not recur a third time — named
-here even if none are found"). **FILED, NOT FIXED** — deliberately: the
-B068-quick-wins wave's binding constraints state "`assay verify` is
-unaffected by every item above", so changing its behavior was out of that
-wave's scope. This entry is the "named here" the acceptance criterion asks
-for.
+here even if none are found").
+
+**Filed and then FIXED in the same wave, on a controller ruling.** It was
+first filed-not-fixed on a reading of the wave's "`assay verify` is
+unaffected by every item above" constraint; the controller ruled that
+sentence was the scope guard for the FIVE ORIGINAL items' own changes, not a
+blanket prohibition on fixing a live crash found inside `assay verify`, and
+directed the fix onto the same branch as a sixth commit. The original
+filing text is kept below unchanged — it is the sweep evidence B072's
+acceptance asks to be "named here" — with the resolution at the end.
 
 ### What was measured
 
@@ -7559,10 +7564,50 @@ not just the bare function.
 
 ### Acceptance
 
-- [ ] a pathologically-nested, well-formed JSON document handed to
+- [x] a pathologically-nested, well-formed JSON document handed to
       `assay verify` (both `-` and a file path) exits 1 with a `not valid
       JSON` line, not a `RecursionError` traceback;
-- [ ] `verify_document`'s behavior on every legible document is unchanged
+- [x] `verify_document`'s behavior on every legible document is unchanged
       (the widening is a catch, not a validation change);
-- [ ] the `provenance.py` judgment above is either affirmed or reversed in
+- [x] the `provenance.py` judgment above is either affirmed or reversed in
       writing at the same time, so the sweep table stays true.
+
+### Resolution — FIXED 2026-09-08 (quick-wins wave, sixth commit).
+
+`verify.py:2562`'s `except` tuple becomes
+`except (json.JSONDecodeError, ValueError, RecursionError)` — the **same
+three names** `attestation.py`'s `parse_attestation` and `adjudication.py`'s
+`evaluate_provenance` carry, deliberately so: this is the third site of one
+gap, and a reader comparing them should find one shape rather than three
+variants. (`ValueError` is the superclass `JSONDecodeError` already belongs
+to; it is spelled out for that cross-site symmetry, not because it adds
+reach here.)
+
+Red-first, confirmed by stashing the fix and running against today's tip:
+both `verify_text` and `cmd_verify` raised `RecursionError` on the
+200,000-byte document.
+
+Tests: `tests/test_verify_recursion_depth.py` (8) —
+- the bare function returns a failure list rather than raising;
+- an injected `RecursionError` pins *which* exception is caught, so a future
+  CPython raising something else cannot leave the fix silently inert;
+- two controls: an ordinary syntax error is unchanged, and a legible but
+  wrong-shaped document still reaches `verify_document` (asserted equal to
+  calling `verify_document` directly) — the widening is a CATCH, never a
+  validation change;
+- the real consumer path three ways, because they are three different ways
+  in: `cmd_verify`'s **stdin** arm, `cmd_verify`'s **file-path** arm (which
+  goes through `_read_file`), and `cli.main(["verify", …])` — each exiting 1
+  with `assay verify: not valid JSON` on stderr;
+- a source-level sweep guard asserting all THREE untrusted-JSON sites still
+  carry the identical clause, so a fourth variant cannot appear unnoticed.
+
+**The `provenance.py:137` judgment is AFFIRMED, not reversed.** It keeps the
+narrow `except json.JSONDecodeError`. Its input is the installed
+distribution's own pip-written `direct_url.json` metadata — assay's own build
+artifact, not a consumer's document — the enclosing function is best-effort
+and already returns `None` on every fault (`OSError`, `ValueError`,
+non-dict, missing members), and a `RecursionError` there would mean a broken
+install rather than a bad artifact. The sweep table above therefore stands as
+written: three untrusted sites, all three now guarded; one trusted site
+deliberately left alone.

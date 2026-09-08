@@ -2557,10 +2557,31 @@ def verify_document(document: Any) -> list[str]:
 
 def verify_text(text: str) -> list[str]:
     """:func:`verify_document`, from raw JSON text — the shape both stdin
-    and a file path resolve to before validation begins."""
+    and a file path resolve to before validation begins.
+
+    (B074) The ``except`` tuple is the SAME three names ``attestation.py``'s
+    ``parse_attestation`` and ``adjudication.py``'s ``evaluate_provenance``
+    carry, and deliberately so: this is the third site of one gap, and a
+    reader comparing them should find one shape rather than three variants.
+    ``RecursionError`` is a ``RuntimeError`` subclass, NOT a ``ValueError``,
+    and CPython raises it from ``json.loads``' recursive descent on a deeply
+    nested document at the real C-stack boundary. ``ValueError`` is the
+    superclass ``JSONDecodeError`` already belongs to, kept explicit for that
+    same cross-site symmetry.
+
+    This site matters most of the three. ``assay verify`` exists to read a
+    verdict artifact **produced somewhere else** — "independently of how it
+    was produced" is its own ``--help`` — from a path or from stdin, so its
+    input is untrusted by definition, and it is the one command a consumer
+    points at an artifact whose producer they are trying to check. Its
+    contract for an unreadable document is already this returned failure
+    list (``cmd_verify`` prints each line and exits 1); before B074 a deeply
+    nested one instead crashed the process with a traceback, which a CI
+    caller reads as a tooling fault rather than as a bad artifact.
+    """
     try:
         document = json.loads(text)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValueError, RecursionError) as exc:
         return [f"not valid JSON: {exc}"]
     return verify_document(document)
 
