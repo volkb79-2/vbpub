@@ -189,6 +189,43 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [6.0.0] - 2026-09-08
+<!-- cmru: generated -->
+<!-- cmru: source-end=55881596de882df322c078a3db59980b6ee1e90e -->
+
+### Added
+- feat(assay): W7 -- the frozen v11 generation, and the gate's own demotion of W6 (B070) (621ae8cc)
+- feat(assay): verify gains the FOURTH re-derivation over judgment.r2.discarded (B070) (00cca2f3)
+- feat(assay): ingest RECORDS the discarded mutants it used to drop (B070) (0a67eae9)
+- feat(assay)!: verdict schema v10 -> v11 -- judgment.r2.discarded becomes a listed, verified field (B070) (4fc13ca2)
+
+### Fixed
+- fix(assay): the model re-narrows the sentinel disposition, and carries BLOCKER 1's own half (review BLOCKER 3) (1be233d2)
+- fix(assay): the candidate ceiling becomes producer-aware -- B070 was refusing the honest high-discard report (review BLOCKER 1) (504b1453)
+- fix(cmru,ciu,nyxloom): re-pin stale assay gate zipapps to 5.2.0, file KI-27 (583faad7)
+
+### Changed
+- Merge assay B070 -- verdict schema v10 -> v11, judgment.r2.discarded becomes a listed, verified field (55881596)
+
+### Documentation
+- docs(assay): B070 fix-verification round 2 -- ACCEPT, all three blockers closed (2c2342be)
+- docs(assay): B070 fix round landed + gate re-verified, fix-verification dispatched (cb3886f5)
+- docs(assay): B070 fix-round LOG + REPORT -- gate GREEN at 05df0450 (f23d6420)
+- docs(assay): the ingested size bound, the honest limit of "refused by name", and B078 (review BLOCKER 1 + OBS 1/2/3) (05df0450)
+- docs(assay): B070 round-1 review logged, 3 blockers ruled, fix dispatched (42d8d756)
+- docs(assay): B070 review round 1 -- BLOCKER 3 confirmed on the full suite (d7e53e53)
+- docs(assay): Wave 3 (B070) adversarial review round 1 -- ACCEPT-conditional, 3 blockers (b46d0467)
+- docs(assay): Wave 3 (B070) LOG + REPORT -- gate GREEN at 6797d4fa (efd3920a)
+- docs(assay): the v10 -> v11 migration notes, written not implied (B070) (6797d4fa)
+- docs(assay,run-gate): design R0 structured-report tiebreak, file B078, move RG-45's disposition (10a413c1)
+- docs(assay): Wave 2 post-release checklist completed + Wave 3 (B070) dispatched (eb93f0b3)
+- docs(assay): Wave 3 prompt -- B070 v11 schema cut, list-the-discarded-mutants shape (361cf628)
+
+### Testing
+- test(assay): the latent-lie fix and the sentinel disposition now have tests that kill their mutants (review BLOCKERS 2+3) (697088c3)
+- test(assay): the local suite for the v11 discarded-mutants cut (B070) (e6920f60)
+- test(assay): a SECOND real StrykerJS artifact, with 40 genuine CompileErrors (B070) (aebf7fda)
+
 ## [5.2.0] - 2026-09-08
 <!-- cmru: generated -->
 <!-- cmru: source-end=763c14b4ee3ae3d5666c3b6fa7d21a0dfd90187e -->
