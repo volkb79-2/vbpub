@@ -66,3 +66,70 @@ proceed.
 Next: await the implementer's LOG/REPORT + green gate, independently
 verify the gate from its own log markers (never the self-report alone),
 then dispatch a fresh adversarial reviewer (never fork).
+
+## PR-R2 — implementation returned, gate independently re-verified GREEN, reviewer dispatched
+
+2026-09-08. Implementer landed all of B070: `4fc13ca2` (the one
+`feat(assay)!:` schema-bump commit), plus ingest/verify/fixture/W7/
+migration-notes commits, LOG+REPORT at `efd3920a`. Controller independently
+re-verified the gate from `gate1.log`'s own markers before trusting the
+report — confirmed `tester-unified: PASS (exit 0)` /
+`ASSAY_REGISTERED_GATE_COMPLETE=1` on `6797d4fa`, matching. Fresh
+adversarial reviewer dispatched (never fork) against the full
+`361cf628..efd3920a` diff with 8 specific things to independently verify
+rather than trust the LOG's own framing.
+
+## PR-R3 — review returned: ACCEPT-conditional, 3 blockers, ruling made, fix dispatched
+
+2026-09-08. Round-1 review committed at `b46d0467` (amended `d7e53e53`
+with a confirmatory full-suite mutant run). Design and execution judged
+sound overall (all six of the backlog's own acceptance boxes genuinely
+satisfied, the fixture independently confirmed as real captured StrykerJS
+output, W1-W6 byte-untouched, forbid-list clean) — but 3 real blockers,
+all inside B070's own scope:
+
+1. **`candidate_count = attempted + len(discarded)` silently reintroduces
+   the exact DA-R26-rejected failure mode** — an honest high-discard
+   ingested report can now be refused at `MAX_CANDIDATE_CEILING` (10,001)
+   *because it discarded too much*, misattributed as `UNREADABLE_ARTIFACT`
+   naming `max_mutants` (a field ingested lanes never declare). Reviewer
+   named 3 routes, declined to pick one. **Controller ruling: route
+   (a) — make the ceiling producer-aware** (native-only; an ingested
+   payload is already bounded by `MAX_INGESTED_MUTANTS`), on the
+   reasoning that this matches the wave's own existing producer-fork
+   pattern (`_INGESTED_ONLY_FIELDS`) and is the only route consistent
+   with B070's actual purpose (never refuse an honest high-discard
+   report) — route (c) would have been self-defeating, route (b) just
+   moves the same arbitrary line.
+2. **The "latent lie" fix (the LOG's own headline discovery) has ZERO
+   tests** — reviewer reverted it, entire 4,300-test suite stayed green.
+   Two specific tests prescribed, no design decision needed.
+3. **`Verdict._check_discarded_disposition` was never re-narrowed** after
+   `Claim`'s sentinel rule had to widen for B070 — model layer currently
+   ACCEPTS both a relabeled native limit sentinel and the exact ingested
+   latent-lie shape blocker 2 is about; only `verify.py` catches either.
+   Confirmed by the amendment's full-suite mutant run: stubbing the check
+   entirely still leaves the full suite green (4257 passed / 77 skipped).
+   Re-derivation prescribed precisely, shares fixtures with blocker 2.
+
+Also actioned in the same fix dispatch: OBS1 (stale doc-comment describing
+v10 behavior), OBS2 (CONSUMERS.md/CHANGES.md overstate "refused by name" —
+an inflated `discarded` + matching `candidate_count` bump together still
+passes; add the qualifying clause), OBS3 (file a NEW backlog entry
+recording the CompileError-vs-RuntimeError distinction `discarded`'s own
+justifying sentence leans on but the record doesn't carry — REPORT's
+decision to leave this OUT of B070 itself was confirmed correct, just
+capture it now while fresh).
+
+**Process finding, not the implementer's to fix**: implementer capped
+`nyxloom-p106`'s gate container by mistake during host contention (a cap,
+not a kill), never reverted it, didn't tell that session. Checked after
+the fact — that session's gate later passed clean, no observable harm.
+Standing lesson for future dispatch prompts: the `--cpus=3` instruction
+needs to say "only containers whose worktree path you own" — it currently
+doesn't distinguish yours from a peer's.
+
+Same implementer resumed via SendMessage (not a fresh agent — this is a
+fix round, not a checkpoint hand-off) with the ruling and all three
+blockers' prescriptions. Next: await repair commit + still-green gate,
+then resume the SAME reviewer (never a different one) for fix-verification.
