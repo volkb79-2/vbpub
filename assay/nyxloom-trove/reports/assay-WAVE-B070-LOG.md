@@ -286,3 +286,182 @@ run-gate: lane 'tester-unified' exit 0
 The gate built from an exact-OID clone of `6797d4fa`
 (`assay-5.2.1.dev18+g6797d4fa-py3-none-any.whl`), so the verdict is against
 the committed work and not against the working tree.
+
+---
+
+# Fix round 1 — appended 2026-09-08
+
+Review: `assay-WAVE-B070-REVIEW-round1.md` (`b46d0467`, amended `d7e53e53`).
+Verdict was **ACCEPT-conditional — 3 blockers, 3 non-blocking observations**.
+All six addressed. Registered gate re-run and **PASS on `05df0450`**, tree
+clean; evidence at the end of this section.
+
+The review's own summary is worth restating because it shaped the repair: two
+of the three blockers were not defects in what the wave built but holes in
+what asserted it — including the change §2 above calls "the one latent lie it
+found and closed", which the reviewer deleted while the whole 4,300-test suite
+stayed green. That is the sharper half of this round.
+
+## Repair commits
+
+| # | hash | commit |
+|---|---|---|
+| 8 | `504b1453` | `fix(assay): the candidate ceiling becomes producer-aware -- B070 was refusing the honest high-discard report (review BLOCKER 1)` |
+| 9 | `1be233d2` | `fix(assay): the model re-narrows the sentinel disposition, and carries BLOCKER 1's own half (review BLOCKER 3)` |
+| 10 | `697088c3` | `test(assay): the latent-lie fix and the sentinel disposition now have tests that kill their mutants (review BLOCKERS 2+3)` |
+| 11 | `05df0450` | `docs(assay): the ingested size bound, the honest limit of "refused by name", and B078 (review BLOCKER 1 + OBS 1/2/3)` |
+
+No new `feat(assay)!:` commit: the wire version does not move again. The
+schema DOES change in `1be233d2` (two `maximum`/`maxItems` numbers and three
+descriptions), and that is a **widening within v11** rather than a second cut
+— every document legal before the change is legal after it, so no producer or
+consumer is broken and no version bump is owed. `W7/verdict.schema.v11.json`
+is re-frozen with `cmp` in the same commit, per the lockstep rule.
+
+## BLOCKER 1 — the ceiling was refusing the honest report
+
+**The finding, restated so the fix is judgeable against it.** B070 made
+`candidate_count = attempted + len(discarded)` on an ingested payload, and
+`candidate_count` was hard-capped at `MAX_CANDIDATE_CEILING = 10_001`.
+Through v10 the field was the bucket sum, so the cap bit only on reports that
+ATTEMPTED more than 10,001 mutants. From v11 it bit on reports that DISCARDED
+too much — a truthful StrykerJS report of 48 attempted and 9,954
+`CompileError`s ingests on `main` and did not on this branch. That is exactly
+DA-R26's route 3, at a higher threshold, inside the item whose whole purpose
+is to stop refusing the honest report. Misattributed besides: `ERROR` /
+`UNREADABLE_ARTIFACT` with a message naming `max_mutants`, which an ingested
+lane never declares (A-360).
+
+**I did not pick the remedy.** The reviewer named three routes and correctly
+declined to choose; the controller ruled **route (a) — make the ceiling
+producer-aware**. Implemented as:
+
+* `MAX_INGESTED_MUTANTS` moved to `assay.vocabulary`, the leaf both the
+  parser and the model import without a cycle, and is re-exported from
+  `mutation_report_json` under its own name. This is the same
+  one-value-many-layers move `_NAMESPACE` already makes for the operator
+  namespace, and it has the same drift guard: a test asserts the two modules
+  hold the same number;
+* `Mutation.__post_init__` bounds `candidate_count` at that DOCUMENT ceiling.
+  That is the most this object can honestly say — it cannot see
+  `judgment.r2.producer`, so the widest legal value is the only bound
+  available to it;
+* the NATIVE product ceiling moves one level up to
+  `Verdict._check_mutation_cardinality`, which is reached only when
+  `max_mutants` is present, i.e. only under `producer = "native"`. Stated
+  explicitly rather than left to be re-derived from the two checks beside it;
+* `judgment.r2.discarded`'s own `maxItems` follows the same reasoning: the
+  field exists only under `ingested`, so `max_mutants`' 10,000 was never
+  protecting anything there;
+* both schema numbers move to 100,000, each with a description saying why the
+  tighter native bound is cross-object and lives in the model and the
+  verifier — the schema's own LAYER OWNERSHIP statement, applied.
+
+**One thing I added that the review did not ask for**, because it is the same
+defect one layer over: `verify.py`'s raw layer now states the NATIVE residual
+rule itself (`candidate_count == total` outside the pre-submission sentinel).
+`Mutation._check_arithmetic` held that for every producer through v10 and
+B070 had to relax it; without this the model would have been its only witness
+— the identical shape BLOCKER 3 is about.
+
+## BLOCKER 2 and BLOCKER 3 — measured, not asserted
+
+The prescriptions needed no design decision, so the only thing worth
+recording is the measurement. Both were run on a throwaway copy under the
+session scratchpad with an **identical test selection**, so the differential
+is clean rather than inferred:
+
+| mutant | result |
+|---|---|
+| `_check_discarded_disposition` stubbed to a bare `return` | **2 failed / 119 passed** — and the two are exactly the new W7 tests |
+| the same copy, mutant reverted, same selection | **121 passed** |
+| `judge_mutation`'s `- discarded` reverted to the v10 form (the reviewer's own mutant) | **4 failed**, across `test_mutation_judge.py` and W7 |
+
+The first pair is the important one: same tree, same selection, one line
+different, and the failures are precisely the tests written to catch it.
+
+**One design point inside BLOCKER 3.** `_check_discarded_disposition` now
+takes the CLAIM rather than just its payload, because the sentinel-disposition
+rule needs the claim's own `(status, reason_code)` beside the producer, and
+this is the only place that sees both.
+
+**One consequence worth flagging to the fix-verifier**, since it changed a
+test's assertion rather than adding one: with the model rule in place, the
+wholly-discarded lie is refused during reconstruction, so
+`_check_r2_rederivation` is no longer reached for that shape and its message
+no longer surfaces. The artifact-level negative therefore asserts the MODEL's
+wording and says so in its docstring; the raw layer's independent witness is
+asserted directly in `test_mutation_judge.py` instead. Both layers still state
+the rule; which one speaks first changed.
+
+## OBS 1/2/3
+
+* **OBS 1** — `_INGESTED_DISCARDED_STATUSES`' doc-comment still described v10.
+  Rewritten, and pointed at B078 for the compile-vs-runtime wrinkle.
+* **OBS 2** — "refused by name" was overstated. CONSUMERS, CHANGES and
+  DESIGN-GUIDE §11 now all say the list is audited against the document it
+  sits in, not against the foreign tool's original report, and that a producer
+  moving `candidate_count` to match still passes. The reviewer is right that
+  this is not a defect — it is the tier every `Mutation` bucket sits in — but
+  B070's subject is credibility and the sentence read stronger than it was.
+* **OBS 3** — **B078 filed** (searched first; nothing existing covers it):
+  `discarded` folds `CompileError` and `RuntimeError` into one list while the
+  sentence justifying the field, in five places, says "could not COMPILE".
+  The entry records why they are materially different facts, that
+  `RuntimeError` may belong closer to `crashed` (a denominator consequence,
+  not merely an added field), that the project has no real artifact carrying a
+  `RuntimeError` mutant at all, and the four questions a v12 A-row would have
+  to answer. Deliberately not built.
+
+## What the review found sound, and I did not touch
+
+Recorded so the fix round is judgeable as a fix round: the record shape, the
+four re-derivations, the A-437 refusal and its control, the fixture's
+authenticity, the W7 freeze and W6 demotion, the forbid-list integrity and the
+acceptance-checklist agreement were all verified independently by the reviewer
+and are unchanged by these four commits.
+
+## Gate verdict (fix round)
+
+Read from the gate's own log in a separate step. Log: `gate2.log` (session
+scratchpad); durable record: `assay/.run-gate/history.json`.
+
+```
+ASSAY_GATE_PHASE=wheel-installed
+ASSAY_GATE_PHASE=attestation-hardened
+ASSAY_GATE_PHASE=verdict-v5-accepted
+ASSAY_GATE_PHASE=lane-schema-v2-successors-verified
+v6/v7/v8/v9/v10 hard-cut guard passed for 34 frozen templates
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-v9-v10-hard-cut-verified
+110 passed in 1.29s
+ASSAY_GATE_PHASE=verdict-v11-successors-verified
+ASSAY_GATE_PHASE=judge-provenance-bound-to-the-installed-wheel
+ASSAY_GATE_PHASE=self-hosted-lane-passed
+ASSAY_GATE_PHASE=topos-qualified
+ASSAY_B006A_CMRU_QUALIFIED=1
+ASSAY_GATE_PHASE=cmru-b006a-qualified
+ASSAY_GATE_PHASE=independent-self-hosting-passed
+ASSAY_GATE_PHASE=pyflakes-clean
+ASSAY_REGISTERED_GATE_COMPLETE=1
+run-gate: lane 'tester-unified' exit 0
+```
+
+```json
+{
+  "commit": "05df0450d7e3d8a074b3bae87667416a35478f42",
+  "dirty": false,
+  "duration_seconds": 899.519,
+  "exit_code": 0,
+  "outcome": "pass"
+}
+```
+
+W7's locked suite is **110 passed** (was 104). Local suite at the same
+content: **4429 passed, 20 skipped** (`tests/` plus W7's suite, one run).
+
+**Host, this round.** `docker ps` and `pgrep -af tester-unified-gate.sh` both
+clean before launch, load 3.7. The container was identified by its own
+`--inner <worktree>` argument BEFORE capping — the process gap the review
+flagged, closed for my own runs at least: `bbe1e69e7802`, capped to
+`--cpus=3`, verified by `docker inspect`. No other session's container was
+touched.

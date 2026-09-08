@@ -283,3 +283,177 @@ weigh (expanded in `assay-WAVE-B070-LOG.md` §4):
    path still discards, and it would have been nearly free to carry in this
    cut, but it is outside B070 and would need a new closed vocabulary. If the
    reviewer wants it, it is a backlog item, not a fix to this wave.
+
+---
+
+# Fix round 1 — appended 2026-09-08
+
+Review: `assay-WAVE-B070-REVIEW-round1.md` — **ACCEPT-conditional, 3 blockers,
+3 observations**. All six addressed in four commits, final **`05df0450`**.
+Registered gate re-run: **PASS (exit 0)** on that commit, `dirty: false`,
+899.5 s. Narrative in `assay-WAVE-B070-LOG.md` § "Fix round 1".
+
+Two corrections to what §9 of this report said before the review, made here
+rather than edited away above, because a report that quietly revises its own
+disclosures is worse than one that was wrong:
+
+* **§9.1 was incomplete.** It said "no document can [carry an unattributed
+  residual] (both `Verdict` and `verify.py` refuse one, in both producer
+  directions)". True for the residual ARITHMETIC; not true for the STATUS
+  PAIRING, which the widened `Claim` rule dropped and which nothing re-narrowed.
+  BLOCKER 3. Fixed in `1be233d2`.
+* **§9.2 understated the gap.** It said the wholly-discarded shape had "no
+  *frozen* document of its own" but was "covered by `judge_mutation`'s own
+  branch and by the widened `Claim` rule". There was no test of any kind, and
+  the reviewer proved it by deleting the branch and watching the suite stay
+  green. BLOCKER 2. Fixed in `697088c3`.
+
+## BLOCKER 1 — the ceiling was refusing the honest high-discard report
+
+**Status: FIXED, route (a) per the controller's ruling.**
+
+The defect: `candidate_count = attempted + len(discarded)` put an ingested
+payload under `MAX_CANDIDATE_CEILING` (10,001), a bound documented as "a
+defence against a malicious DECLARED cap" — which only a native lane has. A
+truthful report of 48 attempted and 9,954 invalid mutants ingests on `main`
+and did not on this branch: DA-R26's route 3, at a higher threshold.
+
+| what | where | evidence |
+|---|---|---|
+| the bound `Mutation` states alone is the DOCUMENT ceiling | `verdict.py`, `Mutation.__post_init__` | `tests/test_verdict_mutation_payload.py::test_the_payload_ceiling_is_the_document_bound_not_the_native_one` — over the native ceiling ACCEPTED, at 100,000 ACCEPTED, at 100,001 refused with `"document ceiling"` |
+| the NATIVE ceiling moves where the producer is visible | `verdict.py`, `Verdict._check_mutation_cardinality` | `W7::test_the_native_ceiling_still_binds_where_a_declared_cap_exists` — a native payload at 10,002 is refused, differentially against the clean `sql-r2-v11-template.json` |
+| `discarded`'s own length bound follows the same reasoning | `verdict.py`, `JudgmentR2._check_ingested_record` | `W7::test_the_locked_v11_schema_bounds_both_at_the_document_ceiling` (schema side); the model-side message names the document ceiling |
+| one value, no drift | `assay.vocabulary.MAX_INGESTED_MUTANTS`, re-exported by the parser | `W7::test_an_ingested_payload_is_bounded_by_the_DOCUMENT_ceiling_not_max_mutants` asserts `MAX_INGESTED_MUTANTS == PARSER_BOUND == 100_000` and `MAX_CANDIDATE_CEILING == 10_001` |
+| the migration sentence the review said was owed | `docs/CONSUMERS.md` "Migration notes (v10 → v11)", `CHANGES.md` BREAKING entry | both now state the document ceiling of 100,000, that it replaces `max_mutants + 1` for an ingested payload, that the 48+9,954 report therefore ingests, and that a native lane's ceiling is unchanged |
+
+Not asked for, added because it is the same defect one layer over:
+`verify.py`'s raw layer now states the NATIVE residual rule itself
+(`candidate_count == total` outside the sentinel), which
+`Mutation._check_arithmetic` held for every producer through v10.
+
+## BLOCKER 2 — the latent-lie fix had no test
+
+**Status: FIXED. The reviewer's own mutant now dies.**
+
+`tests/test_mutation_judge.py`, four new tests on one payload
+(`Mutation(candidate_count=51, total=0)` — byte-identical bytes, five empty
+buckets):
+
+* `test_a_sentinel_shaped_payload_with_NO_discards_is_the_native_limit_refusal`
+  — `(BUDGET_EXCEEDED, MUTANT_LIMIT_EXCEEDED)`, at the default and explicitly
+  at `discarded=0`;
+* `test_the_SAME_payload_with_every_candidate_discarded_is_NO_MUTANTS` —
+  `discarded=51` ⟹ `(INCONCLUSIVE, NO_MUTANTS)`;
+* `test_a_PARTIAL_discard_beside_zero_attempted_is_still_the_native_refusal` —
+  `discarded=50`, so the subtraction cannot decay into `if discarded:`;
+* `test_build_mutation_claim_carries_the_discarded_count_through` — the runner
+  reaches `judge_mutation` only through that helper.
+
+`W7/test_acceptance_v11.py`, the artifact-level half, built from the committed
+high-discard template exactly as the review suggested (no new fixture):
+
+* `test_an_ingested_report_whose_candidates_were_ALL_discarded_is_NO_MUTANTS`
+  — `verify_document(...) == []`;
+* `test_the_SAME_document_claiming_a_limit_refusal_is_REFUSED`, differential
+  against it.
+
+**Measured.** Reverting `mutation.py`'s `- discarded` to its v10 form (the
+reviewer's exact mutant) on a throwaway copy: **4 failed**, split across
+`test_mutation_judge.py` and W7. Before this round the same mutant left the
+whole suite green.
+
+## BLOCKER 3 — the model was not re-narrowed, and carried no test weight
+
+**Status: FIXED. Full-suite mutant re-run reported below, as asked.**
+
+`Verdict._check_discarded_disposition` now takes the CLAIM (it is the one
+place that sees both the claim's terminal and the producer) and states:
+
+* `producer = "native"` + `is_limit_sentinel` ⟹ `(BUDGET_EXCEEDED,
+  MUTANT_LIMIT_EXCEEDED)` — the v10 rule the widening dropped;
+* `producer = "ingested"` + `total == 0` + `candidate_count ==
+  len(discarded)` ⟹ `(INCONCLUSIVE, NO_MUTANTS)`.
+
+Tested from both directions by
+`W7::test_the_MODEL_alone_refuses_both_halves_of_the_sentinel_disposition`,
+reconstructed through `assay.verify._reconstruct_verdict` — the real model
+constructor `verify_document` uses, not a hand-built object — with the honest
+document asserted to reconstruct in the same test so neither negative can pass
+because the surrounding document became foreign.
+
+**The confirmatory run the controller asked for.** The reviewer's own probe
+was scoped to 6 modules (335 passed); I re-ran it across the full suite. On a
+throwaway copy, `_check_discarded_disposition` stubbed to a bare `return`:
+
+```
+tests/ + W7, mutant applied  : 9 failed, 3844 passed, 519 errors
+```
+
+That run is not usable on its own — a copied tree produces 519 errors and 7
+unrelated failures from git/wheel fixtures that do not survive the copy — so I
+ran the honest differential instead: the **same copy, the same test
+selection**, mutant on and off.
+
+```
+selection = W7 suite + test_verdict_schema_is_packaged.py
+          + the two other modules that failed in the copy
+mutant REVERTED : 121 passed
+mutant APPLIED  : 2 failed, 119 passed
+```
+
+The two failures are exactly
+`test_the_SAME_document_claiming_a_limit_refusal_is_REFUSED` and
+`test_the_MODEL_alone_refuses_both_halves_of_the_sentinel_disposition`. The
+method is no longer shadowed.
+
+**One assertion changed rather than being added**, and the fix-verifier should
+see it: with the model rule in place the wholly-discarded lie is refused
+during reconstruction, so `_check_r2_rederivation` is no longer reached for
+that shape and its message no longer surfaces. The artifact-level negative
+asserts the MODEL's wording and its docstring says why; the raw layer's
+independent witness is asserted directly in `test_mutation_judge.py`.
+
+## OBS 1/2/3
+
+| obs | status | evidence |
+|---|---|---|
+| 1 — stale `_INGESTED_DISCARDED_STATUSES` comment | FIXED | `mutation.py`; rewritten for v11 and pointed at B078 |
+| 2 — "refused by name" overstated | FIXED | `docs/CONSUMERS.md`, `CHANGES.md` and `docs/DESIGN-GUIDE.md` §11 all now say the list is audited against the document it sits in, not the tool's original report, and that a producer moving `candidate_count` to match still passes |
+| 3 — file the compile-vs-runtime backlog item | FILED as **B078** | `nyxloom-trove/4-backlog.md`; searched first, nothing existing covers it. Records why the two statuses are materially different facts, that `RuntimeError` may belong closer to `crashed` (a denominator consequence, not merely an added field), that no real artifact carrying a `RuntimeError` mutant exists in this project, and four questions a v12 A-row must answer. Not built |
+
+## Gate evidence (fix round)
+
+Read from the gate's own log in a separate step; the gate built from an
+exact-OID clone of `05df0450`.
+
+```
+v6/v7/v8/v9/v10 hard-cut guard passed for 34 frozen templates
+ASSAY_GATE_PHASE=verdict-v6-v7-v8-v9-v10-hard-cut-verified
+110 passed in 1.29s
+ASSAY_GATE_PHASE=verdict-v11-successors-verified
+...
+ASSAY_GATE_PHASE=pyflakes-clean
+ASSAY_REGISTERED_GATE_COMPLETE=1
+run-gate: lane 'tester-unified' exit 0
+```
+
+`assay/.run-gate/history.json`: `commit 05df0450…`, `dirty false`,
+`exit_code 0`, `outcome pass`, `duration_seconds 899.519`.
+
+W7's locked suite is now **110 passed** (was 104). Local suite at the same
+content: **4429 passed, 20 skipped**.
+
+## Still open for the fix-verifier
+
+1. **§9.1's residual disclosure, corrected but not eliminated.** A bare
+   `Mutation` still accepts a residual it cannot attribute; that is deliberate
+   and documented in the method. What is no longer true is that only
+   `verify.py` catches the status pairing — the model states it now.
+2. **The schema changed without a version bump.** Two numbers widened and
+   three descriptions were rewritten inside v11. I judged that a widening
+   rather than a cut: every document legal before is legal after, so no
+   producer or consumer breaks. If the verifier disagrees, the remedy is a
+   note in the migration section, not a v12 — but it is a judgement call and I
+   am naming it rather than leaving it in the diff.
+3. **B078 is filed, not built**, per the review's own recommendation and the
+   controller's instruction.
