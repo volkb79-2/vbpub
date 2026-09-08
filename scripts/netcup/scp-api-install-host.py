@@ -30,6 +30,7 @@ import os
 import sys
 import json
 import re
+import shlex
 import socket
 import argparse
 import subprocess
@@ -548,7 +549,7 @@ INSTALLATION_CONFIG = {
     "customScript": (
         "curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/scripts/debian-install-v2/bootstrap-remote.py | "
         "AUTO_REBOOT_AFTER_STAGE1=yes NEVER_REBOOT=no "
-        "TELEGRAM_BOT_TOKEN={{TELEGRAM_BOT_TOKEN}} TELEGRAM_CHAT_ID={{TELEGRAM_CHAT_ID}} "
+        "TELEGRAM_BOT_TOKEN='{{TELEGRAM_BOT_TOKEN}}' TELEGRAM_CHAT_ID='{{TELEGRAM_CHAT_ID}}' "
         "CONTROLLER_SSH_PUBKEY='{{CONTROLLER_SSH_PUBKEY}}' "
         "python3 -"
     ),
@@ -1740,16 +1741,22 @@ def _build_customscript(
     a human pasting this into a web-hoster's own reinstall dialog has no
     such resolution step available, so nothing here can be a placeholder.
     """
+    # shlex.quote every operator-supplied value -- _prompt_text() does no
+    # validation at all, and unlike the {{PLACEHOLDER}} path (which the
+    # operator never directly types free-form shell text into), this
+    # wizard's whole point is a value a human just typed going straight
+    # into a real shell command that will actually execute as cloud-init
+    # on a live host.
     env_parts = [
         f"AUTO_REBOOT_AFTER_STAGE1={'yes' if auto_reboot_after_stage1 else 'no'}",
         f"NEVER_REBOOT={'yes' if never_reboot else 'no'}",
     ]
     if telegram_bot_token:
-        env_parts.append(f"TELEGRAM_BOT_TOKEN={telegram_bot_token}")
+        env_parts.append(f"TELEGRAM_BOT_TOKEN={shlex.quote(telegram_bot_token)}")
     if telegram_chat_id:
-        env_parts.append(f"TELEGRAM_CHAT_ID={telegram_chat_id}")
+        env_parts.append(f"TELEGRAM_CHAT_ID={shlex.quote(telegram_chat_id)}")
     if controller_pubkey:
-        env_parts.append(f"CONTROLLER_SSH_PUBKEY='{controller_pubkey}'")
+        env_parts.append(f"CONTROLLER_SSH_PUBKEY={shlex.quote(controller_pubkey)}")
     return f"curl -fsSL {_CUSTOMSCRIPT_BASE_URL} | " + " ".join(env_parts) + " python3 -"
 
 

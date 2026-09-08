@@ -833,6 +833,26 @@ def test_build_customscript_omits_blank_optional_fields(install_host_mod):
     assert "CONTROLLER_SSH_PUBKEY" not in snippet
 
 
+def test_build_customscript_shell_quotes_operator_supplied_values(install_host_mod):
+    """_prompt_text() does no validation at all, and this snippet is meant
+    to be pasted verbatim as a real shell command that executes as
+    cloud-init on a live host -- a value containing shell metacharacters
+    must stay a single quoted argument (shlex.quote), never become a
+    separate shell statement when the snippet is actually run."""
+    import shlex as _shlex
+
+    malicious = "123:tok; rm -rf /"
+    snippet = install_host_mod._build_customscript(
+        auto_reboot_after_stage1=True,
+        never_reboot=False,
+        telegram_bot_token=malicious,
+        telegram_chat_id="-100555",
+        controller_pubkey="",
+    )
+    env_and_cmd = _shlex.split(snippet.split(" | ", 1)[1].rsplit(" python3 -", 1)[0])
+    assert f"TELEGRAM_BOT_TOKEN={malicious}" in env_and_cmd  # one token, not split by shlex
+
+
 def test_run_build_customscript_prints_snippet_without_ssh_key(install_host_mod, capsys, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda *a, **kw: "n")  # decline every yes/no, blank every text
     rc = install_host_mod._run_build_customscript()
