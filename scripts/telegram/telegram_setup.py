@@ -25,11 +25,12 @@ API references:
     - Create a forum supergroup: channels.createChannel
     - Toggle forum mode: channels.toggleForum
 
-Usage (typical):
-  python3 scripts/netcup/telegram_setup.py --setup-forum
+Usage (typical - default --env-file is scripts/netcup/.env, netcup's install
+tooling being this script's primary consumer):
+  python3 scripts/telegram/telegram_setup.py --setup-forum
 
-You can override the env file:
-  python3 scripts/netcup/telegram_setup.py --setup-forum --env-file scripts/netcup/.env
+You can override the env file (e.g. for a different consumer):
+  python3 scripts/telegram/telegram_setup.py --setup-forum --env-file path/to/.env
 
 During chat-id discovery you will be prompted to send `/vbpub_setup` in the
 target forum supergroup.
@@ -38,6 +39,7 @@ target forum supergroup.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -46,11 +48,12 @@ import importlib.util
 import asyncio
 import shutil
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
-
-import requests
 
 
 API_BASE = "https://api.telegram.org"
@@ -136,16 +139,19 @@ def _api_url(token: str, method: str) -> str:
 
 
 def _tg_get(token: str, method: str, params: Optional[Dict[str, Any]] = None, timeout: int = 35) -> Dict[str, Any]:
-    resp = requests.get(_api_url(token, method), params=params or {}, timeout=timeout)
-    resp.raise_for_status()
-    data = resp.json()
-    return data
+    url = _api_url(token, method)
+    if params:
+        url = url + "?" + urllib.parse.urlencode(params)
+    request = urllib.request.Request(url)
+    with urllib.request.urlopen(request, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
 
 
 def _tg_post(token: str, method: str, data: Optional[Dict[str, Any]] = None, timeout: int = 35) -> Dict[str, Any]:
-    resp = requests.post(_api_url(token, method), data=data or {}, timeout=timeout)
-    resp.raise_for_status()
-    return resp.json()
+    body = urllib.parse.urlencode(data or {}).encode("utf-8")
+    request = urllib.request.Request(_api_url(token, method), data=body, method="POST")
+    with urllib.request.urlopen(request, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
 
 
 def get_me(token: str) -> Dict[str, Any]:
@@ -415,7 +421,7 @@ def discover_chat_id(
                 timeout=min(30, max(1, int(deadline - time.time()))),
                 allowed_updates=["message", "edited_message", "channel_post"],
             )
-        except requests.HTTPError as e:
+        except urllib.error.HTTPError as e:
             # Common failure if webhook is configured.
             raise
         except Exception:
@@ -467,10 +473,8 @@ def discover_chat_id(
 
 
 def _import_telegram_client() -> Any:
-    """Import TelegramClient from scripts/debian-install/telegram_client.py."""
-    repo_root = Path(__file__).resolve().parents[2]
-    client_dir = repo_root / "scripts" / "debian-install"
-    sys.path.insert(0, str(client_dir))
+    """Import TelegramClient from the sibling telegram_client.py (now in the
+    same scripts/telegram/ directory - no cross-directory sys.path needed)."""
     from telegram_client import TelegramClient  # type: ignore
 
     return TelegramClient
@@ -838,7 +842,7 @@ def setup_forum(env_file: Path, *, write_env: bool, force_discover_chat_id: bool
                 offset_file=offset_file,
                 max_wait_seconds=180,
             )
-        except requests.HTTPError as e:
+        except urllib.error.HTTPError as e:
             # Telegram returns 409 when a webhook is set.
             print(f"Failed to poll getUpdates: {e}", file=sys.stderr)
             print("If this bot is configured with a webhook, getUpdates will conflict.")
@@ -1157,7 +1161,11 @@ def setup_forum_mtproto(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="vbpub Telegram setup helper")
-    parser.add_argument("--env-file", default=str(Path(__file__).parent / ".env"), help="Path to .env (default: scripts/netcup/.env)")
+    parser.add_argument(
+        "--env-file",
+        default=str(Path(__file__).resolve().parent.parent / "netcup" / ".env"),
+        help="Path to .env (default: scripts/netcup/.env - netcup is this tool's primary consumer; override for others)",
+    )
     parser.add_argument("--setup-forum", action="store_true", help="Interactive wizard: discover chat id + verify forum topics")
     parser.add_argument(
         "--setup-forum-mtproto",

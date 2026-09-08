@@ -1,0 +1,13 @@
+# =============================================================================
+# scripts/telegram gate lane — parsed ONLY by run-gate.py (one parser, D-110).
+# pytest suite. environment = "host" lacks pytest (confirmed this session for
+# scripts/netcup's identical setup); tester-unified has it.
+# See run-gate-project/CONSUMERS.md.
+# =============================================================================
+schema_version = 1
+
+[lanes.suite]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/scripts/telegram && \"$TESTER_VENV/bin/python\" -m pytest tests/ -q"]
+budget = "2m"
