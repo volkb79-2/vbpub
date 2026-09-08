@@ -132,3 +132,26 @@ configuration authority.
 > it; the generated file owns instance identity and only CIU writes it. Merge
 > order is unchanged (committed defaults → committed project override →
 > instance override → generated facts → rendered `ciu.global.toml`).
+
+## D-012 — CIU-94/CIU-95 (per-container `memory.min` guaranteed-slice
+mechanism) ships in v7 now, not deferred to ciu8/v8 (2026-09-08)
+
+CIU-94's own backlog row (filed 2026-09-03) flagged that this might belong in
+the still-design-only ciu8/v8 track instead of v7 maintenance, and asked to
+"confirm [CIU-92 draft.6's `memory_max mandatory`/`admission keyed by the
+slice's cgroup directory`] don't already cover this specific gap... before
+implementation starts on either track." Operator ruling, 2026-09-08: build it
+in v7 now, without waiting on that comparison. v8's S16.6.1/S13.3.2/S16.9.4
+language is about `ciu gate`/activation-time hard-cap declaration hygiene
+generally, a related but distinct concern from CIU-94's specific mechanism
+(summing declared `memory.min` floors against a static, host-provisioned
+slice ceiling via a live cgroupfs walk) — if ciu8 later needs equivalent
+behavior it re-derives it under v8's own "copy-adapt, never import" v7→v8
+doctrine (see the CIU-92 backlog row / `ciu/docs/CIU-V8-HANDOFF-2026-09-03.md`),
+same as every other v7 mechanism.
+
+Consuming host-setup design: `modern-debian-tools-python-debug/host-setup/
+CGROUP-NOTES.md` §"Per-container memory.min guarantees" (the
+`dev-memory_min_guaranteed.slice` static-ceiling design this mechanism
+admits against). Implementing package: `nyxloom-trove/handoffs/
+ciu-P50-ciu94-ciu95-memory-min-guaranteed-slice.md`.
