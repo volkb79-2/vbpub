@@ -28,6 +28,18 @@ scm_dist = "nyxloom"
 strategy = "scm"
 bump = "conventional"
 
+# S15: a first-party artifact nyxloom's OWN release gate consumes (run-gate.toml's
+# pinned `[lanes.tester-unified.pins.assay]` zipapp), tracked here so `cmru
+# tool-deps` can verify integrity/authenticity/freshness and `--refresh` can
+# re-vendor it -- see cmru's own cmru.toml for the pattern this mirrors. KI-27:
+# refresh does NOT itself rewrite run-gate.toml's own pin/argv -- that needs a
+# manual follow-up edit every time, same as cmru's own project.
+[[project.tool_dependencies]]
+project = "assay"
+version = "5.2.0"
+path    = "tools/assay/assay-5.2.0.pyz"
+sha256  = "09e74237d120c2504ddc88f7852f2baf264a7116761b18a618b0398911f87ead"
+
 [project.release]
 git_tag = true
 build_step = "build"

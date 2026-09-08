@@ -1147,3 +1147,47 @@ reports/ciu-P52-REPORT.md`), which worked around this by rendering
 `cmru get-py` itself — a one-time workaround, not a fix, and every OTHER
 project relying on `cmru get-py` against an installed `cmru` (not this
 monorepo's own dev environment) is equally broken today.
+
+### KI-27 — `cmru tool-deps --refresh` re-vendors a declaring project's pin but never touches that project's OWN `run-gate.toml`, which pins the same artifact a second time
+
+**Status:** open (found 2026-09-08, live-hit re-pinning `cmru`'s own assay
+dependency 5.1.0 -> 5.2.0: `--refresh` deleted the vendored
+`tools/assay/assay-5.1.0.pyz` and rewrote `cmru/cmru.toml`'s declaration,
+but `cmru/run-gate.toml` — which independently names the exact same
+version three times, in `[lanes.assay].assay_command`, `[lanes.assay.
+pins.assay]`, and the mutation lane's inline `--assay-zipapp` argv — kept
+pointing at the now-deleted file. cmru's own release gate would have
+failed the next time it ran, until fixed by hand in this same session).
+This is a recurrence, not a new class of bug: the exact same gap was
+hit and hand-fixed during the 5.0.0 -> 5.1.0 re-pin (`fix(cmru): run-
+gate.toml's own assay pin was missed by tool-deps --refresh`,
+`6121eec9`), but no backlog entry was filed at the time, so nothing
+stopped it from recurring identically on the very next refresh.
+
+**Mechanism:** `tool_deps.py`'s `--refresh` (S15) rewrites exactly one
+thing: the declaring project's own `cmru.toml` tool-dep table (version +
+sha256 + vendored file path) and re-vendors the artifact. It has no model
+of a SEPARATE consumer of that same declaration — `run-gate.toml`'s own
+`pins.assay`/`assay_command`/inline zipapp-path fields are a second,
+independent place the exact same fact is spelled out, and `--refresh`
+never looks at that file at all.
+
+**Consequence:** every `cmru tool-deps --refresh assay` against a project
+that ALSO runs its release gate via a pinned assay zipapp in its own
+`run-gate.toml` (today: `cmru` itself — `ciu` and `nyxloom` pin a zipapp
+in `run-gate.toml` too but do not yet declare a `cmru.toml` tool-dep at
+all, so `--refresh` cannot even target them, a related but distinct gap)
+silently breaks that project's own gate until someone notices and
+hand-fixes `run-gate.toml` to match — exactly the "masked default"
+pattern `AGENTS.md` warns about: correct in every case anyone has
+actually re-run the gate right after a refresh, wrong the moment they
+don't.
+
+**Proposed fix:** either (a) teach `--refresh` to also rewrite a
+`[lanes.*.pins.assay]` table + the matching `assay_command`/inline
+zipapp-path occurrences in the declaring project's own `run-gate.toml`
+when one exists (mirroring what it already does for `cmru.toml`), or (b)
+make `run-gate.toml`'s assay pin DERIVE from the `cmru.toml` declaration
+at gate-run time instead of duplicating the version/path literally, so
+there is only one place to update. (a) is the smaller change; (b) removes
+the duplication that makes the drift possible in the first place.
