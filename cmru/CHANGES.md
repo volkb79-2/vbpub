@@ -54,7 +54,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `sshd_config`, or runs an adapter verb. NOTE: the restricted line is written
   `from="P" <type> …` (whitespace), not KI-24's literal `from="P",<type> …` —
   the comma-joined form is rejected by a real sshd; see KI-24's own entry for
-  the measured evidence, and correct any consumer that quotes the old text
+  the measured evidence, and correct any consumer that quotes the old text.
+  ALSO NOTE (adversarial review finding): appending a genuinely different key
+  for an already-enrolled user (a real rotation) is allowed — KI-24 never
+  restricted a user to one key — but now warns, naming the pre-existing
+  key(s), rather than silently leaving two valid identities with no
+  visibility
 - feat(cmru): `cmru init` guided scaffolding (single project / monorepo) —
   generates loader-valid cmru.toml contracts and (monorepo)
   cmru.orchestration.toml with the estate env block (${NAME:-default}

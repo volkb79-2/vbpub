@@ -1325,6 +1325,15 @@ ENROLL_TEST_KEY = (
 ENROLL_TEST_KEY_TYPE = "ssh-ed25519"
 ENROLL_TEST_KEY_B64 = ENROLL_TEST_KEY.split()[1]
 
+# A second, genuinely different key — used only to simulate a key rotation
+# (adversarial review finding: appending a different key for an already-
+# enrolled user must warn, not silently leave two valid identities).
+ENROLL_TEST_KEY_2 = (
+    "ssh-ed25519 "
+    "AAAAC3NzaC1lZDI1NTE5AAAAIBw2P3n2sVQe6ce6t2m1u4wynAV4CmimGgAqZ0rrz+lI"
+    " ciu@control-rotated.example"
+)
+
 # Exactly the flags KI-24's proposed contract names, and nothing else (O6).
 ENROLL_EXPECTED_FLAGS = {
     "-h", "--help",
@@ -2150,6 +2159,31 @@ class TestEnrollAgainstRealSystem:
                 ENROLL_TEST_KEY]
             assert "not duplicated" in second.stdout
             assert "already exists" in second.stdout
+
+    def test_o2_rotating_to_a_different_key_warns_and_appends_alongside(
+        self, enroll_fixture_image, rendered_get_py
+    ):
+        """A real rotation (different --authorized-key, same user) must not
+        silently leave two valid keys with no visibility — it may append
+        (KI-24 never restricts a user to one key), but it must warn."""
+        with _enroll_container(enroll_fixture_image, rendered_get_py) as c:
+            first = _enroll_in(c)
+            assert first.returncode == 0, first.stdout + first.stderr
+
+            rotated = _enroll_in(c, "--authorized-key", ENROLL_TEST_KEY_2)
+            assert rotated.returncode == 0, rotated.stdout + rotated.stderr
+
+            # both keys are now present — this is the coexistence the warning
+            # exists to surface, not silently hide
+            keys = _cexec(c, "cat", "/home/deployer/.ssh/authorized_keys")
+            assert keys.returncode == 0, keys.stderr
+            lines = [ln for ln in keys.stdout.splitlines() if ln.strip()]
+            assert lines == [ENROLL_TEST_KEY, ENROLL_TEST_KEY_2]
+
+            # and the operator was actually told about it
+            combined = rotated.stdout + rotated.stderr
+            assert "other" in combined.lower() and "key" in combined.lower()
+            assert "ciu@control.example" in combined  # names the pre-existing one
 
     def test_o2_from_pattern_written_and_conflicting_options_refused(
         self, enroll_fixture_image, rendered_get_py

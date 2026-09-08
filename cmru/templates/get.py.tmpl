@@ -1087,12 +1087,19 @@ def _enroll_install_key(
     )
 
     already_present = False
+    other_key_comments: List[str] = []
     for raw_line in existing.splitlines():
         parsed_line = _ak_split_line(raw_line)
         if parsed_line is None:
             continue
         have_options, have_type, have_b64, have_comment = parsed_line
         if (have_type, have_b64) != (ktype, b64):
+            # A DIFFERENT, already-recognized key for this same user — not a
+            # conflict (KI-24 never restricts a user to one key), but a
+            # genuine key rotation must not silently leave two valid
+            # identities with no visibility (adversarial review finding,
+            # cmru-ki24): note it so it can be warned about below.
+            other_key_comments.append(have_comment or have_type)
             continue
         if have_options != want_options:
             fatal(
@@ -1111,6 +1118,13 @@ def _enroll_install_key(
     if already_present:
         ok(f"Key already present in {authorized} — not duplicated.")
     else:
+        if other_key_comments:
+            warn(
+                f"{authorized} already has {len(other_key_comments)} other "
+                f"key(s) for this user ({', '.join(other_key_comments)}) — "
+                "appending this one ALONGSIDE them, not replacing. If this "
+                "was meant to be a rotation, remove the old key by hand."
+            )
         with open(authorized, "a", encoding="utf-8") as handle:
             if existing and not existing.endswith("\n"):
                 handle.write("\n")

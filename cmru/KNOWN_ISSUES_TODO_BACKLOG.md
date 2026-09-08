@@ -1056,3 +1056,33 @@ re-run must fail O2.
 CIU-HOST-ENROLLMENT-PROPOSAL.md` rev 2 (the full design), dstdns D-097/D-358
 (origin). The self-hosted *wheel* download backend D-097 wished for stays a
 separate, optional item (ciu proposal §4.10 item 27) — not required here.
+
+### KI-25 — `get.py enroll`'s security-critical container oracles (O2/O3) are structurally invisible to the automated gate
+
+**Status:** open (filed 2026-09-08 by KI-24's own adversarial reviewer).
+
+KI-24 shipped `enroll` — a subcommand that creates a real Linux user,
+writes to `authorized_keys`, and sets file permissions. Its behavioral
+proof (`tests/test_installer.py`'s `TestEnrollAgainstRealSystem`, O2/O3)
+spins up a real container with `openssh-server` and asserts on real
+system state. `./run-gate.py gate`'s `coverage` lane runs in
+`tester-unified`, which has no docker socket (confirmed by reading
+`run-gate.toml`'s `[environments.tester-unified]` — no socket/mount
+declared, same RG-43-class gap already fixed elsewhere in the estate for
+other projects) — so those tests SKIP in the one place whose PASS is
+actually trusted as "the gate said so." KI-24's own merge evidence is a
+manual, independently-reproduced run outside the gate, not gate output —
+correct for THAT package's own dispatch (Touch list correctly excluded
+`run-gate.toml`), but it means this repo's real, standing gate currently
+certifies nothing about the most security-sensitive code it ships.
+
+Proposed fix: a new `run-gate.toml` lane (or an environment variant of the
+existing `coverage`/`assay` lane) that runs with real docker access —
+mirroring whatever pattern the estate's own RG-43 sweep already
+established for other docker-launching orchestrator lanes (`bare-host`,
+per that sweep's own resolution — see the memory/decision record for the
+2026-09-03 debian-install-v2/RG-43 pass across the estate) rather than
+`tester-unified`. Scope: get `TestEnrollAgainstRealSystem`'s O2/O3 classes
+actually running and asserted-on inside `./run-gate.py gate`'s own
+conjunction, not just locally reproducible by a human/agent with direct
+docker access.
