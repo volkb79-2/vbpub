@@ -14,6 +14,23 @@ from debian_install_v2.state import StateStore
 
 CURRENT_DUMP = "label: gpt\ndevice: /dev/vda\n\n/dev/vda3 : start=2500608, size=20971520, type=0fc63daf-8483-4772-8e79-3d69d8477de4"
 
+# Same logical values as CURRENT_DUMP, but with the column-padding whitespace
+# real `sfdisk --dump` actually emits (captured verbatim from a live host,
+# 2026-09-08) -- every other fixture in this suite is unpadded, which is
+# exactly why the bug this padded fixture regression-tests went uncaught.
+PADDED_CURRENT_DUMP = (
+    "label: gpt\n"
+    "label-id: EF944F93-2091-40C3-9FC4-717B6880523C\n"
+    "device: /dev/vda\n"
+    "unit: sectors\n"
+    "first-lba: 34\n"
+    "last-lba: 1073741790\n"
+    "sector-size: 512\n"
+    "\n"
+    "/dev/vda3 : start=     2500608, size=    20971520, "
+    "type=0fc63daf-8483-4772-8e79-3d69d8477de4, uuid=388A5F16-92A8-4AE3-BD71-CA1D6576BEBD\n"
+)
+
 
 class FakeHostActions(HostActions):
     def __init__(self) -> None:
@@ -120,6 +137,29 @@ def test_mismatched_readback_rolls_back(tmp_path):
     assert rollback
     backup_name = rollback[0].argv[3]
     assert actions.files[str(rollback[0].argv[3])].decode() == CURRENT_DUMP
+
+
+def test_apply_known_swap_shape_tolerates_padded_real_sfdisk_dump(tmp_path):
+    """Regression, 2026-09-08: real `sfdisk --dump` output pads attribute
+    values for column alignment (confirmed against a live host's actual
+    dump -- see PADDED_CURRENT_DUMP). _write_sfdisk_plan()'s root-line
+    rebuild used a naive whitespace .split(), which mis-tokenized
+    "start=     2500608," into two separate pieces and silently dropped
+    the "start" key from the rebuilt line entirely. Once re-parsed by
+    _parse_partition_entries(), _validate_plan_geometry() then raised an
+    uncaught KeyError('start') -- the exact failure that crashed a real
+    live install (Case A, minimal-partition). Fixed to use the same
+    ATTR_RE-based extraction _parse_partition_entries() itself already
+    used, which tolerates padding correctly."""
+    installer, actions = make_installer(tmp_path)
+    actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = PADDED_CURRENT_DUMP
+    ordered, readback = expected_readback(installer)
+    actions.readback = readback
+    installer._apply_known_swap_shape()  # must not raise KeyError('start')
+    root_entry = dict(ordered)[3]
+    assert root_entry["start"] == "2500608"
+    assert root_entry["type"] == "0fc63daf-8483-4772-8e79-3d69d8477de4"
+    assert root_entry["uuid"] == "388A5F16-92A8-4AE3-BD71-CA1D6576BEBD"
 
 
 def test_apply_uses_partx_and_udevadm_not_partprobe(tmp_path):

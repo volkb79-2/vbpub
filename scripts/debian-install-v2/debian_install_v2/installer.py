@@ -154,7 +154,19 @@ class Installer:
     def install(self) -> None:
         self.state.save_new(StateStore.new(self.config))
         if self._notifications_enabled:
-            self._notify(self._initial_report_message())
+            # This is a courtesy notification, not part of the install
+            # itself -- a bug in facts-collection/plan-preview code here
+            # must never abort the whole install before _stage1() even
+            # gets a chance to run, and (since this happens before the
+            # try/except below) never silently skip every failure
+            # notification too (adversarial review finding, 2026-09-08: an
+            # unguarded show_plan() call here once did exactly that for
+            # Case B hosts -- see _resolve_swap_plan()'s docstring for the
+            # actual bug that triggered this backstop).
+            try:
+                self._notify(self._initial_report_message())
+            except Exception as exc:
+                print(f"[WARN] could not build/send initial report notification: {exc}", flush=True)
         try:
             self._stage1()
         except BaseException as exc:
@@ -212,7 +224,7 @@ class Installer:
         }
 
     def show_plan(self) -> dict[str, object]:
-        partitions, new_root_size = self._plan_swap_partitions()
+        partitions, new_root_size, _shrink_needed = self._resolve_swap_plan()
         plan_path = Path(self.config.state_dir) / "partition-plan.sfdisk"
         if plan_path.is_file():
             plan_text = plan_path.read_text(encoding="utf-8")
@@ -770,29 +782,31 @@ MaxFileSec=1month
             raise RuntimeError("could not determine minimum root filesystem size from resize2fs -P")
         return block_size, minimum_blocks
 
-    def _plan_root_shrink(self) -> None:
-        """Case B: install an initramfs hook to shrink root offline, pre-mount.
+    def _resolve_swap_plan(self) -> tuple[list[tuple[int, int]], int, bool]:
+        """Resolve (swap partitions, new root size, shrink_needed).
 
-        Called late in _stage1(), before _install_stage2()/_reboot() -- an
-        initramfs-tools local-premount hook fires on EVERY boot, so
-        installing it before stage1's own existing reboot is enough; no
-        extra reboot cycle is needed. Auto-detected, not configurable:
-        _plan_swap_partitions() succeeding at all means free space already
-        covers the known swap shape (Case A, the inuse_partition_editor.Table
-        path in _apply_known_swap_shape() handles it exactly as today, and
-        this method is a no-op). Only its "disk lacks space" failure mode
-        means root itself must shrink first (Case B).
+        Tries the free-space-already-covers-it plan first (Case A). Falls
+        back to a root-shrink-based plan when the disk lacks space for that
+        (Case B) -- the only difference between the two cases is whether
+        root itself must first shrink to (about) its filesystem minimum to
+        make room. Shared by _plan_root_shrink() (which also installs the
+        actual shrink hook when shrink_needed) and show_plan() (a pure,
+        no-side-effect preview) so both agree on what will actually happen,
+        instead of show_plan() calling _plan_swap_partitions() directly and
+        crashing unguarded on Case B (adversarial review finding,
+        2026-09-08: that crash happened inside _initial_report_message(),
+        called by install() BEFORE its own try/except around _stage1() --
+        so it produced no "Install FAILED" notification and no recorded
+        failure state at all, just a bare, silent process exit).
         """
         try:
-            self._plan_swap_partitions()
+            partitions, new_root_size = self._plan_swap_partitions()
         except RuntimeError as exc:
             if "disk lacks space for known swap shape" not in str(exc):
                 raise
         else:
-            self._mark_step("root_shrink", "not_needed", "existing free space already covers the planned swap shape")
-            return
+            return partitions, new_root_size, False
 
-        self._packages(["e2fsprogs"], "stage1")
         disk_sectors, root_start, root_size = self._disk_facts()
         sector = 512
         block_size, minimum_blocks = self._root_filesystem_facts()
@@ -845,6 +859,28 @@ MaxFileSec=1month
         swap_partitions = [
             (first_swap_start + index * per_device, per_device) for index in range(self.config.swap_file_count)
         ]
+        return swap_partitions, target_root_sectors, True
+
+    def _plan_root_shrink(self) -> None:
+        """Case B: install an initramfs hook to shrink root offline, pre-mount.
+
+        Called late in _stage1(), before _install_stage2()/_reboot() -- an
+        initramfs-tools local-premount hook fires on EVERY boot, so
+        installing it before stage1's own existing reboot is enough; no
+        extra reboot cycle is needed. Auto-detected via _resolve_swap_plan():
+        not needed at all (Case A, the inuse_partition_editor.Table path in
+        _apply_known_swap_shape() handles it exactly as today) unless the
+        disk lacks space for the known swap shape as-is.
+        """
+        swap_partitions, target_root_sectors, shrink_needed = self._resolve_swap_plan()
+        if not shrink_needed:
+            self._mark_step("root_shrink", "not_needed", "existing free space already covers the planned swap shape")
+            return
+
+        self._packages(["e2fsprogs"], "stage1")
+        _, _, root_size = self._disk_facts()
+        sector = 512
+        block_size, _ = self._root_filesystem_facts()
 
         plan_text = self._write_sfdisk_plan(swap_partitions, target_root_sectors)
         target_blocks = (target_root_sectors * sector) // block_size
@@ -977,16 +1013,26 @@ MaxFileSec=1month
             if line.startswith(f"{prefix}{self.root_number} ") or line.startswith(f"{prefix}{self.root_number}, ")
         )
         device, separator, attributes = root_line.partition(":")
-        root_parts = [part.strip(",") for part in attributes.split()]
+        # Real `sfdisk --dump` output pads attribute values for column
+        # alignment (e.g. "start=        2048, size=      497664, ..."), so
+        # a plain whitespace .split() mis-tokenizes "start=" and "2048,"
+        # into two separate, malformed pieces -- silently dropping the
+        # "start" key entirely once re-parsed by _parse_partition_entries(),
+        # which later crashed _validate_plan_geometry() with an uncaught
+        # KeyError('start') (confirmed live 2026-09-08 against a real host's
+        # dump; the exact same mis-tokenization bug _parse_partition_entries()
+        # itself was already fixed for, via this same ATTR_RE, but that fix
+        # was never applied here). Use ATTR_RE to extract key=value pairs
+        # regardless of padding, preserving every non-"size" value verbatim
+        # (including quoted ones, e.g. a name="...").
         rebuilt = []
         inserted = False
-        for part in root_parts:
-            key = part.partition("=")[0]
+        for key, value in inuse_partition_editor.ATTR_RE.findall(attributes):
             if key == "size":
                 rebuilt.append(f"size={new_root_size}")
                 inserted = True
             else:
-                rebuilt.append(part)
+                rebuilt.append(f"{key}={value}")
         if not inserted:
             rebuilt.append(f"size={new_root_size}")
         lines.append(f"{prefix}{self.root_number} : " + ", ".join(rebuilt))

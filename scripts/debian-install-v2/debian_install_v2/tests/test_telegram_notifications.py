@@ -140,6 +140,34 @@ def test_install_failure_sends_exactly_one_failure_notification(tmp_path, monkey
     assert "boom" in sent[-1]
 
 
+def test_initial_report_failure_does_not_abort_install(tmp_path, monkeypatch, capsys):
+    """Adversarial-review regression, 2026-09-08: building/sending the
+    initial "Starting debian-install-v2" report happens BEFORE install()'s
+    own try/except around _stage1() -- a real bug there (show_plan()
+    crashing unguarded on a Case B disk) once escaped uncaught, aborting
+    the entire install before _stage1() ever ran, with no "Install FAILED"
+    notification and no recorded failure state at all (see
+    _resolve_swap_plan()'s docstring for that specific bug, now fixed
+    separately). This is the backstop: whatever builds/sends that one
+    courtesy message must never be able to take the whole install down
+    with it, regardless of what future bug might live there."""
+    installer = make_installer(tmp_path)
+    monkeypatch.setattr(Installer, "_notifications_enabled", property(lambda self: True))
+    monkeypatch.setattr(
+        installer, "_initial_report_message",
+        lambda: (_ for _ in ()).throw(RuntimeError("boom in plan preview")),
+    )
+    stage1_calls = []
+    monkeypatch.setattr(installer, "_stage1", lambda: stage1_calls.append(True))
+
+    installer.install()  # must not raise
+
+    assert stage1_calls == [True]
+    out = capsys.readouterr().out
+    assert "could not build/send initial report notification" in out
+    assert "boom in plan preview" in out
+
+
 def test_verbose_progress_notifies_every_mark_step(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, telegram_verbose_progress=True)
     sent: list[str] = []
