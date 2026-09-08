@@ -1,7 +1,7 @@
-From 72cf854897edd71d1dada6f9a741a96b07bd7023 Mon Sep 17 00:00:00 2001
+From 5b73b0871c45c13388cf0a1590d537ea2d084bd2 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Mon, 20 Jul 2026 11:51:15 +0000
-Subject: [PATCH 06/11] Render slice property values in the units they were
+Subject: [PATCH 5/9] Render slice property values in the units they were
  configured with
 
 Slice property log lines carried raw byte counts, so the line an operator
@@ -20,15 +20,16 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ---
  internal/cgroups/cgroups.go      | 51 +++++++++++++++++++++++++-------
  internal/cgroups/cgroups_test.go |  2 +-
+ internal/cgroups/ensure.go       |  4 +--
  internal/cgroups/format_test.go  | 22 ++++++++++++++
- 3 files changed, 63 insertions(+), 12 deletions(-)
+ 4 files changed, 65 insertions(+), 14 deletions(-)
  create mode 100644 internal/cgroups/format_test.go
 
 diff --git a/internal/cgroups/cgroups.go b/internal/cgroups/cgroups.go
-index fddcdbe..06ad73d 100644
+index ee5bd0b..3b3cb97 100644
 --- a/internal/cgroups/cgroups.go
 +++ b/internal/cgroups/cgroups.go
-@@ -108,23 +108,52 @@ func (p Props) Empty() bool {
+@@ -75,23 +75,52 @@ func (p Props) Empty() bool {
  		p.MemoryMax == nil && p.CPUWeight == nil && p.IOWeight == nil
  }
  
@@ -91,9 +92,9 @@ index fddcdbe..06ad73d 100644
 +	size("MemoryMax", p.MemoryMax)
  	add("CPUWeight", p.CPUWeight)
  	add("IOWeight", p.IOWeight)
- 	// Spell out the derived BFQ weight: on a BFQ node that is the value which
+ 	if b.Len() == 0 {
 diff --git a/internal/cgroups/cgroups_test.go b/internal/cgroups/cgroups_test.go
-index 11c235f..1d69107 100644
+index fcbc8f3..6252565 100644
 --- a/internal/cgroups/cgroups_test.go
 +++ b/internal/cgroups/cgroups_test.go
 @@ -157,7 +157,7 @@ func TestPropsString(t *testing.T) {
@@ -105,6 +106,21 @@ index 11c235f..1d69107 100644
  		t.Errorf("props string = %q", s)
  	}
  }
+diff --git a/internal/cgroups/ensure.go b/internal/cgroups/ensure.go
+index 7c82e2c..c47c0bc 100644
+--- a/internal/cgroups/ensure.go
++++ b/internal/cgroups/ensure.go
+@@ -83,8 +83,8 @@ func EnsureForServer(ctx context.Context, l *log.Entry, req EnsureRequest) {
+ 		// honouring all of them. Individual floors stop being guarantees; the
+ 		// tier total still is. Reported, never corrected.
+ 		entry.WithFields(log.Fields{
+-			"floors_total": res.FloorsTotal,
+-			"tier_floor":   res.ParentFloor,
++			"floors_total": FormatSize(res.FloorsTotal),
++			"tier_floor":   FormatSize(res.ParentFloor),
+ 			"tier":         req.Parent,
+ 		}).Info("cgroups: per-server memory.min floors now exceed the tier slice's own MemoryMin; they are applied as configured and the kernel shares the tier's protection proportionally to each server's usage below its own floor")
+ 		return
 diff --git a/internal/cgroups/format_test.go b/internal/cgroups/format_test.go
 new file mode 100644
 index 0000000..0ad9d56

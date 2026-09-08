@@ -1,8 +1,7 @@
-From a69b73bca0654fc06347755412e7af2225956970 Mon Sep 17 00:00:00 2001
+From cae090e865f710b85d0d2de9c174427921f730f7 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Wed, 15 Jul 2026 10:43:10 +0000
-Subject: [PATCH 03/11] Add docker integration tests for cgroup parent
- placement
+Subject: [PATCH 3/9] Add docker integration tests for cgroup parent placement
 
 Adds build-tagged (dockerintegration) tests that drive the full docker
 Environment.Create() path against a real Docker daemon and assert the

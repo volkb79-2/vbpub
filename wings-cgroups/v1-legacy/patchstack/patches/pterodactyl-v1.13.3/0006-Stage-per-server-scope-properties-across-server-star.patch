@@ -1,77 +1,64 @@
-From ca93d1d231250c10d0c89e3b55cb0e16273271a0 Mon Sep 17 00:00:00 2001
+From d16c1b6e8e12b3a07c608b162a046c81b780ba72 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 03:59:43 +0000
-Subject: [PATCH 07/11] Stage per-server slice properties across server startup
+Subject: [PATCH 6/9] Stage per-server scope properties across server startup
 
 A game server's load-time peak routinely dwarfs its steady working set --
 world generation and asset streaming reach for everything at once -- so a
-memory.high sized for the steady state throttles precisely the phase that can
-least afford it.
+memory.high sized for the steady state throttles exactly the phase that can
+least afford it. Worse, the damage is permanent: memory.min and memory.low
+only fend off reclaim driven from OUTSIDE the cgroup, so reclaim a cgroup
+inflicts on itself by exceeding its own memory.high ignores them entirely. A
+ceiling below the load-time peak evicts the server straight through its own
+floor, and those pages come back only as the workload faults them in again.
 
-That would merely be slow if floor and ceiling were independent, but they are
-not. memory.min and memory.low only fend off reclaim driven from OUTSIDE a
-cgroup, so reclaim a cgroup inflicts on itself -- by exceeding its own
-memory.high, or its own memory.max -- ignores them entirely. A ceiling below
-the load-time peak therefore evicts the server straight through its own floor,
-and the damage is permanent: nothing faults those pages back except the
-workload itself, one at a time. Operators are left with a server pinned well
-under a floor that is configured, applied and completely effective.
+This stages a separate startup memory band (startup_defaults /
+WINGS_CG_STARTUP_*) that holds until the server reports ready -- the egg's
+own startup matcher, or WINGS_CG_STEADY_MATCH where "done" fires before the
+world has finished loading -- or until startup_grace expires, whichever comes
+first. The steady ceiling is then reached by a self-pacing ramp
+(steady_ramp_step) that walks memory.high down and pauses at each step until
+reclaim catches up, instead of slamming it in one shot. Only the memory band
+is staged: cpu/io weights are work-conserving and cannot evict anything.
+WINGS_CG_PHASE_EVENTS optionally mirrors named console lines into the Panel
+activity log.
 
-Add a startup band: WINGS_CG_STARTUP_MEMORY_MIN/_LOW/_HIGH/_MAX and
-docker.per_server_slices.startup_defaults, applied by OnBeforeStart -- the one
-path that actually precedes a boot -- and replaced by the steady band once the
-server is up. Only the memory band is staged; cpu/io weights are
-work-conserving and cannot evict anything.
+Adapted for scope-targeted properties. The startup band used to be applied in
+OnBeforeStart, just before the container started, because its slice already
+existed by then. A container scope does not exist until the container's init
+process is launched, so the band is applied immediately after
+ContainerStart() instead -- the same property sets, one step later.
 
-Environment.Create() deliberately keeps applying the steady band: it also runs
-at Wings boot, for a newly created server and for an incoming transfer, none
-of which start the server, and a startup band applied there would never be
-replaced.
+The phase no longer pins a unit. Pinning existed because placement was fixed
+at container-create time, so a Panel sync changing WINGS_CGROUP_PARENT
+mid-startup could leave the steady band on a slice the container was not in.
+The scope name is now read back from the container that actually exists at
+apply time, so it cannot drift; what remains is a plain in-progress flag.
 
-The transition reuses detection Wings already performs. The egg's startup
-"done" matcher sets the running state, which reaches OnStateChange -- so the
-trigger is per-egg configuration every game already carries, and no new
-console parsing is introduced. A startup_grace timer (default 15m) bounds the
-band for servers whose ready line never matches. Note that state-change events
-are dispatched one goroutine each and OnStateChange re-reads current state, so
-"starting" can be coalesced away; that only costs the timer, and a server that
-never reaches "running" is safer holding the startup band anyway.
-
-Applications are gated on the bands actually differing, so a node that
-configures no startup band issues no extra systemd calls and arms no timers --
-its behaviour is unchanged apart from the config file gaining the new keys.
-
-Every application logs the slice it targets, the phase, what triggered it and
-the properties applied, with sizes rendered in the units they were configured
-with instead of raw byte counts:
-
-  cgroups: ensured per-server slice  slice=wings-<32hex>.slice phase=startup
-    reason="server starting" properties="MemoryMin=9G MemoryHigh=64G ..."
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PgCYRx4mTFsr4wtxuHCVXH
 ---
- config/config_docker.go          | 113 +++++++++-
- environment/docker/container.go  |   8 +-
- environment/docker/power.go      |  32 +++
- internal/cgroups/cgroups.go      | 239 ++++++++++++++++++++
- internal/cgroups/cgroups_test.go |  12 +-
- internal/cgroups/ensure.go       |  93 +++++++-
- internal/cgroups/phase_test.go   | 217 ++++++++++++++++++
- internal/cgroups/sysd.go         | 109 +++++++++
- internal/database/database.go    |   7 +
- server/activity.go               |   1 +
- server/install.go                |   2 +-
- server/listeners.go              |  18 ++
- server/server.go                 |  20 ++
- server/slice_phase.go            | 369 +++++++++++++++++++++++++++++++
- server/slice_phase_test.go       | 325 +++++++++++++++++++++++++++
- 15 files changed, 1542 insertions(+), 23 deletions(-)
+ config/config_docker.go             | 113 +++++++-
+ config/config_docker_slices_test.go |   8 +-
+ environment/docker/power.go         |  17 +-
+ environment/docker/scope.go         |   6 +-
+ internal/cgroups/cgroups.go         | 239 +++++++++++++++++
+ internal/cgroups/ensure.go          | 113 ++++++--
+ internal/cgroups/phase_test.go      | 217 ++++++++++++++++
+ internal/cgroups/sysd.go            | 110 ++++++++
+ internal/database/database.go       |   7 +
+ server/activity.go                  |   1 +
+ server/listeners.go                 |  18 ++
+ server/server.go                    |  20 ++
+ server/slice_phase.go               | 388 ++++++++++++++++++++++++++++
+ server/slice_phase_test.go          | 329 +++++++++++++++++++++++
+ 14 files changed, 1555 insertions(+), 31 deletions(-)
  create mode 100644 internal/cgroups/phase_test.go
  create mode 100644 server/slice_phase.go
  create mode 100644 server/slice_phase_test.go
 
 diff --git a/config/config_docker.go b/config/config_docker.go
-index 4f2ea3c..ea9a3b2 100644
+index 23c52d1..b7cf4ab 100644
 --- a/config/config_docker.go
 +++ b/config/config_docker.go
 @@ -7,6 +7,7 @@ import (
@@ -82,8 +69,8 @@ index 4f2ea3c..ea9a3b2 100644
  
  	"emperror.dev/errors"
  	"github.com/distribution/reference"
-@@ -199,6 +200,16 @@ type DockerSliceDefaults struct {
- 	IOBFQWeight uint64 `default:"0" json:"io_bfq_weight" yaml:"io_bfq_weight"`
+@@ -189,6 +190,16 @@ type DockerSliceDefaults struct {
+ 	IOWeight   uint64 `default:"0" json:"io_weight" yaml:"io_weight"`
  }
  
 +// DockerSliceStartupDefaults is the startup-phase memory band. Only the memory
@@ -96,14 +83,15 @@ index 4f2ea3c..ea9a3b2 100644
 +	MemoryMax  string `default:"" json:"memory_max" yaml:"memory_max"`
 +}
 +
- // PerServerSlicesConfiguration configures automatic per-server slice
+ // PerServerSlicesConfiguration configures per-server cgroup property
  // management (docker.per_server_slices). Requires CgroupParent to be set:
- // derived slices nest under it via systemd dash naming.
-@@ -219,6 +230,32 @@ type PerServerSlicesConfiguration struct {
- 	// check.
- 	MemoryMinBudget string `default:"" json:"memory_min_budget" yaml:"memory_min_budget"`
- 
-+	// StartupDefaults are the node-wide memory band applied to a derived slice
+ // containers are placed flat under it, and the properties are applied to each
+@@ -210,6 +221,32 @@ type PerServerSlicesConfiguration struct {
+ 	// WINGS_CG_* values, never these defaults — that slice's policy is the
+ 	// administrator's.
+ 	Defaults DockerSliceDefaults `json:"defaults" yaml:"defaults"`
++
++	// StartupDefaults are the node-wide memory band applied to a server's scope
 +	// while the server is still starting, replaced by Defaults once the server
 +	// reports ready (the egg's startup "done" matcher) or StartupGrace
 +	// expires. Empty fields mean "no startup override".
@@ -128,11 +116,10 @@ index 4f2ea3c..ea9a3b2 100644
 +	// the ceiling is stepped, and only when the steady ceiling is below current
 +	// usage; the floor and everything else apply immediately.
 +	SteadyRampStep string `default:"" json:"steady_ramp_step" yaml:"steady_ramp_step"`
-+
- 	// BudgetPolicy decides what happens to a MemoryMin request exceeding the
- 	// remaining budget. Every other property is applied unchanged in all
- 	// three cases:
-@@ -419,6 +456,27 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
+ }
+ 
+ func (c DockerConfiguration) ContainerLogConfig() container.LogConfig {
+@@ -347,6 +384,27 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
  	if _, errs := c.SliceDefaults().Props(); len(errs) > 0 {
  		return errors.Wrap(errs[0], "docker.per_server_slices.defaults")
  	}
@@ -160,29 +147,34 @@ index 4f2ea3c..ea9a3b2 100644
  	return nil
  }
  
-@@ -440,14 +498,57 @@ func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
- // SliceEnsureRequest assembles the cgroups.EnsureForServer request for a
- // server whose containers are about to be placed under slice (a value
- // previously returned as managed by ResolveServerCgroupParent).
--func (c DockerConfiguration) SliceEnsureRequest(uuid, slice string, env []string) cgroups.EnsureRequest {
-+func (c DockerConfiguration) SliceEnsureRequest(uuid, slice string, env []string, phase cgroups.Phase) cgroups.EnsureRequest {
- 	return cgroups.EnsureRequest{
--		Slice:    slice,
--		Derived:  slice == c.ServerSliceName(uuid),
--		Defaults: c.SliceDefaults(),
--		Env:      env,
--		Budget:   c.SliceBudget(slice),
-+		Slice:           slice,
-+		Derived:         slice == c.ServerSliceName(uuid),
+@@ -374,14 +432,17 @@ func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
+ // CgroupParent. A server pinned elsewhere by WINGS_CGROUP_PARENT gets its
+ // explicit WINGS_CG_* values only, and is left out of the floor ledger: its
+ // floors draw on that administrator's slice, not on this node's tier.
+-func (c DockerConfiguration) ScopeEnsureRequest(uuid, containerID, parent string, env []string) cgroups.EnsureRequest {
++func (c DockerConfiguration) ScopeEnsureRequest(uuid, containerID, parent string, env []string, phase cgroups.Phase) cgroups.EnsureRequest {
+ 	onNodeTier := parent == c.CgroupParent
+ 	req := cgroups.EnsureRequest{
+-		Scope:         cgroups.ScopeName(containerID),
+-		Owner:         uuid,
+-		ApplyDefaults: onNodeTier,
+-		Defaults:      c.SliceDefaults(),
+-		Env:           env,
++		Scope:           cgroups.ScopeName(containerID),
++		Owner:           uuid,
++		ApplyDefaults:   onNodeTier,
 +		Phase:           phase,
 +		Defaults:        c.SliceDefaults(),
 +		StartupDefaults: c.SliceStartupDefaults(),
 +		Env:             env,
-+		Budget:          c.SliceBudget(slice),
 +		RampStep:        c.sliceRampStep(),
-+	}
-+}
-+
+ 	}
+ 	if onNodeTier {
+ 		req.Parent = c.CgroupParent
+@@ -389,6 +450,46 @@ func (c DockerConfiguration) ScopeEnsureRequest(uuid, containerID, parent string
+ 	return req
+ }
+ 
 +// sliceRampStep parses docker.per_server_slices.steady_ramp_step into bytes.
 +// Invalid or empty yields 0 (one-shot); a bad value is validated at startup.
 +func (c DockerConfiguration) sliceRampStep() uint64 {
@@ -219,89 +211,135 @@ index 4f2ea3c..ea9a3b2 100644
 +	d, err := time.ParseDuration(raw)
 +	if err != nil || d < 0 {
 +		return 0
- 	}
++	}
 +	return d
- }
++}
++
+ // RegistryCredentialsForImage returns registry credentials for an image only
+ // when the configured registry and image reference share the same registry
+ // identity.
+diff --git a/config/config_docker_slices_test.go b/config/config_docker_slices_test.go
+index bd45c50..d850c8e 100644
+--- a/config/config_docker_slices_test.go
++++ b/config/config_docker_slices_test.go
+@@ -2,6 +2,8 @@ package config
  
- // SliceBudget converts the configured floor budget into the internal/cgroups
-diff --git a/environment/docker/container.go b/environment/docker/container.go
-index cfbccf3..670c0d6 100644
---- a/environment/docker/container.go
-+++ b/environment/docker/container.go
-@@ -187,7 +187,13 @@ func (e *Environment) Create() error {
- 		// container is placed under it; a missing unit would silently
- 		// materialize as a limit-less transient slice. Best-effort: failures
- 		// are logged and never block container creation.
--		cgroups.EnsureForServer(ctx, e.log(), cfg.Docker.SliceEnsureRequest(e.Id, cgroupParent, evs))
-+		//
-+		// The steady band, deliberately: Create() also runs at Wings boot, for
-+		// a newly created server and for an incoming transfer, none of which
-+		// start the server. A startup band applied here would never be
-+		// replaced. OnBeforeStart applies it on the one path that does precede
-+		// a boot.
-+		cgroups.EnsureForServer(ctx, e.log(), cfg.Docker.SliceEnsureRequest(e.Id, cgroupParent, evs, cgroups.PhaseSteady), "container create")
+ import (
+ 	"testing"
++
++	"github.com/pterodactyl/wings/internal/cgroups"
+ )
+ 
+ const testUUID = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
+@@ -131,7 +133,7 @@ func TestValidatePerServerSlices(t *testing.T) {
+ func TestScopeEnsureRequestOnNodeTier(t *testing.T) {
+ 	c := slicesConfig(true)
+ 	c.PerServerSlices.Defaults.MemoryMin = "512M"
+-	req := c.ScopeEnsureRequest(testUUID, testContainerID, "wings.slice", nil)
++	req := c.ScopeEnsureRequest(testUUID, testContainerID, "wings.slice", nil, cgroups.PhaseSteady)
+ 
+ 	if req.Scope != testScope {
+ 		t.Errorf("Scope = %q, want %q", req.Scope, testScope)
+@@ -153,7 +155,7 @@ func TestScopeEnsureRequestOnNodeTier(t *testing.T) {
+ func TestScopeEnsureRequestUnderAnOverrideSlice(t *testing.T) {
+ 	c := slicesConfig(true)
+ 	c.PerServerSlices.Defaults.MemoryMin = "512M"
+-	req := c.ScopeEnsureRequest(testUUID, testContainerID, "wings-manual.slice", nil)
++	req := c.ScopeEnsureRequest(testUUID, testContainerID, "wings-manual.slice", nil, cgroups.PhaseSteady)
+ 
+ 	if req.ApplyDefaults {
+ 		t.Error("node defaults must not be stamped onto a scope inside an override slice")
+@@ -165,7 +167,7 @@ func TestScopeEnsureRequestUnderAnOverrideSlice(t *testing.T) {
+ 
+ func TestScopeEnsureRequestRejectsAnUnusableContainerID(t *testing.T) {
+ 	c := slicesConfig(true)
+-	req := c.ScopeEnsureRequest(testUUID, testContainerID[:12], "wings.slice", nil)
++	req := c.ScopeEnsureRequest(testUUID, testContainerID[:12], "wings.slice", nil, cgroups.PhaseSteady)
+ 	if req.Scope != "" {
+ 		t.Errorf("Scope = %q, want \"\" for a short container id", req.Scope)
  	}
- 
- 	// Merge user-provided labels with system labels
 diff --git a/environment/docker/power.go b/environment/docker/power.go
-index 34570a3..6b4c071 100644
+index acf2154..122cae9 100644
 --- a/environment/docker/power.go
 +++ b/environment/docker/power.go
-@@ -11,7 +11,9 @@ import (
- 	"github.com/docker/docker/api/types/container"
+@@ -12,6 +12,7 @@ import (
  	"github.com/docker/docker/client"
  
-+	"github.com/pterodactyl/wings/config"
  	"github.com/pterodactyl/wings/environment"
 +	"github.com/pterodactyl/wings/internal/cgroups"
  	"github.com/pterodactyl/wings/remote"
  )
  
-@@ -42,9 +44,39 @@ func (e *Environment) OnBeforeStart(ctx context.Context) error {
+@@ -42,6 +43,13 @@ func (e *Environment) OnBeforeStart(ctx context.Context) error {
  		return err
  	}
  
-+	// The container is about to start, so this is the one moment where the
-+	// startup band is both correct and bounded: the server will either report
-+	// ready or hit the startup grace, and either way the steady band replaces
-+	// this. Best-effort, like every other slice operation.
-+	e.applySliceBand(ctx, cgroups.PhaseStartup, "server starting")
++	// The startup band is NOT applied here. It used to be: the container was
++	// about to start and its slice already existed, so this was the one moment
++	// where the startup band was both correct and bounded. A container scope
++	// does not exist until the container's init process is launched, so there
++	// is nothing to set properties on yet — the band is applied immediately
++	// after ContainerStart() instead, in Start() below.
 +
  	return nil
  }
  
-+// applySliceBand re-ensures this server's slice with the given phase's
-+// property band. A server without a Wings-managed slice is skipped.
-+func (e *Environment) applySliceBand(ctx context.Context, phase cgroups.Phase, reason string) {
-+	cfg := config.Get()
-+	if !cfg.Docker.PerServerSlices.Enabled {
-+		return
-+	}
-+	evs := e.Configuration.EnvironmentVariables()
-+	parent, managed, err := cfg.Docker.ResolveServerCgroupParent(e.Id, evs)
-+	if err != nil {
-+		e.log().WithField("cgroup_parent", parent).WithError(err).Warn("environment/docker: rejected per-server cgroup parent override")
-+	}
-+	if !managed {
-+		return
-+	}
-+	req := cfg.Docker.SliceEnsureRequest(e.Id, parent, evs, phase)
-+	if !req.Staged() {
-+		// Nothing staged: the band applied at container create is already the
-+		// steady one, so this would rewrite identical properties.
-+		return
-+	}
+@@ -83,7 +91,7 @@ func (e *Environment) Start(ctx context.Context) error {
+ 			// and normally still in place, but this is the only point at which
+ 			// Wings can notice and repair drift on a container it did not
+ 			// start itself.
+-			e.applyScopeProps(ctx)
++			e.applyScopeProps(ctx, cgroups.PhaseSteady, "reattached to a running container")
+ 
+ 			return e.Attach(ctx)
+ 		}
+@@ -132,7 +140,12 @@ func (e *Environment) Start(ctx context.Context) error {
+ 	}
+ 
+ 	e.applyCpuBurst(actx)
+-	e.applyScopeProps(actx)
++	// The container's systemd scope exists from this moment on; this is the
++	// earliest point at which its resource properties can be set. The startup
++	// band is both correct and bounded here: the server will either report
++	// ready or hit the startup grace, and either way the steady band replaces
++	// it (see server.beginSlicePhase).
++	e.applyScopeProps(actx, cgroups.PhaseStartup, "container start")
+ 
+ 	// No errors, good to continue through.
+ 	sawError = false
+diff --git a/environment/docker/scope.go b/environment/docker/scope.go
+index b70a319..d9062ba 100644
+--- a/environment/docker/scope.go
++++ b/environment/docker/scope.go
+@@ -29,7 +29,7 @@ import (
+ //
+ // Strictly best-effort: every failure is logged and none of them affect the
+ // server, which runs under the node tier slice either way.
+-func (e *Environment) applyScopeProps(ctx context.Context) {
++func (e *Environment) applyScopeProps(ctx context.Context, phase cgroups.Phase, reason string) {
+ 	cfg := config.Get()
+ 	if !cfg.Docker.PerServerSlices.Enabled {
+ 		return
+@@ -50,12 +50,12 @@ func (e *Environment) applyScopeProps(ctx context.Context) {
+ 		return
+ 	}
+ 
+-	req := cfg.Docker.ScopeEnsureRequest(e.Id, c.ID, parent, evs)
++	req := cfg.Docker.ScopeEnsureRequest(e.Id, c.ID, parent, evs, phase)
+ 	if req.Scope == "" {
+ 		// ScopeName rejected the container id. Nothing sane to do: issuing
+ 		// property calls against a guessed unit name would silently do nothing.
+ 		e.log().WithField("container_id", c.ID).Warn("cgroups: could not derive a systemd scope unit name for this container; resource properties not applied")
+ 		return
+ 	}
+-	cgroups.EnsureForServer(ctx, e.log(), req)
 +	cgroups.EnsureForServer(ctx, e.log(), req, reason)
-+}
-+
- // Start will start the server environment and begins piping output to the event
- // listeners for the console. If a container does not exist, or needs to be
- // rebuilt that will happen in the call to OnBeforeStart().
+ }
 diff --git a/internal/cgroups/cgroups.go b/internal/cgroups/cgroups.go
-index 06ad73d..12e1d03 100644
+index 3b3cb97..6322a86 100644
 --- a/internal/cgroups/cgroups.go
 +++ b/internal/cgroups/cgroups.go
-@@ -20,6 +20,7 @@ import (
+@@ -38,6 +38,7 @@ import (
  	"math"
  	"strconv"
  	"strings"
@@ -309,8 +347,8 @@ index 06ad73d..12e1d03 100644
  
  	"emperror.dev/errors"
  )
-@@ -40,6 +41,64 @@ const (
- 	EnvIOBFQWeight = "WINGS_CG_IO_BFQ_WEIGHT"
+@@ -57,6 +58,98 @@ const (
+ 	EnvIOWeight   = "WINGS_CG_IO_WEIGHT"
  )
  
 +// Startup-phase overrides of the memory band. A game server's load-time peak
@@ -371,13 +409,6 @@ index 06ad73d..12e1d03 100644
 +	PhaseSteady Phase = "steady"
 +)
 +
- // BFQ weight bounds. BFQ keeps its own per-cgroup weight in io.bfq.weight on a
- // 1..1000 scale and does NOT read io.weight — that file belongs to the iocost
- // controller, which is inert unless io.cost.model/io.cost.qos are configured.
-@@ -62,6 +121,40 @@ const (
- 	BFQWeightDefault = 100
- )
- 
 +// rampMaxSteps caps how many memory.high writes a single ramp performs,
 +// regardless of step size, so a tiny misconfigured step cannot turn into a
 +// D-Bus write storm — the effective step is enlarged to fit this budget.
@@ -412,10 +443,10 @@ index 06ad73d..12e1d03 100644
 +	return out
 +}
 +
- // IOWeightFromBFQ inverts systemd's conversion, so an administrator can state
- // the BFQ weight they actually want instead of reverse-engineering the
- // IOWeight that happens to produce it. 900/9900 is exactly 1/11, so the round
-@@ -124,6 +217,21 @@ func FormatSize(v uint64) string {
+ // Props are the systemd slice properties requested for a per-server slice.
+ // Nil means "not requested": the slice keeps whatever systemd default or
+ // previously-set value applies to that property.
+@@ -91,6 +184,21 @@ func FormatSize(v uint64) string {
  	return strconv.FormatUint(v, 10)
  }
  
@@ -437,7 +468,7 @@ index 06ad73d..12e1d03 100644
  // String renders the requested properties for logs, naming each systemd
  // property (what Wings actually sets) and rendering memory sizes with the
  // binary suffix they were configured with, so a log line can be read against
-@@ -239,6 +347,137 @@ func FromEnv(env []string) (props Props, errs []error) {
+@@ -184,6 +292,137 @@ func FromEnv(env []string) (props Props, errs []error) {
  	return props, errs
  }
  
@@ -575,78 +606,49 @@ index 06ad73d..12e1d03 100644
  // Defaults are node-wide slice property defaults, carried as the raw strings
  // and integers found in the Wings configuration. Zero values mean "no
  // default" for the respective property.
-diff --git a/internal/cgroups/cgroups_test.go b/internal/cgroups/cgroups_test.go
-index 1d69107..9111f0c 100644
---- a/internal/cgroups/cgroups_test.go
-+++ b/internal/cgroups/cgroups_test.go
-@@ -168,12 +168,12 @@ func TestIsDerivedName(t *testing.T) {
- 		want bool
- 	}{
- 		{"wings-b87c0a5b23874a1c8863ff23e6800a1d.slice", true},
--		{"wings-b87c0a5b.slice", false},                            // admin short-form, not derived shape
--		{"wings-B87C0A5B23874A1C8863FF23E6800A1D.slice", false},    // uppercase never derived
--		{"wings-b87c0a5b23874a1c8863ff23e6800a1d", false},          // missing suffix
--		{"other-b87c0a5b23874a1c8863ff23e6800a1d.slice", false},    // wrong prefix
--		{"wings-g87c0a5b23874a1c8863ff23e6800a1d.slice", false},    // non-hex
--		{"wings-b87c0a5b23874a1c8863ff23e6800a1d00.slice", false},  // wrong length
-+		{"wings-b87c0a5b.slice", false},                           // admin short-form, not derived shape
-+		{"wings-B87C0A5B23874A1C8863FF23E6800A1D.slice", false},   // uppercase never derived
-+		{"wings-b87c0a5b23874a1c8863ff23e6800a1d", false},         // missing suffix
-+		{"other-b87c0a5b23874a1c8863ff23e6800a1d.slice", false},   // wrong prefix
-+		{"wings-g87c0a5b23874a1c8863ff23e6800a1d.slice", false},   // non-hex
-+		{"wings-b87c0a5b23874a1c8863ff23e6800a1d00.slice", false}, // wrong length
- 		{"wings.slice", false},
- 	} {
- 		if got := isDerivedName(c.name, "wings-"); got != c.want {
 diff --git a/internal/cgroups/ensure.go b/internal/cgroups/ensure.go
-index 003dccb..dc64ab4 100644
+index c47c0bc..19a8beb 100644
 --- a/internal/cgroups/ensure.go
 +++ b/internal/cgroups/ensure.go
-@@ -20,40 +20,115 @@ type EnsureRequest struct {
- 	// (as opposed to an explicit WINGS_CGROUP_PARENT override). Only derived
- 	// slices receive the node-wide property defaults.
- 	Derived bool
+@@ -33,14 +33,26 @@ type EnsureRequest struct {
+ 	// and quietly stamping node defaults onto a scope inside it would fight
+ 	// the very override that was asked for.
+ 	ApplyDefaults bool
 +	// Phase selects the band to apply. PhaseStartup layers the startup memory
 +	// overrides on top of the steady band; PhaseSteady applies the steady band
 +	// alone, which also un-does a previously applied startup override.
 +	Phase Phase
- 	// Defaults are the node-wide slice property defaults.
+ 	// Defaults are the node-wide property defaults.
  	Defaults Defaults
 +	// StartupDefaults are the node-wide startup-phase memory band defaults.
 +	StartupDefaults StartupDefaults
  	// Env is the resolved server environment, the source of the per-server
  	// WINGS_CG_* property overrides.
  	Env []string
- 	// Budget bounds the memory.min floor this request may claim.
- 	Budget Budget
 +	// RampStep, when > 0 and this is a steady application whose target
 +	// memory.high is below current usage, walks memory.high down in steps of
 +	// at most this many bytes instead of setting it in one shot. 0 = one-shot.
 +	RampStep uint64
  }
  
--// EnsureForServer ensures a server's slice unit exists and carries its
--// resource properties, logging instead of failing: without the unit, systemd
--// still materializes a limit-less transient slice at container placement, so
--// the container runs either way — just without the guarantees, which is
--// exactly what the emitted warning tells the administrator.
--func EnsureForServer(ctx context.Context, l *log.Entry, req EnsureRequest) {
+-// props resolves the property band for the request.
 +// props resolves the property band for the request's phase. The steady band is
 +// the node defaults overridden by the per-server WINGS_CG_* variables; the
 +// startup band is that, overridden again by the startup memory overrides.
-+func (req EnsureRequest) props() (Props, []error) {
+ func (req EnsureRequest) props() (Props, []error) {
  	props, errs := FromEnv(req.Env)
- 	if req.Derived {
- 		defaults, derrs := req.Defaults.Props()
+ 	if req.ApplyDefaults {
+@@ -48,7 +60,29 @@ func (req EnsureRequest) props() (Props, []error) {
  		errs = append(errs, derrs...)
  		props = Merge(defaults, props)
  	}
+-	return props, errs
 +	if req.Phase != PhaseStartup {
 +		return props, errs
 +	}
 +	startup, serrs := StartupFromEnv(req.Env)
 +	errs = append(errs, serrs...)
-+	if req.Derived {
++	if req.ApplyDefaults {
 +		defaults, derrs := req.StartupDefaults.Props()
 +		errs = append(errs, derrs...)
 +		startup = Merge(defaults, startup)
@@ -656,7 +658,7 @@ index 003dccb..dc64ab4 100644
 +
 +// Staged reports whether this request's startup band actually differs from its
 +// steady band. When nothing is staged the two are identical, so the properties
-+// applied at container create are already correct and the steady re-apply on
++// applied at container start are already correct and the steady re-apply on
 +// the ready transition would be a pointless systemd round trip.
 +func (req EnsureRequest) Staged() bool {
 +	a, b := req, req
@@ -664,72 +666,111 @@ index 003dccb..dc64ab4 100644
 +	pa, _ := a.props()
 +	pb, _ := b.props()
 +	return !pa.Equal(pb)
-+}
-+
-+// EnsureForServer ensures a server's slice unit exists and carries its
-+// resource properties, logging instead of failing: without the unit, systemd
-+// still materializes a limit-less transient slice at container placement, so
-+// the container runs either way — just without the guarantees, which is
-+// exactly what the emitted warning tells the administrator.
+ }
+ 
+ // EnsureForServer applies a server's resource properties to its container
+@@ -56,38 +90,83 @@ func (req EnsureRequest) props() (Props, []error) {
+ // placement: the container still runs under the node tier slice, just without
+ // its own guarantees, and the emitted warning is what tells the administrator
+ // exactly that.
+-func EnsureForServer(ctx context.Context, l *log.Entry, req EnsureRequest) {
 +//
-+// reason names what triggered this application ("container create", "server
++// reason names what triggered this application ("container start", "server
 +// reported ready", "startup grace expired") and appears in every log line, so
 +// the phase transitions of a server are readable in the log without
 +// correlating timestamps against console output.
 +func EnsureForServer(ctx context.Context, l *log.Entry, req EnsureRequest, reason string) {
-+	props, errs := req.props()
+ 	props, errs := req.props()
+-	l = l.WithField("scope", req.Scope)
 +	phase := req.Phase
 +	if phase == "" {
 +		phase = PhaseSteady
 +	}
-+	l = l.WithFields(log.Fields{"slice": req.Slice, "phase": string(phase), "reason": reason})
++	l = l.WithFields(log.Fields{"scope": req.Scope, "phase": string(phase), "reason": reason})
  	for _, err := range errs {
--		l.WithField("slice", req.Slice).WithError(err).Warn("cgroups: ignoring invalid per-server slice property")
-+		l.WithError(err).Warn("cgroups: ignoring invalid per-server slice property")
-+	}
+ 		l.WithError(err).Warn("cgroups: ignoring invalid per-server cgroup property")
+ 	}
+ 	if props.Empty() {
+ 		return
+ 	}
++	target := Target{Scope: req.Scope, Owner: req.Owner, Parent: req.Parent}
 +
 +	// Steady transition with a configured ramp: apply every property except the
 +	// ceiling under the normal timeout, then walk the ceiling down on its own
 +	// (unbounded by ensureTimeout — a ramp can take tens of seconds). Skipped
 +	// when nothing sets a ceiling.
 +	if phase == PhaseSteady && req.RampStep > 0 && props.MemoryHigh != nil {
-+		target := *props.MemoryHigh
++		high := *props.MemoryHigh
 +		base := props
 +		base.MemoryHigh = nil
 +		bctx, bcancel := context.WithTimeout(ctx, ensureTimeout)
-+		res, err := Ensure(bctx, req.Slice, base, req.Budget)
++		res, err := Apply(bctx, target, base)
 +		bcancel()
 +		if err != nil {
-+			l.WithError(err).Warn("cgroups: could not ensure per-server slice; containers will run under it without managed resource properties")
++			l.WithError(err).Warn("cgroups: could not apply container scope properties; the container runs under the node tier without its own resource guarantees")
 +			return
 +		}
-+		l.WithField("properties", res.Applied.String()).WithField("memory_high_target", FormatSize(target)).
++		logOvercommit(l.WithField("properties", res.Applied.String()), req, res)
++		l.WithField("properties", res.Applied.String()).WithField("memory_high_target", FormatSize(high)).
 +			Info("cgroups: steady band applied; ramping memory.high down to the ceiling")
-+		if err := rampHigh(ctx, req.Slice, target, req.RampStep, l); err != nil {
++		if err := rampHigh(ctx, req.Scope, high, req.RampStep, l); err != nil {
 +			l.WithError(err).Warn("cgroups: memory.high ramp did not complete")
 +		}
 +		return
- 	}
++	}
  
  	ctx, cancel := context.WithTimeout(ctx, ensureTimeout)
  	defer cancel()
- 	requested := props.String()
-+	l.WithField("requested", requested).Debug("cgroups: applying per-server slice properties")
-+
- 	res, err := Ensure(ctx, req.Slice, props, req.Budget)
++	requested := props.String()
++	l.WithField("requested", requested).Debug("cgroups: applying container scope properties")
+ 
+-	res, err := Apply(ctx, Target{Scope: req.Scope, Owner: req.Owner, Parent: req.Parent}, props)
++	res, err := Apply(ctx, target, props)
  	if err != nil {
--		l.WithField("slice", req.Slice).WithError(err).Warn("cgroups: could not ensure per-server slice; containers will run under it without managed resource properties")
-+		l.WithError(err).Warn("cgroups: could not ensure per-server slice; containers will run under it without managed resource properties")
+ 		l.WithError(err).Warn("cgroups: could not apply container scope properties; the container runs under the node tier without its own resource guarantees")
  		return
  	}
--	entry := l.WithField("slice", req.Slice).WithField("properties", res.Applied.String())
-+	entry := l.WithField("properties", res.Applied.String())
- 	if s := res.Applied.String(); s != requested {
- 		entry.WithField("requested", requested).Warn("cgroups: memory.min floor reduced by the node budget (docker.per_server_slices.memory_min_budget)")
+ 	entry := l.WithField("properties", res.Applied.String())
+-	if res.Overcommit {
+-		// Not a reduction — the floors were applied exactly as configured. But
+-		// they now add up to more than the tier slice can back, which changes
+-		// what they mean: the kernel shares the tier's protection out in
+-		// proportion to each server's usage below its own floor rather than
+-		// honouring all of them. Individual floors stop being guarantees; the
+-		// tier total still is. Reported, never corrected.
+-		entry.WithFields(log.Fields{
+-			"floors_total": FormatSize(res.FloorsTotal),
+-			"tier_floor":   FormatSize(res.ParentFloor),
+-			"tier":         req.Parent,
+-		}).Info("cgroups: per-server memory.min floors now exceed the tier slice's own MemoryMin; they are applied as configured and the kernel shares the tier's protection proportionally to each server's usage below its own floor")
++	if logOvercommit(entry, req, res) {
  		return
+ 	}
+ 	entry.Info("cgroups: applied container scope properties")
+ }
++
++// logOvercommit emits the node-tier tripwire line and reports whether it fired.
++//
++// This is not a reduction — the floors were applied exactly as configured. But
++// they now add up to more than the tier slice can back, which changes what they
++// mean: the kernel shares the tier's protection out in proportion to each
++// server's usage below its own floor rather than honouring all of them.
++// Individual floors stop being guarantees; the tier total still is. Reported,
++// never corrected.
++func logOvercommit(entry *log.Entry, req EnsureRequest, res Result) bool {
++	if !res.Overcommit {
++		return false
++	}
++	entry.WithFields(log.Fields{
++		"floors_total": FormatSize(res.FloorsTotal),
++		"tier_floor":   FormatSize(res.ParentFloor),
++		"tier":         req.Parent,
++	}).Info("cgroups: per-server memory.min floors now exceed the tier slice's own MemoryMin; they are applied as configured and the kernel shares the tier's protection proportionally to each server's usage below its own floor")
++	return true
++}
 diff --git a/internal/cgroups/phase_test.go b/internal/cgroups/phase_test.go
 new file mode 100644
-index 0000000..929e075
+index 0000000..7417042
 --- /dev/null
 +++ b/internal/cgroups/phase_test.go
 @@ -0,0 +1,217 @@
@@ -765,7 +806,7 @@ index 0000000..929e075
 +// startup one, and the steady band must come back afterwards.
 +func TestEnsureRequestPhaseBands(t *testing.T) {
 +	req := EnsureRequest{
-+		Derived: true,
++		ApplyDefaults: true,
 +		Defaults: Defaults{
 +			MemoryMin:  "6G",
 +			MemoryHigh: "7G",
@@ -815,7 +856,7 @@ index 0000000..929e075
 +// feature existed: the same properties in both phases.
 +func TestEnsureRequestNoStartupOverrideIsIdentical(t *testing.T) {
 +	req := EnsureRequest{
-+		Derived:  true,
++		ApplyDefaults:  true,
 +		Defaults: Defaults{MemoryMin: "6G", MemoryHigh: "7G"},
 +	}
 +	req.Phase = PhaseStartup
@@ -830,7 +871,7 @@ index 0000000..929e075
 +// A per-server startup variable must work even when the node stages nothing.
 +func TestEnsureRequestPerServerStartupOverride(t *testing.T) {
 +	req := EnsureRequest{
-+		Derived:  true,
++		ApplyDefaults:  true,
 +		Phase:    PhaseStartup,
 +		Defaults: Defaults{MemoryHigh: "7G"},
 +		Env:      []string{"WINGS_CG_STARTUP_MEMORY_HIGH=12G"},
@@ -843,9 +884,9 @@ index 0000000..929e075
 +
 +// Hand-managed slices (explicit WINGS_CGROUP_PARENT) never receive node
 +// defaults — including the startup band.
-+func TestEnsureRequestNonDerivedSkipsDefaults(t *testing.T) {
++func TestEnsureRequestWithoutDefaultsSkipsThem(t *testing.T) {
 +	req := EnsureRequest{
-+		Derived:         false,
++		ApplyDefaults:         false,
 +		Phase:           PhaseStartup,
 +		Defaults:        Defaults{MemoryMin: "6G"},
 +		StartupDefaults: StartupDefaults{MemoryMin: "9G"},
@@ -874,7 +915,7 @@ index 0000000..929e075
 +// Staged() gates the steady re-apply: with nothing staged it must report false
 +// so no pointless systemd round trip happens on every server start.
 +func TestEnsureRequestStaged(t *testing.T) {
-+	base := EnsureRequest{Derived: true, Defaults: Defaults{MemoryMin: "6G", MemoryHigh: "7G"}}
++	base := EnsureRequest{ApplyDefaults: true, Defaults: Defaults{MemoryMin: "6G", MemoryHigh: "7G"}}
 +	if base.Staged() {
 +		t.Error("no startup band configured must report not staged")
 +	}
@@ -951,23 +992,24 @@ index 0000000..929e075
 +	}
 +}
 diff --git a/internal/cgroups/sysd.go b/internal/cgroups/sysd.go
-index 79fd3ca..3995d5a 100644
+index 05ca5c3..cfa7a92 100644
 --- a/internal/cgroups/sysd.go
 +++ b/internal/cgroups/sysd.go
-@@ -6,7 +6,9 @@ import (
+@@ -5,7 +5,9 @@ import (
+ 	"os"
  	"strconv"
  	"strings"
- 	"sync"
 +	"time"
  
 +	"github.com/apex/log"
  	sdbus "github.com/coreos/go-systemd/v22/dbus"
  	godbus "github.com/godbus/dbus/v5"
  
-@@ -294,6 +296,113 @@ func Ensure(ctx context.Context, name string, props Props, b Budget) (Result, er
- 	return res, nil
+@@ -229,3 +231,111 @@ func (c *conn) sliceMemoryMin(ctx context.Context, name string) (uint64, bool, e
+ 	}
+ 	return v, true, nil
  }
- 
++
 +// rampStepTimeout bounds how long a single ramp step waits for reclaim to
 +// catch up before proceeding anyway. The ramp must reach its target even if
 +// the workload refuses to yield (imposing the ceiling is the whole point), so
@@ -1075,9 +1117,6 @@ index 79fd3ca..3995d5a 100644
 +	}
 +}
 +
- // Stop stops (and thereby removes) a slice unit. Stopping a transient slice
- // deletes it; stopping a unit-file-backed slice merely deactivates it until
- // its next start, so callers should only pass slices Wings itself derived.
 diff --git a/internal/database/database.go b/internal/database/database.go
 index 3fd6820..2fb808b 100644
 --- a/internal/database/database.go
@@ -1105,19 +1144,6 @@ index c1613ad..5912ad1 100644
  )
  
  // RequestActivity is a wrapper around a LoggedEvent that is able to track additional request
-diff --git a/server/install.go b/server/install.go
-index 16e2c91..8880446 100644
---- a/server/install.go
-+++ b/server/install.go
-@@ -463,7 +463,7 @@ func (ip *InstallationProcess) Execute() (string, error) {
- 		ip.Server.Log().WithField("cgroup_parent", cgroupParent).WithError(err).Warn("installer: rejected per-server cgroup parent override")
- 	}
- 	if managed {
--		cgroups.EnsureForServer(ctx, ip.Server.Log(), cfg.Docker.SliceEnsureRequest(ip.Server.ID(), cgroupParent, ienv))
-+		cgroups.EnsureForServer(ctx, ip.Server.Log(), cfg.Docker.SliceEnsureRequest(ip.Server.ID(), cgroupParent, ienv, cgroups.PhaseSteady), "install container create")
- 	}
- 	if cgroupParent != "" {
- 		hostConf.CgroupParent = cgroupParent
 diff --git a/server/listeners.go b/server/listeners.go
 index d39e664..998cecc 100644
 --- a/server/listeners.go
@@ -1148,7 +1174,7 @@ index d39e664..998cecc 100644
  	// set the server to be in a stopping state, otherwise crash detection will kick in and
  	// cause the server to unexpectedly restart on the user.
 diff --git a/server/server.go b/server/server.go
-index a1777b0..a914f0e 100644
+index a1777b0..f9d0ed7 100644
 --- a/server/server.go
 +++ b/server/server.go
 @@ -8,8 +8,10 @@ import (
@@ -1171,7 +1197,7 @@ index a1777b0..a914f0e 100644
 +	slicePhaseMu    sync.Mutex
 +	slicePhaseTimer *time.Timer
 +	sliceSteadyDone bool
-+	slicePhaseSlice string
++	slicePhaseActive bool
 +	slicePhaseMatch *regexp.Regexp
 +	sliceEvents     []sliceConsoleEvent
 +	sliceEventsSet  bool
@@ -1203,10 +1229,10 @@ index a1777b0..a914f0e 100644
  	// Reset the resource usage to 0 when the process fully stops so that all the UI
 diff --git a/server/slice_phase.go b/server/slice_phase.go
 new file mode 100644
-index 0000000..9bbbd0e
+index 0000000..45e425e
 --- /dev/null
 +++ b/server/slice_phase.go
-@@ -0,0 +1,369 @@
+@@ -0,0 +1,388 @@
 +package server
 +
 +import (
@@ -1300,7 +1326,7 @@ index 0000000..9bbbd0e
 +		s.slicePhaseTimer.Stop()
 +	}
 +	s.sliceSteadyDone = false
-+	s.slicePhaseSlice = req.Slice // pinned for the whole phase, see enterSteady
++	s.slicePhaseActive = true
 +	s.slicePhaseMatch = matcher
 +	s.slicePhaseTimer = nil
 +	if grace > 0 {
@@ -1330,8 +1356,7 @@ index 0000000..9bbbd0e
 +		return
 +	}
 +	s.sliceSteadyDone = true
-+	pinned := s.slicePhaseSlice // captured now; the apply runs on a goroutine
-+	s.slicePhaseSlice = ""
++	s.slicePhaseActive = false
 +	if s.slicePhaseTimer != nil {
 +		s.slicePhaseTimer.Stop()
 +		s.slicePhaseTimer = nil
@@ -1343,7 +1368,7 @@ index 0000000..9bbbd0e
 +	// Dispatched: OnStateChange runs crash detection after this, and a steady
 +	// application is a D-Bus round trip plus a possible ramp — it must never sit
 +	// in the state machine's path.
-+	go s.applySliceProps(cgroups.PhaseSteady, reason, pinned)
++	go s.applySliceProps(cgroups.PhaseSteady, reason)
 +}
 +
 +// endSlicePhase resets all phase state; called when the server goes offline.
@@ -1354,29 +1379,51 @@ index 0000000..9bbbd0e
 +		s.slicePhaseTimer.Stop()
 +		s.slicePhaseTimer = nil
 +	}
-+	s.slicePhaseSlice = ""
++	s.slicePhaseActive = false
 +	s.slicePhaseMatch = nil
 +	s.sliceSteadyDone = false
 +}
 +
-+// sliceRequest resolves this server's slice and builds the ensure request for
-+// the given phase. The zero request (empty Slice) means the server has no
-+// Wings-managed slice and nothing should be applied.
++// sliceRequest resolves this server's container scope and builds the ensure
++// request for the given phase. The zero request (empty Scope) means the server
++// has no Wings-managed properties, or has no running container to carry them,
++// and nothing should be applied.
 +func (s *Server) sliceRequest(phase cgroups.Phase) cgroups.EnsureRequest {
 +	cfg := config.Get()
 +	if !cfg.Docker.PerServerSlices.Enabled {
 +		return cgroups.EnsureRequest{}
 +	}
 +	env := s.GetEnvironmentVariables()
-+	slice, managed, err := cfg.Docker.ResolveServerCgroupParent(s.ID(), env)
++	parent, managed, err := cfg.Docker.ResolveServerCgroupParent(env)
 +	if err != nil {
-+		s.Log().WithField("cgroup_parent", slice).WithError(err).
-+			Warn("cgroups: rejected per-server cgroup parent override while applying slice properties")
++		s.Log().WithField("cgroup_parent", parent).WithError(err).
++			Warn("cgroups: rejected per-server cgroup parent override while applying scope properties")
 +	}
 +	if !managed {
 +		return cgroups.EnsureRequest{}
 +	}
-+	return cfg.Docker.SliceEnsureRequest(s.ID(), slice, env, phase)
++	// Scope is deliberately left empty here. The scope unit name derives from
++	// the live container id, which needs a Docker round trip; resolveScope
++	// fills it in at apply time. Everything that decides WHETHER to apply --
++	// Staged(), the property bands -- is independent of it.
++	return cfg.Docker.ScopeEnsureRequest(s.ID(), "", parent, env, phase)
++}
++
++// resolveScope looks up the systemd scope unit backing this server's current
++// container. Returns "" when there is no container to apply properties to,
++// which is the normal case for a stopped server.
++func (s *Server) resolveScope(ctx context.Context) string {
++	cli, err := environment.Docker()
++	if err != nil {
++		s.Log().WithError(err).Warn("cgroups: no docker client available to resolve the container scope")
++		return ""
++	}
++	c, err := cli.ContainerInspect(ctx, s.ID())
++	if err != nil {
++		s.Log().WithError(err).Debug("cgroups: could not inspect container to resolve its systemd scope")
++		return ""
++	}
++	return cgroups.ScopeName(c.ID)
 +}
 +
 +// hasSliceMatcher reports whether an explicit steady trigger is in effect for
@@ -1418,34 +1465,29 @@ index 0000000..9bbbd0e
 +	return regexp.Compile(regexp.QuoteMeta(raw))
 +}
 +
-+// pinnedSlice returns the slice captured when this server's startup phase
-+// began, or "" when no phase is in progress.
-+func (s *Server) pinnedSlice() string {
++// slicePhaseInProgress reports whether a startup phase is currently in
++// progress for this server.
++func (s *Server) slicePhaseInProgress() bool {
 +	s.slicePhaseMu.Lock()
 +	defer s.slicePhaseMu.Unlock()
-+	return s.slicePhaseSlice
++	return s.slicePhaseActive
 +}
 +
-+// applySliceProps re-ensures this server's slice with the given phase's
-+// property band. pinned is the slice captured when the phase began (see
-+// enterSteady). Best-effort: a server that is already running is never
++// applySliceProps re-applies this server's container scope properties with the
++// given phase's band. Best-effort: a server that is already running is never
 +// disturbed by a failure here.
-+func (s *Server) applySliceProps(phase cgroups.Phase, reason, pinned string) {
++// The retired per-server-slice design had to pin the slice a phase began with:
++// placement was fixed at container-create time, so a Panel sync that changed
++// WINGS_CGROUP_PARENT mid-startup would make the steady band land on a unit the
++// container was not in. Nothing to pin here — the scope name is read back from
++// the container that actually exists at apply time, so it cannot drift away
++// from reality in the first place.
++func (s *Server) applySliceProps(phase cgroups.Phase, reason string) {
 +	req := s.sliceRequest(phase)
-+	if req.Slice == "" {
++	if req.Owner == "" {
 +		return
 +	}
-+	// Placement is fixed when the container is created, so the container stays
-+	// in whatever slice it was placed under even if the Panel later syncs a
-+	// different WINGS_CGROUP_PARENT. Apply to the slice this phase began with,
-+	// or the steady band lands on a unit holding nothing.
-+	if pinned != "" && pinned != req.Slice {
-+		s.Log().WithFields(log.Fields{"resolved": req.Slice, "applying_to": pinned}).
-+			Warn("cgroups: server cgroup parent changed while starting; the container is still in the slice it was created under")
-+		req.Slice = pinned
-+		req.Budget.Exclude = pinned
-+	}
-+	// With no startup band staged, the properties set at container create are
++	// With no startup band staged, the properties set at container start are
 +	// already the steady ones; re-applying them would cost a systemd round
 +	// trip per server start and log a transition that did not happen.
 +	if phase == cgroups.PhaseSteady && !req.Staged() {
@@ -1456,6 +1498,9 @@ index 0000000..9bbbd0e
 +	ctx := s.Context()
 +	if ctx == nil {
 +		ctx = context.Background()
++	}
++	if req.Scope = s.resolveScope(ctx); req.Scope == "" {
++		return
 +	}
 +	cgroups.EnsureForServer(ctx, s.Log(), req, reason)
 +}
@@ -1578,10 +1623,10 @@ index 0000000..9bbbd0e
 +}
 diff --git a/server/slice_phase_test.go b/server/slice_phase_test.go
 new file mode 100644
-index 0000000..ba28966
+index 0000000..4cd3cbd
 --- /dev/null
 +++ b/server/slice_phase_test.go
-@@ -0,0 +1,325 @@
+@@ -0,0 +1,329 @@
 +package server
 +
 +import (
@@ -1700,15 +1745,15 @@ index 0000000..ba28966
 +	sliceTestConfig(t, true, "15m", "64G")
 +	s := newSliceTestServer()
 +	s.beginSlicePhase()
-+	if s.pinnedSlice() == "" {
++	if !s.slicePhaseInProgress() {
 +		t.Fatal("precondition: a phase should be in progress")
 +	}
 +	s.enterSteady("match") // first trigger wins
 +	if !s.sliceSteadyDone {
 +		t.Fatal("first enterSteady must mark the phase steady-done")
 +	}
-+	if s.pinnedSlice() != "" || s.hasSliceMatcher() {
-+		t.Error("entering steady must clear the pin and matcher")
++	if s.slicePhaseInProgress() || s.hasSliceMatcher() {
++		t.Error("entering steady must end the phase and clear the matcher")
 +	}
 +	// Subsequent triggers (running, grace) are no-ops.
 +	s.enterSteady("running")
@@ -1736,40 +1781,44 @@ index 0000000..ba28966
 +	}
 +}
 +
-+// A server with no Wings-managed slice must produce no request at all, so no
-+// systemd call is ever attempted for it.
++// A server with no Wings-managed properties must produce no request at all, so
++// no systemd call is ever attempted for it. Owner, not Scope, is the sentinel:
++// the scope name needs a live container and is resolved at apply time.
 +func TestSliceRequestSkipsUnmanaged(t *testing.T) {
 +	sliceTestConfig(t, true, "15m", "64G")
 +	s := newSliceTestServer()
 +
-+	if got := s.sliceRequest(cgroups.PhaseSteady); got.Slice == "" {
-+		t.Error("a derived slice should have produced a request")
++	if got := s.sliceRequest(cgroups.PhaseSteady); got.Owner == "" {
++		t.Error("a managed server should have produced a request")
 +	}
 +
 +	sliceTestConfig(t, false, "15m", "64G")
-+	if got := s.sliceRequest(cgroups.PhaseSteady); got.Slice != "" {
-+		t.Errorf("per_server_slices disabled must yield no request, got %q", got.Slice)
++	if got := s.sliceRequest(cgroups.PhaseSteady); got.Owner != "" {
++		t.Errorf("per_server_slices disabled must yield no request, got owner %q", got.Owner)
 +	}
 +}
 +
-+// Placement is create-time only, so once a phase has begun the steady band
-+// must target the slice that phase captured — not whatever the environment
-+// resolves to later, which a Panel sync can change mid-startup.
-+func TestSlicePhasePinsTheSliceItBeganWith(t *testing.T) {
++// The startup phase is a simple in-progress flag now. The retired per-server
++// slice design had to pin the slice a phase began with, because placement was
++// fixed at container-create time and a Panel sync could change
++// WINGS_CGROUP_PARENT mid-startup, leaving the steady band on a unit the
++// container was not in. There is nothing to pin any more: the scope name is
++// read back from the container that actually exists when the steady band is
++// applied, so it cannot drift away from reality in the first place.
++func TestSlicePhaseTracksWhetherItIsInProgress(t *testing.T) {
 +	sliceTestConfig(t, true, "15m", "64G")
 +	s := newSliceTestServer()
 +
-+	if got := s.pinnedSlice(); got != "" {
-+		t.Errorf("no phase in progress must pin nothing, got %q", got)
++	if s.slicePhaseInProgress() {
++		t.Error("no phase should be in progress before one begins")
 +	}
 +	s.beginSlicePhase()
-+	want := s.sliceRequest(cgroups.PhaseSteady).Slice
-+	if got := s.pinnedSlice(); got != want {
-+		t.Errorf("pinned slice = %q, want %q", got, want)
++	if !s.slicePhaseInProgress() {
++		t.Error("beginSlicePhase must mark a phase in progress")
 +	}
 +	s.endSlicePhase()
-+	if got := s.pinnedSlice(); got != "" {
-+		t.Errorf("ended phase must clear the pin, got %q", got)
++	if s.slicePhaseInProgress() {
++		t.Error("ended phase must clear the in-progress flag")
 +	}
 +}
 +
@@ -1818,17 +1867,17 @@ index 0000000..ba28966
 +	}
 +	// The Panel's running state arrives first and must be ignored.
 +	s.onSliceStateChange("running")
-+	if !s.hasSliceMatcher() || s.pinnedSlice() == "" {
++	if !s.hasSliceMatcher() || !s.slicePhaseInProgress() {
 +		t.Error("running state ended the phase despite an explicit trigger")
 +	}
 +	// A non-matching line changes nothing.
 +	s.matchSliceSteady([]byte("Create Dungeon Successed"))
-+	if s.pinnedSlice() == "" {
++	if !s.slicePhaseInProgress() {
 +		t.Error("a non-matching console line ended the phase")
 +	}
 +	// The trigger line ends it.
 +	s.matchSliceSteady([]byte("[SERVER_LIST] try registe server ... succeed!"))
-+	if s.pinnedSlice() != "" || s.hasSliceMatcher() {
++	if s.slicePhaseInProgress() || s.hasSliceMatcher() {
 +		t.Error("the trigger line did not end the startup phase")
 +	}
 +}
@@ -1842,7 +1891,7 @@ index 0000000..ba28966
 +		t.Fatal("no trigger configured, yet one is in effect")
 +	}
 +	s.onSliceStateChange("running")
-+	if s.pinnedSlice() != "" {
++	if s.slicePhaseInProgress() {
 +		t.Error("running state should have ended the phase")
 +	}
 +}

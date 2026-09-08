@@ -1,0 +1,1879 @@
+From 58d8ee8dc0b3af8f7577af9b127d437e1ba79a09 Mon Sep 17 00:00:00 2001
+From: Volker Badziong <development@richtfest.tech>
+Date: Fri, 17 Jul 2026 06:38:24 +0000
+Subject: [PATCH 4/9] Manage per-server container scope properties via systemd
+ D-Bus
+
+With docker.per_server_slices.enabled, Wings applies each server's cgroup v2
+resource properties -- memory.min/low/high/max floors and ceilings, cpu/io
+weights -- directly to the docker-<id>.scope unit systemd creates for that
+server's container, merging node-wide defaults with admin-only per-server
+WINGS_CG_* overrides. Placement stays flat: containers are created under
+docker.cgroup_parent itself, with no Wings-owned unit in between.
+
+The scope is the leaf: the container's pages are charged to it, so a floor
+set there is unconditionally effective. Setting the floor on an intermediate
+parent slice instead only reaches the container when cgroup2 is mounted with
+memory_recursiveprot, a host-wide flag a runtime remount can strip -- after
+which every floor silently protects nothing while systemctl show and the
+cgroupfs file both still report the configured number.
+
+Properties go exclusively through SetUnitProperties(runtime=true), the
+reload-safe systemd-owned channel; raw cgroupfs writes can be wiped by
+daemon-reload. Wings never creates a unit here, which is what removes the
+whole class of lifecycle work the parent-slice design needed: no
+StartTransientUnit, no orphan garbage collection at boot, and no
+transient-versus-administrator-owned discrimination, because there is no
+longer a unit that systemd could auto-materialize ahead of Wings.
+
+The one cost is timing. A scope does not exist until the container's init
+process is launched, so the properties are applied immediately after
+ContainerStart() rather than before ContainerCreate(). The container runs
+unprotected for the few milliseconds in between; that window is bounded by
+process startup rather than by workload and is accepted deliberately.
+
+No budget arithmetic. Floors are applied exactly as configured, and an
+over-committed tier is resolved by the kernel, which shares the parent
+slice's protection among its children in proportion to each one's usage
+below its own floor -- load-following, and no Wings code. What Wings keeps
+is the tripwire: it sums the floors it has applied and compares them against
+the tier slice's own MemoryMin, logging when they exceed it, because at that
+point the configured floors have stopped being individual guarantees and
+only the tier total still is.
+
+Property management is strictly best-effort: D-Bus failures degrade to plain
+placement with a logged warning and never block a server. An explicit
+WINGS_CGROUP_PARENT override remains supported and marks the server
+hand-managed (only explicit WINGS_CG_* values applied, never node defaults,
+and left out of the node's floor ledger); overriding with exactly the
+node-wide value opts a server out entirely.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PgCYRx4mTFsr4wtxuHCVXH
+---
+ cmd/root.go                          |   3 +
+ config/config_docker.go              | 151 ++++++++++++++++-
+ config/config_docker_slices_test.go  | 172 +++++++++++++++++++
+ environment/docker/container.go      |  22 ++-
+ environment/docker/power.go          |   7 +
+ environment/docker/scope.go          |  61 +++++++
+ go.mod                               |   6 +-
+ go.sum                               |   5 +
+ internal/cgroups/cgroups.go          | 241 +++++++++++++++++++++++++++
+ internal/cgroups/cgroups_test.go     | 163 ++++++++++++++++++
+ internal/cgroups/ensure.go           |  93 +++++++++++
+ internal/cgroups/integration_test.go | 215 ++++++++++++++++++++++++
+ internal/cgroups/scope.go            |  98 +++++++++++
+ internal/cgroups/scope_test.go       |  96 +++++++++++
+ internal/cgroups/sysd.go             | 231 +++++++++++++++++++++++++
+ server/install.go                    |  16 +-
+ 16 files changed, 1562 insertions(+), 18 deletions(-)
+ create mode 100644 config/config_docker_slices_test.go
+ create mode 100644 environment/docker/scope.go
+ create mode 100644 internal/cgroups/cgroups.go
+ create mode 100644 internal/cgroups/cgroups_test.go
+ create mode 100644 internal/cgroups/ensure.go
+ create mode 100644 internal/cgroups/integration_test.go
+ create mode 100644 internal/cgroups/scope.go
+ create mode 100644 internal/cgroups/scope_test.go
+ create mode 100644 internal/cgroups/sysd.go
+
+diff --git a/cmd/root.go b/cmd/root.go
+index a645873..c26387e 100644
+--- a/cmd/root.go
++++ b/cmd/root.go
+@@ -411,6 +411,9 @@ func initConfig() {
+ 	if err := config.Get().Docker.ValidateCgroupParent(); err != nil {
+ 		log2.Fatalf("cmd/root: invalid docker configuration: %s", err)
+ 	}
++	if err := config.Get().Docker.ValidatePerServerSlices(); err != nil {
++		log2.Fatalf("cmd/root: invalid docker configuration: %s", err)
++	}
+ 	if debug && !config.Get().Debug {
+ 		config.SetDebugViaFlag(debug)
+ 	}
+diff --git a/config/config_docker.go b/config/config_docker.go
+index b10f00a..23c52d1 100644
+--- a/config/config_docker.go
++++ b/config/config_docker.go
+@@ -12,6 +12,8 @@ import (
+ 	"github.com/distribution/reference"
+ 	"github.com/docker/docker/api/types/container"
+ 	"github.com/docker/docker/api/types/registry"
++
++	"github.com/pterodactyl/wings/internal/cgroups"
+ )
+ 
+ type dockerNetworkInterfaces struct {
+@@ -152,6 +154,14 @@ type DockerConfiguration struct {
+ 	// system.slice.
+ 	AllowedCgroupParents []string `json:"allowed_cgroup_parents" yaml:"allowed_cgroup_parents"`
+ 
++	// PerServerSlices enables automatic per-server slice management: every
++	// server is placed under its own derived slice (see ServerSliceName)
++	// nested inside CgroupParent, and Wings creates/reconciles that slice as
++	// a transient systemd unit — with the configured default resource
++	// properties and any per-server WINGS_CG_* overrides — before containers
++	// are created under it.
++	PerServerSlices PerServerSlicesConfiguration `json:"per_server_slices" yaml:"per_server_slices"`
++
+ 	LogConfig struct {
+ 		Type   string            `default:"local" json:"type" yaml:"type"`
+ 		Config map[string]string `default:"{\"max-size\":\"5m\",\"max-file\":\"1\",\"compress\":\"false\",\"mode\":\"non-blocking\"}" json:"config" yaml:"config"`
+@@ -164,6 +174,44 @@ func (c DockerConfiguration) CpuPeriodMicroseconds() int64 {
+ 	return min(max(c.CpuPeriod, 1_000), 1_000_000)
+ }
+ 
++// DockerSliceDefaults are the node-wide default resource properties applied
++// to every Wings-derived per-server slice. Sizes use single-letter binary
++// suffixes ("6G", "512M") or plain byte counts; empty means "no default".
++// Weights are the systemd cgroup weight range 1..10000; 0 means "no default".
++// A per-server WINGS_CG_* environment variable overrides the corresponding
++// default for that server only.
++type DockerSliceDefaults struct {
++	MemoryMin  string `default:"" json:"memory_min" yaml:"memory_min"`
++	MemoryLow  string `default:"" json:"memory_low" yaml:"memory_low"`
++	MemoryHigh string `default:"" json:"memory_high" yaml:"memory_high"`
++	MemoryMax  string `default:"" json:"memory_max" yaml:"memory_max"`
++	CPUWeight  uint64 `default:"0" json:"cpu_weight" yaml:"cpu_weight"`
++	IOWeight   uint64 `default:"0" json:"io_weight" yaml:"io_weight"`
++}
++
++// PerServerSlicesConfiguration configures per-server cgroup property
++// management (docker.per_server_slices). Requires CgroupParent to be set:
++// containers are placed flat under it, and the properties are applied to each
++// container's own docker-<id>.scope inside it.
++//
++// The block keeps its historical name for configuration compatibility even
++// though Wings no longer creates a slice per server. There is no budget knob
++// here on purpose: floors are applied exactly as configured and an
++// over-committed tier is arbitrated by the kernel, which shares the tier
++// slice's protection out in proportion to each child's usage below its own
++// floor. Wings only reports the condition; see cgroups.Result.Overcommit.
++type PerServerSlicesConfiguration struct {
++	Enabled bool `default:"false" json:"enabled" yaml:"enabled"`
++
++	// Defaults are applied to every managed container scope; individual
++	// servers may override single properties through admin-only WINGS_CG_*
++	// variables. A server pinned to an administrator-managed slice by an
++	// explicit WINGS_CGROUP_PARENT override receives only its explicit
++	// WINGS_CG_* values, never these defaults — that slice's policy is the
++	// administrator's.
++	Defaults DockerSliceDefaults `json:"defaults" yaml:"defaults"`
++}
++
+ func (c DockerConfiguration) ContainerLogConfig() container.LogConfig {
+ 	if c.LogConfig.Type == "" {
+ 		return container.LogConfig{}
+@@ -224,12 +272,7 @@ const CgroupParentOverrideEnv = "WINGS_CGROUP_PARENT"
+ // default is returned together with an error describing the rejection so that
+ // callers can log it. The returned string is always safe to use.
+ func (c DockerConfiguration) ResolveCgroupParent(env []string) (string, error) {
+-	override := ""
+-	for _, v := range env {
+-		if val, ok := strings.CutPrefix(v, CgroupParentOverrideEnv+"="); ok {
+-			override = val
+-		}
+-	}
++	override := cgroupParentOverride(env)
+ 	if override == "" || override == c.CgroupParent {
+ 		return c.CgroupParent, nil
+ 	}
+@@ -250,6 +293,102 @@ func (c DockerConfiguration) ResolveCgroupParent(env []string) (string, error) {
+ 	return c.CgroupParent, errors.New(CgroupParentOverrideEnv + " override " + strconv.Quote(override) + " is outside the built-in wings-*.slice namespace and docker.allowed_cgroup_parents is not configured")
+ }
+ 
++// cgroupParentOverride extracts the raw (unvalidated) WINGS_CGROUP_PARENT
++// value from a resolved server environment; the last occurrence wins.
++func cgroupParentOverride(env []string) string {
++	override := ""
++	for _, v := range env {
++		if val, ok := strings.CutPrefix(v, CgroupParentOverrideEnv+"="); ok {
++			override = val
++		}
++	}
++	return override
++}
++
++// ResolveServerCgroupParent resolves the cgroup parent a server's containers
++// are created under, and reports whether Wings should manage the resource
++// properties of the container scope that ends up inside it.
++//
++// Placement itself is flat and unchanged by per-server management: every
++// container goes directly under the node-wide CgroupParent unless an explicit
++// admin-only WINGS_CGROUP_PARENT override names a different, allow-listed
++// slice. Rejected overrides fail closed to the node-wide value and are
++// reported through err.
++//
++// The managed return value reports whether Wings applies this server's
++// resource properties to its container scope once the container is running
++// (see cgroups.Apply). Setting WINGS_CGROUP_PARENT to exactly the node-wide
++// CgroupParent value remains the documented per-server opt-out gesture: it
++// changes nothing about placement and now means "leave this server's cgroup
++// properties alone entirely".
++func (c DockerConfiguration) ResolveServerCgroupParent(env []string) (parent string, managed bool, err error) {
++	parent, err = c.ResolveCgroupParent(env)
++	if !c.PerServerSlices.Enabled || c.CgroupParent == "" {
++		return parent, false, err
++	}
++	if override := cgroupParentOverride(env); override != "" && override == c.CgroupParent {
++		// Explicit opt-out.
++		return c.CgroupParent, false, nil
++	}
++	return parent, true, err
++}
++
++// ValidatePerServerSlices sanity-checks the docker.per_server_slices block at
++// startup so misconfiguration fails loudly at boot instead of surfacing as
++// per-server warnings at container start.
++func (c DockerConfiguration) ValidatePerServerSlices() error {
++	s := c.PerServerSlices
++	if !s.Enabled {
++		return nil
++	}
++	if c.CgroupParent == "" {
++		return errors.New("docker.per_server_slices requires docker.cgroup_parent to be set: it is the tier the managed container scopes are placed under, and the tier whose own MemoryMin the per-server floors are reported against")
++	}
++	if _, errs := c.SliceDefaults().Props(); len(errs) > 0 {
++		return errors.Wrap(errs[0], "docker.per_server_slices.defaults")
++	}
++	return nil
++}
++
++// SliceDefaults converts the configured per-server slice defaults into the
++// internal/cgroups representation.
++func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
++	d := c.PerServerSlices.Defaults
++	return cgroups.Defaults{
++		MemoryMin:  d.MemoryMin,
++		MemoryLow:  d.MemoryLow,
++		MemoryHigh: d.MemoryHigh,
++		MemoryMax:  d.MemoryMax,
++		CPUWeight:  d.CPUWeight,
++		IOWeight:   d.IOWeight,
++	}
++}
++
++// ScopeEnsureRequest assembles the cgroups.EnsureForServer request for a
++// running server: uuid identifies the server, containerID is its live Docker
++// container id (the scope unit name is derived from it), and parent is the
++// slice the container was actually placed under, as returned by
++// ResolveServerCgroupParent.
++//
++// The node-wide defaults apply only when the server sits under the node-wide
++// CgroupParent. A server pinned elsewhere by WINGS_CGROUP_PARENT gets its
++// explicit WINGS_CG_* values only, and is left out of the floor ledger: its
++// floors draw on that administrator's slice, not on this node's tier.
++func (c DockerConfiguration) ScopeEnsureRequest(uuid, containerID, parent string, env []string) cgroups.EnsureRequest {
++	onNodeTier := parent == c.CgroupParent
++	req := cgroups.EnsureRequest{
++		Scope:         cgroups.ScopeName(containerID),
++		Owner:         uuid,
++		ApplyDefaults: onNodeTier,
++		Defaults:      c.SliceDefaults(),
++		Env:           env,
++	}
++	if onNodeTier {
++		req.Parent = c.CgroupParent
++	}
++	return req
++}
++
+ // RegistryCredentialsForImage returns registry credentials for an image only
+ // when the configured registry and image reference share the same registry
+ // identity.
+diff --git a/config/config_docker_slices_test.go b/config/config_docker_slices_test.go
+new file mode 100644
+index 0000000..bd45c50
+--- /dev/null
++++ b/config/config_docker_slices_test.go
+@@ -0,0 +1,172 @@
++package config
++
++import (
++	"testing"
++)
++
++const testUUID = "b87c0a5b-2387-4a1c-8863-ff23e6800a1d"
++const testContainerID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
++const testScope = "docker-" + testContainerID + ".scope"
++
++func slicesConfig(enabled bool) DockerConfiguration {
++	c := DockerConfiguration{CgroupParent: "wings.slice"}
++	c.PerServerSlices.Enabled = enabled
++	return c
++}
++
++// Placement is flat and identical whether or not per-server management is on:
++// the whole point of the scope-targeted design is that Wings inserts no unit
++// of its own between the tier slice and the container.
++func TestResolveServerCgroupParentPlacementIsFlat(t *testing.T) {
++	for _, enabled := range []bool{false, true} {
++		c := slicesConfig(enabled)
++		parent, managed, err := c.ResolveServerCgroupParent(nil)
++		if err != nil {
++			t.Fatalf("enabled=%v: unexpected error: %v", enabled, err)
++		}
++		if parent != "wings.slice" {
++			t.Errorf("enabled=%v: parent = %q, want wings.slice", enabled, parent)
++		}
++		if managed != enabled {
++			t.Errorf("enabled=%v: managed = %v, want %v", enabled, managed, enabled)
++		}
++	}
++}
++
++func TestResolveServerCgroupParentRequiresANodeParent(t *testing.T) {
++	c := slicesConfig(true)
++	c.CgroupParent = ""
++	parent, managed, err := c.ResolveServerCgroupParent(nil)
++	if err != nil || parent != "" {
++		t.Fatalf("parent = %q, err = %v", parent, err)
++	}
++	if managed {
++		t.Error("with no node cgroup_parent there is no tier to manage against")
++	}
++}
++
++func TestResolveServerCgroupParentAcceptedOverride(t *testing.T) {
++	c := slicesConfig(true)
++	env := []string{"WINGS_CGROUP_PARENT=wings-manual.slice"}
++	parent, managed, err := c.ResolveServerCgroupParent(env)
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if parent != "wings-manual.slice" {
++		t.Errorf("parent = %q, want wings-manual.slice", parent)
++	}
++	if !managed {
++		t.Error("an accepted override still gets its explicit WINGS_CG_* properties applied")
++	}
++}
++
++// Setting the override to exactly the node-wide value changes nothing about
++// placement; it is the documented per-server opt-out gesture and must switch
++// property management off.
++func TestResolveServerCgroupParentOptOut(t *testing.T) {
++	c := slicesConfig(true)
++	env := []string{"WINGS_CGROUP_PARENT=wings.slice"}
++	parent, managed, err := c.ResolveServerCgroupParent(env)
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++	if parent != "wings.slice" {
++		t.Errorf("parent = %q, want wings.slice", parent)
++	}
++	if managed {
++		t.Error("opt-out must disable per-server property management")
++	}
++}
++
++// A rejected override fails closed to the node-wide parent and is still
++// reported, but the server stays managed: refusing the placement must not also
++// silently strip the resource policy the egg asked for.
++func TestResolveServerCgroupParentRejectedOverrideFailsClosed(t *testing.T) {
++	c := slicesConfig(true)
++	env := []string{"WINGS_CGROUP_PARENT=system.slice"}
++	parent, managed, err := c.ResolveServerCgroupParent(env)
++	if err == nil {
++		t.Fatal("expected a rejection error for system.slice")
++	}
++	if parent != "wings.slice" {
++		t.Errorf("parent = %q, want the node-wide wings.slice", parent)
++	}
++	if !managed {
++		t.Error("a rejected override must still leave the server managed on the node tier")
++	}
++}
++
++func TestValidatePerServerSlices(t *testing.T) {
++	// Disabled: nothing is checked.
++	c := slicesConfig(false)
++	c.CgroupParent = ""
++	if err := c.ValidatePerServerSlices(); err != nil {
++		t.Errorf("disabled block must validate: %v", err)
++	}
++
++	// Enabled without a node parent: there is no tier to place under or to
++	// report floors against.
++	c = slicesConfig(true)
++	c.CgroupParent = ""
++	if err := c.ValidatePerServerSlices(); err == nil {
++		t.Error("expected an error when cgroup_parent is unset")
++	}
++
++	// Enabled with a bad default value.
++	c = slicesConfig(true)
++	c.PerServerSlices.Defaults.MemoryMin = "not-a-size"
++	if err := c.ValidatePerServerSlices(); err == nil {
++		t.Error("expected an error for an unparseable default")
++	}
++
++	// Enabled and well-formed.
++	c = slicesConfig(true)
++	c.PerServerSlices.Defaults.MemoryMin = "512M"
++	c.PerServerSlices.Defaults.CPUWeight = 800
++	if err := c.ValidatePerServerSlices(); err != nil {
++		t.Errorf("valid block rejected: %v", err)
++	}
++}
++
++func TestScopeEnsureRequestOnNodeTier(t *testing.T) {
++	c := slicesConfig(true)
++	c.PerServerSlices.Defaults.MemoryMin = "512M"
++	req := c.ScopeEnsureRequest(testUUID, testContainerID, "wings.slice", nil)
++
++	if req.Scope != testScope {
++		t.Errorf("Scope = %q, want %q", req.Scope, testScope)
++	}
++	if req.Owner != testUUID {
++		t.Errorf("Owner = %q, want %q", req.Owner, testUUID)
++	}
++	if !req.ApplyDefaults {
++		t.Error("a server on the node tier receives the node-wide defaults")
++	}
++	if req.Parent != "wings.slice" {
++		t.Errorf("Parent = %q, want wings.slice (the tripwire tier)", req.Parent)
++	}
++}
++
++// A server pinned to an administrator's own slice gets its explicit
++// WINGS_CG_* values only, and is left out of this node's floor ledger: its
++// floors draw on that slice's budget, not on the node tier's.
++func TestScopeEnsureRequestUnderAnOverrideSlice(t *testing.T) {
++	c := slicesConfig(true)
++	c.PerServerSlices.Defaults.MemoryMin = "512M"
++	req := c.ScopeEnsureRequest(testUUID, testContainerID, "wings-manual.slice", nil)
++
++	if req.ApplyDefaults {
++		t.Error("node defaults must not be stamped onto a scope inside an override slice")
++	}
++	if req.Parent != "" {
++		t.Errorf("Parent = %q, want \"\" so the node-tier tripwire stays out of it", req.Parent)
++	}
++}
++
++func TestScopeEnsureRequestRejectsAnUnusableContainerID(t *testing.T) {
++	c := slicesConfig(true)
++	req := c.ScopeEnsureRequest(testUUID, testContainerID[:12], "wings.slice", nil)
++	if req.Scope != "" {
++		t.Errorf("Scope = %q, want \"\" for a short container id", req.Scope)
++	}
++}
+diff --git a/environment/docker/container.go b/environment/docker/container.go
+index d38ddb0..ea5b175 100644
+--- a/environment/docker/container.go
++++ b/environment/docker/container.go
+@@ -20,6 +20,7 @@ import (
+ 
+ 	"github.com/pterodactyl/wings/config"
+ 	"github.com/pterodactyl/wings/environment"
++	"github.com/pterodactyl/wings/internal/cgroups"
+ 	"github.com/pterodactyl/wings/system"
+ )
+ 
+@@ -172,12 +173,15 @@ func (e *Environment) Create() error {
+ 		}
+ 	}
+ 
+-	// Resolve the cgroup parent this container should be created under: the
+-	// node-wide docker.cgroup_parent by default, optionally overridden for
+-	// this server through the reserved, admin-only WINGS_CGROUP_PARENT
+-	// environment variable. Rejected overrides fail closed to the node-wide
+-	// value. See config.DockerConfiguration.ResolveCgroupParent.
+-	cgroupParent, err := cfg.Docker.ResolveCgroupParent(evs)
++	// Resolve the cgroup parent this container should be created under: an
++	// admin-only, allow-listed WINGS_CGROUP_PARENT override if one is set,
++	// otherwise the node-wide docker.cgroup_parent. Rejected overrides fail
++	// closed. Placement is flat — Wings creates no intermediate slice — so
++	// this is the whole of the create-time cgroup work. The per-server
++	// resource properties are applied later, to the container's own
++	// docker-<id>.scope, once systemd has created it; see
++	// Environment.applyScopeProps.
++	cgroupParent, _, err := cfg.Docker.ResolveServerCgroupParent(evs)
+ 	if err != nil {
+ 		e.log().WithField("cgroup_parent", cgroupParent).WithError(err).Warn("environment/docker: rejected per-server cgroup parent override")
+ 	}
+@@ -305,6 +309,12 @@ func (e *Environment) Destroy() error {
+ 
+ 	e.SetState(environment.ProcessOfflineState)
+ 
++	// The server is gone for good. There is no unit to clean up — the
++	// container's docker-<id>.scope is systemd's and dies with the container —
++	// so the only thing to release is this server's entry in the memory.min
++	// floor ledger that backs the tier-overcommit warning.
++	cgroups.ForgetServer(e.Id)
++
+ 	// Don't trigger a destroy failure if we try to delete a container that does not
+ 	// exist on the system. We're just a step ahead of ourselves in that case.
+ 	//
+diff --git a/environment/docker/power.go b/environment/docker/power.go
+index 34570a3..acf2154 100644
+--- a/environment/docker/power.go
++++ b/environment/docker/power.go
+@@ -78,6 +78,12 @@ func (e *Environment) Start(ctx context.Context) error {
+ 		if c.State.Running {
+ 			e.SetState(environment.ProcessRunningState)
+ 			e.applyCpuBurst(ctx)
++			// Re-assert the scope properties when re-attaching to a container
++			// that outlived the Wings process. The values are systemd-owned
++			// and normally still in place, but this is the only point at which
++			// Wings can notice and repair drift on a container it did not
++			// start itself.
++			e.applyScopeProps(ctx)
+ 
+ 			return e.Attach(ctx)
+ 		}
+@@ -126,6 +132,7 @@ func (e *Environment) Start(ctx context.Context) error {
+ 	}
+ 
+ 	e.applyCpuBurst(actx)
++	e.applyScopeProps(actx)
+ 
+ 	// No errors, good to continue through.
+ 	sawError = false
+diff --git a/environment/docker/scope.go b/environment/docker/scope.go
+new file mode 100644
+index 0000000..b70a319
+--- /dev/null
++++ b/environment/docker/scope.go
+@@ -0,0 +1,61 @@
++package docker
++
++import (
++	"context"
++
++	"github.com/pterodactyl/wings/config"
++	"github.com/pterodactyl/wings/internal/cgroups"
++)
++
++// applyScopeProps applies this server's configured cgroup resource properties
++// to the systemd scope unit backing its container.
++//
++// Why this runs after the container has been started, and not at create time:
++// with the systemd cgroup driver the docker-<id>.scope unit does not exist
++// until the container's init process is actually launched. There is nothing to
++// set properties on before ContainerStart() returns. The consequence is a
++// window of a few milliseconds in which the container's processes run charged
++// to a scope that carries no floors and no ceilings; that window is accepted
++// deliberately. It is bounded by process startup rather than by workload, and a
++// game server does not reach a memory footprint worth protecting inside it.
++//
++// The previous design avoided the window by creating a Wings-owned slice ahead
++// of the container and placing the container inside it, at the cost of a unit
++// whose lifecycle Wings had to own: orphan garbage collection at boot,
++// transient-versus-administrator discrimination, and a dependency on the
++// cgroup2 memory_recursiveprot mount flag for the floors to reach the
++// container's own cgroup at all. Setting the properties on the leaf scope
++// removes all three.
++//
++// Strictly best-effort: every failure is logged and none of them affect the
++// server, which runs under the node tier slice either way.
++func (e *Environment) applyScopeProps(ctx context.Context) {
++	cfg := config.Get()
++	if !cfg.Docker.PerServerSlices.Enabled {
++		return
++	}
++
++	evs := e.Configuration.EnvironmentVariables()
++	parent, managed, err := cfg.Docker.ResolveServerCgroupParent(evs)
++	if err != nil {
++		e.log().WithField("cgroup_parent", parent).WithError(err).Warn("environment/docker: rejected per-server cgroup parent override")
++	}
++	if !managed {
++		return
++	}
++
++	c, err := e.ContainerInspect(ctx)
++	if err != nil {
++		e.log().WithError(err).Warn("cgroups: could not inspect container to resolve its systemd scope; resource properties not applied")
++		return
++	}
++
++	req := cfg.Docker.ScopeEnsureRequest(e.Id, c.ID, parent, evs)
++	if req.Scope == "" {
++		// ScopeName rejected the container id. Nothing sane to do: issuing
++		// property calls against a guessed unit name would silently do nothing.
++		e.log().WithField("container_id", c.ID).Warn("cgroups: could not derive a systemd scope unit name for this container; resource properties not applied")
++		return
++	}
++	cgroups.EnsureForServer(ctx, e.log(), req)
++}
+diff --git a/go.mod b/go.mod
+index 6ed6d60..3b5d669 100644
+--- a/go.mod
++++ b/go.mod
+@@ -15,7 +15,9 @@ require (
+ 	github.com/beevik/etree v1.5.0
+ 	github.com/buger/jsonparser v1.1.1
+ 	github.com/cenkalti/backoff/v4 v4.3.0
++	github.com/coreos/go-systemd/v22 v22.5.0
+ 	github.com/creasty/defaults v1.8.0
++	github.com/distribution/reference v0.6.0
+ 	github.com/docker/docker v28.3.3+incompatible
+ 	github.com/docker/go-connections v0.5.0
+ 	github.com/fatih/color v1.18.0
+@@ -26,6 +28,7 @@ require (
+ 	github.com/gin-gonic/gin v1.10.1
+ 	github.com/glebarez/sqlite v1.11.0
+ 	github.com/go-co-op/gocron v1.37.0
++	github.com/godbus/dbus/v5 v5.1.0
+ 	github.com/google/uuid v1.6.0
+ 	github.com/gorilla/websocket v1.5.3
+ 	github.com/iancoleman/strcase v0.3.0
+@@ -45,6 +48,7 @@ require (
+ 	golang.org/x/crypto v0.46.0
+ 	golang.org/x/sync v0.19.0
+ 	golang.org/x/sys v0.39.0
++	golang.org/x/time v0.0.0-20220922220347-f3bd1da661af
+ 	gopkg.in/ini.v1 v1.67.0
+ 	gopkg.in/yaml.v2 v2.4.0
+ 	gopkg.in/yaml.v3 v3.0.1
+@@ -66,7 +70,6 @@ require (
+ 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
+ 	github.com/containerd/log v0.1.0 // indirect
+ 	github.com/davecgh/go-spew v1.1.1 // indirect
+-	github.com/distribution/reference v0.6.0 // indirect
+ 	github.com/docker/go-units v0.5.0 // indirect
+ 	github.com/dsnet/compress v0.0.2-0.20230904184137-39efe44ab707 // indirect
+ 	github.com/dustin/go-humanize v1.0.1 // indirect
+@@ -132,7 +135,6 @@ require (
+ 	golang.org/x/net v0.47.0 // indirect
+ 	golang.org/x/term v0.38.0 // indirect
+ 	golang.org/x/text v0.32.0 // indirect
+-	golang.org/x/time v0.0.0-20220922220347-f3bd1da661af // indirect
+ 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
+ 	google.golang.org/protobuf v1.36.5 // indirect
+ 	gotest.tools/v3 v3.0.2 // indirect
+diff --git a/go.sum b/go.sum
+index 9e2465a..0708c88 100644
+--- a/go.sum
++++ b/go.sum
+@@ -80,6 +80,8 @@ github.com/containerd/errdefs/pkg v0.3.0 h1:9IKJ06FvyNlexW690DXuQNx2KA2cUJXx151X
+ github.com/containerd/errdefs/pkg v0.3.0/go.mod h1:NJw6s9HwNuRhnjJhM7pylWwMyAkmCQvQ4GpJHEqRLVk=
+ github.com/containerd/log v0.1.0 h1:TCJt7ioM2cr/tfR8GPbGf9/VRAX8D2B4PjzCpfX540I=
+ github.com/containerd/log v0.1.0/go.mod h1:VRRf09a7mHDIRezVKTRCrOq78v577GXq3bSa3EhrzVo=
++github.com/coreos/go-systemd/v22 v22.5.0 h1:RrqgGjYQKalulkV8NGVIfkXQf6YYmOyiJKk8iXXhfZs=
++github.com/coreos/go-systemd/v22 v22.5.0/go.mod h1:Y58oyj3AT4RCenI/lSvhwexgC+NSVTIJ3seZv2GcEnc=
+ github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
+ github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
+ github.com/creack/pty v1.1.11/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
+@@ -149,6 +151,9 @@ github.com/go-playground/validator/v10 v10.25.0 h1:5Dh7cjvzR7BRZadnsVOzPhWsrwUr0
+ github.com/go-playground/validator/v10 v10.25.0/go.mod h1:GGzBIJMuE98Ic/kJsBXbz1x/7cByt++cQ+YOuDM5wus=
+ github.com/goccy/go-json v0.10.5 h1:Fq85nIqj+gXn/S5ahsiTlK3TmC85qgirsdTP/+DeaC4=
+ github.com/goccy/go-json v0.10.5/go.mod h1:oq7eo15ShAhp70Anwd5lgX2pLfOS3QCiwU/PULtXL6M=
++github.com/godbus/dbus/v5 v5.0.4/go.mod h1:xhWf0FNVPg57R7Z0UbKHbJfkEywrmjJnf7w5xrFpKfA=
++github.com/godbus/dbus/v5 v5.1.0 h1:4KLkAxT3aOY8Li4FRJe/KvhoNFFxo0m6fNuFUO8QJUk=
++github.com/godbus/dbus/v5 v5.1.0/go.mod h1:xhWf0FNVPg57R7Z0UbKHbJfkEywrmjJnf7w5xrFpKfA=
+ github.com/gogo/protobuf v1.3.2 h1:Ov1cvc58UF3b5XjBnZv7+opcTcQFZebYjWzi34vdm4Q=
+ github.com/gogo/protobuf v1.3.2/go.mod h1:P1XiOD3dCwIKUDQYPy72D8LYyHL2YPYrpS2s69NZV8Q=
+ github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b/go.mod h1:SBH7ygxi8pfUlaOkMMuAQtPIUF8ecWP5IEl/CR7VP2Q=
+diff --git a/internal/cgroups/cgroups.go b/internal/cgroups/cgroups.go
+new file mode 100644
+index 0000000..ee5bd0b
+--- /dev/null
++++ b/internal/cgroups/cgroups.go
+@@ -0,0 +1,241 @@
++// Package cgroups applies per-server cgroup-v2 resource properties to the
++// systemd scope units backing Wings-created containers.
++//
++// Placement (which slice a container is created under) is decided by
++// config.DockerConfiguration and applied through Docker's
++// HostConfig.CgroupParent. It is flat: every container goes directly under the
++// node-wide tier slice, and Wings creates no unit of its own. This package
++// supplies the other half — setting the requested properties
++// (memory.min/low/high/max, cpu.weight, io.weight) on the docker-<id>.scope
++// systemd creates for each container.
++//
++// The scope is deliberately the target rather than an intermediate per-server
++// slice. It is the leaf: the container's pages are charged to it, so a floor
++// set there is unconditionally effective. A floor set on a parent only reaches
++// the container when cgroup2 is mounted with memory_recursiveprot, a host-wide
++// flag a runtime remount can strip — after which every floor silently protects
++// nothing while systemctl show and the cgroupfs file both still report the
++// configured number.
++//
++// Because a scope does not exist until the container's init process is
++// launched, properties are applied immediately after ContainerStart(), not
++// before ContainerCreate(). See Apply for the window that opens and why it is
++// accepted.
++//
++// Properties are applied exclusively through the systemd D-Bus API
++// (SetUnitProperties with runtime=true), never through raw cgroupfs writes:
++// values owned by systemd are re-applied by systemd and survive daemon-reload;
++// raw cgroupfs writes can be wiped by it.
++//
++// Wings performs no budget arithmetic. Floors are applied exactly as
++// configured, and an over-committed tier is arbitrated by the kernel, which
++// shares the tier slice's protection among its children in proportion to each
++// one's usage below its own floor. The only bookkeeping here is the tripwire
++// that reports the condition (see the floor ledger in scope.go).
++package cgroups
++
++import (
++	"math"
++	"strconv"
++	"strings"
++
++	"emperror.dev/errors"
++)
++
++// Per-server environment variables recognized as cgroup property overrides.
++// They are expected to be defined as admin-only egg or server variables in the
++// Panel (user_viewable=false, user_editable=false). Like every server
++// environment variable the values are visible to the server process itself, so
++// they must only ever carry non-secret resource metadata. Wings does not trust
++// them: every value is parsed and validated before use.
++const (
++	EnvMemoryMin  = "WINGS_CG_MEMORY_MIN"
++	EnvMemoryLow  = "WINGS_CG_MEMORY_LOW"
++	EnvMemoryHigh = "WINGS_CG_MEMORY_HIGH"
++	EnvMemoryMax  = "WINGS_CG_MEMORY_MAX"
++	EnvCPUWeight  = "WINGS_CG_CPU_WEIGHT"
++	EnvIOWeight   = "WINGS_CG_IO_WEIGHT"
++)
++
++// Props are the systemd slice properties requested for a per-server slice.
++// Nil means "not requested": the slice keeps whatever systemd default or
++// previously-set value applies to that property.
++type Props struct {
++	MemoryMin  *uint64
++	MemoryLow  *uint64
++	MemoryHigh *uint64
++	MemoryMax  *uint64
++	CPUWeight  *uint64
++	IOWeight   *uint64
++}
++
++// Empty reports whether no property is requested at all.
++func (p Props) Empty() bool {
++	return p.MemoryMin == nil && p.MemoryLow == nil && p.MemoryHigh == nil &&
++		p.MemoryMax == nil && p.CPUWeight == nil && p.IOWeight == nil
++}
++
++// String renders the requested properties for logs.
++func (p Props) String() string {
++	var b strings.Builder
++	add := func(name string, v *uint64) {
++		if v != nil {
++			if b.Len() > 0 {
++				b.WriteByte(' ')
++			}
++			b.WriteString(name)
++			b.WriteByte('=')
++			b.WriteString(strconv.FormatUint(*v, 10))
++		}
++	}
++	add("MemoryMin", p.MemoryMin)
++	add("MemoryLow", p.MemoryLow)
++	add("MemoryHigh", p.MemoryHigh)
++	add("MemoryMax", p.MemoryMax)
++	add("CPUWeight", p.CPUWeight)
++	add("IOWeight", p.IOWeight)
++	if b.Len() == 0 {
++		return "(none)"
++	}
++	return b.String()
++}
++
++// Merge returns base with every property that is set in over replacing the
++// corresponding base property.
++func Merge(base, over Props) Props {
++	pick := func(b, o *uint64) *uint64 {
++		if o != nil {
++			return o
++		}
++		return b
++	}
++	return Props{
++		MemoryMin:  pick(base.MemoryMin, over.MemoryMin),
++		MemoryLow:  pick(base.MemoryLow, over.MemoryLow),
++		MemoryHigh: pick(base.MemoryHigh, over.MemoryHigh),
++		MemoryMax:  pick(base.MemoryMax, over.MemoryMax),
++		CPUWeight:  pick(base.CPUWeight, over.CPUWeight),
++		IOWeight:   pick(base.IOWeight, over.IOWeight),
++	}
++}
++
++// FromEnv extracts per-server slice property overrides from a resolved server
++// environment. Unparseable values are reported in errs and skipped; parsing
++// continues so that one bad value never discards the rest of the request.
++func FromEnv(env []string) (props Props, errs []error) {
++	vals := map[string]string{}
++	for _, kv := range env {
++		k, v, ok := strings.Cut(kv, "=")
++		if !ok {
++			continue
++		}
++		switch k {
++		case EnvMemoryMin, EnvMemoryLow, EnvMemoryHigh, EnvMemoryMax, EnvCPUWeight, EnvIOWeight:
++			vals[k] = v
++		}
++	}
++	set := func(name string, dst **uint64, parse func(string) (uint64, error)) {
++		s, ok := vals[name]
++		if !ok || s == "" {
++			return
++		}
++		v, err := parse(s)
++		if err != nil {
++			errs = append(errs, errors.Wrap(err, name))
++			return
++		}
++		*dst = &v
++	}
++	set(EnvMemoryMin, &props.MemoryMin, ParseSize)
++	set(EnvMemoryLow, &props.MemoryLow, ParseSize)
++	set(EnvMemoryHigh, &props.MemoryHigh, ParseSize)
++	set(EnvMemoryMax, &props.MemoryMax, ParseSize)
++	set(EnvCPUWeight, &props.CPUWeight, ParseWeight)
++	set(EnvIOWeight, &props.IOWeight, ParseWeight)
++	return props, errs
++}
++
++// Defaults are node-wide slice property defaults, carried as the raw strings
++// and integers found in the Wings configuration. Zero values mean "no
++// default" for the respective property.
++type Defaults struct {
++	MemoryMin  string
++	MemoryLow  string
++	MemoryHigh string
++	MemoryMax  string
++	CPUWeight  uint64
++	IOWeight   uint64
++}
++
++// Props parses the defaults into a property set. Invalid entries are reported
++// and skipped, mirroring FromEnv; configuration validation at startup should
++// have caught them long before this is ever hit at runtime.
++func (d Defaults) Props() (props Props, errs []error) {
++	set := func(name, s string, dst **uint64) {
++		if s == "" {
++			return
++		}
++		v, err := ParseSize(s)
++		if err != nil {
++			errs = append(errs, errors.Wrap(err, name))
++			return
++		}
++		*dst = &v
++	}
++	set("memory_min", d.MemoryMin, &props.MemoryMin)
++	set("memory_low", d.MemoryLow, &props.MemoryLow)
++	set("memory_high", d.MemoryHigh, &props.MemoryHigh)
++	set("memory_max", d.MemoryMax, &props.MemoryMax)
++	setW := func(name string, w uint64, dst **uint64) {
++		if w == 0 {
++			return
++		}
++		if w > 10000 {
++			errs = append(errs, errors.New(name+": weight out of range 1..10000"))
++			return
++		}
++		v := w
++		*dst = &v
++	}
++	setW("cpu_weight", d.CPUWeight, &props.CPUWeight)
++	setW("io_weight", d.IOWeight, &props.IOWeight)
++	return props, errs
++}
++
++// ParseSize parses "6G", "512M", "1024K" (single-letter binary suffixes,
++// case-insensitive) or a plain byte count into bytes.
++func ParseSize(s string) (uint64, error) {
++	t := strings.TrimSpace(s)
++	if t == "" {
++		return 0, errors.New("empty size")
++	}
++	mult := uint64(1)
++	switch t[len(t)-1] {
++	case 'G', 'g':
++		mult, t = 1<<30, t[:len(t)-1]
++	case 'M', 'm':
++		mult, t = 1<<20, t[:len(t)-1]
++	case 'K', 'k':
++		mult, t = 1<<10, t[:len(t)-1]
++	}
++	n, err := strconv.ParseUint(t, 10, 64)
++	if err != nil {
++		return 0, errors.New("invalid size " + strconv.Quote(s) + " (want e.g. 6G, 512M, 1024K or bytes)")
++	}
++	if mult > 1 && n > math.MaxUint64/mult {
++		return 0, errors.New("size " + strconv.Quote(s) + " overflows")
++	}
++	return n * mult, nil
++}
++
++// ParseWeight parses a systemd cgroup weight (1..10000).
++func ParseWeight(s string) (uint64, error) {
++	n, err := strconv.ParseUint(strings.TrimSpace(s), 10, 64)
++	if err != nil {
++		return 0, errors.New("invalid weight " + strconv.Quote(s))
++	}
++	if n < 1 || n > 10000 {
++		return 0, errors.New("weight " + strconv.FormatUint(n, 10) + " out of range 1..10000")
++	}
++	return n, nil
++}
+diff --git a/internal/cgroups/cgroups_test.go b/internal/cgroups/cgroups_test.go
+new file mode 100644
+index 0000000..fcbc8f3
+--- /dev/null
++++ b/internal/cgroups/cgroups_test.go
+@@ -0,0 +1,163 @@
++package cgroups
++
++import (
++	"testing"
++)
++
++func u64(v uint64) *uint64 { return &v }
++
++func TestParseSize(t *testing.T) {
++	cases := []struct {
++		in      string
++		want    uint64
++		wantErr bool
++	}{
++		{"6G", 6 << 30, false},
++		{"512M", 512 << 20, false},
++		{"1024K", 1 << 20, false},
++		{"123", 123, false},
++		{"6g", 6 << 30, false},
++		{" 8G ", 8 << 30, false},
++		{"", 0, true},
++		{"abc", 0, true},
++		{"6GB", 0, true},
++		{"-1", 0, true},
++		{"99999999999G", 0, true}, // overflow
++	}
++	for _, c := range cases {
++		got, err := ParseSize(c.in)
++		if c.wantErr != (err != nil) {
++			t.Errorf("ParseSize(%q) error = %v, wantErr %v", c.in, err, c.wantErr)
++			continue
++		}
++		if err == nil && got != c.want {
++			t.Errorf("ParseSize(%q) = %d, want %d", c.in, got, c.want)
++		}
++	}
++}
++
++func TestParseWeight(t *testing.T) {
++	for _, c := range []struct {
++		in      string
++		want    uint64
++		wantErr bool
++	}{
++		{"1", 1, false},
++		{"800", 800, false},
++		{"10000", 10000, false},
++		{"0", 0, true},
++		{"10001", 0, true},
++		{"abc", 0, true},
++		{"", 0, true},
++	} {
++		got, err := ParseWeight(c.in)
++		if c.wantErr != (err != nil) {
++			t.Errorf("ParseWeight(%q) error = %v, wantErr %v", c.in, err, c.wantErr)
++			continue
++		}
++		if err == nil && got != c.want {
++			t.Errorf("ParseWeight(%q) = %d, want %d", c.in, got, c.want)
++		}
++	}
++}
++
++func TestFromEnv(t *testing.T) {
++	props, errs := FromEnv([]string{
++		"SERVER_MEMORY=8192",
++		EnvMemoryMin + "=6G",
++		EnvMemoryHigh + "=7G",
++		EnvCPUWeight + "=800",
++		"UNRELATED=x",
++	})
++	if len(errs) != 0 {
++		t.Fatalf("unexpected errors: %v", errs)
++	}
++	if props.MemoryMin == nil || *props.MemoryMin != 6<<30 {
++		t.Errorf("MemoryMin = %v, want 6G", props.MemoryMin)
++	}
++	if props.MemoryHigh == nil || *props.MemoryHigh != 7<<30 {
++		t.Errorf("MemoryHigh = %v, want 7G", props.MemoryHigh)
++	}
++	if props.CPUWeight == nil || *props.CPUWeight != 800 {
++		t.Errorf("CPUWeight = %v, want 800", props.CPUWeight)
++	}
++	if props.MemoryLow != nil || props.MemoryMax != nil || props.IOWeight != nil {
++		t.Errorf("unexpected properties set: %s", props)
++	}
++}
++
++func TestFromEnvBadValueDoesNotDiscardRest(t *testing.T) {
++	props, errs := FromEnv([]string{
++		EnvMemoryMin + "=banana",
++		EnvMemoryHigh + "=1G",
++	})
++	if len(errs) != 1 {
++		t.Fatalf("want exactly one error, got %v", errs)
++	}
++	if props.MemoryMin != nil {
++		t.Error("bad MemoryMin should be skipped")
++	}
++	if props.MemoryHigh == nil || *props.MemoryHigh != 1<<30 {
++		t.Error("valid MemoryHigh should survive a bad sibling value")
++	}
++}
++
++func TestFromEnvLastOccurrenceWins(t *testing.T) {
++	props, errs := FromEnv([]string{EnvMemoryMin + "=1G", EnvMemoryMin + "=2G"})
++	if len(errs) != 0 {
++		t.Fatalf("unexpected errors: %v", errs)
++	}
++	if props.MemoryMin == nil || *props.MemoryMin != 2<<30 {
++		t.Errorf("MemoryMin = %v, want the later 2G", props.MemoryMin)
++	}
++}
++
++func TestMerge(t *testing.T) {
++	base := Props{MemoryMin: u64(1), MemoryHigh: u64(2), CPUWeight: u64(100)}
++	over := Props{MemoryMin: u64(9), IOWeight: u64(500)}
++	got := Merge(base, over)
++	if *got.MemoryMin != 9 {
++		t.Errorf("override must win: MemoryMin = %d", *got.MemoryMin)
++	}
++	if *got.MemoryHigh != 2 || *got.CPUWeight != 100 {
++		t.Error("base values without override must survive")
++	}
++	if *got.IOWeight != 500 {
++		t.Error("override-only values must be picked up")
++	}
++	if got.MemoryLow != nil || got.MemoryMax != nil {
++		t.Error("unset on both sides must stay unset")
++	}
++}
++
++func TestDefaultsProps(t *testing.T) {
++	props, errs := Defaults{MemoryMin: "6G", MemoryHigh: "7G", CPUWeight: 800}.Props()
++	if len(errs) != 0 {
++		t.Fatalf("unexpected errors: %v", errs)
++	}
++	if props.MemoryMin == nil || *props.MemoryMin != 6<<30 ||
++		props.MemoryHigh == nil || *props.MemoryHigh != 7<<30 ||
++		props.CPUWeight == nil || *props.CPUWeight != 800 {
++		t.Errorf("unexpected props: %s", props)
++	}
++	if props.MemoryLow != nil || props.MemoryMax != nil || props.IOWeight != nil {
++		t.Errorf("zero-value defaults must stay unset: %s", props)
++	}
++
++	if _, errs := (Defaults{MemoryMin: "banana"}).Props(); len(errs) != 1 {
++		t.Errorf("invalid default size must be reported, got %v", errs)
++	}
++	if _, errs := (Defaults{CPUWeight: 20000}).Props(); len(errs) != 1 {
++		t.Errorf("out-of-range default weight must be reported, got %v", errs)
++	}
++}
++
++func TestPropsString(t *testing.T) {
++	if s := (Props{}).String(); s != "(none)" {
++		t.Errorf("empty props = %q", s)
++	}
++	p := Props{MemoryMin: u64(64 << 20), CPUWeight: u64(800)}
++	if s := p.String(); s != "MemoryMin=67108864 CPUWeight=800" {
++		t.Errorf("props string = %q", s)
++	}
++}
+diff --git a/internal/cgroups/ensure.go b/internal/cgroups/ensure.go
+new file mode 100644
+index 0000000..7c82e2c
+--- /dev/null
++++ b/internal/cgroups/ensure.go
+@@ -0,0 +1,93 @@
++package cgroups
++
++import (
++	"context"
++	"time"
++
++	"github.com/apex/log"
++)
++
++// ensureTimeout bounds a single systemd D-Bus round trip. Scope property
++// management is best-effort decoration of a server start and must never stall
++// it.
++const ensureTimeout = 10 * time.Second
++
++// EnsureRequest carries everything needed to apply one server's cgroup
++// properties. It is normally built by
++// config.DockerConfiguration.ScopeEnsureRequest.
++type EnsureRequest struct {
++	// Scope is the systemd scope unit the properties are set on:
++	// docker-<container id>.scope. Empty means there is nothing to manage.
++	Scope string
++	// Owner is the server UUID. Used as the floor-ledger key only.
++	Owner string
++	// Parent is the node-wide tier slice (docker.cgroup_parent) whose own
++	// MemoryMin the summed floors are compared against, or "" for a server
++	// pinned elsewhere by WINGS_CGROUP_PARENT.
++	Parent string
++	// ApplyDefaults reports whether this server sits under the node-wide
++	// docker.cgroup_parent, in which case the node-wide property defaults
++	// apply beneath its per-server WINGS_CG_* overrides. A server pinned to an
++	// administrator-managed slice by WINGS_CGROUP_PARENT gets only its
++	// explicit WINGS_CG_* values: that slice's policy is the administrator's,
++	// and quietly stamping node defaults onto a scope inside it would fight
++	// the very override that was asked for.
++	ApplyDefaults bool
++	// Defaults are the node-wide property defaults.
++	Defaults Defaults
++	// Env is the resolved server environment, the source of the per-server
++	// WINGS_CG_* property overrides.
++	Env []string
++}
++
++// props resolves the property band for the request.
++func (req EnsureRequest) props() (Props, []error) {
++	props, errs := FromEnv(req.Env)
++	if req.ApplyDefaults {
++		defaults, derrs := req.Defaults.Props()
++		errs = append(errs, derrs...)
++		props = Merge(defaults, props)
++	}
++	return props, errs
++}
++
++// EnsureForServer applies a server's resource properties to its container
++// scope, logging instead of failing. A D-Bus failure degrades to plain
++// placement: the container still runs under the node tier slice, just without
++// its own guarantees, and the emitted warning is what tells the administrator
++// exactly that.
++func EnsureForServer(ctx context.Context, l *log.Entry, req EnsureRequest) {
++	props, errs := req.props()
++	l = l.WithField("scope", req.Scope)
++	for _, err := range errs {
++		l.WithError(err).Warn("cgroups: ignoring invalid per-server cgroup property")
++	}
++	if props.Empty() {
++		return
++	}
++
++	ctx, cancel := context.WithTimeout(ctx, ensureTimeout)
++	defer cancel()
++
++	res, err := Apply(ctx, Target{Scope: req.Scope, Owner: req.Owner, Parent: req.Parent}, props)
++	if err != nil {
++		l.WithError(err).Warn("cgroups: could not apply container scope properties; the container runs under the node tier without its own resource guarantees")
++		return
++	}
++	entry := l.WithField("properties", res.Applied.String())
++	if res.Overcommit {
++		// Not a reduction — the floors were applied exactly as configured. But
++		// they now add up to more than the tier slice can back, which changes
++		// what they mean: the kernel shares the tier's protection out in
++		// proportion to each server's usage below its own floor rather than
++		// honouring all of them. Individual floors stop being guarantees; the
++		// tier total still is. Reported, never corrected.
++		entry.WithFields(log.Fields{
++			"floors_total": res.FloorsTotal,
++			"tier_floor":   res.ParentFloor,
++			"tier":         req.Parent,
++		}).Info("cgroups: per-server memory.min floors now exceed the tier slice's own MemoryMin; they are applied as configured and the kernel shares the tier's protection proportionally to each server's usage below its own floor")
++		return
++	}
++	entry.Info("cgroups: applied container scope properties")
++}
+diff --git a/internal/cgroups/integration_test.go b/internal/cgroups/integration_test.go
+new file mode 100644
+index 0000000..98c0eec
+--- /dev/null
++++ b/internal/cgroups/integration_test.go
+@@ -0,0 +1,215 @@
++//go:build systemdintegration
++
++package cgroups
++
++// Integration tests against a REAL systemd instance over D-Bus. They create
++// and remove transient scope units around a throwaway `sleep` process, so
++// never point them at a production host; they are made to run inside the
++// project's privileged systemd-in-Docker e2e container:
++//
++//	go test -tags systemdintegration ./internal/cgroups/
++//
++// The unit under test is Apply, which sets resource properties on a scope
++// systemd created on someone else's behalf. In production that someone is the
++// Docker daemon; here the test plays that role itself with
++// StartTransientUnit + PIDs, which is exactly how Docker's systemd cgroup
++// driver creates docker-<id>.scope. That fidelity is the point: reading and
++// writing resource-control properties is unit-type-specific over D-Bus, and a
++// test that used a slice would pass while production failed.
++
++import (
++	"context"
++	"os/exec"
++	"testing"
++	"time"
++
++	sdbus "github.com/coreos/go-systemd/v22/dbus"
++	godbus "github.com/godbus/dbus/v5"
++)
++
++const (
++	itScopeID = "00000000000000000000000000000000000000000000000000000000000000a1"
++	itScope   = "docker-" + itScopeID + ".scope"
++	itParent  = "wings.slice"
++)
++
++func itCtx(t *testing.T) context.Context {
++	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
++	t.Cleanup(cancel)
++	return ctx
++}
++
++// itTypeProp reads a resource-control property from a unit's TYPE-SPECIFIC
++// D-Bus interface. Reading these from the generic "Unit" interface fails
++// outright — the trap the "Fix MemoryCurrent D-Bus interface" patch documents.
++func itTypeProp(t *testing.T, ctx context.Context, unit, iface, name string) uint64 {
++	t.Helper()
++	c, err := connect(ctx)
++	if err != nil {
++		t.Fatalf("connect: %v", err)
++	}
++	defer c.close()
++	prop, err := c.dbus.GetUnitTypePropertyContext(ctx, unit, iface, name)
++	if err != nil {
++		t.Fatalf("reading %s of %s from the %s interface: %v", name, unit, iface, err)
++	}
++	v, ok := prop.Value.Value().(uint64)
++	if !ok {
++		t.Fatalf("%s of %s has unexpected type %T", name, unit, prop.Value.Value())
++	}
++	return v
++}
++
++func itActiveState(t *testing.T, ctx context.Context, unit string) string {
++	t.Helper()
++	c, err := connect(ctx)
++	if err != nil {
++		t.Fatalf("connect: %v", err)
++	}
++	defer c.close()
++	prop, err := c.dbus.GetUnitPropertyContext(ctx, unit, "ActiveState")
++	if err != nil {
++		return "unknown"
++	}
++	s, _ := prop.Value.Value().(string)
++	return s
++}
++
++func itStopUnit(ctx context.Context, unit string) {
++	c, err := connect(ctx)
++	if err != nil {
++		return
++	}
++	defer c.close()
++	ch := make(chan string, 1)
++	if _, err := c.dbus.StopUnitContext(ctx, unit, "replace", ch); err != nil {
++		return
++	}
++	select {
++	case <-ch:
++	case <-ctx.Done():
++	}
++}
++
++// itStartScope stands in for the Docker daemon: it parks a real process in a
++// transient scope nested under itParent, the same shape Docker's systemd
++// cgroup driver produces for a container.
++func itStartScope(t *testing.T, ctx context.Context, name string) {
++	t.Helper()
++	cmd := exec.Command("sleep", "300")
++	if err := cmd.Start(); err != nil {
++		t.Fatalf("starting the scope's payload process: %v", err)
++	}
++	t.Cleanup(func() {
++		_ = cmd.Process.Kill()
++		_, _ = cmd.Process.Wait()
++	})
++
++	c, err := connect(ctx)
++	if err != nil {
++		t.Fatalf("connect: %v", err)
++	}
++	defer c.close()
++
++	props := []sdbus.Property{
++		{Name: "Description", Value: godbus.MakeVariant("wings-cgroups integration test scope")},
++		{Name: "PIDs", Value: godbus.MakeVariant([]uint32{uint32(cmd.Process.Pid)})},
++		{Name: "Slice", Value: godbus.MakeVariant(itParent)},
++	}
++	ch := make(chan string, 1)
++	if _, err := c.dbus.StartTransientUnitContext(ctx, name, "replace", props, ch); err != nil {
++		t.Fatalf("creating the stand-in container scope %s: %v", name, err)
++	}
++	select {
++	case res := <-ch:
++		if res != "done" {
++			t.Fatalf("creating %s: job result %q", name, res)
++		}
++	case <-ctx.Done():
++		t.Fatalf("creating %s: %v", name, ctx.Err())
++	}
++	t.Cleanup(func() {
++		cctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
++		defer cancel()
++		itStopUnit(cctx, name)
++	})
++}
++
++// TestApplyScopePropertiesIntegration is the load-bearing one: it proves that
++// the properties Wings sets actually land on the container's own cgroup, read
++// back from the "Scope" D-Bus interface, and that re-applying updates them in
++// place rather than failing on an existing unit.
++func TestApplyScopePropertiesIntegration(t *testing.T) {
++	ctx := itCtx(t)
++	itStartScope(t, ctx, itScope)
++
++	if st := itActiveState(t, ctx, itScope); st != "active" {
++		t.Fatalf("stand-in scope %s is %q, want active", itScope, st)
++	}
++
++	target := Target{Scope: itScope, Owner: "srv-integration", Parent: itParent}
++	t.Cleanup(func() { ForgetServer("srv-integration") })
++
++	res, err := Apply(ctx, target, Props{
++		MemoryMin: u64(64 << 20),
++		MemoryLow: u64(96 << 20),
++		CPUWeight: u64(800),
++	})
++	if err != nil {
++		t.Fatalf("Apply: %v", err)
++	}
++	if got := itTypeProp(t, ctx, itScope, "Scope", "MemoryMin"); got != 64<<20 {
++		t.Errorf("MemoryMin = %d, want %d", got, 64<<20)
++	}
++	if got := itTypeProp(t, ctx, itScope, "Scope", "MemoryLow"); got != 96<<20 {
++		t.Errorf("MemoryLow = %d, want %d", got, 96<<20)
++	}
++	if got := itTypeProp(t, ctx, itScope, "Scope", "CPUWeight"); got != 800 {
++		t.Errorf("CPUWeight = %d, want 800", got)
++	}
++	if res.FloorsTotal != 64<<20 {
++		t.Errorf("FloorsTotal = %d, want %d", res.FloorsTotal, 64<<20)
++	}
++
++	// In-place update of a live scope: the same call path, second time.
++	if _, err := Apply(ctx, target, Props{MemoryMin: u64(32 << 20)}); err != nil {
++		t.Fatalf("re-Apply: %v", err)
++	}
++	if got := itTypeProp(t, ctx, itScope, "Scope", "MemoryMin"); got != 32<<20 {
++		t.Errorf("after update MemoryMin = %d, want %d", got, 32<<20)
++	}
++	// A property omitted from the second request keeps its previous value:
++	// systemd holds it, and Wings never clears what it did not ask for.
++	if got := itTypeProp(t, ctx, itScope, "Scope", "CPUWeight"); got != 800 {
++		t.Errorf("after update CPUWeight = %d, want it unchanged at 800", got)
++	}
++}
++
++// MemoryCurrent is the property the memory.high ramp polls. It is
++// unit-type-specific like every other resource-control property, and the
++// interface name differs from the retired slice design's: this test exists so
++// that a future change to the ramp cannot silently regress to a name that
++// errors on every call.
++func TestScopeMemoryCurrentIsReadableIntegration(t *testing.T) {
++	ctx := itCtx(t)
++	scope := "docker-" + itScopeID[:62] + "b2.scope"
++	itStartScope(t, ctx, scope)
++
++	// Setting any Memory* property is what makes systemd enable accounting.
++	if _, err := Apply(ctx, Target{Scope: scope}, Props{MemoryLow: u64(16 << 20)}); err != nil {
++		t.Fatalf("Apply: %v", err)
++	}
++	if got := itTypeProp(t, ctx, scope, "Scope", "MemoryCurrent"); got == ^uint64(0) {
++		t.Error("MemoryCurrent reads as infinity; accounting is not enabled on the scope")
++	}
++}
++
++// Apply must refuse to point a container property write at a slice: a slice
++// would accept the properties happily and protect the wrong level, which is
++// exactly the silent failure this design exists to remove.
++func TestApplyRefusesASliceIntegration(t *testing.T) {
++	ctx := itCtx(t)
++	if _, err := Apply(ctx, Target{Scope: itParent}, Props{CPUWeight: u64(500)}); err == nil {
++		t.Fatal("expected Apply to refuse a .slice unit name")
++	}
++}
+diff --git a/internal/cgroups/scope.go b/internal/cgroups/scope.go
+new file mode 100644
+index 0000000..bb48b37
+--- /dev/null
++++ b/internal/cgroups/scope.go
+@@ -0,0 +1,98 @@
++package cgroups
++
++import (
++	"strings"
++	"sync"
++)
++
++// ScopeName returns the systemd scope unit name for a Docker container id.
++//
++// With the systemd cgroup driver (daemon.json
++// "exec-opts": ["native.cgroupdriver=systemd"]) the Docker daemon asks systemd
++// to create one transient scope unit per container, named docker-<full id>.scope
++// and nested under the slice given as HostConfig.CgroupParent. That unit -- not
++// any Wings-created slice -- is the cgroup the container's processes are
++// actually charged to, so it is the only level at which a memory.min/memory.low
++// floor is unconditionally effective: it is the leaf, with nothing below it for
++// protection to have to recurse through.
++//
++// Returns "" for anything that is not a full 64-character lowercase-hex Docker
++// container id. Callers treat that as "no scope to manage" and log it: a short
++// id or a name would produce a unit name systemd does not know, and issuing
++// D-Bus property calls against an invented unit name is exactly the kind of
++// silent no-op this package exists to avoid.
++func ScopeName(containerID string) string {
++	if len(containerID) != 64 {
++		return ""
++	}
++	for _, r := range containerID {
++		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
++			return ""
++		}
++	}
++	return "docker-" + containerID + ".scope"
++}
++
++// IsScope reports whether name has the shape ScopeName produces. Used to keep
++// the property-setting path from being pointed at a slice by accident.
++func IsScope(name string) bool {
++	body, ok := strings.CutPrefix(name, "docker-")
++	if !ok {
++		return false
++	}
++	body, ok = strings.CutSuffix(body, ".scope")
++	return ok && ScopeName(body) != ""
++}
++
++// The floor ledger.
++//
++// Wings no longer performs any budget arithmetic: a requested memory.min is
++// applied exactly as the administrator stated it, and an over-committed node is
++// resolved by the kernel, which shares the parent slice's protection out in
++// proportion to each child's usage below its own floor (see
++// CGROUP-SEMANTICS.md rule 5). That is the whole policy, and it needs no code.
++//
++// What is worth keeping is the tripwire: an administrator who has quietly
++// over-committed the tier should be told, because the floors they configured
++// have stopped meaning what the egg says they mean -- individually they are no
++// longer guarantees, only the tier total is. The ledger is what makes that
++// statement possible without a systemd round trip per sibling.
++//
++// It is deliberately best-effort and deliberately NOT authoritative:
++//
++//   - keyed by server UUID, not by scope name, so a server that restarts (and
++//     therefore gets a brand-new container id, and a brand-new scope) replaces
++//     its own entry instead of accumulating one per start;
++//   - only servers under the node-wide docker.cgroup_parent are counted, since
++//     only their floors draw on that tier's MemoryMin;
++//   - entries are dropped when a server is deleted, not when it stops. A
++//     stopped server therefore still counts against the tier. That is the
++//     conservative direction for a warning, and it matches how an administrator
++//     sizes a node: by what is provisioned, not by what happens to be running.
++var (
++	floorsMu sync.Mutex
++	floors   = map[string]uint64{}
++)
++
++// recordFloor stores a server's applied memory.min and returns the new total
++// across every server currently in the ledger.
++func recordFloor(owner string, v uint64) uint64 {
++	floorsMu.Lock()
++	defer floorsMu.Unlock()
++	if owner != "" {
++		floors[owner] = v
++	}
++	var total uint64
++	for _, f := range floors {
++		total += f
++	}
++	return total
++}
++
++// ForgetServer drops a server's floor from the ledger. Called when a server is
++// deleted; a missing entry is not an error.
++func ForgetServer(owner string) {
++	floorsMu.Lock()
++	defer floorsMu.Unlock()
++	delete(floors, owner)
++}
+diff --git a/internal/cgroups/scope_test.go b/internal/cgroups/scope_test.go
+new file mode 100644
+index 0000000..6602f9c
+--- /dev/null
++++ b/internal/cgroups/scope_test.go
+@@ -0,0 +1,96 @@
++package cgroups
++
++import (
++	"strings"
++	"testing"
++)
++
++const (
++	idA = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
++	idB = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
++)
++
++func TestScopeName(t *testing.T) {
++	for _, c := range []struct {
++		id   string
++		want string
++	}{
++		{idA, "docker-" + idA + ".scope"},
++		// A short id is what `docker ps` prints and what an administrator
++		// would paste; systemd knows no such unit, so refuse rather than
++		// invent a name that would make every property call a silent no-op.
++		{idA[:12], ""},
++		{strings.ToUpper(idA), ""}, // systemd's unit name is lowercase hex
++		{"", ""},
++		{idA[:63] + "g", ""},  // non-hex
++		{idA + "0", ""},       // too long
++		{idA[:63], ""},        // one short
++	} {
++		if got := ScopeName(c.id); got != c.want {
++			t.Errorf("ScopeName(%q) = %q, want %q", c.id, got, c.want)
++		}
++	}
++}
++
++func TestIsScope(t *testing.T) {
++	for _, c := range []struct {
++		name string
++		want bool
++	}{
++		{"docker-" + idA + ".scope", true},
++		{"wings.slice", false},
++		{"wings-0123456789abcdef0123456789abcdef.slice", false},
++		{"docker-" + idA + ".slice", false},
++		{"docker-abc.scope", false},
++		{"", false},
++	} {
++		if got := IsScope(c.name); got != c.want {
++			t.Errorf("IsScope(%q) = %v, want %v", c.name, got, c.want)
++		}
++	}
++}
++
++// The ledger is keyed by server UUID rather than by scope name precisely so a
++// restart -- which produces a brand new container and therefore a brand new
++// scope -- replaces the server's entry instead of adding a second one. Getting
++// this wrong would make the overcommit warning drift upward forever and become
++// noise, so it is worth pinning.
++func TestFloorLedgerIsKeyedByServerNotScope(t *testing.T) {
++	t.Cleanup(func() {
++		ForgetServer("srv-a")
++		ForgetServer("srv-b")
++	})
++	ForgetServer("srv-a")
++	ForgetServer("srv-b")
++
++	if total := recordFloor("srv-a", 100); total != 100 {
++		t.Fatalf("first floor: total = %d, want 100", total)
++	}
++	if total := recordFloor("srv-b", 50); total != 150 {
++		t.Fatalf("second server: total = %d, want 150", total)
++	}
++	// Same server, new container/scope, new floor: replaces, never adds.
++	if total := recordFloor("srv-a", 200); total != 250 {
++		t.Fatalf("restarted server: total = %d, want 250", total)
++	}
++	ForgetServer("srv-a")
++	if total := recordFloor("srv-b", 50); total != 50 {
++		t.Fatalf("after delete: total = %d, want 50", total)
++	}
++	// Forgetting a server that was never recorded is not an error.
++	ForgetServer("srv-never-seen")
++	if total := recordFloor("srv-b", 50); total != 50 {
++		t.Fatalf("after no-op forget: total = %d, want 50", total)
++	}
++}
++
++func TestFloorLedgerIgnoresEmptyOwner(t *testing.T) {
++	t.Cleanup(func() { ForgetServer("srv-c") })
++	ForgetServer("srv-c")
++	if total := recordFloor("srv-c", 10); total != 10 {
++		t.Fatalf("total = %d, want 10", total)
++	}
++	if total := recordFloor("", 999); total != 10 {
++		t.Fatalf("empty owner must not be recorded: total = %d, want 10", total)
++	}
++}
+diff --git a/internal/cgroups/sysd.go b/internal/cgroups/sysd.go
+new file mode 100644
+index 0000000..05ca5c3
+--- /dev/null
++++ b/internal/cgroups/sysd.go
+@@ -0,0 +1,231 @@
++package cgroups
++
++import (
++	"context"
++	"os"
++	"strconv"
++	"strings"
++
++	sdbus "github.com/coreos/go-systemd/v22/dbus"
++	godbus "github.com/godbus/dbus/v5"
++
++	"emperror.dev/errors"
++)
++
++// Target names the systemd unit a property application acts on, plus the
++// bookkeeping context the overcommit tripwire needs.
++type Target struct {
++	// Scope is the unit whose properties are set: the docker-<id>.scope
++	// systemd created on Docker's behalf for this server's container. See
++	// ScopeName.
++	Scope string
++	// Owner is the server UUID, used only as the floor-ledger key so a
++	// restarted server (new container, new scope) replaces its own entry
++	// rather than adding one.
++	Owner string
++	// Parent is the node-wide tier slice (docker.cgroup_parent, e.g.
++	// "wings.slice") whose own MemoryMin the summed floors are compared
++	// against. Empty disables the tripwire and the ledger entry entirely,
++	// which is what servers pinned elsewhere by WINGS_CGROUP_PARENT get:
++	// their floors do not draw on this tier.
++	Parent string
++}
++
++// Result reports what Apply did, so the caller can log it. Applied is
++// authoritative — it is what systemd was actually asked for, and since Wings
++// no longer performs any budget arithmetic it is always exactly what was
++// requested.
++type Result struct {
++	// Applied are the properties set on the scope.
++	Applied Props
++	// FloorsTotal is the sum of the memory.min floors Wings currently has
++	// applied across the servers of this node's tier, including this one.
++	// 0 when this request carries no floor or the tripwire is disabled.
++	FloorsTotal uint64
++	// ParentFloor is the tier slice's own MemoryMin as systemd reports it.
++	// 0 when unset, unreadable, or the tripwire is disabled.
++	ParentFloor uint64
++	// Overcommit reports that FloorsTotal exceeds ParentFloor. It is purely
++	// informational: nothing was clamped or refused. It means the configured
++	// floors have stopped being individual guarantees — the kernel now shares
++	// the tier's protection out in proportion to each server's usage below its
++	// own floor, and only the tier total is still guaranteed.
++	Overcommit bool
++}
++
++// conn wraps the systemd D-Bus connection. Connections are opened per
++// operation: property management happens a handful of times per server
++// lifecycle, and a fresh connection sidesteps every stale-socket concern of a
++// long-lived one.
++type conn struct {
++	dbus *sdbus.Conn
++}
++
++// systemBusAddresses lists the D-Bus system bus addresses to try, in order.
++//
++// The D-Bus client library dials a compile-time default of
++// /var/run/dbus/system_bus_socket. That resolves on any distribution where
++// /var/run is a symlink to /run, but Wings ships a distroless image which has
++// no /var/run at all — so the conventional
++// `-v /run/dbus/system_bus_socket:/run/dbus/system_bus_socket` mount is
++// invisible to it and slice management silently degrades to placement-only.
++// Try the modern path first, then the library default, and let an explicit
++// DBUS_SYSTEM_BUS_ADDRESS override both.
++func systemBusAddresses() []string {
++	if a := os.Getenv("DBUS_SYSTEM_BUS_ADDRESS"); a != "" {
++		return []string{a}
++	}
++	return []string{
++		"unix:path=/run/dbus/system_bus_socket",
++		"unix:path=/var/run/dbus/system_bus_socket",
++	}
++}
++
++// dialSystemBus connects to the D-Bus broker at addr, performing the same
++// EXTERNAL auth + Hello handshake go-systemd does internally. The uid is
++// passed as a literal so authentication never needs a username lookup (Wings
++// builds with CGO_ENABLED=0 and runs from a distroless image).
++func dialSystemBus(ctx context.Context, addr string) (*sdbus.Conn, error) {
++	return sdbus.NewConnection(func() (*godbus.Conn, error) {
++		c, err := godbus.Dial(addr, godbus.WithContext(ctx))
++		if err != nil {
++			return nil, err
++		}
++		if err := c.Auth([]godbus.Auth{godbus.AuthExternal(strconv.Itoa(os.Getuid()))}); err != nil {
++			_ = c.Close()
++			return nil, err
++		}
++		if err := c.Hello(); err != nil {
++			_ = c.Close()
++			return nil, err
++		}
++		return c, nil
++	})
++}
++
++// connect reaches systemd over the system message bus, falling back to
++// systemd's private socket (/run/systemd/private, root only) for hosts that
++// run systemd without a D-Bus broker. A containerized Wings needs one of the
++// two bind-mounted from the host.
++//
++// Deliberately not sdbus.NewWithContext: that helper tries the system bus,
++// discards its error, and — when running as root — reports only the private
++// socket's failure. A missing or misplaced bus mount therefore surfaces as
++// "dial unix /run/systemd/private: no such file or directory", naming a path
++// the administrator never configured while hiding the one that actually
++// failed. Dialing each candidate here keeps every attempt in the error.
++func connect(ctx context.Context) (*conn, error) {
++	tried := make([]string, 0, 3)
++	for _, addr := range systemBusAddresses() {
++		c, err := dialSystemBus(ctx, addr)
++		if err == nil {
++			return &conn{dbus: c}, nil
++		}
++		tried = append(tried, addr+": "+err.Error())
++	}
++	c, err := sdbus.NewSystemdConnectionContext(ctx)
++	if err == nil {
++		return &conn{dbus: c}, nil
++	}
++	tried = append(tried, "unix:path=/run/systemd/private: "+err.Error())
++	return nil, errors.New("connecting to systemd (tried " + strings.Join(tried, "; ") + ")")
++}
++
++func (c *conn) close() {
++	c.dbus.Close()
++}
++
++func propsToDBus(p Props) []sdbus.Property {
++	var out []sdbus.Property
++	add := func(name string, v *uint64) {
++		if v != nil {
++			out = append(out, sdbus.Property{Name: name, Value: godbus.MakeVariant(*v)})
++		}
++	}
++	add("MemoryMin", p.MemoryMin)
++	add("MemoryLow", p.MemoryLow)
++	add("MemoryHigh", p.MemoryHigh)
++	add("MemoryMax", p.MemoryMax)
++	add("CPUWeight", p.CPUWeight)
++	add("IOWeight", p.IOWeight)
++	return out
++}
++
++// Apply sets the requested resource properties on an already-existing systemd
++// unit: the docker-<id>.scope that systemd created on Docker's behalf when the
++// container started.
++//
++// Wings never creates a unit here. That is the substantive difference from the
++// per-server-slice design this replaced — there is no StartTransientUnit call,
++// no unit whose lifecycle Wings owns, and therefore nothing to garbage-collect,
++// nothing to discriminate transient-vs-administrator-owned, and no window in
++// which systemd could auto-materialize a limit-less unit ahead of Wings. The
++// scope's lifecycle is exactly the container's.
++//
++// Properties go through SetUnitProperties with runtime=true, the systemd-owned
++// channel: the values survive `systemctl daemon-reload` and are re-applied by
++// systemd, which raw cgroupfs writes are not.
++//
++// The scope must already exist, which means Apply can only run AFTER
++// ContainerStart() — systemd creates the scope when the container's init
++// process is launched, not when the container is created. Callers accept the
++// resulting few-millisecond window in which the container runs without its
++// configured properties; see environment/docker.Environment.applyScopeProps.
++//
++// No budget arithmetic is performed: the requested floors are applied exactly
++// as stated. When t.Parent is set, the floors this node has applied are summed
++// and compared against the parent tier's own MemoryMin, and the result is
++// reported through Result.Overcommit for the caller to log. Nothing is clamped
++// — the kernel arbitrates an over-committed tier on its own.
++func Apply(ctx context.Context, t Target, props Props) (Result, error) {
++	res := Result{Applied: props}
++	dprops := propsToDBus(props)
++	if len(dprops) == 0 {
++		return res, nil
++	}
++	// Guard against ever pointing the property write at a slice: a slice unit
++	// would accept the properties happily and protect the wrong level, which
++	// is precisely the silent failure this redesign exists to remove.
++	if !IsScope(t.Scope) {
++		return res, errors.New("refusing to set container properties on " + strconv.Quote(t.Scope) + ": not a docker-<id>.scope unit")
++	}
++
++	c, err := connect(ctx)
++	if err != nil {
++		return res, err
++	}
++	defer c.close()
++
++	if err := c.dbus.SetUnitPropertiesContext(ctx, t.Scope, true, dprops...); err != nil {
++		return res, errors.Wrap(err, "setting properties on "+t.Scope)
++	}
++
++	// Ledger and tripwire are updated only after a successful apply, so a
++	// failed call can never leave a floor recorded that was never set.
++	if props.MemoryMin != nil && t.Parent != "" {
++		res.FloorsTotal = recordFloor(t.Owner, *props.MemoryMin)
++		if limit, ok, err := c.sliceMemoryMin(ctx, t.Parent); err == nil && ok && limit > 0 {
++			res.ParentFloor = limit
++			res.Overcommit = res.FloorsTotal > limit
++		}
++	}
++	return res, nil
++}
++
++// sliceMemoryMin reads a slice unit's own MemoryMin over D-Bus. Like every
++// resource-control property it lives on the type-specific interface, here
++// "Slice" — reading it from the generic "Unit" interface fails outright (the
++// same trap patch "Fix MemoryCurrent D-Bus interface in the memory.high ramp"
++// documents for MemoryCurrent). ok is false when systemd reports the property
++// unset or infinite (MaxUint64), both of which mean "no tier budget declared".
++func (c *conn) sliceMemoryMin(ctx context.Context, name string) (uint64, bool, error) {
++	p, err := c.dbus.GetUnitTypePropertyContext(ctx, name, "Slice", "MemoryMin")
++	if err != nil {
++		return 0, false, err
++	}
++	v, ok := p.Value.Value().(uint64)
++	if !ok || v == ^uint64(0) {
++		return 0, false, nil
++	}
++	return v, true, nil
++}
+diff --git a/server/install.go b/server/install.go
+index f39c678..1da09e3 100644
+--- a/server/install.go
++++ b/server/install.go
+@@ -453,10 +453,18 @@ func (ip *InstallationProcess) Execute() (string, error) {
+ 
+ 	// Keep the installer container under the same cgroup parent as the
+ 	// server's runtime container so that installation workloads are subject to
+-	// the same slice-level resource policy. Per-server overrides resolve
+-	// through the same helper as the runtime container; rejected overrides
+-	// fail closed to the node-wide value.
+-	cgroupParent, err := cfg.Docker.ResolveCgroupParent(ip.Server.GetEnvironmentVariables())
++	// the same tier-level resource policy. Per-server overrides resolve through
++	// the same helper as the runtime container; rejected overrides fail closed
++	// to the node-wide value.
++	//
++	// Deliberately no per-server property application here. The installer's own
++	// scope would need the same post-start treatment the runtime container
++	// gets, and it is not worth it: an installer is short-lived, already
++	// bounded by docker.installer_limits, and giving it the server's memory.min
++	// floor would have it claim a protection reservation for work that is not
++	// the server running. It inherits the tier's policy and nothing more.
++	ienv := ip.Server.GetEnvironmentVariables()
++	cgroupParent, _, err := cfg.Docker.ResolveServerCgroupParent(ienv)
+ 	if err != nil {
+ 		ip.Server.Log().WithField("cgroup_parent", cgroupParent).WithError(err).Warn("installer: rejected per-server cgroup parent override")
+ 	}
+-- 
+2.55.0
+

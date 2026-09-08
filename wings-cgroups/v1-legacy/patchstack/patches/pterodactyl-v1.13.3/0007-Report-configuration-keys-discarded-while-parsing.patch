@@ -1,7 +1,7 @@
-From 157008b911bf3c29879ec65cd5e21d9220f6acdc Mon Sep 17 00:00:00 2001
+From 451c431542b18e22e6cd8c0da81b7fed65844095 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 03:59:43 +0000
-Subject: [PATCH 08/11] Report configuration keys discarded while parsing
+Subject: [PATCH 7/9] Report configuration keys discarded while parsing
 
 Wings parses config.yml permissively and then rewrites the file from the
 parsed struct at boot. A key the schema does not define -- most often a
@@ -30,10 +30,10 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
  create mode 100644 config/config_discarded_test.go
 
 diff --git a/cmd/root.go b/cmd/root.go
-index 62a0022..a687c9b 100644
+index c26387e..156f406 100644
 --- a/cmd/root.go
 +++ b/cmd/root.go
-@@ -50,6 +50,7 @@ var rootCommand = &cobra.Command{
+@@ -49,6 +49,7 @@ var rootCommand = &cobra.Command{
  	PreRun: func(cmd *cobra.Command, args []string) {
  		initConfig()
  		initLogging()
@@ -41,7 +41,7 @@ index 62a0022..a687c9b 100644
  		if tls, _ := cmd.Flags().GetBool("auto-tls"); tls {
  			if host, _ := cmd.Flags().GetString("tls-hostname"); host == "" {
  				fmt.Println("A TLS hostname must be provided when running wings with automatic TLS, e.g.:\n\n    ./wings --auto-tls --tls-hostname my.example.com")
-@@ -421,6 +422,18 @@ func rootCmdRun(cmd *cobra.Command, _ []string) {
+@@ -392,6 +393,18 @@ func rootCmdRun(cmd *cobra.Command, _ []string) {
  
  // Reads the configuration from the disk and then sets up the global singleton
  // with all the configuration values.

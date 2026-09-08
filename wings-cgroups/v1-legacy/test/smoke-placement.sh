@@ -3,11 +3,22 @@
 # Verifies, against the Docker daemon on this machine, that:
 #   1. the daemon uses the systemd cgroup driver on cgroup v2;
 #   2. a container created with --cgroup-parent=<slice> actually lands under
-#      that slice (checked from inside via the host cgroup namespace);
+#      that slice as a docker-<id>.scope (checked from inside via the host
+#      cgroup namespace);
 #   3. if the slice has resource properties AND /sys/fs/cgroup is readable
 #      here, the effective memory.min/low/high match (path-only checks are NOT
 #      sufficient — a missing unit file degrades to a limit-less transient
 #      slice; see proposal Finding A / review F3).
+#
+# This checks PLACEMENT, which is what the daemon does, and it is unchanged by
+# the 2026-09-08 redesign: containers are placed flat under the tier slice, and
+# the docker-<id>.scope this prints IS the unit Wings now sets each server's
+# memory.min/low/high, cpu.weight and io.weight on. Wings creates no unit of
+# its own any more, so there is no per-server slice for this test to look for.
+# What it therefore CANNOT check is the property application itself: that needs
+# a live systemd D-Bus connection and is covered by the systemdintegration
+# tests in internal/cgroups (see ../test/e2e-systemd/).
+#
 # Safe: creates one throwaway busybox container, removes it afterwards.
 set -euo pipefail
 

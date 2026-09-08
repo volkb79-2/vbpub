@@ -1,0 +1,55 @@
+From a6562cebe5c392082acb8301bac215988c14b169 Mon Sep 17 00:00:00 2001
+From: Volker Badziong <development@richtfest.tech>
+Date: Tue, 21 Jul 2026 07:56:59 +0000
+Subject: [PATCH 8/9] Fix MemoryCurrent D-Bus interface in the memory.high ramp
+
+memoryCurrent() read MemoryCurrent via GetUnitPropertyContext against the
+generic org.freedesktop.systemd1.Unit interface. Resource-control properties
+are not exposed there: they live on the TYPE-SPECIFIC interface, so every
+call failed with "Unknown interface org.freedesktop.systemd1.Unit or property
+MemoryCurrent." -- confirmed live in production. rampHigh() returns
+immediately when its first memoryCurrent() call errors, so the ramp never
+ran; memory.high fell back to whatever the surrounding non-ramped apply
+resolved to instead of walking down gradually.
+
+Switch to GetUnitTypePropertyContext with the interface of the unit actually
+being walked. That is "Scope": the ramp now targets each container's
+docker-<id>.scope, not the per-server slice the original fix named. The bug
+class is the same and so is the failure mode -- a wrong interface name is not
+rejected at compile time, produces no partial behaviour, and shows up only as
+a ramp that quietly never happens -- which is why internal/cgroups'
+systemd integration test now reads MemoryCurrent back from a real scope
+rather than trusting the constant.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PgCYRx4mTFsr4wtxuHCVXH
+---
+ internal/cgroups/sysd.go | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/internal/cgroups/sysd.go b/internal/cgroups/sysd.go
+index cfa7a92..6f19589 100644
+--- a/internal/cgroups/sysd.go
++++ b/internal/cgroups/sysd.go
+@@ -245,10 +245,16 @@ const rampMaxDuration = 10 * time.Minute
+ 
+ // memoryCurrent reads the slice's current memory usage (the MemoryCurrent unit
+ // property) over D-Bus. systemd enables accounting implicitly once any Memory*
+-// property is set, so this is valid for every slice this package manages. ok
++// property is set, so this is valid for every scope this package manages. ok
+ // is false when systemd reports it unavailable (MaxUint64) — treat as "unknown".
++//
++// The interface name is NOT interchangeable: resource-control properties are
++// exposed per unit type, so a scope's MemoryCurrent lives on
++// org.freedesktop.systemd1.Scope. Asking for it on "Unit" — or on "Slice",
++// which is what the units this ramp used to walk were — fails outright, and
++// rampHigh returns on the first error, so the ramp silently does not run.
+ func (c *conn) memoryCurrent(ctx context.Context, name string) (uint64, bool, error) {
+-	p, err := c.dbus.GetUnitPropertyContext(ctx, name, "MemoryCurrent")
++	p, err := c.dbus.GetUnitTypePropertyContext(ctx, name, "Scope", "MemoryCurrent")
+ 	if err != nil {
+ 		return 0, false, err
+ 	}
+-- 
+2.55.0
+
