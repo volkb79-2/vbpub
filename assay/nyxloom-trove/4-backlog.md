@@ -7214,3 +7214,63 @@ except (json.JSONDecodeError, ValueError, RecursionError) as exc:
       `runner.py` for any OTHER `except (..., ValueError)`-without-
       `RecursionError` pattern parsing untrusted JSON, so this does not
       recur a third time — named here even if none are found.
+
+---
+
+## B073 — a per-language "live test progress" adapter, reading the runner's own output stream as it happens
+
+**Filed 2026-09-08 by the vbpub controller, deferred out of B064's discussion
+on purpose.** FILE ONLY — not scoped, not carved, not for the next wave.
+
+### The question this answers, and the one it deliberately doesn't
+
+B064's R0/R1 progress stream (phase boundaries assay itself owns: snapshot →
+command started → periodic time-based heartbeat → command finished →
+coverage parsed → verdict written) tells a watcher **whether the lane is
+alive**, not **how much of the runner's own work is left**. The gap between
+those two is real: `command_finished` can legitimately be the longest phase
+by a wide margin (a multi-minute test suite is one opaque subprocess call to
+`execute_plan`, `runner.py`), and a time-based heartbeat only proves elapsed
+seconds are ticking, not progress within that one step.
+
+A genuine "N of M tests done" or "42% complete" signal is NOT obtainable
+without reading the runner's OWN live output as it streams — `pytest`'s
+`-v` per-test lines, `go test -json`'s one-JSON-object-per-test-event
+stream, a JS runner's equivalent. That is real, per-language, per-tool
+parsing of a live subprocess stream — categorically bigger and more
+invasive than anything B064 proposes, and it runs straight into the same
+principle B049/A-346/the whole adapter design already enforces: **declaring
+a producer, never sniffing one** (A-007). A generic "guess the progress
+format" parser would be exactly the sniffing this project's adapters
+elsewhere refuse to do; a real version would need each language adapter to
+DECLARE which live-progress format its runner emits (mirroring how
+`judge.coverage.producer`/`judge.mutation.format` are declared today), with
+its own closed vocabulary and its own refusal for an undeclared/unparseable
+stream.
+
+### Why this is filed and not carved
+
+No consumer has asked for per-test granularity yet — B064's cheaper
+phase-boundary + heartbeat shape was motivated by a real "lane looked hung
+for 9 minutes" observation, not by a request for a progress bar. Building a
+live-stream parser for even one language (the obvious first candidate:
+`go test -json`, already a stable, documented, machine-readable event
+stream) is a real design surface: how a partial/malformed stream mid-run is
+handled (a live process can be killed by its own budget expiring
+mid-write), what happens to buffered-but-unparsed lines, whether a parse
+failure degrades to B064's plain heartbeat or refuses the lane outright,
+and how the schema-free progress-file convention (B065) extends to
+per-test events without becoming a second verdict format.
+
+### Acceptance (for whoever eventually carves this)
+
+- [ ] a design ruling on the first language adopted (recommend `go test
+      -json`: stable, documented, already machine-readable, no bespoke
+      plugin to vendor) before generalizing to a second;
+- [ ] the live-stream reader NEVER blocks or slows the command it is
+      reading — proven under measurement, not assumed;
+- [ ] a stream a lane's own runner declares but does not actually emit (or
+      emits malformed) degrades to B064's plain phase/heartbeat stream, not
+      a lane-wide refusal — progress is diagnostic, never load-bearing;
+- [ ] `assay verify` is unaffected, same as every other progress-family
+      item — this is diagnostic-only, never evidence.
