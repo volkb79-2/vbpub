@@ -2340,6 +2340,11 @@ def _peek_payload_host_label(payload_path: str) -> Optional[str]:
         payload = json.loads(_strip_jsonc_comments(raw))
     except (OSError, json.JSONDecodeError):
         return None
+    if not isinstance(payload, dict):
+        # Valid JSON but not an object (e.g. a bare array/string/number) -
+        # not a real payload; let install_from_payload's own validation
+        # produce the real error later instead of raising here.
+        return None
     hostname = payload.get("hostname")
     if isinstance(hostname, str) and hostname:
         return hostname
@@ -2386,11 +2391,22 @@ def main():
                 host_label = _peek_payload_host_label(args.payload) or SERVER_NAME
             elif SERVER_NAME:
                 # One early, authenticated lookup - reused as step 1 below
-                # (via `server_lookup`) so this isn't a second/duplicate call.
+                # (via `server_lookup`) so this isn't a second/duplicate
+                # call. This lookup is for LABELING ONLY, so any failure
+                # (transient HTTP error, malformed response) must not crash
+                # main() here - leave server_lookup unset and fall back to
+                # the raw SERVER_NAME label; step 1 below will retry the
+                # same call for real, going through its own existing
+                # HTTPStatusError/KeyError/Exception handling instead of
+                # this early, unguarded copy (adversarial-review finding,
+                # 2026-09-08).
                 client = _build_authenticated_client()
-                server_lookup = client.get("/api/v1/servers", params={"name": SERVER_NAME})
-                if server_lookup:
-                    host_label = server_lookup[0].get("hostname") or f"netcup{server_lookup[0]['id']}"
+                try:
+                    server_lookup = client.get("/api/v1/servers", params={"name": SERVER_NAME})
+                    if server_lookup:
+                        host_label = server_lookup[0].get("hostname") or f"netcup{server_lookup[0]['id']}"
+                except Exception:
+                    server_lookup = None
             # Per-host/per-date identity, rendered now that a host label is
             # known - see _render_identity_file_path(). --attach-only
             # intentionally skips rendering: it means to reconnect with an

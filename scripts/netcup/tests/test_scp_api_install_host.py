@@ -154,6 +154,16 @@ def test_peek_payload_host_label_none_on_invalid_json(install_host_mod, tmp_path
     assert install_host_mod._peek_payload_host_label(str(payload_path)) is None
 
 
+def test_peek_payload_host_label_none_on_non_dict_json(install_host_mod, tmp_path):
+    """Adversarial-review regression, 2026-09-08: valid JSON that isn't an
+    object (e.g. a bare array) used to raise AttributeError from
+    list.get() -- must degrade to None like every other malformed-payload
+    case instead."""
+    payload_path = tmp_path / "target-host.jsonc"
+    payload_path.write_text("[1, 2, 3]")
+    assert install_host_mod._peek_payload_host_label(str(payload_path)) is None
+
+
 def test_build_ssh_cmd_base_with_identity(install_host_mod):
     cmd = install_host_mod._build_ssh_cmd_base("1.2.3.4", "root", "/tmp/key")
     assert cmd[-1] == "root@1.2.3.4"
@@ -650,6 +660,56 @@ def test_main_interactive_falls_back_to_server_name_when_no_live_hostname(
     install_host_mod.main()
 
     assert args.ssh_identity_file == str(expected_identity)
+
+
+def test_main_interactive_recovers_from_labeling_lookup_failure(
+    install_host_mod, tmp_path, monkeypatch, capsys
+):
+    """Adversarial-review regression, 2026-09-08: the early identity-
+    labeling /api/v1/servers lookup used to be unguarded -- any failure
+    (transient HTTP error, malformed response) propagated straight out of
+    main() uncaught, instead of the file's normal, existing HTTPStatusError
+    handling. It must now fall back to the raw SERVER_NAME label and let
+    step 1's own (necessarily repeated) call surface the real error
+    cleanly."""
+    monkeypatch.chdir(tmp_path)
+    _fix_datetime_to(install_host_mod, monkeypatch, 2026, 9, 8)
+
+    expected_identity = tmp_path / "vbpub-scp_installer-test-server-20260908-ed25519"
+    _write_fake_identity_at(expected_identity)
+
+    class _AlwaysRaisingClient:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, endpoint, params=None):
+            self.calls.append(("get", endpoint, params))
+            raise install_host_mod.HTTPStatusError(503, "Service Unavailable", "")
+
+    client = _AlwaysRaisingClient()
+    identity_template = str(tmp_path / "vbpub-scp_installer-{host}-{date}-ed25519")
+    args = types.SimpleNamespace(
+        attach_only=False, payload=None, poweroff=False, dry_run=True, yes=True,
+        ssh_identity_file=identity_template,
+    )
+    monkeypatch.setattr(install_host_mod, "SERVER_NAME", "test-server")
+    monkeypatch.setattr(install_host_mod, "get_access_token", lambda rt: "fake-token")
+    monkeypatch.setattr(install_host_mod, "NetcupSCPClient", lambda *a, **kw: client)
+    monkeypatch.setattr(install_host_mod, "parse_args", lambda: args)
+    monkeypatch.setenv("NETCUP_SCP_API_REFRESH_TOKEN", "fake-refresh-token")
+
+    with pytest.raises(SystemExit) as exc_info:
+        install_host_mod.main()
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "❌ HTTP Error" in captured.err
+    # identity file still got a sane (fallback) label instead of crashing
+    # before ever reaching that point
+    assert args.ssh_identity_file == str(expected_identity)
+    # the labeling attempt was swallowed; step 1 retried for real and that
+    # second failure is the one actually reported
+    assert len(client.calls) == 2
 
 
 def test_main_payload_mode_uses_payload_hostname_for_identity_label(
