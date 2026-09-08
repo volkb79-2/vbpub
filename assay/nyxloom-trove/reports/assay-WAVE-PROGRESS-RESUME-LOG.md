@@ -23,7 +23,10 @@ the gate-discipline lesson — is carried forward here.
 | `8bc6b9ad` | — | the checkpoint's continuation brief |
 | `940b5ba2` | **B064 + B065** | the progress stream reaches every rigor tier, ticks, and carries time |
 | `243de634` | **B066** | `--state-dir` — resume state that outlives its worktree |
-| _(this commit)_ | — | this LOG and the wave REPORT |
+| `48561aba` | — | this LOG and the wave REPORT |
+| `842921ef` | — | adversarial review round 1 (reviewer's own commit) — **NOT ACCEPT** |
+| `b5532895` | **round-1 fixes** | B1 blocker, SF-1/2/3/4/5/6, seven of eight nits |
+| _(this commit)_ | — | LOG/REPORT updated for round 1 |
 
 ---
 
@@ -65,6 +68,37 @@ and `isolation._check_timeout` (admits `math.inf`, and only `math.inf`).
 per-*mutant* bound and a baseline runs the whole suite, so tightening it
 there would refuse healthy lanes. Stated in the docstring, in
 `docs/CONSUMERS.md`, and filed with three options and none chosen.
+
+### B067's headline refusal was WRONG as first shipped (round-1 blocker B1)
+
+The predicate above was implemented as
+
+```python
+if (not r2 and not r3) or (ingested_r2 and not r3):
+```
+
+— both refusal arms conditioned on the **absence of R3**, so declaring a
+canary switched the whole refusal off. `judge.canary.budget_per_attempt`
+bounds one canary *probe*; it never bounds the lane's own top-level command,
+which is what produces the R0 status and the R1 coverage artifact. An
+unbounded `["R0","R1","R3"]` lane was therefore **admitted** and ran its own
+evidence-producing command with `timeout=None`, beside two properly-bounded
+canary halves. The ingested-R2+R3 shape was worse: that one command is the
+lane's entire R2 evidence.
+
+Corrected in `b5532895`. The predicate is now about the lane's own top-level
+command and is **orthogonal to which other tiers are declared**: a native R2
+sweep is the one admissible shape, because it is the one where the
+unguessable bulk is bounded per unit. `budget_per_attempt` stays required of
+an unbounded R3 lane — necessary, not sufficient — and the refusal says so by
+name whenever R3 is in play. Ruling: **A-447**.
+
+**The lesson worth keeping.** 29 tests covered B067 and none caught this,
+because every tier was tested **in isolation** and nothing asked what a
+**combination** does. The regression therefore asserts the whole
+admissibility table in ONE place, and pins the reviewer's own repro at the
+process boundary — `subprocess.run` instrumented, asserting no child of such
+a lane is ever launched with `timeout=None`.
 
 ---
 
@@ -230,6 +264,51 @@ What the records **contain** — including B071's `result_stdout_tail` /
 
 ---
 
+## Round-1 review, and what it changed (`b5532895`)
+
+Verdict: **NOT ACCEPT** — one blocker, six should-fixes, eight nits. The
+report is `assay-WAVE-PROGRESS-RESUME-REVIEW-round1.md`. Everything except
+one nit is addressed in `b5532895`.
+
+| item | what it was | disposition |
+| --- | --- | --- |
+| **B1** | `budget = "unbounded"` voidable by declaring R3 | **fixed**, red-first, two regression tests (see B067 above); A-447 |
+| **SF-1** | the `--state-dir` containment check failed OPEN across a symlink | **fixed**, red-first on both of the reviewer's probes |
+| **SF-2** | B067's backlog entry never marked done | **fixed** — and it now records that box 1 was *not* met by the first cut |
+| **SF-3** | no A-row, though B064's box asks for one by name | **fixed** — A-444…A-447 in `decisions.md` |
+| **SF-4** | a breaking artifact change filed only under "Added" | **fixed** — `### Changed`, marked BREAKING, with a migration line |
+| **SF-5** | `--progress` newly self-inflicts `DIRTY_TREE`, and the wave built the fix without applying it | **fixed** — the same preflight, one flag over |
+| **SF-6** | one hollow test with no assertion | **fixed** — asserts the write was attempted, exactly once |
+| **N1** | enrichment computed outside the lock it is written under | **fixed** — both stamps now inside the lock |
+| **N2** | a `:`-prefixed path yielded a raw git-stderr passthrough | **fixed** — named refusal before git is asked |
+| **N3** | inconsistent clock seam between the two heartbeat sites | **fixed** — both use the real monotonic clock, deliberately |
+| **N4** | `end` missing on `run_mutation`'s three early returns | **fixed** — `end` on every path out, with a `reason` |
+| **N5** | `elapsed_s` and `elapsed_seconds` one character apart | **NOT fixed — flagged to the controller**, see below |
+| **N6** | two cross-module names absent from `__all__` | **fixed** |
+| **N7** | no end-to-end heartbeat test | **fixed** — a real run over a real child that outlives one interval |
+| **N8** | no test for a per-attempt bound EXPIRING | **fixed** — the cascade is pinned |
+
+**N5 is deliberately open.** A `candidate` record carries both `elapsed_s`
+(run-relative, new and universal) and `elapsed_seconds` (that candidate's own
+duration, pre-existing). Renaming the older field would be a **second**
+breaking change to the progress artifact in one release, on top of A-445's,
+and it needs a decision rather than an implementer's guess. Mitigated for now
+in `docs/CONSUMERS.md`, which carries a three-row table distinguishing
+`elapsed_s` / `command_elapsed_s` / `elapsed_seconds` explicitly.
+
+Two structural observations from the round worth keeping beside the fixes:
+
+* **B1 and SF-1 are the same failure in two places** — a predicate that
+  answers "is this safe?" and gets the *default* wrong. B1 defaulted to
+  admitting; SF-1 defaulted to "outside the tree, nothing to check". Both are
+  now fail-closed, and `_containments` says so in its own docstring: a false
+  refusal costs one clear message, a false accept costs a work tree that
+  refuses its own next run.
+* **SF-5 is the wave marking its own asymmetry.** B066 built
+  `git.path_is_ignored` and gave `--state-dir` a named preflight; B064 made
+  `--progress` write on every tier in the same commit range and left it
+  without one. The mechanism existed; only the second call site was missing.
+
 ## Gate-discipline lesson, carried forward from the checkpoint brief
 
 **READ THIS BEFORE ANY GATE RUN ON THIS PROJECT.** The `tester-unified`
@@ -273,6 +352,7 @@ Two operational notes that also held on the second half of the wave:
 | `7f2ba056` (B067) | 4266 passed |
 | `940b5ba2` (B064/B065) | 4282 passed, 20 skipped (16 new) |
 | `243de634` (B066) | 4289 passed, 20 skipped (7 new) |
+| `b5532895` (round-1 fixes) | 4302 passed, 20 skipped (13 new) |
 
 The skip count differs from the checkpoint brief's "11" because the two
 implementers ran in different environments; collected totals match at both
@@ -285,7 +365,34 @@ cd /workspaces/vbpub/assay
 ./run-gate.py --worktree /workspaces/vbpub/.worktrees/assay-progress-resume tester-unified
 ```
 
-**GREEN at `243de634`** — the tip carrying all four items.
+Run twice, from scratch each time — a new commit is a new judged tip, and the
+round-1 green was never carried over.
+
+### Round 1 of fixes — **GREEN at `b5532895`**
+
+```
+tester-unified: PASS (exit 0)
+ASSAY_REGISTERED_GATE_COMPLETE=1
+run-gate: lane 'tester-unified' exit 0
+```
+
+All **12** `ASSAY_GATE_PHASE` markers, **zero** `ASSAY_GATE_DIAGNOSTIC`
+lines, verdict read from the log's own markers in a separate step after the
+run finished. Launched after waiting out two peer gates (a dstdns `p176`
+gate, then a peer's own `run-gate-vbpub-tester-unified` container that took
+the slot first); my own container identified by matching `--inner
+/workspaces/vbpub/.worktrees/assay-progress-resume` in `docker ps
+--no-trunc`, excluding the reviewer's `-review` worktree, and capped with
+`docker update --cpus=3` on that id alone.
+
+One deliberate relaxation, recorded rather than silently taken: the wait
+condition asked for ≥6 GB available, and this host now idles at 5 GB with the
+production game server resident. Launched at load 3.29 with 5 GB available,
+no gate process and no gate container — the conditions that actually contend
+(a peer gate, real load) were all clear. If a future run finds the 6 GB bar
+never clearing, that is why.
+
+### The original four items — GREEN at `243de634`
 
 ```
 tester-unified: PASS (exit 0)
