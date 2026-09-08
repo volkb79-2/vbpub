@@ -103,6 +103,28 @@ def test_render_identity_file_path_sanitizes_unsafe_host_characters(install_host
     assert " " not in rendered
 
 
+def test_refuse_unrendered_attach_only_identity_rejects_host_placeholder(install_host_mod):
+    """Adversarial-review regression: --attach-only must never silently
+    generate a fresh key at a literal '{host}'/'{date}' path -- that key
+    would never match anything on the host being attached to, exactly the
+    SSH-monitoring failure mode this redesign exists to close."""
+    with pytest.raises(SystemExit, match="per-host/per-date TEMPLATE"):
+        install_host_mod._refuse_unrendered_attach_only_identity(
+            "~/.ssh/vbpub-netcup-{host}-{date}-ed25519"
+        )
+
+
+def test_refuse_unrendered_attach_only_identity_rejects_date_placeholder(install_host_mod):
+    with pytest.raises(SystemExit, match="per-host/per-date TEMPLATE"):
+        install_host_mod._refuse_unrendered_attach_only_identity("~/.ssh/key-{date}")
+
+
+def test_refuse_unrendered_attach_only_identity_allows_resolved_path(install_host_mod):
+    install_host_mod._refuse_unrendered_attach_only_identity(
+        "~/.ssh/vbpub-netcup-v1001.vxxu.de-20260908-ed25519"
+    )  # must not raise
+
+
 def test_build_ssh_cmd_base_with_identity(install_host_mod):
     cmd = install_host_mod._build_ssh_cmd_base("1.2.3.4", "root", "/tmp/key")
     assert cmd[-1] == "root@1.2.3.4"

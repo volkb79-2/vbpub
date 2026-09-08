@@ -795,8 +795,11 @@ These can be set in a .env file in the current directory (see scripts/netcup/.en
         help=(
             "Path to LOCAL SSH identity file used for attach/monitoring (default: from "
             "scp-api-install-host.toml; override via NETCUP_SCP_API_SSH_IDENTITY_FILE). This is "
-            "the shared client key pre-seeded during install (auto-generated if missing), "
-            "not the host-generated per-host key from bootstrap stage2."
+            "the ephemeral controller bootstrap key, one per (host, date) - the default is a "
+            "'{host}'/'{date}' TEMPLATE rendered automatically for a real install, but "
+            "--attach-only requires an explicit, already-resolved path here (it will refuse "
+            "an unrendered template rather than silently generate a key that can't match the "
+            "host). Not the host-generated per-host production key from bootstrap stage2."
         )
     )
     return parser.parse_args()
@@ -1895,6 +1898,29 @@ def _expand_payload_placeholders(payload: Dict[str, Any]) -> Dict[str, Any]:
     return expanded
 
 
+def _refuse_unrendered_attach_only_identity(identity_file: str) -> None:
+    """Adversarial-review finding, 2026-09-08: without this check,
+    --attach-only with no explicit --ssh-identity-file override would fall
+    through to SETTINGS["ssh.identity_file"] (now a per-host TEMPLATE, not a
+    static path) still containing literal "{host}"/"{date}" text, and
+    _ensure_local_identity_file_exists() would silently generate a brand-new
+    keypair at that nonsense path -- one that was never installed on any
+    host and can never match. That's exactly the SSH-monitoring failure mode
+    (key mismatch) this whole redesign exists to close. Refuse loudly
+    instead: attach-only must be told exactly which already-generated key
+    to use.
+    """
+    if "{host}" in identity_file or "{date}" in identity_file:
+        raise SystemExit(
+            f"ERROR: --attach-only needs an explicit --ssh-identity-file (or "
+            f"NETCUP_SCP_API_SSH_IDENTITY_FILE) pointing at the exact key already "
+            f"used for this host's install -- the configured default "
+            f"({identity_file!r}) is a per-host/per-date TEMPLATE and "
+            f"cannot be resolved without knowing which host and date it was "
+            f"generated for."
+        )
+
+
 def main():
     global args, DEBUG
     args = parse_args()
@@ -1912,6 +1938,8 @@ def main():
             # fresh one that would never match anything on the host it's
             # attaching to.
             args.ssh_identity_file = _render_identity_file_path(args.ssh_identity_file, SERVER_NAME)
+        else:
+            _refuse_unrendered_attach_only_identity(args.ssh_identity_file)
         _ensure_local_identity_file_exists(args.ssh_identity_file, SETTINGS["ssh.controller_fqdn"])
         if not attach_only:
             # Consumed by _expand_payload_placeholders() (mirrors the

@@ -1260,6 +1260,15 @@ MaxFileSec=1month
         # no further controller access is needed. Removes only the exact
         # line _configure_controller_ssh_key() installed, so the operator's
         # own persistent key (however it got there) is never touched.
+        #
+        # Deliberately NOT called from install()'s/resume()'s own failure
+        # handlers (adversarial review finding, 2026-09-08): if stage1 or
+        # stage2 fails partway through, the ephemeral key staying in
+        # authorized_keys is exactly what lets the controller (or a human)
+        # SSH in and diagnose the failure -- removing it on failure would
+        # cut off the one access path useful for debugging a broken run.
+        # It's removed only on the clean-success path, once there's nothing
+        # left to diagnose.
         pubkey_line = self.config.controller_ssh_pubkey.strip()
         if not pubkey_line:
             return
