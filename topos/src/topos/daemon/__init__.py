@@ -53,6 +53,13 @@ from topos.daemon.paddr_lifecycle import (
     PaddrLifecycleStartError,
     PaddrLifecycleStopError,
 )
+from topos.daemon.persist import (
+    GapRange,
+    PersistentHistoryStore,
+    PersistStoreError,
+    SegmentInfo,
+    StoreStats,
+)
 from topos.daemon.component_health import (
     ComponentError,
     ComponentHealthRegistry,
@@ -106,14 +113,19 @@ __all__ = [
     "FrameProducerError",
     "FrameProducerTimeoutError",
     "FrameUnavailableError",
+    "GapRange",
     "HealthSnapshot",
     "PaddrLifecycleStartError",
     "PaddrLifecycleStopError",
     "PeerCredentials",
+    "PersistentHistoryStore",
+    "PersistStoreError",
     "PROTOCOL_VERSION",
     "PROTOCOL_VERSIONS",
     "ProtocolStatus",
+    "SegmentInfo",
     "Sensitivity",
+    "StoreStats",
     "SNAPSHOT_FILENAME",
     "SO_PEERCRED",
     "build_daemon_status",

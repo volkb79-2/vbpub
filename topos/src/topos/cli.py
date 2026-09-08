@@ -37,13 +37,14 @@ from topos.daemon import (
     BpfSnapshotError,
     FrameBroker,
     FrameBrokerError,
+    PersistentHistoryStore,
 )
 from topos.daemon.api import ApiLimits, DaemonApi, serve_versioned_unix_socket
 from topos.daemon.component_health import (
     ComponentError,
     ComponentHealthRegistry,
 )
-from topos.model import frame_to_jsonable
+from topos.model import Frame, frame_to_jsonable
 from topos.record.live import live_frame_stream
 from topos.record.headless import run_headless_record
 from topos.record.replay import ReplayDriver, format_frame_summary
@@ -1601,6 +1602,20 @@ def _main_gateway(argv: list[str]) -> int:
     return 0
 
 
+def _persisting_frame_stream(source: Iterator[Frame], store: PersistentHistoryStore) -> Iterator[Frame]:
+    """Tee each frame to the P91 persistent store as it flows to the broker.
+
+    ``store.append`` never raises — a disk-full/read-only condition degrades
+    the store instead (O7) — so this wrapper cannot turn a persistence problem
+    into a collection outage. Frames reach the store in the same order and
+    exactly once, matching what the RAM tier ring receives (Contract 2: one
+    canonical frame stream, persisted once).
+    """
+    for frame in source:
+        store.append(frame)
+        yield frame
+
+
 def _main_daemon(argv: list[str]) -> int:
     args = parse_daemon_args(argv)
     if args.command == "serve":
@@ -1611,9 +1626,32 @@ def _main_daemon(argv: list[str]) -> int:
         health_registry = ComponentHealthRegistry()
         health_registry.mark_starting("collector", detail="collector initialized")
 
+        history_store = PersistentHistoryStore(config.history.daemon)
+        if config.history.daemon.enabled:
+            history_stats = history_store.stats()
+            if history_stats.degraded:
+                health_registry.record_degraded(
+                    "persistent_history",
+                    detail=f"persistent history degraded at startup: {history_stats.degraded_reason}",
+                    error=ComponentError(
+                        message="persistent history degraded at startup",
+                        error_code="persistent_history_degraded",
+                    ),
+                )
+            else:
+                health_registry.record_success(
+                    "persistent_history",
+                    detail=f"recovery_state={history_stats.recovery_state} segments={history_stats.segment_count}",
+                )
+        else:
+            health_registry.mark_disabled("persistent_history", detail="disabled by default (see P91-REPORT.md)")
+
         frame_stop = threading.Event()
+        frame_stream: Iterator[Frame] = live_frame_stream(collector, stop_event=frame_stop)
+        if config.history.daemon.enabled:
+            frame_stream = _persisting_frame_stream(frame_stream, history_store)
         broker = FrameBroker(
-            live_frame_stream(collector, stop_event=frame_stop),
+            frame_stream,
             history_size=args.history_size,
             health_registry=health_registry,
             stop_callback=frame_stop.set,
@@ -1900,6 +1938,10 @@ def _main_daemon(argv: list[str]) -> int:
                     )
             if collector_stopped:
                 health_registry.mark_stopped("collector", detail="collector stopped")
+            if config.history.daemon.enabled:
+                health_registry.mark_stopping("persistent_history", detail="flushing persistent history")
+                history_store.close()
+                health_registry.mark_stopped("persistent_history", detail="persistent history flushed")
             server.server_close()
         return 0
     if args.command == "preflight":

@@ -174,3 +174,40 @@ class DaemonHistoryFrameSource(FrameSource):
                 gap_before = prev_seq is not None and seq > prev_seq + 1
             yield SourceFrame(seq=seq, frame=frame, gap_before=gap_before)
             prev_seq = seq
+
+
+class PersistentHistoryFrameSource(FrameSource):
+    """FrameSource over P91's on-disk persistent daemon-history store.
+
+    Constructed from the store's own :meth:`PersistentHistoryStore.read_frames`
+    result (a plain list, so this adapter never re-opens the store's files or
+    duplicates its recovery/corruption handling — the store is the single
+    source of truth for what is retained, evicted, or gapped). Age/byte-cap
+    eviction sets :attr:`evicted`; a quarantined or lost segment between two
+    retained segments produces an interior ``gap_before`` exactly like a daemon
+    ring's sequence jump, so a query never presents an evicted or corrupted
+    range as continuous (O8).
+    """
+
+    def __init__(
+        self,
+        entries: tuple[tuple[int, Frame, bool], ...],
+        *,
+        evicted: bool = False,
+        detail: dict[str, str] | None = None,
+    ) -> None:
+        self._entries = tuple(entries)
+        self.provenance = SourceProvenance(kind="daemon-history", detail={"tier": "persistent", **(detail or {})})
+        self.evicted = bool(evicted)
+
+    @classmethod
+    def from_store(cls, store: object, *, since_ts: float | None = None, until_ts: float | None = None) -> PersistentHistoryFrameSource:
+        """Build from a ``PersistentHistoryStore`` (duck-typed to avoid a hard
+        import cycle with the daemon persistence module)."""
+        entries = tuple(store.read_frames(since_ts=since_ts, until_ts=until_ts))
+        stats = store.stats()
+        return cls(entries=entries, evicted=bool(stats.evicted))
+
+    def iter_source_frames(self) -> Iterator[SourceFrame]:
+        for i, (seq, frame, gap_before) in enumerate(self._entries):
+            yield SourceFrame(seq=seq, frame=frame, gap_before=gap_before or (i == 0 and self.evicted))

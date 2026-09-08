@@ -40,11 +40,54 @@ class DiagnosticsConfig:
 
 
 @dataclass(frozen=True)
+class PersistConfig:
+    """Persistent (on-disk) daemon history tier configuration (D-005, P91).
+
+    Age and byte caps are enforced simultaneously; neither may be silently
+    enlarged. ``enabled`` defaults to False: Required contract 6 requires a
+    recorded resource-cost measurement (P91-REPORT.md) before this tier ships
+    on by default.
+    """
+
+    enabled: bool = False
+    dir: Path = Path("/var/lib/topos/history")
+    max_age_days: float = 1.0
+    max_size_mb: float = 256.0
+    compression: str = "zstd"  # "zstd" | "none"
+    segment_frames: int = 360
+    checkpoint_frames: int = 30
+    fsync: bool = True
+    dir_mode: int = 0o750
+    file_mode: int = 0o640
+
+    def __post_init__(self) -> None:
+        if self.max_age_days <= 0:
+            raise ValueError("history.daemon.max_age_days must be greater than 0")
+        if self.max_size_mb <= 0:
+            raise ValueError("history.daemon.max_size_mb must be greater than 0")
+        if self.compression not in ("zstd", "none"):
+            raise ValueError("history.daemon.compression must be 'zstd' or 'none'")
+        if self.segment_frames < 1:
+            raise ValueError("history.daemon.segment_frames must be at least 1")
+        if self.checkpoint_frames < 1:
+            raise ValueError("history.daemon.checkpoint_frames must be at least 1")
+
+    @property
+    def max_age_seconds(self) -> float:
+        return self.max_age_days * 86400.0
+
+    @property
+    def max_size_bytes(self) -> int:
+        return max(0, int(self.max_size_mb * 1024 * 1024))
+
+
+@dataclass(frozen=True)
 class HistoryConfig:
-    full_resolution_seconds: int = 14_400
+    full_resolution_seconds: int = 300
     downsample_interval_seconds: int = 60
-    downsample_retention_hours: int = 4
+    downsample_retention_hours: int = 24
     entity_grace_seconds: float = 30.0
+    daemon: PersistConfig = field(default_factory=PersistConfig)
 
     def capacity_for_interval(self, interval: float) -> int:
         if interval <= 0:
@@ -229,6 +272,16 @@ class ToposConfig:
                 "downsample_interval_seconds": self.history.downsample_interval_seconds,
                 "downsample_retention_hours": self.history.downsample_retention_hours,
                 "entity_grace_seconds": self.history.entity_grace_seconds,
+                "daemon": {
+                    "enabled": self.history.daemon.enabled,
+                    "dir": str(self.history.daemon.dir),
+                    "max_age_days": self.history.daemon.max_age_days,
+                    "max_size_mb": self.history.daemon.max_size_mb,
+                    "compression": self.history.daemon.compression,
+                    "segment_frames": self.history.daemon.segment_frames,
+                    "checkpoint_frames": self.history.daemon.checkpoint_frames,
+                    "fsync": self.history.daemon.fsync,
+                },
             },
             "record": {
                 "flush_every_frames": self.record.flush_every_frames,
@@ -356,6 +409,23 @@ def _load_score_weights(thresholds: dict[str, Any]) -> dict[str, float]:
     return out
 
 
+def _load_persist_config(daemon_data: dict[str, Any]) -> PersistConfig:
+    defaults = PersistConfig()
+    compression = daemon_data.get("compression", defaults.compression)
+    if compression not in ("zstd", "none"):
+        compression = defaults.compression
+    return PersistConfig(
+        enabled=bool(daemon_data.get("enabled", defaults.enabled)),
+        dir=Path(daemon_data["dir"]) if isinstance(daemon_data.get("dir"), str) else defaults.dir,
+        max_age_days=_coerce_float(daemon_data.get("max_age_days"), defaults.max_age_days),
+        max_size_mb=_coerce_float(daemon_data.get("max_size_mb"), defaults.max_size_mb),
+        compression=str(compression),
+        segment_frames=max(1, int(_coerce_float(daemon_data.get("segment_frames"), defaults.segment_frames))),
+        checkpoint_frames=max(1, int(_coerce_float(daemon_data.get("checkpoint_frames"), defaults.checkpoint_frames))),
+        fsync=bool(daemon_data.get("fsync", defaults.fsync)),
+    )
+
+
 _DEFAULT_SCORE_WEIGHTS = {
     "psi_mem_full_avg10": 24.0,
     "psi_mem_some_avg10": 10.0,
@@ -411,10 +481,11 @@ def load(path: Path | None = None) -> ToposConfig:
         hotkeys=dict(data.get("hotkeys", {}) or {}),
         diagnostics=DiagnosticsConfig(score_weights=_load_score_weights(thresholds)),
         history=HistoryConfig(
-            full_resolution_seconds=int(history_data.get("full_resolution_seconds", 14_400)),
+            full_resolution_seconds=int(history_data.get("full_resolution_seconds", 300)),
             downsample_interval_seconds=int(history_data.get("downsample_interval_seconds", 60)),
-            downsample_retention_hours=int(history_data.get("downsample_retention_hours", 4)),
+            downsample_retention_hours=int(history_data.get("downsample_retention_hours", 24)),
             entity_grace_seconds=float(history_data.get("entity_grace_seconds", 30.0)),
+            daemon=_load_persist_config(history_data.get("daemon", {}) or {}),
         ),
         record=RecordConfig(
             flush_every_frames=max(1, int(record_data.get("flush_every_frames", 1))),

@@ -109,7 +109,7 @@ def test_health_error_code_is_retained_when_present() -> None:
             "state_change_count": 0,
             "error": None,
         }
-        for name in ("collector", "bpf_snapshot_bridge", "paddr_lifecycle")
+        for name in ("collector", "bpf_snapshot_bridge", "paddr_lifecycle", "persistent_history")
     ]
     components[0]["error"] = {"message": "collector delayed", "error_code": "retry_later"}
     payload = {"schema_version": 1, "capability": "health-v1", "components": components}

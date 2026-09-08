@@ -550,11 +550,30 @@ separate `--admin` model, exact previews, confirmation, and audit logging.
 
 ## Retention
 
-The current broker uses bounded in-memory history, defaulting to 120 frames.
-There is no automatic on-disk daemon store today. Product decision D-005 sets
-the target contract: five minutes at five-second resolution in memory plus a
-batched compressed persistent tier capped simultaneously at 24 hours and
-256 MiB. Lifecycle facts share that store. The implementation must measure real
-compression/bytes written/write amplification, use explicit permissions, report
-coverage and wear-relevant statistics, recover safely from corruption, and
-never silently enlarge either cap.
+The broker uses bounded in-memory history (`--history-size`, defaulting to 120
+frames). `HistoryConfig.full_resolution_seconds` defaults to 300 (five minutes
+at the default 5s interval), reconciling the prior four-hour default per D-005.
+
+P91 (`topos.daemon.persist.PersistentHistoryStore`) adds an on-disk,
+age-and-byte-capped persistent tier, configured under `[history.daemon]`
+(`PersistConfig`) and disabled by default pending the O10 resource-cost
+measurement (`nyxloom-trove/reports/P91-REPORT.md`, `MEASUREMENTS.md`). When enabled,
+canonical frames are batched into small segment files (JSON-lines, optionally
+zstd-compressed) and published atomically: written to a temp path, fsynced,
+then renamed into `<dir>/segments/`, so a crash mid-write can never leave a
+torn segment visible. The index (`<dir>/index.json`) is republished the same
+way. Age (`max_age_days`) and byte (`max_size_mb`) caps are enforced
+simultaneously, oldest-segment-first, both at write time and again at startup
+recovery. Recovery re-hashes every segment against its recorded checksum;
+a mismatch, missing, or unparseable segment is quarantined under
+`<dir>/quarantine/` (never deleted) and reported as an explicit gap between
+its still-valid neighbours rather than silently returning wrong data. A
+disk-full or read-only `<dir>` degrades the store (visible via `stats()`
+as `degraded`/`degraded_reason`) without raising, so collection and the RAM
+tier are unaffected. `PersistentHistoryStore.stats()` reports byte/frame
+counts, oldest/newest timestamps, evictions, quarantine count, gaps, write
+errors, recovery state and compression ratio; a `PersistentHistoryFrameSource`
+(`topos.query`) hands the same store to P88's query engine without a second
+aggregation path. Lifecycle facts are intended to share this store and these
+caps (D-008) rather than create a second persistence engine, which remains
+future work.
