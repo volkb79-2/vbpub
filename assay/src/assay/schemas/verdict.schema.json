@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:verdict:10",
+  "$id": "urn:assay:schema:verdict:11",
   "title": "assay verdict artifact",
   "description": "One verdict, one lane, one commit. Computed R0-R4 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model. LAYER OWNERSHIP (A-182): this document owns every LOCALLY expressible rule -- enums, ranges, requiredness, string grammar, and reason/payload conditionals within a single object. It deliberately does NOT own cross-object arithmetic (candidate_count against judgment.r2.max_mutants), cross-object equality (canary.attempts[i].target against judgment.r3.targets[i]), or temporal ordering (ended >= started): Draft 2020-12 has no $data, so claiming those here would be a hollow contract. They live in the Python model AND, independently worded, in assay.verify's raw-document checks. It also does not own the BYTE bound on claim.detail -- maxLength counts characters, so the document's bound is satisfied by every legal artifact and the real one is enforced in the model and the verifier (A-428).",
   "type": "object",
@@ -20,7 +20,7 @@
     "schema_version": {
       "description": "The verdict schema version, independent of assay.toml's lane schema version. Exactly one schema is active in a released build (A-170): no negotiation, no default upgrade, no compatibility writer.",
       "type": "integer",
-      "const": 10
+      "const": 11
     },
     "assay_version": {
       "type": "string",
@@ -1327,7 +1327,7 @@
       "additionalProperties": false
     },
     "mutation": {
-      "description": "The R2 claim payload (P12/A-116, reshaped by P21/A-180): baseline-gated mutation execution against changed-line mutants, isolated per mutant, bounded by a declared jobs count AND a declared max_mutants cap. FIVE identity buckets -- killed included, so the largest bucket is auditable against the declared operator policy instead of being a bare count. candidate_count is the bounded number of descriptors discovery observed. NOTE: the arithmetic relating candidate_count, total and the bucket lengths, and its binding to judgment.r2.max_mutants, is cross-object and lives in the model and the raw verifier.",
+      "description": "The R2 claim payload (P12/A-116, reshaped by P21/A-180): baseline-gated mutation execution against changed-line mutants, isolated per mutant, bounded by a declared jobs count AND a declared max_mutants cap. FIVE identity buckets -- killed included, so the largest bucket is auditable against the declared operator policy instead of being a bare count. candidate_count is the bounded number of descriptors discovery observed. B070 (schema v11): candidate_count may now EXCEED total by the number of candidates that were observed and never attempted -- a FIFTH disposition beside the five buckets -- and the residual candidate_count - total must be accounted for one level up, by judgment.r2.discarded's own length under producer = 'ingested' and by nothing at all under 'native', where the only legal residual is the limit sentinel's. NOTE: the arithmetic relating candidate_count, total and the bucket lengths, and its binding to judgment.r2.max_mutants and judgment.r2.discarded, is cross-object and lives in the model and the raw verifier.",
       "type": "object",
       "required": [
         "candidate_count",
@@ -1588,10 +1588,24 @@
           }
         },
         "discarded": {
-          "description": "B046: how many mutants the ingested report marked CompileError or RuntimeError -- invalid mutants assay's native engine never emits at all. EXCLUDED from the pct denominator and COUNTED, rather than silently dropped: a report that could not compile most of its own mutants has measured much less than its score implies. Required (possibly 0) when producer = 'ingested'; forbidden when 'native'. B051/DA-D4/DA-R26 (schema v10): DECLARED, NOT VERIFIED, in producer_tool's own words (A-230a). Assay DERIVES this count at ingest, by listing the report's own CompileError/RuntimeError mutants (DA-D4's 'listed' semantics, never 'encountered'), and assay verify then asserts only that it is an integer and non-negative. It can assert no more, and that is a property of the field rather than a gap in the verifier: a discarded mutant is by those same semantics OUTSIDE the document -- in no mutation bucket, in neither candidate_count nor total (which the model requires to be equal outside the limit sentinel), and its line not in lines_without_candidates, because the tool DID produce a candidate there. A truthful high-discard document is therefore byte-indistinguishable from a truthful zero-discard one, and every upper bound that would refuse an inflated count (discarded <= total, <= candidate_count) also refuses the honest report this field exists to surface. Reproduced and left standing deliberately: this count set to 9999 on a real 109-mutant ingested document verifies clean. This is a COUNT beside the payload, never enters the mutation buckets, so the score's denominator is unaffected by construction. B070 is the v11 candidate that would put the missing quantity on the wire and make this a difference verify can take.",
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 10000
+          "description": "B070 (schema v11): the mutants the ingested report marked CompileError or RuntimeError -- invalid mutants assay's native engine never emits at all -- LISTED BY IDENTITY, one entry per mutant, on survived_uncovered's own footing. Through v10 this was an integer COUNT and was DECLARED, NOT VERIFIED (B051/DA-D4/DA-R26): a count of mutants that are by construction outside the document has nothing in the document to be a difference OF, so a truthful high-discard report was byte-indistinguishable from a truthful zero-discard one, and this field set to 9999 on a real 109-mutant document verified clean. The list supplies the missing quantity. Required (possibly empty) when producer = 'ingested'; forbidden when 'native'. Ascending by (path, start_byte, end_byte, replacement_sha256, operator) and unique; array ORDER is not expressible here and is checked by the model and the raw verifier. A discarded mutant carries no kill_signal -- nothing refused it -- exactly as the four non-killed buckets do. What IS now verified, by re-derivation against the R2 payload rather than by an upper-bound clamp (route 3, rejected by DA-R26 because it refuses the honest report too): every entry's identity is DISJOINT from all five mutation buckets (a discarded mutant was never attempted, so it cannot also be killed); every entry's LINE carries a candidate, so it may not appear in lines_without_candidates; and the FIFTH DISPOSITION arithmetic mutation.candidate_count - mutation.total == the length of this array, which is what makes an inflated list refuse BY NAME and a truthful 900-entry one pass. Still EXCLUDED from the pct denominator, and still incapable of moving a status: these mutants never enter the mutation buckets. What remains declared-not-verified is the strictly SMALLER un-listed half -- candidates a tool drops before reporting at all -- which is not recoverable from any artifact assay receives (A-230a's declared-by-artifact tier).",
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 10000,
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/mutant_outcome"
+              },
+              {
+                "not": {
+                  "required": [
+                    "kill_signal"
+                  ]
+                }
+              }
+            ]
+          }
         },
         "lines_without_candidates": {
           "description": "B046: in-scope executable lines for which the ingested report produced NO mutant at all. With zero candidates in scope overall the R2 claim renders INCONCLUSIVE/NO_MUTANTS exactly as native R2 does; short of that, this is the honest record of where the foreign tool declined to mutate, which a bare pct cannot show. Required (possibly empty) when producer = 'ingested'; forbidden when 'native'. Ascending by (path, lineno) and unique; array ORDER lives in the model and the raw verifier.",
