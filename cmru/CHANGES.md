@@ -4,6 +4,39 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [5.1.0] - 2026-09-08
+<!-- cmru: generated -->
+<!-- cmru: source-end=34d0717ae7f4039111b8aade8f132f16ea2a5a53 -->
+
+### Added
+- feat(cmru): get.py enroll -- bare-host enrollment for every rendered installer (KI-24) (745046b5)
+
+### Fixed
+- fix(cmru): KI-24 review fix -- warn on silent multi-key coexistence, file KI-25 (ed511ddb)
+- fix(run-gate): estate-wide sweep of environment="host" lanes broken by RG-43 (f62642c6)
+- fix(cmru): run-gate.toml's own assay pin was missed by tool-deps --refresh (6121eec9)
+- fix(cmru,run-gate): RG-29 -- cmru/run-gate.toml's assay pin still named the vanished 2.2.0 sidecar (0ad5372d)
+- fix(run-gate): RG-1 conjunction overrides forwarded + override-reachability guard (d0401ed0)
+
+### Changed
+- chore(cmru): tool-deps --refresh assay -- 5.0.0 -> 5.1.0, including run-gate.toml's own pin (a4addfc5)
+- chore(cmru): tool-deps --refresh assay -- 4.1.0 -> 5.0.0 (bc4fb12a)
+- backlog(cmru): file KI-23 -- generate_release_changelog never detects a hand-authored `- UNRELEASED` draft section, duplicates instead of folding (8d7aa615)
+- chore(cmru): re-pin the judge 2.3.0 -> 4.1.0 (run-gate rev 33 passes --resume/--progress, floor 2.4.1) (b36c6925)
+- backlog(cmru): file KI-21, KI-22 -- worktrees crash on a slash-less release branch; a build failure leaves an orphaned tag (8e200938)
+- backlog(cmru): file KI-20 -- status/release ahead-of-origin check reads shared local main, no --ref override (f6b386f2)
+- chore(consumers): repin assay-v2.3.0 (841d89c8)
+- Merge branch 'main' into run-gate-rg-sweep (72cc1f47)
+- run-gate RG-20: resource-aware admission — slice RAM budget + shared-infra locks (5b7535bc)
+- run-gate RG-10: declared artifacts + evidence-path disclosure on every lane exit (6f859529)
+- chore(deps): repin consumers to released assay 2.2.0 (42b6a0de)
+
+### Documentation
+- docs(cmru): KI-24 implementation REPORT -- per-oracle evidence + gate verdict (35d312c3)
+- docs(cmru): plan KI-24 -- get.py's enroll subcommand (dc86a828)
+- docs(ciu,cmru): host enrollment rev 2 for both lines -- ciu host enroll (two steps, no token/callback), v8 SPEC-V8 draft.7 S7.2.4 + V8-29, v7 SPEC.md S14.7 backport, cmru KI-24 get.py enroll subcommand, proposal rev 3.4, round-4 review prompt (b19880bc)
+- docs(run-gate): RG-13 adoption hygiene + estate budget↔timeout sweep (df5c9c10)
+
 ## [5.0.0] - 2026-08-23
 <!-- cmru: generated -->
 <!-- cmru: source-end=6711d260974f859dacd947db6cffbdc0511f19da -->
