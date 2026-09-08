@@ -64,5 +64,6 @@ Phone: install the ntfy app → add server `https://nyxloom.gstammtisch.dchive.d
   rate limits are a second layer, not the gate.
 - Attachments disabled by design (no `attachment-cache-dir`).
 - Container: pinned image, non-root (1003), read-only rootfs, cap_drop ALL,
-  no-new-privileges, `nyxloom.slice` cgroup, bounded json-file logs,
-  no host ports (tls-edge routes via `ingress_public`).
+  no-new-privileges, `dev-background.slice` cgroup (via ciu governance; inline
+  on the plain-compose path), bounded json-file logs, no host ports (tls-edge
+  routes via `ingress_public`).

@@ -21,8 +21,6 @@ container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deplo
 dashboard_port = 8942
 
 [nyxloomd.runtime]
-# systemd slice for the nyxloom service family (shared with ntfy).
-cgroup_parent = "nyxloom.slice"
 run_as_uid = 1003
 run_as_gid = 1003
 # docker gid — group_add so the daemon can reach docker.sock for agent gates.
@@ -42,3 +40,13 @@ start_period = "60s"
 [nyxloomd.logging]
 max_size = "10m"
 max_file = "3"
+
+# nyxloom-P103: 6g, not the root's 2g. 8 routes in routes.host.toml declare
+# trust = "operator", which containment.py:204-213 runs UNCONTAINED as direct
+# children of the daemon -- so up to max_active_tasks = 5 full agent CLIs run
+# in THIS container and are charged to its memory cgroup. A ceiling costs
+# nothing unless used (the tier's 8G MemoryMax is the real backstop), while one
+# set too low OOM-kills the dispatcher and every in-flight agent. Interim value
+# pending real measurement -- see the backlog entry from nyxloom-P103 item 9.
+[nyxloomd.governance]
+mem_limit = "6g"

@@ -11,7 +11,22 @@ services:
     container_name: nyxloom-ntfy
     command: serve
     restart: unless-stopped
-    cgroup_parent: nyxloom.slice
+    # nyxloom-P103: this plain-compose path receives NO ciu governance overlay
+    # (ciu injects via a second `-f` onto .ciu/ciu.compose.overlay.yml), so the
+    # caps are inline here and MUST be kept in step by hand with the
+    # [governance] table in ../ciu.global.defaults.toml.j2 -- the same
+    # "keep both in sync" obligation this file's header already states.
+    cgroup_parent: dev-background.slice
+    mem_limit: 2g
+    memswap_limit: 17g
+    mem_reservation: 256m
+    blkio_config:
+      device_read_iops:
+        - path: /dev/vda
+          rate: 200
+      device_write_iops:
+        - path: /dev/vda
+          rate: 400
     user: "1003:1003"
     read_only: true
     tmpfs:

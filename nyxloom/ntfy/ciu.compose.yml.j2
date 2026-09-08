@@ -10,9 +10,6 @@ services:
     container_name: {{ ntfy.container_prefix }}-ntfy
     command: serve
     restart: unless-stopped
-{% if ntfy.runtime.cgroup_parent %}
-    cgroup_parent: {{ ntfy.runtime.cgroup_parent }}
-{% endif %}
     user: "{{ ntfy.runtime.run_as_uid }}:{{ ntfy.runtime.run_as_gid }}"
     read_only: true
     tmpfs:
