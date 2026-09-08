@@ -227,6 +227,94 @@ verdict's top level, beside `argv_declared`. A lane that declares none records
 `"cwd"` (`null` when undeclared), so a gate tool can preflight the directory
 without parsing `argv`.
 
+## Stop a flaky exit code from failing a green suite: `result_report` (B078)
+
+By default assay judges your lane's command by its **exit code**: 0 is a
+pass, anything else is `FAIL`/`COMMAND_FAILED`. That is the right default and
+it is not changing.
+
+It has one measured blind spot, and you will know if you have hit it: **every
+test green, and a non-zero exit anyway.** run-gate RG-45 reproduced this 5/5
+against vitest 3.2.7, whose internal worker↔orchestrator RPC heartbeat
+(hardcoded at 60s, with no config knob) trips under host-wide CPU contention,
+throws as an unhandled error, and sets `process.exitCode = 1` *after* the
+reporter has already written a complete, all-green report.
+
+If that is your lane, tell assay where your runner's own structured report
+lands and it will judge **that** instead:
+
+```toml
+schema_version = 2
+
+[lanes.ui_unit]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = [
+  "npx", "vitest", "run",
+  "--reporter=json",
+  "--outputFile=vitest-report.json",
+]
+env = { CI = "true" }
+env_passthrough = ["PATH", "HOME"]
+budget = "20m"
+allow_argv_append = false
+
+[lanes.ui_unit.result_report]
+format = "vitest-json"
+path = "vitest-report.json"
+```
+
+Two things have to line up, and nothing else: your argv writes the report
+(`--reporter=json --outputFile=...` — native vitest, no plugin), and
+`result_report.path` names the same file.
+
+**`path` is relative to the directory your command runs in** — the lane's
+`cwd` when it declares one, the project root otherwise — because that is what
+`--outputFile` itself resolves against. Git-ignore it: it is this run's own
+output, exactly like a coverage artifact.
+
+**Declare a path whose directory already exists.** Assay reserves the file
+before your command starts and does not create parent directories in your
+working tree (that capability is contractually reserved for assay's own
+ephemeral snapshots). A path at the project root, as above, always works; a
+path like `.assay/vitest-report.json` works only once something else has
+created `.assay/`, and until then the lane simply behaves as if it had no
+declaration at all. Assay also **removes any pre-existing file at that path**
+before the run — so name a file your test runner owns, never a source file.
+
+### What assay does with it
+
+A report only counts if it is **verified complete**: it parses, it carries
+vitest's own top-level `success` field (its presence is the "this run
+finished" marker — the *value* is not trusted, since it comes from the same
+orchestrator whose internal error is the problem), and it reports more than
+zero tests. Then its own failure count decides, in both directions:
+
+| Report | Exit code | Verdict |
+|---|---|---|
+| complete, 0 failures | non-zero | **`PASS`** — the case this exists for |
+| complete, 0 failures | 0 | `PASS` |
+| complete, ≥1 failure | 0 | **`FAIL`** / `COMMAND_FAILED` |
+| complete, ≥1 failure | non-zero | `FAIL` / `COMMAND_FAILED` |
+| absent, truncated, wrong shape, or 0 tests | any | the exit code alone, unchanged |
+
+The last row is the important one. A missing or half-written report is
+exactly what a genuine crash leaves behind — a hard kill, an OOM-kill, a
+segfault — so it can never be read as evidence *for* a pass. This can only
+ever cost you a pass you would otherwise have been given; it can never grant
+you one you had not earned.
+
+A `PASS` that overrode a non-zero exit still records the real `returncode` and
+keeps the command's output tails, so the disagreement stays visible on the
+verdict. The verdict schema does not change, `assay`'s own exit codes do not
+change, and no new `reason_code` exists — this changes *when*
+`COMMAND_FAILED` fires, never what it means.
+
+**`format = "vitest-json"` is the only format today.** `pytest-json-report`
+and `go test -json` readers are planned as separate checkpoints; declaring
+either now is refused at load, on purpose, rather than silently ignored.
+
 ## A whole-target floor: a coverage gate that survives a docstring-only change
 
 Ordinary R1 judges the `base..HEAD` diff, so "fixing" a method by editing only its docstring
