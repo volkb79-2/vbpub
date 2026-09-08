@@ -14,14 +14,16 @@ scope:
   touch:
     - "ciu.global.defaults.toml.j2"            # THE fix, half 1. Insert Work item 1's pinned `[governance]` block immediately BEFORE the existing `[ciu]` table at line 33. Measured at input_revision: this file has NO `[governance]` table (verified `git grep -n governance -- nyxloom pwmcp`, tabulated below). The defaults layer is the correct home, NOT the gitignored site layer: `config_model.deep_merge` (ciu/src/ciu/config_model.py:558-571) iterates `override.items()` only, so a higher layer that omits the table cannot suppress it -- verified empirically on pwmcp, whose tracked higher-precedence `ciu.global.toml.j2` carries no `[governance]` and did NOT suppress the defaults-layer table
     - "pwmcp/ciu.global.defaults.toml.j2"        # THE fix, half 2 -- Work item 1(b). READ THE PATH CAVEAT: this is relative to the WORKTREE ROOT, not to the nyxloom project root that every other entry here is relative to. pwmcp/ is a SIBLING project in the same monorepo checkout and is NOT a registered nyxloom project (it has no nyxloom-trove/), so there is no other trove this half could be carved in, and NL-6 covers both roots from nyxloom's backlog. nyxloom lint CANNOT validate this entry: L7 hard-errors on any "../" or absolute path (src/nyxloom/lint.py:1017-1024), and this bare form is accepted only because L7 exempts a scope.touch path that does not exist under cfg.root as "a file to be created" (lint.py:1044-1045) -- it resolves to the nonexistent nyxloom/pwmcp/..., NOT to the real file. This is a known, deliberately-accepted lint blind spot, filed by Work item 7; it is recorded here rather than quietly relied upon. The implementer edits <worktree>/pwmcp/ciu.global.defaults.toml.j2 and proves it via O3, which reads the real overlay
-    - "pwmcp-instance/ciu.defaults.toml.j2"    # per-stack memory override, Work item 2. Add `[pwmcp.governance] mem_limit = "4g"` (the stack's root key is `pwmcp`, not `pwmcp-instance` -- confirmed: the rendered overlay's service key is `pwmcp`). Reason is measured, not invented: line 34 declares `shm_size = "2gb"`, and cgroup v2 charges /dev/shm pages to the container's own memory cgroup, so the root's 2g would be consumed by the shm allocation alone. See "Memory sizing" below for why this override is safe even if that accounting claim were wrong
+    - "pwmcp-instance/ciu.defaults.toml.j2"    # per-stack memory override, Work item 2. Add `[pwmcp.governance] mem_limit = "4g"` (the stack's root key is `pwmcp`, not `pwmcp-instance` -- confirmed: the rendered overlay's service key is `pwmcp`). Reason is measured, not invented: line 34 declares `shm_size = "2gb"` and cgroup v2 charges tmpfs pages to the memcg that faults them in. Note the precise claim: `shm_size` is a CEILING, not a preallocation, so 2g is not consumed at start -- the risk is a Chromium renderer filling /dev/shm under load against a 2g cap. See "Memory sizing" for the full derivation and the measured 8G tier backstop that makes a generous per-container value free
     - "ntfy/ciu.compose.yml.j2"                # THE load-bearing correction the backlog entry MISSES. Delete lines 13-15 (`{% if ntfy.runtime.cgroup_parent %}` / `    cgroup_parent: {{ ntfy.runtime.cgroup_parent }}` / `{% endif %}`). ciu governance NEVER overwrites a compose key the stack author already emits (ciu/src/ciu/governance.py:1016-1038, `if "cgroup_parent" not in author_keys`; SPEC.md:2917-2923 "the stack author's rendered compose always wins"), so leaving this block makes ntfy the ONE service that keeps `nyxloom.slice` after the fix. MEASURED, not inferred -- the tracer bullet in "Probe log" shows ntfy's overlay receiving mem_limit/blkio but NO cgroup_parent until this block is gone
-    - "ntfy/docker-compose.yml"                # line 14, `    cgroup_parent: nyxloom.slice`. Delete it. This is the pre-rendered plain-compose sibling; both this file's own header (lines 2-3) and ntfy/ciu.compose.yml.j2's ("keep both in sync: edit HERE, re-render or hand-sync") make it a REQUIRED companion edit. Not a ciu path -- it is the fallback a plain `docker compose up` uses, and leaving it would keep the fictional slice alive on exactly that path
+    - "ntfy/docker-compose.yml"                # line 14, `    cgroup_parent: nyxloom.slice`. REPLACE it -- do NOT merely delete it. This is the pre-rendered plain-compose sibling AND it is the file the CURRENTLY RUNNING ntfy container was actually deployed from (measured: `docker inspect nyxloom-ntfy` reports compose project `ntfy`, `config_files=/workspaces/vbpub/nyxloom/ntfy/docker-compose.yml` -- a plain `docker compose -f` deploy, never a ciu one). ciu's governance overlay is a second `-f` that this path never loads, so the caps must be INLINE here. Deleting line 14 without replacement makes the live path strictly worse -- unconfined instead of a transient slice. Work item 3b pins the replacement block; O2b asserts its post-state
+    - "ntfy/README.md"                         # line 67 states ntfy's hardening posture as "`nyxloom.slice` cgroup". That is the SAME keep-the-documented-posture-in-sync obligation that puts docker-compose.yml in scope, and it is about the cgroup slice -- NOT about ntfy's auth surface (the "Governance notes" heading at line 61, which is deny-all auth and is deliberately untouched). Work item 3f pins the replacement wording. Listed so the implementer is not routed into a BLOCKED exit on an unlisted path
     - "ntfy/ciu.defaults.toml.j2"              # line 24-25 (the comment `# systemd slice for the nyxloom service family.` and `cgroup_parent = "nyxloom.slice"`). Delete both. After the template edit above nothing reads this key: `[<stack>.runtime]` is NOT a ciu-recognised table (no `[runtime]` anywhere in ciu/docs/SPEC.md; ciu reads it never, warns never -- S15.13's unknown-key WARN covers the `[governance]` table ONLY, ciu/src/ciu/governance.py:384-395), so its sole consumer was the Jinja reference just deleted
     - "nyxloomd/ciu.defaults.toml.j2"          # line 24-25, same two lines (comment reads `(shared with ntfy)`). Delete both. Already dead at input_revision with NO template consumer at all: `grep -n cgroup_parent nyxloomd/ciu.compose.yml.j2` returns ZERO hits, which is exactly the "dead config key that looks like placement and produces none" incident docs/plan-resource-governance.md:130-141 records
     - "nyxloomd/ciu.toml"                      # line 8-9, `[nyxloomd.runtime]` / `cgroup_parent = "nyxloom.slice"`. Delete the key line. NOTE this file is TRACKED although `.gitignore:202` lists `**/ciu.toml` (tracked files ignore .gitignore) AND it is a `ciu render` OUTPUT -- `ciu render --profile default` rewrites it. Verified the rewrite is comment-only at input_revision (values identical), but the implementer MUST `git diff` it after any render and must not commit a render's comment-stripping as part of this package. See "Environment setup" for the exact restore step
     - "docs/plan-resource-governance.md"       # Work item 4 ONLY: append the pinned correction note after the D-G0a block (lines 143-157) and after the duplicate "Two ciu defaults that would bite nyxloom" block (lines 221-231). BOTH blocks assert `cgroup_parent` defaults to `besteffort.slice`; that is FALSE for ciu 7.11.0 -- `GOVERNANCE_DEFAULTS["cgroup_parent"] = ""` (ciu/src/ciu/governance.py:67) and `resolve_cgroup_parent` RAISES when neither the key nor $CGROUP_PARENT_DEV_BACKGROUND resolves (governance.py:288-312; SPEC.md:2862-2865 "No hardcoded fallback"). Do NOT rewrite the historical narrative -- append only. Listed in scope precisely so Work item 4 cannot route the implementer into a BLOCKED exit on an unlisted path
     - "nyxloom-trove/backlog/NL-6-nyxloom-s-and-pwmcp-s-ciu-roots-declare-no-governance-nyxloomd.md"  # status open -> fixed via the CLI, AND replace the "Observed mechanism"/"Oracles" sections with Work item 5's PINNED text. Three of the entry's own claims are FALSE at input_revision and must not survive as a fixed entry: (a) "the rendered compose carries no cgroup_parent on any service" -- ntfy's carries `nyxloom.slice`; (b) "`ciu render` -> the rendered compose" -- `ciu render` renders TOML ONLY, never the compose (ciu/src/ciu/deploy.py:1677-1693); (c) "`ciu check` passes the governance stage" as an oracle -- that stage is shape-only (deploy.py:2746-2755) and PASSES at input_revision with zero governance declared, i.e. it is a hollow oracle
+    - "nyxloom-trove/backlog/"                 # DIRECTORY sweep, for the THREE new entries Work items 6, 7 and 8 create via `exec-nyxloom.py backlog new` (pwmcp two-tracked-global-layers; lint L7 cannot express a sibling-project scope path; extend doctor's cgroup-slice-missing check to ciu-declared placement). Their filenames are allocated by the CLI and cannot be pinned at carve time, which is why this is a directory entry rather than three paths. Only ADDING entries here is authorised -- no other backlog file may be edited except NL-6, listed separately above
     - "nyxloom-trove/backlog/INDEX.md"         # GENERATED (line 1 header: "GENERATED by `nyxloom backlog index` -- do not edit; regenerate.") and enforced by BLG3. MUST be regenerated by the CLI, never hand-edited. Note the tester-unified gate does NOT run `nyxloom lint`, so a stale INDEX ships green unless Work item 5(c)'s BLG-findings read is produced
     - "nyxloom-trove/reports/nyxloom-P103-LOG.md"      # NEW: per-commit LOG, estate standard contract
     - "nyxloom-trove/reports/nyxloom-P103-REPORT.md"   # NEW: per-oracle evidence. The gate CANNOT check any oracle in this package (zero Python changed -- see "Gate argv"), so every oracle's command output AND the O5 controlled-break output are run BY HAND and pasted here. This file is where the proof lives; an empty or paraphrased REPORT is a failed package
@@ -34,118 +36,156 @@ scope:
 oracles:
   - id: O1
     observable: >-
-      From a FRESH worktree of this branch, `cd nyxloom && ciu up --profile default --dry-run
-      --define-root "$PWD"` exits 0, and for BOTH stacks the generated overlay
-      `<stack>/.ciu/ciu.compose.overlay.yml` contains the EXACT line
-      `    cgroup_parent: dev-background.slice`. Concretely, both
-      `grep -c '^    cgroup_parent: dev-background\.slice$' ntfy/.ciu/ciu.compose.overlay.yml`
-      and the same on `nyxloomd/.ciu/ciu.compose.overlay.yml` print `1`. Additionally the
-      run's `[GOVERNANCE]` log line reports `services_injected=1 exempt=0` for each stack.
+      COMMITTED CONTENT, checked on a FRESH worktree of this branch before anything is run.
+      On BOTH roots the declaration is literal and host-independent:
+      `grep -qx 'cgroup_parent = "dev-background.slice"' nyxloom/ciu.global.defaults.toml.j2`
+      and the same on `pwmcp/ciu.global.defaults.toml.j2`; likewise
+      `grep -qx 'device = "/dev/vda"'` on both. THEN, from `nyxloom/`,
+      `ciu up --profile default --dry-run --define-root "$PWD"` exits 0 and for BOTH stacks
+      `grep -c '^    cgroup_parent: dev-background\.slice$' <stack>/.ciu/ciu.compose.overlay.yml`
+      prints `1` (stacks: `ntfy`, `nyxloomd`), and the run's `[GOVERNANCE]` log line reports
+      `device=/dev/vda (explicit)` and `services_injected=1 exempt=0` for each.
       The overlay is the ONLY correct place to look: ciu writes governance to
-      `<stack>/.ciu/ciu.compose.overlay.yml` (ciu/src/ciu/composefile.py:1407-1413) and
-      merges it via a second `-f` (composefile.py:1598-1613), deliberately leaving the
-      rendered `ciu.compose.yml` byte-exact author output (SPEC.md:2930-2932).
+      `<stack>/.ciu/ciu.compose.overlay.yml` (ciu/src/ciu/composefile.py:1407-1413) and merges
+      it via a second `-f` (composefile.py:1598-1613), deliberately leaving the rendered
+      `ciu.compose.yml` byte-exact author output (SPEC.md:2930-2935).
     negative: >-
-      Grepping `ciu.compose.yml` instead of the overlay is the false-PASS trap this oracle
-      exists to close: governance NEVER writes into `ciu.compose.yml`, so that grep returns 0
-      both before and after a correct fix, and 1 for ntfy at input_revision for the WRONG
-      reason (the author's own `nyxloom.slice` line). The slice literal is pinned because
-      `dev-background.slice` is the one slice VERIFIED to exist and be in active use on this
-      host (`docker inspect` of 25 running containers at carve time: every one is
-      `dev-background.slice`), whereas `nyxloom.slice` exists NOWHERE -- and ciu cannot catch
-      that here, because its slice-existence preflight SKIPS inside this devcontainer
-      (`[S15.G9-1] systemctl is present but systemd is not PID 1`, observed in the probe log),
-      so a fictional slice fails OPEN to an unbounded transient cgroup. An implementation
-      that sets `cgroup_parent = ""` and relies on $CGROUP_PARENT_DEV_BACKGROUND ALSO fails
-      this oracle by design: that variable is unset in this repo's ciu.env (measured: `grep -i
-      cgroup ciu.env` -> no hits), so `resolve_cgroup_parent` would RAISE (governance.py:288-312)
-      and the run would exit non-zero rather than silently degrade. Requiring `exempt=0`
-      catches an implementation that "passes" by adding the service to `exempt_services`.
+      The committed-literal halves are load-bearing and the overlay check alone CANNOT replace
+      them. `cgroup_parent = ""` produces a BYTE-IDENTICAL overlay line on this machine and
+      passes every overlay-only assertion: `resolve_cgroup_parent` falls back to
+      `$CGROUP_PARENT_DEV_BACKGROUND` (ciu/src/ciu/governance.py:288-312), and that variable IS
+      set in the process environment here -- `env | grep CGROUP` prints
+      `CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice`, injected by devcontainer.json's
+      containerEnv (SPEC.md:2862-2863). (Do NOT re-measure this with `grep -i cgroup ciu.env`:
+      the file has no such key, and reading the FILE instead of the PROCESS environment is the
+      exact mistake an earlier revision of this carve made.) `""` is rejected not because it
+      fails here but because it makes the committed config host-dependent: it hard-errors
+      `[S15.2]` on any host or CI without that ambient variable. Likewise omitting
+      `device = "/dev/vda"` passes an overlay `cgroup_parent` check while silently dropping
+      every blkio cap -- ciu's autodetect (`findmnt --target /var/lib/docker`) returns nothing
+      under docker-outside-of-docker, and the `if device:` guard (governance.py:1042) then skips
+      `blkio_config` entirely. `exempt=0` catches an implementation that "passes" by listing the
+      service in `exempt_services`. Note ciu CANNOT catch a fictional slice here: its
+      slice-existence preflight SKIPS in this devcontainer (`[S15.G9-1] systemctl is present but
+      systemd is not PID 1`), so a bad name fails OPEN to an unbounded transient cgroup --
+      `dev-background.slice` is pinned because it is the one slice verified installed
+      (modern-debian-tools-python-debug/host-setup/units/dev-background.slice.in) and in use by
+      every running container on this host.
     gate: tester-unified
   - id: O2
     observable: >-
-      Same fresh-worktree dry-run as O1. The ntfy service is governed by ciu ALONE, not by its
-      own template: `grep -c cgroup_parent ntfy/ciu.compose.yml` prints `0`, AND
-      `git grep -c 'nyxloom\.slice' -- nyxloom/` prints nothing outside
-      `docs/plan-resource-governance.md` and `infra/slices/` (the historical narrative and the
-      not-yet-installed unit templates, both deliberately retained). The four config/compose
-      occurrences measured at input_revision -- ntfy/ciu.compose.yml.j2:14,
-      ntfy/ciu.defaults.toml.j2:25, ntfy/docker-compose.yml:14, nyxloomd/ciu.defaults.toml.j2:25,
-      nyxloomd/ciu.toml:9 -- are all gone.
+      ntfy is governed by ciu ALONE, not by its own template. On the same fresh-worktree
+      dry-run: `grep -c cgroup_parent ntfy/ciu.compose.yml` prints `0`. AND the fictional slice
+      is gone from every CONFIG/COMPOSE file of both roots -- bound the scan to those file types
+      and no others:
+      `git grep -l 'nyxloom\.slice' -- 'nyxloom/**/*.toml' 'nyxloom/**/*.j2' 'nyxloom/**/*.yml' 'pwmcp/**/*.toml' 'pwmcp/**/*.j2' 'pwmcp/**/*.yml'`
+      returns ONLY `nyxloom/infra/slices/nyxloom-gates.slice`-adjacent unit templates if any
+      match that glob (today: no matches at all). The five occurrences measured at
+      `input_revision` -- `ntfy/ciu.compose.yml.j2:14`, `ntfy/ciu.defaults.toml.j2:25`,
+      `ntfy/docker-compose.yml:14`, `nyxloomd/ciu.defaults.toml.j2:25`, `nyxloomd/ciu.toml:9` --
+      are all gone. Prose retains it deliberately and is NOT scanned.
     negative: >-
-      An implementation that adds the root `[governance]` table but leaves
-      ntfy/ciu.compose.yml.j2's `{% if ntfy.runtime.cgroup_parent %}` block intact still passes
-      a naive "governance is declared" check and still passes O1 for nyxloomd -- but ntfy keeps
-      `cgroup_parent: nyxloom.slice` and stays unbounded, which is the ENTIRE defect for the one
-      service that is actually running in production right now (measured at carve time:
-      `docker inspect nyxloom-ntfy` -> `CgroupParent=nyxloom.slice Memory=0 MemorySwap=0
-      MemoryReservation=0 BlkioDeviceReadIOps=[]`). This is precisely the failure the backlog
-      entry's own proposed contract would have shipped. Deleting the TOML key while leaving the
-      Jinja block is equally wrong in the other direction and must not be treated as sufficient:
-      it changes nothing observable here (an undefined Jinja name is falsy in the `{% if %}`) but
-      leaves a template reading a key no config supplies -- so this oracle requires BOTH the
-      template block and the TOML key gone, and additionally the plain-compose sibling
-      ntfy/docker-compose.yml:14, which no ciu command renders and which a `ciu`-only check
-      therefore cannot catch.
+      Do NOT write this oracle as an unbounded `git grep -c 'nyxloom\.slice' -- nyxloom/` with a
+      prose exclusion list: that form is UNSATISFIABLE, because this handoff is itself a tracked
+      file containing the literal ~20 times, and `ntfy/README.md` and `infra/slices/` match too.
+      An earlier revision of this carve shipped exactly that unsatisfiable oracle. Bounding the
+      scan to config/compose file TYPES is the dimension that makes it checkable; the exclusion
+      is by file type, not by a hand-maintained path list. Separately, an implementation that
+      adds the root `[governance]` table but leaves ntfy/ciu.compose.yml.j2's
+      `{% if ntfy.runtime.cgroup_parent %}` block intact still passes a naive "governance is
+      declared" check and still passes O1 for nyxloomd, yet ntfy keeps `nyxloom.slice` and stays
+      unplaced -- ciu never overwrites a compose key the author already emits
+      (governance.py:1016-1038; SPEC.md:2917-2923). Deleting the TOML key while leaving the Jinja
+      block is equally insufficient. BOTH must go.
+    gate: tester-unified
+  - id: O2b
+    observable: >-
+      The PLAIN-COMPOSE path stays governed. `ntfy/docker-compose.yml` -- which receives NO ciu
+      overlay -- carries the placement and caps inline after the fix:
+      `grep -qx '    cgroup_parent: dev-background.slice' ntfy/docker-compose.yml`, and the same
+      file contains `mem_limit: 2g`, `memswap_limit: 17g`, `mem_reservation: 256m`, and a
+      `blkio_config:` block naming `/dev/vda` with `rate: 200` (read) and `rate: 400` (write) --
+      i.e. it mirrors the fragment ciu injects for ntfy, verified by diffing it against
+      `ntfy/.ciu/ciu.compose.overlay.yml` from O1's run.
+    negative: >-
+      This oracle exists because the ciu overlay CANNOT reach this file, and because the
+      currently-running ntfy container is deployed FROM it, not by ciu. Measured at carve time:
+      `docker inspect nyxloom-ntfy` reports compose project `ntfy` with
+      `config_files=/workspaces/vbpub/nyxloom/ntfy/docker-compose.yml` -- a plain
+      `docker compose -f ...` deployment, so ciu governance was never in that path at all. An
+      implementation that merely DELETES line 14 (as an earlier revision of this carve specified)
+      passes O1 and O2 while making the live deployment path STRICTLY WORSE: it removes the only
+      placement ntfy had and adds nothing, so the container lands at Docker's unconfined default
+      instead of a transient slice. Deleting without replacing is the false-PASS this oracle
+      closes. Note the values are inlined rather than inherited precisely because there is no
+      overlay on this path; they must be kept in step with the governance table by hand, which
+      the file's own "keep both in sync" header already requires.
     gate: tester-unified
   - id: O3
     observable: >-
-      From the same fresh worktree, `cd pwmcp && ciu up --dir . --dry-run --define-root "$PWD"`
-      exits 0 and `.ciu/ciu.compose.overlay.yml` contains BOTH
-      `    cgroup_parent: dev-background.slice` and `    mem_limit: 4g`. This proves the second
-      root independently: pwmcp is a SEPARATE ciu root (`standalone_root = true`), so nyxloom's
-      table cannot reach it -- v7 roots are islands, which is the whole reason NL-6 names two
-      files.
+      The SECOND root, proven independently. `cd pwmcp && ciu up --dir . --dry-run
+      --define-root "$PWD"` exits 0 and `.ciu/ciu.compose.overlay.yml` contains BOTH
+      `    cgroup_parent: dev-background.slice` and `    mem_limit: 4g`. File identity is pinned
+      too, not merely inferred from the overlay:
+      `grep -n '^\[governance\]' pwmcp/ciu.global.defaults.toml.j2` matches, AND
+      `! grep -q governance pwmcp/ciu.global.toml.j2` (the table must NOT have been written into
+      the higher-precedence tracked near-duplicate).
     negative: >-
-      Running only nyxloom's dry-run and assuming pwmcp follows is the false-PASS: there is no
-      inheritance between v7 roots (that is v8's `[ciu] inherit`, SPEC-V8 draft.5 S3.1.5, and
-      explicitly NOT built here). An implementation that edits pwmcp/ciu.global.toml.j2 (the
-      tracked higher-precedence near-duplicate) INSTEAD of ciu.global.defaults.toml.j2 would
-      also pass a local dry-run while violating the contract -- the defaults layer is the
-      committed one every fresh worktree gets, and it is the layer NL-6 names. Verify the edit
-      landed in ciu.global.defaults.toml.j2 by file path, not merely by observing the overlay.
-      Note `--dir .` on pwmcp CREATES a docker network and connects the devcontainer to it
-      (`auto_connect_network = true`, observed in the probe log) -- see Environment setup for
-      the mandatory teardown; an oracle run that leaves that network behind is not complete.
+      Running only nyxloom's dry-run and assuming pwmcp follows is the false-PASS: v7 roots are
+      islands with no inheritance (that is v8's `[ciu] inherit`, explicitly NOT built here).
+      The two grep halves are what distinguish the specified implementation from one that edits
+      `pwmcp/ciu.global.toml.j2` instead -- that file sits at HIGHER precedence
+      (config_model.py:686-696), so editing it produces an IDENTICAL overlay while leaving the
+      committed defaults layer -- the layer every fresh worktree gets -- untouched. Note
+      `--dir .` on pwmcp CREATES a docker network and connects the devcontainer
+      (`auto_connect_network = true`); an oracle run that leaves it behind is not complete, see
+      Environment setup.
     gate: tester-unified
   - id: O4
     observable: >-
-      The optional tools stack is governed too: `cd nyxloom && ciu up --profile tools --dry-run
-      --define-root "$PWD"` exits 0 and `pwmcp-instance/.ciu/ciu.compose.overlay.yml` contains
-      `    cgroup_parent: dev-background.slice` AND `    mem_limit: 4g` (the per-stack override
-      from Work item 2, NOT the root's 2g).
+      Per-stack sizing is real, and the ROOT value is distinct from the OVERRIDE. From `nyxloom/`:
+      `ciu up --profile tools --dry-run --define-root "$PWD"` exits 0 and
+      `pwmcp-instance/.ciu/ciu.compose.overlay.yml` contains `    cgroup_parent: dev-background.slice`
+      AND `    mem_limit: 4g`. In the SAME check, from O1's default-profile run, BOTH
+      `nyxloomd/.ciu/ciu.compose.overlay.yml` and `ntfy/.ciu/ciu.compose.overlay.yml` contain
+      `    mem_limit: 2g` -- the root value, NOT 4g.
     negative: >-
-      `pwmcp-instance` is deliberately OUTSIDE the default profile (ciu.global.defaults.toml.j2
-      lines 25-31), so O1's `--profile default` run NEVER touches it -- checking only the default
-      profile and declaring the root covered is the false-PASS. `mem_limit: 4g` rather than `2g`
-      is the discriminator that proves the per-stack table was written under the correct root key:
-      ciu resolves the per-stack table as `[<root_key>.governance]` where the root key is the
-      stack's single non-reserved top-level key (`pwmcp` here, NOT `pwmcp-instance`), so a table
-      written as `[pwmcp-instance.governance]` is silently ignored -- ciu warns on unknown keys
-      only INSIDE `[governance]` (governance.py:384-395), never on a misplaced table -- and the
-      overlay would show the root's `2g`. That silent-ignore is the same class as the dead
-      `[<stack>.runtime] cgroup_parent` key this package removes.
+      Asserting only `4g` on pwmcp-instance is a false-PASS: an implementation that simply sets
+      the nyxloom ROOT `mem_limit = "4g"` and never writes Work item 2's
+      `[pwmcp.governance]` table satisfies it, while silently giving `ntfy` and `nyxloomd` 4g
+      too. Pinning `2g` on the two default-profile stacks in the same oracle is what forces the
+      per-stack table to exist. `pwmcp-instance` is also deliberately OUTSIDE the default profile
+      (ciu.global.defaults.toml.j2 lines 25-31), so O1's run never touches it -- checking only
+      the default profile and declaring the root covered is the other false-PASS. Finally, the
+      table's root key must be `pwmcp`, the stack's single non-reserved top-level key, NOT
+      `pwmcp-instance`: a misplaced table is silently ignored (ciu warns on unknown keys only
+      INSIDE `[governance]`, governance.py:384-395) and the overlay would show the root's value.
     gate: tester-unified
   - id: O5
     observable: >-
-      MUTATION-CHECKED, run by hand, output pasted in nyxloom-P103-REPORT.md. Two controlled
-      wrong implementations, each of which MUST make O1 fail: (a) flip the committed table to
-      `enabled = false` and re-run O1's dry-run -- no overlay `cgroup_parent` line is produced
-      for either stack, both greps print `0`, and the `[GOVERNANCE]` log line is absent
-      entirely; (b) move the whole `[governance]` block out of `ciu.global.defaults.toml.j2`
-      into an untracked site-layer `ciu.global.toml.j2`, then run O1 from a `git stash -u`-clean
-      or freshly-cloned worktree -- the table is absent there and both greps print `0`. Restore
-      the committed state and re-run O1 green afterwards; the REPORT records all three runs.
+      MUTATION-CHECKED, run by hand, all runs pasted verbatim into nyxloom-P103-REPORT.md.
+      Break (a), two runs: flip the committed table to `enabled = false`, re-run O1's dry-run --
+      no overlay `cgroup_parent` line for either stack (both greps print `0`) and the
+      `[GOVERNANCE]` log line is absent entirely; restore and re-run -- green.
+      Break (b), the LAYER break, FIVE runs in this exact order: (i) delete the `[governance]`
+      block from `ciu.global.defaults.toml.j2`; (ii) write it verbatim into an UNTRACKED
+      `ciu.global.toml.j2`; (iii) run O1 -- it PASSES (this run is the point: it records that a
+      site-layer "fix" looks green locally); (iv) delete ONLY the untracked `ciu.global.toml.j2`,
+      keeping (i) -- run O1, it now FAILS; (v) `git checkout -- ciu.global.defaults.toml.j2` --
+      run O1, green again.
     negative: >-
-      A break that cannot fail the oracle is not mutation evidence. Do NOT substitute "delete
-      the table entirely" for break (a): that is indistinguishable from the input_revision
-      baseline and proves only that the baseline is broken, which is already known. Break (a)
-      specifically pins that `enabled` is load-bearing rather than decorative -- ciu enforces it
-      as a bool (governance.py:398-402) and a table present with `enabled = false` injects
-      nothing. Break (b) is the one that pins the LAYER: an implementer who "fixes" this by
-      writing the table into the gitignored site layer produces a locally-green dry-run on their
-      own machine and ships nothing -- every fresh worktree, and the deployed host, stay
-      unbounded. The oracle is over a FRESH worktree's committed content for exactly this reason.
+      A break that cannot fail the oracle is not mutation evidence. Do NOT collapse break (b) to
+      "move the table to a site layer, then run from a `git stash -u`-clean or freshly-cloned
+      worktree" -- an earlier revision of this carve specified exactly that and it is
+      SELF-CANCELLING: `git stash -u` stashes BOTH the untracked site file AND the tracked
+      deletion, restoring the correct implementation, and a fresh clone of the branch carries the
+      committed defaults table too (the move was never committed). Either way O1 passes and
+      nothing is proved. Step (iv) -- removing only the site file while the defaults deletion
+      stands -- is the run that actually discriminates. Do NOT substitute "delete the table
+      entirely" for break (a) either: that is indistinguishable from the input_revision baseline
+      and proves only that the baseline is broken, which is already known. Break (a)
+      specifically pins that `enabled` is load-bearing rather than decorative (ciu enforces it as
+      a bool, governance.py:398-402).
     gate: tester-unified
 gates: [tester-unified]
 escalate_if:
@@ -155,6 +195,8 @@ escalate_if:
   - "`ciu up --profile default --dry-run` exits non-zero for a reason OTHER than a governance finding -- e.g. the DooD preflight, a secrets/materialise step, or an external network the tools profile expects. That is an environment fault, not this package's contract; report BLOCKED with the full step output rather than weakening a `--dry-run` oracle to `ciu check` (which is shape-only and PASSES with zero governance declared, i.e. it can never prove this package)"
   - "any oracle would require an actual `ciu up` (no `--dry-run`), a `docker run`, or installing a systemd slice -- report BLOCKED. Every oracle here is deliberately render-only: the host is shared with production game servers, carried load average 9.22/8 cores with a live run-gate container and a full dstdns stack at carve time, and slice installation needs host root the daemon must not have (docs/plan-resource-governance.md D-G2)"
   - "the `[nyxloomd.runtime]` deletion in the TRACKED `nyxloomd/ciu.toml` is reverted by a `ciu render` run and the resulting diff is anything more than the comment-stripping measured at carve time -- report BLOCKED rather than committing a render artifact's incidental changes as part of this package"
+  - "any route in routes.host.toml is UNCONTAINED at dispatch time (i.e. nyxloomd would run agent CLIs in-process rather than wrapping them in `docker run`). The 2g nyxloomd bound is derived assuming contained legs, where only a thin docker client stays in-container against `max_active_tasks = 5`; five in-process agent CLIs would not fit 2g. Report BLOCKED with the route list rather than picking a bigger number"
+  - "`dev-background.slice`'s rendered MemoryMax on the live host is not 8G (the value this carve derived from host-setup.env.example, which is the EXAMPLE not a deployed host-setup.env -- no host-setup.env exists in the checkout). The 8G tier backstop is what makes a generous per-container ceiling defensible; if the real unit differs materially, re-derive the per-container numbers rather than shipping the stated reasoning"
   - "a named contract cannot be met as specified, or scope requires a forbidden file"
   - "E-008 checkpoint clause: arm at ~120k context or ~60 tool calls (whichever first), cut at the next coherent boundary (green gate > commit > LOG/REPORT write > edit-cluster end; never on a red gate), repeat every ~40-55 calls, stop when <~40 calls remain. At the cut: write a continuation brief to nyxloom-trove/reports/nyxloom-P103-BRIEF.md plus a self-authored /compact-style retention prompt to nyxloom-trove/reports/nyxloom-P103-COMPACT.md (both authorised touches), commit, and return -- do not resume or fork past the cut yourself. Unlikely to be needed: this is a small config-only package."
 ---
@@ -179,7 +221,12 @@ caps into any container these roots start, on a host that also runs production
 game servers.
 
 **Live proof at carve time**, not a hypothetical — the ntfy container is up right
-now:
+now. Read the attribution carefully: this container was deployed by **plain
+compose**, not by ciu (`docker inspect` reports compose project `ntfy` with
+`config_files=/workspaces/vbpub/nyxloom/ntfy/docker-compose.yml`). ciu governance
+was never in its path — it is disabled at `input_revision` — so nothing was
+"skipped" here. What this proves is the *consequence*; the author-always-wins
+mechanism is proved separately, from ciu's source and the tracer bullet:
 
 ```
 $ docker inspect nyxloom-ntfy --format \
@@ -250,7 +297,8 @@ files only:
 | file | line | current | disposition |
 |---|---|---|---|
 | `nyxloom/ntfy/ciu.compose.yml.j2` | 13-15 | `{% if ntfy.runtime.cgroup_parent %}` block | **DELETE** (Work item 3a) — the live author-set key that defeats injection |
-| `nyxloom/ntfy/docker-compose.yml` | 14 | `    cgroup_parent: nyxloom.slice` | **DELETE** (3b) — pre-rendered plain-compose sibling, no ciu command renders it |
+| `nyxloom/ntfy/docker-compose.yml` | 14 | `    cgroup_parent: nyxloom.slice` | **REPLACE** (3b) — plain-compose sibling; receives NO ciu overlay AND is the path the running container was deployed from, so the caps go inline |
+| `nyxloom/ntfy/README.md` | 67 | documents the posture as `` `nyxloom.slice` cgroup `` | **REWORD** (3f) — same keep-the-documented-posture-in-sync obligation. Missed by the first sweep, which dismissed this file on line 61 (auth governance); line 67 is about the cgroup |
 | `nyxloom/ntfy/ciu.defaults.toml.j2` | 24-25 | comment + `cgroup_parent = "nyxloom.slice"` | **DELETE** (3c) — sole consumer was 3a's Jinja reference |
 | `nyxloom/nyxloomd/ciu.defaults.toml.j2` | 24-25 | comment + same key | **DELETE** (3d) — already dead: `nyxloomd/ciu.compose.yml.j2` has ZERO `cgroup_parent` hits |
 | `nyxloom/nyxloomd/ciu.toml` | 8-9 | `[nyxloomd.runtime]` / same key | **DELETE key line** (3e) — tracked render output, see scope note |
@@ -267,51 +315,104 @@ was live *solely* through its own Jinja template; nyxloomd's was inert.
 **Root level: `mem_limit = "2g"` for nyxloom, `"4g"` for pwmcp. Per-stack: one
 override, `[pwmcp.governance] mem_limit = "4g"` for `pwmcp-instance`.**
 
-Reasoning, in the order the evidence forced it:
+### The host backstop, measured
+
+The tier ceiling is not an assumption — it is a rendered systemd unit in this
+monorepo,
+`modern-debian-tools-python-debug/host-setup/units/dev-background.slice.in`, with
+values from `host-setup.env.example`:
+
+| property | value |
+|---|---|
+| `MemoryHigh` | 6G |
+| `MemoryMax` | **8G** |
+| `MemorySwapMax` | 48G |
+| `CPUWeight` | 20 |
+| `ManagedOOMMemoryPressure` | `kill` at 75% |
+
+So `dev-background.slice` caps **every dev container on this host, in aggregate,
+at 8G**, and cgroup v2 charges child usage to the parent. That is what makes a
+generous per-container ceiling free in host-safety terms: no combination of
+per-container values can exceed 8G for the tier.
+
+**A second, decisive fact:** `scripts/mdt-dev-cap-watcher.py` watches the slice
+and applies `MemoryMax=DEV_CAP_MEMORY_MAX` (**1G**, `mdt-dev-cap-watcher.py:65-66`)
+to any container that arrives *without* asking for its own `--memory`; a caller's
+explicit value always wins. Two consequences, both arguing for this package:
+
+- Declaring `mem_limit` explicitly is **required**, not decorative. Left implicit,
+  `nyxloomd` would be clamped to 1G by the watcher — far too small.
+- Placement is the part that **cannot** be retrofitted: the watcher's own header
+  says it "cannot fix cgroup-parent placement itself (create-time only)". Today's
+  containers sit in a fictional `nyxloom.slice`, i.e. outside the watcher's reach
+  entirely, so they get neither the tier ceiling nor the 1G default. That is the
+  gap `cgroup_parent` closes and nothing else can.
+
+### The per-container numbers
 
 1. **No measured data exists** for `nyxloomd` or `ntfy` — neither is sized in any
    nyxloom doc, and `docker stats` history is unavailable (nyxloomd is not
-   running). `docs/plan-resource-governance.md` **D-G4** rules directly on this:
+   running). `docs/plan-resource-governance.md` **D-G4** rules on this:
    *"absolute limits are HOST-owned and live in the slice units; the project
-   declares nothing absolute"*, and per-container values are *"an optional
-   refinement for a project that has measured itself"*. So inventing per-service
-   numbers would violate nyxloom's own standing decision.
-2. **A single root-level ceiling is the estate pattern.** dstdns's own root is
-   root-level, not per-stack (`dstdns/ciu.global.toml.j2:110-124`, `mem_limit =
-   "2g"`), and its comment records why a generous ceiling is free: the parent
-   slice's `MemoryMax` *"is the real host-safety backstop regardless of any
-   per-container value (cgroup v2 accounts child usage against the parent
-   slice)"*. `2g` matches what every dstdns container is verifiably running with
-   today (`docker inspect` → `Memory=2147483648`).
-3. **The one exception is measured, not invented.** Both pwmcp services declare
-   `shm_size = "2gb"` (`nyxloom/pwmcp-instance/ciu.defaults.toml.j2:34`,
+   declares nothing absolute"*.
+   **The tension is unavoidable and is resolved here, not cited both ways:** once
+   `enabled = true`, ciu injects a `mem_limit` whether or not the project names
+   one (default `"1g"`, `governance.py:68`), and leaving it implicit hands the
+   number to the watcher's 1G. So D-G4's "declare nothing absolute" is not
+   available; the honest reading is that the *authoritative* ceiling remains the
+   slice's 8G and the per-container value is a blast-radius bound beneath it.
+   That is what these numbers are.
+2. **`2g` for nyxloom's root** matches dstdns's own root-level value
+   (`dstdns/ciu.global.toml.j2:110-124`) and what every dstdns container verifiably
+   runs with (`docker inspect` → `Memory=2147483648`).
+   **Bound check against concurrency:** `nyxloom-trove/nyxloom.toml:96` sets
+   `max_active_tasks = 5`, and `nyxloomd` spawns agent legs as its own children
+   (`src/nyxloom/wrapper.py:497`). Crucially, a *contained* leg wraps the argv in
+   `docker run` (`wrapper.py:32` and the "Spawn (the CLI, or the docker client
+   running it)" comment at :488), so the heavy work runs in a SIBLING container
+   charged to its own cgroup and only the docker client — a few MB — stays inside
+   `nyxloomd`. 2g therefore bounds the daemon plus five thin clients, which is
+   ample. An *uncontained* leg runs the CLI in-process and five of those would not
+   fit; if any route in `routes.host.toml` is uncontained at dispatch time, that is
+   an `escalate_if` condition, not a number to guess at.
+3. **`4g` for both pwmcp stacks.** Both declare `shm_size = "2gb"`
+   (`nyxloom/pwmcp-instance/ciu.defaults.toml.j2:34`,
    `pwmcp/ciu.defaults.toml.j2:145`, each commented *"Chromium needs real shared
-   memory"*). cgroup v2 charges `/dev/shm` pages to the container's own memory
-   cgroup, so a 2g cap would be consumed by the shm allocation alone, leaving
-   the browser no headroom. `4g` gives the declared shm plus an equal working
-   set.
-   **This decision is robust even if that accounting claim is wrong:** by (2), a
-   more generous per-container ceiling costs nothing in host safety, because the
-   slice ceiling is the real backstop. Reviewers should still challenge the
-   claim; nothing in the package depends on it being right.
-4. **Everything else is left at ciu's default, deliberately.** `mem_swap_limit`
-   (17g), `mem_reservation` (256m), `write_iops` (400), `read_iops` (200 fallback)
-   are ciu's `GOVERNANCE_DEFAULTS` and are what dstdns runs with in practice.
-   `ksm_optin` is **omitted** (`= off`): pwmcp's image already performs its own
-   KSM opt-in *"without depending on any consumer's ciu governance overlay"*
-   (`pwmcp/containers/pwmcp/ksm-optin.c:7`), and `"builtin"` would make `ciu
-   render` require Docker to compile a shim (`SPEC.md:3197-3200`) — new machinery
-   this package does not need.
+   memory"*), and cgroup v2 charges tmpfs pages to the memcg that faults them in.
+   **State the mechanism precisely:** `shm_size` is a tmpfs *ceiling*, not a
+   preallocation — only pages actually touched are charged, so 2g would not be
+   consumed the moment the container starts. The risk is a Chromium renderer
+   filling `/dev/shm` under load and colliding with a 2g cap. 4g gives the declared
+   shm plus an equal working set.
+4. **Everything else is left at ciu's default, deliberately.** `mem_reservation`
+   (256m), `write_iops` (400), `read_iops` (200 fallback) are
+   `GOVERNANCE_DEFAULTS` and are what dstdns runs with.
+   **`mem_swap_limit` is 17g and that number deserves stating plainly:** in compose
+   `memswap_limit` is *memory + swap combined*, so at `mem_limit: 2g` it permits
+   ~15g of swap for one container. On a host whose own config comment records
+   *"~3GB available / 20GB swap in use with ZERO nyxloom attempts active"*
+   (`nyxloom.toml:98-100`) that is generous. It is accepted UNCHANGED here because
+   the tier's `MemorySwapMax=48G` is the real bound and because changing it is a
+   separate, estate-wide decision affecting dstdns too — but it is recorded, not
+   overlooked, and is a fair thing for a future package to tighten.
+   `ksm_optin` is **omitted** (`= off`): pwmcp's image already performs its own KSM
+   opt-in *"without depending on any consumer's ciu governance overlay"*
+   (`pwmcp/containers/pwmcp/ksm-optin.c:7`), and `"builtin"` would make `ciu render`
+   require Docker to compile a shim (`SPEC.md:3197-3200`).
 5. **`device = "/dev/vda"` is pinned, not autodetected.** `findmnt --target
    /var/lib/docker` returns EMPTY in this devcontainer (measured), so ciu's
-   autodetect silently fails and blkio caps would be skipped entirely
-   (`governance.py:1040-1050`, the `if device:` guard). `/dev/vda` is the real
-   host disk (`lsblk`: 1T) and is exactly what dstdns's containers run with
-   (`BlkioDeviceReadIOps=[/dev/vda:200]`).
+   autodetect silently fails and blkio caps would be skipped entirely (the
+   `if device:` guard, `governance.py:1042`). `/dev/vda` is the real host disk
+   (`lsblk`: 1T) and is what dstdns's containers run with
+   (`BlkioDeviceReadIOps=[/dev/vda:200]`). O1 pins it because omitting it is a
+   silent-skip false-PASS.
 6. **`cgroup_parent = "dev-background.slice"`, explicit.** It is the only slice
-   verified to exist and be in use. It is NOT left `""`: `$CGROUP_PARENT_DEV_BACKGROUND`
-   is unset in this repo's `ciu.env` (measured), and ciu has **no hardcoded slice
-   default** — unset + unresolvable is a hard `[S15.2]` error (`governance.py:288-312`).
+   verified installed and in use. It is NOT left `""`: that resolves from the
+   ambient `$CGROUP_PARENT_DEV_BACKGROUND`, which **is** set in this
+   devcontainer's process environment — so `""` would work here and silently
+   hard-error `[S15.2]` on any host or CI without it. O1 pins the committed
+   literal for exactly this reason.
+
 
 > **Note for the implementer — `docs/plan-resource-governance.md` contains a
 > stale warning that argues against this package.** Its D-G0a block (and its
@@ -415,12 +516,46 @@ mem_limit = "4g"
 The table's root key is **`pwmcp`**, matching the stack's single non-reserved
 top-level key — `[pwmcp-instance.governance]` would be silently ignored.
 
-**3. Retire `nyxloom.slice`** — five deletions, exactly as tabulated in the
-sweep above: (a) `ntfy/ciu.compose.yml.j2` lines 13-15; (b)
-`ntfy/docker-compose.yml` line 14; (c) `ntfy/ciu.defaults.toml.j2` lines 24-25;
-(d) `nyxloomd/ciu.defaults.toml.j2` lines 24-25; (e) `nyxloomd/ciu.toml` line 9
-(and its now-empty-of-placement `[nyxloomd.runtime]` header stays — it still
-carries `run_as_uid`/`run_as_gid`/`docker_gid`).
+**3. Retire `nyxloom.slice`** — four deletions, one REPLACEMENT, one doc edit.
+
+Deletions, exactly as tabulated in the sweep above: (a) `ntfy/ciu.compose.yml.j2`
+lines 13-15; (c) `ntfy/ciu.defaults.toml.j2` lines 24-25; (d)
+`nyxloomd/ciu.defaults.toml.j2` lines 24-25; (e) `nyxloomd/ciu.toml` line 9 (its
+`[nyxloomd.runtime]` header stays — it still carries
+`run_as_uid`/`run_as_gid`/`docker_gid`).
+
+**(b) `ntfy/docker-compose.yml` line 14 is REPLACED, not deleted.** This path
+loads no ciu overlay and is what the running container was deployed from, so the
+caps must be inline. Substitute VERBATIM for line 14, at the same indent:
+
+```yaml
+    # nyxloom-P103: this plain-compose path receives NO ciu governance overlay
+    # (ciu injects via a second `-f` onto .ciu/ciu.compose.overlay.yml), so the
+    # caps are inline here and MUST be kept in step by hand with the
+    # [governance] table in ../ciu.global.defaults.toml.j2 -- the same
+    # "keep both in sync" obligation this file's header already states.
+    cgroup_parent: dev-background.slice
+    mem_limit: 2g
+    memswap_limit: 17g
+    mem_reservation: 256m
+    blkio_config:
+      device_read_iops:
+        - path: /dev/vda
+          rate: 200
+      device_write_iops:
+        - path: /dev/vda
+          rate: 400
+```
+
+Confirm it mirrors ciu's own fragment by diffing against
+`ntfy/.ciu/ciu.compose.overlay.yml` from O1's run (O2b).
+
+**(f) `ntfy/README.md` line 67.** It documents the hardening posture as
+`` `nyxloom.slice` cgroup ``. Replace that fragment with
+`` `dev-background.slice` cgroup (via ciu governance; inline on the
+plain-compose path) `` so the documented posture matches what ships. Leave the
+"Governance notes" section at line 61 alone — that is ntfy's auth surface, not
+cgroups.
 
 **4. Correct the stale `besteffort.slice` claim** in
 `docs/plan-resource-governance.md`. Append (do NOT rewrite the narrative) a
@@ -430,6 +565,13 @@ stating: as of ciu 7.11.0 `cgroup_parent` has no hardcoded default —
 `[S15.2]` error, not a silent `besteffort.slice`; nyxloom-P103 sets the key
 explicitly regardless. Keep the `device` half of both blocks — it is still true
 and is why this package pins `/dev/vda`.
+
+Two FURTHER stale `besteffort.slice` statements in the same file get the same
+treatment: **line 259** and **lines 296-298**. Both describe dstdns as placing
+its containers in `besteffort.slice`; dstdns runs `dev-background.slice` today
+(measured: every dstdns container on this host). Lines 296-298 matter most — they
+are the passage this package's own memory-sizing argument leans on, so leaving
+them naming the wrong slice would make the citation unverifiable.
 
 **5. Close NL-6.** (a) Replace its "Observed mechanism and reproduction" and
 "Oracles" sections with corrected text covering the three false claims tabulated
@@ -444,7 +586,10 @@ fresh regeneration.
 tracked `ciu.global.defaults.toml.j2` and a tracked `ciu.global.toml.j2` that are
 near-duplicates, with the latter at higher precedence and lacking the
 BUILD-TEST-ONLY header. Two tracked global layers in one root is a standing
-shadowing hazard. Record the ID in the REPORT.
+shadowing hazard. File it with
+`python3 exec-nyxloom.py backlog new --title "<title>" --type bugfix --component ciu-config`
+(check `backlog new --help` for the exact flags first), and record the allocated
+ID in the REPORT.
 
 **7. File a second backlog entry** (do not fix it here) against nyxloom's own
 lint: **L7 cannot express a `scope.touch` path in a sibling project of the same
@@ -455,7 +600,18 @@ the create-exemption at `lint.py:1044-1045` treats it as a file to be created
 under `cfg.root`, so lint validates a path that does not exist and never sees the
 real file. This package is the live case: it must edit a second ciu root that no
 nyxloom project owns. Note both halves of the defect (the false negative and the
-false positive) in the entry. Record the ID in the REPORT.
+false positive) in the entry. File it with the same `backlog new` invocation as Work item 6
+(component `nyxloom-lint`) and record the allocated ID in the REPORT.
+
+**8. File a third backlog entry** (do not fix it here): nyxloom's `doctor`
+ALREADY implements a critical `cgroup-slice-missing` finding
+(`src/nyxloom/doctor.py:80-86, 787, 813-831`) for a `--cgroup-parent=<slice>`
+appearing in **gate argv** — but it never inspects a ciu config or compose file.
+That is the durable answer to the gap this package works around by hand: ciu's
+own slice-existence preflight SKIPS inside the devcontainer (systemd is not PID
+1), which is how a fictional `nyxloom.slice` survived in ntfy's config. Extending
+`doctor`'s existing check to ciu-declared placement would have caught it. Record
+the ID in the REPORT.
 
 ### Degrees of freedom
 
@@ -532,10 +688,21 @@ cd {worktree}/nyxloom && ./run-gate.py --worktree {worktree} tester-unified
 Run it as a **regression check** — it must stay green, proving no Python was
 disturbed — but understand what it does *not* do: `asserts = ["tests-pass",
 "changed-line-coverage", "canary-verified"]` (`nyxloom-trove/nyxloom.toml:91`).
-With no changed Python lines, `changed-line-coverage` is **vacuous**, and no
-assert inspects a TOML/Jinja file. **A green tester-unified run is not evidence
-for any oracle in this package.** Do not go hunting for a pytest gate that
-covers governance config — there is none, by design.
+With no changed Python lines, `changed-line-coverage` is **vacuous**, and nothing
+in the lane asserts a governance key. **A green tester-unified run is not evidence
+for any oracle in this package.**
+
+Be precise about *why*, because a blanket "no test reads config" would be false:
+`tests/test_render.py:1451-1505`
+(`test_nyxloomd_compose_template_and_sibling_mounts_agree`) DOES parse both
+`nyxloomd/ciu.compose.yml.j2` and `nyxloomd/docker-compose.yml` inside the gate —
+but only for *volume sources*, and only for *nyxloomd*, so it cannot catch this
+package's regression. That test is nonetheless the ready-made in-repo pattern for
+turning O2/O2b into a permanent gate assertion over the **ntfy** template/sibling
+pair, which is how a zero-Python fix stops being silently re-introducible. Doing
+so is OUT OF SCOPE here (it would add Python and change the gate's meaning) — but
+name it in the REPORT as the recommended follow-up rather than concluding no such
+mechanism exists.
 
 Every oracle O1-O5 is therefore run **BY HAND** via the Environment setup
 commands, and its verbatim output pasted into
@@ -552,18 +719,20 @@ cd {worktree}/nyxloom && python3 exec-nyxloom.py lint \
 
 ### Expected lint output
 
-`nyxloom lint` on this handoff exits **0** with exactly these warnings and no
-errors. Each was verified once at carve time; anything else is drift and should
-be investigated, not waved through.
+`nyxloom lint` on this handoff exits **0** with **22 warnings and no errors** (15 x L13, 6 x L7, 1 x L10).
+Each class was verified once at carve time; anything else is drift and should be
+investigated, not waved through.
 
-| warning | verdict |
-|---|---|
-| `L10 handoff size ~11.4k tokens` | over the 10k warn floor, under the 18k error floor. Accepted: the size is the tabulated sweeps and the probe log, which is what stops the implementer re-deriving the mechanism |
-| `L13 ... '.ciu/ciu.compose.overlay.yml'`, `'ntfy/.ciu/...'`, `'nyxloomd/.ciu/...'`, `'pwmcp-instance/.ciu/...'` (4) | FALSE POSITIVE. These are ciu's **generated, gitignored** artifacts — the thing the oracles *read*, never edit. Putting a build output in `scope.touch` would be wrong |
-| `L13 ... 'ntfy/ciu.compose.yml'` | FALSE POSITIVE, same class: the rendered compose, gitignored |
-| `L13 ... 'ciu/src/ciu/composefile.py'`, `'pwmcp/ciu.global.toml.j2'`, `'infra/slices'` | FALSE POSITIVE: read-only citations and forbidden paths, deliberately not in `scope.touch` |
-| `L7 cross-repo reference '/workspaces/dstdns'` (x2) | expected — the read-only reference for the `[governance]` shape |
-| `L7 relative-up path '../pwmcp'` (x2) | expected — the sibling root this package's second half edits; see the `scope.touch` path caveat and Work item 7 |
+| warning | count | verdict |
+|---|---|---|
+| `L10 handoff size ~14.6k tokens` | 1 | over the 10k warn floor, under the 18k error floor. Accepted: the size is the tabulated sweeps, the probe log and the measured memory derivation — the material that stops the implementer re-deriving the mechanism |
+| `L13 ... '.ciu/ciu.compose.overlay.yml'` and its per-stack forms (O1/O2b/O3/O4) | 6 | FALSE POSITIVE. ciu's **generated, gitignored** overlay — the artifact the oracles *read*, never edit. Putting a build output in `scope.touch` would be wrong |
+| `L13 ... 'ntfy/ciu.compose.yml'` | 1 | FALSE POSITIVE, same class: the rendered compose, gitignored |
+| `L13 ... 'ciu/src/ciu/governance.py'`, `'ciu/src/ciu/composefile.py'`, `'pwmcp/ciu.global.toml.j2'`, `'infra/slices'`, `'nyxloom/infra/slices/nyxloom-gates.slice'`, `'modern-debian-tools-python-debug/host-setup/units/dev-background.slice.in'` | 6 | FALSE POSITIVE: read-only citations and forbidden paths, deliberately not in `scope.touch` |
+| `L13 ... 'nyxloom/ciu.global.defaults.toml.j2'`, `'workspaces/vbpub/nyxloom/ntfy/docker-compose.yml'` | 2 | FALSE POSITIVE of a different kind: both ARE in `scope.touch`, but written project-prefixed / absolute inside the oracle prose, so L13's matcher does not recognise them as the same path |
+| `L7 cross-repo reference '/workspaces/dstdns'` | 2 | expected — the read-only reference for the `[governance]` shape |
+| `L7 relative-up path '../pwmcp'` | 2 | expected — the sibling root this package's second half edits; see the `scope.touch` path caveat and Work item 7 |
+| `L7 relative-up path '../ciu.global.defaults.toml.j2'` | 2 | expected — a relative pointer inside Work item 3b's pinned YAML comment |
 
 ## Scope / forbid
 
