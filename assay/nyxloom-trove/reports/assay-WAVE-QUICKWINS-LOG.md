@@ -18,7 +18,13 @@ stays 10, `assay.toml`'s `schema_version` stays 2, `assay lanes --json`'s
 | 4 | B063 | `e426c29f` | skip-with-a-named-reason + a pre-existing gate-blocking red repaired |
 | 5 | B071 | `b12ec9f2` | `crashed`-only diagnostic tails in the mutation-state record |
 | — | LOG/REPORT | `95177803` | first hand-back, gate green at `b12ec9f2` |
-| 6 | B074 | `767393d1` | the third and last site of the `RecursionError` gap, **on controller ruling** |
+| 6 | B074 | `767393d1` | a third site of the `RecursionError` gap, **on controller ruling** |
+| 7 | review blocker | `93e6f7fc` | B072's sweep redone — it had missed 4 sites, 3 of them crashing |
+
+(The item-6 commit message calls B074 "the third and **last** site of one
+gap". That was wrong, and item 7 is why: there were five more untrusted
+sites than the sweep behind it had looked at. The message is left as
+committed and corrected here rather than rewritten.)
 
 **Scope note on the wave's "`assay verify` is unaffected" constraint.** It
 held for items 1-5, which is what it was written for. Item 6 changes
@@ -85,16 +91,14 @@ leave the fix silently inert), both real consumer hops
 staging it as that one evidence item's own refusal instead of escaping the
 loader), and a legible-document control.
 
-**Sweep — NOT clean.** Widened past the four named modules to all 7
-`json.loads`/`json.load` sites in `src/assay`. `verify.py:2562`
-(`verify_text`, the parser behind `assay verify`, whose whole job is reading a
-document assay did not write) has the identical narrow guard and crashes live
-the same way. **Filed as B074, not fixed** — this wave's binding constraints
-state "`assay verify` is unaffected by every item above", and B072's own
-acceptance asks for the sweep result to be *named here*, which filing does.
-The entry carries the full 7-site table and the recorded judgment that
-`provenance.py:137` (pip-written `direct_url.json`, in an already-best-effort
-function) is a preference call rather than a third defect.
+**Sweep — NOT clean, and the sweep itself was wrong the first time.** It
+found `verify.py`'s `verify_text` carrying the identical narrow guard and
+crashing live, which became B074 (item 6). But it reported **7** sites in
+`src/assay` when there are **11**: its grep was `src/assay/*.py`, a glob that
+never descends into `adapters/`, `coverage_parsers/` or `mutation_parsers/`.
+Review caught that; three of the four unexamined sites were also crashing.
+See item 7 — the corrected sweep and the complete 11-site table live in
+B074's Resolution.
 
 ## 3. B062 — `c2d89888`
 
@@ -155,21 +159,29 @@ reason.
 Applied as a module-level `pytestmark` to `test_python_qualification.py` and
 `test_distribution_build_release.py`, but **per-test** in
 `test_runner_snapshot_selection.py`: only its two embargo tests read the
-monorepo's tagged history, and skipping the ~60 that do not would hide real
+monorepo's tagged history, and skipping the other 11 collected items would hide real
 coverage of assay behind an unrelated property of the checkout.
 
 **Measured**, from a `cp -r` copy of `assay/` into a scratch directory outside
 any git repository:
 
 ```
-2 failed, 4143 passed, 77 skipped, 1 warning in 446.07s (0:07:26)
+4178 passed, 77 skipped, 1 warning in 366.71s (0:06:06)
 ```
 
 against R-1's `11 failed, 3956 passed, 18 skipped, 13 errors in 821.95s`.
-**Zero errors; zero failures attributable to the missing parent repository.**
+**Zero failures, zero errors.**
 
-**Both remaining failures are a pre-existing red on `main`**, unrelated to
-B063 and unrelated to this wave: `assert lane["environment"] == "host"` at
+Re-measured at the final tip, because the number first recorded here
+(`2 failed, 4143 passed, 77 skipped in 446.07s`) went stale twice over: it
+was taken BEFORE the two `host`→`bare-host` repairs in this same commit, and
+before the B074 and second-sweep tests were added. Quoting a pre-repair
+figure next to a claim of "zero failures" was a real inconsistency, caught in
+review.
+
+**Those two failures were a pre-existing red on `main`**, unrelated to
+B063 and unrelated to this wave, and are repaired in this commit:
+`assert lane["environment"] == "host"` at
 `test_cgroup_parent.py:110` and `test_self_hosting.py:461`. run-gate rev 36's
 RG-43 estate sweep (`f62642c6`) moved this lane to `bare-host` and neither
 copy of the assertion followed. Confirmed failing IN PLACE on `main` too.
@@ -216,7 +228,7 @@ files are diagnostic state whose content is untrusted subprocess output.
 
 ## 6. B074 — `767393d1` (added by controller ruling, after the first hand-back)
 
-`verify.py:2562`'s `except` tuple becomes
+`verify.py`'s `verify_text` `except` tuple becomes
 `except (json.JSONDecodeError, ValueError, RecursionError)` — the **same three
 names** the other two sites carry, deliberately, so a reader comparing the
 three finds one shape rather than three variants. (`ValueError` is the
@@ -244,6 +256,60 @@ resolution says so: its input is the installed distribution's own pip-written
 `direct_url.json`, the enclosing function is already best-effort, and a
 `RecursionError` there would mean a broken install rather than a bad
 artifact.
+
+## 7. Review round 1's blocker — `93e6f7fc`
+
+**B072's required sweep was recorded as complete and was not.** Its grep was
+`src/assay/*.py`, which does not descend into subpackages: it reported 7
+`json.loads`/`json.load` sites; there are **11**. Four were never examined.
+Three of those four were genuinely untrusted and reproducibly crashing —
+`coverage_parsers/coverage_py_json.py` and
+`coverage_parsers/coverage_istanbul_json.py` (a target project's own coverage
+tool output, both named by the reviewer) and `adapters/go_stmtpos.py` (a real
+external `go` subprocess' raw stdout, named by neither the reviewer's list
+nor my table — found by the controller's spot-check, confirmed crashing
+here, fixed). All three now carry `RecursionError`; `go_stmtpos` keeps
+`UnicodeDecodeError` first because the decode can fail before `json.loads` is
+reached, with a control test pinning that arm.
+
+The fourth, `mutation_parsers/mutation_report_json.py`, was already guarded —
+and is the proof the old guard test was unfit a **second**, independent way:
+it spells the same three names in a different ORDER, which an exact-string
+match reports as missing. A "fourth variant" already existed, undetected, by
+the very test whose docstring claimed one could not appear unnoticed.
+
+So the guard now derives its subject:
+`tests/test_untrusted_json_parse_sweep.py` walks the AST of every module
+under `src/assay` (`rglob` — the recursive glob whose absence caused the
+first fault), finds every `json.loads`/`json.load` call, and asks whether an
+enclosing `try` **names** `RecursionError`, never how the clause is spelled.
+Every site is guarded or carries a written reason in `TRUSTED_SITES`; there
+is no third disposition. Four guards on the guard: the walk must find a
+plausible population and at least one site in each of the three subpackages
+the old glob missed (so it cannot pass vacuously); no allowlist entry may be
+stale; the eight known-untrusted sites are pinned by name so a silent
+deletion shows up; and order-independence is proven against the real module
+that differs. Verified red by reverting one guard — two independent tests
+fail, naming file and function.
+
+`TRUSTED_SITES` keys on `(module, enclosing function)`, never line number —
+which is also why the old table had already gone stale
+(`verify.py:2562`→2583, `mutation.py:838`→890). The bar for entry is B074's
+own `provenance.py` reasoning, now written down and applied uniformly: assay's
+own bytes or its own installation, never a consumer's project or an external
+tool, AND a failure means a broken build rather than a bad artifact. Three
+sites qualify; the other eight do not and all eight are guarded.
+
+Behavioural red-first tests for each newly-fixed parser live in that parser's
+own module, driven through the real entry point (`load_coverage_profile` for
+both coverage parsers, `_read_document` for the Go oracle), not only through
+the sweep.
+
+Also in this commit, the reviewer's four should-fix nits: the `~60` comment
+now says the real number (11 collected items), the drifted line numbers are
+corrected and the table now says why they will drift again, the B063 numbers
+are re-measured at the final tip (below), and the duplicated `---` separator
+in `4-backlog.md` is gone.
 
 ## Gate
 

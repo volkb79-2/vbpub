@@ -6876,17 +6876,21 @@ any git repository** (`git rev-parse` from there: `fatal: not a git
 repository ... up to mount point /`):
 
 ```
-2 failed, 4143 passed, 77 skipped, 1 warning in 446.07s (0:07:26)
+4178 passed, 77 skipped, 1 warning in 366.71s (0:06:06)
 ```
 
 versus R-1's `11 failed, 3956 passed, 18 skipped, 13 errors in 821.95s`.
-**Zero errors, and zero of the two remaining failures are attributable to the
-missing parent repository** — both are
+**Zero failures, zero errors.**
+
+Re-measured at the wave's final tip. The figure first recorded here —
+`2 failed, 4143 passed, 77 skipped in 446.07s` — was taken BEFORE the two
+repairs described next, so quoting it beside a "zero failures" claim was an
+inconsistency; review caught it. Both of those failures were
 `assert lane["environment"] == "host"` (`test_cgroup_parent.py:110`,
-`test_self_hosting.py:461`), and both fail IN PLACE on `main` too: run-gate
-rev 36's RG-43 sweep (`f62642c6`) moved this lane to `bare-host` and neither
-copy of the assertion followed. Repaired in this wave as a gate-blocking
-pre-existing regression, since a red gate blocks the wave.
+`test_self_hosting.py:461`), unrelated to B063, failing IN PLACE on `main`
+too: run-gate rev 36's RG-43 sweep (`f62642c6`) moved this lane to
+`bare-host` and neither copy of the assertion followed. Repaired in this wave
+as a gate-blocking pre-existing regression, since a red gate blocks the wave.
 
 In place, the three modules are unchanged: 68 passed, 9 skipped, and all 9
 skips are the pre-existing `requires the tester-unified image's own

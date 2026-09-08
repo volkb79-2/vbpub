@@ -4,9 +4,10 @@ Companion to `assay-WAVE-QUICKWINS-LOG.md` (what was done, per item, with
 hashes). This document is the **acceptance-box status per item** plus the
 findings the controller has to decide something about.
 
-Branch `fix/assay-b068-quickwins-2026-09-08`, tip `767393d1`, 7 commits over
-`a78d0280`: the wave prompt's five items, the first LOG/REPORT hand-back, and
-**B074 as a sixth item added by controller ruling** after that hand-back.
+Branch `fix/assay-b068-quickwins-2026-09-08`: the wave prompt's five items,
+**B074 as a sixth** (controller ruling after the first hand-back), and
+**the review-round-1 blocker fix as a seventh** — B072's sweep, redone
+properly after review found it was a hand-list, not a sweep.
 
 ---
 
@@ -54,7 +55,7 @@ needed `_ = value` or a `# noqa`.
 
 | box | status |
 |---|---|
-| a `cp -r` copy outside vbpub runs the suite with zero failures and zero errors attributable to the missing parent (quote the numbers) | **MET** — `2 failed, 4143 passed, 77 skipped in 446.07s`; **zero errors**, and neither failure is attributable (both are a pre-existing `main` red, see below) |
+| a `cp -r` copy outside vbpub runs the suite with zero failures and zero errors attributable to the missing parent (quote the numbers) | **MET** — `4178 passed, 77 skipped, 1 warning in 366.71s`; **zero failures, zero errors**, re-measured at the final tip (the first figure recorded, `2 failed, 4143 passed`, predated this wave's own repair of those two — review caught the inconsistency) |
 | the choice is stated at the seam with the rejected alternative | **MET** — `conftest.requires_parent_repository`'s docstring |
 | the three modules still measure the same thing in place | **MET** — 68 passed, 9 skipped in place; all 9 skips pre-existing `/opt/tester-venv`, none from B063 |
 
@@ -87,17 +88,12 @@ Red-first confirmed by stashing the fix: `RecursionError` from both
 
 ### 1. B074 — a THIRD instance of the `RecursionError` gap, on `assay verify`'s own untrusted-input path. **FIXED (item 6, `767393d1`).**
 
-B072's required sweep was widened past the four named modules to all 7
-`json.loads`/`json.load` sites in `src/assay`. It was **not clean**:
-
-| site | guard | verdict |
-|---|---|---|
-| `attestation.py:239` | now includes `RecursionError` | fixed by B072 |
-| `adjudication.py:154` | includes `RecursionError` | already fixed by `f0126b35` |
-| **`verify.py:2562` (`verify_text`)** | **`json.JSONDecodeError` only** | **B074 — untrusted, confirmed crashing live** |
-| `mutation.py:838` | `(UnicodeDecodeError, JSONDecodeError)` | assay's own state record, written by assay in the same run |
-| `provenance.py:137` | `json.JSONDecodeError` only | pip-written `direct_url.json`; whole function is best-effort → `None` |
-| `verdict.py:501` | none | assay's own shipped package resource |
+> **The 7-site table that stood here is RETRACTED — see finding 5.** The
+> sweep behind it used `grep ... src/assay/*.py`, which does not descend into
+> subpackages. There are **11** sites; four were never examined and three of
+> those were crashing. The complete, corrected table lives in B074's
+> Resolution in the backlog, and the correction is recorded there in writing
+> rather than silently applied.
 
 `verify_text` is the parser behind `assay verify`, a command whose entire
 purpose is reading a verdict artifact **produced somewhere else** — untrusted
@@ -232,6 +228,59 @@ included.
 - No `gate/` addition to the lint scope.
 - No change to `provenance.py:137` — affirmed in writing as a trusted input,
   not a fourth instance of the gap.
+
+### 5. Review round 1's blocker: **B072's sweep was recorded as complete and was not.** FIXED (`93e6f7fc`).
+
+This is the one finding I did not self-report, and it is the most important
+one in the wave — because the claim it falsified is exactly the class of
+claim B072 and B074 exist to protect.
+
+**What was wrong.** The "sweep" was a hand-list presented as a sweep. Its
+grep was `src/assay/*.py`, a glob that does not descend into subpackages, so
+it examined 7 sites and reported that as *all* of them. There are **11**.
+
+**What the four unexamined sites turned out to be:**
+
+| site | disposition |
+|---|---|
+| `coverage_parsers/coverage_py_json.py` (`parse`) | untrusted (a target project's own `coverage.py` output), **crashed live — fixed** |
+| `coverage_parsers/coverage_istanbul_json.py` (`parse`) | untrusted (its istanbul output), **crashed live — fixed** |
+| `adapters/go_stmtpos.py` (`_read_document`) | untrusted (a real external `go` subprocess' raw stdout), **crashed live — fixed** |
+| `mutation_parsers/mutation_report_json.py` (`sniff`, `parse`) | already guarded — and the proof the guard test was unfit a second way |
+
+The first two were named by the reviewer. **The third was on neither the
+reviewer's list nor my table** — the controller's own spot-check raised it,
+and it is the most literally untrusted input in the tree: whatever bytes an
+external toolchain writes to stdout. Confirmed crashing before the fix; it
+was not assumed fine for want of anyone naming it.
+
+**The guard test was independently unfit, too.** It matched an exact
+`except (...)` string against a hard-coded 3-element tuple. Beyond being
+unable to see an unlisted site, it could not see a guard written with the
+same three names in a different ORDER — and
+`mutation_parsers/mutation_report_json.py` already had one. A fourth variant
+already existed, invisible to the test whose docstring said one could not
+appear unnoticed. Replaced by a derived sweep
+(`tests/test_untrusted_json_parse_sweep.py`) that walks the AST of every
+module under `src/assay`, asks whether an enclosing `try` **names**
+`RecursionError` rather than how it is spelled, and requires every site to be
+guarded or explicitly allowlisted with a written reason. Verified red by
+reverting a guard.
+
+**Recorded, not silently corrected.** B072's and B074's backlog Resolutions
+both carry the retraction in writing, because "the sweep is complete" was the
+load-bearing claim and a reader who trusted it deserves to see it withdrawn.
+
+### Should-fixes from the same review — all four done
+
+| nit | fix |
+|---|---|
+| `~60` comment overstated the module | now "the other 11 collected items", the measured count |
+| B074's table line numbers had drifted | corrected, and the table now states that they drift and that the guard keys on `(module, function)` instead |
+| LOG's B063 numbers were pre-repair | re-measured at the final tip: `4178 passed, 77 skipped, 0 failed, 0 errors in 366.71s` |
+| duplicated `---` in `4-backlog.md` | removed |
+
+---
 
 ## Controller rulings folded in
 
