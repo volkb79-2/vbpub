@@ -103,7 +103,7 @@ def real_host_key(tmp_path):
     Generated with the platform's ssh-keygen so the fingerprints these tests
     compare are OpenSSH's own, never a re-implementation's.
     """
-    if shutil.which("ssh-keygen") is None:  # pragma: no cover - present everywhere we run
+    if shutil.which("ssh-keygen") is None:
         pytest.skip("ssh-keygen unavailable")
     path = tmp_path / "hostkey"
     subprocess.run(
@@ -992,7 +992,7 @@ class TestRenderedInstaller:
 
     def test_release_coordinates_match_ciu_own_cmru_toml(self):
         cmru_toml = CIU_ROOT / "cmru.toml"
-        if not cmru_toml.exists():  # pragma: no cover - present in a checkout
+        if not cmru_toml.exists():
             pytest.skip("ciu/cmru.toml not available")
         doc = tomllib.loads(cmru_toml.read_text(encoding="utf-8"))
         assert doc["github"]["owner"] == host_enroll.INSTALLER_REPO_OWNER
@@ -1002,7 +1002,7 @@ class TestRenderedInstaller:
 
     def test_release_publishes_get_py_as_an_asset(self):
         cmru_toml = CIU_ROOT / "cmru.toml"
-        if not cmru_toml.exists():  # pragma: no cover - present in a checkout
+        if not cmru_toml.exists():
             pytest.skip("ciu/cmru.toml not available")
         doc = tomllib.loads(cmru_toml.read_text(encoding="utf-8"))
         argv = doc["steps"]["push"]["commands"][0]["argv"]
@@ -1066,6 +1066,25 @@ def _cli(monkeypatch, argv):
     return exc.value.code
 
 
+@pytest.fixture
+def pinned_version(monkeypatch):
+    """Pin the control host's OWN reported ciu version for the CLI tests.
+
+    Without this the outcome depends on how the interpreter running the suite
+    got its ciu: a released wheel reports `7.11.0` and the verb prints a real
+    release-asset URL, while a source checkout reports a setuptools-scm
+    `.dev`/local version, for which `installer_url` deliberately REFUSES
+    (S14.7d: version-pinned, never a URL that 404s). Both behaviours are
+    tested — here, and in
+    `test_an_unreleased_control_version_refuses_and_names_installer_url` —
+    but neither may depend on the environment the gate happens to run in.
+    """
+    from ciu import cli
+
+    monkeypatch.setattr(cli, "get_cli_version", lambda: "7.11.0")
+
+
+@pytest.mark.usefixtures("pinned_version")
 class TestHostVerbDispatch:
     def test_step1_through_the_cli(self, repo, monkeypatch, capsys):
         monkeypatch.setenv("REPO_ROOT", str(repo))
@@ -1127,6 +1146,32 @@ class TestHostVerbDispatch:
         err = capsys.readouterr().err
         assert "[ERROR] [S14.7]" in err and "step 1" in err
 
+    def test_an_unreleased_control_version_refuses_and_names_installer_url(
+        self, repo, monkeypatch, capsys
+    ):
+        """A source-checkout control host has no release asset to pin, so the
+        verb refuses instead of printing a URL that 404s (S14.7d)."""
+        from ciu import cli
+
+        monkeypatch.setattr(cli, "get_cli_version", lambda: "7.12.0.dev4+gabcdef")
+        monkeypatch.setenv("REPO_ROOT", str(repo))
+        assert _cli(monkeypatch, ["host", "enroll", "rs1002"]) == 2
+        err = capsys.readouterr().err
+        assert "unreleased ciu" in err and "--installer-url" in err
+
+    def test_installer_url_makes_an_unreleased_control_host_usable(
+        self, repo, monkeypatch, capsys
+    ):
+        from ciu import cli
+
+        monkeypatch.setattr(cli, "get_cli_version", lambda: "7.12.0.dev4+gabcdef")
+        monkeypatch.setenv("REPO_ROOT", str(repo))
+        assert _cli(monkeypatch, [
+            "host", "enroll", "rs1002",
+            "--installer-url", "https://mirror.example/ciu/get.py",
+        ]) == 0
+        assert "https://mirror.example/ciu/get.py" in capsys.readouterr().out
+
     def test_verb_help_is_the_host_block_not_the_top_level_usage(
         self, monkeypatch, capsys
     ):
@@ -1143,14 +1188,14 @@ class TestHostVerbDispatch:
         algo, blob, fingerprint = real_host_key
         monkeypatch.setenv("REPO_ROOT", str(repo))
         monkeypatch.delenv("CIU_SSH_INSECURE_TOFU", raising=False)
-        _cli(monkeypatch, ["host", "enroll", "rs1002"])
+        assert _cli(monkeypatch, ["host", "enroll", "rs1002"]) == 0
         _fake_keyscan(monkeypatch, algo, blob)
         from ciu import transport_ssh
 
         monkeypatch.setattr(transport_ssh, "ssh_exec", lambda *a, **k: 0)
-        _cli(monkeypatch, [
+        assert _cli(monkeypatch, [
             "host", "enroll", "rs1002", "--ssh-host", "a", "--fingerprint", fingerprint,
-        ])
+        ]) == 0
         assert "CIU_SSH_INSECURE_TOFU" not in os.environ
 
         # Neither new module mutates the process environment AT ALL, which is
@@ -1217,7 +1262,7 @@ def enroll_fixture_image():
         ["docker", "build", "-t", FIXTURE_IMAGE, "-"],
         input=FIXTURE_DOCKERFILE, capture_output=True, text=True,
     )
-    if build.returncode != 0:  # pragma: no cover - infrastructure failure
+    if build.returncode != 0:
         pytest.skip(f"could not build the enroll fixture image: {build.stderr[-400:]}")
     return FIXTURE_IMAGE
 
@@ -1228,7 +1273,7 @@ def enroll_container(enroll_fixture_image):
         ["docker", "run", "-d", "--rm", enroll_fixture_image],
         capture_output=True, text=True,
     )
-    if run.returncode != 0:  # pragma: no cover - infrastructure failure
+    if run.returncode != 0:
         pytest.skip(f"could not start the enroll fixture container: {run.stderr}")
     cid = run.stdout.strip()
     # Host-load rule: this container is capped the moment it exists.

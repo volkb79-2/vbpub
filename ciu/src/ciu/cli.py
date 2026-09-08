@@ -459,6 +459,10 @@ ciu host enroll <name> --abort
   --docker          ask the installer to add the deploy user to the docker group
   --installer-url URL   override the pinned release-asset URL (a mirror, or a
                     commit-pinned raw URL). Nothing ever falls back to `latest`.
+                    REQUIRED when this control host runs an UNRELEASED ciu (a
+                    setuptools-scm `.dev`/local version, i.e. a source
+                    checkout): there is no release asset to pin, so step 1
+                    refuses rather than print a URL that 404s.
   --replace         rotate: regenerate the key and overwrite an existing row's
                     ssh_key/known_host at step 2
   --abort           remove a pending (step-1-only) key pair
