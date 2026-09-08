@@ -8455,6 +8455,40 @@ class TestStallEndToEndCommandLane:
         assert logs_calls, "no `docker logs` call was recorded"
         assert any("--timestamps" in c for c in logs_calls), logs_calls
 
+    def test_the_real_popen_call_tolerates_non_utf8_with_errors_replace(
+            self, tmp_path, monkeypatch):
+        """Round-4 review: `TestLogStreamWatch`'s own non-UTF-8 unit test
+        builds its OWN `Popen` with `errors="replace"` hardcoded — it
+        proves `LogStreamWatch` tolerates bad bytes when CORRECTLY
+        CONFIGURED, not that `await_container`'s real construction site
+        actually configures it that way (confirmed: removing
+        `errors="replace"` from the real call site leaves the full suite
+        green, 0 failures — the exact silent-regression gap this pins).
+        `_docker_calls` cannot see a `Popen` KWARG the way it sees argv, so
+        this pins it by tracking `subprocess.Popen`'s own call directly —
+        the same "construction proves construction" philosophy as
+        `test_the_real_docker_logs_call_requests_timestamps` just above,
+        applied to a kwarg instead of an argv flag."""
+        repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys"))
+        monkeypatch.setattr(sys, "argv", [str(proj / "run-gate.py")])
+        log, state = fake_docker_logstream(tmp_path, monkeypatch)
+        calls = []
+        real_popen = subprocess.Popen
+
+        def _tracked_popen(argv, *a, **kw):
+            calls.append((argv, kw))
+            return real_popen(argv, *a, **kw)
+
+        monkeypatch.setattr(subprocess, "Popen", _tracked_popen)
+        assert run_gate.main(["suite"]) == 0
+        logs_popen_calls = [(argv, kw) for argv, kw in calls
+                            if len(argv) > 1 and argv[1] == "logs"]
+        assert logs_popen_calls, "no `docker logs` Popen call was recorded"
+        argv, kw = logs_popen_calls[0]
+        assert kw.get("errors") == "replace", kw
+
     def test_source_is_disclosed_as_log_stream_on_the_fresh_path(
             self, tmp_path, monkeypatch, capsys):
         repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
@@ -8500,7 +8534,7 @@ class TestStallEndToEndCommandLane:
         assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
 
     def test_the_pump_thread_is_joined_even_on_a_stall(
-            self, tmp_path, monkeypatch, capsys):
+            self, tmp_path, monkeypatch):
         """Round-3 review: the stall branch never joined the pump thread
         even AFTER `finally`'s `proc.terminate()`/`proc.wait()` had
         genuinely unblocked its pipe read, leaving the thread's own

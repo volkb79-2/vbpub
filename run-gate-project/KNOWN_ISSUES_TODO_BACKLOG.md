@@ -2964,6 +2964,32 @@ clock skew (source clock ahead of this host) — a pre-existing property of
 shared function, not introduced by it, and affecting both watchers
 equally; not filed separately given how narrow and pre-existing it is.
 
+A round-4 confirming review of the round-3 fix (folded into this SAME
+unreleased rev), scoped tightly to the round-3 diff alone per its own
+closing-round framing, ACCEPTED both fixes as correct (confirmed the
+`finally`-join placement empirically via the same red-first method used
+here, and confirmed `errors="replace"` cannot land a replacement character
+inside the parsed timestamp portion in any way that produces a NEW failure
+mode — a malformed prefix already falls back to arrival-time, the same
+path a stray `U+FFFD` there would take). It found two non-blocking test
+gaps and one optional latency note, all closed or triaged here: the new
+non-UTF-8 test proved `LogStreamWatch` tolerates bad bytes when correctly
+configured but never pinned that `await_container`'s REAL `Popen` call
+actually passes `errors="replace"` (confirmed empirically: removing it
+from the real call site left the full suite green) — closed with a new
+construction-level test tracking the real `subprocess.Popen` call directly
+(the same "construction proves construction" philosophy as the
+`--timestamps` argv pin, applied to a kwarg `_docker_calls` cannot see),
+red-first proven. A second, fresh instance of the exact "unused `capsys`"
+copy-paste artifact this same rev's own commit message already claimed to
+have cleaned up elsewhere was found and removed. The third finding — the
+`finally` block's unconditional join can add ANOTHER bounded wait on the
+non-stalled path if the first, disclosed join already failed to fully
+drain — was assessed and left as-is: it only adds latency in an already-
+disclosed, already-anomalous (real host contention) case, and giving the
+thread MORE chance to finish before the function returns is the correct
+direction for the concern this round's own fix exists to close.
+
 ## RG-44 — `GONE_SIGNALS` matches docker's "gone" stderr case-sensitively; this docker version emits lowercase and the container-truly-gone case is never recognized
 
 ### Observed mechanism and reproduction
