@@ -1260,18 +1260,30 @@ def _entry_prior_instance_scopes(
     survive a stale compose file, but CIU injects no identifying label onto
     governed containers today — ``governance.build_injections`` emits only
     ``cgroup_parent``/``mem_limit``/``memswap_limit``/``mem_reservation``/
-    ``cpus``/``blkio_config`` — so that route means inventing a whole labeling
-    scheme, a strictly larger change than the defect warrants.
+    ``cpus``/``blkio_config`` (plus the KSM ``environment``/``volumes``
+    opt-in — still nothing label-shaped) — so that route means inventing a
+    whole labeling scheme, a strictly larger change than the defect
+    warrants.
 
     **Fails closed by construction.** Every failure mode — no prior compose
     file (a genuine FIRST deploy), unreadable or malformed YAML, a stale
     compose naming containers that no longer exist, a container that is not
     running, a name Docker cannot resolve — yields no scope for that service,
     so nothing is excluded and admission behaves exactly as it did before this
-    fix. The dangerous direction (excluding an occupant that is NOT this
-    entry's) is unreachable through a name: Docker enforces container-name
-    uniqueness daemon-wide, so a name read out of THIS entry's compose file
-    can only ever resolve to THIS entry's container.
+    fix. **The dangerous direction (excluding an occupant that is NOT this
+    entry's) is NOT unreachable in principle** — Docker's name uniqueness
+    only guarantees at most one container holds a name at a given instant, it
+    does not guarantee the container currently holding a name read out of a
+    possibly-stale prior compose file is still THIS entry's. Over-exclusion
+    needs two things to hold at once: a stale prior compose whose
+    ``container_name`` has since been claimed by a DIFFERENT entry (a
+    renamed stack, a changed ``project_name``, a copy-pasted stack), AND that
+    entry's container living in the SAME guaranteed slice (exclusion is by
+    intersection against ``enumerate_slice_children``, so a container in any
+    other slice can never be dropped regardless). CIU's
+    ``{project}-{env}-{service}`` naming convention makes the collision
+    unlikely in practice, but does not rule it out — this is a known,
+    low-probability residual risk, not a proven-impossible one.
 
     Exempt services are skipped, mirroring
     :func:`apply_mem_min_injections`' own filter: CIU never applied a floor to

@@ -200,6 +200,20 @@ def _serialize_shared_test_repo_access(request: pytest.FixtureRequest) -> Iterat
     A writer's exclusive lock outranks a reader's shared one when a test
     somehow carries both marks — the writer's own mutations are the thing that
     must not be observed half-applied.
+
+    **Self-deadlock hazard, verified live (ciu-P51 adversarial review):** this
+    covers the mark+mark case, but NOT a test that carries
+    ``@pytest.mark.ciu_test_repo_inplace`` (this fixture, autouse, acquires
+    ``LOCK_EX``) while ALSO requesting the ``shared_test_repo_read_lock``
+    fixture directly (a second, independent ``LOCK_SH`` acquisition). Both
+    locks are held by the SAME process on separate file descriptors —
+    ``fcntl`` locking is per-process/per-fd, not reentrant — so the second
+    acquisition blocks on the first FOREVER (measured: ``LOCK_NB`` on that
+    combination raises immediately rather than granting, confirming the
+    would-be blocking call never returns). No test currently does this. If
+    you ever need both a writer mark and the read-lock fixture on one test,
+    do NOT request ``shared_test_repo_read_lock`` — the ``LOCK_EX`` this
+    fixture already holds covers reads too (exclusive subsumes shared).
     """
     if request.node.get_closest_marker(_TEST_REPO_INPLACE_MARK) is not None:
         yield from _hold_test_repo_lock(fcntl.LOCK_EX)

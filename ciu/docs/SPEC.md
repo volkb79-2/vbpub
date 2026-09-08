@@ -3752,14 +3752,24 @@ It fails closed in every direction that matters. No prior compose file (a
 genuine first deploy), unreadable/malformed YAML, a stale file naming
 containers that no longer exist, a stopped container, a name Docker cannot
 resolve — each yields no scope, so nothing is excluded and admission behaves
-exactly as it did before. The dangerous direction is unreachable through a
-name: Docker enforces container-name uniqueness daemon-wide, so a name read
-out of THIS entry's compose file can only ever resolve to THIS entry's
-container. A label filter (`docker ps --filter label=...`) would survive a
-stale compose file, but CIU injects no identifying label onto governed
-containers — `build_injections` emits only
+exactly as it did before. **The dangerous direction is NOT unreachable in
+principle** — Docker's name uniqueness only guarantees at most one container
+holds a name at a given instant, not that the container currently holding a
+name read out of a possibly-stale prior compose file is still THIS entry's.
+Over-exclusion needs two things at once: a stale prior compose whose
+`container_name` has since been claimed by a DIFFERENT entry (a renamed
+stack, a changed `project_name`, a copy-pasted stack), AND that entry's
+container living in the SAME guaranteed slice (exclusion is by intersection
+against `enumerate_slice_children`, so a container in any other slice can
+never be dropped regardless). CIU's `{project}-{env}-{service}` naming
+convention makes the collision unlikely, but does not rule it out — a known,
+low-probability residual risk, not a proven-impossible one. A label filter
+(`docker ps --filter label=...`) would survive a stale compose file, but CIU
+injects no identifying label onto governed containers — `build_injections`
+emits only
 `cgroup_parent`/`mem_limit`/`memswap_limit`/`mem_reservation`/`cpus`/
-`blkio_config` — so that route would mean inventing a labeling scheme, a
+`blkio_config` (plus the KSM `environment`/`volumes` opt-in — still nothing
+label-shaped) — so that route would mean inventing a labeling scheme, a
 strictly larger change than the defect warranted.
 
 > **Still open — the concurrent-admission race.** Two DIFFERENT stacks
