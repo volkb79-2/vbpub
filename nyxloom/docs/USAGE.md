@@ -169,12 +169,14 @@ them as worked examples.
 | `render` | Render the read-only `www/` dashboard. |
 | `migrate-store <project>` | Migrate the file-backend event store → SQLite. |
 | `daemon [--foreground]` | Run the resident reconcile daemon. |
+| `auth show \| bootstrap [--operator] \| rotate [--operator] [--force]` | Show / initialize / rotate the daemon's operator-auth store. |
 | `tick [--project]` | One reconcile pass (degraded/debug mode). |
 | `decide <project> <D-id> --choose` | Resolve a `D-NNN` product decision. |
 | `discuss <project> <D-id>` | Print the decision-chat command. |
 | `intake <project> <intake_id> <msg>` | Advance a feature-intake chat turn. |
 | `reject <project> <task> [--note]` | Merge-gate rejection. |
 | `merge <project> <task> [--commit]` | Record a manual merge. |
+| `gate` | Reserved namespace, no subcommands today — GA1's `verify` was retired in nyxloom-P98; gate execution now lives entirely in each project's own `run-gate.py`/Assay lane. |
 | `pause` / `resume <project> [task]` | Set / clear the pause flag. |
 | `leases` | Show mutex (flock) holders. |
 | `digest <project> [--since]` | Notification digest. |
@@ -182,6 +184,10 @@ them as worked examples.
 | `init <project_folder>` | Scaffold a `nyxloom-trove/` from templates. |
 | `onboard <project_folder> [--maturity --docs --mode --scan --questionnaire --check-gate]` | Guided onboarding (see §3). |
 | `free-models list \| refresh` | Discover currently-free models & refresh routes (see §5). |
+| `capability-map refresh [--dry-run] [--emit-findings PROJECT]` | Refresh `routes.toml`'s model catalog from a live capability probe; optionally record `cost_crossover` findings under a registered project. |
+| `route doctor [--no-probe]` | Validate `routes.toml` and live-probe each declared route (`--no-probe`: schema-only, offline-safe). |
+| `finding record --project --kind --title [--body] [--field KEY=VALUE]... [--task-id] [--severity] \| list [--project] [--kind]` | Record / list structured findings against a registered project (FN-4). |
+| `backlog new <title> [--type --severity --priority --component --provenance --filed-by --spec-owner --body-from] \| promote <inbox-id> \| note <id> <text> \| set-status <id> <status> [--reason] \| list [--status] \| show <id> \| index` | Managed per-entry backlog (`docs/backlog-entries-spec.md`); `INDEX.md` is generated — always via `index`, never hand-edited. |
 | `version` | Print the version. |
 
 Against the deployed daemon, run any verb through the container wrapper:

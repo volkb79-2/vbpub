@@ -1,6 +1,24 @@
 # Plan — next implementation batches (2026-07-25 checkpoint)
 
-**State:** vbpub/nyxloom `main` @ `8af765b7`, tree clean, daemon `nyxloom-prod-nyxloomd`
+> **Stale as of 2026-09-08 — read before acting on anything below.** This
+> checkpoint predates the nyxloom-P97 thread (2026-09-03: P98/P99/P100/P101),
+> which retired the GA1/GA4 toolkit this doc's own "State" line below still
+> cites as current. Specifically: **`nyxloom gate verify` (GA1) no longer
+> exists** — `gate` is now a reserved top-level verb with zero subcommands
+> (nyxloom-P98); gate execution and trustworthiness verification live
+> entirely in each project's own `run-gate.py`/Assay lane (Assay's R2/R3
+> supersede GA1's purpose). The GA4 daemon verify-cadence is likewise gone.
+> Everything else below (BATCH A-E) is historical record of what shipped
+> through 2026-07-26 and still accurate for that window; only the "State"
+> line's GA1/gate-verify claim is now wrong. See `nyxloom-trove/archive/
+> nyxloom-P98-retire-toolkit-gate-verify.md` for the full retirement record,
+> and [[nyxloom-p97-testing-code-removal-thread]] / the nyxloom-P100/P101
+> archive entries for the rest of that thread (tier/routes.toml validation,
+> `_TIER_BAND` retirement). This doc has not been re-verified against `main`
+> since; treat anything below as historical narrative, not current state.
+
+**State (as of 2026-07-25, see stale-notice above):** vbpub/nyxloom `main` @
+`8af765b7`, tree clean, daemon `nyxloom-prod-nyxloomd`
 STOPPED. Pipeline hardened this session: A/F/G/GA1/GA2/D-part-1 merged; gate is
 parallel (`-n auto`) + coverage-honest (pytest-cov) + auto-reverting (F) + verifiable
 (`nyxloom gate verify`, GA1) + rigor-declaring (`asserts=`, GA2); review is
