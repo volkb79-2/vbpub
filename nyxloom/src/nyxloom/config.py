@@ -80,6 +80,12 @@ class MutexDef:
         return f"{project_id}.{self.name}"
 
 
+#: Valid `[notify] backend` selector values (NL-17). This is the SCHEMA-side
+#: list: config.py is imported BY notify.py, so it cannot import the backend
+#: registry back; `test_notify` asserts the two never drift.
+NOTIFY_BACKENDS = ("ntfy", "webhook", "mattermost")
+
+
 @dataclass
 class NotifyConfig:
     ntfy_url: str | None = None     # e.g. https://ntfy.sh or self-hosted
@@ -93,6 +99,22 @@ class NotifyConfig:
     cmd_topic: str | None = None
     cmd_token_env: str = "NTFY_CMD_TOKEN"
     webhook_url: str | None = None
+    # NL-17: for Mattermost (as for Slack) the incoming-webhook URL IS the
+    # credential, so it must be settable without committing it to a
+    # bind-mounted nyxloom.toml. Same env-wins-over-toml shape as NTFY_URL
+    # above; the VALUE never appears in config files, only the var name.
+    webhook_url_env: str = "NYXLOOM_WEBHOOK_URL"
+    # NL-17: explicit backend selector. None keeps the historical implicit
+    # precedence (ntfy if configured, webhook as its fallback) so existing
+    # configs are unaffected; naming one (see NOTIFY_BACKENDS) makes it the
+    # SOLE channel -- switching the active backend is then a declared config
+    # change, not a side effect of which URLs happen to be set.
+    backend: str | None = None
+    # NL-17, Mattermost-only cosmetics (all optional): the webhook's posting
+    # identity and, where the server allows overrides, its target channel.
+    mattermost_username: str | None = None
+    mattermost_icon_url: str | None = None
+    mattermost_channel: str | None = None
     push_classes: list[str] = field(default_factory=lambda: [
         "DECISION_OPENED", "TASK_BLOCKED", "PROVIDER_STATE_CHANGED",
         "BUDGET_WARNING", "BUDGET_EXHAUSTED", "SPEC_ATTENTION",
@@ -102,6 +124,16 @@ class NotifyConfig:
     digest_classes: list[str] = field(default_factory=lambda: [
         "MERGE_RECORDED", "TASK_TRANSITIONED",
     ])
+
+    def __post_init__(self) -> None:
+        # NL-17: an unknown selector fails LOUDLY at construction. Silently
+        # ignoring it would fall back to the legacy chain and deliver over a
+        # channel the operator did not name -- exactly the implicit routing
+        # the selector exists to remove.
+        if self.backend is not None and self.backend not in NOTIFY_BACKENDS:
+            raise ValueError(
+                "[notify] backend must be one of "
+                f"{', '.join(NOTIFY_BACKENDS)}; got {self.backend!r}")
 
 
 @dataclass
@@ -420,6 +452,19 @@ class ProjectConfig:
         env_url = os.environ.get("NTFY_URL")
         if env_url:
             notify_data["ntfy_url"] = env_url
+        # NL-17: same env-wins-over-toml resolution for the webhook URL,
+        # which for Mattermost/Slack incoming webhooks IS the credential and
+        # therefore must not live in the (bind-mounted, committed)
+        # nyxloom.toml. The var NAME is configurable per project
+        # (`webhook_url_env`), defaulting to NYXLOOM_WEBHOOK_URL; resolved
+        # here rather than in NotifyConfig.__post_init__ for the same reason
+        # NTFY_URL is -- the env is authoritative over the TOML source only,
+        # so a caller constructing NotifyConfig(...) directly keeps the url
+        # it passes.
+        env_webhook = os.environ.get(
+            notify_data.get("webhook_url_env") or "NYXLOOM_WEBHOOK_URL", "")
+        if env_webhook:
+            notify_data["webhook_url"] = env_webhook
         noti = NotifyConfig(**notify_data)
         # D-060: resolve + validate the pipeline at load. A preset name or an
         # explicit list under top-level `pipeline` (or [project].pipeline);

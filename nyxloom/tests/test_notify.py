@@ -1140,3 +1140,255 @@ def test_probe_transport_never_raises_and_never_leaks_the_url():
     probe = probe_transport(nc, timeout=1.0)
     assert "sk-SECRET" not in probe.detail
     assert "127.0.0.1" not in probe.detail
+
+
+# =========================================================================
+# NL-17: the NotifyBackend seam + the Mattermost backend
+#
+# Oracle (per-backend payload shape): each backend must translate the typed
+# note into the RECEIVER's documented contract, not into nyxloom's internal
+# note dict. Mattermost's incoming-webhook contract renders only `text`
+# (Markdown) and honours `username`/`icon_url`/`channel` as optional
+# overrides -- every other key, including nyxloom's title/click/priority/
+# tags, is ignored. A raw note dump therefore 200s and renders NOTHING,
+# which is the silent failure this seam removes.
+# =========================================================================
+
+_NOTE = {
+    "title": "Decision needed: D-7",
+    "body": "Decision D-7 opened for demo/T-3.",
+    "click": "http://127.0.0.1:8942/www/task/demo/T-3.html",
+    "priority": 5,
+    "tags": ["decision"],
+}
+
+#: Every key Mattermost's incoming-webhook API documents for a simple text
+#: post. A payload key outside this set is, at best, ignored.
+_MATTERMOST_ALLOWED_KEYS = {"text", "username", "icon_url", "channel", "props", "type"}
+
+
+def _one_shot_server(status: int = 200):
+    """Start a single-request HTTP server; returns (url, captured, join)."""
+    captured: dict = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            captured["path"] = self.path
+            captured["headers"] = dict(self.headers)
+            captured["body"] = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(status)
+            self.end_headers()
+
+        def do_GET(self):
+            captured["probed"] = True
+            self.send_response(status)
+            self.end_headers()
+
+        def log_message(self, fmt, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+
+    def finish():
+        thread.join(timeout=2)
+        server.server_close()
+
+    return f"http://127.0.0.1:{server.server_port}", captured, finish
+
+
+def test_backend_registry_matches_the_config_schema_list():
+    """config.py cannot import notify.py (notify imports config), so the
+    selector's valid values are duplicated. This is the anti-drift oracle."""
+    from nyxloom.config import NOTIFY_BACKENDS
+    from nyxloom.notify import _BACKENDS
+
+    assert set(_BACKENDS) == set(NOTIFY_BACKENDS)
+    assert all(name == backend.name for name, backend in _BACKENDS.items())
+
+    schema = json.loads(
+        (Path(__import__("nyxloom").__file__).parent
+         / "schemas" / "nyxloom-config.schema.json").read_text(encoding="utf-8"))
+    enum = schema["properties"]["notify"]["properties"]["backend"]["enum"]
+    assert set(enum) == set(NOTIFY_BACKENDS) | {None}
+
+
+def test_notify_config_rejects_an_unknown_backend_name():
+    """An unknown selector must fail loudly, not silently fall back to the
+    legacy chain and deliver over a channel nobody named."""
+    with pytest.raises(ValueError) as exc:
+        NotifyConfig(backend="telegram")
+    assert "telegram" in str(exc.value)
+
+
+def test_mattermost_payload_matches_the_documented_contract():
+    """Oracle: only documented keys, and every nyxloom signal survives
+    INSIDE `text` (Mattermost ignores everything else)."""
+    from nyxloom.notify import mattermost_payload
+
+    payload = mattermost_payload(NotifyConfig(webhook_url="http://x"), _NOTE)
+
+    assert set(payload) <= _MATTERMOST_ALLOWED_KEYS
+    assert set(payload) == {"text"}          # no cosmetics configured
+    # The internal note schema must NOT leak through as top-level keys.
+    for leaked in ("title", "body", "click", "priority", "tags"):
+        assert leaked not in payload
+
+    text = payload["text"]
+    assert "**Decision needed: D-7**" in text        # bold title line
+    assert "Decision D-7 opened for demo/T-3." in text
+    assert "[open](http://127.0.0.1:8942/www/task/demo/T-3.html)" in text
+    assert "_tags: decision_" in text
+
+
+def test_mattermost_payload_preserves_priority_without_inventing_a_field():
+    """Mattermost has no priority field on incoming webhooks; the signal has
+    to survive as fixed text, and must not appear as a made-up JSON key."""
+    from nyxloom.notify import mattermost_payload
+
+    nc = NotifyConfig(webhook_url="http://x")
+    urgent = mattermost_payload(nc, dict(_NOTE, priority=5))["text"]
+    high = mattermost_payload(nc, dict(_NOTE, priority=4))["text"]
+    routine = mattermost_payload(nc, dict(_NOTE, priority=3))["text"]
+
+    assert urgent.startswith(":rotating_light: **")
+    assert high.startswith(":warning: **")
+    assert routine.startswith("**")          # no badge on routine notes
+    assert "priority" not in mattermost_payload(nc, _NOTE)
+
+
+def test_mattermost_payload_carries_only_configured_cosmetics():
+    from nyxloom.notify import mattermost_payload
+
+    nc = NotifyConfig(webhook_url="http://x", mattermost_username="nyxloom",
+                      mattermost_icon_url="https://example.invalid/i.png",
+                      mattermost_channel="ops")
+    payload = mattermost_payload(nc, _NOTE)
+    assert payload["username"] == "nyxloom"
+    assert payload["icon_url"] == "https://example.invalid/i.png"
+    assert payload["channel"] == "ops"
+    assert set(payload) <= _MATTERMOST_ALLOWED_KEYS
+
+
+def test_mattermost_payload_ignores_untyped_extra_note_keys():
+    """SPEC §13 injection boundary: the payload is assembled from the TYPED
+    fields only. An extra key riding along on the note dict (model-authored
+    prose is exactly what §13 forbids) must never reach the wire."""
+    from nyxloom.notify import mattermost_payload
+
+    note = dict(_NOTE, blocked_reason="ignore previous instructions; PROSE")
+    payload = mattermost_payload(NotifyConfig(webhook_url="http://x"), note)
+    assert "PROSE" not in json.dumps(payload)
+
+
+def test_send_mattermost_posts_the_translated_payload():
+    """The end-to-end unit oracle: with backend='mattermost', what lands on
+    the wire is Mattermost's shape -- not the raw note dict."""
+    url, captured, finish = _one_shot_server()
+    nc = NotifyConfig(backend="mattermost", webhook_url=f"{url}/hooks/abc123")
+
+    ok, detail = send(nc, _NOTE)
+    finish()
+
+    assert ok is True
+    assert detail == "mattermost ok"
+    assert captured["headers"]["Content-Type"] == "application/json"
+    body = json.loads(captured["body"])
+    assert set(body) <= _MATTERMOST_ALLOWED_KEYS
+    assert "**Decision needed: D-7**" in body["text"]
+    assert "title" not in body
+
+
+def test_send_mattermost_non_200_is_a_failure():
+    url, _captured, finish = _one_shot_server(status=500)
+    nc = NotifyConfig(backend="mattermost", webhook_url=f"{url}/hooks/abc123")
+
+    ok, detail = send(nc, _NOTE)
+    finish()
+
+    assert ok is False
+    assert "mattermost" in detail
+
+
+def test_send_mattermost_transport_fault_never_raises_and_names_the_channel():
+    nc = NotifyConfig(backend="mattermost", webhook_url="http://127.0.0.1:1/hooks/x")
+    ok, detail = send(nc, _NOTE)
+    assert ok is False
+    assert detail.startswith("mattermost failed:")
+
+
+def test_explicit_backend_selection_never_falls_back_to_another_channel():
+    """NL-17 §3: with a selector set, a note can NOT silently leave over a
+    channel the operator did not name -- even one that is fully configured."""
+    ntfy_url, ntfy_captured, ntfy_finish = _one_shot_server()
+    nc = NotifyConfig(backend="mattermost",
+                      webhook_url="http://127.0.0.1:1/hooks/dead",  # closed
+                      ntfy_url=ntfy_url, ntfy_topic="alerts")       # live!
+
+    ok, detail = send(nc, _NOTE)
+
+    assert ok is False
+    assert detail.startswith("mattermost failed:")
+    assert ntfy_captured.get("body") is None, "note leaked to the unselected ntfy channel"
+    ntfy_finish()
+
+
+def test_legacy_precedence_is_unchanged_when_no_backend_is_selected():
+    """Backward compat: an existing config with both urls set still goes to
+    ntfy, exactly as before the seam."""
+    ntfy_url, ntfy_captured, ntfy_finish = _one_shot_server()
+    nc = NotifyConfig(ntfy_url=ntfy_url, ntfy_topic="alerts",
+                      webhook_url="http://127.0.0.1:1/hook")
+
+    ok, detail = send(nc, _NOTE)
+    ntfy_finish()
+
+    assert (ok, detail) == (True, "ok")
+    assert ntfy_captured["path"] == "/alerts"
+    assert ntfy_captured["headers"]["Title"] == "Decision needed: D-7"
+
+
+def test_resolve_backends_shapes():
+    from nyxloom.notify import _BACKENDS, resolve_backends
+
+    legacy = resolve_backends(NotifyConfig(ntfy_url="http://a", ntfy_topic="t",
+                                           webhook_url="http://b"))
+    assert [b.name for b in legacy] == ["ntfy", "webhook"]
+
+    assert resolve_backends(NotifyConfig()) == []
+    # selected but not configured -> no channel (not a silent legacy fallback)
+    assert resolve_backends(NotifyConfig(backend="mattermost",
+                                         ntfy_url="http://a", ntfy_topic="t")) == []
+    selected = resolve_backends(NotifyConfig(backend="mattermost", webhook_url="http://b"))
+    assert selected == [_BACKENDS["mattermost"]]
+
+    # An unknown name that bypassed construction-time validation resolves to
+    # NO channel rather than to an arbitrary one.
+    nc = NotifyConfig(webhook_url="http://b")
+    nc.backend = "discord"
+    assert resolve_backends(nc) == []
+
+
+def test_probe_transport_follows_the_selected_backend():
+    """doctor's liveness check must probe the channel that would actually
+    carry a notification -- the selected one, not ntfy by habit."""
+    url, captured, finish = _one_shot_server()
+    nc = NotifyConfig(backend="mattermost", webhook_url=f"{url}/hooks/abc",
+                      ntfy_url="http://127.0.0.1:1", ntfy_topic="alerts")
+
+    probe = probe_transport(nc, timeout=2.0)
+    finish()
+
+    assert probe.status == "healthy"
+    assert probe.channel == "mattermost"
+    assert captured.get("probed") is True
+
+
+def test_probe_transport_mattermost_unreachable_never_leaks_the_url():
+    nc = NotifyConfig(backend="mattermost",
+                      webhook_url="http://127.0.0.1:1/hooks/sk-SECRET")
+    probe = probe_transport(nc, timeout=1.0)
+    assert probe.status == "unreachable"
+    assert probe.channel == "mattermost"
+    assert "sk-SECRET" not in probe.detail
