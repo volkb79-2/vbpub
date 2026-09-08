@@ -265,6 +265,11 @@ items:
     type: feature
     component: test-infra
     context_estimate: medium
+  - id: B-047
+    title: "4 tests (test_record.py::test_cli_version_reports_package_version, test_acceptance.py::{test_run_smoke_json_fixture_root,test_subprocess_smoke_json,test_run_steady_json_small_samples}) hardcode package version '0.1.0'; setuptools_scm now resolves a live dev version off the newest topos-v* tag (topos-v0.2.1), making topos-suite exit 1 on a clean main checkout -- confirmed pre-existing/unrelated to any in-flight package (P93 port-forward control run against main tip 3dd08b12 in the tester-unified gate container)"
+    type: bugfix
+    component: test-infra
+    context_estimate: small
 ---
 
 # Backlog
