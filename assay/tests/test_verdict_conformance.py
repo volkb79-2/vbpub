@@ -1184,7 +1184,7 @@ def test_verify_skips_r2_rederivation_when_a_payload_less_claim_has_no_r0_siblin
     contradiction regardless is unconstructible
     (``Claim._check_a_judged_status_carries_its_own_payload``)."""
     document = {
-            "schema_version": 10,
+            "schema_version": 11,
         "assay_version": "0.1.0",
         "lane": "package",
         "commit": "a" * 40,
@@ -1296,9 +1296,9 @@ def test_verify_rejects_a_foreign_schema_version_as_a_version_problem():
 
     failures = verify_document(document)
     assert failures == [
-        "schema_version 2 is not this verifier's version 10: a verdict "
+        "schema_version 2 is not this verifier's version 11: a verdict "
         "artifact is rejected, never upgraded in place -- re-produce it "
-        "with an assay whose VERDICT_SCHEMA_VERSION is 10"
+        "with an assay whose VERDICT_SCHEMA_VERSION is 11"
     ]
 
 
@@ -1317,7 +1317,7 @@ def test_verify_rejects_a_v3_artifact_with_exactly_one_version_diagnostic():
     failures = verify_document(document)
 
     assert len(failures) == 1
-    assert "schema_version 3 is not this verifier's version 10" in failures[0]
+    assert "schema_version 3 is not this verifier's version 11" in failures[0]
 
 
 # ============================================================================
@@ -1424,7 +1424,10 @@ def _as_ingested_at_floor(document: dict, fail_under: float) -> dict:
     }
     judgment_r2["survived_uncovered"] = []
     judgment_r2["lines_without_candidates"] = []
-    judgment_r2["discarded"] = 0
+    # B070 (schema v11): a LIST, empty because this helper's payload records
+    # no discarded mutants at all -- and the payload's own
+    # `candidate_count`/`total` therefore need no adjustment either.
+    judgment_r2["discarded"] = []
     judgment_r2["fail_under"] = fail_under
     claim = next(c for c in document["claims"] if c["rigor"] == "R2")
     for bucket in ("killed", "survived", "crashed", "budget_exceeded", "equivalent"):

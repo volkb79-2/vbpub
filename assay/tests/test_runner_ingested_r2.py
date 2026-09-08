@@ -46,6 +46,25 @@ REAL_REPORT = (
     / "mutation-report-json.probe-js-stryker.json"
 )
 
+#: (B070, schema v11) The SECOND real StrykerJS artifact, and the one this
+#: project owed itself the moment ``judgment.r2.discarded`` stopped being
+#: declared-not-verified: a run of the same StrykerJS 10.0.0 over the same
+#: probe sources with ``@stryker-mutator/typescript-checker`` enabled, which
+#: type-checks each mutant before running it and marks the ones that do not
+#: compile ``CompileError``. It carries **40 genuinely discarded mutants** out
+#: of 88 — not a hand-authored status, not a synthetic report: the recipe,
+#: pinned versions and the exact ``tsconfig``/``stryker.config`` are committed
+#: beside it in ``fixtures/mutation/probe-js-stryker-typecheck/`` and recorded
+#: in ``fixtures/mutation/PROVENANCE.md``. DA-D4's witness clause, waived for a
+#: declared field by DA-R26 and owed again the moment the field became
+#: verified.
+REAL_TYPECHECK_REPORT = (
+    Path(__file__).resolve().parent
+    / "fixtures"
+    / "mutation"
+    / "mutation-report-json.probe-js-stryker-typecheck.json"
+)
+
 #: The lane's command rewrites this placeholder to its own ``$PWD``. `sed` is
 #: used rather than an unquoted heredoc on purpose: the report embeds the full
 #: TypeScript SOURCE of every measured file, and a shell would expand a `$` in
@@ -57,6 +76,11 @@ ARTIFACT = "app/reports/mutation.json"
 
 def _report_document() -> dict:
     return json.loads(REAL_REPORT.read_text(encoding="utf-8"))
+
+
+def _typecheck_report_document() -> dict:
+    """(B070) The real high-discard artifact, read verbatim."""
+    return json.loads(REAL_TYPECHECK_REPORT.read_text(encoding="utf-8"))
 
 
 def _stage_report(tmp_path: Path, document: dict, *, name: str = "report.json") -> Path:
@@ -772,3 +796,143 @@ def test_a_measured_file_the_commit_does_not_track_is_the_same_refusal(
     assert claim.reason_code is ReasonCode.UNREADABLE_ARTIFACT
     assert "app/src/never-committed.ts" in text, text
     assert "does not carry as a regular tracked file" in text, text
+
+
+# --------------------------------------------------------------------------
+# B070 (schema v11): the discarded mutants are RECORDED, not dropped
+#
+# Every test below drives the SECOND real StrykerJS artifact --
+# `mutation-report-json.probe-js-stryker-typecheck.json`, 88 mutants of which
+# 40 are genuine `CompileError`s produced by `@stryker-mutator/
+# typescript-checker`. Through schema v10 `ingest_mutation_report` `continue`d
+# past each of those 40 with no record of it anywhere in the document, which
+# is exactly why `judgment.r2.discarded` had nothing to be checked against.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def discarding(git_repo: GitRepo, tmp_path: Path):
+    """The high-discard run, materialised the same way `ingested` is: the real
+    report, a real repo seeded with the exact sources it embeds, a real lane
+    whose command writes it from inside the snapshot."""
+    document = _typecheck_report_document()
+    document["projectRoot"] = PLACEHOLDER
+    staged = _stage_report(tmp_path, document, name="typecheck-report.json")
+    _seed_repo(git_repo, document)
+    base = git_repo.git("rev-parse", "HEAD~1").strip()
+    return _run(git_repo, _lane(git_repo=git_repo, staged=staged, base=base))
+
+
+def _r2(verdict) -> tuple:
+    claim = next(item for item in verdict.claims if item.rigor == "R2")
+    return claim, verdict.judgment.r2
+
+
+def test_the_real_report_carries_forty_genuine_compile_errors():
+    """The fixture's own premise, asserted against the committed bytes rather
+    than trusted from PROVENANCE.md. If a regenerated report ever stops
+    carrying discarded mutants, this fails FIRST and names why, instead of
+    every B070 test below quietly degenerating into a zero-discard control."""
+    document = _typecheck_report_document()
+    statuses = [
+        mutant["status"]
+        for record in document["files"].values()
+        for mutant in record["mutants"]
+    ]
+    assert statuses.count("CompileError") == 40, statuses.count("CompileError")
+    assert len(statuses) == 88, len(statuses)
+    assert document["framework"]["name"] == "StrykerJS"
+    assert document["framework"]["version"] == "10.0.0"
+
+
+def test_every_discarded_mutant_reaches_the_wire_with_its_full_identity(
+    discarding,
+):
+    """B070's whole point: the forty invalid mutants are LISTED, one entry
+    each, with the same identity a bucketed mutant carries."""
+    claim, judgment_r2 = _r2(discarding)
+    assert len(judgment_r2.discarded) == 40
+    for entry in judgment_r2.discarded:
+        assert entry.path.startswith("app/src/")
+        assert entry.operator.startswith("stryker:")
+        assert entry.end_byte > entry.start_byte
+        assert len(entry.replacement_sha256) == 64
+        # A discarded mutant was refused by nothing, so it names no mechanism.
+        assert entry.kill_signal is None
+
+
+def test_the_discarded_list_is_sorted_and_unique_by_identity(discarding):
+    _, judgment_r2 = _r2(discarding)
+    identities = [entry.identity for entry in judgment_r2.discarded]
+    assert identities == sorted(identities)
+    assert len(set(identities)) == len(identities)
+
+
+def test_the_fifth_disposition_arithmetic_holds_on_a_real_document(discarding):
+    """`candidate_count - total == len(discarded)` — the quantity that did not
+    exist before v11, on a real 88-mutant report."""
+    claim, judgment_r2 = _r2(discarding)
+    payload = claim.mutation
+    assert payload.total == 48
+    assert payload.candidate_count == 88
+    assert payload.candidate_count - payload.total == len(judgment_r2.discarded)
+
+
+def test_no_discarded_mutant_is_also_in_a_bucket(discarding):
+    """Disjointness, on the real document rather than only in the model's
+    own refusal message."""
+    claim, judgment_r2 = _r2(discarding)
+    bucketed = {
+        item.identity
+        for name in ("killed", "survived", "crashed", "budget_exceeded", "equivalent")
+        for item in getattr(claim.mutation, name)
+    }
+    assert bucketed
+    assert not bucketed & {entry.identity for entry in judgment_r2.discarded}
+
+
+def test_a_discarded_mutants_line_is_never_reported_as_barren(discarding):
+    """The converse of `lines_without_candidates`: the tool DID produce a
+    candidate on that line — it merely produced an invalid one."""
+    _, judgment_r2 = _r2(discarding)
+    barren = {item.sort_key for item in judgment_r2.lines_without_candidates}
+    assert not barren & {
+        (entry.path, entry.lineno) for entry in judgment_r2.discarded
+    }
+
+
+def test_the_discarded_mutants_do_not_move_the_score(discarding):
+    """DA-R23's sentence, re-asserted at v11: listing the mutants changed
+    where they are recorded, not whether they count. The denominator is
+    `killed + survived` over the buckets, and forty entries beside it leave
+    it untouched."""
+    from assay.mutation import mutation_pct
+
+    claim, judgment_r2 = _r2(discarding)
+    payload = claim.mutation
+    assert len(judgment_r2.discarded) == 40
+    assert mutation_pct(payload) == pytest.approx(
+        100.0 * len(payload.killed) / (len(payload.killed) + len(payload.survived))
+    )
+
+
+def test_the_high_discard_verdict_verifies_clean(discarding):
+    """The CONTROL that proves the new arithmetic is a re-derivation and not
+    an upper-bound clamp (route 3, rejected by DA-R26). A truthful document
+    whose discarded mutants outnumber four fifths of its buckets is ACCEPTED,
+    in full, by the real verifier."""
+    from assay.verify import verify_document
+
+    document = json.loads(json.dumps(discarding.to_dict()))
+    assert len(document["judgment"]["r2"]["discarded"]) == 40
+    assert verify_document(document) == []
+
+
+def test_a_zero_discard_report_still_records_an_EMPTY_list(ingested):
+    """The empty-vs-absent rule `survived_uncovered` already lives under. The
+    first real artifact discards nothing; that is a positive statement assay
+    makes, not a silence."""
+    verdict, _document = ingested
+    claim, judgment_r2 = _r2(verdict)
+    assert judgment_r2.discarded == ()
+    assert claim.mutation.candidate_count == claim.mutation.total

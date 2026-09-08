@@ -168,15 +168,15 @@ def test_the_limit_sentinel_records_observation_without_attempt():
         # total must equal the recorded identities
         ({"candidate_count": 2, "total": 3, "killed": (_outcome(),)}, "must equal"),
         ({"candidate_count": 1, "total": 0, "killed": (_outcome(),)}, "must equal"),
-        # neither normal nor sentinel: attempted work with a mismatched count
+        # (B070/v11) fewer candidates than attempted: a mutant that was
+        # attempted was first observed as a candidate, so this direction stays
+        # refused. The OTHER direction -- `candidate_count > total` -- became
+        # legal at v11 and is asserted below rather than here: a candidate can
+        # now be observed and never attempted (the discarded disposition), and
+        # attributing that residual is `Verdict`'s job, not this object's.
         (
-            {"candidate_count": 5, "total": 1, "killed": (_outcome(),)},
-            "either normal",
-        ),
-        # a sentinel may not carry identities
-        (
-            {"candidate_count": 51, "total": 1, "killed": (_outcome(),)},
-            "either normal",
+            {"candidate_count": 0, "total": 1, "killed": (_outcome(),)},
+            "candidate_count is never below total",
         ),
         ({"candidate_count": -1, "total": 0}, "must not be negative"),
         ({"candidate_count": "2", "total": 2}, "must be an integer"),
@@ -191,6 +191,40 @@ def test_the_limit_sentinel_records_observation_without_attempt():
 def test_a_payload_between_the_two_legal_shapes_is_refused(kwargs: dict, match: str):
     with pytest.raises(ValueError, match=match):
         Mutation(**kwargs)
+
+
+def test_a_residual_is_now_LEGAL_in_the_payload_and_attributed_one_level_up():
+    """(B070, schema v11) The rule this method used to enforce, and why it
+    could not survive the fifth disposition.
+
+    Through v10 ``candidate_count != total`` outside the limit sentinel was
+    refused HERE — a rule written when the five buckets were the only
+    dispositions a candidate could have. An ingested report now records the
+    mutants it marked ``CompileError``/``RuntimeError`` on
+    ``judgment.r2.discarded`` instead of dropping them, and those mutants
+    genuinely WERE candidates and genuinely were never attempted, so the
+    honest document has a residual. Refusing it here would make the honest
+    document illegal, which is B070's own diagnosis of why the old
+    ``discarded`` count could never be verified.
+
+    The residual is never left unexplained: ``Verdict.
+    _check_discarded_disposition`` requires it to equal
+    ``len(judgment.r2.discarded)`` under ``producer = "ingested"`` and to be
+    zero outside the limit sentinel under ``"native"``, and ``assay.verify``
+    states the same rule independently at the raw layer. This test asserts
+    only the half this object owns.
+    """
+    payload = Mutation(candidate_count=5, total=1, killed=(_outcome(),))
+
+    assert payload.candidate_count - payload.total == 4
+    assert not payload.is_limit_sentinel, (
+        "a residual beside attempted work is not the pre-submission sentinel; "
+        "the sentinel attempts NOTHING"
+    )
+
+    # And the sentinel's own shape is untouched by the widening.
+    sentinel = Mutation(candidate_count=51, total=0)
+    assert sentinel.is_limit_sentinel
 
 
 @pytest.mark.parametrize("bucket", ["killed", "survived", "crashed", "budget_exceeded"])

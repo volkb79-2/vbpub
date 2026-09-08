@@ -538,7 +538,7 @@ def test_witness_file_is_valid_json_with_the_current_schema_version() -> None:
     # `==`, so it tracks the CURRENT schema and is migrated by every cut. Its
     # filename still says `v6`; that is a wave identity, not a schema version.
     document = json.loads(_WITNESS_PATH.read_text(encoding="utf-8"))
-    assert document["schema_version"] == 10
+    assert document["schema_version"] == 11
     # B035/A-329: the witness is an `R0,R2` document -- the exact shape whose
     # `base` rule was unenforceable until `judgment.r2` could say which scope
     # it judged under. It carries a base, so it must say `changed_lines`.

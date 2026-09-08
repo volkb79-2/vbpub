@@ -77,10 +77,10 @@ def test_a_legible_document_still_reaches_verify_document():
     """The other control: the widening is a CATCH, not a validation change.
     A well-formed but wrong-shaped document must still be judged by
     ``verify_document`` rather than dismissed as unparseable."""
-    failures = verify_text(json.dumps({"schema_version": 10}))
+    failures = verify_text(json.dumps({"schema_version": 11}))
     assert failures, "an incomplete verdict must still be rejected"
     assert not any("not valid JSON" in failure for failure in failures), failures
-    assert failures == verify_document({"schema_version": 10})
+    assert failures == verify_document({"schema_version": 11})
 
 
 # --- the real consumer path ----------------------------------------------------
