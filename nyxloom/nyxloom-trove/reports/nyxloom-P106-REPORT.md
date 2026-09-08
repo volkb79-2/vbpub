@@ -228,8 +228,7 @@ cross-contamination.
    persisted volume, and the admin password would be lost outright (no
    SMTP, no recovery path). **Migrate both secret files to the main
    checkout's store BEFORE the first from-main `ciu up`**, then re-up and
-   re-verify health. Deliberately not done here: it is a post-merge step,
-   sequenced by the controller.
+   re-verify health. **DONE post-merge — see "S1 migration" below.**
 4. **The verification webhook has been DELETED (review S3).** Its id had
    appeared in two agent transcripts. `mmctl --local webhook list nyxloom`
    now reports 0 webhooks, and no committed file referenced the id. It was
@@ -289,3 +288,93 @@ change needed it (C7's "probably fine to skip"): `run-gate.py
 tester-unified` at `2a98da5c` — **PASS (exit 0)**, R0 PASS, R1 PASS
 `pct=100.0 considered=3 missing={}`. This commit itself only re-touches
 REPORT.md with the verdict, so the gate stands for the whole code change.
+
+---
+
+## S1 migration — moving the live stack onto the main checkout (post-merge)
+
+Done 2026-09-08 after the merge (`ff2b33c3`). The stack had been deployed
+from the P106 worktree; its only copy of both secrets lived there, and
+`/workspaces/vbpub/nyxloom/.ciu/` did not exist at all.
+
+**1. Secrets copied first, before any `ciu up` from main** — the ordering is
+the whole point: a from-main `ciu up` with an empty store would have had
+`GEN_LOCAL` mint a fresh Postgres password that does not match the `mmuser`
+role already inside the persisted `nyxloom-prod-mattermost_postgres-data`
+volume, and lost the admin password outright.
+
+```
+nyxloom/.ciu/                          0700 vscode:vscode
+nyxloom/.ciu/secrets/                  0700 vscode:vscode
+nyxloom/.ciu/secrets/mattermost/       0700 vscode:vscode
+  admin_password                       0440 vscode:docker
+  postgres_password                    0444 vscode:docker
+```
+
+sha256 of both files identical before and after the copy
+(`2e8372b6…` admin, `50b95a64…` postgres). All of it is gitignored via
+`**/.ciu/` — confirmed with `git check-ignore`. (`cp -a` preserved the file
+modes; the `.ciu` root itself came out 0755 from `mkdir -p` and was
+tightened to 0700 by hand to match what ciu produces.)
+
+A `pg_dump` safety net was taken before touching anything (186 KB, 97
+tables), kept out of the repo.
+
+**2. A plain `ciu up` from main was NOT sufficient — flagged, because it
+looks like success.** It reported both containers `Running` and exited
+`[SUCCESS]`, but compose's service config-hash does not cover the top-level
+`secrets.*.file` path, so it left the containers untouched — still bound to
+`…/.worktrees/nyxloom-p106/nyxloom/.ciu/secrets/…` and still labelled
+`com.docker.compose.project.working_dir=…/.worktrees/…`. Tearing the
+worktree down at that point would have left the stack with a bind source
+that no longer exists, failing on the next restart: the S1 failure mode
+wearing a green hat.
+
+`ciu down` alone is also not enough — it STOPS containers (volumes and
+containers preserved by design), so the following `up` would have restarted
+the same stale ones. What was needed was a recreate:
+
+```
+ciu down --define-root /workspaces/vbpub/nyxloom     # stop, volumes preserved
+docker rm nyxloom-prod-mattermost nyxloom-prod-mattermost-db
+ciu up --dir nyxloom/mattermost -y --define-root /workspaces/vbpub/nyxloom
+```
+
+`docker rm` without `-v` does not touch named volumes; all six survived
+(verified by count before and after). The recreate itself is ciu's, so
+governance injection and the S4.19 `MM_DB_PASSWORD` env injection both
+happen the way they do on any normal deploy — no hand-rolled
+`docker compose` invocation, which would have silently produced an empty
+`${MM_DB_PASSWORD}` and a broken DSN.
+
+**3. Verification, all post-recreate:**
+
+- Paths: the secret bind is now
+  `/home/vb/volkb79-2/vbpub/nyxloom/.ciu/secrets/mattermost/postgres_password`
+  and `working_dir` is `/workspaces/vbpub/nyxloom` on both containers.
+  `docker inspect` of both containers contains **zero** occurrences of
+  `nyxloom-p106` — nothing references the worktree any more.
+- Health: `nyxloom-prod-mattermost` and `-db` both `(healthy)`.
+- Postgres accepted the migrated password: Mattermost connected and reached
+  healthy, with zero `authentication failed` / `unable to connect` lines in
+  its log — which is the real proof that the migrated file matches the role
+  baked into the persisted volume.
+- Data intact, identical counts before and after: **3 users, 6 posts, 1
+  team**; the three P106 verification posts still render in `nyxloom:alerts`.
+- Admin password intact: a real `POST /api/v4/users/login` as
+  `nyxloom-admin` with the migrated password returned **HTTP 200** with a
+  session token. (Run from a throwaway container with the secret bind-
+  mounted read-only rather than passed on a command line; the session row it
+  created was then deleted, leaving 0 sessions.)
+- Governance re-verified from scratch rather than assumed — a recreate is
+  exactly where it could silently drop. New container ids, both under
+  `/dev.slice/dev-background.slice/…` read from the host cgroup namespace;
+  `docker inspect` reports mem 2147483648 / memswap 19327352832 / nanocpus
+  1500000000 for the app and 536870912 / 4294967296 / 500000000 for the db,
+  both with the /dev/vda 200/400 iops caps; inside the db container
+  `memory.max 536870912`, `memory.swap.max 3758096384`, `cpu.max
+  "50000 100000"`. Unchanged from the pre-merge measurement.
+
+**Consequence:** the P106 worktree is no longer load-bearing for the running
+stack and is safe to tear down (with `ciu worktree rm`, not bare
+`git worktree remove`).
