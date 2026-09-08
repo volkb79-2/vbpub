@@ -116,6 +116,24 @@ release heading at release time, per the process note above.
   alternatives table already accepted: two stacks admitted simultaneously can
   oversubscribe the ceiling, which cgroup v2 resolves by dividing protection
   across more claimants than intended — smaller floors, never a crash.
+- **A redeploy double-counts the entry's own prior instance and can be
+  spuriously refused.** Admission sums every CURRENT occupant of the slice
+  with no notion of "this candidate replaces an occupant already in that
+  sum," and runs before the entry's own previous container is stopped. A
+  slice sized correctly for its intended occupant(s) — exactly what
+  `CGROUP-NOTES.md`'s sizing doctrine calls for — will therefore refuse an
+  ordinary config/image-update redeploy of a stack that already fully
+  claims its ceiling, even though the net claim never changes. Workaround
+  until fixed: provision headroom for the redeploying stack's own claim, or
+  `ciu down` before `ciu deploy` for stacks on a guaranteed slice. Tracked
+  as `CIU-96` (excluding an entry's own occupant needs correlating a live
+  cgroup child back to a specific CIU entry, unavailable at this call site
+  as currently architected — real follow-up work).
+- **`[S15.22]`'s recursiveprot check runs before the pre-existing
+  `[S15.G9-1]` missing-slice check** in the same preflight function — a host
+  with both problems only reports the first per `ciu deploy` run. Both are
+  independently fatal and actionable; this is report ordering, not a masked
+  finding.
 - **Live verification is not part of this change's evidence.** The
   implementing environment has no host-rooted systemd, so `systemctl show
   <scope> --property=MemoryMin` after a real deploy, and a genuine

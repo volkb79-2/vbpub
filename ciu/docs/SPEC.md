@@ -3623,6 +3623,14 @@ condition deserves the stronger default; a per-slice one does not. This
 also matches `mdt-host-check.sh`'s own FAIL-not-warn treatment of the
 identical flag.
 
+**Ordering note.** This check runs before the pre-existing `[S15.G9-1]`
+missing-slice-unit check in the same preflight function, so on a host with
+BOTH problems at once, one `ciu deploy` run only ever reports the S15.22
+failure — an operator who fixes it and redeploys may then be surprised by a
+previously-invisible `[S15.G9-1]` failure. Both are independently fatal and
+actionable; this is a one-problem-at-a-time report order, not a masked or
+dropped finding.
+
 **(b) Downward enumeration.** Before this section `governance.py` could only
 walk UPWARD (S15.16), so there was no way to answer "who else is currently
 sharing this slice's protection" — the proportional-surplus-redistribution
@@ -3714,6 +3722,32 @@ this one must reflect state as earlier entries in *this same run* come up.
 > `CGROUP-NOTES.md`'s own motivating cases are single-container stacks — but
 > it is a real limitation of this version, named here rather than discovered
 > later.
+
+> **Known v1 limitation — a redeploy double-counts the entry's own prior
+> instance.** `check_mem_min_admission` sums every CURRENT occupant of the
+> slice, with no notion of "this candidate is a replacement for an occupant
+> already in that sum" — and `mem_min_admission_check` runs before
+> `_run_stack` stops the entry's own previous container. So redeploying an
+> already-running guaranteed-slice stack (an ordinary config/image update via
+> `ciu deploy`, not a fresh start — arguably the MORE common case for a
+> continuously-processing workload than a first deploy) counts the outgoing
+> instance's own live claim AND the incoming candidate's claim at once. A
+> slice sized correctly for its intended occupant(s) — exactly what
+> `CGROUP-NOTES.md`'s own sizing doctrine calls for, and exactly what "an
+> exactly-full slice admits" above is designed to allow — will therefore
+> spuriously REFUSE every redeploy of a stack that already fully claims its
+> ceiling, even though the net claim across the whole operation never
+> changes. This is a different failure shape from the concurrent-admission
+> race `CGROUP-NOTES.md`'s alternatives table already accepts (that one is a
+> graceful over-admit; this is a spurious hard refuse of a no-net-change
+> redeploy). **Operational workaround until fixed:** provision the slice's
+> ceiling with headroom for the redeploying stack's own claim, or run `ciu
+> down` before `ciu deploy` for stacks on this slice. Tracked for a proper
+> fix as `CIU-96` (excluding an entry's own current occupant from the sum
+> needs correlating a live cgroup child back to a specific CIU entry —
+> container-name or compose-label based — which is not available at this
+> call site as currently architected; real follow-up work, not a one-line
+> patch).
 
 **(b) Injection — after the stack starts, `[S15.23]`, WARN.**
 `deploy.apply_mem_min_injections` runs right after a successful `_run_stack`.
