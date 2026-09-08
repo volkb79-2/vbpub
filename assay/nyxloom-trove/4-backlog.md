@@ -6593,12 +6593,45 @@ its own stall, and a hung unit is already caught by its unit bound.
 
 ### Acceptance
 
-- [ ] `unbounded` with a missing unit bound refuses at load naming the unit;
-- [ ] an unbounded R2 lane with `budget_per_candidate` runs to completion
+- [x] `unbounded` with a missing unit bound refuses at load naming the unit;
+- [x] an unbounded R2 lane with `budget_per_candidate` runs to completion
       with no `LANE_TIMEOUT` path reachable (measured on a real lane);
-- [ ] CONSUMERS' worked mutation lane shows the recommended shape:
+- [x] CONSUMERS' worked mutation lane shows the recommended shape:
       `budget = "unbounded"` + `budget_per_candidate` + run-gate
       `stall_timeout`.
+
+**IMPLEMENTED 2026-09-08** (progress/resume wave), shipped in `7f2ba056` and
+**corrected in round-1 fixes** — box 1 was NOT met by the first cut, and the
+entry is marked done only now, after the correction. Ruling recorded as
+A-447; the mechanism half is A-444's sibling in the same session block.
+
+**The correction, because the original framing above is what caused it.**
+This entry's own prose says "R3 ... require the per-attempt bound", and the
+shipped predicate followed it literally: `if (not r2 and not r3) or
+(ingested_r2 and not r3)`, so declaring an R3 canary switched BOTH refusal
+arms off. But `judge.canary.budget_per_attempt` bounds one canary probe and
+never the lane's own top-level command — the `argv` that produces the R0
+status and the R1 coverage artifact. An unbounded `["R0","R1","R3"]` lane was
+therefore admitted and ran its own evidence-producing command with
+`timeout=None`, which is the exact state this refusal's message calls
+impossible; the ingested-R2+R3 shape was worse, since that one command is the
+lane's entire R2 evidence. Found by round-1 adversarial review (blocker B1),
+reproduced end to end through the real CLI.
+
+The predicate is now about the lane's own top-level command and is
+**orthogonal to which other tiers are declared**: a NATIVE R2 sweep is the one
+admissible shape, because it is the one where the unguessable bulk is bounded
+per unit. `budget_per_attempt` is still required of an unbounded R3 lane — it
+is necessary, and it is not sufficient — and the refusal says so by name
+whenever R3 is in play.
+
+Two things worth carrying forward. The defect survived 29 tests because every
+tier was tested **in isolation** and nothing asked what a **combination**
+does; the regression now asserts the whole admissibility table in one place
+AND instruments `subprocess.run` to prove no child of such a lane is launched
+without a timeout. And B076 — an unbounded native-R2 lane's own baseline — is
+a genuinely different question and stays open: there the sweep, the part whose
+length cannot be guessed, IS bounded per unit.
 
 ## B068 — `assay run` (R0/R1 mock/coverage target) hard-fails `GIT_FAILED` in a Mode-B linked worktree, unconditionally of `clean_tree`
 
@@ -7003,6 +7036,11 @@ B007's A-row must say so in one sentence; nothing here widens B007's scope.
       building.
 
 **IMPLEMENTED 2026-09-08** (progress/resume wave), R0/R1 half only.
+
+The ruling is recorded as **A-row A-444** in `nyxloom-trove/decisions.md`
+(added in the round-1 fixes: the first cut ticked this box with the LOG and
+this entry as its evidence, and the box asks for an A-row by name — round-1
+SF-3). A-445/A-446/A-447 cover B065, B066 and B067's corrected predicate.
 
 The ruling: **the R0/R1 phase stream is BUILT.** Rejected alternatives, named
 as the entry asks — (a) *nothing*: measured, `--progress` on an R0/R1 lane

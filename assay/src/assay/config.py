@@ -1757,14 +1757,33 @@ def _refuse_unbounded_without_unit_bounds(
     the lane's work carries its own bound. Refuse at LOAD otherwise, naming
     the unit that has none.
 
-    The two admissible shapes, and why:
+    **The predicate is about the lane's own TOP-LEVEL COMMAND, and is
+    orthogonal to which other tiers are declared** (round-1 blocker B1).
+    Every lane runs its own ``argv`` once, and ``budget`` is the only thing
+    that ever bounds it. So the question is not "does this lane have some
+    per-unit bound somewhere" but "is the work this lane's own command
+    represents the whole of its evidence".
 
-    * a NATIVE R2 lane, whose work is N independent mutant commands, each
-      already boundable by ``judge.mutation.budget_per_candidate``;
-    * an R3 lane, whose work is one probe per declared canary target, each
-      boundable by ``judge.canary.budget_per_attempt`` (B067's own addition
-      -- B007/A-432 shipped the ordered multi-target STRUCTURE but no
-      per-attempt bound).
+    The ONE admissible shape is a **native R2 sweep**: its work is N
+    independent mutant commands, each boundable by
+    ``judge.mutation.budget_per_candidate``, so the unguessable bulk -- the
+    part whose length genuinely cannot be predicted, which is the reason
+    ``unbounded`` exists at all -- is bounded per unit. The single command
+    that shape still leaves unbounded is the pre-sweep baseline, which is
+    B076: filed, reasoned, and deliberately not closed here.
+
+    **An R3 canary does not make a lane admissible.** This was the shipped
+    bug: both refusal arms were conditioned on the ABSENCE of R3
+    (``if (not r2 and not r3) or (ingested_r2 and not r3)``), so declaring a
+    canary switched the refusal off entirely. But
+    ``judge.canary.budget_per_attempt`` bounds one canary PROBE and nothing
+    else -- it never bounds the lane's own top-level command, which is what
+    produces the R0 status and the R1 coverage artifact. An unbounded
+    R0/R1+R3 lane therefore ran its own evidence-producing command with
+    ``timeout=None`` while its canary halves were properly bounded, which is
+    precisely the state this function's own message calls impossible.
+    ``budget_per_attempt`` is still REQUIRED of an unbounded R3 lane (below)
+    -- it is necessary, and it is not sufficient.
 
     Everything else is refused BY NAME:
 
@@ -1798,14 +1817,27 @@ def _refuse_unbounded_without_unit_bounds(
         and judge.mutation is not None
         and judge.mutation.is_ingested
     )
-    if (not r2 and not r3) or (ingested_r2 and not r3):
+    native_r2 = r2 and not ingested_r2
+    if not native_r2:
         which = "an ingested R2" if ingested_r2 else "an R0/R1"
+        # Said explicitly whenever R3 is in play, because an author who just
+        # declared `budget_per_attempt` reads a bare "no per-unit bound to
+        # require" as a contradiction of the lane in front of them.
+        canary_note = (
+            " Declaring R3 does not change this: "
+            "'judge.canary.budget_per_attempt' bounds one canary probe, "
+            "never this lane's own command, which is what produces the R0 "
+            "status and the R1 coverage artifact."
+            if r3
+            else ""
+        )
         raise LaneConfigError(
             f"{where}: budget = {UNBOUNDED_BUDGET!r} is refused on this lane: "
             f"{which} lane is ONE command, so it has no per-unit bound to "
             f"require and 'budget' is its only liveness bound; declaring "
-            f"{UNBOUNDED_BUDGET!r} would leave it with none at all. Declare a "
-            f"duration (rigor declared here: {list(rigor)})"
+            f"{UNBOUNDED_BUDGET!r} would leave it with none at all."
+            f"{canary_note} Declare a duration "
+            f"(rigor declared here: {list(rigor)})"
         )
     missing: list[str] = []
     if (

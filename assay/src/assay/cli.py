@@ -681,6 +681,9 @@ def _cmd_run(
         state_dir = _resolve_state_dir(args, lane_file.project_root)
         if (progress_arg := getattr(args, "progress", None)) is not None:
             validate_progress_destination(progress_arg)
+            _refuse_a_visible_progress_destination(
+                progress_arg, lane_file.project_root
+            )
             with mutation.progress_writer(
                 Path(progress_arg).expanduser()
             ) as raw_write:
@@ -739,30 +742,138 @@ def _resolve_state_dir(
     if raw is None:
         return None
     resolved = Path(resolve_state_directory(raw))
-    root = project_root.resolve()
-    try:
-        relative = resolved.relative_to(root)
-    except ValueError:
-        # Outside the judged tree: git never sees it, nothing to check.
-        return resolved
-    # Ask about a RECORD, not about the directory. The directory does not
-    # exist yet (it is created on demand), and `git check-ignore` cannot tell
-    # a not-yet-existing path is a directory -- so a perfectly ordinary
-    # `resume-store/` line in `.gitignore`, which is directory-only, would
-    # answer "not ignored" and refuse a correctly-configured consumer. A
-    # representative record name answers the question that actually matters:
-    # will the files assay is about to write be visible to git?
-    probe = (relative / f"{'0' * 64}.json").as_posix()
-    if not git.path_is_ignored(project_root, probe):
-        raise LaneConfigError(
-            f"--state-dir {raw!r} resolves inside the judged tree at "
-            f"{resolved} and is not git-ignored -- assay's own clean-tree "
-            f"precondition would then report those records as uncommitted "
-            f"and refuse the NEXT run of this lane "
-            f"NO_MEASUREMENT/DIRTY_TREE. Point it outside the repository, "
-            f"or add {relative.as_posix()!r} to a committed .gitignore"
+    for root, inside in _containments(resolved, project_root):
+        _refuse_a_visible_store_inside_the_tree(
+            raw,
+            flag="--state-dir",
+            what="those records",
+            root=root,
+            # A representative record name, because the directory itself
+            # does not exist yet -- see the helper's own docstring.
+            probe=inside / f"{'0' * 64}.json",
         )
     return resolved
+
+
+def _refuse_a_visible_progress_destination(raw: str, project_root: Path) -> None:
+    """(Round-1 SF-5) The same git-visibility preflight `--state-dir` has.
+
+    B064 made `--progress` write on EVERY rigor tier. Before it, a
+    destination inside a non-ignored work tree was harmless on an R0/R1 lane
+    -- nothing was written, because the producer only existed at R2 -- and
+    after it the lane refuses ITSELF on its very first run, with a bare
+    `NO_MEASUREMENT`/`DIRTY_TREE` that names neither the flag nor the fix.
+
+    That asymmetry was created in one commit range: the same wave gave
+    `--state-dir` a preflight that refuses before any work and left the flag
+    it had just made universal without one. Both flags now ask the identical
+    question through the identical helper.
+    """
+    destination = Path(os.path.normpath(os.path.abspath(os.path.expanduser(raw))))
+    for root, relative in _containments(destination, project_root):
+        # The progress destination IS a file, so it is its own probe --
+        # never a representative sibling, which would answer the wrong
+        # question for a `.gitignore` that matches by extension.
+        _refuse_a_visible_store_inside_the_tree(
+            raw,
+            flag="--progress",
+            what="the progress file",
+            root=root,
+            probe=relative,
+        )
+
+
+def _containments(target: Path, project_root: Path) -> "list[tuple[Path, Path]]":
+    """(Round-1 SF-1) Every way *target* can be said to land inside the
+    judged tree, as ``(root, relative)`` pairs.
+
+    The shipped check compared ONE pair, and the two halves of it came from
+    two different path namespaces: `output.resolve_state_directory` is
+    lexical by design (`normpath`, never `realpath`, because resolving
+    against the filesystem would follow symlinks that the descriptor walk
+    exists to refuse), while `project_root.resolve()` does follow them. When
+    they disagreed `relative_to` raised and the caller read that as
+    "outside the tree, nothing to check" -- a containment check that fails
+    OPEN, reproduced twice by the reviewer with records landing inside the
+    real work tree.
+
+    Both namespaces are now asked, in both directions, and ANY of them
+    saying "inside" is enough to refuse. Fail-closed is the only safe
+    disposition for this question: a false refusal costs an operator one
+    clear message naming the path, while a false accept costs them a work
+    tree that refuses its own next run.
+    """
+    candidates: list[Path] = [target]
+    fully_resolved = _resolve_through_existing_prefix(target)
+    if fully_resolved != target:
+        candidates.append(fully_resolved)
+    roots: list[Path] = [project_root]
+    real_root = project_root.resolve()
+    if real_root != project_root:
+        roots.append(real_root)
+
+    found: list[tuple[Path, Path]] = []
+    for root in roots:
+        for candidate in candidates:
+            try:
+                relative = candidate.relative_to(root)
+            except ValueError:
+                continue
+            if (root, relative) not in found:
+                found.append((root, relative))
+    return found
+
+
+def _resolve_through_existing_prefix(target: Path) -> Path:
+    """*target* with every symlink in its existing prefix resolved.
+
+    `Path.resolve()` is non-strict, so a not-yet-created directory (which
+    `--state-dir` and `--progress` both routinely are) resolves its existing
+    ancestors and keeps the remainder verbatim -- exactly what a containment
+    question needs. Wrapped so an `OSError` (a resolution loop, a permission
+    failure mid-walk) leaves the lexical spelling standing rather than
+    crashing a preflight.
+    """
+    try:
+        return target.resolve()
+    except OSError:
+        return target
+
+
+def _refuse_a_visible_store_inside_the_tree(
+    raw: str, *, flag: str, what: str, root: Path, probe: Path
+) -> None:
+    """Refuse *raw* when git can see the file(s) it names inside the tree.
+
+    *probe* is always a FILE that assay would actually write, never a
+    directory: `git check-ignore` cannot tell that a not-yet-existing path
+    is a directory, so a perfectly ordinary directory-only `.gitignore` line
+    (`resume-store/`) would answer "not ignored" and refuse a
+    correctly-configured consumer. `--state-dir` therefore probes a
+    representative record name under the directory; `--progress` probes the
+    destination itself, which already is the file.
+    """
+    # (Round-1 N2) `path_is_ignored` runs without `--literal-pathspecs`,
+    # because `check-ignore` refuses that flag outright -- so git would parse
+    # a leading `:` as pathspec magic and answer with a raw `fatal:` that
+    # reached the operator as `ERROR/GIT_FAILED`, the exact shape B068 was
+    # fixed to stop emitting. Named here instead, before git is asked.
+    if any(component.startswith(":") for component in probe.parts):
+        raise LaneConfigError(
+            f"{flag} {raw!r} has a path component beginning with ':', which "
+            f"git reads as pathspec magic rather than as a filename, so "
+            f"assay cannot ask whether it is ignored. Choose a path whose "
+            f"components do not begin with ':'"
+        )
+    if not git.path_is_ignored(root, probe.as_posix()):
+        raise LaneConfigError(
+            f"{flag} {raw!r} resolves inside the judged tree at "
+            f"{root / probe} and is not git-ignored -- assay's own "
+            f"clean-tree precondition would then report {what} as "
+            f"uncommitted and refuse the NEXT run of this lane "
+            f"NO_MEASUREMENT/DIRTY_TREE. Point it outside the repository, "
+            f"or add {probe.as_posix()!r} to a committed .gitignore"
+        )
 
 
 def _resolve_progress_heartbeat(args: argparse.Namespace) -> float | None:

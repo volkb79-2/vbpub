@@ -78,13 +78,12 @@ def _repo(tmp_path: Path) -> GitRepo:
 
 
 def _records(state_root: Path) -> list[dict]:
-    # (B066) The store's ROOT is now the caller's own `state_root`; the
-    # `.assay/mutation-state/` tail is only the DEFAULT that `run_lane`
-    # composes when no `--state-dir` is given.
-    directory = state_root
+    """(B066) Records live directly under the caller's own *state_root*. The
+    `.assay/mutation-state/` tail is only the DEFAULT root `run_lane`
+    composes when no `--state-dir` is given."""
     return [
         json.loads(path.read_text(encoding="utf-8"))
-        for path in sorted(directory.glob("*.json"))
+        for path in sorted(state_root.glob("*.json"))
     ]
 
 

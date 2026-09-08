@@ -152,7 +152,7 @@ class _NoOpTransformAdapter(PythonAdapter):
         return text, "injected nothing at all"
 
 
-def _run(repo: GitRepo, lane, *, adapter=None, gate=None):
+def _run(repo: GitRepo, lane, *, adapter=None, gate=None, monotonic=None):
     gate = gate if gate is not None else _Gate()
     verdict = runner.run_lane(
         lane,
@@ -163,7 +163,7 @@ def _run(repo: GitRepo, lane, *, adapter=None, gate=None):
         assay_version="0.1.0",
         process_runner=gate,
         clock=_clock,
-        monotonic=CountingMonotonic(),
+        monotonic=monotonic if monotonic is not None else CountingMonotonic(),
     )
     return verdict, gate
 
@@ -594,6 +594,51 @@ def test_every_probe_runs_under_the_declared_per_attempt_bound(git_repo: GitRepo
     # are not left with what the first one had already spent, so the last
     # run still sees very nearly the whole 30 s.
     assert probes[-1] > 25.0
+
+
+def test_an_expired_per_attempt_bound_abandons_every_later_target_too(
+    git_repo: GitRepo,
+):
+    """(Round-1 N8.) B067's per-attempt bound does not merely get HANDED to
+    the process boundary -- when it EXPIRES it takes the whole rest of the
+    canary with it, and that is a real behaviour change worth pinning.
+
+    One slow target now abandons every subsequent target even though the
+    lane itself has almost its entire 300 s budget left. That is deliberate,
+    not incidental: `canary.py` chose it so a per-attempt expiry produces
+    the SAME terminal shape a lane-wide expiry already does -- this probe and
+    every LATER probe `not_attempted`/`budget_exhausted` -- which is exactly
+    the trailing-run shape `verify.py`'s R-2/SF-1 rule already enforces. A
+    per-attempt expiry that let later probes run would break the verifier.
+
+    Only the per-attempt clock runs out here: the lane budget is 300 s and
+    the fake monotonic advances well under a second per sample, so nothing
+    but the tightened bound can be what cut this short.
+    """
+    _seed(git_repo)
+    lane = _lane(git_repo, aggregation="all", budget_per_attempt="1s")
+    # 0.6 s per sample: the 1 s per-attempt window is gone within the first
+    # probe, while 300 s of lane budget would need some five hundred samples.
+    clock = CountingMonotonic(step=0.6)
+    verdict, gate = _run(git_repo, lane, gate=_Gate(catches=False), monotonic=clock)
+
+    claim = _r3(verdict)
+    assert (claim.status, claim.reason_code) == (
+        Outcome.BUDGET_EXCEEDED,
+        ReasonCode.LANE_TIMEOUT,
+    )
+    assert claim.canary is not None
+    assert [attempt.target for attempt in claim.canary.attempts] == list(TARGETS)
+    assert [
+        attempt.not_attempted_reason for attempt in claim.canary.attempts
+    ] == ["budget_exhausted", "budget_exhausted"]
+    assert claim.canary.attempts[-1].disposition == "not_attempted"
+    # The later target was abandoned without being started at all -- the
+    # cascade, not two independent expiries.
+    assert "never started" in claim.canary.attempts[-1].description
+    # And the lane itself was nowhere near its own budget.
+    assert clock.value < 100.0, clock.value
+    _accepted(verdict)
 
 
 def test_a_lane_declaring_no_per_attempt_bound_is_byte_unchanged(git_repo: GitRepo):

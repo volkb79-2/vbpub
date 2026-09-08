@@ -294,6 +294,132 @@ def test_a_gitignored_state_dir_inside_the_tree_is_accepted(
     assert git_repo.git("status", "--porcelain").strip() == ""
 
 
+def test_the_inside_the_tree_check_does_not_fail_open_across_an_intermediate_symlink(
+    git_repo: GitRepo, tmp_path
+):
+    """(Round-1 SF-1, the reviewer's PROBE D.) The containment check compared
+    two DIFFERENT path namespaces.
+
+    `output.resolve_state_directory` is lexical by design (`normpath`, never
+    `realpath`, because resolving against the filesystem would follow
+    symlinks that the descriptor walk exists to refuse), while
+    `project_root.resolve()` does follow them. When the two disagreed
+    `relative_to` raised and the path was silently classified "outside the
+    judged tree, nothing to check" -- so a `--state-dir` reached through a
+    symlink hop landed records INSIDE the real work tree and left it dirty,
+    which is the exact `NO_MEASUREMENT`/`DIRTY_TREE` this refusal exists to
+    prevent.
+    """
+    _seed(git_repo)
+    hop_parent = tmp_path / "outside"
+    hop_parent.mkdir()
+    (hop_parent / "hop").symlink_to(git_repo.path)
+    err = io.StringIO()
+
+    code = main(
+        [
+            "run",
+            "unit",
+            "--file",
+            str(git_repo.path / "assay.toml"),
+            "--state-dir",
+            str(hop_parent / "hop" / "sneaky"),
+            "--resume",
+        ],
+        stderr=err,
+    )
+
+    assert code != 0, "a symlink hop must not launder a path into the work tree"
+    assert "DIRTY_TREE" in err.getvalue(), err.getvalue()
+    assert not (git_repo.path / "sneaky").exists()
+    assert git_repo.git("status", "--porcelain").strip() == ""
+
+
+def test_the_inside_the_tree_check_holds_when_the_root_itself_is_reached_by_symlink(
+    git_repo: GitRepo, tmp_path
+):
+    """(Round-1 SF-1, the reviewer's PROBE C.) The other direction: the
+    project root itself reached through a symlink, with a `--state-dir`
+    lexically under that link."""
+    _seed(git_repo)
+    link = tmp_path / "link"
+    link.symlink_to(git_repo.path)
+    err = io.StringIO()
+
+    code = main(
+        [
+            "run",
+            "unit",
+            "--file",
+            str(link / "assay.toml"),
+            "--state-dir",
+            str(link / "inside-via-link"),
+            "--resume",
+        ],
+        stderr=err,
+    )
+
+    assert code != 0
+    assert "DIRTY_TREE" in err.getvalue(), err.getvalue()
+    assert not (git_repo.path / "inside-via-link").exists()
+    assert git_repo.git("status", "--porcelain").strip() == ""
+
+
+def test_a_genuinely_outside_state_dir_is_still_accepted_after_the_symlink_fix(
+    git_repo: GitRepo, tmp_path
+):
+    """The fix must fail CLOSED on the two probes above without failing
+    closed on the ordinary case the flag exists for."""
+    _seed(git_repo)
+    outside = tmp_path / "genuinely-outside"
+
+    assert (
+        main(
+            [
+                "run",
+                "unit",
+                "--file",
+                str(git_repo.path / "assay.toml"),
+                "--state-dir",
+                str(outside),
+                "--resume",
+            ]
+        )
+        == _COMPLETED
+    )
+    assert sorted(outside.glob("*.json"))
+    assert git_repo.git("status", "--porcelain").strip() == ""
+
+
+def test_a_state_dir_spelled_as_git_pathspec_magic_refuses_by_name(
+    git_repo: GitRepo, tmp_path
+):
+    """(Round-1 N2.) `path_is_ignored` runs without `--literal-pathspecs`
+    (`check-ignore` refuses that flag outright), so git parses a leading `:`
+    as pathspec magic and answered with a raw `GIT_FAILED` passthrough --
+    the exact shape B068 was fixed to stop emitting. Named instead."""
+    _seed(git_repo)
+    err = io.StringIO()
+
+    code = main(
+        [
+            "run",
+            "unit",
+            "--file",
+            str(git_repo.path / "assay.toml"),
+            "--state-dir",
+            str(git_repo.path / ":(icase)store"),
+            "--resume",
+        ],
+        stderr=err,
+    )
+
+    assert code != 0
+    message = err.getvalue()
+    assert "pathspec magic" in message, message
+    assert "GIT_FAILED" not in message, message
+
+
 def test_a_state_dir_that_is_an_existing_file_refuses(git_repo: GitRepo, tmp_path):
     _seed(git_repo)
     occupied = tmp_path / "not-a-directory"

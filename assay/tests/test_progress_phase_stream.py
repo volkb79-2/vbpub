@@ -215,6 +215,105 @@ def test_no_verdict_destination_is_reported_as_null_not_omitted(
     assert terminal["destination"] is None
 
 
+def test_a_progress_path_inside_a_visible_tree_refuses_before_any_work(
+    git_repo: GitRepo, tmp_path
+):
+    """(Round-1 SF-5.) B064 made `--progress` write on EVERY tier, which
+    turned a previously-harmless invocation into an immediate red.
+
+    Before this wave, `--progress <non-ignored path inside the work tree>` on
+    an R0/R1 lane wrote nothing at all -- the `r2_declared` gate saw to that
+    -- so the run passed. After it, the file is created and the lane refuses
+    ITSELF on its very first run with a bare `NO_MEASUREMENT`/`DIRTY_TREE`,
+    which says nothing about the flag that caused it.
+
+    The same wave built the preflight that answers this (`git.path_is_ignored`,
+    for `--state-dir`) and did not extend it one flag over. It is extended
+    here: refused before any work, naming the cause and the fix, exactly as
+    its sibling does.
+    """
+    lane_file = _r0_repo(git_repo)
+    err = io.StringIO()
+
+    code = main(
+        [
+            "run",
+            "unit",
+            "--file",
+            lane_file,
+            "--progress",
+            str(git_repo.path / ".assay" / "progress-unit.jsonl"),
+        ],
+        stderr=err,
+    )
+
+    assert code != 0
+    message = err.getvalue()
+    assert "DIRTY_TREE" in message, message
+    assert "--progress" in message, message
+    assert not (git_repo.path / ".assay").exists(), (
+        "refused BEFORE the destination's parent was created"
+    )
+    assert git_repo.git("status", "--porcelain").strip() == ""
+
+
+def test_a_gitignored_progress_path_inside_the_tree_is_accepted(
+    git_repo: GitRepo, tmp_path
+):
+    """The estate's own convention (run-gate RG-33/RG-13's gitignore
+    obligation) keeps `.assay/` ignored, and that case must keep working --
+    the refusal is about VISIBILITY to git, never about location."""
+    git_repo.write("assay.toml", _R0_LANE)
+    git_repo.write(".gitignore", ".assay/\n")
+    git_repo.commit_all("lane with an ignored .assay/")
+    destination = git_repo.path / ".assay" / "progress-unit.jsonl"
+
+    assert (
+        main(
+            [
+                "run",
+                "unit",
+                "--file",
+                str(git_repo.path / "assay.toml"),
+                "--progress",
+                str(destination),
+            ]
+        )
+        == 0
+    )
+    assert _events(destination)
+    assert git_repo.git("status", "--porcelain").strip() == ""
+
+
+def test_a_progress_path_reached_through_a_symlink_hop_refuses_too(
+    git_repo: GitRepo, tmp_path
+):
+    """SF-1's containment fix serves both flags, because both ask the same
+    question through the same helper."""
+    lane_file = _r0_repo(git_repo)
+    hop_parent = tmp_path / "outside"
+    hop_parent.mkdir()
+    (hop_parent / "hop").symlink_to(git_repo.path)
+    err = io.StringIO()
+
+    code = main(
+        [
+            "run",
+            "unit",
+            "--file",
+            lane_file,
+            "--progress",
+            str(hop_parent / "hop" / "sneaky.jsonl"),
+        ],
+        stderr=err,
+    )
+
+    assert code != 0
+    assert "DIRTY_TREE" in err.getvalue(), err.getvalue()
+    assert not (git_repo.path / "sneaky.jsonl").exists()
+    assert git_repo.git("status", "--porcelain").strip() == ""
+
+
 # --- the heartbeat -------------------------------------------------------
 
 
@@ -254,16 +353,31 @@ def test_the_heartbeat_ticks_while_a_command_runs_and_stops_when_it_returns():
 
 def test_a_heartbeat_write_failure_stops_the_heartbeat_and_nothing_else():
     """A diagnostic tick that could kill a measured lane would be worse than
-    no tick at all."""
+    no tick at all.
+
+    (Round-1 SF-6.) This test used to assert nothing at all -- "reaching here
+    is the assertion" -- so it would have passed identically had
+    `_command_heartbeat` never started a thread, never called the writer, or
+    been a bare `yield`. It now pins both halves of the claim: a write WAS
+    attempted (proving the thread ran and reached the writer), and NO second
+    attempt followed it (proving the failure retired the thread instead of
+    spinning on a broken destination for the rest of the lane).
+    """
+    attempts: list[float] = []
 
     def explode(event):
+        attempts.append(time.monotonic())
         raise OSError("the progress filesystem went away")
 
     stream = mutation.ProgressStream(explode, clock=lambda: datetime.now(timezone.utc))
     with runner._command_heartbeat(stream, interval_seconds=0.02, phase="baseline"):
-        time.sleep(0.1)
-    # Reaching here at all is the assertion: the background thread swallowed
-    # its own error rather than propagating it into the lane.
+        # Long enough for a healthy heartbeat to have ticked many times over.
+        time.sleep(0.3)
+
+    assert len(attempts) == 1, (
+        f"expected exactly one attempted write before the heartbeat retired, "
+        f"got {len(attempts)}"
+    )
 
 
 def test_no_stream_and_no_interval_start_no_thread():
@@ -337,6 +451,50 @@ def test_the_heartbeat_flag_is_a_no_op_without_a_destination(
 
     assert main(["run", "unit", "--file", lane_file, "--progress-heartbeat", "5"]) == 0
     assert git_repo.git("status", "--porcelain").strip() == ""
+
+
+def test_a_real_run_emits_a_real_tick_through_the_real_flag(
+    git_repo: GitRepo, tmp_path
+):
+    """(Round-1 N7.) Every other heartbeat test drives `_command_heartbeat`
+    directly or asserts a CLI refusal; none proved the WIRING -- that
+    `--progress-heartbeat` actually reaches a running lane and puts a
+    `command_running` record in the file. Proven here end to end, on a real
+    child that outlives one interval.
+    """
+    git_repo.write("assay.toml", _R0_LANE.replace("exit 0", "sleep 7; exit 0"))
+    git_repo.commit_all("a lane whose command outlives one heartbeat interval")
+    destination = tmp_path / "progress.jsonl"
+
+    assert (
+        main(
+            [
+                "run",
+                "unit",
+                "--file",
+                str(git_repo.path / "assay.toml"),
+                "--progress",
+                str(destination),
+                "--progress-heartbeat",
+                "5",
+            ]
+        )
+        == 0
+    )
+
+    events = _events(destination)
+    ticks = [event for event in events if event["event"] == "command_running"]
+    assert ticks, [event["event"] for event in events]
+    assert ticks[0]["phase"] == "direct"
+    assert ticks[0]["command_elapsed_s"] >= 5.0
+    # Command-relative and run-relative are genuinely different quantities,
+    # and the run started before the command did.
+    assert ticks[0]["elapsed_s"] >= ticks[0]["command_elapsed_s"]
+    # Cancelled with the command: no tick may follow `command_finished`.
+    names = [event["event"] for event in events]
+    assert names.index("command_finished") > max(
+        index for index, name in enumerate(names) if name == "command_running"
+    )
 
 
 def test_the_default_and_the_floor_are_the_documented_ones():

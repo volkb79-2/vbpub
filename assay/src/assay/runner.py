@@ -5277,11 +5277,18 @@ def run_lane(
                     "argv": list(plan.argv_effective),
                 }
             )
+        # (Round-1 N3) The heartbeat deliberately uses the REAL monotonic
+        # clock at both of its two call sites, rather than this path's
+        # injected `monotonic`. `command_elapsed_s` reports wall-clock
+        # progress to a human or a watching orchestrator; it is not deadline
+        # arithmetic and never feeds a refusal, so a test's frozen or
+        # accelerated deadline clock must not silently retime it. The
+        # baseline site (`_execute_snapshot_unit`) has no injected clock to
+        # pass, and the two sites now agree instead of differing by accident.
         with _command_heartbeat(
             progress_stream,
             interval_seconds=progress_heartbeat_seconds,
             phase="direct",
-            monotonic=monotonic,
         ):
             result = execute_plan(
                 plan,

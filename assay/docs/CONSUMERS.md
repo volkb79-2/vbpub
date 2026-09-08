@@ -1738,14 +1738,29 @@ literal `"unbounded"`, which says **"there is no lane-wide bound; every unit
 of this lane's work carries its own, and liveness is judged by the caller."**
 
 `"unbounded"` is admitted **only where every unit really is bounded**, and
-refused at load, by name, everywhere else:
+refused at load, by name, everywhere else. The question is about the lane's
+own **top-level command** — the `argv` every lane runs once, which `budget` is
+the only thing that ever bounds — so it is decided **independently of which
+other tiers the lane declares**:
 
 | lane | `budget = "unbounded"` |
 | --- | --- |
 | R0/R1 | **refused** — one command, whose only bound *is* `budget` |
 | ingested R2 (`judge.mutation.format`) | **refused** — likewise one command; assay runs no units of its own |
-| native R2 | requires `judge.mutation.budget_per_candidate` |
-| R3 | requires `judge.canary.budget_per_attempt` |
+| either of the above **plus R3** | **still refused** — see below |
+| native R2 | **admitted**; requires `judge.mutation.budget_per_candidate` |
+| native R2 **plus R3** | **admitted**; requires both `budget_per_candidate` and `judge.canary.budget_per_attempt` |
+
+**Declaring an R3 canary does not make a lane unbounded.**
+`judge.canary.budget_per_attempt` bounds one canary *probe* and nothing else —
+it never bounds the lane's own command, which is what produces the R0 status
+and the R1 coverage artifact. So an R0/R1+R3 lane is refused on exactly the
+same grounds an R0/R1 lane is, and the refusal says so. `budget_per_attempt`
+is *necessary* for an unbounded R3 lane and is not *sufficient* on its own.
+
+A native R2 sweep is the one admissible shape because the part whose length
+genuinely cannot be guessed — the sweep — is bounded per unit. The single
+command it still leaves unbounded is the pre-sweep baseline, described below.
 
 The recommended shape, with the caller supplying the liveness half:
 
@@ -1789,9 +1804,11 @@ assay's.
 Progress is opt-in. `assay run worker_lane --progress /tmp/worker.progress.jsonl` appends one compact
 JSON object per line, each flushed as it is written, so a monitor can tail it live. Without the flag
 no progress file is written at all, and assay never chooses the location itself. Choose a path
-OUTSIDE the repository (or a gitignored one): assay's own clean-tree
-precondition refuses `NO_MEASUREMENT`/`DIRTY_TREE` on the next run of that lane if the progress file
-lands in the work tree. The verdict does not name the destination -- the caller already chose it,
+OUTSIDE the repository (or a gitignored one): a progress file git can see inside the work tree
+would make the lane refuse `NO_MEASUREMENT`/`DIRTY_TREE`. **A destination inside the judged tree
+that git can see is refused before any work**, naming the cause and the fix — the same preflight
+`--state-dir` gets, and for the same reason. A gitignored path inside the tree is fine, and so is
+any path outside it. The verdict does not name the destination -- the caller already chose it,
 the same way it does for `--verdict-json`. **The stream is diagnostic, never
 evidence:** `assay verify` does not read it, and no verdict field derives from
 it.
@@ -1814,15 +1831,29 @@ never says `coverage_parsed`.
 | `shard` / `resume` | a shard was selected / records were resumed | `selected_total` / `resumed_total` |
 | `baseline` | the sweep's baseline record | `candidate_total` |
 | `candidate` | one candidate completed | `candidate_id`, `candidate_index`, `path`, `operator`, `outcome_bucket`, `elapsed_seconds` |
-| `end` | the mutation sweep finished | `buckets` (per-bucket counts) |
+| `end` | the mutation sweep ended, on every path out | `buckets` (per-bucket counts), `reason` |
 | `verdict_written` | terminal, for every tier | `outcome`, `reason_code`, `exit_code`, `destination` |
 
 **Every record** additionally carries `emitted_at` (UTC ISO 8601) and
 `elapsed_s` (monotonic seconds since the `run` header). Those two are what let
 a reader with ONLY this file compute rate, ETA and last-event age. `elapsed_s`
-is run-relative on every record without exception; the heartbeat's separate
-question — how long *this* command has been running — is `command_elapsed_s`,
-a different name because it is a different quantity.
+is run-relative on every record without exception.
+
+**Three field names sit close together and mean three different things**, so
+read them carefully:
+
+| field | on | means |
+| --- | --- | --- |
+| `elapsed_s` | every record | seconds since the `run` header — the *run*'s age |
+| `command_elapsed_s` | `command_running` | seconds since *this command* started |
+| `elapsed_seconds` | `candidate` | how long *that one mutant* took |
+
+`end`'s `reason` is `null` for a sweep that actually ran, and otherwise names
+why none did: `"unsupported"` (the adapter has no mutation implementation),
+`"over_candidate_cap"` (more candidates than `max_mutants`), or
+`"no_candidates"`. It is emitted on every path out of the sweep, so a reader
+of a direct-library run — which has no `verdict_written` — can still tell a
+finished run from a dead process.
 
 Two `null`s are meaningful rather than missing. `budget_s` is `null` exactly
 when the lane declares `budget = "unbounded"`, in which case

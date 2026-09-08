@@ -330,8 +330,9 @@ def test_resume_reruns_a_state_record_after_a_routine_schema_version_bump(tmp_pa
     corrupt -- a routine bump of `MUTATION_STATE_SCHEMA_VERSION`. That must
     be a silent rerun (a cache miss), never a lane-wide failure -- the
     pre-B021 disposition raised here, which meant every consumer's existing
-    `.assay/mutation-state/` became `ERROR`/`UNREADABLE_ARTIFACT` on their
-    very next `--resume` after an upgrade, until they manually deleted it."""
+    resume store (`.assay/mutation-state/` then; wherever `--state-dir` puts
+    it since B066) became `ERROR`/`UNREADABLE_ARTIFACT` on their very next
+    `--resume` after an upgrade, until they manually deleted it."""
     repo = _repo(tmp_path)
     state_root = tmp_path / "state-root"
     state_root.mkdir()

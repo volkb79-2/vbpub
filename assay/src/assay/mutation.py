@@ -169,6 +169,11 @@ __all__ = [
     "line_for_offset",
     "merge_mutations",
     "merge_mutation_shards",
+    # (Round-1 N6) Both are cross-module API -- `runner` composes the default
+    # store from `default_state_root`, and `mutation_state_record_name` is
+    # the identity-to-filename rule `--state-dir` addresses records by.
+    "default_state_root",
+    "mutation_state_record_name",
     "mutation_state_record_path",
     "resolve_mutation_targets",
     "run_mutation",
@@ -846,13 +851,23 @@ class ProgressStream:
                 f"progress event {name!r} is not in the closed progress "
                 f"vocabulary {sorted(PROGRESS_EVENTS)}"
             )
-        enriched = {
-            **event,
-            "emitted_at": iso_utc(self._clock()),
-            "elapsed_s": round(self.elapsed(), 3),
-        }
+        # (Round-1 N1) The two timestamps are computed INSIDE the lock, not
+        # before it. Outside it, the heartbeat thread and a `jobs`-way
+        # concurrent sweep could stamp in one order and win the lock in the
+        # other, so a reader tailing the file would see `elapsed_s` go
+        # backwards between consecutive lines -- and run-gate's own
+        # `_rate_per_min` reads that field off the newest candidate record.
+        # Under the lock, stamp order and write order are the same order by
+        # construction. The cost is two clock reads inside a critical
+        # section that already does a `write` and a `flush`.
         with self._lock:
-            self._write(enriched)
+            self._write(
+                {
+                    **event,
+                    "emitted_at": iso_utc(self._clock()),
+                    "elapsed_s": round(self.elapsed(), 3),
+                }
+            )
 
     #: A :class:`ProgressStream` IS a :data:`ProgressWriter`, so every
     #: pre-existing ``write_progress(...)`` call site keeps working and is
@@ -1678,15 +1693,40 @@ def run_mutation(
         collected = collect_mutation_sites(
             targets, adapter=adapter, operators=operators, limit=max_mutants + 1
         )
+        # (Round-1 N4) Each of the three returns below ends the sweep without
+        # running one candidate, and each used to emit NOTHING. Under the
+        # lane path `verdict_written` still terminated the stream, but a
+        # DIRECT `run_mutation` library caller has no `verdict_written` at
+        # all -- so those runs were indistinguishable from a process that
+        # died mid-sweep, which is the exact question `end` was added to
+        # answer. `end` is now the sweep's terminal on every path out, and
+        # `reason` says which one: `null` for a sweep that actually ran.
+        def _end(
+            buckets: Mapping[str, int], *, reason: str | None, total: int
+        ) -> None:
+            if write_progress is not None:
+                write_progress(
+                    {
+                        "event": "end",
+                        "candidate_total": total,
+                        "buckets": dict(buckets),
+                        "reason": reason,
+                    }
+                )
+
+        _no_buckets = {name: 0 for name in MUTATION_BUCKETS}
         if collected == UNSUPPORTED:
+            _end(_no_buckets, reason="unsupported", total=0)
             return UNSUPPORTED
 
         job_list = collected
         candidate_count = len(job_list)
         if candidate_count > max_mutants:
+            _end(_no_buckets, reason="over_candidate_cap", total=candidate_count)
             return Mutation(candidate_count=candidate_count, total=0)
         total = candidate_count
         if total == 0:
+            _end(_no_buckets, reason="no_candidates", total=0)
             return Mutation(candidate_count=0, total=0)
 
         selected_indices = list(range(total))
@@ -1817,19 +1857,15 @@ def run_mutation(
             # that later sees the verdict finds them agreeing rather than
             # having to reconcile two spellings.
             #
-            # Emitted only where a sweep actually ran. The three early
-            # returns above (`UNSUPPORTED`, over the candidate cap, no
-            # candidates at all) never began one, and the lane's own
-            # `verdict_written` still terminates the stream for them.
-            write_progress(
+            # `reason: null` -- a sweep that actually ran. The three early
+            # returns above name their own reason instead (round-1 N4).
+            _end(
                 {
-                    "event": "end",
-                    "candidate_total": total,
-                    "buckets": {
-                        name: len(getattr(result_payload, name))
-                        for name in MUTATION_BUCKETS
-                    },
-                }
+                    name: len(getattr(result_payload, name))
+                    for name in MUTATION_BUCKETS
+                },
+                reason=None,
+                total=total,
             )
         return result_payload
 

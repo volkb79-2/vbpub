@@ -165,6 +165,151 @@ def test_an_ingested_R2_lane_refuses_unbounded_as_the_one_command_it_is(tmp_path
     assert "an ingested R2 lane is ONE command" in str(excinfo.value)
 
 
+def test_declaring_R3_does_not_exempt_an_R0_R1_lane_from_needing_a_bound(tmp_path):
+    """(Round-1 blocker B1.) The refusal used to be conditioned on the
+    ABSENCE of R3 -- `if (not r2 and not r3) or (ingested_r2 and not r3)` --
+    so declaring a canary switched it off entirely.
+
+    `judge.canary.budget_per_attempt` bounds one canary PROBE. It does not
+    bound the lane's own top-level command, which is what produces the R0
+    status and the R1 coverage artifact. So an R0/R1+R3 lane under
+    `unbounded` ran its own evidence-producing command with no bound at all
+    -- exactly the state the refusal's own message calls impossible. The
+    reviewer reproduced it end to end: `child timeout=None` on the lane's
+    own argv, beside two properly-bounded canary halves.
+    """
+    path = _project(
+        tmp_path,
+        _toml(
+            rigor='["R0", "R1", "R3"]',
+            tail=_CANARY + 'budget_per_attempt = "30s"\n',
+        ),
+    )
+    with pytest.raises(LaneConfigError) as excinfo:
+        load_lane_file(path)
+    message = str(excinfo.value)
+    assert "an R0/R1 lane is ONE command" in message
+    # The refusal must say WHY the declared per-attempt bound does not save
+    # it, or an author reads it as a contradiction of the lane they wrote.
+    assert "budget_per_attempt" in message
+    assert "['R0', 'R1', 'R3']" in message
+
+
+def test_declaring_R3_does_not_exempt_an_ingested_R2_lane_either(tmp_path):
+    """The same hole, on the worse of the two shapes: an ingested R2 lane's
+    ENTIRE R2 evidence comes from that one unbounded command."""
+    path = _project(
+        tmp_path,
+        _toml(
+            rigor='["R0", "R1", "R2", "R3"]',
+            tail=_INGESTED_MUTATION + _CANARY + 'budget_per_attempt = "30s"\n',
+        ),
+    )
+    with pytest.raises(LaneConfigError) as excinfo:
+        load_lane_file(path)
+    message = str(excinfo.value)
+    assert "an ingested R2 lane is ONE command" in message
+    assert "budget_per_attempt" in message
+
+
+def test_the_one_admissible_shape_is_a_native_R2_sweep(tmp_path):
+    """The whole table, in one place -- because B1 got through precisely
+    because every tier was tested in ISOLATION and no test asked what a
+    COMBINATION does.
+
+    A native R2 sweep is the one shape where the unguessable bulk of the work
+    is bounded per unit; the single command it leaves unbounded (the
+    baseline) is B076, filed and reasoned. Every other shape's only
+    evidence-producing work IS that one command.
+    """
+    admitted: dict[str, bool] = {}
+    for label, rigor, tail in (
+        ("R0/R1", '["R0", "R1"]', ""),
+        (
+            "R0/R1+R3",
+            '["R0", "R1", "R3"]',
+            _CANARY + 'budget_per_attempt = "30s"\n',
+        ),
+        ("ingested R2", '["R0", "R1", "R2"]', _INGESTED_MUTATION),
+        (
+            "ingested R2+R3",
+            '["R0", "R1", "R2", "R3"]',
+            _INGESTED_MUTATION + _CANARY + 'budget_per_attempt = "30s"\n',
+        ),
+        (
+            "native R2",
+            '["R0", "R1", "R2"]',
+            _NATIVE_MUTATION + 'budget_per_candidate = "45s"\n',
+        ),
+        (
+            "native R2+R3",
+            '["R0", "R1", "R2", "R3"]',
+            _NATIVE_MUTATION
+            + 'budget_per_candidate = "45s"\n'
+            + _CANARY
+            + 'budget_per_attempt = "30s"\n',
+        ),
+    ):
+        project = _project(tmp_path / label.replace("/", "-"), _toml(rigor=rigor, tail=tail))
+        try:
+            load_lane_file(project)
+        except LaneConfigError:
+            admitted[label] = False
+        else:
+            admitted[label] = True
+
+    assert admitted == {
+        "R0/R1": False,
+        "R0/R1+R3": False,
+        "ingested R2": False,
+        "ingested R2+R3": False,
+        "native R2": True,
+        "native R2+R3": True,
+    }
+
+
+def test_no_child_of_an_unbounded_R0_R1_R3_lane_ever_gets_no_timeout(
+    git_repo: GitRepo, tmp_path, monkeypatch
+):
+    """(Round-1 blocker B1.) The reviewer's own repro, pinned at the process
+    boundary rather than at the loader.
+
+    A load-time assertion alone would not have caught the ORIGINAL defect any
+    better than the tests that missed it: what makes this one binding is that
+    it instruments the actual `subprocess.run` call and asserts no child of
+    this lane was ever launched with `timeout=None`. Before the fix the
+    lane's own argv ran exactly that way.
+    """
+    recorded: list[object] = []
+    real_run = subprocess.run
+
+    def record(*args, **kwargs):
+        recorded.append(kwargs.get("timeout", "MISSING"))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", record)
+
+    git_repo.write(
+        "assay.toml",
+        _toml(
+            rigor='["R0", "R1", "R3"]',
+            tail=_CANARY + 'budget_per_attempt = "30s"\n',
+        ).replace('argv = ["pytest", "-q"]', 'argv = ["/bin/sh", "-c", "exit 0"]'),
+    )
+    git_repo.write("pkg/flags.py", _SOURCE)
+    git_repo.commit_all("unbounded R0/R1/R3 lane")
+
+    from assay.cli import main
+
+    exit_code = main(["run", "only", "--file", str(git_repo.path / "assay.toml")])
+
+    assert exit_code != 0, "the lane must be refused, not run"
+    assert None not in recorded, (
+        "a child of an unbounded R0/R1+R3 lane was launched with no timeout at "
+        f"all: {recorded}"
+    )
+
+
 def test_an_R3_lane_without_budget_per_attempt_names_the_missing_bound(tmp_path):
     path = _project(
         tmp_path,
