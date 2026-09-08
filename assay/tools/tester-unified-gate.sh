@@ -564,11 +564,18 @@ run_inner() {
   # to W4, so W5 JOINS the same demotion -- collect-only here, hard-cut-probed
   # below -- and its positive coverage lives on in W6's v10 successors, run
   # for real further down. `carve-assets/W5/` is untouched by that cut.
+  #
+  # B070 (the v11 discarded-mutants cut): 10 -> 11 does to W6 exactly what
+  # 9 -> 10 did to W5, so W6 JOINS the same demotion and its positive coverage
+  # lives on in W7's v11 successors. `carve-assets/W6/` is untouched by that
+  # cut -- `git diff` over it is empty, and the hard-cut probe below is what
+  # proves its nine documents are now refused rather than migrated.
   for locked in \
     "nyxloom-trove/carve-assets/W1/test_acceptance_v6.py" \
     "nyxloom-trove/carve-assets/W2/test_acceptance_v7.py" \
     "nyxloom-trove/carve-assets/W4/test_acceptance_v8.py" \
-    "nyxloom-trove/carve-assets/W5/test_acceptance_v9.py"
+    "nyxloom-trove/carve-assets/W5/test_acceptance_v9.py" \
+    "nyxloom-trove/carve-assets/W6/test_acceptance_v10.py"
   do
     # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
     PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
@@ -585,7 +592,7 @@ from assay.verify import verify_document
 
 root = Path(sys.argv[1]) / "nyxloom-trove" / "carve-assets"
 checked = 0
-for wave, version in (("W1", 6), ("W2", 7), ("W4", 8), ("W5", 9)):
+for wave, version in (("W1", 6), ("W2", 7), ("W4", 8), ("W5", 9), ("W6", 10)):
     expected = root / wave / "expected"
     paths = sorted(expected.glob("*.json"))
     assert paths, f"{wave}/expected holds no frozen templates to check"
@@ -593,30 +600,31 @@ for wave, version in (("W1", 6), ("W2", 7), ("W4", 8), ("W5", 9)):
         document = json.loads(path.read_text())
         failures = verify_document(document)
         assert failures == [
-            f"schema_version {version} is not this verifier's version 10: a "
+            f"schema_version {version} is not this verifier's version 11: a "
             f"verdict artifact is rejected, never upgraded in place -- "
-            f"re-produce it with an assay whose VERDICT_SCHEMA_VERSION is 10"
+            f"re-produce it with an assay whose VERDICT_SCHEMA_VERSION is 11"
         ], (wave, path.name, failures)
         checked += 1
-print(f"v6/v7/v8/v9 hard-cut guard passed for {checked} frozen templates")
+print(f"v6/v7/v8/v9/v10 hard-cut guard passed for {checked} frozen templates")
 PYEOF
-  echo 'ASSAY_GATE_PHASE=verdict-v6-v7-v8-v9-hard-cut-verified'
+  echo 'ASSAY_GATE_PHASE=verdict-v6-v7-v8-v9-v10-hard-cut-verified'
 
-  # A-427..A-434 (wave D, the integrity cut): the locked v10 acceptance suite,
-  # run for real against the same installed wheel. It carries forward the
-  # positive coverage W1's, W2's, W4's and now W5's suites gave up above, and
-  # adds v10's own contract: `judgment.r2.fail_under` and BOTH directions of
-  # the producer fork it rides, `claim.detail` with its BYTE bound and its
-  # all-or-nothing dropped-byte pair, the two reserved reason codes in both
-  # schema places AND in `assay.errors` independently, the
-  # `adjudicated => verified_by_assay: false` narrowing, `canary.attempts[]`
-  # with its disposition fork and pairwise target equality, and `R4` with
-  # `judgment.r4`/`red_first`. Every negative in it is differential.
+  # B070 (the v11 discarded-mutants cut): the locked v11 acceptance suite, run
+  # for real against the same installed wheel. It carries forward the positive
+  # coverage W1's, W2's, W4's, W5's and now W6's suites gave up above -- v10's
+  # whole contract included -- and adds v11's own: `judgment.r2.discarded` as
+  # an ARRAY of mutant identities, its three re-derivations (bucket
+  # disjointness, the `lines_without_candidates` line rule, and the
+  # fifth-disposition arithmetic `candidate_count - total == len(discarded)`),
+  # the A-437 reproduction as a NAMED refusal, and -- the one that makes the
+  # rest mean anything -- a REAL 40-discard verdict that is ACCEPTED, so the
+  # new bound is provably a re-derivation and not the upper-bound clamp DA-R26
+  # rejected. Every negative in it is differential.
   # shellcheck disable=SC1007 # intentional empty PYTHONPATH for this child only
   PYTHONPATH= "$scratch/run-venv/bin/python" -m pytest \
-    "$worktree/assay/nyxloom-trove/carve-assets/W6/test_acceptance_v10.py" \
+    "$worktree/assay/nyxloom-trove/carve-assets/W7/test_acceptance_v11.py" \
     -q -p no:randomly --override-ini=pythonpath=
-  echo 'ASSAY_GATE_PHASE=verdict-v10-successors-verified'
+  echo 'ASSAY_GATE_PHASE=verdict-v11-successors-verified'
 
   run_self_hosted_lane "$worktree" "$scratch" "$version" "$wheel"
 
