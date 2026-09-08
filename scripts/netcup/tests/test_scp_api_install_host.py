@@ -126,6 +126,34 @@ def test_refuse_unrendered_attach_only_identity_allows_resolved_path(install_hos
     )  # must not raise
 
 
+def test_peek_payload_host_label_prefers_hostname(install_host_mod, tmp_path):
+    payload_path = tmp_path / "target-host.jsonc"
+    payload_path.write_text('{\n  "serverId": 804027,\n  "hostname": "v1001.vxxu.de"\n}\n')
+    assert install_host_mod._peek_payload_host_label(str(payload_path)) == "v1001.vxxu.de"
+
+
+def test_peek_payload_host_label_falls_back_to_netcup_server_id(install_host_mod, tmp_path):
+    payload_path = tmp_path / "target-host.jsonc"
+    payload_path.write_text('{\n  "serverId": 804027\n}\n')
+    assert install_host_mod._peek_payload_host_label(str(payload_path)) == "netcup804027"
+
+
+def test_peek_payload_host_label_none_when_neither_field_present(install_host_mod, tmp_path):
+    payload_path = tmp_path / "target-host.jsonc"
+    payload_path.write_text('{\n  "diskName": "vda"\n}\n')
+    assert install_host_mod._peek_payload_host_label(str(payload_path)) is None
+
+
+def test_peek_payload_host_label_none_on_missing_file(install_host_mod, tmp_path):
+    assert install_host_mod._peek_payload_host_label(str(tmp_path / "nope.jsonc")) is None
+
+
+def test_peek_payload_host_label_none_on_invalid_json(install_host_mod, tmp_path):
+    payload_path = tmp_path / "target-host.jsonc"
+    payload_path.write_text("{ not valid json")
+    assert install_host_mod._peek_payload_host_label(str(payload_path)) is None
+
+
 def test_build_ssh_cmd_base_with_identity(install_host_mod):
     cmd = install_host_mod._build_ssh_cmd_base("1.2.3.4", "root", "/tmp/key")
     assert cmd[-1] == "root@1.2.3.4"
@@ -545,6 +573,127 @@ def test_main_interactive_recipe_never_overrides_freshly_resolved_image_flavour(
     assert payload["locale"] == "de_DE.UTF-8"  # non-conflicting recipe defaults still apply
 
 
+def _fix_datetime_to(install_host_mod, monkeypatch, year, month, day):
+    class _FixedDatetime(install_host_mod.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(year, month, day)
+
+    monkeypatch.setattr(install_host_mod, "datetime", _FixedDatetime)
+
+
+def _write_fake_identity_at(path):
+    path.write_text("fake-private-key-material\n")
+    path.with_suffix(path.suffix + ".pub").write_text("ssh-ed25519 AAAAFAKEFAKEFAKE test@fake\n")
+
+
+def test_main_interactive_uses_live_hostname_for_identity_label_not_raw_server_name(
+    install_host_mod, tmp_path, fake_client, monkeypatch, capsys
+):
+    """SERVER_NAME holds netcup's own opaque internal server name (e.g.
+    "v2202511209318406253"), not a human label -- the SSH identity file must
+    be labeled from the live-resolved "hostname" field instead (operator
+    ask, 2026-09-08), reusing the SAME /api/v1/servers lookup for step 1
+    rather than fetching it a second time."""
+    monkeypatch.chdir(tmp_path)
+    _fix_datetime_to(install_host_mod, monkeypatch, 2026, 9, 8)
+
+    expected_identity = tmp_path / "vbpub-scp_installer-v1001.vxxu.de-20260908-ed25519"
+    _write_fake_identity_at(expected_identity)
+
+    servers = [{"id": 804027, "hostname": "v1001.vxxu.de"}]
+    server_details = {
+        "serverLiveInfo": {"disks": [{"dev": "vda", "capacityInMiB": 524288}]},
+        "hostname": "v1001.vxxu.de",
+    }
+    flavours = [{"id": 2, "image": {"name": "Debian 13.2 UEFI amd64"}}]
+    ssh_keys: list = []
+    client = fake_client(
+        get_responses=[servers, server_details, flavours, ssh_keys, ssh_keys],
+        user_info={"id": 7},
+        allow=("get", "get_user_info"),
+    )
+    identity_template = str(tmp_path / "vbpub-scp_installer-{host}-{date}-ed25519")
+    args = types.SimpleNamespace(
+        attach_only=False, payload=None, poweroff=False, dry_run=True, yes=True,
+        ssh_identity_file=identity_template,
+    )
+    _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
+
+    install_host_mod.main()
+
+    assert args.ssh_identity_file == str(expected_identity)
+    server_gets = [c for c in client.calls if c[0] == "get" and c[1] == "/api/v1/servers"]
+    assert len(server_gets) == 1, "must reuse the labeling lookup for step 1, not fetch it twice"
+
+
+def test_main_interactive_falls_back_to_server_name_when_no_live_hostname(
+    install_host_mod, tmp_path, fake_client, monkeypatch, capsys
+):
+    """When the live /api/v1/servers response carries no "hostname" field,
+    fall back to "netcup<id>" rather than SERVER_NAME's opaque string."""
+    monkeypatch.chdir(tmp_path)
+    _fix_datetime_to(install_host_mod, monkeypatch, 2026, 9, 8)
+
+    expected_identity = tmp_path / "vbpub-scp_installer-netcup804027-20260908-ed25519"
+    _write_fake_identity_at(expected_identity)
+
+    client = _fake_gather_client(fake_client)  # servers = [{"id": 42}], no "hostname"
+    client._get_responses[0] = [{"id": 804027}]
+    identity_template = str(tmp_path / "vbpub-scp_installer-{host}-{date}-ed25519")
+    args = types.SimpleNamespace(
+        attach_only=False, payload=None, poweroff=False, dry_run=True, yes=True,
+        ssh_identity_file=identity_template,
+    )
+    _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
+
+    install_host_mod.main()
+
+    assert args.ssh_identity_file == str(expected_identity)
+
+
+def test_main_payload_mode_uses_payload_hostname_for_identity_label(
+    install_host_mod, tmp_path, fake_client, monkeypatch, capsys
+):
+    """--payload mode must label the SSH identity file from the payload's
+    OWN "hostname" field via a purely local peek (no API call needed just
+    to name the file) -- SERVER_NAME is often unset entirely in this mode."""
+    monkeypatch.chdir(tmp_path)
+    _fix_datetime_to(install_host_mod, monkeypatch, 2026, 9, 8)
+
+    expected_identity = tmp_path / "vbpub-scp_installer-r1002.vxxu.de-20260908-ed25519"
+    _write_fake_identity_at(expected_identity)
+
+    payload_path = tmp_path / "target-host-r1002.jsonc"
+    payload_path.write_text(
+        '{\n'
+        '  "serverId": 799611,\n'
+        '  "hostname": "r1002.vxxu.de",\n'
+        '  "diskName": "vda",\n'
+        '  "imageFlavourId": 128,\n'
+        '  "sshKeyIds": [22556]\n'
+        '}\n'
+    )
+
+    client = fake_client(get_responses=[{"serverLiveInfo": {}}], allow=("get",))
+    identity_template = str(tmp_path / "vbpub-scp_installer-{host}-{date}-ed25519")
+    args = types.SimpleNamespace(
+        attach_only=False, payload=str(payload_path), poweroff=False, dry_run=True, yes=True,
+        ssh_identity_file=identity_template,
+    )
+    monkeypatch.setattr(install_host_mod, "SERVER_NAME", None)  # not required for --payload mode
+    monkeypatch.setattr(install_host_mod, "get_access_token", lambda rt: "fake-token")
+    monkeypatch.setattr(install_host_mod, "NetcupSCPClient", lambda *a, **kw: client)
+    monkeypatch.setattr(install_host_mod, "parse_args", lambda: args)
+    monkeypatch.setenv("NETCUP_SCP_API_REFRESH_TOKEN", "fake-refresh-token")
+
+    install_host_mod.main()
+
+    assert args.ssh_identity_file == str(expected_identity)
+    server_gets = [c for c in client.calls if c[0] == "get" and c[1] == "/api/v1/servers"]
+    assert len(server_gets) == 0, "the payload already has serverId/hostname - no lookup needed"
+
+
 # --- .env read/write -------------------------------------------------------
 
 
@@ -781,6 +930,40 @@ def test_run_configure_fails_cleanly_with_no_debian_flavours(install_host_mod, t
     rc = install_host_mod._run_configure(client)
     assert rc == 1
     assert not (tmp_path / "default-recipe.jsonc").exists()
+
+
+def test_main_configure_dispatch_never_touches_ssh_identity(install_host_mod, tmp_path, fake_client, monkeypatch):
+    """Regression, found live 2026-09-08: `configure` doesn't need an SSH
+    identity at all (it only writes a recipe file), but main()'s identity-
+    rendering block used to run unconditionally BEFORE the `configure`
+    dispatch check -- generating a real, pointless "unknown-host"-labeled
+    keypair as a side effect whenever $NETCUP_SCP_API_SERVER_NAME was unset.
+    `configure` must now dispatch before that block runs at all."""
+    monkeypatch.setattr(install_host_mod, "SERVER_NAME", None)  # the exact trigger condition
+    monkeypatch.setattr(install_host_mod, "DEFAULT_RECIPE_PATH", tmp_path / "default-recipe.jsonc")
+    monkeypatch.setattr("builtins.input", lambda *a, **kw: "")
+    monkeypatch.setattr(install_host_mod, "get_access_token", lambda rt: "fake-token")
+    monkeypatch.setenv("NETCUP_SCP_API_REFRESH_TOKEN", "fake-refresh-token")
+
+    def _fail_if_called(*a, **kw):
+        raise AssertionError("configure must never touch SSH identity machinery")
+
+    monkeypatch.setattr(install_host_mod, "_ensure_local_identity_file_exists", _fail_if_called)
+    monkeypatch.setattr(install_host_mod, "_read_public_key_for_identity", _fail_if_called)
+    monkeypatch.setattr(install_host_mod, "_render_identity_file_path", _fail_if_called)
+
+    args = types.SimpleNamespace(command="configure", debug=False)
+    monkeypatch.setattr(install_host_mod, "parse_args", lambda: args)
+
+    servers = [{"id": 42}]
+    flavours = [{"id": 2, "image": {"name": "Debian 13.2 UEFI amd64"}}]
+    monkeypatch.setattr(install_host_mod, "SERVER_NAME", "test-server")  # _run_configure's own requirement
+    client = fake_client(get_responses=[servers, flavours], allow=("get",))
+    monkeypatch.setattr(install_host_mod, "NetcupSCPClient", lambda *a, **kw: client)
+
+    with pytest.raises(SystemExit) as exc_info:
+        install_host_mod.main()
+    assert exc_info.value.code == 0
 
 
 # --- command positional argument --------------------------------------------

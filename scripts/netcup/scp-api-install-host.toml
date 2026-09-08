@@ -17,12 +17,23 @@ keycloak_url = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-con
 # a shared file reused across hosts (confirmed live 2026-09-08: a shared key
 # meant SSH monitoring for one host could silently pick up a key netcup had
 # actually registered for a *different* host). `{host}`/`{date}` are
-# rendered from the target server name (falls back to "unknown-host" if
-# unset) and today's UTC date before use -- see _render_identity_file_path().
+# rendered before use -- see _render_identity_file_path() -- from today's UTC
+# date and the best host label main() can resolve WITHOUT an extra API call
+# where possible: a --payload file's own "hostname" (or "netcup<serverId>" if
+# only that's present); otherwise one early /api/v1/servers lookup by
+# $NETCUP_SCP_API_SERVER_NAME, reused for step 1 so it isn't a second/
+# duplicate call. Falls back to the raw (opaque) $NETCUP_SCP_API_SERVER_NAME
+# value, then "unknown-host", only when neither resolves (confirmed live
+# 2026-09-08: using the raw netcup-internal server name -- e.g.
+# "v2202511209318406253" -- produced unreadable filenames with no way to
+# tell which key belonged to which host at a glance; operator asked for
+# real FQDNs / "netcup<id>" instead).
 # Matches netcup-api-filter's own `<service>-<host-id>-<algorithm>` naming
-# convention (.devcontainer/finalize.post.d/10-netcup-setup.sh's SSH_KEYS),
-# with a date segment added per the operator's own request. Kept under
-# ~/.ssh/ - the devcontainer's writable, mdt-managed SSH dir (see
+# convention (.devcontainer/finalize.post.d/10-netcup-setup.sh's SSH_KEYS) --
+# service is "scp_installer" (this tool), not "netcup", to stay
+# unambiguous against netcup-api-filter's OWN differently-scoped keys on the
+# same account -- with a date segment added per the operator's own request.
+# Kept under ~/.ssh/ - the devcontainer's writable, mdt-managed SSH dir (see
 # .devcontainer/devcontainer.json), NOT ~/.ssh-host (the host's *native*
 # ~/.ssh, bind-mounted readonly for known_hosts/reference - writing there
 # fails with "Read-only file system", confirmed live 2026-09-08). Auto-
@@ -32,7 +43,7 @@ keycloak_url = "https://www.servercontrolpanel.de/realms/scp/protocol/openid-con
 # also passed through to debian-install-v2 (CONTROLLER_SSH_PUBKEY) so it can
 # be installed into authorized_keys directly and removed again once stage2
 # finishes, independent of whether netcup's own sshKeyIds injection worked.
-identity_file = "~/.ssh/vbpub-netcup-{host}-{date}-ed25519"
+identity_file = "~/.ssh/vbpub-scp_installer-{host}-{date}-ed25519"
 user = "root"
 
 # Feeds into the *comment* on the auto-generated key above, alongside the

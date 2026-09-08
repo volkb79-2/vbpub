@@ -2306,6 +2306,49 @@ def _refuse_unrendered_attach_only_identity(identity_file: str) -> None:
         )
 
 
+def _build_authenticated_client() -> "NetcupSCPClient":
+    """Refresh-token check + access-token fetch + client construction.
+
+    Factored out so both the early `configure` dispatch and the normal flow
+    can build a client without duplicating this (previously the only copy
+    of) error handling.
+    """
+    refresh_token = os.environ.get("NETCUP_SCP_API_REFRESH_TOKEN")
+    if not refresh_token:
+        print("ERROR: missing $NETCUP_SCP_API_REFRESH_TOKEN", file=sys.stderr)
+        print("Usage: export NETCUP_SCP_API_REFRESH_TOKEN='your-refresh-token' && python3 <this script>")
+        sys.exit(1)
+    try:
+        access_token = get_access_token(refresh_token)
+    except Exception as e:
+        print(f"❌ Failed to get access token:  {e}", file=sys.stderr)
+        sys.exit(1)
+    return NetcupSCPClient(access_token, refresh_token=refresh_token)
+
+
+def _peek_payload_host_label(payload_path: str) -> Optional[str]:
+    """Cheap, local, no-API-call peek at a --payload file's own "hostname"
+    (or "serverId", as "netcup<id>") so the per-host SSH identity file gets
+    a meaningful label before any network call happens - exactly the fields
+    a `configure`/interactive-gather-produced payload already bakes in.
+    Returns None (falls back to SERVER_NAME / _UNKNOWN_HOST_LABEL) if the
+    file can't be read/parsed or has neither field.
+    """
+    try:
+        with open(payload_path, "r", encoding="utf-8") as f:
+            raw = f.read()
+        payload = json.loads(_strip_jsonc_comments(raw))
+    except (OSError, json.JSONDecodeError):
+        return None
+    hostname = payload.get("hostname")
+    if isinstance(hostname, str) and hostname:
+        return hostname
+    server_id = payload.get("serverId")
+    if isinstance(server_id, int):
+        return f"netcup{server_id}"
+    return None
+
+
 def main():
     global args, DEBUG
     args = parse_args()
@@ -2319,18 +2362,43 @@ def main():
         # no refresh token needed, unlike configure.
         sys.exit(_run_build_customscript())
 
+    if getattr(args, "command", None) == "configure":
+        # Doesn't touch SSH identity at all (just writes a recipe file) -
+        # dispatch before the identity-rendering block below so it can't
+        # generate a throwaway keypair as a side effect (confirmed live
+        # 2026-09-08: running `configure` with $NETCUP_SCP_API_SERVER_NAME
+        # unset produced a real "unknown-host"-labeled key for no reason).
+        sys.exit(_run_configure(_build_authenticated_client()))
+
     attach_only = getattr(args, "attach_only", False)
+    client: Optional["NetcupSCPClient"] = None
+    server_lookup: Optional[List[Dict[str, Any]]] = None
     if getattr(args, "ssh_identity_file", None):
         if not attach_only:
-            # Per-host/per-date identity, rendered now that SERVER_NAME (this
-            # run's target host) is known - see _render_identity_file_path().
-            # --attach-only intentionally skips rendering: it means to
-            # reconnect with an already-known, already-generated key (passed
-            # explicitly via --ssh-identity-file /
-            # NETCUP_SCP_API_SSH_IDENTITY_FILE), not to silently generate a
-            # fresh one that would never match anything on the host it's
-            # attaching to.
-            args.ssh_identity_file = _render_identity_file_path(args.ssh_identity_file, SERVER_NAME)
+            # A real hostname/server-id label, resolved WITHOUT an extra API
+            # call where possible, instead of SERVER_NAME's opaque internal
+            # netcup id (confirmed live 2026-09-08: e.g.
+            # "v2202511209318406253" gave every generated key an unreadable
+            # filename with no way to tell which host it belonged to at a
+            # glance - see scp-api-install-host.toml's [ssh] comments).
+            host_label = SERVER_NAME
+            if args.payload:
+                host_label = _peek_payload_host_label(args.payload) or SERVER_NAME
+            elif SERVER_NAME:
+                # One early, authenticated lookup - reused as step 1 below
+                # (via `server_lookup`) so this isn't a second/duplicate call.
+                client = _build_authenticated_client()
+                server_lookup = client.get("/api/v1/servers", params={"name": SERVER_NAME})
+                if server_lookup:
+                    host_label = server_lookup[0].get("hostname") or f"netcup{server_lookup[0]['id']}"
+            # Per-host/per-date identity, rendered now that a host label is
+            # known - see _render_identity_file_path(). --attach-only
+            # intentionally skips rendering: it means to reconnect with an
+            # already-known, already-generated key (passed explicitly via
+            # --ssh-identity-file / NETCUP_SCP_API_SSH_IDENTITY_FILE), not to
+            # silently generate a fresh one that would never match anything
+            # on the host it's attaching to.
+            args.ssh_identity_file = _render_identity_file_path(args.ssh_identity_file, host_label)
         else:
             _refuse_unrendered_attach_only_identity(args.ssh_identity_file)
         _ensure_local_identity_file_exists(args.ssh_identity_file, SETTINGS["ssh.controller_fqdn"])
@@ -2379,25 +2447,8 @@ def main():
         finally:
             follower.stop()
         return
-    
-    # Check for refresh token
-    refresh_token = os.environ.get("NETCUP_SCP_API_REFRESH_TOKEN")
-    if not refresh_token:
-        print("ERROR: missing $NETCUP_SCP_API_REFRESH_TOKEN", file=sys.stderr)
-        print("Usage: export NETCUP_SCP_API_REFRESH_TOKEN='your-refresh-token' && python3 <this script>")
-        sys.exit(1)
 
-    try:
-        # Get fresh access token
-        access_token = get_access_token(refresh_token)
-    except Exception as e:
-        print(f"❌ Failed to get access token:  {e}", file=sys.stderr)
-        sys.exit(1)
-
-    client = NetcupSCPClient(access_token, refresh_token=refresh_token)
-
-    if getattr(args, "command", None) == "configure":
-        sys.exit(_run_configure(client))
+    client = client or _build_authenticated_client()
 
     # If payload file is provided, use direct installation mode
     if args.payload:
@@ -2417,9 +2468,12 @@ def main():
     print()
 
     try:
-        # 1. Find server by name
+        # 1. Find server by name (reuse the identity-labeling lookup above,
+        # if one already happened, instead of a second/duplicate GET)
         print(f"1. Finding server '{SERVER_NAME}'...")
-        servers = client.get("/api/v1/servers", params={"name": SERVER_NAME})
+        servers = server_lookup if server_lookup is not None else client.get(
+            "/api/v1/servers", params={"name": SERVER_NAME}
+        )
 
         if not servers:
             print(f"   ❌ ERROR: Server '{SERVER_NAME}' not found!")
