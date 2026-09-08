@@ -12,6 +12,44 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [5.1.0] - 2026-09-08
+<!-- cmru: generated -->
+<!-- cmru: source-end=309bedca062a76a08ae5d626f6604597a6ca58bd -->
+
+### Added
+- feat(assay): a crashed mutation candidate's state record keeps the output that explains it (B071) (b12ec9f2)
+
+### Fixed
+- fix(assay): redo B072's sweep properly -- it missed 4 sites, 3 of them crashing (review blocker) (93e6f7fc)
+- fix(assay): verify_text catches RecursionError too -- the third and last site of one gap (B074) (767393d1)
+- fix(assay): the suite skips, honestly, when there is no parent repository to read (B063) (e426c29f)
+- fix(assay): sweep tests/ pyflakes-clean and widen the gate's lint phase to cover it (B062) (c2d89888)
+- fix(assay): parse_attestation catches RecursionError too (B072); sweep finds a third instance, filed B074 (9cd5ef28)
+- fix(assay): a severed linked worktree is NAMED, not passed through as git's fatal (B068) (96973575)
+- fix(run-gate): estate-wide sweep of environment="host" lanes broken by RG-43 (f62642c6)
+
+### Changed
+- merge(assay): B068 + quick-wins -- linked-worktree gap named, 3 RecursionError sites closed, tests/ pyflakes-clean, honest skips outside a repo, crash diagnostics kept (B068/B072/B062/B063/B071/B074) (309bedca)
+- Merge remote-tracking branch 'origin/main' (cafbb8a5)
+- Merge remote-tracking branch 'origin/main' into debian-install-update (2161b7d3)
+- Merge remote-tracking branch 'origin/main' into debian-install-update (6aa14599)
+- chore(assay): sync worktree to origin/main (assay-v2.4.2) (276c1912)
+
+### Documentation
+- docs(assay): fix-verification -- ACCEPT, the review blocker is discharged (1a494e83)
+- docs(assay): gate re-run GREEN at 001a1f24 after the review-blocker fix (12b4a3ed)
+- docs(assay): record the retracted sweep, item 7, and the re-measured B063 numbers (001a1f24)
+- docs(assay): adversarial review round 1 -- ACCEPT-conditional, one blocker on B072's sweep record (7ec114c6)
+- docs(assay): Wave (B068+quickwins) controller log -- QW-R2/QW-R3, review dispatched (83d5ebda)
+- docs(assay): add B074 as wave item 6; gate re-run GREEN at 767393d1 (7bcf089a)
+- docs(assay): B068 quick-wins wave -- implementer LOG and REPORT; gate GREEN at b12ec9f2 (95177803)
+- docs(backlog): B074 — a whole-target judge cannot grade deployed library code under a tests/ segment (5f17c60b)
+- docs(assay): Wave (B068+quickwins) dispatched -- wave prompt + controller log (a78d0280)
+- docs(assay/backlog): B073 -- per-language live test progress adapter, filed only (faaa49c2)
+- docs(assay/backlog): B072 -- attestation.py has the identical uncaught-RecursionError gap adjudication.py had before f0126b35 (3dd08b12)
+- docs(assay/backlog): B071 -- R2 mutation candidate stdout/stderr computed then discarded (9862f96e)
+- docs: estate-wide assay live-install policy for in-repo consumers; fix debian-install-v2 README link (44664150)
+
 ## [5.0.0] - 2026-09-03
 <!-- cmru: generated -->
 <!-- cmru: source-end=d761838df269c6ce8d8bb2bb9d1ee12c963e3065 -->
