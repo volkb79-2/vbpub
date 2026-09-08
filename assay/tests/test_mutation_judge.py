@@ -403,3 +403,93 @@ def test_run_mutation_reaches_all_four_buckets_and_total_accounts_for_every_one(
     claim = build_mutation_claim(baseline, mutation)
     assert claim.status is Outcome.ERROR
     assert claim.reason_code is ReasonCode.EXEC_FAILED
+
+
+# --------------------------------------------------------------------------
+# B070 (schema v11): the FIFTH DISPOSITION's one behavioural branch
+#
+# `judge_mutation` subtracts `discarded` from `candidate_count` before asking
+# the pre-submission-sentinel question. That single subtraction is the whole
+# of what tells a NATIVE limit refusal from an INGESTED report whose in-scope
+# mutants were all invalid -- two payloads with byte-identical bytes. Round 1
+# of B070's review deleted the subtraction and watched the entire local suite
+# stay green; these two tests are what make that impossible.
+# --------------------------------------------------------------------------
+
+
+def test_a_sentinel_shaped_payload_with_NO_discards_is_the_native_limit_refusal():
+    """The v10 behaviour, unchanged and asserted so the widening cannot eat
+    it. `discarded` defaults to 0, which is every native call site."""
+    from assay.verdict import Mutation
+
+    baseline = _baseline(Outcome.PASS, None)
+    mutation = Mutation(candidate_count=51, total=0)
+
+    assert judge_mutation(baseline, mutation) == (
+        Outcome.BUDGET_EXCEEDED,
+        ReasonCode.MUTANT_LIMIT_EXCEEDED,
+    )
+    assert judge_mutation(baseline, mutation, discarded=0) == (
+        Outcome.BUDGET_EXCEEDED,
+        ReasonCode.MUTANT_LIMIT_EXCEEDED,
+    )
+
+
+def test_the_SAME_payload_with_every_candidate_discarded_is_NO_MUTANTS():
+    """B070's latent lie, as a differential against the test above. The bytes
+    are identical -- `total 0`, five empty buckets, `candidate_count 51` --
+    and only the discarded count distinguishes them. An ingested lane declares
+    no candidate cap (A-360) and assay declined nothing, so calling this a
+    pre-submission BUDGET_EXCEEDED refusal would name a cap that does not
+    exist."""
+    from assay.verdict import Mutation
+
+    baseline = _baseline(Outcome.PASS, None)
+    mutation = Mutation(candidate_count=51, total=0)
+
+    assert judge_mutation(baseline, mutation, discarded=51) == (
+        Outcome.INCONCLUSIVE,
+        ReasonCode.NO_MUTANTS,
+    )
+
+
+def test_a_PARTIAL_discard_beside_zero_attempted_is_still_the_native_refusal():
+    """The boundary between the two branches, so the subtraction cannot be
+    replaced by a bare `if discarded:`. 51 candidates observed, 50 accounted
+    for as discarded, ONE unexplained -- the residual is still positive, so
+    the sentinel question is still answered yes. (No document can carry this
+    shape: `Verdict._check_discarded_disposition` requires the residual to be
+    exactly the discarded list's length. It is here to pin the arithmetic
+    rather than a truthiness test.)"""
+    from assay.verdict import Mutation
+
+    baseline = _baseline(Outcome.PASS, None)
+    mutation = Mutation(candidate_count=51, total=0)
+
+    assert judge_mutation(baseline, mutation, discarded=50) == (
+        Outcome.BUDGET_EXCEEDED,
+        ReasonCode.MUTANT_LIMIT_EXCEEDED,
+    )
+
+
+def test_build_mutation_claim_carries_the_discarded_count_through():
+    """The wiring, not just the function. `runner._run_prepared_lane` reaches
+    `judge_mutation` only through this helper, so a `discarded` that stopped
+    here would leave the fix inert on the one path that actually produces a
+    document."""
+    from assay.verdict import Mutation
+
+    baseline = _baseline(Outcome.PASS, None)
+    mutation = Mutation(candidate_count=51, total=0)
+
+    native = build_mutation_claim(baseline, mutation)
+    assert (native.status, native.reason_code) == (
+        Outcome.BUDGET_EXCEEDED,
+        ReasonCode.MUTANT_LIMIT_EXCEEDED,
+    )
+
+    ingested = build_mutation_claim(baseline, mutation, discarded=51)
+    assert (ingested.status, ingested.reason_code) == (
+        Outcome.INCONCLUSIVE,
+        ReasonCode.NO_MUTANTS,
+    )

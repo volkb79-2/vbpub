@@ -1273,7 +1273,10 @@ def test_the_locked_v11_schema_types_discarded_as_a_mutant_outcome_array():
     discarded = schema["$defs"]["judgment_r2"]["properties"]["discarded"]
     assert discarded["type"] == "array"
     assert discarded["uniqueItems"] is True
-    assert discarded["maxItems"] == 10000
+    # The DOCUMENT ceiling, not `max_mutants`' -- see
+    # `test_the_locked_v11_schema_bounds_both_at_the_document_ceiling` for why
+    # the two are different numbers with different owners.
+    assert discarded["maxItems"] == 100000
     branches = discarded["items"]["allOf"]
     assert {"$ref": "#/$defs/mutant_outcome"} in branches
     assert {"not": {"required": ["kill_signal"]}} in branches
@@ -1323,3 +1326,244 @@ def test_the_arithmetic_rule_admits_the_residual_only_where_it_is_attributed():
     # attempted was first observed as a candidate.
     with pytest.raises(ValueError, match="candidate_count is never below total"):
         Mutation(candidate_count=0, total=1, killed=(one,))
+
+
+# --------------------------------------------------------------------------
+# B070 fix round 1: the WHOLLY-DISCARDED ingested document
+#
+# `total 0`, five empty buckets, a positive `candidate_count` -- byte-identical
+# to a NATIVE pre-submission limit sentinel, and reachable for real by an
+# ingested report whose in-scope mutants were all invalid. Round 1 of the
+# review deleted the subtraction that tells them apart and watched the whole
+# local suite stay green; these tests are the artifact-level half of what
+# makes that impossible. Built from the committed high-discard template, so no
+# new fixture is needed and the control is a real run.
+# --------------------------------------------------------------------------
+
+
+def _wholly_discarded(clean: dict) -> dict:
+    """The real 40-discard document with its buckets emptied: every one of its
+    candidates accounted for as discarded, nothing attempted.
+
+    `survived_uncovered` empties with the `survived` bucket it is a subset of
+    -- keeping it would be a document contradicting itself for a second
+    reason, and a negative that fails for two reasons proves neither.
+    """
+    document = copy.deepcopy(clean)
+    r2 = next(c for c in document["claims"] if c["rigor"] == "R2")
+    discarded = document["judgment"]["r2"]["discarded"]
+    for bucket in ("killed", "survived", "crashed", "budget_exceeded", "equivalent"):
+        r2["mutation"][bucket] = []
+    r2["mutation"]["total"] = 0
+    r2["mutation"]["candidate_count"] = len(discarded)
+    r2["status"] = "INCONCLUSIVE"
+    r2["reason_code"] = "NO_MUTANTS"
+    document["judgment"]["r2"]["survived_uncovered"] = []
+    document["outcome"] = "INCONCLUSIVE"
+    document["reason_code"] = "NO_MUTANTS"
+    document["exit_code"] = 5
+    return document
+
+
+def test_an_ingested_report_whose_candidates_were_ALL_discarded_is_NO_MUTANTS(
+    verify_document,
+):
+    """The honest document, ACCEPTED. An ingested lane declares no candidate
+    cap (A-360) and assay declined nothing — it read a report that attempted
+    no mutant, which is `INCONCLUSIVE`/`NO_MUTANTS`."""
+    clean = load(HERE / "expected" / HIGH_DISCARD_TEMPLATE)
+    document = _wholly_discarded(clean)
+
+    payload = next(c for c in document["claims"] if c["rigor"] == "R2")["mutation"]
+    assert payload["total"] == 0
+    assert payload["candidate_count"] == 40
+    assert len(document["judgment"]["r2"]["discarded"]) == 40
+
+    assert verify_document(document) == [], (
+        "a report that discarded every candidate it had is a real, honest "
+        "shape; refusing it would put B070 back where DA-R26 found it"
+    )
+
+
+def test_the_SAME_document_claiming_a_limit_refusal_is_REFUSED(verify_document):
+    """The lie, refused, differentially against the honest document above.
+    These bytes are what a NATIVE pre-submission refusal looks like, and
+    reporting them that way would name a candidate cap the lane never declared
+    and a refusal assay never made.
+
+    Two layers hold this rule and either would catch it alone. The message
+    asserted here is the MODEL's, because reconstruction runs before
+    `_check_r2_rederivation` can be reached and a refused reconstruction ends
+    the read — which is exactly what "the model states it too" means. The raw
+    layer's own independent witness is `judge_mutation`'s subtraction inside
+    `_check_r2_rederivation`; it is what caught this shape in round 1, when
+    the model still accepted it, and it is asserted directly in
+    `tests/test_mutation_judge.py`.
+    """
+    clean = load(HERE / "expected" / HIGH_DISCARD_TEMPLATE)
+    honest = _wholly_discarded(clean)
+    assert verify_document(honest) == []
+
+    lie = copy.deepcopy(honest)
+    r2 = next(c for c in lie["claims"] if c["rigor"] == "R2")
+    r2["status"] = "BUDGET_EXCEEDED"
+    r2["reason_code"] = "MUTANT_LIMIT_EXCEEDED"
+    lie["outcome"] = "BUDGET_EXCEEDED"
+    lie["reason_code"] = "MUTANT_LIMIT_EXCEEDED"
+    lie["exit_code"] = 4
+
+    failures = verify_document(lie)
+    assert failures, "the wholly-discarded latent lie must be refused"
+    assert any(
+        "the honest terminal is INCONCLUSIVE/NO_MUTANTS" in failure
+        for failure in failures
+    ), failures
+
+
+def test_the_MODEL_alone_refuses_both_halves_of_the_sentinel_disposition():
+    """The two-independent-witnesses half. `assay verify` catches both shapes
+    through its raw checks and its re-derivation; the MODEL must state the
+    rule itself, or `Verdict._check_discarded_disposition` is entirely
+    shadowed and its removal would go unnoticed (round-1 review measured
+    exactly that: the whole method stubbed out, 4257 passed).
+
+    Reconstructed through `assay.verify._reconstruct_verdict`, which is the
+    real model constructor `verify_document` uses, so this asserts the model
+    layer and not a hand-built object.
+    """
+    from assay.verify import _reconstruct_verdict
+
+    clean = load(HERE / "expected" / HIGH_DISCARD_TEMPLATE)
+
+    # (a) the INGESTED half: a wholly discarded report may not claim the
+    #     native limit refusal.
+    lie = _wholly_discarded(clean)
+    r2 = next(c for c in lie["claims"] if c["rigor"] == "R2")
+    r2["status"] = "BUDGET_EXCEEDED"
+    r2["reason_code"] = "MUTANT_LIMIT_EXCEEDED"
+    lie["outcome"] = "BUDGET_EXCEEDED"
+    lie["reason_code"] = "MUTANT_LIMIT_EXCEEDED"
+    lie["exit_code"] = 4
+    with pytest.raises(ValueError, match="the honest terminal is INCONCLUSIVE"):
+        _reconstruct_verdict(lie)
+
+    # ...and the honest one really does reconstruct, so (a) is not passing
+    # because the surrounding document became foreign.
+    assert _reconstruct_verdict(_wholly_discarded(clean)) is not None
+
+    # (b) the NATIVE half: a real limit sentinel may not be relabelled with
+    #     the milder ingested terminal. The `Claim` rule had to admit that
+    #     pairing for (a)'s sake; this is where it is taken back.
+    native = load(HERE / "expected" / "sql-r2-v11-template.json")
+    assert native["judgment"]["r2"]["producer"] == "native"
+    sentinel = copy.deepcopy(native)
+    claim = next(c for c in sentinel["claims"] if c["rigor"] == "R2")
+    for bucket in ("killed", "survived", "crashed", "budget_exceeded", "equivalent"):
+        claim["mutation"][bucket] = []
+    claim["mutation"]["total"] = 0
+    claim["mutation"]["candidate_count"] = (
+        sentinel["judgment"]["r2"]["max_mutants"] + 1
+    )
+    claim["status"] = "BUDGET_EXCEEDED"
+    claim["reason_code"] = "MUTANT_LIMIT_EXCEEDED"
+    sentinel["outcome"] = "BUDGET_EXCEEDED"
+    sentinel["reason_code"] = "MUTANT_LIMIT_EXCEEDED"
+    sentinel["exit_code"] = 4
+    assert _reconstruct_verdict(sentinel) is not None, (
+        "the honest native sentinel must reconstruct, or the negative below "
+        "proves nothing"
+    )
+
+    relabelled = copy.deepcopy(sentinel)
+    claim = next(c for c in relabelled["claims"] if c["rigor"] == "R2")
+    claim["status"] = "INCONCLUSIVE"
+    claim["reason_code"] = "NO_MUTANTS"
+    relabelled["outcome"] = "INCONCLUSIVE"
+    relabelled["reason_code"] = "NO_MUTANTS"
+    relabelled["exit_code"] = 5
+    with pytest.raises(ValueError, match="PRE-SUBMISSION limit refusal"):
+        _reconstruct_verdict(relabelled)
+
+
+# --------------------------------------------------------------------------
+# B070 fix round 1: the ingested size bound, at the boundary in both
+# directions
+#
+# `candidate_count = attempted + discarded` put a truthful high-discard report
+# under a ceiling built for a NATIVE declared cap. The ceiling is now
+# producer-aware; these pin the new bound so a future edit cannot quietly
+# reintroduce the narrowing DA-R26 ruled against.
+# --------------------------------------------------------------------------
+
+
+def test_an_ingested_payload_is_bounded_by_the_DOCUMENT_ceiling_not_max_mutants():
+    """`MAX_CANDIDATE_CEILING` (10,001) is `max_mutants + 1` and defends
+    against a malicious DECLARED cap — a native concern. An ingested lane
+    declares none (A-360), so the bound that applies is the one on reading a
+    report at all."""
+    from assay.verdict import MAX_CANDIDATE_CEILING, Mutation, MutantOutcome
+    from assay.vocabulary import MAX_INGESTED_MUTANTS
+    from assay.mutation_parsers.mutation_report_json import (
+        MAX_INGESTED_MUTANTS as PARSER_BOUND,
+    )
+
+    # One value, two modules -- the drift guard the operator namespace already
+    # has. A ceiling the parser and the model disagreed about would refuse a
+    # report one of them was willing to read.
+    assert MAX_INGESTED_MUTANTS == PARSER_BOUND == 100_000
+    assert MAX_CANDIDATE_CEILING == 10_001
+
+    one = MutantOutcome(
+        path="app/src/format.ts",
+        lineno=3,
+        start_byte=10,
+        end_byte=14,
+        replacement_sha256="a" * 64,
+        operator="stryker:ArithmeticOperator",
+        description="+ -> -",
+    )
+
+    # The shape the review reproduced: 48 attempted, and enough invalid
+    # mutants to carry the payload past the NATIVE ceiling. Accepted.
+    over_the_native_ceiling = Mutation(
+        candidate_count=MAX_CANDIDATE_CEILING + 1, total=1, killed=(one,)
+    )
+    assert over_the_native_ceiling.candidate_count == 10_002
+
+    # ACCEPTED right at the document ceiling...
+    at_the_bound = Mutation(
+        candidate_count=MAX_INGESTED_MUTANTS, total=1, killed=(one,)
+    )
+    assert at_the_bound.candidate_count == 100_000
+
+    # ...and REFUSED one past it, by name.
+    with pytest.raises(ValueError, match="exceeds the document ceiling"):
+        Mutation(candidate_count=MAX_INGESTED_MUTANTS + 1, total=1, killed=(one,))
+
+
+def test_the_native_ceiling_still_binds_where_a_declared_cap_exists(verify_document):
+    """The other direction, and the reason moving the bound is not the same as
+    dropping it: under `producer = "native"` a payload over `max_mutants + 1`
+    is still refused — one level up, where the producer is visible."""
+    clean = load(HERE / "expected" / "sql-r2-v11-template.json")
+    assert clean["judgment"]["r2"]["producer"] == "native"
+    assert verify_document(clean) == []
+
+    broken = copy.deepcopy(clean)
+    claim = next(c for c in broken["claims"] if c["rigor"] == "R2")
+    claim["mutation"]["candidate_count"] = 10_002
+    failures = verify_document(broken)
+    assert failures, "a native payload over the product ceiling must be refused"
+
+
+def test_the_locked_v11_schema_bounds_both_at_the_document_ceiling():
+    """Asserted against the LOCKED artifact. A `maximum: 10001` surviving here
+    would mean the shipped schema still refuses the honest high-discard report
+    even though the model no longer does."""
+    schema = json.loads((HERE / "verdict.schema.v11.json").read_text())
+    assert schema["$defs"]["mutation"]["properties"]["candidate_count"][
+        "maximum"
+    ] == 100000
+    assert schema["$defs"]["judgment_r2"]["properties"]["discarded"][
+        "maxItems"
+    ] == 100000
