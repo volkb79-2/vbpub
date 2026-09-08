@@ -74,29 +74,42 @@ oracles:
     gate: tester-unified
   - id: O2
     observable: >-
-      ntfy is governed by ciu ALONE, not by its own template. On the same fresh-worktree
-      dry-run: `grep -c cgroup_parent ntfy/ciu.compose.yml` prints `0`. AND the fictional slice
-      is gone from every CONFIG/COMPOSE file of both roots -- bound the scan to those file types
-      and no others:
-      `git grep -l 'nyxloom\.slice' -- 'nyxloom/**/*.toml' 'nyxloom/**/*.j2' 'nyxloom/**/*.yml' 'pwmcp/**/*.toml' 'pwmcp/**/*.j2' 'pwmcp/**/*.yml'`
-      returns ONLY `nyxloom/infra/slices/nyxloom-gates.slice`-adjacent unit templates if any
-      match that glob (today: no matches at all). The five occurrences measured at
-      `input_revision` -- `ntfy/ciu.compose.yml.j2:14`, `ntfy/ciu.defaults.toml.j2:25`,
-      `ntfy/docker-compose.yml:14`, `nyxloomd/ciu.defaults.toml.j2:25`, `nyxloomd/ciu.toml:9` --
-      are all gone. Prose retains it deliberately and is NOT scanned.
+      ntfy is governed by ciu ALONE, not by its own template. Three assertions, all required.
+      (i) The TEMPLATE no longer emits a placement key at all:
+      `! grep -q cgroup_parent nyxloom/ntfy/ciu.compose.yml.j2`, and for symmetry
+      `! grep -q cgroup_parent nyxloom/ntfy/ciu.defaults.toml.j2`,
+      `! grep -q cgroup_parent nyxloom/nyxloomd/ciu.defaults.toml.j2` and
+      `! grep -q cgroup_parent nyxloom/nyxloomd/ciu.toml`.
+      (ii) The RENDERED compose is clean: from the O1 dry-run,
+      `grep -c cgroup_parent nyxloom/ntfy/ciu.compose.yml` prints `0`.
+      (iii) The fictional slice literal is gone from the config/compose files of both roots.
+      RUN THIS FROM THE WORKTREE ROOT -- the globs are repo-root-relative and silently match
+      NOTHING if run from `nyxloom/`:
+      `cd <worktree> && git grep -l 'nyxloom\.slice' -- 'nyxloom/**/*.toml' 'nyxloom/**/*.j2' 'nyxloom/**/*.yml' 'pwmcp/**/*.toml' 'pwmcp/**/*.j2' 'pwmcp/**/*.yml'`
+      returns NOTHING. Measured at `input_revision` from the worktree root, that same command
+      returns exactly FOUR files -- `ntfy/ciu.defaults.toml.j2`, `ntfy/docker-compose.yml`,
+      `nyxloomd/ciu.defaults.toml.j2`, `nyxloomd/ciu.toml` -- so it is a real before/after
+      discriminator. Prose (`docs/`, `infra/slices/`, the trove) retains the literal deliberately
+      and is outside these globs.
     negative: >-
       Do NOT write this oracle as an unbounded `git grep -c 'nyxloom\.slice' -- nyxloom/` with a
       prose exclusion list: that form is UNSATISFIABLE, because this handoff is itself a tracked
       file containing the literal ~20 times, and `ntfy/README.md` and `infra/slices/` match too.
       An earlier revision of this carve shipped exactly that unsatisfiable oracle. Bounding the
       scan to config/compose file TYPES is the dimension that makes it checkable; the exclusion
-      is by file type, not by a hand-maintained path list. Separately, an implementation that
-      adds the root `[governance]` table but leaves ntfy/ciu.compose.yml.j2's
-      `{% if ntfy.runtime.cgroup_parent %}` block intact still passes a naive "governance is
-      declared" check and still passes O1 for nyxloomd, yet ntfy keeps `nyxloom.slice` and stays
-      unplaced -- ciu never overwrites a compose key the author already emits
-      (governance.py:1016-1038; SPEC.md:2917-2923). Deleting the TOML key while leaving the Jinja
-      block is equally insufficient. BOTH must go.
+      is by file type, not by a hand-maintained path list. Assertion (i) is NOT redundant with
+      (iii) and must not be dropped: `ntfy/ciu.compose.yml.j2:14` holds
+      `{{ ntfy.runtime.cgroup_parent }}` -- the Jinja EXPRESSION, never the literal string
+      `nyxloom.slice` -- so it is invisible to (iii)'s glob. Without (i), an implementation that
+      deletes the four TOML keys but leaves the Jinja block passes the WHOLE of O2: the rendered
+      compose has no `cgroup_parent` (an undefined Jinja name is falsy in the `{% if %}`, so (ii)
+      prints 0) and the literal is gone everywhere (iii). That state leaves a template reading a
+      key no config supplies -- the same dead-config-key class this package exists to retire --
+      and silently re-acquires ntfy's old placement the moment anyone restores the TOML key.
+      Separately, an implementation that adds the root `[governance]` table but leaves that block
+      intact keeps `nyxloom.slice` on ntfy outright, because ciu never overwrites a compose key
+      the author already emits (governance.py:1016-1038; SPEC.md:2917-2923). BOTH the block and
+      the keys must go.
     gate: tester-unified
   - id: O2b
     observable: >-
@@ -146,15 +159,19 @@ oracles:
       Per-stack sizing is real, and the ROOT value is distinct from the OVERRIDE. From `nyxloom/`:
       `ciu up --profile tools --dry-run --define-root "$PWD"` exits 0 and
       `pwmcp-instance/.ciu/ciu.compose.overlay.yml` contains `    cgroup_parent: dev-background.slice`
-      AND `    mem_limit: 4g`. In the SAME check, from O1's default-profile run, BOTH
-      `nyxloomd/.ciu/ciu.compose.overlay.yml` and `ntfy/.ciu/ciu.compose.overlay.yml` contain
-      `    mem_limit: 2g` -- the root value, NOT 4g.
+      AND `    mem_limit: 4g`. In the SAME check, from O1's default-profile run, the three
+      stacks carry THREE DISTINCT values: `ntfy/.ciu/ciu.compose.overlay.yml` has
+      `    mem_limit: 2g` (the nyxloom root value), `nyxloomd/.ciu/ciu.compose.overlay.yml` has
+      `    mem_limit: 6g` (Work item 2b's per-stack override), and `pwmcp-instance` has `4g`.
     negative: >-
       Asserting only `4g` on pwmcp-instance is a false-PASS: an implementation that simply sets
-      the nyxloom ROOT `mem_limit = "4g"` and never writes Work item 2's
-      `[pwmcp.governance]` table satisfies it, while silently giving `ntfy` and `nyxloomd` 4g
-      too. Pinning `2g` on the two default-profile stacks in the same oracle is what forces the
-      per-stack table to exist. `pwmcp-instance` is also deliberately OUTSIDE the default profile
+      the nyxloom ROOT `mem_limit = "4g"` and never writes Work item 2's `[pwmcp.governance]`
+      table satisfies it, while silently giving `ntfy` and `nyxloomd` 4g too. Requiring THREE
+      distinct values in one oracle is what forces both per-stack tables to exist: no single root
+      value can satisfy 2g/6g/4g simultaneously. The `6g` half is load-bearing for a second
+      reason -- `nyxloomd` runs up to 5 agent CLIs uncontained in-container (see Memory sizing
+      2b), so an implementation that leaves it at the root's 2g ships a dispatcher that OOM-kills
+      itself and every in-flight agent under normal load, while passing every other assertion. `pwmcp-instance` is also deliberately OUTSIDE the default profile
       (ciu.global.defaults.toml.j2 lines 25-31), so O1's run never touches it -- checking only
       the default profile and declaring the root covered is the other false-PASS. Finally, the
       table's root key must be `pwmcp`, the stack's single non-reserved top-level key, NOT
@@ -190,12 +207,12 @@ oracles:
 gates: [tester-unified]
 escalate_if:
   - "`git grep -n '\\[governance\\]' -- nyxloom pwmcp` at dispatch time returns ANY hit -- measured at input_revision as ZERO hits in every tracked ciu.*.toml* file under both roots (tabulated below). A pre-existing table means someone landed part of this fix concurrently and the layering analysis is stale: report BLOCKED naming the file, do not merge two tables"
-  - "`pwmcp/ciu.global.toml.j2` has acquired a `[governance]` table between carve and dispatch -- it sits at HIGHER precedence than the file this package edits (ciu/src/ciu/config_model.py:668), so a table there would win per-key over the committed defaults and silently invert the fix. Report BLOCKED; resolving the two-file duplication is Work item 6's filing, not this package's edit"
+  - "`pwmcp/ciu.global.toml.j2` has acquired a `[governance]` table between carve and dispatch -- it sits at HIGHER precedence than the file this package edits (ciu/src/ciu/config_model.py:686-696), so a table there would win per-key over the committed defaults and silently invert the fix. Report BLOCKED; resolving the two-file duplication is Work item 6's filing, not this package's edit"
   - "`ciu version` reports anything other than 7.11.0 -- every semantic in this carve (author-always-wins injection, the no-hardcoded-slice-default, overlay path, per-key deep_merge) was measured against 7.11.0 exactly. A different version means the probe log is stale evidence; re-probe before trusting any oracle, and report BLOCKED if the overlay path or precedence changed"
   - "`ciu up --profile default --dry-run` exits non-zero for a reason OTHER than a governance finding -- e.g. the DooD preflight, a secrets/materialise step, or an external network the tools profile expects. That is an environment fault, not this package's contract; report BLOCKED with the full step output rather than weakening a `--dry-run` oracle to `ciu check` (which is shape-only and PASSES with zero governance declared, i.e. it can never prove this package)"
   - "any oracle would require an actual `ciu up` (no `--dry-run`), a `docker run`, or installing a systemd slice -- report BLOCKED. Every oracle here is deliberately render-only: the host is shared with production game servers, carried load average 9.22/8 cores with a live run-gate container and a full dstdns stack at carve time, and slice installation needs host root the daemon must not have (docs/plan-resource-governance.md D-G2)"
   - "the `[nyxloomd.runtime]` deletion in the TRACKED `nyxloomd/ciu.toml` is reverted by a `ciu render` run and the resulting diff is anything more than the comment-stripping measured at carve time -- report BLOCKED rather than committing a render artifact's incidental changes as part of this package"
-  - "any route in routes.host.toml is UNCONTAINED at dispatch time (i.e. nyxloomd would run agent CLIs in-process rather than wrapping them in `docker run`). The 2g nyxloomd bound is derived assuming contained legs, where only a thin docker client stays in-container against `max_active_tasks = 5`; five in-process agent CLIs would not fit 2g. Report BLOCKED with the route list rather than picking a bigger number"
+  - "`grep -c 'trust = \"operator\"' routes.host.toml` returns anything other than 8, or `nyxloom-trove/nyxloom.toml`'s `max_active_tasks` is no longer 5. Both are INPUTS to Work item 2b's nyxloomd ceiling (8 operator-trust routes run UNCONTAINED as in-process children of the daemon -- `containment.py:204-213`, `routes.host.toml:19-20` -- and cover every default implement/review tier). A change in either invalidates the derivation: report BLOCKED and re-derive rather than shipping a stale ceiling"
   - "`dev-background.slice`'s rendered MemoryMax on the live host is not 8G (the value this carve derived from host-setup.env.example, which is the EXAMPLE not a deployed host-setup.env -- no host-setup.env exists in the checkout). The 8G tier backstop is what makes a generous per-container ceiling defensible; if the real unit differs materially, re-derive the per-container numbers rather than shipping the stated reasoning"
   - "a named contract cannot be met as specified, or scope requires a forbidden file"
   - "E-008 checkpoint clause: arm at ~120k context or ~60 tool calls (whichever first), cut at the next coherent boundary (green gate > commit > LOG/REPORT write > edit-cluster end; never on a red gate), repeat every ~40-55 calls, stop when <~40 calls remain. At the cut: write a continuation brief to nyxloom-trove/reports/nyxloom-P103-BRIEF.md plus a self-authored /compact-style retention prompt to nyxloom-trove/reports/nyxloom-P103-COMPACT.md (both authorised touches), commit, and return -- do not resume or fork past the cut yourself. Unlikely to be needed: this is a small config-only package."
@@ -257,9 +274,9 @@ must correct them rather than let them survive as a "fixed" entry:
 emits.** `governance.py:1016-1038` skips any of its six injected keys already
 present on that service block; `SPEC.md:2917-2923` states it normatively. So
 adding the root table *as NL-6 proposes* leaves ntfy — the one service actually
-running — still pinned to `nyxloom.slice`. That is why `scope.touch` is nine
-files rather than the two NL-6 names: **every extra file is forced by a measured
-fact, none by preference.** The carve-time tracer bullet below shows ntfy's
+running — still pinned to `nyxloom.slice`. That is why `scope.touch` carries
+eleven content files rather than the two NL-6 names: **every extra file is forced
+by a measured fact, none by preference.** The carve-time tracer bullet below shows ntfy's
 overlay receiving `mem_limit`/`blkio_config` but *no* `cgroup_parent` until the
 template block is deleted.
 
@@ -282,7 +299,8 @@ declarations (prose hits in `docs/`, `README`s, `nyxloom-trove/` narrative and
 | `nyxloom/docs/plan-resource-governance.md` | 139, 147, 168, 213-231, 273, 283-296, 357, 370 | PROSE/design narrative. Line 273's `[governance]` is a *proposed gate-argv* design (D-G3), not a live table. Work item 4 appends a correction; no other edit |
 | `nyxloom/assay.toml` | 45 | comment, mentions ciu's cgroup-governance *tests*. Unrelated |
 | `nyxloom/infra/slices/*.slice`, `infra/agent-cli/*` | various | uninstalled unit templates + narrative (D-G1/D-G5). In `forbid` |
-| `nyxloom/ntfy/{README.md,server.yml}` | 61, 2 | ntfy's OWN auth governance, not cgroups. In `forbid` |
+| `nyxloom/ntfy/server.yml` | 2 | ntfy's OWN auth governance, not cgroups. In `forbid` |
+| `nyxloom/ntfy/README.md` | 61, 67 | line 61 ("Governance notes") is auth, NOT cgroups -- untouched. Line 67 names the `nyxloom.slice` cgroup and IS in `scope.touch` (Work item 3f). The two must not be conflated |
 | `nyxloom/src/nyxloom/gate_scaffold.py` | 52 | comment referencing the plan doc. No code dependency |
 | `pwmcp/{README.md,containers/pwmcp/ksm-optin.c}` | 171, 7 | prose + the image's self-contained KSM opt-in. Explains why this package sets **no** `ksm_optin` |
 
@@ -303,7 +321,7 @@ files only:
 | `nyxloom/nyxloomd/ciu.defaults.toml.j2` | 24-25 | comment + same key | **DELETE** (3d) — already dead: `nyxloomd/ciu.compose.yml.j2` has ZERO `cgroup_parent` hits |
 | `nyxloom/nyxloomd/ciu.toml` | 8-9 | `[nyxloomd.runtime]` / same key | **DELETE key line** (3e) — tracked render output, see scope note |
 | `nyxloom/pwmcp-instance/*`, `pwmcp/*` | — | none | no edit; inject cleanly |
-| `nyxloom/docs/plan-resource-governance.md`, `nyxloom/infra/slices/` | various | narrative + uninstalled units | RETAINED deliberately (O2's exclusion) |
+| `nyxloom/docs/plan-resource-governance.md`, `nyxloom/infra/slices/` | various | narrative + uninstalled units | RETAINED deliberately -- prose and `.slice` units are outside O2(iii)'s config/compose globs |
 
 **`[<stack>.runtime]` is not a ciu table at all.** There is no `[runtime]` in
 `ciu/docs/SPEC.md`; ciu reads the key never and warns never (S15.13's unknown-key
@@ -348,6 +366,17 @@ explicit value always wins. Two consequences, both arguing for this package:
   entirely, so they get neither the tier ceiling nor the 1G default. That is the
   gap `cgroup_parent` closes and nothing else can.
 
+**One behaviour change to state plainly, not bury.** `dev-background.slice` sets
+`ManagedOOMMemoryPressure=kill` at 75% over an **8G aggregate** shared with 25+
+containers. Moving `ntfy` — which is public-facing behind tls-edge — into that
+tier makes it OOM-killable under tier pressure for the first time. This is still
+strictly better than the status quo (an unbounded transient slice with no ceiling
+at all), and the practical risk is low: ntfy is a small Go binary and systemd-oomd
+targets the highest-pressure cgroup, which will be a build or gate container long
+before it is ntfy. But it IS a posture change for a production-facing service, so
+record it in the REPORT and flag it for operator acknowledgement rather than
+letting it land silently.
+
 ### The per-container numbers
 
 1. **No measured data exists** for `nyxloomd` or `ntfy` — neither is sized in any
@@ -365,16 +394,37 @@ explicit value always wins. Two consequences, both arguing for this package:
 2. **`2g` for nyxloom's root** matches dstdns's own root-level value
    (`dstdns/ciu.global.toml.j2:110-124`) and what every dstdns container verifiably
    runs with (`docker inspect` → `Memory=2147483648`).
-   **Bound check against concurrency:** `nyxloom-trove/nyxloom.toml:96` sets
-   `max_active_tasks = 5`, and `nyxloomd` spawns agent legs as its own children
-   (`src/nyxloom/wrapper.py:497`). Crucially, a *contained* leg wraps the argv in
-   `docker run` (`wrapper.py:32` and the "Spawn (the CLI, or the docker client
-   running it)" comment at :488), so the heavy work runs in a SIBLING container
-   charged to its own cgroup and only the docker client — a few MB — stays inside
-   `nyxloomd`. 2g therefore bounds the daemon plus five thin clients, which is
-   ample. An *uncontained* leg runs the CLI in-process and five of those would not
-   fit; if any route in `routes.host.toml` is uncontained at dispatch time, that is
-   an `escalate_if` condition, not a number to guess at.
+   `2g` applies to **ntfy**, which is a single small Go binary — comfortable.
+   It does NOT apply to `nyxloomd`; see item 2b.
+2b. **`6g` for `nyxloomd`, via `[nyxloomd.governance] mem_limit`.** This is the
+   number an earlier revision of this carve got wrong, so the derivation is
+   spelled out.
+   `nyxloomd` spawns agent legs as its own children (`src/nyxloom/wrapper.py:497`).
+   A *contained* leg wraps the argv in `docker run` (`wrapper.py:32`, and the
+   "Spawn (the CLI, or the docker client running it)" comment at `:486`), leaving
+   only a thin docker client in-container. But **containment is not the default**:
+   `containment.py:204-213` returns False for any non-free `trust = "operator"`
+   route, `routes.host.toml:19-20` says such a route *"runs as a direct child of
+   the daemon, uncontained"*, and **8 routes declare it** — covering
+   `[tiers.implement-1]`, `[tiers.implement-2]` and `[tiers.review-3]`, i.e. every
+   default implementation and review path. So in the normal case up to
+   `max_active_tasks = 5` (`nyxloom-trove/nyxloom.toml:96`) full agent CLIs run
+   **in-process inside this container** and are charged to its memory cgroup.
+   **Why 6g, and why erring high is the safe direction.** nyxloom's own
+   `infra/slices/nyxloom-daemon.slice:30-33` sizes the bare daemon at "at or below
+   a Python daemon's realistic resident set" (`MemoryMin=128M`), and its sibling
+   `nyxloom-agents.slice:13-16` leaves the agent ceiling explicitly blank —
+   *"OPERATOR MUST SET"*. **nyxloom has never sized this either**; the number is a
+   genuinely open product question, which is why Work item 9 files it for
+   measurement rather than pretending this carve settles it. The interim value
+   uses the same asymmetry argument that slice file makes for `MemoryMin`, but
+   inverted for a ceiling: too HIGH is harmless — `mem_limit` is a cap, not a
+   reservation, it charges nothing unless actually used, and the tier's 8G
+   `MemoryMax` remains the real backstop; too LOW is harmful — it OOM-kills the
+   dispatcher and every in-flight agent at a threshold we invented. So: daemon
+   (~256M) + 5 concurrent CLIs at ~1g each ≈ 5.5g, rounded to **6g**.
+   Note this makes the number NOT a guess dressed as a measurement: it is an
+   explicitly conservative interim ceiling with a filed follow-up.
 3. **`4g` for both pwmcp stacks.** Both declare `shm_size = "2gb"`
    (`nyxloom/pwmcp-instance/ciu.defaults.toml.j2:34`,
    `pwmcp/ciu.defaults.toml.j2:145`, each commented *"Chromium needs real shared
@@ -464,8 +514,11 @@ the existing `[ciu]` table (line 33), leaving one blank line after the block:
 # declares its own. See nyxloom-P103 / backlog NL-6.
 #
 # cgroup_parent is EXPLICIT, never "": ciu has no hardcoded slice default, so
-# "" falls back to $CGROUP_PARENT_DEV_BACKGROUND and raises [S15.2] when that
-# is unset (as it is in this repo's ciu.env). dev-background.slice is the
+# "" falls back to the AMBIENT $CGROUP_PARENT_DEV_BACKGROUND -- which IS set in
+# this devcontainer's process environment (devcontainer.json containerEnv), and
+# is absent on other hosts and in CI, where it raises [S15.2]. Naming the slice
+# here keeps the committed config host-independent instead of silently
+# depending on an environment variable. dev-background.slice is the
 # installed, in-use host slice; nyxloom.slice was never installed anywhere and
 # a name systemd does not know fails OPEN to an unbounded transient cgroup.
 # The nyxloom-*.slice units in infra/slices/ (D-G1) need an operator install
@@ -497,8 +550,10 @@ inside the comment header:
 # dstdns-hosted pwmcp container runs in dev-background.slice with a 2g cap
 # from dstdns's own root. Do NOT vendor this table.
 # mem_limit is 4g, not the estate's 2g: this stack declares shm_size = "2gb"
-# (ciu.defaults.toml.j2:145) and cgroup v2 charges /dev/shm to the container's
-# own memory cgroup, so 2g would be spent on shm alone.
+# (ciu.defaults.toml.j2:145), and cgroup v2 charges tmpfs pages to the memcg
+# that faults them in. shm_size is a CEILING, not a preallocation -- nothing is
+# charged at start; the risk is a Chromium renderer filling /dev/shm under load
+# against a 2g cap. 4g = the declared shm plus an equal working set.
 ```
 
 **2. Per-stack override for nyxloom's browser stack.** In
@@ -515,6 +570,21 @@ mem_limit = "4g"
 
 The table's root key is **`pwmcp`**, matching the stack's single non-reserved
 top-level key — `[pwmcp-instance.governance]` would be silently ignored.
+
+**2b. Per-stack override for the daemon.** In `nyxloomd/ciu.defaults.toml.j2`
+(the same file Work item 3d edits), add:
+
+```toml
+# nyxloom-P103: 6g, not the root's 2g. 8 routes in routes.host.toml declare
+# trust = "operator", which containment.py:204-213 runs UNCONTAINED as direct
+# children of the daemon -- so up to max_active_tasks = 5 full agent CLIs run
+# in THIS container and are charged to its memory cgroup. A ceiling costs
+# nothing unless used (the tier's 8G MemoryMax is the real backstop), while one
+# set too low OOM-kills the dispatcher and every in-flight agent. Interim value
+# pending real measurement -- see the backlog entry from nyxloom-P103 item 9.
+[nyxloomd.governance]
+mem_limit = "6g"
+```
 
 **3. Retire `nyxloom.slice`** — four deletions, one REPLACEMENT, one doc edit.
 
@@ -610,13 +680,28 @@ appearing in **gate argv** — but it never inspects a ciu config or compose fil
 That is the durable answer to the gap this package works around by hand: ciu's
 own slice-existence preflight SKIPS inside the devcontainer (systemd is not PID
 1), which is how a fictional `nyxloom.slice` survived in ntfy's config. Extending
-`doctor`'s existing check to ciu-declared placement would have caught it. Record
-the ID in the REPORT.
+`doctor`'s existing check to ciu-declared placement would have caught it. Fold in
+the companion recommendation from "Gate argv" — extending
+`tests/test_render.py:1451-1505`'s template/sibling-agreement pattern to the
+**ntfy** pair, so this package's config fix stops being silently re-introducible
+— either in this entry or a sibling one, so it survives past this package.
+Record the ID in the REPORT.
+
+**9. File a fourth backlog entry** (do not fix it here): **`nyxloomd`'s memory
+ceiling has never been measured by anyone.** `infra/slices/nyxloom-agents.slice:13-16`
+leaves the agent-session ceiling blank with *"OPERATOR MUST SET"*, and
+`nyxloom-daemon.slice:35-37`'s own "TO REFINE" note already prescribes the
+method: run the daemon idle, then under a real dispatch wave, read
+`memory.current` + `memory.stat` anon at both points. Work item 2b ships a
+deliberately conservative 6g interim ceiling; this entry is the measurement that
+replaces it, and it should record that up to `max_active_tasks = 5` agent CLIs
+run uncontained inside the daemon container today. Record the ID in the REPORT.
 
 ### Degrees of freedom
 
 Comment wording in Work items 4, 5 and 6, and REPORT/LOG prose. The TOML blocks
-in Work items 1-2, the five deletions in Work item 3, and every oracle command
+in Work items 1, 2 and 2b, the four deletions plus the replacement and the doc reword
+in Work item 3, and every oracle command
 are fixed.
 
 ## Probe log (carver-run, ciu 7.11.0, `input_revision` + the proposed edits)
@@ -719,17 +804,17 @@ cd {worktree}/nyxloom && python3 exec-nyxloom.py lint \
 
 ### Expected lint output
 
-`nyxloom lint` on this handoff exits **0** with **22 warnings and no errors** (15 x L13, 6 x L7, 1 x L10).
-Each class was verified once at carve time; anything else is drift and should be
-investigated, not waved through.
+`nyxloom lint` on this handoff exits **0** with **25 warnings and no errors**
+(18 x L13, 6 x L7, 1 x L10). Each class was verified once at carve time; anything
+else is drift and should be investigated, not waved through.
 
 | warning | count | verdict |
 |---|---|---|
-| `L10 handoff size ~14.6k tokens` | 1 | over the 10k warn floor, under the 18k error floor. Accepted: the size is the tabulated sweeps, the probe log and the measured memory derivation — the material that stops the implementer re-deriving the mechanism |
-| `L13 ... '.ciu/ciu.compose.overlay.yml'` and its per-stack forms (O1/O2b/O3/O4) | 6 | FALSE POSITIVE. ciu's **generated, gitignored** overlay — the artifact the oracles *read*, never edit. Putting a build output in `scope.touch` would be wrong |
-| `L13 ... 'ntfy/ciu.compose.yml'` | 1 | FALSE POSITIVE, same class: the rendered compose, gitignored |
-| `L13 ... 'ciu/src/ciu/governance.py'`, `'ciu/src/ciu/composefile.py'`, `'pwmcp/ciu.global.toml.j2'`, `'infra/slices'`, `'nyxloom/infra/slices/nyxloom-gates.slice'`, `'modern-debian-tools-python-debug/host-setup/units/dev-background.slice.in'` | 6 | FALSE POSITIVE: read-only citations and forbidden paths, deliberately not in `scope.touch` |
-| `L13 ... 'nyxloom/ciu.global.defaults.toml.j2'`, `'workspaces/vbpub/nyxloom/ntfy/docker-compose.yml'` | 2 | FALSE POSITIVE of a different kind: both ARE in `scope.touch`, but written project-prefixed / absolute inside the oracle prose, so L13's matcher does not recognise them as the same path |
+| `L10 handoff size ~16.5k tokens` | 1 | over the 10k warn floor, still under the 18k ERROR floor — but the margin is now thin, so a future revision that adds material should trim rather than assume headroom. The size is the tabulated sweeps, the probe log and the measured memory derivation: the material that stops the implementer re-deriving the mechanism |
+| `L13 ... '.ciu/ciu.compose.overlay.yml'` and its per-stack forms | 6 | FALSE POSITIVE. ciu's **generated, gitignored** overlay — the artifact the oracles *read*, never edit. Putting a build output in `scope.touch` would be wrong |
+| `L13 ...` paths that ARE in `scope.touch` but written project-prefixed or absolute in oracle prose (`nyxloom/ciu.global.defaults.toml.j2`, `nyxloom/ntfy/ciu.compose.yml.j2`, `nyxloom/ntfy/ciu.defaults.toml.j2`, `nyxloom/nyxloomd/ciu.defaults.toml.j2`, `nyxloom/nyxloomd/ciu.toml`, `workspaces/vbpub/nyxloom/ntfy/docker-compose.yml`) | 6 | FALSE POSITIVE of a distinct kind: L13's matcher does not recognise the prefixed form as the same path. The prefixes are deliberate — O2(iii)'s globs are repo-root-relative and MUST be run from the worktree root, so the oracle spells the paths that way |
+| `L13 ... 'nyxloom/ntfy/ciu.compose.yml'` | 1 | FALSE POSITIVE, same class as the overlay: the rendered compose, gitignored |
+| `L13 ... 'ciu/src/ciu/governance.py'`, `'ciu/src/ciu/composefile.py'`, `'pwmcp/ciu.global.toml.j2'`, `'infra/slices'`, `'modern-debian-tools-python-debug/host-setup/units/dev-background.slice.in'` | 5 | FALSE POSITIVE: read-only citations and forbidden paths, deliberately not in `scope.touch` |
 | `L7 cross-repo reference '/workspaces/dstdns'` | 2 | expected — the read-only reference for the `[governance]` shape |
 | `L7 relative-up path '../pwmcp'` | 2 | expected — the sibling root this package's second half edits; see the `scope.touch` path caveat and Work item 7 |
 | `L7 relative-up path '../ciu.global.defaults.toml.j2'` | 2 | expected — a relative pointer inside Work item 3b's pinned YAML comment |
