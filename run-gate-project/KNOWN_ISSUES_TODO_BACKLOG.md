@@ -2952,4 +2952,28 @@ composite gate run..."), filed here per the estate cross-repo convention
 (findings about a TOOL are filed in the tool's own backlog, never worked
 around locally and forgotten).
 
+### Note (dstdns controller, 2026-09-08, 5th reproduction) — reproduces under QUIET load too, weakening the pure heavy-contention framing
+
+Deliberately re-ran the same composite `run-gate gate` at branch head
+`ed76cd5b` under confirmed quiet-ish host conditions (load average
+2.5–4.4 on this 8-core host, no sibling gate process observed via `ps`)
+specifically to test whether the failure clears when contention is low —
+it did not. **5th identical reproduction**: `frontend-unit` exit 1,
+154/154 real tests passed, exactly 2 unhandled `onTaskUpdate` timeout
+errors, same signature as all 4 prior attempts. This is meaningfully
+different evidence from the first 4 (all coincident with or shortly after
+heavier contention): a load average of ~4/8 with no named competing gate
+process is not remotely the 13.15 spike that coincided with the earlier
+failures, yet the failure reproduced anyway. Does not refute the
+birpc-starvation mechanism outright (a lower-but-nonzero contention floor,
+or some other periodic host activity below `ps`'s sampling resolution, is
+still consistent with it) but does weaken candidate direction 3's
+"nothing to fix, purely an operator-policy question" framing — the trigger
+condition looks lower than "another repo's full gate actively running,"
+which matters for how each candidate direction is prioritized. dstdns
+disposition recorded as `decisions.md` D-404: proceeding to code review
+with this gap disclosed rather than blocking on it further, since the
+signature is proven independent of application/test correctness across
+all 5 attempts.
+
 ### Status — OPEN 2026-09-08
