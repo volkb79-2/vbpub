@@ -44,7 +44,7 @@ Also read `nyxloom-trove/decisions.md` **D-012** (build in v7 now).
 
 ### 1 — `feat(ciu): CIU-94 + CIU-95 -- per-container memory.min admission control, injection, and the memory_recursiveprot/downward-enumeration primitives (ciu-P50)`
 
-Self-hash: `SELF_HASH_1`
+Self-hash: `a4f5aa94`
 
 Everything in Parts A-F landed as one commit: the parts are not independently
 green (Part C's admission control is built on Part A's walk, Part D's call site
@@ -95,7 +95,8 @@ Fixture: `test-repo/infra/db-core/ciu.defaults.toml.j2` gained a
 `[db_core.governance]` table declaring `mem_min = "128m"` on an explicit
 `cgroup_parent = "dev-memory_min_guaranteed.slice"`.
 
-Gate: `GATE_VERDICT_1`
+Gate on this commit alone: **FAIL** — see commit 2. All 3639 tests passed; the
+lane's R1 changed-line floor (100%, branches required) reported 90.26%.
 
 ---
 
@@ -109,3 +110,30 @@ Gate: `GATE_VERDICT_1`
   `check_memory_recursiveprot`. Reasoning in the REPORT.
 - Live verification (real slice, real `systemctl show`) is NOT done and is NOT
   claimed — explicitly out of this dispatch's oracle contract per the handoff.
+
+### 2 — `test(ciu): ciu-P50 -- close the changed-line coverage gaps the first gate run found`
+
+Self-hash: `b57cc41c`
+
+Commit 1's own error/degradation paths had no oracle: `_read_memory_min_bytes`'s
+unparseable-value branch, `check_memory_recursiveprot`'s unreadable-`/proc/mounts`
+branch, `mem_min_admission_check`'s malformed-size raise,
+`apply_mem_min_injections`' three degradation paths, and the `[S15.23]` refusal
+handler wired into `action_deploy`'s per-entry loop (both branches of its
+`if not ignore_errors`). Eight behavioral tests added, no pragma anywhere.
+
+Gate: `./run-gate.py ciu --worktree /workspaces/vbpub/.worktrees/ciu-p50-memory-min-guaranteed-slice` — **PASS (exit 0)** at commit `b57cc41c`, verdict read in a separate step from `.assay/verdict-ciu.json`: R0 PASS, R1 PASS, changed-line coverage **100.0%**, branches **84/84**, `mode=changed_lines fail_under=100.0 require_branch=True`, base `faaa49c2` (merge-base). 3647 tests, all passing.
+
+Verdict read in a separate step from the JSON artifact, never off a piped tail
+(vbpub AGENTS.md, LESSONS L4).
+
+---
+
+## Final state
+
+- Branch `ciu-p50-memory-min-guaranteed-slice`, two commits, clean tree.
+- **Not merged, not pushed** — per the handoff, a fresh adversarial reviewer
+  verifies first.
+- No BLOCKED condition was hit. No forbidden file was touched.
+- Checkpoint clause not triggered (the package completed well inside the
+  ~120k-context / ~60-call budget).

@@ -4,7 +4,18 @@ CIU-94 (per-container `memory.min` injection + admission control) and CIU-95
 (`memory_recursiveprot` check + downward slice enumeration), built in v7 per
 `nyxloom-trove/decisions.md` D-012.
 
-Gate: `GATE_VERDICT_1`
+Gate: `./run-gate.py ciu --worktree /workspaces/vbpub/.worktrees/ciu-p50-memory-min-guaranteed-slice` — **PASS (exit 0)** at commit `b57cc41c`, verdict read in a separate step from `.assay/verdict-ciu.json`: R0 PASS, R1 PASS, changed-line coverage **100.0%**, branches **84/84**, `mode=changed_lines fail_under=100.0 require_branch=True`, base `faaa49c2` (merge-base). 3647 tests, all passing.
+
+The FIRST gate run on commit `a4f5aa94` FAILED — reported here rather than
+smoothed over, because what it caught is worth knowing: all 3639 tests passed
+and the failure was purely the R1 changed-line floor at 90.26%. Commit 1's own
+error and degradation paths (unparseable cgroup values, an unreadable
+`/proc/mounts`, an unreadable rendered compose, a service with no
+`container_name`, and the `[S15.23]` refusal handler in `action_deploy`'s loop)
+had no oracle at all. Eight behavioral tests closed every gap — no `no-cover`
+pragma was added anywhere, in code or comment (anti-pattern D). This is exactly
+the "`pytest tests/` green ≠ the registered gate green" gap the estate's own
+lesson names.
 
 ---
 
