@@ -166,17 +166,28 @@ def read_swap_total_kib(meminfo: dict[str, int], swaps_text: str) -> int:
 
 def kib_to_size_str(kib: int, min_mib: int = 0) -> str:
     """Round a KiB quantity to a tidy systemd-style size string: '…M' below
-    1 GiB (rounded to the nearest 50M, floored at `min_mib`), '…G' at or
-    above (rounded to the nearest 0.5G). A pure formatting function — the
-    live-sizing oracle calls it directly against fixture numbers."""
+    1 GiB ('…G' at or above, rounded to the nearest 0.5G), floored at
+    `min_mib`. A pure formatting function — the live-sizing oracle calls it
+    directly against fixture numbers.
+
+    Below-1GiB rounding granularity is 50M, EXCEPT below 50M itself, where
+    it drops to 5M: at 50M granularity a genuinely nonzero small value (the
+    memory-min-guaranteed suggestion routinely proposes tens-of-MB numbers,
+    see CGROUP-NOTES.md — "keep it small") rounds down to a
+    self-contradictory "0" (adversarial review, mdt-host-setup-wizard).
+    Any nonzero `kib` is guaranteed to format as a nonzero string — the
+    result is floored at the active granularity rather than allowed to
+    round down to nothing."""
     kib = max(0, int(kib))
     if kib == 0:
         return "0"
     mib = kib / 1024
     if mib < 1024:
-        rounded = max(min_mib, round(mib / 50) * 50)
-        rounded = max(rounded, 50) if rounded else 0
-        return f"{int(rounded)}M" if rounded else "0"
+        granularity = 5 if mib < 50 else 50
+        rounded = max(min_mib, round(mib / granularity) * granularity)
+        if rounded <= 0:
+            rounded = granularity
+        return f"{int(rounded)}M"
     gib = mib / 1024
     rounded_g = round(gib * 2) / 2
     if rounded_g == int(rounded_g):
@@ -802,7 +813,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    write_atomic(args.output, text)
+    try:
+        write_atomic(args.output, text)
+    except (PermissionError, OSError) as exc:
+        # A full interactive session (~20 prompts) must not end in a raw
+        # traceback just because the operator forgot `sudo` -- this script
+        # is documented to run standalone, not only via `install.sh
+        # --wizard` (which already checks [ "$(id -u)" = 0 ] before ever
+        # reaching here). Every answer given above is lost either way; at
+        # least say why in one line instead of a stack trace (adversarial
+        # review, mdt-host-setup-wizard).
+        print(f"\nERROR: could not write {args.output}: {exc}", file=sys.stderr)
+        print("Re-run as root (sudo) -- every answer above was lost, sorry.", file=sys.stderr)
+        return 1
     print(f"\nwrote {args.output}")
 
     if args.skip_run_offer:
