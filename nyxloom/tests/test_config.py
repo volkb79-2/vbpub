@@ -1002,3 +1002,43 @@ class TestProjectConfigCarveDefaults:
         cfg = ProjectConfig.load(root)
         assert cfg.carve.session == "fresh"
         assert cfg.carve.compact_context_ratio == 0.70
+
+
+# =========================================================================
+# NL-17: the same env-wins resolution for the WEBHOOK url, because for a
+# Mattermost/Slack incoming webhook the URL itself is the credential and
+# nyxloom.toml is bind-mounted and committed.
+# =========================================================================
+
+def test_webhook_url_env_overrides_toml(tmp_path, monkeypatch):
+    monkeypatch.setenv("NYXLOOM_WEBHOOK_URL", "https://env-hook.example/hooks/abc")
+    root = _write_project(tmp_path, 'webhook_url = "https://toml-hook.example/hooks/xyz"\n')
+
+    cfg = ProjectConfig.load(root)
+
+    assert cfg.notify.webhook_url == "https://env-hook.example/hooks/abc"
+
+
+def test_webhook_url_falls_back_to_toml_without_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("NYXLOOM_WEBHOOK_URL", raising=False)
+    root = _write_project(tmp_path, 'webhook_url = "https://toml-hook.example/hooks/xyz"\n')
+
+    cfg = ProjectConfig.load(root)
+
+    assert cfg.notify.webhook_url == "https://toml-hook.example/hooks/xyz"
+
+
+def test_webhook_url_env_var_name_is_per_project(tmp_path, monkeypatch):
+    """`webhook_url_env` names the var, so two projects can carry two
+    different webhook credentials in one process environment."""
+    monkeypatch.delenv("NYXLOOM_WEBHOOK_URL", raising=False)
+    monkeypatch.setenv("NYXLOOM_WEBHOOK_URL_OPS", "https://ops.example/hooks/abc")
+    root = _write_project(
+        tmp_path,
+        'webhook_url_env = "NYXLOOM_WEBHOOK_URL_OPS"\n'
+        'webhook_url = "https://toml-hook.example/hooks/xyz"\n',
+    )
+
+    cfg = ProjectConfig.load(root)
+
+    assert cfg.notify.webhook_url == "https://ops.example/hooks/abc"

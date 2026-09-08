@@ -225,7 +225,10 @@ def _transport_finding(cfg: ProjectConfig, probe_cache: dict | None = None) -> D
     and reporting a timeout instead of the finding. Opt-in: passing no cache
     keeps every call a genuinely fresh probe."""
     nc = cfg.notify
-    key = (nc.ntfy_url, nc.ntfy_topic, nc.webhook_url)
+    # NL-17: the selected backend is part of the channel's identity -- two
+    # projects sharing a webhook_url but selecting different backends are
+    # NOT the same probe target.
+    key = (nc.backend, nc.ntfy_url, nc.ntfy_topic, nc.webhook_url)
     if probe_cache is not None and key in probe_cache:
         probe = probe_cache[key]
     else:

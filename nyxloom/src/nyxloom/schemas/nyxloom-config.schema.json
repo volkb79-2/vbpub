@@ -338,6 +338,40 @@
             "null"
           ]
         },
+        "webhook_url_env": {
+          "type": "string",
+          "minLength": 1
+        },
+        "backend": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "ntfy",
+            "webhook",
+            "mattermost",
+            null
+          ]
+        },
+        "mattermost_username": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mattermost_icon_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mattermost_channel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "push_classes": {
           "type": "array",
           "items": {

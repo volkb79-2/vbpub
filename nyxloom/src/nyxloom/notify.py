@@ -23,10 +23,32 @@ INTERFACE CONTRACT (frozen):
   click = 'http://127.0.0.1:<port>/www/task/<project>/<task_id>.html' (or
   index for project-scoped events).
 - send(nc: NotifyConfig, note: dict) -> tuple[bool, str]:
+  dispatches over resolve_backends(nc) -- see the NotifyBackend seam below.
   ntfy: urllib POST to f'{ntfy_url}/{ntfy_topic}', body=note['body'],
   headers Title/Priority/Tags/Click; webhook: POST JSON of note to
-  webhook_url. 5s timeout. Never raises; (ok, detail). Both configured ->
-  ntfy wins, webhook is fallback on failure.
+  webhook_url; mattermost: POST mattermost_payload(nc, note) to
+  webhook_url. 5s timeout per backend. Never raises; (ok, detail). With no
+  explicit nc.backend and both configured -> ntfy wins, webhook is fallback
+  on failure (unchanged).
+
+NL-17 2026-09-08 (backend seam; ntfy retired as the ACTIVE channel, kept
+selectable) adds:
+
+- NotifyBackend: one delivery channel. Each backend owns translating the
+  typed note into ITS OWN payload shape -- the old single webhook path
+  json.dumps()'d the internal note dict verbatim, which no real receiver
+  understands (Mattermost reads only {'text': ...} and would 200 on a
+  payload it cannot render, so the failure was silent). Backends:
+  NtfyBackend (unchanged behaviour), WebhookBackend (the legacy raw
+  passthrough, kept for receivers already built for it), MattermostBackend
+  (new). Telegram/Discord are additional subclasses later; send()'s
+  dispatch does not change for them.
+- resolve_backends(nc) -> list[NotifyBackend]: nc.backend names the SOLE
+  channel; absent, the legacy ntfy-then-webhook precedence stands, so
+  existing configs behave exactly as before.
+- mattermost_payload(nc, note) -> dict: the §13-clean translation into
+  Mattermost's incoming-webhook contract (title/click/priority/tags folded
+  into the Markdown `text`, since Mattermost ignores every other key).
 - notify_event(cfg, states, ev) -> None:
   if ev.type is NOTIFICATION_* -> return (no recursion). If
   ev.type.value in cfg.notify.push_classes and notification_for gives a
@@ -101,13 +123,18 @@ class NotifyTransportProbe:
                               DNS failure, or similar. THE case RISK-007
                               names ("the notification channel was
                               crash-looping").
-      * ``"unconfigured"`` -- neither ntfy nor webhook is set up. Not a
-                              fault -- a project may legitimately run with no
-                              push channel at all.
+      * ``"unconfigured"`` -- `resolve_backends` finds no usable backend:
+                              either no selector and neither ntfy nor webhook
+                              set up, or a selected backend (NL-17) whose own
+                              config is absent. Not a fault -- a project may
+                              legitimately run with no push channel at all.
     """
 
     status: NotifyTransportStatus
-    channel: str    # "ntfy" | "webhook" | "" (unconfigured)
+    #: The probed backend's `name` -- any of `_BACKENDS` ("ntfy", "webhook",
+    #: "mattermost", and whatever is registered later) -- or "" when
+    #: unconfigured.
+    channel: str
     detail: str
 
     @property
@@ -253,15 +280,80 @@ def notification_for(ev: Event) -> dict | None:
     return None
 
 
-def send(nc: NotifyConfig, note: dict) -> tuple[bool, str]:
-    """Send a notification via ntfy and/or webhook.
+class NotifyBackend:
+    """One delivery channel (NL-17).
 
-    ntfy wins if both are configured; webhook is fallback on ntfy failure.
-    Never raises; returns (ok: bool, detail: str).
-    Timeout is 5 seconds. Connection refused or server error returns (False, ...).
+    A backend owns translating the typed ``note`` dict
+    (``{title, body, click, priority, tags}``, produced by
+    ``notification_for``) into ITS OWN wire payload -- there is deliberately
+    no shared raw-JSON passthrough, because no two receivers agree on a
+    schema (ntfy reads HTTP headers; Mattermost reads a ``{"text": ...}``
+    JSON body and ignores every other key).
+
+    The SPEC §13 injection boundary binds every backend equally: a payload
+    is assembled ONLY from the typed note fields plus FIXED template
+    strings owned by this module. A backend must never widen that by
+    forwarding model-authored prose.
+
+    Adding a backend (Telegram, Discord, ...) is: subclass, set ``name``,
+    implement the three methods, register in ``_BACKENDS`` and in
+    ``config.NOTIFY_BACKENDS``. ``send()``/``probe_transport()`` dispatch
+    generically and need no edit.
     """
-    # If ntfy is configured, try it first
-    if nc.ntfy_url and nc.ntfy_topic:
+
+    #: Selector value in ``[notify] backend`` / ``NotifyConfig.backend``.
+    name: str = ""
+
+    def is_configured(self, nc: NotifyConfig) -> bool:
+        """True when this project's config carries what the backend needs."""
+        raise NotImplementedError
+
+    def deliver(self, nc: NotifyConfig, note: dict) -> tuple[bool, str] | None:
+        """Deliver one note. Never raises.
+
+        Returns ``(ok, detail)`` for a DEFINITIVE outcome (the server
+        answered, for better or worse), or ``None`` for a transport-level
+        fault the caller may retry on the NEXT backend in the chain. Only
+        ntfy uses the ``None`` fallthrough -- that is the pre-existing
+        "ntfy raised -> try webhook" behaviour, preserved verbatim.
+        """
+        raise NotImplementedError
+
+    def probe(self, nc: NotifyConfig, *, timeout: float) -> NotifyTransportProbe:
+        """Active reachability probe for this channel (CR-16). Never raises,
+        never publishes a real notification."""
+        raise NotImplementedError
+
+
+def _probe_url(url: str, channel: str, timeout: float) -> NotifyTransportProbe:
+    """Shared CR-16 probe body: a bare GET; ANY HTTP response proves the
+    transport carried a request there and an answer back (see
+    ``probe_transport``'s docstring for why a 404/405 is still healthy)."""
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout):
+            pass
+    except urllib.error.HTTPError as exc:
+        return NotifyTransportProbe(
+            "healthy", channel, f"{channel} reachable (HTTP {exc.code})")
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
+        return NotifyTransportProbe(
+            "unreachable", channel, snapshot.bounded_detail(f"{type(exc).__name__}: {exc}"))
+    return NotifyTransportProbe("healthy", channel, f"{channel} reachable")
+
+
+class NtfyBackend(NotifyBackend):
+    """ntfy: title/priority/click/tags travel as HTTP HEADERS, body as the
+    raw request body. Behaviour is UNCHANGED from the pre-seam
+    implementation (ntfy is stopped as the active channel, not deleted --
+    it stays selectable)."""
+
+    name = "ntfy"
+
+    def is_configured(self, nc: NotifyConfig) -> bool:
+        return bool(nc.ntfy_url and nc.ntfy_topic)
+
+    def deliver(self, nc: NotifyConfig, note: dict) -> tuple[bool, str] | None:
         try:
             url = f"{nc.ntfy_url}/{nc.ntfy_topic}"
             body = note.get("body", "").encode("utf-8")
@@ -302,9 +394,32 @@ def send(nc: NotifyConfig, note: dict) -> tuple[bool, str]:
             # strict superset of the narrower tuple.)
             log.warning("notification channel failed", channel="ntfy",
                         topic=nc.ntfy_topic, error=type(e).__name__)
+            # None (not a (False, ...) tuple) is what makes the caller try
+            # the NEXT backend -- the pre-seam "ntfy raised -> fall through
+            # to webhook" behaviour, unchanged. A non-200 above still
+            # returns definitively and does NOT fall through, also as before.
+            return None
 
-    # Try webhook fallback if ntfy failed or not configured
-    if nc.webhook_url:
+    def probe(self, nc: NotifyConfig, *, timeout: float) -> NotifyTransportProbe:
+        return _probe_url(nc.ntfy_url or "", "ntfy", timeout)
+
+
+class WebhookBackend(NotifyBackend):
+    """Generic webhook: POSTs the note dict as JSON verbatim.
+
+    This is the LEGACY passthrough (NL-17's original finding): it assumes
+    the receiver understands nyxloom's own internal note schema. Kept
+    unchanged for any deployment already pointing it at a receiver built
+    for that shape -- new receivers get a real adapter (see
+    ``MattermostBackend``) instead.
+    """
+
+    name = "webhook"
+
+    def is_configured(self, nc: NotifyConfig) -> bool:
+        return bool(nc.webhook_url)
+
+    def deliver(self, nc: NotifyConfig, note: dict) -> tuple[bool, str] | None:
         try:
             headers = {
                 "Content-Type": "application/json",
@@ -335,6 +450,178 @@ def send(nc: NotifyConfig, note: dict) -> tuple[bool, str]:
                         error=type(e).__name__)
             return (False, f"webhook failed: {type(e).__name__}")
 
+    def probe(self, nc: NotifyConfig, *, timeout: float) -> NotifyTransportProbe:
+        return _probe_url(nc.webhook_url or "", "webhook", timeout)
+
+
+#: Mattermost has NO priority field on incoming webhooks (message priority
+#: is an API-only post property), so the ntfy priority signal would be lost
+#: outright. These FIXED prefixes preserve it inside the rendered text --
+#: the only place the receiver will actually show it. Priorities <= 3 get no
+#: prefix on purpose: a badge on every routine note trains the reader to
+#: ignore it.
+_MATTERMOST_PRIORITY_PREFIX = {
+    5: ":rotating_light: ",
+    4: ":warning: ",
+}
+
+
+def mattermost_payload(nc: NotifyConfig, note: dict) -> dict:
+    """Translate a typed note into Mattermost's incoming-webhook payload.
+
+    Mattermost's documented contract for an incoming webhook is a JSON
+    object whose ONLY rendered field is ``text`` (Markdown); ``username``,
+    ``icon_url`` and ``channel`` are optional identity/routing overrides
+    (the last two only honoured when the server allows overrides), and
+    every other key -- including nyxloom's own ``title``/``click``/
+    ``priority``/``tags`` -- is ignored. So all four surviving signals have
+    to be folded INTO ``text``:
+
+        :rotating_light: **Decision needed: D-7**
+        Decision D-7 opened for demo/T-3.
+        [open](http://127.0.0.1:8942/www/task/demo/T-3.html)
+        _tags: decision_
+
+    SPEC §13: every part comes from the typed note fields or from the fixed
+    template strings above -- nothing model-authored is interpolated.
+
+    The text is NOT Markdown-escaped, deliberately, but the reason is worth
+    stating honestly rather than as an absolute: `notification_for` builds
+    titles and bodies from ids, enum values, counts and costs, and escaping
+    would corrupt the ids. A few branches interpolate a payload value that
+    is enum-like BY UPSTREAM DISCIPLINE rather than by construction (e.g.
+    SPEC_ATTENTION's `payload.reason`), so "there is nothing to escape" is a
+    property of the callers, not of this function. The residual blast radius
+    if one of those ever carried a stray `*` or `_` is a formatting oddity
+    in a private channel: Mattermost sanitizes HTML, `click` is always a
+    code-owned constant (so a Markdown link cannot be redirected), and §13
+    already forbids the free-text sources that would make this interesting.
+    """
+    lines: list[str] = []
+    title = str(note.get("title", "") or "")
+    if title:
+        prefix = _MATTERMOST_PRIORITY_PREFIX.get(int(note.get("priority", 3) or 3), "")
+        lines.append(f"{prefix}**{title}**")
+    body = str(note.get("body", "") or "")
+    if body:
+        lines.append(body)
+    click = str(note.get("click", "") or "")
+    if click:
+        lines.append(f"[open]({click})")
+    tags = [str(t) for t in (note.get("tags") or [])]
+    if tags:
+        lines.append(f"_tags: {', '.join(tags)}_")
+
+    payload: dict = {"text": "\n".join(lines)}
+    if nc.mattermost_username:
+        payload["username"] = nc.mattermost_username
+    if nc.mattermost_icon_url:
+        payload["icon_url"] = nc.mattermost_icon_url
+    if nc.mattermost_channel:
+        payload["channel"] = nc.mattermost_channel
+    return payload
+
+
+class MattermostBackend(NotifyBackend):
+    """Mattermost incoming webhook (NL-17).
+
+    Shares ``webhook_url`` with the generic backend -- a Mattermost
+    incoming webhook IS a webhook URL, and for Mattermost (as for Slack)
+    that URL is itself the credential, which is why it is never logged and
+    is settable from the environment (``webhook_url_env``) instead of a
+    committed nyxloom.toml.
+    """
+
+    name = "mattermost"
+
+    def is_configured(self, nc: NotifyConfig) -> bool:
+        return bool(nc.webhook_url)
+
+    def deliver(self, nc: NotifyConfig, note: dict) -> tuple[bool, str] | None:
+        try:
+            body = json.dumps(mattermost_payload(nc, note)).encode("utf-8")
+            req = urllib.request.Request(
+                nc.webhook_url, data=body,
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=5) as response:
+                if response.status == 200:
+                    # NEVER log nc.webhook_url -- the URL IS the secret.
+                    log.info("notification sent", channel="mattermost")
+                    return (True, "mattermost ok")
+                log.warning("notification channel failed", channel="mattermost",
+                            status=response.status)
+                return (False, f"mattermost returned {response.status}")
+        except Exception as e:  # census: advisory-degradation (NL-17)
+            # Broad on purpose and classified rather than inherited as debt:
+            # SPEC §13 says a delivery failure never raises into the caller,
+            # so every fault this channel can produce -- HTTP, socket, DNS,
+            # a malformed URL -- degrades to a recorded (False, detail).
+            log.warning("notification channel failed", channel="mattermost",
+                        error=type(e).__name__)
+            return (False, f"mattermost failed: {type(e).__name__}")
+
+    def probe(self, nc: NotifyConfig, *, timeout: float) -> NotifyTransportProbe:
+        return _probe_url(nc.webhook_url or "", "mattermost", timeout)
+
+
+#: The backend registry. `config.NOTIFY_BACKENDS` is the schema-side copy of
+#: these names (config.py cannot import notify.py -- notify imports config);
+#: `test_notify` asserts the two never drift.
+_BACKENDS: dict[str, NotifyBackend] = {
+    b.name: b for b in (NtfyBackend(), WebhookBackend(), MattermostBackend())
+}
+
+#: Legacy precedence, preserved for configs with no explicit selector:
+#: ntfy first, webhook as the fallback.
+_LEGACY_CHAIN = ("ntfy", "webhook")
+
+
+def resolve_backends(nc: NotifyConfig) -> list[NotifyBackend]:
+    """The ordered backend chain `send()`/`probe_transport()` will use.
+
+    * ``nc.backend`` set  -> EXACTLY that backend, no implicit fallback.
+      Switching the active channel is then a declared config change, and a
+      notification can never silently leave by a channel the operator did
+      not name (NL-17 §3).
+    * ``nc.backend`` unset -> the historical implicit precedence (ntfy if
+      url+topic are set, then webhook if its url is set), so every existing
+      nyxloom.toml keeps behaving exactly as before.
+
+    Backends that are not configured are dropped; an empty list means "no
+    push channel", which is a legitimate state, not a fault.
+    """
+    if nc.backend:
+        backend = _BACKENDS.get(nc.backend)
+        if backend is None:
+            log.warning("notification backend unknown", backend=nc.backend)
+            return []
+        return [backend] if backend.is_configured(nc) else []
+    return [_BACKENDS[name] for name in _LEGACY_CHAIN
+            if _BACKENDS[name].is_configured(nc)]
+
+
+def send(nc: NotifyConfig, note: dict) -> tuple[bool, str]:
+    """Send a notification through the configured backend chain (NL-17).
+
+    Dispatches over `resolve_backends(nc)`: each backend translates the
+    typed note into its own payload shape. A backend that returns a
+    definitive outcome ends the call; a backend that reports a
+    transport-level fault (``None``) falls through to the next one -- which
+    is how the historical "ntfy failed -> webhook fallback" still works,
+    unchanged, for configs with no explicit selector.
+
+    Never raises; returns (ok: bool, detail: str). Timeout is 5 seconds per
+    backend. No channel configured -> (False, "unconfigured").
+    """
+    last_fault: str | None = None
+    for backend in resolve_backends(nc):
+        result = backend.deliver(nc, note)
+        if result is not None:
+            return result
+        last_fault = f"{backend.name} failed"
+    if last_fault is not None:
+        # Every backend in the chain faulted at the transport level.
+        return (False, last_fault)
     # No notification channel configured
     log.debug("notification unconfigured")
     return (False, "unconfigured")
@@ -346,47 +633,27 @@ def probe_transport(nc: NotifyConfig, *, timeout: float = _DEFAULT_PROBE_TIMEOUT
 
     Deliberately NOT `send()`: this never writes a title/body/topic, so it
     is safe to run on a tight interval without becoming the very
-    notification storm watchdog.py exists to catch. ntfy wins if both are
-    configured, mirroring `send()`'s own precedence -- probing the channel
-    a real notify_event() call would actually use is the point.
+    notification storm watchdog.py exists to catch. It probes the FIRST
+    backend of `resolve_backends(nc)` -- i.e. the channel a real
+    notify_event() call would actually use, which is the point (NL-17: with
+    an explicit `backend` selector that is the selected one; without it, the
+    legacy ntfy-wins-over-webhook precedence, as before).
 
     A GET to the bare configured URL is enough: any HTTP response (even a
-    404/405 -- ntfy's root path and a webhook endpoint both routinely
-    reject a bare GET) proves the socket connected and the server answered,
-    which is everything this probe claims. A connection-level fault
-    (refused, DNS, timeout) OR a malformed configured URL (`ValueError` --
-    urllib's own reaction to e.g. a scheme-less string; an operator typo is
-    exactly as unreachable as a dead server, and this probe existing to be
-    a caller's ONE place to ask "can the channel be used" is defeated if a
-    typo instead raises past it) both mean the transport itself is down.
+    404/405 -- ntfy's root path, a Mattermost webhook endpoint and a plain
+    webhook receiver all routinely reject a bare GET) proves the socket
+    connected and the server answered, which is everything this probe
+    claims. A connection-level fault (refused, DNS, timeout) OR a malformed
+    configured URL (`ValueError` -- urllib's own reaction to e.g. a
+    scheme-less string; an operator typo is exactly as unreachable as a
+    dead server, and this probe existing to be a caller's ONE place to ask
+    "can the channel be used" is defeated if a typo instead raises past it)
+    both mean the transport itself is down.
     """
-    if nc.ntfy_url and nc.ntfy_topic:
-        try:
-            req = urllib.request.Request(nc.ntfy_url, method="GET")
-            with urllib.request.urlopen(req, timeout=timeout):
-                pass
-        except urllib.error.HTTPError as exc:
-            return NotifyTransportProbe(
-                "healthy", "ntfy", f"ntfy reachable (HTTP {exc.code})")
-        except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
-            return NotifyTransportProbe(
-                "unreachable", "ntfy", snapshot.bounded_detail(f"{type(exc).__name__}: {exc}"))
-        return NotifyTransportProbe("healthy", "ntfy", "ntfy reachable")
-
-    if nc.webhook_url:
-        try:
-            req = urllib.request.Request(nc.webhook_url, method="GET")
-            with urllib.request.urlopen(req, timeout=timeout):
-                pass
-        except urllib.error.HTTPError as exc:
-            return NotifyTransportProbe(
-                "healthy", "webhook", f"webhook reachable (HTTP {exc.code})")
-        except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
-            return NotifyTransportProbe(
-                "unreachable", "webhook", snapshot.bounded_detail(f"{type(exc).__name__}: {exc}"))
-        return NotifyTransportProbe("healthy", "webhook", "webhook reachable")
-
-    return NotifyTransportProbe("unconfigured", "", "no ntfy or webhook configured")
+    chain = resolve_backends(nc)
+    if not chain:
+        return NotifyTransportProbe("unconfigured", "", "no notification backend configured")
+    return chain[0].probe(nc, timeout=timeout)
 
 
 def notify_event(cfg: ProjectConfig, states: dict[str, TaskStateFile], ev: Event) -> None:
@@ -426,8 +693,11 @@ def notify_event(cfg: ProjectConfig, states: dict[str, TaskStateFile], ev: Event
         wave_id=ev.wave_id,
     )
 
-    # Check if both notification channels are unconfigured
-    both_unconfigured = not (cfg.notify.ntfy_url or cfg.notify.webhook_url)
+    # Is there any usable channel at all? (NL-17: asked of the resolved
+    # backend chain rather than of the two url fields directly, so an
+    # explicit `backend` selector is honoured here too. The recorded event
+    # is identical either way -- NOTIFICATION_FAILED, detail 'unconfigured'.)
+    both_unconfigured = not resolve_backends(cfg.notify)
 
     if both_unconfigured:
         # Both unconfigured: don't call send, just mark as failed -- a soft,

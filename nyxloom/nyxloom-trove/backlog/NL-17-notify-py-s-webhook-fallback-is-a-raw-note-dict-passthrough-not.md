@@ -118,3 +118,7 @@ Operator request, live session 2026-09-08, surfaced while resolving
 nyxloom-P103's outstanding ntfy-redeploy follow-up (see
 nyxloom-trove backlog NL-6/NL-8/NL-9/NL-10/NL-11, all filed the same day
 from the same P103 governance work).
+
+## Updates
+
+**2026-09-08** — nyxloom-P106 implements this on branch nyxloom-P106 (NOT merged, pending independent review): notify.py grows a NotifyBackend seam (NtfyBackend behaviour-preserving, WebhookBackend = the legacy raw passthrough kept for existing receivers, MattermostBackend new), resolve_backends() dispatch, an explicit NotifyConfig.backend selector that defaults to the historical ntfy-then-webhook precedence when absent, and NYXLOOM_WEBHOOK_URL env resolution so the incoming-webhook URL (which IS the credential) stays out of a committed nyxloom.toml. probe_transport now probes the SELECTED backend. Verified live against a new ciu-managed Mattermost stack (nyxloom/mattermost/): three real notification_for() notes delivered and read back rendered from the channel. Telegram/Discord deliberately NOT built (no forcing function).
