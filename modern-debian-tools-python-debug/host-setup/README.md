@@ -83,6 +83,17 @@ sudo ./install.sh --with-baseline  # re-render + measure disk ceilings (~4 min s
 sudo mdt-host-check.sh             # verify
 ```
 
+Or, instead of the hand-edit step: `sudo ./install.sh --wizard` walks
+`host-setup.env.example`'s own sections interactively (IO device, IO cap
+percentages, per-tier memory, the memory-min-guaranteed ceiling, buildkitd,
+Docker daemon.json keys) and proposes starting numbers scaled off THIS
+host's own live `/proc/meminfo` instead of the shipped example's fixed
+figures — Enter accepts the shown default at every step, and it falls
+through into the same render/apply logic either way. Both paths write the
+same `/etc/mdt/host-setup.env`; the raw file is still there for operators
+who'd rather edit it directly (`--wizard` never replaces it silently — it
+only runs when you pass the flag, and backs up any existing config first).
+
 Then recreate the containers that should be governed (placement is
 create-time): rebuild the devcontainer, `docker compose up -d --force-recreate`
 the test stacks.
@@ -99,6 +110,7 @@ the test stacks.
 | `scripts/mdt-apply-dev-caps.sh` | `/usr/local/sbin/` | runtime half (see below) |
 | `scripts/mdt-slice-audit.py` | `/usr/local/sbin/` | read-only audit — logs a `[WARN]` for any `memory.min`/`memory.low` under `dev.slice` that is a silent no-op because an ancestor lacks its own value (second `ExecStart=` on the same service/timer) |
 | `scripts/mdt-io-baseline.py` | `/usr/local/sbin/` | fio benchmark → `/var/lib/mdt/io-baseline.env` (30-day cache) |
+| `scripts/mdt-host-setup-wizard.py` | not installed — run from this directory via `install.sh --wizard` | interactive `/etc/mdt/host-setup.env` builder (see Quick start); template surgery on `host-setup.env.example`, never generated from scratch |
 | `scripts/check.sh` | `/usr/local/sbin/mdt-host-check.sh` | health check, non-zero exit on failure |
 | `etc/modules-load.d/bfq.conf`, `etc/udev/rules.d/60-bfq-scheduler.rules` | `/etc/…` (`mdt-` prefixed) | BFQ at boot so IO weights bite |
 | (merged, not copied) | `/etc/docker/daemon.json` | `cgroup-parent` (D-G7 default) + `live-restore`/log rotation — this is the file's ONE owner now; every key is merged in, nothing else in the file is touched |

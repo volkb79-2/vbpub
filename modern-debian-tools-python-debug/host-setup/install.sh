@@ -4,14 +4,19 @@
 # dev-buildkitd.slice + runtime IO governance + /etc/docker/daemon.json,
 # which this owns fully).
 #
-#   sudo ./install.sh [--with-baseline] [--force] [--restart-docker]
+#   sudo ./install.sh [--wizard] [--with-baseline] [--force] [--restart-docker]
 #
 # Idempotent. First run seeds /etc/mdt/host-setup.env from the example (review
-# it, then re-run to apply your edits). --with-baseline additionally runs the
-# fio benchmark (~4 min of saturated disk — quiet window!). --force backs up
-# an already-installed /etc/mdt/host-setup.env and re-seeds it from the
-# current example (needed to pick up newly-added variables — otherwise this
-# script never touches a config that's already there). --restart-docker will
+# it, then re-run to apply your edits). --wizard walks that seeding step
+# interactively instead (scripts/mdt-host-setup-wizard.py) — sizes the tiers
+# against THIS host's own /proc/meminfo rather than the example's fixed
+# numbers, then falls through into the same render/apply logic below either
+# way. --with-baseline additionally runs the fio benchmark (~4 min of
+# saturated disk — quiet window!). --force backs up an already-installed
+# /etc/mdt/host-setup.env and re-seeds it from the current example (needed to
+# pick up newly-added variables — otherwise this script never touches a
+# config that's already there; --wizard does this backup-then-regenerate
+# automatically too, whenever a config already exists). --restart-docker will
 # automatically restart docker.socket and docker.service at the end (warning:
 # disrupts all running containers). See README.md.
 set -euo pipefail
@@ -20,12 +25,14 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 WITH_BASELINE=0
 FORCE=0
 AUTO_RESTART_DOCKER=0
+WIZARD=0
 for arg in "$@"; do
   case "$arg" in
+    --wizard) WIZARD=1 ;;
     --with-baseline) WITH_BASELINE=1 ;;
     --force) FORCE=1 ;;
     --restart-docker) AUTO_RESTART_DOCKER=1 ;;
-    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \?//'; exit 0 ;;
     *) echo "unknown argument: $arg (try --help)"; exit 2 ;;
   esac
 done
@@ -53,7 +60,25 @@ fi
 
 echo "== config =="
 mkdir -p /etc/mdt /var/lib/mdt
-if [ -f /etc/mdt/host-setup.env ] && [ "$FORCE" = 1 ]; then
+if [ "$WIZARD" = 1 ]; then
+  # Runs BEFORE (instead of) the cp-based seed/re-seed below — the wizard's
+  # only contract with the rest of this script is "produce a valid
+  # /etc/mdt/host-setup.env," identical in shape to what a human hand-edit
+  # (or the plain seed below) would produce; everything downstream (render(),
+  # RENDER_VARS, unit installation) is unmodified and runs exactly as it
+  # always has against whatever the wizard wrote.
+  if [ -f /etc/mdt/host-setup.env ]; then
+    backup="/etc/mdt/host-setup.env.bak-$(date +%Y%m%dT%H%M%S)"
+    cp /etc/mdt/host-setup.env "$backup"
+    echo "--wizard: backed up existing config to $backup before regenerating it interactively"
+  fi
+  python3 "$HERE/scripts/mdt-host-setup-wizard.py" \
+    --example "$HERE/host-setup.env.example" \
+    --output /etc/mdt/host-setup.env \
+    --io-baseline-script "$HERE/scripts/mdt-io-baseline.py" \
+    --install-script "$HERE/install.sh" \
+    --skip-run-offer
+elif [ -f /etc/mdt/host-setup.env ] && [ "$FORCE" = 1 ]; then
   backup="/etc/mdt/host-setup.env.bak-$(date +%Y%m%dT%H%M%S)"
   cp /etc/mdt/host-setup.env "$backup"
   cp "$HERE/host-setup.env.example" /etc/mdt/host-setup.env
