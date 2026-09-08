@@ -32,7 +32,13 @@ artifact_dirs = ["dist"]
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "nyxloom: tester-unified parallel suite", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-n", "auto", "-q"], cwd = "." },
+  # SSOT pointer (D-110/D-111): the real test/coverage/canary contract lives
+  # in nyxloom/run-gate.toml + nyxloom-trove/nyxloom.toml [gates.tester-unified]
+  # (tests-pass + changed-line-coverage + canary-verified via Assay's real
+  # judge, NL-1/nyxloom-P48). This step owns no test logic; a bare
+  # `cmru tester-gate -- pytest` here would release on a lesser bare-pytest
+  # check than every other gate this project's own pipeline actually trusts.
+  { label = "nyxloom: run-gate tester-unified", argv = ["./run-gate.py", "tester-unified"], cwd = "." },
 ]
 
 [steps.build]
