@@ -829,6 +829,12 @@ def sample_all_servers(servers: list, ts: float) -> list:
                 rcon.close()
             continue
         report_control_drift(server, g["controls"])
+        # report_control_drift only updates last_controls (for the next drift
+        # comparison) — without also refreshing these, header_lines() keeps
+        # rendering the min/low/high/KSM-status string captured at startup
+        # forever, even though the drift note above just reported it changed.
+        server["controls"] = g["controls"]
+        server["ksm"] = g["ksm"]
         rates = server["tracker"].update(
             ts, {"wra": g["wra"], "zswpin": g["zswpin"], "wrf": g["wrf"]})
         rf_z, rf_d = split_rates(rates)
@@ -1201,9 +1207,14 @@ def _group_width(columns, prefix=""):
 
 
 def _pad_center(text: str, width: int) -> str:
-    """Center text in a field of given width."""
+    """Center text in a field of given width. Never truncates: `width` here
+    is derived from the row2 DATA columns, not from the row1 label's own
+    length, so a label that grows past it (e.g. a large KSM profit number)
+    must overflow rather than get silently sliced — a wider label just
+    nudges later header groups out of alignment with their data columns for
+    that one line, which is a cosmetic cost, not lost information."""
     if len(text) >= width:
-        return text[:width]
+        return text
     left = (width - len(text)) // 2
     return " " * left + text + " " * (width - len(text) - left)
 
@@ -1232,28 +1243,13 @@ def header_lines(server_count: int, wide: bool, servers=None):
     SEP = " | "
 
     def _ksm_status_str(server):
+        # Static on/off/any/vma only. merge/zero/profit are already live,
+        # per-sample data columns (GAME_COLUMNS "merge"/"zero"/"profit") —
+        # repeating them here just reintroduced the staleness/truncation
+        # bugs for numbers the row already carries live.
         if server is None:
             return ""
-        ksm = server.get("ksm") or {}
-        # Build abbreviated KSM status: merge_pages/zero_pages +/-profit
-        k_merge = ksm.get("ksm_merging_pages") or 0
-        k_zero = ksm.get("ksm_zero_pages") or 0
-        k_profit = ksm.get("ksm_process_profit")
-        try:
-            k_profit_int = int(k_profit)
-            profit_str = f"+{_fmt_bytes(k_profit_int)}" if k_profit_int >= 0 else f"{_fmt_bytes(k_profit_int)}"
-        except (ValueError, TypeError):
-            profit_str = ""
-        return f"KSM:m={k_merge}z={k_zero}{profit_str}"
-
-    def _fmt_bytes(b):
-        """Format bytes as human readable."""
-        if b is None: return "?"
-        b = int(b)
-        if abs(b) >= 1073741824: return f"{b/1073741824:.0f}G"
-        if abs(b) >= 1048576: return f"{b/1048576:.0f}M"
-        if abs(b) >= 1024: return f"{b/1024:.0f}K"
-        return str(b)
+        return f"KSM:{ksm_status(server.get('ksm') or {})}"
 
     # ── build group info: (row1_text, [(columns, prefix), ...], total_width, row2_fmt_str) ──
     group_info = []  # each entry: (row1_label, [(col_defs_tuple, prefix), ...], width, row2_fmt)
