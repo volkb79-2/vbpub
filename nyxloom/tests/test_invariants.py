@@ -75,6 +75,7 @@ rather than raising. See the KNOWN_STATE_GAPS declaration below, now empty.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,6 +84,7 @@ import pytest
 
 from nyxloom import storage
 from nyxloom.config import MutexDef, Policy, ProjectConfig, RouteDef, Routes
+from nyxloom.daemon import RUNAWAY_PERSIST_AFTER_CYCLES
 from nyxloom.reconcile import (
     Action, DispatchImplementer, EmitAttemptExit, LaunchSelfReview, OpenWave,
     ReconcileInput, RunPostMergeGate, Transition, plan_project,
@@ -93,6 +95,7 @@ from nyxloom.types import (
     Receipt, ReceiptResult, Role, Route, Scope, Source, TaskState,
     TaskStateFile,
 )
+from nyxloom.watchdog import RunawaySignal, resume_baseline
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RECONCILE_SRC = (REPO_ROOT / "src" / "nyxloom" / "reconcile.py").read_text()
@@ -832,3 +835,208 @@ def test_task_transition_targets_are_all_taskstate_members():
         assert isinstance(cur, TaskState)
         for t in targets:
             assert isinstance(t, TaskState), f"{cur}: non-TaskState target {t!r}"
+
+
+# ===========================================================================
+# INVARIANT 5: the watchdog's post-resume streak baseline covers EVERY
+# runaway pattern (B13 2026-09-08, nyxloom-P104).
+#
+# docs/flow-system-review-and-redesign.md:58 states invariant I6 --
+# "Watchdog auto-pause is one-shot per fresh condition; streak resets on
+# operator action" -- and asks for it as an executable property (§69 item
+# 4). P49 delivered half of it (N passes while PAUSED => streak stays 0,
+# pinned behaviourally in test_daemon.py); B13 delivered the resume-side
+# half: past the operator's PAUSE_CLEARED the streak advances only on
+# genuinely NEW evidence of the signal's own condition.
+#
+# This section is that property, and it is written in this file's own
+# idiom: ABSENCE is the failure mode. watchdog._is_evidence_for FAILS OPEN
+# (an unrecognised pattern advances unconditionally, so an unknown detector
+# is never silently disarmed) -- which means a NEW detector pattern added
+# to detect_runaways without a matching evidence branch would quietly get
+# no B13 protection at all and nothing would fail. So the property below
+# enumerates the pattern space from the detector's OWN source and requires
+# every member to have a real, working evidence branch.
+# ===========================================================================
+
+WATCHDOG_SRC = (REPO_ROOT / "src" / "nyxloom" / "watchdog.py").read_text()
+
+
+def _detector_patterns() -> set[str]:
+    """Every `pattern=` literal detect_runaways can construct a
+    RunawaySignal with, read out of watchdog.py itself."""
+    body = WATCHDOG_SRC[WATCHDOG_SRC.index("def detect_runaways"):
+                        WATCHDOG_SRC.index("def last_resume_index")]
+    return set(re.findall(r'pattern="([a-z-]+)"', body))
+
+
+def _wd_event(seq: int, ev_type: EventType, *, payload=None,
+              task_id: str | None = None) -> Event:
+    return Event(
+        schema_version=1, sequence=seq, timestamp=_utc(2026, 9, 8), project="inv",
+        actor=Actor(kind=ActorKind.TICK, id="inv-test"), type=ev_type,
+        payload=payload or {}, task_id=task_id,
+    )
+
+
+# pattern -> (a signal of that pattern, a single event that IS fresh
+# evidence for it). Deliberately hand-written rather than derived: the
+# whole point is to pin, per pattern, WHICH event shape counts as the
+# condition worsening.
+_PATTERN_CASES: dict[str, tuple[str, Event]] = {
+    "notification-storm": (
+        "notification-storm:total",
+        _wd_event(900, EventType.NOTIFICATION_REQUESTED),
+    ),
+    "reconcile-thrash": (
+        "reconcile-thrash:rejections",
+        _wd_event(900, EventType.SPEC_ATTENTION, payload={"reason": "rejections"}),
+    ),
+    "attempt-loop": (
+        "attempt-loop:inv-P01",
+        _wd_event(900, EventType.ATTEMPT_CREATED, task_id="inv-P01"),
+    ),
+    "tick-error-streak": (
+        "tick-error-streak",
+        _wd_event(900, EventType.TICK_ERROR, payload={"error": "boom"}),
+    ),
+}
+
+
+def test_every_watchdog_pattern_has_a_b13_evidence_branch():
+    """The pattern space itself: no detector pattern may be missing from
+    the table the two properties below enumerate. (Without this, adding a
+    5th pattern to detect_runaways would silently ship with fail-open
+    behaviour and zero B13 coverage -- an ABSENCE, this file's whole
+    subject.)"""
+    detected = _detector_patterns()
+    assert detected, "sanity: the source scan really found the detector's patterns"
+    assert detected == set(_PATTERN_CASES), (
+        f"watchdog patterns without a B13 evidence case: {detected - set(_PATTERN_CASES)}; "
+        f"stale cases: {set(_PATTERN_CASES) - detected}"
+    )
+
+
+@pytest.mark.parametrize("pattern", sorted(_PATTERN_CASES))
+def test_resumed_condition_with_no_new_evidence_never_advances_the_streak(pattern):
+    """I6 (resume half), negative direction. For EVERY pattern: an operator
+    resume followed by any number of passes over an UNCHANGED event log
+    reports no new evidence, so daemon.py's streak stays at its post-resume
+    baseline of 0 and the project is never re-paused on
+    passes-since-resume alone.
+
+    Non-hollow: `resume_baseline` is pure and deterministic in the event
+    log, so 'any number of passes' is faithfully modelled by calling it
+    repeatedly on the same log -- which is exactly what the daemon does
+    when nothing new is appended (the P49/B13 incident shape)."""
+    key, evidence = _PATTERN_CASES[pattern]
+    sig = RunawaySignal(pattern=pattern, key=key, detail="fixed-field detail")
+    # The stale, already-acknowledged condition, then the resume.
+    log = [dataclasses.replace(evidence, sequence=i) for i in range(1, 10)]
+    log.append(_wd_event(50, EventType.PAUSE_CLEARED))
+
+    streak = 0
+    for _ in range(RUNAWAY_PERSIST_AFTER_CYCLES * 5):
+        marker, new_evidence = resume_baseline(sig, log)
+        assert marker == 50, "the resume anchor is the latest PAUSE_CLEARED's sequence"
+        if new_evidence:
+            streak += 1
+    assert streak == 0, (
+        f"{pattern}: an unchanged, already-acknowledged condition advanced the "
+        f"streak {streak} times on passes-since-resume alone (B13)"
+    )
+    assert streak < RUNAWAY_PERSIST_AFTER_CYCLES
+
+
+@pytest.mark.parametrize("pattern", sorted(_PATTERN_CASES))
+def test_new_evidence_after_a_resume_still_advances_the_streak(pattern):
+    """I6 (resume half), positive direction -- the safety symmetry. For
+    EVERY pattern: one genuinely new qualifying event after the resume
+    re-opens the ladder, so RUNAWAY_PERSIST_AFTER_CYCLES passes still reach
+    the auto-pause threshold. B13 narrows WHEN the streak may climb; it
+    must never disable the watchdog."""
+    key, evidence = _PATTERN_CASES[pattern]
+    sig = RunawaySignal(pattern=pattern, key=key, detail="fixed-field detail")
+    log = [dataclasses.replace(evidence, sequence=i) for i in range(1, 10)]
+    log.append(_wd_event(50, EventType.PAUSE_CLEARED))
+    log.append(dataclasses.replace(evidence, sequence=51))
+
+    streak = 0
+    for _ in range(RUNAWAY_PERSIST_AFTER_CYCLES):
+        marker, new_evidence = resume_baseline(sig, log)
+        assert marker == 50
+        assert new_evidence
+        streak += 1
+    assert streak >= RUNAWAY_PERSIST_AFTER_CYCLES
+
+
+def test_watchdog_own_escalation_is_never_its_own_new_evidence():
+    """The watchdog appends NEEDS_OPERATOR{reason:'runaway'} itself, and
+    detector (a)'s per-reason form keys on (type, reason) -- so without an
+    explicit exclusion the watchdog's own escalation would be 'new
+    evidence' for the signal it escalated, re-climbing the streak from its
+    own output and re-pausing after every resume regardless of B13."""
+    sig = RunawaySignal(
+        pattern="notification-storm",
+        key=f"notification-storm:{EventType.NEEDS_OPERATOR.value}:runaway",
+        detail="fixed-field detail",
+    )
+    log = [
+        _wd_event(50, EventType.PAUSE_CLEARED),
+        _wd_event(51, EventType.NEEDS_OPERATOR,
+                  payload={"reason": "runaway", "pattern": "attempt-loop",
+                           "key": "attempt-loop:inv-P01", "detail": "d"}),
+    ]
+    assert resume_baseline(sig, log) == (50, False)
+
+    # ... but an unrelated NEEDS_OPERATOR reason IS real new evidence.
+    log.append(_wd_event(52, EventType.NEEDS_OPERATOR, payload={"reason": "runaway"}))
+    other = RunawaySignal(
+        pattern="notification-storm",
+        key=f"notification-storm:{EventType.NEEDS_OPERATOR.value}:carve-ready",
+        detail="fixed-field detail",
+    )
+    log.append(_wd_event(53, EventType.NEEDS_OPERATOR, payload={"reason": "carve-ready"}))
+    assert resume_baseline(other, log) == (50, True)
+
+
+def test_no_resume_in_the_window_keeps_the_pre_b13_behaviour():
+    """Fail-open toward staying ARMED: a project that has never been
+    resumed (or whose resume has aged out of the daemon's ~500-event slice)
+    gets an unconditional advance and a None marker, exactly as before
+    B13."""
+    sig = RunawaySignal(pattern="attempt-loop", key="attempt-loop:inv-P01",
+                        detail="fixed-field detail")
+    log = [_wd_event(i, EventType.ATTEMPT_CREATED, task_id="inv-P01") for i in range(1, 8)]
+    assert resume_baseline(sig, log) == (None, True)
+    assert resume_baseline(sig, []) == (None, True)
+
+
+def test_only_the_most_recent_resume_is_the_baseline():
+    """Two resumes: evidence that predates the LATEST one is stale again.
+    (This is what makes the fix self-correcting -- each fresh operator
+    acknowledgment moves the baseline forward rather than accumulating.)"""
+    sig = RunawaySignal(pattern="attempt-loop", key="attempt-loop:inv-P01",
+                        detail="fixed-field detail")
+    log = [
+        _wd_event(10, EventType.PAUSE_CLEARED),
+        _wd_event(11, EventType.ATTEMPT_CREATED, task_id="inv-P01"),
+    ]
+    assert resume_baseline(sig, log) == (10, True)
+    log.append(_wd_event(12, EventType.PAUSE_CLEARED))
+    assert resume_baseline(sig, log) == (12, False)
+
+
+def test_evidence_is_per_condition_not_merely_per_pattern():
+    """A DIFFERENT task's attempt (same pattern, different key) is not
+    evidence that THIS task's attempt-loop is worsening -- the streak is
+    per-RunawaySignal.key, and so is its evidence."""
+    sig = RunawaySignal(pattern="attempt-loop", key="attempt-loop:inv-P01",
+                        detail="fixed-field detail")
+    log = [
+        _wd_event(10, EventType.PAUSE_CLEARED),
+        _wd_event(11, EventType.ATTEMPT_CREATED, task_id="inv-P02"),
+    ]
+    assert resume_baseline(sig, log) == (10, False)
+    log.append(_wd_event(12, EventType.ATTEMPT_CREATED, task_id="inv-P01"))
+    assert resume_baseline(sig, log) == (10, True)

@@ -4131,6 +4131,151 @@ def test_watchdog_repauses_after_fresh_persist_cycles_if_condition_still_open(
 
 
 # --------------------------------------------------------------------------
+# B13 2026-09-08 (nyxloom-P104): P49's resume-side complement. P49 stopped the
+# streak climbing WHILE PAUSED, but left "N passes have gone by since the
+# resume" enough to climb it again -- detect_runaways re-detects the same
+# persistent-but-acknowledged condition every pass, so the project auto-
+# re-paused a few cycles after EVERY resume until the condition aged out of
+# HISTORY_REJECTION_WINDOW_SECONDS (7 days). Past the operator's most recent
+# PAUSE_CLEARED the streak now advances only on genuinely NEW evidence.
+#
+# NOTE the two P49 tests above resume by unlinking the pause flag ALONE, with
+# no PAUSE_CLEARED event -- that path is unchanged by B13 (no resume anchor in
+# the window => pre-B13 behaviour) and is deliberately left as the regression
+# pin it already was. The two tests below drive the resume the way every real
+# operator surface does it (flag removed AND PAUSE_CLEARED appended: daemon.py
+# _post_config_pause mode 'run', cli.py cmd_resume, commands.py _cmd_resume).
+
+def _operator_resume(project: str) -> None:
+    """Resume exactly as the real surfaces do: drop the flag AND append the
+    PAUSE_CLEARED acknowledgment event."""
+    paths.pause_flag(project).unlink(missing_ok=True)
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.PAUSE_CLEARED, payload={},
+    )
+
+
+def _seed_attempt_loop(project: str, task_id: str, count: int = 7) -> None:
+    now = utc_now()
+    for i in range(count):
+        storage.append_and_apply(
+            project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.ATTEMPT_CREATED, payload={}, task_id=task_id,
+            timestamp=now - timedelta(seconds=(count - i)),
+        )
+
+
+def test_watchdog_does_not_repause_after_operator_resume_without_new_evidence(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """THE B13 BUG. Auto-pause on a persistent attempt-loop, then the
+    operator resumes properly (PAUSE_CLEARED). The underlying condition is
+    still technically true -- 7 ATTEMPT_CREATED events with no progress,
+    inside the watchdog's 1h window -- so detect_runaways keeps returning
+    the identical signal on every pass. But nothing NEW has happened since
+    the resume, so the streak must not climb: many passes later the project
+    is still running.
+
+    Before the fix this re-paused on the RUNAWAY_PERSIST_AFTER_CYCLES-th
+    pass after the resume, and again after the next resume, and the next."""
+    project = "demo"
+    task_id = "demo-attempt-loop-task"
+    _seed_attempt_loop(project, task_id)
+
+    monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES):
+        d.run_pass(project)
+    assert paths.pause_flag(project).exists(), "sanity: the runaway did auto-pause"
+
+    _operator_resume(project)
+
+    # Far more than RUNAWAY_PERSIST_AFTER_CYCLES passes: passes-since-resume
+    # alone must never re-climb the ladder.
+    for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES * 5):
+        d.run_pass(project)
+
+    assert not paths.pause_flag(project).exists(), (
+        "an acknowledged, unchanged condition must not re-pause the project "
+        "on passes-since-resume alone (B13)"
+    )
+    # The signal is still DETECTED every pass -- this is a streak-baseline
+    # fix, not a detector mute -- but it escalated exactly once, ever.
+    runaway_escalations = [
+        e for e in storage.iter_events(project)
+        if e.type is EventType.NEEDS_OPERATOR and e.payload.get("reason") == "runaway"
+    ]
+    assert len(runaway_escalations) == 1
+
+
+def test_watchdog_still_suppresses_the_repeating_action_after_a_resume(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Safety half of B13: holding the STREAK does not re-arm the repeating
+    action. After a proper resume of an acknowledged reconcile-thrash
+    condition, a freshly-planned SpecAttention with the same reason is still
+    dropped from the pass -- suppression is ungated, only the pause ladder
+    needs new evidence."""
+    project = "demo"
+    now = utc_now()
+    for i in range(6):
+        storage.append_and_apply(
+            project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+            type=EventType.SPEC_ATTENTION, payload={"reason": "rejections", "detail": None},
+            timestamp=now - timedelta(seconds=(6 - i)),
+        )
+    _operator_resume(project)
+
+    _scripted(monkeypatch, [[reconcile.SpecAttention(reason="rejections", detail=None)]])
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    n = d.run_pass(project)
+
+    assert n == 0, "the repeating action must still be suppressed after a resume"
+    assert not paths.pause_flag(project).exists()
+
+
+def test_watchdog_repauses_after_a_resume_when_genuinely_new_evidence_arrives(
+        tmp_state, sample_project, patch_siblings, monkeypatch):
+    """Safety symmetry for B13: the fix narrows WHEN the streak may climb,
+    it does not disable the watchdog. Same acknowledged attempt-loop, then
+    ONE genuinely new ATTEMPT_CREATED for that task after the resume -- the
+    ladder re-opens and RUNAWAY_PERSIST_AFTER_CYCLES fresh passes re-pause
+    the project."""
+    project = "demo"
+    task_id = "demo-attempt-loop-task"
+    _seed_attempt_loop(project, task_id)
+
+    monkeypatch.setattr(reconcile, "plan_project", lambda inp: [])
+    d = daemon.Daemon({"demo": sample_project.root})
+
+    for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES):
+        d.run_pass(project)
+    assert paths.pause_flag(project).exists()
+
+    _operator_resume(project)
+    for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES * 2):
+        d.run_pass(project)
+    assert not paths.pause_flag(project).exists(), "sanity: stale condition held"
+
+    # The condition genuinely worsens: a NEW attempt for the same task.
+    storage.append_and_apply(
+        project, {}, actor=Actor(ActorKind.OPERATOR, "test"),
+        type=EventType.ATTEMPT_CREATED, payload={}, task_id=task_id,
+    )
+
+    for _ in range(daemon.RUNAWAY_PERSIST_AFTER_CYCLES - 1):
+        d.run_pass(project)
+    assert not paths.pause_flag(project).exists(), (
+        "new evidence re-opens the ladder but must not short-circuit it"
+    )
+    d.run_pass(project)
+    assert paths.pause_flag(project).exists(), (
+        "a condition that is genuinely still worsening must still re-pause"
+    )
+
+
+# --------------------------------------------------------------------------
 # B4b 2026-07-20 (D-060 triage stage; critique CRITIQUE.md:207). The daemon
 # half: the frontier reviewer self-stamps a REJECT_CLASS the daemon captures in
 # the REVIEW_RECORDED event (Tier-2 producer, D-066); _triage_classes derives
@@ -7433,3 +7578,4 @@ def test_gate_diagnosis_architectural_routes_to_carve_end_to_end(tmp_state, samp
     transitions = [a for a in actions
                    if isinstance(a, reconcile.Transition) and a.task_id == task_id]
     assert any(t.to is TaskState.READY_TO_CARVE for t in transitions)
+

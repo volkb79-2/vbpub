@@ -55,8 +55,11 @@ INTERFACE CONTRACT (frozen):
        ALWAYS drops the matching repeating action(s) from THIS pass, and
        once the same signal.key has persisted for
        RUNAWAY_PERSIST_AFTER_CYCLES consecutive passes (in-memory streak,
-       disposable), auto-pauses the project ('drain-agents') — see
-       _apply_watchdog's own docstring for the full contract.
+       disposable), auto-pauses the project ('drain-agents'). That streak
+       is frozen while the project is already paused (P49) and, past the
+       operator's most recent PAUSE_CLEARED, advances only on NEW evidence
+       of the signal's own shape (B13/P104) — see _apply_watchdog's own
+       docstring for the full contract.
     3. execute(project, action) for each — see EXECUTION MAP below.
     4. render.render_all(...) if any event was appended this pass.
     5. Wrap the whole pass in try/except: append TICK_ERROR (bounded repr)
@@ -717,6 +720,13 @@ class Daemon:
         # escalation itself is deduped via the persisted event log instead
         # (restart-safe), not via this dict.
         self._runaway_streak: dict[str, int] = {}
+        # B13 2026-09-08 (P104): which operator resume each of those streaks
+        # was last counted from -- the `sequence` of the most recent
+        # PAUSE_CLEARED (None = no resume in the window). Same disposable
+        # in-memory convention as the streak it shadows: a restart re-reads
+        # the resume from the event log on the very next pass, so losing it
+        # costs at most one extra baseline reset, never a wrong direction.
+        self._runaway_resume_marker: dict[str, int | None] = {}
         # F018 P3d: set of project_ids that already got their enablement-guard
         # WARN in this daemon instance (emit once per daemon lifetime).
         self._carver_enablement_warned: set[str] = set()
@@ -2792,6 +2802,23 @@ class Daemon:
         instant re-trip, while still re-pausing if the condition is
         genuinely still active rather than silently disabling the
         watchdog.
+
+        B13 2026-09-08 (P104) completes that fix on the RESUME side. P49
+        only stopped the streak climbing WHILE PAUSED; it left "N passes
+        have gone by since the resume" enough to climb it again, because
+        detect_runaways re-detects a persistent-but-acknowledged condition
+        (a 7-day-windowed rejection history, a still-trailing
+        reconcile-thrash run) identically on every pass. So the watchdog
+        auto-re-paused a few cycles after EVERY resume until the condition
+        finally aged out. Fix: past the most recent PAUSE_CLEARED, the
+        streak advances only on a pass where a NEW event of this signal's
+        own shape has been emitted since that resume
+        (watchdog.streak_should_advance -- pure, one branch per detector
+        pattern). Escalation (i) and suppression (ii) stay UNGATED, so the
+        repeating action is still dropped every pass; only the pause ladder
+        (iii) needs fresh evidence. A genuinely still-worsening condition
+        still re-pauses after RUNAWAY_PERSIST_AFTER_CYCLES fresh passes.
+
         Returns (filtered_actions, new_events) -- both empty/unchanged when
         no runaway is detected (the overwhelmingly common case).
 
@@ -2824,8 +2851,27 @@ class Daemon:
                 self._runaway_streak[streak_key] = 0
                 continue
 
-            streak = self._runaway_streak.get(streak_key, 0) + 1
-            self._runaway_streak[streak_key] = streak
+            # B13 2026-09-08 (P104), two halves, see watchdog.resume_baseline:
+            #   (1) an operator resume we have not counted from yet shifts
+            #       this signal's baseline back to 0 -- exactly once per
+            #       resume, identified by the PAUSE_CLEARED sequence (P49's
+            #       paused-pass reset does not fire at all when the operator
+            #       resumes before another pass runs, which is the common
+            #       shape: the streak is then still sitting AT the threshold);
+            #   (2) past that resume, only genuinely NEW evidence of this
+            #       signal's own condition may climb it again.
+            # Escalation and suppression below stay UNGATED: an
+            # acknowledgment must not re-arm the repeating action, it only
+            # stops the pause ladder re-climbing on stale history.
+            resume_marker, new_evidence = watchdog.resume_baseline(sig, recent_events)
+            if self._runaway_resume_marker.get(streak_key) != resume_marker:
+                self._runaway_resume_marker[streak_key] = resume_marker
+                self._runaway_streak[streak_key] = 0
+
+            streak = self._runaway_streak.get(streak_key, 0)
+            if new_evidence:
+                streak += 1
+                self._runaway_streak[streak_key] = streak
 
             if not self._runaway_recently_escalated(project, sig.key,
                                                      events=recent_events):

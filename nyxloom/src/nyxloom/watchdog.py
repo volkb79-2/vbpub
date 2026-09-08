@@ -81,6 +81,13 @@ INTERFACE CONTRACT (frozen except for CR-16's (d), see above):
   Order is deterministic: (a) total-volume storm, then (a) per-reason
   storms sorted by (type, reason), then (b) thrash, then (c) attempt-loop
   sorted by task_id, then (d) the tick-error streak.
+
+B13 2026-09-08 (nyxloom-P104) ADDS `resume_baseline` (and its two pure
+helpers `last_resume_index` / `has_new_evidence_after`) BELOW the frozen
+trio above. They are ADDITIVE -- WatchdogConfig, RunawaySignal and
+detect_runaways are untouched, byte-for-byte, and the new functions are
+just as pure (no I/O, no imports beyond .types). See `resume_baseline`'s
+own docstring for the defect they fix.
 """
 
 from __future__ import annotations
@@ -218,6 +225,142 @@ def detect_runaways(recent_events: list[Event], cfg: WatchdogConfig) -> list[Run
         ))
 
     return signals
+
+
+# ---------------------------------------------------------------------------
+# B13 2026-09-08 (nyxloom-P104): post-resume streak baseline.
+#
+# ADDITIVE to the frozen contract above -- these three functions do not touch
+# WatchdogConfig / RunawaySignal / detect_runaways, and are PURE in exactly
+# the same sense (no I/O, no imports beyond .types).
+# ---------------------------------------------------------------------------
+
+# The watchdog's OWN escalation event (daemon.py's _apply_watchdog appends
+# NEEDS_OPERATOR{reason:'runaway', ...}). It is the watchdog's output, never
+# independent evidence that the underlying condition is still worsening --
+# and it happens to carry a `reason`, so without this exclusion it would
+# feed detector (a)'s per-reason storm key
+# 'notification-storm:NEEDS_OPERATOR:runaway' with its own tail.
+_SELF_ESCALATION_REASON = "runaway"
+
+
+def last_resume_index(recent_events: list[Event]) -> int | None:
+    """Index of the most recent PAUSE_CLEARED in `recent_events`, or None.
+
+    PAUSE_CLEARED is the one event every operator resume surface appends --
+    the control-plane HTTP handler (daemon.py `_post_config_pause`, mode
+    'run'), both CLI paths (cli.py `cmd_resume`, incl. the forced override)
+    and chat-ops (commands.py `_cmd_resume`) -- so it is the authoritative
+    'the operator has acknowledged this' marker.
+
+    Deliberately an INDEX, not a timestamp: `recent_events` is
+    chronologically-ordered oldest-first by this module's own contract, and
+    emission order is the ordering authority patterns (b)/(d) already use.
+    Comparing positions is immune to same-second timestamp ties (several
+    events can be appended within one reconcile pass) and to clock skew.
+    """
+    for i in range(len(recent_events) - 1, -1, -1):
+        if recent_events[i].type is EventType.PAUSE_CLEARED:
+            return i
+    return None
+
+
+def _is_evidence_for(sig: RunawaySignal, ev: Event) -> bool:
+    """Is `ev` a fresh instance of the condition `sig` reports?
+
+    One branch per detector, deriving the discriminator from the SAME parse
+    of `RunawaySignal.key` the detector used to build it (and that
+    daemon.py's `_suppress_runaway_action` uses to pick the action to drop),
+    because the three patterns rest on different underlying event shapes.
+    An unrecognised pattern returns True (fail-open: an unknown detector
+    keeps its full pre-B13 escalation power rather than being silently
+    disarmed)."""
+    payload = ev.payload or {}
+    if ev.type is EventType.NEEDS_OPERATOR and payload.get("reason") == _SELF_ESCALATION_REASON:
+        return False
+
+    if sig.pattern == "notification-storm":
+        # 'notification-storm:total' | 'notification-storm:<TYPE>:<reason>'
+        # (maxsplit=2 so a reason containing ':' stays intact).
+        parts = sig.key.split(":", 2)
+        if len(parts) < 3:
+            return ev.type is EventType.NOTIFICATION_REQUESTED
+        _, type_val, reason = parts
+        return ev.type.value == type_val and payload.get("reason") == reason
+
+    if sig.pattern == "reconcile-thrash":
+        reason = sig.key.split(":", 1)[1] if ":" in sig.key else None
+        return ev.type is EventType.SPEC_ATTENTION and payload.get("reason") == reason
+
+    if sig.pattern == "attempt-loop":
+        task_id = sig.key.split(":", 1)[1] if ":" in sig.key else None
+        return ev.type is EventType.ATTEMPT_CREATED and ev.task_id == task_id
+
+    if sig.pattern == "tick-error-streak":
+        return ev.type is EventType.TICK_ERROR
+
+    return True
+
+
+def has_new_evidence_after(sig: RunawaySignal, recent_events: list[Event],
+                           index: int) -> bool:
+    """True if any event AFTER position `index` is fresh evidence for `sig`."""
+    return any(_is_evidence_for(sig, ev) for ev in recent_events[index + 1:])
+
+
+def resume_baseline(sig: RunawaySignal,
+                    recent_events: list[Event]) -> tuple[int | None, bool]:
+    """The per-signal post-resume streak baseline. Returns
+    ``(resume_marker, has_new_evidence)``:
+
+    - ``resume_marker``: the ``sequence`` of the most recent PAUSE_CLEARED in
+      `recent_events`, or None if the operator has never resumed within it.
+      A STABLE identity (sequence, not index -- the window slides), so the
+      caller can tell "the same resume I already counted from" apart from
+      "a resume that has happened since my last pass" and reset its streak
+      exactly once per resume.
+    - ``has_new_evidence``: whether any event AFTER that resume is a fresh
+      instance of this signal's own condition. Always True when
+      ``resume_marker`` is None (nothing to be new relative to).
+
+    B13 (the defect this exists for): P49 froze the streak at 0 for every
+    pass spent ALREADY PAUSED. It did NOT cover the passes AFTER a resume.
+    `detect_runaways` re-detects a persistent-but-acknowledged condition
+    identically on every pass -- a still-trailing `reconcile-thrash:<reason>`
+    run, or a rejection history daemon.py's HISTORY_REJECTION_WINDOW_SECONDS
+    keeps true for a full 7 days -- so the streak climbed back to
+    RUNAWAY_PERSIST_AFTER_CYCLES on nothing but PASSES-SINCE-RESUME and
+    re-paused the project a few cycles after every resume, defeating the
+    operator's acknowledgment until the condition finally aged out. (P49's
+    own reset does not even fire in the common shape, where the operator
+    resumes before another pass runs while paused: the streak is still
+    sitting AT the pause threshold, so the very first post-resume pass
+    re-pauses.)
+
+    The fix is a BASELINE SHIFT, not a decay: a resume drops the streak back
+    to zero, and past that resume only genuinely NEW evidence may climb it
+    again.
+
+    Safety-symmetric, deliberately:
+      - Suppression is NOT gated by this. daemon.py still drops the matching
+        repeating action on EVERY pass a signal is detected, resumed or not
+        -- an acknowledgment must never re-arm a harmful action.
+      - Escalation is NOT gated by this either (it has its own
+        once-per-condition dedup).
+      - A condition that IS still worsening still re-pauses: one new
+        qualifying event re-opens the ladder and RUNAWAY_PERSIST_AFTER_CYCLES
+        fresh passes still auto-pause. This narrows WHEN the streak may
+        climb; it never disables the watchdog.
+      - No PAUSE_CLEARED in the window at all (never paused, or the resume
+        has aged out of the caller's ~500-event slice) => pre-B13 behaviour,
+        unconditional advance. Fail-open toward staying armed.
+      - The watchdog's own NEEDS_OPERATOR{reason:'runaway'} escalation never
+        counts as evidence (see _SELF_ESCALATION_REASON).
+    """
+    idx = last_resume_index(recent_events)
+    if idx is None:
+        return None, True
+    return recent_events[idx].sequence, has_new_evidence_after(sig, recent_events, idx)
 
 
 def log_signals(signals: list[RunawaySignal]) -> None:
