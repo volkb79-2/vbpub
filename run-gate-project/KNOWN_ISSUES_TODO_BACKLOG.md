@@ -2741,3 +2741,102 @@ Sequenced with the other progress/resume work: E-3 of
 once assay B065 lands, RG-38, RG-40). Not implemented in rev 34 by ruling —
 the wave shipped the refusal, and this is the answer to what the refusal
 costs.
+
+## RG-44 — `GONE_SIGNALS` matches docker's "gone" stderr case-sensitively; this docker version emits lowercase and the container-truly-gone case is never recognized
+
+### Observed mechanism and reproduction
+
+`run-gate.py:1512` declares:
+
+```python
+GONE_SIGNALS = ("No such object", "No such container")
+```
+
+checked at `run-gate.py:1609` via `if any(signal in stderr for signal in
+GONE_SIGNALS)` — a case-sensitive substring test. On this host's docker
+version, `docker inspect <gone-name>` prints:
+
+```
+error: no such object: <name>
+```
+
+lowercase `no such object`, which never matches either `GONE_SIGNALS`
+entry. Reproduced live (nyxloom-P103 post-merge verification,
+2026-09-08): a `tester-unified` lane's client process was killed by the
+harness's own low-memory guard mid-run (the container itself survived,
+`docker run -d`); the operator manually `docker rm -f`'d the finished
+container once its verdict had already been recorded. The next invocation
+— including with `--fresh`, whose whole purpose is this exact case —
+refused with the same message every time:
+
+```
+run-gate: docker inspect could not answer for container <name> (exit 1):
+error: no such object: <name> — that is not a 'No such object' answer, so
+run-gate will not read it as one: the inflight record is untouched and
+nothing was recorded. Fix docker and re-run — if the container is still
+running, the record can still find it
+```
+
+The error text quotes `GONE_SIGNALS[0]` verbatim ("No such object") right
+next to the actual stderr it failed to match ("no such object") — the two
+strings differ only in the leading letter's case, visible in the message
+itself once you diff them character-by-character.
+
+Workaround used: manually deleted the stale
+`.run-gate/inflight/tester-unified.json` record (safe here only because
+the container's actual verdict had already landed in
+`.assay/verdict-tester-unified.json` before the record went stale) and
+re-ran clean.
+
+### Why this matters
+
+This is exactly the class of bug RG-35/RG-39's own commit history (rev 34
+onward) is full of hardening against: a stale inflight record silently
+blocking every future invocation of a lane, on a host that runs ONE gate
+container at a time by policy — a single false negative here wedges the
+lane indefinitely for every client until someone finds and deletes the
+record by hand, which is not something an unattended/automated caller can
+safely do (deleting a record for a container that is NOT actually gone
+would let two clients run concurrently, the exact hazard R-39e's owner-pid
+check exists to prevent).
+
+### Proposed contract
+
+Make the gone-detection resilient to docker's own message casing rather
+than depending on an exact string match against one docker version's
+wording. Options, not mutually exclusive:
+1. Case-fold the comparison (`signal.lower() in stderr.lower()`) — cheapest,
+   but still brittle against a docker version that rewords the message
+   entirely rather than just re-casing it.
+2. Prefer `docker inspect`'s EXIT CODE plus a distinguishing marker docker
+   guarantees more stably than its prose (if one exists across supported
+   versions) over a hardcoded English string at all.
+3. At minimum, log the exact docker CLI version this host reports
+   alongside the mismatch, so a future occurrence is diagnosable without
+   needing to reproduce the exact stderr by hand.
+
+### Oracles
+
+- A `docker inspect` stderr of `error: no such object: NAME` (this host's
+  actual wording, lowercase) is recognized as GONE, not as an ambiguous
+  failure — on both the plain re-attach path and `--fresh`.
+- A genuinely ambiguous docker failure (daemon unreachable, permission
+  denied) is still NOT treated as gone — the fix must not widen the match
+  into false positives, which would reintroduce the R-39e concurrent-run
+  hazard the strict check exists to prevent.
+- Regression coverage should pin the exact docker version(s) this project's
+  CI/gate containers actually run, not just assert against a hand-picked
+  string literal that happens to satisfy today's code.
+
+### SPEC ownership
+
+`run-gate.py`'s `GONE_SIGNALS`/gone-detection logic (rev 35, RG-35/R-39e's
+owner-pid hardening); this project's own `KNOWN_ISSUES_TODO_BACKLOG.md`.
+
+### Provenance
+
+Found during nyxloom-P103's post-merge gate verification, 2026-09-08 — not
+nyxloom's own bug, filed here per estate cross-repo convention rather than
+worked around locally and forgotten.
+
+### Status — OPEN 2026-09-08
