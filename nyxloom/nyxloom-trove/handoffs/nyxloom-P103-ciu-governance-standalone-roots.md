@@ -4,7 +4,7 @@ id: nyxloom-P103-ciu-governance-standalone-roots
 project: nyxloom
 title: "Declare [governance] on nyxloom's and pwmcp's ciu roots; retire the fictional nyxloom.slice"
 tier: luna-high
-input_revision: "91a24997"
+input_revision: "b40edff3"
 depends_on: []
 session: fresh
 source:
