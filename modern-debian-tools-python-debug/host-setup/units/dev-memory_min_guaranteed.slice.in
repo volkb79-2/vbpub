@@ -15,7 +15,7 @@ Before=slices.target
 # every unrelated container already living there).
 #
 # The total ever guaranteed across every container placed here combined.
-# ciu's admission control (CIU-94, not yet implemented) refuses to start a
+# ciu's admission control (CIU-94, shipped ciu-v7.12.0) refuses to start a
 # container whose own declared claim would push the live sum past this
 # ceiling -- this slice's own value is the static side of that design; ciu
 # is the consumer-side admission-check half.
