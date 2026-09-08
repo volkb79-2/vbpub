@@ -49,11 +49,12 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 from conftest import (
-    PROJECT_ROOT,
+    REPO_ROOT,
     FakeAdapter,
     GitRepo,
     make_lane,
     make_r1_judge,
+    requires_parent_repository,
     write_coverage_json,
 )
 
@@ -798,11 +799,11 @@ def test_dstdns_nginx_link_is_an_exact_omittable_leaf(
 # delete.
 # ---------------------------------------------------------------------------
 
-#: The monorepo top -- one level above assay's own project root, matching
-#: `test_distribution_build_release.py`'s own established `REPO_ROOT`
-#: convention -- where `cmru/assay.toml` and every other project's lane
-#: file live alongside assay's own.
-_REPO_ROOT = PROJECT_ROOT.parent
+#: The monorepo top -- one level above assay's own project root, where
+#: `cmru/assay.toml` and every other project's lane file live alongside
+#: assay's own. (B063) Now `conftest.REPO_ROOT`, the ONE definition the three
+#: modules that need it share, instead of three independent `.parent` hops.
+_REPO_ROOT = REPO_ROOT
 
 #: WI-1's own landing commit, exactly as this work item's own written brief
 #: names it: the point after which lane schema v2 (and therefore omission
@@ -855,6 +856,11 @@ def _carries_wi4_policy_record(ref: str) -> bool:
     return _WI4_POLICY_RECORD in shown.stdout
 
 
+# (B063) Marked per-test, NOT with a module-level `pytestmark`: only the two
+# tests in this embargo section read the monorepo's own tagged history, and
+# skipping the ~60 that do not would hide real coverage of assay itself
+# behind an unrelated property of the checkout.
+@requires_parent_repository
 def test_every_release_since_wi1_landed_carries_wi4s_policy_record() -> None:
     """Embargo half (b), as the property rather than the proxy (A-278).
 
@@ -897,6 +903,7 @@ def test_every_release_since_wi1_landed_carries_wi4s_policy_record() -> None:
         )
 
 
+@requires_parent_repository
 def test_wi1s_own_landing_commit_is_the_state_the_embargo_forbids() -> None:
     """The must-fail control for the audit above, run through the IDENTICAL
     reader (A-278). WI-1's landing commit is the real, reachable commit

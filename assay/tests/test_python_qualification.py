@@ -37,9 +37,14 @@ import sys
 from pathlib import Path
 
 import pytest
-from conftest import PROJECT_ROOT
+from conftest import PROJECT_ROOT, REPO_ROOT, requires_parent_repository
 
-REPO_ROOT = PROJECT_ROOT.parent
+# (B063) Every test here shells out to `git -C REPO_ROOT` (or hands it to the
+# harness to do so). Outside the monorepo checkout there is no such
+# repository, and a skip naming that is the true answer — see
+# `conftest.requires_parent_repository` for the rejected alternative.
+pytestmark = requires_parent_repository
+
 HARNESS = PROJECT_ROOT / "gate" / "python" / "qualify_topos.py"
 ASSET_ROOT = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P25"
 GATE_SCRIPT = PROJECT_ROOT / "tools" / "tester-unified-gate.sh"

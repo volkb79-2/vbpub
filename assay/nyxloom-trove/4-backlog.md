@@ -6835,14 +6835,62 @@ failure of assay.
 
 ### Acceptance
 
-- [ ] a `cp -r` copy of `assay/` outside the vbpub checkout runs the suite
+- [x] a `cp -r` copy of `assay/` outside the vbpub checkout runs the suite
       with **zero** failures and **zero** errors attributable to the missing
       parent repository (measure it, quote the numbers);
-- [ ] whichever of skip-with-a-reason or resolve-from-context is chosen, the
+- [x] whichever of skip-with-a-reason or resolve-from-context is chosen, the
       choice is stated at the seam with the rejected alternative;
-- [ ] the three modules still measure what they measure today when the tree
+- [x] the three modules still measure what they measure today when the tree
       IS in the vbpub checkout — proven by running them in place, unchanged
       results.
+
+### Resolution — FIXED 2026-09-08 (quick-wins wave), skip-with-a-named-reason.
+
+`conftest.py` gains one shared `REPO_ROOT` (replacing three independent
+`PROJECT_ROOT.parent` hops) and a `requires_parent_repository` skip mark. It
+asks **git**, not the filesystem — a linked worktree's marker is a gitfile
+and a submodule's is a redirect, so "is there a repository here" is git's
+question — and it compares the reported **toplevel** against `REPO_ROOT`
+rather than merely testing for existence: a module that needs THIS monorepo
+is not served by assay having been copied into some unrelated repository's
+subdirectory, where every read would fail confusingly instead of skipping
+honestly.
+
+The rejected alternative (`git rev-parse --show-toplevel` from
+`PROJECT_ROOT`, i.e. resolve-from-context) is stated at the seam, with its
+reason: these modules test a property of the CHECKOUT — that assay sits
+inside the monorepo whose sibling projects and whose tagged history they read
+— not a property of assay. When that is false, "there is no repository here"
+is the true answer; reaching further up the tree would answer a question
+nobody asked and make the result depend on whatever happened to be above the
+copy.
+
+Applied as a module-level `pytestmark` to `test_python_qualification.py` and
+`test_distribution_build_release.py`, but **per-test** in
+`test_runner_snapshot_selection.py`: only its two embargo tests read the
+monorepo's tagged history, and skipping the ~60 that do not would hide real
+coverage of assay itself behind an unrelated property of the checkout.
+
+**Measured, from a `cp -r` copy of `assay/` into a scratch directory outside
+any git repository** (`git rev-parse` from there: `fatal: not a git
+repository ... up to mount point /`):
+
+```
+2 failed, 4143 passed, 77 skipped, 1 warning in 446.07s (0:07:26)
+```
+
+versus R-1's `11 failed, 3956 passed, 18 skipped, 13 errors in 821.95s`.
+**Zero errors, and zero of the two remaining failures are attributable to the
+missing parent repository** — both are
+`assert lane["environment"] == "host"` (`test_cgroup_parent.py:110`,
+`test_self_hosting.py:461`), and both fail IN PLACE on `main` too: run-gate
+rev 36's RG-43 sweep (`f62642c6`) moved this lane to `bare-host` and neither
+copy of the assertion followed. Repaired in this wave as a gate-blocking
+pre-existing regression, since a red gate blocks the wave.
+
+In place, the three modules are unchanged: 68 passed, 9 skipped, and all 9
+skips are the pre-existing `requires the tester-unified image's own
+/opt/tester-venv` ones — none from B063.
 
 ---
 
@@ -7208,17 +7256,57 @@ larger decision this entry does not make.
 
 ### Acceptance
 
-- [ ] a `crashed` candidate's `mutation-state/<id>.json` carries
+- [x] a `crashed` candidate's `mutation-state/<id>.json` carries
       `result_stderr_tail` (and `result_stdout_tail` when non-empty) reading
       the actual subprocess failure, verified on a real run (the
       `uq_work_units_id_operation` case above is a ready-made fixture);
-- [ ] a `killed` candidate's record is unaffected in size/shape by default
+- [x] a `killed` candidate's record is unaffected in size/shape by default
       (tails are opt-in by bucket, not universal, unless the design session
       decides the cost is worth it for all four buckets);
-- [ ] `assay verify` is unaffected — this is diagnostic-only, like B065's
+- [x] `assay verify` is unaffected — this is diagnostic-only, like B065's
       progress stream, never evidence;
-- [ ] CONSUMERS' mutation-state paragraph documents the new field(s) and
+- [x] CONSUMERS' mutation-state paragraph documents the new field(s) and
       which buckets populate them.
+
+### Resolution — FIXED 2026-09-08 (quick-wins wave), `crashed` bucket only.
+
+`_write_mutation_state_record`'s payload gains
+`result_stdout_tail`/`result_stderr_tail` — the names `verdict.py:3778-3779`
+already defines and `verify.py:1853-1859` already round-trips for other claim
+types, so a future verdict-level surfacing needs no new vocabulary — through
+a new `_crash_diagnostic_tails(outcome_bucket, result)` helper that returns
+`{}` for every bucket but `crashed`.
+
+**Scope held deliberately narrow**, per this entry's own priority ask and the
+wave's ruling: `killed`/`survived`/`budget_exceeded` are NOT wired, and
+`write_progress`'s payload is untouched (still a possible follow-up, still
+not carved). No schema or wire change: the mutation-state file is diagnostic
+state, not a verified artifact, and `_load_validated_state_record` validates
+named keys while tolerating extra ones, so an older record without these
+fields resumes exactly as before.
+
+An empty tail is written as `""` rather than omitted — "the stream was empty"
+is itself a diagnosis, and not the same fact as a record from a build that
+had no tails at all. A `None` tail is omitted rather than written as `null`.
+
+Tests: `tests/test_mutation_state_crash_tails.py` (8). The headline one
+reproduces this entry's own `uq_work_units_id_operation` shape rather than
+asserting synthetically — an `equivalence_artifact` lane whose mutated DDL
+fails to apply and therefore writes no artifact, which is exactly what lands
+the candidate in `crashed` instead of `killed` — and asserts the real
+Postgres sentence (`there is no unique constraint matching given keys for
+referenced table "work_units"`) is in the record. Then: `killed` and
+`survived` records carry neither field; a crashed record still resumes
+without re-execution; and the size argument is PINNED rather than left as
+arithmetic in a comment — two maximal 64 KiB tails of the most
+expensive-to-escape character `json.dump`'s default `ensure_ascii=True` has
+still serialize under `MUTATION_STATE_RECORD_LIMIT` (1 MiB), so the reader
+can never be handed a record it would refuse as oversized.
+
+`docs/CONSUMERS.md`'s mutation-state paragraph documents the fields, names
+`crashed` as the only bucket that populates them and why, and states that
+these files are diagnostic state whose content is untrusted subprocess
+output.
 
 ---
 

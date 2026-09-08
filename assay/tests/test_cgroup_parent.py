@@ -107,7 +107,13 @@ def test_nyxloom_gate_uses_verified_value_without_a_literal_slice():
     ]
     assert "tester-unified" in gate_cfg["lanes"], (
         "pointer names a lane the SSOT no longer declares")
-    assert lane["environment"] == "host"
+    # `bare-host`, not `host`: run-gate rev 36 made plain `host` a CONTAINER
+    # default with no docker-socket mount, and vbpub's RG-43 estate-wide
+    # sweep (`f62642c6`) moved this driver -- which launches its own nested
+    # build container and therefore needs real docker -- onto `bare-host`.
+    # This assertion was not updated in that sweep and had been red on `main`
+    # ever since; found and repaired by the B068 quick-wins wave.
+    assert lane["environment"] == "bare-host"
     assert lane["argv"][0] == "bash"
     assert lane["argv"][1] == "{worktree}/assay/tools/tester-unified-gate.sh"
     assert '"$worktree/assay/tools/cgroup-parent.sh"' in driver
