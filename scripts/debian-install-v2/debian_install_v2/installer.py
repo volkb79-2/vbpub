@@ -503,6 +503,11 @@ MaxFileSec=1month
         self._mark_step("ksm_config", "success", "ksmd enabled host-wide, opt-in per process")
 
     def _configure_oomd(self) -> None:
+        # systemd-oomd ships as its own package on Debian, not part of the
+        # base systemd install - confirmed live 2026-09-08 on two freshly
+        # provisioned trixie hosts, both failing identically with "Unit
+        # systemd-oomd.service does not exist" before this install step.
+        self._packages(["systemd-oomd"], "oomd")
         self.actions.mkdir("/etc/systemd/oomd.conf.d")
         self.actions.write_file("/etc/systemd/oomd.conf.d/vbpub.conf", OOMD_CONFIG)
         self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")

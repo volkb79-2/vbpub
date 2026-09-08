@@ -108,6 +108,20 @@ def test_oomd_thresholds_written_and_enabled(tmp_path):
     assert "enable systemd-oomd with vbpub thresholds" in descriptions
 
 
+def test_oomd_installs_its_package_before_enabling_the_unit(tmp_path):
+    """Regression for a real bug found live 2026-09-08 on two freshly
+    provisioned trixie hosts: systemd-oomd.service doesn't exist until the
+    systemd-oomd package is installed - it's not part of the base system.
+    _configure_oomd must apt-get install it before systemctl enable."""
+    _, actions = install_dry(tmp_path)
+    argvs = [a.argv for a in actions.planned]
+    install_idx = argvs.index(
+        ("/usr/bin/apt-get", "install", "-y", "--no-install-recommends", "systemd-oomd")
+    )
+    enable_idx = argvs.index(("/usr/bin/systemctl", "enable", "--now", "systemd-oomd"))
+    assert install_idx < enable_idx
+
+
 def test_fstrim_daily_override_written(tmp_path):
     _, actions = install_dry(tmp_path)
     content = actions.dry_run_writes["/etc/systemd/system/fstrim.timer.d/vbpub-daily.conf"]
