@@ -147,6 +147,8 @@ class TestThisRepo:
             "mark-interrupted": reconcile.MarkInterrupted(task_id="t1",
                                                           attempt_id="a1"),
             "mark-stalled": reconcile.MarkStalled(task_id="t1", attempt_id="a1"),
+            "mark-review-stalled": reconcile.MarkReviewStalled(
+                task_id="t1", attempt_id="a1", trigger="wall-clock"),
             "spec-attention": reconcile.SpecAttention(reason="ratchet"),
             "provider-pause": reconcile.ProviderPause(route_id="r1"),
             "post-merge-gate": reconcile.RunPostMergeGate(task_id="t1"),

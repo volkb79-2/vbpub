@@ -23,6 +23,11 @@ never fetched from a report file on disk (that would be new I/O, out of
 scope for this trace). Free text absent from the log renders as None; the
 caller decides how to display that ("unknown"/"-").
 
+B29 2026-09-09 (nyxloom-P105) adds the `review-stall` kind below. It is the
+only ADDITION to this module's contract since B26 and it changes nothing
+else: still pure, still read-only, still defining no EventType of its own
+(REVIEW_PROGRESS_STALLED is review_progress.py's).
+
 Leg kinds (`TraceLeg.kind`):
   created          TASK_CREATED -- the handoff's origin point.
   attempt          One dispatched agent leg (ATTEMPT_CREATED..EXITED/FAILED
@@ -34,6 +39,15 @@ Leg kinds (`TraceLeg.kind`):
                     (implementer/self-review/review-independent/carver).
   review           REVIEW_RECORDED -- a reviewer's structured verdict
                     (approved/rejected/incomplete) + reject_class, if any.
+  review-stall     REVIEW_PROGRESS_STALLED (B29 2026-09-09, PL11) -- a
+                    bounded review leg stopped for making no concrete
+                    progress. `outcome` is the TYPED reason
+                    ('review-no-concrete-progress'), never prose; `detail`
+                    carries the trigger and the compact controller summary's
+                    fixed fields. This is the one leg kind whose whole point
+                    is to be visible on the trace: an attempt leg alone shows
+                    a review that ended, with no way to tell "reached a
+                    verdict" from "burned its budget saying nothing".
   gate             GATE_FINISHED -- one gate run; summary is its
                     output_tail (bounded diagnostic text the daemon
                     already truncates on failure).
@@ -168,6 +182,36 @@ def _review_leg(ev: Event) -> TraceLeg:
     )
 
 
+def _review_stall_leg(ev: Event) -> TraceLeg:
+    """B29 2026-09-09 (nyxloom-P105, PL11).
+
+    Reads FIXED fields off the compact summary and nothing else. The payload
+    also carries `inspected_paths`, which is agent-DERIVED (tool-call
+    arguments out of a transcript): it is reported as a COUNT here rather
+    than as a list, because this bag is rendered as a flat `k=v` string and a
+    forty-entry path list would drown the row it is attached to. The paths
+    themselves stay in the event, where a drill-down can read them.
+    """
+    payload = ev.payload
+    signals = payload.get("signals") or {}
+    detail: dict[str, Any] = {
+        "trigger": payload.get("trigger", ""),
+        "elapsed_seconds": payload.get("elapsed_seconds", ""),
+        "transcript_bytes": payload.get("transcript_bytes", ""),
+        "transcript_records": payload.get("transcript_records", ""),
+        "branch_advanced": signals.get("branch_advanced"),
+        "gate_active": signals.get("gate_active"),
+        "finding_recorded": signals.get("finding_recorded"),
+        "inspected_files": len(payload.get("inspected_paths") or []),
+    }
+    return TraceLeg(
+        sequence=ev.sequence, kind="review-stall", stage="review-progress",
+        outcome=payload.get("reason"), started=iso(ev.timestamp), ended=None,
+        actor=_actor_label(ev), summary=None, attempt_id=ev.attempt_id,
+        detail=detail,
+    )
+
+
 def _gate_leg(ev: Event) -> TraceLeg:
     gr = GateResult.from_dict(ev.payload["gate_result"])
     outcome = "pass" if gr.exit_code == 0 else "fail"
@@ -247,6 +291,8 @@ def build_trace(task_id: str, events: list[Event]) -> HandoffTrace:
             attempt_events[aid].append(ev)
         elif t is EventType.REVIEW_RECORDED:
             legs.append(_review_leg(ev))
+        elif t is EventType.REVIEW_PROGRESS_STALLED:
+            legs.append(_review_stall_leg(ev))
         elif t is EventType.GATE_FINISHED:
             legs.append(_gate_leg(ev))
         elif t is EventType.MERGE_RECORDED:

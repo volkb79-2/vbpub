@@ -92,11 +92,19 @@ INTERFACE CONTRACT (frozen):
                     last 64KB of the newest attempt log, decisions
                     referenced, events tail (last 50 for this task).
                     B26 2026-07-27: a "Processing Trace" table -- one row
-                    per handoff_trace.TraceLeg (created/attempt/review/gate/
-                    merge/transition/scope-amendment, tr.trace-leg[data-kind]),
+                    per handoff_trace.TraceLeg (created/attempt/review/
+                    review-stall/gate/merge/transition/scope-amendment,
+                    tr.trace-leg[data-kind]),
                     the task's own leg-by-leg implement/review/gate/merge
                     history reconstructed PURELY from events.jsonl (no new
-                    writes — see handoff_trace.py).
+                    writes — see handoff_trace.py). B29 2026-09-09
+                    (nyxloom-P105, PL11) adds the review-stall kind: a review
+                    leg stopped for making no concrete progress, whose
+                    Outcome cell is the typed reason
+                    'review-no-concrete-progress'. This table is where a
+                    stalled review becomes VISIBLE -- the attempt row alone
+                    cannot distinguish a leg that reached a verdict from one
+                    that burned its budget saying nothing.
     config.html     P15 2026-07-15 (spec amendment, user directive): per-
                     project policy form (current values for the 9 editable
                     Policy keys — 7 int, P16 2026-07-15 adds 2 more int
@@ -1408,9 +1416,16 @@ def _render_quality(www: Path, registry: dict[str, Path], all_states: dict[str, 
 # P16 2026-07-15: 2 more int keys (carve_ahead_target, headroom_warn).
 # carve_authority (the one STRING-valued key) is rendered separately as a
 # <select> below, not through this numeric-input list.
+# B29 2026-09-09 (nyxloom-P105): the two review-progress budgets join the
+# list. They belong here for the same reason stall_log_quiet_seconds and
+# attempt_max_wall_seconds do -- they are the knobs an operator reaches for
+# when a leg is being stopped too early or too late -- and leaving them out
+# would break this list's stated correspondence with daemon._POLICY_BOUNDS,
+# which is the only thing keeping the two copies honest.
 _EDITABLE_POLICY_KEYS = [
     "max_active_tasks", "ready_queue_target", "max_attempts_per_task",
     "wave_max_diffs", "stall_log_quiet_seconds", "attempt_max_wall_seconds",
+    "review_progress_wall_seconds", "review_progress_max_records",
     "reconcile_interval_seconds", "carve_ahead_target", "headroom_warn",
 ]
 

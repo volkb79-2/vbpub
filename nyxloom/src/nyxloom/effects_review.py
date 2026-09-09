@@ -395,18 +395,24 @@ class ReviewEffector:
             created_payload: dict[str, Any] = {"attempt": attempt.to_dict()}
             if action.resume_session:
                 created_payload["resumed_from"] = action.resume_session
-            if cfg.policy.reviewer_repair:
-                # The PRE-review baseline for this member's own branch: the
-                # boundary "everything committed after this is the reviewer's"
-                # that a repair's blast radius is measured against. Only
-                # resolved when the policy is on -- an unused rev-parse per
-                # member is pointless when the whole post-hoc path is inert.
-                pre_sha = task_branch_head_sha(self._ports.git, cfg, t)
-                if pre_sha:
-                    created_payload["pre_review_sha"] = pre_sha
-                else:
-                    log.warning("reviewer-repair-baseline-unresolved",
-                                project=project, task=t, attempt=attempt_id)
+            # The PRE-review baseline for this member's own branch: the
+            # boundary "everything committed after this is the reviewer's".
+            #
+            # B29 2026-09-09 (nyxloom-P105): resolved UNCONDITIONALLY. It was
+            # gated on cfg.policy.reviewer_repair because a repair's blast
+            # radius was its only consumer, so an unused rev-parse per member
+            # was pointless. It now has a second: the review-leg progress
+            # watchdog measures signal (b) -- "has this leg landed any
+            # correction" -- against exactly this sha, and without it that
+            # signal is structurally unmeasurable (permanently, not
+            # transiently) for every leg on a project with reviewer_repair
+            # off. One rev-parse per member per REVIEW, not per pass.
+            pre_sha = task_branch_head_sha(self._ports.git, cfg, t)
+            if pre_sha:
+                created_payload["pre_review_sha"] = pre_sha
+            elif cfg.policy.reviewer_repair:
+                log.warning("reviewer-repair-baseline-unresolved",
+                            project=project, task=t, attempt=attempt_id)
             events.append(ctx.append(EventType.ATTEMPT_CREATED, created_payload,
                                      task_id=t, attempt_id=attempt_id,
                                      wave_id=wave_id))

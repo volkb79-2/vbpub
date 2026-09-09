@@ -28,9 +28,10 @@ than an attribute it found.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-from . import effects, paths, reconcile, storage
+from . import effects, paths, reconcile, review_progress, storage
 from .log import get_logger
 from .types import (
     AttemptState, Event, EventType, TaskState, TaskStateFile, new_id,
@@ -165,6 +166,75 @@ class LifecycleEffector:
                            task_id=action.task_id,
                            attempt_id=action.attempt_id)]
 
+    def mark_review_stalled(self, ctx: effects.EffectContext,
+                            action: reconcile.MarkReviewStalled) -> list[Event]:
+        """Record WHY a review leg is being stopped, then stop it the ordinary
+        way. B29 2026-09-09 (nyxloom-P105, PL11).
+
+        Two events, in this order and for different reasons.
+        REVIEW_PROGRESS_STALLED is the audit half: the typed reason
+        ('review-no-concrete-progress') and the compact controller summary a
+        restart is meant to be seeded FROM. ATTEMPT_STALLED is the state
+        half, appended by the SAME path mark_stalled uses -- so the ladder's
+        existing 'already STALLED -> InterruptAttempt' branch picks the leg up
+        next pass and this package adds no second kill path.
+
+        The transcript read lives here rather than in the planner because it
+        is I/O, and it happens exactly ONCE per stalled leg (guarded below)
+        rather than on every 30s pass: the cheap signals the planner decided
+        from are the daemon's, and only the leg that already lost is worth
+        parsing.
+        """
+        attempt = ctx.states[action.task_id].attempt_by_id(action.attempt_id)
+        events: list[Event] = []
+        # A wave review is ONE attempt across N member tasks, and the ladder
+        # walks per task -- so N of these actions arrive in a single pass for
+        # one leg. The audit record is per LEG (recorded once); the state
+        # mark below is per member statefile, which is why only this half is
+        # guarded.
+        if not review_progress.already_recorded(ctx.events(), action.attempt_id):
+            summary = self._review_stall_summary(ctx, action, attempt)
+            events.append(ctx.append(EventType.REVIEW_PROGRESS_STALLED, summary,
+                                     task_id=action.task_id,
+                                     attempt_id=action.attempt_id))
+        attempt.state = AttemptState.STALLED
+        events.append(ctx.append(EventType.ATTEMPT_STALLED,
+                                 {"attempt": attempt.to_dict()},
+                                 task_id=action.task_id,
+                                 attempt_id=action.attempt_id))
+        return events
+
+    def _review_stall_summary(self, ctx: effects.EffectContext,
+                              action: reconcile.MarkReviewStalled,
+                              attempt: Any) -> dict[str, Any]:
+        """The compact summary payload, transcript read included.
+
+        An unreadable transcript degrades to an EMPTY inspected-file list, it
+        does not abort the stall: the leg's failure to make progress was
+        established from signals the daemon already measured, and losing the
+        salvage half must never cost the detection half.
+        """
+        inspected: tuple[str, ...] = ()
+        truncated = False
+        log_path = attempt.log_path
+        if log_path:
+            try:
+                text = self._ports.files.read_text(Path(log_path))
+            except Exception:  # census: advisory-degradation (B29)
+                log.debug("review-stall transcript unreadable",
+                          attempt=action.attempt_id, path=log_path)
+            else:
+                inspected, truncated = review_progress.inspected_paths(
+                    text.splitlines())
+        return review_progress.compact_summary(
+            attempt_id=action.attempt_id or "", task_id=action.task_id or "",
+            role=attempt.role.value, route_id=attempt.route.route_id,
+            model=attempt.route.model, trigger=action.trigger or "",
+            signals=action.signals, budget=review_progress.ReviewProgressBudget(
+                wall_seconds=ctx.cfg.policy.review_progress_wall_seconds,
+                max_records=ctx.cfg.policy.review_progress_max_records),
+            paths=inspected, paths_truncated=truncated)
+
     def stall_check(self, ctx: effects.EffectContext,
                     action: reconcile.StallCheck) -> list[Event]:
         """A planned no-op: the stall cache was already updated during input
@@ -277,6 +347,14 @@ def specs(effector: LifecycleEffector) -> tuple[effects.HandlerSpec, ...]:
             handler=effector.mark_stalled,
             emits=frozenset({EventType.ATTEMPT_STALLED}),
             idempotency_key=lambda a: f"mark-stalled:{a.attempt_id}",
+        ),
+        effects.HandlerSpec(
+            action_type=reconcile.MarkReviewStalled,
+            kind="mark-review-stalled",
+            handler=effector.mark_review_stalled,
+            emits=frozenset({EventType.REVIEW_PROGRESS_STALLED,
+                             EventType.ATTEMPT_STALLED}),
+            idempotency_key=lambda a: f"mark-review-stalled:{a.attempt_id}",
         ),
         effects.HandlerSpec(
             action_type=reconcile.StallCheck,

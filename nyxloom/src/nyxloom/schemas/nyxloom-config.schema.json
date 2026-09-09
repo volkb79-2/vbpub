@@ -210,6 +210,14 @@
           "type": "integer",
           "minimum": 0
         },
+        "review_progress_wall_seconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "review_progress_max_records": {
+          "type": "integer",
+          "minimum": 0
+        },
         "max_resume_failures": {
           "type": "integer",
           "minimum": 0

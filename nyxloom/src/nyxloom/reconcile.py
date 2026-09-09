@@ -367,6 +367,7 @@ from .carver_session import (
 from . import planning, snapshot
 from .config import ProjectConfig, RouteDef, Routes, healthy_routes, undeclined_routes
 from .planning import PlanContext, RuleMatch
+from .review_progress import ReviewLegSignals
 from .stages import effective_concurrency
 from .types import (
     Blocker, Frontmatter, TaskState, TaskStateFile,
@@ -457,6 +458,32 @@ class MarkStalled(Action):
     event in between; a confirmed stall was invisible until the wrapper's
     own ATTEMPT_INTERRUPTED landed."""
     attempt_id: str | None = None
+
+
+@dataclass
+class MarkReviewStalled(Action):
+    """B29 2026-09-09 (nyxloom-P105, PL11): a bounded review leg burned its
+    progress budget without producing a correction, a gate run or a verdict.
+
+    Carries the TYPED trigger only (review_progress.TRIGGER_*), never prose:
+    the compact summary the effect persists is assembled at the effect
+    boundary, because building it needs the transcript on disk and this
+    action is planned by a pure rule.
+
+    Does NOT interrupt. It marks the attempt STALLED (and records why), and
+    the ladder's existing branch 4 -- 'already STALLED -> InterruptAttempt'
+    -- does the interrupting on the next pass, through the same signal path
+    every other interrupt uses. That is P14 item 2's discipline (make a
+    confirmed stall VISIBLE before anything kills it) reused rather than
+    re-litigated, and it means this package adds no second kill path."""
+    attempt_id: str | None = None
+    trigger: str | None = None
+    # The measurement the decision was made FROM, carried rather than
+    # re-read: the effect boundary writes it into the durable summary, and
+    # re-measuring there would let the recorded evidence disagree with the
+    # evidence the plan was actually made on (EffectContext's own rule --
+    # "an effector reads the premises it was planned from").
+    signals: ReviewLegSignals | None = None
 
 
 @dataclass
@@ -758,6 +785,15 @@ class ReconcileInput:
     pid_alive: dict[str, bool]
     receipts: dict[str, dict | None]                    # attempt_id -> receipt dict
     stall_confirmed: dict[str, bool] = field(default_factory=dict)
+    # B29 2026-09-09 (nyxloom-P105, PL11): attempt_id -> the four measured
+    # progress signals for an in-flight REVIEW leg, computed by the daemon
+    # (Daemon._review_leg_signals) from the attempt log, the task branch and
+    # the event log. Present ONLY for review-role attempts the daemon
+    # actually measured; every other attempt is absent, and an absent entry
+    # means "not judged" -- so every pre-existing test that omits this field
+    # plans exactly what it planned before. reconcile stays pure: the
+    # measurement is the daemon's, the verdict is review_progress.py's.
+    review_leg_signals: dict[str, ReviewLegSignals] = field(default_factory=dict)
     # P34 2026-07-16 (resume-safety re-cut): attempt_id -> count of aged
     # (older than policy.resume_progress_grace_seconds) attempt.resume-N.log
     # files for that attempt, computed by the daemon from disk. An
