@@ -148,3 +148,34 @@ green tests as proof — and to adversarially test whether the new AST
 sweep is actually load-bearing (try breaking wiring, confirm it catches
 it) rather than just reading it and assuming it works. Next: await
 ACCEPT (or further blockers) before merging.
+
+## PR-R5 — fix-verification returned: ACCEPT-conditional, test-only condition, close-out dispatched
+
+2026-09-09. Round-2 fix-verification committed at `ad90bdc4`. Reviewer
+re-ran their own round-1 probe verbatim against `8735b68d`: R0 claim now
+`PASS` (was `FAIL`), must-fail control still `FAIL`, reverse direction
+still `FAIL` — the actual defect is genuinely closed. Traced (not just
+read) that `_execute_snapshot_unit` takes no `Lane` at all, so
+"forwards, never derives" is structurally true. Broke the wiring three
+ways to test the new AST sweep: unwiring the snapshot engine and leaking
+into canary are both caught by the sweep; removing the baseline opt-in
+itself is outside the sweep's watch set but killed by 3 e2e tests
+(logged as OBS-A, informational).
+
+One condition: the canary-exclusion behavioral-equivalence test is
+HOLLOW — its shell command never writes a report file, so it can't
+distinguish "excluded" from "consulted" (proven by mutation: flipping the
+canary call site to leak `result_report` still leaves the test green).
+The actual invariant is NOT unenforced — the AST sweep's value-pin
+catches that exact mutation independently — so this is a test-quality gap
+with a real backing guard elsewhere, not a shipped-code defect. Reviewer
+explicitly authorized merging now with this as a one-line follow-up
+("I don't need to see it again"). Given the fix is trivial (reuse an
+existing test helper), dispatched it to the implementer directly rather
+than deferring — will independently verify the gate once it lands, no
+third review round needed per the reviewer's own waiver.
+
+Blocker 4 fully confirmed fixed, OBS 2/5 confirmed actioned, OBS 1/3
+confirmed soundly declined, Checkpoint 1 tick confirmed correctly
+reverted with nothing over-ticked. Next: await the one-line test fix,
+verify gate, merge.
