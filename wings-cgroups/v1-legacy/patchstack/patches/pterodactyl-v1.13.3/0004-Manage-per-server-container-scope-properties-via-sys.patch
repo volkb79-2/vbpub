@@ -1,4 +1,4 @@
-From 58d8ee8dc0b3af8f7577af9b127d437e1ba79a09 Mon Sep 17 00:00:00 2001
+From 47bc1ca56149e3921022e07f842770d7afc51920 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Fri, 17 Jul 2026 06:38:24 +0000
 Subject: [PATCH 4/9] Manage per-server container scope properties via systemd
@@ -41,6 +41,24 @@ the tier slice's own MemoryMin, logging when they exceed it, because at that
 point the configured floors have stopped being individual guarantees and
 only the tier total still is.
 
+Because the scope is the leaf, it is also where Docker writes the panel's
+own container.Resources. A panel-side settings save on a running server
+reaches Environment.InSituUpdate -> ContainerUpdate, and with the systemd
+cgroup driver runc turns that into SetUnitProperties on the very same scope,
+after Wings' own write. Left alone it silently replaces MemoryLow, MemoryMax,
+CPUWeight and the BFQ weight with the panel's values -- including replacing a
+deliberately tight WINGS_CG_MEMORY_MAX with a much looser panel memory limit.
+InSituUpdate therefore re-asserts the scope properties once the Docker update
+has returned. On the three-level shape this was unnecessary: the two writers
+lived on different units and composed by the min-along-path rule.
+
+The tripwire has one condition it cannot report by firing: a node whose tier
+slice declares no MemoryMin of its own has nothing to compare the summed
+floors against, so it can never fire at all. That is now said once per Wings
+process, the first time a floor is applied against such a tier -- it cannot
+be said at startup, because the tier's MemoryMin is only knowable over D-Bus
+and configuration validation runs without a bus.
+
 Property management is strictly best-effort: D-Bus failures degrade to plain
 placement with a logged warning and never block a server. An explicit
 WINGS_CGROUP_PARENT override remains supported and marks the server
@@ -52,27 +70,29 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01PgCYRx4mTFsr4wtxuHCVXH
 ---
  cmd/root.go                          |   3 +
- config/config_docker.go              | 151 ++++++++++++++++-
+ config/config_docker.go              | 158 ++++++++++++++++-
  config/config_docker_slices_test.go  | 172 +++++++++++++++++++
- environment/docker/container.go      |  22 ++-
+ environment/docker/container.go      |  43 ++++-
  environment/docker/power.go          |   7 +
  environment/docker/scope.go          |  61 +++++++
  go.mod                               |   6 +-
  go.sum                               |   5 +
- internal/cgroups/cgroups.go          | 241 +++++++++++++++++++++++++++
+ internal/cgroups/cgroups.go          | 241 ++++++++++++++++++++++++++
  internal/cgroups/cgroups_test.go     | 163 ++++++++++++++++++
- internal/cgroups/ensure.go           |  93 +++++++++++
- internal/cgroups/integration_test.go | 215 ++++++++++++++++++++++++
- internal/cgroups/scope.go            |  98 +++++++++++
+ internal/cgroups/ensure.go           | 120 +++++++++++++
+ internal/cgroups/ensure_test.go      |  87 ++++++++++
+ internal/cgroups/integration_test.go | 215 +++++++++++++++++++++++
+ internal/cgroups/scope.go            | 108 ++++++++++++
  internal/cgroups/scope_test.go       |  96 +++++++++++
- internal/cgroups/sysd.go             | 231 +++++++++++++++++++++++++
+ internal/cgroups/sysd.go             | 247 +++++++++++++++++++++++++++
  server/install.go                    |  16 +-
- 16 files changed, 1562 insertions(+), 18 deletions(-)
+ 17 files changed, 1730 insertions(+), 18 deletions(-)
  create mode 100644 config/config_docker_slices_test.go
  create mode 100644 environment/docker/scope.go
  create mode 100644 internal/cgroups/cgroups.go
  create mode 100644 internal/cgroups/cgroups_test.go
  create mode 100644 internal/cgroups/ensure.go
+ create mode 100644 internal/cgroups/ensure_test.go
  create mode 100644 internal/cgroups/integration_test.go
  create mode 100644 internal/cgroups/scope.go
  create mode 100644 internal/cgroups/scope_test.go
@@ -93,7 +113,7 @@ index a645873..c26387e 100644
  		config.SetDebugViaFlag(debug)
  	}
 diff --git a/config/config_docker.go b/config/config_docker.go
-index b10f00a..23c52d1 100644
+index b10f00a..22e79d1 100644
 --- a/config/config_docker.go
 +++ b/config/config_docker.go
 @@ -12,6 +12,8 @@ import (
@@ -105,22 +125,29 @@ index b10f00a..23c52d1 100644
  )
  
  type dockerNetworkInterfaces struct {
-@@ -152,6 +154,14 @@ type DockerConfiguration struct {
+@@ -152,6 +154,21 @@ type DockerConfiguration struct {
  	// system.slice.
  	AllowedCgroupParents []string `json:"allowed_cgroup_parents" yaml:"allowed_cgroup_parents"`
  
-+	// PerServerSlices enables automatic per-server slice management: every
-+	// server is placed under its own derived slice (see ServerSliceName)
-+	// nested inside CgroupParent, and Wings creates/reconciles that slice as
-+	// a transient systemd unit — with the configured default resource
-+	// properties and any per-server WINGS_CG_* overrides — before containers
-+	// are created under it.
++	// PerServerSlices enables per-server cgroup property management. Every
++	// server's container is created flat under CgroupParent, and Wings applies
++	// the configured default resource properties plus any per-server
++	// WINGS_CG_* overrides to that container's own docker-<id>.scope — the
++	// unit systemd creates on Docker's behalf — immediately after
++	// ContainerStart() returns, which is the earliest moment the scope exists.
++	//
++	// Wings creates no unit of its own here: there is no derived per-server
++	// slice, no nesting below CgroupParent and no transient unit whose
++	// lifecycle Wings has to own. The block keeps its historical name for
++	// configuration compatibility. See internal/cgroups.Apply for the write
++	// path and its guarantees, and environment/docker.Environment
++	// .applyScopeProps for the timing window this ordering accepts.
 +	PerServerSlices PerServerSlicesConfiguration `json:"per_server_slices" yaml:"per_server_slices"`
 +
  	LogConfig struct {
  		Type   string            `default:"local" json:"type" yaml:"type"`
  		Config map[string]string `default:"{\"max-size\":\"5m\",\"max-file\":\"1\",\"compress\":\"false\",\"mode\":\"non-blocking\"}" json:"config" yaml:"config"`
-@@ -164,6 +174,44 @@ func (c DockerConfiguration) CpuPeriodMicroseconds() int64 {
+@@ -164,6 +181,44 @@ func (c DockerConfiguration) CpuPeriodMicroseconds() int64 {
  	return min(max(c.CpuPeriod, 1_000), 1_000_000)
  }
  
@@ -165,7 +192,7 @@ index b10f00a..23c52d1 100644
  func (c DockerConfiguration) ContainerLogConfig() container.LogConfig {
  	if c.LogConfig.Type == "" {
  		return container.LogConfig{}
-@@ -224,12 +272,7 @@ const CgroupParentOverrideEnv = "WINGS_CGROUP_PARENT"
+@@ -224,12 +279,7 @@ const CgroupParentOverrideEnv = "WINGS_CGROUP_PARENT"
  // default is returned together with an error describing the rejection so that
  // callers can log it. The returned string is always safe to use.
  func (c DockerConfiguration) ResolveCgroupParent(env []string) (string, error) {
@@ -179,7 +206,7 @@ index b10f00a..23c52d1 100644
  	if override == "" || override == c.CgroupParent {
  		return c.CgroupParent, nil
  	}
-@@ -250,6 +293,102 @@ func (c DockerConfiguration) ResolveCgroupParent(env []string) (string, error) {
+@@ -250,6 +300,102 @@ func (c DockerConfiguration) ResolveCgroupParent(env []string) (string, error) {
  	return c.CgroupParent, errors.New(CgroupParentOverrideEnv + " override " + strconv.Quote(override) + " is outside the built-in wings-*.slice namespace and docker.allowed_cgroup_parents is not configured")
  }
  
@@ -461,7 +488,7 @@ index 0000000..bd45c50
 +	}
 +}
 diff --git a/environment/docker/container.go b/environment/docker/container.go
-index d38ddb0..ea5b175 100644
+index d38ddb0..323d53f 100644
 --- a/environment/docker/container.go
 +++ b/environment/docker/container.go
 @@ -20,6 +20,7 @@ import (
@@ -472,7 +499,35 @@ index d38ddb0..ea5b175 100644
  	"github.com/pterodactyl/wings/system"
  )
  
-@@ -172,12 +173,15 @@ func (e *Environment) Create() error {
+@@ -138,6 +139,27 @@ func (e *Environment) InSituUpdate() error {
+ 	}
+ 
+ 	e.applyCpuBurst(ctx)
++
++	// Re-assert this server's cgroup properties.
++	//
++	// ContainerUpdate above carries the panel's own container.Resources —
++	// Memory, MemoryReservation, CpuShares, BlkioWeight — and with the systemd
++	// cgroup driver runc translates those into SetUnitProperties on the SAME
++	// docker-<id>.scope Wings sets its properties on. Docker's write is the
++	// later one, so without this call a routine panel-side settings save
++	// silently replaces MemoryLow, MemoryMax, CPUWeight and the BFQ weight with
++	// the panel's values — including replacing a deliberately tight
++	// WINGS_CG_MEMORY_MAX with a much looser panel memory limit, and collapsing
++	// an 800 CPUWeight to the ~39 that docker.cpu_shares=1024 derives. Under the
++	// retired per-server-slice design the two writers lived on different units
++	// and composed by the min-along-path rule; on one unit they overwrite.
++	//
++	// Deliberately synchronous and last: the properties must land after the
++	// Docker write, and applying them is a bounded D-Bus round trip.
++	sctx, scancel := context.WithTimeout(context.Background(), 15*time.Second)
++	defer scancel()
++	e.applyScopeProps(sctx)
++
+ 	return nil
+ }
+ 
+@@ -172,12 +194,15 @@ func (e *Environment) Create() error {
  		}
  	}
  
@@ -494,7 +549,7 @@ index d38ddb0..ea5b175 100644
  	if err != nil {
  		e.log().WithField("cgroup_parent", cgroupParent).WithError(err).Warn("environment/docker: rejected per-server cgroup parent override")
  	}
-@@ -305,6 +309,12 @@ func (e *Environment) Destroy() error {
+@@ -305,6 +330,12 @@ func (e *Environment) Destroy() error {
  
  	e.SetState(environment.ProcessOfflineState)
  
@@ -1086,14 +1141,15 @@ index 0000000..fcbc8f3
 +}
 diff --git a/internal/cgroups/ensure.go b/internal/cgroups/ensure.go
 new file mode 100644
-index 0000000..7c82e2c
+index 0000000..71be90d
 --- /dev/null
 +++ b/internal/cgroups/ensure.go
-@@ -0,0 +1,93 @@
+@@ -0,0 +1,120 @@
 +package cgroups
 +
 +import (
 +	"context"
++	"sync"
 +	"time"
 +
 +	"github.com/apex/log"
@@ -1167,6 +1223,7 @@ index 0000000..7c82e2c
 +		return
 +	}
 +	entry := l.WithField("properties", res.Applied.String())
++	logTierFloorUnset(entry, req, res)
 +	if res.Overcommit {
 +		// Not a reduction — the floors were applied exactly as configured. But
 +		// they now add up to more than the tier slice can back, which changes
@@ -1182,6 +1239,124 @@ index 0000000..7c82e2c
 +		return
 +	}
 +	entry.Info("cgroups: applied container scope properties")
++}
++
++// tierFloorUnsetOnce keeps the "tripwire inactive" notice to one line per Wings
++// process. It cannot be emitted at startup, where it would naturally belong:
++// the tier's MemoryMin is only knowable over D-Bus, and config validation runs
++// without a bus (see config.ValidatePerServerSlices). The first floor applied
++// on this node is therefore the earliest honest moment to say it.
++var tierFloorUnsetOnce sync.Once
++
++// logTierFloorUnset says, exactly once, that the floor-overcommit tripwire is
++// switched off because the tier slice declares no MemoryMin of its own.
++//
++// Without this the condition is completely invisible. An administrator who
++// dropped a budget knob in favour of reading the tier's real MemoryMin gets no
++// signal at all when reality declares nothing: floors are applied, every log
++// line looks healthy, and the check they believe is watching the node never
++// runs. One Info line closes that.
++func logTierFloorUnset(entry *log.Entry, req EnsureRequest, res Result) {
++	if !res.TierFloorUnset {
++		return
++	}
++	tierFloorUnsetOnce.Do(func() {
++		entry.WithField("tier", req.Parent).
++			Info("cgroups: tier slice declares no MemoryMin of its own; per-server memory.min floors are applied as configured but the floor-overcommit tripwire is inactive for this node")
++	})
++}
+diff --git a/internal/cgroups/ensure_test.go b/internal/cgroups/ensure_test.go
+new file mode 100644
+index 0000000..2979860
+--- /dev/null
++++ b/internal/cgroups/ensure_test.go
+@@ -0,0 +1,87 @@
++package cgroups
++
++import (
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/apex/log"
++)
++
++// captureHandler collects the entries a test emits through the package-level
++// apex logger. apex/log has no assertion handler of its own and the project
++// vendors no test-log helper, so this is the smallest thing that works.
++type captureHandler struct {
++	mu      sync.Mutex
++	entries []*log.Entry
++}
++
++func (h *captureHandler) HandleLog(e *log.Entry) error {
++	h.mu.Lock()
++	defer h.mu.Unlock()
++	h.entries = append(h.entries, e)
++	return nil
++}
++
++func (h *captureHandler) len() int {
++	h.mu.Lock()
++	defer h.mu.Unlock()
++	return len(h.entries)
++}
++
++func (h *captureHandler) last() *log.Entry {
++	h.mu.Lock()
++	defer h.mu.Unlock()
++	if len(h.entries) == 0 {
++		return nil
++	}
++	return h.entries[len(h.entries)-1]
++}
++
++// captureLog redirects the package-level logger for the duration of one test.
++func captureLog(t *testing.T) *captureHandler {
++	t.Helper()
++	h := &captureHandler{}
++	logger, ok := log.Log.(*log.Logger)
++	if !ok {
++		t.Skip("package logger is not an *log.Logger; nothing to capture")
++	}
++	prev := logger.Handler
++	logger.Handler = h
++	t.Cleanup(func() { logger.Handler = prev })
++	return h
++}
++
++// The tripwire that reports an over-committed tier is inert on a node whose
++// tier slice declares no MemoryMin of its own — sliceMemoryMin returns ok=false
++// and Apply can never set Overcommit. That used to be completely silent, which
++// is the worst failure mode for a check an administrator believes is running.
++func TestLogTierFloorUnsetSaysSoExactlyOnce(t *testing.T) {
++	h := captureLog(t)
++	tierFloorUnsetOnce = sync.Once{}
++	t.Cleanup(func() { tierFloorUnsetOnce = sync.Once{} })
++
++	entry := log.WithField("scope", "docker-"+strings.Repeat("a", 64)+".scope")
++	req := EnsureRequest{Parent: "wings.slice"}
++
++	// A tier that does declare a floor says nothing at all.
++	logTierFloorUnset(entry, req, Result{ParentFloor: 1 << 30})
++	if got := h.len(); got != 0 {
++		t.Fatalf("logged %d entries for a tier that declares a floor, want 0", got)
++	}
++
++	logTierFloorUnset(entry, req, Result{TierFloorUnset: true})
++	if got := h.len(); got != 1 {
++		t.Fatalf("logged %d entries for an inert tripwire, want 1", got)
++	}
++	if e := h.last(); e == nil || e.Fields["tier"] != "wings.slice" {
++		t.Errorf("entry does not name the tier it is talking about: %+v", e)
++	}
++
++	// Once per process, not once per server start: a node with fifty servers
++	// must not emit fifty copies of the same standing condition.
++	logTierFloorUnset(entry, req, Result{TierFloorUnset: true})
++	if got := h.len(); got != 1 {
++		t.Errorf("logged %d entries after a second inert apply, want the once-per-process 1", got)
++	}
 +}
 diff --git a/internal/cgroups/integration_test.go b/internal/cgroups/integration_test.go
 new file mode 100644
@@ -1406,10 +1581,10 @@ index 0000000..98c0eec
 +}
 diff --git a/internal/cgroups/scope.go b/internal/cgroups/scope.go
 new file mode 100644
-index 0000000..bb48b37
+index 0000000..bdc073b
 --- /dev/null
 +++ b/internal/cgroups/scope.go
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,108 @@
 +package cgroups
 +
 +import (
@@ -1477,10 +1652,20 @@ index 0000000..bb48b37
 +//     its own entry instead of accumulating one per start;
 +//   - only servers under the node-wide docker.cgroup_parent are counted, since
 +//     only their floors draw on that tier's MemoryMin;
-+//   - entries are dropped when a server is deleted, not when it stops. A
-+//     stopped server therefore still counts against the tier. That is the
-+//     conservative direction for a warning, and it matches how an administrator
-+//     sizes a node: by what is provisioned, not by what happens to be running.
++//   - entries are dropped when a server is deleted, not when it stops. Within
++//     the lifetime of one Wings process a stopped server therefore still counts
++//     against the tier, which is the conservative direction for a warning.
++//
++// The caveat that follows from being an unpersisted in-memory map, stated
++// plainly because it is easy to read the point above as a stronger claim than
++// it is: the ledger holds "servers that have applied a floor since this Wings
++// process started", NOT "servers provisioned on this node". A Wings restart
++// empties it, and it refills only as servers happen to start, so immediately
++// after a restart the total is running-based accounting and under-reports a
++// node whose servers are mostly stopped -- the tripwire can stay silent on a
++// tier that is in fact over-committed. Persisting it was considered and not
++// done: the ledger feeds exactly one informational log line and nothing else,
++// so the cost of being wrong is a missing warning, not a missing guarantee.
 +var (
 +	floorsMu sync.Mutex
 +	floors   = map[string]uint64{}
@@ -1612,10 +1797,10 @@ index 0000000..6602f9c
 +}
 diff --git a/internal/cgroups/sysd.go b/internal/cgroups/sysd.go
 new file mode 100644
-index 0000000..05ca5c3
+index 0000000..4cb687e
 --- /dev/null
 +++ b/internal/cgroups/sysd.go
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,247 @@
 +package cgroups
 +
 +import (
@@ -1669,6 +1854,15 @@ index 0000000..05ca5c3
 +	// the tier's protection out in proportion to each server's usage below its
 +	// own floor, and only the tier total is still guaranteed.
 +	Overcommit bool
++	// TierFloorUnset reports that this request carried a floor and named a
++	// tier, but the tier slice itself declares no MemoryMin (unset, infinity,
++	// or unreadable). The floor was still applied exactly as configured — but
++	// there is no tier budget to compare the summed floors against, so the
++	// overcommit tripwire above can never fire on this node. Reported so the
++	// caller can say so once, out loud: a tripwire that is switched off
++	// because reality declares nothing is indistinguishable, from the logs
++	// alone, from a tripwire that simply never had cause to fire.
++	TierFloorUnset bool
 +}
 +
 +// conn wraps the systemd D-Bus connection. Connections are opened per
@@ -1825,6 +2019,13 @@ index 0000000..05ca5c3
 +		if limit, ok, err := c.sliceMemoryMin(ctx, t.Parent); err == nil && ok && limit > 0 {
 +			res.ParentFloor = limit
 +			res.Overcommit = res.FloorsTotal > limit
++		} else {
++			// No tier budget to compare against: the tier declares no
++			// MemoryMin, reports it as infinity, or could not be read at all.
++			// Nothing is wrong with the apply itself — but the tripwire is
++			// inert for the whole life of this node, and that has to be
++			// visible somewhere. See Result.TierFloorUnset.
++			res.TierFloorUnset = true
 +		}
 +	}
 +	return res, nil

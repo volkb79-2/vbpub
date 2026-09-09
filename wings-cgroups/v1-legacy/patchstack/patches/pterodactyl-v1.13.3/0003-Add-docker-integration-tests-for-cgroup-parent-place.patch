@@ -1,4 +1,4 @@
-From cae090e865f710b85d0d2de9c174427921f730f7 Mon Sep 17 00:00:00 2001
+From c5629a983142f558b3a6a68503c90483b20a2466 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Wed, 15 Jul 2026 10:43:10 +0000
 Subject: [PATCH 3/9] Add docker integration tests for cgroup parent placement

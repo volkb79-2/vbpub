@@ -1,4 +1,4 @@
-From d16c1b6e8e12b3a07c608b162a046c81b780ba72 Mon Sep 17 00:00:00 2001
+From d731e9bb463214806312bf0d68c98978289ed7d7 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 03:59:43 +0000
 Subject: [PATCH 6/9] Stage per-server scope properties across server startup
@@ -29,6 +29,16 @@ existed by then. A container scope does not exist until the container's init
 process is launched, so the band is applied immediately after
 ContainerStart() instead -- the same property sets, one step later.
 
+Two consequences for the property applier itself. It now takes the band to
+apply, so the panel-side in-situ re-assertion added with the scope work picks
+one: startup while the environment is still in the starting state, steady
+otherwise -- the same signal the phase machinery keys on, read from the layer
+that actually has it. And it takes whether the steady ramp may run, because
+the ramp belongs to the startup->steady handoff, where the ceiling genuinely
+drops below a load-time peak; a re-assertion writes the value already on the
+unit, so there is nothing to walk and a reclaim-paced loop would sit on the
+caller's path for nothing.
+
 The phase no longer pins a unit. Pinning existed because placement was fixed
 at container-create time, so a Panel sync changing WINGS_CGROUP_PARENT
 mid-startup could leave the steady band on a slice the container was not in.
@@ -40,10 +50,11 @@ Claude-Session: https://claude.ai/code/session_01PgCYRx4mTFsr4wtxuHCVXH
 ---
  config/config_docker.go             | 113 +++++++-
  config/config_docker_slices_test.go |   8 +-
+ environment/docker/container.go     |  23 +-
  environment/docker/power.go         |  17 +-
- environment/docker/scope.go         |   6 +-
+ environment/docker/scope.go         |  18 +-
  internal/cgroups/cgroups.go         | 239 +++++++++++++++++
- internal/cgroups/ensure.go          | 113 ++++++--
+ internal/cgroups/ensure.go          | 114 ++++++--
  internal/cgroups/phase_test.go      | 217 ++++++++++++++++
  internal/cgroups/sysd.go            | 110 ++++++++
  internal/database/database.go       |   7 +
@@ -52,13 +63,13 @@ Claude-Session: https://claude.ai/code/session_01PgCYRx4mTFsr4wtxuHCVXH
  server/server.go                    |  20 ++
  server/slice_phase.go               | 388 ++++++++++++++++++++++++++++
  server/slice_phase_test.go          | 329 +++++++++++++++++++++++
- 14 files changed, 1555 insertions(+), 31 deletions(-)
+ 15 files changed, 1589 insertions(+), 33 deletions(-)
  create mode 100644 internal/cgroups/phase_test.go
  create mode 100644 server/slice_phase.go
  create mode 100644 server/slice_phase_test.go
 
 diff --git a/config/config_docker.go b/config/config_docker.go
-index 23c52d1..b7cf4ab 100644
+index 22e79d1..8e42988 100644
 --- a/config/config_docker.go
 +++ b/config/config_docker.go
 @@ -7,6 +7,7 @@ import (
@@ -69,7 +80,7 @@ index 23c52d1..b7cf4ab 100644
  
  	"emperror.dev/errors"
  	"github.com/distribution/reference"
-@@ -189,6 +190,16 @@ type DockerSliceDefaults struct {
+@@ -196,6 +197,16 @@ type DockerSliceDefaults struct {
  	IOWeight   uint64 `default:"0" json:"io_weight" yaml:"io_weight"`
  }
  
@@ -86,7 +97,7 @@ index 23c52d1..b7cf4ab 100644
  // PerServerSlicesConfiguration configures per-server cgroup property
  // management (docker.per_server_slices). Requires CgroupParent to be set:
  // containers are placed flat under it, and the properties are applied to each
-@@ -210,6 +221,32 @@ type PerServerSlicesConfiguration struct {
+@@ -217,6 +228,32 @@ type PerServerSlicesConfiguration struct {
  	// WINGS_CG_* values, never these defaults — that slice's policy is the
  	// administrator's.
  	Defaults DockerSliceDefaults `json:"defaults" yaml:"defaults"`
@@ -119,7 +130,7 @@ index 23c52d1..b7cf4ab 100644
  }
  
  func (c DockerConfiguration) ContainerLogConfig() container.LogConfig {
-@@ -347,6 +384,27 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
+@@ -354,6 +391,27 @@ func (c DockerConfiguration) ValidatePerServerSlices() error {
  	if _, errs := c.SliceDefaults().Props(); len(errs) > 0 {
  		return errors.Wrap(errs[0], "docker.per_server_slices.defaults")
  	}
@@ -147,7 +158,7 @@ index 23c52d1..b7cf4ab 100644
  	return nil
  }
  
-@@ -374,14 +432,17 @@ func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
+@@ -381,14 +439,17 @@ func (c DockerConfiguration) SliceDefaults() cgroups.Defaults {
  // CgroupParent. A server pinned elsewhere by WINGS_CGROUP_PARENT gets its
  // explicit WINGS_CG_* values only, and is left out of the floor ledger: its
  // floors draw on that administrator's slice, not on this node's tier.
@@ -171,7 +182,7 @@ index 23c52d1..b7cf4ab 100644
  	}
  	if onNodeTier {
  		req.Parent = c.CgroupParent
-@@ -389,6 +450,46 @@ func (c DockerConfiguration) ScopeEnsureRequest(uuid, containerID, parent string
+@@ -396,6 +457,46 @@ func (c DockerConfiguration) ScopeEnsureRequest(uuid, containerID, parent string
  	return req
  }
  
@@ -258,8 +269,45 @@ index bd45c50..d850c8e 100644
  	if req.Scope != "" {
  		t.Errorf("Scope = %q, want \"\" for a short container id", req.Scope)
  	}
+diff --git a/environment/docker/container.go b/environment/docker/container.go
+index 323d53f..66019bd 100644
+--- a/environment/docker/container.go
++++ b/environment/docker/container.go
+@@ -154,11 +154,30 @@ func (e *Environment) InSituUpdate() error {
+ 	// retired per-server-slice design the two writers lived on different units
+ 	// and composed by the min-along-path rule; on one unit they overwrite.
+ 	//
++	// The band comes from this environment's own process state rather than from
++	// the server's slice phase, which lives a layer up in server/slice_phase.go
++	// and is not reachable from here. A container still in the starting state is
++	// exactly the condition the startup band exists for, and it is the same
++	// signal the phase machinery keys on (the egg's startup "done" matcher flips
++	// the environment to running). The two can disagree only for a server that
++	// stages a startup band AND either names a WINGS_CG_STEADY_MATCH that fires
++	// off the running transition or has already burnt its startup grace — and
++	// only until the next application. Applying nothing instead leaves the
++	// panel's values in place until the container is next started, which is
++	// strictly worse.
++	//
+ 	// Deliberately synchronous and last: the properties must land after the
+-	// Docker write, and applying them is a bounded D-Bus round trip.
++	// Docker write. Its own context, because the update above may have consumed
++	// most of this call's budget and a D-Bus round trip that is skipped for lack
++	// of a deadline is the same silent no-op this whole path exists to prevent.
++	// The steady ramp is deliberately not used — see applyScopeProps.
++	phase := cgroups.PhaseSteady
++	if e.State() == environment.ProcessStartingState {
++		phase = cgroups.PhaseStartup
++	}
+ 	sctx, scancel := context.WithTimeout(context.Background(), 15*time.Second)
+ 	defer scancel()
+-	e.applyScopeProps(sctx)
++	e.applyScopeProps(sctx, phase, "panel-side in-situ resource update", false)
+ 
+ 	return nil
+ }
 diff --git a/environment/docker/power.go b/environment/docker/power.go
-index acf2154..122cae9 100644
+index acf2154..78c68d3 100644
 --- a/environment/docker/power.go
 +++ b/environment/docker/power.go
 @@ -12,6 +12,7 @@ import (
@@ -289,7 +337,7 @@ index acf2154..122cae9 100644
  			// Wings can notice and repair drift on a container it did not
  			// start itself.
 -			e.applyScopeProps(ctx)
-+			e.applyScopeProps(ctx, cgroups.PhaseSteady, "reattached to a running container")
++			e.applyScopeProps(ctx, cgroups.PhaseSteady, "reattached to a running container", true)
  
  			return e.Attach(ctx)
  		}
@@ -303,29 +351,43 @@ index acf2154..122cae9 100644
 +	// band is both correct and bounded here: the server will either report
 +	// ready or hit the startup grace, and either way the steady band replaces
 +	// it (see server.beginSlicePhase).
-+	e.applyScopeProps(actx, cgroups.PhaseStartup, "container start")
++	e.applyScopeProps(actx, cgroups.PhaseStartup, "container start", true)
  
  	// No errors, good to continue through.
  	sawError = false
 diff --git a/environment/docker/scope.go b/environment/docker/scope.go
-index b70a319..d9062ba 100644
+index b70a319..71008c2 100644
 --- a/environment/docker/scope.go
 +++ b/environment/docker/scope.go
-@@ -29,7 +29,7 @@ import (
+@@ -27,9 +27,18 @@ import (
+ // container's own cgroup at all. Setting the properties on the leaf scope
+ // removes all three.
  //
++// ramp selects whether a steady application may walk memory.high down in
++// steps (docker.per_server_slices.steady_ramp_step). It belongs to the
++// startup->steady handoff, where the ceiling genuinely drops below a load-time
++// peak and a one-shot write would slam a running workload. A re-assertion of
++// properties that are already in place is not that transition: the value being
++// written is the value already on the unit, so there is nothing to walk, and a
++// ramp there would put a bound-by-reclaim loop on a caller's path for no gain.
++// Pass false from those callers.
++//
  // Strictly best-effort: every failure is logged and none of them affect the
  // server, which runs under the node tier slice either way.
 -func (e *Environment) applyScopeProps(ctx context.Context) {
-+func (e *Environment) applyScopeProps(ctx context.Context, phase cgroups.Phase, reason string) {
++func (e *Environment) applyScopeProps(ctx context.Context, phase cgroups.Phase, reason string, ramp bool) {
  	cfg := config.Get()
  	if !cfg.Docker.PerServerSlices.Enabled {
  		return
-@@ -50,12 +50,12 @@ func (e *Environment) applyScopeProps(ctx context.Context) {
+@@ -50,12 +59,15 @@ func (e *Environment) applyScopeProps(ctx context.Context) {
  		return
  	}
  
 -	req := cfg.Docker.ScopeEnsureRequest(e.Id, c.ID, parent, evs)
 +	req := cfg.Docker.ScopeEnsureRequest(e.Id, c.ID, parent, evs, phase)
++	if !ramp {
++		req.RampStep = 0
++	}
  	if req.Scope == "" {
  		// ScopeName rejected the container id. Nothing sane to do: issuing
  		// property calls against a guessed unit name would silently do nothing.
@@ -607,10 +669,10 @@ index 3b3cb97..6322a86 100644
  // and integers found in the Wings configuration. Zero values mean "no
  // default" for the respective property.
 diff --git a/internal/cgroups/ensure.go b/internal/cgroups/ensure.go
-index c47c0bc..19a8beb 100644
+index 850bd62..520e4a9 100644
 --- a/internal/cgroups/ensure.go
 +++ b/internal/cgroups/ensure.go
-@@ -33,14 +33,26 @@ type EnsureRequest struct {
+@@ -34,14 +34,26 @@ type EnsureRequest struct {
  	// and quietly stamping node defaults onto a scope inside it would fight
  	// the very override that was asked for.
  	ApplyDefaults bool
@@ -638,7 +700,7 @@ index c47c0bc..19a8beb 100644
  func (req EnsureRequest) props() (Props, []error) {
  	props, errs := FromEnv(req.Env)
  	if req.ApplyDefaults {
-@@ -48,7 +60,29 @@ func (req EnsureRequest) props() (Props, []error) {
+@@ -49,7 +61,29 @@ func (req EnsureRequest) props() (Props, []error) {
  		errs = append(errs, derrs...)
  		props = Merge(defaults, props)
  	}
@@ -669,7 +731,7 @@ index c47c0bc..19a8beb 100644
  }
  
  // EnsureForServer applies a server's resource properties to its container
-@@ -56,38 +90,83 @@ func (req EnsureRequest) props() (Props, []error) {
+@@ -57,43 +91,89 @@ func (req EnsureRequest) props() (Props, []error) {
  // placement: the container still runs under the node tier slice, just without
  // its own guarantees, and the emitted warning is what tells the administrator
  // exactly that.
@@ -710,6 +772,7 @@ index c47c0bc..19a8beb 100644
 +			l.WithError(err).Warn("cgroups: could not apply container scope properties; the container runs under the node tier without its own resource guarantees")
 +			return
 +		}
++		logTierFloorUnset(l.WithField("properties", res.Applied.String()), req, res)
 +		logOvercommit(l.WithField("properties", res.Applied.String()), req, res)
 +		l.WithField("properties", res.Applied.String()).WithField("memory_high_target", FormatSize(high)).
 +			Info("cgroups: steady band applied; ramping memory.high down to the ceiling")
@@ -731,6 +794,7 @@ index c47c0bc..19a8beb 100644
  		return
  	}
  	entry := l.WithField("properties", res.Applied.String())
+ 	logTierFloorUnset(entry, req, res)
 -	if res.Overcommit {
 -		// Not a reduction — the floors were applied exactly as configured. But
 -		// they now add up to more than the tier slice can back, which changes
@@ -748,7 +812,7 @@ index c47c0bc..19a8beb 100644
  	}
  	entry.Info("cgroups: applied container scope properties")
  }
-+
+ 
 +// logOvercommit emits the node-tier tripwire line and reports whether it fired.
 +//
 +// This is not a reduction — the floors were applied exactly as configured. But
@@ -768,6 +832,10 @@ index c47c0bc..19a8beb 100644
 +	}).Info("cgroups: per-server memory.min floors now exceed the tier slice's own MemoryMin; they are applied as configured and the kernel shares the tier's protection proportionally to each server's usage below its own floor")
 +	return true
 +}
++
+ // tierFloorUnsetOnce keeps the "tripwire inactive" notice to one line per Wings
+ // process. It cannot be emitted at startup, where it would naturally belong:
+ // the tier's MemoryMin is only knowable over D-Bus, and config validation runs
 diff --git a/internal/cgroups/phase_test.go b/internal/cgroups/phase_test.go
 new file mode 100644
 index 0000000..7417042
@@ -992,7 +1060,7 @@ index 0000000..7417042
 +	}
 +}
 diff --git a/internal/cgroups/sysd.go b/internal/cgroups/sysd.go
-index 05ca5c3..cfa7a92 100644
+index 4cb687e..b164f5f 100644
 --- a/internal/cgroups/sysd.go
 +++ b/internal/cgroups/sysd.go
 @@ -5,7 +5,9 @@ import (
@@ -1005,7 +1073,7 @@ index 05ca5c3..cfa7a92 100644
  	sdbus "github.com/coreos/go-systemd/v22/dbus"
  	godbus "github.com/godbus/dbus/v5"
  
-@@ -229,3 +231,111 @@ func (c *conn) sliceMemoryMin(ctx context.Context, name string) (uint64, bool, e
+@@ -245,3 +247,111 @@ func (c *conn) sliceMemoryMin(ctx context.Context, name string) (uint64, bool, e
  	}
  	return v, true, nil
  }

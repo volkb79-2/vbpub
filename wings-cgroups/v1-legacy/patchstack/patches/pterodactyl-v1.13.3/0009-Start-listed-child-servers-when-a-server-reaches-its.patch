@@ -1,4 +1,4 @@
-From 677d43863ea87740bfdbef36bb41edc8fa8f7a97 Mon Sep 17 00:00:00 2001
+From fd838c0f8f6db96f587d9906daeb7c51d7815203 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 15:49:24 +0000
 Subject: [PATCH 9/9] Start listed child servers when a server reaches its

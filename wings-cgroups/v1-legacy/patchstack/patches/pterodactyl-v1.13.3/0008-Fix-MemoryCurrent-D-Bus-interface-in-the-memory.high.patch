@@ -1,4 +1,4 @@
-From a6562cebe5c392082acb8301bac215988c14b169 Mon Sep 17 00:00:00 2001
+From 41db9655a8a617c09c2fd6d9193e4a49570c4829 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 07:56:59 +0000
 Subject: [PATCH 8/9] Fix MemoryCurrent D-Bus interface in the memory.high ramp
@@ -14,24 +14,84 @@ resolved to instead of walking down gradually.
 
 Switch to GetUnitTypePropertyContext with the interface of the unit actually
 being walked. That is "Scope": the ramp now targets each container's
-docker-<id>.scope, not the per-server slice the original fix named. The bug
-class is the same and so is the failure mode -- a wrong interface name is not
-rejected at compile time, produces no partial behaviour, and shows up only as
-a ramp that quietly never happens -- which is why internal/cgroups'
-systemd integration test now reads MemoryCurrent back from a real scope
-rather than trusting the constant.
+docker-<id>.scope, not the per-server slice the original fix named.
+
+The bug class is the same and so is the failure mode -- a wrong interface
+name is not rejected at compile time, produces no partial behaviour, and
+shows up only as a ramp that quietly never happens. Nothing but a real bus
+can catch that, so the systemd integration case for MemoryCurrent is pointed
+at the production reader here: it calls (*conn).memoryCurrent against a live
+scope and asserts on what that function returns.
+
+It previously read the property through the test file's own itTypeProp helper,
+which takes the interface name as an argument. That asserted the test's own
+string literal, not sysd.go's: with this patch reverted, the case still
+passed. Reading through the function under test is what makes the revert
+fail, which is the only form of proof this fix can have.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01PgCYRx4mTFsr4wtxuHCVXH
 ---
- internal/cgroups/sysd.go | 10 ++++++++--
- 1 file changed, 8 insertions(+), 2 deletions(-)
+ internal/cgroups/integration_test.go | 32 ++++++++++++++++++++++++++--
+ internal/cgroups/sysd.go             | 10 +++++++--
+ 2 files changed, 38 insertions(+), 4 deletions(-)
 
+diff --git a/internal/cgroups/integration_test.go b/internal/cgroups/integration_test.go
+index 98c0eec..75c4fe4 100644
+--- a/internal/cgroups/integration_test.go
++++ b/internal/cgroups/integration_test.go
+@@ -190,6 +190,13 @@ func TestApplyScopePropertiesIntegration(t *testing.T) {
+ // interface name differs from the retired slice design's: this test exists so
+ // that a future change to the ramp cannot silently regress to a name that
+ // errors on every call.
++//
++// It therefore calls the PRODUCTION reader, (*conn).memoryCurrent, and not the
++// itTypeProp helper. The helper takes the interface name as an argument, so a
++// test written on top of it asserts only that the test file's own string
++// literal is right — the exact reading under which an earlier version of this
++// test passed unchanged with sysd.go reverted to "Slice". Reading through the
++// function under test is the whole point: the mutant has to die here.
+ func TestScopeMemoryCurrentIsReadableIntegration(t *testing.T) {
+ 	ctx := itCtx(t)
+ 	scope := "docker-" + itScopeID[:62] + "b2.scope"
+@@ -199,9 +206,30 @@ func TestScopeMemoryCurrentIsReadableIntegration(t *testing.T) {
+ 	if _, err := Apply(ctx, Target{Scope: scope}, Props{MemoryLow: u64(16 << 20)}); err != nil {
+ 		t.Fatalf("Apply: %v", err)
+ 	}
+-	if got := itTypeProp(t, ctx, scope, "Scope", "MemoryCurrent"); got == ^uint64(0) {
+-		t.Error("MemoryCurrent reads as infinity; accounting is not enabled on the scope")
++
++	c, err := connect(ctx)
++	if err != nil {
++		t.Fatalf("connect: %v", err)
++	}
++	defer c.close()
++
++	cur, ok, err := c.memoryCurrent(ctx, scope)
++	if err != nil {
++		// This is the regression the ramp cannot survive: a wrong D-Bus
++		// interface is not a compile error and produces no partial behaviour,
++		// it fails on every call, and rampHigh returns on the first failure.
++		t.Fatalf("memoryCurrent on a real scope: %v (wrong D-Bus interface for a scope's resource-control properties?)", err)
+ 	}
++	if !ok {
++		t.Fatal("memoryCurrent reports MemoryCurrent unavailable (infinity); accounting is not enabled on the scope")
++	}
++	// The value itself is deliberately not asserted. This scope is created by
++	// moving an ALREADY-RUNNING process into it, exactly as Docker's systemd
++	// driver does, and the pages that process faulted in before the move stay
++	// charged where they were — so a freshly created scope legitimately reads
++	// 0. What has to hold is that the read SUCCEEDS on a scope, which is the
++	// entirety of what a wrong interface name breaks.
++	t.Logf("memoryCurrent(%s) = %d bytes", scope, cur)
+ }
+ 
+ // Apply must refuse to point a container property write at a slice: a slice
 diff --git a/internal/cgroups/sysd.go b/internal/cgroups/sysd.go
-index cfa7a92..6f19589 100644
+index b164f5f..a416aaf 100644
 --- a/internal/cgroups/sysd.go
 +++ b/internal/cgroups/sysd.go
-@@ -245,10 +245,16 @@ const rampMaxDuration = 10 * time.Minute
+@@ -261,10 +261,16 @@ const rampMaxDuration = 10 * time.Minute
  
  // memoryCurrent reads the slice's current memory usage (the MemoryCurrent unit
  // property) over D-Bus. systemd enables accounting implicitly once any Memory*
