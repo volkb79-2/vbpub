@@ -108,11 +108,52 @@ services:
       MM_SERVICESETTINGS_LOCALMODESOCKETLOCATION: "/var/tmp/mattermost_local.socket"
       # ── Safe-governance baseline, mirroring ntfy's server.yml posture ──
       # No open server / no self-signup: accounts are admin-created only.
+      #
+      # ENABLEUSERCREATION is "false", NOT the "true" this stack shipped
+      # until nyxloom-P110. That combination did NOT deliver the README's
+      # "no self-signup — admin-created only" claim, and it was measured, not
+      # reasoned about (11.10.1, throwaway instance):
+      #
+      #   POST /api/v4/users            (no token, no invite) -> 403
+      #                                 api.user.create_user.no_open_server
+      #   POST /api/v4/users?iid=<team invite_id>             -> 201 CREATED
+      #
+      # i.e. ENABLEOPENSERVER=false closes the bare signup route and NOTHING
+      # else: anyone holding a team's `invite_id` creates a full `system_user`
+      # anonymously. That id is not a secret in any useful sense — the team
+      # this stack's own hook creates comes out `type: "O"` with
+      # `allow_open_invite: true`, so the id is in the invite link every team
+      # member can copy, including the `nyxloom-installer` service account
+      # whose credential is meant to live on third-party install hosts. Behind
+      # `expose_public = true` that is an unauthenticated account-creation
+      # endpoint on the public internet.
+      #
+      # ENABLEUSERCREATION=false is the flag that closes it, and it does NOT
+      # cost this stack anything: `mmctl --local user create` is an admin-
+      # socket path and keeps working (measured — the provisioning hook
+      # creates all four accounts on a fresh instance with this set), so
+      # "admin-created only" becomes literally true instead of aspirational.
       MM_TEAMSETTINGS_ENABLEOPENSERVER: "false"
-      MM_TEAMSETTINGS_ENABLEUSERCREATION: "true"
+      MM_TEAMSETTINGS_ENABLEUSERCREATION: "false"
       MM_TEAMSETTINGS_ENABLEUSERDEACTIVATION: "false"
+      # Kept "true", and left alone deliberately. It reads like the obvious
+      # thing to switch off, but it is the email/password AUTHENTICATION
+      # method as well as the signup one, and no SSO provider is configured
+      # here — turning it off risks leaving this server with no way to log in
+      # at all. NOT MEASURED (unlike everything else in this block): the
+      # throwaway was torn down before that was tested, so it is reasoned
+      # about, and it is flagged as such rather than presented as a finding.
+      # It is also not the account-creation gate: with ENABLEUSERCREATION
+      # false, the signup route already refuses (measured — 501
+      # `api.user.create_user.signup_email_disabled`) while
+      # `POST /api/v4/users/login` still returns 200 for both human accounts.
       MM_EMAILSETTINGS_ENABLESIGNUPWITHEMAIL: "true"
       MM_EMAILSETTINGS_REQUIREEMAILVERIFICATION: "false"
+      # Default is TRUE (measured). Inert while no SMTP is configured, but it
+      # is the other invite surface and there is no reason to leave the only
+      # thing standing between it and use as an "SMTP was configured later"
+      # accident.
+      MM_SERVICESETTINGS_ENABLEEMAILINVITATIONS: "false"
       # No SMTP is configured; sending would only produce error noise.
       MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS: "false"
       MM_EMAILSETTINGS_ENABLEEMAILBATCHING: "false"
@@ -135,6 +176,111 @@ services:
       MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS: "{{ 'true' if mattermost.enable_user_access_tokens else 'false' }}"
       MM_SERVICESETTINGS_ENABLEDEVELOPER: "false"
       MM_SERVICESETTINGS_ENABLETESTING: "false"
+      # ── nyxloom-P110: settings whose SILENT DEFAULT was wrong for a
+      #    public instance. Every value below the divider was read off a
+      #    throwaway 11.10.1 instance with `mmctl --local config get` before
+      #    being set, because guessing is what this stack does not do.
+      #
+      # EnableOAuthServiceProvider's default is TRUE. Mattermost Team Edition
+      # ships an OAuth2 *authorization server* switched on: a system admin can
+      # register third-party OAuth apps that then mint bearer credentials for
+      # this server. Nothing in nyxloom uses it, and it is a second credential
+      # factory sitting behind the one human admin login. Off, explicitly —
+      # the same "explicit over silently-inherited-default" rule this stack
+      # already applies to `cgroup_parent` and `device`.
+      MM_SERVICESETTINGS_ENABLEOAUTHSERVICEPROVIDER: "false"
+      # Deletion APIs. All three ALREADY default false (measured); they are
+      # restated because "measured false today" and "false by contract" are
+      # different things across an image bump, and these three are the ones
+      # that turn a stolen admin session into data loss rather than a leak.
+      MM_SERVICESETTINGS_ENABLEAPITEAMDELETION: "false"
+      MM_SERVICESETTINGS_ENABLEAPIUSERDELETION: "false"
+      MM_SERVICESETTINGS_ENABLEAPICHANNELDELETION: "false"
+      # ── Login surface (item 5 of the P110 audit) ───────────────────────
+      # MaximumLoginAttempts already defaults to 10 (measured), so the public
+      # login form is NOT the zero-lockout surface it was suspected to be.
+      # Restated at the same value rather than tightened: two human logins
+      # with GEN_LOCAL passwords do not need a 3-strike lockout, and a
+      # too-tight threshold is its own denial-of-service on the operator.
+      MM_SERVICESETTINGS_MAXIMUMLOGINATTEMPTS: "10"
+      # SessionLengthWebInHours defaults to 4320 — 180 days. That is the one
+      # login-surface default that IS wrong here: a browser session stolen
+      # once stays valid for half a year. 168h = 7 days, and
+      # ExtendSessionLengthWithActivity (default true, restated) means the
+      # operator's own session is refreshed by use rather than expiring
+      # mid-week.
+      MM_SERVICESETTINGS_SESSIONLENGTHWEBINHOURS: "168"
+      MM_SERVICESETTINGS_EXTENDSESSIONLENGTHWITHACTIVITY: "true"
+      # MFA is AVAILABLE in Team Edition (measured: the setting exists and
+      # defaults false). Enabled, deliberately NOT enforced: enabling only
+      # exposes the per-account opt-in so the operator can turn it on for the
+      # human login, while ENFORCE would apply server-wide and lock out any
+      # account that authenticates with a password and cannot hold a TOTP
+      # secret.
+      MM_SERVICESETTINGS_ENABLEMULTIFACTORAUTHENTICATION: "true"
+      MM_SERVICESETTINGS_ENFORCEMULTIFACTORAUTHENTICATION: "false"
+      # EnableSecurityFixAlert defaults TRUE and is a telemetry channel —
+      # it reports this server's version and deployment shape to Mattermost.
+      # The README already claims "no telemetry" and MM_LOGSETTINGS_
+      # ENABLEDIAGNOSTICS is already false; leaving this one on made that
+      # claim untrue. The cost is stated rather than hidden: nobody will mail
+      # this instance about a CVE, so the image tag is the operator's only
+      # notification channel and bumping it stays a deliberate act.
+      MM_SERVICESETTINGS_ENABLESECURITYFIXALERT: "false"
+      # ── Directory disclosure (PrivacySettings) ──────────────────────────
+      # Both default TRUE. Measured consequence: any authenticated account —
+      # including `nyxloom-installer`, whose credential is meant to sit on a
+      # third-party install host — can read every other account's address and
+      # roles off `GET /api/v4/users/username/<name>`, which is how an
+      # attacker finds out WHICH account is the system admin worth attacking.
+      # The four provisioned addresses are `*@nyxloom.local` placeholders, so
+      # hiding them costs nothing and the operator loses no function: mmctl's
+      # local admin socket is not subject to PrivacySettings (verified — the
+      # hook's `channel users list` parse still sees the `(<email>)` field).
+      MM_PRIVACYSETTINGS_SHOWEMAILADDRESS: "false"
+      MM_PRIVACYSETTINGS_SHOWFULLNAME: "false"
+      # ── Rate limiting (item 4 of the P110 audit) ────────────────────────
+      # RateLimitSettings.Enable defaults FALSE (measured), and the shared
+      # ingress does NOT make up for it: tls-edge attaches exactly one
+      # entrypoint-level middleware, `secure-headers` (HSTS / nosniff /
+      # referrer-policy), and lists `rateLimit` under ARCHITECTURE.md F5
+      # "Traefik middleware additions — Partially implemented" as a future
+      # item with no definition shipped in `edge-proxy/conf.d/middlewares.yml`.
+      # So app-level limiting here is NOT redundant; it is the only limiter
+      # in the path.
+      #
+      # The estate already HAS a pattern for this and it is app-level, not
+      # edge-level: ../ntfy/server.yml carries visitor-request-limit-burst /
+      # -replenish / -subscription-limit / -message-daily-limit with the
+      # comment "defense in depth; all real use is authenticated", plus
+      # `behind-proxy: true` so the limiter keys on the forwarded address
+      # instead of the edge's. This block is that same shape in Mattermost's
+      # vocabulary, not a new invention.
+      #
+      # PerSec/MaxBurst/MemoryStoreSize are restated at their measured
+      # defaults (10 / 100 / 10000) — the default VALUES are fine, it is
+      # `Enable: false` that was not.
+      MM_RATELIMITSETTINGS_ENABLE: "true"
+      MM_RATELIMITSETTINGS_PERSEC: "10"
+      MM_RATELIMITSETTINGS_MAXBURST: "100"
+      MM_RATELIMITSETTINGS_MEMORYSTORESIZE: "10000"
+{% if mattermost.expose_public %}
+      # KEYING, and it has to follow the topology — this is the one part of
+      # the hardening that is genuinely conditional, because getting it wrong
+      # inverts the control rather than weakening it. Behind tls-edge every
+      # request arrives from the Traefik container's address, so the default
+      # VaryByRemoteAddr=true would put the entire internet in ONE bucket:
+      # a single client could then exhaust the limit for the operator, the
+      # daemon and the install hosts at once. Keyed on the forwarded address
+      # instead — ntfy's `behind-proxy: true`, spelled Mattermost's way.
+      MM_RATELIMITSETTINGS_VARYBYREMOTEADDR: "false"
+      MM_RATELIMITSETTINGS_VARYBYHEADER: "X-Forwarded-For"
+{% else %}
+      # Not exposed: there is no proxy in front, so no X-Forwarded-For to
+      # trust, and keying on it would put every caller in one bucket for the
+      # mirror-image reason. The peer address IS the caller here.
+      MM_RATELIMITSETTINGS_VARYBYREMOTEADDR: "true"
+{% endif %}
       # nyxloom notifications are typed text only (SPEC §13) — the same
       # reason ntfy runs with attachments disabled.
       MM_FILESETTINGS_ENABLEFILEATTACHMENTS: "false"

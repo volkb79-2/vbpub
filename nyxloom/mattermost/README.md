@@ -54,9 +54,22 @@ network-exposed admin API.
 | `nyxloom-installer` | regular — 3rd-party service account | `installs` | `mattermost/installer_password` |
 | `nyxloom-intake` | regular — the feature-intake chatbot (nyxloom-P109) | `intake` (**private**) | `mattermost/intake_password` |
 
-`nyxloom-admin` is deliberately **not** declared in `[mattermost.provision]`:
-the hook never touches an account it does not own, so the P106 bootstrap
-account is left exactly as it is. Log in as `nyxloom-operator` instead.
+`nyxloom-admin` **is** declared as of nyxloom-P110, reversing P107. Measured on
+a genuinely empty instance, P107's config created **three** accounts, not four
+— nothing created `nyxloom-admin`, which existed only as an artefact of P106's
+manual bootstrap on the live server and would have vanished on any rebuild. It
+is listed **first** because Mattermost promotes the first-ever account on an
+empty server to system admin (measured), so the promotion lands on the account
+that is meant to have it. On the live instance the entry reconciles to a
+no-op: the hook still never touches an account that already exists.
+
+It stays a **bootstrap/system** account either way — log in as
+`nyxloom-operator` for daily use.
+
+Two channels are declared; a fresh team comes up with **four**, because
+`mmctl team create` also creates Mattermost's own `town-square` and
+`off-topic` and auto-joins every team member to them. That is Mattermost
+behaviour, not drift, and `all_channels = true` resolves against all four.
 
 "Access to all channels" is `all_channels = true`, resolved against the team's
 channel list **at reconcile time** — a channel added to
@@ -235,6 +248,100 @@ tls-edge (same domain convention and router-label pattern as ntfy) and re-points
 a real public endpoint on a real domain. The locked-down posture below applies
 either way.
 
+The ordered steps for actually flipping it are further down, under
+[Going public](#going-public--the-post-merge-recipe). Read the audit first.
+
+## Security audit for public exposure (nyxloom-P110)
+
+Everything in this section was **measured** against a throwaway 11.10.1
+instance in its own `ciu worktree` — never read out of the Mattermost docs and
+never inferred from a setting's name. That discipline was not decoration: the
+two items that looked most obviously fine — `ENABLEOPENSERVER=false` closing
+self-signup, and OAuth "surely defaulting off" — were the two that were wrong.
+
+### Found wrong, and fixed
+
+| Setting | Was | Now | What the measurement showed |
+|---|---|---|---|
+| `MM_TEAMSETTINGS_ENABLEUSERCREATION` | `true` | `false` | `POST /api/v4/users` unauthenticated → **403** `no_open_server`, but `POST /api/v4/users?iid=<team invite_id>` → **201 CREATED**. `ENABLEOPENSERVER=false` closes the bare signup route and nothing else. |
+| `MM_SERVICESETTINGS_ENABLEOAUTHSERVICEPROVIDER` | unset | `false` | The default is **`true`**. Team Edition ships an OAuth2 authorization server switched on — a second credential factory behind the one human admin login. |
+| `MM_RATELIMITSETTINGS_ENABLE` (+ `PERSEC`/`MAXBURST`/`MEMORYSTORESIZE`/keying) | unset | `true` (10/100/10000) | `RateLimitSettings.Enable` defaults **false**, and tls-edge does not compensate: its only entrypoint middleware is `secure-headers`, and `rateLimit` sits under ARCHITECTURE.md **F5 "Partially implemented"** with no definition in `edge-proxy/conf.d/middlewares.yml`. App-level is the only limiter in the path — which is also the shape `../ntfy/server.yml` already uses. |
+| `MM_SERVICESETTINGS_SESSIONLENGTHWEBINHOURS` | unset | `168` | Default **4320 hours = 180 days**. A browser session stolen once stayed valid for half a year. |
+| `MM_PRIVACYSETTINGS_SHOWEMAILADDRESS` / `SHOWFULLNAME` | unset | `false` | Both default **true**: any authenticated account — including `nyxloom-installer`, whose credential is meant to live on a third-party install host — read every other account's address from `GET /api/v4/users/username/<name>`. After the change the same call returns `email: ""`. **Partial, stated as such:** `roles` is *not* covered by `PrivacySettings` and still comes back, so an authenticated caller can still tell which account is the system admin. Closing that would mean a permissions-scheme change, not a config flag. |
+| `MM_SERVICESETTINGS_ENABLEEMAILINVITATIONS` | unset | `false` | Defaults **true**. Inert without SMTP, but it is the other invite surface and nothing but the absence of SMTP was stopping it. |
+| `MM_SERVICESETTINGS_ENABLESECURITYFIXALERT` | unset | `false` | Defaults **true** and is a telemetry channel, which made this README's "no telemetry" claim untrue. Stated cost: nobody will mail this instance about a CVE — the pinned image tag is the operator's only notification channel. |
+
+### Checked and already correct — restated explicitly, not changed
+
+Restating a value that already matches is this estate's "explicit over
+silently-inherited-default" rule (the same reason `cgroup_parent` and `device`
+are spelled out rather than autodetected): a measured default is a fact about
+today's image, not a contract across the next bump.
+
+| Setting | Measured default | Note |
+|---|---|---|
+| `MaximumLoginAttempts` | `10` | The public login form is **not** the zero-lockout surface it was suspected to be. Restated at 10 rather than tightened — two human logins with `GEN_LOCAL` passwords do not need a 3-strike lockout, and a tight threshold is its own denial of service on the operator. |
+| `EnableAPITeamDeletion` / `EnableAPIUserDeletion` / `EnableAPIChannelDeletion` | all `false` | Restated: these are the ones that turn a stolen admin session into data loss rather than a leak. |
+| `EnableMultifactorAuthentication` | `false`, and **available in Team Edition** | Turned **on** (not enforced) so the operator can opt the human login in; `ENFORCE` stays false because it applies server-wide. |
+
+### Checked and found to need nothing
+
+- **Non-admin webhook minting.** `MM_SERVICESETTINGS_ENABLEONLYADMININTEGRATIONS`
+  does not exist in 11.10.1 — `mmctl config get` answers `invalid key`. The
+  setting was replaced by the permissions scheme, and the scheme is already
+  right: `system_user`, `team_user` and `channel_user` hold **no** `*webhook*`
+  permission at all, and a logged-in non-admin `POST /api/v4/hooks/incoming`
+  is refused **403** where the same call as a system admin returns **201**.
+  Nothing to set; the `nyxloom-installer` pattern cannot self-mint webhooks.
+- **Clickjacking / response headers.** Mattermost already sends
+  `Content-Security-Policy: frame-ancestors 'self'`, `X-Frame-Options:
+  SAMEORIGIN`, `X-Content-Type-Options: nosniff` and `Referrer-Policy:
+  no-referrer` on the web app; tls-edge adds HSTS at the entrypoint. No
+  per-router Traefik `headers` middleware is warranted — and this is exactly
+  the case tls-edge's `secure-headers` deliberately leaves `frameDeny` unset
+  for.
+
+### Known residual, NOT fixed here — stated so it is not mistaken for covered
+
+`alerts` is a **public** channel. Measured on the throwaway, logged in as
+`nyxloom-installer` — an account deliberately left OUT of `alerts`:
+`GET /api/v4/channels/<alerts>/posts` → **200** (it reads the channel without
+being a member) and `POST /api/v4/channels/<alerts>/members` → **201** (it
+joins). So `ciu.defaults.toml.j2`'s claim that a compromised install host
+"cannot read nyxloom's own operator traffic" is weaker than it reads.
+
+**The signup fix above does not touch this, and it is worth being blunt about
+why**, because the two look related and are not. `ENABLEUSERCREATION=false`
+stops *new accounts being created*. This gap is about accounts that **already
+exist**: any member of the team can browse and join any *public* channel in
+it, and no server setting in this stack's posture changes that. Removing an
+attacker's ability to sign up does not remove an existing service account's
+ability to join `alerts`. (An earlier revision of this section led with the
+team's `type: "O"` / `allow_open_invite: true` shape, which invited exactly
+that wrong inference — those govern joining the **team**, and every account
+here is already a team member.)
+
+Closing it means making `alerts` **private**, the way nyxloom-P109 made
+`intake` private for the same read-boundary reason. The hook only ever
+*creates* channels, so setting `private = true` in
+`[[mattermost.provision.channels]]` would silently do nothing to the existing
+live channel — it is an **operator action on the live instance**, not a code
+change a package can verify. It is a named decision point in the go-public
+recipe below (step 2b), not just a note here.
+
+The blast radius that actually matters — the installer's webhook URL — is
+post-only and targets `installs` alone, which is unchanged.
+
+### One consequence worth knowing before debugging anything
+
+A setting supplied through `MM_*` **cannot be changed at runtime**. Measured:
+`mmctl --local config set TeamSettings.EnableUserCreation false` prints
+`Value changed successfully` and the value stays `true`, because the
+environment overlay wins over `config.json`. So the System Console shows these
+greyed out, and *verifying* hardening means reading the running config
+(`mmctl --local config get`) or `docker inspect`, never a successful
+`config set`.
+
 ## Governance / safety posture
 
 - Governance is ciu-resolved, not hand-written: the root's `[governance]`
@@ -247,11 +354,13 @@ either way.
 - Verified live (2026-09-08): both containers sit under
   `/dev.slice/dev-background.slice/`, with `memory.max` / `memory.swap.max` /
   `cpu.max` matching the declared values.
-- Accounts: no open server, no self-signup — admin-created only.
+- Accounts: no open server, **no user creation over the API at all** — created
+  only through the local admin socket. Until nyxloom-P110 this line said "no
+  self-signup" and was **not true**; see the audit below for what closed it.
 - No file attachments, no plugin framework (the prepackaged playbooks/AI
   plugins would otherwise run their own processes inside this 2g cgroup), no
   marketplace, no outgoing webhooks, no slash commands, no telemetry, no email
-  (no SMTP is configured).
+  (no SMTP is configured), no OAuth2 authorization server.
 - **Personal access tokens: off by default**, and their own declared flag
   (`[mattermost].enable_user_access_tokens`) rather than an implication of
   provisioning one. See "The `intake` channel and its PAT" above for what
@@ -263,6 +372,307 @@ either way.
   `expose_env` escape hatch (S4.19), because the 11.x image ships no shell for
   the S4.18 entrypoint-wrapper pattern and Mattermost has no `*_FILE` form for
   its datasource. See the comment in `ciu.defaults.toml.j2`.
+
+## Going public — the post-merge recipe
+
+Run **after** this package is merged, against the live
+`nyxloom-prod-mattermost` stack, from the deployment checkout
+(`/workspaces/vbpub`). The package itself does **not** flip exposure:
+`expose_public` stays `false` in `ciu.defaults.toml.j2` and the controller
+changes it here, live, in step 3 — deliberately, so that landing the hardening
+and creating a public endpoint are two separately reversible decisions.
+
+Steps 0–2 are worth doing **on their own** even if the flip is postponed: none
+of the hardening is conditional on being public.
+
+```bash
+cd /workspaces/vbpub
+R="--define-root /workspaces/vbpub/nyxloom"
+```
+
+### 0. Pre-flight — READ-ONLY, and it gates everything after it
+
+Nothing here mutates anything. It exists because this package declares
+`nyxloom-admin` in `[[mattermost.provision.accounts]]` for the first time
+(P107 left it out), and the hook's "never touch an account that already
+exists" rule only protects the live bootstrap admin **if the live bootstrap
+admin is actually called `nyxloom-admin`**. If it is named anything else, the
+first `ciu up` after this merge creates a *brand-new* `nyxloom-admin` from the
+`GEN_LOCAL` secret, adds it to the team and promotes it to system admin —
+which is not wrong so much as **silent**, and only visible afterwards.
+
+```bash
+C=nyxloom-prod-mattermost
+docker exec $C /mattermost/bin/mmctl --local --json user search nyxloom-admin \
+  | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["username"], "|", d["roles"])'
+# expect: nyxloom-admin | system_admin system_user   (order of roles may vary)
+
+docker exec $C /mattermost/bin/mmctl --local channel users list nyxloom:alerts --all \
+  | grep nyxloom-admin
+# expect: one line naming nyxloom-admin
+
+docker exec $C /mattermost/bin/mmctl --local user list --all
+# expect exactly the accounts you think exist — read the whole list, this is
+# the step that tells you whether the bootstrap admin is named something else
+```
+
+**STOP conditions — do not run step 1 if any of these hold:**
+
+| Observation | What it means | Do this instead |
+|---|---|---|
+| `user search nyxloom-admin` fails / not found | the live bootstrap admin has a **different name** | rename it to `nyxloom-admin`, **or** change `username` in the first `[[mattermost.provision.accounts]]` entry to match the real one, before any `ciu up` |
+| it exists but has **no** `system_admin` role | the hook will promote it on the next run | intended, but confirm that is what you want first — this hook only ever promotes, never demotes an existing account |
+| it exists but is **not** in `alerts` | the hook will add it (`channels = ["alerts"]`) | intended; noted so it is not a surprise |
+| `user list --all` shows an unexpected extra admin | somebody provisioned by hand | resolve that first; it is outside this recipe |
+
+Everything the pre-flight can find is cheaper to find here than after a
+`ciu up` has already created an account and promoted it.
+
+### 1. Apply the hardening (no exposure change yet)
+
+```bash
+ciu up --dir nyxloom/mattermost --dry-run -y $R          # read the rendered env diff
+ciu up --dir nyxloom/mattermost -y $R
+```
+
+The env block changed, so **the app container is RECREATED** — and a recreate
+is precisely where governance silently drops (nyxloom-P106's own lesson, and
+the reason the P107 migration recipe below ends the same way). Re-verify caps
+against the *new* container, do not assume they carried:
+
+```bash
+docker inspect nyxloom-prod-mattermost nyxloom-prod-mattermost-db \
+  --format '{{.Name}} {{.HostConfig.CgroupParent}} {{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}'
+# expect (name / cgroup / memory / nanocpus):
+#   /nyxloom-prod-mattermost     dev-background.slice 2147483648 1500000000
+#   /nyxloom-prod-mattermost-db  dev-background.slice  536870912  500000000
+docker exec nyxloom-prod-mattermost-db cat /sys/fs/cgroup/memory.max /sys/fs/cgroup/cpu.max
+```
+
+Postgres is **not** recreated by this change (its env is untouched), so its
+data is not at risk here; the app container holds no state outside its mounts.
+
+The `post_compose` hook runs as part of this `ciu up`. Expect it to change
+**nothing** on the live instance — the accounts, channels and webhooks already
+exist:
+
+```
+[PROVISION] team_created=False channels_created=[] accounts_created=[] \
+            admin_role_stripped=[] memberships_added=0 webhooks=[...]
+```
+
+`admin_role_stripped=[]` is the expected live value: that step only ever
+touches accounts the same run created.
+
+### 2. Verify the hardening actually took effect — before exposing anything
+
+Reading the *running* config, not `config.json` and not a `config set` (see
+["One consequence worth knowing"](#one-consequence-worth-knowing-before-debugging-anything)
+— an `MM_*` value cannot be changed at runtime and `config set` reports
+success while changing nothing):
+
+```bash
+for k in TeamSettings.EnableUserCreation TeamSettings.EnableOpenServer \
+         ServiceSettings.EnableOAuthServiceProvider ServiceSettings.SessionLengthWebInHours \
+         PrivacySettings.ShowEmailAddress RateLimitSettings.Enable \
+         ServiceSettings.MaximumLoginAttempts ServiceSettings.EnableSecurityFixAlert; do
+  printf '%-50s ' "$k"
+  docker exec nyxloom-prod-mattermost /mattermost/bin/mmctl --local config get "$k"
+done
+# expect: false false false 168 false true 10 false
+```
+
+> `mmctl --local config get RateLimitSettings.VaryByHeader` **panics** on
+> 11.10.1 (`reflect: call of reflect.Value.IsNil on string Value`) — an mmctl
+> bug, not a misconfiguration. Read that one from `docker inspect` instead.
+
+And the probe that actually matters — the invite-id signup route that was open
+before this package. From the devcontainer, joined to the stack's private
+bridge:
+
+```bash
+docker network connect nyxloom-prod-mattermost_internal <this-container>
+B=http://nyxloom-prod-mattermost:8065
+IID=$(docker exec nyxloom-prod-mattermost /mattermost/bin/mmctl --local --json team search nyxloom \
+      | python3 -c 'import sys,json; print(json.load(sys.stdin)[0]["invite_id"])')
+curl -s -X POST "$B/api/v4/users?iid=$IID" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"probe@invalid.example","username":"p110probe","password":"Pr0be-Pw!2026"}'
+# BEFORE this package: 201, and a real account exists afterwards.
+# AFTER (measured):    501  api.user.create_user.signup_email_disabled
+docker network disconnect nyxloom-prod-mattermost_internal <this-container>
+```
+
+**If that returns 201, stop — do not proceed to step 3.** (501 rather than
+403 is Mattermost's own choice of code for a disabled signup route; it is the
+`id` field that identifies the refusal, not the status.)
+
+The two human logins must still work — `ENABLEUSERCREATION` gates account
+*creation*, not authentication, and this was verified on the throwaway before
+being written down:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$B/api/v4/users/login" \
+  -H 'Content-Type: application/json' \
+  -d "{\"login_id\":\"nyxloom-operator\",\"password\":\"$(cat /workspaces/vbpub/nyxloom/.ciu/secrets/mattermost/operator_password)\"}"
+# expect 200
+```
+
+### 2b. 🛑 DECISION POINT — `alerts` is joinable by every account on this server
+
+**This one is not a check that passes or fails. It is a choice, and it has to
+be made here, before the flip, because nothing later in this recipe closes
+it.**
+
+`alerts` is a **public** channel. Any account that is a member of the
+`nyxloom` team can browse it and join it — including `nyxloom-installer`,
+whose credential is meant to live on a third-party install host, and
+including `nyxloom-intake`, whose PAT (P109) is a bearer credential if it is
+ever enabled. Measured as `nyxloom-installer`, an account deliberately left
+out of `alerts`: reading its posts returns **200** and joining returns
+**201**.
+
+**None of the hardening in step 1 affects this.** `ENABLEUSERCREATION=false`
+stops new accounts from being *created*; it does nothing about what the
+accounts that already exist are allowed to join. Do not read step 2's green
+signup probe as covering this.
+
+See it for yourself:
+
+```bash
+PW=$(cat /workspaces/vbpub/nyxloom/.ciu/secrets/mattermost/installer_password)
+TOK=$(curl -s -D- -o /dev/null -X POST "$B/api/v4/users/login" \
+      -H 'Content-Type: application/json' \
+      -d "{\"login_id\":\"nyxloom-installer\",\"password\":\"$PW\"}" \
+      | tr -d '\r' | awk 'tolower($1)=="token:"{print $2}')
+TEAM=$(docker exec $C /mattermost/bin/mmctl --local --json team search nyxloom \
+       | python3 -c 'import sys,json; print(json.load(sys.stdin)[0]["id"])')
+CH=$(curl -s "$B/api/v4/teams/$TEAM/channels/name/alerts" -H "Authorization: Bearer $TOK" \
+     | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
+curl -s -o /dev/null -w 'installer reads alerts: %{http_code}\n' \
+  "$B/api/v4/channels/$CH/posts" -H "Authorization: Bearer $TOK"
+# 200 today — the installer account is not a member and reads it anyway
+```
+
+**Option A — close it (recommended before going public).** Convert the live
+channel to private, then make a fresh create match. Both halves, or the next
+rebuild silently reopens it:
+
+```bash
+docker exec $C /mattermost/bin/mmctl --local channel modify nyxloom:alerts --private
+docker exec $C /mattermost/bin/mmctl --local channel list nyxloom     # expect: alerts (private)
+curl -s -o /dev/null -w 'installer reads alerts: %{http_code}\n' \
+  "$B/api/v4/channels/$CH/posts" -H "Authorization: Bearer $TOK"      # expect 403
+```
+
+Then set `private = true` on the `alerts` entry in
+`[[mattermost.provision.channels]]` — the hook only ever *creates* channels,
+so that flag changes nothing live and exists purely so a future fresh create
+comes up private too. This is exactly the shape nyxloom-P109 used for
+`intake`. Verify afterwards that the four accounts that are *supposed* to be
+in `alerts` still are (`mmctl --local channel users list nyxloom:alerts
+--all`) — converting a channel does not drop members, but it is one command
+to confirm rather than assume.
+
+**Option B — accept it.** Defensible: the accounts in question are all
+nyxloom's own, `alerts` carries operator notifications rather than secrets,
+and the credential with the widest distribution (`installer_webhook_url`) is
+post-only and targets `installs`. If you choose this, **write it down** —
+an accepted risk that nobody recorded is indistinguishable from one nobody
+noticed.
+
+Either way, decide before step 3. Exposure is what turns "an account on this
+server" into a thing an outsider might eventually get hold of.
+
+### 3. Flip exposure
+
+```bash
+$EDITOR nyxloom/mattermost/ciu.defaults.toml.j2     # expose_public = false -> true
+ciu up --dir nyxloom/mattermost --dry-run -y $R
+```
+
+Before the real `ciu up`, confirm the render actually carries exposure — a
+silent no-op here is the failure mode that wastes the most time:
+
+```bash
+grep -E 'traefik|ingress|SITEURL|VARYBYHEADER' nyxloom/mattermost/ciu.compose.yml
+# expect: traefik.enable=true, router rule Host(`mattermost.gstammtisch.dchive.de`),
+#         traefik.docker.network=ingress_public, an `ingress` network on the app
+#         service, MM_SERVICESETTINGS_SITEURL=https://mattermost.gstammtisch.dchive.de,
+#         and MM_RATELIMITSETTINGS_VARYBYHEADER=X-Forwarded-For
+```
+
+That last one is not cosmetic: behind tls-edge every request arrives from the
+Traefik container's address, so if the keying did not switch the rate limiter
+would put the whole internet in one bucket.
+
+```bash
+ciu up --dir nyxloom/mattermost -y $R
+```
+
+Container recreates again → **re-run the governance check from step 1**.
+
+### 4. Verify from OUTSIDE
+
+```bash
+dig +short mattermost.gstammtisch.dchive.de
+curl -sSI https://mattermost.gstammtisch.dchive.de/ | head -1     # 200
+curl -sS  https://mattermost.gstammtisch.dchive.de/api/v4/system/ping
+openssl s_client -connect mattermost.gstammtisch.dchive.de:443 \
+  -servername mattermost.gstammtisch.dchive.de </dev/null 2>/dev/null | openssl x509 -noout -dates -subject
+```
+
+Re-run the **step 2 invite-id probe against the public URL** — internally-true
+is not externally-true, and this is the whole reason the flip is gated:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  "https://mattermost.gstammtisch.dchive.de/api/v4/users?iid=$IID" \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"probe@invalid.example","username":"p110probe","password":"Pr0be-Pw!2026"}'
+# expect 501 — the same refusal as step 2, now proven from outside the host
+```
+
+Then the thing the flip actually buys: `installer_webhook_url` is built on
+`siteurl`, so it was **unreachable from an install host until this moment**.
+The hook re-persists it on the step-3 `ciu up`; prove it end to end from
+outside the private network:
+
+```bash
+cat nyxloom/mattermost/.ciu/secrets/installer_webhook_url   # now https://mattermost...
+curl -sS -X POST "$(cat nyxloom/mattermost/.ciu/secrets/installer_webhook_url)" \
+  -H 'Content-Type: application/json' -d '{"text":"P110 external delivery check"}'
+docker exec nyxloom-prod-mattermost /mattermost/bin/mmctl --local post list nyxloom:installs --number 3
+```
+
+Also confirm the rate limiter is keyed on the real client, not on Traefik:
+two clients from different addresses must not share a budget. The cheap
+version is to check that a burst from one source returns `429` while the
+operator's browser is unaffected.
+
+### 5. Rollback
+
+Exposure is reversible on its own:
+
+```bash
+$EDITOR nyxloom/mattermost/ciu.defaults.toml.j2     # expose_public = true -> false
+ciu up --dir nyxloom/mattermost -y $R               # recreates: re-check governance
+```
+
+That removes the Traefik labels and the `ingress_public` join, and re-points
+`SITEURL` (and therefore the next-minted `installer_webhook_url`) back at the
+internal address. Already-minted webhook ids keep working over the private
+bridge; the persisted `installer_webhook_url` file goes back to the internal
+form on that same run.
+
+**The hardening from step 1 needs no separate revert and should not get one.**
+Nothing in it is conditional on being public: it closes an anonymous
+account-creation route, an OAuth authorization server, a 180-day session, and
+a directory disclosure that were all equally live while the stack was
+internal-only. The single value that *is* topology-dependent —
+`MM_RATELIMITSETTINGS_VARYBYHEADER` — is emitted by the template's own
+`expose_public` branch, so it reverts itself as part of the same edit and
+needs no manual step.
 
 ## Storage — bind-mounted hostdirs + named volumes (nyxloom-P107)
 
@@ -280,10 +690,59 @@ helper — `vol-*/` is gitignored.
 
 **These are deliberately NOT `external` volumes.** External would *protect*
 them from teardown; the requirement is the opposite — the ability to wipe on
-demand. `ciu down` preserves them; **`ciu up --reset` and `ciu clean` delete
-them** (S6.4, which routes to the PHYSICAL path under DooD and degrades to the
-root helper for the uid-70/uid-2000 subtrees the operator cannot remove
-himself), taking every account, channel, message and webhook with them.
+demand. `ciu down` preserves them.
+
+> ### ⚠️ Neither `ciu up --reset` NOR `ciu clean` wipes the hostdirs on this root
+>
+> Both are broken, for the **same single missing key**, and the second one
+> fails *quietly* — which is worse. Measured on ciu 7.12.0 and traced through
+> the installed source (nyxloom-P110):
+>
+> * `ciu up --dir mattermost --reset` →
+>   `[ERROR] deploy.labels.prefix is required for reset`.
+>   `engine.reset_service` raises that **before its Step 1**, because
+>   `nyxloom/ciu.global.defaults.toml.j2` does not set the key.
+> * `ciu clean` calls **the same `engine.reset_service`**, and
+>   `deploy.action_clean` wraps it in `except Exception` — it prints
+>   `reset failed for <stack>`, sets `rc=1`, and **carries on**. Its own
+>   Step 3 and Step 4 then remove docker named volumes and networks, so the
+>   command looks like it did most of its job. It did not do the part that
+>   matters here: removing the `vol-*` hostdirs is `reset_service`'s **Step
+>   2**, inside the call that never ran.
+>
+> An earlier revision of this section said "use `ciu clean` instead", which
+> was wrong in exactly the way that costs an afternoon: the command runs,
+> reports a failure for one stack among several, and leaves a full Postgres
+> data directory behind for the next `ciu up` to adopt as if it were fresh.
+>
+> **The only wipe path that works today** is the root helper — and the three
+> `vol-*` trees are uid 70 / uid 2000, so the operator cannot `rm` them
+> directly. This is the block this package's own throwaway teardown used:
+>
+> ```bash
+> P=/home/vb/volkb79-2/vbpub/nyxloom/mattermost
+> docker run --rm -v "$P":/t alpine:3.20 sh -c \
+>   'rm -rf /t/vol-postgres-data /t/vol-mattermost-config /t/vol-mattermost-logs'
+> ```
+>
+> Remove the containers and named volumes alongside it (`docker rm -f
+> nyxloom-prod-mattermost nyxloom-prod-mattermost-db`, then
+> `docker volume rm $(docker volume ls -q --filter name=nyxloom-prod-mattermost)`).
+>
+> **Fixing it at the source** is one line — `labels.prefix` under `[deploy]`
+> in `../ciu.global.defaults.toml.j2` — and it unblocks both commands for
+> every stack on this root. nyxloom-P110 deliberately did **not** make that
+> change: it is a root-level file shared with `ntfy`, `nyxloomd` and
+> `pwmcp-instance`, and it converts `ciu clean` from partly-inert into
+> genuinely destructive for all of them, which is a decision for whoever owns
+> the root rather than a side effect of a Mattermost package. One fact for
+> whoever does it, since it is the thing that looks scary and is not: ciu uses
+> the prefix in exactly one place, Step 4's orphan-sweep filter
+> `label=<prefix>.component=<service>`, and **ciu never writes that label** —
+> only a consumer's own compose template would. nyxloom's templates do not, so
+> adding the key relabels nothing and orphans nothing; the sweep simply
+> matches zero containers. (v8 drops `labels.prefix` entirely for fixed
+> `ciu.*` ownership labels, so this is a v7-only wart either way.)
 
 **No init container**, unlike dstdns's `infra/db-core` (`postgres_init`, with
 its `CLEAN_DATA_DIR` wipe gate). That container exists there because db-core

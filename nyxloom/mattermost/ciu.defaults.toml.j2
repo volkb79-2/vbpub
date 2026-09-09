@@ -208,6 +208,23 @@ team_display_name = "nyxloom"
 
 # `alerts` already exists (P106). `installs` is new: the separate channel the
 # 3rd-party service account posts host-provisioning progress into.
+#
+# NEITHER is `private`, and unlike `intake` below that is NOT a considered
+# decision recorded here — it is the P106/P107 status quo, and nyxloom-P110
+# measured what it costs: `alerts` is public, so ANY team member browses and
+# joins it (`GET .../posts` 200, `POST .../members` 201 as `nyxloom-installer`,
+# an account deliberately excluded from it). The comment on that account below
+# claims a compromised install host "cannot read nyxloom's own operator
+# traffic"; as long as `alerts` is public, that is weaker than it sounds.
+#
+# P110 did not flip it, and the reason is mechanical rather than a judgement
+# about the risk: this hook only ever CREATES channels, so `private = true`
+# here would change nothing about the live `alerts` and would leave the
+# committed config asserting something untrue of the running server. Converting
+# it is `mmctl --local channel modify nyxloom:alerts --private` on the live
+# instance, and it is a named decision point (step 2b) in README.md's
+# go-public recipe. If it is ever converted, set `private = true` here IN THE
+# SAME PASS so a fresh create matches.
 [[mattermost.provision.channels]]
 name = "alerts"
 display_name = "Alerts"
@@ -237,10 +254,36 @@ display_name = "Feature Intake"
 private = true
 
 # ── Accounts ───────────────────────────────────────────────────────────────
-# `nyxloom-admin` (P106) is deliberately NOT listed: it is now understood as
-# the BOOTSTRAP/system account, not a daily-use one, and this hook never
-# touches an account it does not declare.
+# ORDER MATTERS on an EMPTY instance and nowhere else: Mattermost promotes the
+# FIRST-EVER account on a server with no users to `system_admin` (measured on
+# 11.10.1 — account #1 comes out `system_admin system_user`, account #2 plain
+# `system_user`). `nyxloom-admin` is listed first so that promotion lands on
+# the account that is *supposed* to be the bootstrap administrator. The hook
+# also strips the role from any account it creates that declares
+# `system_admin = false` and got promoted anyway, so this ordering is a
+# belt-and-braces preference, not the only guard — but relying on the strip
+# alone would mean deliberately mis-provisioning and then repairing.
 #
+# `nyxloom-admin` IS declared, reversing P107's decision to leave it out
+# (nyxloom-P110). Two measured reasons, not a change of taste:
+#   * The operator's requirement is "our 4 users are created on fresh stack
+#     create". Measured on a genuinely empty instance, P107's config produced
+#     THREE: nothing creates `nyxloom-admin`, so it existed only as an
+#     artefact of P106's manual bootstrap on the live server. On any rebuild —
+#     including a `ciu up --reset` — it would simply have been gone.
+#   * `mattermost_admin_password` is declared with `consumed_by = "hook"`,
+#     which is S4.20's marker for "deliberately consumed outside compose". No
+#     hook step consumed it. The marker was suppressing an accurate warning.
+# P107's actual concern is preserved intact: the hook still never TOUCHES an
+# account that already exists — no password is re-sent and no role revoked —
+# so on the live instance this entry reconciles to a no-op.
+[[mattermost.provision.accounts]]
+username = "nyxloom-admin"
+email = "admin@nyxloom.local"
+password_secret = "mattermost_admin_password"
+channels = ["alerts"]
+system_admin = true
+
 # nyxloom's own daemon posts as a REGULAR account with its own webhook,
 # replacing P106's `override_username` display trick — a real identity, a
 # credential of its own, and no system-admin rights on the thing that only
@@ -298,8 +341,14 @@ system_admin = false
 #   nyxloom-installer — scoped to `installs` for a third party; giving the
 #                       install-host credential a second, unrelated
 #                       capability is the opposite of what it is for.
-#   nyxloom-admin     — the bootstrap account this hook deliberately never
-#                       touches.
+#   nyxloom-admin     — system_admin, and disqualified for exactly the same
+#                       reason `nyxloom-operator` is. (P109 gave a different
+#                       reason — "the bootstrap account this hook deliberately
+#                       never touches" — which nyxloom-P110 made untrue by
+#                       declaring it above. The CONCLUSION is unchanged and
+#                       actually stronger: it is not a candidate because of
+#                       what it CAN DO, not because of what the hook does or
+#                       does not manage.)
 # So: regular (never system_admin), member of `intake` and nothing else.
 # A leaked intake PAT can read and post in one private channel it was
 # already conversing in, and can do nothing else.

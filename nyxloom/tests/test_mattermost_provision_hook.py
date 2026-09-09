@@ -532,6 +532,505 @@ def test_validate_config_returns_a_list_not_a_bool(hook):
 
 
 # ---------------------------------------------------------------------------
+# _team_exists (nyxloom-P110)
+#
+# The bug this replaces was not subtle in effect and completely invisible in
+# code: `mmctl --local team search <missing>` exits **0**, so a returncode
+# read said "the team exists", `_ensure_team` skipped `team create`, and the
+# next step aborted the deploy with `unable to find team "nyxloom"`. It could
+# only ever fire on a genuinely empty instance, which is precisely the case
+# nobody had run.
+# ---------------------------------------------------------------------------
+
+_TEAM_FOUND = "nyxloom: nyxloom (9999teamid9999999999999999)\n"
+# Verbatim 11.10.1 capture, including the exit code that made this a bug.
+_TEAM_MISSING = "Unable to find team 'nyxloom'\n"
+
+
+def test_team_exists_true_for_a_real_row(hook, monkeypatch):
+    monkeypatch.setattr(hook, "_mmctl", _fake_mmctl(_TEAM_FOUND))
+    assert hook._team_exists("c", "nyxloom") is True
+
+
+def test_team_exists_false_on_the_not_found_sentinel_despite_rc_zero(hook, monkeypatch):
+    monkeypatch.setattr(hook, "_mmctl", _fake_mmctl(_TEAM_MISSING, rc=0))
+    assert hook._team_exists("c", "nyxloom") is False
+
+
+def test_team_exists_requires_an_exact_name_not_a_prefix_hit(hook, monkeypatch):
+    # `mmctl team search probe` prints `probe-team: ...` — mmctl matches on a
+    # prefix, so "the search returned a row" is not "the team exists". A
+    # substring hit would make `_ensure_team` skip creating `nyxloom` because
+    # an unrelated `nyxloom-archive` happened to exist.
+    monkeypatch.setattr(
+        hook,
+        "_mmctl",
+        _fake_mmctl("nyxloom-archive: Archive (8888888888888888888888888)\n"),
+    )
+    assert hook._team_exists("c", "nyxloom") is False
+
+
+def test_team_exists_raises_when_the_probe_itself_fails(hook, monkeypatch):
+    monkeypatch.setattr(hook, "_mmctl", _fake_mmctl("", "boom", rc=1))
+    with pytest.raises(hook.ProvisionError):
+        hook._team_exists("c", "nyxloom")
+
+
+def test_team_exists_refuses_a_drifted_row_rather_than_reporting_absent(hook, monkeypatch):
+    # Reporting "absent" on an unparseable row would send `_ensure_team` off to
+    # re-create a team that exists; `team create` fails, and `_must` then
+    # aborts every subsequent deploy.
+    monkeypatch.setattr(hook, "_mmctl", _fake_mmctl("nyxloom | nyxloom | id\n"))
+    with pytest.raises(hook.ProvisionError) as excinfo:
+        hook._team_exists("c", "nyxloom")
+    assert "team search" in str(excinfo.value)
+
+
+def test_team_exists_ignores_the_count_sentence_on_stdout(hook, monkeypatch):
+    monkeypatch.setattr(
+        hook, "_mmctl", _fake_mmctl("There are 1 teams on local instance\n" + _TEAM_FOUND)
+    )
+    assert hook._team_exists("c", "nyxloom") is True
+
+
+def test_ensure_team_creates_when_the_instance_is_empty(hook, monkeypatch):
+    calls: list[tuple] = []
+
+    def _impl(_container, *args, as_json=False):
+        calls.append(args)
+        if args[:2] == ("team", "search"):
+            return 0, _TEAM_MISSING, ""
+        return 0, "New team nyxloom successfully created\n", ""
+
+    monkeypatch.setattr(hook, "_mmctl", _impl)
+    assert hook._ensure_team("c", {"team": "nyxloom"}) is True
+    assert any(a[:2] == ("team", "create") for a in calls)
+
+
+# ---------------------------------------------------------------------------
+# _demote_unintended_admins (nyxloom-P110)
+#
+# Mattermost promotes the FIRST-EVER account on an empty server to
+# system_admin (measured: account #1 -> "system_admin system_user", #2 ->
+# "system_user"). Without this step a fresh `ciu up` handed server
+# administration to whichever entry heads the accounts list.
+# ---------------------------------------------------------------------------
+
+_ACCOUNTS = [
+    {"username": "nyxloom-admin", "system_admin": True},
+    {"username": "nyxloom-daemon", "system_admin": False},
+    {"username": "nyxloom-operator", "system_admin": True},
+    {"username": "nyxloom-installer", "system_admin": False},
+]
+
+
+def _roles_stub(hook, monkeypatch, roles: dict[str, set[str]]):
+    # `_require_user_roles`, not `_user_roles`: the demotion guard reads the
+    # fail-CLOSED twin on purpose, and stubbing the wrong one would leave the
+    # real function running against a `docker exec` that is not there.
+    monkeypatch.setattr(
+        hook, "_require_user_roles", lambda _c, u: roles.get(u, {"system_user"})
+    )
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        hook, "_must", lambda _c, *args, what="": calls.append(args) or ""
+    )
+    return calls
+
+
+def test_demote_strips_the_auto_granted_role_from_a_created_account(hook, monkeypatch):
+    calls = _roles_stub(
+        hook, monkeypatch, {"nyxloom-daemon": {"system_admin", "system_user"}}
+    )
+    demoted = hook._demote_unintended_admins(
+        "c", {"accounts": _ACCOUNTS}, ["nyxloom-daemon", "nyxloom-operator"]
+    )
+    assert demoted == ["nyxloom-daemon"]
+    assert calls == [("roles", "member", "nyxloom-daemon")]
+
+
+def test_demote_never_touches_an_account_this_run_did_not_create(hook, monkeypatch):
+    # P107's rule, unchanged: an operator's manual promotion of a pre-existing
+    # account must survive every reconcile. This is why the step keys off the
+    # created list and not off the declared roles.
+    #
+    # `created` is deliberately NON-EMPTY and simply does not contain the
+    # promoted account. An empty list would prove nothing: the function
+    # short-circuits on `if not created`, so a version that ignored the
+    # created list entirely still passed (caught by deliberate mutation).
+    calls = _roles_stub(
+        hook, monkeypatch, {"nyxloom-daemon": {"system_admin", "system_user"}}
+    )
+    assert (
+        hook._demote_unintended_admins(
+            "c", {"accounts": _ACCOUNTS}, ["nyxloom-installer"]
+        )
+        == []
+    )
+    assert calls == []
+
+
+def test_demote_short_circuits_when_nothing_was_created(hook, monkeypatch):
+    calls = _roles_stub(
+        hook, monkeypatch, {"nyxloom-daemon": {"system_admin", "system_user"}}
+    )
+    assert hook._demote_unintended_admins("c", {"accounts": _ACCOUNTS}, []) == []
+    assert calls == []
+
+
+def test_demote_leaves_a_declared_system_admin_alone(hook, monkeypatch):
+    calls = _roles_stub(
+        hook, monkeypatch, {"nyxloom-operator": {"system_admin", "system_user"}}
+    )
+    assert (
+        hook._demote_unintended_admins("c", {"accounts": _ACCOUNTS}, ["nyxloom-operator"])
+        == []
+    )
+    assert calls == []
+
+
+def test_demote_is_a_no_op_when_the_role_was_never_granted(hook, monkeypatch):
+    # The live instance's shape: `nyxloom-admin` already exists, so nothing the
+    # hook creates is ever account #1 and nothing is ever promoted.
+    calls = _roles_stub(hook, monkeypatch, {})
+    assert (
+        hook._demote_unintended_admins("c", {"accounts": _ACCOUNTS}, ["nyxloom-daemon"])
+        == []
+    )
+    assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# _require_user_roles — the demotion guard's fail-CLOSED role read
+#
+# `_user_roles` returns an empty set on any rc/parse failure. Read by the
+# DEMOTION guard that would be "not an admin, nothing to strip", so an mmctl
+# output-format drift would silently leave a freshly created service account
+# holding system administration — reinstating the exact defect the guard was
+# added for, with no message anywhere. A privilege guard fails closed.
+# ---------------------------------------------------------------------------
+
+_USER_JSON = '{"username": "nyxloom-daemon", "roles": "system_admin system_user"}'
+
+
+def test_require_user_roles_parses_the_roles(hook, monkeypatch):
+    monkeypatch.setattr(hook, "_mmctl", _fake_mmctl(_USER_JSON))
+    assert hook._require_user_roles("c", "nyxloom-daemon") == {
+        "system_admin",
+        "system_user",
+    }
+
+
+def test_require_user_roles_raises_when_the_probe_fails(hook, monkeypatch):
+    monkeypatch.setattr(hook, "_mmctl", _fake_mmctl("", "user not found", rc=1))
+    with pytest.raises(hook.ProvisionError) as excinfo:
+        hook._require_user_roles("c", "nyxloom-daemon")
+    assert "refusing to assume" in str(excinfo.value)
+
+
+def test_require_user_roles_raises_on_non_json_output(hook, monkeypatch):
+    # mmctl prints human-readable errors on both streams even under --json.
+    monkeypatch.setattr(hook, "_mmctl", _fake_mmctl("id: abc\nusername: x\n"))
+    with pytest.raises(hook.ProvisionError):
+        hook._require_user_roles("c", "nyxloom-daemon")
+
+
+def test_require_user_roles_raises_when_the_roles_field_is_gone(hook, monkeypatch):
+    # Valid JSON, drifted schema — the failure mode a bare `.get("roles", "")`
+    # turns into a confident "this account has no roles".
+    monkeypatch.setattr(hook, "_mmctl", _fake_mmctl('{"username": "nyxloom-daemon"}'))
+    with pytest.raises(hook.ProvisionError):
+        hook._require_user_roles("c", "nyxloom-daemon")
+
+
+def test_demote_refuses_rather_than_skipping_when_roles_are_unreadable(hook, monkeypatch):
+    """The whole point, end to end: drift must abort, not silently skip."""
+    monkeypatch.setattr(hook, "_mmctl", _fake_mmctl("", "boom", rc=1))
+    monkeypatch.setattr(hook, "_must", lambda *a, **k: pytest.fail("must not mutate"))
+    with pytest.raises(hook.ProvisionError):
+        hook._demote_unintended_admins("c", {"accounts": _ACCOUNTS}, ["nyxloom-daemon"])
+
+
+def test_user_roles_still_fails_open_for_the_promotion_guard(hook, monkeypatch):
+    # The twin is deliberately unchanged: `_ensure_account` reads it, an empty
+    # answer means "promote", and promoting an account that already holds the
+    # role is a server-side no-op. Erring toward a redundant promotion is
+    # harmless; aborting a deploy over a transient parse failure is not.
+    monkeypatch.setattr(hook, "_mmctl", _fake_mmctl("", "boom", rc=1))
+    assert hook._user_roles("c", "nyxloom-operator") == set()
+
+
+# ---------------------------------------------------------------------------
+# _ensure_account — the "merging cannot touch the live bootstrap admin" claim
+#
+# nyxloom-P110 declares `nyxloom-admin` for the first time, and the entire
+# argument that this is safe on the live instance rests on ONE property of
+# this function: an account that already exists is never sent a password and
+# never has a role taken away. That property had no direct test on either
+# branch; it was verified by reading the code. These pin it.
+# ---------------------------------------------------------------------------
+
+
+def _account_stub(hook, monkeypatch, *, exists: bool, roles=frozenset()):
+    """Record every mmctl verb `_ensure_account` issues, mutating nothing."""
+    calls: list[tuple] = []
+    monkeypatch.setattr(hook, "_user_exists", lambda _c, _u: exists)
+    monkeypatch.setattr(hook, "_user_roles", lambda _c, _u: set(roles))
+    monkeypatch.setattr(
+        hook, "_must", lambda _c, *args, what="": calls.append(args) or ""
+    )
+    return calls
+
+
+class _NoSecretCtx:
+    """Minimal ctx whose `secret_file` fails loudly if anything reads a secret.
+
+    Named to avoid colliding with nyxloom-P109's own `_Ctx` further down this
+    file — one module namespace, two packages, last definition wins.
+    """
+
+    def __init__(self):
+        self.reads: list[str] = []
+
+    def secret_file(self, name):
+        self.reads.append(name)
+        raise AssertionError(f"a secret was read for an existing account: {name}")
+
+
+_ADMIN_SPEC = {
+    "username": "nyxloom-admin",
+    "email": "admin@nyxloom.local",
+    "password_secret": "mattermost_admin_password",
+    "channels": ["alerts"],
+    "system_admin": True,
+}
+
+
+def test_ensure_account_never_reads_a_password_for_an_existing_account(hook, monkeypatch):
+    ctx = _NoSecretCtx()
+    calls = _account_stub(
+        hook, monkeypatch, exists=True, roles={"system_admin", "system_user"}
+    )
+    created = hook._ensure_account("c", ctx, {"team": "nyxloom"}, _ADMIN_SPEC)
+    assert created is False
+    assert ctx.reads == []
+    # `user create` is the ONLY verb that carries a password, and it must not
+    # appear; nor may any password value reach any argv.
+    assert all(a[:2] != ("user", "create") for a in calls)
+    flat = [tok for a in calls for tok in a]
+    assert "--password" not in flat
+
+
+def test_ensure_account_only_adds_team_membership_for_an_existing_admin(hook, monkeypatch):
+    # The full verb set for the live `nyxloom-admin` reconcile: one idempotent
+    # `team users add`, and nothing else. In particular no `roles member`
+    # anywhere — this function only ever promotes.
+    calls = _account_stub(
+        hook, monkeypatch, exists=True, roles={"system_admin", "system_user"}
+    )
+    hook._ensure_account("c", _NoSecretCtx(), {"team": "nyxloom"}, _ADMIN_SPEC)
+    assert calls == [("team", "users", "add", "nyxloom", "nyxloom-admin")]
+
+
+def test_ensure_account_promotes_but_never_demotes(hook, monkeypatch):
+    # Declared system_admin, does not hold it -> promote.
+    calls = _account_stub(hook, monkeypatch, exists=True, roles={"system_user"})
+    hook._ensure_account("c", _NoSecretCtx(), {"team": "nyxloom"}, _ADMIN_SPEC)
+    assert ("roles", "system-admin", "nyxloom-admin") in calls
+
+    # NOT declared system_admin, but holds it -> left alone. An operator's
+    # manual promotion of a pre-existing account survives every reconcile;
+    # stripping it is `_demote_unintended_admins`' job and only for accounts
+    # the same run created.
+    spec = dict(_ADMIN_SPEC, username="nyxloom-daemon", system_admin=False)
+    calls = _account_stub(
+        hook, monkeypatch, exists=True, roles={"system_admin", "system_user"}
+    )
+    hook._ensure_account("c", _NoSecretCtx(), {"team": "nyxloom"}, spec)
+    assert all(a[0] != "roles" for a in calls)
+
+
+def test_ensure_account_reads_the_password_only_when_creating(hook, monkeypatch):
+    class _Store:
+        def __init__(self, path):
+            self.path = path
+
+        def secret_file(self, name):
+            assert name == "mattermost_admin_password"
+            return self.path
+
+    calls = _account_stub(hook, monkeypatch, exists=False)
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        secret = Path(tmp) / "admin_password"
+        secret.write_text("s3cret-value")
+        created = hook._ensure_account(
+            "c", _Store(secret), {"team": "nyxloom"}, _ADMIN_SPEC
+        )
+    assert created is True
+    create = next(a for a in calls if a[:2] == ("user", "create"))
+    assert "--password" in create and "s3cret-value" in create
+
+
+# ---------------------------------------------------------------------------
+# The SHIPPED files, not a synthetic dict (P109's precedent).
+#
+# Every assertion below pins something a live measurement proved wrong; a
+# hand-built config fixture would pass while the file that actually deploys
+# regressed.
+# ---------------------------------------------------------------------------
+
+_STACK = _HOOK_PATH.parents[1]
+_DEFAULTS_TEXT = (_STACK / "ciu.defaults.toml.j2").read_text(encoding="utf-8")
+_COMPOSE_TEXT = (_STACK / "ciu.compose.yml.j2").read_text(encoding="utf-8")
+_FALLBACK_TEXT = (_STACK / "docker-compose.yml").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [
+        # Measured: ENABLEOPENSERVER=false alone still let
+        # `POST /api/v4/users?iid=<invite_id>` create an account (201).
+        ("MM_TEAMSETTINGS_ENABLEUSERCREATION", "false"),
+        ("MM_TEAMSETTINGS_ENABLEOPENSERVER", "false"),
+        # Measured default: true.
+        ("MM_SERVICESETTINGS_ENABLEOAUTHSERVICEPROVIDER", "false"),
+        ("MM_SERVICESETTINGS_ENABLEEMAILINVITATIONS", "false"),
+        ("MM_SERVICESETTINGS_ENABLESECURITYFIXALERT", "false"),
+        # Measured default: 4320 hours (180 days).
+        ("MM_SERVICESETTINGS_SESSIONLENGTHWEBINHOURS", "168"),
+        # Measured default: false, with no rate limiting at the tls-edge layer
+        # either (ARCHITECTURE.md F5 is unimplemented).
+        ("MM_RATELIMITSETTINGS_ENABLE", "true"),
+        # Measured default: true — leaks every account's email AND roles to
+        # any authenticated user.
+        ("MM_PRIVACYSETTINGS_SHOWEMAILADDRESS", "false"),
+        ("MM_PRIVACYSETTINGS_SHOWFULLNAME", "false"),
+    ],
+)
+def test_compose_template_carries_the_p110_hardening(key, value):
+    assert f'{key}: "{value}"' in _COMPOSE_TEXT
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [
+        ("MM_TEAMSETTINGS_ENABLEUSERCREATION", "false"),
+        ("MM_SERVICESETTINGS_ENABLEOAUTHSERVICEPROVIDER", "false"),
+        ("MM_RATELIMITSETTINGS_ENABLE", "true"),
+        ("MM_PRIVACYSETTINGS_SHOWEMAILADDRESS", "false"),
+    ],
+)
+def test_prerendered_fallback_carries_the_same_hardening(key, value):
+    # The plain-compose fallback receives NO ciu overlay, so it has to carry
+    # these by hand — the same reason it carries governance caps by hand, and
+    # the same trap (NL-6) if the two drift.
+    assert f'{key}: "{value}"' in _FALLBACK_TEXT
+
+
+def test_rate_limit_keying_follows_the_exposure_branch():
+    # Behind tls-edge every request arrives from the Traefik container, so
+    # VaryByRemoteAddr would put the whole internet in one bucket; with no
+    # proxy in front there is no X-Forwarded-For to key on. Both halves must
+    # therefore live inside the `expose_public` conditional.
+    exposed = _COMPOSE_TEXT.split("{% if mattermost.expose_public %}")
+    keyed = [
+        block
+        for block in exposed[1:]
+        if "MM_RATELIMITSETTINGS_VARYBYHEADER" in block.split("{% endif %}")[0]
+    ]
+    assert keyed, "VARYBYHEADER must be emitted only when expose_public is true"
+    assert 'MM_RATELIMITSETTINGS_VARYBYHEADER: "X-Forwarded-For"' in _COMPOSE_TEXT
+
+
+def test_expose_public_stays_false_in_the_committed_defaults():
+    # nyxloom-P110 hardens and documents the flip; it does not perform it. The
+    # controller flips exposure live, per the README recipe.
+    #
+    # Anchored to the START of a line: the file also mentions
+    # "`expose_public = false`" inside a comment about the installer webhook's
+    # URL base, and a substring check therefore passed happily with the real
+    # assignment flipped to `true` (caught by deliberate mutation).
+    assignments = [
+        line
+        for line in _DEFAULTS_TEXT.splitlines()
+        if line.startswith("expose_public")
+    ]
+    assert assignments == ["expose_public = false"]
+
+
+def test_every_account_is_declared_with_admin_first():
+    """`nyxloom-admin` heads the list, and the list is the full declared set.
+
+    The operator's requirement was "our 4 users are created on fresh stack
+    create". Measured on a genuinely empty instance, P107's config produced
+    THREE — nothing created `nyxloom-admin`.
+
+    The FIRST position is the part that carries weight: Mattermost promotes
+    the first-ever account on an empty server to system_admin, so whoever
+    heads this list is what a fresh create makes an administrator. The rest of
+    the order is incidental.
+
+    The full list is asserted anyway, not just the head, so that ADDING an
+    account is a deliberate act that updates this test rather than something
+    that slides in unnoticed — nyxloom-P109's `nyxloom-intake` is the fifth
+    entry and is why the test is no longer named "four".
+    """
+    order = [
+        line.split("=", 1)[1].strip().strip('"')
+        for line in _DEFAULTS_TEXT.splitlines()
+        if line.startswith("username = ")
+    ]
+    assert order[0] == "nyxloom-admin"
+    assert order == [
+        "nyxloom-admin",
+        "nyxloom-daemon",
+        "nyxloom-operator",
+        "nyxloom-installer",
+        "nyxloom-intake",
+    ]
+
+
+def test_fallback_does_not_drift_from_the_template():
+    """Every literal MM_* setting must match between the two compose files.
+
+    Stronger than the hand-picked keys above, and the reason it exists: the
+    pre-rendered `docker-compose.yml` receives NO ciu overlay, so it carries
+    the whole env block (and the governance caps) by hand. Two files edited by
+    hand drift, and NL-6 is what that costs — weeks of an unconfined container
+    because one path silently disagreed with the other.
+
+    Compared only where comparison is meaningful:
+
+    * Keys whose TEMPLATE value contains a Jinja expression are skipped —
+      SITEURL, the DSN and LISTENADDRESS are the same setting rendered, not a
+      disagreement.
+    * `MM_RATELIMITSETTINGS_VARYBYHEADER` is expected in the template ONLY: it
+      is emitted inside the `expose_public` branch, and the fallback is the
+      `expose_public = false` rendering, where keying on an absent
+      X-Forwarded-For would be wrong.
+    """
+    pattern = re.compile(r'^\s+(MM_[A-Z0-9_]+): "(.*)"$', re.M)
+    template = dict(pattern.findall(_COMPOSE_TEXT))
+    fallback = dict(pattern.findall(_FALLBACK_TEXT))
+
+    exposed_only = {"MM_RATELIMITSETTINGS_VARYBYHEADER"}
+    literal = {k: v for k, v in template.items() if "{{" not in v}
+
+    missing = sorted(set(literal) - set(fallback) - exposed_only)
+    assert not missing, f"template settings absent from the fallback: {missing}"
+
+    extra = sorted(set(fallback) - set(template))
+    assert not extra, f"fallback carries settings the template does not: {extra}"
+
+    mismatched = {
+        k: (literal[k], fallback[k])
+        for k in set(literal) & set(fallback)
+        if literal[k] != fallback[k]
+    }
+    assert not mismatched, f"value drift between the two compose files: {mismatched}"
 # personal access tokens (nyxloom-P109 / B9)
 #
 # Same rule as everything above: every payload here is a VERBATIM 11.10.1
