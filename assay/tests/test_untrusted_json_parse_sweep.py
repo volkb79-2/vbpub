@@ -246,11 +246,16 @@ def test_no_trusted_entry_is_stale():
         ("mutation_parsers/mutation_report_json.py", "parse"),
         ("mutation_parsers/mutation_report_json.py", "sniff"),
         ("adapters/go_stmtpos.py", "_read_document"),
+        # (B078) The vitest result report: a document written by the
+        # consumer's own test runner, read to decide R0. Squarely a "bytes
+        # assay did not write" site, and the derived sweep is what caught it
+        # unguarded in the first place.
+        ("result_reports/vitest_json.py", "read"),
     ],
 )
 def test_each_known_untrusted_site_is_still_present_and_guarded(identity):
     """The derived sweep above cannot notice a site that DISAPPEARS -- delete
-    a parser and its assertion silently stops applying. These eight are the
+    a parser and its assertion silently stops applying. These nine are the
     ones known to read bytes assay did not write, so each is pinned by name:
     a rename is fine and shows up here as a clear failure, a silent deletion
     of a guard is not."""
