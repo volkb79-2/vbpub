@@ -1,0 +1,233 @@
+From f500a638bb3ba4a272d51d201c1f9f6da6da1407 Mon Sep 17 00:00:00 2001
+From: wings-cgroups <wings-cgroups@localhost>
+Date: Wed, 9 Sep 2026 18:19:37 +0000
+Subject: [PATCH 11/11] Distinguish a bare connection drop from a failed auth
+ attempt in SFTP logging
+
+Separate patch from 0010, deliberately: 0010 quiets a client that attempted
+and failed authentication (*ssh.ServerAuthError). This handles a different,
+equally common shape -- a client that connects and disconnects (cleanly or
+via a network-level reset) BEFORE ever reaching the auth loop, e.g. during
+the SSH version exchange, key exchange, or the initial service request. That
+is the signature of a bare TCP port scanner (masscan, zmap, a misdirected
+health check): connect, maybe read the banner, then go away without sending
+anything back.
+
+Verified against the exact pinned golang.org/x/crypto/ssh v0.46.0 source
+that this case surfaces differently from 0010's: exchangeVersions/waitSession
+read raw bytes off the connection and return whatever io error the net.Conn
+produces -- io.EOF, io.ErrUnexpectedEOF, or a *net.OpError -- completely
+unwrapped, never as *ssh.ServerAuthError, because nothing about credentials
+was ever exchanged for the ssh library to have an opinion on. Before this
+patch AcceptInbound still wrapped it with errors.WithStack like any other
+failure and it logged at Error with a full stack trace, same as 0010's
+symptom but for a different root cause.
+
+isHandshakeDisconnect classifies this narrowly -- only io.EOF/
+io.ErrUnexpectedEOF/*net.OpError, i.e. "the connection went away", never any
+error the ssh library or Wings' own protocol logic actively raised -- so it
+cannot absorb a genuine protocol bug (malformed packets, algorithm mismatch)
+into routine scanner noise. logAcceptInboundFailure logs it at Warn under
+"reason", same as 0010's case, but with a DISTINCT message
+("sftp: connection dropped before authentication began" vs
+"sftp: rejected unauthenticated connection") specifically so connection-level
+scanning and credential-probing can be told apart and alerted on
+independently -- operator's explicit ask: treat this with the same
+seriousness as a failed-auth attempt, not as silence, and keep it separately
+monitorable.
+
+Filed as its own patch, not folded into 0010, so each can be independently
+accepted or rejected if this series is ever proposed upstream -- they touch
+the same function but are separable in intent and in the underlying error
+taxonomy the ssh library exposes.
+
+Test coverage: a table-driven unit test of isHandshakeDisconnect covers all
+four accepted shapes plus three explicit non-matches (a plain unrelated
+error, *ssh.ServerAuthError itself, nil), and two integration-shaped tests
+through the real logAcceptInboundFailure call site (mirroring AcceptInbound's
+actual errors.WithStack wrapping). Killed by mutation, twice: deleting the
+whole branch fails both integration tests; narrowing the classifier to drop
+the *net.OpError check fails the unit test and the OpError integration test.
+Both restored after confirming the kill.
+
+Also corrects 0010's own doc comment, which said a disconnecting client
+"surfaces ... as a *ssh.ServerAuthError" unconditionally -- true only for a
+disconnect partway through the auth loop (EOF while reading a userauth
+packet, inside serverAuthenticate); a disconnect before the auth loop is
+reached is exactly this patch's case. Sharpened, not rewritten.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01HFUhB8cNuTVNoQZQ3TTVkJ
+---
+ sftp/server.go      | 54 +++++++++++++++++++++++++++-------
+ sftp/server_test.go | 71 +++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 115 insertions(+), 10 deletions(-)
+
+diff --git a/sftp/server.go b/sftp/server.go
+index 8916d3a..ac1c5df 100644
+--- a/sftp/server.go
++++ b/sftp/server.go
+@@ -114,27 +114,61 @@ func (c *SFTPServer) Run() error {
+ 	}
+ }
+ 
+-// logAcceptInboundFailure logs an AcceptInbound failure at the severity its cause warrants.
++// logAcceptInboundFailure logs an AcceptInbound failure at the severity its cause warrants,
++// and distinctly enough that the two expected, unauthenticated-traffic cases below can be
++// monitored separately from each other and from a genuine unexpected failure.
+ //
+-// A client that never completed authentication -- a bad password, too many auth tries, or
+-// simply disconnecting mid-handshake -- surfaces from the ssh library as a *ssh.ServerAuthError.
+-// That is background scanner noise on any internet-facing SFTP port: an expected, handled
+-// condition, not evidence of a bug. It is logged at Warn, deliberately under a field NOT named
+-// "error": the CLI handler unconditionally attaches (and prints) a stack trace to any
+-// "error"-named field regardless of level (loggers/cli/cli.go, errors.WithStackDepthIf), so
+-// reusing that field name here would still produce a Stacktrace: block despite the level change.
++// A client that attempted and failed authentication -- a bad password, too many auth tries,
++// or disconnecting partway through the auth loop after already sending at least one auth
++// request -- surfaces from the ssh library as a *ssh.ServerAuthError. Logged at Warn under
++// "reason": credential probing, worth watching the same way a fail2ban rule would.
+ //
+-// Any other AcceptInbound failure -- malformed packets, protocol violations, key exchange
+-// failures -- is unexpected and keeps logging at Error with its stack, unchanged.
++// A client that disconnects (cleanly or via a network-level reset) BEFORE the auth loop is
++// ever reached -- i.e. during the version exchange, key exchange, or the initial service
++// request -- surfaces as a raw io.EOF/io.ErrUnexpectedEOF or *net.OpError, never as a
++// *ssh.ServerAuthError: nothing about credentials was ever exchanged for the ssh library to
++// have an opinion on. This is the shape a bare TCP port scanner (masscan, zmap, a
++// misdirected health check) produces -- connect, maybe read the banner, then go away without
++// sending anything back. Logged at Warn under "reason" too, but with a distinct message, so
++// connection-level scanning and credential-probing can be told apart and alerted on
++// independently; see SETUP.md's troubleshooting notes for both.
++//
++// Both cases are logged under a field NOT named "error": the CLI handler unconditionally
++// attaches (and prints) a stack trace to any "error"-named field regardless of level
++// (loggers/cli/cli.go, errors.WithStackDepthIf), so reusing that field name here would still
++// produce a Stacktrace: block despite the level change.
++//
++// Any other AcceptInbound failure -- malformed packets, protocol negotiation failures, key
++// exchange algorithm mismatches -- is unexpected and keeps logging at Error with its stack,
++// unchanged. Those indicate the client DID exchange protocol data and Wings' own logic
++// rejected it, a meaningfully different signal from either case above.
+ func logAcceptInboundFailure(err error, ip string) {
+ 	var authErr *ssh.ServerAuthError
+ 	if errors.As(err, &authErr) {
+ 		log.WithField("ip", ip).WithField("reason", authErr.Error()).Warn("sftp: rejected unauthenticated connection")
+ 		return
+ 	}
++	if isHandshakeDisconnect(err) {
++		log.WithField("ip", ip).WithField("reason", err.Error()).Warn("sftp: connection dropped before authentication began")
++		return
++	}
+ 	log.WithField("error", err).WithField("ip", ip).Error("sftp: failed to accept inbound connection")
+ }
+ 
++// isHandshakeDisconnect reports whether err is a network-level disconnect -- a clean close,
++// an unexpected EOF, or any other net.OpError (reset, broken pipe, timeout) -- as opposed to
++// a protocol- or auth-level error that Wings' own logic or the ssh library actively raised.
++// It is deliberately narrow: it only catches "the connection went away", never "the client
++// sent something Wings didn't like", so it cannot absorb a genuine protocol bug into routine
++// scanner noise.
++func isHandshakeDisconnect(err error) bool {
++	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
++		return true
++	}
++	var netErr *net.OpError
++	return errors.As(err, &netErr)
++}
++
+ // AcceptInbound handles an inbound connection to the instance and determines if we should
+ // serve the request or not.
+ func (c *SFTPServer) AcceptInbound(conn net.Conn, config *ssh.ServerConfig) error {
+diff --git a/sftp/server_test.go b/sftp/server_test.go
+index c0c3d52..0fb8741 100644
+--- a/sftp/server_test.go
++++ b/sftp/server_test.go
+@@ -1,6 +1,8 @@
+ package sftp
+ 
+ import (
++	"io"
++	"net"
+ 	"testing"
+ 
+ 	"emperror.dev/errors"
+@@ -85,6 +87,75 @@ func TestLogAcceptInboundFailure_WrappedAuthRejection_StillUnwrapped(t *testing.
+ 	}
+ }
+ 
++func TestIsHandshakeDisconnect(t *testing.T) {
++	cases := []struct {
++		name string
++		err  error
++		want bool
++	}{
++		{"bare io.EOF", io.EOF, true},
++		{"bare io.ErrUnexpectedEOF", io.ErrUnexpectedEOF, true},
++		{"io.EOF wrapped in a stack", errors.WithStack(io.EOF), true},
++		{"net.OpError (e.g. connection reset)", &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}, true},
++		{"net.OpError wrapped in a stack", errors.WithStack(&net.OpError{Op: "read", Net: "tcp", Err: io.ErrClosedPipe}), true},
++		{"unrelated plain error", errors.New("ssh: no common algorithm for key exchange"), false},
++		{"*ssh.ServerAuthError is NOT a handshake disconnect", &ssh.ServerAuthError{Errors: []error{ssh.ErrNoAuth}}, false},
++		{"nil", nil, false},
++	}
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			if got := isHandshakeDisconnect(c.err); got != c.want {
++				t.Errorf("isHandshakeDisconnect(%v) = %v, want %v", c.err, got, c.want)
++			}
++		})
++	}
++}
++
++func TestLogAcceptInboundFailure_HandshakeDisconnect_DistinctFromAuthRejection(t *testing.T) {
++	h := withLogCapture(t)
++
++	// AcceptInbound wraps this with errors.WithStack, same as every other path --
++	// mirror that shape rather than pass a bare io.EOF the real call site never would.
++	logAcceptInboundFailure(errors.WithStack(io.EOF), "203.0.113.9:4444")
++
++	if len(h.Entries) != 1 {
++		t.Fatalf("want 1 log entry, got %d", len(h.Entries))
++	}
++	e := h.Entries[0]
++	if e.Level != log.WarnLevel {
++		t.Errorf("want WarnLevel, got %v", e.Level)
++	}
++	if e.Fields.Get("error") != nil {
++		t.Error(`a handshake disconnect must not carry an "error" field either -- same WithStackDepthIf hazard as the auth-rejection case`)
++	}
++	if e.Fields.Get("reason") == nil {
++		t.Error(`want a "reason" field describing the disconnect`)
++	}
++	const wantMsg = "sftp: connection dropped before authentication began"
++	if e.Message != wantMsg {
++		t.Errorf("want message %q, got %q", wantMsg, e.Message)
++	}
++	// The whole point of a separate patch: this message must not collide with the
++	// auth-rejection one, so a log consumer can alert on each independently.
++	if e.Message == "sftp: rejected unauthenticated connection" {
++		t.Error("handshake-disconnect and auth-rejection must not share a message")
++	}
++}
++
++func TestLogAcceptInboundFailure_NetOpError_AlsoClassifiedAsDisconnect(t *testing.T) {
++	h := withLogCapture(t)
++
++	opErr := &net.OpError{Op: "read", Net: "tcp", Err: errors.New("connection reset by peer")}
++	logAcceptInboundFailure(opErr, "203.0.113.9:4444")
++
++	if len(h.Entries) != 1 {
++		t.Fatalf("want 1 log entry, got %d", len(h.Entries))
++	}
++	if e := h.Entries[0]; e.Level != log.WarnLevel || e.Message != "sftp: connection dropped before authentication began" {
++		t.Errorf("want Warn/\"connection dropped before authentication began\", got %v/%q", e.Level, e.Message)
++	}
++}
++
+ func TestLogAcceptInboundFailure_OtherError_KeepsErrorLevelAndField(t *testing.T) {
+ 	h := withLogCapture(t)
+ 
+-- 
+2.55.0
+
