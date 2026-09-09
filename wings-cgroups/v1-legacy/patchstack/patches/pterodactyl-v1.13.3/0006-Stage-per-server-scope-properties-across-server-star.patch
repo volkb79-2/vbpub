@@ -1,4 +1,4 @@
-From d731e9bb463214806312bf0d68c98978289ed7d7 Mon Sep 17 00:00:00 2001
+From 4d7b6c0559b93adc426e28b9de3d0a0d1b7e9202 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 03:59:43 +0000
 Subject: [PATCH 6/9] Stage per-server scope properties across server startup
@@ -29,15 +29,32 @@ existed by then. A container scope does not exist until the container's init
 process is launched, so the band is applied immediately after
 ContainerStart() instead -- the same property sets, one step later.
 
-Two consequences for the property applier itself. It now takes the band to
-apply, so the panel-side in-situ re-assertion added with the scope work picks
-one: startup while the environment is still in the starting state, steady
-otherwise -- the same signal the phase machinery keys on, read from the layer
-that actually has it. And it takes whether the steady ramp may run, because
-the ramp belongs to the startup->steady handoff, where the ceiling genuinely
-drops below a load-time peak; a re-assertion writes the value already on the
-unit, so there is nothing to walk and a reclaim-paced loop would sit on the
-caller's path for nothing.
+The property applier now takes the band to apply. Its two call sites in
+environment/docker are power transitions of the container itself -- the apply
+that follows ContainerStart, and the re-assert made when Wings re-attaches to
+a container that outlived it -- so the band is unambiguous at both.
+
+The panel-side re-assertion added with the scope work therefore moves UP, out
+of Environment.InSituUpdate and into its caller, Server.SyncWithEnvironment.
+An Environment can only see Docker's process state, and that is not the slice
+phase: a server with an explicit WINGS_CG_STEADY_MATCH deliberately stays in
+its startup band long after the environment reports running -- for a
+world-streaming game that is the whole remaining world load, bounded only by
+startup_grace -- and the grace backstop conversely moves a server to steady
+while the environment is still starting. Inferring the band from process
+state would apply the steady one, unramped, to a server at its load-time
+peak, which is the eviction this patch exists to prevent, and it would stand
+for the rest of that boot because nothing re-applies the startup band.
+
+A re-assertion differs from a phase transition in two further ways, both in
+Server.reassertSliceProps. It has no "nothing staged" early exit: skipping a
+transition between two identical bands is right, skipping the repair of those
+same properties is not, because the premise is that what is on the unit is no
+longer what Wings wrote. And it leaves memory.high alone. That is the one
+property a foreign writer cannot have damaged -- Docker's container.Resources
+has no MemoryHigh field, so runc never writes it -- and the one a repair could
+do damage with, by writing a resting ceiling onto a workload still above it,
+mid-load or mid-ramp. Everything Docker's write can reach is re-asserted.
 
 The phase no longer pins a unit. Pinning existed because placement was fixed
 at container-create time, so a Panel sync changing WINGS_CGROUP_PARENT
@@ -48,22 +65,23 @@ apply time, so it cannot drift; what remains is a plain in-progress flag.
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01PgCYRx4mTFsr4wtxuHCVXH
 ---
- config/config_docker.go             | 113 +++++++-
+ config/config_docker.go             | 113 ++++++-
  config/config_docker_slices_test.go |   8 +-
- environment/docker/container.go     |  23 +-
+ environment/docker/container.go     |  46 ++-
  environment/docker/power.go         |  17 +-
- environment/docker/scope.go         |  18 +-
- internal/cgroups/cgroups.go         | 239 +++++++++++++++++
- internal/cgroups/ensure.go          | 114 ++++++--
- internal/cgroups/phase_test.go      | 217 ++++++++++++++++
- internal/cgroups/sysd.go            | 110 ++++++++
+ environment/docker/scope.go         |  19 +-
+ internal/cgroups/cgroups.go         | 239 ++++++++++++++
+ internal/cgroups/ensure.go          | 143 +++++++-
+ internal/cgroups/phase_test.go      | 264 +++++++++++++++
+ internal/cgroups/sysd.go            | 109 +++++++
  internal/database/database.go       |   7 +
  server/activity.go                  |   1 +
  server/listeners.go                 |  18 ++
  server/server.go                    |  20 ++
- server/slice_phase.go               | 388 ++++++++++++++++++++++++++++
- server/slice_phase_test.go          | 329 +++++++++++++++++++++++
- 15 files changed, 1589 insertions(+), 33 deletions(-)
+ server/slice_phase.go               | 484 ++++++++++++++++++++++++++++
+ server/slice_phase_test.go          | 442 +++++++++++++++++++++++++
+ server/update.go                    |  14 +
+ 16 files changed, 1887 insertions(+), 57 deletions(-)
  create mode 100644 internal/cgroups/phase_test.go
  create mode 100644 server/slice_phase.go
  create mode 100644 server/slice_phase_test.go
@@ -270,44 +288,66 @@ index bd45c50..d850c8e 100644
  		t.Errorf("Scope = %q, want \"\" for a short container id", req.Scope)
  	}
 diff --git a/environment/docker/container.go b/environment/docker/container.go
-index 323d53f..66019bd 100644
+index 0324565..63592c5 100644
 --- a/environment/docker/container.go
 +++ b/environment/docker/container.go
-@@ -154,11 +154,30 @@ func (e *Environment) InSituUpdate() error {
- 	// retired per-server-slice design the two writers lived on different units
- 	// and composed by the min-along-path rule; on one unit they overwrite.
- 	//
-+	// The band comes from this environment's own process state rather than from
-+	// the server's slice phase, which lives a layer up in server/slice_phase.go
-+	// and is not reachable from here. A container still in the starting state is
-+	// exactly the condition the startup band exists for, and it is the same
-+	// signal the phase machinery keys on (the egg's startup "done" matcher flips
-+	// the environment to running). The two can disagree only for a server that
-+	// stages a startup band AND either names a WINGS_CG_STEADY_MATCH that fires
-+	// off the running transition or has already burnt its startup grace — and
-+	// only until the next application. Applying nothing instead leaves the
-+	// panel's values in place until the container is next started, which is
-+	// strictly worse.
-+	//
- 	// Deliberately synchronous and last: the properties must land after the
--	// Docker write, and applying them is a bounded D-Bus round trip.
-+	// Docker write. Its own context, because the update above may have consumed
-+	// most of this call's budget and a D-Bus round trip that is skipped for lack
-+	// of a deadline is the same silent no-op this whole path exists to prevent.
-+	// The steady ramp is deliberately not used — see applyScopeProps.
-+	phase := cgroups.PhaseSteady
-+	if e.State() == environment.ProcessStartingState {
-+		phase = cgroups.PhaseStartup
-+	}
- 	sctx, scancel := context.WithTimeout(context.Background(), 15*time.Second)
- 	defer scancel()
--	e.applyScopeProps(sctx)
-+	e.applyScopeProps(sctx, phase, "panel-side in-situ resource update", false)
+@@ -128,35 +128,27 @@ func (e *Environment) InSituUpdate() error {
+ 		e.clearCpuBurst(c.State.Pid)
+ 	}
  
- 	return nil
- }
+-	// Re-assert this server's cgroup properties once the Docker write is done.
++	// The panel's own container.Resources — Memory, MemoryReservation,
++	// CpuShares, BlkioWeight — reach the SAME docker-<id>.scope Wings sets its
++	// properties on, because with the systemd cgroup driver runc issues them as
++	// SetUnitProperties. Docker's write is the later one, so this call silently
++	// replaces MemoryLow, MemoryMax, CPUWeight and the BFQ weight with the
++	// panel's values, including replacing a deliberately tight
++	// WINGS_CG_MEMORY_MAX with a much looser panel memory limit and collapsing
++	// an 800 CPUWeight to the ~39 that docker.cpu_shares=1024 derives.
+ 	//
+-	// ContainerUpdate below carries the panel's own container.Resources —
+-	// Memory, MemoryReservation, CpuShares, BlkioWeight — and with the systemd
+-	// cgroup driver runc translates those into SetUnitProperties on the SAME
+-	// docker-<id>.scope Wings sets its properties on. Docker's write is the
+-	// later one, so without this call a routine panel-side settings save
+-	// silently replaces MemoryLow, MemoryMax, CPUWeight and the BFQ weight with
+-	// the panel's values — including replacing a deliberately tight
+-	// WINGS_CG_MEMORY_MAX with a much looser panel memory limit, and collapsing
+-	// an 800 CPUWeight to the ~39 that docker.cpu_shares=1024 derives. Under the
+-	// retired per-server-slice design the two writers lived on different units
+-	// and composed by the min-along-path rule; on one unit they overwrite.
++	// Wings' properties therefore have to be re-asserted afterwards — but NOT
++	// from here. Which band to re-assert is a question only the server layer
++	// can answer: an Environment sees Docker's process state, and that is not
++	// the slice phase. A server with an explicit WINGS_CG_STEADY_MATCH is
++	// deliberately still in its startup band long after the environment reports
++	// running (server.onSliceStateChange), and the startup-grace backstop
++	// conversely moves it to steady while the environment is still starting.
++	// Guessing here would apply the steady band, one-shot, to a server at its
++	// load-time peak — the exact eviction the startup band exists to prevent.
+ 	//
+-	// Deferred rather than called at the end, so that it also runs when
+-	// ContainerUpdate fails: Docker restores its own HostConfig on that path
+-	// but does not roll back the cgroup writes runc has already made, so a
+-	// partially applied update is exactly the state that most needs repairing.
+-	// A re-assert against a scope that no longer exists is cheap and harmless
+-	// (applyScopeProps bails out on a container that is not running).
+-	//
+-	// Its own context, because the update may have consumed most of this
+-	// call's budget and a D-Bus round trip skipped for lack of a deadline is
+-	// the same silent no-op this whole path exists to prevent.
+-	defer func() {
+-		sctx, scancel := context.WithTimeout(context.Background(), 15*time.Second)
+-		defer scancel()
+-		e.applyScopeProps(sctx)
+-	}()
++	// The re-assert therefore lives in Server.SyncWithEnvironment, the caller,
++	// which owns the phase. See Server.reassertSliceProps.
+ 
+ 	// CPU pinning cannot be removed once it is applied to a container. The same is true
+ 	// for removing memory limits, a container must be re-created.
 diff --git a/environment/docker/power.go b/environment/docker/power.go
-index acf2154..78c68d3 100644
+index acf2154..122cae9 100644
 --- a/environment/docker/power.go
 +++ b/environment/docker/power.go
 @@ -12,6 +12,7 @@ import (
@@ -337,7 +377,7 @@ index acf2154..78c68d3 100644
  			// Wings can notice and repair drift on a container it did not
  			// start itself.
 -			e.applyScopeProps(ctx)
-+			e.applyScopeProps(ctx, cgroups.PhaseSteady, "reattached to a running container", true)
++			e.applyScopeProps(ctx, cgroups.PhaseSteady, "reattached to a running container")
  
  			return e.Attach(ctx)
  		}
@@ -351,43 +391,44 @@ index acf2154..78c68d3 100644
 +	// band is both correct and bounded here: the server will either report
 +	// ready or hit the startup grace, and either way the steady band replaces
 +	// it (see server.beginSlicePhase).
-+	e.applyScopeProps(actx, cgroups.PhaseStartup, "container start", true)
++	e.applyScopeProps(actx, cgroups.PhaseStartup, "container start")
  
  	// No errors, good to continue through.
  	sawError = false
 diff --git a/environment/docker/scope.go b/environment/docker/scope.go
-index b70a319..71008c2 100644
+index 36dde5c..53d9964 100644
 --- a/environment/docker/scope.go
 +++ b/environment/docker/scope.go
-@@ -27,9 +27,18 @@ import (
+@@ -27,9 +27,22 @@ import (
  // container's own cgroup at all. Setting the properties on the leaf scope
  // removes all three.
  //
-+// ramp selects whether a steady application may walk memory.high down in
-+// steps (docker.per_server_slices.steady_ramp_step). It belongs to the
-+// startup->steady handoff, where the ceiling genuinely drops below a load-time
-+// peak and a one-shot write would slam a running workload. A re-assertion of
-+// properties that are already in place is not that transition: the value being
-+// written is the value already on the unit, so there is nothing to walk, and a
-+// ramp there would put a bound-by-reclaim loop on a caller's path for no gain.
-+// Pass false from those callers.
++// Both callers are power transitions of the container itself — the apply that
++// follows ContainerStart, and the re-assert made when Wings re-attaches to a
++// container that outlived it — so the phase is unambiguous at both, and the
++// configured steady ramp applies as normal.
++//
++// Nothing else in environment/docker may call this. An Environment sees
++// Docker's process state, which is not the server's slice phase: a server with
++// an explicit WINGS_CG_STEADY_MATCH stays in its startup band long after the
++// environment reports running, and the startup-grace backstop moves one to
++// steady while the environment is still starting. Anything that needs to
++// re-apply properties outside a power transition goes through
++// Server.reassertSliceProps, in the layer that holds the phase.
 +//
  // Strictly best-effort: every failure is logged and none of them affect the
  // server, which runs under the node tier slice either way.
 -func (e *Environment) applyScopeProps(ctx context.Context) {
-+func (e *Environment) applyScopeProps(ctx context.Context, phase cgroups.Phase, reason string, ramp bool) {
++func (e *Environment) applyScopeProps(ctx context.Context, phase cgroups.Phase, reason string) {
  	cfg := config.Get()
  	if !cfg.Docker.PerServerSlices.Enabled {
  		return
-@@ -50,12 +59,15 @@ func (e *Environment) applyScopeProps(ctx context.Context) {
+@@ -63,12 +76,12 @@ func (e *Environment) applyScopeProps(ctx context.Context) {
  		return
  	}
  
 -	req := cfg.Docker.ScopeEnsureRequest(e.Id, c.ID, parent, evs)
 +	req := cfg.Docker.ScopeEnsureRequest(e.Id, c.ID, parent, evs, phase)
-+	if !ramp {
-+		req.RampStep = 0
-+	}
  	if req.Scope == "" {
  		// ScopeName rejected the container id. Nothing sane to do: issuing
  		// property calls against a guessed unit name would silently do nothing.
@@ -669,10 +710,10 @@ index 3b3cb97..6322a86 100644
  // and integers found in the Wings configuration. Zero values mean "no
  // default" for the respective property.
 diff --git a/internal/cgroups/ensure.go b/internal/cgroups/ensure.go
-index 850bd62..520e4a9 100644
+index 19813af..0389a1d 100644
 --- a/internal/cgroups/ensure.go
 +++ b/internal/cgroups/ensure.go
-@@ -34,14 +34,26 @@ type EnsureRequest struct {
+@@ -34,14 +34,48 @@ type EnsureRequest struct {
  	// and quietly stamping node defaults onto a scope inside it would fight
  	// the very override that was asked for.
  	ApplyDefaults bool
@@ -691,6 +732,28 @@ index 850bd62..520e4a9 100644
 +	// memory.high is below current usage, walks memory.high down in steps of
 +	// at most this many bytes instead of setting it in one shot. 0 = one-shot.
 +	RampStep uint64
++	// KeepMemoryHigh drops MemoryHigh from the resolved band, leaving whatever
++	// ceiling is currently on the unit alone.
++	//
++	// Set by a RE-ASSERTION — an application whose job is to repair properties
++	// some other writer overwrote, not to move a server from one band to
++	// another. memory.high is the one property such a repair must not touch:
++	//
++	//   - It cannot have been damaged. Docker's container.Resources has no
++	//     MemoryHigh field at all (see environment.Settings.AsContainerResources
++	//     and Docker's own struct), so runc never writes it, and a re-assert
++	//     would only ever write back the value already there.
++	//   - It is the one property that can hurt when it is written. A ceiling
++	//     applied while the workload is above it reclaims immediately, and a
++	//     cgroup is not protected from reclaim it inflicts on itself — it
++	//     reclaims straight through its own memory.min. Writing the resting
++	//     value in one shot is exactly what RampStep exists to avoid during the
++	//     startup->steady handoff, and a re-assert has no business doing it
++	//     mid-load, or mid-ramp while that handoff is still walking it down.
++	//
++	// Everything a foreign write CAN reach — MemoryLow, MemoryMax, CPUWeight,
++	// IOWeight, MemoryMin — is re-asserted as normal.
++	KeepMemoryHigh bool
  }
  
 -// props resolves the property band for the request.
@@ -700,38 +763,45 @@ index 850bd62..520e4a9 100644
  func (req EnsureRequest) props() (Props, []error) {
  	props, errs := FromEnv(req.Env)
  	if req.ApplyDefaults {
-@@ -49,7 +61,29 @@ func (req EnsureRequest) props() (Props, []error) {
+@@ -49,28 +83,96 @@ func (req EnsureRequest) props() (Props, []error) {
  		errs = append(errs, derrs...)
  		props = Merge(defaults, props)
  	}
--	return props, errs
-+	if req.Phase != PhaseStartup {
-+		return props, errs
++	if req.Phase == PhaseStartup {
++		startup, serrs := StartupFromEnv(req.Env)
++		errs = append(errs, serrs...)
++		if req.ApplyDefaults {
++			defaults, derrs := req.StartupDefaults.Props()
++			errs = append(errs, derrs...)
++			startup = Merge(defaults, startup)
++		}
++		props = Merge(props, startup)
 +	}
-+	startup, serrs := StartupFromEnv(req.Env)
-+	errs = append(errs, serrs...)
-+	if req.ApplyDefaults {
-+		defaults, derrs := req.StartupDefaults.Props()
-+		errs = append(errs, derrs...)
-+		startup = Merge(defaults, startup)
++	if req.KeepMemoryHigh {
++		props.MemoryHigh = nil
 +	}
-+	return Merge(props, startup), errs
-+}
-+
+ 	return props, errs
+ }
+ 
 +// Staged reports whether this request's startup band actually differs from its
 +// steady band. When nothing is staged the two are identical, so the properties
 +// applied at container start are already correct and the steady re-apply on
 +// the ready transition would be a pointless systemd round trip.
 +func (req EnsureRequest) Staged() bool {
 +	a, b := req, req
++	// Whether a band is staged is a property of the configuration, not of the
++	// application about to be made: a request that suppresses the ceiling must
++	// not report "nothing staged" for a server whose two bands differ only in
++	// their ceiling.
++	a.KeepMemoryHigh, b.KeepMemoryHigh = false, false
 +	a.Phase, b.Phase = PhaseStartup, PhaseSteady
 +	pa, _ := a.props()
 +	pb, _ := b.props()
 +	return !pa.Equal(pb)
- }
- 
++}
++
  // EnsureForServer applies a server's resource properties to its container
-@@ -57,43 +91,89 @@ func (req EnsureRequest) props() (Props, []error) {
+ // scope, logging instead of failing. A D-Bus failure degrades to plain
  // placement: the container still runs under the node tier slice, just without
  // its own guarantees, and the emitted warning is what tells the administrator
  // exactly that.
@@ -773,6 +843,7 @@ index 850bd62..520e4a9 100644
 +			return
 +		}
 +		logTierFloorUnset(l.WithField("properties", res.Applied.String()), req, res)
++		logTierFloorUnreadable(l.WithField("properties", res.Applied.String()), req, res)
 +		logOvercommit(l.WithField("properties", res.Applied.String()), req, res)
 +		l.WithField("properties", res.Applied.String()).WithField("memory_high_target", FormatSize(high)).
 +			Info("cgroups: steady band applied; ramping memory.high down to the ceiling")
@@ -792,9 +863,10 @@ index 850bd62..520e4a9 100644
  	if err != nil {
  		l.WithError(err).Warn("cgroups: could not apply container scope properties; the container runs under the node tier without its own resource guarantees")
  		return
- 	}
+@@ -78,23 +180,32 @@ func EnsureForServer(ctx context.Context, l *log.Entry, req EnsureRequest) {
  	entry := l.WithField("properties", res.Applied.String())
  	logTierFloorUnset(entry, req, res)
+ 	logTierFloorUnreadable(entry, req, res)
 -	if res.Overcommit {
 -		// Not a reduction — the floors were applied exactly as configured. But
 -		// they now add up to more than the tier slice can back, which changes
@@ -833,15 +905,15 @@ index 850bd62..520e4a9 100644
 +	return true
 +}
 +
- // tierFloorUnsetOnce keeps the "tripwire inactive" notice to one line per Wings
- // process. It cannot be emitted at startup, where it would naturally belong:
- // the tier's MemoryMin is only knowable over D-Bus, and config validation runs
+ // tierFloorUnsetOnce and tierFloorErrOnce keep the two "tripwire inactive"
+ // notices to one line each per Wings process. Neither can be emitted at
+ // startup, where they would naturally belong: the tier's MemoryMin is only
 diff --git a/internal/cgroups/phase_test.go b/internal/cgroups/phase_test.go
 new file mode 100644
-index 0000000..7417042
+index 0000000..7d255b3
 --- /dev/null
 +++ b/internal/cgroups/phase_test.go
-@@ -0,0 +1,217 @@
+@@ -0,0 +1,264 @@
 +package cgroups
 +
 +import "testing"
@@ -924,8 +996,8 @@ index 0000000..7417042
 +// feature existed: the same properties in both phases.
 +func TestEnsureRequestNoStartupOverrideIsIdentical(t *testing.T) {
 +	req := EnsureRequest{
-+		ApplyDefaults:  true,
-+		Defaults: Defaults{MemoryMin: "6G", MemoryHigh: "7G"},
++		ApplyDefaults: true,
++		Defaults:      Defaults{MemoryMin: "6G", MemoryHigh: "7G"},
 +	}
 +	req.Phase = PhaseStartup
 +	a, _ := req.props()
@@ -939,10 +1011,10 @@ index 0000000..7417042
 +// A per-server startup variable must work even when the node stages nothing.
 +func TestEnsureRequestPerServerStartupOverride(t *testing.T) {
 +	req := EnsureRequest{
-+		ApplyDefaults:  true,
-+		Phase:    PhaseStartup,
-+		Defaults: Defaults{MemoryHigh: "7G"},
-+		Env:      []string{"WINGS_CG_STARTUP_MEMORY_HIGH=12G"},
++		ApplyDefaults: true,
++		Phase:         PhaseStartup,
++		Defaults:      Defaults{MemoryHigh: "7G"},
++		Env:           []string{"WINGS_CG_STARTUP_MEMORY_HIGH=12G"},
 +	}
 +	p, _ := req.props()
 +	if p.MemoryHigh == nil || *p.MemoryHigh != 12<<30 {
@@ -954,7 +1026,7 @@ index 0000000..7417042
 +// defaults — including the startup band.
 +func TestEnsureRequestWithoutDefaultsSkipsThem(t *testing.T) {
 +	req := EnsureRequest{
-+		ApplyDefaults:         false,
++		ApplyDefaults:   false,
 +		Phase:           PhaseStartup,
 +		Defaults:        Defaults{MemoryMin: "6G"},
 +		StartupDefaults: StartupDefaults{MemoryMin: "9G"},
@@ -1003,6 +1075,53 @@ index 0000000..7417042
 +	same.StartupDefaults = StartupDefaults{MemoryHigh: "7G"}
 +	if same.Staged() {
 +		t.Error("startup band identical to steady must report not staged")
++	}
++}
++
++// KeepMemoryHigh drops the ceiling from whichever band was resolved and
++// touches nothing else. It is what a re-assertion sets: memory.high is the one
++// property a foreign writer cannot have damaged (Docker's container.Resources
++// has no such field) and the one a repair could do damage with, by writing a
++// resting ceiling onto a workload that is still above it.
++func TestEnsureRequestKeepMemoryHigh(t *testing.T) {
++	base := EnsureRequest{
++		ApplyDefaults:   true,
++		Defaults:        Defaults{MemoryMin: "6G", MemoryHigh: "7G", MemoryMax: "8G", CPUWeight: 800},
++		StartupDefaults: StartupDefaults{MemoryHigh: "64G", MemoryMax: "64G"},
++	}
++
++	for _, phase := range []Phase{PhaseStartup, PhaseSteady} {
++		full := base
++		full.Phase = phase
++		want, _ := full.props()
++		if want.MemoryHigh == nil {
++			t.Fatalf("%s band has no ceiling; the test is not exercising what it claims", phase)
++		}
++
++		kept := full
++		kept.KeepMemoryHigh = true
++		got, _ := kept.props()
++		if got.MemoryHigh != nil {
++			t.Errorf("%s band with KeepMemoryHigh still carries MemoryHigh = %d", phase, *got.MemoryHigh)
++		}
++		// Everything a foreign write CAN reach is still there, and unchanged.
++		want.MemoryHigh = nil
++		if !got.Equal(want) {
++			t.Errorf("%s band with KeepMemoryHigh = %s, want %s", phase, got.String(), want.String())
++		}
++	}
++
++	// Whether a band is staged is a fact about the configuration, so
++	// suppressing the ceiling must not make a server whose two bands differ
++	// ONLY in their ceiling look unstaged.
++	onlyCeiling := EnsureRequest{
++		ApplyDefaults:   true,
++		Defaults:        Defaults{MemoryHigh: "7G"},
++		StartupDefaults: StartupDefaults{MemoryHigh: "64G"},
++		KeepMemoryHigh:  true,
++	}
++	if !onlyCeiling.Staged() {
++		t.Error("Staged() went false because the request suppresses the ceiling; it describes the configuration, not the application")
 +	}
 +}
 +
@@ -1060,7 +1179,7 @@ index 0000000..7417042
 +	}
 +}
 diff --git a/internal/cgroups/sysd.go b/internal/cgroups/sysd.go
-index 4cb687e..b164f5f 100644
+index 95351d1..d304158 100644
 --- a/internal/cgroups/sysd.go
 +++ b/internal/cgroups/sysd.go
 @@ -5,7 +5,9 @@ import (
@@ -1073,7 +1192,7 @@ index 4cb687e..b164f5f 100644
  	sdbus "github.com/coreos/go-systemd/v22/dbus"
  	godbus "github.com/godbus/dbus/v5"
  
-@@ -245,3 +247,111 @@ func (c *conn) sliceMemoryMin(ctx context.Context, name string) (uint64, bool, e
+@@ -266,3 +268,110 @@ func (c *conn) sliceMemoryMin(ctx context.Context, name string) (uint64, bool, e
  	}
  	return v, true, nil
  }
@@ -1184,7 +1303,6 @@ index 4cb687e..b164f5f 100644
 +		}
 +	}
 +}
-+
 diff --git a/internal/database/database.go b/internal/database/database.go
 index 3fd6820..2fb808b 100644
 --- a/internal/database/database.go
@@ -1242,7 +1360,7 @@ index d39e664..998cecc 100644
  	// set the server to be in a stopping state, otherwise crash detection will kick in and
  	// cause the server to unexpectedly restart on the user.
 diff --git a/server/server.go b/server/server.go
-index a1777b0..f9d0ed7 100644
+index a1777b0..1acfcf0 100644
 --- a/server/server.go
 +++ b/server/server.go
 @@ -8,8 +8,10 @@ import (
@@ -1262,13 +1380,13 @@ index a1777b0..f9d0ed7 100644
  
 +	// Guards the startup -> steady transition of this server's per-server
 +	// slice property band (see slice_phase.go).
-+	slicePhaseMu    sync.Mutex
-+	slicePhaseTimer *time.Timer
-+	sliceSteadyDone bool
++	slicePhaseMu     sync.Mutex
++	slicePhaseTimer  *time.Timer
++	sliceSteadyDone  bool
 +	slicePhaseActive bool
-+	slicePhaseMatch *regexp.Regexp
-+	sliceEvents     []sliceConsoleEvent
-+	sliceEventsSet  bool
++	slicePhaseMatch  *regexp.Regexp
++	sliceEvents      []sliceConsoleEvent
++	sliceEventsSet   bool
 +
  	// The console throttler instance used to control outputs.
  	throttler    *ConsoleThrottle
@@ -1297,10 +1415,10 @@ index a1777b0..f9d0ed7 100644
  	// Reset the resource usage to 0 when the process fully stops so that all the UI
 diff --git a/server/slice_phase.go b/server/slice_phase.go
 new file mode 100644
-index 0000000..45e425e
+index 0000000..8990465
 --- /dev/null
 +++ b/server/slice_phase.go
-@@ -0,0 +1,388 @@
+@@ -0,0 +1,484 @@
 +package server
 +
 +import (
@@ -1491,7 +1609,43 @@ index 0000000..45e425e
 +		s.Log().WithError(err).Debug("cgroups: could not inspect container to resolve its systemd scope")
 +		return ""
 +	}
++	if c.State == nil || !c.State.Running {
++		// A docker-<id>.scope lives exactly as long as the container's init
++		// process, so a container that exists but is stopped has no unit to
++		// carry properties. Deriving a name from its id anyway would produce a
++		// unit systemd does not know, and the property write would fail with
++		// "Unit docker-<id>.scope not found" — reported by EnsureForServer as
++		// the "runs under the node tier without its own resource guarantees"
++		// warning, which is the one diagnostic this design leans on for a
++		// genuinely degraded server. It must not fire for a stopped one.
++		s.Log().Debug("cgroups: container is not running; no scope unit exists to carry its resource properties")
++		return ""
++	}
 +	return cgroups.ScopeName(c.ID)
++}
++
++// currentPhase reports which band is in effect for this server right now.
++//
++// This is the phase the server layer actually holds. It is NOT interchangeable
++// with the environment's process state, and anything that needs to know "which
++// band is live" has to ask here rather than infer it from Environment.State():
++//
++//   - A server with an explicit WINGS_CG_STEADY_MATCH deliberately stays in the
++//     startup phase after the environment flips to running, because the egg's
++//     "done" line is whatever makes the Panel show Running, which for a
++//     world-streaming game is routinely well before loading finishes. See
++//     onSliceStateChange. That window is the whole remaining world load, bounded
++//     only by the startup grace.
++//   - The grace backstop moves a server to the steady band while the
++//     environment is still starting, for a server that never prints its done
++//     line at all.
++//
++// Both are the documented, recommended configuration, not corner cases.
++func (s *Server) currentPhase() cgroups.Phase {
++	if s.slicePhaseInProgress() {
++		return cgroups.PhaseStartup
++	}
++	return cgroups.PhaseSteady
 +}
 +
 +// hasSliceMatcher reports whether an explicit steady trigger is in effect for
@@ -1558,10 +1712,70 @@ index 0000000..45e425e
 +	// With no startup band staged, the properties set at container start are
 +	// already the steady ones; re-applying them would cost a systemd round
 +	// trip per server start and log a transition that did not happen.
++	//
++	// Correct for a phase TRANSITION, wrong for a re-assertion — see
++	// reassertSliceProps, which does not take this exit.
 +	if phase == cgroups.PhaseSteady && !req.Staged() {
 +		return
 +	}
-+	// This runs on its own goroutine, where a panic takes the whole daemon
++	s.dispatchSliceProps(req, reason)
++}
++
++// reassertSliceProps re-applies the band that is currently in effect, after
++// something else has written to this server's systemd scope.
++//
++// The caller is SyncWithEnvironment. Docker's ContainerUpdate carries the
++// Panel's own container.Resources — Memory, MemoryReservation, CpuShares,
++// BlkioWeight — and with the systemd cgroup driver runc issues those as
++// SetUnitProperties on the SAME docker-<id>.scope Wings writes to. Docker's
++// write is the later one, so a routine Panel-side settings save silently
++// replaces MemoryLow, MemoryMax, CPUWeight and the BFQ weight with the Panel's
++// values, including replacing a deliberately tight WINGS_CG_MEMORY_MAX with a
++// much looser Panel memory limit.
++//
++// It lives here, and not in environment/docker where the Docker write is made,
++// for one reason: only this layer knows which band is live. See currentPhase.
++//
++// Two deliberate differences from applySliceProps, which handles a phase
++// transition:
++//
++//   - No "nothing staged" early return. Skipping a transition between two
++//     identical bands is right; skipping the repair of those properties is not.
++//     The whole premise here is that what is on the unit is no longer what
++//     Wings wrote, whether or not a startup band was ever staged.
++//   - The ceiling is left alone (KeepMemoryHigh), and the ramp is off. Docker
++//     cannot have touched memory.high — container.Resources has no such field —
++//     so there is nothing to repair, and writing it anyway is the one thing a
++//     repair could do damage with: mid-load under a high startup ceiling, or
++//     mid-ramp while the startup->steady handoff is still walking it down.
++func (s *Server) reassertSliceProps(reason string) {
++	req := s.reassertRequest()
++	if req.Owner == "" {
++		return
++	}
++	s.dispatchSliceProps(req, reason)
++}
++
++// reassertRequest builds the re-assert request for the band currently in
++// effect. Split out from reassertSliceProps so that the part which has to be
++// right — WHICH band, and what a repair is allowed to write — is assertable
++// without a Docker daemon or a systemd bus. The zero request (empty Owner)
++// means there is nothing for Wings to re-assert on this server.
++func (s *Server) reassertRequest() cgroups.EnsureRequest {
++	req := s.sliceRequest(s.currentPhase())
++	if req.Owner == "" {
++		return cgroups.EnsureRequest{}
++	}
++	req.KeepMemoryHigh = true
++	req.RampStep = 0
++	return req
++}
++
++// dispatchSliceProps resolves the live scope and hands the request to
++// internal/cgroups. Shared by the transition and re-assert entry points above,
++// which differ only in how they build the request.
++func (s *Server) dispatchSliceProps(req cgroups.EnsureRequest, reason string) {
++	// This can run on its own goroutine, where a panic takes the whole daemon
 +	// with it, so do not assume a context exists.
 +	ctx := s.Context()
 +	if ctx == nil {
@@ -1691,10 +1905,10 @@ index 0000000..45e425e
 +}
 diff --git a/server/slice_phase_test.go b/server/slice_phase_test.go
 new file mode 100644
-index 0000000..4cd3cbd
+index 0000000..fdc61e2
 --- /dev/null
 +++ b/server/slice_phase_test.go
-@@ -0,0 +1,329 @@
+@@ -0,0 +1,442 @@
 +package server
 +
 +import (
@@ -1950,6 +2164,119 @@ index 0000000..4cd3cbd
 +	}
 +}
 +
++// The band a Panel-side re-assert applies comes from the phase this layer
++// holds, never from the environment's process state.
++//
++// This is the regression guard for the worst shape this code has had. An
++// earlier version inferred the band inside environment/docker from
++// Environment.State(): startup while the container reported starting, steady
++// otherwise. On the configuration SETUP.md actually recommends — an explicit
++// WINGS_CG_STEADY_MATCH, because a world-streaming game's "done" line fires
++// long before loading finishes — the two disagree for the entire remaining
++// world load. A routine settings save in that window applied the STEADY band,
++// one-shot and unramped, to a server sitting at its load-time peak: a cgroup
++// reclaims through its own memory.min when it exceeds its own memory.high, so
++// that is precisely the eviction the startup band exists to prevent. And it
++// stood for the rest of the boot, because nothing re-applies the startup band.
++func TestReassertUsesThePhaseNotTheEnvironmentState(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "64G")
++	s := newSliceTestServer()
++	s.cfg.EnvVars = map[string]interface{}{
++		"WINGS_CG_STEADY_MATCH": `regex:World load complete`,
++	}
++	s.beginSlicePhase()
++
++	if got := s.currentPhase(); got != cgroups.PhaseStartup {
++		t.Fatalf("phase during startup = %q, want %q", got, cgroups.PhaseStartup)
++	}
++
++	// The egg's own done matcher fires. The environment is now RUNNING, which
++	// is exactly the signal the retired heuristic read — but the world is still
++	// loading and the phase deliberately stays startup.
++	s.onSliceStateChange("running")
++	if !s.slicePhaseInProgress() {
++		t.Fatal("the explicit trigger should still be holding the startup phase")
++	}
++	req := s.reassertRequest()
++	if req.Phase != cgroups.PhaseStartup {
++		t.Errorf("re-assert during the steady-match window would apply the %q band; the server is still loading and holds the %q one", req.Phase, cgroups.PhaseStartup)
++	}
++
++	// A repair must not move the ceiling: Docker's container.Resources cannot
++	// have touched memory.high, and writing it here is what slams a loading
++	// workload.
++	if !req.KeepMemoryHigh {
++		t.Error("a re-assert must leave memory.high alone")
++	}
++	if req.RampStep != 0 {
++		t.Error("a re-assert must not sit on a reclaim-paced ramp; it writes no ceiling to walk")
++	}
++
++	// The trigger finally fires. Now, and only now, the steady band is live.
++	s.matchSliceSteady([]byte("World load complete"))
++	if got := s.currentPhase(); got != cgroups.PhaseSteady {
++		t.Errorf("phase after the steady trigger = %q, want %q", got, cgroups.PhaseSteady)
++	}
++	if got := s.reassertRequest().Phase; got != cgroups.PhaseSteady {
++		t.Errorf("re-assert after the steady trigger = %q, want %q", got, cgroups.PhaseSteady)
++	}
++}
++
++// The mirror case, same root cause: the startup grace expires while the
++// environment is still "starting" because the server never printed its done
++// line. enterSteady has run and the steady band is live, so a re-assert must
++// apply THAT — the retired heuristic would have read "starting" and re-lifted
++// the ceiling the grace backstop had just lowered, silently defeating it.
++func TestReassertAfterGraceExpiryUsesTheSteadyBand(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "64G")
++	s := newSliceTestServer()
++	s.beginSlicePhase()
++	if got := s.currentPhase(); got != cgroups.PhaseStartup {
++		t.Fatalf("phase during startup = %q, want %q", got, cgroups.PhaseStartup)
++	}
++
++	// What the grace timer does when it fires. The environment is never told
++	// anything; it is still in the starting state.
++	s.enterSteady(sliceReasonGrace)
++
++	if got := s.currentPhase(); got != cgroups.PhaseSteady {
++		t.Errorf("phase after the grace backstop = %q, want %q", got, cgroups.PhaseSteady)
++	}
++	if got := s.reassertRequest().Phase; got != cgroups.PhaseSteady {
++		t.Errorf("re-assert after the grace backstop = %q, want %q", got, cgroups.PhaseSteady)
++	}
++}
++
++// A re-assert has no "nothing staged" exit. applySliceProps skips a steady
++// transition whose band is identical to the startup one, because there is no
++// transition to make; a re-assert of that same band is the entire point, since
++// what is on the unit is no longer what Wings wrote.
++func TestReassertAppliesEvenWithNothingStaged(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "") // no startup band at all
++	s := newSliceTestServer()
++	s.beginSlicePhase()
++
++	req := s.reassertRequest()
++	if req.Owner == "" {
++		t.Fatal("a managed server with no staged startup band still has properties to re-assert")
++	}
++	if req.Staged() {
++		t.Fatal("nothing is staged in this configuration; the test is not exercising what it claims")
++	}
++	if req.Phase != cgroups.PhaseSteady {
++		t.Errorf("re-assert phase = %q, want %q", req.Phase, cgroups.PhaseSteady)
++	}
++}
++
++// A server Wings does not manage has nothing to re-assert.
++func TestReassertSkipsUnmanaged(t *testing.T) {
++	sliceTestConfig(t, false, "15m", "64G")
++	s := newSliceTestServer()
++	if got := s.reassertRequest(); got.Owner != "" {
++		t.Errorf("re-assert request built for a node with per-server slices off: %+v", got)
++	}
++}
++
 +// Without a trigger the previous behaviour stands: running ends the phase.
 +func TestWithoutTriggerRunningEndsThePhase(t *testing.T) {
 +	sliceTestConfig(t, true, "15m", "64G")
@@ -2024,6 +2351,31 @@ index 0000000..4cd3cbd
 +		t.Errorf("both events should have fired once: %+v", byName)
 +	}
 +}
+diff --git a/server/update.go b/server/update.go
+index 3c1f365..2cfc969 100644
+--- a/server/update.go
++++ b/server/update.go
+@@ -54,6 +54,20 @@ func (s *Server) SyncWithEnvironment() {
+ 			// next boot, or fail out entirely in a more logical position.
+ 			s.Log().WithField("error", err).Warn("failed to perform on-the-fly update of the server environment")
+ 		}
++
++		// The in-situ update just wrote the Panel's container.Resources to the
++		// same systemd scope Wings sets this server's cgroup properties on, so
++		// those properties have to be put back. This is the layer that knows
++		// which band is currently in effect; the environment does not.
++		//
++		// Deliberately NOT gated on the error above. Docker restores its own
++		// HostConfig when ContainerUpdate fails, but it does not roll back
++		// cgroup writes runc has already made, so a half-applied update is the
++		// state that most needs repairing — and a re-assert with nothing to
++		// repair is a single D-Bus round trip that writes the values already
++		// there. Best-effort throughout: reassertSliceProps logs and never
++		// disturbs a running server.
++		s.reassertSliceProps("panel-side in-situ resource update")
+ 	} else {
+ 		// Checks if the server is now in a suspended state. If so and a server process is currently running it
+ 		// will be gracefully stopped (and terminated if it refuses to stop).
 -- 
 2.55.0
 

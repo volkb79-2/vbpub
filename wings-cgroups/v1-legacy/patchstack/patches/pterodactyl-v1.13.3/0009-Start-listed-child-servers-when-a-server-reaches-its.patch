@@ -1,4 +1,4 @@
-From fd838c0f8f6db96f587d9906daeb7c51d7815203 Mon Sep 17 00:00:00 2001
+From 028fa1360145ab9ccaeee98018d24c089b43fbc1 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 15:49:24 +0000
 Subject: [PATCH 9/9] Start listed child servers when a server reaches its
@@ -595,12 +595,12 @@ index 88970f4..bc84fd8 100644
  	// Setup the base server configuration data which will be used for all of the
  	// remaining functionality in this call.
 diff --git a/server/server.go b/server/server.go
-index f9d0ed7..8dc8b24 100644
+index 1acfcf0..0517c5b 100644
 --- a/server/server.go
 +++ b/server/server.go
 @@ -76,6 +76,16 @@ type Server struct {
- 	sliceEvents     []sliceConsoleEvent
- 	sliceEventsSet  bool
+ 	sliceEvents      []sliceConsoleEvent
+ 	sliceEventsSet   bool
  
 +	// manager is a set-once back-reference to the Manager this server was
 +	// created through, wired in Manager.InitServer before the server is used
@@ -819,7 +819,7 @@ index 0000000..2857193
 +	}
 +}
 diff --git a/server/slice_phase.go b/server/slice_phase.go
-index 45e425e..56147ad 100644
+index 8990465..40a2037 100644
 --- a/server/slice_phase.go
 +++ b/server/slice_phase.go
 @@ -61,16 +61,39 @@ func (s *Server) beginSlicePhase() {
@@ -919,7 +919,7 @@ index 45e425e..56147ad 100644
  
  // endSlicePhase resets all phase state; called when the server goes offline.
 diff --git a/server/slice_phase_test.go b/server/slice_phase_test.go
-index 4cd3cbd..7046c89 100644
+index fdc61e2..e66d910 100644
 --- a/server/slice_phase_test.go
 +++ b/server/slice_phase_test.go
 @@ -94,6 +94,38 @@ func TestBeginSlicePhaseOnlyArmsWhenStaged(t *testing.T) {

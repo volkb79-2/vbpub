@@ -1,4 +1,4 @@
-From bfedb2698621a22aa1187193b6646f5eb1a20d12 Mon Sep 17 00:00:00 2001
+From 5810fcb31f34602f9cebb4d855a859958e7b2d68 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Mon, 20 Jul 2026 11:51:15 +0000
 Subject: [PATCH 5/9] Render slice property values in the units they were
@@ -107,10 +107,10 @@ index fcbc8f3..6252565 100644
  	}
  }
 diff --git a/internal/cgroups/ensure.go b/internal/cgroups/ensure.go
-index 71be90d..850bd62 100644
+index e86ea5b..19813af 100644
 --- a/internal/cgroups/ensure.go
 +++ b/internal/cgroups/ensure.go
-@@ -85,8 +85,8 @@ func EnsureForServer(ctx context.Context, l *log.Entry, req EnsureRequest) {
+@@ -86,8 +86,8 @@ func EnsureForServer(ctx context.Context, l *log.Entry, req EnsureRequest) {
  		// honouring all of them. Individual floors stop being guarantees; the
  		// tier total still is. Reported, never corrected.
  		entry.WithFields(log.Fields{

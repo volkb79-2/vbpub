@@ -1,4 +1,4 @@
-From 47bc1ca56149e3921022e07f842770d7afc51920 Mon Sep 17 00:00:00 2001
+From 8feff0b7f2cffa979b4c2c4c5fa6ec028edc0996 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Fri, 17 Jul 2026 06:38:24 +0000
 Subject: [PATCH 4/9] Manage per-server container scope properties via systemd
@@ -50,14 +50,34 @@ CPUWeight and the BFQ weight with the panel's values -- including replacing a
 deliberately tight WINGS_CG_MEMORY_MAX with a much looser panel memory limit.
 InSituUpdate therefore re-asserts the scope properties once the Docker update
 has returned. On the three-level shape this was unnecessary: the two writers
-lived on different units and composed by the min-along-path rule.
+lived on different units and composed by the min-along-path rule. The
+re-assert is deferred rather than tacked on at the end, so it also runs when
+ContainerUpdate itself fails: Docker restores its own HostConfig on that path
+but does not roll back the cgroup writes runc has already made, and a
+half-applied update is the state that most needs repairing.
+
+Properties are applied only to a container that is actually running. A
+docker-<id>.scope lives exactly as long as the container's init process, so
+for a container that exists but is stopped there is no unit to write to and
+the D-Bus call fails with "Unit docker-<id>.scope not found". Both routine
+paths hit this -- a settings save on a stopped server, and the pre-boot
+Sync -> InSituUpdate that runs before the container is started at all -- and
+without the guard each of them would log the "runs under the node tier
+without its own resource guarantees" warning. That warning is the one
+diagnostic this design leans on for a genuinely degraded server; making it
+routine would train an administrator to ignore it.
 
 The tripwire has one condition it cannot report by firing: a node whose tier
 slice declares no MemoryMin of its own has nothing to compare the summed
 floors against, so it can never fire at all. That is now said once per Wings
 process, the first time a floor is applied against such a tier -- it cannot
 be said at startup, because the tier's MemoryMin is only knowable over D-Bus
-and configuration validation runs without a bus.
+and configuration validation runs without a bus. A tier whose MemoryMin
+could not be READ gets a separate line, and its own once-per-process budget:
+the consequence for the tripwire is identical, but "the tier declares no
+floor" is a statement about the administrator's configuration, and saying it
+on the strength of a failed read asserts something that was never
+established.
 
 Property management is strictly best-effort: D-Bus failures degrade to plain
 placement with a logged warning and never block a server. An explicit
@@ -70,23 +90,23 @@ Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01PgCYRx4mTFsr4wtxuHCVXH
 ---
  cmd/root.go                          |   3 +
- config/config_docker.go              | 158 ++++++++++++++++-
- config/config_docker_slices_test.go  | 172 +++++++++++++++++++
- environment/docker/container.go      |  43 ++++-
+ config/config_docker.go              | 158 ++++++++++++-
+ config/config_docker_slices_test.go  | 172 +++++++++++++++
+ environment/docker/container.go      |  53 ++++-
  environment/docker/power.go          |   7 +
- environment/docker/scope.go          |  61 +++++++
+ environment/docker/scope.go          |  74 +++++++
  go.mod                               |   6 +-
  go.sum                               |   5 +
- internal/cgroups/cgroups.go          | 241 ++++++++++++++++++++++++++
- internal/cgroups/cgroups_test.go     | 163 ++++++++++++++++++
- internal/cgroups/ensure.go           | 120 +++++++++++++
- internal/cgroups/ensure_test.go      |  87 ++++++++++
- internal/cgroups/integration_test.go | 215 +++++++++++++++++++++++
- internal/cgroups/scope.go            | 108 ++++++++++++
- internal/cgroups/scope_test.go       |  96 +++++++++++
- internal/cgroups/sysd.go             | 247 +++++++++++++++++++++++++++
+ internal/cgroups/cgroups.go          | 241 ++++++++++++++++++++
+ internal/cgroups/cgroups_test.go     | 163 ++++++++++++++
+ internal/cgroups/ensure.go           | 150 +++++++++++++
+ internal/cgroups/ensure_test.go      | 136 ++++++++++++
+ internal/cgroups/integration_test.go | 318 +++++++++++++++++++++++++++
+ internal/cgroups/scope.go            | 108 +++++++++
+ internal/cgroups/scope_test.go       |  96 ++++++++
+ internal/cgroups/sysd.go             | 268 ++++++++++++++++++++++
  server/install.go                    |  16 +-
- 17 files changed, 1730 insertions(+), 18 deletions(-)
+ 17 files changed, 1956 insertions(+), 18 deletions(-)
  create mode 100644 config/config_docker_slices_test.go
  create mode 100644 environment/docker/scope.go
  create mode 100644 internal/cgroups/cgroups.go
@@ -488,7 +508,7 @@ index 0000000..bd45c50
 +	}
 +}
 diff --git a/environment/docker/container.go b/environment/docker/container.go
-index d38ddb0..323d53f 100644
+index d38ddb0..0324565 100644
 --- a/environment/docker/container.go
 +++ b/environment/docker/container.go
 @@ -20,6 +20,7 @@ import (
@@ -499,14 +519,13 @@ index d38ddb0..323d53f 100644
  	"github.com/pterodactyl/wings/system"
  )
  
-@@ -138,6 +139,27 @@ func (e *Environment) InSituUpdate() error {
+@@ -127,6 +128,36 @@ func (e *Environment) InSituUpdate() error {
+ 		e.clearCpuBurst(c.State.Pid)
  	}
  
- 	e.applyCpuBurst(ctx)
-+
-+	// Re-assert this server's cgroup properties.
++	// Re-assert this server's cgroup properties once the Docker write is done.
 +	//
-+	// ContainerUpdate above carries the panel's own container.Resources —
++	// ContainerUpdate below carries the panel's own container.Resources —
 +	// Memory, MemoryReservation, CpuShares, BlkioWeight — and with the systemd
 +	// cgroup driver runc translates those into SetUnitProperties on the SAME
 +	// docker-<id>.scope Wings sets its properties on. Docker's write is the
@@ -518,16 +537,34 @@ index d38ddb0..323d53f 100644
 +	// retired per-server-slice design the two writers lived on different units
 +	// and composed by the min-along-path rule; on one unit they overwrite.
 +	//
-+	// Deliberately synchronous and last: the properties must land after the
-+	// Docker write, and applying them is a bounded D-Bus round trip.
-+	sctx, scancel := context.WithTimeout(context.Background(), 15*time.Second)
-+	defer scancel()
-+	e.applyScopeProps(sctx)
++	// Deferred rather than called at the end, so that it also runs when
++	// ContainerUpdate fails: Docker restores its own HostConfig on that path
++	// but does not roll back the cgroup writes runc has already made, so a
++	// partially applied update is exactly the state that most needs repairing.
++	// A re-assert against a scope that no longer exists is cheap and harmless
++	// (applyScopeProps bails out on a container that is not running).
++	//
++	// Its own context, because the update may have consumed most of this
++	// call's budget and a D-Bus round trip skipped for lack of a deadline is
++	// the same silent no-op this whole path exists to prevent.
++	defer func() {
++		sctx, scancel := context.WithTimeout(context.Background(), 15*time.Second)
++		defer scancel()
++		e.applyScopeProps(sctx)
++	}()
++
+ 	// CPU pinning cannot be removed once it is applied to a container. The same is true
+ 	// for removing memory limits, a container must be re-created.
+ 	//
+@@ -138,6 +169,7 @@ func (e *Environment) InSituUpdate() error {
+ 	}
+ 
+ 	e.applyCpuBurst(ctx)
 +
  	return nil
  }
  
-@@ -172,12 +194,15 @@ func (e *Environment) Create() error {
+@@ -172,12 +204,15 @@ func (e *Environment) Create() error {
  		}
  	}
  
@@ -549,7 +586,7 @@ index d38ddb0..323d53f 100644
  	if err != nil {
  		e.log().WithField("cgroup_parent", cgroupParent).WithError(err).Warn("environment/docker: rejected per-server cgroup parent override")
  	}
-@@ -305,6 +330,12 @@ func (e *Environment) Destroy() error {
+@@ -305,6 +340,12 @@ func (e *Environment) Destroy() error {
  
  	e.SetState(environment.ProcessOfflineState)
  
@@ -589,10 +626,10 @@ index 34570a3..acf2154 100644
  	sawError = false
 diff --git a/environment/docker/scope.go b/environment/docker/scope.go
 new file mode 100644
-index 0000000..b70a319
+index 0000000..36dde5c
 --- /dev/null
 +++ b/environment/docker/scope.go
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,74 @@
 +package docker
 +
 +import (
@@ -642,6 +679,19 @@ index 0000000..b70a319
 +	c, err := e.ContainerInspect(ctx)
 +	if err != nil {
 +		e.log().WithError(err).Warn("cgroups: could not inspect container to resolve its systemd scope; resource properties not applied")
++		return
++	}
++	if c.State == nil || !c.State.Running {
++		// A docker-<id>.scope lives exactly as long as the container's init
++		// process. For a container that exists but is not running there is no
++		// unit to set properties on, and asking anyway fails with "Unit
++		// docker-<id>.scope not found" — which EnsureForServer reports as the
++		// "runs under the node tier without its own resource guarantees"
++		// warning. That warning is the one diagnostic this design leans on for
++		// a genuinely degraded server (see internal/cgroups.EnsureForServer),
++		// so it must not fire for the routine case of a stopped one. Debug,
++		// not Warn: nothing is wrong here.
++		e.log().Debug("cgroups: container is not running; no scope unit exists to carry its resource properties")
 +		return
 +	}
 +
@@ -1141,10 +1191,10 @@ index 0000000..fcbc8f3
 +}
 diff --git a/internal/cgroups/ensure.go b/internal/cgroups/ensure.go
 new file mode 100644
-index 0000000..71be90d
+index 0000000..e86ea5b
 --- /dev/null
 +++ b/internal/cgroups/ensure.go
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,150 @@
 +package cgroups
 +
 +import (
@@ -1224,6 +1274,7 @@ index 0000000..71be90d
 +	}
 +	entry := l.WithField("properties", res.Applied.String())
 +	logTierFloorUnset(entry, req, res)
++	logTierFloorUnreadable(entry, req, res)
 +	if res.Overcommit {
 +		// Not a reduction — the floors were applied exactly as configured. But
 +		// they now add up to more than the tier slice can back, which changes
@@ -1241,12 +1292,20 @@ index 0000000..71be90d
 +	entry.Info("cgroups: applied container scope properties")
 +}
 +
-+// tierFloorUnsetOnce keeps the "tripwire inactive" notice to one line per Wings
-+// process. It cannot be emitted at startup, where it would naturally belong:
-+// the tier's MemoryMin is only knowable over D-Bus, and config validation runs
-+// without a bus (see config.ValidatePerServerSlices). The first floor applied
-+// on this node is therefore the earliest honest moment to say it.
-+var tierFloorUnsetOnce sync.Once
++// tierFloorUnsetOnce and tierFloorErrOnce keep the two "tripwire inactive"
++// notices to one line each per Wings process. Neither can be emitted at
++// startup, where they would naturally belong: the tier's MemoryMin is only
++// knowable over D-Bus, and config validation runs without a bus (see
++// config.ValidatePerServerSlices). The first floor applied on this node is
++// therefore the earliest honest moment to say it.
++//
++// They are separate counters because they are separate statements. Sharing one
++// would let a single transient D-Bus error spend the budget for the standing
++// configuration notice, which is the one an administrator actually needs.
++var (
++	tierFloorUnsetOnce sync.Once
++	tierFloorErrOnce   sync.Once
++)
 +
 +// logTierFloorUnset says, exactly once, that the floor-overcommit tripwire is
 +// switched off because the tier slice declares no MemoryMin of its own.
@@ -1256,6 +1315,10 @@ index 0000000..71be90d
 +// signal at all when reality declares nothing: floors are applied, every log
 +// line looks healthy, and the check they believe is watching the node never
 +// runs. One Info line closes that.
++//
++// It fires only for a tier whose MemoryMin was actually read. The line names
++// what the administrator configured, so it must not be emitted on the strength
++// of a read that never succeeded — see logTierFloorUnreadable.
 +func logTierFloorUnset(entry *log.Entry, req EnsureRequest, res Result) {
 +	if !res.TierFloorUnset {
 +		return
@@ -1265,15 +1328,33 @@ index 0000000..71be90d
 +			Info("cgroups: tier slice declares no MemoryMin of its own; per-server memory.min floors are applied as configured but the floor-overcommit tripwire is inactive for this node")
 +	})
 +}
++
++// logTierFloorUnreadable says, exactly once, that the tripwire is inactive
++// because the tier's MemoryMin could not be read at all.
++//
++// Same operational consequence as logTierFloorUnset and a different cause, so
++// a different line: this one carries the error and is a Warn, because unlike a
++// tier that genuinely declares no floor, a tier Wings cannot read is not a
++// configuration an administrator chose.
++func logTierFloorUnreadable(entry *log.Entry, req EnsureRequest, res Result) {
++	if res.TierFloorErr == nil {
++		return
++	}
++	tierFloorErrOnce.Do(func() {
++		entry.WithField("tier", req.Parent).WithError(res.TierFloorErr).
++			Warn("cgroups: could not read the tier slice's own MemoryMin; per-server memory.min floors are applied as configured but the floor-overcommit tripwire is inactive for this node")
++	})
++}
 diff --git a/internal/cgroups/ensure_test.go b/internal/cgroups/ensure_test.go
 new file mode 100644
-index 0000000..2979860
+index 0000000..a903b81
 --- /dev/null
 +++ b/internal/cgroups/ensure_test.go
-@@ -0,0 +1,87 @@
+@@ -0,0 +1,136 @@
 +package cgroups
 +
 +import (
++	"errors"
 +	"strings"
 +	"sync"
 +	"testing"
@@ -1358,12 +1439,60 @@ index 0000000..2979860
 +		t.Errorf("logged %d entries after a second inert apply, want the once-per-process 1", got)
 +	}
 +}
++
++// A tier whose MemoryMin could not be READ is a different statement from a
++// tier that declares none, and gets its own line: saying "declares no
++// MemoryMin" on the strength of a failed read asserts something about the
++// administrator's configuration that was never established.
++func TestLogTierFloorUnreadableIsItsOwnLine(t *testing.T) {
++	h := captureLog(t)
++	tierFloorUnsetOnce = sync.Once{}
++	tierFloorErrOnce = sync.Once{}
++	t.Cleanup(func() { tierFloorUnsetOnce, tierFloorErrOnce = sync.Once{}, sync.Once{} })
++
++	entry := log.WithField("scope", "docker-"+strings.Repeat("a", 64)+".scope")
++	req := EnsureRequest{Parent: "wings.slice"}
++
++	// A successful read says nothing through this helper, whatever it found.
++	logTierFloorUnreadable(entry, req, Result{TierFloorUnset: true})
++	logTierFloorUnreadable(entry, req, Result{ParentFloor: 1 << 30})
++	if got := h.len(); got != 0 {
++		t.Fatalf("logged %d entries for reads that succeeded, want 0", got)
++	}
++
++	logTierFloorUnreadable(entry, req, Result{TierFloorErr: errors.New("no such unit")})
++	if got := h.len(); got != 1 {
++		t.Fatalf("logged %d entries for an unreadable tier floor, want 1", got)
++	}
++	e := h.last()
++	if e == nil || e.Fields["tier"] != "wings.slice" {
++		t.Fatalf("entry does not name the tier it is talking about: %+v", e)
++	}
++	if strings.Contains(e.Message, "declares no MemoryMin") {
++		t.Errorf("unreadable-tier line claims the tier declares no MemoryMin: %q", e.Message)
++	}
++	if e.Fields["error"] == nil {
++		t.Errorf("unreadable-tier line does not carry the underlying error: %+v", e.Fields)
++	}
++
++	logTierFloorUnreadable(entry, req, Result{TierFloorErr: errors.New("no such unit")})
++	if got := h.len(); got != 1 {
++		t.Errorf("logged %d entries after a second unreadable apply, want the once-per-process 1", got)
++	}
++
++	// The two counters are independent: a transient read failure must not
++	// spend the budget for the standing configuration notice.
++	logTierFloorUnset(entry, req, Result{TierFloorUnset: true})
++	if got := h.len(); got != 2 {
++		t.Errorf("logged %d entries, want 2 — the unset notice was suppressed by the error notice", got)
++	}
++}
 diff --git a/internal/cgroups/integration_test.go b/internal/cgroups/integration_test.go
 new file mode 100644
-index 0000000..98c0eec
+index 0000000..6c05ef4
 --- /dev/null
 +++ b/internal/cgroups/integration_test.go
-@@ -0,0 +1,215 @@
+@@ -0,0 +1,318 @@
 +//go:build systemdintegration
 +
 +package cgroups
@@ -1462,6 +1591,16 @@ index 0000000..98c0eec
 +// cgroup driver produces for a container.
 +func itStartScope(t *testing.T, ctx context.Context, name string) {
 +	t.Helper()
++	itStartScopeIn(t, ctx, name, itParent)
++}
++
++// itStartScopeIn is itStartScope with the parent tier named explicitly. A
++// slice that has no unit file is materialised by systemd from the name alone,
++// so passing an unused name here yields a live tier slice carrying nothing but
++// systemd's own defaults — which is the state Result.TierFloorUnset exists to
++// report, and the one no test could otherwise reach.
++func itStartScopeIn(t *testing.T, ctx context.Context, name, slice string) {
++	t.Helper()
 +	cmd := exec.Command("sleep", "300")
 +	if err := cmd.Start(); err != nil {
 +		t.Fatalf("starting the scope's payload process: %v", err)
@@ -1480,7 +1619,7 @@ index 0000000..98c0eec
 +	props := []sdbus.Property{
 +		{Name: "Description", Value: godbus.MakeVariant("wings-cgroups integration test scope")},
 +		{Name: "PIDs", Value: godbus.MakeVariant([]uint32{uint32(cmd.Process.Pid)})},
-+		{Name: "Slice", Value: godbus.MakeVariant(itParent)},
++		{Name: "Slice", Value: godbus.MakeVariant(slice)},
 +	}
 +	ch := make(chan string, 1)
 +	if _, err := c.dbus.StartTransientUnitContext(ctx, name, "replace", props, ch); err != nil {
@@ -1567,6 +1706,99 @@ index 0000000..98c0eec
 +	}
 +	if got := itTypeProp(t, ctx, scope, "Scope", "MemoryCurrent"); got == ^uint64(0) {
 +		t.Error("MemoryCurrent reads as infinity; accounting is not enabled on the scope")
++	}
++}
++
++// itSetSliceFloor gives a tier slice a MemoryMin of its own, over the same
++// systemd-owned channel Apply uses. Not Apply itself: Apply refuses every unit
++// that is not a docker-<id>.scope, on purpose.
++func itSetSliceFloor(t *testing.T, ctx context.Context, slice string, v uint64) {
++	t.Helper()
++	c, err := connect(ctx)
++	if err != nil {
++		t.Fatalf("connect: %v", err)
++	}
++	defer c.close()
++	if err := c.dbus.SetUnitPropertiesContext(ctx, slice, true,
++		sdbus.Property{Name: "MemoryMin", Value: godbus.MakeVariant(v)}); err != nil {
++		t.Fatalf("setting MemoryMin on the tier slice %s: %v", slice, err)
++	}
++}
++
++// TestApplyTierFloorUnsetIntegration covers the PRODUCTION decision behind the
++// "tripwire inactive" notice: Apply's own classification of the tier's floor.
++//
++// The log helper this feeds has a unit test, but the branch that feeds it does
++// not and cannot — it sits past connect(), so only a real bus reaches it. That
++// is the same shape as the bug where a test asserted a string literal in the
++// test file instead of the function under test: a proven helper hanging off an
++// unproven decision. Both classifications are exercised here against real
++// slices, so a regression that reported every tier as unset — or none of them
++// — has to fail.
++func TestApplyTierFloorUnsetIntegration(t *testing.T) {
++	ctx := itCtx(t)
++
++	// A tier that declares a floor: the control. Named per-test rather than
++	// reusing itParent, so this asserts what THIS test set up rather than
++	// depending on the surrounding harness having created wings.slice with a
++	// MemoryMin first.
++	withFloor := "wings-itfloor.slice"
++	scopeA := "docker-" + itScopeID[:62] + "c1.scope"
++	itStartScopeIn(t, ctx, scopeA, withFloor)
++	itSetSliceFloor(t, ctx, withFloor, 128<<20)
++	t.Cleanup(func() { ForgetServer("srv-tier-declares-a-floor") })
++
++	res, err := Apply(ctx, Target{Scope: scopeA, Owner: "srv-tier-declares-a-floor", Parent: withFloor},
++		Props{MemoryMin: u64(16 << 20)})
++	if err != nil {
++		t.Fatalf("Apply under a tier that declares a floor: %v", err)
++	}
++	if res.TierFloorErr != nil {
++		t.Fatalf("TierFloorErr = %v on a readable tier", res.TierFloorErr)
++	}
++	if res.TierFloorUnset {
++		t.Error("TierFloorUnset on a tier whose MemoryMin is 128M; the tripwire would be reported inactive on a node where it works")
++	}
++	if res.ParentFloor != 128<<20 {
++		t.Errorf("ParentFloor = %d, want %d", res.ParentFloor, 128<<20)
++	}
++	if res.Overcommit {
++		t.Errorf("Overcommit with floors %d under a tier floor of %d", res.FloorsTotal, res.ParentFloor)
++	}
++
++	// A tier that declares nothing. systemd materialises the slice from the
++	// scope's own Slice= property, so it exists, is active, and carries only
++	// systemd's defaults — an unset MemoryMin, which comes back over D-Bus as
++	// a plain 0 rather than as an error or as infinity.
++	noFloor := "wings-itnofloor.slice"
++	scopeB := "docker-" + itScopeID[:62] + "c2.scope"
++	itStartScopeIn(t, ctx, scopeB, noFloor)
++	t.Cleanup(func() { ForgetServer("srv-tier-declares-nothing") })
++
++	res, err = Apply(ctx, Target{Scope: scopeB, Owner: "srv-tier-declares-nothing", Parent: noFloor},
++		Props{MemoryMin: u64(16 << 20)})
++	if err != nil {
++		t.Fatalf("Apply under a tier that declares no floor: %v", err)
++	}
++	if res.TierFloorErr != nil {
++		t.Fatalf("TierFloorErr = %v; the tier is live and readable, it simply declares nothing", res.TierFloorErr)
++	}
++	if !res.TierFloorUnset {
++		t.Error("TierFloorUnset is false for a tier with no MemoryMin; the inactive tripwire stays invisible, which is exactly what this reporting exists to prevent")
++	}
++	if res.ParentFloor != 0 {
++		t.Errorf("ParentFloor = %d, want 0 for a tier that declares no floor", res.ParentFloor)
++	}
++	if res.Overcommit {
++		t.Error("Overcommit reported against a tier with no budget to overcommit")
++	}
++	if res.FloorsTotal == 0 {
++		t.Error("FloorsTotal = 0; the floor was still supposed to be applied and ledgered")
++	}
++	// And the floor really did land, unset tier or not: nothing is withheld
++	// because the tripwire cannot run.
++	if got := itTypeProp(t, ctx, scopeB, "Scope", "MemoryMin"); got != 16<<20 {
++		t.Errorf("MemoryMin on %s = %d, want %d", scopeB, got, 16<<20)
 +	}
 +}
 +
@@ -1695,7 +1927,7 @@ index 0000000..bdc073b
 +}
 diff --git a/internal/cgroups/scope_test.go b/internal/cgroups/scope_test.go
 new file mode 100644
-index 0000000..6602f9c
+index 0000000..77364e3
 --- /dev/null
 +++ b/internal/cgroups/scope_test.go
 @@ -0,0 +1,96 @@
@@ -1723,9 +1955,9 @@ index 0000000..6602f9c
 +		{idA[:12], ""},
 +		{strings.ToUpper(idA), ""}, // systemd's unit name is lowercase hex
 +		{"", ""},
-+		{idA[:63] + "g", ""},  // non-hex
-+		{idA + "0", ""},       // too long
-+		{idA[:63], ""},        // one short
++		{idA[:63] + "g", ""}, // non-hex
++		{idA + "0", ""},      // too long
++		{idA[:63], ""},       // one short
 +	} {
 +		if got := ScopeName(c.id); got != c.want {
 +			t.Errorf("ScopeName(%q) = %q, want %q", c.id, got, c.want)
@@ -1797,10 +2029,10 @@ index 0000000..6602f9c
 +}
 diff --git a/internal/cgroups/sysd.go b/internal/cgroups/sysd.go
 new file mode 100644
-index 0000000..4cb687e
+index 0000000..95351d1
 --- /dev/null
 +++ b/internal/cgroups/sysd.go
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,268 @@
 +package cgroups
 +
 +import (
@@ -1855,14 +2087,23 @@ index 0000000..4cb687e
 +	// own floor, and only the tier total is still guaranteed.
 +	Overcommit bool
 +	// TierFloorUnset reports that this request carried a floor and named a
-+	// tier, but the tier slice itself declares no MemoryMin (unset, infinity,
-+	// or unreadable). The floor was still applied exactly as configured — but
-+	// there is no tier budget to compare the summed floors against, so the
-+	// overcommit tripwire above can never fire on this node. Reported so the
-+	// caller can say so once, out loud: a tripwire that is switched off
-+	// because reality declares nothing is indistinguishable, from the logs
-+	// alone, from a tripwire that simply never had cause to fire.
++	// tier, that the tier's own MemoryMin was READ SUCCESSFULLY, and that it
++	// declares no usable budget: unset (systemd reports 0) or infinity. The
++	// floor was still applied exactly as configured — but there is no tier
++	// budget to compare the summed floors against, so the overcommit tripwire
++	// above can never fire on this node. Reported so the caller can say so
++	// once, out loud: a tripwire that is switched off because reality declares
++	// nothing is indistinguishable, from the logs alone, from a tripwire that
++	// simply never had cause to fire.
 +	TierFloorUnset bool
++	// TierFloorErr is set when the tier's MemoryMin could not be read at all.
++	// The consequence for the tripwire is identical to TierFloorUnset, but the
++	// cause is not — "the tier declares no floor" is a configuration statement
++	// about the node, while this is a failure to find out — and saying the
++	// former when the latter happened is a false statement about the
++	// administrator's own configuration. Kept apart so each is reported in its
++	// own words. See logTierFloorUnset / logTierFloorUnreadable.
++	TierFloorErr error
 +}
 +
 +// conn wraps the systemd D-Bus connection. Connections are opened per
@@ -2016,16 +2257,24 @@ index 0000000..4cb687e
 +	// failed call can never leave a floor recorded that was never set.
 +	if props.MemoryMin != nil && t.Parent != "" {
 +		res.FloorsTotal = recordFloor(t.Owner, *props.MemoryMin)
-+		if limit, ok, err := c.sliceMemoryMin(ctx, t.Parent); err == nil && ok && limit > 0 {
++		limit, ok, err := c.sliceMemoryMin(ctx, t.Parent)
++		switch {
++		case err != nil:
++			// Could not find out. Nothing is wrong with the apply itself, but
++			// the tripwire cannot fire, and this must not be reported as "the
++			// tier declares no floor" — that would be a statement about the
++			// administrator's configuration that was never established.
++			res.TierFloorErr = err
++		case !ok || limit == 0:
++			// Read fine, and there is no tier budget to compare against: the
++			// tier declares no MemoryMin (systemd reports an unset one as 0)
++			// or reports it as infinity. The tripwire is inert for the whole
++			// life of this node, and that has to be visible somewhere. See
++			// Result.TierFloorUnset.
++			res.TierFloorUnset = true
++		default:
 +			res.ParentFloor = limit
 +			res.Overcommit = res.FloorsTotal > limit
-+		} else {
-+			// No tier budget to compare against: the tier declares no
-+			// MemoryMin, reports it as infinity, or could not be read at all.
-+			// Nothing is wrong with the apply itself — but the tripwire is
-+			// inert for the whole life of this node, and that has to be
-+			// visible somewhere. See Result.TierFloorUnset.
-+			res.TierFloorUnset = true
 +		}
 +	}
 +	return res, nil
@@ -2035,8 +2284,12 @@ index 0000000..4cb687e
 +// resource-control property it lives on the type-specific interface, here
 +// "Slice" — reading it from the generic "Unit" interface fails outright (the
 +// same trap patch "Fix MemoryCurrent D-Bus interface in the memory.high ramp"
-+// documents for MemoryCurrent). ok is false when systemd reports the property
-+// unset or infinite (MaxUint64), both of which mean "no tier budget declared".
++// documents for MemoryCurrent).
++//
++// ok is false when systemd reports the property as infinity (MaxUint64) or as
++// a type the property is not supposed to have. An UNSET MemoryMin comes back
++// as a perfectly ordinary 0, so it returns (0, true, nil) — callers must treat
++// a zero limit as "no budget declared" rather than as a floor of zero bytes.
 +func (c *conn) sliceMemoryMin(ctx context.Context, name string) (uint64, bool, error) {
 +	p, err := c.dbus.GetUnitTypePropertyContext(ctx, name, "Slice", "MemoryMin")
 +	if err != nil {
