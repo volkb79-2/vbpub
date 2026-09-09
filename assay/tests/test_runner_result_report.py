@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from conftest import GitRepo, fixed_clock, make_lane
+from conftest import FakeAdapter, GitRepo, fixed_clock, make_lane, make_r1_judge
 
 from assay import runner, safeio
 from assay.config import ResultReportConfig
@@ -36,6 +36,7 @@ from assay.errors import Outcome, ReasonCode
 
 MOMENT_A = datetime(2026, 9, 8, 10, 0, 0, tzinfo=timezone.utc)
 MOMENT_B = datetime(2026, 9, 8, 10, 0, 1, tzinfo=timezone.utc)
+MOMENT_C = datetime(2026, 9, 8, 10, 0, 2, tzinfo=timezone.utc)
 
 REPORT_PATH = "vitest-report.json"
 VITEST_REPORT = ResultReportConfig(format="vitest-json", path=REPORT_PATH)
@@ -493,19 +494,24 @@ def test_a_declared_report_does_not_rescue_a_refused_argv_append(tmp_path: Path)
     assert stale.exists(), "a run that never launched removes nothing"
 
 
-# --- the SHIPPED direct R0-only path, through run_lane -----------------------
+# --- the two SHIPPED run_lane paths, one per lane shape ----------------------
+#
+# `run_lane` dispatches on declared rigor, and the two branches reach
+# `execute_plan` through completely different call chains. Both produce the
+# R0 claim, so both must apply the tiebreak -- and each needs its own
+# end-to-end test, because a green suite covering only one of them is exactly
+# how round 1 shipped a feature that did nothing for RG-45's actual lane.
 
 
 def test_run_lane_direct_r0_path_applies_the_tiebreak(git_repo: GitRepo):
-    """The path RG-45 actually reproduces on.
+    """An R0-ONLY lane: `run_lane`'s direct branch.
 
-    dstdns's ``ui_unit`` is an R0-only ``kind = "assay"`` lane, and
-    :func:`~assay.runner.run_lane`'s direct branch calls
-    :func:`~assay.runner.execute_plan` itself rather than going through
-    :func:`~assay.runner.execute_command`. Wiring only the latter -- which is
-    the site the design document names -- would have left the confirmed live
-    reproduction untouched, so this test exercises the shipped branch end to
-    end and would go red if the wiring were moved back.
+    It calls :func:`~assay.runner.execute_plan` itself rather than going
+    through :func:`~assay.runner.execute_command`, so wiring only the latter
+    -- the site the design document names -- would have missed it.
+
+    This is **not** the path RG-45 reproduces on; see
+    :func:`test_run_lane_r0_r1_baseline_applies_the_tiebreak` for that one.
     """
     # A-140's rule, exactly as the coverage artifact follows it: this run's own
     # OUTPUT must be git-ignored, or the post-run dirt check sees it.
@@ -558,3 +564,318 @@ def test_run_lane_direct_r0_path_still_fails_without_the_declaration(
     )
 
     assert verdict.outcome is Outcome.FAIL
+
+
+# --- the path RG-45 ACTUALLY reproduces on: an R0+R1 lane's baseline unit ----
+#
+# Round-1 blocker 1. dstdns's `ui_unit` -- RG-45's own confirmed live
+# reproduction -- declares `rigor = ["R0", "R1"]`
+# (`/workspaces/dstdns/assay.toml`), so `run_lane` dispatches it to
+# `_run_higher_rigor_lane` and it NEVER reaches the direct branch above. Its
+# R0 command runs inside `_run_prepared_lane`'s baseline
+# `_execute_snapshot_unit`, and that unit's `CommandResult` is what
+# `build_r0_claim` turns into the R0 claim.
+#
+# The first round of this wave wired only the two paths above, on the strength
+# of a false premise about `ui_unit`'s declared rigor, and shipped a fully
+# green suite that did nothing for the bug it was written for. These two tests
+# are the regression fence for exactly that.
+
+
+def _cov_document(files: dict) -> str:
+    """A real coverage.py-JSON document. The parser requires all three line
+    buckets on every record, so they are filled in rather than assumed."""
+    return json.dumps(
+        {
+            "files": {
+                key: {
+                    "executed_lines": list(record.get("executed_lines", [])),
+                    "missing_lines": list(record.get("missing_lines", [])),
+                    "excluded_lines": list(record.get("excluded_lines", [])),
+                }
+                for key, record in files.items()
+            }
+        }
+    )
+
+
+def _seed_r1_repo(repo: GitRepo) -> tuple[str, str]:
+    """Two commits with a real changed-line diff, and both of this run's own
+    OUTPUTS git-ignored (A-140) -- the coverage artifact and the result
+    report alike, or `run_lane`'s whole-tree cleanliness guard refuses before
+    anything runs."""
+    repo.write(".gitignore", f"cov.json\n{REPORT_PATH}\n")
+    repo.write("pkg/mod.zzz", "BASE\n")
+    base_rev = repo.commit_all("add pkg base")
+    repo.write("pkg/mod.zzz", "BASE\nLINE2\nLINE3\nLINE4\nLINE5\n")
+    head_rev = repo.commit_all("add pkg head")
+    return base_rev, head_rev
+
+
+def _r1_lane_argv(*, exit_code: int) -> tuple[str, ...]:
+    """One REAL command that writes BOTH artifacts this lane declares -- the
+    coverage document R1 judges and the vitest report R0 now judges -- and
+    then exits *exit_code*. Nothing is pre-seeded: a PASS here proves both
+    files came from this run, inside the snapshot."""
+    coverage = _cov_document({"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}})
+    report = vitest_document(total=140, failed=0)
+    return (
+        "/bin/sh",
+        "-c",
+        f"cat > cov.json <<'COVEOF'\n{coverage}\nCOVEOF\n"
+        f"printf %s {shlex.quote(report)} > {REPORT_PATH}; "
+        f"echo 'noise on stderr' >&2; "
+        f"exit {exit_code}",
+    )
+
+
+def test_run_lane_r0_r1_baseline_applies_the_tiebreak(git_repo: GitRepo):
+    """**The RG-45 shape on the lane shape that actually reproduces it.**
+
+    An R0+R1 lane whose command writes a verified-complete, zero-failure
+    vitest report and then exits 1. The R0 claim must be `PASS` on the
+    report's evidence -- and, because R0 no longer fails, R1 must go on to be
+    evaluated at all, which is the difference between "the gate is green" and
+    "the gate reports a coverage claim that was never computed".
+    """
+    base_rev, head_rev = _seed_r1_repo(git_repo)
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=make_r1_judge(
+            source_root_paths=(git_repo.path / "pkg",), base=base_rev
+        ),
+        argv=_r1_lane_argv(exit_code=1),
+        result_report=VITEST_REPORT,
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=FakeAdapter(),
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert [claim.rigor for claim in verdict.claims] == ["R0", "R1"]
+    assert verdict.claims[0].status is Outcome.PASS, (
+        "the R0 claim built from the baseline unit must honour the report"
+    )
+    assert verdict.claims[0].reason_code is None
+    assert verdict.claims[1].status is Outcome.PASS, (
+        "R1 ran at all, which it cannot do behind an R0 FAIL"
+    )
+    assert verdict.outcome is Outcome.PASS
+
+
+def test_run_lane_r0_r1_baseline_still_fails_without_the_declaration(
+    git_repo: GitRepo,
+):
+    """The must-fail control. Identical lane, identical command, identical
+    report written to the same path -- and no declaration -- is the
+    `FAIL`/`COMMAND_FAILED` it has always been.
+
+    Without this, the test above could go green for any reason unrelated to
+    the report, and the round-1 defect (a green test over a path that was
+    never wired) is precisely that failure mode.
+    """
+    base_rev, head_rev = _seed_r1_repo(git_repo)
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=make_r1_judge(
+            source_root_paths=(git_repo.path / "pkg",), base=base_rev
+        ),
+        argv=_r1_lane_argv(exit_code=1),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=FakeAdapter(),
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert verdict.claims[0].status is Outcome.FAIL
+    assert verdict.claims[0].reason_code is ReasonCode.COMMAND_FAILED
+    assert verdict.outcome is Outcome.FAIL
+
+
+def test_run_lane_r0_r1_baseline_report_naming_failures_fails_over_a_zero_exit(
+    git_repo: GitRepo,
+):
+    """Both directions on the baseline path too: a verified-complete report
+    naming real failures is a `FAIL` even though the command exited 0.
+
+    The tiebreak is the ground truth on this path or it is a one-directional
+    escape hatch, and SR-2 forbids the latter.
+    """
+    base_rev, head_rev = _seed_r1_repo(git_repo)
+    coverage = _cov_document({"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}})
+    report = vitest_document(total=140, failed=3, success=False)
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=make_r1_judge(
+            source_root_paths=(git_repo.path / "pkg",), base=base_rev
+        ),
+        argv=(
+            "/bin/sh",
+            "-c",
+            f"cat > cov.json <<'COVEOF'\n{coverage}\nCOVEOF\n"
+            f"printf %s {shlex.quote(report)} > {REPORT_PATH}; exit 0",
+        ),
+        result_report=VITEST_REPORT,
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=FakeAdapter(),
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert verdict.claims[0].status is Outcome.FAIL
+    assert verdict.claims[0].reason_code is ReasonCode.COMMAND_FAILED
+
+
+def test_run_lane_r0_r1_baseline_creates_the_reports_parent_directory(
+    git_repo: GitRepo,
+):
+    """The snapshot half legitimately gets `create_missing_parents=True`.
+
+    B006(b) reserves that opt-in for a call site that KNOWS it owns an
+    ephemeral, assay-managed snapshot -- which the baseline unit does, and the
+    direct path (measuring the consumer's live tree) does not. It matters
+    here more than for coverage: a snapshot is a tracked-only checkout, so an
+    untracked output directory never exists in it, and without this a lane
+    declaring a subdirectory path would fall back to A-073 on EVERY run
+    rather than only the first. The command itself never `mkdir`s, so this
+    passes only if the reservation created the directory.
+    """
+    base_rev, head_rev = _seed_r1_repo(git_repo)
+    git_repo.write(".gitignore", "cov.json\n.assay/\n")
+    head_rev = git_repo.commit_all("ignore the report directory")
+    coverage = _cov_document({"pkg/mod.zzz": {"executed_lines": [2, 3, 4, 5]}})
+    report = vitest_document(total=140, failed=0)
+    lane = make_lane(
+        rigor=("R0", "R1"),
+        judge=make_r1_judge(
+            source_root_paths=(git_repo.path / "pkg",), base=base_rev
+        ),
+        argv=(
+            "/bin/sh",
+            "-c",
+            f"cat > cov.json <<'COVEOF'\n{coverage}\nCOVEOF\n"
+            f"printf %s {shlex.quote(report)} > .assay/report.json; exit 1",
+        ),
+        result_report=ResultReportConfig(
+            format="vitest-json", path=".assay/report.json"
+        ),
+    )
+
+    verdict = runner.run_lane(
+        lane,
+        commit=head_rev,
+        repo=git_repo.path,
+        project_root=git_repo.path,
+        adapter=FakeAdapter(),
+        assay_version="0.1.0",
+        clock=fixed_clock(MOMENT_A, MOMENT_B, MOMENT_C),
+    )
+
+    assert verdict.claims[0].status is Outcome.PASS
+
+
+# --- R3's canary halves are excluded, and stay excluded ----------------------
+
+
+def test_the_legacy_canary_pipeline_never_consults_a_declared_report(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Round-1 blocker 3. `assay.canary._run_pipeline` runs the lane's argv to
+    answer a DIFFERENT question -- "did injecting this defect change the
+    judgement" -- so it opts out explicitly rather than inheriting
+    :func:`~assay.runner.execute_command`'s lane-declared default.
+
+    Asserted at the seam rather than through an end-to-end canary run,
+    because the property is about which argument reaches `execute_plan`: a
+    behavioural test could pass while the input was silently being consulted
+    and happening not to change the outcome.
+    """
+    seen: list[object] = []
+    real = runner.execute_plan
+
+    def record(plan, **kwargs):
+        seen.append(kwargs.get("result_report"))
+        return real(plan, **kwargs)
+
+    monkeypatch.setattr(runner, "execute_plan", record)
+
+    runner.execute_command(
+        make_lane(argv=("/bin/sh", "-c", "exit 0"), result_report=VITEST_REPORT),
+        cwd=Path("/tmp"),
+        result_report=None,
+    )
+
+    assert seen == [None], (
+        "an explicit result_report=None must reach execute_plan, so a canary "
+        "half is excluded rather than inheriting the lane's declaration"
+    )
+
+
+def test_execute_command_honours_the_lane_declaration_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The must-fail control for the exclusion above: without the explicit
+    argument, `execute_command` IS the R0 step and forwards the lane's own
+    declaration. If the sentinel default ever collapsed to plain `None`, the
+    feature would silently stop working through the public API and only this
+    test would notice."""
+    seen: list[object] = []
+    real = runner.execute_plan
+
+    def record(plan, **kwargs):
+        seen.append(kwargs.get("result_report"))
+        return real(plan, **kwargs)
+
+    monkeypatch.setattr(runner, "execute_plan", record)
+
+    runner.execute_command(
+        make_lane(argv=("/bin/sh", "-c", "exit 0"), result_report=VITEST_REPORT),
+        cwd=Path("/tmp"),
+    )
+
+    assert seen == [VITEST_REPORT]
+
+
+def test_a_declaring_lane_produces_identical_canary_behaviour(tmp_path: Path):
+    """The behavioural half of blocker 3: a lane declaring `result_report`
+    and an otherwise identical lane that does not produce the same canary
+    outcome, for the control half and the transformed half alike."""
+    from assay import canary
+
+    def outcome_for(report):
+        lane = make_lane(
+            rigor=("R0",),
+            argv=("/bin/sh", "-c", "exit 1"),
+            result_report=report,
+        )
+        return canary._run_pipeline(
+            lane,
+            repo=tmp_path,
+            project_root=tmp_path,
+            base_commit="d" * 40,
+            adapter=None,
+            infrastructure_source=None,
+            infrastructure_environment=None,
+            process_runner=runner.default_process_runner,
+            clock=lambda: datetime(2026, 9, 8, tzinfo=timezone.utc),
+        )
+
+    assert outcome_for(VITEST_REPORT) == outcome_for(None)
