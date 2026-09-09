@@ -97,7 +97,7 @@ def parse(text: str, *, producer: str | None) -> CoverageProfile:
     try:
         document = json.loads(text)
     except (json.JSONDecodeError, ValueError, RecursionError) as exc:
-        # (B074, second sweep) `RecursionError` is a `RuntimeError` subclass,
+        # (B075, second sweep) `RecursionError` is a `RuntimeError` subclass,
         # NOT a `ValueError`, and CPython raises it from `json.loads`'
         # recursive descent at the real C-stack boundary. This text is a
         # TARGET PROJECT's own `coverage.py` output -- produced entirely

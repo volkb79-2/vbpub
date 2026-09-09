@@ -2733,7 +2733,7 @@ def verify_text(text: str) -> list[str]:
     """:func:`verify_document`, from raw JSON text — the shape both stdin
     and a file path resolve to before validation begins.
 
-    (B074) The ``except`` tuple is the SAME three names ``attestation.py``'s
+    (B075) The ``except`` tuple is the SAME three names ``attestation.py``'s
     ``parse_attestation`` and ``adjudication.py``'s ``evaluate_provenance``
     carry, and deliberately so: this is the third site of one gap, and a
     reader comparing them should find one shape rather than three variants.
@@ -2749,7 +2749,7 @@ def verify_text(text: str) -> list[str]:
     input is untrusted by definition, and it is the one command a consumer
     points at an artifact whose producer they are trying to check. Its
     contract for an unreadable document is already this returned failure
-    list (``cmd_verify`` prints each line and exits 1); before B074 a deeply
+    list (``cmd_verify`` prints each line and exits 1); before B075 a deeply
     nested one instead crashed the process with a traceback, which a CI
     caller reads as a tooling fault rather than as a bad artifact.
     """

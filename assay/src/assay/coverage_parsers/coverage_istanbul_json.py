@@ -228,7 +228,7 @@ def parse(text: str, *, producer: str | None) -> CoverageProfile:
     try:
         document = json.loads(text)
     except (json.JSONDecodeError, ValueError, RecursionError) as exc:
-        # (B074, second sweep) Same gap, same reason as
+        # (B075, second sweep) Same gap, same reason as
         # `coverage_py_json.parse`: this text is a TARGET PROJECT's own
         # istanbul output, produced outside assay by a tool assay does not
         # control. `RecursionError` is a `RuntimeError` subclass, not a

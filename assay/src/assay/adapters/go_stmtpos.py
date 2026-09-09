@@ -292,7 +292,7 @@ def _read_document(
     try:
         document = json.loads(stdout.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
-        # (B074, second sweep) `stdout` is a real external `go` subprocess'
+        # (B075, second sweep) `stdout` is a real external `go` subprocess'
         # own output -- the most literally untrusted input in this module,
         # and the one place a toolchain assay does not control decides what
         # bytes arrive. `RecursionError` is a `RuntimeError` subclass, not a
