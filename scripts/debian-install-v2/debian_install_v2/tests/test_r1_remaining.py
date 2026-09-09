@@ -456,7 +456,7 @@ def test_activate_swap_partuuid_disappears(tmp_path, monkeypatch):
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
     installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = "uuid4"
     installer.actions.outputs[("/usr/sbin/mkswap", "/dev/vda4")] = ""
-    installer.actions.outputs[("/usr/bin/swapon", "-p", "10", "/dev/vda4")] = ""
+    installer.actions.outputs[("/usr/sbin/swapon", "-p", "10", "/dev/vda4")] = ""
     real_run = installer.actions.run
     calls = {"n": 0}
     def flaky(argv, **kw):

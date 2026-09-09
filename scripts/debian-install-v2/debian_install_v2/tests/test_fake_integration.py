@@ -137,6 +137,21 @@ def test_mismatched_readback_rolls_back(tmp_path):
     backup_name = rollback[0].argv[3]
     assert actions.files[str(rollback[0].argv[3])].decode() == CURRENT_DUMP
 
+    # Adversarial-review regression, 2026-09-08: the rollback's own
+    # kernel-view refresh must use partx -u/--update, NOT -a/--add like the
+    # forward apply path a few lines earlier in the same function -- this
+    # branch just restored a table with FEWER partitions than what that
+    # earlier -a call already registered with the kernel, and -a cannot
+    # retract now-stale entries. Matches inuse_partition_editor.py's own
+    # established add-vs-restore distinction (`--add --nr ...` vs
+    # `--update`). Exactly one -a (the forward apply, before the mismatch
+    # was detected) and exactly one -u (this rollback) must appear -- never
+    # a second -a.
+    argvs = [action.argv for action in actions.planned]
+    assert argvs.count(("/usr/bin/partx", "-a", "/dev/vda")) == 1
+    assert argvs.count(("/usr/bin/partx", "-u", "/dev/vda")) == 1
+    assert argvs.count(("/usr/bin/udevadm", "settle")) == 2  # once per partx call
+
 
 def test_apply_known_swap_shape_tolerates_padded_real_sfdisk_dump(tmp_path):
     """Regression, 2026-09-08: real `sfdisk --dump` output pads attribute

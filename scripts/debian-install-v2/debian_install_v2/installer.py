@@ -1108,12 +1108,24 @@ MaxFileSec=1month
                     description="rollback failed partition write",
                     dangerous=True,
                 )
-                # partx -a + udevadm settle, matching the apply path above
-                # (P0#3) -- not partprobe, which isn't even installed by
-                # this package set (it ships in the separate `parted`
-                # package, never one of stage2's own dependencies) and was
-                # already established as less reliable at this exact job.
-                self._run(["/usr/bin/partx", "-a", f"/dev/{self.root_disk}"], "refresh kernel view after rollback", dangerous=True)
+                # partx + udevadm settle instead of partprobe (not even
+                # installed by this package set -- it ships in the separate
+                # `parted` package, never one of stage2's own dependencies)
+                # -- but -u/--update here, NOT -a/--add like the apply path
+                # above (adversarial-review finding, 2026-09-08): this
+                # branch just restored the OLD backup table, a strictly
+                # SMALLER set of partitions than what the just-reverted
+                # write's own partx -a already registered with the kernel
+                # (the new swap partitions, the resized root). -a only adds
+                # partitions the kernel doesn't know about yet -- it cannot
+                # retract now-stale entries the way this rollback needs.
+                # inuse_partition_editor.py already draws exactly this
+                # distinction itself: Table.write()'s add case uses
+                # `partx --add --nr min:max`, but its own `restore`
+                # subcommand (recovering a previously-dumped table --
+                # functionally the same operation as this rollback) uses
+                # `partx --update`.
+                self._run(["/usr/bin/partx", "-u", f"/dev/{self.root_disk}"], "refresh kernel view after rollback", dangerous=True)
                 self._run(["/usr/bin/udevadm", "settle"], "wait for udev after rollback")
                 raise RuntimeError(f"partition table verification failed; restored backup {backup_dir / backup_name}")
             expected_paths = [
