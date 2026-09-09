@@ -3289,6 +3289,23 @@ state they poll for lands. Controls at the identical commit: full suite serial
 = 3932 passed; full suite `-n 4` = 0 failures; `test_behavioral.py` alone under
 xdist = 14 passed.
 
+**Addendum, same day, at `--cpus=6`.** Two further runs at a later commit on
+the same branch, four minutes apart, both at the lane-matching cap:
+
+| host load at start | outcome |
+| --- | --- |
+| ~6, rising to ~15 during the run | `FAIL / COMMAND_FAILED` — one failure, `test_behavioral.py::test_fake_approved_review_reaches_merge_ready` (a sibling of the two above). R1 passed at 100.0% |
+| ~8 | **PASS**, 2m10s |
+
+Two things follow. First, the cap is only half the problem: at the *correct*
+cap the lane still goes red once unrelated work pushes the 8-core box past
+~15, so declaring `resources.cpus` bounds the gate's own footprint but does
+not make the lane robust against the rest of the host. The other half belongs
+to the tests — bounded tick loops measure wall-clock progress with no bound on
+what shares the machine. Second, note the wall times: **9m24s versus 2m10s at
+the same cap on the same lane**, a 4x spread driven purely by ambient load,
+which is also why `budget = "30m"` is not a meaningful timeout here.
+
 The damage is not the slowness, it is that **the first failure mode is a
 plausible-looking red gate on files the change never touched** — an implementer
 who trusts it goes hunting a nonexistent regression, and one who doesn't trust

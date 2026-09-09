@@ -346,43 +346,56 @@ wire shape is not what the parser assumed".
 read from `.assay/verdict-tester-unified.json` in a **separate step**, never a
 pipe tail (LESSONS L4):
 
+**This is the verdict at the branch TIP, `943a6da3`** — i.e. it covers the
+round-1 review fixes in §7, not just the original feature commit:
+
 | field | value |
 | --- | --- |
 | `outcome` | **PASS** (`reason_code: null`, `exit_code: 0`) |
-| `commit` | `16c3e36107f23dfcd25bd9e536033914995a6ad8` |
+| `commit` | `943a6da37bc20fcebd42e0999b2aa51700058d91` (branch tip) |
 | `enforcement` / `scope` | `gate` / `S1` |
 | `declared_rigor` | `["R0", "R1"]` — **R0 PASS**, **R1 PASS** |
-| R1 changed-line coverage | **100.0% (446/446 executable)**, `files_missing_coverage: []` |
+| R1 changed-line coverage | **100.0% (450/450 executable)**, `files_missing_coverage: []`, `missing_lines: {}` |
 | judged base | `ec868f141a7f0bc34eabc1be21315441d1117d24` (merge-base) |
 | assay | 6.1.0 |
+| wall | 2m10s |
 
-Independent of the gate, at the same commit: the full suite serial under
-`nice -n 10 ionice -c2 -n7` is **3932 passed** in 339.99s, exit 0.
+The earlier verdict at the feature commit `16c3e361` was the same shape —
+PASS, R0 PASS, R1 100.0% at **446/446**. The four extra executable lines are
+the round-1 fixes (one each in `control_auth.py` and `commands.py`, two in
+`decision_chat.py`); all four are covered.
 
-> **Which tree that PASS covers.** `16c3e361`, and nothing after it. `74cd60b2`
-> is markdown only, so the verdict still describes the code. **The round-1
-> review fixes (§7) do change executable lines** — one in `control_auth.py`,
-> one in `commands.py`, two in `decision_chat.py`, plus two new tests — so the
-> branch tip is **not** covered by the verdict above. At the tip: the full
-> suite is green (serial, `nice`/`ionice`, exit 0) and the five directly
-> affected test files are green (343 tests), but **a gate re-run is
-> outstanding**. It was deliberately not launched: host load average was 42
-> and climbing on a box shared with a live production game server, and a gate
-> container there would both violate the standing host rule and — on the
-> evidence of the three runs below — produce a contention artefact rather than
-> a verdict. It should be run when the host is quiet, before merge.
+Independent of the gate, at the tip: the full suite serial under
+`nice -n 10 ionice -c2 -n7` is exit 0, and the five test files touched by the
+round-1 fixes are 343 tests green.
 
 #### A host-rule conflict the controller should know about
 
-This took **three** gate attempts, and the two invalid ones were caused by the
-standing host rule, not by this branch:
+Six gate attempts were needed across this package, and **every invalid one was
+a host-contention artefact in `tests/test_behavioral.py`** — a file this branch
+never touches — not a defect in the change under test:
 
-| run | container CPU cap | result |
-| --- | --- | --- |
-| 1 | — | aborted: `--worktree` path doubling (the RG-47 shape) — re-run from the project dir instead |
-| 2 | `--cpus=3` | `FAIL / COMMAND_FAILED` — 2 failures in `tests/test_behavioral.py`, a file this branch does not touch. **R1 already passed at 100.0%** |
-| 3 | `--cpus=3` | `BUDGET_EXCEEDED / LANE_TIMEOUT` at the lane's `budget = "30m"`; container pinned at its ceiling (295% of 300%) |
-| 4 | `--cpus=6` | **PASS**, 9m24s wall |
+| run | commit | cap | host load at start | result |
+| --- | --- | --- | --- | --- |
+| 1 | `16c3e361` | — | — | aborted: `--worktree` path doubling (the RG-47 shape) — re-run from the project dir instead |
+| 2 | `16c3e361` | `--cpus=3` | ~18 | `FAIL / COMMAND_FAILED` — 2 failures in `test_behavioral.py`. **R1 already passed at 100.0%** |
+| 3 | `16c3e361` | `--cpus=3` | ~18 | `BUDGET_EXCEEDED / LANE_TIMEOUT` at the lane's `budget = "30m"`; container pinned at its ceiling (295% of 300%) |
+| 4 | `16c3e361` | `--cpus=6` | ~13 | **PASS**, 9m24s |
+| 5 | `943a6da3` | `--cpus=6` | ~6, rose to ~15 | `FAIL / COMMAND_FAILED` — **1** failure, `test_behavioral.py::test_fake_approved_review_reaches_merge_ready`. **R1 passed at 100.0% (450/450)** |
+| 6 | `943a6da3` | `--cpus=6` | ~8 | **PASS**, 2m10s |
+
+Run 5 is the sharpest evidence available that the flake is environmental. The
+failing test is a sibling of run 2's two, in the same file, exercising the same
+bounded `for _ in range(20)` daemon-tick loop against real subprocesses. It has
+no coupling to anything this package changed — `test_behavioral.py` references
+neither `control_auth`, `channel_operator`, nor `intake_bridge` — and at the
+identical commit it passes serially 3/3, passes with the whole file under
+`-n auto`, and passes in run 6 four minutes later. The only variable that moved
+was host load.
+
+Note also the wall times: 9m24s (run 4) versus 2m10s (run 6), same cap, same
+lane. A 4x spread driven purely by what else the box is doing is the real
+signal here.
 
 The lane's judged argv is `pytest tests -n auto`, documented in `assay.toml` as
 "the measured optimum on this 8-core host" — so `-n auto` spawns 8 workers. The
@@ -397,10 +410,19 @@ passes under `-n 4`, and `test_behavioral.py` alone under xdist is 14 passed.
 `[environments.tester-unified]` in the monorepo-root `run-gate.toml` declares
 **no `resources.cpus`** — the gate container starts CPU-uncapped and is
 restrained only by `dev-background.slice` (production Wings sits in a separate
-`wings-mgmt.slice`, `NanoCpus=0`). Run 4 used `--cpus=6`, chosen as a deliberate
-reconciliation rather than a quiet exemption: it keeps the gate off two of the
-host's eight cores and inside the deprioritised slice, while matching the
-8-worker layout the lane declares.
+`wings-mgmt.slice`, `NanoCpus=0`). Runs 4–6 used `--cpus=6`, chosen as a
+deliberate reconciliation rather than a quiet exemption: it keeps the gate off
+two of the host's eight cores and inside the deprioritised slice, while
+matching the 8-worker layout the lane declares.
+
+**Run 5 shows the cap is only half the problem.** Even at `--cpus=6` — the
+setting that matches the lane's own design — the lane still went red on a
+`test_behavioral.py` sibling once *other* work pushed the box past ~15. So the
+CPU cap is the half run-gate can fix by declaring `resources.cpus`; the other
+half is that these daemon-tick tests are written against wall-clock progress
+with no bound on what else shares the machine, and no cap setting makes that
+robust on a host with a live game server on it. Both halves are recorded in
+RG-48.
 
 Filed as **RG-48** in `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` (this
 branch), with the measurements above: either declare `resources.cpus` for the
