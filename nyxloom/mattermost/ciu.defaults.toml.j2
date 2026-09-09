@@ -55,7 +55,7 @@ public_host = "mattermost.{{ env.PUBLIC_FQDN }}"
 # is not minting and returns nothing to persist. So the accounts, channels
 # and webhooks provision as usual and only the PAT waits, visibly, on an
 # operator flipping this line.
-enable_user_access_tokens = false
+enable_user_access_tokens = true
 # tls-edge shared ingress network (external) — joined only when exposed.
 ingress_network = "ingress_public"
 
