@@ -16,6 +16,7 @@ import pytest
 NETCUP_DIR = Path(__file__).resolve().parent.parent
 INSTALL_HOST_PATH = NETCUP_DIR / "scp-api-install-host.py"
 MONITOR_TASK_PATH = NETCUP_DIR / "scp-api-monitor-task.py"
+EXPLORE_PATH = NETCUP_DIR / "scp-api-explore.py"
 
 
 def _load_module(path: Path, name: str) -> types.ModuleType:
@@ -33,6 +34,11 @@ def install_host_mod():
 @pytest.fixture()
 def monitor_task_mod():
     return _load_module(MONITOR_TASK_PATH, "scp_api_monitor_task")
+
+
+@pytest.fixture()
+def explore_mod():
+    return _load_module(EXPLORE_PATH, "scp_api_explore")
 
 
 class FakeHTTPResponse:
@@ -55,7 +61,7 @@ class FakeHTTPResponse:
 class FakeClient:
     """Records calls instead of hitting the network - for --dry-run tests.
 
-    Any of get/post/patch/get_user_info raises AssertionError if called
+    Any of get/post/patch/put/delete/get_user_info raises AssertionError if called
     when the test didn't expect it (pass `allow=set()` to permit specific
     method names).
     """
@@ -84,6 +90,18 @@ class FakeClient:
         if "patch" not in self._allow:
             raise AssertionError(f"unexpected mutating PATCH {endpoint} (dry-run must not call this)")
         self.calls.append(("patch", endpoint, data, params))
+        return {}
+
+    def put(self, endpoint, data=None, params=None):
+        if "put" not in self._allow:
+            raise AssertionError(f"unexpected mutating PUT {endpoint} (dry-run/declined-confirm must not call this)")
+        self.calls.append(("put", endpoint, data, params))
+        return {}
+
+    def delete(self, endpoint, params=None):
+        if "delete" not in self._allow:
+            raise AssertionError(f"unexpected mutating DELETE {endpoint} (dry-run/declined-confirm must not call this)")
+        self.calls.append(("delete", endpoint, params))
         return {}
 
     def get_user_info(self):
