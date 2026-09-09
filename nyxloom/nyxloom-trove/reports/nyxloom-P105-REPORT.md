@@ -493,22 +493,25 @@ verified against the broken state, where it names the drifted keys. Commit
 run from the worktree's `nyxloom/` directory, verdict read from
 `.assay/verdict-tester-unified.json` in a separate step.
 
-**Result: PASS.** `run-gate` exit 0; verdict read from
-`.assay/verdict-tester-unified.json` in a separate step:
+**Result: PASS**, re-run fresh after the round-1 nit fixes. `run-gate` exit 0;
+verdict read from `.assay/verdict-tester-unified.json` in a separate step:
 
 ```
 outcome        PASS          exit_code 0
 lane           tester-unified   scope S1   rigor [R0, R1]   enforcement gate
-commit         3232a0ff607f43af924cb7028f72046dfb71b0ca
-judge          assay 6.0.0 (zipapp, sha256 43fffa70…), verdict schema 11
+commit         35de3f721d20872ffe12a8e320f8f481049015fe
+judge          assay 6.0.0 (zipapp), verdict schema 11
 claim R0       PASS   verified_by_assay=true
 claim R1       PASS   verified_by_assay=true
-  changed-line coverage   384 / 384 = 100.0 %   (fail_under 100.0)
+  changed-line coverage   396 / 396 = 100.0 %   (fail_under 100.0)
   files considered        11        files_missing_coverage []
   unclassified {}   excluded {}      (allow_excluded=false, require_branch=false)
 base           996048ac  (base_resolution: merge-base)   source_roots ["src"]
 argv_modified  false
 ```
+
+Prior run, before the nit fixes, for the record: PASS on `3232a0ff`, 384/384.
+The two runs were also independently reproduced by the round-1 reviewer.
 
 `unclassified_lines {}` and `excluded_lines {}` are worth stating rather than
 skipping: an empty denominator or a silently-excluded changed line are exactly
@@ -518,10 +521,12 @@ measured and all 384 covered, across 11 files.
 
 Independently corroborated before the gate by a local reconstruction of the
 same judgment (`git diff -U0` against the base ∩ `coverage.json`), which
-reported 253/253 = 100.0% over `src`. The two numbers differ because the local
-check diffed against `origin/main` two-dot while assay resolves the base by
+reported 259/259 = 100.0% over `src`. The two numbers differ because the local
+check diffs against `origin/main` two-dot while assay resolves the base by
 **merge-base**; both agree on the only thing that matters, that no changed
 executable line is uncovered.
+
+Full suite at the same commit: **3825 passed**.
 
 Host discipline observed throughout: load checked before every run, pytest
 under `nice -n 10 ionice -c2 -n7`, and the gate deliberately **deferred**
