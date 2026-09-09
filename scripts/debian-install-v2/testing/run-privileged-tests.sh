@@ -40,18 +40,26 @@ docker build -q -f "$HERE/Dockerfile" -t "$IMAGE" "$DEBIAN_INSTALL_DIR" >/dev/nu
 cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-# --cgroupns=host is REQUIRED on this estate's docker daemon (confirmed
-# 2026-09-09): its default --cgroupns=private gives a privileged
-# systemd-as-PID1 container a cgroup namespace systemd can't finish booting
-# in -- it dies within milliseconds, exit 255, with ZERO log output (dies
-# before its own logging machinery initializes at all), and this reproduces
-# identically on a well-known, unrelated public systemd-in-docker image
-# (jrei/systemd-debian:12), proving it's this daemon's default, not
-# anything about this image. --cgroupns=host (share the daemon's own
-# cgroup namespace instead of a fresh private one) fixed it 100% reliably
-# across repeated retries on both that control image and this one.
-echo "+ docker run -d --name $NAME --privileged --cgroupns=host ... -v $HOST_DEBIAN_INSTALL_DIR:/work"
-docker run -d --name "$NAME" --privileged --cgroupns=host \
+# DO NOT add --cgroupns=host here again. It was tried on 2026-09-09 as a
+# workaround for this daemon's default --cgroupns=private breaking a
+# privileged systemd-as-PID1 container's boot (exit 255, no log output).
+# It "worked" as a startup fix, but --cgroupns=host makes the container's
+# OWN systemd instance share the REAL HOST's cgroup namespace -- not a
+# capability/isolation issue (the reviewer who checked that angle was
+# right that --privileged already grants those), but a live-state-
+# CONTENTION issue: a second, independent systemd now sees and can act on
+# the actual host cgroup tree the real host PID 1 is simultaneously
+# managing. Combined with an ad hoc exploratory container from that same
+# session left running unattended with real (host-kernel-global, not
+# container-scoped) loop/partition devices attached, this contributed to
+# a hang serious enough to require a HOST REBOOT (2026-09-09, see
+# resume-2026-09-08-netcup-debian-install-v2-livetest.md's incident
+# section). This container tier is therefore back to BLOCKED on this
+# shared host -- do not re-enable it without the operator's explicit
+# sign-off on a genuinely isolated environment (a real separate VM, not a
+# cgroupns=host workaround on shared production infrastructure).
+echo "+ docker run -d --name $NAME --privileged ... -v $HOST_DEBIAN_INSTALL_DIR:/work"
+docker run -d --name "$NAME" --privileged \
     --tmpfs /run --tmpfs /run/lock --tmpfs /tmp \
     -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
     -v "$HOST_DEBIAN_INSTALL_DIR:/work:rw" \
