@@ -5,9 +5,13 @@ Read this before touching `wings-cgroups` again.
 
 > **Amended 2026-09-09** after the independent adversarial review
 > (`REVIEW-2026-09-09-scope-redesign.md`, commit `2ddadee8`) returned
-> NOT-ACCEPT on two blocking findings. Everything below is the 2026-09-08
-> state *plus* corrections; the review's own file is the authority on what was
-> wrong. See "2026-09-09 review-fix pass" at the end for what changed.
+> NOT-ACCEPT on two blocking findings, and again after the independent
+> fix-verification (`FIXVERIFY-2026-09-09-scope-redesign.md`, commit
+> `6de29c5a`) returned NOT-ACCEPT on one blocking finding **introduced by that
+> first fix**. Everything below is the 2026-09-08 state *plus* corrections; the
+> two review files are the authority on what was wrong. There are two fix-pass
+> sections at the end — read both, in order, and note that the second one
+> supersedes the first's central design decision.
 >
 > **Correcting note for commit `e22a6452`.** That commit's message says the
 > systemd e2e run "*proves* … which is what patch 0008's retarget claims and
@@ -36,9 +40,10 @@ Plus a docs commit (see `git log wings-cgroups/`).
   `v1-legacy/build/wings-pterodactyl` (backup ref `backup/pre-redesign-v1133`
   holds the pure-rebase, pre-redesign tip)
 - `stack.conf` `PTERODACTYL_REF="v1.13.3"`
-- Image built and present on the host daemon: **`wings-local:1.13.3-cgroup.2`**
-  (the review-fix state; `cgroup.1` is the pre-review build and is superseded.
-  Nothing deployed — no compose file was touched, the live host still runs
+- Image built and present on the host daemon: **`wings-local:1.13.3-cgroup.3`**
+  (the second review-fix state, 2026-09-09; `cgroup.1` is the pre-review build
+  and `cgroup.2` the first review-fix build, both superseded. Nothing deployed —
+  no compose file was touched, the live host still runs
   `wings-local:1.13.1-cgroup.11`)
 
 ## Verified
@@ -150,7 +155,9 @@ to a middle patch.
 | `internal/cgroups/sysd.go:sliceMemoryMin` | reads the tier's `MemoryMin` from the **`"Slice"`** interface — different unit type, different interface, on purpose. |
 | `environment/docker/scope.go:applyScopeProps` | the post-`ContainerStart()` application point and the accepted timing window. |
 | `environment/docker/power.go` | two call sites: `PhaseStartup` after `ContainerStart`, `PhaseSteady` when re-attaching to an already-running container. |
-| `environment/docker/container.go:InSituUpdate` | the third call site, added 2026-09-09. Docker's `ContainerUpdate` writes the Panel's `Resources` to the SAME scope, after Wings, on every Panel-side settings save; without the re-assert here the redesign's properties are silently replaced and a memory ceiling can be *loosened*. Any future path that issues a Docker resource write must re-assert too. |
+| `server/slice_phase.go:reassertSliceProps` | the third call site, added 2026-09-09, **moved here from `environment/docker/container.go` later the same day** (V1). Docker's `ContainerUpdate` writes the Panel's `Resources` to the SAME scope, after Wings, on every Panel-side settings save; without the re-assert the redesign's properties are silently replaced and a memory ceiling can be *loosened*. Any future path that issues a Docker resource write must re-assert too — **and must do it from a layer that can see the slice phase.** `Environment.State()` is NOT the phase. |
+| `server/slice_phase.go:currentPhase` | the single answer to "which band is live". `slicePhaseActive`, not the environment's process state. Anything that reads the environment's state to decide a band is the V1 bug again. |
+| `internal/cgroups.EnsureRequest.KeepMemoryHigh` | set only by a re-assertion. Drops `MemoryHigh` from the resolved band, because Docker cannot have damaged it (`container.Resources` has no such field) and writing it is the one thing a repair can do harm with. |
 | `config/config_docker.go:ResolveServerCgroupParent` | placement + `managed`. Override == node value is the opt-out. |
 | `config/config_docker.go:ScopeEnsureRequest` | `ApplyDefaults`/`Parent` are set only when the server is on the node tier. |
 | `server/slice_phase.go:sliceRequest` / `resolveScope` | deliberately split: `sliceRequest` decides *whether* to apply without needing Docker (so it stays unit-testable); `resolveScope` does the inspect at apply time. `req.Owner`, not `req.Scope`, is the "no request" sentinel. |
@@ -196,8 +203,16 @@ to a middle patch.
       merged change gets one, no size exception) — DONE 2026-09-09,
       `REVIEW-2026-09-09-scope-redesign.md` (`2ddadee8`), verdict NOT-ACCEPT on
       F1 + F2; all six findings answered in the fix pass below
-- [ ] A fresh fix-verification pass over the 2026-09-09 review-fix commits
-      (never the reviewer's own session, never a fork of the fixer)
+- [x] A fresh fix-verification pass over the 2026-09-09 review-fix commits
+      (never the reviewer's own session, never a fork of the fixer) — DONE,
+      `FIXVERIFY-2026-09-09-scope-redesign.md` (`6de29c5a`), verdict NOT-ACCEPT
+      on V1; all six findings answered in the second fix pass below
+- [ ] A fresh fix-verification pass over the SECOND review-fix pass (V1–V6).
+      Same rule: not the fixer's session, not a fork of it. The thing to press
+      hardest on is `KeepMemoryHigh` — it is the one place this pass chose to
+      write *less* than the previous design did, on the strength of "Docker's
+      `container.Resources` has no `MemoryHigh` field"; if that premise is ever
+      false, memory.high silently stops being repaired
 - [ ] `v1-legacy/README.md`, `v1-legacy/pr/*.md`,
       `v1-legacy/t2-per-server-placement/README.md`,
       `v1-legacy/t3a-slice-manager/README.md`, `v1-legacy/test/README.md` still
@@ -230,7 +245,9 @@ were re-exported; the branch tip in `build/wings-pterodactyl` is
 
 **Decisions taken, with reasons.**
 
-- *Which phase the `InSituUpdate` re-apply uses.* The `Environment` cannot see
+- *Which phase the `InSituUpdate` re-apply uses.* **SUPERSEDED — this reasoning
+  was wrong, and the fix-verification found it (V1). Read the next section.**
+  The `Environment` cannot see
   the server's slice phase (that lives in `server/slice_phase.go`, a layer up),
   so it reads its own process state: still starting → startup band, otherwise
   steady. That is the same signal the phase machinery keys on. The two can
@@ -239,7 +256,13 @@ were re-exported; the branch tip in `build/wings-pterodactyl` is
   burnt its startup grace, and only until the next application. Applying
   nothing was the strictly worse option: the Panel's values then stand until
   the container is next started.
-- *No steady ramp on the re-apply.* `applyScopeProps` gained a `ramp bool`.
+- *No steady ramp on the re-apply.* **PARTLY SUPERSEDED: the premise
+  (`ContainerUpdate` never touches `MemoryHigh`) is correct and was
+  independently confirmed, but the conclusion held only when the inferred phase
+  matched the real one. The second pass keeps the premise and draws the
+  stronger conclusion from it — the re-assert writes no ceiling at all — and
+  the `ramp bool` is gone again, because both remaining callers pass true.**
+  `applyScopeProps` gained a `ramp bool`.
   The ramp exists for the startup→steady handoff, where the ceiling genuinely
   drops below a load-time peak. A re-assertion writes the value that is
   already on the unit (`ContainerUpdate` does not touch `MemoryHigh`), so
@@ -280,3 +303,95 @@ trailing blank line at EOF in `internal/cgroups/sysd.go`, plus
 `internal/cgroups/{phase_test,scope_test}.go` and `server/server.go`. All
 predate this pass; fixing them means another forward rebuild of the series for
 no behavioural gain. Fold them into the next patch that touches those files.
+*(Done on 2026-09-09 in the second review-fix pass below — `gofmt -l` is now
+clean on the whole tree.)*
+
+---
+
+## 2026-09-09 second review-fix pass (answers the fix-verification, V1–V6)
+
+Answers `FIXVERIFY-2026-09-09-scope-redesign.md` (`6de29c5a`), which returned
+NOT-ACCEPT on **V1**: the first pass's re-assertion inferred its property band
+from `Environment.State()`, which is not the slice phase. Series rebuilt
+**forward** again (patches 0004 and 0006 amended in place, 0005/0007/0008/0009
+re-applied on top, all nine re-exported). Pre-fix tip kept as
+`backup/pre-reviewfix2-20260909`; the exported series reproduces the branch
+byte-identically (tree `fe3104b7`).
+
+| finding | where the fix lives | what it does |
+|---|---|---|
+| V1 (blocking) | patch 0006 — `environment/docker/container.go`, `server/{update,slice_phase}.go`, `internal/cgroups/ensure.go` | The re-assertion moves OUT of `Environment.InSituUpdate` and into its caller, `Server.SyncWithEnvironment`, as `Server.reassertSliceProps`. The band comes from `currentPhase()` — the phase this layer holds — not from Docker's process state. It also stops writing `memory.high` at all (`EnsureRequest.KeepMemoryHigh`). |
+| V2 | patch 0004 (`environment/docker/scope.go`) + patch 0006 (`server/slice_phase.go:resolveScope`) | Both apply paths bail out at Debug when the container is not running, so the "runs under the node tier without its own resource guarantees" Warn no longer fires on every server start and on settings saves for stopped servers. |
+| V3 | patch 0004 — `internal/cgroups/{sysd,ensure,integration_test,ensure_test}.go` | `TestApplyTierFloorUnsetIntegration` exercises `Apply`'s own classification against two real tier slices (one declaring `MemoryMin`, one not). `Result` now separates `TierFloorUnset` (read succeeded, no budget) from `TierFloorErr` (could not read), with a line and a `sync.Once` each, so a transient D-Bus error no longer asserts something about the administrator's configuration. |
+| V4 | `wings-cgroups/CGROUP-SEMANTICS.md` rule 7 | The "`systemctl show` agrees with `io.bfq.weight` once more" claim is replaced by the measured table: 4950 derives 540, they are different scales and never agree numerically; what the repair restores is systemd's derivation rather than the Panel's raw value. |
+| V5 | `test/e2e-systemd/inner-test.sh` | The folded `E2E: ALL PASS` line is gone — the final line is a concatenation of the two per-tally verdicts and nothing else. Skips are tracked and named in the verdict, so a PASS cannot quietly cover a section that did not run. Section 2's degraded NOTE is replaced by a real assertion (see below). |
+| V6 | patch 0006 — `server/update.go` | Decided deliberately: the re-assertion is **not** gated on `InSituUpdate`'s error. Docker restores its own `HostConfig` when `ContainerUpdate` fails but does not roll back cgroup writes runc already made, so a half-applied update is the state that most needs repairing. Documented at the call site. |
+
+**Why V1's fix is shaped this way.** `applySliceProps` could not be reused: its
+`phase == PhaseSteady && !req.Staged()` early return is right for a transition
+and wrong for a re-assert. So the two entry points now build their requests
+separately and share `dispatchSliceProps`. The re-assert additionally sets
+`KeepMemoryHigh`, which is the second half of the fix and worth keeping
+straight: `memory.high` is the **only** property Docker's write cannot reach
+(`container.Resources` has no such field) and the **only** one whose
+re-application can hurt — it reclaims immediately if the workload is above it,
+and a cgroup reclaims straight through its own `memory.min`. Suppressing it also
+removes a race the first pass would still have had: a settings save landing
+while `enterSteady`'s ramp is walking the ceiling down would have written the
+resting value in one shot and cut the ramp short.
+
+**V1 reproduced, then fixed, measured on the e2e harness** (systemd 257,
+cgroup v2, `native.cgroupdriver=systemd`; now a permanent assertion as
+`inner-test.sh` section 5, so it cannot regress silently):
+
+```
+server at its load-time working set, startup band applied
+    memory.min=200M  memory.high=400M  memory.current=324,079,616
+
+panel settings save (docker update)          cpu.weight 800->39, memory.low 300M->512M
+
+BUGGY  steady band, one-shot, mid-load
+    memory.current  323,854,336 -> 103,923,712   reclaimed THROUGH its own 200M floor
+    memory.events   high +174
+
+FIXED  startup band, memory.high left alone
+    memory.current  315,379,712 -> 315,523,072   untouched
+    memory.events   high +0
+    memory.high     419,430,400 (the startup 400M, unchanged)
+    repaired        cpu.weight=800  memory.low=300M  memory.max=450M
+```
+
+**Section 2's contrast, fixed rather than softened.** The old assertion — a raw
+cgroupfs write does not survive `daemon-reload` — is false on systemd 257 and
+had degraded to a NOTE. The reason: a `docker-<id>.scope` is transient and has
+no unit file, and `daemon-reload` re-reads unit files. Measured here:
+
+```
+set-property MemoryMin=64M MemoryLow=96M   ->  67108864 / 100663296
+raw cgroupfs write                          ->  11108352 / 33554432
+daemon-reload                               ->  11108352 / 33554432   (raw value survives)
+any later set-property on the unit          ->  67108864 / 100663296  (systemd's view wins)
+```
+
+So the section now asserts the true and load-bearing statement instead: systemd
+re-derives every managed attribute from its own view the next time a property is
+set on the unit, which for a Wings-managed server is every property application.
+
+**Re-verified after the fixes** (real output in the round-3 report):
+
+- `patchstack/scripts/test.sh pterodactyl` — green; `gofmt -l` now clean.
+- `INTEGRATION=1 patchstack/scripts/test.sh pterodactyl` — `dockerintegration` 5/5.
+- `test/e2e-systemd/run-e2e.sh` — `E2E: series -> PASS | t3a-slice-manager -> PASS`,
+  exit 0, including the new section 5 and the new
+  `TestApplyTierFloorUnsetIntegration`.
+- `patchstack/scripts/coverage.sh pterodactyl` — assay R1 **PASS**, 347 covered,
+  53.80%, floor 50.0 (untouched, still one commit in its history).
+- `patchstack/scripts/build-image.sh pterodactyl cgroup.3` →
+  **`wings-local:1.13.3-cgroup.3`** (`c7d56b8fd034`). Nothing deployed; the live
+  node still runs `wings-local:1.13.1-cgroup.11`.
+
+**Still not verified.** The honest gap from the first hand-off stands unchanged:
+nothing has run against a live Wings. The band decision now has unit tests and
+the kernel consequence has an e2e assertion, but the wiring from a real Panel
+sync through `SyncWithEnvironment` to `EnsureForServer` is still only covered by
+tests plus reading.
