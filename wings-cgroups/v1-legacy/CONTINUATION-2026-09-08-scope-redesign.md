@@ -390,6 +390,14 @@ set on the unit, which for a Wings-managed server is every property application.
   **`wings-local:1.13.3-cgroup.3`** (`c7d56b8fd034`). Nothing deployed; the live
   node still runs `wings-local:1.13.1-cgroup.11`.
 
+**The one risk V2's guard introduces, checked.** Both apply paths now skip a
+container whose `State.Running` is false, and the primary apply
+(`power.go`, immediately after `ContainerStart`) would silently do nothing if
+Docker did not report the container running by then. Measured against the real
+daemon: 10/10 create+start+inspect cycles report `Running=true` with no delay,
+and the only `false` is a container that has already exited — which has no scope
+to write to either way, so skipping is the correct answer there.
+
 **Still not verified.** The honest gap from the first hand-off stands unchanged:
 nothing has run against a live Wings. The band decision now has unit tests and
 the kernel consequence has an e2e assertion, but the wiring from a real Panel
