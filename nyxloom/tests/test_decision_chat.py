@@ -505,10 +505,20 @@ def test_an_unusable_channel_identity_keeps_the_decision_route_closed(
 # Outbound pushes: typed-fields-only vs. the sanctioned free-text exception
 # ==========================================================================
 
+def _mattermost_only(cfg):
+    """The live nyxloom-trove shape after the P106/P107 cutover: an explicit
+    Mattermost selector, a webhook URL, and NO ntfy fields at all."""
+    cfg.notify.backend = "mattermost"
+    cfg.notify.webhook_url = "http://mm.example/hooks/abc"
+    cfg.notify.mattermost_channel = "alerts"
+    cfg.notify.ntfy_url = None
+    cfg.notify.ntfy_topic = None
+    cfg.notify.cmd_topic = None
+    return cfg
+
+
 def test_notify_decision_opened_uses_typed_fields_only(sample_project, monkeypatch):
-    cfg = sample_project
-    cfg.notify.ntfy_url = "http://fake-ntfy.example"
-    cfg.notify.cmd_topic = "feedback"
+    cfg = _mattermost_only(sample_project)
 
     sent = []
     monkeypatch.setattr(notify, "send", lambda nc, note: sent.append(note) or (True, "ok"))
@@ -523,9 +533,7 @@ def test_notify_decision_opened_uses_typed_fields_only(sample_project, monkeypat
 
 
 def test_post_feedback_carries_free_text_with_loop_guard_tag(sample_project, monkeypatch):
-    cfg = sample_project
-    cfg.notify.ntfy_url = "http://fake-ntfy.example"
-    cfg.notify.cmd_topic = "feedback"
+    cfg = _mattermost_only(sample_project)
 
     sent = []
     monkeypatch.setattr(notify, "send", lambda nc, note: sent.append((nc, note)) or (True, "ok"))
@@ -534,9 +542,80 @@ def test_post_feedback_carries_free_text_with_loop_guard_tag(sample_project, mon
 
     assert len(sent) == 1
     nc, note = sent[0]
-    assert nc.ntfy_topic == "feedback"
+    assert nc is cfg.notify
     assert note["body"] == "free text reply body"
     assert note["tags"] == [decision_chat.DECISION_AGENT_TAG]
+
+
+# ==========================================================================
+# PACKAGE P108 (2026-09-09) -- the Mattermost-cutover regression.
+#
+# Both pushes above used to build their OWN ntfy-shaped NotifyConfig behind
+# an `if not (cfg.notify.ntfy_url and cfg.notify.cmd_topic): return` guard.
+# Once nyxloom-trove/nyxloom.toml switched to `backend = "mattermost"` and
+# dropped its ntfy URL, that guard was permanently true: every decision push
+# was swallowed with no error and no log line. These tests pin the fix by
+# asserting on the SELECTED BACKEND, not on any one backend's field names --
+# each of them fails against the pre-fix code (zero sends).
+# ==========================================================================
+
+def test_notify_decision_opened_sends_on_mattermost_only_config(sample_project,
+                                                                 monkeypatch):
+    cfg = _mattermost_only(sample_project)
+
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda nc, note: sent.append(nc) or (True, "ok"))
+
+    decision_chat.notify_decision_opened(cfg, "D-002")
+
+    assert len(sent) == 1, "decision push silently dropped on a mattermost-only config"
+    # The config handed to send() must resolve to the backend the operator
+    # actually named -- the real resolver, not a restatement of it.
+    assert [b.name for b in notify.resolve_backends(sent[0])] == ["mattermost"]
+
+
+def test_post_feedback_sends_on_mattermost_only_config(sample_project, monkeypatch):
+    cfg = _mattermost_only(sample_project)
+
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda nc, note: sent.append(nc) or (True, "ok"))
+
+    decision_chat._post_feedback(cfg, "D-001", "free text reply body")
+
+    assert len(sent) == 1, "decision-agent reply silently dropped on a mattermost-only config"
+    assert [b.name for b in notify.resolve_backends(sent[0])] == ["mattermost"]
+
+
+def test_notify_decision_opened_omits_reply_hint_without_inbound_transport(
+        sample_project, monkeypatch):
+    """The inbound half is still ntfy-only (commands.cmd_transport_configured),
+    so a Mattermost-only deployment must not tell the operator to reply on a
+    channel nothing is polling."""
+    cfg = _mattermost_only(sample_project)
+
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda nc, note: sent.append(note) or (True, "ok"))
+
+    decision_chat.notify_decision_opened(cfg, "D-002")
+
+    assert "Reply here" not in sent[0]["body"]
+    assert sent[0]["click"] == decision_chat.DECISIONS_UI_URL
+
+
+def test_notify_decision_opened_keeps_reply_hint_when_inbound_transport_live(
+        sample_project, monkeypatch):
+    cfg = sample_project
+    cfg.notify.ntfy_url = "http://fake-ntfy.example"
+    cfg.notify.cmd_topic = "feedback"
+    cfg.notify.cmd_token_env = "NTFY_CMD_TOKEN"
+    monkeypatch.setenv("NTFY_CMD_TOKEN", "read-tok")
+
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda nc, note: sent.append(note) or (True, "ok"))
+
+    decision_chat.notify_decision_opened(cfg, "D-002")
+
+    assert "Reply here" in sent[0]["body"]
 
 
 def test_find_project_for_decision_unknown_returns_none(sample_project):
@@ -553,12 +632,10 @@ def test_find_project_for_decision_unknown_returns_none(sample_project):
 # ==========================================================================
 
 def test_notify_decision_opened_swallows_send_failure(sample_project, monkeypatch):
-    cfg = sample_project
-    cfg.notify.ntfy_url = "http://fake-ntfy.example"
-    cfg.notify.cmd_topic = "feedback"
+    cfg = _mattermost_only(sample_project)
 
     def _raise(nc, note):
-        raise RuntimeError("ntfy unreachable")
+        raise RuntimeError("channel unreachable")
 
     monkeypatch.setattr(notify, "send", _raise)
 
@@ -568,12 +645,10 @@ def test_notify_decision_opened_swallows_send_failure(sample_project, monkeypatc
 
 
 def test_post_feedback_swallows_send_failure(sample_project, monkeypatch):
-    cfg = sample_project
-    cfg.notify.ntfy_url = "http://fake-ntfy.example"
-    cfg.notify.cmd_topic = "feedback"
+    cfg = _mattermost_only(sample_project)
 
     def _raise(nc, note):
-        raise RuntimeError("ntfy unreachable")
+        raise RuntimeError("channel unreachable")
 
     monkeypatch.setattr(notify, "send", _raise)
 

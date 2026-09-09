@@ -150,6 +150,19 @@ def _pre_resume_drift_scan(project: str, cfg: ProjectConfig) -> list | None:
     return [p for p in plan if p.proposed_action != resync.ACTION_NONE]
 
 
+def cmd_transport_configured(cfg: ProjectConfig) -> bool:
+    """True when this project can actually READ operator messages.
+
+    P108: the inbound half of chat-ops is ntfy-only -- `_listen_once` below
+    long-polls ntfy's `/{topic}/json` endpoint, and the Mattermost cutover
+    (P106/P107) shipped no inbound equivalent. Module-level and shared with
+    decision_chat, which must not promise "reply here" on a channel nothing
+    is polling; a second, drifting copy of this condition is exactly the
+    defect P108 fixed on the outbound side."""
+    return bool(cfg.notify.cmd_topic and cfg.notify.ntfy_url
+                and os.environ.get(cfg.notify.cmd_token_env))
+
+
 class CommandListener:
     """Long-poll listener on the ntfy inbound command topic."""
 
@@ -162,6 +175,9 @@ class CommandListener:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._since = "0"
+        # Edge-trigger for the "nothing to poll" warning (P108): logged once
+        # per transition, not once per backoff tick.
+        self._unconfigured_logged = False
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -358,10 +374,21 @@ class CommandListener:
         while not self._stop_event.is_set():
             cfg = self._find_cmd_config()
             if cfg is None:
+                # P108: this branch used to spin in total silence, so a
+                # daemon whose only visible sign of life was "command
+                # listener started" could poll nothing at all forever --
+                # which is what the Mattermost cutover produced.
+                if not self._unconfigured_logged:
+                    self._unconfigured_logged = True
+                    log.warning("command listener idle: no project has an "
+                                "inbound ntfy transport configured "
+                                "(chat-ops reads require ntfy; the "
+                                "Mattermost backend is outbound-only)")
                 if self._stop_event.wait(backoff):
                     return
                 backoff = min(backoff * 2, self.BACKOFF_MAX)
                 continue
+            self._unconfigured_logged = False
             try:
                 self._listen_once(cfg)
                 backoff = self.BACKOFF_INITIAL
@@ -380,8 +407,7 @@ class CommandListener:
                 cfg = config.ProjectConfig.load(self.registry[project])
             except Exception:
                 continue
-            if (cfg.notify.cmd_topic and cfg.notify.ntfy_url
-                    and os.environ.get(cfg.notify.cmd_token_env)):
+            if cmd_transport_configured(cfg):
                 return cfg
         return None
 
@@ -416,6 +442,12 @@ class CommandListener:
             self._send_reply(cfg, reply)
 
     def _send_reply(self, cfg: ProjectConfig, text: str) -> None:
+        # P108 deliberately did NOT migrate this onto cfg.notify's backend
+        # selector, unlike decision_chat's pushes. A reply must land on the
+        # channel the command was READ from, and this path is only ever
+        # reached after `cmd_transport_configured(cfg)` held -- i.e. ntfy.
+        # Sending it over cfg.notify instead would split one Q&A across two
+        # channels. It re-migrates with the inbound transport, not before.
         nc = NotifyConfig(
             ntfy_url=cfg.notify.ntfy_url,
             ntfy_topic=cfg.notify.cmd_topic,
