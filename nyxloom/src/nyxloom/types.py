@@ -292,6 +292,21 @@ class EventType(enum.Enum):
     GATE_FINISHED = "GATE_FINISHED"
     EVIDENCE_RECORDED = "EVIDENCE_RECORDED"
     REVIEW_RECORDED = "REVIEW_RECORDED"
+    # B29 2026-09-09 (nyxloom-P105, LESSONS PL11): a bounded review leg that
+    # was growing its transcript while producing no correction, no gate run
+    # and no verdict inside its budget. Audit-only, no TaskStateFile
+    # projection (registered in test_invariants.KNOWN_IGNORED_EVENT_TYPES):
+    # the STATE consequence arrives via the ATTEMPT_STALLED the same effect
+    # appends alongside it, which is the projection-handled half and the one
+    # the ladder's existing "already STALLED -> InterruptAttempt" branch
+    # reads. This event exists to carry what ATTEMPT_STALLED structurally
+    # cannot -- the TYPED reason ('review-no-concrete-progress') and the
+    # compact controller summary a restart is meant to resume FROM instead
+    # of replaying the original prompt. Deliberately NOT named ATTEMPT_*:
+    # that prefix is a projection branch (projection.py) and a trace-grouping
+    # key (handoff_trace.py), and this is neither an attempt-record update
+    # nor a leg of its own. See review_progress.py.
+    REVIEW_PROGRESS_STALLED = "REVIEW_PROGRESS_STALLED"
     MERGE_RECORDED = "MERGE_RECORDED"
     MERGE_REVERTED = "MERGE_REVERTED"
     PROGRESS_RECORDED = "PROGRESS_RECORDED"

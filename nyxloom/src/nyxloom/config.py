@@ -156,6 +156,27 @@ class Policy:
     # Absolute per-attempt wall-clock backstop (P14): interrupt regardless
     # of liveness once exceeded; fm.budget.max_wall_seconds overrides.
     attempt_max_wall_seconds: int = 10800
+    # B29 2026-09-09 (nyxloom-P105, PL11): the review-leg progress budgets.
+    # These govern a DIFFERENT failure than the two above -- a review leg
+    # that is loud (so stall_log_quiet_seconds never fires) and useless (so
+    # only attempt_max_wall_seconds ever stops it, three hours late). See
+    # review_progress.py for the four-signal rule.
+    #
+    # 1800s is chosen against the incident and against its neighbours, not
+    # picked round: PL11's reviewer was already unproductive at ten minutes,
+    # and 1800 is 6x below attempt_max_wall_seconds -- so this can only ever
+    # fire EARLIER than the existing absolute backstop, never instead of a
+    # case it would have caught. A leg that has committed anything, run any
+    # gate, or recorded any finding or verdict is immune regardless.
+    review_progress_wall_seconds: int = 1800
+    # 0 DISABLES (the opt-in convention test_health_interval_days and
+    # gap_audit_after_changed_lines already use). The mechanism is built and
+    # tested; the THRESHOLD is not set, because no measured distribution of
+    # healthy-review transcript-record counts exists in this project yet and
+    # a guessed floor here kills healthy reviewers. Every stall the
+    # wall-clock budget records carries transcript_records, which is exactly
+    # the distribution needed to set this -- that is its forcing function.
+    review_progress_max_records: int = 0
     reconcile_interval_seconds: int = 30
     wave_max_diffs: int = 3
     http_port: int = 8942           # loopback only

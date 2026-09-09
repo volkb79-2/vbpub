@@ -1122,7 +1122,10 @@ def rule_table() -> tuple[RuleSpec, ...]:
             scope=RuleScope.PLAN, channel=Channel.ATTEMPT,
             rule=rules_attempts.attempt_ladder,
             emits=frozenset({"DispatchImplementer", "EmitAttemptExit",
-                             "InterruptAttempt", "MarkInterrupted", "MarkStalled",
+                             "InterruptAttempt", "MarkInterrupted",
+                             # B29 2026-09-09 (nyxloom-P105, PL11): the loud
+                             # review stall -- ladder branch 5.
+                             "MarkReviewStalled", "MarkStalled",
                              "ResumeAttempt", "StallCheck", "Transition"}),
             rationale=(
                 "After dispatch, so a fresh-start re-cut of a poisoned attempt "

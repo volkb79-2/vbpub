@@ -18,10 +18,13 @@ branch fires, in this fixed precedence:
 3. no receipt, pid alive, past the WALL-CLOCK CAP -> ``InterruptAttempt``,
    unconditionally, bypassing the stall gate entirely (P14 item 6);
 4. already STALLED -> ``InterruptAttempt``;
-5. RUNNING with a quiet log -> ``StallCheck``, or ``MarkStalled`` once the
+5. a RUNNING REVIEW leg that burned its progress budget while its transcript
+   kept GROWING -> ``MarkReviewStalled`` (B29/PL11 -- the loud stall, which
+   6 below cannot see and 3 above catches only three hours late);
+6. RUNNING with a quiet log -> ``StallCheck``, or ``MarkStalled`` once the
    daemon's tier-2 evidence confirms it (P14 item 2);
-6. FAILED and latest -> the task is moved off its non-terminal state (P54);
-7. INTERRUPTED -> the P34 poisoned-resume decision table, gated by P15's
+7. FAILED and latest -> the task is moved off its non-terminal state (P54);
+8. INTERRUPTED -> the P34 poisoned-resume decision table, gated by P15's
    drain-agents park and B24's transient backoff.
 
 Precedence is expressed as an ``if``/``elif`` chain over one attempt, so it is
@@ -50,9 +53,11 @@ from .config import healthy_routes, undeclined_routes
 from .planning import PlanContext, RuleEmitter
 from .reconcile import (
     DispatchImplementer, EmitAttemptExit, InterruptAttempt, MarkInterrupted,
-    MarkStalled, ResumeAttempt, StallCheck, Transition, _wall_clock_cap_exceeded,
-    attempts_used, fresh_start_eligible, implementer_record_count,
+    MarkReviewStalled, MarkStalled, ResumeAttempt, StallCheck, Transition,
+    _wall_clock_cap_exceeded, attempts_used, fresh_start_eligible,
+    implementer_record_count,
 )
+from .review_progress import REVIEW_ROLES, ReviewProgressBudget, evaluate_leg
 from .types import (
     AttemptState, Blocker, BlockerType, Role, TaskState, TERMINAL_TASK_STATES,
 )
@@ -63,6 +68,27 @@ from .types import (
 _INTERRUPTIBLE_STATES = (
     AttemptState.RUNNING, AttemptState.PREFLIGHTING, AttemptState.STALLED,
 )
+
+
+def _review_stall_trigger(attempt, inp) -> str | None:
+    """B29 (nyxloom-P105, PL11): the typed review-progress trigger for one
+    attempt, or None -- for a non-review role, for a leg the daemon did not
+    measure this pass, and for every leg still inside its budget or showing
+    any concrete progress.
+
+    Kept OUT of the ladder's `elif` chain deliberately: the ladder needs the
+    answer before it starts, so that a measured-but-CLEARED review leg falls
+    through to the quiet-log stall gate instead of consuming its branch.
+    """
+    if attempt.role not in REVIEW_ROLES:
+        return None
+    signals = inp.review_leg_signals.get(attempt.attempt_id)
+    if signals is None:
+        return None
+    return evaluate_leg(signals, ReviewProgressBudget(
+        wall_seconds=getattr(inp.cfg.policy, "review_progress_wall_seconds", 0),
+        max_records=getattr(inp.cfg.policy, "review_progress_max_records", 0),
+    ))
 
 
 def attempt_ladder(ctx: PlanContext, emit: RuleEmitter) -> None:
@@ -89,6 +115,7 @@ def attempt_ladder(ctx: PlanContext, emit: RuleEmitter) -> None:
         for attempt in tsf.attempts:
             has_receipt = inp.receipts.get(attempt.attempt_id) is not None
             alive = inp.pid_alive.get(attempt.attempt_id, False)
+            review_trigger = _review_stall_trigger(attempt, inp)
 
             # Receipt handling: RUNNING/PREFLIGHTING/STALLED with receipt (or
             # an already-EXITED attempt whose task transition is pending) ->
@@ -160,6 +187,33 @@ def attempt_ladder(ctx: PlanContext, emit: RuleEmitter) -> None:
             # emitted a prior pass) and still no receipt -> interrupt now.
             elif attempt.state == AttemptState.STALLED:
                 emit(InterruptAttempt(task_id=task_id, attempt_id=attempt.attempt_id))
+
+            # B29 2026-09-09 (nyxloom-P105, PL11) -- the LOUD stall. Placed
+            # here, between "already STALLED" and the quiet-log gate below,
+            # because that ordering is the whole integration: the branch
+            # below can only ever fire on a QUIET log, and PL11's reviewer
+            # was never quiet. It wrote hundreds of kilobytes of
+            # orchestration overhead, held its lease past ten minutes, and
+            # reached no correction, no gate and no verdict -- invisible to
+            # every gate in this ladder except the 3h wall-clock cap above.
+            #
+            # This branch is strictly additive: it fires only when the
+            # transcript IS growing (review_progress.evaluate_leg's own first
+            # guard), so it never claims a case the tier-2 CPU-signature
+            # confirmation below would have handled more carefully, and it
+            # sits AFTER the wall-clock cap so the unconditional backstop
+            # keeps its precedence.
+            # The trigger is computed BEFORE the chain, not inside this
+            # branch's condition: a measured-and-CLEARED review leg must fall
+            # through to the quiet-log gate below rather than consuming its
+            # `elif`. Deciding inside the branch would have silently disabled
+            # the P14 stall path for every review leg the daemon measures.
+            elif (attempt.state == AttemptState.RUNNING and alive
+                  and review_trigger is not None):
+                emit(MarkReviewStalled(
+                    task_id=task_id, attempt_id=attempt.attempt_id,
+                    trigger=review_trigger,
+                    signals=inp.review_leg_signals[attempt.attempt_id]))
 
             # Stall handling: no receipt, pid alive, log quiet > threshold
             elif attempt.state == AttemptState.RUNNING and alive:

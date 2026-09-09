@@ -689,6 +689,12 @@ KNOWN_IGNORED_EVENT_TYPES: frozenset[EventType] = frozenset({
     # family, everything else in it is explicitly "no projection effect".
     EventType.GATE_STARTED,
     EventType.REVIEW_RECORDED,
+    # B29 2026-09-09 (nyxloom-P105, PL11): the review-leg stall's AUDIT half.
+    # Its state consequence arrives via the ATTEMPT_STALLED that
+    # effects_lifecycle.mark_review_stalled appends alongside it in the same
+    # handler -- same "separate, properly-handled event" shape as
+    # MERGE_REVERTED below. See review_progress.py.
+    EventType.REVIEW_PROGRESS_STALLED,
     EventType.EVIDENCE_RECORDED,
     EventType.WAVE_CLOSED,
     EventType.SPEC_ATTENTION,

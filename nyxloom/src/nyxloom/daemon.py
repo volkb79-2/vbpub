@@ -381,8 +381,8 @@ from . import (
     effects_dispatch, effects_gates,
     effects_lifecycle, effects_merge, effects_review, frontmatter,
     gate_runner, intake_chat, leases,
-    lint, merge_digest, notify, paths, reconcile, render, results, snapshot, stages,
-    storage, watchdog, wrapper,
+    lint, merge_digest, notify, paths, reconcile, render, results, review_progress,
+    snapshot, stages, storage, watchdog, wrapper,
 )
 from . import __version__
 from .config import GateDef, ProjectConfig
@@ -606,6 +606,13 @@ _POLICY_BOUNDS: dict[str, tuple[int, int]] = {
     # carve_ahead_target is 0 since ready_count >= 0 is never < 0).
     "carve_ahead_target": (0, 64),
     "headroom_warn": (0, 64),
+    # B29 2026-09-09 (nyxloom-P105): both review-progress budgets, 0 = off
+    # (review_progress.ReviewProgressBudget.armed). The wall-clock ceiling
+    # matches attempt_max_wall_seconds' -- a review budget ABOVE the absolute
+    # per-attempt cap is inert, but it is a tuning mistake, not a safety one,
+    # so it is permitted rather than rejected here.
+    "review_progress_wall_seconds": (0, 604800),
+    "review_progress_max_records": (0, 10_000_000),
 }
 
 # P15 2026-07-15: factory-state pause modes accepted by POST /api/config/pause.
@@ -1492,6 +1499,8 @@ class Daemon:
             project, cfg, states, events=events)
         provider_ok = self._provider_ok(routes, builder=b)
         stall_confirmed = self._confirm_stall(states, log_quiet_seconds, pid_alive, cfg)
+        review_leg_signals = self._review_leg_signals(
+            cfg, states, log_quiet_seconds, pid_alive, receipts, events=events)
         resume_failures = self._resume_failures(project, states, cfg.policy.resume_progress_grace_seconds)
         transient_backoff_ready = self._transient_backoff_ready(project, states)
         budget_remaining = self._budget_remaining(cfg, states)
@@ -1572,6 +1581,7 @@ class Daemon:
             pid_alive=pid_alive,
             receipts=receipts,
             stall_confirmed=stall_confirmed,
+            review_leg_signals=review_leg_signals,
             resume_failures=resume_failures,
             transient_backoff_ready=transient_backoff_ready,
             budget_remaining=budget_remaining,
@@ -2227,6 +2237,144 @@ class Daemon:
                 out[aid] = prev is not None and cpu is not None and prev == cpu
                 self._stall_cache[aid] = cpu
         return out
+
+    def _review_leg_signals(self, cfg: ProjectConfig,
+                            states: dict[str, TaskStateFile],
+                            log_quiet_seconds: dict[str, float | None],
+                            pid_alive: dict[str, bool],
+                            receipts: dict[str, dict | None],
+                            *, events: Sequence[Event],
+                            ) -> dict[str, review_progress.ReviewLegSignals]:
+        """B29 2026-09-09 (nyxloom-P105, PL11): measure the four progress
+        signals for every IN-FLIGHT review leg. The daemon measures; the
+        pure detector (review_progress.evaluate_leg) decides.
+
+        Grouped by ATTEMPT, not by task: a wave review is one attempt spanning
+        N member tasks, so a leg that ran a gate or landed a correction on ANY
+        member has demonstrably got somewhere and must be immune as a whole.
+        Iterating per task and judging each in isolation would stall a
+        productive leg on the strength of its least-advanced member.
+
+        Legs with a receipt, a dead pid, or a non-RUNNING state are absent:
+        the ladder's earlier branches own those, and an absent entry means
+        "not judged" rather than "judged clean".
+        """
+        out: dict[str, review_progress.ReviewLegSignals] = {}
+        if not getattr(cfg.policy, "review_progress_wall_seconds", 0) and \
+                not getattr(cfg.policy, "review_progress_max_records", 0):
+            return out  # both budgets disabled -- measure nothing
+
+        legs: dict[str, tuple[Attempt, list[str]]] = {}
+        for tsf in states.values():
+            if tsf.state in TERMINAL_TASK_STATES:
+                continue
+            for att in tsf.attempts:
+                if (att.role not in review_progress.REVIEW_ROLES
+                        or att.state != AttemptState.RUNNING
+                        or not pid_alive.get(att.attempt_id, False)
+                        or receipts.get(att.attempt_id) is not None):
+                    continue
+                entry = legs.get(att.attempt_id)
+                if entry is None:
+                    legs[att.attempt_id] = (att, [tsf.task_id])
+                elif tsf.task_id not in entry[1]:
+                    entry[1].append(tsf.task_id)
+
+        if not legs:
+            return out
+        starts = review_progress.attempt_start_sequences(events)
+        now = self._ports.clock.now()
+        quiet_threshold = cfg.policy.stall_log_quiet_seconds
+        for attempt_id, (att, task_ids) in legs.items():
+            quiet = log_quiet_seconds.get(attempt_id)
+            since = starts.get(attempt_id)
+            gate_active = False
+            finding_recorded = False
+            branch_advanced: bool | None = None
+            for task_id in sorted(task_ids):
+                g, f = review_progress.event_progress(
+                    events, attempt_id, task_id, since_sequence=since)
+                gate_active = gate_active or g
+                finding_recorded = finding_recorded or f
+                advanced = self._review_branch_advanced(cfg, att, task_id, events)
+                if advanced:
+                    branch_advanced = True
+                elif advanced is False and branch_advanced is None:
+                    branch_advanced = False
+            transcript_bytes, transcript_records = self._transcript_extent(att)
+            out[attempt_id] = review_progress.ReviewLegSignals(
+                elapsed_seconds=max(0.0, (now - att.started).total_seconds()),
+                transcript_bytes=transcript_bytes,
+                transcript_records=transcript_records,
+                # Signal (a). NOT progress -- it is what makes this leg
+                # invisible to the quiet-log stall gate, which is exactly why
+                # the detector requires it before judging anything.
+                transcript_growing=(quiet is not None and quiet <= quiet_threshold),
+                branch_advanced=branch_advanced,
+                gate_active=gate_active,
+                finding_recorded=finding_recorded,
+            )
+        return out
+
+    def _review_branch_advanced(self, cfg: ProjectConfig, att: Attempt,
+                                task_id: str,
+                                events: Sequence[Event]) -> bool | None:
+        """Signal (b) for one leg/member pair: has this task's branch moved
+        since the leg started? None when there is no baseline to measure
+        against (see ReviewLegSignals.branch_advanced for why None must NOT
+        read as progress, while a git READ FAULT must).
+        """
+        baseline = self._pre_review_sha(events, att.attempt_id, task_id) or att.base_commit
+        if not baseline:
+            return None
+        try:
+            current = self._ports.git.resolve_verify(str(cfg.root), f"feat/{task_id}")
+        except Exception:  # census: advisory-degradation (B29)
+            log.debug("review-progress branch read failed",
+                      task=task_id, attempt=att.attempt_id)
+            return True  # transient fault -> immune this pass, never interrupt
+        if current is None:
+            return True
+        return current != baseline
+
+    @staticmethod
+    def _pre_review_sha(events: Sequence[Event], attempt_id: str,
+                        task_id: str) -> str | None:
+        """The pre-review branch head effects_review.launch_review stamped
+        into this leg's own ATTEMPT_CREATED for this member task."""
+        for ev in events:
+            if (ev.type is EventType.ATTEMPT_CREATED
+                    and ev.attempt_id == attempt_id and ev.task_id == task_id):
+                sha = (ev.payload or {}).get("pre_review_sha")
+                return sha if isinstance(sha, str) and sha else None
+        return None
+
+    @staticmethod
+    def _transcript_extent(att: Attempt) -> tuple[int, int]:
+        """``(bytes, newline-delimited records)`` of a leg's attempt log.
+
+        Counted over a chunked BINARY read: for a claude route the log is
+        stream-json, so one line is one orchestration record, and counting
+        newlines costs a scan rather than the JSON parse of every line on
+        every 30s pass that assistant-turn granularity would need. An
+        unreadable or absent log yields (0, 0) -- the budget then simply
+        never fires on records, which is the safe direction.
+        """
+        if not att.log_path:
+            return 0, 0
+        path = Path(att.log_path)
+        try:
+            size = path.stat().st_size
+            records = 0
+            with path.open("rb") as fh:
+                while True:
+                    chunk = fh.read(1 << 20)
+                    if not chunk:
+                        break
+                    records += chunk.count(b"\n")
+            return size, records
+        except OSError:  # census: advisory-degradation (B29)
+            return 0, 0
 
     @staticmethod
     def _read_proc_cpu(pid: int | None) -> str | None:
