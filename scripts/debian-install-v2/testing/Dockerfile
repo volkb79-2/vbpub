@@ -1,9 +1,12 @@
 # Privileged, systemd-as-PID1 test environment for
 # debian_install_v2/inuse_partition_editor.py -- AND, via the qemu-system-x86
-# packages below, the boot-level test harness in run-boot-test.sh (real
+# packages below, groundwork for a planned boot-level test harness (real
 # initramfs execution, which no container -- privileged or not -- can ever
 # exercise, since a container shares the host kernel and never actually
 # boots one: no bootloader, no initramfs unpack/execute, no switch_root).
+# That harness's own driver script does not exist yet -- only its base-image
+# downloader does (download-base-image.sh) -- the references to
+# "run-boot-test.sh" below describe the intended design, not shipped code.
 #
 # Why this exists instead of adapting tester-unified (vbpub's shared gate
 # image): tester-unified runs as an unprivileged uid (1003), has no systemd,

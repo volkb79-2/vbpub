@@ -1147,6 +1147,21 @@ MaxFileSec=1month
             readback = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
             readback_entries = self._parse_partition_entries(readback)
             if readback_entries != plan_entries:
+                # Diagnostic-only, computed before the rollback below
+                # overwrites the disk: every prior mismatch on this exact
+                # line has needed an SSH session to a still-broken host to
+                # find out WHAT differed (2026-09-08/09, three separate
+                # rounds) -- surface the actual diff in the raised error
+                # itself so it reaches Telegram/custom_script.output2
+                # without another live round + manual SSH dig.
+                all_numbers = sorted(set(plan_entries) | set(readback_entries))
+                diff_parts = []
+                for number in all_numbers:
+                    expected = plan_entries.get(number)
+                    actual = readback_entries.get(number)
+                    if expected != actual:
+                        diff_parts.append(f"p{number}: expected={expected} actual={actual}")
+                mismatch_detail = "; ".join(diff_parts) or "(dicts differ but no per-number diff found)"
                 # Same missing-stdin bug as the forward write above: sfdisk
                 # takes its restore script on stdin, not as a positional
                 # path argument -- a bare positional arg after the device is
@@ -1202,7 +1217,10 @@ MaxFileSec=1month
                 )
                 self._run(["/usr/bin/partx", "-u", f"/dev/{self.root_disk}"], "refresh kernel view after rollback", dangerous=True)
                 self._run(["/usr/bin/udevadm", "settle"], "wait for udev after rollback")
-                raise RuntimeError(f"partition table verification failed; restored backup {backup_dir / backup_name}")
+                raise RuntimeError(
+                    f"partition table verification failed; restored backup {backup_dir / backup_name}; "
+                    f"diff: {mismatch_detail}"
+                )
             expected_paths = [
                 f"{self._partition_base}{number}"
                 for number in range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1)
