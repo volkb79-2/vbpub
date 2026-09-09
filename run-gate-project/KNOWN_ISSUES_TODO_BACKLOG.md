@@ -3253,3 +3253,99 @@ assay B078. This entry stays OPEN here as the pointer/provenance record,
 not because run-gate.py itself needs a fix.
 
 ### Status — OPEN 2026-09-08 (moved to assay, see disposition above)
+
+## RG-47 — `run-gate.toml` resolves relative to the invoking process's CWD, not `--worktree`; a stale/diverged config from outside the target worktree silently wins
+
+### Observed mechanism and reproduction
+
+`run-gate <lane> --worktree PATH` scopes the JUDGED tree and the exec
+target (which container/worktree the lane actually runs against) to
+`PATH` — but it resolves its OWN `run-gate.toml` (lane definitions,
+`[lanes.*.pins.assay]` versions, everything) relative to the INVOKING
+PROCESS's current working directory, not to `--worktree`. The two are
+silently assumed to agree, and normally do, because a worktree's
+`run-gate.toml` is a checked-out copy of the same file at whatever
+commit its branch is on — so in the common case CWD-config and
+`--worktree`-config are byte-identical and the divergence is invisible.
+
+Reproduced live (dstdns, 2026-09-08, during the assay 5.2.0 -> 6.1.0
+pin bump on `main`): an ad-hoc `run-gate ui_unit --worktree
+/workspaces/dstdns/.worktrees/p179-edge-typing --base ...`, run from
+the MAIN checkout (CWD = `/workspaces/dstdns`), picked up **main's**
+already-upgraded `run-gate.toml` (pinned to `assay-6.1.0.pyz`) instead
+of the worktree's own still-5.2.0 copy, and failed looking for an
+artifact that worktree never had:
+
+```
+sha256sum: tools/assay/assay-6.1.0.pyz.sha256: No such file or directory
+```
+
+(first symptom; a config edited to tolerate the missing pin instead
+produces a spurious `NO_MEASUREMENT/EMPTY_COVERAGE` further downstream,
+which is the more dangerous failure mode — it looks like a real gate
+result, not a configuration error). `cd`-ing into the worktree before
+the same invocation fixed it immediately: config and judged tree agree
+again.
+
+### Why this matters
+
+This is the same *class* of bug as RG-24/RG-27..RG-31/RG-34 (a
+sub-mechanism silently resolving from the repo/CWD instead of the
+validated `--worktree` scope) — but for the config file itself, which
+is more fundamental than any of those: every lane definition, every
+pin version, every `[lanes.gate]` composite comes from it. Two
+concrete hazards:
+1. **Silent wrong-version pin.** A multi-package wave routinely has
+   several worktrees each mid-migration on a tool-version bump (like
+   this one); an ad-hoc invocation from the wrong CWD does not refuse
+   or warn — it just judges against a DIFFERENT lane definition than
+   the one committed on the target branch, and nothing in the output
+   says so.
+2. **It only ever surfaces when the two configs have actually
+   diverged**, which is rare and momentary (the exact window a pin
+   bump is in flight) — so a project can go a long time between
+   reproductions and each one looks like an unrelated, unreproducible
+   flake rather than a structural CWD-vs-`--worktree` gap.
+
+### Proposed fix
+
+Make `--worktree` the single source of truth for BOTH the judged tree
+and the config file that describes it — resolve `run-gate.toml`
+relative to `--worktree` when the flag is given, not relative to CWD.
+If a caller genuinely wants to judge worktree X's tree against a
+DIFFERENT config (unusual, but not obviously wrong), that should be an
+explicit separate flag, not the silent default. At minimum, `run-gate
+--worktree PATH` should print which `run-gate.toml` path it actually
+read (banner already prints the lane/env/container/slice — add the
+config path to the same line), so a CWD/`--worktree` mismatch is
+visible even before this is fixed structurally.
+
+### Oracles
+
+- `run-gate <lane> --worktree PATH`, invoked from a CWD whose own
+  `run-gate.toml` differs from `PATH`'s committed copy, reads (and the
+  banner discloses) `PATH`'s config — not the invoking CWD's.
+  Regression coverage: two fixture trees with deliberately different
+  `run-gate.toml` lane definitions, invoke from tree A with
+  `--worktree` pointed at tree B, assert the lane actually run is
+  tree B's.
+- The existing "invoked from inside the worktree" path (CWD ==
+  `--worktree`) is unaffected — this must not change behavior for the
+  common case, only make the CWD != `--worktree` case correct instead
+  of silently wrong.
+
+### SPEC ownership
+
+`run-gate.py`'s own `run-gate.toml` discovery/load path; this
+project's `KNOWN_ISSUES_TODO_BACKLOG.md`.
+
+### Provenance
+
+Found during dstdns's assay 6.1.0 adoption (P176-P179 core-workflow
+repair wave), 2026-09-08 — documented locally first as a standing
+operational rule (`decisions.md` D-431 addendum: "cd into the target
+worktree before any ad-hoc invocation from outside it"), filed here per
+the estate's own cross-repo convention rather than left as a
+workaround-only lesson.
+
+### Status — OPEN 2026-09-09
