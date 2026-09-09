@@ -58,6 +58,24 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [5.2.0] - 2026-09-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=617d387ed5b6481cd1d2d85561269dc78d40c8d1 -->
+
+### Added
+- feat(cmru): retain release logs+artifacts by DEFAULT, --discard-*-on-release opts out (f3713a8b)
+
+### Fixed
+- fix(cmru,ciu,nyxloom): re-pin assay gate zipapps 5.2.0 -> 6.0.0 (assay-v6.0.0) (ec0bc47f)
+- fix(cmru): backlog sweep -- KI-19/20/21/23/25, all verified live (8e3d1ae7)
+- fix(cmru,ciu,nyxloom): re-pin stale assay gate zipapps to 5.2.0, file KI-27 (583faad7)
+
+### Documentation
+- docs(cmru backlog): KI-26 -- get-py cannot render any project's get.py from an installed cmru (61c842d7)
+
+### Testing
+- test(cmru): kill the workspace_purpose two-part-branch survivor (617d387e)
+
 ## [5.1.0] - 2026-09-08
 <!-- cmru: generated -->
 <!-- cmru: source-end=34d0717ae7f4039111b8aade8f132f16ea2a5a53 -->
