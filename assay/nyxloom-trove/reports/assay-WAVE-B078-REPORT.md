@@ -14,23 +14,47 @@ the diff.
 
 ### ☑ "a lane declaring `result_report` with a verified-complete, zero-failure vitest JSON report and a non-zero wrapped-process exit code is judged `PASS`"
 
+> **Round-1 status: this item was the REJECT.** It held on the R0-only path
+> and was false for every R1+ lane — i.e. false for the cited live repro. Both
+> paths are wired now; the evidence below is the post-repair set.
+
 `tests/test_runner_result_report.py::test_verified_complete_zero_failure_report_passes_over_a_nonzero_exit`
 — a real `/bin/sh` writes a real 140-test, 0-failure vitest document and then
 exits 1. Asserts `outcome is PASS`, `reason_code is None`, and that
-`returncode == 1` survives on the artifact (the report decides the outcome; it
-does not rewrite what the process did).
+`returncode == 1` survives on the in-process `CommandResult` (the report
+decides the outcome; it does not rewrite what the process did — though note
+`returncode` is not, and never was, a verdict field: see the correction under
+"One deviation" below).
 
 `::test_the_r0_claim_for_the_rg45_shape_is_a_pass_claim` carries the same
 scenario through `build_r0_claim`, because the `Claim` is what a consumer's
 gate actually reads.
 
-`::test_run_lane_direct_r0_path_applies_the_tiebreak` proves it on the
-**shipped** path — `run_lane`'s direct R0-only branch, which is where RG-45's
-own reproduction (dstdns `ui_unit`, an R0-only `kind = "assay"` lane) runs.
-`::test_run_lane_direct_r0_path_still_fails_without_the_declaration` is its
-must-fail control: identical lane, identical command, identical report on
-disk, no declaration → `FAIL`. Without the control the first test could pass
-for a reason unrelated to the report.
+**Both shipped `run_lane` paths, one per lane shape, each with a must-fail
+control** — `run_lane` dispatches on declared rigor and the two branches reach
+`execute_plan` through entirely different call chains, so one end-to-end test
+cannot stand in for the other:
+
+| Lane shape | Path | Test | Control |
+|---|---|---|---|
+| R0-only | `run_lane`'s direct branch | `::test_run_lane_direct_r0_path_applies_the_tiebreak` | `::test_run_lane_direct_r0_path_still_fails_without_the_declaration` |
+| **R0+R1** (RG-45's `ui_unit` shape) | `_run_prepared_lane`'s baseline `_execute_snapshot_unit` | `::test_run_lane_r0_r1_baseline_applies_the_tiebreak` | `::test_run_lane_r0_r1_baseline_still_fails_without_the_declaration` |
+
+The R0+R1 test additionally asserts that **R1 was evaluated at all** — it
+cannot run behind an R0 `FAIL`, so this is the difference between a green gate
+and a gate reporting a coverage claim that was never computed.
+`::test_run_lane_r0_r1_baseline_report_naming_failures_fails_over_a_zero_exit`
+covers the opposite direction on that path, and
+`::test_run_lane_r0_r1_baseline_creates_the_reports_parent_directory` covers
+the snapshot's `create_missing_parents=True`.
+
+**Verified load-bearing, not just green:** removing the one-line baseline
+wiring turns exactly those three R0+R1 tests red and nothing else — run and
+reverted during the repair.
+
+R2/R3-declaring lanes take the same `_run_prepared_lane` baseline path and are
+covered by construction; `tests/test_result_report_wiring_sweep.py` is what
+keeps that true (see the Blocker 2 entry below).
 
 ### ☑ "a truncated/malformed/absent report falls back to A-073 unchanged"
 
@@ -179,22 +203,70 @@ asserts `RESULT_REPORT_FORMATS == {"vitest-json"}`, and
 | Checkpoints 2/3 not built | asserted by test, above |
 | `Claim.detail` decision | **not used** — `Claim._check_detail` forbids detail on a PASS, and the PASS direction is the one worth annotating; provenance rides on the retained `returncode` + tails instead. Reasoning in the LOG. |
 
+## Round-1 review reconciliation
+
+Review: `assay-WAVE-B078-REVIEW-round1.md` (`27b66c25`) — **REJECT, 4
+blockers.** All four addressed; repair commits `388f23a2`, `f535f04e`,
+`92803df3`. Reconciled against the reviewer's own frontmatter table.
+
+| Blocker | Fix | Evidence |
+|---|---|---|
+| **1** — the tiebreak never reached the R0 command of any R1+ lane, so RG-45's live repro was unfixed | `_execute_snapshot_unit` gains a forwarded `result_report=None`; `_run_prepared_lane`'s baseline is the sole caller that passes it (controller ruling D-1), with `create_missing_parents=True` for the snapshot it owns | the four R0+R1 tests above, mutation-verified |
+| **2** — `result_report` declarable but inert on any R1+ lane | Resolved by construction once blocker 1 landed: every lane shape's R0 claim now consults it, so no load-time rigor refusal is needed. Pinned mechanically rather than asserted | `tests/test_result_report_wiring_sweep.py` (4 tests): every `execute_plan`/`execute_command` call site must pass `result_report=` or carry a written reason in `EXCLUDED_SITES`; `REQUIRED_SITES` catches the reverse (a site that *stops* passing it — round 1's exact defect) |
+| **3** — the branch's own "canary halves are unchanged by construction" was false | `canary._run_pipeline` passes `result_report=None` explicitly (controller ruling D-2), via a sentinel default on `execute_command` so "the lane's declaration" and "no report at all" stay distinct | `::test_the_legacy_canary_pipeline_never_consults_a_declared_report`, its control `::test_execute_command_honours_the_lane_declaration_by_default`, the behavioural `::test_a_declaring_lane_produces_identical_canary_behaviour`, and `test_result_report_wiring_sweep.py::test_the_legacy_canary_pipeline_is_pinned_as_excluded_by_value` (pins the *value*, so flipping it fails there rather than nowhere) |
+| **4** — CONSUMERS.md documented a `returncode` verdict field that does not exist | Documentation corrected, no schema change (controller ruling D-3). A `PASS` carrying output tails is now named as the detection method (OBS 4), since a plain green run omits them | `docs/CONSUMERS.md` "How to tell, from a verdict, that a report overrode an exit code"; `runner.py`'s corresponding comment |
+
+Non-blocking observations: **OBS 2** actioned (the vitest reader joins the
+pinned untrusted-JSON list, now nine). **OBS 5** actioned (DESIGN-GUIDE's
+scope sentence was false in both directions and is now exhaustive: three
+consulting sites, three named exclusions). **OBS 1** read and deliberately not
+actioned — the unreachable `finished` check is defence-in-depth for
+Checkpoints 2/3 and collapsing it would make the core format-specific.
+**OBS 3** narrowed by blocker 1's fix (the parent-directory limitation is now
+R0-only lanes); the reviewer's suggested `--progress` "declared report was not
+usable" note is Checkpoint 2's, not this wave's.
+
+**Acceptance-box status.** The backlog's Checkpoint 1 tick is reverted to
+`[ ]`: it was ticked in round 1 on work that did not do what the box claims,
+and it belongs to fix-verification rather than to the implementer. The
+fault-injection tick the reviewer judged earned is left standing.
+
 ## One deviation, flagged not absorbed
 
 The branch lives in `execute_plan`, not `execute_command` as the design
 document says. `runner.py:1140-1142` is `execute_command`'s *docstring*; the
-A-073 rule is implemented in `execute_plan`, and the **shipped R0-only path
-(`run_lane`'s direct branch — the one RG-45 reproduces on) never calls
-`execute_command`**. Wiring only the named site would have shipped a feature
-that passes every unit test and does nothing for the case it was built for.
-Full reasoning, and the opt-in mechanism that keeps every other `execute_plan`
-caller unchanged by construction, in the LOG.
+A-073 rule is implemented in `execute_plan`, and `execute_command` is not
+called by `runner.py` at all — it is public API. Wiring only the named site
+would have left every `run_lane` path untouched. The reviewer verified this
+independently and confirmed it; the design document's SR-6 / "Migration
+surface" pointer should be corrected on main.
+
+**Corrected in the round-1 repair:** the first version of this section went on
+to claim the direct R0-only branch is "the one RG-45 reproduces on". It is
+not. `ui_unit` declares `rigor = ["R0", "R1"]`, so it runs through
+`_run_prepared_lane`'s baseline unit instead. Three sites carried that false
+claim and all three are fixed. Full reasoning in the LOG's repair section.
+
+**Where the tiebreak is consulted, exhaustively** — three sites, one per lane
+shape: `execute_command` (the R0 step and public API), `run_lane`'s direct
+branch (R0-only), `_run_prepared_lane`'s baseline unit (R1/R2/R3). Everything
+else keeps `execute_plan`'s `result_report=None` default: mutation candidates,
+R3's canary halves (both the snapshot engine's and `assay.canary`'s legacy
+pipeline, which passes `None` explicitly), and the `environment_command`
+probe. `tests/test_result_report_wiring_sweep.py` pins that list mechanically.
 
 ## One known limitation, stated up front
 
-Assay does not create the report's parent directory (`create_missing_parents`
-is contractually reserved for ephemeral snapshot callers; R0 runs in the live
-tree). A path in a not-yet-existing directory falls back to A-073 — safe, but
-silent. Documented in CONSUMERS.md with the working shape (a project-root
-path), and asserted as a stated fact by
+On an **R0-only** lane, assay does not create the report's parent directory:
+`create_missing_parents` is contractually reserved for callers that own an
+ephemeral assay-managed snapshot (B006(b)), and an R0-only lane runs in the
+consumer's live tree. A path in a not-yet-existing directory falls back to
+A-073 there — safe, but silent. Documented in CONSUMERS.md with the working
+shape (a project-root path), and asserted as a stated fact by
 `::test_a_report_in_a_directory_that_does_not_exist_yet_falls_back`.
+
+Every lane declaring R1, R2 or R3 runs inside a snapshot assay owns, so the
+baseline path passes `create_missing_parents=True` and has no such limitation
+— proven by
+`::test_run_lane_r0_r1_baseline_creates_the_reports_parent_directory`, whose
+command deliberately never `mkdir`s.

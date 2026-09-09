@@ -1,5 +1,15 @@
 # assay wave B078 — checkpoint 1 implementer LOG (2026-09-08/09)
 
+> **Round-1 review: REJECT, 4 blockers — all four fixed. See
+> "Round-1 repair" at the end**, which supersedes parts of the section "The
+> one place I did not follow the design document" below: that correction was
+> half right (moving the branch into `execute_plan` — confirmed correct by
+> the reviewer and kept), and half wrong on a load-bearing fact (I claimed
+> dstdns's `ui_unit` is an R0-only lane; it declares `rigor = ["R0", "R1"]`,
+> so the path I wired is not the one RG-45 reproduces on). The original text
+> is left standing, uncorrected, so the reasoning that produced the defect is
+> readable rather than tidied away.
+
 Branch: `feat/assay-b078-r0-structured-report-2026-09-08`
 Worktree: `/workspaces/vbpub/.worktrees/assay-b078-r0-structured-report`
 Spec: `nyxloom-trove/R0-STRUCTURED-REPORT-DESIGN.md` (SR-0..SR-6) +
@@ -181,3 +191,163 @@ fact by
 `tests/test_runner_result_report.py::test_a_report_in_a_directory_that_does_not_exist_yet_falls_back`.
 If a future consumer needs a subdirectory path, the honest fix is a widened
 `safeio` contract, not a quiet `True` at this call site.
+
+*(Round-1 update: this now applies to R0-ONLY lanes only. The snapshot
+baseline path legitimately passes `create_missing_parents=True` — see the
+repair section below.)*
+
+---
+
+# Round-1 repair (2026-09-09)
+
+Review: `assay-WAVE-B078-REVIEW-round1.md` (`27b66c25`) — **REJECT, 4
+blockers.** All four fixed. Gate re-verified green on the repair commit.
+
+| Commit | Blockers |
+|---|---|
+| `388f23a2` | 1 — wire the R0 command of every R1+ lane |
+| `f535f04e` | 3 (canary exclusion) + 2 (the wiring sweep that answers it) |
+| `92803df3` | 4 (`returncode` is not a verdict field) + OBS 4, OBS 5 |
+
+## Blocker 1 — what I actually got wrong
+
+The reviewer split my design-doc correction in two, and they were right to.
+
+**The half that held:** `runner.py:1140-1142` really is a docstring, the rule
+really lives in `execute_plan`, `execute_command` really is not called by
+`runner.py` at all, and moving the branch into `execute_plan` behind a
+keyword-only `result_report=None` really was the right structure. Kept
+unchanged.
+
+**The half that did not:** I justified wiring the *direct* path by asserting —
+three times, as settled fact — that dstdns's `ui_unit` is an R0-only lane. It
+is not. `/workspaces/dstdns/assay.toml` declares `rigor = ["R0", "R1"]`, which
+I did not check before writing it down. An R1 lane never reaches the direct
+branch; `run_lane` dispatches it to `_run_higher_rigor_lane` →
+`_run_prepared_lane` → `_execute_snapshot_unit`, and *that* baseline unit's
+`CommandResult` is what `build_r0_claim` turns into the R0 claim.
+
+So the checkpoint shipped green and did nothing for the bug it was written
+for. The uncomfortable part is that this is the *same* failure I had just
+correctly diagnosed one layer up and written a paragraph about — I caught
+"the design points at a path the repro does not take", then landed on a
+different path the repro does not take, because I stopped verifying at the
+point where the story became satisfying. The lesson worth keeping is narrower
+than "check your facts": **a claim that makes the rest of your reasoning work
+is the one to verify first, not last.**
+
+**The fix, per the controller's D-1 ruling.**
+`_execute_snapshot_unit` gains a `result_report=None` parameter it only
+*forwards*; `_run_prepared_lane`'s baseline call site is the sole caller that
+passes anything. Deriving it from the lane inside that function would have
+been fewer lines and silently wrong: that engine is shared with R2 candidate
+re-executions and R3's canary halves, so the tiebreak would have reached all
+three. Taking it from the caller keeps "only the lane's own R0 command opts
+in" true by reading call sites rather than by trusting a docstring.
+
+The snapshot half also passes `create_missing_parents=True` (also D-1).
+B006(b) reserves that opt-in for a caller that KNOWS it owns an ephemeral
+assay-managed checkout, which this one does and the direct path does not. It
+matters more here than for coverage: a snapshot is a tracked-only checkout, so
+an untracked output directory never exists in it — without this, a
+subdirectory report path would fall back to A-073 on *every* run rather than
+only the first.
+
+**Tests:** three new end-to-end R0+R1 cases (the RG-45 shape; the
+report-names-failures-over-a-zero-exit direction; the created parent
+directory), each with a must-fail control. Verified load-bearing by removing
+the one-line wiring and confirming exactly those three turn red, then
+restoring.
+
+The three false statements are corrected at all three cited locations.
+
+## Blocker 3 — the invariant my own prose asserted was false
+
+`canary._run_pipeline` (the engine both halves of the legacy standalone
+`run_python_canary` run through) calls `execute_command`, which I had made
+forward `lane.result_report` unconditionally. Three places in this branch —
+`execute_plan`'s docstring, DESIGN-GUIDE §6, and this LOG — said canary halves
+were "unchanged by construction". They were not. I wired a public-API function
+and never traced its callers, which is exactly the omission that produced
+blocker 1 in a different function.
+
+Per the controller's D-2 ruling: **excluded.** `canary.py` now passes
+`result_report=None` explicitly. That needed a sentinel default on
+`execute_command`, because `None` is itself a legitimate value of
+`Lane.result_report` and "take the lane's declaration" must stay
+distinguishable from "consult no report at all" at the call site — the
+`_ISOLATION_UNSET` pattern the test harness already uses for the same reason.
+
+## Blocker 2 — answered by construction, then pinned mechanically
+
+With the baseline unit wired, every lane shape's R0 claim consults the
+declaration: R0-only through the direct branch, R1/R2/R3 through
+`_run_prepared_lane`'s baseline. There is no shape left where `result_report`
+is accepted at load and silently inert, so **no load-time rigor refusal is
+needed** — the condition the reviewer's prescription made it conditional on
+does not arise.
+
+But "I traced the call graph and it's fine" is precisely the assurance that
+failed in round 1, so it is not the deliverable.
+`tests/test_result_report_wiring_sweep.py` proves it mechanically instead: an
+AST sweep over every `execute_plan`/`execute_command` call site in
+`src/assay/`, each of which must either pass `result_report=` or appear in
+`EXCLUDED_SITES` with a written reason. A `REQUIRED_SITES` half catches the
+opposite direction — a site that *stops* passing it, which is what round 1
+was, and which a presence-only sweep structurally cannot see. Canary's
+exclusion is pinned by *value*, so flipping it to `lane.result_report` fails
+there rather than nowhere.
+
+It earned itself immediately: it located the mutation call site under a
+function name I had guessed wrong when writing the exclusion list.
+
+## Blocker 4 — documentation of a field that does not exist
+
+CONSUMERS.md told consumers a report-driven `PASS` "still records the real
+`returncode`" on the verdict. It does not — `returncode` lives on the
+in-process `CommandResult` and on the progress stream's `command_finished`
+event, and appears nowhere in `verdict.schema.json` or `verdict.py`. I wrote
+that sentence from the code I was editing without checking what
+`assemble_verdict` actually threads, and it was the one paragraph a consumer
+reads to decide whether this feature is auditable.
+
+Per the controller's D-3 ruling: fixed by **correcting the documentation, not
+by adding a verdict field** (that would be a real schema change, and this wave
+is scoped to none). What replaces it is true, and per OBS 4 is now stated as a
+usable detection method rather than left implicit: an ordinary green run omits
+the output tails, so **a `PASS` carrying `result_stdout_tail`/
+`result_stderr_tail` IS a `PASS` that overrode a non-zero exit code** — and
+those tails are the failing run's own output, which is what an auditor wants.
+The exit code itself remains available via `--progress`. The matching code
+comment in `runner.py` is corrected too.
+
+## OBS 2 and OBS 5
+
+- **OBS 2:** the vitest reader joins `test_untrusted_json_parse_sweep.py`'s
+  pinned list (now nine). The derived sweep already covered it — that is how
+  the missing `RecursionError` guard was caught — but the pinned list exists
+  to notice a site that *disappears*, which a derived sweep cannot.
+- **OBS 5:** DESIGN-GUIDE's "the tiebreak applies to the lane's own R0 command
+  alone" was false in both directions before this repair. It is now accurate,
+  and spelled out exhaustively: three consulting sites (one per lane shape)
+  and a named reason for each of the three exclusions, with a pointer to the
+  sweep that pins the list.
+
+## OBS 1 and OBS 3 — read, deliberately not actioned
+
+- **OBS 1** (`verify_complete`'s `finished` check is unreachable for the only
+  shipped format, since the vitest reader refuses a missing `success` itself).
+  Correct, and left as is: it is defence-in-depth for Checkpoints 2/3, the
+  reviewer agreed the split is right, and the unit test covers the bullet
+  directly. Collapsing the two would make the core format-specific.
+- **OBS 3** (a lane author who mistypes a report directory gets zero signal).
+  Narrowed by blocker 1's fix — it now applies to R0-only lanes only. The
+  reviewer's suggestion of a `--progress` `command_finished` note saying "a
+  declared report was not usable" is a good one and is explicitly Checkpoint
+  2's, not this wave's.
+
+## The backlog tick
+
+Reverted to `[ ]`. I ticked my own acceptance box in round 1, and ticked it on
+work that did not do what the box claims. It belongs to fix-verification. The
+fault-injection tick the reviewer judged earned is left standing.
