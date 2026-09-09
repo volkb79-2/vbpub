@@ -96,17 +96,34 @@ starting points for repeated installer-parameter test iterations.
 ## Caching apt traffic across resets
 
 Every `vmctl start` (unless `--no-apt-cache`) lazily starts `apt-cacher-ng`
-inside the runner container and points the guest's apt at it via
-`Acquire::http::Proxy` (reachable at QEMU user-mode networking's synthetic
-gateway address, `10.0.2.2`, from inside the guest). This caches
-plain-HTTP traffic — `deb.debian.org`, `security.debian.org` — so repeated
-installer runs against the same package set don't re-fetch from the real
-internet every reset. It does **not** cover Docker's own apt repo
-(`https://download.docker.com`, HTTPS-only); caching that would require
-rewriting debian-install-v2's own generated `docker.sources` to use
-apt-cacher-ng's special `/HTTPS/` URL convention, which isn't worth
-coupling the real installer to a test-harness detail for a comparatively
-small, infrequently-hit package set. The cache lives inside the runner
+inside the runner container and pushes the guest's `Acquire::http::Proxy`
+config over SSH once it's reachable (reachable at QEMU user-mode
+networking's synthetic gateway address, `10.0.2.2`, from inside the
+guest) — deliberately over SSH, not via cloud-init's `write_files`: a run
+booted from a "ready" base (`prepare-ready-base`) has cloud-init
+permanently disabled, so anything relying on cloud-init to land a file
+would silently never apply there (live-confirmed 2026-09-09 — the first
+version of this used `write_files` and the proxy config never actually
+reached the guest on a `-ready` base until this was fixed).
+
+This caches plain-HTTP traffic — confirmed live: the main `deb.debian.org`
+archive component caches and installs correctly through it (e.g. `fio`
+installed via the proxy in under a minute). **Known gap, not yet fixed**:
+Debian trixie's `-backports`/`-security` sources resolve through a
+`mirror+file:` redirector that, for those two components specifically,
+needs an HTTPS CONNECT tunnel — apt-cacher-ng refuses that by default
+(`403 CONNECT denied`), so `apt-get update` logs two warnings for those
+components and falls back to whatever index it already has cached. This
+is a soft degrade (`apt-get update` still succeeds overall), not a hard
+failure, and is narrower than originally expected (only backports/security
+index *metadata*, not general package installs) — worth a proper fix
+(apt-cacher-ng's `PassThroughPattern` config) if it turns out to matter in
+practice, not chased further this session. Also does **not** cover
+Docker's own apt repo (`https://download.docker.com`, HTTPS-only);
+caching that would require rewriting debian-install-v2's own generated
+`docker.sources` to use apt-cacher-ng's special `/HTTPS/` URL convention,
+which isn't worth coupling the real installer to a test-harness detail for
+a comparatively small, infrequently-hit package set. The cache lives inside the runner
 container's own filesystem (not `.vm/`, not bind-mounted), so it persists
 across VM resets within one runner lifetime but is lost on
 `run-vm-harness.sh --stop-daemon`.

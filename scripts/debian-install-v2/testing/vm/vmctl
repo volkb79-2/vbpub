@@ -82,12 +82,16 @@ ensure_apt_cache() {
     # coupling for a comparatively small, infrequently-hit package set;
     # those re-fetch for real each time a run reaches docker_install.
     command -v apt-cacher-ng >/dev/null 2>&1 || return 1
-    pgrep -f '/apt-cacher-ng ' >/dev/null 2>&1 && return 0
+    pgrep -x apt-cacher-ng >/dev/null 2>&1 && return 0
     log "starting apt-cacher-ng on 127.0.0.1:$APT_CACHE_PORT (guest-visible as 10.0.2.2:$APT_CACHE_PORT)"
-    /usr/lib/apt-cacher-ng/apt-cacher-ng -c /etc/apt-cacher-ng ForeGround=0 \
+    # Bare command name, not a hardcoded path: the real binary's install
+    # path has moved across Debian releases before (it is NOT
+    # /usr/lib/apt-cacher-ng/apt-cacher-ng on trixie -- live-confirmed
+    # 2026-09-09, dpkg -L apt-cacher-ng shows /usr/sbin/apt-cacher-ng).
+    apt-cacher-ng -c /etc/apt-cacher-ng ForeGround=0 \
         >/tmp/apt-cacher-ng.startup.log 2>&1
     for _ in $(seq 1 20); do
-        pgrep -f '/apt-cacher-ng ' >/dev/null 2>&1 && return 0
+        pgrep -x apt-cacher-ng >/dev/null 2>&1 && return 0
         sleep 0.25
     done
     log "apt-cacher-ng did not come up (see /tmp/apt-cacher-ng.startup.log inside the runner) -- guests will fetch packages directly, not fatal"
@@ -164,7 +168,13 @@ cmd_prepare_ready_base() {
 }
 
 cloud_init_seed() {
-    local run_dir="$1" use_apt_cache="$2"
+    # Deliberately does NOT carry the apt-cache-proxy config (see
+    # cmd_wait's own comment for why: it's pushed over SSH after boot
+    # instead) -- a run booted from a "ready" base (prepare-ready-base)
+    # has cloud-init permanently disabled, so anything relying on
+    # cloud-init's own write_files module to land a file would silently
+    # never apply there. SSH is available on every base regardless.
+    local run_dir="$1"
     local pubkey
     pubkey="$(cat "$SSH_KEY.pub")"
     mkdir -p "$run_dir/cloud-init"
@@ -179,18 +189,6 @@ users:
 ssh_pwauth: false
 package_update: false
 EOF
-    if [ "$use_apt_cache" = "1" ]; then
-        # 10.0.2.2 is QEMU user-mode networking's (slirp) synthetic gateway
-        # address -- connections to it are redirected to the host running
-        # the qemu process (this runner container's own loopback), which is
-        # exactly where ensure_apt_cache() starts apt-cacher-ng listening.
-        cat >> "$run_dir/cloud-init/user-data" <<EOF
-write_files:
-  - path: /etc/apt/apt.conf.d/02vbpub-test-proxy
-    content: |
-      Acquire::http::Proxy "http://10.0.2.2:$APT_CACHE_PORT";
-EOF
-    fi
     cat > "$run_dir/cloud-init/meta-data" <<EOF
 instance-id: $(basename "$run_dir")-$(date +%s)
 local-hostname: vbpub-test
@@ -236,7 +234,8 @@ cmd_start() {
     if [ "$want_apt_cache" = "1" ] && ensure_apt_cache; then
         apt_cache_active=1
     fi
-    cloud_init_seed "$run_dir" "$apt_cache_active"
+    echo "$apt_cache_active" > "$run_dir/apt_cache_active"
+    cloud_init_seed "$run_dir"
 
     echo "$ssh_port" > "$run_dir/ssh_port"
 
@@ -295,6 +294,17 @@ cmd_wait() {
     ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -i "$SSH_KEY" -p "$ssh_port" tester@127.0.0.1 \
         'sudo cloud-init status --wait >/dev/null 2>&1 || true'
+    if [ "$(cat "$run_dir/apt_cache_active" 2>/dev/null)" = "1" ]; then
+        # Pushed over SSH, not via cloud-init's write_files -- this must
+        # work identically whether cloud-init ran on this boot or was
+        # permanently disabled (a "ready" base -- see cloud_init_seed()).
+        # 10.0.2.2 is QEMU user-mode networking's (slirp) synthetic
+        # gateway address, redirected to this runner container's own
+        # loopback, exactly where ensure_apt_cache() listens.
+        ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -i "$SSH_KEY" -p "$ssh_port" tester@127.0.0.1 \
+            "echo 'Acquire::http::Proxy \"http://10.0.2.2:$APT_CACHE_PORT\";' | sudo tee /etc/apt/apt.conf.d/02vbpub-test-proxy >/dev/null"
+    fi
     log "run '$run' ready"
 }
 
