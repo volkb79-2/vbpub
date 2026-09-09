@@ -245,19 +245,30 @@ family of pre-built cloud images (built with cloud-init already
 integrated, virtio drivers built in, sized to grow into whatever disk
 they're given) rather than running a full installer per deployment — it's
 faster, more reproducible, and is precisely what these images exist for.
-Corroborating evidence gathered from the real Netcup API responses this
-session: the reinstall task's own step names
-(`ServerImageSetupTaskStepSetupImage`, `...FixNetworkDriver`,
-`...FixStorageDriver`) describe exactly the shape of "take a stock cloud
-image, apply provider-specific driver/network fixups for our specific KVM
-setup, boot it" — not "run an OS installer from scratch."
+Corroborating evidence: the reinstall task's own step names, verbatim
+from a real Netcup API response captured this session (e.g. `.../
+scratchpad/live6-r1002-caseB.log`, a `--monitor` run's raw JSON —
+ephemeral session scratch, not checked into this repo, but independently
+re-obtainable by anyone with API access by firing a real reinstall and
+inspecting the task JSON) —
+```json
+{"name": "ServerImageSetupTaskStepSetupImage", ...}
+{"name": "ServerImageSetupTaskStepFixNetworkDriver", ...}
+{"name": "ServerImageSetupTaskStepFixStorageDriver", ...}
+```
+— describe exactly the shape of "take a stock cloud image, apply
+provider-specific driver/network fixups for our specific KVM setup, boot
+it," not "run an OS installer from scratch."
 
 What we've directly, independently confirmed matches real hosts this
 session, from many live `sfdisk`/`lsblk`/`dpkg` checks against v1001 and
 r1002:
-- GPT partitioning, `virtio` block device naming (`/dev/vda`), 512-byte
-  sectors — the harness's guests boot with the identical shape (confirmed
-  live, see §4).
+- `virtio` block device naming (`/dev/vda`) — the harness's guest boots
+  with the identical device naming (confirmed live, see §4, which runs
+  `lsblk` but not `sfdisk`/`blockdev` — GPT-vs-MBR and sector size for the
+  harness's OWN guest specifically were not directly re-checked in that
+  same transcript, though they match what the `genericcloud` image is
+  documented to ship and what every real host checked this session used).
 - Kernel: the harness's smoke-test guest ran `6.12.107+deb13-cloud-amd64`
   — the same `-cloud-` kernel flavor and the same version family observed
   on the real, currently-provisioned hosts.
