@@ -569,9 +569,10 @@ Then set `private = true` on the `alerts` entry in
 `[[mattermost.provision.channels]]` — the hook only ever *creates* channels,
 so that flag changes nothing live and exists purely so a future fresh create
 comes up private too. This is exactly the shape nyxloom-P109 used for
-`intake`. Verify afterwards that the four accounts that are *supposed* to be
-in `alerts` still are (`mmctl --local channel users list nyxloom:alerts
---all`) — converting a channel does not drop members, but it is one command
+`intake`. Verify afterwards that the accounts which are *supposed* to be
+in `alerts` (`nyxloom-admin`, `nyxloom-daemon`, `nyxloom-operator`) still are
+(`mmctl --local channel users list nyxloom:alerts --all`) — converting a
+channel does not drop members, but it is one command
 to confirm rather than assume.
 
 **Option B — accept it.** Defensible: the accounts in question are all
@@ -844,6 +845,13 @@ docker exec nyxloom-prod-mattermost mmctl --local channel users list nyxloom:int
 # 1. THE WIDENING. Set it in ciu.defaults.toml.j2 ([mattermost] table):
 #      enable_user_access_tokens = true
 #    then re-render and confirm the compose really carries it before `up`.
+# NOTE: --dry-run is NOT read-only (CIU-103) -- it still runs the real
+# post_compose hook against the LIVE container. Here that means the hook
+# sees the new render's `true` but the container it's still talking to has
+# not recreated yet, so it correctly REFUSES to mint against a server that
+# doesn't have the feature enabled yet and this command exits rc=1. That is
+# expected -- no token or secret file is written on this refusal -- and the
+# very next (real) `ciu up` proceeds normally once the container recreates.
 ciu up --dir nyxloom/mattermost -y --dry-run --define-root /workspaces/vbpub/nyxloom
 # ciu's rendered compose output is `ciu.compose.yml` at the stack root (S8.5)
 # -- NOT the hand-maintained `docker-compose.yml` fallback beside it, which

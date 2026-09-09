@@ -3573,6 +3573,88 @@ on a shared container) rather than a functional break; the failure mode is
 contention/flakiness under concurrent dispatch, not a hard error, which is
 exactly why it went unnoticed until traced by hand.
 
+## CIU-103 — `ciu up --dry-run` runs the real `post_compose` hook against the live stack; only `docker compose up` itself is skipped
+
+**Filed by:** nyxloom, 2026-09-09, during the live nyxloom-P109/P110
+Mattermost cutover (hardening + PAT enablement + public exposure). Verified
+live, not paraphrased: reproduced twice in the same session, on the real
+`nyxloom-prod-mattermost` stack.
+
+### Observed mechanism and reproduction
+
+`ciu up --dir <stack> --dry-run -y` is documented and used throughout this
+effort's own recipes as a safe, read-only way to preview a rendered config
+diff before committing to a real deploy (e.g. `mattermost/README.md`'s
+go-public recipe step 1: "`ciu up --dry-run` first, read the diff, then real
+`ciu up`"). It is not read-only. `engine.py`'s deploy pipeline skips only the
+`docker compose up` invocation itself under `--dry-run` — every other
+pipeline step, including the stack's `post_compose` hook
+(`hooks/post_compose_provision.py` for this stack), runs for real against
+whatever is already live.
+
+Live consequence: running P110 step 1's documented `ciu up --dry-run` against
+the already-merged nyxloom-P109 code (which declares a new `nyxloom-intake`
+account, `intake` channel, and incoming webhook) actually created that
+account, channel, and webhook on the live Mattermost instance — before the
+real, non-dry-run `ciu up` in the very next command was ever issued. It was
+only non-destructive here because the hook's provisioning is itself
+idempotent and additive (the same real `ciu up` that followed simply found
+everything already provisioned and changed nothing further) — a hook with a
+non-idempotent or destructive `post_compose` step would not have this safety
+net, and "everything happened to be idempotent" is not something a caller of
+`--dry-run` should have to rely on.
+
+A second-order symptom from the same cause: once a stack's config declares a
+value the LIVE container doesn't have yet (here, `enable_user_access_tokens =
+true` before the real `ciu up` had recreated the container with it), a
+`--dry-run` that runs the real hook against the still-old live container can
+itself exit non-zero (the hook correctly refuses to mint a PAT against a
+server that doesn't have the feature enabled yet) — a dry-run preview
+command failing with a real error code, for a reason that has nothing to do
+with the render being previewed.
+
+### Why this matters
+
+`--dry-run` is the standard, repeatedly-recommended way (in this project's
+own generated recipes, and presumably elsewhere) to inspect a change before
+committing to a live deploy — the entire value proposition is "safe to run
+against production first." A hook author or recipe author who trusts that
+contract and writes a `post_compose` hook with a real side effect gated only
+on "did compose actually come up" (rather than on the dry-run flag itself)
+will silently execute that side effect during what every caller believes is
+a preview.
+
+### Proposed fix
+
+Either (a) skip `post_compose` (and any other hook with real side effects)
+under `--dry-run` the same way `docker compose up` is skipped, and print what
+WOULD run instead — restoring the documented read-only contract — or (b) if
+hooks must keep running under `--dry-run` for some load-bearing reason (e.g.
+a hook that only computes/validates config), pass an explicit `dry_run` flag
+into the hook context so hook authors can choose to no-op their own mutating
+steps, and document loudly that `--dry-run` is NOT read-only for stacks with
+hooks unless the hook itself opts into that contract.
+
+### Oracles
+
+- `ciu up --dir <stack> --dry-run -y` against a stack whose `post_compose`
+  hook has an observable side effect (e.g. creates a file, calls a mocked
+  external API) must produce ZERO observable side effects, matching what
+  every existing `--dry-run` caller in this codebase's own documentation
+  already assumes.
+- A regression test: a stack fixture with a `post_compose` hook that
+  increments a counter/writes a marker file; assert the marker is absent
+  after `--dry-run` and present only after a real `ciu up`.
+
+### Severity
+
+High — this is not a hypothetical: it mutated a live, production,
+soon-to-be-internet-facing service during what its own operator/recipe
+believed was a safe preview step, and was caught only because the
+provisioning hook in question happened to already be idempotent. A
+less-idempotent hook would have caused real, unintended live-state changes
+under a command whose entire purpose is previewing without changing state.
+
 ## Compact resolved index
 
 Detailed history for closed work lives in the normative SPEC, release notes,
