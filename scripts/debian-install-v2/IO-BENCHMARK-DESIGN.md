@@ -32,51 +32,36 @@ landed before any code was written:
    separate, later decision — see `debian_install_v2/README.md`'s "Not yet
    in v2" section.
 
-## The `--testdev`-vs-partition problem (found reading the vendored source)
+## The `--testdev`-vs-partition problem — RESOLVED via a vendored patch
 
 `iocost_coef_gen.py --testdev DEV` runs destructive tests directly against
-a **whole disk** — explicitly documented as destroying everything on it,
-which rules out ever pointing it at the live root disk. The operator's own
-proposal was to carve a throwaway partition from the same free space swap
-will use, benchmark that, then discard it before writing the real swap
-layout — avoiding touching anything live.
+whatever device it's given — explicitly documented as destroying
+everything on it, which is exactly why a *partition* target (not the whole
+disk) matters: carving a throwaway partition from the same free space swap
+will use, benchmarking that, then discarding it before writing the real
+swap layout, keeps this from ever touching live data.
 
-That doesn't work as a direct `--testdev /dev/vda7`-style invocation,
-though: the script resolves the elevator/`nomerges` sysfs paths as
-`/sys/block/<basename of --testdev>/queue/...` (`iocost_coef_gen.py` lines
-~126-131, 139-140) — correct for `/dev/vda` (`/sys/block/vda/queue/...`
-exists), but **wrong for a partition** (`/sys/block/vda7` does not exist;
-only `/sys/block/vda/vda7` does). Pointed at a partition, it fails outright
-trying to open that path. The script's own `dir_to_dev()` helper (used by
-its *other* mode) already contains the correct partition→whole-device
-resolution logic (`glob.glob('/sys/block/*/' + devname)`, walking up to the
-parent) — it's just not applied to the `--testdev` argument.
+Reading the vendored source found a real bug in that path, though: the
+script resolves the elevator/`nomerges` sysfs paths as `/sys/block/<basename
+of --testdev>/queue/...` (`iocost_coef_gen.py` lines ~126-131, 139-140) —
+correct for `/dev/vda` (`/sys/block/vda/queue/...` exists), but **wrong for
+a partition** (`/sys/block/vda7` does not exist; only `/sys/block/vda/vda7`
+does). Pointed at a partition, it fails outright trying to open that path.
 
-Two ways forward, neither implemented yet:
-
-- **(a) Format+mount the throwaway partition, use the script's default
-  testfile mode** (no `--testdev`, `--testfile-size-gb` sized to the
-  partition, CWD on that mount). This mode already goes through
-  `dir_to_dev()`'s correct partition→whole-device resolution, so it works
-  against a partition with zero modification to the vendored script. Cost:
-  the benchmark runs through a filesystem, not a truly raw device — some
-  metadata/journaling overhead on top of the raw numbers, though `direct=1`
-  in the underlying fio job still bypasses the page cache for the actual
-  read/write data. This is the tool's officially-supported default mode,
-  not a workaround.
-- **(b) Carry a documented, minimal patch** in whatever *invokes* the
-  vendored script — not in the vendored file itself (see `vendor/README.md`
-  — never hand-edit the vendored copy) — that pre-resolves the partition to
-  its parent whole-disk name and passes that as `--testdev` instead,
-  accepting that fio will then be pointed at the whole disk's device node
-  while the *intent* was to only exercise the partition's LBA range. This
-  is riskier (a whole-disk device node write is not scoped to the
-  partition's own sectors — nothing stops fio from touching other
-  partitions' data) and isn't recommended without a lot more thought.
-
-**(a) is the safer default recommendation** unless a fresh look finds a
-concrete reason the filesystem-layer overhead invalidates the calibration
-for this use case.
+**Resolved, not worked around**: `debian_install_v2/vendor/0001-testdev-
+resolve-partition-to-parent-for-sysfs.patch` is a 9-line patch that reuses
+the script's own `dir_to_dev()` partition→whole-device resolution
+(`glob.glob('/sys/block/*/' + devname)`) for `--testdev`'s `devname` too —
+but only for the two sysfs lookups; `devno`/`testfile` (what fio actually
+reads/writes) stay exactly the partition given on the command line.
+Elevator/nomerges genuinely are whole-queue properties shared across every
+partition of a disk, so widening only those two lookups is correct. This
+keeps the benchmark on the tool's primary, highest-fidelity raw-device
+mode — no format+mount detour, no filesystem-layer overhead on the
+numbers, and the vendored copy itself stays byte-identical to upstream
+(the patch applies on top of it at deploy/invoke time — see
+`vendor/README.md` for the exact `patch -p1`/drift-check invocation, and
+never hand-edit the vendored file itself).
 
 ## Sizing and duration (operator-specified, 2026-09-09)
 

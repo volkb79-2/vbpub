@@ -129,9 +129,12 @@ An io.cost calibration benchmark is planned but not yet built: `config.py`
 has the (currently inert) `run_io_benchmark`/`io_benchmark_duration_s`/
 `io_benchmark_max_size_gb` fields, and the kernel's own official
 `tools/cgroup/iocost_coef_gen.py` is vendored (`debian_install_v2/vendor/`)
-rather than reimplementing a bespoke fio job. See `IO-BENCHMARK-DESIGN.md`
-for the full design, the real `--testdev`-vs-partition constraint found
-while vendoring it, and why the actual partition-surgery integration is
+rather than reimplementing a bespoke fio job. A real `--testdev`-vs-
+partition bug found while vendoring it is already resolved as a carried
+patch (`debian_install_v2/vendor/0001-*.patch`, applied at deploy/invoke
+time — the vendored copy itself stays untouched). See `IO-BENCHMARK-
+DESIGN.md` for the full design and why the actual partition-surgery
+integration (create/benchmark/delete a throwaway partition) is
 deliberately deferred to its own reviewed pass rather than built inline
 here.
 
