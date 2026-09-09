@@ -61,6 +61,11 @@ _SAFE_COMMANDS = {
         "start",
     },
     "systemd-detect-virt": set(),
+    # Used only to schedule the delayed, detached stage1->stage2 reboot
+    # (see installer.py's _reboot()) -- "--" is required so systemd-run's
+    # own option parsing doesn't try to interpret the target command as
+    # more systemd-run flags.
+    "systemd-run": {"--on-active", "--"},
     "tee": {"-a"},
     "udevadm": {"settle", "trigger"},
     "update-grub": set(),

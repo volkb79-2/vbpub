@@ -1273,14 +1273,50 @@ MaxFileSec=1month
                 print(f"[WARN] Telegram notification failed: {exc}", flush=True)
                 break  # don't send later chunks out of order after a failure
 
+    #: Confirmed live 2026-09-08 against a real Netcup host: a synchronous
+    #: reboot from inside the still-running customScript process strands
+    #: netcup's own ServerImageSetupTask forever at its CloudinitWait step
+    #: (it never sees cloud-init report completion, because the guest goes
+    #: down before that signal fires) -- which then PERMANENTLY LOCKS the
+    #: server against any further install-image API call
+    #: ("server.lock.error"). scripts/debian-install (v1)'s bootstrap.sh
+    #: already named and solved this exact failure mode
+    #: (stage1_reboot()/stage2_reboot(): "rebooting inline can strand the
+    #: provider task (e.g. Netcup CloudinitWait)") by scheduling a delayed,
+    #: detached reboot instead of an inline one, so the script can exit
+    #: cleanly and cloud-init can report completion first. This constant
+    #: mirrors v1's own default delay.
+    _REBOOT_DELAY_SECONDS = 60
+
     def _reboot(self) -> None:
         if self.config.never_reboot or not self.config.auto_reboot_after_stage1:
             self._mark_step("reboot", "deferred", "disabled by configuration")
             self._notify("<b>Stage1 complete.</b> Reboot is disabled by configuration - stage2 requires a manual resume.")
             return
-        self._mark_step("reboot", "scheduled", "stage2 resumes on next boot")
+        self._mark_step(
+            "reboot", "scheduled",
+            f"stage2 resumes on next boot (reboot delayed {self._REBOOT_DELAY_SECONDS}s to let cloud-init report completion)",
+        )
         self._notify("<b>Stage1 complete.</b> Rebooting into stage2.")
-        self._run(["/usr/bin/systemctl", "reboot"], "reboot into stage2", dangerous=True)
+        # systemd-run schedules a transient, detached unit and returns
+        # immediately -- this process (and the customScript/cloud-init
+        # runcmd it's a child of) gets to exit normally well before the
+        # actual reboot fires. Not a raw shell backgrounded job
+        # (`sleep N && systemctl reboot &`, v1's own approach): this
+        # codebase's action allowlist deliberately has no path for
+        # ad hoc shell invocation at all (HostActions._validate() refuses
+        # bash/sh outright), so systemd-run -- a single, non-shell argv,
+        # allowlisted like any other command -- is the idiomatic
+        # equivalent here.
+        self._run(
+            [
+                "/usr/bin/systemd-run",
+                "--on-active", str(self._REBOOT_DELAY_SECONDS),
+                "--", "/usr/bin/systemctl", "reboot",
+            ],
+            "schedule delayed reboot into stage2 (avoids stranding the provider's cloud-init tracking)",
+            dangerous=True,
+        )
 
     def _configure_controller_ssh_key(self) -> None:
         pubkey_line = self.config.controller_ssh_pubkey.strip()

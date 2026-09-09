@@ -397,11 +397,23 @@ def test_notify_failure(tmp_path, monkeypatch, capsys):
 
 
 def test_reboot_real(tmp_path):
+    """Regression, 2026-09-08: a real Netcup host confirmed that rebooting
+    synchronously from inside the still-running customScript process
+    strands the provider's own install-tracking task forever (it never
+    sees cloud-init report completion), permanently locking the server
+    against any further reinstall. _reboot() must schedule a delayed,
+    detached reboot via systemd-run instead of calling `systemctl reboot`
+    directly -- see _reboot()'s own docstring/comment for the full story."""
     installer = make_installer(tmp_path, dry_run=False, auto_reboot_after_stage1=True, never_reboot=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
-    installer.actions.outputs[("/usr/bin/systemctl", "reboot")] = ""
+    reboot_argv = (
+        "/usr/bin/systemd-run", "--on-active", "60", "--", "/usr/bin/systemctl", "reboot",
+    )
+    installer.actions.outputs[reboot_argv] = ""
     installer._reboot()
-    assert any(a.argv == ("/usr/bin/systemctl", "reboot") for a in installer.actions.planned)
+    assert any(a.argv == reboot_argv for a in installer.actions.planned)
+    # the old synchronous call must never recur
+    assert not any(a.argv == ("/usr/bin/systemctl", "reboot") for a in installer.actions.planned)
 
 
 def test_module_main_block():
