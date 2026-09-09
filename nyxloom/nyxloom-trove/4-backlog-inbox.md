@@ -109,18 +109,6 @@ items:
   component: runtime
   context_estimate: medium
   folds_into: F010
-- id: B26
-  title: 'per-handoff processing-trace artifact: capture each dispatched agent
-    summary + insights across legs (implementation, review, gate, merge) as a
-    structured, drill-down-able record surfaced in the dashboard, so a human can
-    trace how a handoff was processed leg-by-leg (agent A implemented with these
-    insights; agent B reviewed and found these; gate result; merge). Generalizes
-    the ad-hoc controller session log into a first-class per-task trace view
-    (operator ask 2026-07-24). Relates to the Logging-P04 log-stream UI and the
-    LOG/REPORT handoff artifacts.'
-  type: feature
-  component: control
-  context_estimate: medium
 - id: B27
   title: 'Scale SEAL (labs.scale.com) benchmark source: ingest SWE-Bench Pro
     (public+private) resolve-rate and MCP Atlas tool-use pass-rate -- both live
