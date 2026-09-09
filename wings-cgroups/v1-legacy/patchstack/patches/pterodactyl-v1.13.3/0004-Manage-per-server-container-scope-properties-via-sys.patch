@@ -1,4 +1,4 @@
-From 8feff0b7f2cffa979b4c2c4c5fa6ec028edc0996 Mon Sep 17 00:00:00 2001
+From a4915142cd0a6ec3ea7616bfa516f7b5bab1bfe5 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Fri, 17 Jul 2026 06:38:24 +0000
 Subject: [PATCH 4/9] Manage per-server container scope properties via systemd

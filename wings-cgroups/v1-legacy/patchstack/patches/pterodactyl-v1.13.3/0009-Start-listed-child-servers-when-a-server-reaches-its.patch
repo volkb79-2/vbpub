@@ -1,4 +1,4 @@
-From 028fa1360145ab9ccaeee98018d24c089b43fbc1 Mon Sep 17 00:00:00 2001
+From 9544c34bbd4e8209fa512a29aa001b37dddf866c Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 15:49:24 +0000
 Subject: [PATCH 9/9] Start listed child servers when a server reaches its
@@ -819,7 +819,7 @@ index 0000000..2857193
 +	}
 +}
 diff --git a/server/slice_phase.go b/server/slice_phase.go
-index 8990465..40a2037 100644
+index d28d8b8..25f8e78 100644
 --- a/server/slice_phase.go
 +++ b/server/slice_phase.go
 @@ -61,16 +61,39 @@ func (s *Server) beginSlicePhase() {
@@ -919,10 +919,10 @@ index 8990465..40a2037 100644
  
  // endSlicePhase resets all phase state; called when the server goes offline.
 diff --git a/server/slice_phase_test.go b/server/slice_phase_test.go
-index fdc61e2..e66d910 100644
+index eab5f74..83df933 100644
 --- a/server/slice_phase_test.go
 +++ b/server/slice_phase_test.go
-@@ -94,6 +94,38 @@ func TestBeginSlicePhaseOnlyArmsWhenStaged(t *testing.T) {
+@@ -98,6 +98,38 @@ func TestBeginSlicePhaseOnlyArmsWhenStaged(t *testing.T) {
  	s.endSlicePhase()
  }
  

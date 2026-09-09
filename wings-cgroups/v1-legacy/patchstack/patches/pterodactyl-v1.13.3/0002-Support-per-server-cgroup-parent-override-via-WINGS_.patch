@@ -1,4 +1,4 @@
-From 7760fbe96f056ad2050b055626d9855d1cba7f7f Mon Sep 17 00:00:00 2001
+From 0242fca0b1b413cd2858e877d2b7c8818141b5e0 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Wed, 15 Jul 2026 10:43:10 +0000
 Subject: [PATCH 2/9] Support per-server cgroup parent override via

@@ -1,4 +1,4 @@
-From bdd1c046c5110cb9adab7cbc2dc7341ecdb37178 Mon Sep 17 00:00:00 2001
+From b28e3bc135b40538f96866ddd325b8d80e19377d Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 07:56:59 +0000
 Subject: [PATCH 8/9] Fix MemoryCurrent D-Bus interface in the memory.high ramp

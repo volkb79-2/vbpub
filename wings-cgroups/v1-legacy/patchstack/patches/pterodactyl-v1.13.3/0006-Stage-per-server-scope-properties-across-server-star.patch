@@ -1,4 +1,4 @@
-From 4d7b6c0559b93adc426e28b9de3d0a0d1b7e9202 Mon Sep 17 00:00:00 2001
+From 35efcd3bc5db590a99c7a967503b4b296326d303 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 03:59:43 +0000
 Subject: [PATCH 6/9] Stage per-server scope properties across server startup
@@ -62,29 +62,44 @@ mid-startup could leave the steady band on a slice the container was not in.
 The scope name is now read back from the container that actually exists at
 apply time, so it cannot drift; what remains is a plain in-progress flag.
 
+Two things a reader should be able to check rather than take on trust, so
+both are tests. dispatchSliceProps reaches the outside world through two
+package variables, which lets a unit test drive SyncWithEnvironment against a
+stub environment and assert the request that actually came out: without that
+seam, deleting the re-assertion outright, or rewiring it through the
+transition path (which restores the "nothing staged" exit), both leave the
+whole suite green. And the claim that Docker cannot reach memory.high is a
+claim about a struct in another module that nothing in the compiler defends,
+so a reflection test walks container.Resources and container.UpdateConfig and
+fails if a docker bump ever adds a field that could.
+
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01PgCYRx4mTFsr4wtxuHCVXH
 ---
- config/config_docker.go             | 113 ++++++-
- config/config_docker_slices_test.go |   8 +-
- environment/docker/container.go     |  46 ++-
- environment/docker/power.go         |  17 +-
- environment/docker/scope.go         |  19 +-
- internal/cgroups/cgroups.go         | 239 ++++++++++++++
- internal/cgroups/ensure.go          | 143 +++++++-
- internal/cgroups/phase_test.go      | 264 +++++++++++++++
- internal/cgroups/sysd.go            | 109 +++++++
- internal/database/database.go       |   7 +
- server/activity.go                  |   1 +
- server/listeners.go                 |  18 ++
- server/server.go                    |  20 ++
- server/slice_phase.go               | 484 ++++++++++++++++++++++++++++
- server/slice_phase_test.go          | 442 +++++++++++++++++++++++++
- server/update.go                    |  14 +
- 16 files changed, 1887 insertions(+), 57 deletions(-)
+ config/config_docker.go                   | 113 ++++-
+ config/config_docker_slices_test.go       |   8 +-
+ environment/docker/container.go           |  46 +-
+ environment/docker/power.go               |  17 +-
+ environment/docker/scope.go               |  19 +-
+ internal/cgroups/cgroups.go               | 239 +++++++++++
+ internal/cgroups/docker_resources_test.go |  39 ++
+ internal/cgroups/ensure.go                | 143 +++++-
+ internal/cgroups/phase_test.go            | 264 ++++++++++++
+ internal/cgroups/sysd.go                  | 109 +++++
+ internal/database/database.go             |   7 +
+ server/activity.go                        |   1 +
+ server/listeners.go                       |  18 +
+ server/server.go                          |  20 +
+ server/slice_phase.go                     | 501 ++++++++++++++++++++++
+ server/slice_phase_test.go                | 446 +++++++++++++++++++
+ server/slice_reassert_dispatch_test.go    | 234 ++++++++++
+ server/update.go                          |  14 +
+ 18 files changed, 2181 insertions(+), 57 deletions(-)
+ create mode 100644 internal/cgroups/docker_resources_test.go
  create mode 100644 internal/cgroups/phase_test.go
  create mode 100644 server/slice_phase.go
  create mode 100644 server/slice_phase_test.go
+ create mode 100644 server/slice_reassert_dispatch_test.go
 
 diff --git a/config/config_docker.go b/config/config_docker.go
 index 22e79d1..8e42988 100644
@@ -709,6 +724,51 @@ index 3b3cb97..6322a86 100644
  // Defaults are node-wide slice property defaults, carried as the raw strings
  // and integers found in the Wings configuration. Zero values mean "no
  // default" for the respective property.
+diff --git a/internal/cgroups/docker_resources_test.go b/internal/cgroups/docker_resources_test.go
+new file mode 100644
+index 0000000..9a5e81a
+--- /dev/null
++++ b/internal/cgroups/docker_resources_test.go
+@@ -0,0 +1,39 @@
++package cgroups
++
++import (
++	"reflect"
++	"strings"
++	"testing"
++
++	"github.com/docker/docker/api/types/container"
++)
++
++// A re-assertion sets EnsureRequest.KeepMemoryHigh and therefore writes no
++// memory.high at all. That is safe only because Docker's ContainerUpdate
++// cannot reach memory.high: container.UpdateConfig embeds container.Resources,
++// and that struct has no MemoryHigh field, so runc never sets one.
++//
++// The premise is about a struct in someone else's module, and nothing in the
++// compiler defends it. This does: if a docker/docker bump ever adds a field
++// that could reach memory.high, this test fails and whoever bumped it has to
++// re-decide whether a repair still gets to skip the ceiling.
++func TestDockerCannotWriteMemoryHigh(t *testing.T) {
++	rt := reflect.TypeOf(container.Resources{})
++	for i := 0; i < rt.NumField(); i++ {
++		name := rt.Field(i).Name
++		if strings.Contains(name, "High") {
++			t.Fatalf("docker's container.Resources gained %q: EnsureRequest.KeepMemoryHigh assumes a panel-side "+
++				"ContainerUpdate cannot touch memory.high. Re-decide before shipping this docker bump.", name)
++		}
++	}
++	// UpdateConfig is what ContainerUpdate actually takes; assert it adds
++	// nothing beyond the embedded Resources and a restart policy.
++	ut := reflect.TypeOf(container.UpdateConfig{})
++	for i := 0; i < ut.NumField(); i++ {
++		switch n := ut.Field(i).Name; n {
++		case "Resources", "RestartPolicy":
++		default:
++			t.Errorf("docker's container.UpdateConfig gained field %q; re-check what a panel save can now reach", n)
++		}
++	}
++}
 diff --git a/internal/cgroups/ensure.go b/internal/cgroups/ensure.go
 index 19813af..0389a1d 100644
 --- a/internal/cgroups/ensure.go
@@ -1415,10 +1475,10 @@ index a1777b0..1acfcf0 100644
  	// Reset the resource usage to 0 when the process fully stops so that all the UI
 diff --git a/server/slice_phase.go b/server/slice_phase.go
 new file mode 100644
-index 0000000..8990465
+index 0000000..d28d8b8
 --- /dev/null
 +++ b/server/slice_phase.go
-@@ -0,0 +1,484 @@
+@@ -0,0 +1,501 @@
 +package server
 +
 +import (
@@ -1771,6 +1831,23 @@ index 0000000..8990465
 +	return req
 +}
 +
++// The two effects dispatchSliceProps has on the outside world, behind package
++// variables so that the seam between the request builders — which are already
++// assertable without a daemon — and their callers can be tested too.
++//
++// This is not decoration. Without it, the only coverage of that seam is
++// reading: deleting the reassertSliceProps call from SyncWithEnvironment
++// altogether, or rewiring it through applySliceProps (which silently restores
++// the "nothing staged" early return a re-assert must not take), both leave the
++// whole suite green. Those are the two mutants TestSyncWithEnvironment* kill.
++//
++// Production never reassigns either; the test binary installs its recorders
++// once, before any test runs.
++var (
++	sliceResolveScope = (*Server).resolveScope
++	sliceEnsure       = cgroups.EnsureForServer
++)
++
 +// dispatchSliceProps resolves the live scope and hands the request to
 +// internal/cgroups. Shared by the transition and re-assert entry points above,
 +// which differ only in how they build the request.
@@ -1781,10 +1858,10 @@ index 0000000..8990465
 +	if ctx == nil {
 +		ctx = context.Background()
 +	}
-+	if req.Scope = s.resolveScope(ctx); req.Scope == "" {
++	if req.Scope = sliceResolveScope(s, ctx); req.Scope == "" {
 +		return
 +	}
-+	cgroups.EnsureForServer(ctx, s.Log(), req, reason)
++	sliceEnsure(ctx, s.Log(), req, reason)
 +}
 +
 +// sliceConsoleEvent is one compiled WINGS_CG_PHASE_EVENTS entry plus whether it
@@ -1905,10 +1982,10 @@ index 0000000..8990465
 +}
 diff --git a/server/slice_phase_test.go b/server/slice_phase_test.go
 new file mode 100644
-index 0000000..fdc61e2
+index 0000000..eab5f74
 --- /dev/null
 +++ b/server/slice_phase_test.go
-@@ -0,0 +1,442 @@
+@@ -0,0 +1,446 @@
 +package server
 +
 +import (
@@ -1938,6 +2015,10 @@ index 0000000..fdc61e2
 +	c.Docker.PerServerSlices.Defaults.MemoryHigh = "7G"
 +	c.Docker.PerServerSlices.StartupDefaults.MemoryHigh = startupHigh
 +	c.Docker.PerServerSlices.StartupGrace = grace
++	// Non-zero on purpose. RampStep is populated from this key, so leaving it
++	// unset would make every "a re-assert must not sit on a ramp" assertion
++	// unfalsifiable: the field would read 0 whether or not the code zeroes it.
++	c.Docker.PerServerSlices.SteadyRampStep = "64M"
 +	config.Set(&c)
 +}
 +
@@ -2349,6 +2430,246 @@ index 0000000..fdc61e2
 +	}
 +	if !byName["update"] || !byName["load"] {
 +		t.Errorf("both events should have fired once: %+v", byName)
++	}
++}
+diff --git a/server/slice_reassert_dispatch_test.go b/server/slice_reassert_dispatch_test.go
+new file mode 100644
+index 0000000..313538d
+--- /dev/null
++++ b/server/slice_reassert_dispatch_test.go
+@@ -0,0 +1,234 @@
++package server
++
++import (
++	"context"
++	"errors"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/apex/log"
++
++	"github.com/pterodactyl/wings/environment"
++	"github.com/pterodactyl/wings/events"
++	"github.com/pterodactyl/wings/internal/cgroups"
++	"github.com/pterodactyl/wings/server/filesystem"
++)
++
++// These tests cover the seam between reassertRequest(), which the tests in
++// slice_phase_test.go already pin down, and its one real caller. Without them
++// two mutations survive the entire suite: deleting the reassertSliceProps call
++// from SyncWithEnvironment (the whole repair silently disappearing), and
++// rewiring it through applySliceProps (which restores the "nothing staged"
++// early return a repair must never take). Both are caught here, because what
++// is asserted is the request that actually came out of SyncWithEnvironment.
++
++// stubEnvironment is a ProcessEnvironment that touches nothing outside itself.
++// SyncWithEnvironment only ever calls Config, InSituUpdate and State on it; the
++// rest of the interface is present because the interface requires it.
++type stubEnvironment struct {
++	cfg       *environment.Configuration
++	state     string
++	insituErr error
++
++	mu      sync.Mutex
++	insituN int
++}
++
++func newStubEnvironment(insituErr error) *stubEnvironment {
++	return &stubEnvironment{
++		cfg:       environment.NewConfiguration(environment.Settings{}, nil),
++		state:     environment.ProcessRunningState,
++		insituErr: insituErr,
++	}
++}
++
++func (e *stubEnvironment) InSituUpdate() error {
++	e.mu.Lock()
++	e.insituN++
++	e.mu.Unlock()
++	return e.insituErr
++}
++
++func (e *stubEnvironment) inSituCalls() int {
++	e.mu.Lock()
++	defer e.mu.Unlock()
++	return e.insituN
++}
++
++func (e *stubEnvironment) Type() string                       { return "stub" }
++func (e *stubEnvironment) Config() *environment.Configuration { return e.cfg }
++func (e *stubEnvironment) Events() *events.Bus                { return events.NewBus() }
++func (e *stubEnvironment) Exists() (bool, error)              { return true, nil }
++func (e *stubEnvironment) IsRunning(context.Context) (bool, error) {
++	return e.state == environment.ProcessRunningState, nil
++}
++func (e *stubEnvironment) OnBeforeStart(context.Context) error { return nil }
++func (e *stubEnvironment) Start(context.Context) error         { return nil }
++func (e *stubEnvironment) Stop(context.Context) error          { return nil }
++func (e *stubEnvironment) WaitForStop(context.Context, time.Duration, bool) error {
++	return nil
++}
++func (e *stubEnvironment) Terminate(context.Context, string) error { return nil }
++func (e *stubEnvironment) Destroy() error                          { return nil }
++func (e *stubEnvironment) ExitState() (uint32, bool, error)        { return 0, false, nil }
++func (e *stubEnvironment) Create() error                           { return nil }
++func (e *stubEnvironment) Attach(context.Context) error            { return nil }
++func (e *stubEnvironment) SendCommand(string) error                { return nil }
++func (e *stubEnvironment) Readlog(int) ([]string, error)           { return nil, nil }
++func (e *stubEnvironment) State() string                           { return e.state }
++func (e *stubEnvironment) SetState(s string)                       { e.state = s }
++func (e *stubEnvironment) Uptime(context.Context) (int64, error)   { return 0, nil }
++func (e *stubEnvironment) SetLogCallback(func([]byte))             {}
++
++var _ environment.ProcessEnvironment = (*stubEnvironment)(nil)
++
++// dispatchRecorder stands in for dispatchSliceProps' two effects on the outside
++// world and keeps every request that reached the applier.
++//
++// The scope resolver is stubbed as well as the applier: the real one needs a
++// live Docker daemon and returns "" without one, which would swallow the very
++// call being asserted.
++type dispatchRecorder struct {
++	scope string
++
++	mu   sync.Mutex
++	reqs []cgroups.EnsureRequest
++}
++
++// dispatchLog is installed once, in init, rather than swapped per test. Two
++// reasons, both real: enterSteady dispatches applySliceProps onto a goroutine,
++// so a request from an earlier test can land at any time — and a per-test swap
++// would be a write racing those goroutines' reads, as well as attributing their
++// requests to whichever test happened to hold the seam. Requests are therefore
++// filtered by the owning server, and every test here uses its own uuid.
++var dispatchLog = &dispatchRecorder{scope: "docker-0123456789abcdef.scope"}
++
++func init() {
++	sliceResolveScope = func(*Server, context.Context) string { return dispatchLog.scope }
++	sliceEnsure = func(_ context.Context, _ *log.Entry, req cgroups.EnsureRequest, _ string) {
++		dispatchLog.mu.Lock()
++		dispatchLog.reqs = append(dispatchLog.reqs, req)
++		dispatchLog.mu.Unlock()
++	}
++}
++
++// requestsFor returns the requests applied to one server, in order.
++func (r *dispatchRecorder) requestsFor(owner string) []cgroups.EnsureRequest {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	var out []cgroups.EnsureRequest
++	for _, req := range r.reqs {
++		if req.Owner == owner {
++			out = append(out, req)
++		}
++	}
++	return out
++}
++
++// newSyncTestServer is newSliceTestServer plus the two things
++// SyncWithEnvironment dereferences — an environment and a filesystem — and its
++// own uuid, so its dispatches are distinguishable from every other test's.
++func newSyncTestServer(t *testing.T, uuid string, env environment.ProcessEnvironment) *Server {
++	t.Helper()
++	s := newSliceTestServer()
++	s.cfg.Uuid = uuid
++	fs, err := filesystem.New(t.TempDir(), 0, nil)
++	if err != nil {
++		t.Fatalf("filesystem.New: %v", err)
++	}
++	s.fs = fs
++	s.Environment = env
++	return s
++}
++
++// The load-bearing case. A Panel settings save arrives while the server is
++// still loading its world under an explicit steady trigger — the configuration
++// SETUP.md recommends — and the repair that follows Docker's write must carry
++// the STARTUP band and must not write a ceiling. Asserted on the request that
++// came out of SyncWithEnvironment itself, so deleting the call is a failure and
++// not merely an unread line.
++func TestSyncWithEnvironmentReassertsTheLiveBand(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "64G")
++	env := newStubEnvironment(nil)
++	s := newSyncTestServer(t, "5d1c2f6e-0001-4a1c-8863-ff23e6800a1d", env)
++	s.cfg.EnvVars = map[string]interface{}{
++		"WINGS_CG_STEADY_MATCH": `regex:World load complete`,
++	}
++	s.beginSlicePhase()
++	t.Cleanup(s.endSlicePhase)
++	if !s.slicePhaseInProgress() {
++		t.Fatal("the startup phase should be in progress; the test is not exercising what it claims")
++	}
++
++	s.SyncWithEnvironment()
++
++	if got := env.inSituCalls(); got != 1 {
++		t.Fatalf("InSituUpdate calls = %d, want 1", got)
++	}
++	reqs := dispatchLog.requestsFor(s.ID())
++	if len(reqs) != 1 {
++		t.Fatalf("requests reaching the applier = %d, want 1 (a panel save that repairs nothing leaves the scope carrying docker's values)", len(reqs))
++	}
++	req := reqs[0]
++	if req.Phase != cgroups.PhaseStartup {
++		t.Errorf("repair applied the %q band; the server is still loading and holds the %q one", req.Phase, cgroups.PhaseStartup)
++	}
++	if !req.KeepMemoryHigh {
++		t.Error("the repair must leave memory.high alone: docker cannot have touched it, and writing it mid-load is the eviction this whole path exists to avoid")
++	}
++	if req.RampStep != 0 {
++		t.Errorf("the repair must not sit on a reclaim-paced ramp; RampStep = %d", req.RampStep)
++	}
++	if req.Scope != dispatchLog.scope {
++		t.Errorf("request scope = %q, want the resolved live scope %q", req.Scope, dispatchLog.scope)
++	}
++}
++
++// The mutant applySliceProps would let through. With no startup band staged the
++// transition path takes its "nothing to swap in" exit — correct for a
++// transition, wrong for a repair, because what is on the unit is no longer what
++// Wings wrote. The InSituUpdate error is deliberate too: Docker does not roll
++// back the cgroup writes runc already made, so a failed update is the state
++// that most needs repairing and must not short-circuit the repair.
++func TestSyncWithEnvironmentRepairsWithNothingStagedAndAfterAFailedUpdate(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "") // no startup band configured at all
++	env := newStubEnvironment(errors.New("in-situ update failed"))
++	s := newSyncTestServer(t, "5d1c2f6e-0002-4a1c-8863-ff23e6800a1d", env)
++
++	if s.reassertRequest().Staged() {
++		t.Fatal("something is staged in this configuration; the test is not exercising what it claims")
++	}
++
++	s.SyncWithEnvironment()
++
++	reqs := dispatchLog.requestsFor(s.ID())
++	if len(reqs) != 1 {
++		t.Fatalf("requests reaching the applier = %d, want 1", len(reqs))
++	}
++	if got := reqs[0].Phase; got != cgroups.PhaseSteady {
++		t.Errorf("repair phase = %q, want %q", got, cgroups.PhaseSteady)
++	}
++	if !reqs[0].KeepMemoryHigh {
++		t.Error("the repair must leave memory.high alone")
++	}
++}
++
++// A suspended server never reaches InSituUpdate, so there is nothing for a
++// repair to put back either.
++func TestSyncWithEnvironmentDoesNotRepairASuspendedServer(t *testing.T) {
++	sliceTestConfig(t, true, "15m", "64G")
++	env := newStubEnvironment(nil)
++	env.state = environment.ProcessOfflineState
++	s := newSyncTestServer(t, "5d1c2f6e-0003-4a1c-8863-ff23e6800a1d", env)
++	s.cfg.Suspended = true
++
++	s.SyncWithEnvironment()
++
++	if got := env.inSituCalls(); got != 0 {
++		t.Errorf("InSituUpdate calls on a suspended server = %d, want 0", got)
++	}
++	if got := len(dispatchLog.requestsFor(s.ID())); got != 0 {
++		t.Errorf("requests reaching the applier for a suspended server = %d, want 0", got)
 +	}
 +}
 diff --git a/server/update.go b/server/update.go
