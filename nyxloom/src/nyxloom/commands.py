@@ -223,7 +223,7 @@ class CommandListener:
         # -- the channel twin of the HTTP surface's auth-before-lookup order.
         operator: Actor | None = None
         if verb in _MUTATING_VERBS:
-            operator = control_auth.channel_operator_for(verb)
+            operator = control_auth.channel_operator_for(f"ntfy:{verb}")
             if operator is None:
                 return CHANNEL_CLOSED_REPLY
 

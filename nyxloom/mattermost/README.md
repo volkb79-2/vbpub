@@ -52,6 +52,7 @@ network-exposed admin API.
 | `nyxloom-daemon` | regular | `alerts` | `mattermost/daemon_password` |
 | `nyxloom-operator` | system admin — the human operator login | **all** | `mattermost/operator_password` |
 | `nyxloom-installer` | regular — 3rd-party service account | `installs` | `mattermost/installer_password` |
+| `nyxloom-intake` | regular — the feature-intake chatbot (nyxloom-P109) | `intake` (**private**) | `mattermost/intake_password` |
 
 `nyxloom-admin` is deliberately **not** declared in `[mattermost.provision]`:
 the hook never touches an account it does not own, so the P106 bootstrap
@@ -64,13 +65,62 @@ A channel created out of band in the UI is joined on the **next** `ciu up`;
 Mattermost has no "member of all future channels" primitive, so that gap is a
 documented caveat, not an oversight.
 
-Two incoming webhooks, one per producer (the operator account is a human login
-and gets none — an unused credential is worse than no credential):
+Three incoming webhooks, one per producer (the operator account is a human login
+and gets none — an unused credential is worse than no credential). A Mattermost
+incoming webhook is bound to **one** channel at creation, so a producer that
+writes to a different channel needs its own:
 
 | Secret file | Channel | Posts as | URL base |
 |---|---|---|---|
 | `daemon_webhook_url` | `alerts` | `nyxloom-daemon` | internal bridge address |
 | `installer_webhook_url` | `installs` | `nyxloom-installer` | `MM_SERVICESETTINGS_SITEURL` |
+| `intake_webhook_url` | `intake` | `nyxloom-intake` | internal bridge address |
+
+### The `intake` channel and its PAT (nyxloom-P109 / backlog B9)
+
+`intake` is where the feature-intake interview (`src/nyxloom/intake_chat.py`)
+is conducted with a human, bridged by `src/nyxloom/intake_bridge.py`. Two
+things about it are deliberate and were measured, not assumed.
+
+**It is private, and that is the read boundary.** Verified on a throwaway
+11.10.1 instance with a plain `system_user` account: a team member who is not a
+channel member reads a **public** channel's posts (HTTP 200) and is refused on a
+**private** one (HTTP 403). The intake account holds a personal access token,
+Team Edition has no per-token scoping, and a PAT therefore inherits its
+account's full permissions — so "which channels is this account in" is the only
+thing bounding what a leaked token can read.
+
+**Its PAT belongs to a dedicated, non-admin, single-channel account.** The other
+four accounts each fail on that: `nyxloom-operator` is a system admin (a leaked
+PAT would be a system-admin bearer token), `nyxloom-daemon` would gain the
+ability to read all of `alerts` and to forge notifications, `nyxloom-installer`
+is a third party's credential, and `nyxloom-admin` is the untouched bootstrap
+account.
+
+The token is provisioned by the hook through S9.4a into
+`nyxloom/mattermost/.ciu/secrets/intake_pat`, alongside the webhook URLs and on
+the same terms. It is minted only while
+`[mattermost].enable_user_access_tokens = true`; while that is false the hook
+prints the token names it is **not** minting and moves on, so the account, the
+channel and the reply webhook are all provisioned and waiting — the same shape
+`installer_webhook_url` already has against `expose_public`.
+
+**Rotating the PAT**: `mmctl --local token revoke <token-id>` (id from
+`mmctl --local token list nyxloom-intake`), delete
+`.ciu/secrets/intake_pat`, then `ciu up`. Both steps are required: Mattermost
+reveals a token's value exactly once, so a live token with no store file is a
+state the hook **refuses** rather than guesses at — it cannot re-derive the
+value, and minting a second would leave an unrevocable orphan.
+
+**Enabling PATs is a server-wide widening.** `enable_user_access_tokens` drives
+`MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS`, which lets any system admin mint a
+bearer token for any account. It is required by the bridge's `rest` transport
+and by nothing else — the `mmctl` transport needs no server change at all, which
+is exactly why both exist. It cannot be avoided by using a Mattermost *bot*
+account (bots are exempt from the setting): `mmctl bot create` answers
+`This command cannot be run in local mode`, and reaching the bot API would mean
+using the network admin API with an admin password — the widening this stack's
+local-mode design exists to avoid. That was tested, not assumed.
 
 **Where the secrets live — two directories, on purpose.** The generated
 *passwords* are S4 `GEN_LOCAL` directives and land in the **project** store,
@@ -140,6 +190,23 @@ mattermost_channel = "alerts"   # optional; the webhook already targets a channe
 export NYXLOOM_WEBHOOK_URL="$(cat /workspaces/vbpub/nyxloom/mattermost/.ciu/secrets/daemon_webhook_url)"
 ```
 
+The feature-intake bridge is wired in the same file's `[intake_bridge]` table
+(nyxloom-P109), defaulting to the `mmctl` transport so it needs no server
+change. Its two credentials are exported the same way, and the ingress stays
+closed until an operator is named:
+
+```bash
+export NYXLOOM_INTAKE_WEBHOOK_URL="$(cat /workspaces/vbpub/nyxloom/mattermost/.ciu/secrets/intake_webhook_url)"
+export NYXLOOM_INTAKE_MM_TOKEN="$(cat /workspaces/vbpub/nyxloom/mattermost/.ciu/secrets/intake_pat)"   # `rest` only
+export NYXLOOM_CHANNEL_OPERATOR_ID="<operator identity>"
+nyxloom intake-bridge poll nyxloom
+```
+
+That default runs anywhere the docker socket does. `--transport rest` does
+NOT: it dials `base_url` over the network below, so it only works from inside
+`nyxloom-prod-mattermost_internal` — which is why the transport is a config
+selector and not a fallback chain. See step 5b of the P109 recipe.
+
 `/workspaces/dstdns`'s own config is a **separate repo and out of scope** —
 it still points at its previous channel and is left for a dstdns-side session.
 
@@ -183,8 +250,13 @@ either way.
 - Accounts: no open server, no self-signup — admin-created only.
 - No file attachments, no plugin framework (the prepackaged playbooks/AI
   plugins would otherwise run their own processes inside this 2g cgroup), no
-  marketplace, no personal access tokens, no outgoing webhooks, no slash
-  commands, no telemetry, no email (no SMTP is configured).
+  marketplace, no outgoing webhooks, no slash commands, no telemetry, no email
+  (no SMTP is configured).
+- **Personal access tokens: off by default**, and their own declared flag
+  (`[mattermost].enable_user_access_tokens`) rather than an implication of
+  provisioning one. See "The `intake` channel and its PAT" above for what
+  turning it on widens and why the bridge's `mmctl` transport exists so it
+  does not have to be turned on at all.
 - Postgres is dedicated to this stack, on a private bridge, never published,
   password from ciu's `GEN_LOCAL` store via `POSTGRES_PASSWORD_FILE`.
 - The one deliberate concession: the app's DSN password arrives through ciu's
@@ -290,3 +362,121 @@ delete them (`docker volume rm nyxloom-prod-mattermost_postgres-data
 nyxloom-prod-mattermost_mattermost-config
 nyxloom-prod-mattermost_mattermost-logs`) only once the bind-mounted stack has
 been healthy for a while.
+
+### Enabling personal access tokens + minting the intake PAT (nyxloom-P109)
+
+Required once, on the live stack, from the checkout it is deployed from. This
+is a **server-wide widening** — read "The `intake` channel and its PAT" above
+before running it. Everything except the PAT itself (the `nyxloom-intake`
+account, the private `intake` channel, `intake_webhook_url`) lands on an
+ordinary `ciu up` with no flag change at all, so step 0 is worth doing on its
+own first.
+
+```bash
+# 0. WITHOUT the flag: account + private channel + reply webhook only.
+#    Expect `channels_created=['intake'] accounts_created=['nyxloom-intake']`
+#    and a line naming intake_pat as NOT minted. This is also the first live
+#    exercise of the ` (private)` channel-name parse -- if `channel list`
+#    drifted, the hook refuses here, before anything is widened.
+ciu up --dir nyxloom/mattermost -y --define-root /workspaces/vbpub/nyxloom
+docker exec nyxloom-prod-mattermost mmctl --local channel list nyxloom   # expect `intake (private)`
+docker exec nyxloom-prod-mattermost mmctl --local channel users list nyxloom:intake --all
+
+# 1. THE WIDENING. Set it in ciu.defaults.toml.j2 ([mattermost] table):
+#      enable_user_access_tokens = true
+#    then re-render and confirm the compose really carries it before `up`.
+ciu up --dir nyxloom/mattermost -y --dry-run --define-root /workspaces/vbpub/nyxloom
+# ciu's rendered compose output is `ciu.compose.yml` at the stack root (S8.5)
+# -- NOT the hand-maintained `docker-compose.yml` fallback beside it, which
+# receives no ciu overlay and is not what `ciu up` deploys.
+grep ENABLEUSERACCESSTOKENS nyxloom/mattermost/ciu.compose.yml   # expect "true"
+
+# 2. Real up. The container RECREATES (an env change), so re-verify governance
+#    in the same breath -- a recreate is exactly where it silently drops.
+ciu up --dir nyxloom/mattermost -y --define-root /workspaces/vbpub/nyxloom
+docker inspect nyxloom-prod-mattermost \
+  --format '{{.Name}} {{.HostConfig.CgroupParent}} {{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}'
+
+# 3. Verify the PAT was minted ONCE and is idempotent. The second `ciu up`
+#    must print `tokens_minted=[]` -- if it mints again, STOP and revoke.
+#    Capture, THEN read: a `| grep` here would replace ciu's own exit status
+#    with grep's, so a `ciu up` that failed outright would still look fine as
+#    long as the word appeared somewhere (LESSONS L4, the same reason gate
+#    verdicts are never read from a pipe tail).
+docker exec nyxloom-prod-mattermost mmctl --local token list nyxloom-intake
+ls -l nyxloom/mattermost/.ciu/secrets/intake_pat          # 0440, non-empty
+ciu up --dir nyxloom/mattermost -y --define-root /workspaces/vbpub/nyxloom \
+  >/tmp/p109-reup.log 2>&1; echo "ciu up rc=$?"           # rc MUST be 0
+grep tokens_minted /tmp/p109-reup.log                     # expect tokens_minted=[]
+docker exec nyxloom-prod-mattermost mmctl --local token list nyxloom-intake   # still exactly ONE
+
+# 4. Point the bridge at it. Both credentials come from the stack store and
+#    neither is committed; NYXLOOM_INTAKE_MM_TOKEN wins over any toml value.
+export NYXLOOM_INTAKE_WEBHOOK_URL="$(cat nyxloom/mattermost/.ciu/secrets/intake_webhook_url)"
+export NYXLOOM_INTAKE_MM_TOKEN="$(cat nyxloom/mattermost/.ciu/secrets/intake_pat)"
+export NYXLOOM_CHANNEL_OPERATOR_ID="<the operator identity this channel belongs to>"
+
+# 5. The `mmctl` transport, against the real channel. This one runs from the
+#    controller's own shell because it shells out via `docker exec` -- the
+#    docker socket is the transport, so no network reachability is involved.
+#    The FIRST poll of a channel only adopts the head
+#    (`status=bootstrapped`, nothing ingested) -- that is correct, not a
+#    failure. Post something in `intake` from the Mattermost UI as
+#    nyxloom-operator, then poll again.
+nyxloom intake-bridge poll nyxloom --transport mmctl
+```
+
+#### Step 5b — `--transport rest` is NOT runnable from the controller's shell
+
+Do not add `nyxloom intake-bridge poll nyxloom --transport rest` to the block
+above; it fails with a connection error and proves nothing.
+`[intake_bridge].base_url` is `http://nyxloom-prod-mattermost:8065`, and that
+name exists only inside the `nyxloom-prod-mattermost_internal` docker network —
+the stack publishes no host port (see "Network exposure" above, which is the
+point, not an oversight).
+
+The REST transport was verified end-to-end against the throwaway 11.10.1
+instance during development, and its parsing is covered by unit tests built
+from verbatim captures. What has NOT been exercised is that path against the
+LIVE stack with the LIVE PAT, and that stays true until `nyxloomd` itself runs
+as a container on that network — which this track has deliberately not done
+yet.
+
+What CAN be checked today, without deploying anything, is the half that is
+actually in doubt: the credential and the reachability. This is a one-shot
+throwaway container on the private network that makes exactly the two GETs
+`RestReader.fetch` makes, with the same stdlib client, and exits:
+
+```bash
+# Uses python:3-slim (already on this host) and stdlib urllib only -- no pip,
+# no image build, nothing persistent. Prints the two HTTP statuses and the
+# resolved channel id. Expect: 200, 200, a 26-char id.
+docker run --rm --network nyxloom-prod-mattermost_internal \
+  --cpus=1 --memory=256m \
+  -e MM_TOKEN="$NYXLOOM_INTAKE_MM_TOKEN" \
+  python:3-slim python3 -c '
+import json, os, urllib.request
+BASE = "http://nyxloom-prod-mattermost:8065"
+H = {"Authorization": "Bearer " + os.environ["MM_TOKEN"]}
+def get(path):
+    req = urllib.request.Request(BASE + path, headers=H, method="GET")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return r.status, json.loads(r.read().decode())
+st, meta = get("/api/v4/teams/name/nyxloom/channels/name/intake")
+print("channel lookup:", st, "id=" + meta["id"])
+st, page = get("/api/v4/channels/%s/posts?per_page=1" % meta["id"])
+print("posts read   :", st, "posts=%d" % len(page.get("posts", {})))
+'
+```
+
+A `401` means the PAT is revoked or `enable_user_access_tokens` went back to
+false; a `403` means `nyxloom-intake` is not a member of the private `intake`
+channel (step 0's `channel users list` is the check for that); a connection
+error means the container did not join the right network. Any of those is a
+real finding about the live stack — none of them is a bridge defect, which is
+exactly why this probe is worth running before the daemon ever is.
+
+Rollback is a flag, not a migration: set `enable_user_access_tokens = false`,
+`ciu up`, and revoke the token (`mmctl --local token revoke <token-id>`, then
+delete `.ciu/secrets/intake_pat`). The `mmctl` transport keeps working.
+

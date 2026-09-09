@@ -613,7 +613,7 @@ def handle_feedback_message(registry: dict[str, Path], text: str, tags: list[str
 
     dm = _DECIDE_CMD_RE.match(stripped)
     if dm:
-        operator = control_auth.channel_operator_for("decide")
+        operator = control_auth.channel_operator_for("ntfy:decide")
         if operator is None:
             return commands.CHANNEL_CLOSED_REPLY
         decision_id, choice = dm.group(1), dm.group(2).strip()
@@ -629,7 +629,7 @@ def handle_feedback_message(registry: dict[str, Path], text: str, tags: list[str
 
     pm = _DECISION_PREFIX_RE.match(stripped)
     if pm:
-        operator = control_auth.channel_operator_for("decision-chat")
+        operator = control_auth.channel_operator_for("ntfy:decision-chat")
         if operator is None:
             return commands.CHANNEL_CLOSED_REPLY
         decision_id, message = pm.group(1), pm.group(2).strip()
