@@ -159,7 +159,7 @@ so each needs a named owner before that plane is rewritten around it.
 | Surface | Lines | Package ownership / constraint |
 | --- | ---: | --- |
 | `src/nyxloom/merge_digest.py` | 558 | CR-12, CR-14: merge evidence is a typed product record, not rendered prose; digests feed evidence, never authority |
-| `src/nyxloom/decision_chat.py` | 552 | CR-09: the human-decision escape path a band-5 decline lands on; its transport must stay independent of route health |
+| `src/nyxloom/decision_chat.py` | 634 | CR-09: the human-decision escape path a band-5 decline lands on; its transport must stay independent of route health |
 | `src/nyxloom/decisions.py` | 415 | CR-09, CR-11: `decisions_open` is a planner input; the open/resolved projection must survive the store rewrite unchanged |
 | `src/nyxloom/intake_chat.py` | 423 | CR-01: intake writes handoff documents; document authority rules apply to what it produces |
 | `src/nyxloom/control_auth.py` | 469 | CR-15: the control plane's trust root. Owns the credential store, the operator identity that becomes an event `Actor`, the shared audited-refusal helper, and the notification channel's closed-by-default posture. CR-05 may move the handlers that call it; the auth-before-body/target boundary and the single refusal shape move with them, never around them |
