@@ -1323,6 +1323,57 @@ back to line-only", never "should branch data count when present". Naming it
 latter would read as a toggle over presence, which is the exact silent
 downgrade this key exists to forbid.
 
+### `allow_test_path_targets` overrides a claim about LAYOUT, never about a filename (B074)
+
+Assay's adapters each carry a test-path convention, and it fuses two different
+claims: *this file is named like a test* (`test_foo.py`, `conftest.py`,
+`foo.test.ts`, `bar_test.go`) and *this file sits under a directory named like
+a test tree* (`tests/`, `__tests__/`). Fusing them is right where paths arrive
+from a **diff** — the changed-line sweep and its R2 sibling — because nobody
+has vouched for a swept path, and grading the tests is the vacuity
+`whole_target` exists to close.
+
+A `judge.targets` entry is not a swept path. It is an explicit, reviewed,
+per-lane declaration, and the fused rule silently equates "sits under a
+directory named `tests/`" with "is test code" — a repository-layout assumption
+assay was making on the consumer's behalf, and one that is measurably false
+where deployed helper libraries live under a test tree (harness modules
+`COPY`-ed into a container image and run as a real service). Such code has no
+test runner of its own, so it is precisely the code most likely to accumulate
+unexercised branches, and it was ungradeable by `whole_target` at all.
+
+`judge.allow_test_path_targets = true` (default `false`, legal only on an R1
+lane in `whole_target` mode) lets the lane assert "the paths I named are
+library code despite their location". Three properties make it a narrow
+override rather than a hole:
+
+* **It splits the convention rather than suspending it.** Only the DIRECTORY
+  half is overridable. `_is_test_filename` asks the adapter about the path's
+  bare *basename* — a basename has no directory segments, so a positive means
+  a filename branch fired, for every adapter shipped and any future one,
+  without the core re-deriving any language's rule. A target that names itself
+  a test is refused with the flag exactly as without it.
+* **It governs both whole-target tiers, or it would let them disagree.** R1's
+  `evaluate._resolve_whole_target` and R2's `runner._mutation_targets_whole`
+  resolve the *same* declared list one tier apart. A flag reaching only one
+  would make a single declaration mean two things, and would leave the
+  motivating consumer coverage-gradeable but never mutation-gradeable. There
+  is no safety asymmetry to justify a split: mutation runs in an ephemeral
+  snapshot, never in the consumer's tree.
+* **It is auditable.** The effective policy is recorded as
+  `judgment.r1.allow_test_path_targets`, so a reviewer reading the artifact
+  alone sees that a graded target was one assay would otherwise have refused.
+  R1 is required for exactly this reason — it is the tier that writes that
+  field, and an R2-only lane would relax its gate with nothing in the verdict
+  admitting it.
+
+The field is a DECLARATION, like `allow_excluded` and `require_branch` beside
+it: a lane that sets it and happens to name no test path still records `true`,
+because what the verdict answers is "what policy judged", not "was the
+relaxation exercised". It is emitted only when true, which is what makes it
+additive to schema v11 rather than a version cut — a pre-B074 loader refuses
+the key as surplus judge config, so no older assay can emit it at all.
+
 ### Snapshot selection: an affirmative materialisation boundary, not a sandbox (B006a)
 
 Every R1/R2/R3 lane now declares `[lanes.X.isolation]` — required the moment

@@ -2049,20 +2049,36 @@ class JudgmentR1:
     #: defaults to ``False``, the value every lane declared before this
     #: field existed.
     require_branch: bool = False
-    #: (B074) the EFFECTIVE ``judge.allow_test_path_targets`` policy -- did
-    #: this lane grade a target assay's own test-path convention would
-    #: otherwise have refused? ``False``, the value every lane declared
-    #: before this field existed, for every lane that did not opt in.
+    #: (B074) the EFFECTIVE ``judge.allow_test_path_targets`` POLICY -- was
+    #: this lane permitted to name a target assay's own test-path convention
+    #: would otherwise have refused? A DECLARATION, exactly as
+    #: :attr:`allow_excluded` and :attr:`require_branch` beside it are: a lane
+    #: that sets the flag and happens to name no test path still records
+    #: ``true``, because what the field answers is "what policy judged", not
+    #: "was the relaxation exercised". ``False``, the value every lane
+    #: declared before this field existed, for every lane that did not opt in.
+    #:
+    #: The policy governs BOTH whole-target tiers -- R1's
+    #: ``evaluate._resolve_whole_target`` and R2's
+    #: ``runner._mutation_targets_whole`` -- so one recorded value is the
+    #: honest answer for the whole lane, not R1's half of it.
     #:
     #: **Emitted only when true** (:meth:`to_dict`), for the reason the field
-    #: is additive rather than a schema-version bump: the key can appear ONLY
-    #: on a verdict that was impossible to produce at all before B074 -- a
-    #: whole-target lane naming a test path refused ``ERROR``/
-    #: ``BAD_LANE_CONFIG`` and therefore emitted no ``judgment.r1`` -- so no
-    #: artifact any existing consumer already reads gains a key, and every
-    #: verdict from a lane that did not opt in stays byte-identical. A
-    #: consumer that DOES opt in is by construction on the assay that grew
-    #: the flag. See ``docs/CONSUMERS.md``.
+    #: is additive rather than a schema-version bump. Two arguments, and the
+    #: SECOND is the load-bearing one:
+    #:
+    #: * a whole-target lane naming a test path used to refuse ``ERROR``/
+    #:   ``BAD_LANE_CONFIG`` and therefore emitted no ``judgment.r1`` at all;
+    #:   and, absolutely,
+    #: * a pre-B074 LOADER rejects ``allow_test_path_targets`` as a surplus
+    #:   judge key, so no pre-B074 lane could declare it whatever its targets
+    #:   -- there is no configuration under which an older assay emits this
+    #:   key, and none under which an older consumer meets one it did not ask
+    #:   for.
+    #:
+    #: So every verdict from a lane that did not opt in stays byte-identical,
+    #: and a consumer that DOES opt in is by construction on the assay that
+    #: grew the flag. See ``docs/CONSUMERS.md``.
     allow_test_path_targets: bool = False
 
     def __post_init__(self) -> None:

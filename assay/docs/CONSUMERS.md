@@ -362,7 +362,10 @@ artifact = ".assay/coverage.json"
 
 The resulting verdict's `judgment.r1` carries `allow_test_path_targets: true`
 beside `mode` and `targets`, so a reviewer reading the artifact alone can see
-that a graded target was one assay would otherwise have refused. A lane that
+that a graded target was one assay would otherwise have refused. Like
+`allow_excluded` and `require_branch` beside it, that field records the
+**declared policy**, not whether the relaxation was exercised: a lane that sets
+the flag and happens to name no test path still records `true`. A lane that
 does not set the flag writes no such key at all — `false` is spelled as
 absence, and every verdict written before this flag existed stays valid
 unchanged.
@@ -374,10 +377,14 @@ Four things the flag deliberately does **not** do:
 | It does not relax the **changed-line sweep**. | A `changed_lines` lane over a diff touching the same file still skips it. Those paths come from a diff and nobody vouched for them; there is no argument you can pass to change that. |
 | It does not admit a file whose own **filename** is a test filename. | `tests/_harness/test_lib.py` and `tests/_harness/conftest.py` are still refused *with* the flag set, and the refusal says so. The flag is a claim about a directory's contents, never about a file that names itself a test. Same split in every adapter: `__tests__/helper.ts` yes, `helper.test.ts` no. |
 | It does not relax the **other five** target gates. | Symlink, source-root containment, regular-file, excluded-directory and adapter-recognised-source all still apply, with or without it. |
-| It does not reach **R2**. | Whole-target mutation (`rigor = ["R0","R1","R2"]` under `mode = "whole_target"`) applies its own test-path gate and still refuses a test-path target by name. Mutating a file to see whether a suite notices is a different claim from measuring that file's coverage, and B074 relaxed only the second. Declare such a lane R1-only, or move the file. |
+| It does not relax **anything at R2 that R1 keeps strict**. | Whole-target mutation (`rigor = ["R0","R1","R2"]` under `mode = "whole_target"`) honors the *same* flag on the *same* terms — the two tiers resolve one declared `judge.targets` list, so one declaration governs both and they cannot disagree about it. R2's own gate applies the identical directory/filename split and refuses a test-*filename* target with or without the flag. |
 
 The flag is legal only on an **R1 lane in `whole_target` mode** — declaring it
-anywhere else is refused at load, because nothing there would read it.
+anywhere else is refused at load. R1 specifically, even for a lane whose real
+interest is R2: R1 is the tier that writes `judgment.r1.allow_test_path_targets`,
+so an R2-only lane would relax its own target gate with nothing in the verdict
+admitting it, which is the auditability the flag exists to provide. Declare
+`rigor = ["R0", "R1", "R2"]` and both tiers honor the one declaration.
 
 ## Resume and shard a long mutation lane
 

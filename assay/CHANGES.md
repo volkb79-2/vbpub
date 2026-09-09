@@ -93,20 +93,29 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   only its directory half: the changed-line sweep's own test-path exclusion is
   untouched and takes no such parameter; the other five target gates (symlink,
   source-root containment, regular-file, excluded-directory,
-  adapter-recognised-source) still apply; whole-target **R2** still refuses a
-  test-path target by its own gate, because mutating a file is a different
-  claim from measuring it; and a target whose own FILENAME is a test filename
+  adapter-recognised-source) still apply; and a target whose own FILENAME is a
+  test filename
   (`test_foo.py`, `conftest.py`, `foo.test.ts`, `bar_test.go`) is still refused
-  *with* the flag set, in every adapter — grading a test file is the vacuity
-  whole-target mode exists to close. The effective policy is recorded as
-  `judgment.r1.allow_test_path_targets`, so a reviewer can see from the
-  artifact alone that a graded target was one assay would otherwise have
-  refused. **No verdict-schema version bump**: the key is emitted only when
-  true, so a lane that did not opt in writes a byte-identical verdict, and the
-  key can appear only on a verdict that was impossible to produce before this
-  change (such a lane refused `ERROR`/`BAD_LANE_CONFIG` and emitted no
-  `judgment.r1` at all). `assay verify` accepts the new key and refuses it
-  under `changed_lines` mode or spelled as an explicit `false`.
+  *with* the flag set, in every registered adapter — grading a test file is the
+  vacuity whole-target mode exists to close.
+  **Both whole-target tiers honor it**: R1's coverage target resolution and
+  R2's mutation target resolution read one declared `judge.targets` list, so a
+  flag reaching only one would make a single declaration mean two things — and
+  would leave the motivating consumer coverage-gradeable but never
+  mutation-gradeable. There is no safety asymmetry to justify a split: mutation
+  runs in an ephemeral snapshot, never in the consumer's tree. R2's own refusal
+  now names the flag and the remedy, as R1's already did.
+  The effective policy is recorded as
+  `judgment.r1.allow_test_path_targets` — a DECLARATION, like `allow_excluded`
+  and `require_branch` beside it, so a lane that sets the flag and names no
+  test path still records `true` — and a reviewer can see from the artifact
+  alone that a graded target was one assay would otherwise have refused.
+  **No verdict-schema version bump**: the key is emitted only when true, so a
+  lane that did not opt in writes a byte-identical verdict, and no pre-B074
+  assay can emit it at all — its loader refuses `allow_test_path_targets` as a
+  surplus judge key, whatever the lane's targets. `assay verify` accepts the
+  new key and refuses it under `changed_lines` mode or spelled as an explicit
+  `false`.
 
 ### Changed
 

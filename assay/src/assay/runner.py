@@ -116,7 +116,16 @@ from .coverage import derive_branch_capability
 from .coverage_parsers.model import CoverageProfile
 from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from .adapters.base import HelperInvocation
-from .evaluate import evaluate_coverage, evaluate_targets, resolve_coverage_keys
+from .evaluate import (
+    # (B074) `_is_test_filename` is imported rather than reproduced: R2's
+    # declared-target gate below must split "test by DIRECTORY" from "test by
+    # FILENAME" on exactly R1's terms, and two independently written copies
+    # of that split are two things that can drift.
+    _is_test_filename,
+    evaluate_coverage,
+    evaluate_targets,
+    resolve_coverage_keys,
+)
 from .statement_attribution import attribute_statements
 from .output import VerdictOutput
 from .verdict import (
@@ -2883,6 +2892,7 @@ def _mutation_targets_whole(
     adapter: LanguageAdapter,
     source_root_paths: Sequence[Path],
     targets: Sequence[str],
+    allow_test_path_targets: bool = False,
 ) -> tuple[mutation.MutationTarget, ...]:
     """Build whole-file R2 targets from the lane's declared target list.
 
@@ -2911,6 +2921,26 @@ def _mutation_targets_whole(
     A duplicate spelling is the one thing still collapsed rather than
     refused: two identical entries request exactly the same work, so
     de-duplicating narrows nothing.
+
+    **(B074) *allow_test_path_targets* reaches this gate too, on exactly
+    R1's terms.** This function's whole contract is "R1's own rule, one tier
+    down" over the SAME declared ``judge.targets`` list, so a flag that
+    relaxes R1's sixth gate and not this one would make the two tiers
+    disagree about a single declaration -- and would leave B074's own
+    motivating consumer (deployed harness library code under ``tests/``)
+    coverage-gradeable but never mutation-gradeable, an incomplete fix for
+    the one case the entry exists for. There is no safety asymmetry to
+    justify the split: mutation happens in an ephemeral snapshot, never in
+    the consumer's tree or a deployed artifact.
+
+    The relaxation is the same shape, half for half: only the DIRECTORY
+    half of the adapter's convention is overridable, and a target whose own
+    FILENAME is a test filename is refused with or without the flag
+    (:func:`assay.evaluate._is_test_filename`, imported rather than
+    re-derived so the two tiers cannot drift apart). The SWEEP-side sites
+    are untouched and unreachable from here --
+    :func:`assay.mutation.resolve_mutation_targets` (the changed-line R2
+    path, one function up) takes no such parameter at all.
     """
     resolved: list[mutation.MutationTarget] = []
     seen: set[str] = set()
@@ -2963,12 +2993,35 @@ def _mutation_targets_whole(
                 reason_code=ReasonCode.BAD_LANE_CONFIG,
             )
         if adapter.is_test_path(path):
-            raise AssayError(
-                f"mutation target {raw_target!r} is a test path per the "
-                f"adapter's own convention",
-                outcome=Outcome.ERROR,
-                reason_code=ReasonCode.BAD_LANE_CONFIG,
-            )
+            # B074, R1's own three-way split reproduced here: WHY the adapter
+            # called it a test path decides whether a declared target can
+            # override it. Both messages name the flag, because a refusal
+            # that does not tell a correctly-configured consumer which knob
+            # exists is the shape this project keeps having to re-close.
+            if not allow_test_path_targets:
+                raise AssayError(
+                    f"mutation target {raw_target!r} is a test path per the "
+                    f"adapter's own convention. If this file is library code "
+                    f"that merely LIVES under a test directory, declare "
+                    f"judge.allow_test_path_targets = true on this lane -- it "
+                    f"relaxes this gate and R1's twin of it together, so one "
+                    f"declaration covers both tiers",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.BAD_LANE_CONFIG,
+                )
+            if _is_test_filename(adapter, path):
+                raise AssayError(
+                    f"mutation target {raw_target!r} is a test path by its "
+                    f"own FILENAME per the adapter's convention, which "
+                    f"judge.allow_test_path_targets does not override: that "
+                    f"flag asserts a claim about a repository's LAYOUT "
+                    f"('this directory holds library code'), never about a "
+                    f"file that names itself a test. Mutating a test file to "
+                    f"see whether the suite notices grades the suite against "
+                    f"itself",
+                    outcome=Outcome.ERROR,
+                    reason_code=ReasonCode.BAD_LANE_CONFIG,
+                )
         text = _read_prepared_source_text(prepared, path, deadline=deadline)
         # Every line the file actually has. A trailing newline TERMINATES the
         # last line rather than starting another, so `count("\n") + 2` (the
@@ -3541,6 +3594,15 @@ def _run_prepared_lane(
                         adapter=adapter,
                         source_root_paths=relocated_lane_r2.judge.source_root_paths,
                         targets=lane.judge.targets or (),
+                        # (B074) The SAME declaration R1 resolved, so the same
+                        # effective policy -- absent means False, resolved
+                        # here exactly as `evaluate_r1` resolves it for its
+                        # own twin of this gate.
+                        allow_test_path_targets=(
+                            lane.judge.allow_test_path_targets
+                            if lane.judge.allow_test_path_targets is not None
+                            else False
+                        ),
                     )
                 except AssayError as exc:
                     # B033/A-325: the verdict stays as closed as it was --

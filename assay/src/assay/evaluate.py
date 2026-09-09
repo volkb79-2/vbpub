@@ -1035,6 +1035,12 @@ def _resolve_whole_target(
     reviewer can see that a graded target was one assay would otherwise
     have refused.
 
+    The lane's R2 twin of this gate, :func:`assay.runner.
+    _mutation_targets_whole`, honours the SAME flag on the same terms --
+    the two resolve one declared ``judge.targets`` list one tier apart, so
+    a flag that reached only one of them would make the tiers disagree
+    about a single declaration.
+
     What the flag does NOT do, deliberately:
 
     * it never reaches the SWEEP-side ``is_test_path`` checks
@@ -1042,7 +1048,8 @@ def _resolve_whole_target(
       resolve_mutation_targets`'), where paths arrive from a diff and
       nobody has vouched for them;
     * it never relaxes the other five gates above, which catch real
-      declaration errors and are not what B074 asked to relax; and
+      declaration errors and are not what B074 asked to relax (nor their
+      five counterparts in the R2 twin); and
     * it never admits a file whose OWN FILENAME is a test filename by the
       adapter's convention (``test_foo.py``, ``conftest.py``,
       ``foo.test.ts``, ``bar_test.go``) -- :func:`_is_test_filename` is the

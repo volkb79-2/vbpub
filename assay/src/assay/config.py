@@ -776,9 +776,14 @@ class JudgeConfig:
     require_branch: bool | None = None
     #: (B074) the declared `judge.allow_test_path_targets` -- `None` when the
     #: file omits it, which means `false`. Legal only on an R1 lane in
-    #: `whole_target` mode: it relaxes the test-path gate `evaluate.
-    #: _resolve_whole_target` applies to an EXPLICITLY DECLARED target, and
-    #: nothing else reads it. Stored as declared, never defaulted here.
+    #: `whole_target` mode. It relaxes the test-path gate applied to an
+    #: EXPLICITLY DECLARED target at BOTH whole-target tiers -- `evaluate.
+    #: _resolve_whole_target` (R1 coverage) and `runner.
+    #: _mutation_targets_whole` (R2 mutation) -- which resolve the same
+    #: `judge.targets` list, so one declaration governs both and they cannot
+    #: disagree about it. Nothing else reads it; the SWEEP-side test-path
+    #: exclusions are not overridable. Stored as declared, never defaulted
+    #: here.
     allow_test_path_targets: bool | None = None
     #: (B019/A-328) the declared `judge.base_source`, verbatim -- `None` when
     #: the file omits it, which means `"declared"`. Stored as declared, never
@@ -2012,16 +2017,14 @@ def _load_judge(
     # of an R2-only whole-target lane for a reason that has nothing to do
     # with rigor arithmetic).
     #
-    # Both placements are refused because both are INERT (A-062): the flag
-    # is read at exactly one site, `evaluate._resolve_whole_target`, which
-    # only R1 reaches and only under `whole_target`. Note what is NOT
-    # refused here: a lane that also declares R2. R2's own whole-target
-    # test-path gate (`runner._mutation_targets_whole`) is deliberately
-    # UNCHANGED by B074 and still refuses a test-path target loudly, so such
-    # a lane fails with a named message at R2 rather than silently narrowing
-    # its mutation scope -- and refusing it at LOAD would be a false refusal
-    # for the ordinary case of a lane that sets the flag while none of its
-    # targets is actually a test path.
+    # Both placements are refused because both are INERT (A-062): the flag is
+    # read at exactly two sites, `evaluate._resolve_whole_target` and
+    # `runner._mutation_targets_whole`, which resolve the SAME `judge.targets`
+    # list one tier apart. Both are whole-target-only, and R1 is required
+    # because it is the tier that records the effective policy into the
+    # verdict (`judgment.r1.allow_test_path_targets`) -- an R2-only lane
+    # would honour the flag with nothing in the artifact saying it did, which
+    # is the auditability half of B074's own acceptance.
     allow_test_path_targets = None
     if "allow_test_path_targets" in table:
         allow_test_path_targets = _as_bool(
@@ -2040,9 +2043,12 @@ def _load_judge(
         if not r1_declared:
             raise LaneConfigError(
                 f"{where}: declares 'judge.allow_test_path_targets' but "
-                f"rigor {list(rigor)} does not include R1 -- R1's whole-target "
-                f"resolution is the only reader of this flag, so on a lane "
-                f"without it nothing reads it"
+                f"rigor {list(rigor)} does not include R1. R1 is the tier "
+                f"that RECORDS the effective policy into the verdict "
+                f"(judgment.r1.allow_test_path_targets), so an R2-only lane "
+                f"would relax its own target gate with nothing in the "
+                f"artifact saying it did -- which is the auditability the "
+                f"flag exists to provide. Declare R1 alongside R2"
             )
 
     if effective_mode == "whole_target":

@@ -30,10 +30,7 @@ from types import MappingProxyType
 
 import pytest
 
-from assay.adapters.go import GoAdapter
-from assay.adapters.javascript import JavaScriptAdapter
 from assay.adapters.python import PythonAdapter
-from assay.adapters.sql import SqlAdapter
 from assay.coverage_parsers.model import CoverageProfile, FileCoverage
 from assay.diff import AddedLines
 from assay.errors import AssayError, Outcome, ReasonCode
@@ -265,45 +262,92 @@ def test_a_test_filename_outside_a_test_directory_also_refuses_with_the_flag(
     assert "FILENAME" in str(exc.value)
 
 
-@pytest.mark.parametrize(
-    ("adapter", "directory_case", "filename_case"),
-    [
-        # Python: `tests/` is a directory branch; `test_*.py`/`conftest.py`
-        # are filename branches.
-        (PythonAdapter(), "tests/_harness/lib.py", "tests/_harness/test_lib.py"),
-        # JavaScript: `__tests__/` is the directory branch; `*.test.ts` the
-        # filename one.
-        (JavaScriptAdapter(), "__tests__/helper.ts", "__tests__/helper.test.ts"),
-        # SQL: `tests/`/`test/` are directory branches; `test_*.sql` and
-        # `*_test.sql` are filename branches.
-        (SqlAdapter(), "tests/ddl/schema.sql", "tests/ddl/schema_test.sql"),
-    ],
-)
-def test_is_test_filename_splits_directory_from_filename_per_adapter(
-    adapter, directory_case: str, filename_case: str
-):
-    """The split, asserted directly against each real adapter's own rule --
-    both cases are `is_test_path` positives, and only the second is a
+#: One case per REGISTERED language, keyed by the registry's own name.
+#:
+#: * ``directory_case`` -- an ``is_test_path`` positive that matches only on a
+#:   DIRECTORY branch of that adapter's convention, so the flag may override
+#:   it. ``None`` means the adapter has no directory branch at all, which is a
+#:   real answer (Go), not a missing case.
+#: * ``filename_case`` -- an ``is_test_path`` positive that matches on a
+#:   FILENAME branch, which the flag must never override.
+#:
+#: Hand-written per language, because each entry encodes that language's own
+#: convention and deriving it from the regex under test would be the tautology
+#: A-067 forbids. What is DERIVED is the SET this table must cover -- see the
+#: completeness guard below.
+_SPLIT_CASES: dict[str, tuple[str | None, str]] = {
+    # `tests/` is the directory branch; `test_*.py`/`conftest.py` the filename
+    # branches.
+    "python": ("tests/_harness/lib.py", "tests/_harness/test_lib.py"),
+    # `tests/`/`test/` are directory branches; `test_*.sql`/`*_test.sql` the
+    # filename ones.
+    "sql": ("tests/ddl/schema.sql", "tests/ddl/schema_test.sql"),
+    # `__tests__/` is the directory branch; `*.test.ts` the filename one.
+    "javascript": ("__tests__/helper.ts", "__tests__/helper.test.ts"),
+    # Go's convention is PURELY a filename suffix, so there is no directory
+    # branch for a declaration to be wrong about and the flag is correctly
+    # inert for a Go lane. `None` records that as an answer.
+    "go": (None, "internal/pkg/thing_test.go"),
+}
+
+
+def _registered_languages() -> dict[str, object]:
+    from assay.cli import _built_in_registry
+
+    return {name: entry.adapter for name, entry in _built_in_registry().entries.items()}
+
+
+def test_every_registered_adapter_has_a_split_case():
+    """(A-270, round-1 Blocker 3.) `_resolve_whole_target`'s docstring,
+    `CHANGES.md` and `CONSUMERS.md` all claim the directory/filename split
+    holds "in every adapter" and "for any future one". That claim is only as
+    strong as the set it is checked over, so the set is DERIVED from the
+    shipped registry rather than hand-copied beside it: a fifth adapter added
+    without a case here turns this red instead of silently narrowing the
+    claim to four languages while the prose still says "every".
+    """
+    assert set(_SPLIT_CASES) == set(_registered_languages()), (
+        "every registered language needs a directory/filename case in "
+        "_SPLIT_CASES (or an explicit None directory_case if it has no "
+        "directory branch)"
+    )
+
+
+@pytest.mark.parametrize("language", sorted(_SPLIT_CASES))
+def test_is_test_filename_splits_directory_from_filename_per_adapter(language: str):
+    """The split, asserted against each REGISTERED adapter's own live rule --
+    both cases are `is_test_path` positives, and only the filename one is a
     FILENAME positive. Without this asymmetry the flag would either relax
-    nothing or relax everything."""
-    assert adapter.is_test_path(directory_case)
-    assert adapter.is_test_path(filename_case)
-    assert not _is_test_filename(adapter, directory_case)
-    assert _is_test_filename(adapter, filename_case)
+    nothing or relax everything.
 
+    The adapter comes from the registry, not from a local constructor, so this
+    exercises the object a real lane resolves.
+    """
+    adapter = _registered_languages()[language]
+    directory_case, filename_case = _SPLIT_CASES[language]
 
-def test_go_has_no_directory_branch_so_the_flag_relaxes_nothing_for_it():
-    """Go's convention is purely a filename suffix (`_test.go`), so
-    `_is_test_filename` agrees with `is_test_path` everywhere and the flag is
-    inert for a Go lane -- correct, not a gap: Go has no test DIRECTORY
-    convention for a declaration to be wrong about."""
-    go = GoAdapter()
-    for path in ("tests/helper_test.go", "internal/pkg/thing_test.go"):
-        assert go.is_test_path(path)
-        assert _is_test_filename(go, path)
-    # ...and a Go file under a `tests/` directory was never a test path to
-    # begin with, so it needed no flag.
-    assert not go.is_test_path("tests/helper.go")
+    assert adapter.is_test_path(filename_case), filename_case
+    assert _is_test_filename(adapter, filename_case), (
+        f"{language}: {filename_case} must stay refused WITH the flag set"
+    )
+
+    if directory_case is None:
+        # No directory branch: the flag relaxes nothing here, and the pair
+        # that would prove it does not exist. Assert the ABSENCE positively
+        # rather than skipping, so "this adapter has no directory branch"
+        # stays a checked claim -- a `tests/`-segment path is simply not a
+        # test path for this language.
+        assert not adapter.is_test_path("tests/helper.go"), (
+            f"{language} was declared to have no directory branch, but one "
+            f"matched"
+        )
+        return
+
+    assert adapter.is_test_path(directory_case), directory_case
+    assert not _is_test_filename(adapter, directory_case), (
+        f"{language}: {directory_case} is a DIRECTORY positive, so a declared "
+        f"target must be able to override it"
+    )
 
 
 # --- 4. the other five gates still refuse WITH the flag ---------------------
