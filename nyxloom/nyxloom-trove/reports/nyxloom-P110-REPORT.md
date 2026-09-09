@@ -460,6 +460,10 @@ the real assignment flipped; caught by deliberate mutation).
 
 ## Tests
 
+> Counts in this section are the **first-round** figures, before `main`
+> (with nyxloom-P109) was merged in. The final numbers are 98 tests and 16
+> mutations — see "Review round 1" below.
+
 `tests/test_mattermost_provision_hook.py`: **35 → 62**, all passing. The 27 new
 tests cover `_team_exists` (including the rc=0 sentinel, exact-vs-prefix
 matching, probe failure and row drift), `_demote_unintended_admins` (including
@@ -553,6 +557,17 @@ From the verdict artifact:
 | `assay_version` / digest | 6.1.0 / `80ce1a5412a3…` |
 | `argv_modified` | `false` |
 
+**What the 100% coverage figure does and does not mean.** R1 judges changed
+lines within the lane's coverage scope, which is `--cov=src/nyxloom`. The
+provisioning hook lives at `mattermost/hooks/post_compose_provision.py`,
+**outside `src/`**, so R1 structurally cannot see it — the 53 lines it measured
+are other changed surface in `src/`, not this package's hook. That is not a
+gap in the gate and it is not being glossed: it is exactly why
+`tests/test_mattermost_provision_hook.py` exists as a deliberate act rather
+than as a coverage by-product, and why this round's evidence for the hook is
+the mutation table rather than a percentage. Read "100%" as "the changed lines
+the judge can see are covered", never as "the hook is covered".
+
 **RG-48 did not bite.** The lane's `pytest -n auto` and this host's mandatory
 `docker update --cpus=3` produced false failures in an earlier package; here
 the gate was launched during a genuine quiet window (1-minute load average
@@ -568,20 +583,211 @@ under contention, RG-48's `--cpus=6` reconciliation is the known workaround.
 | `mattermost/ciu.compose.yml.j2` | the hardening env block; rate-limit keying inside the `expose_public` branch |
 | `mattermost/docker-compose.yml` | the same values hand-synced into the pre-rendered fallback (it receives no ciu overlay — NL-6's trap) |
 | `mattermost/ciu.defaults.toml.j2` | `nyxloom-admin` declared, first, with the ordering rationale. `expose_public` untouched |
-| `mattermost/hooks/post_compose_provision.py` | `_team_exists` rewritten; `_demote_unintended_admins` added and wired after the create/promote pass; `admin_role_stripped` in the summary line and in the S9.4a state result |
+| `mattermost/hooks/post_compose_provision.py` | `_team_exists` rewritten; `_demote_unintended_admins` added and wired after the create/promote pass; `_require_user_roles` (the fail-CLOSED role read that guard uses); `admin_role_stripped` in the summary line and in the S9.4a state result |
 | `mattermost/README.md` | the audit, the corrected "no self-signup" claim, the fresh-create facts, the residual, and the go-public recipe |
-| `tests/test_mattermost_provision_hook.py` | +26 tests |
+| `tests/test_mattermost_provision_hook.py` | +37 tests |
 
 ## Scope kept
 
 - **No live stack contact of any kind** — not even a read.
 - `expose_public` not flipped anywhere, including in the committed default.
 - **P109's territory untouched**: no PAT enablement, no `intake` account,
-  channel or `[[mattermost.provision.tokens]]` table. This package's edits to
-  `[mattermost]` and to the compose env sit adjacent to P109's; nothing
-  unrelated was reformatted or reordered, so the two diffs should be
-  mechanically mergeable.
+  channel or `[[mattermost.provision.tokens]]` table. P109 has since merged and
+  this branch merged it in (see "Review round 1"); the only P109 lines touched
+  are two comment corrections its own text invited, both named below.
 - No dstdns / installer-side integration.
+
+## Review round 1 — NEEDS-FIXES, addressed
+
+The reviewer **cleared the highest-risk item outright**: the `nyxloom-admin`
+idempotency question. Traced directly, `mmctl user change-password` appears
+nowhere in the hook (only in docstring prose), `--password` reaches only the
+create-a-new-account branch, and role changes only ever promote. The live
+bootstrap admin's password cannot be touched by this hook. No action needed —
+but the reviewer noted `_ensure_account` had **zero direct unit coverage**, so
+that whole argument rested on reading the code. It does not any more; see
+"Tests added this round".
+
+### Merged `main` (which now contains nyxloom-P109)
+
+`git merge main` into `nyxloom-P110`. As predicted, `ciu.compose.yml.j2`,
+`ciu.defaults.toml.j2` and the hook itself auto-merged; the two textual
+conflicts were `README.md` and `tests/test_mattermost_provision_hook.py`, both
+pure append-vs-append:
+
+- **README.md** — one bullet. P109 promoted "no personal access tokens" from a
+  clause in the posture list to its own bullet; P110 had appended "no OAuth2
+  authorization server" to that same clause. Resolution keeps P109's structure
+  and carries the OAuth clause into it.
+- **tests** — the two packages' blocks are disjoint; the markers came out and
+  both blocks stayed. One collision the merge could not see: **both files
+  define a module-level `_Ctx`**, and P109's is defined later, so it silently
+  won and my three `_ensure_account` tests failed with
+  `_Ctx.__init__() missing 1 required positional argument: 'stack_dir'`. Mine
+  is renamed `_NoSecretCtx`. Worth naming because a same-named *helper* rather
+  than a same-named *test* is the kind of merge hazard that can also resolve
+  the other way and silently weaken an assertion instead of erroring.
+
+`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` was not touched — RG-48 is only
+referenced from this report, and RG-47/RG-48 were left exactly as the
+controller resolved them.
+
+**The account-count test was the one real breakage.** P109 added a fifth
+account (`nyxloom-intake`), so the expected list is now five. It is also
+renamed `test_every_account_is_declared_with_admin_first` and the docstring now
+separates the two things it asserts: `nyxloom-admin` heading the list is what
+carries weight (Mattermost promotes the first-ever account); the full list is
+asserted so that adding an account is a deliberate act that updates this test.
+No other test carried a count assumption — checked, not assumed.
+
+### F1 — the wipe-path replacement was broken the same way `--reset` is ✅
+
+The reviewer is right, and I verified the mechanism in the installed ciu 7.12.0
+source rather than taking it on trust:
+
+- `engine.reset_service` raises `deploy.labels.prefix is required for reset` at
+  `engine.py:731`, **before its Step 1**.
+- `deploy.action_clean` (`deploy.py:4360`) calls the same `reset_service` inside
+  `except Exception` — it prints `reset failed for <stack>`, sets `rc=1` and
+  **continues**. Its own Step 3 and Step 4 remove named volumes and networks,
+  so the command looks mostly successful. Removing the `vol-*` hostdirs is
+  `reset_service`'s **Step 2**, inside the call that never ran.
+
+So my "use `ciu clean` instead" was wrong in the worst available way: the
+command runs, reports a failure for one stack among several, and leaves a full
+Postgres data directory for the next `ciu up` to adopt as though it were fresh.
+The README now says plainly that **both** are broken for the same missing key,
+explains that `clean` fails *quietly*, and presents the root-helper
+`docker run alpine rm -rf` block — the one this package's own teardown used —
+as the only working path.
+
+**I did not add `deploy.labels.prefix` to the root**, and the reasoning is in
+the README so the next person does not have to redo it. It is a root-level file
+shared with `ntfy`, `nyxloomd` and `pwmcp-instance`, and adding the key converts
+`ciu clean` from partly-inert to genuinely destructive for all of them — a
+decision for whoever owns the root, not a side effect of a Mattermost package.
+One fact recorded to make that decision cheap, because it is the part that
+looks alarming and is not: ciu uses the prefix in **exactly one place**, Step
+4's orphan-sweep filter `label=<prefix>.component=<service>`, and **ciu never
+writes that label** — only a consumer's compose template would, and nyxloom's
+do not. Adding the key therefore relabels nothing and orphans nothing (the
+CIU-V8 R-15 hazard does not apply here); the sweep just matches zero
+containers.
+
+### F2a — read-only pre-flight before the risky step ✅
+
+New **step 0** in the recipe, and the recipe's preamble now says steps 0–2
+stand alone. It checks, mutating nothing, that `nyxloom-admin` exists, holds
+`system_admin`, and is in `alerts`; and it prints the full account list,
+because the failure this is really guarding is *the live bootstrap admin being
+named something else* — in which case the first `ciu up` after the merge
+creates a brand-new `nyxloom-admin` from the `GEN_LOCAL` secret and promotes
+it. Not wrong, but silent, and only visible afterwards.
+
+It ships as an explicit **STOP table**: four observations, what each means, and
+what to do instead — including the two outcomes that are *intended* but should
+not be surprises (promotion of an un-promoted admin; adding it to `alerts`).
+
+### F2b — the `alerts` gap is now IN the operator's path ✅
+
+Three changes, because the reviewer's point was that a residuals section is not
+where a flip-time decision belongs:
+
+1. **New recipe step 2b**, immediately before the flip, headed as a decision
+   point rather than a check: `alerts` is public, any team member can read and
+   join it, with a runnable probe that demonstrates it as `nyxloom-installer`.
+   **Option A** converts it (`mmctl --local channel modify nyxloom:alerts
+   --private`, plus setting `private = true` so a fresh create matches — both
+   halves, or the next rebuild silently reopens it) and re-runs the probe
+   expecting 403. **Option B** accepts it, with the instruction to *write the
+   acceptance down*, since an unrecorded accepted risk is indistinguishable
+   from one nobody noticed. The `mmctl channel modify --private` syntax was
+   verified against the pinned image (`docker run --rm --network none
+   mattermost/mattermost-team-edition:11.10.1 ... channel modify --help`) rather
+   than recalled — the throwaway was already destroyed, and this recipe is
+   meant to be run verbatim on production.
+2. **The misleading parenthetical is gone.** The residual section led with the
+   team's `type: "O"` / `allow_open_invite: true` shape, which invites exactly
+   the wrong inference — that F1's `ENABLEUSERCREATION=false` closes this too.
+   It does not: that flag stops accounts from being *created*, and this gap is
+   about accounts that *already exist* joining a public channel. The section now
+   says so in as many words, and explains that the open-team shape governs
+   joining the **team**, which every account here already did.
+3. **`ciu.defaults.toml.j2` records it at the source**, next to the `alerts`
+   declaration — including why `private = true` was not simply set here (the
+   hook only creates channels, so it would change nothing live while making the
+   committed config assert something untrue of the running server), and the
+   instruction to set it in the same pass if the channel is ever converted.
+
+### F3 (optional) — taken: the privilege guard now fails CLOSED ✅
+
+`_user_roles` returned `set()` on any rc/parse failure, and
+`_demote_unintended_admins` read that as "not an admin, nothing to strip" — so
+an mmctl output-format drift would have silently left an auto-promoted service
+account holding server administration, reinstating the exact defect the guard
+was added for, with no message anywhere.
+
+Rather than change `_user_roles` globally, there is now a
+`_require_user_roles` twin that **raises** on a failed probe, non-JSON output,
+or JSON with no `roles` field. The demotion guard uses it; `_ensure_account`'s
+**promotion** guard deliberately keeps the fail-open original, because there an
+empty answer means "promote", and promoting an account that already holds the
+role is a server-side no-op — erring toward a redundant promotion is harmless,
+aborting a deploy over a transient parse failure is not. Both functions now
+document which caller they are safe for.
+
+The blast radius of the new refusal is small and lands where it should: it can
+only fire for an account the same run just created, i.e. on a fresh instance,
+which is exactly when an operator is present and wants to be told.
+
+### Two comment corrections in P109's text
+
+Both are places where P110's own change made P109's prose untrue, and both are
+in regions this merge already touched:
+
+- The `nyxloom-intake` rationale disqualified `nyxloom-admin` as "the bootstrap
+  account this hook deliberately never touches" — no longer true now that it is
+  declared. Corrected to the accurate reason, which is also the stronger one:
+  it is `system_admin`, so it is disqualified for exactly the same reason
+  `nyxloom-operator` is. The conclusion is unchanged.
+- The posture list's PAT bullet (README) kept P109's structure with P110's
+  OAuth clause folded in, rather than either package's version winning.
+
+### Tests added this round
+
+`tests/test_mattermost_provision_hook.py`: **88 after the merge → 98**.
+
+- 4 for `_require_user_roles` (parses roles; raises on rc≠0, on non-JSON, and
+  on valid JSON whose `roles` field has gone away — the drift a bare
+  `.get("roles", "")` turns into a confident "this account has no roles").
+- 1 end-to-end: the demotion guard *refuses* rather than skipping when roles
+  are unreadable, and mutates nothing while doing so.
+- 1 pinning that the fail-open twin is still fail-open, so the split is
+  deliberate rather than an accident waiting to be "tidied up".
+- 4 for **`_ensure_account`** — the coverage gap the reviewer named. These turn
+  the manual trace that cleared the highest-risk item into an enforced
+  invariant: no secret is read for an existing account and no `--password`
+  reaches any argv; the complete verb set for the live `nyxloom-admin`
+  reconcile is exactly one idempotent `team users add`; the function promotes
+  but never demotes; and the password *is* read and passed when the account is
+  genuinely being created.
+
+### Mutations — 6 more introduced this round, 6 caught (16/16 overall)
+
+| # | Mutation | Failures |
+|---|---|---|
+| M11 | demotion guard reverted to the fail-OPEN role read | 2 |
+| M12 | `_require_user_roles` returns an empty set instead of raising | 2 |
+| M13 | `_ensure_account` re-sends the password to an EXISTING account | 3 |
+| M14 | `_ensure_account` demotes an existing non-declared-admin account | 1 |
+| M15 | `nyxloom-intake` dropped from the declared accounts | 3 |
+| M16 | `nyxloom-admin` moved out of first position | 1 |
+
+The template-vs-fallback drift check was re-verified as still *meaningful*
+after the merge rather than merely still green: it compares 42 literal `MM_*`
+settings and skips 4 whose template value is a Jinja expression — P109's
+`ENABLEUSERACCESSTOKENS` joined `SITEURL`, the DSN and `LISTENADDRESS` in that
+set, which is correct, and no drift was found.
 
 ## Throwaway teardown
 

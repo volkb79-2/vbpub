@@ -175,10 +175,63 @@ def _user_exists(container: str, username: str) -> bool:
 
 
 def _user_roles(container: str, username: str) -> set[str]:
+    """Roles of *username*, or an EMPTY SET when they cannot be read.
+
+    Fail-OPEN, and only safe where the caller's use of an empty answer is
+    itself safe. There is exactly one such caller: `_ensure_account`'s
+    promotion guard, where "no roles" means "promote", and promoting an
+    account that already holds the role is a server-side no-op. Erring toward
+    a redundant promotion is harmless; aborting a deploy over a transient
+    parse failure would not be.
+
+    It is NOT safe for the demotion guard, where an empty answer reads as
+    "not an admin, nothing to strip" — see `_require_user_roles`.
+    """
     rc, parsed = _mmctl_json(container, "user", "search", username)
     if rc != 0 or not isinstance(parsed, dict):
         return set()
     return set(str(parsed.get("roles", "")).split())
+
+
+def _require_user_roles(container: str, username: str) -> set[str]:
+    """Roles of *username*, REFUSING rather than guessing when unreadable.
+
+    The fail-open twin above cannot be used by `_demote_unintended_admins`:
+    that guard exists to take `system_admin` away from an account Mattermost
+    auto-promoted, and it decides by asking whether the role is present. An
+    unreadable answer becomes "not an admin, skip", so an mmctl output-format
+    drift would leave a freshly created service account holding server
+    administration and say nothing — silently reinstating the exact defect the
+    guard was added for.
+
+    A privilege guard has to fail CLOSED. This one raises, which aborts the
+    deploy with the account named. The blast radius of that is small and
+    bounded to the case where it matters: it can only fire for an account the
+    SAME run just created, i.e. on a fresh instance, which is precisely when
+    an operator is present and wants to be told.
+    """
+    rc, out, err = _mmctl(container, "user", "search", username, as_json=True)
+    if rc != 0:
+        raise ProvisionError(
+            f"cannot read the roles of {username!r} (rc={rc}): "
+            f"{(err or out).strip()[:400]} — refusing to assume this account "
+            "is not a system admin"
+        )
+    try:
+        parsed = json.loads(out)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ProvisionError(
+            f"`mmctl --local --json user search {username}` did not emit JSON; "
+            "the output format has changed and this hook can no longer tell "
+            "whether the account is a system admin. Refusing rather than "
+            "assuming it is not."
+        ) from exc
+    if not isinstance(parsed, dict) or "roles" not in parsed:
+        raise ProvisionError(
+            f"the JSON for {username!r} carries no `roles` field; refusing "
+            "rather than assuming the account is not a system admin"
+        )
+    return set(str(parsed["roles"]).split())
 
 
 _TEAM_MISSING_RE = re.compile(r"^unable to find team\b", re.IGNORECASE)
@@ -691,7 +744,10 @@ def _demote_unintended_admins(container: str, prov: dict, created: list[str]) ->
     for username in created:
         if username in wanted_admin:
             continue
-        if "system_admin" not in _user_roles(container, username):
+        # `_require_user_roles`, not `_user_roles`: this guard must fail CLOSED.
+        # An unreadable answer here would read as "not an admin, nothing to do"
+        # and silently leave the role in place.
+        if "system_admin" not in _require_user_roles(container, username):
             continue
         _must(
             container,
