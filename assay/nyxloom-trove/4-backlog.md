@@ -8119,16 +8119,20 @@ was also a corrected assumption from the operator's first framing).
 
 ### Acceptance (for the carve, sequenced per SR-5)
 
-- [x] Checkpoint 1 (vitest, the confirmed live repro): a lane declaring
+- [ ] Checkpoint 1 (vitest, the confirmed live repro): a lane declaring
       `result_report` with a verified-complete, zero-failure vitest JSON
       report and a non-zero wrapped-process exit code is judged `PASS`;
       a truncated/malformed/absent report falls back to A-073 unchanged;
       a verified-complete report naming real failures is judged `FAIL`
       regardless of exit code; a lane not declaring `result_report` is
       byte-for-byte unaffected.
-      **Shipped 2026-09-08** — `src/assay/result_reports/`,
-      `[lanes.X.result_report]`, and the three-way branch in
-      `runner.execute_plan`. Evidence per item in
+      **Implemented, awaiting fix-verification.** Round 1 was ticked
+      prematurely and the review REJECTED it: the tiebreak was wired to the
+      R0-only path but not to `_run_prepared_lane`'s baseline unit, which is
+      the path every R1+ lane takes — including `ui_unit`, the confirmed live
+      repro, which declares `rigor = ["R0", "R1"]`. Both paths are wired in
+      the round-1 fix; the tick belongs to the fix-verification round, not to
+      the implementer. Evidence per item in
       `nyxloom-trove/reports/assay-WAVE-B078-REPORT.md`.
 - [ ] Checkpoint 2: `pytest-json-report` reader, same completeness
       contract.

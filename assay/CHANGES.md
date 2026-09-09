@@ -33,8 +33,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   The report is reserved and armed before the command runs, so a previous
   run's report can never be read as this run's evidence. A lane that declares
   nothing is byte-for-byte unaffected, structurally: the parameter defaults to
-  absent and only the lane's own R0 command passes it — mutation candidates
-  and R3's canary halves deliberately do not. `LANE_SCHEMA_VERSION` stays 2,
+  absent and only the lane's own R0 command passes it — on **every** lane
+  shape (an R0-only lane's direct run, and the baseline unit every lane
+  declaring R1, R2 or R3 runs inside its snapshot), and on nothing else.
+  Mutation candidates, R3's canary halves and the `environment_command` probe
+  all keep the old rule, and a sweep test pins that list so a future call site
+  cannot join it silently. `LANE_SCHEMA_VERSION` stays 2,
   the verdict schema is untouched, `Outcome`/`EXIT_CODES` is untouched
   (A-021), and there is no new `reason_code`: `COMMAND_FAILED` still means the
   same thing, it just fires at different times. `pytest-json-report` and

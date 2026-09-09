@@ -568,10 +568,26 @@ path.
 assay's own exit code for a report-verified-clean run is `PASS` (0) at the
 source, so every consumer's gate keeps trusting it exactly as it does today.
 No new `ReasonCode` — `COMMAND_FAILED` still means "the lane's wrapped
-command failed", and B078 changes only WHEN it fires. The tiebreak applies to
-the lane's own R0 command alone: a mutation candidate's whole signal is
-whether the suite fails, `jobs`-way concurrent against one path, and R3's
-canary halves have their own semantics — neither takes this input.
+command failed", and B078 changes only WHEN it fires. The exit code itself is
+not added to the verdict either (it never was a field there); what a
+report-driven `PASS` does carry is the command's output tails, which an
+ordinary green run omits — so a `PASS` bearing `result_stdout_tail` is itself
+the signature of an overridden exit code.
+
+**Which executions consult it, exhaustively.** The lane's own R0 command, and
+nothing else. That is three call sites, one per lane shape: `execute_command`
+(the R0 step and public API), `run_lane`'s direct branch (an R0-only lane),
+and `_run_prepared_lane`'s baseline unit (every lane declaring R1, R2 or R3 —
+its `CommandResult` is what `build_r0_claim` turns into the R0 claim). Every
+other execution of the lane's argv keeps `execute_plan`'s `result_report=None`
+default: a mutation candidate, whose whole signal is whether the suite fails
+`jobs`-way concurrently against one declared path; R3's canary halves, whose
+control/transform outcome answers "did injecting this defect change the
+judgement" rather than "did the wrapped suite pass"; and the
+`environment_command` probe, which is not the lane command at all.
+`tests/test_result_report_wiring_sweep.py` pins that list mechanically —
+every call site either passes the argument or carries a written reason for
+not doing so.
 
 **Residual risk, named rather than hidden.** A verified-complete report proves
 the reporter hook ran and wrote a coherent summary. It does not prove nothing

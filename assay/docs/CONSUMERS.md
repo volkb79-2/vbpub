@@ -274,13 +274,15 @@ Two things have to line up, and nothing else: your argv writes the report
 `--outputFile` itself resolves against. Git-ignore it: it is this run's own
 output, exactly like a coverage artifact.
 
-**Declare a path whose directory already exists.** Assay reserves the file
-before your command starts and does not create parent directories in your
-working tree (that capability is contractually reserved for assay's own
-ephemeral snapshots). A path at the project root, as above, always works; a
-path like `.assay/vitest-report.json` works only once something else has
-created `.assay/`, and until then the lane simply behaves as if it had no
-declaration at all. Assay also **removes any pre-existing file at that path**
+**On an R0-only lane, declare a path whose directory already exists.** Assay
+reserves the file before your command starts. Inside a snapshot — which every
+lane declaring R1, R2 or R3 runs in — assay owns the checkout and creates the
+report's parent directory for you, so any path works. On an **R0-only** lane
+the command runs in your own working tree, which assay will not create
+directories in, so a path like `.assay/vitest-report.json` works only once
+something else has created `.assay/`; until then the lane behaves exactly as
+if it had no declaration at all. A path at the project root, as above, always
+works on both. Assay also **removes any pre-existing file at that path**
 before the run — so name a file your test runner owns, never a source file.
 
 ### What assay does with it
@@ -305,11 +307,26 @@ segfault — so it can never be read as evidence *for* a pass. This can only
 ever cost you a pass you would otherwise have been given; it can never grant
 you one you had not earned.
 
-A `PASS` that overrode a non-zero exit still records the real `returncode` and
-keeps the command's output tails, so the disagreement stays visible on the
-verdict. The verdict schema does not change, `assay`'s own exit codes do not
-change, and no new `reason_code` exists — this changes *when*
-`COMMAND_FAILED` fires, never what it means.
+### How to tell, from a verdict, that a report overrode an exit code
+
+The verdict schema does not change, `assay`'s own exit codes do not change,
+and no new `reason_code` exists — this changes *when* `COMMAND_FAILED` fires,
+never what it means. **The wrapped process's exit code is not a verdict
+field** and never has been; it appears only in the progress stream's
+`command_finished` event, which exists when you pass `--progress`.
+
+What the verdict does carry is the command's **output tails**, and that is
+enough to detect the override:
+
+> **A `PASS` carrying `result_stdout_tail`/`result_stderr_tail` is a `PASS`
+> that overrode a non-zero exit code.** An ordinary green run omits both
+> fields entirely — a `PASS` has no failure output to keep — so their presence
+> on a `PASS` means the command exited non-zero and a verified-complete report
+> overruled it. The tails are the failing run's own output, which is what you
+> want to read when auditing one of these.
+
+If you want the exit code itself, run the lane with `--progress PATH` and read
+`command_finished`.
 
 **`format = "vitest-json"` is the only format today.** `pytest-json-report`
 and `go test -json` readers are planned as separate checkpoints; declaring
