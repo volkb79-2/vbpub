@@ -74,9 +74,28 @@ nothing.
 One consequence of the flat shape: the scope is now the *only* place below the
 tier where a per-server limit can live, and it is also where Docker puts the
 Panel's own memory limit. Two writers, one unit — the last one to set the
-property wins, and Wings applies its set just after the container starts. That
-is a change from the three-level shape, where a Wings value on the slice and a
-Docker value on the scope composed by this rule instead of overwriting.
+property wins. That is a change from the three-level shape, where a Wings value
+on the slice and a Docker value on the scope composed by this rule instead of
+overwriting.
+
+Wings makes sure it is the last writer at every point where Docker writes:
+just after `ContainerStart()`, when re-attaching to a container that outlived
+the Wings process, and at the end of `InSituUpdate` — the on-the-fly resource
+update a Panel-side settings save triggers, whose `ContainerUpdate` otherwise
+lands the Panel's `Memory`/`MemoryReservation`/`CpuShares`/`BlkioWeight` on the
+scope *after* Wings' own set. Until 2026-09-09 that last one was missing, so a
+routine settings save silently replaced `MemoryLow`, `MemoryMax`, `CPUWeight`
+and the BFQ weight with the Panel's values — and a Panel memory limit is
+usually *looser* than a deliberate `WINGS_CG_MEMORY_MAX`, so the ceiling did
+not just move, it disappeared. Measured, then fixed (adversarial review
+2026-09-09, F1).
+
+So the rule to hold on to is not "whoever writes last wins" in the abstract:
+**for the properties Wings manages, Wings' value is the one that persists,
+because it re-applies on every path where the other writer acts.** What that
+does *not* give you is composition — the two settings no longer stack, they
+replace, and the Panel's value for a Wings-managed property is simply
+overwritten a moment later.
 
 ## Rule 3 — a cgroup is never protected from itself
 
@@ -359,11 +378,24 @@ wings.slice                 IOWeight        share of the disk
 
 Before 2026-09-08 these were two levels apart and composed by Rule 6. They no
 longer do: both write `io.bfq.weight` on the same unit, by different routes, and
-the later write wins — and systemd re-derives that file from `IOWeight` whenever
-it re-applies the unit's IO settings, so the systemd-side value is the one that
-survives. **Use one or the other.** If you set `WINGS_CG_IO_WEIGHT`, leave the
-panel field at its default and read the result back off `io.bfq.weight` rather
-than trusting either number.
+the later write wins.
+
+Do **not** assume systemd re-derives the file on its own. This document
+previously claimed "systemd re-derives that file from `IOWeight` whenever it
+re-applies the unit's IO settings, so the systemd-side value is the one that
+survives". That was measured false (adversarial review 2026-09-09): after a
+`docker update --blkio-weight 700` on a scope where Wings had set
+`IOWeight=4950`, the kernel file held the panel's raw 700 while `systemctl show`
+still reported `IOWeight=4950`. The audit surface reported a number that was no
+longer real — the exact failure this redesign exists to remove.
+
+What actually keeps the systemd-side value in force is Wings re-applying it:
+since 2026-09-09 `InSituUpdate` re-asserts the scope properties after the
+Docker write, so the last write on that file is Wings' `IOWeight` again and
+`systemctl show` agrees with `io.bfq.weight` once more. That is a repair, not
+composition. **Use one or the other.** If you set `WINGS_CG_IO_WEIGHT`, leave
+the panel field at its default and read the result back off `io.bfq.weight`
+rather than trusting either number.
 
 The remaining trap is nomenclature: the panel's `io_weight` and this project's
 `defaults.io_weight` share a name while meaning different scales — 10..1000 raw
