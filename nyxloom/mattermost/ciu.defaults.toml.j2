@@ -190,10 +190,36 @@ name = "installs"
 display_name = "Host Installs"
 
 # ── Accounts ───────────────────────────────────────────────────────────────
-# `nyxloom-admin` (P106) is deliberately NOT listed: it is now understood as
-# the BOOTSTRAP/system account, not a daily-use one, and this hook never
-# touches an account it does not declare.
+# ORDER MATTERS on an EMPTY instance and nowhere else: Mattermost promotes the
+# FIRST-EVER account on a server with no users to `system_admin` (measured on
+# 11.10.1 — account #1 comes out `system_admin system_user`, account #2 plain
+# `system_user`). `nyxloom-admin` is listed first so that promotion lands on
+# the account that is *supposed* to be the bootstrap administrator. The hook
+# also strips the role from any account it creates that declares
+# `system_admin = false` and got promoted anyway, so this ordering is a
+# belt-and-braces preference, not the only guard — but relying on the strip
+# alone would mean deliberately mis-provisioning and then repairing.
 #
+# `nyxloom-admin` IS declared, reversing P107's decision to leave it out
+# (nyxloom-P110). Two measured reasons, not a change of taste:
+#   * The operator's requirement is "our 4 users are created on fresh stack
+#     create". Measured on a genuinely empty instance, P107's config produced
+#     THREE: nothing creates `nyxloom-admin`, so it existed only as an
+#     artefact of P106's manual bootstrap on the live server. On any rebuild —
+#     including a `ciu up --reset` — it would simply have been gone.
+#   * `mattermost_admin_password` is declared with `consumed_by = "hook"`,
+#     which is S4.20's marker for "deliberately consumed outside compose". No
+#     hook step consumed it. The marker was suppressing an accurate warning.
+# P107's actual concern is preserved intact: the hook still never TOUCHES an
+# account that already exists — no password is re-sent and no role revoked —
+# so on the live instance this entry reconciles to a no-op.
+[[mattermost.provision.accounts]]
+username = "nyxloom-admin"
+email = "admin@nyxloom.local"
+password_secret = "mattermost_admin_password"
+channels = ["alerts"]
+system_admin = true
+
 # nyxloom's own daemon posts as a REGULAR account with its own webhook,
 # replacing P106's `override_username` display trick — a real identity, a
 # credential of its own, and no system-admin rights on the thing that only

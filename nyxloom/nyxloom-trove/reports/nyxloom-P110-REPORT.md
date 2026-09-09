@@ -1,0 +1,563 @@
+# nyxloom-P110 — Mattermost hardening for public exposure, fresh-create re-verification, and the go-public recipe
+
+**Branch**: `nyxloom-P110` · **Worktree**: `/workspaces/vbpub/.worktrees/nyxloom-p110`
+**Date**: 2026-09-09 · **Image under test**: `mattermost/mattermost-team-edition:11.10.1`
+
+## Summary
+
+Three things were asked for and all three are done: a security audit for public
+exposure, an empirical re-verification of account provisioning **from a
+genuinely empty instance**, and a written (not executed) post-merge recipe.
+
+The audit found **seven** settings whose silent default was wrong for an
+internet-facing instance — including one that made this README's own
+"no self-signup — admin-created only" claim **false**: with
+`ENABLEOPENSERVER=false`, an anonymous request carrying a team's `invite_id`
+created a full account (HTTP **201**).
+
+The fresh-create verification found **three real defects**, none of which could
+ever have shown up on the live instance, because every previous run had P106's
+hand-made state already in place:
+
+1. **The provisioning hook could not provision an empty instance at all.**
+   `mmctl team search <missing>` exits **0**, so a returncode probe reported the
+   team as existing, `team create` was skipped, and the deploy aborted.
+2. **The first account created would silently have become a system admin.**
+   Mattermost promotes the first-ever account on an empty server; that would
+   have been `nyxloom-daemon`, which declares `system_admin = false` and whose
+   webhook credential is the one destined for third-party install hosts.
+3. **Only three of the four documented accounts were created.** Nothing ever
+   created `nyxloom-admin`; it existed purely as an artefact of P106's manual
+   bootstrap and would have vanished on any rebuild.
+
+All three are fixed and re-verified end to end against a genuinely empty
+instance, twice (create, then idempotent re-run).
+
+**No live stack was touched.** No `ciu up`, no `docker exec` mutation and no
+read of `nyxloom-prod-mattermost` was performed at any point; `expose_public`
+remains `false` in the committed config. Every measurement in this report comes
+from a throwaway instance in this package's own `ciu worktree`.
+
+## Isolation — the corrected approach, verified before trusting anything
+
+The previous attempt at this task caused a contained production incident: an
+`environment_tag` override in the **same stack directory** did not isolate
+`[<svc>.hostdir]` paths (they are stack-directory-relative), so a scratch stack
+bind-mounted live Postgres' data directory.
+
+This package used `ciu worktree create nyxloom-p110` — a genuinely separate
+physical directory — and **verified the isolation before running anything**:
+
+```
+/nyxloom-p110-mattermost    [.../.worktrees/nyxloom-p110/nyxloom/mattermost/vol-mattermost-config -> /mattermost/config]
+                            [.../.worktrees/nyxloom-p110/nyxloom/mattermost/vol-mattermost-logs   -> /mattermost/logs]
+/nyxloom-p110-mattermost-db [.../.worktrees/nyxloom-p110/nyxloom/.ciu/secrets/mattermost/postgres_password -> /run/secrets/...]
+                            [.../.worktrees/nyxloom-p110/nyxloom/mattermost/vol-postgres-data     -> /var/lib/postgresql/data]
+```
+
+Every bind resolves under the worktree. Named volumes, the compose project and
+the bridge network are all `nyxloom-p110-*`.
+
+A gitignored `ciu.global.instance.toml.j2` in the worktree set
+`deploy.environment_tag = "p110"`. That is **not** the isolation mechanism and
+the file says so — the worktree already isolated the paths; the tag only
+de-conflicts Docker's global *container-name* namespace on top of a directory
+separation that already held. Doing it the other way round is the incident.
+
+The belief that `standalone_root = true` blocks worktree-based `ciu up` is
+false, confirmed in passing: `ciu up --dir mattermost --define-root <worktree>/nyxloom`
+worked throughout.
+
+Teardown is recorded at the end of this report.
+
+---
+
+## Part 1 — Security hardening audit
+
+Everything below was **measured** against the throwaway. Nothing was taken from
+the Mattermost documentation or from a setting's name. That mattered: the two
+items most likely to have been waved through — "`ENABLEOPENSERVER=false`
+obviously closes signup" and "OAuth surely defaults off" — were both wrong.
+
+### Item 1 — the self-signup gap → **REAL GAP, FIXED**
+
+| Probe (anonymous, no token) | Result |
+|---|---|
+| `POST /api/v4/users` | **403** `api.user.create_user.no_open_server` |
+| `POST /api/v4/users?iid=<team invite_id>` | **201 CREATED** — a real `system_user` account |
+| `GET /signup_email` | 200, but that is the SPA shell; every route returns 200 |
+
+`ENABLEOPENSERVER=false` closes the bare signup route and **nothing else**.
+Anyone holding a team `invite_id` creates an account anonymously.
+
+The id is not meaningfully secret: the team this stack's own hook creates comes
+out `type: "O"` with `allow_open_invite: true` and a stable `invite_id`, which
+is in the invite link every team member can copy — including
+`nyxloom-installer`, whose credential is meant to live on third-party install
+hosts. Behind `expose_public = true` that is an unauthenticated
+account-creation endpoint on the public internet.
+
+**Fix**: `MM_TEAMSETTINGS_ENABLEUSERCREATION: "false"` (was `"true"`).
+
+**Verified after the change, on the same instance:**
+
+| Probe | Before | After |
+|---|---|---|
+| `POST /api/v4/users?iid=<invite_id>` | 201 | **501** `api.user.create_user.signup_email_disabled` |
+| `POST /api/v4/users` | 403 | **501** |
+| account count | — | unchanged (4) |
+| `POST /api/v4/users/login` as `nyxloom-operator` | — | **200** (human login unaffected) |
+| `POST /api/v4/users/login` as `nyxloom-admin` | — | **200** |
+| `mmctl --local user create` (the hook's own path) | — | **works** — all four accounts created on a fresh instance with this set |
+
+The flag gates account *creation over the API*, not authentication, and not the
+local admin socket. "Admin-created only" is now literally true instead of
+aspirational; the README line that claimed it has been corrected to say what is
+actually enforced.
+
+### Item 2 — OAuth → **REAL GAP, FIXED**
+
+`ServiceSettings.EnableOAuthServiceProvider` **defaults to `true`** (measured —
+this was the guess most likely to have gone the other way). Team Edition ships
+an OAuth2 authorization server switched on: a system admin can register
+third-party OAuth apps that mint bearer credentials for this server. Nothing in
+nyxloom uses it.
+
+**Fix**: `MM_SERVICESETTINGS_ENABLEOAUTHSERVICEPROVIDER: "false"`, set
+explicitly rather than left to an unstated default — the same rule this stack
+already applies to `cgroup_parent` and `device`.
+
+### Item 3 — non-admin webhook creation → **VERIFIED SAFE, no change**
+
+The setting the brief named does not exist any more:
+
+```
+$ mmctl --local config get ServiceSettings.EnableOnlyAdminIntegrations
+Error: invalid key
+```
+
+It was replaced by the permissions scheme, and the scheme is already correct:
+
+- `system_user`, `team_user`, `channel_user` hold **no** `*webhook*` permission.
+- A logged-in non-admin `POST /api/v4/hooks/incoming` → **403**
+  `api.context.permissions.app_error`.
+- The identical call as a system admin → **201**, which is the control proving
+  the 403 was a permission refusal and not a malformed request.
+
+Nothing to set. The `nyxloom-installer` / `nyxloom-daemon` pattern cannot
+self-mint webhooks.
+
+### Item 4 — rate limiting → **REAL GAP, FIXED (and the "is the edge already doing it" question answered)**
+
+- `RateLimitSettings.Enable` **defaults `false`**.
+- **tls-edge does not compensate.** Its only entrypoint-level middleware is
+  `secure-headers` (`edge-proxy/conf.d/middlewares.yml`: HSTS, nosniff,
+  referrer-policy — `frameDeny` deliberately unset). `rateLimit` appears only
+  under `ARCHITECTURE.md` **F5 "Traefik middleware additions — Partially
+  implemented"** as a *future* item, and in `KNOWN_ISSUES.md` as an unbuilt
+  "middleware template library". No definition ships.
+
+So app-level limiting is **not** redundant — it is the only limiter in the path.
+
+The estate already has a pattern for this and it is app-level, so it was
+mirrored rather than reinvented: `../ntfy/server.yml` carries
+`visitor-request-limit-burst` / `-replenish` / `-subscription-limit` /
+`-message-daily-limit` ("defense in depth; all real use is authenticated") plus
+`behind-proxy: true` so the limiter keys on the forwarded address.
+
+**Fix**: `MM_RATELIMITSETTINGS_ENABLE: "true"` with `PERSEC`/`MAXBURST`/
+`MEMORYSTORESIZE` restated at their measured defaults (10/100/10000) — the
+values were fine, `Enable: false` was not.
+
+**Keying is the one genuinely topology-dependent piece**, and it sits inside
+the template's existing `expose_public` conditional:
+
+- exposed → `VARYBYREMOTEADDR: "false"` + `VARYBYHEADER: "X-Forwarded-For"`.
+  Behind tls-edge every request arrives from the Traefik container's address,
+  so the default would put the **entire internet in one bucket** — a single
+  client could exhaust the budget for the operator, the daemon and every
+  install host at once. That inverts the control rather than weakening it.
+- not exposed → `VARYBYREMOTEADDR: "true"`. There is no proxy and no
+  `X-Forwarded-For`; keying on an absent header has the mirror-image failure.
+
+Verified live on the throwaway (`expose_public = false`): `RateLimitSettings.Enable`
+reads `true`, `VaryByRemoteAddr` reads `true`, `VARYBYHEADER` is correctly
+absent from the container env, and a real incoming-webhook POST still delivered
+(**HTTP 200**, post visible in `alerts` as `nyxloom-daemon`).
+
+> Wire fact worth recording: `mmctl --local config get RateLimitSettings.VaryByHeader`
+> **panics** on 11.10.1 (`reflect: call of reflect.Value.IsNil on string Value`).
+> That is an mmctl bug, not a misconfiguration — read that key from
+> `docker inspect` instead. The recipe says so.
+
+### Item 5 — brute force / lockout / MFA → **PARTLY VERIFIED-TRUE, one real gap fixed**
+
+| Measured | Verdict |
+|---|---|
+| `MaximumLoginAttempts` = **10** | The public login form is **not** the zero-lockout surface it was suspected to be. Restated at 10 rather than tightened: two human logins with `GEN_LOCAL` passwords do not need a 3-strike lockout, and a tight threshold is its own denial of service on the operator. A wrong password returns 401 as expected. |
+| `SessionLengthWebInHours` = **4320** (180 days) | **Real gap.** A browser session stolen once stayed valid for half a year. Set to `168` (7 days) with `ExtendSessionLengthWithActivity` restated `true`, so the operator's own session is refreshed by use rather than expiring mid-week. |
+| `EnableMultifactorAuthentication` = false, and **available in Team Edition** | Turned **on**, deliberately **not** enforced: enabling exposes the per-account opt-in for the human login; `ENFORCE` is server-wide and would apply to accounts that authenticate with a password and cannot hold a TOTP secret. |
+
+This is the item where over-engineering was the risk, and the audit
+deliberately declined to: no password-complexity policy was added (the four
+account passwords are `GEN_LOCAL`, and a symbol requirement is a way to break
+`mmctl user create` for no gain), and the lockout threshold was left alone.
+
+### Item 6 — everything else → **two more real gaps fixed, one non-issue closed out**
+
+| Finding | Measured | Action |
+|---|---|---|
+| `PrivacySettings.ShowEmailAddress` / `ShowFullName` | both **true**. Any authenticated account — `nyxloom-installer` included — read every other account's email from `GET /api/v4/users/username/<name>`. | Both `false`. Verified after: the same call returns `email: ""`. **Partial and stated as such:** `roles` is not covered by `PrivacySettings` and still comes back, so a caller can still tell which account is the system admin. Closing that needs a permissions-scheme change, not a flag. |
+| `ServiceSettings.EnableEmailInvitations` | **true** | `false`. Inert without SMTP, but it is the other invite surface and only the absence of SMTP was stopping it. |
+| `ServiceSettings.EnableSecurityFixAlert` | **true** — a telemetry channel | `false`. The README already claimed "no telemetry" and `ENABLEDIAGNOSTICS` was already false; leaving this on made the claim untrue. Cost stated rather than hidden: the pinned image tag becomes the operator's only CVE notification channel. |
+| `EnableAPITeamDeletion` / `EnableAPIUserDeletion` / `EnableAPIChannelDeletion` | all **false** | Restated explicitly. These are the ones that turn a stolen admin session into data loss rather than a leak; a measured default is a fact about today's image, not a contract across the next bump. |
+| **Clickjacking / response headers** | Mattermost already sends `Content-Security-Policy: frame-ancestors 'self'`, `X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`; tls-edge adds HSTS at the entrypoint | **Nothing to do.** No per-router Traefik `headers` middleware is warranted — this is precisely the case tls-edge's `secure-headers` leaves `frameDeny` unset for. |
+
+### A residual that is NOT fixed — recorded so it cannot be mistaken for covered
+
+`ciu.defaults.toml.j2` claims `nyxloom-installer`'s exclusion from `alerts`
+means "a compromised install host cannot read nyxloom's own operator traffic".
+Measured, logged in as `nyxloom-installer`:
+
+- `GET /api/v4/channels/<alerts>/posts` → **200** (reads it without membership)
+- `POST /api/v4/channels/<alerts>/members` → **201** (joins it)
+
+`alerts` is a **public** channel in an open team, so any team member can read
+and join it. The claim is weaker than it reads.
+
+This was **not** silently half-fixed, because it cannot be fixed from a
+package: the hook only ever *creates* channels, so setting `private = true` in
+`[[mattermost.provision.channels]]` would do nothing to the existing live
+channel and would produce a config that lies about the running state. It is an
+**operator action on the live instance** (convert `alerts` to private, then set
+the flag so a future fresh create matches), and it is written up as such in the
+README. The blast radius that actually matters — the installer's webhook URL —
+is post-only and targets `installs` alone, unchanged.
+
+### An incidental finding: the README's documented wipe path does not work
+
+Trying to reset the throwaway the way `mattermost/README.md` says to:
+
+```
+$ ciu up --dir mattermost --reset -y
+[ERROR] deploy.labels.prefix is required for reset
+```
+
+`engine.py` requires `deploy.labels.prefix` for the reset path and
+`nyxloom/ciu.global.defaults.toml.j2` does not set it, so the README's claim
+that "`ciu up --reset` and `ciu clean` delete them" was **false for
+`--reset`** on this root. (v8 drops `labels.prefix` entirely in favour of
+fixed `ciu.*` ownership labels — CIU-V8 R-15 — so it is a v7-only wart.)
+
+The README now says what actually works and shows the root-helper removal the
+throwaway teardown used. **No ciu backlog entry was filed**: nothing in ciu
+misbehaved, nyxloom's root simply does not set a key ciu requires, and the key
+is already scheduled for removal upstream. Flagged for the controller in case
+adding `deploy.labels.prefix` to the nyxloom root is preferred over the
+documentation fix.
+
+### One operational consequence, measured and documented
+
+An `MM_*` setting **cannot be changed at runtime**:
+
+```
+$ mmctl --local config set TeamSettings.EnableUserCreation false
+Value changed successfully
+$ mmctl --local config get TeamSettings.EnableUserCreation
+true
+```
+
+The write lands in `config.json` and the environment overlay wins. So the
+System Console shows these greyed out, and *verifying* hardening means reading
+the running config or `docker inspect` — never a successful `config set`. The
+recipe's verification step is built on that.
+
+---
+
+## Part 2 — Fresh-instance provisioning re-verification
+
+Method: bring the stack up from **nothing** in the worktree — no containers, no
+named volumes, no `vol-*` hostdirs, and both secret stores (project *and*
+stack) deleted — then run the hook, inspect the result, run it again.
+
+### What the first attempt found
+
+The very first `ciu up` against an empty instance **failed the deploy**:
+
+```
+[ERROR] [hook] .../post_compose_provision.py: cannot list channels of team 'nyxloom'
+        (rc=1): unable to find team "nyxloom"
+```
+
+Root cause, measured:
+
+```
+$ mmctl --local team search nyxloom          # empty instance
+Unable to find team 'nyxloom'
+$ echo $?
+0
+```
+
+`_team_exists` was `return rc == 0`. Exit 0 for "not found" → the hook believed
+the team existed → `team create` skipped → the next step aborted. Invisible for
+as long as it was, because every previous run had P106's team already there.
+
+`mmctl user search <missing>` exits **1**, so `_user_exists` is *not* affected —
+confirmed in the same session, which is why only the one probe was changed.
+
+**Fix**: `_team_exists` parses the output, matches the team name **exactly**
+(mmctl matches on a prefix: `team search probe` prints `probe-team: ...`, so
+"a row came back" is not "the team exists"), raises when the probe itself
+fails, and refuses on an unrecognised row rather than reporting "absent" —
+the same drift discipline the other list parsers in the file already use.
+
+### Second defect — Mattermost's first-account auto-promotion
+
+Measured on an empty server:
+
+```
+create probe-first   -> roles: "system_admin system_user"
+create probe-second  -> roles: "system_user"
+```
+
+On a fresh `ciu up`, account #1 was whichever entry headed
+`[[mattermost.provision.accounts]]` — `nyxloom-daemon`, which declares
+`system_admin = false` precisely so the thing that only ever POSTs has no
+administrative rights. A fresh create would have handed server administration
+to the account whose webhook credential ships to install hosts. Confirmed live:
+the first corrected run reported `admin_role_stripped=['nyxloom-daemon']`.
+
+Ordering turned out to be load-bearing, and it too was measured rather than
+assumed:
+
+```
+$ mmctl --local roles member probe-first
+can't update roles for user "probe-first": Cannot demote last System Admin.   (rc=1)
+```
+
+So the new `_demote_unintended_admins` step runs **after** the whole
+create-and-promote pass, once `nyxloom-operator` exists to be the other admin.
+Its scope is deliberately narrow — only accounts **this run created**, and only
+where the spec says `system_admin` is not wanted. P107's rule that the hook
+never touches a pre-existing account (so an operator's manual promotion
+survives) is unchanged, and is exactly why this cannot be a blanket
+"reconcile roles downward" pass.
+
+### Third defect — only three of the four documented accounts existed
+
+A genuinely empty instance produced **three** accounts, not four. Nothing
+creates `nyxloom-admin`: P107 deliberately left it undeclared, so it existed
+only as an artefact of P106's manual bootstrap on the live server and would
+have disappeared on any rebuild — including a `ciu up --reset`.
+
+The operator's requirement is "our 4 users are created **on fresh stack
+create**", so `nyxloom-admin` is now declared, **first** in the list, so that
+Mattermost's first-account promotion lands on the account that is supposed to
+have it. A second, independent reason: `mattermost_admin_password` was declared
+`consumed_by = "hook"` — S4.20's marker for "deliberately consumed outside
+compose" — and no hook step consumed it, so the marker was suppressing an
+accurate warning.
+
+**This reverses a P107 decision and is flagged for the reviewer as the one
+judgment call in the package.** Live-safety analysis: on the live instance the
+account already exists, so `_ensure_account` creates nothing, sends no password
+and revokes no role; `team users add` is a server-side no-op; the declared
+`system_admin` is already held; and `alerts` membership already exists. The
+entry reconciles to a **no-op**. The demotion step is kept anyway rather than
+being made redundant by the ordering — relying on ordering alone would mean
+deliberately mis-provisioning and then repairing.
+
+### Verified end state — fresh create, then idempotent re-run
+
+Run 1, against nothing:
+
+```
+[PROVISION] team_created=True channels_created=['alerts', 'installs']
+            accounts_created=['nyxloom-admin', 'nyxloom-daemon', 'nyxloom-operator', 'nyxloom-installer']
+            admin_role_stripped=[] memberships_added=5
+            webhooks=['daemon_webhook_url', 'installer_webhook_url']
+```
+
+Run 2, immediately after, unchanged instance:
+
+```
+[PROVISION] team_created=False channels_created=[] accounts_created=[]
+            admin_role_stripped=[] memberships_added=0
+            webhooks=['daemon_webhook_url', 'installer_webhook_url']
+```
+
+State inspected directly:
+
+| Check | Result |
+|---|---|
+| accounts | exactly 4: `nyxloom-admin` (`system_admin system_user`), `nyxloom-operator` (`system_admin system_user`), `nyxloom-daemon` (`system_user`), `nyxloom-installer` (`system_user`) |
+| channel membership | `alerts` = admin + daemon + operator; `installs` = installer + operator — matches the declarations exactly |
+| declared channels | `alerts`, `installs` both created |
+| incoming webhooks | exactly **2**, `nyxloom-daemon` → `alerts`, `host-installer` → `installs`; still 2 after the second run |
+| webhook delivery | a real POST to the persisted `daemon_webhook_url` → **200**, post appears in `alerts` authored by `nyxloom-daemon` |
+| `admin_role_stripped` | `[]` in the shipped ordering; was `['nyxloom-daemon']` in the ordering that exposed the bug |
+
+`admin_role_stripped=[]` is also the expected value on the **live** instance,
+where nothing the hook creates is ever account #1.
+
+One Mattermost behaviour worth recording rather than treating as drift: a fresh
+team comes up with **four** channels, not two — `mmctl team create` also creates
+`town-square` and `off-topic` and auto-joins every team member. `all_channels = true`
+resolves against all four. Documented in the README.
+
+Also confirmed while checking the privacy change did not break the hook:
+`mmctl --local channel users list` still prints the `(<email>)` field with
+`ShowEmailAddress=false`, so `_channel_members`' parse is unaffected — the
+local admin socket is not subject to `PrivacySettings`. That was a real risk:
+had the field been omitted, the membership dedup would have silently broken and
+re-added every member on every run.
+
+---
+
+## Part 3 — The post-merge recipe
+
+Written, **not executed**. It lives inline in `mattermost/README.md` under
+**"Going public — the post-merge recipe"** and covers, in order:
+
+1. **Apply the hardening alone** (`--dry-run` first, then real `ciu up`), with
+   the explicit note that the env change **recreates** the app container and
+   that governance must therefore be re-verified against the new container —
+   P106's lesson, with the exact `docker inspect` / `cgroup` commands and the
+   expected values. Postgres is not recreated (its env is untouched). The
+   expected hook output for a live no-op is spelled out, including why
+   `admin_role_stripped=[]` is correct there.
+2. **Verify the hardening took effect before exposing anything** — reading the
+   *running* config (with the reason a `config set` cannot be used as
+   evidence), plus the invite-id probe with its measured before/after codes
+   (201 → 501 `signup_email_disabled`) and an explicit **stop** if it still
+   returns 201, plus a login check proving the human logins survive.
+3. **Flip `expose_public`**, with a render-inspection step before the real
+   `ciu up` — grepping the rendered compose for the Traefik labels, the
+   `ingress` network, the `https://` `SITEURL` and `VARYBYHEADER`, because a
+   silent no-op there is the failure mode that wastes the most time. Container
+   recreates again → governance re-check again.
+4. **Verify from outside**: DNS, TLS certificate dates/subject, site load, and
+   the invite-id probe **against the public URL** (internally-true is not
+   externally-true). Then the thing the flip actually buys — an end-to-end POST
+   to `installer_webhook_url`, which is built on `siteurl` and was therefore
+   unreachable from an install host until this moment — read back with
+   `mmctl post list`. Plus a check that the rate limiter is keyed on the real
+   client rather than on Traefik.
+5. **Rollback**: `expose_public = false` + `ciu up` is the reversal, and it
+   states explicitly that **the hardening needs no separate revert and should
+   not get one** — none of it is conditional on being public; it closes an
+   anonymous account-creation route, an OAuth authorization server, a 180-day
+   session and a directory disclosure that were all equally live while the
+   stack was internal-only. The single topology-dependent value
+   (`VARYBYHEADER`) is emitted by the template's own `expose_public` branch and
+   reverts itself.
+
+`expose_public` stays **`false`** in the committed `ciu.defaults.toml.j2` — a
+test asserts it, anchored to the start of a line (a substring check passed with
+the real assignment flipped; caught by deliberate mutation).
+
+---
+
+## Tests
+
+`tests/test_mattermost_provision_hook.py`: **35 → 62**, all passing. The 27 new
+tests cover `_team_exists` (including the rc=0 sentinel, exact-vs-prefix
+matching, probe failure and row drift), `_demote_unintended_admins` (including
+its short-circuit and its refusal to touch a pre-existing account), and the
+**actually-shipped files** — the hardening keys in the ciu template, the same
+keys hand-synced into the pre-rendered `docker-compose.yml` fallback, the
+rate-limit keying living inside the `expose_public` branch, `expose_public`
+still false, and all four accounts declared with `nyxloom-admin` first.
+
+The last of those is a whole-block **drift check** rather than a handful of
+picked keys: every literal `MM_*` setting must match between
+`ciu.compose.yml.j2` and `docker-compose.yml`, skipping the ones whose template
+value is a Jinja expression (SITEURL, the DSN, LISTENADDRESS — the same setting
+rendered, not a disagreement) and the one that legitimately exists only in the
+`expose_public` branch. The fallback receives no ciu overlay and carries the
+whole env block by hand; two hand-edited files drift, and NL-6 is what that
+costs.
+
+Testing the shipped files rather than a synthetic dict is P109's precedent and
+it earned its place here: a hand-built fixture would have passed while the file
+that actually deploys regressed.
+
+### Deliberate mutations — 10 introduced, 10 caught (2 only after fixing the tests)
+
+| # | Mutation | Failures |
+|---|---|---|
+| M1 | `_team_exists` back to a bare returncode read | 5 |
+| M2 | exact name match weakened to substring | 1 |
+| M3 | demotion iterates every declared account, not just created ones | 1 |
+| M3b | M3 plus the `if not created` short-circuit removed | 2 |
+| M4 | OAuth hardening reverted in the template | 1 |
+| M5 | `nyxloom-admin` removed from the accounts list | 1 |
+| M6 | `VARYBYHEADER` emitted unconditionally | 1 |
+| M7 | pre-rendered fallback left un-synced | 1 |
+| M8 | `expose_public` flipped in the committed defaults | 1 |
+| M9 | a template setting silently deleted from the fallback | 1 |
+| M10 | one value drifting between the two compose files | 1 |
+
+**M3 and M8 initially survived**, and both were genuine test defects rather
+than noise:
+
+- M3 survived because the test passed `created=[]`, which the function
+  short-circuits on — so a version ignoring `created` entirely still passed.
+  Fixed by using a non-empty `created` that simply excludes the promoted
+  account, and by adding a separate test for the short-circuit itself.
+- M8 survived because `expose_public = false` also appears inside a **comment**
+  about the installer webhook's URL base, so a substring check matched with the
+  real assignment set to `true`. Fixed by anchoring to the start of a line.
+
+Both are reported rather than quietly repaired, because "the mutation was
+caught" was false for them until the tests were changed.
+
+## Gate
+
+`run-gate tester-unified`, verdict read from `.assay/verdict-tester-unified.json`
+in a separate step:
+
+> **(filled in below — see "Gate verdict")**
+
+## Files changed
+
+| File | What |
+|---|---|
+| `mattermost/ciu.compose.yml.j2` | the hardening env block; rate-limit keying inside the `expose_public` branch |
+| `mattermost/docker-compose.yml` | the same values hand-synced into the pre-rendered fallback (it receives no ciu overlay — NL-6's trap) |
+| `mattermost/ciu.defaults.toml.j2` | `nyxloom-admin` declared, first, with the ordering rationale. `expose_public` untouched |
+| `mattermost/hooks/post_compose_provision.py` | `_team_exists` rewritten; `_demote_unintended_admins` added and wired after the create/promote pass; `admin_role_stripped` in the summary line and in the S9.4a state result |
+| `mattermost/README.md` | the audit, the corrected "no self-signup" claim, the fresh-create facts, the residual, and the go-public recipe |
+| `tests/test_mattermost_provision_hook.py` | +26 tests |
+
+## Scope kept
+
+- **No live stack contact of any kind** — not even a read.
+- `expose_public` not flipped anywhere, including in the committed default.
+- **P109's territory untouched**: no PAT enablement, no `intake` account,
+  channel or `[[mattermost.provision.tokens]]` table. This package's edits to
+  `[mattermost]` and to the compose env sit adjacent to P109's; nothing
+  unrelated was reformatted or reordered, so the two diffs should be
+  mechanically mergeable.
+- No dstdns / installer-side integration.
+
+## Throwaway teardown
+
+Destroyed after the last measurement, and the absence verified rather than
+assumed:
+
+| Resource | After teardown |
+|---|---|
+| containers matching `nyxloom-p110` | **0** |
+| volumes matching `nyxloom-p110` | **0** |
+| networks matching `nyxloom-p110` | **0** |
+| `vol-*` hostdirs under the worktree stack dir | **0** (removed through a root helper — uid 70 / uid 2000 subtrees) |
+| worktree secret stores (project + stack) | **0** |
+| `nyxloom-prod-mattermost` / `-db` | **Up 7 hours (healthy)** — never restarted, never contacted |
+
+The devcontainer was also disconnected from the throwaway's bridge network.
+
+The worktree itself (`/workspaces/vbpub/.worktrees/nyxloom-p110`) is left in
+place for review, holding only the branch and a gitignored
+`ciu.global.instance.toml.j2`. It is `ciu worktree rm nyxloom-p110` when the
+package lands.

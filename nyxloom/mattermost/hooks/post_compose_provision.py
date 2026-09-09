@@ -138,9 +138,66 @@ def _user_roles(container: str, username: str) -> set[str]:
     return set(str(parsed.get("roles", "")).split())
 
 
+_TEAM_MISSING_RE = re.compile(r"^unable to find team\b", re.IGNORECASE)
+
+
 def _team_exists(container: str, team: str) -> bool:
-    rc, _out, _err = _mmctl(container, "team", "search", team)
-    return rc == 0
+    """True when a team named EXACTLY *team* exists.
+
+    This must not be `rc == 0`, which is what it was until nyxloom-P110 and
+    what made the hook unable to provision a genuinely empty instance at all.
+    Measured on 11.10.1, against a Mattermost with no teams:
+
+        $ mmctl --local team search nyxloom
+        Unable to find team 'nyxloom'
+        $ echo $?
+        0
+
+    Exit 0 for "not found". So `_ensure_team` concluded the team already
+    existed, skipped `team create`, and the very next step —
+    `_ensure_channels` -> `_channel_names` — aborted the whole deploy with
+    `unable to find team "nyxloom"` (rc=1 there, because `channel list` does
+    signal missing teams through its exit code). The bug was invisible for as
+    long as it was, only because every run so far had P106's team already in
+    place; "fresh stack create" is the exact case it breaks.
+
+    `mmctl user search` is NOT affected — it exits 1 on a missing user
+    (measured in the same session), which is why `_user_exists` is left as a
+    returncode read.
+
+    Matching is EXACT, not "the search returned a row": `team search probe`
+    prints `probe-team: Probe (<id>)`, i.e. mmctl matches on a prefix. A
+    substring hit would let `_ensure_team` skip creating `nyxloom` because
+    some unrelated `nyxloom-archive` exists.
+    """
+    rc, out, err = _mmctl(container, "team", "search", team)
+    if rc != 0:
+        raise ProvisionError(
+            f"cannot search for team {team!r} (rc={rc}): "
+            f"{(err or out).strip()[:400]}"
+        )
+    found = False
+    unrecognised = 0
+    for raw in out.splitlines():
+        line = raw.strip()
+        if not line or _is_noise(line) or _TEAM_MISSING_RE.match(line):
+            continue
+        # `<name>: <display name> (<id>)`
+        name, sep, rest = line.partition(": ")
+        if not sep or not rest.endswith(")"):
+            unrecognised += 1
+            continue
+        if name.strip() == team:
+            found = True
+    _refuse_unrecognised(
+        unrecognised,
+        what=f"the team search for {team!r}",
+        fix="Compare `mmctl --local team search <team>` against "
+        "_team_exists() — treating an unparseable row as 'no such team' "
+        "would make this hook try to re-create a team that exists, and "
+        "`team create` failing aborts every later deploy.",
+    )
+    return found
 
 
 _COUNT_RE = re.compile(r"^there are (\d+) \w+ on local instance", re.IGNORECASE)
@@ -533,6 +590,81 @@ def _ensure_account(container: str, ctx, prov: dict, spec: dict) -> bool:
     return created
 
 
+def _demote_unintended_admins(container: str, prov: dict, created: list[str]) -> list[str]:
+    """Strip `system_admin` from accounts THIS RUN created that never asked for it.
+
+    Mattermost auto-promotes the FIRST-EVER account on an empty server to
+    system_admin. Measured on 11.10.1 against a genuinely empty instance:
+
+        create probe-first  -> roles: "system_admin system_user"
+        create probe-second -> roles: "system_user"
+
+    On a `ciu up` over a fresh stack that first account is whichever entry
+    heads `[[mattermost.provision.accounts]]`. When this was written that was
+    `nyxloom-daemon`, which declares `system_admin = false` and exists
+    precisely so that the thing that only ever POSTs has no administrative
+    rights — and a fresh create was measured handing it the role
+    (`admin_role_stripped=['nyxloom-daemon']` on the run that found this).
+    The account whose webhook credential is destined for third-party install
+    hosts would have been a server administrator.
+
+    The shipped config now heads that list with `nyxloom-admin`
+    (`system_admin = true`), so in the normal case the promotion lands where
+    it belongs and this step reports nothing. That ordering is a PREFERENCE,
+    not the guard: it is one line away from being reordered, and an account
+    list with no declared admin at the head would silently re-open the same
+    hole. Both are kept on purpose.
+
+    On the live instance nothing this hook creates is ever account #1 —
+    `nyxloom-admin` predates it — so this step is a no-op there.
+
+    Scope is deliberately narrow — ONLY accounts created in THIS run, and only
+    where the spec says `system_admin` is not wanted. An account that already
+    existed is still never touched: `_ensure_account`'s rule that this hook
+    must not silently undo an operator's manual promotion is unchanged, and it
+    is exactly why this cannot be a blanket "reconcile roles downward" pass.
+
+    ORDERING is load-bearing, not incidental. Mattermost refuses to remove the
+    role from the only remaining administrator — measured:
+
+        $ mmctl --local roles member probe-first
+        can't update roles for user "probe-first": Cannot demote last System
+        Admin.                                                        (rc=1)
+
+    So this runs AFTER the whole create-and-promote pass, once
+    `nyxloom-operator` (`system_admin = true`) exists to be the other one. A
+    config declaring no system admin at all would fail here with that message,
+    which is the correct outcome: it says "you asked for a server with no
+    administrator", not "the demotion is broken".
+    """
+    if not created:
+        return []
+    wanted_admin = {
+        spec["username"]
+        for spec in prov.get("accounts", [])
+        if isinstance(spec, dict) and spec.get("system_admin")
+    }
+    demoted: list[str] = []
+    for username in created:
+        if username in wanted_admin:
+            continue
+        if "system_admin" not in _user_roles(container, username):
+            continue
+        _must(
+            container,
+            "roles",
+            "member",
+            username,
+            what=(
+                f"strip the auto-granted system_admin role from {username!r} "
+                "(Mattermost promotes the first account on an empty server; "
+                "this account declares system_admin = false)"
+            ),
+        )
+        demoted.append(username)
+    return demoted
+
+
 def _ensure_memberships(container: str, prov: dict) -> int:
     """Join every account to the channels its spec asks for.
 
@@ -768,6 +900,9 @@ def run(config: dict, ctx) -> dict:
         for spec in prov.get("accounts", [])
         if _ensure_account(container, ctx, prov, spec)
     ]
+    # After the whole create+promote pass, never inside it — Mattermost
+    # refuses to demote the last remaining System Admin.
+    demoted = _demote_unintended_admins(container, prov, accounts_created)
     memberships_added = _ensure_memberships(container, prov)
     webhook_urls = _ensure_webhooks(container, config, prov)
 
@@ -775,6 +910,7 @@ def run(config: dict, ctx) -> dict:
         f"[PROVISION] team_created={team_created} "
         f"channels_created={channels_created} "
         f"accounts_created={accounts_created} "
+        f"admin_role_stripped={demoted} "
         f"memberships_added={memberships_added} "
         f"webhooks={sorted(webhook_urls)}",
         flush=True,
@@ -793,6 +929,13 @@ def run(config: dict, ctx) -> dict:
     }
     result["provision.memberships_added"] = {
         "value": memberships_added,
+        "persist": "state",
+    }
+    # Deliberately recorded even though it is normally 0: a non-zero value is
+    # the only durable trace that Mattermost's first-account auto-promotion
+    # fired on this stack and was reversed.
+    result["provision.admin_role_stripped"] = {
+        "value": len(demoted),
         "persist": "state",
     }
     return result
