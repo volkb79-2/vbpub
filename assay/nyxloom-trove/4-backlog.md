@@ -7727,6 +7727,11 @@ catch real declaration errors and are not what this entry asks to relax.
 
 ### Acceptance
 
+**Shipped 2026-09-09** (Shape 1, `judge.allow_test_path_targets`), later
+EXTENDED to also reach R2's own declared-target gate
+(`_mutation_targets_whole`) on a controller ruling — see the entry's own
+extension note below the original acceptance list.
+
 - A `whole_target` lane naming `tests/<...>/lib.py` with the opt-out set is
   JUDGED, reaching a real `PASS`/`FAIL` on its coverage floor rather than
   `BAD_LANE_CONFIG`.
@@ -7742,6 +7747,23 @@ catch real declaration errors and are not what this entry asks to relax.
   deliberately rather than falling out by accident.
 - The flag appears in the verdict's resolved judgment, so a reviewer can see
   that a graded target was one assay would otherwise have refused.
+
+### Extension beyond the original ask: R2 also reached (controller ruling, 2026-09-09)
+
+The round-1 reviewer surfaced a THIRD declared-target test-path gate the
+original filing never mentioned: `_mutation_targets_whole` (R2), which
+resolves the same `judge.targets` list one tier down from R1's
+`_resolve_whole_target`. Ruled: extend the flag there too, not just
+clarify its refusal message — this entry's own central argument (an
+explicit declaration is a reviewed assertion, not a swept path) applies
+identically, and leaving R2 out would leave this entry's own motivating
+consumer (dstdns's real deployed harness code) coverage-graded but never
+mutation-graded. `_mutation_targets_whole` now IMPORTS
+`evaluate._is_test_filename` rather than re-deriving the split, so R1 and
+R2 structurally cannot drift apart. A THIRD, independent declared-target
+veto was found and deliberately left untouched — `judge.canary.target`
+(R3) — filed separately as [B085](#b085), genuinely different semantics
+(a canary deliberately breaks the file), not this entry's scope.
 ---
 
 ## B075 — `verify.py`'s `verify_text` is the THIRD instance of the uncaught-`RecursionError` gap, and it is on `assay verify`'s own untrusted-input path
@@ -8062,14 +8084,16 @@ mirroring the diagnostic-message discipline `_linked_worktree_gap()`
 
 ### Acceptance
 
-- [ ] a `--state-dir`/`--progress` destination reached through a symlink
+**Shipped 2026-09-09.**
+
+- [x] a `--state-dir`/`--progress` destination reached through a symlink
       whose target is INSIDE the judged tree (and correctly gitignored)
       refuses with a message naming the symlink and the traversal, not a
       raw `fatal: pathspec ... is beyond a symbolic link` passthrough;
-- [ ] the two ALREADY-correct outcomes stay correct: a destination
+- [x] the two ALREADY-correct outcomes stay correct: a destination
       genuinely outside the repository, and one reached with no symlink
       involved, are both unaffected;
-- [ ] a regression test reproduces the reviewer's exact repro (a symlink
+- [x] a regression test reproduces the reviewer's exact repro (a symlink
       inside the tree pointing at a gitignored location, both
       `--state-dir` and `--progress`) and confirms the new message.
 
