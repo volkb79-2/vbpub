@@ -9053,3 +9053,79 @@ a product capability until a supported producer path reaches it" framing).
       first place, so the matrix is the freshness check for whoever closes
       this.
 
+## B088 — `--resume`'s candidate identity folds in the mutant's source bytes but not the judging test suite's, so a test-only fix silently replays a stale verdict instead of re-executing
+
+**Found by:** dstdns-P175 implementer dispatch, 2026-09-09,
+`worker-execution-admission-r2-flips` lane, via `--state-dir`
+(RG-38/B066, freshly landed 2026-09-08).
+
+### What was measured
+
+A mutant at `admission.py:39` (`@dataclass(frozen=True)` boolean-const flip)
+`FAIL/MUTANTS_SURVIVED` on the first run because nothing asserted
+immutability. The implementer added
+`test_admission_snapshot_is_frozen` (a genuine, real fix — a NEW assertion
+in the test suite, zero bytes of `admission.py` touched) and re-ran the same
+lane with `--resume`. It reported the **identical** `"outcome_bucket":
+"survived"` for the same candidate at the new commit — the mutant had not
+actually been re-executed against the strengthened suite at all; the prior
+run's stale record was replayed. Confirmed by inspecting the record directly
+(`.run-gate/assay-state/.../<candidate-id>.json`, cleared and re-run fresh):
+after clearing, the SAME candidate now reports `killed`, with no other
+change to source, command, or environment between the two runs.
+
+### Root cause
+
+`mutation_state_record_path`/`_load_validated_state_record`
+(`mutation.py:797-806`, `:890`) compute the persisted record's identity from
+the candidate alone — `path` + `source_sha256` + byte span +
+`replacement_sha256` + `operator` (the same fields the candidate id itself
+folds in, per B066/RG-38's own "safe by construction" reasoning, which is
+correct for what it covers). **Nothing in that identity depends on what
+JUDGES the mutant** — the test command, its argv, or a hash of the test
+files/dirs it collects. A mutant's source bytes are the same mutant whether
+the test suite that runs against it just changed or not, so `--resume`
+correctly treats it as "the same candidate" and, on that basis, incorrectly
+treats its PRIOR VERDICT as still valid — conflating "is this the same
+mutation" (true, and the right question for skipping re-generation/
+re-application work) with "is this verdict still trustworthy" (false, the
+moment the judging suite changes).
+
+This is a distinct defect from B021 (stale `source_sha256` disposition is
+backwards) and from RG-38/B066 (durable state-dir *location*) — both of
+those are about the record's OWN identity fields or WHERE the store lives;
+this is about a dimension the identity never included in the first place.
+
+### Why this matters beyond one lane
+
+The exact failure shape this produces — a real fix landing, a mutation gate
+staying green on a STALE cached verdict instead of re-proving the kill — is
+the mirror image of what mutation testing exists to catch: a change that
+looks tested but isn't. Here the tooling itself manufactures that gap for
+any workflow that iterates "mutant survives → strengthen the tests →
+`--resume`", which B066/RG-38 just made the DEFAULT, durable, cross-worktree
+shape rather than a same-worktree convenience — raising how often this is
+hit, not lowering it.
+
+### Suggested fix
+
+Fold a test-identity component into the persisted record (not necessarily
+the candidate id itself, which B066 already documents as safe-by-construction
+for its own purpose): a hash of the resolved test-command argv plus the
+judged test paths' aggregate content digest, stored alongside the existing
+identity fields and checked on load. A mismatch on that component should be
+treated the same way a `schema_version` mismatch is proposed to be treated
+in B021 (silently re-execute, not `MutationStateError`) — it is a routine
+"the ground moved" case, not tampering evidence.
+
+### Acceptance
+
+- [ ] a record from a run against test suite A, loaded by a `--resume` run
+      against test suite B (same mutant, same source bytes, different test
+      file content), is NOT trusted — the candidate re-executes;
+- [ ] a record from a run against the SAME test suite content resumes exactly
+      as today (no regression to the documented B066/RG-38 resume behavior);
+- [ ] `CONSUMERS.md`'s resume/state-dir paragraph documents that resume
+      identity now includes the judging suite, and what "the judging suite"
+      is computed from (argv vs. file contents vs. both).
+
