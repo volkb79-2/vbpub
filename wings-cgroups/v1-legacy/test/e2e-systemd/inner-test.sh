@@ -4,26 +4,29 @@
 # WHAT EACH SECTION IS EVIDENCE FOR. Read this before quoting a summary line.
 # The harness covers two unrelated things and they must not be conflated:
 #
-#   Sections 1, 2, 4  — the SHIPPED wings patch series (slice -> scope
+#   Sections 1, 2, 4, 5 — the SHIPPED wings patch series (slice -> scope
 #                       redesign). 1 and 2 assert the placement and the
 #                       property-durability model the series depends on; 4
 #                       runs the series' own systemd integration tests from
-#                       the compiled binary.
+#                       the compiled binary; 5 asserts that a panel-side
+#                       re-assertion cannot evict a still-loading server.
 #   Section 3         — the SEPARATE t3a-slice-manager component. It is NOT
 #                       part of the wings patch series and never was; its
 #                       budget/GC machinery is exactly what the redesign
 #                       deleted from wings. It is exercised here only because
 #                       this is the one harness with a real systemd.
 #
-# The final summary therefore reports the two tallies separately. A green
-# section 3 says nothing whatsoever about the patch series, and an "ALL PASS"
-# that folded them together is what made an earlier hand-off overstate its
-# evidence.
+# The final summary reports the two tallies separately, and names any section
+# that did not run. A green section 3 says nothing whatsoever about the patch
+# series, and an "ALL PASS" folded over both is what made an earlier hand-off
+# overstate its evidence — so no line printed here says "ALL PASS".
 set -uo pipefail
 
 FAILS=0
 SERIES_FAILS=0
 OTHER_FAILS=0
+SERIES_SKIPS=""
+OTHER_SKIPS=""
 # Sections tally into SERIES_FAILS unless scope_other is called.
 SCOPE=series
 scope_series() { SCOPE=series; }
@@ -33,6 +36,12 @@ fail() {
     echo "  FAIL: $*"
     FAILS=$((FAILS+1))
     if [[ "$SCOPE" == series ]]; then SERIES_FAILS=$((SERIES_FAILS+1)); else OTHER_FAILS=$((OTHER_FAILS+1)); fi
+}
+# skip() records what did NOT run, so the summary can say so instead of
+# reporting a PASS that covers less than it looks like it does.
+skip() {
+    echo "  SKIP: $*"
+    if [[ "$SCOPE" == series ]]; then SERIES_SKIPS="$SERIES_SKIPS; $*"; else OTHER_SKIPS="$OTHER_SKIPS; $*"; fi
 }
 section() { echo; echo "=== $* ==="; }
 
@@ -107,10 +116,6 @@ systemctl set-property --runtime "$scope" MemoryMin=64M CPUWeight=800 2>/dev/nul
     && pass "scope cpu.weight = 800 is effective" \
     || fail "scope cpu.weight = $(cat "$scopedir/cpu.weight" 2>/dev/null)"
 
-# A raw write to a property systemd was never told about, for contrast.
-echo 33554432 > "$scopedir/memory.low" 2>/dev/null \
-    && pass "raw-wrote 32M to scope memory.low (the cgroupfs channel, for contrast)" \
-    || fail "could not raw-write scope memory.low"
 systemctl daemon-reload
 sleep 2
 [[ "$(cat "$scopedir/memory.min" 2>/dev/null)" == "67108864" ]] \
@@ -119,9 +124,30 @@ sleep 2
 [[ "$(cat "$scopedir/cpu.weight" 2>/dev/null)" == "800" ]] \
     && pass "systemd-set scope cpu.weight SURVIVED daemon-reload" \
     || fail "systemd-set scope cpu.weight lost on daemon-reload: $(cat "$scopedir/cpu.weight" 2>/dev/null)"
-[[ "$(cat "$scopedir/memory.low" 2>/dev/null)" == "0" ]] \
-    && pass "raw-written scope memory.low WIPED by daemon-reload (why raw writes are not used)" \
-    || echo "  NOTE: raw scope value survived on this systemd version ($(cat "$scopedir/memory.low" 2>/dev/null)) — not reproducible here"
+
+# The contrast, and the other half of why the systemd-owned channel is not a
+# stylistic preference: a raw cgroupfs write to an attribute systemd MANAGES is
+# not durable. systemd holds its own view of the unit's resource properties and
+# re-derives every managed attribute from it the next time any property is set
+# — which, for a Wings-managed server, is every property application.
+#
+# What this deliberately does NOT assert: that `daemon-reload` alone wipes the
+# raw write. It does not, on systemd 257 — a docker-<id>.scope is transient, has
+# no unit file, and a reload re-reads unit files. An earlier version of this
+# section asserted exactly that and degraded to a NOTE on this host; the real,
+# reproducible statement is the one below.
+echo 33554432 > "$scopedir/memory.min" 2>/dev/null \
+    && pass "raw-wrote 32M over the systemd-managed scope memory.min (the cgroupfs channel, for contrast)" \
+    || fail "could not raw-write scope memory.min"
+[[ "$(cat "$scopedir/memory.min" 2>/dev/null)" == "33554432" ]] \
+    && pass "the raw write did land (so what follows is a real overwrite, not a failed write)" \
+    || fail "raw write did not take: $(cat "$scopedir/memory.min" 2>/dev/null)"
+# Any property set on the unit; systemd re-applies its WHOLE view, not just this one.
+systemctl set-property --runtime "$scope" CPUWeight=777 2>/dev/null
+sleep 1
+[[ "$(cat "$scopedir/memory.min" 2>/dev/null)" == "67108864" ]] \
+    && pass "raw-written scope memory.min DISCARDED the next time systemd touched the unit (why raw writes are not used)" \
+    || fail "systemd did not re-derive memory.min from its own view: $(cat "$scopedir/memory.min" 2>/dev/null)"
 docker rm -f e2e1 >/dev/null
 
 scope_other
@@ -132,7 +158,7 @@ section "3. t3a-slice-manager black box -- SEPARATE COMPONENT, NOT the wings ser
 # slice->scope redesign deleted the budget arithmetic and the unit lifecycle
 # outright. Green here is evidence about t3a-slice-manager and nothing else.
 if [[ ! -x /usr/local/bin/wings-slice-manager ]]; then
-    echo "  SKIP: slice-manager binary not in image"
+    skip "section 3: slice-manager binary not in image"
 else
     cat > /etc/wings-slice-manager.yaml <<'EOF'
 parent_slice: wings.slice
@@ -182,7 +208,7 @@ fi
 scope_series
 section "4. SHIPPED SERIES: wings internal/cgroups systemd integration tests"
 if [[ ! -x /usr/local/bin/cgroups.test ]]; then
-    echo "  SKIP: cgroups.test binary not in image (build/wings-pterodactyl absent at harness build)"
+    skip "section 4: cgroups.test binary not in image (build/wings-pterodactyl absent at harness build)"
 else
     if /usr/local/bin/cgroups.test -test.v \
         > /var/log/cgroups-test.log 2>&1; then
@@ -194,19 +220,102 @@ else
     fi
 fi
 
+scope_series
+section "5. SHIPPED SERIES: a panel-side re-assertion must not evict a loading server"
+# The kernel consequence of getting the re-assertion's band wrong, measured
+# rather than argued. This is the failure a fix-verification found on
+# 2026-09-09 (V1): the re-assert inferred its band from Docker's process state,
+# so on the configuration SETUP.md recommends -- WINGS_CG_STEADY_MATCH set,
+# because a world-streaming game's "done" line fires long before loading
+# finishes -- a routine settings save applied the STEADY band, one-shot, to a
+# server at its load-time peak.
+#
+# Both halves run here. The BUGGY sequence must reclaim the server through its
+# own memory.min; the FIXED sequence, which re-asserts the startup band and
+# never writes memory.high, must not touch the working set while repairing
+# everything docker's write clobbered. Asserting the buggy half too is
+# deliberate: if it ever stops evicting, this section has stopped measuring
+# anything and its green means nothing.
+docker run -d --name e2e5 --cgroup-parent=wings.slice \
+    --memory 512m --memory-reservation 512m --cpu-shares 2 busybox \
+    sh -c 'dd if=/dev/zero of=/tmp/world bs=1M count=300 2>/dev/null; while :; do cat /tmp/world > /dev/null; sleep 2; done' >/dev/null
+cid5=$(docker inspect -f '{{.Id}}' e2e5)
+scope5="docker-$cid5.scope"
+d5="/sys/fs/cgroup/wings.slice/$scope5"
+sleep 10
+
+# The bands. Startup: a generous ceiling while the world loads. Steady: the
+# resting one, deliberately below the load peak, which is the only shape in
+# which the startup band does anything at all (SETUP.md "ENGAGEMENT").
+startup_band() { systemctl set-property --runtime "$scope5" MemoryMin=200M MemoryLow=300M MemoryHigh=400M MemoryMax=450M CPUWeight=800 IOWeight=4950; }
+# What a panel settings save issues: docker's own container.Resources.
+panel_save()   { docker update --memory 512m --memory-reservation 512m --cpu-shares 1024 e2e5 >/dev/null; }
+mem_cur()      { cat "$d5/memory.current" 2>/dev/null; }
+
+startup_band
+sleep 6
+peak=$(mem_cur)
+[[ -n "$peak" && "$peak" -gt 209715200 ]] \
+    && pass "server is at a load-time working set of $peak bytes, above its own 200M memory.min" \
+    || fail "no load-time working set to measure ($peak bytes); the rest of this section proves nothing"
+
+panel_save
+sleep 1
+[[ "$(cat "$d5/cpu.weight")" == "39" && "$(cat "$d5/memory.low")" == "536870912" ]] \
+    && pass "the panel save clobbered the scope: cpu.weight 800->39, memory.low 300M->512M" \
+    || fail "the panel save did not clobber as expected (cpu.weight=$(cat "$d5/cpu.weight") memory.low=$(cat "$d5/memory.low"))"
+
+# BUGGY: the steady band, one-shot, while the server is still loading.
+before=$(mem_cur)
+systemctl set-property --runtime "$scope5" MemoryMin=200M MemoryLow=300M MemoryHigh=100M MemoryMax=450M CPUWeight=800 IOWeight=4950
+sleep 3
+after=$(mem_cur)
+[[ -n "$after" && "$after" -lt 209715200 ]] \
+    && pass "steady band mid-load reclaimed $before -> $after, THROUGH its own 200M memory.min (the eviction V1 described)" \
+    || fail "steady band mid-load did not evict ($before -> $after); this section is no longer measuring the failure"
+
+# FIXED: the startup band -- the phase the server layer actually holds -- and
+# no memory.high at all, because docker cannot have touched it.
+startup_band
+sleep 8
+panel_save
+sleep 1
+before=$(mem_cur)
+systemctl set-property --runtime "$scope5" MemoryMin=200M MemoryLow=300M MemoryMax=450M CPUWeight=800 IOWeight=4950
+sleep 3
+after=$(mem_cur)
+[[ -n "$after" && "$after" -gt 209715200 ]] \
+    && pass "the re-assertion left the working set alone: $before -> $after, still above the 200M floor" \
+    || fail "the re-assertion evicted the server ($before -> $after)"
+[[ "$(cat "$d5/memory.high")" == "419430400" ]] \
+    && pass "the re-assertion did not move memory.high (still the startup 400M)" \
+    || fail "the re-assertion wrote memory.high: $(cat "$d5/memory.high")"
+[[ "$(cat "$d5/cpu.weight")" == "800" && "$(cat "$d5/memory.low")" == "314572800" && "$(cat "$d5/memory.max")" == "471859200" ]] \
+    && pass "everything the panel save DID reach was repaired: cpu.weight=800 memory.low=300M memory.max=450M" \
+    || fail "repair incomplete (cpu.weight=$(cat "$d5/cpu.weight") memory.low=$(cat "$d5/memory.low") memory.max=$(cat "$d5/memory.max"))"
+# The IO half of the same repair, and the scale trap Rule 7 warns about.
+echo "  NOTE: IOWeight=$(systemctl show "$scope5" -p IOWeight --value) derives io.bfq.weight=$(cat "$d5/io.bfq.weight" 2>/dev/null) — different scales, they never agree numerically"
+docker rm -f e2e5 >/dev/null
+
 echo
 echo "=== summary ==="
 # Reported separately on purpose: only the first tally is evidence about the
 # wings patch series. See the header of this file.
-if [[ "$SERIES_FAILS" -eq 0 ]]; then
-    echo "  SHIPPED SERIES (sections 1, 2, 4): PASS"
-else
-    echo "  SHIPPED SERIES (sections 1, 2, 4): $SERIES_FAILS FAILURE(S)"
-fi
-if [[ "$OTHER_FAILS" -eq 0 ]]; then
-    echo "  t3a-slice-manager, separate component (section 3): PASS"
-else
-    echo "  t3a-slice-manager, separate component (section 3): $OTHER_FAILS FAILURE(S)"
-fi
-if [[ "$FAILS" -eq 0 ]]; then echo "E2E: ALL PASS"; else echo "E2E: $FAILS FAILURE(S)"; fi
+#
+# verdict() builds one line per tally that states the failures AND anything that
+# did not run, so a "PASS" here can never quietly cover a skipped section. The
+# final line is a concatenation of exactly those two verdicts: there is
+# deliberately no third, folded verdict, because a single quotable "ALL PASS"
+# over both tallies is what made an earlier hand-off overstate its evidence.
+verdict() { # verdict <fails> <skips>
+    local v
+    if [[ "$1" -eq 0 ]]; then v="PASS"; else v="$1 FAILURE(S)"; fi
+    [[ -n "$2" ]] && v="$v, BUT NOT RUN:${2#;}"
+    echo "$v"
+}
+series_verdict="$(verdict "$SERIES_FAILS" "$SERIES_SKIPS")"
+other_verdict="$(verdict "$OTHER_FAILS" "$OTHER_SKIPS")"
+echo "  SHIPPED SERIES (sections 1, 2, 4, 5): $series_verdict"
+echo "  t3a-slice-manager, separate component (section 3): $other_verdict"
+echo "E2E: series -> $series_verdict | t3a-slice-manager -> $other_verdict"
 exit "$FAILS"
