@@ -592,7 +592,19 @@ MaxFileSec=1month
         )
         self.actions.write_file("/etc/systemd/system/thp-config.service", THP_SERVICE)
         self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
-        self._run(["/usr/bin/systemctl", "enable", "zswap-config.service", "thp-config.service"], "enable early tuning units")
+        # enable-now, not a bare enable: both units are WantedBy=sysinit.target
+        # (templates.py), a target already passed earlier in THIS boot --
+        # `_health_gate_swap_devices()` reads the live zswap compressor from
+        # sysfs immediately afterward, in the same _stage2() run, with no
+        # reboot in between. A bare `enable` only symlinks the unit for the
+        # NEXT boot; it never actually runs this boot, so the health gate
+        # was reading the kernel's still-default 'lzo' compressor instead of
+        # the configured one. Live-confirmed 2026-09-09 (v1001 round 10, the
+        # first round to ever get this far -- pre-existing since 9ab176399,
+        # 2026-08-27, never reached before because earlier rounds died
+        # during partitioning): "health gate failed: zswap compressor is
+        # 'lzo', expected 'zstd'".
+        self._run(["/usr/bin/systemctl", "enable-now", "zswap-config.service", "thp-config.service"], "enable and start early tuning units")
         self._mark_step("zswap_config", "success", self.config.zswap_compressor)
 
     def _disk_facts(self) -> tuple[int, int, int]:

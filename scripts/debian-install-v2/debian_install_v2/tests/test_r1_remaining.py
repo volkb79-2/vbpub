@@ -475,6 +475,23 @@ def test_notify_dry_run_returns_early(tmp_path):
     installer._notify("hello")  # must not raise; early return path
 
 
+def test_configure_zswap_starts_units_this_boot_not_just_enables_them(tmp_path):
+    # Regression, 2026-09-09 (v1001 round 10 -- the first round this code
+    # was ever actually reached, ~9ab176399 predates this whole live-test
+    # effort): zswap-config.service/thp-config.service are
+    # WantedBy=sysinit.target, a target already passed earlier in the
+    # SAME boot _stage2() runs in -- a bare `enable` only symlinks the
+    # unit for the NEXT boot, so _health_gate_swap_devices() (called
+    # right after, same boot, no reboot in between) read the kernel's
+    # still-default 'lzo' compressor instead of the configured one and
+    # failed the whole install. Must be `enable-now`.
+    installer = make_installer(tmp_path, dry_run=False)
+    installer._configure_zswap()
+    argvs = [a.argv for a in installer.actions.planned]
+    assert ("/usr/bin/systemctl", "enable-now", "zswap-config.service", "thp-config.service") in argvs
+    assert not any(argv[:2] == ("/usr/bin/systemctl", "enable") for argv in argvs)
+
+
 def test_health_gate_compressor_and_log(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
