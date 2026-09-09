@@ -68,7 +68,7 @@ _SAFE_COMMANDS = {
     "tee": {"-a"},
     "udevadm": {"settle", "trigger"},
     "update-grub": set(),
-    "update-initramfs": {"-u"},
+    "update-initramfs": {"-u", "-k"},
     "wget": {"-q"},
     "xfs_growfs": {"/"},
 }

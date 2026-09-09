@@ -924,7 +924,25 @@ MaxFileSec=1month
             ROOT_SHRINK_LOCAL_PREMOUNT_HOOK,
             0o755,
         )
-        self._run(["/usr/sbin/update-initramfs", "-u"], "rebuild initramfs with the root-shrink hook", dangerous=True)
+        # -k all, not a bare -u: -u only rebuilds the CURRENTLY RUNNING
+        # kernel's initrd. Live-confirmed root cause of r1002's silent
+        # shrink no-op (2026-09-09): stage1 install steps before this point
+        # can pull in a newer linux-image package as an ordinary dependency
+        # (confirmed on r1002: 6.12.94+deb13 was running when this ran, but
+        # 6.12.107+deb13 was ALSO installed and reboot's GRUB default picks
+        # the newest kernel) -- that newer kernel's own postinst had
+        # already auto-generated ITS initrd (without our hook, installed
+        # only after the fact) at package-install time, so a plain -u here
+        # silently rebuilt the WRONG (soon-to-be-unused) kernel's image
+        # while the one GRUB actually booted kept its pristine, hookless
+        # initrd -- zero disk change, no logged failure, exactly what was
+        # observed. -k all rebuilds every installed kernel's initrd
+        # regardless of which one is currently running or which one GRUB
+        # ultimately boots.
+        self._run(
+            ["/usr/sbin/update-initramfs", "-u", "-k", "all"],
+            "rebuild initramfs with the root-shrink hook", dangerous=True,
+        )
         self._mark_step(
             "root_shrink", "planned",
             f"target root {target_root_sectors} sectors (was {root_size}); hook installed",
@@ -982,8 +1000,14 @@ MaxFileSec=1month
                 "/etc/vbpub/root-shrink-plan.sfdisk",
             ):
                 Path(path).unlink(missing_ok=True)
+            # -k all: same reasoning as _plan_root_shrink()'s own build call
+            # -- more than one kernel can be installed by this point, and a
+            # stale hook+plan-file copy left in a non-running kernel's
+            # initrd is untidy even though it's harmless (the idempotent
+            # no-op check in the hook script would just skip it next boot).
             self._run(
-                ["/usr/sbin/update-initramfs", "-u"], "rebuild initramfs without the root-shrink hook", dangerous=True
+                ["/usr/sbin/update-initramfs", "-u", "-k", "all"],
+                "rebuild initramfs without the root-shrink hook", dangerous=True,
             )
             self._mark_step("root_shrink", "success", f"root shrunk to {root_size} sectors (target {target_sectors})")
             return True

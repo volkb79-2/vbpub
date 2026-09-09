@@ -152,6 +152,15 @@ def test_plan_root_shrink_installs_hook_when_disk_lacks_space(tmp_path):
 
     update_initramfs_calls = [a for a in actions.planned if a.argv[:2] == ("/usr/sbin/update-initramfs", "-u")]
     assert update_initramfs_calls
+    # Regression, 2026-09-09: a bare `-u` only rebuilds the CURRENTLY
+    # RUNNING kernel's initrd -- live-confirmed on r1002 that a newer
+    # kernel can get installed earlier in stage1 (an ordinary apt
+    # dependency pull) and GRUB's reboot then boots THAT kernel's own,
+    # separately-generated, hookless initrd, silently no-opping the whole
+    # shrink with zero disk change and no logged failure. Must be `-k all`
+    # so every installed kernel's initrd gets the hook, regardless of
+    # which one is running now or which one GRUB ultimately boots.
+    assert update_initramfs_calls[0].argv == ("/usr/sbin/update-initramfs", "-u", "-k", "all")
 
 
 def test_plan_root_shrink_honors_preserve_root_size_gb_above_filesystem_minimum(tmp_path):
@@ -350,6 +359,9 @@ def test_verify_root_shrink_success_cleans_up_and_falls_through(tmp_path, monkey
     assert state["steps"]["root_shrink"]["status"] == "success"
     cleanup_initramfs_calls = [a for a in actions.planned if a.argv[:2] == ("/usr/sbin/update-initramfs", "-u")]
     assert cleanup_initramfs_calls
+    # Same reasoning as the build-side regression test above: more than one
+    # kernel can be installed by the time cleanup runs too.
+    assert cleanup_initramfs_calls[0].argv == ("/usr/sbin/update-initramfs", "-u", "-k", "all")
 
 
 def test_verify_root_shrink_failure_raises_and_notifies_without_crashing(tmp_path, monkeypatch):
