@@ -183,6 +183,7 @@ class CommandListener:
 
     def start(self) -> None:
         self._stop_event.clear()
+        self._unconfigured_logged = False
         t = threading.Thread(target=self._run, daemon=True)
         t.start()
         self._thread = t

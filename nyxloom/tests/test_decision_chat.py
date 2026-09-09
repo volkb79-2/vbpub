@@ -602,6 +602,65 @@ def test_notify_decision_opened_omits_reply_hint_without_inbound_transport(
     assert sent[0]["click"] == decision_chat.DECISIONS_UI_URL
 
 
+# --------------------------------------------------------------------------
+# P108 review finding N1: the ntfy ROLLBACK path must keep P18's deviation-1
+# topology. ntfy is the one backend with two distinct topics, and it is kept
+# selectable on purpose ("RETIRED -- kept for rollback"). Handing cfg.notify
+# verbatim to an ntfy send would deliver on `ntfy_topic` (write-only
+# progress) instead of `cmd_topic` (bidirectional feedback) -- putting
+# decision-agent replies on the wrong topic and aiming the "reply here" hint
+# at a topic CommandListener does not poll. Asserting on the destination
+# TOPIC, not on hint text, is the point: the hint-text test below stays green
+# either way, which is exactly why it could not catch this.
+# --------------------------------------------------------------------------
+
+def _ntfy_two_topic(cfg, monkeypatch):
+    cfg.notify.backend = "ntfy"
+    cfg.notify.ntfy_url = "http://fake-ntfy.example"
+    cfg.notify.ntfy_topic = "notifications"
+    cfg.notify.cmd_topic = "feedback"
+    cfg.notify.cmd_token_env = "NTFY_CMD_TOKEN"
+    monkeypatch.setenv("NTFY_CMD_TOKEN", "read-tok")
+    return cfg
+
+
+@pytest.mark.parametrize("push", ["opened", "feedback"])
+def test_ntfy_rollback_delivers_on_the_feedback_topic_not_the_progress_topic(
+        sample_project, monkeypatch, push):
+    cfg = _ntfy_two_topic(sample_project, monkeypatch)
+
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda nc, note: sent.append(nc) or (True, "ok"))
+
+    if push == "opened":
+        decision_chat.notify_decision_opened(cfg, "D-002")
+    else:
+        decision_chat._post_feedback(cfg, "D-001", "free text reply body")
+
+    assert len(sent) == 1
+    nc = sent[0]
+    assert [b.name for b in notify.resolve_backends(nc)] == ["ntfy"]
+    assert nc.ntfy_topic == "feedback", (
+        "decision push delivered on the write-only progress topic; P18 sends "
+        "both pushes to the bidirectional feedback topic")
+    # The redirect is a per-send copy, never a mutation of the project config.
+    assert cfg.notify.ntfy_topic == "notifications"
+
+
+def test_mattermost_config_is_passed_through_unredirected(sample_project, monkeypatch):
+    """The redirect is ntfy-only: a Mattermost incoming webhook is
+    channel-bound at creation, so there is nothing to choose between."""
+    cfg = _mattermost_only(sample_project)
+    cfg.notify.cmd_topic = "feedback"
+
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda nc, note: sent.append(nc) or (True, "ok"))
+
+    decision_chat._post_feedback(cfg, "D-001", "free text reply body")
+
+    assert sent[0] is cfg.notify
+
+
 def test_notify_decision_opened_keeps_reply_hint_when_inbound_transport_live(
         sample_project, monkeypatch):
     cfg = sample_project

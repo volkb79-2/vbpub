@@ -75,6 +75,29 @@ analogous thing one level further at the Mattermost boundary is the consistent
 choice, not a shortcut. It is written down as deviation **1b** in that docstring
 rather than left implicit.
 
+### The ntfy rollback path keeps P18's original topology (review finding N1)
+
+The collapse above is **Mattermost's**, not a rewrite of P18's deviation 1.
+ntfy is the one backend that still has two distinct topics, and it is kept
+selectable on purpose (`nyxloom.toml`: "ntfy (RETIRED — kept for rollback)").
+The first cut of this package handed `cfg.notify` verbatim to `notify.send()`,
+which for `NtfyBackend` posts to `{ntfy_url}/{ntfy_topic}` — but `config.py` maps
+the trove's `notifications_topic` → `ntfy_topic` and `feedback_topic` →
+`cmd_topic`, and P18 sends both decision pushes to `cmd_topic` specifically.
+On the rollback path that first cut would have put decision-agent replies on the
+write-only progress topic and aimed the "reply here" hint at a topic
+`CommandListener` does not poll — the same class of mis-routing this package
+exists to remove, reintroduced for one backend.
+
+`_decision_channel()` now redirects: when the **first** resolved backend is ntfy
+and `cmd_topic` is set, the send goes out on
+`replace(nc, ntfy_topic=nc.cmd_topic)` — a per-send copy, never a mutation of
+the project config. First-resolved rather than "the chain contains ntfy",
+because with no explicit selector the legacy chain is `(ntfy, webhook)` and ntfy
+is the one that actually delivers; a fallthrough to webhook carries the swapped
+topic harmlessly since no non-ntfy backend reads `ntfy_topic`. Every other
+backend has a single destination, so the config passes through untouched.
+
 ### Consequences handled, not papered over
 
 1. **"Reply here to discuss" would now be a lie.** The inbound half is ntfy-only
@@ -92,8 +115,26 @@ rather than left implicit.
 3. **`CommandListener._run`'s "nothing to poll" branch spun in total silence.**
    The daemon's only sign of life was `command listener started`, after which it
    polled nothing forever. It now warns **once**, edge-triggered (reset when a
-   config appears), naming ntfy as the requirement. This is the small
-   fail-visibly improvement the carve authorized — a log line, not a transport.
+   config appears, and on `start()` so a stop/start cycle re-arms it), naming
+   ntfy as the requirement. This is the small fail-visibly improvement the carve
+   authorized — a log line, not a transport.
+4. **DECISION_OPENED now produces two same-titled messages in `alerts`** — the
+   generic `notification_for` push and `notify_decision_opened`'s own. Accepted
+   deliberately: the second carries the actionable "how to answer" text the
+   first lacks, and two beats the zero this package found. It de-duplicates on
+   its own the moment a second channel exists to send one of them to. Disclosed
+   explicitly in deviation 1b rather than left to be discovered.
+5. **`notify.mattermost_payload`'s §13 rationale was made false by this
+   package** and is restated rather than left standing. `_post_feedback` is now
+   the first caller to interpolate model-authored prose into a `body` that
+   `mattermost_payload` renders as unescaped Markdown. The rendering is
+   **accepted, not overlooked**: the text is `cfg.redact()`-ed, capped at
+   `MAX_REPLY_CHARS`, produced by an agent dispatched with a read-only tool
+   allowlist, and delivered to an operator-only channel. What is conceded is
+   cosmetic-to-minor — odd Markdown, a model-authored link, or an
+   `@here`/`@channel` Mattermost would honour. Escaping only that one body is
+   the tighter fix and is recorded in the docstring as belonging with the next
+   change to that seam.
 
 ## In scope but deliberately NOT fixed
 
@@ -134,6 +175,15 @@ warning about vacuously-true assertions:
 | `test_cmd_transport_configured_requires_all_three_ntfy_facts` | predicate did not exist |
 | `test_unconfigured_inbound_transport_logs_once` | idle listener never warned |
 
+Two more added in the review round, both verified red against the **first cut of
+this package** (stash of `decision_chat.py` → both failed on the destination
+topic, `+ notifications`):
+
+| test | catches |
+| --- | --- |
+| `test_ntfy_rollback_delivers_on_the_feedback_topic_not_the_progress_topic[opened\|feedback]` | N1 — asserts the delivered `ntfy_topic` is `cmd_topic`, and that `cfg.notify` itself is not mutated |
+| `test_mattermost_config_is_passed_through_unredirected` | the converse — the redirect must not fire for a channel-bound webhook |
+
 `test_notify_decision_opened_keeps_reply_hint_when_inbound_transport_live`
 passes both before and after, on purpose: it pins the behavior that must be
 *preserved* when ntfy is live.
@@ -155,10 +205,13 @@ config, and assert `nc is cfg.notify`.
   `_push` — a handler removed, not reclassified. `test_exception_census.py`
   fails a budget that is too generous, by design.
 * `nyxloom-trove/reports/CORE-REDESIGN-OWNERSHIP-INVENTORY-2026-08-02.md`:
-  `decision_chat.py` recorded size 552 → 634 (the recorded value was already
+  `decision_chat.py` recorded size 552 → **676** (the recorded value was already
   stale at 591 before this change; the added docstring pushed the drift past the
   10% tolerance). `test_core_characterization.py` asks for exactly this
-  re-measure.
+  re-measure. `notify.py` 788 → 819 and `commands.py` 451 → 467 were re-measured
+  in the same pass: both were still *inside* tolerance, but leaving a knowingly
+  stale number is what let `decision_chat.py`'s drift accumulate unnoticed in
+  the first place.
 
 No new events; nothing in the event-sourced path was touched.
 
@@ -169,15 +222,31 @@ separately from `.assay/verdict-tester-unified.json`.
 
 * First run (commit `cd79c7d6`): **FAIL / COMMAND_FAILED** — the two self-census
   tests above. R1 changed-line coverage was already **PASS at 100.0%**.
-* Second run (the bookkeeping commit below, HEAD of the branch): **PASS**,
-  R0 PASS + R1 PASS, changed-line coverage 100.0%.
+* Second run (`f4985220`): **PASS**, R0 + R1, changed-line coverage 100.0%.
+* Third run, after the review round (branch HEAD): **PASS**, R0 + R1,
+  changed-line coverage 100.0%.
+
+## Review round
+
+Independent review returned **ACCEPT-with-nits** (gate re-verified green; the
+reviewer reproduced all 5 original tests failing against a scratch pre-fix
+tree). All five findings are addressed in one round, per this project's
+precedent for non-blocking nits:
+
+| finding | resolution |
+| --- | --- |
+| **N1** ntfy rollback path mis-routed to the progress topic | fixed properly via `_decision_channel()`; 2 new tests pin the destination topic |
+| **N2** `mattermost_payload`'s §13 rationale no longer true | docstring restated; the unescaped-Markdown concession is now a recorded decision with its bounding safeguards named |
+| **N3** stale two-channel comments + undisclosed duplicate | deviation 1b discloses the duplicate; `decision_chat.py` and `daemon.py:1364` comments corrected |
+| **N4** `start()` did not reset `_unconfigured_logged` | one-line reset added |
+| **N5** two comments misquoted the removed guard | corrected to `if not (cfg.notify.ntfy_url and cfg.notify.cmd_topic)` |
 
 ## Commits
 
 * `cd79c7d6` — the fix: both pushes onto the configured backend, the
   `cmd_transport_configured` predicate, the idle-listener warning, docstring
   deviation 1b, tests.
-* branch HEAD — self-census bookkeeping (exception budget, inventory size) and
-  this report.
+* `f4985220` — self-census bookkeeping and this report.
+* branch HEAD — review round: N1 fix + its tests, N2–N5, re-measures.
 
-Not merged; `main` untouched. An independent adversarial review is next.
+Not merged; `main` untouched. No second review round requested.

@@ -1361,10 +1361,13 @@ class Daemon:
             out.append(self._append_ev(project, cfg, states, EventType(ev_type_str), {},
                                         decision_id=decision_id))
             if ev_type_str == "DECISION_OPENED":
-                # P18: additional actionable push to the feedback channel,
-                # in ADDITION to the normal notifications-channel push
+                # P18: an additional push carrying the actionable "how to
+                # answer" text, in ADDITION to the generic push
                 # notify.notify_event already sent above via _append_ev.
-                # A feedback-channel push that fails must not undo the durable
+                # P108: the two are separate CHANNELS only on the ntfy
+                # rollback path; on Mattermost they are two messages in one
+                # channel (decision_chat's deviation 1b spells out why).
+                # Either way a failed push must not undo the durable
                 # DECISION_OPENED that has already been appended.
                 try:
                     decision_chat.notify_decision_opened(cfg, decision_id)
