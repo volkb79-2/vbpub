@@ -91,6 +91,17 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               on subsequent calls) and prints the agent's
                               reply. The programmatic entry point P30's UI
                               calls.
+  intake-bridge poll <project> [--transport mmctl|rest]
+                              B9 2026-09-09 (nyxloom-P109): ONE poll of the
+                              Mattermost intake channel -> at most one
+                              intake_chat turn -> reply posted via
+                              notify.send() -> exit. No loop, no daemon; a
+                              future scheduled job (B20) runs this verb.
+                              Exit 1 ONLY when the ingress is refused (no
+                              named channel operator); an unconfigured
+                              bridge and an empty channel are both 0. A
+                              separate verb GROUP because `intake` above is
+                              a frozen three-positional contract.
   reject <project> <task> [--note TEXT]
                               P17 2026-07-15: merge-gate rejection.
                               MERGE_READY -> REVIEW_REJECTED via
@@ -746,6 +757,35 @@ def cmd_intake(args) -> int:
     reply = intake_chat.advance_intake(cfg, args.project, args.intake_id, args.message)
     print(reply)
     return 0
+
+
+def cmd_intake_bridge_poll(args) -> int:
+    """intake-bridge poll <project> [--transport mmctl|rest]
+
+    B9 2026-09-09 (nyxloom-P109): ONE poll of the Mattermost intake channel,
+    then exit. A separate verb GROUP rather than a sub-verb of `intake`
+    because `intake <project> <intake_id> <message>` is a frozen positional
+    contract (P29) that cannot grow a sub-parser without breaking it; the
+    hyphenated-group shape matches `free-models`/`capability-map`/`route`.
+    """
+    from . import intake_bridge
+
+    cfg = _cfg(args.project)
+    if args.transport:
+        # An explicit override still goes through resolve_reader's
+        # is_configured check -- naming a transport whose config is absent
+        # must report 'unconfigured', not fall through to the other one.
+        from dataclasses import replace as _replace
+        cfg = _replace(cfg, intake_bridge=_replace(cfg.intake_bridge,
+                                                   transport=args.transport))
+    result = intake_bridge.poll_once(cfg, args.project)
+    print(f"transport={result.transport or '-'} status={result.status} "
+          f"fetched={result.fetched} ingested={result.ingested} "
+          f"intake={result.intake_id or '-'} reply_posted={result.reply_posted} "
+          f"cursor_ms={result.cursor_ms}")
+    if result.detail:
+        print(result.detail)
+    return 1 if result.status == "refused" else 0
 
 
 def cmd_reject(args) -> int:
@@ -1897,6 +1937,20 @@ def main(argv: list[str] | None = None) -> int:
     intake_parser.add_argument("intake_id", help="Intake ID")
     intake_parser.add_argument("message", help="Message to the intake agent")
 
+    # intake-bridge (B9 / nyxloom-P109): the Mattermost transport for the
+    # SAME intake_chat engine `intake` above drives by hand.
+    intake_bridge_parser = subparsers.add_parser(
+        "intake-bridge", help="Mattermost <-> feature-intake chat bridge")
+    intake_bridge_subs = intake_bridge_parser.add_subparsers(dest="intake_bridge_cmd")
+    ibp = intake_bridge_subs.add_parser(
+        "poll", help="poll the intake channel once, advance one turn, exit")
+    ibp.add_argument("project", help="Project ID")
+    # The choices come from the schema-side tuple rather than a literal here,
+    # so a transport added to the registry cannot be missing from the CLI.
+    from .config import INTAKE_TRANSPORTS
+    ibp.add_argument("--transport", choices=list(INTAKE_TRANSPORTS), default=None,
+                     help="override [intake_bridge] transport for this poll")
+
     # reject
     reject_parser = subparsers.add_parser("reject")
     reject_parser.add_argument("project", help="Project ID")
@@ -2140,6 +2194,11 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_discuss(args)
         elif args.cmd == "intake":
             return cmd_intake(args)
+        elif args.cmd == "intake-bridge":
+            if getattr(args, "intake_bridge_cmd", None) == "poll":
+                return cmd_intake_bridge_poll(args)
+            intake_bridge_parser.print_help(sys.stderr)
+            return 2
         elif args.cmd == "reject":
             return cmd_reject(args)
         elif args.cmd == "merge":

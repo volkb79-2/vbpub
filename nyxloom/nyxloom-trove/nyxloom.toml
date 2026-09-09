@@ -214,3 +214,34 @@ feedback_topic = "feedback"             # decisions + escalation Q&A, bidirectio
 # --- SELF-HOSTING CAVEAT: worktree isolation + manual merge keep the RUNNING
 #     nyxloomd safe from an in-flight change, but a merge to daemon-core code
 #     needs a container rebuild (`ciu up --dir nyxloom/nyxloomd`) to take effect.
+
+# --- feature-intake bridge (B9 / nyxloom-P109) -------------------------------
+# The Mattermost transport for intake_chat's interview. Its own table, not more
+# [notify] keys: notify is a one-way push channel; this is bidirectional, has a
+# read credential and keeps a poll cursor.
+#
+# `mmctl` is the default because it needs NO Mattermost server change — it uses
+# the same local-mode admin socket the provisioning hook already talks over.
+# `rest` is the interchangeable alternative and needs a PAT plus
+# `[mattermost].enable_user_access_tokens = true`; switch with
+# `transport = "rest"` (or, for one run, `nyxloom intake-bridge poll --transport
+# rest`) once `mattermost/README.md`'s enable-PATs recipe has been run.
+#
+# NEITHER credential is here, and neither may ever be: the PAT and the reply
+# webhook URL are both bearer secrets. Export them from the stack store, the
+# same way NYXLOOM_WEBHOOK_URL is exported above:
+#
+#   export NYXLOOM_INTAKE_WEBHOOK_URL="$(cat nyxloom/mattermost/.ciu/secrets/intake_webhook_url)"
+#   export NYXLOOM_INTAKE_MM_TOKEN="$(cat nyxloom/mattermost/.ciu/secrets/intake_pat)"
+#
+# The ingress is CLOSED until NYXLOOM_CHANNEL_OPERATOR_ID names the operator the
+# channel's write ACL belongs to — an intake turn opens D-NNN decisions and
+# files backlog items, so it is a mutation and is attributed to a human, never
+# to a transport name (control_auth.channel_operator, CR-15).
+[intake_bridge]
+transport = "mmctl"
+team = "nyxloom"
+channel = "intake"
+container = "nyxloom-prod-mattermost"
+# Only read by the `rest` transport; the stack's private-bridge address.
+base_url = "http://nyxloom-prod-mattermost:8065"
