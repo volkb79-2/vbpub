@@ -209,25 +209,29 @@ team_display_name = "nyxloom"
 # `alerts` already exists (P106). `installs` is new: the separate channel the
 # 3rd-party service account posts host-provisioning progress into.
 #
-# NEITHER is `private`, and unlike `intake` below that is NOT a considered
-# decision recorded here — it is the P106/P107 status quo, and nyxloom-P110
-# measured what it costs: `alerts` is public, so ANY team member browses and
-# joins it (`GET .../posts` 200, `POST .../members` 201 as `nyxloom-installer`,
-# an account deliberately excluded from it). The comment on that account below
-# claims a compromised install host "cannot read nyxloom's own operator
-# traffic"; as long as `alerts` is public, that is weaker than it sounds.
+# `alerts` IS private as of the go-public cutover (2026-09-09) — README.md
+# step 2b's decision point, resolved Option A ("close it") by the operator.
+# nyxloom-P110 had measured what leaving it public cost: ANY team member
+# browsed and joined it (`GET .../posts` 200, `POST .../members` 201 as
+# `nyxloom-installer`, an account deliberately excluded from it), which made
+# the comment on that account below — a compromised install host "cannot read
+# nyxloom's own operator traffic" — weaker than it read.
 #
-# P110 did not flip it, and the reason is mechanical rather than a judgement
-# about the risk: this hook only ever CREATES channels, so `private = true`
-# here would change nothing about the live `alerts` and would leave the
-# committed config asserting something untrue of the running server. Converting
-# it is `mmctl --local channel modify nyxloom:alerts --private` on the live
-# instance, and it is a named decision point (step 2b) in README.md's
-# go-public recipe. If it is ever converted, set `private = true` here IN THE
-# SAME PASS so a fresh create matches.
+# P110 itself could not flip it, for a mechanical reason: this hook only ever
+# CREATES channels, so `private = true` alone changes nothing about an
+# ALREADY-EXISTING channel. Closing it therefore took both halves, in the same
+# pass — `mmctl --local channel modify nyxloom:alerts --private` against the
+# live instance (done; installer read went 200 -> 403, no members dropped,
+# the daemon webhook still delivers), and this flag, which exists purely so a
+# future fresh create comes up private too. Same shape as `intake` below.
+#
+# `installs` stays PUBLIC deliberately: it is the channel the third-party
+# install host posts INTO, its webhook is post-only, and it carries no
+# operator traffic.
 [[mattermost.provision.channels]]
 name = "alerts"
 display_name = "Alerts"
+private = true
 
 [[mattermost.provision.channels]]
 name = "installs"
