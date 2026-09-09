@@ -53,7 +53,6 @@ _SAFE_COMMANDS = {
         "daemon-reload",
         "disable",
         "enable",
-        "enable-now",
         "reboot",
         "restart",
         "show",

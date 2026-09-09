@@ -592,7 +592,7 @@ MaxFileSec=1month
         )
         self.actions.write_file("/etc/systemd/system/thp-config.service", THP_SERVICE)
         self._run(["/usr/bin/systemctl", "daemon-reload"], "reload systemd units")
-        # enable-now, not a bare enable: both units are WantedBy=sysinit.target
+        # enable --now, not a bare enable: both units are WantedBy=sysinit.target
         # (templates.py), a target already passed earlier in THIS boot --
         # `_health_gate_swap_devices()` reads the live zswap compressor from
         # sysfs immediately afterward, in the same _stage2() run, with no
@@ -604,7 +604,17 @@ MaxFileSec=1month
         # 2026-08-27, never reached before because earlier rounds died
         # during partitioning): "health gate failed: zswap compressor is
         # 'lzo', expected 'zstd'".
-        self._run(["/usr/bin/systemctl", "enable-now", "zswap-config.service", "thp-config.service"], "enable and start early tuning units")
+        # "enable-now" (a single token) is NOT a real systemctl verb --
+        # confirmed via `man systemctl` against systemd 257.13-1~deb13u1,
+        # the exact version this installer targets: --now is a FLAG
+        # combined with the enable verb, not its own operation. Caught by
+        # review before this shipped for real -- every OTHER enable+start
+        # call site in this file already uses the correct two-token form
+        # (see e.g. line 406, "docker"); this one was a copy-paste slip
+        # that would have printed "Unknown operation enable-now." and
+        # aborted _configure_zswap() with a brand new failure instead of
+        # fixing the original one.
+        self._run(["/usr/bin/systemctl", "enable", "--now", "zswap-config.service", "thp-config.service"], "enable and start early tuning units")
         self._mark_step("zswap_config", "success", self.config.zswap_compressor)
 
     def _disk_facts(self) -> tuple[int, int, int]:

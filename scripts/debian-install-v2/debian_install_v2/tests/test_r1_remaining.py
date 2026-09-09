@@ -484,12 +484,19 @@ def test_configure_zswap_starts_units_this_boot_not_just_enables_them(tmp_path):
     # unit for the NEXT boot, so _health_gate_swap_devices() (called
     # right after, same boot, no reboot in between) read the kernel's
     # still-default 'lzo' compressor instead of the configured one and
-    # failed the whole install. Must be `enable-now`.
+    # failed the whole install. Must be `enable --now` (two tokens -- a
+    # first attempt at this fix used the single, non-existent token
+    # "enable-now" and would have printed "Unknown operation enable-now."
+    # instead of fixing anything; caught by review before it shipped).
     installer = make_installer(tmp_path, dry_run=False)
     installer._configure_zswap()
     argvs = [a.argv for a in installer.actions.planned]
-    assert ("/usr/bin/systemctl", "enable-now", "zswap-config.service", "thp-config.service") in argvs
-    assert not any(argv[:2] == ("/usr/bin/systemctl", "enable") for argv in argvs)
+    assert ("/usr/bin/systemctl", "enable", "--now", "zswap-config.service", "thp-config.service") in argvs
+    # Neither the original bug (bare enable, no --now at all) nor the
+    # first, also-wrong fix attempt (the single, non-existent token
+    # "enable-now") may reappear.
+    assert ("/usr/bin/systemctl", "enable", "zswap-config.service", "thp-config.service") not in argvs
+    assert not any("enable-now" in argv for argv in argvs)
 
 
 def test_health_gate_compressor_and_log(tmp_path, monkeypatch):
