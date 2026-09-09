@@ -28,7 +28,7 @@ enforcement = "gate"
 # profile instead of vanishing from it (CONSUMERS.md Go point 8).
 argv = [
     "go", "test",
-    "./config/...", "./environment/...", "./server/...", "./internal/cgroups/...",
+    "./config/...", "./environment/...", "./server/...", "./internal/cgroups/...", "./sftp/...",
     "-count=1",
     "-coverpkg=./...",
     "-covermode=atomic",
@@ -60,7 +60,7 @@ language = "go"
 # touch them (server/slice_phase.go, server/slice_children.go and friends,
 # ~964 changed lines); they are outside the declared judged surface of this
 # lane. Add them in a separate, deliberate step — it will move the number.
-source_roots = ["internal/cgroups", "environment/docker", "config", "cmd"]
+source_roots = ["internal/cgroups", "environment/docker", "config", "cmd", "sftp"]
 # WHAT THIS NUMBER DOES NOT INCLUDE — read before trusting it.
 #
 # The profile comes from a plain `go test`. internal/cgroups/integration_test.go

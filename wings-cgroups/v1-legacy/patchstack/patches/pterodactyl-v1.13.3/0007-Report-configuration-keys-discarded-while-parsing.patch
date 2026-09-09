@@ -1,7 +1,7 @@
 From 607353f5d48d2d20cb9679f5fe6a181494fd0a80 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 03:59:43 +0000
-Subject: [PATCH 7/9] Report configuration keys discarded while parsing
+Subject: [PATCH 07/10] Report configuration keys discarded while parsing
 
 Wings parses config.yml permissively and then rewrites the file from the
 parsed struct at boot. A key the schema does not define -- most often a

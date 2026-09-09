@@ -1,0 +1,195 @@
+From 264c025df17c12b9f2855d6e249c829fe29989a1 Mon Sep 17 00:00:00 2001
+From: wings-cgroups <wings-cgroups@localhost>
+Date: Wed, 9 Sep 2026 17:38:55 +0000
+Subject: [PATCH 10/10] Downgrade unauthenticated SFTP connection rejection
+ from Error+stacktrace to Warn
+
+Every SFTP client that never completes authentication -- a bad password, too
+many auth tries, or simply disconnecting mid-handshake, all routine on any
+internet-facing port -- surfaces from golang.org/x/crypto/ssh as a typed
+*ssh.ServerAuthError. AcceptInbound wrapped it with errors.WithStack like any
+other failure, and the call site logged it at Error under a field named
+"error", so a plain unauthenticated probe produced the same Error+Stacktrace:
+shape as a genuine unhandled bug -- observed live, once, from a single scanner
+IP, on the freshly rebased v1.13.3 image.
+
+Simply lowering the log level to Warn does not fix this: loggers/cli/cli.go's
+CLI handler calls errors.WithStackDepthIf on any field literally named
+"error" unconditionally, regardless of level, and would still print a
+Stacktrace: block. The fix has to route this specific, expected class of
+failure through a field that isn't named "error" at all.
+
+logAcceptInboundFailure type-switches the AcceptInbound error via errors.As:
+a *ssh.ServerAuthError (unwrapped through whatever stack AcceptInbound already
+attached) logs at Warn under "reason" instead of "error", so the CLI
+handler never attaches or prints a trace for it. Any other AcceptInbound
+failure -- malformed packets, protocol violations, key exchange failures --
+is unexpected and keeps the original Error+stacktrace behaviour unchanged.
+
+Independent of the cgroups series entirely: sftp/server.go is untouched by
+every other patch in this stack.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01HFUhB8cNuTVNoQZQ3TTVkJ
+---
+ sftp/server.go      |  23 +++++++++-
+ sftp/server_test.go | 107 ++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 129 insertions(+), 1 deletion(-)
+ create mode 100644 sftp/server_test.go
+
+diff --git a/sftp/server.go b/sftp/server.go
+index e2263a4..8916d3a 100644
+--- a/sftp/server.go
++++ b/sftp/server.go
+@@ -107,13 +107,34 @@ func (c *SFTPServer) Run() error {
+ 			go func(conn net.Conn) {
+ 				defer conn.Close()
+ 				if err := c.AcceptInbound(conn, conf); err != nil {
+-					log.WithField("error", err).WithField("ip", conn.RemoteAddr().String()).Error("sftp: failed to accept inbound connection")
++					logAcceptInboundFailure(err, conn.RemoteAddr().String())
+ 				}
+ 			}(conn)
+ 		}
+ 	}
+ }
+ 
++// logAcceptInboundFailure logs an AcceptInbound failure at the severity its cause warrants.
++//
++// A client that never completed authentication -- a bad password, too many auth tries, or
++// simply disconnecting mid-handshake -- surfaces from the ssh library as a *ssh.ServerAuthError.
++// That is background scanner noise on any internet-facing SFTP port: an expected, handled
++// condition, not evidence of a bug. It is logged at Warn, deliberately under a field NOT named
++// "error": the CLI handler unconditionally attaches (and prints) a stack trace to any
++// "error"-named field regardless of level (loggers/cli/cli.go, errors.WithStackDepthIf), so
++// reusing that field name here would still produce a Stacktrace: block despite the level change.
++//
++// Any other AcceptInbound failure -- malformed packets, protocol violations, key exchange
++// failures -- is unexpected and keeps logging at Error with its stack, unchanged.
++func logAcceptInboundFailure(err error, ip string) {
++	var authErr *ssh.ServerAuthError
++	if errors.As(err, &authErr) {
++		log.WithField("ip", ip).WithField("reason", authErr.Error()).Warn("sftp: rejected unauthenticated connection")
++		return
++	}
++	log.WithField("error", err).WithField("ip", ip).Error("sftp: failed to accept inbound connection")
++}
++
+ // AcceptInbound handles an inbound connection to the instance and determines if we should
+ // serve the request or not.
+ func (c *SFTPServer) AcceptInbound(conn net.Conn, config *ssh.ServerConfig) error {
+diff --git a/sftp/server_test.go b/sftp/server_test.go
+new file mode 100644
+index 0000000..c0c3d52
+--- /dev/null
++++ b/sftp/server_test.go
+@@ -0,0 +1,107 @@
++package sftp
++
++import (
++	"testing"
++
++	"emperror.dev/errors"
++	"github.com/apex/log"
++	"github.com/apex/log/handlers/memory"
++	"golang.org/x/crypto/ssh"
++)
++
++// withLogCapture points the package-global apex/log logger at a fresh memory
++// handler for the duration of the test and restores the previous handler and
++// level afterwards, so this test cannot leak state into any other test in the
++// package (or in a package that imports this one) that also logs through the
++// same global logger. log.SetHandler/SetLevel mutate fields on the existing
++// *log.Logger behind log.Log -- log.Log itself is never reassigned -- so the
++// fields, not the log.Log variable, are what must be saved and restored.
++func withLogCapture(t *testing.T) *memory.Handler {
++	t.Helper()
++	logger, ok := log.Log.(*log.Logger)
++	if !ok {
++		t.Fatalf("log.Log is a %T, not *log.Logger; this test cannot capture its output", log.Log)
++	}
++	prevHandler, prevLevel := logger.Handler, logger.Level
++	h := memory.New()
++	log.SetHandler(h)
++	log.SetLevel(log.DebugLevel)
++	t.Cleanup(func() {
++		logger.Handler = prevHandler
++		logger.Level = prevLevel
++	})
++	return h
++}
++
++func TestLogAcceptInboundFailure_AuthRejection_NoStacktraceField(t *testing.T) {
++	h := withLogCapture(t)
++
++	authErr := &ssh.ServerAuthError{Errors: []error{
++		ssh.ErrNoAuth,
++		errors.New("the credentials provided were invalid"),
++	}}
++	logAcceptInboundFailure(authErr, "203.0.113.5:1234")
++
++	if len(h.Entries) != 1 {
++		t.Fatalf("want 1 log entry, got %d", len(h.Entries))
++	}
++	e := h.Entries[0]
++	if e.Level != log.WarnLevel {
++		t.Errorf("want WarnLevel, got %v", e.Level)
++	}
++	if e.Fields.Get("error") != nil {
++		t.Errorf(`log entry carries a field named "error" (%v) -- the CLI handler attaches `+
++			`a stack trace to any field of that name regardless of level (WithStackDepthIf), `+
++			`so this would still print a Stacktrace: block for a routine auth rejection`,
++			e.Fields.Get("error"))
++	}
++	if got := e.Fields.Get("reason"); got != authErr.Error() {
++		t.Errorf(`want field "reason"=%q, got %q`, authErr.Error(), got)
++	}
++	if e.Message != "sftp: rejected unauthenticated connection" {
++		t.Errorf("unexpected message %q", e.Message)
++	}
++}
++
++func TestLogAcceptInboundFailure_WrappedAuthRejection_StillUnwrapped(t *testing.T) {
++	h := withLogCapture(t)
++
++	// AcceptInbound wraps every error it returns with errors.WithStack. Mirror that
++	// here to prove errors.As still finds the *ssh.ServerAuthError underneath --
++	// this is the exact shape logAcceptInboundFailure actually receives in production,
++	// not a hand-picked bare error the real call site would never produce.
++	authErr := &ssh.ServerAuthError{Errors: []error{ssh.ErrNoAuth}}
++	wrapped := errors.WithStack(authErr)
++	logAcceptInboundFailure(wrapped, "203.0.113.5:1234")
++
++	if len(h.Entries) != 1 {
++		t.Fatalf("want 1 log entry, got %d", len(h.Entries))
++	}
++	if e := h.Entries[0]; e.Level != log.WarnLevel {
++		t.Errorf("want WarnLevel even when *ssh.ServerAuthError arrives wrapped in a stack, got %v", e.Level)
++	}
++	if h.Entries[0].Fields.Get("error") != nil {
++		t.Error(`a wrapped auth rejection still must not carry an "error" field`)
++	}
++}
++
++func TestLogAcceptInboundFailure_OtherError_KeepsErrorLevelAndField(t *testing.T) {
++	h := withLogCapture(t)
++
++	unexpected := errors.New("ssh: message too large")
++	logAcceptInboundFailure(unexpected, "203.0.113.5:1234")
++
++	if len(h.Entries) != 1 {
++		t.Fatalf("want 1 log entry, got %d", len(h.Entries))
++	}
++	e := h.Entries[0]
++	if e.Level != log.ErrorLevel {
++		t.Errorf("want ErrorLevel for a non-auth AcceptInbound failure, got %v", e.Level)
++	}
++	if e.Fields.Get("error") == nil {
++		t.Error(`an unexpected failure must keep its "error" field so the existing stack-trace behaviour is unchanged`)
++	}
++	if e.Message != "sftp: failed to accept inbound connection" {
++		t.Errorf("unexpected message %q", e.Message)
++	}
++}
+-- 
+2.55.0
+

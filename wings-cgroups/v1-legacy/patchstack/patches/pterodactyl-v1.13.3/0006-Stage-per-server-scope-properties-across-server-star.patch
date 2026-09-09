@@ -1,7 +1,7 @@
 From 35efcd3bc5db590a99c7a967503b4b296326d303 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 03:59:43 +0000
-Subject: [PATCH 6/9] Stage per-server scope properties across server startup
+Subject: [PATCH 06/10] Stage per-server scope properties across server startup
 
 A game server's load-time peak routinely dwarfs its steady working set --
 world generation and asset streaming reach for everything at once -- so a
