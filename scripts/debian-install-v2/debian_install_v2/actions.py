@@ -39,7 +39,6 @@ _SAFE_COMMANDS = {
     "mkdir": {"-p"},
     "mkswap": set(),
     "modprobe": {"zstd"},
-    "partprobe": set(),
     "partx": {"-a", "-d", "-u"},
     "pip3": {"install"},
     "resize2fs": set(),

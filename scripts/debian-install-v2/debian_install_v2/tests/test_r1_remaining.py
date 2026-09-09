@@ -336,16 +336,16 @@ def test_health_gate_failures(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings")] = ""
-    installer.actions.outputs[("/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = ""
+    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = ""
 
     # missing PARTUUID
     with pytest.raises(RuntimeError, match="missing PARTUUID"):
         installer._health_gate_swap_devices()
 
     # present but not active
-    installer.actions.outputs[("/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = "uuid4"
+    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = "uuid4"
     for num in range(5, 12):
-        installer.actions.outputs[("/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", f"/dev/vda{num}")] = f"uuid{num}"
+        installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", f"/dev/vda{num}")] = f"uuid{num}"
     with pytest.raises(RuntimeError, match="formatted but not active"):
         installer._health_gate_swap_devices()
 
@@ -363,13 +363,23 @@ def test_activate_swap_partitions_real(tmp_path):
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
     for num in range(4, 12):
         p = f"/dev/vda{num}"
-        installer.actions.outputs[("/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", p)] = f"uuid{num}"
+        installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", p)] = f"uuid{num}"
         installer.actions.outputs[("/usr/sbin/mkswap", p)] = ""
-        installer.actions.outputs[("/usr/bin/swapon", "-p", "10", p)] = ""
-    installer.actions.outputs[("/usr/bin/swapon", "-p", "10", "/dev/vda4")] = ""
+        installer.actions.outputs[("/usr/sbin/swapon", "-p", "10", p)] = ""
     installer._activate_swap_partitions()
     fstab = installer.actions.files["/etc/fstab"].decode()
     assert fstab.count(" none swap sw,pri=10,discard=once 0 0") == 8
+    # Regression, 2026-09-08: confirmed live against real Debian 13 trixie
+    # (`which partx` / `which blkid` / `which swapon` on v1001.vxxu.de) --
+    # partx lives at /usr/bin/partx (not /usr/sbin), while blkid and swapon
+    # live at /usr/sbin (not /usr/bin, which the code briefly, wrongly, used
+    # for both). Every fake-actions test faked the subprocess call, so a
+    # bare FileNotFoundError for the wrong path was never exercised until a
+    # real host actually reached this code.
+    argvs = [action.argv for action in installer.actions.planned]
+    assert all(argv[0] != "/usr/bin/blkid" for argv in argvs)
+    assert all(argv[0] != "/usr/bin/swapon" for argv in argvs)
+    assert any(argv[0] == "/usr/sbin/swapon" for argv in argvs)
 
 
 def test_install_stage2_systemd_credentials(tmp_path):
@@ -435,7 +445,7 @@ def test_activate_swap_missing_partuuid(tmp_path):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
-    installer.actions.outputs[("/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = ""
+    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = ""
     with pytest.raises(RuntimeError, match="no PARTUUID"):
         installer._activate_swap_partitions()
 
@@ -444,13 +454,13 @@ def test_activate_swap_partuuid_disappears(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
-    installer.actions.outputs[("/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = "uuid4"
+    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = "uuid4"
     installer.actions.outputs[("/usr/sbin/mkswap", "/dev/vda4")] = ""
     installer.actions.outputs[("/usr/bin/swapon", "-p", "10", "/dev/vda4")] = ""
     real_run = installer.actions.run
     calls = {"n": 0}
     def flaky(argv, **kw):
-        if argv == ["/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4"]:
+        if argv == ["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4"]:
             calls["n"] += 1
             if calls["n"] == 2:
                 return ""
@@ -472,7 +482,7 @@ def test_health_gate_compressor_and_log(tmp_path, monkeypatch):
         "\n".join(f"/dev/vda{n} partition 1G 10" for n in range(4, 12))
     )
     for num in range(4, 12):
-        installer.actions.outputs[("/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", f"/dev/vda{num}")] = f"uuid{num}"
+        installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", f"/dev/vda{num}")] = f"uuid{num}"
     fstab_content = "\n".join(f"PARTUUID=uuid{num} none swap sw,pri=10 0 0" for num in range(4, 12))
     real_read = Path.read_text
     real_is_file = Path.is_file

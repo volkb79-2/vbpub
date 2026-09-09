@@ -1087,7 +1087,18 @@ MaxFileSec=1month
             # its bare subprocess.run) is more reliable than partprobe alone at
             # getting the new swap partitions' /dev/xxxN nodes to actually exist
             # before _activate_swap_partitions() tries to mkswap them (P0#3).
-            self._run(["/usr/sbin/partx", "-a", f"/dev/{self.root_disk}"], "register new partitions with the kernel", dangerous=True)
+            # Confirmed live 2026-09-08 on real Debian 13 trixie: partx lives
+            # at /usr/bin/partx (util-linux), NOT /usr/sbin/partx -- the code
+            # had assumed the latter and crashed with a bare
+            # FileNotFoundError the moment a real host actually reached this
+            # line (every existing test faked the subprocess call, so the
+            # wrong path was never exercised for real). blkid similarly moved
+            # the OTHER direction on this same host (/usr/sbin/blkid, not
+            # /usr/bin/blkid) -- see _health_gate_swap_devices() and
+            # _activate_swap_partitions() below. Paths were verified directly
+            # against a live host with `which`, not assumed from any package
+            # changelog.
+            self._run(["/usr/bin/partx", "-a", f"/dev/{self.root_disk}"], "register new partitions with the kernel", dangerous=True)
             self._run(["/usr/bin/udevadm", "settle"], "wait for udev to create new device nodes")
             readback = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
             readback_entries = self._parse_partition_entries(readback)
@@ -1097,7 +1108,13 @@ MaxFileSec=1month
                     description="rollback failed partition write",
                     dangerous=True,
                 )
-                self._run(["/usr/sbin/partprobe", f"/dev/{self.root_disk}"], "refresh kernel view after rollback")
+                # partx -a + udevadm settle, matching the apply path above
+                # (P0#3) -- not partprobe, which isn't even installed by
+                # this package set (it ships in the separate `parted`
+                # package, never one of stage2's own dependencies) and was
+                # already established as less reliable at this exact job.
+                self._run(["/usr/bin/partx", "-a", f"/dev/{self.root_disk}"], "refresh kernel view after rollback", dangerous=True)
+                self._run(["/usr/bin/udevadm", "settle"], "wait for udev after rollback")
                 raise RuntimeError(f"partition table verification failed; restored backup {backup_dir / backup_name}")
             expected_paths = [
                 f"{self._partition_base}{number}"
@@ -1139,7 +1156,7 @@ MaxFileSec=1month
         }
         for number in expected_numbers:
             path = f"{prefix}{number}"
-            partuuid = "dry-run" if self.actions.dry_run else self._run(["/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", path])
+            partuuid = "dry-run" if self.actions.dry_run else self._run(["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", path])
             if not partuuid:
                 raise RuntimeError(f"health gate failed: missing PARTUUID on {path}")
             if not self.actions.dry_run and path not in active_names:
@@ -1165,12 +1182,12 @@ MaxFileSec=1month
         for offset, number in enumerate(range(first_number, last_number + 1), start=1):
             path = f"{prefix}{number}"
             label = f"vbpub-swap{offset}"
-            partuuid = "dry-run" if self.actions.dry_run else self._run(["/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", path])
+            partuuid = "dry-run" if self.actions.dry_run else self._run(["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", path])
             if not self.actions.dry_run and not partuuid:
                 raise RuntimeError(f"expected swap partition has no PARTUUID after partitioning: {path}")
             self._run(["/usr/sbin/mkswap", "-L", label, path], f"format {path}", dangerous=True)
-            self._run(["/usr/bin/swapon", "-p", str(self.config.swap_priority), path], f"enable {path}", dangerous=True)
-            refreshed = partuuid if self.actions.dry_run else self._run(["/usr/bin/blkid", "-s", "PARTUUID", "-o", "value", path])
+            self._run(["/usr/sbin/swapon", "-p", str(self.config.swap_priority), path], f"enable {path}", dangerous=True)
+            refreshed = partuuid if self.actions.dry_run else self._run(["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", path])
             if not refreshed:
                 raise RuntimeError(f"PARTUUID disappeared after mkswap: {path}")
             fstab_entries.append(f"PARTUUID={refreshed} none swap sw,pri={self.config.swap_priority}{discard} 0 0")

@@ -93,7 +93,6 @@ def make_installer(tmp_path: Path) -> tuple[Installer, FakeHostActions]:
     actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     actions.outputs[("/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE")] = "/dev/vda3 / ext4\n"
     actions.outputs[("/usr/sbin/blockdev", "--getsize64", "/dev/vda")] = str(512 * 1024 ** 3)
-    actions.outputs[("/usr/sbin/partprobe", "/dev/vda")] = ""
     installer = Installer(config, actions)
     StateStore(config.state_dir).save_new(StateStore.new(config))
     return installer, actions
@@ -208,7 +207,7 @@ def test_apply_uses_partx_and_udevadm_not_partprobe(tmp_path):
     actions.readback = readback
     installer._apply_known_swap_shape()
     argvs = [action.argv for action in actions.planned]
-    assert ("/usr/sbin/partx", "-a", "/dev/vda") in argvs
+    assert ("/usr/bin/partx", "-a", "/dev/vda") in argvs
     assert ("/usr/bin/udevadm", "settle") in argvs
     assert not any(argv[0] == "/usr/sbin/partprobe" for argv in argvs)
 
