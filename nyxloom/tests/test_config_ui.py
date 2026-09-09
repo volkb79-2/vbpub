@@ -550,3 +550,32 @@ def test_non_browser_client_without_origin_still_mutates(cfg_daemon, sample_proj
 
     assert status == 200
     assert "ready_queue_target = 7" in _project_toml_text(sample_project)
+
+
+# ---------------------------------------------------------------------------
+# B29 2026-09-09 (nyxloom-P105): the two copies of the editable-key list.
+
+
+def test_the_dashboard_form_and_the_server_bounds_name_the_same_policy_keys():
+    """`render._EDITABLE_POLICY_KEYS` says in its own comment that it is "the
+    render-side copy" of `daemon._POLICY_BOUNDS`' key set -- render.py has no
+    import on daemon.py, so nothing but this test ties the copies together.
+
+    The two failure modes are not symmetric and both are real. A key in
+    _POLICY_BOUNDS but not in the form is a knob the server will accept and
+    validate that an operator cannot reach from the dashboard. A key in the
+    form but not in _POLICY_BOUNDS renders an input whose every Save is
+    refused server-side, which reads to the operator as a broken page.
+
+    Caught during nyxloom-P105: adding two Policy keys to _POLICY_BOUNDS
+    alone left the correspondence silently broken, with no test to say so.
+    """
+    assert set(render._EDITABLE_POLICY_KEYS) == set(daemon._POLICY_BOUNDS), (
+        "editable-key drift -- in bounds only: "
+        f"{sorted(set(daemon._POLICY_BOUNDS) - set(render._EDITABLE_POLICY_KEYS))}; "
+        "in the form only: "
+        f"{sorted(set(render._EDITABLE_POLICY_KEYS) - set(daemon._POLICY_BOUNDS))}")
+    # Not hollow: both lists are non-empty and carry a key this test would
+    # notice the loss of.
+    assert "max_active_tasks" in render._EDITABLE_POLICY_KEYS
+    assert "review_progress_wall_seconds" in daemon._POLICY_BOUNDS

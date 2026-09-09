@@ -1416,9 +1416,16 @@ def _render_quality(www: Path, registry: dict[str, Path], all_states: dict[str, 
 # P16 2026-07-15: 2 more int keys (carve_ahead_target, headroom_warn).
 # carve_authority (the one STRING-valued key) is rendered separately as a
 # <select> below, not through this numeric-input list.
+# B29 2026-09-09 (nyxloom-P105): the two review-progress budgets join the
+# list. They belong here for the same reason stall_log_quiet_seconds and
+# attempt_max_wall_seconds do -- they are the knobs an operator reaches for
+# when a leg is being stopped too early or too late -- and leaving them out
+# would break this list's stated correspondence with daemon._POLICY_BOUNDS,
+# which is the only thing keeping the two copies honest.
 _EDITABLE_POLICY_KEYS = [
     "max_active_tasks", "ready_queue_target", "max_attempts_per_task",
     "wave_max_diffs", "stall_log_quiet_seconds", "attempt_max_wall_seconds",
+    "review_progress_wall_seconds", "review_progress_max_records",
     "reconcile_interval_seconds", "carve_ahead_target", "headroom_warn",
 ]
 
