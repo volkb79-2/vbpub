@@ -29,3 +29,45 @@ each other or with the B078 sibling wave.
 
 Next: await LOG/REPORT + green gate, independently verify from the gate's
 own log markers, then dispatch a fresh adversarial reviewer (never fork).
+
+## PR-R2 — implementation returned, gate independently re-verified GREEN, reviewer dispatched
+
+2026-09-09. Implementer landed both items: `991ede05` (B074,
+`judge.allow_test_path_targets`), `dc944932` (B077, named symlink
+refusal), `427157c1` (a real B070-surface interaction: the gate caught
+the new field missing from the locked W7 v11 schema asset — fixed per
+the guard's own docstring instructions), LOG+REPORT at `b3a33415`.
+Controller independently re-verified the gate from
+`b074-b077-gate2.log`'s own markers — `tester-unified: PASS (exit 0)` /
+`ASSAY_REGISTERED_GATE_COMPLETE=1` on `427157c1`, matching.
+
+B074's ambiguous edge case (a genuine test file, WITH the flag set) was
+resolved: still refuses — the flag overrides only the directory half of
+an adapter's test-path convention, never the filename half. Flagged for
+the reviewer to independently confirm, not accept.
+
+One judgment call ratified without waiting for review: the wave prompt's
+"no verdict-schema change" and B074's own backlog acceptance box ("the
+flag appears in the verdict's resolved judgment") were genuinely in
+tension — a wording gap in the prompt, not a real conflict. Implementer
+added the flag to `judgment.r1` additively, no `VERDICT_SCHEMA_VERSION`
+bump, byte-identical verdict for a non-opting lane. Ruled: this is fine,
+matches every other additive MINOR feature this project has shipped —
+reviewer told not to treat "a field was added" as a blocker by itself,
+but to independently verify the additivity claim and the three-place
+wiring.
+
+Also disclosed, not this wave's to fix: 8 pre-existing comments elsewhere
+in the tree say "B074" meaning a DIFFERENT, older item (the RecursionError
+sweep, renumbered to B075 after those comments shipped) — a naming
+collision predating this wave. Reviewer told to confirm it's genuinely
+pre-existing, not something to fix now.
+
+Same host running B078 checkpoint 1 concurrently (operator-authorized
+parallel track) — reviewer told a sibling gate container may appear and
+to identify its own by worktree-path argv only.
+
+Next: await ACCEPT (or blockers) before merging. `CHANGES.md` will
+conflict at merge (assay 6.0.0 released to main mid-wave, folding
+`[Unreleased]`) — controller resolves that at merge time, not a review
+blocker.
