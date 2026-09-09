@@ -40,8 +40,18 @@ docker build -q -f "$HERE/Dockerfile" -t "$IMAGE" "$DEBIAN_INSTALL_DIR" >/dev/nu
 cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-echo "+ docker run -d --name $NAME --privileged ... -v $HOST_DEBIAN_INSTALL_DIR:/work"
-docker run -d --name "$NAME" --privileged \
+# --cgroupns=host is REQUIRED on this estate's docker daemon (confirmed
+# 2026-09-09): its default --cgroupns=private gives a privileged
+# systemd-as-PID1 container a cgroup namespace systemd can't finish booting
+# in -- it dies within milliseconds, exit 255, with ZERO log output (dies
+# before its own logging machinery initializes at all), and this reproduces
+# identically on a well-known, unrelated public systemd-in-docker image
+# (jrei/systemd-debian:12), proving it's this daemon's default, not
+# anything about this image. --cgroupns=host (share the daemon's own
+# cgroup namespace instead of a fresh private one) fixed it 100% reliably
+# across repeated retries on both that control image and this one.
+echo "+ docker run -d --name $NAME --privileged --cgroupns=host ... -v $HOST_DEBIAN_INSTALL_DIR:/work"
+docker run -d --name "$NAME" --privileged --cgroupns=host \
     --tmpfs /run --tmpfs /run/lock --tmpfs /tmp \
     -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
     -v "$HOST_DEBIAN_INSTALL_DIR:/work:rw" \
