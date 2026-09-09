@@ -467,3 +467,225 @@ def test_verify_is_unaffected_by_where_resume_state_lives(git_repo: GitRepo, tmp
     document = json.loads(verdict_path.read_text(encoding="utf-8"))
     assert str(state_dir) not in json.dumps(document)
     assert main(["verify", str(verdict_path)]) == 0
+
+
+# --- B077: a destination reached THROUGH a symlink inside the judged tree ----
+
+
+def _seed_with_a_committed_symlink_to_a_gitignored_store(repo: GitRepo) -> None:
+    """The reviewer's exact repro: a symlink INSIDE the tree pointing at a
+    gitignored location, both halves committed -- i.e. a consumer who
+    configured this exactly right.
+
+    The link is COMMITTED on purpose. An untracked link would itself make
+    the tree dirty, which would confuse the thing under test with the
+    `DIRTY_TREE` failure the sibling refusals above already cover.
+    """
+    _seed(repo)
+    (repo.path / "durable-store").mkdir()
+    repo.write(".gitignore", "durable-store/\n")
+    (repo.path / "store-link").symlink_to("durable-store")
+    repo.commit_all("a committed symlink to a gitignored store")
+
+
+def test_a_state_dir_reached_through_a_symlink_names_the_link_not_gits_stderr(
+    git_repo: GitRepo, tmp_path
+):
+    """(B077.) Git refuses to resolve a pathspec through a symlink at all --
+    `fatal: pathspec '<path>' is beyond a symbolic link`, exit 128 -- which
+    reached the operator verbatim as `ERROR`/`GIT_FAILED`: a repository
+    failure shape for a destination-configuration mistake, and one a
+    consumer who gitignored the real location correctly could hit while
+    doing everything right. Named before git is asked, exactly as round-1's
+    N2 pathspec-magic guard is.
+    """
+    _seed_with_a_committed_symlink_to_a_gitignored_store(git_repo)
+    err = io.StringIO()
+
+    code = main(
+        [
+            "run",
+            "unit",
+            "--file",
+            str(git_repo.path / "assay.toml"),
+            "--state-dir",
+            str(git_repo.path / "store-link" / "records"),
+            "--resume",
+        ],
+        stderr=err,
+    )
+
+    assert code != 0
+    message = err.getvalue()
+    # the raw passthrough is GONE...
+    assert "GIT_FAILED" not in message, message
+    # git's own stderr always interpolates the offending path immediately
+    # after `pathspec `; the refusal quotes the phrasing (so an operator who
+    # already met the raw error recognises it) but is never that passthrough.
+    assert "fatal: pathspec '" not in message, message
+    # ...replaced by a message naming the symlink AND the traversal
+    assert "store-link" in message, message
+    assert "symlink" in message, message
+    assert "BAD_LANE_CONFIG" in message, message
+    # and pointing at the destination that CAN be checked
+    assert "durable-store" in message, message
+    assert git_repo.git("status", "--porcelain").strip() == ""
+
+
+def test_a_progress_destination_reached_through_a_symlink_refuses_the_same_way(
+    git_repo: GitRepo, tmp_path
+):
+    """The other half of the reviewer's pairing. `--progress` probes the
+    destination FILE rather than a representative record, so it reaches the
+    same guard by a different probe -- which is exactly why the check lives
+    in the shared helper both flags call."""
+    _seed_with_a_committed_symlink_to_a_gitignored_store(git_repo)
+    err = io.StringIO()
+
+    code = main(
+        [
+            "run",
+            "unit",
+            "--file",
+            str(git_repo.path / "assay.toml"),
+            "--progress",
+            str(git_repo.path / "store-link" / "progress.jsonl"),
+        ],
+        stderr=err,
+    )
+
+    assert code != 0
+    message = err.getvalue()
+    assert "GIT_FAILED" not in message, message
+    # git's own stderr always interpolates the offending path immediately
+    # after `pathspec `; the refusal quotes the phrasing (so an operator who
+    # already met the raw error recognises it) but is never that passthrough.
+    assert "fatal: pathspec '" not in message, message
+    assert "store-link" in message, message
+    assert "--progress" in message, message
+    assert git_repo.git("status", "--porcelain").strip() == ""
+
+
+def test_the_real_destination_behind_the_link_is_still_accepted(
+    git_repo: GitRepo, tmp_path
+):
+    """The remedy the refusal names must actually work: passing the link's
+    own destination -- a gitignored directory inside the tree -- is the
+    already-correct case B066 shipped, and B077 must not have narrowed it."""
+    _seed_with_a_committed_symlink_to_a_gitignored_store(git_repo)
+
+    assert (
+        main(
+            [
+                "run",
+                "unit",
+                "--file",
+                str(git_repo.path / "assay.toml"),
+                "--state-dir",
+                str(git_repo.path / "durable-store"),
+                "--resume",
+            ]
+        )
+        == _COMPLETED
+    )
+    assert sorted((git_repo.path / "durable-store").glob("*.json"))
+    assert git_repo.git("status", "--porcelain").strip() == ""
+
+
+def test_a_destination_that_IS_a_symlink_is_still_refused_by_its_own_older_guard(
+    git_repo: GitRepo, tmp_path
+):
+    """A symlink in the FINAL position is a different mistake with an older,
+    earlier refusal, and B077 must not have moved it.
+
+    Both flags lstat their destination before any repository work --
+    `output.resolve_state_directory` requires a directory, `output.
+    validate_progress_destination` an ordinary regular file -- and a symlink
+    is neither. Those fire first and say so in their own words; B077's guard
+    never sees these paths.
+    """
+    _seed(git_repo)
+    (git_repo.path / "real-target").mkdir()
+    (git_repo.path / "dir-link").symlink_to("real-target")
+    (git_repo.path / "real-progress-target").write_text("", encoding="utf-8")
+    (git_repo.path / "progress-link.jsonl").symlink_to("real-progress-target")
+    git_repo.commit_all("committed symlinks in the final position")
+
+    err = io.StringIO()
+    assert main(
+        [
+            "run", "unit", "--file", str(git_repo.path / "assay.toml"),
+            "--state-dir", str(git_repo.path / "dir-link"), "--resume",
+        ],
+        stderr=err,
+    ) != 0
+    assert "is not a directory" in err.getvalue(), err.getvalue()
+
+    err = io.StringIO()
+    assert main(
+        [
+            "run", "unit", "--file", str(git_repo.path / "assay.toml"),
+            "--progress", str(git_repo.path / "progress-link.jsonl"),
+        ],
+        stderr=err,
+    ) != 0
+    assert "not an ordinary regular file" in err.getvalue(), err.getvalue()
+
+
+def test_the_guard_probes_directory_components_only(git_repo: GitRepo):
+    """`git check-ignore` answers normally about a path whose LAST component
+    is a symlink -- there is nothing "beyond" it -- so a guard that probed
+    every component would refuse a question git can and does answer.
+
+    Asserted against the shared helper directly, because both CLI flags
+    refuse a final-position symlink earlier for their own separate reasons
+    (above), so this scoping is not observable end-to-end through either.
+    """
+    from assay.cli import _refuse_a_visible_store_inside_the_tree
+
+    _seed(git_repo)
+    (git_repo.path / "durable-store").mkdir()
+    (git_repo.path / "durable-store" / "real.jsonl").write_text("", encoding="utf-8")
+    git_repo.write(".gitignore", "durable-store/\nlink.jsonl\n")
+    (git_repo.path / "link.jsonl").symlink_to("durable-store/real.jsonl")
+    git_repo.commit_all("a gitignored symlink in the final position")
+
+    # No exception: the probe's only symlink is its last component, so the
+    # guard stands aside and `path_is_ignored` answers "ignored".
+    _refuse_a_visible_store_inside_the_tree(
+        "link.jsonl",
+        flag="--progress",
+        what="the progress file",
+        root=git_repo.path,
+        probe=Path("link.jsonl"),
+    )
+
+
+def test_a_destination_genuinely_outside_the_repository_is_unaffected(
+    git_repo: GitRepo, tmp_path
+):
+    """B077's second acceptance line, first half: the guard runs only for a
+    destination `_containments` already placed inside the tree, so an
+    outside path never reaches it -- even one whose own parents are
+    symlinks."""
+    _seed(git_repo)
+    real = tmp_path / "real-outside"
+    real.mkdir()
+    (tmp_path / "outside-link").symlink_to(real)
+
+    assert (
+        main(
+            [
+                "run",
+                "unit",
+                "--file",
+                str(git_repo.path / "assay.toml"),
+                "--state-dir",
+                str(tmp_path / "outside-link" / "records"),
+                "--resume",
+            ]
+        )
+        == _COMPLETED
+    )
+    assert sorted((real / "records").glob("*.json"))
+    assert git_repo.git("status", "--porcelain").strip() == ""

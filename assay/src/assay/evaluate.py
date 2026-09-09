@@ -963,12 +963,46 @@ def _tally_branches(
     return covered, total, frozenset(missing)
 
 
+def _is_test_filename(adapter: LanguageAdapter, rel_path: str) -> bool:
+    """Does the adapter's own test-path convention match *rel_path*'s FILENAME
+    ALONE -- that is, independently of every directory it sits under?
+
+    (B074) The one question ``judge.allow_test_path_targets`` needs answered
+    and :meth:`~assay.adapters.base.LanguageAdapter.is_test_path` cannot
+    answer, because that predicate deliberately fuses two different claims:
+    "this file is named like a test" (``test_foo.py``, ``conftest.py``,
+    ``foo.test.ts``, ``bar_test.go``) and "this file lives under a directory
+    named like a test tree" (``tests/``, ``__tests__/``). The first is a
+    property of the FILE and the flag never overrides it; the second is a
+    property of the repository's LAYOUT, which is exactly the assumption
+    B074 found to be false for a consumer whose deployed helper libraries
+    live under ``tests/``.
+
+    Asking the adapter about the bare basename is how that split is taken
+    without a second adapter method and without this module re-deriving any
+    language's convention: each adapter's rule is a pure predicate over a
+    path string, and a basename has no directory segments for a
+    directory-segment branch to match. So a ``True`` here means some
+    FILENAME branch of the adapter's own rule fired -- for every adapter
+    shipped today, and for any future one, without this function knowing
+    which branches exist.
+
+    Not a substitute for :meth:`~assay.adapters.base.LanguageAdapter.
+    is_test_path` anywhere else: it is deliberately WEAKER (it never sees
+    the directory), so using it as the sweep-side gate would let real test
+    trees into a diff-scoped judgment. It is called from exactly one place,
+    below, and only after ``is_test_path`` has already said ``True``.
+    """
+    return adapter.is_test_path(PurePosixPath(rel_path).name)
+
+
 def _resolve_whole_target(
     raw_target: str,
     *,
     adapter: LanguageAdapter,
     project_root: Path,
     source_root_paths: Sequence[Path],
+    allow_test_path_targets: bool = False,
 ) -> str:
     """One declared ``judge.targets`` entry, resolved and structurally
     validated against the REAL filesystem of the snapshot being judged
@@ -991,6 +1025,38 @@ def _resolve_whole_target(
     which is precisely the vacuity hole this whole mode exists to close;
     inside an adapter-excluded directory; not adapter-recognised source; or
     a test path per the adapter's own convention.
+
+    **(B074) *allow_test_path_targets* relaxes the LAST of those six gates,
+    and only its directory half.** A ``judge.targets`` entry is not a swept
+    path: it is an explicit, reviewed, per-lane declaration, and a lane
+    setting ``judge.allow_test_path_targets = true`` is asserting "the paths
+    I named are library code despite their location". That claim is
+    recorded in the verdict (``judgment.r1.allow_test_path_targets``), so a
+    reviewer can see that a graded target was one assay would otherwise
+    have refused.
+
+    The lane's R2 twin of this gate, :func:`assay.runner.
+    _mutation_targets_whole`, honours the SAME flag on the same terms --
+    the two resolve one declared ``judge.targets`` list one tier apart, so
+    a flag that reached only one of them would make the tiers disagree
+    about a single declaration.
+
+    What the flag does NOT do, deliberately:
+
+    * it never reaches the SWEEP-side ``is_test_path`` checks
+      (:func:`evaluate_coverage`'s and :func:`assay.mutation.
+      resolve_mutation_targets`'), where paths arrive from a diff and
+      nobody has vouched for them;
+    * it never relaxes the other five gates above, which catch real
+      declaration errors and are not what B074 asked to relax (nor their
+      five counterparts in the R2 twin); and
+    * it never admits a file whose OWN FILENAME is a test filename by the
+      adapter's convention (``test_foo.py``, ``conftest.py``,
+      ``foo.test.ts``, ``bar_test.go``) -- :func:`_is_test_filename` is the
+      split, and its docstring states why. Grading a genuine test file is
+      the vacuity ``whole_target`` exists to close, and "my deployed
+      library happens to live under ``tests/``" is not a claim about the
+      file's own name.
 
     Returns the target's PROJECT-relative POSIX spelling (the profile
     lookup's repo-top-relative conversion is the caller's job, §5 rule 1).
@@ -1042,12 +1108,31 @@ def _resolve_whole_target(
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
     if adapter.is_test_path(rel_to_project):
-        raise AssayError(
-            f"judge.targets entry {raw_target!r} is a test path per the "
-            f"adapter's own convention",
-            outcome=Outcome.ERROR,
-            reason_code=ReasonCode.BAD_LANE_CONFIG,
-        )
+        # B074. Three-way, not two: WHY the adapter called it a test path
+        # decides whether a declared target can override it.
+        if not allow_test_path_targets:
+            raise AssayError(
+                f"judge.targets entry {raw_target!r} is a test path per the "
+                f"adapter's own convention. If this file is library code "
+                f"that merely LIVES under a test directory -- deployed "
+                f"helper modules under tests/ are the named case -- declare "
+                f"judge.allow_test_path_targets = true on this lane to "
+                f"assert that, which the verdict then records",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
+        if _is_test_filename(adapter, rel_to_project):
+            raise AssayError(
+                f"judge.targets entry {raw_target!r} is a test path by its "
+                f"own FILENAME per the adapter's convention, which "
+                f"judge.allow_test_path_targets does not override: that flag "
+                f"asserts a claim about a repository's LAYOUT ('this "
+                f"directory holds library code'), never about a file that "
+                f"names itself a test. Grading a test file's own coverage is "
+                f"the vacuity whole-target mode exists to close",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.BAD_LANE_CONFIG,
+            )
     return rel_to_project
 
 
@@ -1061,6 +1146,7 @@ def evaluate_targets(
     source_root_paths: Sequence[Path],
     fail_under: float,
     allow_excluded: bool,
+    allow_test_path_targets: bool = False,
 ) -> CoverageEvaluation:
     """B005's whole-target judge (wave-1 §5, A-260): intersect a FIXED,
     lane-declared set of source files with *profile* -- never a diff.
@@ -1084,7 +1170,12 @@ def evaluate_targets(
     *targets* are the lane's declared, already load-validated (§5's
     canonical-spelling grammar, :mod:`assay.config`) project-relative
     paths. Each is resolved and validated against the real snapshot
-    filesystem by :func:`_resolve_whole_target`, then looked up in *profile*
+    filesystem by :func:`_resolve_whole_target` -- *allow_test_path_targets*
+    (B074, the lane's ``judge.allow_test_path_targets``, absent means
+    ``False``) is forwarded there unchanged and read NOWHERE else in this
+    module: it relaxes exactly one of that function's six gates and has no
+    bearing on lookup, arithmetic or the claim assembled below -- then
+    looked up in *profile*
     by its REPO-TOP-RELATIVE spelling -- the profile's own RAW keys are
     PROJECT-relative (the lane's coverage command always runs with ``cwd =
     project_root``); :func:`_normalized_profile_files` (via
@@ -1130,6 +1221,7 @@ def evaluate_targets(
             adapter=adapter,
             project_root=project_root.resolve(),
             source_root_paths=source_root_paths,
+            allow_test_path_targets=allow_test_path_targets,
         )
         repo_path = (project_prefix / rel_to_project).as_posix()
         file_cov = cov_by_repo_path.get(repo_path)

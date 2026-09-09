@@ -375,3 +375,80 @@ def test_uncovered_line_canary_outside_whole_target_mode_ignores_targets_entirel
     assert judge is not None
     assert judge.mode is None
     assert judge.canary is not None
+
+
+# --- B074: judge.allow_test_path_targets ------------------------------------
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_allow_test_path_targets_is_legal_under_whole_target_mode(
+    project: Project, value: bool
+):
+    lane = WHOLE_TARGET_LANE.replace(
+        "\n[lanes.package.where]",
+        f"\nallow_test_path_targets = {str(value).lower()}\n\n[lanes.package.where]",
+    )
+    judge = load_lane_file(project.write(lane)).lane("package").judge
+    assert judge is not None
+    assert judge.allow_test_path_targets is value
+
+
+def test_allow_test_path_targets_absent_stays_none(project: Project):
+    """`None` means ABSENT FROM THE FILE, never "assay chose false" -- the
+    loader's own standing rule, which `runner.evaluate_r1` resolves to the
+    effective `False` at exactly one place."""
+    judge = load_lane_file(project.write(WHOLE_TARGET_LANE)).lane("package").judge
+    assert judge is not None
+    assert judge.allow_test_path_targets is None
+
+
+def test_allow_test_path_targets_round_trips_through_as_declared(project: Project):
+    lane = WHOLE_TARGET_LANE.replace(
+        "\n[lanes.package.where]",
+        "\nallow_test_path_targets = true\n\n[lanes.package.where]",
+    )
+    judge = load_lane_file(project.write(lane)).lane("package").judge
+    assert judge is not None
+    assert judge.as_declared()["allow_test_path_targets"] is True
+    # ...and a lane that omitted it declares no such key at all
+    plain = load_lane_file(project.write(WHOLE_TARGET_LANE)).lane("package").judge
+    assert plain is not None
+    assert "allow_test_path_targets" not in plain.as_declared()
+
+
+def test_allow_test_path_targets_under_changed_lines_mode_is_refused(
+    project: Project,
+):
+    """Inert config, refused by name: the flag relaxes the gate on a DECLARED
+    target, and changed-line mode declares none. The sweep's own test-path
+    exclusion is deliberately not overridable, which the message says."""
+    lane = R1_LANE.replace(
+        "\n[lanes.package.where]",
+        "\nallow_test_path_targets = true\n\n[lanes.package.where]",
+    )
+    with pytest.raises(LaneConfigError, match="judge.mode is not 'whole_target'"):
+        load_lane_file(project.write(lane))
+
+
+def test_allow_test_path_targets_without_r1_is_refused():
+    """R1's whole-target resolution is the only reader, so an R2-only lane
+    declaring it declares something nothing reads."""
+    lane = R2_ONLY_LANE.replace(
+        "\n[lanes.package.judge.mutation]",
+        '\nmode = "whole_target"\ntargets = ["src/mod.py"]\n'
+        "allow_test_path_targets = true\n\n[lanes.package.judge.mutation]",
+    )
+    with pytest.raises(
+        LaneConfigError,
+        match=r"'judge\.allow_test_path_targets' but rigor .* does not include R1",
+    ):
+        _load(drop_key(lane, "base"))
+
+
+def test_allow_test_path_targets_rejects_a_non_boolean(project: Project):
+    lane = WHOLE_TARGET_LANE.replace(
+        "\n[lanes.package.where]",
+        '\nallow_test_path_targets = "yes"\n\n[lanes.package.where]',
+    )
+    with pytest.raises(LaneConfigError, match="judge.allow_test_path_targets"):
+        load_lane_file(project.write(lane))

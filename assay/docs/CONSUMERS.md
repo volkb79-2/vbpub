@@ -415,6 +415,82 @@ live outside the committed tree, so a personal ignore rule there could hide
 real untracked source with nothing else reporting it. Modified and staged
 tracked files remain dirty regardless of any exclude source.
 
+### When your deployed library code lives under `tests/`: `judge.allow_test_path_targets`
+
+Assay refuses to whole-target-judge a file its language adapter calls a test
+path — for Python that is anything under a `tests/` segment, plus any
+`test_*.py` or `conftest.py`. Grading the tests is exactly the vacuity
+`whole_target` exists to close, so that veto is right for a path swept out of
+a diff, where nobody has vouched for it.
+
+A `judge.targets` entry is not a swept path. If your repository keeps
+**deployed library code** under a `tests/` tree — harness modules that are
+`COPY`-ed into a container image and run as a real service, a fixture-contract
+library other services import — that code is production-shaped, has no test
+runner of its own, and is therefore the code most likely to accumulate
+unexercised branches. Declaring `judge.allow_test_path_targets = true` asserts
+"the paths I named are library code despite their location":
+
+```toml
+schema_version = 2
+
+[lanes.harness_lib]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["python", "-m", "pytest", "tests/unit/test_harness_lib.py", "-q", "--cov=tests._harness.seeded_targets.variety", "--cov-branch", "--cov-report=json:.assay/coverage.json"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "10m"
+allow_argv_append = false
+
+[lanes.harness_lib.isolation]
+snapshot_selection = "repository"
+
+[lanes.harness_lib.judge]
+language = "python"
+source_roots = ["tests"]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+mode = "whole_target"
+targets = ["tests/_harness/seeded_targets/variety.py"]
+# Without this line the lane refuses ERROR/BAD_LANE_CONFIG naming the target
+# and the test-path gate -- `variety.py` matches on the `tests/` SEGMENT, not
+# on any test-filename convention.
+allow_test_path_targets = true
+
+[lanes.harness_lib.judge.coverage]
+format = "coverage-py-json"
+artifact = ".assay/coverage.json"
+```
+
+The resulting verdict's `judgment.r1` carries `allow_test_path_targets: true`
+beside `mode` and `targets`, so a reviewer reading the artifact alone can see
+that a graded target was one assay would otherwise have refused. Like
+`allow_excluded` and `require_branch` beside it, that field records the
+**declared policy**, not whether the relaxation was exercised: a lane that sets
+the flag and happens to name no test path still records `true`. A lane that
+does not set the flag writes no such key at all — `false` is spelled as
+absence, and every verdict written before this flag existed stays valid
+unchanged.
+
+Four things the flag deliberately does **not** do:
+
+| | |
+|---|---|
+| It does not relax the **changed-line sweep**. | A `changed_lines` lane over a diff touching the same file still skips it. Those paths come from a diff and nobody vouched for them; there is no argument you can pass to change that. |
+| It does not admit a file whose own **filename** is a test filename. | `tests/_harness/test_lib.py` and `tests/_harness/conftest.py` are still refused *with* the flag set, and the refusal says so. The flag is a claim about a directory's contents, never about a file that names itself a test. Same split in every adapter: `__tests__/helper.ts` yes, `helper.test.ts` no. |
+| It does not relax the **other five** target gates. | Symlink, source-root containment, regular-file, excluded-directory and adapter-recognised-source all still apply, with or without it. |
+| It does not relax **anything at R2 that R1 keeps strict**. | Whole-target mutation (`rigor = ["R0","R1","R2"]` under `mode = "whole_target"`) honors the *same* flag on the *same* terms — the two tiers resolve one declared `judge.targets` list, so one declaration governs both and they cannot disagree about it. R2's own gate applies the identical directory/filename split and refuses a test-*filename* target with or without the flag. |
+
+The flag is legal only on an **R1 lane in `whole_target` mode** — declaring it
+anywhere else is refused at load. R1 specifically, even for a lane whose real
+interest is R2: R1 is the tier that writes `judgment.r1.allow_test_path_targets`,
+so an R2-only lane would relax its own target gate with nothing in the verdict
+admitting it, which is the auditability the flag exists to provide. Declare
+`rigor = ["R0", "R1", "R2"]` and both tiers honor the one declaration.
+
 ## Resume and shard a long mutation lane
 
 **A consumer gate passes `--resume --progress <path>` on EVERY lane it runs,
@@ -457,6 +533,19 @@ the progress file has. A gitignored path inside the tree is fine, and so is
 any path outside it. Verify and refusal semantics are otherwise unchanged:
 this relocates *where* resume state lives, never *what* it contains, and
 `assay verify` does not read it either way.
+
+**Give both flags a real path, not one that goes through a symlinked
+directory inside the tree.** Git refuses to resolve a pathspec through a
+symlink at all — `fatal: pathspec '<path>' is beyond a symbolic link` — so
+`--state-dir <repo>/store-link/records` (where `store-link` is a symlink) is a
+destination assay cannot ask the ignore question about in *either* direction,
+even when the link's target is gitignored and everything else is configured
+correctly. That is refused before any work with a message naming the link, its
+target, and the real path to pass instead; it is deliberately not the raw git
+error, which reads as a repository failure rather than a flag you can fix. A
+symlink in the *final* position is a different matter and has its own older
+refusal: `--state-dir` requires a directory and `--progress` an ordinary
+regular file, and a symlink is neither.
 
 Preview a subset without executing it:
 
@@ -1943,7 +2032,9 @@ OUTSIDE the repository (or a gitignored one): a progress file git can see inside
 would make the lane refuse `NO_MEASUREMENT`/`DIRTY_TREE`. **A destination inside the judged tree
 that git can see is refused before any work**, naming the cause and the fix — the same preflight
 `--state-dir` gets, and for the same reason. A gitignored path inside the tree is fine, and so is
-any path outside it. The verdict does not name the destination -- the caller already chose it,
+any path outside it; a path reached *through a symlinked directory* inside the tree is refused by
+name, because git cannot answer the ignore question through a symlink at all (see `--state-dir`
+above). The verdict does not name the destination -- the caller already chose it,
 the same way it does for `--verdict-json`. **The stream is diagnostic, never
 evidence:** `assay verify` does not read it, and no verdict field derives from
 it.

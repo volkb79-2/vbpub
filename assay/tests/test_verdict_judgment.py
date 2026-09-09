@@ -1222,3 +1222,45 @@ def test_verdict_refuses_a_canary_payload_whose_mechanism_disagrees_with_judgmen
                 r3=JudgmentR3(mechanism="import-break", targets=("pkg/mod.py",)),
             ),
         )
+
+
+# --- B074: judgment.r1.allow_test_path_targets ------------------------------
+
+
+def test_allow_test_path_targets_is_absent_from_a_lane_that_did_not_opt_in():
+    """The additive-not-a-version-bump argument, asserted rather than
+    asserted-in-prose: a verdict from a lane that did not opt in is
+    byte-identical to one written before the field existed."""
+    policy = JudgmentR1(**BASE_R1_POLICY)
+    assert policy.allow_test_path_targets is False
+    assert "allow_test_path_targets" not in policy.to_dict()
+    explicit_false = JudgmentR1(**BASE_R1_POLICY, allow_test_path_targets=False)
+    assert explicit_false.to_dict() == policy.to_dict()
+
+
+def test_allow_test_path_targets_is_recorded_when_the_lane_opted_in():
+    policy = JudgmentR1(
+        **BASE_R1_POLICY,
+        mode="whole_target",
+        targets=("tests/_harness/lib.py",),
+        allow_test_path_targets=True,
+    )
+    assert policy.to_dict()["allow_test_path_targets"] is True
+
+
+def test_allow_test_path_targets_is_refused_outside_whole_target_mode():
+    """The artifact-side half of the loader's own placement rule: the flag is
+    read at exactly one site, so recording it true under changed-line mode
+    would claim a relaxation that never applied."""
+    with pytest.raises(ValueError, match="not 'whole_target'"):
+        JudgmentR1(**BASE_R1_POLICY, allow_test_path_targets=True)
+
+
+def test_allow_test_path_targets_must_be_a_boolean():
+    with pytest.raises(ValueError, match="allow_test_path_targets must be a boolean"):
+        JudgmentR1(
+            **BASE_R1_POLICY,
+            mode="whole_target",
+            targets=("tests/_harness/lib.py",),
+            allow_test_path_targets="true",
+        )

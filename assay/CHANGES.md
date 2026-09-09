@@ -112,6 +112,44 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   RG-36): assay gains no stall threshold of its own. No verdict-schema change
   — the lane's budget is a declaration, never wire evidence.
 
+- **A declared whole-target entry can name deployed library code that lives
+  under `tests/` (B074).** `judge.targets` is an explicit, reviewed, per-lane
+  declaration, but assay refused ANY entry its adapter called a test path —
+  including a file that matches only on the `tests/` *directory* segment. Any
+  project whose deployed helper libraries live under a test tree (harness
+  modules `COPY`-ed into a container image and run as a real service is the
+  reproduced case) could therefore not put them under a whole-target judge at
+  all, and the only remedies were to move the file or leave the code ungraded.
+  New **`judge.allow_test_path_targets = true`** (default `false`, legal only
+  on an R1 lane in `whole_target` mode) lets the lane assert "the paths I named
+  are library code despite their location". It relaxes exactly one gate and
+  only its directory half: the changed-line sweep's own test-path exclusion is
+  untouched and takes no such parameter; the other five target gates (symlink,
+  source-root containment, regular-file, excluded-directory,
+  adapter-recognised-source) still apply; and a target whose own FILENAME is a
+  test filename
+  (`test_foo.py`, `conftest.py`, `foo.test.ts`, `bar_test.go`) is still refused
+  *with* the flag set, in every registered adapter — grading a test file is the
+  vacuity whole-target mode exists to close.
+  **Both whole-target tiers honor it**: R1's coverage target resolution and
+  R2's mutation target resolution read one declared `judge.targets` list, so a
+  flag reaching only one would make a single declaration mean two things — and
+  would leave the motivating consumer coverage-gradeable but never
+  mutation-gradeable. There is no safety asymmetry to justify a split: mutation
+  runs in an ephemeral snapshot, never in the consumer's tree. R2's own refusal
+  now names the flag and the remedy, as R1's already did.
+  The effective policy is recorded as
+  `judgment.r1.allow_test_path_targets` — a DECLARATION, like `allow_excluded`
+  and `require_branch` beside it, so a lane that sets the flag and names no
+  test path still records `true` — and a reviewer can see from the artifact
+  alone that a graded target was one assay would otherwise have refused.
+  **No verdict-schema version bump**: the key is emitted only when true, so a
+  lane that did not opt in writes a byte-identical verdict, and no pre-B074
+  assay can emit it at all — its loader refuses `allow_test_path_targets` as a
+  surplus judge key, whatever the lane's targets. `assay verify` accepts the
+  new key and refuses it under `changed_lines` mode or spelled as an explicit
+  `false`.
+
 ### Changed
 
 - **BREAKING (verdict schema v10 → v11): `judgment.r2.discarded` LISTS the
@@ -219,6 +257,25 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   the real work tree, leaving it dirty. Both namespaces are now checked, in
   both directions, and any of them saying "inside" refuses. Found by
   adversarial review.
+
+- **A `--state-dir`/`--progress` destination reached through a symlink inside
+  the judged tree surfaced git's raw stderr (B077).** Git refuses to resolve a
+  pathspec through a symlink at all — `fatal: pathspec '<path>' is beyond a
+  symbolic link`, exit 128 — so the ignore question has no answer in *either*
+  direction there. That fatal reached the operator verbatim as
+  `ERROR`/`GIT_FAILED`, a repository-failure shape for what is a
+  destination-configuration mistake, and one a consumer whose real location was
+  correctly gitignored could hit while doing everything right. It is now
+  refused before any work as `ERROR`/`BAD_LANE_CONFIG`, naming the symlink, its
+  target, and the real path to pass instead — the same diagnostic discipline
+  `_linked_worktree_gap()` (B068) and the round-1 pathspec-magic guard beside
+  it already established, and answered in the same place: before git is asked,
+  not by dressing up its error afterwards. The two already-correct outcomes are
+  unchanged: a destination genuinely outside the repository, and one reached
+  with no symlink involved. A symlink in the *final* position is a different
+  mistake and keeps its own older, earlier refusal (`--state-dir` requires a
+  directory, `--progress` an ordinary regular file). Filed by the
+  progress/resume wave's round-2 reviewer.
 
 <!-- cmru: release history -->
 

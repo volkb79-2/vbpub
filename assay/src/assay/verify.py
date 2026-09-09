@@ -1656,6 +1656,12 @@ def _reconstruct_judgment_r1(raw: dict) -> JudgmentR1:
         mode=raw["mode"],
         targets=tuple(raw["targets"]) if "targets" in raw else None,
         require_branch=raw["require_branch"],
+        # B074: registered here in the same commit the dataclass and the
+        # schema gain it, per the comment above. Absent means `False` -- the
+        # value every verdict written before the flag existed carries, and
+        # the value `to_dict` re-emits as absence, so reconstruction is
+        # round-trip exact in both directions.
+        allow_test_path_targets=raw.get("allow_test_path_targets", False),
     )
     _reject_unknown_keys(raw, r1.to_dict(), "judgment.r1")
     return r1

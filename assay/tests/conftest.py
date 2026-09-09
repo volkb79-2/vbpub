@@ -747,6 +747,7 @@ def make_r1_judge(
     mode: str | None = None,
     targets: tuple[str, ...] | None = None,
     require_branch: bool | None = None,
+    allow_test_path_targets: bool | None = None,
 ) -> JudgeConfig:
     """A fully-resolved R1 ``JudgeConfig`` — every field
     ``JUDGE_FIELDS_BY_RIGOR["R1"]`` names — built directly rather than
@@ -768,7 +769,15 @@ def make_r1_judge(
     ``targets=(...)`` explicitly; passing ``targets`` without ``base=None``
     is legal here (this helper does not enforce the config loader's own
     "base forbidden under whole_target with no R2" rule -- that is
-    :mod:`assay.config`'s OWN test surface, not this bypass helper's)."""
+    :mod:`assay.config`'s OWN test surface, not this bypass helper's).
+
+    *allow_test_path_targets* (B074) joins them on the same terms, and for a
+    measured reason: while this helper could not build a judge carrying the
+    flag, no runner-level test could reach either of its two consumers
+    (``runner.evaluate_r1``'s whole-target branch and
+    ``runner._mutation_targets_whole``), and round-1 review found BOTH
+    forwardings mutable to a literal ``False`` with the whole suite still
+    green. A helper that cannot express a field is why nothing tests it."""
     return JudgeConfig(
         language=language,
         source_roots=tuple(str(p) for p in source_root_paths),
@@ -782,6 +791,7 @@ def make_r1_judge(
         mode=mode,
         targets=targets,
         require_branch=require_branch,
+        allow_test_path_targets=allow_test_path_targets,
     )
 
 

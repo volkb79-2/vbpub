@@ -299,6 +299,7 @@ _KNOWN_JUDGE_FIELDS: tuple[str, ...] = (
     "mode",
     "targets",
     "require_branch",
+    "allow_test_path_targets",
 )
 
 #: (B019/A-328) who owns the comparison commit a changed-line lane judges
@@ -783,6 +784,17 @@ class JudgeConfig:
     #: the file omits it, which means `false`. Legal only on a lane
     #: declaring R1.
     require_branch: bool | None = None
+    #: (B074) the declared `judge.allow_test_path_targets` -- `None` when the
+    #: file omits it, which means `false`. Legal only on an R1 lane in
+    #: `whole_target` mode. It relaxes the test-path gate applied to an
+    #: EXPLICITLY DECLARED target at BOTH whole-target tiers -- `evaluate.
+    #: _resolve_whole_target` (R1 coverage) and `runner.
+    #: _mutation_targets_whole` (R2 mutation) -- which resolve the same
+    #: `judge.targets` list, so one declaration governs both and they cannot
+    #: disagree about it. Nothing else reads it; the SWEEP-side test-path
+    #: exclusions are not overridable. Stored as declared, never defaulted
+    #: here.
+    allow_test_path_targets: bool | None = None
     #: (B019/A-328) the declared `judge.base_source`, verbatim -- `None` when
     #: the file omits it, which means `"declared"`. Stored as declared, never
     #: defaulted here, exactly as `mode` is: the loader records what the file
@@ -816,6 +828,8 @@ class JudgeConfig:
             declared["targets"] = list(self.targets)
         if self.require_branch is not None:
             declared["require_branch"] = self.require_branch
+        if self.allow_test_path_targets is not None:
+            declared["allow_test_path_targets"] = self.allow_test_path_targets
         if self.attestation_dir is not None:
             declared["attestation_dir"] = self.attestation_dir
         if self.adjudication_dir is not None:
@@ -2103,6 +2117,49 @@ def _load_judge(
             f"believe a floor is enforced when it is not"
         )
 
+    # B074. The opt-out is scoped by NAME here, exactly as `require_branch`
+    # and `base_source` are, rather than folded into any
+    # `JUDGE_FIELDS_BY_RIGOR` tuple: it is optional in the one place that
+    # reads it, so it can never be a member of `required`, and the generic
+    # surplus message below would send an operator looking for the wrong
+    # mistake ("rigor reads none of judge.{allow_test_path_targets}" is true
+    # of an R2-only whole-target lane for a reason that has nothing to do
+    # with rigor arithmetic).
+    #
+    # Both placements are refused because both are INERT (A-062): the flag is
+    # read at exactly two sites, `evaluate._resolve_whole_target` and
+    # `runner._mutation_targets_whole`, which resolve the SAME `judge.targets`
+    # list one tier apart. Both are whole-target-only, and R1 is required
+    # because it is the tier that records the effective policy into the
+    # verdict (`judgment.r1.allow_test_path_targets`) -- an R2-only lane
+    # would honour the flag with nothing in the artifact saying it did, which
+    # is the auditability half of B074's own acceptance.
+    allow_test_path_targets = None
+    if "allow_test_path_targets" in table:
+        allow_test_path_targets = _as_bool(
+            table["allow_test_path_targets"], where, "judge.allow_test_path_targets"
+        )
+        if effective_mode != "whole_target":
+            raise LaneConfigError(
+                f"{where}: declares 'judge.allow_test_path_targets' but "
+                f"judge.mode is not 'whole_target' -- the flag relaxes the "
+                f"test-path gate on an EXPLICITLY DECLARED judge.targets "
+                f"entry, and changed-line mode declares no targets, so here "
+                f"it is inert config that cannot fail loudly if it is wrong. "
+                f"The changed-line sweep's own test-path exclusion is not "
+                f"overridable by design"
+            )
+        if not r1_declared:
+            raise LaneConfigError(
+                f"{where}: declares 'judge.allow_test_path_targets' but "
+                f"rigor {list(rigor)} does not include R1. R1 is the tier "
+                f"that RECORDS the effective policy into the verdict "
+                f"(judgment.r1.allow_test_path_targets), so an R2-only lane "
+                f"would relax its own target gate with nothing in the "
+                f"artifact saying it did -- which is the auditability the "
+                f"flag exists to provide. Declare R1 alongside R2"
+            )
+
     if effective_mode == "whole_target":
         # A-260/§5 as corrected by A-325: `base` resolves nothing for a
         # whole-target lane at EITHER tier, so it moves OUT of `required`
@@ -2218,6 +2275,10 @@ def _load_judge(
             "mode",
             "require_branch",
             "base_source",
+            # B074: joins the three above for their reason exactly -- optional
+            # in the only mode that reads it, so never a member of `required`,
+            # with its own placement rules enforced by name above.
+            "allow_test_path_targets",
         }
     )
     if surplus:
@@ -2320,6 +2381,7 @@ def _load_judge(
         mode=mode,
         targets=targets,
         require_branch=require_branch,
+        allow_test_path_targets=allow_test_path_targets,
         attestation_dir=attestation_dir,
         adjudication_dir=adjudication_dir,
         evidence=evidence,
