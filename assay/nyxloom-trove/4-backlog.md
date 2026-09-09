@@ -8807,3 +8807,53 @@ claim that the current release was "5.2" is wrong.
       the edit;
 - [ ] no other 5.x/6.x self-version claim in `README.md` or
       `docs/CONSUMERS.md` is left disagreeing with `CHANGES.md`.
+
+---
+
+## B085 — a THIRD declared-target test-path veto (`judge.canary.target`, R3) is untouched by B074's opt-out and its refusal names neither a flag nor a remedy
+
+**Filed 2026-09-09** by B074+B077's round-2 fix-verification reviewer,
+while confirming the B074→R2 extension reached exactly the sites it
+should and no further. **Not a blocker on B074/B077** — filed so the gap
+has a home rather than getting lost.
+
+### What was measured
+
+B074 (`judge.allow_test_path_targets`) now reaches two declared-target
+test-path gates: `_resolve_whole_target` (R1) and, after the fix-verified
+extension, `_mutation_targets_whole` (R2) — both resolve the SAME
+`judge.targets` list, one tier down. `canary.py:477` is a **third**,
+independent declared-target veto: it resolves `judge.canary.target` (R3),
+refuses an explicit canary target sitting under a test-path convention,
+and does not consult `allow_test_path_targets` at all. The combination
+(a lane declaring `allow_test_path_targets = true` AND a
+`judge.canary.target` under `tests/`) loads and still refuses, with a
+message naming neither the flag nor a remedy.
+
+### Why this is filed, not fixed, and not even ruled on yet
+
+The reviewer explicitly declined to treat this as the same gap B074/B077
+just closed: `judge.canary.target` is a **different declaration** with
+**genuinely different semantics** — a canary probe deliberately BREAKS
+the named file to prove the suite notices, which is not "measure this
+file's coverage" (R1) or "mutate this file to see if the suite notices"
+(R2) so much as "corrupt this exact file on purpose as the experiment
+itself." Nothing in the shipped docs claims `allow_test_path_targets`
+reaches R3, so there is no "one declaration, two meanings" contradiction
+of the kind that forced the R2 ruling — this is a genuinely open question,
+not an oversight the same fix already answers.
+
+### Acceptance (for whoever picks this up)
+
+- [ ] a ruling on whether `allow_test_path_targets` should reach
+      `canary.py:477`, or whether R3 canary targets need their OWN
+      opt-out given the different semantics (declaring "this is library
+      code, measure/mutate it" is not the same claim as "deliberately
+      break this file as a canary experiment");
+- [ ] whichever way it goes, the refusal at `canary.py:477` should name
+      the actual gate and, if a remedy exists, state it — today it names
+      neither;
+- [ ] if a fix lands, the same three-probe discipline B074/B077 used:
+      the positive (flag/mechanism set, target resolves), the controlled
+      negative (same lane without it, still refuses), and confirmation
+      that R1/R2's own behavior is unaffected.
