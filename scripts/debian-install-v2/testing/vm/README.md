@@ -46,6 +46,18 @@ cd scripts/debian-install-v2/testing/vm
 ./run-vm-harness.sh destroy smoke1
 ```
 
+For fast, repeated installer test iterations, use the "ready" base instead
+of the raw stock image (see "Skipping repeated first-boot cost" below):
+
+```bash
+./run-vm-harness.sh prepare-ready-base case-b   # one-time: base-prep + cloud-init once + disable it
+./run-vm-harness.sh start iter1 --case case-b-ready
+./run-vm-harness.sh wait iter1     # boots straight past cloud-init entirely
+./run-vm-harness.sh copy iter1 ../../debian_install_v2 /home/tester/debian_install_v2
+./run-vm-harness.sh ssh iter1 -- 'cd debian_install_v2 && sudo python3 -m debian_install_v2 ...'
+./run-vm-harness.sh destroy iter1   # the case-b-ready base itself is untouched -- next iter starts identical
+```
+
 `run-vm-harness.sh` builds (if needed) and reuses one persistent runner
 container (`debian-install-vm-harness`) across invocations — a VM started
 by one call needs to still be reachable by a later `wait`/`ssh`/`destroy`
@@ -59,11 +71,45 @@ plus the one-time setup. If you're already inside the runner container
 (`docker exec -it debian-install-vm-harness bash`), just run `./vmctl`
 directly from `/work/vm`.
 
-Subcommands: `prepare-base <case>`, `start <run> [--case case-b]
-[--ssh-port N] [--mem MB] [--smp N]`, `wait <run> [--timeout-s N]`,
-`ssh <run> [-- cmd...]`, `copy <run> <src> <dst>`, `console <run>`,
+Subcommands: `prepare-base <case>`, `prepare-ready-base <case>` (see below),
+`start <run> [--case case-b] [--ssh-port N] [--mem MB] [--smp N]
+[--no-apt-cache]`, `wait <run> [--timeout-s N]`, `ssh <run> [-- cmd...]`,
+`copy <run> <src> <dst>`, `snapshot <run> <new-case>` (flatten a *stopped*
+run's disk into a new `.vm/images/<new-case>-base.qcow2`), `console <run>`,
 `status <run>`, `stop <run>` (graceful QMP `system_powerdown`, falling
 back to SIGTERM then SIGKILL), `destroy <run>` (stop + remove all state).
+
+## Skipping repeated first-boot cost: "ready" base images
+
+`vmctl prepare-ready-base <case>` builds on `prepare-base`: boots the stock
+base once, waits for cloud-init's full first-boot sequence to finish (see
+"What happens before our own installer runs" below), then permanently
+disables cloud-init (`touch /etc/cloud/cloud-init.disabled` + masking its
+four unit files) and flattens the result into `.vm/images/<case>-ready-
+base.qcow2` via `vmctl snapshot`. Starting from `--case <case>-ready`
+instead of the raw `<case>` skips cloud-init's network/user/SSH-key/apt-
+sources setup entirely on every subsequent boot — this is the disk state
+right at the moment a real host would hand off to this project's own
+stage1, which is exactly the point: fast, deterministic, byte-identical
+starting points for repeated installer-parameter test iterations.
+
+## Caching apt traffic across resets
+
+Every `vmctl start` (unless `--no-apt-cache`) lazily starts `apt-cacher-ng`
+inside the runner container and points the guest's apt at it via
+`Acquire::http::Proxy` (reachable at QEMU user-mode networking's synthetic
+gateway address, `10.0.2.2`, from inside the guest). This caches
+plain-HTTP traffic — `deb.debian.org`, `security.debian.org` — so repeated
+installer runs against the same package set don't re-fetch from the real
+internet every reset. It does **not** cover Docker's own apt repo
+(`https://download.docker.com`, HTTPS-only); caching that would require
+rewriting debian-install-v2's own generated `docker.sources` to use
+apt-cacher-ng's special `/HTTPS/` URL convention, which isn't worth
+coupling the real installer to a test-harness detail for a comparatively
+small, infrequently-hit package set. The cache lives inside the runner
+container's own filesystem (not `.vm/`, not bind-mounted), so it persists
+across VM resets within one runner lifetime but is lost on
+`run-vm-harness.sh --stop-daemon`.
 
 State lives under `.vm/` (gitignored): `.vm/images/<case>-base.qcow2`
 (immutable, shared across runs), `.vm/runs/<run>/` (disk overlay, cloud-init
@@ -104,6 +150,42 @@ reachable as its own network node (multiple guests talking to each other,
 arbitrary guest-side listening ports), that needs TAP + `CAP_NET_ADMIN` +
 `/dev/net/tun` instead — not implemented here, ask before adding it (it's
 a real privilege increase, unlike everything else this harness does).
+
+## What happens before our own installer runs
+
+On both a real Netcup host and this harness's own VM, cloud-init runs to
+completion before anything of ours gets a chance to act — Netcup's own
+provisioning API literally has a distinct `CloudinitWait` step, separate
+from `SetupImage` (see `debian_install_v2/installer.py`'s
+`_REBOOT_DELAY_SECONDS` comment, and `../DESIGN.md` for the raw JSON this
+project captured from a live install task). The standard Debian
+genericcloud `/etc/cloud/cloud.cfg` runs, in order:
+
+1. `cloud-init-local.service` — finds the datasource (NoCloud/ConfigDrive
+   on Netcup; this harness's own `seed.iso`) before networking exists.
+2. `cloud-init.service` (network stage) — network bring-up, then modules
+   including `growpart`/`resizefs`, `users-groups`, `ssh` (host key
+   generation, `authorized_keys`).
+3. `cloud-config.service` (config stage) — `apt-configure` (sources.list),
+   `ssh-import-id`, `runcmd`.
+4. `cloud-final.service` — `package-update-upgrade-install`, `scripts-user`
+   (any final user-data script), `final-message`.
+
+Working hypothesis, **not independently confirmed** against a real host's
+actual `/etc/cloud/cloud.cfg` (flagging this as inference, not a checked
+fact): `growpart`'s default behavior in stage 2 is why Case B (root filling
+the whole disk) is the more common real-world starting shape rather than
+the edge case its letter suggests — growpart grows root to fill whatever
+disk it's handed unless something disables it first. Case A would then mean
+either the disk wasn't grown for some other reason, or Netcup's own
+provisioning disables/skips growpart for that host. Worth confirming
+directly against a live host's `cloud-init analyze show` output next time
+one is available, rather than relying on this inference.
+
+Only after stage 4 completes is SSH reliably up with a stable environment —
+which is exactly why `vmctl wait` already blocks on `cloud-init status
+--wait` before returning control, and why `prepare-ready-base` snapshots
+right after that point (see above).
 
 ## What this harness does NOT do (yet)
 

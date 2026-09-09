@@ -33,10 +33,13 @@
 #
 # Usage:
 #   vmctl prepare-base <case>          # download + stage .vm/images/<case>-base.qcow2
-#   vmctl start <run>  [--case <case>] [--ssh-port N] [--mem MB] [--smp N]
+#   vmctl prepare-ready-base <case>    # prepare-base, then boot+wait for cloud-init to
+#                                       # finish, disable it, flatten -> <case>-ready-base.qcow2
+#   vmctl start <run>  [--case <case>] [--ssh-port N] [--mem MB] [--smp N] [--no-apt-cache]
 #   vmctl wait <run>   [--timeout-s N]
 #   vmctl ssh <run> [-- cmd...]        # interactive shell if no cmd given
 #   vmctl copy <run> <src> <dst>       # rsync local src -> guest dst
+#   vmctl snapshot <run> <new-case>    # flatten a STOPPED run's disk -> <new-case>-base.qcow2
 #   vmctl console <run>                # tail -f the serial console log
 #   vmctl status <run>
 #   vmctl stop <run>                   # graceful: QMP system_powerdown, then SIGTERM
@@ -61,9 +64,35 @@ SSH_KEY="$SSH_DIR/id_ed25519"
 DEFAULT_SSH_PORT=2222
 DEFAULT_MEM_MB=2048
 DEFAULT_SMP=2
+APT_CACHE_PORT=3142
 
 log() { echo "+ $*" >&2; }
 die() { echo "vmctl: $*" >&2; exit 1; }
+
+ensure_apt_cache() {
+    # Best-effort: repeated installer runs across CoW VM resets otherwise
+    # re-fetch the exact same plain-HTTP debian.org/security.debian.org
+    # packages from the real internet every single time. apt-cacher-ng
+    # caches that transparently when guests are pointed at it as a plain
+    # Acquire::http::Proxy (see cloud_init_seed()). Deliberately does NOT
+    # cover Docker's own apt repo (https://download.docker.com) -- that's
+    # HTTPS-only, and apt-cacher-ng can only cache HTTPS repos via a
+    # special /HTTPS/ URL-rewrite convention that would require rewriting
+    # debian-install-v2's own generated docker.sources -- not worth that
+    # coupling for a comparatively small, infrequently-hit package set;
+    # those re-fetch for real each time a run reaches docker_install.
+    command -v apt-cacher-ng >/dev/null 2>&1 || return 1
+    pgrep -f '/apt-cacher-ng ' >/dev/null 2>&1 && return 0
+    log "starting apt-cacher-ng on 127.0.0.1:$APT_CACHE_PORT (guest-visible as 10.0.2.2:$APT_CACHE_PORT)"
+    /usr/lib/apt-cacher-ng/apt-cacher-ng -c /etc/apt-cacher-ng ForeGround=0 \
+        >/tmp/apt-cacher-ng.startup.log 2>&1
+    for _ in $(seq 1 20); do
+        pgrep -f '/apt-cacher-ng ' >/dev/null 2>&1 && return 0
+        sleep 0.25
+    done
+    log "apt-cacher-ng did not come up (see /tmp/apt-cacher-ng.startup.log inside the runner) -- guests will fetch packages directly, not fatal"
+    return 1
+}
 
 ensure_ssh_key() {
     mkdir -p "$SSH_DIR"
@@ -96,8 +125,46 @@ cmd_prepare_base() {
     esac
 }
 
+cmd_prepare_ready_base() {
+    # Builds on prepare-base: boots the stock base once, lets cloud-init
+    # run its full first-boot sequence to completion (network bring-up,
+    # user/SSH-key provisioning, apt sources, growpart/resizefs where
+    # applicable -- see testing/vm/DESIGN.md for the full breakdown of what
+    # a real Netcup host's own cloud-init pass does before this project's
+    # own stage1 ever gets a chance to run), then permanently disables
+    # cloud-init and flattens the result into a new base image. Every
+    # future `start --case <case>-ready` boots straight past all of that
+    # onto a disk state matching the moment right before our own installer
+    # would take over on a real host -- this is the "snapshot to use as
+    # base just before we start to run" the operator asked for.
+    local case_name="${1:?usage: vmctl prepare-ready-base <case>}"
+    local dest="$IMAGES_DIR/${case_name}-ready-base.qcow2"
+    if [ -f "$dest" ]; then
+        log "already staged: $dest"
+        return 0
+    fi
+    cmd_prepare_base "$case_name"
+
+    local run="prep-ready-$case_name-$$"
+    log "booting a throwaway run ($run) to let cloud-init finish once, then disabling it for good"
+    # cmd_start's qemu is -daemonize'd (fully detached), and this whole
+    # script runs under set -e -- a failure anywhere in the sequence below
+    # (e.g. cmd_wait timing out under host load, live-confirmed 2026-09-09)
+    # would otherwise abort immediately and leave that qemu process running
+    # with nothing to stop it. Clean up the throwaway run on any failure.
+    trap 'log "cleaning up throwaway run $run after failure"; cmd_stop "$run" 2>/dev/null || true; cmd_destroy "$run" 2>/dev/null || true' ERR
+    cmd_start "$run" --case "$case_name" --no-apt-cache
+    cmd_wait "$run"
+    cmd_ssh "$run" -- 'sudo touch /etc/cloud/cloud-init.disabled && sudo systemctl disable cloud-init-local.service cloud-init.service cloud-config.service cloud-final.service 2>/dev/null; true'
+    cmd_stop "$run"
+    cmd_snapshot "$run" "${case_name}-ready"
+    cmd_destroy "$run"
+    trap - ERR
+    log "ready base staged: $dest -- future runs: vmctl start <run> --case ${case_name}-ready"
+}
+
 cloud_init_seed() {
-    local run_dir="$1"
+    local run_dir="$1" use_apt_cache="$2"
     local pubkey
     pubkey="$(cat "$SSH_KEY.pub")"
     mkdir -p "$run_dir/cloud-init"
@@ -112,6 +179,18 @@ users:
 ssh_pwauth: false
 package_update: false
 EOF
+    if [ "$use_apt_cache" = "1" ]; then
+        # 10.0.2.2 is QEMU user-mode networking's (slirp) synthetic gateway
+        # address -- connections to it are redirected to the host running
+        # the qemu process (this runner container's own loopback), which is
+        # exactly where ensure_apt_cache() starts apt-cacher-ng listening.
+        cat >> "$run_dir/cloud-init/user-data" <<EOF
+write_files:
+  - path: /etc/apt/apt.conf.d/02vbpub-test-proxy
+    content: |
+      Acquire::http::Proxy "http://10.0.2.2:$APT_CACHE_PORT";
+EOF
+    fi
     cat > "$run_dir/cloud-init/meta-data" <<EOF
 instance-id: $(basename "$run_dir")-$(date +%s)
 local-hostname: vbpub-test
@@ -122,18 +201,20 @@ EOF
 run_dir_for() { echo "$RUNS_DIR/$1"; }
 
 cmd_start() {
-    local run="${1:?usage: vmctl start <run> [--case case-b] [--ssh-port N] [--mem MB] [--smp N]}"
+    local run="${1:?usage: vmctl start <run> [--case case-b] [--ssh-port N] [--mem MB] [--smp N] [--no-apt-cache]}"
     shift
     local case_name="case-b"
     local ssh_port="$DEFAULT_SSH_PORT"
     local mem_mb="$DEFAULT_MEM_MB"
     local smp="$DEFAULT_SMP"
+    local want_apt_cache=1
     while [ $# -gt 0 ]; do
         case "$1" in
             --case) case_name="$2"; shift 2 ;;
             --ssh-port) ssh_port="$2"; shift 2 ;;
             --mem) mem_mb="$2"; shift 2 ;;
             --smp) smp="$2"; shift 2 ;;
+            --no-apt-cache) want_apt_cache=0; shift ;;
             *) die "unknown start option: $1" ;;
         esac
     done
@@ -151,7 +232,11 @@ cmd_start() {
     log "creating CoW overlay over $base"
     qemu-img create -q -f qcow2 -F qcow2 -b "$base" "$run_dir/disk.qcow2" >/dev/null
 
-    cloud_init_seed "$run_dir"
+    local apt_cache_active=0
+    if [ "$want_apt_cache" = "1" ] && ensure_apt_cache; then
+        apt_cache_active=1
+    fi
+    cloud_init_seed "$run_dir" "$apt_cache_active"
 
     echo "$ssh_port" > "$run_dir/ssh_port"
 
@@ -236,6 +321,23 @@ cmd_copy() {
         "$src" "tester@127.0.0.1:$dst"
 }
 
+cmd_snapshot() {
+    local run="${1:?usage: vmctl snapshot <run> <new-case>}"
+    local new_case="${2:?usage: vmctl snapshot <run> <new-case>}"
+    local run_dir; run_dir="$(run_dir_for "$run")"
+    [ -f "$run_dir/disk.qcow2" ] || die "no such run: $run"
+    if [ -f "$run_dir/qemu.pid" ] && kill -0 "$(cat "$run_dir/qemu.pid")" 2>/dev/null; then
+        die "run '$run' is still live -- vmctl stop $run first (snapshotting a live disk under a running guest is not safe; a clean shutdown is what gets flattened)"
+    fi
+    mkdir -p "$IMAGES_DIR"
+    local dest="$IMAGES_DIR/${new_case}-base.qcow2"
+    [ -f "$dest" ] && die "base '$new_case' already exists ($dest) -- remove it by hand first if you really mean to replace it"
+    log "flattening $run_dir/disk.qcow2 (+ its backing chain) -> $dest"
+    qemu-img convert -q -O qcow2 "$run_dir/disk.qcow2" "$dest.tmp"
+    mv "$dest.tmp" "$dest"
+    log "snapshot ready: vmctl start <new-run> --case $new_case"
+}
+
 cmd_console() {
     local run="${1:?usage: vmctl console <run>}"
     local run_dir; run_dir="$(run_dir_for "$run")"
@@ -309,14 +411,16 @@ cmd_destroy() {
 
 main() {
     local sub="${1:-}"
-    [ -n "$sub" ] || die "usage: vmctl <prepare-base|start|wait|ssh|copy|console|status|stop|destroy> ..."
+    [ -n "$sub" ] || die "usage: vmctl <prepare-base|prepare-ready-base|start|wait|ssh|copy|snapshot|console|status|stop|destroy> ..."
     shift
     case "$sub" in
         prepare-base) cmd_prepare_base "$@" ;;
+        prepare-ready-base) cmd_prepare_ready_base "$@" ;;
         start) cmd_start "$@" ;;
         wait) cmd_wait "$@" ;;
         ssh) cmd_ssh "$@" ;;
         copy) cmd_copy "$@" ;;
+        snapshot) cmd_snapshot "$@" ;;
         console) cmd_console "$@" ;;
         status) cmd_status "$@" ;;
         stop) cmd_stop "$@" ;;

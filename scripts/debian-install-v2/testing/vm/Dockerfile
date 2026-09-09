@@ -19,6 +19,12 @@
 # container sharing the HOST kernel can never safely run that path, but a
 # QEMU guest has its own, genuinely separate kernel, so swap activated
 # inside it is the GUEST's own swap, never the host's.
+#
+# apt-cacher-ng runs inside this same container (vmctl starts it lazily,
+# see ensure_apt_cache()) so repeated installer runs across CoW VM resets
+# don't re-fetch the same plain-HTTP debian.org/security.debian.org
+# packages from the real internet every time -- see vmctl's own comment
+# for why this does NOT cover Docker's HTTPS-only apt repo.
 FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -26,4 +32,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         cloud-image-utils \
         openssh-client rsync socat \
         wget ca-certificates \
+        apt-cacher-ng \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
