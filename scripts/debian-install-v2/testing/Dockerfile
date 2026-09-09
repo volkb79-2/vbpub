@@ -1,12 +1,16 @@
 # Privileged, systemd-as-PID1 test environment for
-# debian_install_v2/inuse_partition_editor.py -- AND, via the qemu-system-x86
-# packages below, groundwork for a planned boot-level test harness (real
-# initramfs execution, which no container -- privileged or not -- can ever
-# exercise, since a container shares the host kernel and never actually
-# boots one: no bootloader, no initramfs unpack/execute, no switch_root).
-# That harness's own driver script does not exist yet -- only its base-image
-# downloader does (download-base-image.sh) -- the references to
-# "run-boot-test.sh" below describe the intended design, not shipped code.
+# debian_install_v2/inuse_partition_editor.py's real --commit path (real
+# loop devices, real udev, real systemd unit activation).
+#
+# The QEMU/KVM boot-level test harness (real initramfs execution, which no
+# container -- privileged or not -- can ever exercise, since a container
+# shares the host kernel and never actually boots one) is a SEPARATE,
+# unprivileged image at testing/vm/Dockerfile, not this one -- QEMU's own
+# TCG software CPU emulation needs no host privilege at all (no loop
+# devices, no /dev/kvm, nothing this image's --privileged/systemd/devtmpfs
+# machinery exists for), so coupling it to this image would only make the
+# VM harness depend on this container's own, separate startup problems for
+# no reason. See testing/vm/README.md.
 #
 # Why this exists instead of adapting tester-unified (vbpub's shared gate
 # image): tester-unified runs as an unprivileged uid (1003), has no systemd,
@@ -22,34 +26,20 @@
 # (`losetup --partscan`), and `partx`/`udevadm settle` behaving as they do on
 # a real host. Real systemd-as-PID1 (not a bare --privileged shell) also lets
 # `systemd-analyze verify` and an actual `systemctl start` of the generated
-# stage2 unit be exercised the same way production reboots into it. The same
-# loop-device access is reused by run-boot-test.sh to customize a downloaded
-# base cloud image (mount its root partition, install the real generated
-# initramfs hook, `update-initramfs -u`) before handing it to QEMU.
+# stage2 unit be exercised the same way production reboots into it.
 #
 # Nothing here ever touches a host block device: all test images are
 # sparse files created inside the container's own tmpfs (/tmp), discarded
 # with the container. See README.md in this directory for the run recipe;
-# run-privileged-tests.sh drives build + boot + exec + teardown as one step;
-# run-boot-test.sh drives the QEMU boot-level harness.
+# run-privileged-tests.sh drives build + boot + exec + teardown as one step.
 FROM debian:trixie-slim
 
 # sfdisk/cfdisk moved out of util-linux into the separate `fdisk` package on
 # trixie — util-linux alone gives you losetup/partx/mkswap/swapon but not
 # sfdisk, which this tool is built entirely on top of.
-#
-# qemu-system-x86 + qemu-utils: the boot-level harness. No KVM anywhere in
-# this estate's own infrastructure (confirmed 2026-09-08: this devcontainer's
-# own host VM has no /dev/kvm and reports zero vmx/svm cpuinfo flags -- the
-# hosting provider doesn't expose nested virtualization) -- TCG software
-# emulation only (`-accel tcg`), which needs no /dev/kvm and no extra
-# container privilege beyond what this image already has for loop devices.
-# wget/ca-certificates: downloading the official Debian cloud base image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         systemd systemd-sysv udev util-linux fdisk \
         python3 python3-pytest python3-pytest-cov \
-        qemu-system-x86 qemu-utils \
-        wget ca-certificates \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Standard "systemd in a container" trims: these units assume a real

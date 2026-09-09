@@ -40,6 +40,11 @@ scripts/debian-install/mem_write_bench
 scripts/debian-install/mem_read_bench
 scripts/debian-install/mem_mixed_bench
 
+# debian-install-v2's QEMU/KVM test harness: downloaded/built qcow2 base
+# images, generated SSH keys, and per-run disposable overlays -- all
+# regenerable, none of it belongs in git.
+scripts/debian-install-v2/testing/vm/.vm/
+
 # Distribution / packaging
 .Python
 build/

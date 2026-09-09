@@ -1,0 +1,317 @@
+#!/usr/bin/env bash
+# vmctl -- lifecycle control for the QEMU/TCG test VM harness.
+#
+# Why this exists: neither this devcontainer nor the shared docker host it
+# talks to has hardware virtualization exposed (no /dev/kvm, no vmx/svm
+# cpuinfo flags -- confirmed 2026-09-08). QEMU's software CPU emulation
+# (-accel tcg) needs neither. More importantly: a genuinely separate guest
+# kernel is the ONLY real isolation boundary for anything that touches
+# loop devices or swap -- Linux does not namespace either, so a
+# --privileged docker container sharing the HOST kernel can never safely
+# run inuse_partition_editor.py's real add-swap --commit path (confirmed
+# the hard way, 2026-09-09: real host-wide swap got activated via exactly
+# that path and hung the shared devcontainer host badly enough to need a
+# reboot -- see resume-2026-09-08-netcup-debian-install-v2-livetest.md and
+# cgroupns-host-loop-device-host-hang-incident.md). This harness is where
+# that class of test belongs instead: the guest's /dev/vda and its swap
+# are the GUEST kernel's own, entirely separate from the host's.
+#
+# Design (credited: this repo's own operator ran the same question past a
+# separate research session, cross-checked against this implementation --
+# see the 2026-09-09 KVM-setup discussion in project memory):
+#   - immutable base images (.vm/images/*.qcow2), never written to directly
+#   - a disposable qcow2 CoW overlay per run (.vm/runs/<name>/disk.qcow2)
+#   - QMP (unix socket) for VM lifecycle (start/stop/reset/status)
+#   - SSH for everything inside the guest -- two separate control planes
+#   - QEMU user-mode networking (slirp) + hostfwd -- no TAP, no
+#     CAP_NET_ADMIN, no /dev/net/tun, no bridge; works from an unprivileged
+#     process (though this harness currently runs inside the existing
+#     privileged debian-install-v2 test container for its loop-device
+#     access during base-image customization, not because QEMU itself
+#     needs privilege -- qemu-system-x86_64 reads/writes qcow2 files
+#     directly in userspace, no host loop device involved in booting one)
+#
+# Usage:
+#   vmctl prepare-base <case>          # download + stage .vm/images/<case>-base.qcow2
+#   vmctl start <run>  [--case <case>] [--ssh-port N] [--mem MB] [--smp N]
+#   vmctl wait <run>   [--timeout-s N]
+#   vmctl ssh <run> [-- cmd...]        # interactive shell if no cmd given
+#   vmctl copy <run> <src> <dst>       # rsync local src -> guest dst
+#   vmctl console <run>                # tail -f the serial console log
+#   vmctl status <run>
+#   vmctl stop <run>                   # graceful: QMP system_powerdown, then SIGTERM
+#   vmctl destroy <run>                # stop (if running) + rm -rf the run dir
+#
+# <case> selects which base image (.vm/images/<case>-base.qcow2); for now
+# "case-b" (a plain, unmodified genericcloud image -- root already fills
+# the disk, exactly Case B's real-world starting shape) is implemented.
+# "case-a" (small root + large free trailing space, needing cloud-init's
+# growpart/resize_rootfs disabled before the disk is grown -- see the
+# design discussion in project memory for the exact recipe) is NOT yet
+# built by this script -- prepare-base case-a will say so and stop.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STATE_DIR="$HERE/.vm"
+IMAGES_DIR="$STATE_DIR/images"
+RUNS_DIR="$STATE_DIR/runs"
+SSH_DIR="$STATE_DIR/ssh"
+SSH_KEY="$SSH_DIR/id_ed25519"
+
+DEFAULT_SSH_PORT=2222
+DEFAULT_MEM_MB=2048
+DEFAULT_SMP=2
+
+log() { echo "+ $*" >&2; }
+die() { echo "vmctl: $*" >&2; exit 1; }
+
+ensure_ssh_key() {
+    mkdir -p "$SSH_DIR"
+    if [ ! -f "$SSH_KEY" ]; then
+        log "generating VM fixture SSH key ($SSH_KEY)"
+        ssh-keygen -q -t ed25519 -N '' -f "$SSH_KEY"
+    fi
+}
+
+cmd_prepare_base() {
+    local case_name="${1:?usage: vmctl prepare-base <case>}"
+    mkdir -p "$IMAGES_DIR"
+    local dest="$IMAGES_DIR/${case_name}-base.qcow2"
+    case "$case_name" in
+        case-b)
+            [ -f "$dest" ] && { log "already staged: $dest"; return 0; }
+            local downloaded
+            downloaded="$("$HERE/../download-base-image.sh")"
+            log "staging $downloaded -> $dest (copy, not symlink: base images are never written to, but a copy means the original download cache can be independently re-verified/refreshed without disturbing an in-use base)"
+            cp "$downloaded" "$dest.tmp"
+            mv "$dest.tmp" "$dest"
+            log "case-b base ready: $dest (root fills the disk -- matches a real Netcup rootPartitionFullDiskSize=false... actually true-shape deploy; this is intentionally the UNMODIFIED cloud image)"
+            ;;
+        case-a)
+            die "case-a base prep (small root + disabled-growpart + resized-up free tail) is not yet implemented in this script -- see the design discussion in project memory (resume-2026-09-08-netcup-debian-install-v2-livetest.md) for the exact recipe: boot small with growpart enabled, disable growpart+resize_rootfs, qemu-img resize the qcow2 up, sgdisk -e to relocate the backup GPT header, then flatten with qemu-img convert. Build case-b first and get the harness itself proven before adding this."
+            ;;
+        *)
+            die "unknown case '$case_name' (known: case-b; case-a not yet implemented)"
+            ;;
+    esac
+}
+
+cloud_init_seed() {
+    local run_dir="$1"
+    local pubkey
+    pubkey="$(cat "$SSH_KEY.pub")"
+    mkdir -p "$run_dir/cloud-init"
+    cat > "$run_dir/cloud-init/user-data" <<EOF
+#cloud-config
+users:
+  - name: tester
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - $pubkey
+ssh_pwauth: false
+package_update: false
+EOF
+    cat > "$run_dir/cloud-init/meta-data" <<EOF
+instance-id: $(basename "$run_dir")-$(date +%s)
+local-hostname: vbpub-test
+EOF
+    cloud-localds "$run_dir/seed.iso" "$run_dir/cloud-init/user-data" "$run_dir/cloud-init/meta-data"
+}
+
+run_dir_for() { echo "$RUNS_DIR/$1"; }
+
+cmd_start() {
+    local run="${1:?usage: vmctl start <run> [--case case-b] [--ssh-port N] [--mem MB] [--smp N]}"
+    shift
+    local case_name="case-b"
+    local ssh_port="$DEFAULT_SSH_PORT"
+    local mem_mb="$DEFAULT_MEM_MB"
+    local smp="$DEFAULT_SMP"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --case) case_name="$2"; shift 2 ;;
+            --ssh-port) ssh_port="$2"; shift 2 ;;
+            --mem) mem_mb="$2"; shift 2 ;;
+            --smp) smp="$2"; shift 2 ;;
+            *) die "unknown start option: $1" ;;
+        esac
+    done
+
+    local base="$IMAGES_DIR/${case_name}-base.qcow2"
+    [ -f "$base" ] || die "no base image for '$case_name' -- run: vmctl prepare-base $case_name"
+    ensure_ssh_key
+
+    local run_dir; run_dir="$(run_dir_for "$run")"
+    [ -e "$run_dir/qemu.pid" ] && kill -0 "$(cat "$run_dir/qemu.pid")" 2>/dev/null \
+        && die "run '$run' already has a live QEMU process (pid $(cat "$run_dir/qemu.pid")) -- vmctl destroy $run first"
+    rm -rf "$run_dir"
+    mkdir -p "$run_dir"
+
+    log "creating CoW overlay over $base"
+    qemu-img create -q -f qcow2 -F qcow2 -b "$base" "$run_dir/disk.qcow2" >/dev/null
+
+    cloud_init_seed "$run_dir"
+
+    echo "$ssh_port" > "$run_dir/ssh_port"
+
+    log "starting qemu-system-x86_64 (TCG, no KVM) -- ssh on 127.0.0.1:$ssh_port"
+    qemu-system-x86_64 \
+        -name "vbpub-test-$run" \
+        -machine q35 \
+        -accel tcg,thread=multi \
+        -cpu max \
+        -smp "$smp" \
+        -m "$mem_mb" \
+        -drive file="$run_dir/disk.qcow2",format=qcow2,if=virtio,cache=writeback \
+        -drive file="$run_dir/seed.iso",format=raw,media=cdrom,readonly=on \
+        -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:${ssh_port}-:22" \
+        -display none \
+        -serial "file:$run_dir/serial.log" \
+        -monitor none \
+        -qmp "unix:$run_dir/qmp.sock,server=on,wait=off" \
+        -pidfile "$run_dir/qemu.pid" \
+        -daemonize
+
+    log "started (pid $(cat "$run_dir/qemu.pid")); vmctl wait $run to block until SSH is reachable"
+}
+
+cmd_wait() {
+    local run="${1:?usage: vmctl wait <run> [--timeout-s N]}"
+    shift
+    local timeout_s=300
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --timeout-s) timeout_s="$2"; shift 2 ;;
+            *) die "unknown wait option: $1" ;;
+        esac
+    done
+    local run_dir; run_dir="$(run_dir_for "$run")"
+    [ -f "$run_dir/qemu.pid" ] || die "no such run: $run (vmctl start $run first)"
+    local ssh_port; ssh_port="$(cat "$run_dir/ssh_port")"
+
+    local waited=0
+    while ! ssh -q -o ConnectTimeout=1 -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null -i "$SSH_KEY" -p "$ssh_port" \
+            tester@127.0.0.1 true 2>/dev/null
+    do
+        if ! kill -0 "$(cat "$run_dir/qemu.pid")" 2>/dev/null; then
+            echo "vmctl: VM process died while waiting -- last 200 lines of console:" >&2
+            tail -200 "$run_dir/serial.log" >&2 || true
+            exit 1
+        fi
+        if [ "$waited" -ge "$timeout_s" ]; then
+            die "timed out after ${timeout_s}s waiting for SSH on run '$run'"
+        fi
+        sleep 2
+        waited=$((waited + 2))
+    done
+    log "SSH reachable after ~${waited}s; waiting for cloud-init to finish"
+    ssh -q -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -i "$SSH_KEY" -p "$ssh_port" tester@127.0.0.1 \
+        'sudo cloud-init status --wait >/dev/null 2>&1 || true'
+    log "run '$run' ready"
+}
+
+cmd_ssh() {
+    local run="${1:?usage: vmctl ssh <run> [-- cmd...]}"
+    shift
+    [ "${1:-}" = "--" ] && shift
+    local run_dir; run_dir="$(run_dir_for "$run")"
+    [ -f "$run_dir/ssh_port" ] || die "no such run: $run"
+    local ssh_port; ssh_port="$(cat "$run_dir/ssh_port")"
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -i "$SSH_KEY" -p "$ssh_port" tester@127.0.0.1 "$@"
+}
+
+cmd_copy() {
+    local run="${1:?usage: vmctl copy <run> <src> <dst>}"
+    local src="${2:?usage: vmctl copy <run> <src> <dst>}"
+    local dst="${3:?usage: vmctl copy <run> <src> <dst>}"
+    local run_dir; run_dir="$(run_dir_for "$run")"
+    [ -f "$run_dir/ssh_port" ] || die "no such run: $run"
+    local ssh_port; ssh_port="$(cat "$run_dir/ssh_port")"
+    rsync -az --delete \
+        -e "ssh -p $ssh_port -i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+        "$src" "tester@127.0.0.1:$dst"
+}
+
+cmd_console() {
+    local run="${1:?usage: vmctl console <run>}"
+    local run_dir; run_dir="$(run_dir_for "$run")"
+    [ -f "$run_dir/serial.log" ] || die "no such run: $run"
+    tail -f "$run_dir/serial.log"
+}
+
+cmd_status() {
+    local run="${1:?usage: vmctl status <run>}"
+    local run_dir; run_dir="$(run_dir_for "$run")"
+    if [ -f "$run_dir/qemu.pid" ] && kill -0 "$(cat "$run_dir/qemu.pid")" 2>/dev/null; then
+        echo "running (pid $(cat "$run_dir/qemu.pid"), ssh 127.0.0.1:$(cat "$run_dir/ssh_port" 2>/dev/null || echo '?'))"
+    else
+        echo "not running"
+    fi
+}
+
+qmp_cmd() {
+    # Single QMP command over the unix socket: perform the mandatory
+    # capabilities handshake first, then send the requested command.
+    # -q suppresses socat's own diagnostics; we don't need the QMP replies.
+    local sock="$1" body="$2"
+    printf '{"execute":"qmp_capabilities"}\n%s\n' "$body" \
+        | timeout 5 socat -t2 - "UNIX-CONNECT:$sock" >/dev/null 2>&1 || true
+}
+
+cmd_stop() {
+    local run="${1:?usage: vmctl stop <run>}"
+    local run_dir; run_dir="$(run_dir_for "$run")"
+    [ -f "$run_dir/qemu.pid" ] || { echo "not running"; return 0; }
+    local pid; pid="$(cat "$run_dir/qemu.pid")"
+    kill -0 "$pid" 2>/dev/null || { echo "not running"; return 0; }
+
+    if [ -S "$run_dir/qmp.sock" ] && command -v socat >/dev/null; then
+        log "requesting graceful shutdown via QMP"
+        qmp_cmd "$run_dir/qmp.sock" '{"execute":"system_powerdown"}'
+        for _ in $(seq 1 15); do
+            kill -0 "$pid" 2>/dev/null || { log "stopped"; return 0; }
+            sleep 1
+        done
+    fi
+    log "graceful shutdown didn't land in time -- SIGTERM"
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 10); do
+        kill -0 "$pid" 2>/dev/null || { log "stopped"; return 0; }
+        sleep 1
+    done
+    log "still alive -- SIGKILL"
+    kill -9 "$pid" 2>/dev/null || true
+}
+
+cmd_destroy() {
+    local run="${1:?usage: vmctl destroy <run>}"
+    local run_dir; run_dir="$(run_dir_for "$run")"
+    [ -d "$run_dir" ] || { log "nothing to destroy for '$run'"; return 0; }
+    cmd_stop "$run" || true
+    rm -rf "$run_dir"
+    log "destroyed run '$run'"
+}
+
+main() {
+    local sub="${1:-}"
+    [ -n "$sub" ] || die "usage: vmctl <prepare-base|start|wait|ssh|copy|console|status|stop|destroy> ..."
+    shift
+    case "$sub" in
+        prepare-base) cmd_prepare_base "$@" ;;
+        start) cmd_start "$@" ;;
+        wait) cmd_wait "$@" ;;
+        ssh) cmd_ssh "$@" ;;
+        copy) cmd_copy "$@" ;;
+        console) cmd_console "$@" ;;
+        status) cmd_status "$@" ;;
+        stop) cmd_stop "$@" ;;
+        destroy) cmd_destroy "$@" ;;
+        *) die "unknown subcommand: $sub" ;;
+    esac
+}
+
+main "$@"
