@@ -151,7 +151,7 @@ def test_mismatched_readback_rolls_back(tmp_path):
     # and one -u (this rollback) must appear -- never a second -a.
     argvs = [action.argv for action in actions.planned]
     swap_range = f"{installer.root_number + 1}:{installer.root_number + installer.config.swap_file_count}"
-    assert argvs.count(("/usr/bin/partx", "-a", "/dev/vda")) == 1
+    assert argvs.count(("/usr/bin/partx", "-a", "--nr", swap_range, "/dev/vda")) == 1
     assert argvs.count(("/usr/bin/partx", "-d", "--nr", swap_range, "/dev/vda")) == 1
     assert argvs.count(("/usr/bin/partx", "-u", "/dev/vda")) == 1
     assert argvs.count(("/usr/bin/udevadm", "settle")) == 2  # once per partx-refresh round
@@ -229,7 +229,15 @@ def test_apply_uses_partx_and_udevadm_not_partprobe(tmp_path):
     actions.readback = readback
     installer._apply_known_swap_shape()
     argvs = [action.argv for action in actions.planned]
-    assert ("/usr/bin/partx", "-a", "/dev/vda") in argvs
+    # Regression, 2026-09-08: a real live host confirmed a bare `partx -a
+    # <disk>` (no --nr) tries to re-add EVERY partition on the disk,
+    # including the ones the kernel already has (ESP/boot/root) -- and
+    # adding an already-registered partition fails outright ("error adding
+    # partitions 1-3"). Must be scoped to exactly the new swap-partition
+    # range, matching inuse_partition_editor.Table.write()'s own
+    # `--add --nr min:max`.
+    swap_range = f"{installer.root_number + 1}:{installer.root_number + installer.config.swap_file_count}"
+    assert ("/usr/bin/partx", "-a", "--nr", swap_range, "/dev/vda") in argvs
     assert ("/usr/bin/udevadm", "settle") in argvs
     assert not any(argv[0] == "/usr/sbin/partprobe" for argv in argvs)
 

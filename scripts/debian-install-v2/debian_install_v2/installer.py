@@ -1098,7 +1098,24 @@ MaxFileSec=1month
             # _activate_swap_partitions() below. Paths were verified directly
             # against a live host with `which`, not assumed from any package
             # changelog.
-            self._run(["/usr/bin/partx", "-a", f"/dev/{self.root_disk}"], "register new partitions with the kernel", dangerous=True)
+            # --nr <range> is REQUIRED, not optional (confirmed live
+            # 2026-09-08, the very next real host to reach this line once
+            # the path above was fixed): a bare `partx -a <disk>` with no
+            # range tries to re-add EVERY partition number on the disk,
+            # including the ones the kernel already has (the ESP/boot/root
+            # partitions this write never touched) -- and adding an
+            # already-registered partition fails outright ("error adding
+            # partitions 1-3"). inuse_partition_editor.Table.write() itself
+            # already scopes this correctly (`partx --add --nr min:max`);
+            # the port here had dropped that scoping.
+            self._run(
+                [
+                    "/usr/bin/partx", "-a", "--nr",
+                    f"{self.root_number + 1}:{self.root_number + self.config.swap_file_count}",
+                    f"/dev/{self.root_disk}",
+                ],
+                "register new partitions with the kernel", dangerous=True,
+            )
             self._run(["/usr/bin/udevadm", "settle"], "wait for udev to create new device nodes")
             readback = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
             readback_entries = self._parse_partition_entries(readback)
