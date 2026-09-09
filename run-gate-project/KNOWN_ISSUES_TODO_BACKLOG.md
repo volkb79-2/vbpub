@@ -3253,3 +3253,58 @@ assay B078. This entry stays OPEN here as the pointer/provenance record,
 not because run-gate.py itself needs a fix.
 
 ### Status — OPEN 2026-09-08 (moved to assay, see disposition above)
+
+---
+
+## RG-48 — an environment that declares no `resources.cpus` leaves the lane's worker count and the operator's CPU cap to be decided in two places that contradict each other
+
+> **ID note:** filed from the `nyxloom-P109` worktree, whose base predates
+> main's RG-47. Renumber on merge if 48 has been taken concurrently.
+
+**Found by:** nyxloom-P109 gate runs, 2026-09-09.
+
+`[environments.tester-unified]` in the monorepo-root `run-gate.toml` declares
+`image` only — no `resources.cpus`. The gate container therefore starts
+**CPU-uncapped**, restrained only by `$CGROUP_PARENT_DEV_BACKGROUND`
+(`dev-background.slice`), which deprioritises but does not bound it. Because
+this host is shared with a live production game server, every agent prompt
+carries a standing rule to run `docker update --cpus=3` on any container it
+launches, immediately after launch. Meanwhile the lane's judged argv is
+`pytest tests -n auto`, documented in nyxloom's `assay.toml` as "the measured
+optimum on this 8-core host" — i.e. 8 workers.
+
+So the two halves of the decision live in different files owned by different
+people, and they disagree by 2.7x. Measured consequence on nyxloom at commit
+`16c3e361`, same tree every time:
+
+| container cap | outcome |
+| --- | --- |
+| `--cpus=3` | `FAIL / COMMAND_FAILED` — 2 failures in `tests/test_behavioral.py`, a file the branch under test did not touch |
+| `--cpus=3` (retry) | `BUDGET_EXCEEDED / LANE_TIMEOUT` at `budget = "30m"`; container pinned at 295% of its 300% ceiling for the duration |
+| `--cpus=6` | **PASS**, 9m24s |
+
+The failing tests are bounded `for _ in range(20)` daemon-tick loops driving
+real subprocesses; oversubscribed, they exhaust their tick budget before the
+state they poll for lands. Controls at the identical commit: full suite serial
+= 3932 passed; full suite `-n 4` = 0 failures; `test_behavioral.py` alone under
+xdist = 14 passed.
+
+The damage is not the slowness, it is that **the first failure mode is a
+plausible-looking red gate on files the change never touched** — an implementer
+who trusts it goes hunting a nonexistent regression, and one who doesn't trust
+it has learned to discount red gates. (RG-45 is the neighbouring problem —
+host-wide contention across *different* repos' containers — and was moved to
+assay as B078. This one is narrower and entirely inside run-gate's own config:
+a single repo's environment and lane contradicting each other with no
+contention from anyone else required.)
+
+**Possible shapes, not yet decided:** declare `resources.cpus` on the
+environment so run-gate applies the cap itself and one file owns the number;
+and/or let a lane declare the worker count it needs (or derive `-n` from the
+environment's declared cpus) so `-n auto` cannot read the *host's* core count
+through a cgroup that does not grant it. A cheaper interim: have run-gate warn
+when a lane's argv contains `-n auto` while its environment declares no cpu
+bound, since that is precisely the configuration whose behaviour depends on
+what an operator does to the container out-of-band after launch.
+
+### Status — OPEN 2026-09-09

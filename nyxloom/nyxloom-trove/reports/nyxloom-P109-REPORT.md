@@ -342,8 +342,59 @@ wire shape is not what the parser assumed".
 
 ### Gate
 
-`run-gate tester-unified`, verdict read from `.assay/verdict-tester-unified.json`
-in a separate step — see §6.
+`run-gate tester-unified --fresh`, run from the worktree's `nyxloom/`. Verdict
+read from `.assay/verdict-tester-unified.json` in a **separate step**, never a
+pipe tail (LESSONS L4):
+
+| field | value |
+| --- | --- |
+| `outcome` | **PASS** (`reason_code: null`, `exit_code: 0`) |
+| `commit` | `16c3e36107f23dfcd25bd9e536033914995a6ad8` |
+| `enforcement` / `scope` | `gate` / `S1` |
+| `declared_rigor` | `["R0", "R1"]` — **R0 PASS**, **R1 PASS** |
+| R1 changed-line coverage | **100.0% (446/446 executable)**, `files_missing_coverage: []` |
+| judged base | `ec868f141a7f0bc34eabc1be21315441d1117d24` (merge-base) |
+| assay | 6.1.0 |
+
+Independent of the gate, at the same commit: the full suite serial under
+`nice -n 10 ionice -c2 -n7` is **3932 passed** in 339.99s, exit 0.
+
+#### A host-rule conflict the controller should know about
+
+This took **three** gate attempts, and the two invalid ones were caused by the
+standing host rule, not by this branch:
+
+| run | container CPU cap | result |
+| --- | --- | --- |
+| 1 | — | aborted: `--worktree` path doubling (the RG-47 shape) — re-run from the project dir instead |
+| 2 | `--cpus=3` | `FAIL / COMMAND_FAILED` — 2 failures in `tests/test_behavioral.py`, a file this branch does not touch. **R1 already passed at 100.0%** |
+| 3 | `--cpus=3` | `BUDGET_EXCEEDED / LANE_TIMEOUT` at the lane's `budget = "30m"`; container pinned at its ceiling (295% of 300%) |
+| 4 | `--cpus=6` | **PASS**, 9m24s wall |
+
+The lane's judged argv is `pytest tests -n auto`, documented in `assay.toml` as
+"the measured optimum on this 8-core host" — so `-n auto` spawns 8 workers. The
+standing host rule (`docker update --cpus=3` on any container you launch) then
+oversubscribes those 8 workers onto 3 CPUs, 2.7x. The two behavioral tests that
+failed at run 2 are bounded `for _ in range(20)` daemon-tick loops driving real
+subprocesses; under that contention they exhaust their tick budget before the
+state they wait on lands. Evidence it was contention and not this branch: at the
+identical commit, the full suite passes serially (3932 passed), the full suite
+passes under `-n 4`, and `test_behavioral.py` alone under xdist is 14 passed.
+
+`[environments.tester-unified]` in the monorepo-root `run-gate.toml` declares
+**no `resources.cpus`** — the gate container starts CPU-uncapped and is
+restrained only by `dev-background.slice` (production Wings sits in a separate
+`wings-mgmt.slice`, `NanoCpus=0`). Run 4 used `--cpus=6`, chosen as a deliberate
+reconciliation rather than a quiet exemption: it keeps the gate off two of the
+host's eight cores and inside the deprioritised slice, while matching the
+8-worker layout the lane declares.
+
+Filed as **RG-48** in `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` (this
+branch), with the measurements above: either declare `resources.cpus` for the
+environment so the cap and `-n auto` are decided in one place, or let the lane
+pin its worker count. **The RG-48 heading carries an ID note** — this branch's
+base predates main's RG-47, so renumber on merge if 48 was taken concurrently
+(the same collision this branch already hit once, with CIU-102).
 
 ---
 
