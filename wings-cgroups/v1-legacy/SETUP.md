@@ -464,3 +464,22 @@ nothing left that can be orphaned).
   `WINGS_CG_*` variable. Already-placed containers keep their placement until
   their next recreation, so rollback costs no extra outage; the properties Wings
   set are runtime-only and die with the scope.
+
+## SFTP connection-rejection logging (patches 0010, 0011)
+
+Unrelated to cgroups entirely, but lands on any node running this series. Two
+`Warn`-level, stack-trace-free log lines replace what upstream logs as `Error`
+with a full stack trace for the same routine, internet-background-noise
+events — both intentionally worded so a log pipeline or alerting rule can
+tell them apart:
+
+| Message | Means | Worth watching like |
+|---|---|---|
+| `sftp: rejected unauthenticated connection` | A client attempted and failed authentication — bad password, exhausted `MaxAuthTries` (6), or disconnected partway through the auth loop. `reason` names the actual `*ssh.ServerAuthError` detail. | a failed login/credential-stuffing attempt (fail2ban-style) |
+| `sftp: connection dropped before authentication began` | A client connected and disconnected (cleanly or via a network-level reset) **before ever attempting auth** — the signature of a bare TCP port scanner (masscan, zmap) or a misdirected health check. `reason` names the underlying `io.EOF`/`io.ErrUnexpectedEOF`/`*net.OpError`. | portscan/recon noise |
+
+Anything else `AcceptInbound` can fail on — malformed packets, protocol
+negotiation failures, key exchange algorithm mismatches — is unexpected and
+still logs at `Error` with its stack trace, unchanged from upstream. Neither
+patch changes what gets *rejected*, only how the rejection is logged; the
+SFTP server's actual auth behaviour is identical to stock Wings.

@@ -1,7 +1,7 @@
 From b28e3bc135b40538f96866ddd325b8d80e19377d Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 07:56:59 +0000
-Subject: [PATCH 08/10] Fix MemoryCurrent D-Bus interface in the memory.high
+Subject: [PATCH 08/11] Fix MemoryCurrent D-Bus interface in the memory.high
  ramp
 
 memoryCurrent() read MemoryCurrent via GetUnitPropertyContext against the

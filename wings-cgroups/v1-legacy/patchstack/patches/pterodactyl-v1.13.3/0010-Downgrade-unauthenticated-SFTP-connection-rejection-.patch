@@ -1,7 +1,7 @@
 From 264c025df17c12b9f2855d6e249c829fe29989a1 Mon Sep 17 00:00:00 2001
 From: wings-cgroups <wings-cgroups@localhost>
 Date: Wed, 9 Sep 2026 17:38:55 +0000
-Subject: [PATCH 10/10] Downgrade unauthenticated SFTP connection rejection
+Subject: [PATCH 10/11] Downgrade unauthenticated SFTP connection rejection
  from Error+stacktrace to Warn
 
 Every SFTP client that never completes authentication -- a bad password, too

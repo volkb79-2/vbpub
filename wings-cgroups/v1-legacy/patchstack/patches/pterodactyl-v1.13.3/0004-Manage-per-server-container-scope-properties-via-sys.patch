@@ -1,7 +1,7 @@
 From a4915142cd0a6ec3ea7616bfa516f7b5bab1bfe5 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Fri, 17 Jul 2026 06:38:24 +0000
-Subject: [PATCH 04/10] Manage per-server container scope properties via
+Subject: [PATCH 04/11] Manage per-server container scope properties via
  systemd D-Bus
 
 With docker.per_server_slices.enabled, Wings applies each server's cgroup v2

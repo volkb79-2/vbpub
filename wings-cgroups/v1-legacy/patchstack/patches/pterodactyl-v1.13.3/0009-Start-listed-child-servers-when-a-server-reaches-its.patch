@@ -1,7 +1,7 @@
 From 9544c34bbd4e8209fa512a29aa001b37dddf866c Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Tue, 21 Jul 2026 15:49:24 +0000
-Subject: [PATCH 09/10] Start listed child servers when a server reaches its
+Subject: [PATCH 09/11] Start listed child servers when a server reaches its
  steady trigger
 
 A single Wings node routinely runs servers that depend on one another. The

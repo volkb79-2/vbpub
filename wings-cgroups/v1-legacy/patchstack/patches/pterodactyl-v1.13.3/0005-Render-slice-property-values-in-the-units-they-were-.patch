@@ -1,7 +1,7 @@
 From 45084612785a9bf15ea54d016d19cea240622096 Mon Sep 17 00:00:00 2001
 From: Volker Badziong <development@richtfest.tech>
 Date: Mon, 20 Jul 2026 11:51:15 +0000
-Subject: [PATCH 05/10] Render slice property values in the units they were
+Subject: [PATCH 05/11] Render slice property values in the units they were
  configured with
 
 Slice property log lines carried raw byte counts, so the line an operator
