@@ -411,7 +411,11 @@ def test_client_get_retries_after_401(install_host_mod, monkeypatch):
         return FakeHTTPResponse(json.dumps({"ok": True}).encode())
 
     monkeypatch.setattr(install_host_mod.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(install_host_mod, "get_access_token", lambda rt: "new-token")
+    # NetcupSCPClient.refresh_access_token() calls get_access_token() as a
+    # name resolved in netcup_scp_client's OWN globals (that's where the
+    # client class is defined), not install_host_mod's -- patching the
+    # latter would silently not affect the client's internal retry call.
+    monkeypatch.setattr(install_host_mod.netcup_scp_client, "get_access_token", lambda rt: "new-token")
     client = install_host_mod.NetcupSCPClient("old-token", refresh_token="rt")
     result = client.get("/api/v1/tasks/x")
     assert result == {"ok": True}
