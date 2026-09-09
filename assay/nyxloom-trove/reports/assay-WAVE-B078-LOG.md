@@ -346,6 +346,36 @@ comment in `runner.py` is corrected too.
   declared report was not usable" is a good one and is explicitly Checkpoint
   2's, not this wave's.
 
+## Round-2 fix-verification condition (close-out)
+
+ACCEPT-conditional, one test-only repair, now done.
+
+`test_a_declaring_lane_produces_identical_canary_behaviour` did not test what
+its name says. Its lane ran a bare `exit 1`, which writes no report, so both
+sides fell back to A-073 and the equality held regardless of what
+`_run_pipeline` did with the declaration — the reviewer demonstrated it by
+flipping `canary.py` to `result_report=lane.result_report` and watching the
+test pass anyway. Blocker 3's behavioural enforcement was therefore resting
+entirely on the AST value-pin in the sweep.
+
+It now uses the module's own `shell_writing(vitest_document(total=140,
+failed=0), exit_code=1)` — the RG-45 shape — so the two sides can only agree
+if the canary genuinely ignores the declaration. It additionally pins the
+shared value (`FAIL`/`COMMAND_FAILED`) so the equality cannot be satisfied by
+both sides moving together, and asserts the report file was actually written
+so the test cannot quietly regress to proving nothing. Re-verified under the
+reviewer's own mutation: this test and the sweep pin both go red, and both go
+green again on revert. No shipped code moved.
+
+The sting is that the sibling seam test's docstring, fifty lines above, warns
+in as many words that "a behavioural test could pass while the input was
+silently being consulted and happening not to change the outcome" — I wrote
+that sentence and then wrote the test it describes. Knowing the failure mode
+by name is not the same as checking for it; the check is a mutation, and it
+costs about a minute. That is the third time in this wave the same shape of
+error has appeared (an unverified premise, an untraced caller, an unmutated
+test), which is the pattern worth carrying forward, not the individual bugs.
+
 ## The backlog tick
 
 Reverted to `[ ]`. I ticked my own acceptance box in round 1, and ticked it on

@@ -855,15 +855,32 @@ def test_execute_command_honours_the_lane_declaration_by_default(
 
 
 def test_a_declaring_lane_produces_identical_canary_behaviour(tmp_path: Path):
-    """The behavioural half of blocker 3: a lane declaring `result_report`
-    and an otherwise identical lane that does not produce the same canary
-    outcome, for the control half and the transformed half alike."""
+    """The behavioural half of blocker 3: a lane declaring `result_report` and
+    an otherwise identical lane that does not produce the same canary outcome.
+
+    **The command must actually write a verified-complete report** -- that is
+    the whole load-bearing part, and round-2 fix-verification caught this test
+    without it. With a bare `exit 1` the lane writes nothing, both sides fall
+    back to A-073, and the equality holds whether `_run_pipeline` excludes the
+    declaration or consults it: proven by mutation, the test passed with
+    `canary.py` flipped to `result_report=lane.result_report`.
+
+    With the RG-45 shape instead, the two sides can only agree if the canary
+    genuinely ignores the declaration -- a canary that consulted it would
+    return `PASS` for the declaring lane and `FAIL` for the other, and the
+    assertion goes red. The expected VALUE is pinned too, not just the
+    equality, so "both sides changed together" cannot pass either.
+
+    The sibling seam test 50 lines up warns that "a behavioural test could
+    pass while the input was silently being consulted and happening not to
+    change the outcome". This is that test, written correctly the second time.
+    """
     from assay import canary
 
     def outcome_for(report):
         lane = make_lane(
             rigor=("R0",),
-            argv=("/bin/sh", "-c", "exit 1"),
+            argv=shell_writing(vitest_document(total=140, failed=0), exit_code=1),
             result_report=report,
         )
         return canary._run_pipeline(
@@ -878,4 +895,19 @@ def test_a_declaring_lane_produces_identical_canary_behaviour(tmp_path: Path):
             clock=lambda: datetime(2026, 9, 8, tzinfo=timezone.utc),
         )
 
-    assert outcome_for(VITEST_REPORT) == outcome_for(None)
+    declaring = outcome_for(VITEST_REPORT)
+
+    assert declaring == outcome_for(None), (
+        "a canary half must judge the lane's argv by A-073 alone, whatever the "
+        "lane declares -- its control/transform outcome answers 'did injecting "
+        "this defect change the judgement', not 'did the wrapped suite pass'"
+    )
+    assert declaring == (Outcome.FAIL, ReasonCode.COMMAND_FAILED), (
+        "and the shared value is the exit code's own verdict, not a PASS the "
+        "report bought -- pinned so the equality above cannot be satisfied by "
+        "both sides moving together"
+    )
+    assert (tmp_path / REPORT_PATH).exists(), (
+        "guards the guard: if the command stopped writing the report, this "
+        "test would silently go back to proving nothing"
+    )

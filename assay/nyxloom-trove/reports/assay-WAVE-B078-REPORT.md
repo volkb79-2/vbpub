@@ -216,6 +216,30 @@ blockers.** All four addressed; repair commits `388f23a2`, `f535f04e`,
 | **3** — the branch's own "canary halves are unchanged by construction" was false | `canary._run_pipeline` passes `result_report=None` explicitly (controller ruling D-2), via a sentinel default on `execute_command` so "the lane's declaration" and "no report at all" stay distinct | `::test_the_legacy_canary_pipeline_never_consults_a_declared_report`, its control `::test_execute_command_honours_the_lane_declaration_by_default`, the behavioural `::test_a_declaring_lane_produces_identical_canary_behaviour`, and `test_result_report_wiring_sweep.py::test_the_legacy_canary_pipeline_is_pinned_as_excluded_by_value` (pins the *value*, so flipping it fails there rather than nowhere) |
 | **4** — CONSUMERS.md documented a `returncode` verdict field that does not exist | Documentation corrected, no schema change (controller ruling D-3). A `PASS` carrying output tails is now named as the detection method (OBS 4), since a plain green run omits them | `docs/CONSUMERS.md` "How to tell, from a verdict, that a report overrode an exit code"; `runner.py`'s corresponding comment |
 
+### Round-2 fix-verification: ACCEPT-conditional, condition met
+
+`assay-WAVE-B078-REVIEW-round2-fixverify.md` (`ad90bdc4`) confirmed all four
+blocker fixes and raised one test-only condition, which is now fixed.
+
+`test_a_declaring_lane_produces_identical_canary_behaviour` was hollow. Its
+lane ran `("/bin/sh", "-c", "exit 1")`, which writes no report at all, so both
+sides fell back to A-073 and the equality held whether `_run_pipeline`
+excluded the declaration or consulted it. The reviewer proved it by mutation:
+with `canary.py` flipped to `result_report=lane.result_report`, the test still
+passed.
+
+It now runs `shell_writing(vitest_document(total=140, failed=0), exit_code=1)`
+— the RG-45 shape — so a canary that consulted the report would return `PASS`
+for the declaring lane and `FAIL` for the other, and the equality goes red. It
+also pins the shared VALUE (`FAIL`/`COMMAND_FAILED`), so "both sides moved
+together" cannot satisfy it either, and asserts the report file really was
+written, so the test cannot silently revert to proving nothing.
+
+**Re-verified by the same mutation:** with `canary.py` flipped to
+`result_report=lane.result_report`, this test and the sweep's value-pin both
+go red (2 failed); reverted, 49 passed. Behavioural enforcement of blocker 3
+no longer rests on the AST pin alone.
+
 Non-blocking observations: **OBS 2** actioned (the vitest reader joins the
 pinned untrusted-JSON list, now nine). **OBS 5** actioned (DESIGN-GUIDE's
 scope sentence was false in both directions and is now exhaustive: three
