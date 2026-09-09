@@ -358,12 +358,26 @@ def test_real_commit_via_loop_device_materializes_partition_nodes(tmp_path):
     make_dos_image(img)
     loop = subprocess.run(["losetup", "--find", "--show", "--partscan", str(img)],
                            capture_output=True, text=True, check=True).stdout.strip()
+    part = f"{loop}p6"
     try:
         result = run_cli("--disk", loop, "add-swap", "--count", "1",
                           "--size", "fill", "--labels", "gswap1", "--commit")
         assert result.returncode == 0
-        assert os.path.exists(f"{loop}p6")
+        assert os.path.exists(part)
     finally:
+        # add-swap --commit runs `swapon -a` for real (inuse_partition_
+        # editor.py's own intended production behavior) -- swap activated
+        # on a loop device is a REAL, HOST-KERNEL-GLOBAL swap area, not
+        # something contained by this process/container. Detaching the
+        # loop device WITHOUT swapping this partition off first leaves a
+        # live host swap area referencing a since-removed device -- this
+        # is exactly what happened for real on 2026-09-09 (this test had
+        # never successfully run before that day; the privileged
+        # container it needs had been broken for a long time) and
+        # contributed to the shared host hanging badly enough to need a
+        # reboot. swapoff before detach, tolerating "not active"/ENOENT
+        # if add-swap didn't reach swapon for some reason.
+        subprocess.run(["swapoff", part], check=False)
         subprocess.run(["losetup", "--detach", loop], check=False)
 
 
@@ -377,10 +391,15 @@ def test_real_gpt_commit_via_loop_device_materializes_partition_nodes(tmp_path):
     make_gpt_image(img)
     loop = subprocess.run(["losetup", "--find", "--show", "--partscan", str(img)],
                            capture_output=True, text=True, check=True).stdout.strip()
+    part = f"{loop}p3"
     try:
         result = run_cli("--disk", loop, "add-swap", "--count", "1",
                           "--size", "fill", "--labels", "gswap1", "--commit")
         assert result.returncode == 0
-        assert os.path.exists(f"{loop}p3")
+        assert os.path.exists(part)
     finally:
+        # See the sibling DOS-image test's comment: swapoff before detach
+        # is required, not optional -- swap activated on a loop device is
+        # real host-global kernel state.
+        subprocess.run(["swapoff", part], check=False)
         subprocess.run(["losetup", "--detach", loop], check=False)

@@ -37,27 +37,59 @@ fi
 echo "+ docker build -f $HERE/Dockerfile -t $IMAGE $DEBIAN_INSTALL_DIR"
 docker build -q -f "$HERE/Dockerfile" -t "$IMAGE" "$DEBIAN_INSTALL_DIR" >/dev/null
 
-cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
+# docker stop (graceful, SIGRTMIN+3 per the Dockerfile's STOPSIGNAL) before
+# the unconditional docker rm -f fallback: systemd's normal shutdown
+# sequence deactivates swap units as a standard step, giving any swap this
+# run activated on a loop device (see the big warning below) a real chance
+# to come off cleanly before the container disappears. A bare `rm -f`
+# SIGKILLs PID 1 immediately with no such chance. Best-effort either way --
+# see the warning for why this is defense-in-depth, not a real fix.
+cleanup() {
+    docker stop -t 15 "$NAME" >/dev/null 2>&1 || true
+    docker rm -f "$NAME" >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 
-# DO NOT add --cgroupns=host here again. It was tried on 2026-09-09 as a
-# workaround for this daemon's default --cgroupns=private breaking a
-# privileged systemd-as-PID1 container's boot (exit 255, no log output).
-# It "worked" as a startup fix, but --cgroupns=host makes the container's
-# OWN systemd instance share the REAL HOST's cgroup namespace -- not a
-# capability/isolation issue (the reviewer who checked that angle was
-# right that --privileged already grants those), but a live-state-
-# CONTENTION issue: a second, independent systemd now sees and can act on
-# the actual host cgroup tree the real host PID 1 is simultaneously
-# managing. Combined with an ad hoc exploratory container from that same
-# session left running unattended with real (host-kernel-global, not
-# container-scoped) loop/partition devices attached, this contributed to
-# a hang serious enough to require a HOST REBOOT (2026-09-09, see
-# resume-2026-09-08-netcup-debian-install-v2-livetest.md's incident
-# section). This container tier is therefore back to BLOCKED on this
-# shared host -- do not re-enable it without the operator's explicit
-# sign-off on a genuinely isolated environment (a real separate VM, not a
-# cgroupns=host workaround on shared production infrastructure).
+# ============================================================================
+# INCIDENT, 2026-09-09: this container's real --commit-path test tier
+# (test_real_commit_via_loop_device_materializes_partition_nodes and its GPT
+# sibling, in test_inuse_partition_editor_r1.py) had apparently never
+# successfully run before that day -- this container couldn't even start on
+# this host's docker daemon until a same-day fix. That fix let those tests
+# run for real for the first time, surfacing a dormant bug with real
+# consequences: they call `inuse_partition_editor.py add-swap --commit`
+# against a loop device, and that command's own intended, correct production
+# behavior is to run `mkswap` + `swapon -a` for real -- fully provisioning
+# working swap is the whole point of the tool. Swap activated on a loop
+# device is REAL, HOST-KERNEL-GLOBAL kernel state, not something a
+# container's namespaces contain -- and the tests' cleanup only did
+# `losetup --detach`, never `swapoff` first (fixed same-day). The result: a
+# real host-wide swap area was left active, referencing an already-detached
+# loop device. Deactivating a loop-backed swap area whose backing device is
+# gone is a known-hazardous operation (evacuating swapped pages can need
+# memory the loop driver itself would have to supply, a reclaim-recursion
+# trap) -- `swapoff` hung in uninterruptible (D) sleep, memory pressure
+# cascaded across the shared host, and even the production game server's own
+# process got caught in D state. The operator had to manually SIGKILL
+# multiple docker container cgroups (production and dev alike) trying to
+# free memory, and ultimately had to REBOOT THE HOST. See
+# resume-2026-09-08-netcup-debian-install-v2-livetest.md's incident section
+# and cgroupns-host-loop-device-host-hang-incident.md for the full account.
+#
+# The direct test bug is fixed (swapoff before detach, both tests). That is
+# defense-in-depth, not a guarantee: a `docker rm -f`/SIGKILL mid-test (which
+# is exactly what happened during the incident's own investigation) skips
+# Python `finally` blocks entirely, so an interrupted run can still leak real
+# host swap regardless of this fix. Do not treat this container as safe to
+# force-kill mid-run, and do not run this script's default (full R0+R1,
+# which includes the swap-activating tests) unattended or interrupted on
+# this shared host. --cgroupns=host is ALSO still off-limits here (see git
+# blame on this file, 2026-09-09) as a separate, independent hazard -- it is
+# not established to be what caused this specific incident (loop-device
+# swap is host-global regardless of cgroupns mode), but it is a live-state-
+# contention risk on shared infrastructure in its own right and there is no
+# reason to accept it.
+# ============================================================================
 echo "+ docker run -d --name $NAME --privileged ... -v $HOST_DEBIAN_INSTALL_DIR:/work"
 docker run -d --name "$NAME" --privileged \
     --tmpfs /run --tmpfs /run/lock --tmpfs /tmp \
