@@ -253,6 +253,35 @@ def test_an_empty_path_argument_is_dropped_rather_than_recorded():
     assert inspected_paths(lines)[0] == ("src/real.py",)
 
 
+def test_the_walk_is_bounded_in_depth_and_in_volume():
+    """Both halves of the walk's guard, against a transcript that is agent-
+    authored and therefore potentially hostile.
+
+    DEPTH: a tool_use buried below the cap is simply not reached -- real
+    stream-json nests it about four levels, so the cap costs nothing and
+    bounds recursion on a pathological record. The shallow twin proves the
+    walk WOULD have found it, so this is a statement about depth and not
+    about the shape being unrecognised.
+
+    VOLUME: far more tool calls than the raw-hit ceiling still terminate and
+    still produce a capped, flagged result.
+    """
+    deep: dict = {"type": "tool_use", "input": {"file_path": "src/buried.py"}}
+    for _ in range(12):
+        deep = {"wrapper": deep}
+    assert inspected_paths([json.dumps(deep)])[0] == ()
+    assert inspected_paths([json.dumps({"wrapper": {"wrapper": deep["wrapper"]["wrapper"]}})
+                            ])[0] == ()
+    shallow = {"type": "tool_use", "input": {"file_path": "src/buried.py"}}
+    assert inspected_paths([json.dumps(shallow)])[0] == ("src/buried.py",)
+
+    flood = [_tool_use_line("Read", {"file_path": f"src/f{i:04d}.py"})
+             for i in range(review_progress.INSPECTED_PATH_LIMIT * 4 + 20)]
+    found, truncated = inspected_paths(flood)
+    assert len(found) == review_progress.INSPECTED_PATH_LIMIT
+    assert truncated is True
+
+
 def test_a_non_json_log_yields_nothing_rather_than_raising():
     assert inspected_paths(["plain text", "", "not json at all"]) == ((), False)
 
