@@ -12,12 +12,14 @@ linking against assay itself.
 - **Status:** Python is fully supported (R0–R3). SQL/DDL mutation testing is
   supported at **R2 only** (no SQL R1, no SQL R3 — see
   [SQL/DDL mutation testing](#sqlddl-mutation-testing-r2-only) below).
-  JavaScript/TypeScript is supported at **R1 only** — changed-line coverage
-  for `.js`/`.jsx`/`.ts`/`.tsx`, see
+  JavaScript/TypeScript is supported at **R1 and R2** — changed-line coverage
+  plus mutation testing over externally-ingested evidence (no native JS mutant
+  generator yet), see
   [JavaScript/TypeScript changed-line coverage](#javascripttypescript-changed-line-coverage-r1-only)
   below. Go is supported at **R1 only** — changed-line coverage for `.go`,
   statement-granular, requiring a real Go toolchain on the judging machine;
-  see the Go section below.
+  see the Go section below. **Full matrix, and what R0–R3 each actually mean:
+  [Rigor levels, and what's registered where](#rigor-levels-and-whats-registered-where).**
 
 ---
 
@@ -129,6 +131,127 @@ where to run it.**
   rigor level a lane didn't ask for, and it never silently claims a
   capability the adapter can't back up — see
   [§0, the one invariant](docs/DESIGN-GUIDE.md#0-the-one-invariant).
+
+### Rigor levels, and what's registered where
+
+Declaring `rigor = ["R0","R1"]` on a lane does not mean "R1, but stricter
+than R0" — each level asks a **structurally different question** about the
+same execution's evidence, and the verdict carries one independent claim per
+declared level:
+
+| Rigor | Question it answers | What it needs beyond the level below |
+|---|---|---|
+| **R0** | Did the declared command succeed? | Nothing — reads the wrapped `argv`'s exit code by default, or (B078) a **verified-complete test report** in a registered format (`vitest-json` today) when the framework's own machinery can set a misleading exit code. No language adapter is resolved for R0 at all: it is the one fully language-agnostic layer, available for any command in any language, including ones assay has no adapter for. |
+| **R1** | Of the code judged, how much did that execution's tests actually exercise? | A coverage profile the same command produced as a side effect (an extra flag, e.g. `-coverprofile=...` or `--cov-report=json`), plus a language-specific reader. Go additionally needs a real Go toolchain on the judging machine (a statement-position oracle — see below). |
+| **R2** | If a bug were deliberately introduced into the judged code, would the suite fail? | A language-specific mutant generator (or, for JS, externally-ingested mutation evidence judged rather than produced), and re-running the suite once per candidate. |
+| **R3** | Does behavior hold across an independently-mutated scratch copy (canary/parity)? | Two independently-owned scratch copies of the repository; the consumer's own worktree is never touched. |
+
+R1 has two independent axes, and support differs per axis:
+
+**Scope — which lines get judged.** The default, `judge.mode =
+"changed_lines"`, judges `base..HEAD`'s diff. `judge.mode = "whole_target"`
+(B005) instead judges a **declared file list**, independent of any diff — so
+a lane can assert "this module stays fully covered regardless of what the
+diff touches," which a changed-line floor cannot express (a docstring-only
+edit changes zero executable lines). Both modes produce the identical
+structured `coverage` claim and both honor `fail_under`; `whole_target` is
+registered and generically implemented for every R1 language, though its own
+qualification-by-real-consumer to date is Python-specific (`CONSUMERS.md`'s
+`redirect_chain` example).
+
+**Line vs. branch coverage.** Branch capability is derived from the coverage
+*artifact's format*, never hardcoded per language
+(`assay.coverage.derive_branch_capability`) — a format that can express
+branch arcs (`coverage-py-json`, Istanbul, Cobertura, LCOV) reports real
+`branches_covered`/`branches_total`; `go-cover` cannot, structurally, because
+`go test -coverprofile`'s own file format carries no branch information for
+any consumer to parse (the parser hardcodes `branches=None` unconditionally).
+This is **not an assay gap** — it is upstream, in the Go toolchain itself:
+`go tool cover`'s own modes are `set`/`count`/`atomic`, all statement-level;
+there is no branch mode to read from in the first place. Where branches
+*are* reportable, `fail_under` is not line-only: it is a single **pooled**
+percentage over line and branch counts together
+(`100 * (covered + branches_covered) / (executable + branches_total)`), with
+a distinct `UNCOVERED_BRANCHES` reason code (vs. `UNCOVERED_LINES`) when a
+floor is missed purely on branches — so "enforce line *and* branch coverage
+on this module" is `mode = "whole_target"` + `require_branch = true` +
+`fail_under`, already shipped, not a gap to design around.
+
+#### The matrix
+
+| Language | R0 | R1 — line coverage | R1 — branch coverage | R2 — mutation | R3 — canary/parity |
+|---|---|---|---|---|---|
+| *(any)* | ✅ language-agnostic | — | — | — | — |
+| **Python** | ✅ | ✅ registered, both scope modes | ✅ **available** — real `coverage.py` branch arcs | ✅ registered, native mutant generator | ✅ registered |
+| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — assay judges mutation evidence an external producer already generated; no native JS mutant generator | ⚠️ **implemented, not registered** — the canary injection methods are real code, not stubs, but no producer path is wired into the CLI's closed registry yet |
+| **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
+| **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered — SQL's only rigor level | ❌ not registered |
+
+Three genuinely different states, worth keeping distinct:
+
+- **Structurally impossible** — the input data does not exist upstream of
+  assay (Go branch coverage). No engineering investment inside assay fixes
+  this.
+- **Not implemented** — nothing prevents it; nobody has built it yet (Go
+  mutation testing, SQL line coverage, Go/SQL canary).
+- **Implemented but unregistered** — the code exists and presumably works,
+  but is not wired as a callable capability through the CLI's own closed
+  declaration (JS canary).
+
+Source for every claim above: `src/assay/cli.py`'s `_built_in_registry()`
+(the single authority for what's registered — its own docstring notes this
+exact table has gone stale in restatement more than once, most recently a
+"JavaScript at R1 only" sentence this README itself carried until corrected
+here), `src/assay/registry.py`, `src/assay/coverage.py::derive_branch_capability`,
+`src/assay/evaluate.py`'s `fail_under` arithmetic, and the five
+`coverage_parsers/*.py` modules directly — not restated from an earlier doc
+pass.
+
+#### "Why is there always a budget?" — R0/R1's numeric timeout is deliberate, not unfinished
+
+A lane declares `budget` (e.g. `"10m"`); the wrapped command is killed if it
+runs longer. Two things are easy to conflate here, and the backlog
+(`nyxloom-trove/4-backlog.md` B064/B065/B067) already worked through both in
+depth:
+
+**Observability exists.** `--progress`/`--progress-heartbeat SECONDS`
+(default 60, B064, shipped) makes an R0/R1 lane write a closed-vocabulary
+phase stream — `run` header, `snapshot_materialized`, `command_started`, a
+time-based heartbeat tick, `command_finished`, `coverage_parsed`,
+`verdict_written` — each event carrying `emitted_at`/`elapsed_s` (B065,
+shipped), so a caller with only the progress file can compute rate, ETA and
+last-event age without the verdict. A lane that looks hung for nine minutes
+is legible with these flags on; it is not legible with them off, which is
+the mistake to check for before concluding assay itself is silent.
+
+**The numeric bound stays mandatory for R0/R1 anyway, and that is a ruling
+(A-447), not an oversight.** `budget = "unbounded"` is legal — but *only*
+when every unit of the lane's work carries its own bound: R2 requires
+`budget_per_candidate`, R3 requires `budget_per_attempt`. An R0/R1 lane is
+**one command**; its only unit of work *is* the whole command, so there is
+no smaller bound to fall back on, and `unbounded` is refused there by name.
+Removing the top-level timeout for a single opaque subprocess would mean
+launching it with `timeout=None` — genuinely unbounded, no backstop at all
+if it hangs forever. The heartbeat is a *liveness signal a caller can act
+on*; it is deliberately not treated as license to disable assay's own
+last-resort kill switch — "stall detection stays with the caller"
+(run-gate's own `stall_timeout`/`LogStreamWatch`, RG-36/RG-41), which can
+choose to extend a wait based on the heartbeat still ticking, in front of
+assay's unconditional numeric backstop, not instead of it.
+
+**What the heartbeat does *not* give you: true percentage/ETA of the
+runner's own internal progress.** `command_finished` can legitimately be the
+longest phase by a wide margin — a multi-minute test suite is one opaque
+subprocess call from assay's point of view — and a time-based heartbeat only
+proves elapsed seconds are ticking, not how much of *that* suite is left.
+Getting "47 of 213 tests done" requires reading the runner's own live output
+stream (`pytest -v`'s per-test lines, `go test -json`'s one-event-per-test
+stream) — real, per-language, per-tool parsing, and a different design
+surface than the phase heartbeat (declaring a producer format, never
+sniffing one, per this project's own A-007 principle). That is filed and
+scoped as **B073**, deliberately deferred — no consumer had asked for
+per-test granularity when it was filed; use `--progress` for liveness today,
+and see B073 if per-test detail becomes worth the design cost.
 
 ### What assay is not (yet)
 
@@ -442,6 +565,56 @@ When a lane command fails or times out, its verdict can retain at most the last
 Truncation is head-side and visible through the paired dropped-byte counts, so
 the final error survives without turning a verdict artifact into an unbounded
 log.
+
+### Codebase-quality metrics beyond coverage
+
+Coverage (line/statement, branch, and mutation-tested "real" coverage) and
+canary/parity answer one specific question — "did tests touch this code, and
+would they notice if it broke." That is not the only axis of "is this
+codebase in good shape," and assay deliberately does not try to be every
+tool at once (§0, the one invariant). Two different relationships to
+assay's own model are worth telling apart:
+
+**Metrics with no assay involvement at all — a different tool answers them,
+and R0 can attest any of them today, language-agnostically.** R0 only needs
+"good" to be expressible as a zero exit code; it does not care what the
+wrapped command measures. Wrapping any of the tools below as a lane's `argv`
+(with a threshold check baked into the command, since most of these tools
+don't have their own `--fail-under`) gets a standardized, machine-readable
+`PASS`/`FAIL`/`reason_code` in the exact same verdict shape as a coverage
+lane — no new assay code needed:
+
+| Metric | What it tells you | Go | Python | JavaScript/TypeScript |
+|---|---|---|---|---|
+| Static analysis / lint | Style and correctness smells | `go vet` (stdlib), `golangci-lint` (aggregates many linters) | `ruff`, `pylint` | `eslint` |
+| Cyclomatic / cognitive complexity | How hard a function is to reason about or fully branch-test | `gocyclo`, `gocognit` | `radon`, `xenon` | `eslint`'s `complexity` rule, `escomplex` |
+| Duplication (copy-paste detection) | Maintenance risk, drift between near-identical paths | `dupl` | `pylint`'s duplicate-code check, `jscpd` (multi-language) | `jscpd` |
+| Dead code / unused exports | Code nobody calls — a maintenance and audit-surface liability | `deadcode` (`golang.org/x/tools`), `unused` (staticcheck) | `vulture` | `ts-unused-exports`, `knip` |
+| Dependency vuln scanning | Supply-chain risk | `govulncheck` | `pip-audit`, `safety` | `npm audit` |
+| API/ABI surface stability | Whether a "non-breaking" change actually is | — | — | — |
+| Documentation coverage | Undocumented exported symbols — onboarding/audit friction | — | `interrogate` | — |
+| Performance/benchmark regression | Whether a change made something slower | `go test -bench` + a comparator (`benchstat`) | `pytest-benchmark` | — |
+
+`jscpd` and `semgrep` (static analysis, not listed per-cell above) are
+cross-language and worth knowing about for exactly that reason — one tool,
+one R0 wrapper, covers several of a monorepo's languages at once.
+
+**Metrics that *do* touch assay's own model, because coverage's own
+structured data already answers part of the question.** A `whole_target`
+lane already tells you which declared lines are executed by *any* test in
+the whole suite (not just the diff) — a line that's `0` in that mode, on a
+target nothing imports, is exactly what a dead-code detector is trying to
+find, just from a different direction (execution evidence, not static
+reachability analysis). Not a substitute for the tools above — a line can be
+imported and executed by one throwaway test and still be dead in every real
+sense — but a signal that's already sitting in a verdict you may already be
+producing, worth checking before reaching for a new tool.
+
+**What's not on this list on purpose.** API/ABI stability and performance
+regression need a *baseline to compare against over time*, not a single run
+judged in isolation — a fundamentally different shape than "run this command
+once, judge the result," and out of scope for what R0–R3 are built to
+answer.
 
 ## How it works
 

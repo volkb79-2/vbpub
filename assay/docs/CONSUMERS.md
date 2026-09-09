@@ -1865,15 +1865,21 @@ A gate wrapper reads this the way `assay run` would, without running it:
   longer needs a `bash -c "cd … && …"` wrapper, so `argv0` on such a lane
   now names the real command instead of `bash`. A lane that still carries
   the wrapper still hides its command behind `argv0 = "bash"`, exactly as it
-  does from `assay run`'s own preflight. **In this release, `external_tools` is
-  `()` for every shipped adapter** (Python `adapters/python.py:806`, SQL
-  `adapters/sql.py:671`, Go `adapters/go.py:501`, JavaScript
-  `adapters/javascript.py:322` — none declares a nonempty tuple), so this
-  field is structurally always `[]` today, not a per-lane fact a preflight
-  can meaningfully branch on yet. A gate consumer should not build a
-  `MISSING_EXTERNAL_TOOL` preflight around this field expecting it to name
-  `node`/`npm` for a `javascript` lane — that check today has to come from
-  `language` itself (the paragraph above), not from `external_tools`.
+  does from `assay run`'s own preflight. **Corrected (found stale during a
+  wings-cgroups cross-check, 2026-09-09): this used to say `external_tools`
+  is `()` for every shipped adapter, "none declares a nonempty tuple" — false
+  since A-394/B047 item 2. Go is the one real exception**:
+  `adapters/go.py`'s `external_tools: tuple[str, ...] = ("go",)`, because the
+  statement-position oracle is a Go program (A-217) and a Go lane genuinely
+  needs a real toolchain on the judge — `assay run`'s preflight refuses
+  `NO_MEASUREMENT`/`MISSING_EXTERNAL_TOOL` before the lane's command runs
+  when it's absent. Python (`adapters/python.py:807`), SQL
+  (`adapters/sql.py:672`) and JavaScript (`adapters/javascript.py:494`) are
+  still genuinely `()` — none needs an external binary beyond the interpreter
+  running assay itself. So a gate consumer's `MISSING_EXTERNAL_TOOL`
+  preflight *can* branch on this field today, and should, for a Go lane
+  specifically — it just won't name `node`/`npm` for a `javascript` lane,
+  since that language has no such dependency to preflight.
 - **`environment_command`** is a boolean, not the probe's own argv: a gate
   only needs to know ONE declares a probe must pass in the invoking
   environment before snapshot work, never to re-implement or repeat it
