@@ -467,14 +467,29 @@ WantedBy=multi-user.target
 """
 
 # Case B (root-fills-disk): build-time hook, runs during `update-initramfs -u`
-# itself, not at boot. Embeds sfdisk into the image (util-linux ships no
-# initramfs-tools hook of its own for it, unlike e2fsprogs's resize2fs/e2fsck,
-# which are already bundled automatically) and copies in the plan files
-# ROOT_SHRINK_LOCAL_PREMOUNT_HOOK reads at boot -- a plain /etc/vbpub/ file is
-# NOT part of the initramfs image unless something explicitly copies it in.
-# Defensive against both files being absent (a build triggered long after
-# stage2's own cleanup already deleted this hook, in case that delete ever
-# raced or failed).
+# itself, not at boot. Embeds sfdisk AND resize2fs into the image and
+# copies in the plan files ROOT_SHRINK_LOCAL_PREMOUNT_HOOK reads at boot --
+# a plain /etc/vbpub/ file is NOT part of the initramfs image unless
+# something explicitly copies it in. Defensive against both files being
+# absent (a build triggered long after stage2's own cleanup already
+# deleted this hook, in case that delete ever raced or failed).
+#
+# resize2fs must be copy_exec'd explicitly -- e2fsprogs's OWN
+# initramfs-tools hook only bundles e2fsck (needed for the standard boot-
+# time root fsck initramfs-tools itself performs), not resize2fs, which
+# is only ever needed by this custom shrink flow. Live-confirmed
+# 2026-09-09 (r1002, round 4, the first time -k all let both kernels'
+# initrds actually carry this hook far enough to matter): the previous
+# comment here assumed resize2fs was "already bundled automatically" the
+# same way e2fsck is -- it isn't. `lsinitramfs` on the real, booted
+# initrd showed e2fsck/sfdisk/blockdev present but resize2fs entirely
+# missing. At boot, ROOT_SHRINK_LOCAL_PREMOUNT_HOOK's `resize2fs -P
+# "$DEVICE"` then failed as "not found", $MIN_BLOCKS came back empty,
+# and the hook took its own silent-skip branch ("could not read minimum
+# filesystem size, skipping"; exit 0) -- a safe, non-boot-blocking
+# degradation by design, but it meant root never actually shrank, with
+# no failure ever logged anywhere the initramfs stage can reach
+# (log_failure_msg output there doesn't reach the persistent journal).
 ROOT_SHRINK_BUILD_HOOK = """\
 #!/bin/sh
 PREREQS=""
@@ -482,6 +497,7 @@ case "$1" in prereqs) echo "$PREREQS"; exit 0 ;; esac
 . /usr/share/initramfs-tools/hook-functions
 
 copy_exec /usr/sbin/sfdisk /usr/sbin/sfdisk
+copy_exec /usr/sbin/resize2fs /usr/sbin/resize2fs
 
 for f in /etc/vbpub/root-shrink-plan.env /etc/vbpub/root-shrink-plan.sfdisk; do
   [ -f "$f" ] && copy_file vbpub-root-shrink-plan "$f" "$f"

@@ -704,6 +704,27 @@ MaxFileSec=1month
             entries[int(suffix)] = values
         return entries
 
+    @staticmethod
+    def _geometry_for_comparison(attrs: dict[str, str]) -> dict[str, str | None]:
+        """Project a parsed partition-entry dict down to the fields a
+        write plan actually controls (start/size/type), case-folding
+        type. Live-confirmed 2026-09-09 (v1001 round 9, this same
+        readback-verification diagnostic's own first live outing): a
+        raw dict `!=` between the in-memory plan and a real `sfdisk
+        --dump` readback flags EVERY real write as a mismatch, not just
+        broken ones -- real sfdisk always assigns a random `uuid=` the
+        plan never specifies, and normalizes `type=` to uppercase
+        regardless of the case it was written in. A perfectly correct
+        forward write was rolled back over exactly these two cosmetic
+        differences, undoing otherwise-successful partitioning. Compare
+        only what the plan itself constrains.
+        """
+        return {
+            "start": attrs.get("start"),
+            "size": attrs.get("size"),
+            "type": (attrs.get("type") or "").upper(),
+        }
+
     def _validate_plan_geometry(
         self,
         current: dict[int, dict[str, str]],
@@ -1170,19 +1191,26 @@ MaxFileSec=1month
             self._run(["/usr/bin/udevadm", "settle"], "wait for udev to create new device nodes")
             readback = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
             readback_entries = self._parse_partition_entries(readback)
-            if readback_entries != plan_entries:
+            expected_geometry = {n: self._geometry_for_comparison(a) for n, a in plan_entries.items()}
+            actual_geometry = {n: self._geometry_for_comparison(a) for n, a in readback_entries.items()}
+            if actual_geometry != expected_geometry:
                 # Diagnostic-only, computed before the rollback below
                 # overwrites the disk: every prior mismatch on this exact
                 # line has needed an SSH session to a still-broken host to
                 # find out WHAT differed (2026-09-08/09, three separate
                 # rounds) -- surface the actual diff in the raised error
                 # itself so it reaches Telegram/custom_script.output2
-                # without another live round + manual SSH dig.
-                all_numbers = sorted(set(plan_entries) | set(readback_entries))
+                # without another live round + manual SSH dig. Compares
+                # the same normalized (start/size/type-cased) projection
+                # used for the pass/fail decision above, not the raw
+                # attrs dicts -- otherwise the diff itself would show the
+                # exact uuid/type-case noise that _geometry_for_comparison
+                # exists to ignore.
+                all_numbers = sorted(set(expected_geometry) | set(actual_geometry))
                 diff_parts = []
                 for number in all_numbers:
-                    expected = plan_entries.get(number)
-                    actual = readback_entries.get(number)
+                    expected = expected_geometry.get(number)
+                    actual = actual_geometry.get(number)
                     if expected != actual:
                         diff_parts.append(f"p{number}: expected={expected} actual={actual}")
                 mismatch_detail = "; ".join(diff_parts) or "(dicts differ but no per-number diff found)"

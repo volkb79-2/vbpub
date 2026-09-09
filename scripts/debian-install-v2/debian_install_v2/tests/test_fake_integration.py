@@ -116,6 +116,48 @@ def expected_readback(installer: Installer) -> tuple[list[tuple[int, dict[str, s
     return ordered, plan_text
 
 
+def realistic_readback(plan_text: str) -> str:
+    """Simulate what a REAL `sfdisk --dump` readback looks like, as
+    opposed to byte-replaying the in-memory plan text back at itself
+    (what every other fixture in this file does, which is exactly why
+    the regression this simulates went uncaught until a real host hit
+    it): real sfdisk always assigns a random per-partition uuid= the
+    plan never specifies, and normalizes type= GUIDs to uppercase
+    regardless of the case they were written in."""
+    lines = []
+    for line in plan_text.splitlines():
+        if " : " in line and "type=" in line:
+            device, _, attrs = line.partition(" : ")
+            parts = []
+            for chunk in attrs.split(", "):
+                key, _, value = chunk.partition("=")
+                if key == "type":
+                    value = value.upper()
+                parts.append(f"{key}={value}")
+            fake_uuid = f"AAAAAAAA-BBBB-CCCC-DDDD-{abs(hash(line)) % 10**12:012d}"
+            line = f"{device} : {', '.join(parts)}, uuid={fake_uuid}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def test_apply_tolerates_realistic_readback_uuid_and_type_case(tmp_path):
+    """Regression, 2026-09-09 (v1001 round 9): a real sfdisk --dump
+    readback always carries a random per-partition uuid= the in-memory
+    plan never specifies, and normalizes type= GUIDs to uppercase. A raw
+    dict `!=` between plan_entries and readback_entries treats EVERY
+    real write as a mismatch purely because of these two cosmetic
+    differences -- confirmed live: a perfectly correct forward write on
+    a real host was rolled back over exactly this, undoing otherwise-
+    successful partitioning and crashing stage2. Every other test in
+    this file uses `expected_readback()`, which byte-replays the plan
+    text back at itself and therefore could never have caught this --
+    this test specifically simulates what a real readback looks like."""
+    installer, actions = make_installer(tmp_path)
+    _, plan_text = expected_readback(installer)
+    actions.readback = realistic_readback(plan_text)
+    installer._apply_known_swap_shape()  # must NOT raise/roll back
+
+
 def test_transaction_succeeds_with_checksum_and_manifest(tmp_path):
     installer, actions = make_installer(tmp_path)
     ordered, readback = expected_readback(installer)

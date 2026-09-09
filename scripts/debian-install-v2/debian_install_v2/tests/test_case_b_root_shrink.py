@@ -146,6 +146,13 @@ def test_plan_root_shrink_installs_hook_when_disk_lacks_space(tmp_path):
 
     hook = actions.files["/etc/initramfs-tools/hooks/vbpub-root-shrink"].decode()
     assert "copy_exec /usr/sbin/sfdisk /usr/sbin/sfdisk" in hook
+    # Regression, 2026-09-09 (r1002 round 4): resize2fs is NOT bundled
+    # automatically by e2fsprogs's own initramfs-tools hook the way
+    # e2fsck is -- it must be copy_exec'd explicitly here, or the
+    # premount hook's `resize2fs -P "$DEVICE"` fails as "not found" at
+    # boot and the whole shrink silently no-ops (confirmed live via
+    # lsinitramfs on the real, booted initrd).
+    assert "copy_exec /usr/sbin/resize2fs /usr/sbin/resize2fs" in hook
     premount = actions.files["/etc/initramfs-tools/scripts/local-premount/vbpub-root-shrink"].decode()
     assert "/etc/vbpub/root-shrink-plan.env" in premount
     assert premount.startswith("#!/bin/sh\n")
