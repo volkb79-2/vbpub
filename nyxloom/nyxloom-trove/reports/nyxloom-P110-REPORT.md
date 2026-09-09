@@ -38,6 +38,13 @@ read of `nyxloom-prod-mattermost` was performed at any point; `expose_public`
 remains `false` in the committed config. Every measurement in this report comes
 from a throwaway instance in this package's own `ciu worktree`.
 
+> **Round 2.** Independent review returned NEEDS-FIXES on three bounded items
+> and **cleared the highest-risk one** (whether declaring `nyxloom-admin` could
+> touch the live bootstrap admin's password — it cannot). All three are fixed,
+> one optional hardening item was taken, `main` (now carrying nyxloom-P109) is
+> merged in, and the suite and gate were re-run at the merged tip. See
+> **"Review round 1"** near the end for what changed and why.
+
 ## Isolation — the corrected approach, verified before trusting anything
 
 The previous attempt at this task caused a contained production incident: an
@@ -461,8 +468,8 @@ the real assignment flipped; caught by deliberate mutation).
 ## Tests
 
 > Counts in this section are the **first-round** figures, before `main`
-> (with nyxloom-P109) was merged in. The final numbers are 98 tests and 16
-> mutations — see "Review round 1" below.
+> (with nyxloom-P109) was merged in. The final numbers are 98 tests in this
+> file and 16 mutations — see "Review round 1" below.
 
 `tests/test_mattermost_provision_hook.py`: **35 → 62**, all passing. The 27 new
 tests cover `_team_exists` (including the rc=0 sentinel, exact-vs-prefix
@@ -519,27 +526,28 @@ caught" was false for them until the tests were changed.
 ## Full test suite
 
 `python3 -m pytest tests/` on the whole nyxloom suite, serial, under
-`nice -n 15 ionice -c3` per the shared-host rule:
+`nice -n 15 ionice -c3` per the shared-host rule. **At the merged tip** (this
+branch plus nyxloom-P109):
 
 ```
-3863 tests, progress characters: {'.': 3863}      # no F, no E, no x, no s
+3973 tests, progress characters: {'.': 3973}      # no F, no E, no x, no s
 PYTEST_RC=0
 ```
 
-(The run's final `N passed` status line is not emitted by this project's pytest
-configuration; the census of progress characters plus the exit code is the
-evidence, and both were captured explicitly after the first attempt piped the
-output through `tail` and lost the end of it.)
+(Round 1's pre-merge figure was 3863. The run's final `N passed` status line is
+not emitted by this project's pytest configuration, so the census of progress
+characters plus the exit code is the evidence — captured explicitly after a
+first attempt piped the output through `tail` and lost the end of it.)
 
 ## Gate
 
-`run-gate tester-unified`, run from inside the worktree's `nyxloom/` directory.
-Verdict read from `.assay/verdict-tester-unified.json` in a **separate step**
-(LESSONS L4 — never a pipe tail):
+`run-gate tester-unified`, run from inside the worktree's `nyxloom/` directory
+**at the merged tip**. Verdict read from `.assay/verdict-tester-unified.json`
+in a **separate step** (LESSONS L4 — never a pipe tail):
 
 ```
 tester-unified: PASS (exit 0)
-  commit: 9dc61cad6f49feb08c39f6fd867d7b8ecc7ea792
+  commit: 6b8b0acda7a07736c6953af871015a92c4960922
   argv: /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-report=json:coverage.json
 run-gate: lane 'tester-unified' exit 0
 ```
@@ -550,31 +558,35 @@ From the verdict artifact:
 |---|---|
 | `outcome` | **PASS** |
 | `exit_code` | 0 |
-| `commit` | `9dc61cad6f49feb08c39f6fd867d7b8ecc7ea792` (this branch's HEAD) |
+| `commit` | `6b8b0acda7a07736c6953af871015a92c4960922` — equals this branch's HEAD at the time of the run |
 | `declared_rigor` | `R0`, `R1` — both `PASS`, both `verified_by_assay: true` |
-| R1 coverage | `pct: 100.0`, `covered: 53 / executable: 53`, `files_missing_coverage: []` |
+| R1 coverage | `pct: 100.0`, `covered: 450 / executable: 450`, `files_missing_coverage: []` |
 | R1 judgment | `mode: changed_lines`, `fail_under: 100.0`, base `ec868f14` (merge-base) |
-| `assay_version` / digest | 6.1.0 / `80ce1a5412a3…` |
+| `assay_version` | 6.1.0 |
 | `argv_modified` | `false` |
+
+(Round 1's pre-merge run also PASSed, at commit `9dc61cad`, 53/53 changed
+lines. The jump to 450 is the merge: the merge-base is unchanged, so P109's
+`src/nyxloom/intake_bridge.py` is now inside the changed-line window too.)
 
 **What the 100% coverage figure does and does not mean.** R1 judges changed
 lines within the lane's coverage scope, which is `--cov=src/nyxloom`. The
 provisioning hook lives at `mattermost/hooks/post_compose_provision.py`,
-**outside `src/`**, so R1 structurally cannot see it — the 53 lines it measured
-are other changed surface in `src/`, not this package's hook. That is not a
-gap in the gate and it is not being glossed: it is exactly why
+**outside `src/`**, so R1 structurally cannot see it — the lines it measured
+are changed surface in `src/`, not this package's hook. That is not a gap in
+the gate and it is not being glossed: it is exactly why
 `tests/test_mattermost_provision_hook.py` exists as a deliberate act rather
-than as a coverage by-product, and why this round's evidence for the hook is
-the mutation table rather than a percentage. Read "100%" as "the changed lines
-the judge can see are covered", never as "the hook is covered".
+than as a coverage by-product, and why the evidence for the hook is the
+mutation table rather than a percentage. Read "100%" as "the changed lines the
+judge can see are covered", never as "the hook is covered".
 
-**RG-48 did not bite.** The lane's `pytest -n auto` and this host's mandatory
-`docker update --cpus=3` produced false failures in an earlier package; here
-the gate was launched during a genuine quiet window (1-minute load average
-**5.72**, the four other estate test-runner containers idle) and completed in
-under four minutes, before a cap could be applied. So the container ran
-**uncapped** — reported rather than hidden. If the controller re-runs the gate
-under contention, RG-48's `--cpus=6` reconciliation is the known workaround.
+**RG-48 did not bite, and this time the cap was applied.** The gate went out at
+1-minute load **1.75** and its container
+(`run-gate-vbpub-tester-unified-742855-…`) was capped with
+`docker update --cpus=3` immediately after launch, per the shared-host rule —
+the lane's `pytest -n auto` under that cap produced no false failures here.
+(Round 1's run finished before a cap could be applied and is recorded as
+uncapped; that is the honest difference between the two runs.)
 
 ## Files changed
 
