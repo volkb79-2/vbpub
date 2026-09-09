@@ -236,6 +236,18 @@ section "5. SHIPPED SERIES: a panel-side re-assertion must not evict a loading s
 # everything docker's write clobbered. Asserting the buggy half too is
 # deliberate: if it ever stops evicting, this section has stopped measuring
 # anything and its green means nothing.
+#
+# WHAT THIS SECTION IS, AND IS NOT. It asserts the KERNEL CONSEQUENCE: that the
+# reclaim-through-your-own-floor bug is real on this kernel, and that the shape
+# of the fix prevents it at the systemd/cgroup level. It is NOT a regression
+# guard against the Go code regressing. Every command below is a raw
+# docker/systemctl call; no Wings code runs in this section at all, so it stays
+# green with the V1 code fix reverted (demonstrated by mutation on 2026-09-09 --
+# see the correcting note in CONTINUATION-2026-09-08-scope-redesign.md, which
+# supersedes commit 1b4a720f's "permanent regression guard" claim). The actual
+# regression guard for the band choice is the unit suite --
+# TestReassertUsesThePhaseNotTheEnvironmentState and its neighbours in
+# server/slice_phase_test.go, which kill that mutant.
 docker run -d --name e2e5 --cgroup-parent=wings.slice \
     --memory 512m --memory-reservation 512m --cpu-shares 2 busybox \
     sh -c 'dd if=/dev/zero of=/tmp/world bs=1M count=300 2>/dev/null; while :; do cat /tmp/world > /dev/null; sleep 2; done' >/dev/null

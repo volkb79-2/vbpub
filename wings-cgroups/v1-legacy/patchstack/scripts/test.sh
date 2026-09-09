@@ -16,7 +16,10 @@ set -e
 echo "=== go build ===" && go build ./...
 echo "=== go vet (strict, minus known-dirty upstream pkgs) ==="
 go vet $(go list ./... | grep -v -E "'"$VET_EXCLUDE_RE"'")
-echo "=== go test ===" && go test ./config/... ./environment/... ./server/... ./internal/cgroups/...
+# -count=1 is not optional: without it a green run can be served entirely from
+# the shared wingscg-gocache volume, so the gate would report OK having executed
+# nothing. A gate that can pass without running is not a gate.
+echo "=== go test ===" && go test -count=1 ./config/... ./environment/... ./server/... ./internal/cgroups/...
 echo "=== integration compile check ===" && go vet -tags dockerintegration ./environment/docker/
 go vet -tags systemdintegration ./internal/cgroups/
 '

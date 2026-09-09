@@ -113,7 +113,10 @@ So the rule to hold on to is not "whoever writes last wins" in the abstract:
 because it re-applies on every path where the other writer acts.** What that
 does *not* give you is composition — the two settings no longer stack, they
 replace, and the Panel's value for a Wings-managed property is simply
-overwritten a moment later.
+overwritten a moment later. "The other writer" here means Docker, on those
+three paths and no others: a value an administrator sets on a scope by hand
+with `systemctl set-property`, outside both Docker and Wings, is *not* repaired,
+because nothing tells Wings it happened.
 
 ## Rule 3 — a cgroup is never protected from itself
 

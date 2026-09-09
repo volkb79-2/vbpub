@@ -23,6 +23,27 @@ Read this before touching `wings-cgroups` again.
 > is never rewritten here. This note is the correction. The claim became true
 > on 2026-09-09, when the case was changed to call `(*conn).memoryCurrent`;
 > the mutant now dies.
+>
+> **Correcting note for commit `1b4a720f`.** That commit's message says the new
+> section 5 of `test/e2e-systemd/inner-test.sh` "gives V1 a permanent regression
+> guard." That is **false**, and was false when written. Section 5 contains no
+> invocation of Wings code at all — every line in it is a raw `docker` /
+> `systemctl set-property` call — so the round-3 fix-verification reverted the V1
+> code fix (`reassertRequest` back to `s.sliceRequest(cgroups.PhaseSteady)`), ran
+> the harness, and got `EXIT=0`, `E2E: series -> PASS`. The message is left as it
+> stands, for the same reason as above. This note is the correction.
+>
+> What section 5 actually asserts, and what makes it worth having, is the
+> **kernel consequence**: that a cgroup really does reclaim through its own
+> `memory.min` when pushed below its own `memory.high`, and that the shape of the
+> fix prevents it at the systemd/cgroup level — measured in both directions, so
+> the section cannot silently stop measuring. Section 5's own header comment was
+> corrected on 2026-09-09 to say exactly that. The regression guard for the Go
+> code is, and always was, the unit suite:
+> `TestReassertUsesThePhaseNotTheEnvironmentState`,
+> `TestReassertAfterGraceExpiryUsesTheSteadyBand`,
+> `TestReassertAppliesEvenWithNothingStaged`, and (since 2026-09-09) the
+> `TestSyncWithEnvironment*` cases that cover the dispatch seam.
 
 ## What shipped
 
@@ -40,9 +61,10 @@ Plus a docs commit (see `git log wings-cgroups/`).
   `v1-legacy/build/wings-pterodactyl` (backup ref `backup/pre-redesign-v1133`
   holds the pure-rebase, pre-redesign tip)
 - `stack.conf` `PTERODACTYL_REF="v1.13.3"`
-- Image built and present on the host daemon: **`wings-local:1.13.3-cgroup.3`**
-  (the second review-fix state, 2026-09-09; `cgroup.1` is the pre-review build
-  and `cgroup.2` the first review-fix build, both superseded. Nothing deployed —
+- Image built and present on the host daemon: **`wings-local:1.13.3-cgroup.4`**
+  (the round-4 closeout state, 2026-09-09; `cgroup.1` is the pre-review build,
+  `cgroup.2` the first review-fix build and `cgroup.3` the second, all
+  superseded. Nothing deployed —
   no compose file was touched, the live host still runs
   `wings-local:1.13.1-cgroup.11`)
 
@@ -403,3 +425,63 @@ nothing has run against a live Wings. The band decision now has unit tests and
 the kernel consequence has an e2e assertion, but the wiring from a real Panel
 sync through `SyncWithEnvironment` to `EnsureForServer` is still only covered by
 tests plus reading.
+
+---
+
+# Closeout — 2026-09-09, round 4 (mechanical)
+
+The review→fix→verify chain ends here. Round 3's fix-verification
+(`FIXVERIFY-2026-09-09-round3.md`) returned **ACCEPT-WITH-FOLLOWUPS** with no
+blocking defect; this pass closed the followups. No design decision was
+revisited and no behaviour changed except where a test needed a seam.
+
+## Closed
+
+| id | what was done |
+|---|---|
+| **W1** | The `1b4a720f` correction above, plus a rewritten header on section 5 of `inner-test.sh` saying plainly that it asserts the kernel consequence and is **not** a regression guard against the Go code, and naming the unit tests that are. |
+| **W2** | `dispatchSliceProps` now reaches the world through two package variables (`sliceResolveScope`, `sliceEnsure`) so the seam between `reassertRequest()` and its one caller is assertable. Three new cases in `server/slice_reassert_dispatch_test.go` drive the real `SyncWithEnvironment` against a stub `environment.ProcessEnvironment` and assert the request that actually came out. Both surviving mutants now die — see the table below. |
+| **W3** | `sliceTestConfig` sets `SteadyRampStep = "64M"`, so the `req.RampStep != 0` assertions can fail. Confirmed: mutant M4 (dropping `req.RampStep = 0`) was green before and is red now. |
+| **W4** | `internal/cgroups/docker_resources_test.go` — the reflection guard over `container.Resources` / `container.UpdateConfig`, verified non-vacuous by pointing its field walk at `"MemoryReservation"` (fails as intended). |
+| **W6** | Half-sentence added to `CGROUP-SEMANTICS.md` naming the out-of-band `systemctl set-property` case the rule does not promise to repair. |
+| **W7** | `patchstack/scripts/test.sh` runs `go test -count=1`. Every gate result below is therefore a real execution, not a cache hit. |
+
+W2/W3/W4 land **inside patch 0006** (`Stage per-server scope properties across
+server startup`), built forward — `git am` 0001–0006, edit, `git commit --amend`,
+`git am` 0007–0009, `export-patches.sh`. W1's `inner-test.sh` and W7's `test.sh`
+are project tooling, outside the exported series, and were edited directly.
+
+## Deliberately not done
+
+- **W5** — the narrow race in which a re-assert reading `currentPhase()==Startup`
+  loses to a concurrent `enterSteady`'s dispatched steady apply, leaving the
+  startup floors under the steady ceiling. Window is about one
+  `ContainerInspect`; the consequence is looser protection, never eviction, and
+  it is strictly better than the round-2 behaviour. **Accepted as a documented
+  decision, not an oversight** — that is round 3's own recommendation and this
+  round did not reopen it.
+- **A live smoke.** Round 3 said it would want either the W2 seam *or* one live
+  run on a throwaway server before the production node. The seam is what was
+  built. Nothing here has still ever executed against a live Wings, and that
+  remains the honest state before any deployment.
+
+## Mutation results — my own runs, uncached
+
+| mutant | before | after |
+|---|---|---|
+| M7: delete `s.reassertSliceProps(…)` from `server/update.go` | SURVIVED | **KILLED** — both `TestSyncWithEnvironment*` repair cases, "requests reaching the applier = 0, want 1" |
+| M8: rewire it to `s.applySliceProps(s.currentPhase(), reason)` | SURVIVED | **KILLED** — `KeepMemoryHigh` false, `RampStep = 67108864`, and 0 requests in the nothing-staged case |
+| M4: drop `req.RampStep = 0` from `reassertRequest` | SURVIVED | **KILLED** — `slice_phase_test.go` *and* the new dispatch test |
+| W4 guard pointed at `"MemoryReservation"` | — | fails as intended (non-vacuous) |
+
+## Gates — fresh, this round
+
+| gate | result |
+|---|---|
+| `patchstack/scripts/test.sh pterodactyl` | `ALL OK (pterodactyl)`, exit 0, no `(cached)` lines |
+| `INTEGRATION=1 patchstack/scripts/test.sh pterodactyl` | `ok …/environment/docker 3.643s`, dockerintegration 5/5, exit 0 |
+| `test/e2e-systemd/run-e2e.sh` | exit 0 — `E2E: series -> PASS \| t3a-slice-manager -> PASS`, 0 SKIP, 0 FAIL |
+| `patchstack/scripts/coverage.sh pterodactyl` | assay R1 **PASS**, **349 / 645 = 54.11 %**, `fail_under = 50.0` **untouched** (was 347/645 = 53.80 %) |
+| series reproducibility | fresh `git clone -b v1.13.3` + `git am` of all nine patches: **applies clean** |
+| build clone vs committed series | `git format-patch` output byte-identical to `patchstack/patches/pterodactyl-v1.13.3` |
+| image | **`wings-local:1.13.3-cgroup.4`** = `42de6ad0b6c3`. Nothing deployed; the live node still runs `wings-local:1.13.1-cgroup.11`. |
