@@ -541,6 +541,11 @@ def test_a_refused_poll_is_audited_on_the_control_ledger(sample_project, monkeyp
     refusals = [e for e in storage.iter_events(control_auth.CONTROL_LEDGER_PROJECT, since=0)
                 if e.type is EventType.CONTROL_MUTATION_REFUSED]
     assert refusals, "a refused channel mutation must leave an audit record"
+    # The TRANSPORT half of the path is load-bearing: an audit trail that
+    # labels a Mattermost refusal `ntfy:` sends whoever reads it to the wrong
+    # channel's logs.
+    assert refusals[-1].payload == {"path": "mattermost:intake-bridge",
+                                    "reason": "no-named-channel-operator"}
 
 
 # --------------------------------------------------------------------------
@@ -871,7 +876,7 @@ def test_cli_poll_reports_and_exits_zero_when_unconfigured(sample_project, capsy
     assert "status=unconfigured" in capsys.readouterr().out
 
 
-def test_cli_poll_exits_one_only_on_a_refusal(sample_project, monkeypatch, capsys):
+def test_cli_poll_exits_one_on_a_refusal(sample_project, monkeypatch, capsys):
     from nyxloom import cli
 
     monkeypatch.delenv(control_auth.CHANNEL_OPERATOR_ENV, raising=False)
@@ -881,6 +886,26 @@ def test_cli_poll_exits_one_only_on_a_refusal(sample_project, monkeypatch, capsy
         classmethod(lambda _cls, _root: _with_bridge(sample_project)))
     assert cli.main(["intake-bridge", "poll", "demo"]) == 1
     assert "status=refused" in capsys.readouterr().out
+
+
+def test_cli_poll_also_exits_one_on_a_bridge_error(sample_project, monkeypatch, capsys):
+    """A refusal is not the ONLY 1, and the docstring must not claim it is.
+
+    A scheduled consumer that reads exit 1 as "refused" would treat a corrupt
+    cursor or an unparseable payload as an authorisation problem and stop
+    retrying for the wrong reason.
+    """
+    from nyxloom import cli
+
+    def _boom(*_a, **_kw):
+        raise intake_bridge.BridgeError("mmctl --json post list: stdout is not JSON")
+
+    monkeypatch.setattr(intake_bridge, "poll_once", _boom)
+    monkeypatch.setattr(
+        config.ProjectConfig, "load",
+        classmethod(lambda _cls, _root: _with_bridge(sample_project)))
+    assert cli.main(["intake-bridge", "poll", "demo"]) == 1
+    assert "stdout is not JSON" in capsys.readouterr().err
 
 
 def _with_bridge(cfg):

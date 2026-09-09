@@ -48,9 +48,13 @@ public_host = "mattermost.{{ env.PUBLIC_FQDN }}"
 # else — the `mmctl` transport needs no server change at all, which is why
 # both exist. Leave this false and the bridge still works over `mmctl`.
 #
-# Flipping it and populating [[mattermost.provision.tokens]] belong in the
-# SAME edit: with the flag false the hook's token step raises rather than
-# silently skipping.
+# That is also why a [[mattermost.provision.tokens]] table can ship while
+# this stays false, and why merging one cannot break the next `ciu up` here:
+# the hook's token step is a NO-OP under a false flag. It does not raise, and
+# it does not skip silently either -- it PRINTS the declared secret names it
+# is not minting and returns nothing to persist. So the accounts, channels
+# and webhooks provision as usual and only the PAT waits, visibly, on an
+# operator flipping this line.
 enable_user_access_tokens = false
 # tls-edge shared ingress network (external) — joined only when exposed.
 ingress_network = "ingress_public"

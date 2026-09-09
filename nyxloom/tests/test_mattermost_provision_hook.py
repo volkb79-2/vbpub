@@ -29,6 +29,7 @@ third one at all.
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -846,6 +847,23 @@ def test_the_shipped_pat_flag_is_off_so_merging_cannot_widen_the_live_server(hoo
     # account/channel/webhook provision on an ordinary `ciu up` and only the
     # PAT waits on an explicit operator decision.
     assert _render_shipped_defaults()["mattermost"]["enable_user_access_tokens"] is False
+
+
+def test_the_shipped_pat_flag_is_off_without_needing_jinja(hook):
+    """The same property as above, enforced UNCONDITIONALLY.
+
+    Every other assertion in this section renders the template and so sits
+    behind `importorskip("jinja2")` -- correct for shape assertions, wrong for
+    this one. "Merging cannot widen the live server" is the package's headline
+    safety claim, and a gate container without jinja2 would skip the only test
+    that checks it and still report green. This reads the shipped bytes
+    instead: no dependency, nothing to skip.
+    """
+    src = (_HOOK_PATH.parents[1] / "ciu.defaults.toml.j2").read_text()
+    assignments = re.findall(r"(?m)^enable_user_access_tokens\s*=\s*(\S+)\s*$", src)
+    assert assignments == ["false"], (
+        "ciu.defaults.toml.j2 must ship exactly one `enable_user_access_tokens` "
+        f"assignment and it must be false; found {assignments!r}")
 
 
 def test_this_package_did_not_touch_expose_public(hook):

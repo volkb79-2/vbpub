@@ -437,7 +437,12 @@ docker inspect nyxloom-prod-mattermost \
 #    and revoke -- that is the duplication failure mode.
 docker exec nyxloom-prod-mattermost mmctl --local token list nyxloom-intake
 ls -l nyxloom/mattermost/.ciu/secrets/intake_pat                           # 0440, non-empty
-ciu up --dir nyxloom/mattermost -y --define-root /workspaces/vbpub/nyxloom | grep tokens_minted
+#    Capture, THEN read -- a `| grep` here would report grep's exit status as
+#    ciu's (LESSONS L4, the pipe-tail hazard, same reason gate verdicts are
+#    read in a separate step).
+ciu up --dir nyxloom/mattermost -y --define-root /workspaces/vbpub/nyxloom \
+  >/tmp/p109-reup.log 2>&1; echo "ciu up rc=$?"                            # rc MUST be 0
+grep tokens_minted /tmp/p109-reup.log                                      # expect tokens_minted=[]
 docker exec nyxloom-prod-mattermost mmctl --local token list nyxloom-intake  # still exactly ONE
 
 # 4. Point the bridge at it. Neither credential is committed.
@@ -445,13 +450,34 @@ export NYXLOOM_INTAKE_WEBHOOK_URL="$(cat nyxloom/mattermost/.ciu/secrets/intake_
 export NYXLOOM_INTAKE_MM_TOKEN="$(cat nyxloom/mattermost/.ciu/secrets/intake_pat)"
 export NYXLOOM_CHANNEL_OPERATOR_ID="<the operator identity this channel belongs to>"
 
-# 5. Exercise BOTH transports against the real channel.
+# 5. Exercise the `mmctl` transport against the real channel. It runs from the
+#    controller's shell because the docker socket IS its transport.
 #    The FIRST poll of a channel only adopts the head (status=bootstrapped,
 #    nothing ingested). That is correct, not a failure. Then post something in
 #    `intake` from the Mattermost UI as nyxloom-operator and poll again.
 nyxloom intake-bridge poll nyxloom --transport mmctl
-nyxloom intake-bridge poll nyxloom --transport rest
 ```
+
+**Step 5 does NOT include `--transport rest`, and that is a real limitation,
+not an omission.** `base_url` is `http://nyxloom-prod-mattermost:8065`, a name
+that resolves only inside the `nyxloom-prod-mattermost_internal` docker
+network; the stack publishes no host port, deliberately. The controller's own
+shell is not on that network, so a `--transport rest` poll there fails with a
+connection error and demonstrates nothing. **The REST path against the LIVE
+stack stays unverified until `nyxloomd` runs as a container on that network** —
+which this track has explicitly deferred. It was verified end-to-end against
+the throwaway 11.10.1 instance during development, and its parsing is pinned by
+unit tests built from verbatim captures of that instance.
+
+The half that is genuinely in doubt on the live stack — does the PAT
+authenticate, and is the private channel readable with it — *can* be checked
+today without deploying anything, with a one-shot container that makes exactly
+`RestReader.fetch`'s two GETs using the same stdlib client and exits. The exact
+command is **step 5b** in `mattermost/README.md`; it uses `python:3-slim`
+(already on this host), no pip, no build, nothing persistent. A 401 means the
+PAT is revoked or the flag went back off, a 403 means `nyxloom-intake` is not a
+member of `intake`, and a connection error means the container did not join the
+right network — all live-stack findings, none of them bridge defects.
 
 **Expected end state**: exactly one token on `nyxloom-intake`; `intake` private
 with `nyxloom-intake` + `nyxloom-operator` as members; one `nyxloom-intake`
@@ -502,3 +528,29 @@ recoverable, but only by revoking.
    verifiable author (unlike ntfy), so a username allowlist would now be
    meaningful — it was left out because the private channel's membership already
    answers "who may speak here", and a second list would drift from it.
+
+---
+
+## 7. Independent review round 1 — NEEDS-FIXES (documentation only), resolved
+
+An independent reviewer re-verified all 14 numbered claims above, mutation
+reproduction included, and found **no defect in any of the code**
+(`intake_bridge.py`, `config.py`, `cli.py`, the provisioning hook). Two
+blocking documentation findings and four nits; all six are fixed here.
+
+| # | Finding | Fix |
+| --- | --- | --- |
+| **F1** | The recipe's step 5 could not execute as written: `base_url` resolves only inside `nyxloom-prod-mattermost_internal`, and the recipe told the controller to run `--transport rest` from a shell that is not on that network. | Step 5 now runs `mmctl` only. New **step 5b** states plainly that the live REST path stays unverified until `nyxloomd` runs on that network, and supplies a one-shot `docker run --rm --network …` probe (python:3-slim, stdlib urllib, no pip, nothing persistent) making exactly `RestReader.fetch`'s two GETs. |
+| **F2** | `ciu.defaults.toml.j2` claimed the token step *raises* under a false flag; `_ensure_tokens` prints and returns `{}`. Wrong mechanism, in the comment an operator reads before deciding the flag is safe to leave off. | Comment rewritten to the module docstring's own (correct) framing: a no-op that announces what it is not minting. |
+| N1 | `channel_operator_for` hardcoded an `ntfy:` prefix, so P109's audit record read `ntfy:mattermost:intake-bridge`. | Prefix moved to the three call sites; the helper now records what it is given. Existing ntfy payloads are byte-identical. The bridge's audit test was strengthened from "a refusal exists" to pinning the exact payload — the weakness that let this through. |
+| N2 | `cli.py` and `docs/USAGE.md` said exit 1 "only" on a refused ingress; a `BridgeError` also exits 1 via `main()`'s catch-all. | Both corrected; a new test pins the `BridgeError` → 1 path so the sentence a B20 consumer will be written against is enforced. |
+| N5 | The "merging cannot widen the live server" tests all sat behind `importorskip("jinja2")` and would skip silently in a gate container without it. | Added a jinja-free assertion on the shipped literal: exactly one `enable_user_access_tokens` assignment, and it is `false`. |
+| N6 | Recipe step 3 read `ciu up … \| grep tokens_minted`, replacing ciu's exit status with grep's (LESSONS L4). | Capture to a file, echo the real `rc`, then grep. |
+
+N3/N4/N7/N8 and observations O1–O4 were judged non-blocking and are
+deliberately untouched.
+
+**Each of the three new/changed assertions was verified red against a broken
+implementation** before being accepted: restoring the `ntfy:` prefix fails the
+audit-payload test; flipping the template flag to `true` fails the jinja-free
+test; making the CLI swallow `BridgeError` fails the exit-code test.

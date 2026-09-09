@@ -202,6 +202,11 @@ export NYXLOOM_CHANNEL_OPERATOR_ID="<operator identity>"
 nyxloom intake-bridge poll nyxloom
 ```
 
+That default runs anywhere the docker socket does. `--transport rest` does
+NOT: it dials `base_url` over the network below, so it only works from inside
+`nyxloom-prod-mattermost_internal` — which is why the transport is a config
+selector and not a fallback chain. See step 5b of the P109 recipe.
+
 `/workspaces/dstdns`'s own config is a **separate repo and out of scope** —
 it still points at its previous channel and is left for a dstdns-side session.
 
@@ -394,9 +399,15 @@ docker inspect nyxloom-prod-mattermost \
 
 # 3. Verify the PAT was minted ONCE and is idempotent. The second `ciu up`
 #    must print `tokens_minted=[]` -- if it mints again, STOP and revoke.
+#    Capture, THEN read: a `| grep` here would replace ciu's own exit status
+#    with grep's, so a `ciu up` that failed outright would still look fine as
+#    long as the word appeared somewhere (LESSONS L4, the same reason gate
+#    verdicts are never read from a pipe tail).
 docker exec nyxloom-prod-mattermost mmctl --local token list nyxloom-intake
 ls -l nyxloom/mattermost/.ciu/secrets/intake_pat          # 0440, non-empty
-ciu up --dir nyxloom/mattermost -y --define-root /workspaces/vbpub/nyxloom | grep tokens_minted
+ciu up --dir nyxloom/mattermost -y --define-root /workspaces/vbpub/nyxloom \
+  >/tmp/p109-reup.log 2>&1; echo "ciu up rc=$?"           # rc MUST be 0
+grep tokens_minted /tmp/p109-reup.log                     # expect tokens_minted=[]
 docker exec nyxloom-prod-mattermost mmctl --local token list nyxloom-intake   # still exactly ONE
 
 # 4. Point the bridge at it. Both credentials come from the stack store and
@@ -405,13 +416,65 @@ export NYXLOOM_INTAKE_WEBHOOK_URL="$(cat nyxloom/mattermost/.ciu/secrets/intake_
 export NYXLOOM_INTAKE_MM_TOKEN="$(cat nyxloom/mattermost/.ciu/secrets/intake_pat)"
 export NYXLOOM_CHANNEL_OPERATOR_ID="<the operator identity this channel belongs to>"
 
-# 5. Both transports, against the real channel. The FIRST poll of a channel
-#    only adopts the head (`status=bootstrapped`, nothing ingested) -- that is
-#    correct, not a failure. Post something in `intake` from the Mattermost UI
-#    as nyxloom-operator, then poll again.
+# 5. The `mmctl` transport, against the real channel. This one runs from the
+#    controller's own shell because it shells out via `docker exec` -- the
+#    docker socket is the transport, so no network reachability is involved.
+#    The FIRST poll of a channel only adopts the head
+#    (`status=bootstrapped`, nothing ingested) -- that is correct, not a
+#    failure. Post something in `intake` from the Mattermost UI as
+#    nyxloom-operator, then poll again.
 nyxloom intake-bridge poll nyxloom --transport mmctl
-nyxloom intake-bridge poll nyxloom --transport rest
 ```
+
+#### Step 5b — `--transport rest` is NOT runnable from the controller's shell
+
+Do not add `nyxloom intake-bridge poll nyxloom --transport rest` to the block
+above; it fails with a connection error and proves nothing.
+`[intake_bridge].base_url` is `http://nyxloom-prod-mattermost:8065`, and that
+name exists only inside the `nyxloom-prod-mattermost_internal` docker network —
+the stack publishes no host port (see "Network exposure" above, which is the
+point, not an oversight).
+
+The REST transport was verified end-to-end against the throwaway 11.10.1
+instance during development, and its parsing is covered by unit tests built
+from verbatim captures. What has NOT been exercised is that path against the
+LIVE stack with the LIVE PAT, and that stays true until `nyxloomd` itself runs
+as a container on that network — which this track has deliberately not done
+yet.
+
+What CAN be checked today, without deploying anything, is the half that is
+actually in doubt: the credential and the reachability. This is a one-shot
+throwaway container on the private network that makes exactly the two GETs
+`RestReader.fetch` makes, with the same stdlib client, and exits:
+
+```bash
+# Uses python:3-slim (already on this host) and stdlib urllib only -- no pip,
+# no image build, nothing persistent. Prints the two HTTP statuses and the
+# resolved channel id. Expect: 200, 200, a 26-char id.
+docker run --rm --network nyxloom-prod-mattermost_internal \
+  --cpus=1 --memory=256m \
+  -e MM_TOKEN="$NYXLOOM_INTAKE_MM_TOKEN" \
+  python:3-slim python3 -c '
+import json, os, urllib.request
+BASE = "http://nyxloom-prod-mattermost:8065"
+H = {"Authorization": "Bearer " + os.environ["MM_TOKEN"]}
+def get(path):
+    req = urllib.request.Request(BASE + path, headers=H, method="GET")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return r.status, json.loads(r.read().decode())
+st, meta = get("/api/v4/teams/name/nyxloom/channels/name/intake")
+print("channel lookup:", st, "id=" + meta["id"])
+st, page = get("/api/v4/channels/%s/posts?per_page=1" % meta["id"])
+print("posts read   :", st, "posts=%d" % len(page.get("posts", {})))
+'
+```
+
+A `401` means the PAT is revoked or `enable_user_access_tokens` went back to
+false; a `403` means `nyxloom-intake` is not a member of the private `intake`
+channel (step 0's `channel users list` is the check for that); a connection
+error means the container did not join the right network. Any of those is a
+real finding about the live stack — none of them is a bridge defect, which is
+exactly why this probe is worth running before the daemon ever is.
 
 Rollback is a flag, not a migration: set `enable_user_access_tokens = false`,
 `ciu up`, and revoke the token (`mmctl --local token revoke <token-id>`, then

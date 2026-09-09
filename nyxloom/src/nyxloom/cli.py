@@ -97,9 +97,15 @@ INTERFACE CONTRACT (frozen) — subcommands:
                               intake_chat turn -> reply posted via
                               notify.send() -> exit. No loop, no daemon; a
                               future scheduled job (B20) runs this verb.
-                              Exit 1 ONLY when the ingress is refused (no
-                              named channel operator); an unconfigured
-                              bridge and an empty channel are both 0. A
+                              Exit 1 when the ingress is refused (no named
+                              channel operator) AND, via main()'s catch-all,
+                              on any error -- a BridgeError from an
+                              unreadable cursor or an unparseable payload
+                              included. Exit 0 is therefore the only "the
+                              poll decided something", and it covers an
+                              unconfigured bridge and an empty channel too.
+                              A scheduled consumer must not read a 1 as
+                              "refused" specifically. A
                               separate verb GROUP because `intake` above is
                               a frozen three-positional contract.
   reject <project> <task> [--note TEXT]

@@ -174,7 +174,7 @@ them as worked examples.
 | `decide <project> <D-id> --choose [--note]` | Resolve a `D-NNN` product decision. |
 | `discuss <project> <D-id>` | Print the decision-chat command. |
 | `intake <project> <intake_id> <msg>` | Advance a feature-intake chat turn. |
-| `intake-bridge poll <project> [--transport mmctl\|rest]` | B9/nyxloom-P109: poll the Mattermost intake channel **once**, fold any new posts into one `intake` turn, post the reply back, exit. No daemon and no loop — a future scheduled job runs this verb. Exit 1 **only** on a refused ingress (no `NYXLOOM_CHANNEL_OPERATOR_ID`); an unconfigured bridge and an empty channel are both 0. Configured by `[intake_bridge]`; see `mattermost/README.md`. |
+| `intake-bridge poll <project> [--transport mmctl\|rest]` | B9/nyxloom-P109: poll the Mattermost intake channel **once**, fold any new posts into one `intake` turn, post the reply back, exit. No daemon and no loop — a future scheduled job runs this verb. Exit 1 on a refused ingress (no `NYXLOOM_CHANNEL_OPERATOR_ID`) **and** on any error (a `BridgeError` — unreadable cursor, unparseable payload — reaches `main()`'s catch-all); an unconfigured bridge and an empty channel are both 0, so a 1 means "did not complete", not "refused" specifically. Configured by `[intake_bridge]`; see `mattermost/README.md`. |
 | `reject <project> <task> [--note]` | Merge-gate rejection. |
 | `merge <project> <task> [--commit] [--force]` | Record a manual merge (`--force`: operator override to record it even if the pre-merge gate fails). |
 | `gate` | Reserved namespace, no subcommands today — GA1's `verify` was retired in nyxloom-P98; gate execution now lives entirely in each project's own `run-gate.py`/Assay lane. |

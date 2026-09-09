@@ -147,16 +147,20 @@ def channel_operator() -> Actor | None:
 def channel_operator_for(ingress: str) -> Actor | None:
     """`channel_operator()`, plus the audited refusal a channel ingress owes.
 
-    ONE implementation for both notification-channel ingresses (`commands`'
-    verbs and `decision_chat`'s decision routes), so they cannot drift into
-    two refusal shapes or two audit payloads.  `ingress` names the route, not
-    the target: `ntfy:pause`, `ntfy:decide`.
+    ONE implementation for every channel ingress (`commands`' verbs,
+    `decision_chat`'s decision routes, `intake_bridge`'s Mattermost poll), so
+    they cannot drift into two refusal shapes or two audit payloads.
+    `ingress` names the route, not the target, and carries its own TRANSPORT
+    prefix: `ntfy:pause`, `ntfy:decide`, `mattermost:intake-bridge`.  The
+    prefix belongs to the caller because this helper is no longer ntfy-only --
+    minting it here labelled the first non-ntfy caller's audit record with the
+    wrong transport.
     """
     operator = channel_operator()
     if operator is None:
         log.warning("channel mutation refused", ingress=ingress,
                     reason="no-named-channel-operator")
-        audit_control_refusal(f"ntfy:{ingress}", "no-named-channel-operator")
+        audit_control_refusal(ingress, "no-named-channel-operator")
     return operator
 
 
