@@ -742,7 +742,7 @@ MaxFileSec=1month
         # full stop. Confirmed live 2026-09-08: this used to be
         # max(root_size, preserve_root_size_gb-in-sectors), which on a real
         # host whose default-image root partition is SMALLER than the
-        # configured preserve_root_size_gb (v1001's actual root was ~9.46
+        # configured preserve_root_size_gb (v1001's actual root was ~8.81
         # GiB against a configured preserve_root_size_gb of 10) inflated
         # new_root_size past the real root_size -- producing a plan that
         # tried to GROW root, correctly refused by _validate_plan_geometry()

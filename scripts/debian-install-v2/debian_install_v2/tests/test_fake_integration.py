@@ -164,7 +164,7 @@ def test_apply_known_swap_shape_tolerates_padded_real_sfdisk_dump(tmp_path):
 
 # Real numbers captured live from v1001.vxxu.de, 2026-09-08: this host's
 # actual default-image root partition is smaller than the configured
-# preserve_root_size_gb (10 GiB) -- 18468864 sectors is ~9.46 GiB.
+# preserve_root_size_gb (10 GiB) -- 18468864 sectors is ~8.81 GiB.
 _SMALL_REAL_ROOT_DUMP = (
     "label: gpt\ndevice: /dev/vda\n\n"
     "/dev/vda3 : start=2500608, size=18468864, type=0fc63daf-8483-4772-8e79-3d69d8477de4"
@@ -176,7 +176,7 @@ def test_plan_swap_partitions_never_grows_root_below_preserve_floor(tmp_path):
     new_root_size as max(root_size, preserve_root_size_gb-in-sectors) --
     Case A never actually resizes root, so on a real host whose existing
     root partition is smaller than the configured preserve_root_size_gb
-    (confirmed live: v1001's real root was ~9.46 GiB against a configured
+    (confirmed live: v1001's real root was ~8.81 GiB against a configured
     10 GiB floor), this inflated new_root_size past the real root_size,
     producing a plan that tried to GROW root. _validate_plan_geometry()
     correctly refused it ("partition plan unexpectedly grows the root
