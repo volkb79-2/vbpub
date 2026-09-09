@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # coverage.sh [pterodactyl] — assay R1 changed-line coverage over the patch
-# surface (base..HEAD, i.e. the 9-patch series against the upstream tag).
+# surface (base..HEAD, i.e. the 10-patch series against the upstream tag).
 #
 # Runs standalone, and is also what `COVERAGE=1 test.sh` calls.
 #

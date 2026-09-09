@@ -50,7 +50,7 @@ snapshot_selection = "repository"
 [lanes.coverage.judge]
 language = "go"
 # Project-relative, i.e. <module root>/<entry>. These are the directories the
-# 9-patch series adds code to. NOTE: assay's source_roots are DIRECTORIES —
+# 10-patch series adds code to. NOTE: assay's source_roots are DIRECTORIES —
 # a single file is rejected at load ("source root does not exist ... looked
 # for <path>") — so cmd/root.go is expressed as the `cmd` directory. That is
 # not a widening in practice: within base..HEAD, root.go is the only changed
@@ -73,13 +73,14 @@ source_roots = ["internal/cgroups", "environment/docker", "config", "cmd", "sftp
 # via `go test -c -cover` + GOCOVERDIR + `go tool covdata textfmt` is open
 # follow-up work.
 #
-# Measured floor: 53.8% at the 9-patch tip (677d438). 50.0 is a regression
-# guard sitting just under it, not a quality target. Raise it as coverage
-# improves; never lower it to make a red lane green.
+# Measured floor: 53.8% at the 9-patch tip (677d438); 54.4% at the 10-patch
+# tip (8ab9674e's underlying commit, after patch 0010 added sftp/ coverage).
+# 50.0 is a regression guard sitting just under it, not a quality target.
+# Raise it as coverage improves; never lower it to make a red lane green.
 fail_under = 50.0
 allow_excluded = false
 # The upstream tag this series is based on: PTERODACTYL_REF in stack.conf.
-# base..HEAD is exactly the 9 patches.
+# base..HEAD is exactly the 10 patches.
 base = "v1.13.3"
 
 [lanes.coverage.judge.coverage]

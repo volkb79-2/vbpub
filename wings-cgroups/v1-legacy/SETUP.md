@@ -1,4 +1,4 @@
-# SETUP — deploying the patched Wings (patches 0001–0009) on a node
+# SETUP — deploying the patched Wings (patches 0001–0010) on a node
 
 The one-stop, node-agnostic deployment guide: host prerequisites → compose →
 `config.yml` → panel data → cutover → verification → rollback, in that order.
