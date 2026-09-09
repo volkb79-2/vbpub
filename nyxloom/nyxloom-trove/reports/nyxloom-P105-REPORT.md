@@ -350,7 +350,8 @@ straight into §4.2's argv ceiling. Same unblocker.
 
 ## 5. Tests — and proof they are not vacuous
 
-`tests/test_review_progress.py`, 43 tests across four layers: the pure
+`tests/test_review_progress.py`, **44** tests across four layers (plus one in
+`tests/test_config_ui.py`, §5.1): the pure
 detector (one test per signal, each flipping exactly **one** field of a shared
 stalled baseline), the event scan, the daemon measurement half, the ladder,
 the effect, and the trace.
@@ -372,6 +373,21 @@ All five reverted; suite green. Several tests additionally carry an explicit
 count; a `False` baseline is a different answer from `None`; a trace without
 the event carries no such leg) so no assertion can pass for the wrong reason.
 
+### 5.1 A latent drift caught by self-review, and pinned
+
+`render._EDITABLE_POLICY_KEYS` states in its own comment that it is "the
+render-side copy" of `daemon._POLICY_BOUNDS`' key set (render.py has no
+import on daemon.py), and the two were in **exact** correspondence before
+this package — with **nothing** enforcing it. Adding the two budgets to
+`_POLICY_BOUNDS` alone broke it silently: the server would accept and
+validate two knobs the dashboard gave an operator no way to reach.
+
+Both keys now appear in the form, and
+`test_the_dashboard_form_and_the_server_bounds_name_the_same_policy_keys`
+(`tests/test_config_ui.py`) pins the correspondence in both directions —
+verified against the broken state, where it names the drifted keys. Commit
+`3232a0ff`.
+
 ---
 
 ## 6. Gate
@@ -381,9 +397,35 @@ the event carries no such leg) so no assertion can pass for the wrong reason.
 run from the worktree's `nyxloom/` directory, verdict read from
 `.assay/verdict-tester-unified.json` in a separate step.
 
-**Result: see §7 of this file's companion note in the commit message / the
-controller's dispatch reply — the verdict is recorded there with its exact
-values.**
+**Result: PASS.** `run-gate` exit 0; verdict read from
+`.assay/verdict-tester-unified.json` in a separate step:
+
+```
+outcome        PASS          exit_code 0
+lane           tester-unified   scope S1   rigor [R0, R1]   enforcement gate
+commit         3232a0ff607f43af924cb7028f72046dfb71b0ca
+judge          assay 6.0.0 (zipapp, sha256 43fffa70…), verdict schema 11
+claim R0       PASS   verified_by_assay=true
+claim R1       PASS   verified_by_assay=true
+  changed-line coverage   384 / 384 = 100.0 %   (fail_under 100.0)
+  files considered        11        files_missing_coverage []
+  unclassified {}   excluded {}      (allow_excluded=false, require_branch=false)
+base           996048ac  (base_resolution: merge-base)   source_roots ["src"]
+argv_modified  false
+```
+
+`unclassified_lines {}` and `excluded_lines {}` are worth stating rather than
+skipping: an empty denominator or a silently-excluded changed line are exactly
+the two ways a 100% changed-line reading can be vacuous (PL12, and B30's
+"0/0 = 100.0%" trap). Neither applies here — 384 changed executable lines were
+measured and all 384 covered, across 11 files.
+
+Independently corroborated before the gate by a local reconstruction of the
+same judgment (`git diff -U0` against the base ∩ `coverage.json`), which
+reported 253/253 = 100.0% over `src`. The two numbers differ because the local
+check diffed against `origin/main` two-dot while assay resolves the base by
+**merge-base**; both agree on the only thing that matters, that no changed
+executable line is uncovered.
 
 Host discipline observed throughout: load checked before every run, pytest
 under `nice -n 10 ionice -c2 -n7`, and the gate deliberately **deferred**
