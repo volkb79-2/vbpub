@@ -111,7 +111,9 @@ class HostActions:
         if not allow_shell and command in {"bash", "sh"}:
             raise ActionError("shell commands are only accepted through write_file templates")
 
-    def run(self, argv: list[str], description: str = "", dangerous: bool = False) -> str | None:
+    def run(
+        self, argv: list[str], description: str = "", dangerous: bool = False, input: str | None = None
+    ) -> str | None:
         self._validate(list(argv))
         planned = PlannedAction(tuple(argv), description or shlex.join(argv), dangerous)
         self.planned.append(planned)
@@ -121,6 +123,7 @@ class HostActions:
             argv,
             check=False,
             text=True,
+            input=input,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )

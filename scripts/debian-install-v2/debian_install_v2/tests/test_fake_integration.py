@@ -40,10 +40,20 @@ class FakeHostActions(HostActions):
         self.readback: str | None = None
         self.applied = False
         self.exists_result = True
+        # (argv, input) per call -- lets tests verify sfdisk actually got fed
+        # the plan/backup text on stdin, not just that the argv looked right
+        # (regression, 2026-09-09: HostActions.run() had no stdin plumbing at
+        # all, so both the forward write and the rollback restore silently
+        # wrote nothing real to sfdisk -- see installer.py's _apply_known_
+        # swap_shape() comments).
+        self.inputs: list[tuple[tuple[str, ...], str | None]] = []
 
-    def run(self, argv: list[str], description: str = "", dangerous: bool = False) -> str | None:
+    def run(
+        self, argv: list[str], description: str = "", dangerous: bool = False, input: str | None = None
+    ) -> str | None:
         self._validate(list(argv))
         self.planned.append(PlannedAction(tuple(argv), description or " ".join(argv), dangerous))
+        self.inputs.append((tuple(argv), input))
         if argv[0] == "/usr/sbin/sfdisk" and argv[1] == "--force":
             self.applied = True
             return ""
@@ -119,6 +129,12 @@ def test_transaction_succeeds_with_checksum_and_manifest(tmp_path):
     assert manifest["backup"] == backup_name
     assert manifest["current"] == CURRENT_DUMP
     assert len([line for line in manifest["plan"].splitlines() if "type=0657fd6d" in line]) == 8
+    # Regression, 2026-09-09: the forward sfdisk write must actually be fed
+    # the computed plan on stdin (HostActions.run() previously had no stdin
+    # plumbing at all, so this call silently wrote nothing real).
+    forward_write = ("/usr/sbin/sfdisk", "--force", "--no-reread", "/dev/vda")
+    forward_inputs = [input_text for argv, input_text in actions.inputs if argv == forward_write]
+    assert forward_inputs == [manifest["plan"]]
 
 
 def test_mismatched_readback_rolls_back(tmp_path):
@@ -127,15 +143,26 @@ def test_mismatched_readback_rolls_back(tmp_path):
     actions.readback = readback.replace("start=23472128", "start=23472129", 1)
     with pytest.raises(RuntimeError, match="verification failed; restored backup"):
         installer._apply_known_swap_shape()
+    # Regression, 2026-09-09: sfdisk takes its restore script on stdin, not
+    # as a positional path argument (a bare positional arg after the device
+    # is sfdisk's unrelated "operate on just this partition number" syntax --
+    # confirmed live on v1001 round 6: "failed to parse partition number:
+    # '<backup path>'"). The rollback call is exactly 3 argv tokens now; the
+    # backup content must arrive via input=, matching what was written to
+    # the backup file.
     rollback = [
         action for action in actions.planned
-        if action.argv[:3] == ("/usr/sbin/sfdisk", "--force", "/dev/vda")
-        and len(action.argv) == 4
-        and action.argv[3].endswith(".sfdisk")
+        if action.argv == ("/usr/sbin/sfdisk", "--force", "/dev/vda")
     ]
     assert rollback
-    backup_name = rollback[0].argv[3]
-    assert actions.files[str(rollback[0].argv[3])].decode() == CURRENT_DUMP
+    rollback_inputs = [input_text for argv, input_text in actions.inputs if argv == rollback[0].argv]
+    # +"\n": _run() strips command output (current_dump loses its trailing
+    # newline reading the backup back), so the rollback call restores it
+    # before feeding sfdisk -- otherwise this input would end mid-line
+    # unlike the forward write's plan_text, which already carries one.
+    assert rollback_inputs == [CURRENT_DUMP + "\n"]
+    backup_name = next(name for name in actions.files if "/backups/ptable-" in name and name.endswith(".sfdisk"))
+    assert actions.files[backup_name].decode() == CURRENT_DUMP
 
     # Adversarial-review regression, 2026-09-08 (two rounds): the
     # rollback's own kernel-view refresh must NOT reuse the forward apply

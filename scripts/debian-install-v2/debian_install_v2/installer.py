@@ -88,8 +88,18 @@ class Installer:
         self.release = self._detect_release()
         self.root_disk, self.root_partition_path, self.root_number = self._discover_root()
 
-    def _run(self, argv: list[str], description: str = "", dangerous: bool = False) -> str:
-        output = self.actions.run(argv, description=description, dangerous=dangerous)
+    def _run(
+        self, argv: list[str], description: str = "", dangerous: bool = False, input: str | None = None
+    ) -> str:
+        # input is forwarded only when actually supplied (not just non-None
+        # by default) so the many pre-existing test doubles for
+        # actions.run(argv, description=..., dangerous=...) -- fixed,
+        # narrower signatures with no **kwargs -- keep working unchanged;
+        # only _apply_known_swap_shape()'s two sfdisk calls ever pass one.
+        kwargs: dict[str, object] = {"description": description, "dangerous": dangerous}
+        if input is not None:
+            kwargs["input"] = input
+        output = self.actions.run(argv, **kwargs)
         return (output or "").strip()
 
     def _detect_release(self) -> str:
@@ -1081,7 +1091,24 @@ MaxFileSec=1month
             backup_digest = hashlib.sha256(current_dump.encode("utf-8")).hexdigest()
             self.actions.write_file(str(backup_dir / checksum_name), f"{backup_digest}  {backup_name}\n", 0o644)
             self.actions.write_file(plan_path, plan_text)
-            self._run(["/usr/sbin/sfdisk", "--force", "--no-reread", f"/dev/{self.root_disk}"], dangerous=True)
+            # input=plan_text is REQUIRED -- sfdisk with no positional script
+            # argument reads its new table from stdin (this is exactly how
+            # inuse_partition_editor.py's own Table.write() calls it:
+            # `run(["sfdisk", ...], input=self.to_dump())`); the port here had
+            # dropped that `input=` entirely, and HostActions.run() had no
+            # stdin plumbing at all to carry it even if supplied. Under
+            # systemd (Type=oneshot, no StandardInput=), default stdin is
+            # /dev/null, so sfdisk got an empty script and silently wrote
+            # nothing -- readback then never matched the plan, and EVERY
+            # real run fell into the (also broken, see below) rollback
+            # branch. Confirmed live 2026-09-09 on v1001 round 6: this was
+            # the true cause of "rollback failed partition write", not the
+            # partx/blkid path bugs fixed earlier in this same session.
+            self._run(
+                ["/usr/sbin/sfdisk", "--force", "--no-reread", f"/dev/{self.root_disk}"],
+                dangerous=True,
+                input=plan_text,
+            )
             # partx -a + udevadm settle (inuse_partition_editor.Table.write()'s
             # own apply mechanism, ported to go through HostActions rather than
             # its bare subprocess.run) is more reliable than partprobe alone at
@@ -1120,10 +1147,30 @@ MaxFileSec=1month
             readback = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
             readback_entries = self._parse_partition_entries(readback)
             if readback_entries != plan_entries:
+                # Same missing-stdin bug as the forward write above: sfdisk
+                # takes its restore script on stdin, not as a positional
+                # path argument -- a bare positional arg after the device is
+                # sfdisk's (unrelated) "operate on just this partition
+                # number" syntax, which is why the live failure was
+                # literally "failed to parse partition number: '<path>'".
+                # current_dump is the exact backup content already held in
+                # memory (identical to what was just written to
+                # backup_dir/backup_name), so feed it straight back in
+                # rather than re-reading the file. _run() unconditionally
+                # .strip()s command output, so current_dump lost its
+                # trailing newline on the way in (unlike plan_text, which
+                # _write_sfdisk_plan() builds with one already) -- restore
+                # it so both `input=` payloads this method feeds sfdisk are
+                # terminated the same way (adversarial-review finding,
+                # 2026-09-09: harmless in practice, sfdisk's line reader
+                # handles a final unterminated line fine, but an
+                # unintentional divergence from the reference
+                # inuse_partition_editor.py, which never strips at all).
                 self._run(
-                    ["/usr/sbin/sfdisk", "--force", f"/dev/{self.root_disk}", str(backup_dir / backup_name)],
+                    ["/usr/sbin/sfdisk", "--force", f"/dev/{self.root_disk}"],
                     description="rollback failed partition write",
                     dangerous=True,
+                    input=current_dump + "\n",
                 )
                 # partx + udevadm settle instead of partprobe (not even
                 # installed by this package set -- it ships in the separate
