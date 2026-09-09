@@ -3419,4 +3419,79 @@ when a lane's argv contains `-n auto` while its environment declares no cpu
 bound, since that is precisely the configuration whose behaviour depends on
 what an operator does to the container out-of-band after launch.
 
+## RG-49 — RG-38's `--state-dir` fix `mkdir -p`s against a root-owned synthetic parent in a Mode-B (partial-bind-mount) worktree container
+
+**Found by:** dstdns-P175 implementer dispatch, 2026-09-09, worker-io
+`worker-execution-admission` R1 lane, first attempt.
+
+### What's wrong
+
+RG-38's shipped fix (`run-gate-P05`, above) unconditionally appends
+`--state-dir <repo>/.run-gate/assay-state/<project-relative-path>/` to every
+assay-kind lane's argv and `mkdir -p`s that directory in the same inner
+script that already creates `.assay`. That assumes `<repo>` (here,
+`/workspaces/dstdns`) is a real, writable-by-the-app-user directory inside
+the container. It is not, for a **Mode-B isolated worktree**
+(`nyxloom-trove/GUIDE.md` §3.4): that worktree's own dedicated
+`test-runner` container (per `tools/test-runner/ciu.compose.yml`) bind-mounts
+only `.worktrees/<branch>` and `.git`, both individually, at
+`/workspaces/dstdns`. Docker has no directory to bind those two paths
+*under* until it auto-creates the missing parent (`/workspaces/dstdns`
+itself) inside the container's filesystem layer — and it creates that
+synthetic parent `root:root 0755`. The container's actual runtime user is
+correctly non-root (uid 1003 in this instance), so `mkdir -p
+/workspaces/dstdns/.run-gate/...` fails outright:
+
+```
+mkdir: cannot create directory '/workspaces/dstdns/.run-gate': Permission denied
+```
+
+This is the same Docker behavior AGENTS.md §4.2a anti-pattern #2 already
+names for the SOURCE side of a bind mount (a missing bind source silently
+becomes an empty root-owned directory, ciu CIU-14) — RG-49 is the identical
+mechanism hitting the DESTINATION/parent side of a *partial* multi-path bind
+onto one container mountpoint, which RG-38's fix did not have in view
+because its own acceptance criteria (two full-tree worktrees of one repo)
+never exercises a partial bind.
+
+**Worked around by the implementer, out of its own scope** (no tracked file
+edited — not a fix, a pre-flight): `docker exec -u root` pre-created
+`/workspaces/dstdns/.run-gate/assay-state/.worktrees/<branch>` and
+`chown -R <uid>:<gid>` it before the first R1 attempt. That is a manual,
+per-worktree, per-run step today; nothing in `ciu`'s Mode-B compose
+generation or run-gate's `--state-dir` construction does it automatically.
+
+### Proposed fix
+
+One of, not yet decided which is more correct for the ownership boundary
+run-gate vs. ciu are meant to hold:
+
+1. **run-gate side:** before the unconditional `mkdir -p
+   <state-dir>`, `mkdir -p`+`chown` as root (or `install -d -o -g`) rather
+   than relying on the app user's own privileges — the container already
+   runs a `git config --global safe.directory` step as part of the same
+   inner script (see RG-22), so a root-context setup step ahead of the
+   app-user command is a precedented shape here.
+2. **ciu side:** Mode-B's `tools/test-runner/ciu.compose.yml` generation
+   pre-creates and chowns the synthetic `/workspaces/dstdns` parent (and
+   `.run-gate/` under it) at container startup, the same way it already
+   must handle `.worktrees/<branch>` and `.git`'s own ownership — so every
+   consumer that assumes a writable repo-root subdirectory (not just
+   `--state-dir`) is covered by construction, not per-consumer.
+
+Filed here (run-gate) rather than ciu because the concrete symptom is
+`--state-dir`'s own `mkdir -p`; if the ciu-side shape is chosen instead,
+this entry should be mirrored or moved to `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`.
+
+### Acceptance
+
+- [ ] a fresh Mode-B worktree's FIRST assay-kind lane run (no manual
+      pre-chown) creates and writes `.run-gate/assay-state/...` successfully;
+- [ ] a regression test exercises a container with only sub-paths bind-mounted
+      at the repo root (not the repo root itself), reproducing this entry's
+      exact `Permission denied` without the fix and passing with it;
+- [ ] RG-38's own two-full-tree-worktree acceptance criteria still pass
+      unchanged (no regression for the Mode-A / persistent-worktree case
+      RG-38 was built and verified against).
+
 ### Status — OPEN 2026-09-09
