@@ -71,3 +71,42 @@ Next: await ACCEPT (or blockers) before merging. `CHANGES.md` will
 conflict at merge (assay 6.0.0 released to main mid-wave, folding
 `[Unreleased]`) — controller resolves that at merge time, not a review
 blocker.
+
+## PR-R3 — review returned: ACCEPT-conditional, 3 blockers, 1 decision ask, ruling made, fix dispatched
+
+2026-09-09. Round-1 review committed at `12321837`. Both items' actual
+behavior confirmed correct end-to-end (reviewer drove real lanes through
+`cli.main()` themselves, byte-diffed merge-base-vs-branch verdicts for
+additivity, ran a 10-mutant battery with only 2 survivors). The 2
+survivors ARE the real finding: **B074's runner plumbing has zero
+lane-level test coverage** — both forwarding sites deleted (mutated to
+`False`) and the entire 4359-test suite stayed green, meaning the whole
+feature could ship dead and nothing would notice. Fixable with one
+end-to-end test + a conftest helper field, no behavior change.
+
+Reviewer surfaced a THIRD test-path gate site the backlog and wave
+prompt never mentioned: `runner._mutation_targets_whole` (R2's own
+declared-target veto, distinct from the sweep-side sites that must stay
+untouched) — and correctly declined to decide whether the flag should
+reach it, naming it a genuine open scope question. **Ruling: extend the
+flag to R2 too**, not just fix its refusal message. Reasoning: B074's own
+central argument (an explicit `judge.targets` declaration is a reviewed
+assertion, not a swept path) applies identically to R2 as to R1, there is
+no real safety distinction (mutation happens in an ephemeral snapshot,
+never the live artifact), and leaving R2 out would leave B074's own
+motivating consumer (dstdns's real deployed harness library code) able to
+get coverage-graded but never mutation-graded — an incomplete fix for the
+exact case this item exists for.
+
+Also dispatched: Blocker 3 (derive the per-adapter test-path split from
+the adapter registry, not a hand-copied table — this project's A-270
+discipline), plus two cheap doc fixes (a missing DESIGN-GUIDE paragraph
+matching the pattern comparable flags already have; a schema field
+description that describes the wrong thing). Two non-blocking notes (a
+comment-wording tweak, a backlog note about the B074/B075 naming
+collision growing) are the controller's to handle directly, not the
+implementer's.
+
+Same implementer resumed via SendMessage (repair round). Next: await
+repair commit + still-green gate, then resume the SAME reviewer for
+fix-verification.
