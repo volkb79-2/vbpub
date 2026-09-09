@@ -359,6 +359,19 @@ pipe tail (LESSONS L4):
 Independent of the gate, at the same commit: the full suite serial under
 `nice -n 10 ionice -c2 -n7` is **3932 passed** in 339.99s, exit 0.
 
+> **Which tree that PASS covers.** `16c3e361`, and nothing after it. `74cd60b2`
+> is markdown only, so the verdict still describes the code. **The round-1
+> review fixes (§7) do change executable lines** — one in `control_auth.py`,
+> one in `commands.py`, two in `decision_chat.py`, plus two new tests — so the
+> branch tip is **not** covered by the verdict above. At the tip: the full
+> suite is green (serial, `nice`/`ionice`, exit 0) and the five directly
+> affected test files are green (343 tests), but **a gate re-run is
+> outstanding**. It was deliberately not launched: host load average was 42
+> and climbing on a box shared with a live production game server, and a gate
+> container there would both violate the standing host rule and — on the
+> evidence of the three runs below — produce a contention artefact rather than
+> a verdict. It should be run when the host is quiet, before merge.
+
 #### A host-rule conflict the controller should know about
 
 This took **three** gate attempts, and the two invalid ones were caused by the
