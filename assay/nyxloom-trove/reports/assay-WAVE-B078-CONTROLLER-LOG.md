@@ -59,3 +59,57 @@ creation for the report path, silent A-073 fallback) that may warrant a
 non-blocking "should this be a named diagnostic instead" observation.
 
 Next: await ACCEPT (or blockers) before merging.
+
+## PR-R3 — review returned: REJECT, 4 blockers, rulings made, fix dispatched
+
+2026-09-09. Round-1 review committed at `27b66c25`. The implementer's
+self-reported correction (design doc's wiring pointer was a docstring;
+`execute_plan` not `execute_command` is the real site) was independently
+confirmed CORRECT. But the justification for wiring ONLY the direct
+R0-only path rested on a false claim (stated 3x as settled fact) that
+dstdns's `ui_unit` — the confirmed live RG-45 repro — is R0-only. It
+isn't: `rigor = ["R0", "R1"]`. An R1 lane never reaches the wired direct
+branch; it goes through `_execute_snapshot_unit`, which was NOT wired.
+Reviewer proved live: an R0+R1 probe reproducing the exact RG-45 shape
+still comes out FAIL. **Checkpoint 1 as shipped fixes nothing for the
+case it exists for**, despite every test being green — reviewer named
+this precisely as the failure mode the implementer had itself warned
+about one layer up, landing one layer further in.
+
+Three additional blockers, all real: `result_report` declarable-but-inert
+on any R1+/R2/R3 lane with no load-time guard (B2); the branch's own
+stated "canary halves unchanged by construction" invariant is FALSE —
+`canary.py`'s shared engine calls `execute_command`, which now forwards
+`result_report` to both canary halves untested (B3); `CONSUMERS.md`
+documents a verdict field (`returncode`) that does not exist on the
+schema at all (B4).
+
+Reviewer explicitly declined to pick answers on 3 decision asks. Rulings
+made:
+- **D-1 (blocker 1's seam)**: pass `result_report` explicitly from the
+  CALLER (`_run_prepared_lane`'s baseline call site only), not as a
+  default `_execute_snapshot_unit` itself forwards — keeps "only callers
+  that explicitly opt in" literally auditable. Also ruled: use
+  `create_missing_parents=True` for this snapshot-path call (B006(b)'s
+  own contract permits it for an assay-owned ephemeral snapshot),
+  narrowing the missing-parent-dir limitation to the direct path only.
+- **D-2 (blocker 3)**: exclude canary halves explicitly —
+  `result_report=None` from `canary.py:248` — keeping the stated
+  invariant literally true, matching the design's own explicit scoping
+  (a canary probe's outcome is a different kind of judgment than "did
+  the wrapped suite pass").
+- **D-3 (blocker 4)**: no verdict-schema change in this checkpoint
+  (adding `returncode` would be a real schema change, out of scope) —
+  fix the documentation instead to describe what's actually retained
+  (the output tails; a PASS carrying tails IS the detection signal).
+
+Same implementer resumed via SendMessage (repair round, not a fresh
+agent) with all rulings + exact blocker prescriptions + two cheap
+non-blocking fixes (OBS 2: add the new reader to the pinned
+untrusted-JSON sweep list; OBS 5: reword a now-inaccurate DESIGN-GUIDE
+sentence once fixed). Everything the reviewer verified as correct
+(SR-6 constraints, Checkpoints 2/3 genuinely unbuilt, A-073 default,
+`Claim._check_detail` finding, RecursionError guard, mutation repin, both
+design decisions) is explicitly marked do-not-touch. Next: await repair
+commit + still-green gate, then resume the SAME reviewer for
+fix-verification.
