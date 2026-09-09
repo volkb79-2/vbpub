@@ -512,12 +512,54 @@ than noise:
 Both are reported rather than quietly repaired, because "the mutation was
 caught" was false for them until the tests were changed.
 
+## Full test suite
+
+`python3 -m pytest tests/` on the whole nyxloom suite, serial, under
+`nice -n 15 ionice -c3` per the shared-host rule:
+
+```
+3863 tests, progress characters: {'.': 3863}      # no F, no E, no x, no s
+PYTEST_RC=0
+```
+
+(The run's final `N passed` status line is not emitted by this project's pytest
+configuration; the census of progress characters plus the exit code is the
+evidence, and both were captured explicitly after the first attempt piped the
+output through `tail` and lost the end of it.)
+
 ## Gate
 
-`run-gate tester-unified`, verdict read from `.assay/verdict-tester-unified.json`
-in a separate step:
+`run-gate tester-unified`, run from inside the worktree's `nyxloom/` directory.
+Verdict read from `.assay/verdict-tester-unified.json` in a **separate step**
+(LESSONS L4 — never a pipe tail):
 
-> **(filled in below — see "Gate verdict")**
+```
+tester-unified: PASS (exit 0)
+  commit: 9dc61cad6f49feb08c39f6fd867d7b8ecc7ea792
+  argv: /opt/tester-venv/bin/python -m pytest tests -n auto -q --cov=src/nyxloom --cov-report=json:coverage.json
+run-gate: lane 'tester-unified' exit 0
+```
+
+From the verdict artifact:
+
+| Field | Value |
+|---|---|
+| `outcome` | **PASS** |
+| `exit_code` | 0 |
+| `commit` | `9dc61cad6f49feb08c39f6fd867d7b8ecc7ea792` (this branch's HEAD) |
+| `declared_rigor` | `R0`, `R1` — both `PASS`, both `verified_by_assay: true` |
+| R1 coverage | `pct: 100.0`, `covered: 53 / executable: 53`, `files_missing_coverage: []` |
+| R1 judgment | `mode: changed_lines`, `fail_under: 100.0`, base `ec868f14` (merge-base) |
+| `assay_version` / digest | 6.1.0 / `80ce1a5412a3…` |
+| `argv_modified` | `false` |
+
+**RG-48 did not bite.** The lane's `pytest -n auto` and this host's mandatory
+`docker update --cpus=3` produced false failures in an earlier package; here
+the gate was launched during a genuine quiet window (1-minute load average
+**5.72**, the four other estate test-runner containers idle) and completed in
+under four minutes, before a cap could be applied. So the container ran
+**uncapped** — reported rather than hidden. If the controller re-runs the gate
+under contention, RG-48's `--cpus=6` reconciliation is the known workaround.
 
 ## Files changed
 
