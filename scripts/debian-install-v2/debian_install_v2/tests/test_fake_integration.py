@@ -137,20 +137,27 @@ def test_mismatched_readback_rolls_back(tmp_path):
     backup_name = rollback[0].argv[3]
     assert actions.files[str(rollback[0].argv[3])].decode() == CURRENT_DUMP
 
-    # Adversarial-review regression, 2026-09-08: the rollback's own
-    # kernel-view refresh must use partx -u/--update, NOT -a/--add like the
-    # forward apply path a few lines earlier in the same function -- this
-    # branch just restored a table with FEWER partitions than what that
-    # earlier -a call already registered with the kernel, and -a cannot
-    # retract now-stale entries. Matches inuse_partition_editor.py's own
-    # established add-vs-restore distinction (`--add --nr ...` vs
-    # `--update`). Exactly one -a (the forward apply, before the mismatch
-    # was detected) and exactly one -u (this rollback) must appear -- never
-    # a second -a.
+    # Adversarial-review regression, 2026-09-08 (two rounds): the
+    # rollback's own kernel-view refresh must NOT reuse the forward apply
+    # path's plain `partx -a` -- this branch just restored a table with
+    # FEWER partitions than what that earlier -a call already registered
+    # with the kernel (the new swap partitions, the resized root), and -a
+    # only adds. Round 2 (verified against util-linux's own partx.c
+    # source): `partx -u` alone fixes GEOMETRY for numbers still present
+    # (un-resizes root) but silently skips -- does not delete -- numbers
+    # now entirely ABSENT from the restored table, so the vanished swap
+    # partitions need an explicit `-d --nr <range>` first. Exactly one -a
+    # (the forward apply, before the mismatch was detected), one scoped -d,
+    # and one -u (this rollback) must appear -- never a second -a.
     argvs = [action.argv for action in actions.planned]
+    swap_range = f"{installer.root_number + 1}:{installer.root_number + installer.config.swap_file_count}"
     assert argvs.count(("/usr/bin/partx", "-a", "/dev/vda")) == 1
+    assert argvs.count(("/usr/bin/partx", "-d", "--nr", swap_range, "/dev/vda")) == 1
     assert argvs.count(("/usr/bin/partx", "-u", "/dev/vda")) == 1
-    assert argvs.count(("/usr/bin/udevadm", "settle")) == 2  # once per partx call
+    assert argvs.count(("/usr/bin/udevadm", "settle")) == 2  # once per partx-refresh round
+    # -d must run BEFORE -u in the rollback (retract stale numbers, then
+    # resync geometry for what remains) -- order matters for correctness.
+    assert argvs.index(("/usr/bin/partx", "-d", "--nr", swap_range, "/dev/vda")) < argvs.index(("/usr/bin/partx", "-u", "/dev/vda"))
 
 
 def test_apply_known_swap_shape_tolerates_padded_real_sfdisk_dump(tmp_path):

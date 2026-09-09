@@ -1110,21 +1110,32 @@ MaxFileSec=1month
                 )
                 # partx + udevadm settle instead of partprobe (not even
                 # installed by this package set -- it ships in the separate
-                # `parted` package, never one of stage2's own dependencies)
-                # -- but -u/--update here, NOT -a/--add like the apply path
-                # above (adversarial-review finding, 2026-09-08): this
-                # branch just restored the OLD backup table, a strictly
-                # SMALLER set of partitions than what the just-reverted
-                # write's own partx -a already registered with the kernel
-                # (the new swap partitions, the resized root). -a only adds
-                # partitions the kernel doesn't know about yet -- it cannot
-                # retract now-stale entries the way this rollback needs.
-                # inuse_partition_editor.py already draws exactly this
-                # distinction itself: Table.write()'s add case uses
-                # `partx --add --nr min:max`, but its own `restore`
-                # subcommand (recovering a previously-dumped table --
-                # functionally the same operation as this rollback) uses
-                # `partx --update`.
+                # `parted` package, never one of stage2's own dependencies).
+                # Two calls, not one (adversarial-review finding,
+                # 2026-09-08, round 2 -- confirmed directly against
+                # util-linux's own partx.c source, not just man-page
+                # recall): this branch just restored the OLD backup table, a
+                # strictly SMALLER set of partitions than what the
+                # just-reverted write's own partx -a already registered with
+                # the kernel (the new swap partitions, the resized root).
+                # `partx -u` alone only fixes GEOMETRY for partition numbers
+                # still present in the restored table (which is exactly what
+                # un-resizes root back to its original size) -- upd_parts()
+                # silently skips (warns, does not delete) any number that's
+                # now entirely ABSENT from the restored table, per
+                # util-linux's own source. The vanished swap-partition
+                # numbers need an explicit, scoped `-d --nr` first; `-d`
+                # treats an already-absent partition as success (ENXIO), so
+                # this is safe/idempotent even if the forward path never got
+                # as far as registering them.
+                self._run(
+                    [
+                        "/usr/bin/partx", "-d", "--nr",
+                        f"{self.root_number + 1}:{self.root_number + self.config.swap_file_count}",
+                        f"/dev/{self.root_disk}",
+                    ],
+                    "retract stale swap partitions after rollback", dangerous=True,
+                )
                 self._run(["/usr/bin/partx", "-u", f"/dev/{self.root_disk}"], "refresh kernel view after rollback", dangerous=True)
                 self._run(["/usr/bin/udevadm", "settle"], "wait for udev after rollback")
                 raise RuntimeError(f"partition table verification failed; restored backup {backup_dir / backup_name}")
