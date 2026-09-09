@@ -8492,6 +8492,41 @@ change touching a component with a defaulted parameter, which on dstdns is the
 whole shipped design-system primitive set. Both P176 and P177 had to be
 dispositioned by disclosure rather than by the lane.
 
+**Addendum, dstdns, 2026-09-09 — the predicted "latent tripwire" fired, live,
+for the first time.** `dstdns/nyxloom-trove/decisions.md` **D-433** (P179
+post-merge fix-verify). A fifth specimen, independently arrived at, not one of
+the four already listed: `applications/webapp-ui-react/src/api/queries/
+domains.ts`'s `useDomainEvolution(domainId, params: UseDomainEvolutionParams =
+{})` — same shape as the other four (a destructured parameter with a default),
+same `default-arg` branch on the function-signature line. This is exactly the
+"Latent tripwire" paragraph's `TimelineTab.tsx` prediction, just tripped by a
+different route into the same file's include-widening: `domains.ts` needed
+`coverage.include` widened to grade an unrelated *sibling* export in the same
+file (`exportDomainDossier`, a plain async function with no relation to
+`useDomainEvolution`), which was enough to pull the whole file's istanbul
+record — `useDomainEvolution` included — into the judge, reproducing oracle
+#5's exact shape verbatim: `mode = "changed_lines"`, `require_branch = true`,
+`ERROR/UNREADABLE_ARTIFACT` (exit 2) rather than a PASS/FAIL with a number,
+because the file *did* have real changed lines in `judge.source_roots` scope
+(the "in the judged diff? yes" row, not B054's "no").
+
+Consumer-side, this took four attempts to work around, entirely because the
+first two "consumer escape hatch" options above are indeed both worse than the
+defect, exactly as already documented: (1) extracting the OFFENDING function
+(`useDomainEvolution`) to its own file just relocated the trip — the new file's
+entire content became "changed" against the diff base, reproducing
+`ERROR/UNREADABLE_ARTIFACT` in the new location; reverted. (2) extracting the
+UNRELATED, bug-free sibling function (`exportDomainDossier`) instead worked,
+but only after also discovering that the changed-line judge treats *every*
+changed line in a file outside `coverage.include` as missing coverage — even a
+bare comment or `import` line, not just executable ones — which forced a
+`coverage.include` widening on a second, previously-untouched 895-line route
+component just to grade one import-statement diff line. None of that
+consumer-side maneuvering would have been necessary under either proposed
+shape (A or B) above. No new entry filed — this corroborates B080 exactly as
+written; recording it here as the first live confirmation of the predicted
+tripwire, in case it moves this entry's priority.
+
 ## B081 — a "dubious ownership" `GIT_FAILED` passes through git's own remedy, which `_REPLACEMENT_ENV` has made unreachable by construction: the message sends the consumer to a fix assay guarantees cannot work
 
 **Proposed by:** `wings-cgroups`, 2026-09-08, while wiring an assay 6.0.0 Go R1
