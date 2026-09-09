@@ -227,6 +227,111 @@ verdict's top level, beside `argv_declared`. A lane that declares none records
 `"cwd"` (`null` when undeclared), so a gate tool can preflight the directory
 without parsing `argv`.
 
+## Stop a flaky exit code from failing a green suite: `result_report` (B078)
+
+By default assay judges your lane's command by its **exit code**: 0 is a
+pass, anything else is `FAIL`/`COMMAND_FAILED`. That is the right default and
+it is not changing.
+
+It has one measured blind spot, and you will know if you have hit it: **every
+test green, and a non-zero exit anyway.** run-gate RG-45 reproduced this 5/5
+against vitest 3.2.7, whose internal worker↔orchestrator RPC heartbeat
+(hardcoded at 60s, with no config knob) trips under host-wide CPU contention,
+throws as an unhandled error, and sets `process.exitCode = 1` *after* the
+reporter has already written a complete, all-green report.
+
+If that is your lane, tell assay where your runner's own structured report
+lands and it will judge **that** instead:
+
+```toml
+schema_version = 2
+
+[lanes.ui_unit]
+scope = "S1"
+rigor = ["R0"]
+enforcement = "gate"
+argv = [
+  "npx", "vitest", "run",
+  "--reporter=json",
+  "--outputFile=vitest-report.json",
+]
+env = { CI = "true" }
+env_passthrough = ["PATH", "HOME"]
+budget = "20m"
+allow_argv_append = false
+
+[lanes.ui_unit.result_report]
+format = "vitest-json"
+path = "vitest-report.json"
+```
+
+Two things have to line up, and nothing else: your argv writes the report
+(`--reporter=json --outputFile=...` — native vitest, no plugin), and
+`result_report.path` names the same file.
+
+**`path` is relative to the directory your command runs in** — the lane's
+`cwd` when it declares one, the project root otherwise — because that is what
+`--outputFile` itself resolves against. Git-ignore it: it is this run's own
+output, exactly like a coverage artifact.
+
+**On an R0-only lane, declare a path whose directory already exists.** Assay
+reserves the file before your command starts. Inside a snapshot — which every
+lane declaring R1, R2 or R3 runs in — assay owns the checkout and creates the
+report's parent directory for you, so any path works. On an **R0-only** lane
+the command runs in your own working tree, which assay will not create
+directories in, so a path like `.assay/vitest-report.json` works only once
+something else has created `.assay/`; until then the lane behaves exactly as
+if it had no declaration at all. A path at the project root, as above, always
+works on both. Assay also **removes any pre-existing file at that path**
+before the run — so name a file your test runner owns, never a source file.
+
+### What assay does with it
+
+A report only counts if it is **verified complete**: it parses, it carries
+vitest's own top-level `success` field (its presence is the "this run
+finished" marker — the *value* is not trusted, since it comes from the same
+orchestrator whose internal error is the problem), and it reports more than
+zero tests. Then its own failure count decides, in both directions:
+
+| Report | Exit code | Verdict |
+|---|---|---|
+| complete, 0 failures | non-zero | **`PASS`** — the case this exists for |
+| complete, 0 failures | 0 | `PASS` |
+| complete, ≥1 failure | 0 | **`FAIL`** / `COMMAND_FAILED` |
+| complete, ≥1 failure | non-zero | `FAIL` / `COMMAND_FAILED` |
+| absent, truncated, wrong shape, or 0 tests | any | the exit code alone, unchanged |
+
+The last row is the important one. A missing or half-written report is
+exactly what a genuine crash leaves behind — a hard kill, an OOM-kill, a
+segfault — so it can never be read as evidence *for* a pass. This can only
+ever cost you a pass you would otherwise have been given; it can never grant
+you one you had not earned.
+
+### How to tell, from a verdict, that a report overrode an exit code
+
+The verdict schema does not change, `assay`'s own exit codes do not change,
+and no new `reason_code` exists — this changes *when* `COMMAND_FAILED` fires,
+never what it means. **The wrapped process's exit code is not a verdict
+field** and never has been; it appears only in the progress stream's
+`command_finished` event, which exists when you pass `--progress`.
+
+What the verdict does carry is the command's **output tails**, and that is
+enough to detect the override:
+
+> **A `PASS` carrying `result_stdout_tail`/`result_stderr_tail` is a `PASS`
+> that overrode a non-zero exit code.** An ordinary green run omits both
+> fields entirely — a `PASS` has no failure output to keep — so their presence
+> on a `PASS` means the command exited non-zero and a verified-complete report
+> overruled it. The tails are the failing run's own output, which is what you
+> want to read when auditing one of these.
+
+If you want the exit code itself, run the lane with `--progress PATH` and read
+`command_finished`.
+
+**`format = "vitest-json"` is the only format today.** `pytest-json-report`
+and `go test -json` readers are planned as separate checkpoints; declaring
+either now is refused at load, on purpose, rather than silently ignored.
+
 ## A whole-target floor: a coverage gate that survives a docstring-only change
 
 Ordinary R1 judges the `base..HEAD` diff, so "fixing" a method by editing only its docstring

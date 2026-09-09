@@ -72,6 +72,12 @@ from .errors import LaneConfigError
 # does not open the `config -> mutation -> config` cycle that would exist if
 # the registry lived in `assay.mutation`.
 from .mutation_parsers import MUTATION_FORMAT_REGISTRY
+# (B078) The result-report reader registry, imported at module level for
+# `FORMAT_REGISTRY`'s own reason (A-068): `result_report.format` is closed
+# against the registry's own keys, never a second hardcoded list that could
+# let a format be declarable before its reader exists. The package imports
+# nothing from assay at all, so it opens no cycle.
+from .result_reports import RESULT_REPORT_FORMATS
 from .vocabulary import (
     ADJUDICATED_EVIDENCE_KEYS,
     COVERAGE_PRODUCERS_BY_FORMAT,
@@ -100,7 +106,9 @@ __all__ = [
     "LaneFile",
     "MutationConfig",
     "REQUIRED_LANE_FIELDS",
+    "RESULT_REPORT_FORMATS",
     "RIGOR_LEVELS",
+    "ResultReportConfig",
     "SCOPES",
     "SNAPSHOT_SELECTIONS",
     "find_lane_file",
@@ -194,6 +202,8 @@ _OPTIONAL_LANE_FIELDS: tuple[str, ...] = (
     "infrastructure",
     # (B043, schema v9) the lane command's declared working directory.
     "cwd",
+    # (B078) the lane's opt-in structured test-report declaration.
+    "result_report",
 )
 
 INFRASTRUCTURE_SOURCES: frozenset[str] = frozenset({"required-env", "derived"})
@@ -862,6 +872,96 @@ def _validate_omission_path(value: Any, *, where: str, field: str) -> str:
     return value
 
 
+#: (B078) The keys ``[lanes.X.result_report]`` accepts -- both REQUIRED. A
+#: format with no path names nothing to read and a path with no format cannot
+#: be parsed, so neither has a meaning on its own and there is no defaulting
+#: that would be "correct in the absence of information" (this module's own
+#: rule for when a default is legitimate).
+_RESULT_REPORT_FIELDS: tuple[str, ...] = ("format", "path")
+
+
+@dataclass(frozen=True)
+class ResultReportConfig:
+    """``[lanes.X.result_report]`` (B078) -- the lane's opt-in declaration of
+    a structured test report R0 may consult INSTEAD of the wrapped command's
+    raw exit code.
+
+    Opt-in per lane, and never assay's default (SR-1): a lane that omits this
+    table is governed by A-073's exit-code rule exactly as it always was.
+    That is the safety property the whole design rests on -- A-073 exists
+    because "an ordinary non-zero exit is a judged R0 FAIL, never a universal
+    PASS" closes a whole class of silently-waved-away failures, and reversing
+    it as a DEFAULT would reopen precisely that hazard.
+
+    The nesting mirrors ``[lanes.X.isolation]``/``[lanes.X.judge.coverage]``
+    one field over rather than inventing a second convention.
+    """
+
+    #: closed against :data:`assay.result_reports.RESULT_REPORT_FORMATS`
+    #: (A-007: declared, never sniffed -- the same rule
+    #: ``judge.coverage.format`` follows).
+    format: str
+    #: forward-slash, relative to the directory the lane's command RUNS in
+    #: (the lane's ``cwd`` when it declares one, the project root otherwise),
+    #: because that is the directory the test runner's own ``--outputFile``
+    #: resolves against. Grammar-checked at load
+    #: (:func:`_validate_omission_path`); the live filesystem is never touched
+    #: here, because this path is an OUTPUT the lane's own command writes and
+    #: need not exist when ``assay.toml`` loads -- exactly
+    #: :func:`_validate_artifact_path`'s own timing argument (A-048).
+    path: str
+
+    def as_declared(self) -> dict[str, Any]:
+        return {"format": self.format, "path": self.path}
+
+
+def _load_result_report(value: Any, where: str) -> ResultReportConfig | None:
+    """``[lanes.X.result_report]`` (B078), or ``None`` when the lane omitted
+    it -- which is the overwhelmingly common case and must stay free.
+
+    Validated the way every other lane sub-table is: a table, no unknown
+    keys, every required key present, and each value checked against the
+    closed vocabulary or path grammar it belongs to. Containment is a
+    property of the accepted SPELLING here (no absolute path, no ``..``,
+    ``.``, ``.git`` or empty component), not of a resolve-and-compare against
+    a root: the root this path is relative to is the lane's RUN directory,
+    which for a snapshot lane does not exist until the run, so there is
+    nothing to resolve against at load time. The runtime read goes through
+    :func:`assay.safeio.reserve_output`, whose descriptor-relative,
+    ``O_NOFOLLOW`` walk is what refuses a symlinked component -- the half a
+    lexical grammar structurally cannot see.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise LaneConfigError(
+            f"{where}: 'result_report' must be a table, got {_type_name(value)}"
+        )
+    unknown = sorted(set(value) - set(_RESULT_REPORT_FIELDS))
+    if unknown:
+        raise LaneConfigError(
+            f"{where}: 'result_report' has unknown key(s): {', '.join(unknown)}; "
+            f"expected only: {', '.join(_RESULT_REPORT_FIELDS)}"
+        )
+    for field in _RESULT_REPORT_FIELDS:
+        if field not in value:
+            raise LaneConfigError(
+                f"{where}: 'result_report' is missing required field {field!r}; "
+                f"a report declaration needs both the format to parse and the "
+                f"path to read"
+            )
+    report_format = _as_str(value["format"], where, "result_report.format")
+    if report_format not in RESULT_REPORT_FORMATS:
+        raise LaneConfigError(
+            f"{where}: 'result_report.format' must be one of "
+            f"{sorted(RESULT_REPORT_FORMATS)}, got {report_format!r}"
+        )
+    path = _validate_omission_path(
+        value["path"], where=where, field="result_report.path"
+    )
+    return ResultReportConfig(format=report_format, path=path)
+
+
 @dataclass(frozen=True)
 class IsolationConfig:
     """``[lanes.X.isolation]`` (B006a/A-269, §3.2) -- the declared repository
@@ -1051,6 +1151,10 @@ class Lane:
     #: probe of the INVOKING environment (B010/DESIGN-GUIDE §4), not the lane
     #: command, and keeps running in the invoking cwd.
     cwd: str | None = None
+    #: (B078) The opt-in structured test-report declaration, or ``None`` --
+    #: which is what every lane written before this field existed carries, and
+    #: what keeps A-073's exit-code rule the unchanged default for it.
+    result_report: ResultReportConfig | None = None
 
     def as_declared(self) -> dict[str, Any]:
         """Reconstruct the TOML table this lane was loaded from.
@@ -1078,6 +1182,8 @@ class Lane:
             declared["infrastructure"] = dict(self.infrastructure)
         if self.cwd is not None:
             declared["cwd"] = self.cwd
+        if self.result_report is not None:
+            declared["result_report"] = self.result_report.as_declared()
         if self.judge is not None:
             declared["judge"] = self.judge.as_declared()
         if self.where is not None:
@@ -1465,6 +1571,8 @@ def _load_lane(
     # the same `Lane` the moment they are read.
     _check_cwd_is_not_under_a_link_path(cwd, isolation, where)
 
+    result_report = _load_result_report(table.get("result_report"), where)
+
     return Lane(
         name=name,
         scope=scope,
@@ -1483,6 +1591,7 @@ def _load_lane(
         where=None if where_table is None else MappingProxyType(dict(where_table)),
         isolation=isolation,
         cwd=cwd,
+        result_report=result_report,
     )
 
 

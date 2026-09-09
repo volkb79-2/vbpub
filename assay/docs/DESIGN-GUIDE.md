@@ -502,6 +502,103 @@ reading diagnosis as policy. A structured detail was rejected for precisely
 that reason: `reason_code` is already the structured surface, and a second
 one would re-open the vocabulary A-138/A-170 shut.
 
+### R0 may judge a verified-complete test report instead of the exit code (B078)
+
+By default, R0 decides the wrapped command's outcome from its raw exit code
+alone: 0 is `PASS`, anything else is `FAIL`/`COMMAND_FAILED` (A-073 — never
+`EXEC_FAILED`, and never a universal `PASS`). **That default does not change,
+and a lane that declares nothing new is governed by it exactly as before.**
+
+It has one measured blind spot. A test framework's own internal machinery can
+set the process's exit code independently of whether any test failed:
+run-gate RG-45 reproduced it 5/5 against vitest 3.2.7, whose
+worker↔orchestrator RPC heartbeat (hardcoded 60s, no config path) trips under
+host-wide CPU contention, is thrown as an unhandled error, and sets
+`process.exitCode = 1` *after* the reporter has already written a complete,
+all-green report. R0's response to that observation was correct; the
+observation itself was wrong.
+
+A lane may therefore opt in to a second, more truthful input:
+
+<!-- assay-doc-example:skip reason="the [lanes.X.result_report] table alone, shown beside the prose that defines it; CONSUMERS.md carries the complete loadable lane" -->
+```toml
+[lanes.package.result_report]
+format = "vitest-json"
+path = "vitest-report.json"
+```
+
+`format` is closed against the shipped reader registry
+(`assay.result_reports.RESULT_REPORT_FORMATS`) — today, `vitest-json` alone.
+`path` is relative to the directory the lane's command **runs in** (its `cwd`
+when it declares one), because that is what the runner's own `--outputFile`
+resolves against.
+
+**Verified complete** is the bar a present report must clear before it may
+participate at all:
+
+- it parses as the declared format's own shape;
+- it carries that format's own "this run finished" marker (vitest: a
+  top-level `success` field — its PRESENCE, never its value, since `success`
+  is computed by the same orchestrator whose internal error is the defect);
+- it reports a total test count greater than zero — a report that measured
+  nothing is `NO_MEASUREMENT` territory, not something to wave through.
+
+Only then does the report's own failure count decide, and it decides in
+**both** directions: zero reported failures is a `PASS` whatever the process
+exited with, and one or more is a `FAIL`/`COMMAND_FAILED` whatever it exited
+with. Reading the report at all means reading it as the ground truth, not as
+a one-directional escape hatch.
+
+Every other state — no declaration, no file, a truncated write, the wrong
+shape, an unsafe object at the path, a report that measured nothing — falls
+back to A-073 on the exit code alone. **Absence is never evidence for a
+pass**: "the file was not written" is exactly the signature of the genuine
+crash (a hard kill, an OOM-kill, a segfault) that A-073 must keep failing
+loudly on. The asymmetry is the safety property — every fallback can cost a
+`PASS`, never grant one.
+
+The report is reserved and armed before the command runs
+(`safeio.reserve_output`), the same discipline the coverage artifact and the
+ingested mutation report already get, and for a sharper version of the same
+reason: the crash that stops a report from being written is also the crash
+that leaves the *previous* run's all-green report sitting at the declared
+path.
+
+**What this does not change.** `Outcome`/`EXIT_CODES` is untouched (A-021):
+assay's own exit code for a report-verified-clean run is `PASS` (0) at the
+source, so every consumer's gate keeps trusting it exactly as it does today.
+No new `ReasonCode` — `COMMAND_FAILED` still means "the lane's wrapped
+command failed", and B078 changes only WHEN it fires. The exit code itself is
+not added to the verdict either (it never was a field there); what a
+report-driven `PASS` does carry is the command's output tails, which an
+ordinary green run omits — so a `PASS` bearing `result_stdout_tail` is itself
+the signature of an overridden exit code.
+
+**Which executions consult it, exhaustively.** The lane's own R0 command, and
+nothing else. That is three call sites, one per lane shape: `execute_command`
+(the R0 step and public API), `run_lane`'s direct branch (an R0-only lane),
+and `_run_prepared_lane`'s baseline unit (every lane declaring R1, R2 or R3 —
+its `CommandResult` is what `build_r0_claim` turns into the R0 claim). Every
+other execution of the lane's argv keeps `execute_plan`'s `result_report=None`
+default: a mutation candidate, whose whole signal is whether the suite fails
+`jobs`-way concurrently against one declared path; R3's canary halves, whose
+control/transform outcome answers "did injecting this defect change the
+judgement" rather than "did the wrapped suite pass"; and the
+`environment_command` probe, which is not the lane command at all.
+`tests/test_result_report_wiring_sweep.py` pins that list mechanically —
+every call site either passes the argument or carries a written reason for
+not doing so.
+
+**Residual risk, named rather than hidden.** A verified-complete report proves
+the reporter hook ran and wrote a coherent summary. It does not prove nothing
+went wrong in the narrow window after that write and before the process
+exited. That window is not closed with a per-framework stderr-signature
+allowlist: one would be needed per language, each would need re-checking
+against every upstream wording change, and RG-44 (a case-sensitivity mismatch
+in run-gate's own `GONE_SIGNALS` match) demonstrated that cost live. A real
+incident traced *into* that window — proven, not suspected — is what a
+stricter bar would need as evidence.
+
 ### Bounded command-output tails
 
 A non-PASS terminal that captured process output may carry four optional

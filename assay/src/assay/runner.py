@@ -103,6 +103,7 @@ from . import (
     measurability,
     mutation,
     mutation_parsers,
+    result_reports,
     safeio,
 )
 from .adapters.base import LanguageAdapter
@@ -110,6 +111,7 @@ from .config import (
     MAX_INFRASTRUCTURE_VALUE_BYTES,
     IsolationConfig,
     Lane,
+    ResultReportConfig,
     parse_duration,
 )
 from .coverage import derive_branch_capability
@@ -976,6 +978,95 @@ def _command_heartbeat(
         thread.join(timeout=PROGRESS_HEARTBEAT_FLOOR_SECONDS)
 
 
+def _reserve_result_report(
+    run_cwd: Path,
+    result_report: ResultReportConfig | None,
+    *,
+    create_missing_parents: bool = False,
+) -> safeio.OutputReservation | None:
+    """Reserve and ARM the lane's declared result report, or return ``None``.
+
+    (B078) Reservation is what makes *"the file I read after the command is
+    the file THIS command wrote"* true by construction rather than by hope --
+    :mod:`assay.safeio`'s own contract, and the identical reasoning B046
+    already applies to the ingested mutation report one function over: without
+    it, a report left behind by an earlier run (or committed into the
+    repository) satisfies the declared path and gets judged as evidence of a
+    run that never happened. That hole matters more here than anywhere else in
+    assay, because the exact failure this design exists to survive -- a
+    process that dies before finalising results -- is also the one that leaves
+    the PREVIOUS run's report sitting at the declared path.
+
+    **Every failure returns ``None``, deliberately.** A missing parent
+    directory (the ordinary first-run state: the runner has not created its
+    own output directory yet), a symlink where the report should be, a
+    permission error -- none of them is an assay ERROR terminal. Each means
+    "there is no report this run can trust", which lands on A-073's exit-code
+    rule, and that fallback can only ever cost a PASS, never grant one. The
+    asymmetry is the safety property: this function's failure modes are all in
+    the strict direction.
+
+    *create_missing_parents* is threaded straight to
+    :func:`assay.safeio.reserve_output`'s own identically-named,
+    identically-defaulted parameter, and B006(b)'s contract for it holds
+    unchanged: only a caller that KNOWS it owns an ephemeral, assay-managed
+    snapshot may pass ``True``. The snapshot baseline unit is such a caller
+    (and passes it, because a tracked-only checkout never contains an
+    untracked output directory); the direct R0 path measures the consumer's
+    LIVE tree and therefore keeps ``False`` -- assay does not create
+    directories in a tree it does not own.
+    """
+    if result_report is None:
+        return None
+    try:
+        reservation = safeio.reserve_output(
+            run_cwd,
+            result_report.path,
+            limit=result_reports.MAX_RESULT_REPORT_BYTES,
+            create_missing_parents=create_missing_parents,
+        )
+    except (AssayError, OSError):
+        return None
+    try:
+        reservation.arm()
+    except (AssayError, OSError):
+        reservation.close()
+        return None
+    return reservation
+
+
+def _consume_result_report(
+    reservation: safeio.OutputReservation | None,
+    result_report: ResultReportConfig | None,
+) -> result_reports.ReportSummary | None:
+    """The verified-complete report the lane's command just wrote, or ``None``.
+
+    (B078/SR-2) ``None`` covers every shape of "no usable report": the file
+    was never written (:meth:`~assay.safeio.OutputReservation.consume` returns
+    ``None``), the write was truncated mid-flush, the document is the wrong
+    shape, it carries no completion marker, or it reports zero tests. All of
+    them are the SAME answer to R0 -- fall back to A-073 -- and collapsing
+    them here is what keeps the caller's three-way branch three-way instead of
+    seven-way.
+
+    A report is only ever evidence FOR a determination; its absence is never
+    evidence against one, because "the file wasn't written" is exactly the
+    signature of the genuine crash A-073 must keep failing loudly on.
+    """
+    if reservation is None or result_report is None:
+        return None
+    try:
+        raw = reservation.consume()
+    except (AssayError, OSError):
+        return None
+    if raw is None:
+        return None
+    try:
+        return result_reports.read_verified(result_report.format, raw)
+    except result_reports.ReportUnusable:
+        return None
+
+
 def execute_plan(
     plan: CommandPlan,
     *,
@@ -983,6 +1074,8 @@ def execute_plan(
     timeout: float,
     process_runner: ProcessRunner = default_process_runner,
     clock: Clock = _utc_now,
+    result_report: ResultReportConfig | None = None,
+    result_report_create_missing_parents: bool = False,
 ) -> CommandResult:
     """Execute one already-frozen command plan with a required remainder.
 
@@ -993,6 +1086,44 @@ def execute_plan(
     ``OverflowError`` inside :mod:`selectors`, so this conversion is what
     makes an unbounded lane run at all. Every other non-finite or
     non-positive value is refused exactly as before.
+
+    **(B078) *result_report*** is the lane's opt-in structured-report
+    declaration, and it defaults to ``None`` -- which is what makes "a lane
+    that does not declare one is byte-for-byte unaffected" a property of the
+    CODE rather than of a rule each caller has to remember. This function is
+    the one place A-073's exit-code rule is actually implemented, and it is
+    shared by the lane's own R0 command, every R2 candidate re-execution, R3's
+    canary halves and the ``environment_command`` probe. Exactly the three
+    callers that run *the lane's own R0 command once* pass this argument, and
+    they are the three shapes a lane can have:
+
+    * :func:`execute_command` -- the documented R0 step and public API;
+    * :func:`run_lane`'s direct branch -- an **R0-only** lane;
+    * :func:`_run_prepared_lane`'s baseline unit (through
+      :func:`_execute_snapshot_unit`) -- every lane declaring **R1, R2 or
+      R3**, whose baseline ``CommandResult`` is what ``build_r0_claim`` turns
+      into the R0 claim. (Round-1 blocker 1: this one was missed at first, and
+      it is the path RG-45's own ``ui_unit`` lane -- ``rigor = ["R0", "R1"]``
+      -- actually takes. Wiring only the first two left the confirmed live
+      reproduction unfixed while every test stayed green.)
+
+    Every other call site keeps the default and is therefore unchanged by
+    construction, with no per-caller opt-out to get wrong later: R2 candidate
+    re-executions, R3's canary halves (both the snapshot engine's and
+    :mod:`assay.canary`'s legacy standalone pipeline, which passes ``None``
+    explicitly through :func:`execute_command`), and the
+    ``environment_command`` probe.
+
+    A mutation candidate deliberately does NOT get this: a mutant's whole
+    signal is whether the suite fails, ``jobs``-way concurrently against one
+    declared path, and a shared report file would be both a race and a
+    re-definition of what "killed" means -- neither of which B078 is about.
+    A canary half does not get it either: its control/transform outcome is a
+    different KIND of judgement from "did the wrapped suite pass".
+
+    *result_report_create_missing_parents* is B006(b)'s opt-in, threaded to
+    :func:`_reserve_result_report`; only the snapshot baseline passes ``True``,
+    because only it owns an ephemeral, assay-managed checkout.
     """
     if (
         isinstance(timeout, bool)
@@ -1016,16 +1147,61 @@ def execute_plan(
             started=iso_utc(started_at),
             ended=iso_utc(clock()),
         )
+    # (B043) The single re-rooting site. *cwd* is the project root the caller
+    # resolved (a snapshot's, or the invoking checkout's); the lane's own
+    # declared subdirectory is joined here, once, so the lane command, every
+    # R2 candidate and every R3 canary run in the same place by construction.
+    # (B078) It is also the root the declared `result_report.path` is relative
+    # to -- the directory the test runner's own `--outputFile` resolves
+    # against -- which is why the join happens before the reservation.
+    run_cwd = resolve_run_cwd(cwd, plan)
+    reservation = _reserve_result_report(
+        run_cwd,
+        result_report,
+        create_missing_parents=result_report_create_missing_parents,
+    )
+    try:
+        return _execute_plan_inner(
+            plan,
+            run_cwd=run_cwd,
+            child_timeout=child_timeout,
+            process_runner=process_runner,
+            clock=clock,
+            started_at=started_at,
+            reservation=reservation,
+            result_report=result_report,
+        )
+    finally:
+        # `consume` already closed the descriptor on the path that reached it;
+        # `close` is idempotent and never unlinks, so this covers every
+        # early-return and every raise without a second bookkeeping flag.
+        if reservation is not None:
+            reservation.close()
+
+
+def _execute_plan_inner(
+    plan: CommandPlan,
+    *,
+    run_cwd: Path,
+    child_timeout: float | None,
+    process_runner: ProcessRunner,
+    clock: Clock,
+    started_at: datetime,
+    reservation: safeio.OutputReservation | None,
+    result_report: ResultReportConfig | None,
+) -> CommandResult:
+    """:func:`execute_plan`'s body, from launch to terminal.
+
+    Split out only so the reservation's lifetime is one ``try``/``finally`` in
+    the caller rather than a ``close()`` repeated on each of this function's
+    four terminal paths -- four places to get right, and four for a later edit
+    to get wrong.
+    """
     try:
         proc = process_runner(
             plan.argv_effective,
             env=plan.env_effective,
-            # (B043) The single re-rooting site. *cwd* is the project root
-            # the caller resolved (a snapshot's, or the invoking checkout's);
-            # the lane's own declared subdirectory is joined here, once, so
-            # the lane command, every R2 candidate and every R3 canary run
-            # in the same place by construction.
-            cwd=resolve_run_cwd(cwd, plan),
+            cwd=run_cwd,
             timeout=child_timeout,
         )
     except subprocess.TimeoutExpired as exc:
@@ -1063,7 +1239,23 @@ def execute_plan(
             ended=iso_utc(clock()),
         )
     ended = iso_utc(clock())
-    if proc.returncode == 0:
+    # (B078/SR-2) The three-way branch, and the whole point of the design.
+    #
+    # `summary is None` -- no lane declaration, no report written, a truncated
+    # or wrong-shaped one, or one that measured nothing -- is A-073 verbatim:
+    # the exit code alone decides, exactly as it did before this parameter
+    # existed. Only a report that cleared EVERY completeness bullet gets to
+    # speak, and then it speaks in both directions: zero reported failures is
+    # a PASS whatever the process exited with (the RG-45 shape: vitest's own
+    # internal RPC heartbeat setting `process.exitCode = 1` with every real
+    # test green), and one or more reported failures is a FAIL whatever the
+    # process exited with. Reading the report at all means reading it as the
+    # ground truth, not as a one-directional escape hatch.
+    summary = _consume_result_report(reservation, result_report)
+    passed = proc.returncode == 0 if summary is None else summary.failed == 0
+    if passed and proc.returncode == 0:
+        # The unchanged happy path -- identical field-for-field to what this
+        # function returned before B078, including the omitted output tails.
         return CommandResult(
             plan=plan,
             outcome=Outcome.PASS,
@@ -1072,12 +1264,33 @@ def execute_plan(
             started=iso_utc(started_at),
             ended=ended,
         )
+    # B014's bounded tails are retained for every terminal that is NOT the
+    # plain green run above -- which now includes a report-driven PASS over a
+    # non-zero exit. That is deliberate, and it is the ONLY trace of the
+    # disagreement that reaches the verdict: `returncode` lives on this
+    # in-process `CommandResult` and on the progress stream's
+    # `command_finished` event, but it is NOT a verdict field (round-1
+    # blocker 4 -- an earlier version of this comment said it was). What the
+    # verdict does carry is the tails, and because a plain green run omits
+    # them, a PASS that carries them IS the signature of an overridden exit
+    # code. The verdict's own contract already allows this
+    # (`Verdict.result_stdout_tail`: "a PASS whose evidence was not
+    # requested"), and `Claim.detail` deliberately is NOT used here -- that
+    # field is forbidden on a PASS claim, which is precisely the direction
+    # worth annotating, so an asymmetric FAIL-only note would be noise.
+    # The reason code stays A-073's own, unchanged in MEANING (B078 changes
+    # WHEN `COMMAND_FAILED` fires, never what it means) -- no new `ReasonCode`
+    # member, so the closed vocabulary A-050 guards is untouched. The two
+    # fields below are also `tests/test_self_hosting.py`'s pinned mutation
+    # target (A-131), which is why they sit adjacent with no comment between
+    # them: that test collapses this conditional pair to its PASS arm to prove
+    # `assay verify` alone cannot catch a universal-PASS producer bug.
     stdout_tail, stdout_dropped_bytes = _bounded_tail(proc.stdout)
     stderr_tail, stderr_dropped_bytes = _bounded_tail(proc.stderr)
     return CommandResult(
         plan=plan,
-        outcome=Outcome.FAIL,
-        reason_code=ReasonCode.COMMAND_FAILED,
+        outcome=Outcome.PASS if passed else Outcome.FAIL,
+        reason_code=None if passed else ReasonCode.COMMAND_FAILED,
         returncode=proc.returncode,
         stdout_tail=stdout_tail,
         stderr_tail=stderr_tail,
@@ -1086,6 +1299,17 @@ def execute_plan(
         started=iso_utc(started_at),
         ended=ended,
     )
+
+
+#: (B078, round-1 blocker 3) :func:`execute_command`'s "take the lane's own
+#: declaration" default, which is NOT spellable as ``None`` -- ``None`` is
+#: itself a legitimate value of ``Lane.result_report`` and, passed
+#: explicitly, means "consult no report at all, whatever this lane declares".
+#: One sentinel keeps those two states distinguishable at the call site,
+#: mirroring the ``_ISOLATION_UNSET`` pattern the test harness already uses
+#: for the same reason. The only caller that passes ``None`` deliberately is
+#: :mod:`assay.canary`'s legacy standalone pipeline.
+_LANE_DECLARED_REPORT: Any = object()
 
 
 def execute_command(
@@ -1099,6 +1323,7 @@ def execute_command(
     infrastructure_environment: Mapping[str, str] | None = None,
     process_runner: ProcessRunner = default_process_runner,
     clock: Clock = _utc_now,
+    result_report: ResultReportConfig | None = _LANE_DECLARED_REPORT,
 ) -> CommandResult:
     """The R0 step (A-094): resolve the plan, then run it, and return a
     :class:`CommandResult` on every terminal path.
@@ -1140,6 +1365,18 @@ def execute_command(
     Otherwise the exit code decides: 0 is ``PASS``; anything else is
     ``FAIL``/``COMMAND_FAILED`` (A-073 -- an ordinary non-zero exit is a
     judged R0 FAIL, never ``EXEC_FAILED``, and never a universal PASS).
+
+    **(B078) *result_report*** defaults to the sentinel
+    :data:`_LANE_DECLARED_REPORT`, meaning "use ``lane.result_report``" --
+    this function is the R0 step, so honouring the lane's own declaration is
+    its job and no caller has to remember to ask for it. Passing ``None``
+    explicitly is the opt-OUT, and it is a real, distinct state from the
+    default: a caller that runs this lane's argv to answer a different
+    question suppresses the tiebreak that way.
+    :func:`assay.canary._run_pipeline` is the one such caller
+    (round-1 blocker 3) -- a canary probe's control/transform outcome is not
+    "did the wrapped suite pass", and SR-1 scopes the tiebreak to the lane's
+    own R0 command.
     """
     plan = resolve_command_plan(
         lane, argv_append=argv_append, passthrough_source=passthrough_source,
@@ -1155,6 +1392,17 @@ def execute_command(
         timeout=math.inf if plan.budget_seconds is None else plan.budget_seconds,
         process_runner=process_runner,
         clock=clock,
+        # (B078) This function IS the R0 step, so by default it forwards the
+        # lane's own opt-in declaration -- `None` on every lane that does not
+        # declare one, which is A-073 unchanged. A caller that runs this lane's
+        # argv for a DIFFERENT question than "did the wrapped suite pass" says
+        # so by passing `result_report=None` explicitly; `assay.canary`'s
+        # legacy standalone pipeline is the one such caller today.
+        result_report=(
+            lane.result_report
+            if result_report is _LANE_DECLARED_REPORT
+            else result_report
+        ),
     )
 
 
@@ -2401,6 +2649,18 @@ def _execute_snapshot_unit(
     process_runner: ProcessRunner,
     clock: Clock,
     create_missing_parents: bool = False,
+    #: (B078, round-1 blocker 1) The lane's opt-in structured-report
+    #: declaration, or ``None`` -- and ``None`` is the default precisely
+    #: because this function is the shared engine for three roles. The lane's
+    #: own baseline R0 command is the only one B078 governs, so
+    #: :func:`_run_prepared_lane`'s baseline call site is the only caller that
+    #: passes this; :mod:`assay.canary`'s control/transform halves and
+    #: :mod:`assay.mutation`'s candidates keep the default and are unchanged
+    #: by construction. Deliberately NOT derived from a `Lane` here: this
+    #: function never sees one, and giving it one so it could read the field
+    #: itself is exactly how "only the R0 command" would stop being auditable
+    #: from the call sites.
+    result_report: ResultReportConfig | None = None,
     equivalence_artifact: str | None = None,
     kill_signal_artifact: str | None = None,
     mutation_artifact: str | None = None,
@@ -2647,6 +2907,22 @@ def _execute_snapshot_unit(
             timeout=deadline.remaining(),
             process_runner=process_runner,
             clock=clock,
+            # (B078, round-1 blocker 1) Forwarded, never derived. This engine
+            # runs three different KINDS of unit -- the lane's own baseline R0
+            # command, R2 candidate re-executions, and R3's canary halves --
+            # and only the first is the command B078 is about. Reading
+            # `result_report` off the lane here would silently extend the
+            # tiebreak to all three; taking it from the caller keeps "only the
+            # lane's own R0 command opts in" auditable by reading call sites.
+            result_report=result_report,
+            # (B078) `True` is contractually legitimate HERE and nowhere else
+            # on this feature's paths: B006(b) reserves it for a call site
+            # that KNOWS it owns an ephemeral, assay-managed snapshot, which
+            # this is. A snapshot is a tracked-only checkout, so an untracked
+            # output directory never exists in it -- without this, a lane
+            # declaring `path = ".assay/report.json"` would fall back to
+            # A-073 on every single run rather than only the first.
+            result_report_create_missing_parents=True,
         )
     if progress is not None:
         progress.emit(
@@ -3175,6 +3451,19 @@ def _run_prepared_lane(
             process_runner=process_runner,
             clock=clock,
             create_missing_parents=True,
+            # (B078, round-1 blocker 1) THE fix for RG-45's actual lane.
+            # `ui_unit` -- the confirmed live reproduction -- declares
+            # `rigor = ["R0", "R1"]`, so it never reaches `run_lane`'s direct
+            # R0-only branch: it comes through here, and the `CommandResult`
+            # this baseline unit returns is what `build_r0_claim` (two lines
+            # below) turns into the R0 claim. Wiring only the direct branch
+            # shipped a feature that passed every test and did nothing for the
+            # case it was built for.
+            #
+            # This is the BASELINE call site, and the only one that passes
+            # this. `_execute_snapshot_unit`'s other two roles -- R2 candidate
+            # re-executions and R3's canary halves -- take the default.
+            result_report=lane.result_report,
             equivalence_artifact=equivalence_artifact,
             kill_signal_artifact=kill_signal_artifact,
             mutation_artifact=mutation_artifact,
@@ -5302,6 +5591,19 @@ def run_lane(
                 timeout=deadline.remaining(),
                 process_runner=process_runner,
                 clock=clock,
+                # (B078) The R0-ONLY lane's path. It reaches `execute_plan`
+                # directly rather than through `execute_command`, so the
+                # design document's own wiring pointer (`execute_command`)
+                # would have missed it.
+                #
+                # It is NOT, however, the path RG-45 reproduces on -- an
+                # earlier version of this comment claimed dstdns's `ui_unit`
+                # was an R0-only lane, and it is not: it declares
+                # `rigor = ["R0", "R1"]`, so `run_lane` dispatches it to
+                # `_run_higher_rigor_lane` and it never arrives here. That
+                # lane's R0 command runs in `_run_prepared_lane`'s baseline
+                # unit, which is wired separately (round-1 blocker 1).
+                result_report=lane.result_report,
             )
         if progress_stream is not None:
             progress_stream.emit(

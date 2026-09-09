@@ -12,6 +12,39 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Added
 
+- **A lane may hand R0 its test runner's own structured report instead of an
+  exit code (B078, checkpoint 1 of 3).** New opt-in
+  `[lanes.<name>.result_report]` table (`format`, `path`) with the first
+  reader, `vitest-json` — vitest's native `--reporter=json --outputFile=...`,
+  no plugin. The measured defect (run-gate RG-45, reproduced 5/5) is a test
+  framework's own internals setting the process exit code independent of
+  whether any test failed: vitest 3.2.7's worker↔orchestrator RPC heartbeat
+  (hardcoded 60s, no config path) trips under host CPU contention and sets
+  `process.exitCode = 1` *after* the reporter has written a complete,
+  all-green report. When a declared report is **verified complete** — it
+  parses, carries the format's own "run finished" marker, and reports more
+  than zero tests — its own failure count decides in BOTH directions: zero
+  failures is a `PASS` whatever the process exited with, one or more is a
+  `FAIL` whatever it exited with. Every other state (no declaration, no file,
+  a truncated write, the wrong shape, a zero-test report, an unsafe object at
+  the path) falls back to today's exit-code rule (A-073) **unchanged** — a
+  missing report is the signature of a genuine crash and can never be evidence
+  *for* a pass, so the fallback can only ever cost a `PASS`, never grant one.
+  The report is reserved and armed before the command runs, so a previous
+  run's report can never be read as this run's evidence. A lane that declares
+  nothing is byte-for-byte unaffected, structurally: the parameter defaults to
+  absent and only the lane's own R0 command passes it — on **every** lane
+  shape (an R0-only lane's direct run, and the baseline unit every lane
+  declaring R1, R2 or R3 runs inside its snapshot), and on nothing else.
+  Mutation candidates, R3's canary halves and the `environment_command` probe
+  all keep the old rule, and a sweep test pins that list so a future call site
+  cannot join it silently. `LANE_SCHEMA_VERSION` stays 2,
+  the verdict schema is untouched, `Outcome`/`EXIT_CODES` is untouched
+  (A-021), and there is no new `reason_code`: `COMMAND_FAILED` still means the
+  same thing, it just fires at different times. `pytest-json-report` and
+  `go test -json` readers are later checkpoints and are refused at load today
+  rather than silently ignored.
+
 - **The progress stream reaches every rigor tier, and ticks while a command
   runs (B064).** `--progress PATH` had exactly one producer, four layers down
   inside the mutation sweep, so an R0/R1 lane was handed an empty file and a

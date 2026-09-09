@@ -8119,19 +8119,33 @@ was also a corrected assumption from the operator's first framing).
 
 ### Acceptance (for the carve, sequenced per SR-5)
 
-- [ ] Checkpoint 1 (vitest, the confirmed live repro): a lane declaring
+- [x] Checkpoint 1 (vitest, the confirmed live repro): a lane declaring
       `result_report` with a verified-complete, zero-failure vitest JSON
       report and a non-zero wrapped-process exit code is judged `PASS`;
       a truncated/malformed/absent report falls back to A-073 unchanged;
       a verified-complete report naming real failures is judged `FAIL`
       regardless of exit code; a lane not declaring `result_report` is
       byte-for-byte unaffected.
+      **Shipped 2026-09-09.** Round 1 was ticked prematurely and the
+      review REJECTED it: the tiebreak was wired to the R0-only path but
+      not to `_run_prepared_lane`'s baseline unit, which is the path every
+      R1+ lane takes — including `ui_unit`, the confirmed live repro,
+      which declares `rigor = ["R0", "R1"]`. Both paths are wired in the
+      round-1 fix, independently re-verified live by the reviewer against
+      the exact RG-45 shape (R0 claim now `PASS`, was `FAIL`); fix
+      round 2 closed the one remaining test-only gap (a canary-exclusion
+      test that could not actually fail) with its own mutation-proof.
+      Evidence per item in
+      `nyxloom-trove/reports/assay-WAVE-B078-REPORT.md`.
 - [ ] Checkpoint 2: `pytest-json-report` reader, same completeness
       contract.
 - [ ] Checkpoint 3: `go test -json` reader (NDJSON-specific completeness
       design, deferred in SR-4c).
-- [ ] Fault-injection regression tests for every completeness-check
+- [x] Fault-injection regression tests for every completeness-check
       failure shape (truncated write, wrong shape, zero-test report).
+      **Shipped 2026-09-08** — `tests/test_runner_result_report.py`
+      parametrizes twelve unusable shapes in BOTH exit-code directions,
+      plus stale-report, symlinked-path and never-written cases.
 
 ### Cross-reference
 

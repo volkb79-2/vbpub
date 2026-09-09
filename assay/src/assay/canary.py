@@ -252,6 +252,16 @@ def _run_pipeline(
         infrastructure_environment=infrastructure_environment,
         process_runner=process_runner,
         clock=clock,
+        # (B078, round-1 blocker 3) Explicitly OUT. This engine runs both the
+        # control and the transformed half of a canary probe, and a probe's
+        # outcome answers "did injecting this defect change the judgement",
+        # not "did the wrapped suite pass" -- the one question SR-1 scopes the
+        # structured-report tiebreak to. Without this argument the lane's own
+        # declaration would reach both halves through `execute_command`'s
+        # default, which is behaviour nothing designed, reviewed or tested.
+        # `_execute_snapshot_unit`'s canary callers get the same exclusion for
+        # free, by keeping `result_report`'s default there.
+        result_report=None,
     )
     r0_claim = build_r0_claim(result)
     if r0_claim.status is not Outcome.PASS or "R1" not in lane.rigor:
