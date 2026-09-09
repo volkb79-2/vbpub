@@ -80,15 +80,33 @@ overwriting.
 
 Wings makes sure it is the last writer at every point where Docker writes:
 just after `ContainerStart()`, when re-attaching to a container that outlived
-the Wings process, and at the end of `InSituUpdate` — the on-the-fly resource
-update a Panel-side settings save triggers, whose `ContainerUpdate` otherwise
-lands the Panel's `Memory`/`MemoryReservation`/`CpuShares`/`BlkioWeight` on the
-scope *after* Wings' own set. Until 2026-09-09 that last one was missing, so a
-routine settings save silently replaced `MemoryLow`, `MemoryMax`, `CPUWeight`
-and the BFQ weight with the Panel's values — and a Panel memory limit is
-usually *looser* than a deliberate `WINGS_CG_MEMORY_MAX`, so the ceiling did
-not just move, it disappeared. Measured, then fixed (adversarial review
-2026-09-09, F1).
+the Wings process, and after the on-the-fly resource update a Panel-side
+settings save triggers, whose `ContainerUpdate` otherwise lands the Panel's
+`Memory`/`MemoryReservation`/`CpuShares`/`BlkioWeight` on the scope *after*
+Wings' own set. Until 2026-09-09 that last one was missing, so a routine
+settings save silently replaced `MemoryLow`, `MemoryMax`, `CPUWeight` and the
+BFQ weight with the Panel's values — and a Panel memory limit is usually
+*looser* than a deliberate `WINGS_CG_MEMORY_MAX`, so the ceiling did not just
+move, it disappeared. Measured, then fixed (adversarial review 2026-09-09, F1).
+
+Two things about that last re-assertion are load-bearing, and both were got
+wrong on the first attempt (fix-verification 2026-09-09, V1):
+
+- **It uses the band the server is actually in**, which is the *slice phase*
+  (`server/slice_phase.go`), not the environment's process state. A server with
+  an explicit `WINGS_CG_STEADY_MATCH` — which `SETUP.md` tells you to set for a
+  world-streaming game, because the egg's "done" line fires before loading
+  finishes — is deliberately still in its startup band for the whole remaining
+  world load, long after Docker reports the container running. Re-asserting the
+  *steady* band there drops the ceiling onto a server at its load-time peak,
+  which is the eviction of Rule 4 below, self-inflicted. The re-assertion is
+  therefore made from `Server.reassertSliceProps`, in the layer that holds the
+  phase, and never from `environment/docker`.
+- **It never writes `memory.high`.** Docker cannot have damaged it —
+  `container.Resources` has no such field, so runc never sets it — and writing
+  it is the one thing a repair could do harm with. Everything Docker's write
+  *can* reach is re-asserted; the ceiling is left where the phase machinery put
+  it.
 
 So the rule to hold on to is not "whoever writes last wins" in the abstract:
 **for the properties Wings manages, Wings' value is the one that persists,
@@ -389,13 +407,33 @@ survives". That was measured false (adversarial review 2026-09-09): after a
 still reported `IOWeight=4950`. The audit surface reported a number that was no
 longer real — the exact failure this redesign exists to remove.
 
-What actually keeps the systemd-side value in force is Wings re-applying it:
-since 2026-09-09 `InSituUpdate` re-asserts the scope properties after the
-Docker write, so the last write on that file is Wings' `IOWeight` again and
-`systemctl show` agrees with `io.bfq.weight` once more. That is a repair, not
-composition. **Use one or the other.** If you set `WINGS_CG_IO_WEIGHT`, leave
-the panel field at its default and read the result back off `io.bfq.weight`
-rather than trusting either number.
+The accurate statement is narrower and is what the code relies on: systemd
+**does** derive `io.bfq.weight` from `IOWeight`, and re-derives it every time a
+property is set on the unit — but only then. It never does so spontaneously, so
+it does not undo a foreign write on its own. Measured on the project's e2e
+harness (systemd 257, cgroup v2, BFQ):
+
+| step | `systemctl show … IOWeight` | `io.bfq.weight` |
+|---|---|---|
+| container created `--blkio-weight 300` | *(not set)* | 300 |
+| Wings sets `IOWeight=4950` | 4950 | **540** |
+| `docker update --blkio-weight 700` | 4950 | **700** ← audit surface diverges |
+| Wings re-asserts `IOWeight=4950` | 4950 | **540** ← repaired |
+| Wings sets `IOWeight=100` | 100 | 100 |
+
+What keeps the systemd-side value in force is therefore Wings re-applying it:
+since 2026-09-09 a panel-side settings save is followed by a re-assertion of the
+scope properties (`Server.reassertSliceProps`), so the last write on that file
+is systemd's derivation from Wings' `IOWeight` again rather than the panel's raw
+number. That is a repair, not composition.
+
+Note what the repaired row does **not** say: `systemctl show` and
+`io.bfq.weight` never agree numerically, because they are different scales —
+4950 compressed is 540 raw (Rule 7's own arithmetic). "Repaired" means the file
+is once again systemd's derivation from `IOWeight` instead of the panel's raw
+value, not that the two numbers match. **Use one or the other.** If you set
+`WINGS_CG_IO_WEIGHT`, leave the panel field at its default and read the result
+back off `io.bfq.weight` rather than trusting either number.
 
 The remaining trap is nomenclature: the panel's `io_weight` and this project's
 `defaults.io_weight` share a name while meaning different scales — 10..1000 raw
