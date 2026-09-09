@@ -183,6 +183,16 @@ def test_workspace_purpose_falls_back_to_the_raw_branch_for_anything_unrecognize
     assert transaction.workspace_purpose("feature-unrelated-branch") == "feature-unrelated-branch"
 
 
+def test_workspace_purpose_extracts_the_only_segment_of_an_unrecognized_branch_with_one_slash():
+    """`"other/x".split("/", 2)` is `["other", "x"]` -- exactly 2 parts, not 3
+    like the `cmru/other/x` nested-branch case above. Distinguishes
+    `len(parts) >= 2` from `> 2`: both agree on the 3-part and 1-part cases
+    already covered by the other tests here, but only `>= 2` returns
+    `parts[1]` ("x") for this 2-part shape -- `> 2` would fall through to the
+    raw-branch fallback instead."""
+    assert transaction.workspace_purpose("other/x") == "x"
+
+
 @pytest.mark.parametrize(
     ("branch", "expected_token"),
     [
