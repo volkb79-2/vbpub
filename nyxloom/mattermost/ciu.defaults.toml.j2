@@ -29,8 +29,16 @@ container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deplo
 # decision: the hostname must exist in DNS (the wildcard A record covers
 # it) and Mattermost then faces the internet with the locked-down posture
 # below (no open server, no self-signup, no attachments, no plugin
-# uploads/marketplace, no personal access tokens).
-expose_public = false
+# uploads/marketplace) plus nyxloom-P110's hardening (no OAuth2 provider,
+# 168h web sessions, rate limiting keyed on X-Forwarded-For, no email/full
+# name disclosure). Personal access tokens are NO LONGER part of that list:
+# they were enabled in the same cutover for the intake bridge's `rest`
+# transport -- see `enable_user_access_tokens` below for what that widens.
+#
+# TRUE as of the 2026-09-09 go-public cutover (README.md "Going public",
+# step 3), executed after steps 0-2b landed the hardening and closed
+# `alerts`. Reversible on its own: set false and `ciu up`.
+expose_public = true
 # Public hostname routed by tls-edge when expose_public = true. Same domain
 # convention as ntfy's nyxloom.{{ env.PUBLIC_FQDN }}.
 public_host = "mattermost.{{ env.PUBLIC_FQDN }}"
