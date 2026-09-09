@@ -42,13 +42,20 @@ fi
 
 ensure_runner() {
     docker build -q -f "$HERE/Dockerfile" -t "$IMAGE" "$HERE" >/dev/null
-    if ! docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
-        echo "+ starting persistent VM-harness runner ($NAME)" >&2
-        docker run -d --name "$NAME" \
-            -v "$HOST_TESTING_DIR:/work:rw" \
-            -w /work/vm \
-            "$IMAGE" sleep infinity >/dev/null
+    if docker ps --format '{{.Names}}' | grep -qx "$NAME"; then
+        return 0
     fi
+    # A stopped-but-present container with this name (e.g. OOM-killed, or
+    # the host itself restarted) would otherwise make the docker run below
+    # fail with "name already in use" instead of self-healing -- remove
+    # any dead leftover by name first, not just check `docker ps` for a
+    # live one (review finding, 2026-09-09).
+    docker rm -f "$NAME" >/dev/null 2>&1 || true
+    echo "+ starting persistent VM-harness runner ($NAME)" >&2
+    docker run -d --name "$NAME" \
+        -v "$HOST_TESTING_DIR:/work:rw" \
+        -w /work/vm \
+        "$IMAGE" sleep infinity >/dev/null
 }
 
 case "${1:-}" in

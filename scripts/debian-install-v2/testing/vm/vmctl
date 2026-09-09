@@ -256,10 +256,16 @@ cmd_status() {
 qmp_cmd() {
     # Single QMP command over the unix socket: perform the mandatory
     # capabilities handshake first, then send the requested command.
-    # -q suppresses socat's own diagnostics; we don't need the QMP replies.
+    # Live-verified (review, 2026-09-09) that batching both messages in
+    # one write works fine against a real QEMU 10.0.11 -- the observed
+    # smoke-test fallback to SIGTERM was TCG-emulation shutdown latency,
+    # not a protocol issue with this pattern. Response is captured (not
+    # discarded) so a caller can tell "handshake/command rejected" apart
+    # from "guest just hasn't finished shutting down yet" instead of
+    # both looking like silent failure.
     local sock="$1" body="$2"
     printf '{"execute":"qmp_capabilities"}\n%s\n' "$body" \
-        | timeout 5 socat -t2 - "UNIX-CONNECT:$sock" >/dev/null 2>&1 || true
+        | timeout 5 socat -t2 - "UNIX-CONNECT:$sock" 2>&1
 }
 
 cmd_stop() {
@@ -271,11 +277,16 @@ cmd_stop() {
 
     if [ -S "$run_dir/qmp.sock" ] && command -v socat >/dev/null; then
         log "requesting graceful shutdown via QMP"
-        qmp_cmd "$run_dir/qmp.sock" '{"execute":"system_powerdown"}'
+        local qmp_out
+        qmp_out="$(qmp_cmd "$run_dir/qmp.sock" '{"execute":"system_powerdown"}')" || true
+        if [ -n "$qmp_out" ] && ! printf '%s' "$qmp_out" | grep -q '"return"'; then
+            log "QMP response did not look like success: $qmp_out"
+        fi
         for _ in $(seq 1 15); do
             kill -0 "$pid" 2>/dev/null || { log "stopped"; return 0; }
             sleep 1
         done
+        log "guest didn't power off within 15s of the QMP request (TCG shutdown can be slow) -- falling back"
     fi
     log "graceful shutdown didn't land in time -- SIGTERM"
     kill "$pid" 2>/dev/null || true

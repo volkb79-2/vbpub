@@ -5,7 +5,8 @@
 # (bootloader, initramfs, kernel), not something built from scratch with
 # debootstrap, and it's the same kind of image the real Case B live-test
 # hosts are provisioned from. Cached under testing/.cache/ so a second run
-# of run-boot-test.sh doesn't re-download; only refetches if missing or the
+# of testing/vm/vmctl prepare-base doesn't re-download; only refetches if
+# missing or the
 # checksum doesn't match what's currently published (Debian repoints
 # "latest" at a new build periodically).
 #
