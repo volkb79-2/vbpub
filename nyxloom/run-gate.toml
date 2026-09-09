@@ -13,7 +13,7 @@ schema_version = 1
 kind = "assay"
 assay_lane = "tester-unified"        # -> assay.toml [lanes.tester-unified]
 environment = "tester-unified"       # central [environments.tester-unified]
-assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-6.0.0.pyz"]
+assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-6.1.0.pyz"]
 # -n auto is the measured optimum on this 8-core host (~2m28s vs 4m56s
 # serial); pytest-cov (NOT `coverage run`) is load-bearing under xdist for
 # the same reason it always was -- coverage run traces only the parent,
@@ -21,11 +21,11 @@ assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-6.0.0.pyz"]
 # argv (the judged command), not here.
 budget = "30m"                       # advisory; consumers may enforce
 
-# Re-pinned 5.2.0 -> 6.0.0 on 2026-09-08 via `cmru tool-deps --refresh assay`
-# (assay B070: verdict schema v10 -> v11, a hard cut -- functionally
-# unchanged for this project's native R0/R1 lane, see assay's own
-# "Migration notes (v10 -> v11)"). KI-27: --refresh does not itself rewrite
+# Re-pinned 6.0.0 -> 6.1.0 on 2026-09-09 via `cmru tool-deps --refresh assay`
+# (assay B074/B077/B078: additive, no schema change -- byte-identical for
+# this project's native R0/R1 lane, which declares neither result_report
+# nor allow_test_path_targets). KI-27: --refresh does not itself rewrite
 # this file's own pin/argv -- manual follow-up here, same recurring gap.
 [lanes.tester-unified.pins.assay]
-version = "6.0.0"
-sha256 = "tools/assay/assay-6.0.0.pyz.sha256"
+version = "6.1.0"
+sha256 = "tools/assay/assay-6.1.0.pyz.sha256"
