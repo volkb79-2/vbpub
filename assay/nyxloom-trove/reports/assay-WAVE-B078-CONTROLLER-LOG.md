@@ -113,3 +113,38 @@ sentence once fixed). Everything the reviewer verified as correct
 design decisions) is explicitly marked do-not-touch. Next: await repair
 commit + still-green gate, then resume the SAME reviewer for
 fix-verification.
+
+## PR-R4 — fix round returned, gate independently re-verified GREEN, fix-verification dispatched
+
+2026-09-09. Repair range `27b66c25..8735b68d` (4 commits). Implementer's
+own account is unusually candid: their round-1 diagnosis correctly
+identified the SYMPTOM (design doc's pointer was wrong) but then landed
+on a DIFFERENT wrong path anyway, "because I stopped verifying once the
+story became satisfying" — flagged explicitly as the exact failure mode
+to watch for. Fix wired per the D-1 ruling: `_execute_snapshot_unit`
+gains a `result_report=None` it only forwards (never derives internally,
+which would have silently leaked it to R2/R3 too); the baseline call site
+is the sole caller that passes anything; snapshot half also gets
+`create_missing_parents=True` per the ruling. Three new R0+R1
+end-to-end tests, verified load-bearing by the implementer (removing the
+one-line wiring turns exactly those three red).
+
+Beyond the minimum fix, implementer added `tests/test_result_report_wiring_sweep.py`
+— an AST sweep requiring every `execute_plan`/`execute_command` call site
+to either forward `result_report=` or carry a documented exclusion,
+catching a FUTURE unwired site automatically rather than relying on
+another manual audit. Says it caught a real mistake (wrong function-name
+guess) during its own construction. Blockers 3/4 fixed per the D-2/D-3
+rulings (canary halves excluded via explicit `None` + a new sentinel
+default; documentation corrected, no schema change).
+
+Gate independently re-verified GREEN by the controller from
+`b078-gate4.log`'s own markers on `8735b68d`, worktree clean.
+
+Same reviewer resumed via SendMessage for fix-verification, told
+explicitly to reproduce the exact R0+R1 live probe again themselves
+(the one that found the round-1 defect) rather than accept three new
+green tests as proof — and to adversarially test whether the new AST
+sweep is actually load-bearing (try breaking wiring, confirm it catches
+it) rather than just reading it and assuming it works. Next: await
+ACCEPT (or further blockers) before merging.
