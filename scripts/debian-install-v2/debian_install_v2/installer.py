@@ -213,6 +213,20 @@ class Installer:
             self.state.save(status="success", phase="done")
             if not self.actions.dry_run:
                 Path(self.config.state_dir, "stage2_done").touch(mode=0o600)
+            # Only NOW, after the marker external pollers watch for already
+            # exists on disk: this used to run inside _stage2() itself,
+            # BEFORE this marker was ever touched. Live-confirmed
+            # 2026-09-09 (v1001 round 12, the first fully successful
+            # install this whole effort): scp-api-install-host.py's own
+            # completion poller authenticates with this exact controller
+            # key, so revoking it before the marker exists created a race
+            # where a successful install could permanently strand its own
+            # external poller -- unable to ever reconnect and see the
+            # marker it's specifically waiting for, silently retrying for
+            # up to its full timeout (an hour, by default) and then
+            # reporting a spurious TimeoutError for an install that had
+            # actually already succeeded.
+            self._remove_controller_ssh_key()
             if self._notifications_enabled:
                 duration = self._duration_since_start()
                 facts_html = format_facts_html(collect_host_facts(self))
@@ -1620,5 +1634,7 @@ MaxFileSec=1month
             self._apply_known_swap_shape()
         self._activate_swap_partitions()
         self._health_gate_swap_devices()
-        self._remove_controller_ssh_key()
         self.state.save(phase="done", status="success")
+        # _remove_controller_ssh_key() deliberately does NOT happen here --
+        # see resume(), which calls it only after the stage2_done marker
+        # file exists. See that comment for why.

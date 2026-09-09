@@ -431,6 +431,41 @@ def test_disable_stage2_sets_state(tmp_path):
     )
 
 
+def test_resume_removes_controller_ssh_key_only_after_stage2_done_marker(tmp_path, monkeypatch):
+    # Regression, 2026-09-09 (v1001 round 12, the first fully successful
+    # live install this whole effort): _remove_controller_ssh_key() used
+    # to run INSIDE _stage2(), before the caller (resume()) ever touches
+    # the stage2_done marker file. scp-api-install-host.py's own
+    # completion poller authenticates with that exact controller key --
+    # revoking it before the marker exists let a successful install
+    # permanently strand its own external poller (unable to reconnect to
+    # ever see the marker it's waiting for), which then spuriously
+    # reported a TimeoutError for an install that had actually succeeded.
+    # Must happen strictly after the marker is on disk.
+    from debian_install_v2.tests.test_fake_integration import FakeHostActions
+    config = Config(
+        state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
+        telegram_bot_token="", telegram_chat_id="",
+        auto_reboot_after_stage1=False,
+    )
+    actions = FakeHostActions()
+    actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+    installer = Installer(config, actions)
+    StateStore(config.state_dir).save_new(StateStore.new(config))
+    monkeypatch.setattr(installer, "_stage2", lambda: None)
+
+    marker_existed_at_call_time = {}
+
+    def fake_remove_key():
+        marker_existed_at_call_time["value"] = (
+            Path(config.state_dir, "stage2_done").exists()
+        )
+
+    monkeypatch.setattr(installer, "_remove_controller_ssh_key", fake_remove_key)
+    installer.resume()
+    assert marker_existed_at_call_time["value"] is True
+
+
 def test_resume_loads_credentials_and_thread(tmp_path, monkeypatch):
     from debian_install_v2.tests.test_fake_integration import FakeHostActions
     config = Config(
