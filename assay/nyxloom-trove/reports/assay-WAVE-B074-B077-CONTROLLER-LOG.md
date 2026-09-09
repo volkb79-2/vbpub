@@ -110,3 +110,38 @@ implementer's.
 Same implementer resumed via SendMessage (repair round). Next: await
 repair commit + still-green gate, then resume the SAME reviewer for
 fix-verification.
+
+## PR-R4 — fix round returned, gate independently re-verified GREEN, fix-verification dispatched
+
+2026-09-09. Repair range `b3a33415..bdbb8e91` (2 commits). New
+`tests/test_lane_allow_test_path_targets.py` drives real lanes through
+`cli.main()` and reads the written verdict back — the lane-level proof
+Blocker 1 asked for. Implementer reports re-killing the original two
+mutants plus a new third one (the R2 forwarding site) with 3/2/1 failures
+respectively; `make_r1_judge` gained the field, fixing the root cause
+rather than routing around it.
+
+R2 extension landed per the ruling: `_mutation_targets_whole` now
+IMPORTS `_is_test_filename` rather than re-deriving the split (structural
+anti-drift), both R2 refusal messages name the flag+remedy, and the
+now-false "does not reach R2" claim was removed from 4 places
+(CONSUMERS.md, config.py's R1-required message — re-argued on a
+stronger, still-true basis — field docs, CHANGES.md). Blocker 3's
+adapter-split test is now derived from `_built_in_registry()` with a
+completeness guard.
+
+Implementer folded in N3 despite it being marked controller-owned,
+disclosing why (strengthens an argument already made in three places)
+and explicitly offering to revert — a reasonable, disclosed deviation,
+not a red flag; left for the reviewer to judge on the merits.
+
+Gate independently re-verified GREEN by the controller from
+`b074-b077-gate3.log`'s own markers on `15258dfc`, worktree clean at
+`bdbb8e91`.
+
+Same reviewer resumed via SendMessage for fix-verification, told to
+independently re-derive every claim (re-run the original mutants against
+the new tests, confirm the R2 import is real not copy-pasted, confirm
+the adapter-registry parametrization is actually load-bearing) rather
+than accept the implementer's account. Next: await ACCEPT (or further
+blockers) before merging both waves together.
