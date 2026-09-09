@@ -2,8 +2,6 @@
 
 All notable changes to this project are recorded here. Entries marked `cmru: generated` are produced from the project-scoped release range before the release gate runs.
 
-<!-- cmru: release history -->
-
 ## [Unreleased]
 
 ### Changed
@@ -57,6 +55,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   place whose PASS is actually trusted as "the gate said so." Verified: all 8
   `TestEnrollAgainstRealSystem` tests pass for real against live docker
   containers.
+
+<!-- cmru: release history -->
 
 ## [5.1.0] - 2026-09-08
 <!-- cmru: generated -->
@@ -112,63 +112,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - test(cmru): restore 100% branch coverage over the tester-gate/init wave (b2470223)
 - test(cmru): xdist-safe tester-gate main tests — declared cgroup-parent model, unscoped-launch contract, forward var via CMRU_TESTER_CGROUP_FORWARD_VAR (9ea87a32)
 
-## [Unreleased]
-
-### Added
-- feat(cmru): `get.py enroll` — every project that renders `get.py` gains a
-  host-enrollment subcommand, so a bare untrusted host can bootstrap itself into
-  something a controller may start trusting (cmru KI-24; unblocks ciu CIU-93 /
-  `SPEC.md` S14.7). Shape:
-  `enroll --authorized-key 'KEY' --controller FQDN [--user USER] [--name NAME]
-  [--from PATTERN] [--docker] [--no-install] [--scope system]`. Strict
-  fail-fast order, idempotent on re-run: prerequisites BEFORE any network I/O
-  (Linux, root, an `sshd` on PATH or at `/usr/sbin/sshd` — absent is
-  `EXIT_PREREQ` naming `openssh-server`, and enroll never installs system
-  packages itself — then the key line parsed as `<type> <base64> [comment]`
-  with the type in `ssh-ed25519 | ecdsa-sha2-* | sk-* | ssh-rsa`, else
-  `EXIT_CONFIG`); `install --scope <scope>` run verbatim through the existing
-  `do_install` (skipped by `--no-install`); the deploy user (default `ciu`)
-  created with `useradd --create-home --shell /bin/bash` when absent and left
-  untouched when present, `--docker` refused with `EXIT_PREREQ` before any user
-  is created when there is no `docker` group; `~USER/.ssh` 0700 and
-  `authorized_keys` 0600, both owned by the user, with the key appended exactly
-  ONCE — an identical entry is reported rather than duplicated, and the same key
-  material under different options is `EXIT_CONFIG`, never a second line; then a
-  report of every `/etc/ssh/ssh_host_*_key.pub` fingerprint (`ssh-keygen -lf`),
-  the `hostname -I` addresses explicitly labelled UNCONFIRMED, the user, the
-  installed version, and the exact `ciu host enroll …` completion command.
-  `enroll` never generates keys, calls anything back, opens a listener, edits
-  `sshd_config`, or runs an adapter verb. NOTE: the restricted line is written
-  `from="P" <type> …` (whitespace), not KI-24's literal `from="P",<type> …` —
-  the comma-joined form is rejected by a real sshd; see KI-24's own entry for
-  the measured evidence, and correct any consumer that quotes the old text.
-  ALSO NOTE (adversarial review finding): appending a genuinely different key
-  for an already-enrolled user (a real rotation) is allowed — KI-24 never
-  restricted a user to one key — but now warns, naming the pre-existing
-  key(s), rather than silently leaving two valid identities with no
-  visibility
-- feat(cmru): `cmru init` guided scaffolding (single project / monorepo) —
-  generates loader-valid cmru.toml contracts and (monorepo)
-  cmru.orchestration.toml with the estate env block (${NAME:-default}
-  references, RAM/IO comments); templates ship in the wheel
-  (`cmru/templates/*`); validation-first via the real loaders; never
-  overwrites existing files
-
-
-
-### Changed
-- feat(cmru): tester-gate cgroup-parent is DECLARED-CONFIG — resolves only
-  `CMRU_TESTER_CGROUP_PARENT` (empty/unset = no slice tier, announced
-  unscoped launch); no ambient `CGROUP_PARENT_DEV_BACKGROUND` read, no code
-  fallback. `cmru.orchestration.toml [env]` gains load-time `${NAME:-default}`
-  expansion so the devcontainer var can be referenced declaratively
-  (`${CGROUP_PARENT_DEV_BACKGROUND:-dev-background.slice}`), plus
-  `CMRU_TESTER_CGROUP_FORWARD_VAR` for the in-container forward and
-  documented per-container IO-cap keys (`CMRU_TESTER_DEVICE_*`, with a host
-  cgroup-v2-io-controller preflight that refuses when unsupported). Supersedes
-  today's earlier FALLBACK-tier commit
-
-
+<!-- cleared 2026-09-09: this was a stale, never-renamed `[Unreleased]` draft
+     block sitting between [5.0.0] and [4.1.1] -- everything it described
+     (get.py enroll/KI-24, cmru init scaffolding, tester-gate cgroup-parent
+     DECLARED-CONFIG) is already captured in the real [5.0.0]/[5.1.0]
+     sections above. Found stale while auditing for unreleased ciu/cmru
+     work on 2026-09-09; this is the exact failure mode this file's own
+     process note (top of file) describes -- removed rather than folded
+     since the detail duplicated what [5.0.0]/[5.1.0] already say. -->
 
 ## [4.1.1] - 2026-08-22
 <!-- cmru: generated -->

@@ -9,51 +9,15 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 <!-- hand-written ahead of release; cmru's generator will produce the real dated entry for this range at release time -->
 
-### Added
-- **RG-41**: a `kind = "command"` container lane can now declare
-  `stall_timeout` too — previously refused at load, judged only from an
-  assay lane's progress file (R-40c), leaving the lane shape most likely
-  to hang on a shared host (an arbitrary consumer command, a pytest
-  suite, a gate-conjunction of sub-lanes) with no bound but a `budget`
-  run-gate only prints and never enforces. Judged instead from the SAME
-  log stream `await_container` already tails (`docker logs -f`): a new
-  `LogStreamWatch` times the arrival of the container's own last line,
-  the same "silence, never total elapsed" rule `ProgressWatch`/R-40c
-  already gives a progress file's mtime, one signal over. The pass-through
-  stays live and in order (never captured-then-replayed) — a background
-  thread re-prints each line as it arrives and drains anything still in
-  flight before `await_container`'s own status lines print. The source is
-  disclosed by name, never inferred, on the fresh, re-attach and follow
-  paths alike: `(source: progress file)` vs `(source: log stream)`. An
-  assay lane's behavior is unchanged. `docker logs -f --timestamps` is
-  used for a watched command lane specifically so silence can be measured
-  from the CONTAINER's own per-line clock, not the watching client's —
-  without it, a re-attach to an already-hung lane read the replayed
-  backlog as arriving "just now" and silently granted a fresh stall
-  window instead of catching the pre-existing silence (found in
-  adversarial review, fixed the same way `ProgressWatch` already fixes
-  the analogous gap for a progress file's mtime, RW-27). A confirming
-  second review round then found the fix's own drain-disclosure fired on
-  EVERY stall rather than the rare host-contention case it was written
-  for (it was joining a pump thread still legitimately blocked reading a
-  silent container — nothing unblocks that read until the container is
-  actually removed); moved to the branch where it belongs, and the
-  duplicated wall-clock-translation arithmetic shared with `ProgressWatch`
-  is now a single helper both call. A third review round then closed two
-  more gaps: a single non-UTF-8 byte anywhere in a container's own output
-  used to silently end the pump thread (`text=True`'s strict decoding),
-  freezing liveness so a healthy lane eventually read as falsely stalled —
-  fixed with `errors="replace"`; and the pump thread now joins
-  unconditionally in `finally` too (thread-lifecycle hygiene, no
-  disclosure needed there), so it cannot outlive `await_container`'s own
-  return under in-process reuse.
-
-<!-- cleared 2026-09-08 after the 23.6.0 release, per the standing
-     housekeeping rule (see CHANGES.md history for the prior occurrences
-     this recurred on this project): cmru's generator produces the dated
-     entry below from the commit range but does not clear this
-     hand-written block, so leaving content here republishes shipped work
-     as "unreleased". -->
+<!-- cleared 2026-09-09: the RG-41 write-up that was here (log-stream
+     command-lane liveness, LogStreamWatch, three review-round fixes) is
+     already shipped -- see [23.6.0]/[23.6.1] below and
+     KNOWN_ISSUES_TODO_BACKLOG.md's RG-41 entry for the full detail. Found
+     stale (still describing already-released work) while auditing for
+     unreleased ciu/cmru work on 2026-09-09 -- this project's standing
+     housekeeping rule (clear this block by hand after every release,
+     cmru's generator never does it) had been written down here before but
+     not actually carried out. -->
 
 <!-- cmru: release history -->
 
