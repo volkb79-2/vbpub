@@ -9,9 +9,27 @@ timestamped+checksummed backup, and the fill-size EBR-gap waste fix.
 
 sfdisk/blockdev/partx all work against a plain regular file — no loop
 device, no root, no VM needed for anything except the real-commit
-contract tests, which are skipped unless running as root with losetup
-available. That combination is exactly what the privileged systemd
-container at scripts/debian-install-v2/testing/ provides — see its README.
+contract tests.
+
+Those two tests exercise `add-swap --commit`, which for real runs
+`mkswap`+`swapon -a` against a loop-device partition. Loop devices and
+swap are NOT namespaced by Linux at all -- there is no per-container loop
+device pool and no per-container swap area; `swapon(2)` adds a region to
+the one machine-wide page-reclaim pool the kernel uses for every process
+on the box, containerized or not. A privileged Docker container is the
+SAME kernel as the host with namespaces/capability restrictions wrapped
+around it, not a separate kernel -- so "run this in the privileged
+systemd container" was never actually a safe isolation boundary for these
+two tests specifically, only for the rest of this file's real-sfdisk
+tests (which stay at the file level, never touch swap). Confirmed the
+hard way, 2026-09-09: these two tests activated real host-wide swap that
+outlived their own test process, `swapoff` on it hung the shared host
+badly enough to require a reboot and it caught the production game server
+too. See resume-2026-09-08-netcup-debian-install-v2-livetest.md and
+cgroupns-host-loop-device-host-hang-incident.md. They now additionally
+require VBPUB_ALLOW_HOST_GLOBAL_SWAP_TEST=1 (see REAL_SWAP_TEST_SKIP
+below) -- only set that inside a disposable VM/KVM guest whose kernel
+is not shared with anything else, never on a shared docker host.
 """
 from __future__ import annotations
 
@@ -345,14 +363,33 @@ def test_part_dev_naming_matches_loop_device_convention(mod, monkeypatch):
     assert p["dev"] == "/dev/loop7p3"
 
 
-# --- root+loop-device full commit contract (see docker/systemd note) ---
+# --- root+loop-device full commit contract (see module docstring) ---
 
-
-@pytest.mark.skipif(
-    os.geteuid() != 0 or shutil.which("losetup") is None,
-    reason="needs root + losetup for a real --commit contract test; "
-           "run inside the privileged systemd container described in the README",
+# These two tests are the ONLY ones in this file that activate real swap
+# (add-swap --commit -> mkswap + swapon -a). Root + losetup is not a
+# sufficient gate for them on its own -- that combination is true inside
+# ANY --privileged container on this shared docker host, and Linux does
+# not namespace loop devices or swap, so running them there means
+# activating real, machine-wide swap on the host kernel itself (confirmed
+# the hard way 2026-09-09 -- see the module docstring). A second,
+# explicit, loudly-named opt-in is required so this can never happen by
+# just re-enabling the container: set VBPUB_ALLOW_HOST_GLOBAL_SWAP_TEST=1
+# only when the kernel these tests will run against is a disposable
+# VM/KVM guest, never a shared docker host.
+REAL_SWAP_TEST_SKIP = pytest.mark.skipif(
+    os.geteuid() != 0
+    or shutil.which("losetup") is None
+    or os.environ.get("VBPUB_ALLOW_HOST_GLOBAL_SWAP_TEST") != "1",
+    reason="needs root + losetup AND VBPUB_ALLOW_HOST_GLOBAL_SWAP_TEST=1 -- "
+           "this test activates REAL, machine-wide swap (mkswap+swapon -a "
+           "via add-swap --commit); Linux does not namespace loop devices "
+           "or swap, so this is never safe on a shared docker host, only "
+           "inside a disposable VM/KVM guest with its own kernel. See "
+           "resume-2026-09-08-netcup-debian-install-v2-livetest.md.",
 )
+
+
+@REAL_SWAP_TEST_SKIP
 def test_real_commit_via_loop_device_materializes_partition_nodes(tmp_path):
     img = tmp_path / "commit.img"
     make_dos_image(img)
@@ -381,11 +418,7 @@ def test_real_commit_via_loop_device_materializes_partition_nodes(tmp_path):
         subprocess.run(["losetup", "--detach", loop], check=False)
 
 
-@pytest.mark.skipif(
-    os.geteuid() != 0 or shutil.which("losetup") is None,
-    reason="needs root + losetup for a real --commit contract test; "
-           "run inside the privileged systemd container described in the README",
-)
+@REAL_SWAP_TEST_SKIP
 def test_real_gpt_commit_via_loop_device_materializes_partition_nodes(tmp_path):
     img = tmp_path / "commit-gpt.img"
     make_gpt_image(img)

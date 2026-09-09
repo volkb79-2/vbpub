@@ -8,14 +8,37 @@ plain regular files (no root needed for any of that). But two things can
 only be tested with real root and a real kernel-backed block device:
 
 - `Table.write(commit=True)` — refuses outright without `os.geteuid() == 0`.
-- `partx --add` actually materializing `/dev/xxxN` partition device nodes,
-  and `mkswap`/`swapon` activating them — the part of the tool that mirrors
-  what happens on a real host after a reboot into stage2.
+- `partx --add` actually materializing `/dev/xxxN` partition device nodes —
+  the part of the tool that mirrors what happens on a real host after a
+  reboot into stage2. (Two tests go further and also call `mkswap`/
+  `swapon` for real, which this container is now understood to NOT be a
+  safe place for — see the warning below.)
 
 This directory provides a disposable, privileged, systemd-as-PID1 container
 to exercise exactly that, without ever touching a host block device: every
 test image here is a sparse file created inside the container's own tmpfs,
 backed by a loop device, and discarded with the container.
+
+> **This isolation claim has one real hole: `mkswap`/`swapon` are NOT
+> namespaced by Linux at all.** Loop devices and swap are global kernel
+> state, not per-container -- `swapon(2)` adds a region to the ONE
+> machine-wide page-reclaim pool the kernel uses for every process on the
+> box, container or not, because there is no "swap namespace" to isolate
+> it into. A `--privileged` container is the SAME kernel as the host with
+> namespace/capability wrappers around it, not a separate one -- so any
+> test that actually activates swap (the two `test_real_*_commit_via_
+> loop_device` tests, via `add-swap --commit`) is directly, unavoidably
+> touching REAL, HOST-WIDE swap on whatever machine runs this container.
+> Confirmed the hard way, 2026-09-09: this hung the shared devcontainer
+> host badly enough to force a reboot and caught an unrelated production
+> service in the process (see resume-2026-09-08-netcup-debian-install-v2-
+> livetest.md and cgroupns-host-loop-device-host-hang-incident.md). Those
+> two tests now additionally require `VBPUB_ALLOW_HOST_GLOBAL_SWAP_TEST=1`
+> — **only set that inside a disposable VM/KVM guest with its own kernel,
+> never on a shared docker host, regardless of how "disposable" the
+> container feels.** Every other test in this suite (including the rest
+> of the real-`sfdisk`-contract tests, which only partition and format,
+> never `swapon`) has no such caveat and is safe here as documented below.
 
 ## Why not the shared `tester-unified` image
 
@@ -43,11 +66,16 @@ outcome. Pass pytest args to run a subset:
 scripts/debian-install-v2/testing/run-privileged-tests.sh -k real_commit -v
 ```
 
-Every test in the suite is safe to run this way — the fast fake-`run`
-unit tests are just as harmless as root inside a throwaway container as they
-are anywhere else. Only the tests gated on `os.geteuid() == 0 and
-shutil.which("losetup")` change behavior here: everywhere else they're
-skipped; inside this container they activate automatically.
+Every test EXCEPT the two real-swap-activation tests is safe to run this
+way — the fast fake-`run` unit tests are just as harmless as root inside a
+throwaway container as they are anywhere else, and the other real-`sfdisk`
+contract tests only partition/format, never `swapon`. Tests gated on
+`os.geteuid() == 0 and shutil.which("losetup")` alone activate
+automatically here (everywhere else they're skipped). The two tests that
+also call `add-swap --commit` (real `mkswap`+`swapon -a`) need a further,
+separate, deliberate opt-in (`VBPUB_ALLOW_HOST_GLOBAL_SWAP_TEST=1`) and
+stay skipped without it, EVEN inside this container — see the warning
+above for why.
 
 ## What the container needs, and why
 
