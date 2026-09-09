@@ -153,13 +153,34 @@ hook mints a fresh one and re-persists the URL. Do **not** leave two webhooks
 with the same display name — the hook refuses to guess which is current and
 fails the deploy naming the count.
 
-**The `installer_webhook_url` is not yet reachable from an install host.**
-While `expose_public = false` its base is the internal bridge address. The
-credential is provisioned and waiting; it becomes usable in the same edit that
-flips exposure. (`scripts/netcup` / `scripts/debian-install-v2` are out of
-scope here and untouched — that work brings its own payload translator and a
-`notify_backend` selector; this package only puts the Mattermost side in
-place.)
+**The `installer_webhook_url` is reachable from an install host as of the
+2026-09-09 go-public cutover** (`expose_public = true`, "Going public" below).
+Its base is `MM_SERVICESETTINGS_SITEURL`, so it resolves to the public
+`https://mattermost.gstammtisch.dchive.de` form, deliverable from a
+freshly-provisioned host off nyxloom's private network. (`scripts/netcup` /
+`scripts/debian-install-v2` are out of scope here and untouched — that work
+brings its own payload translator and a `notify_backend` selector; this
+package only puts the Mattermost side in place.)
+
+**`installer_pat` (nyxloom-P111, follow-up to P109/P110).** A personal access
+token for the same `nyxloom-installer` account, minted through the same
+`[[mattermost.provision.tokens]]` mechanism as `intake_pat` (see "The `intake`
+channel and its PAT" above for the full mechanics — dedup key, orphan refusal,
+rotation). It carries the account's existing scope, nothing wider: read/post
+in `installs` only. Verified live: a REST GET against `installs` returns 200;
+the same lookup against the private `alerts` channel returns 404 (Mattermost
+hides a private channel's existence from a non-member's name lookup, unlike
+the 403 a *known-id* posts-read gets — both refuse the read, this is just a
+different endpoint). Lands in `nyxloom/mattermost/.ciu/secrets/installer_pat`,
+0440, same store as the webhook URLs.
+
+This PAT exists because the webhook is POST-only and Mattermost's
+incoming-webhook API has no attachment support at all — a PAT + the REST
+Files API is the only path to file uploads. **File attachments are still
+off** (`MM_FILESETTINGS_ENABLEFILEATTACHMENTS` unset/default): minting this
+token does not by itself unlock them. Until that flag flips, treat this PAT
+as read/post-only, the same job the webhook already does — it is provisioned
+ahead of need, not yet required by anything.
 
 **Why a hook and not a one-shot init container** (both were evaluated): S9.4a
 is the only sanctioned way to get a minted webhook id back into ciu's secret

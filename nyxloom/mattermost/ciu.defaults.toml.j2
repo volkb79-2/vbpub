@@ -453,6 +453,30 @@ secret = "intake_pat"
 user = "nyxloom-intake"
 description = "nyxloom-intake-bridge"
 
+# nyxloom-P111 (backlog follow-up to P109/P110): a PAT for the debian-install-v2
+# / scripts/netcup consumer, scoped exactly like its existing webhook — the
+# `installs` channel only, via the `nyxloom-installer` account. This does NOT
+# widen that account's reach: it already had `channels = ["installs"]` and no
+# other membership, so a leaked PAT can read/post in `installs` and nothing
+# else, same blast radius as the webhook it sits beside.
+#
+# What this PAT is FOR that the existing `installer_webhook_url` is not: the
+# webhook is post-only and cannot carry files (Mattermost's incoming-webhook
+# API has no attachment support at all), so a PAT + the REST Files API is the
+# only path to file-upload support later. `MM_FILESETTINGS_ENABLEFILEATTACHMENTS`
+# is a SEPARATE flag, still off — minting this token does not by itself unlock
+# attachments; it only gets the credential provisioned and waiting, the same
+# "provisioned before the operator widens further" shape `intake_pat` used
+# against `enable_user_access_tokens` above.
+#
+# `description` is the dedup key (see the intake token's comment above for
+# why it must not be edited casually). `expires_in` left unset for the same
+# reason: no daemon exists yet to notice an expiry and re-mint.
+[[mattermost.provision.tokens]]
+secret = "installer_pat"
+user = "nyxloom-installer"
+description = "nyxloom-installer-bridge"
+
 [mattermost.health]
 # Mattermost's first boot runs the full schema migration before /api/v4/ping
 # answers; start_period is sized for that, not for a steady-state restart.
