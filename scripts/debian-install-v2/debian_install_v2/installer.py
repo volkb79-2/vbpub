@@ -738,7 +738,20 @@ MaxFileSec=1month
             raise RuntimeError(f"swap target too small for {self.config.swap_file_count} devices")
         actual_total = per_device * self.config.swap_file_count
         end_buffer = 2048
-        new_root_size = max(root_size, self.config.preserve_root_size_gb * 1024 * 1024 * 1024 // 512)
+        # Case A never resizes root -- it stays exactly its current size,
+        # full stop. Confirmed live 2026-09-08: this used to be
+        # max(root_size, preserve_root_size_gb-in-sectors), which on a real
+        # host whose default-image root partition is SMALLER than the
+        # configured preserve_root_size_gb (v1001's actual root was ~9.46
+        # GiB against a configured preserve_root_size_gb of 10) inflated
+        # new_root_size past the real root_size -- producing a plan that
+        # tried to GROW root, correctly refused by _validate_plan_geometry()
+        # ("partition plan unexpectedly grows the root partition"), but only
+        # after a real live install got that far. preserve_root_size_gb is
+        # exclusively a Case B concept (the floor _plan_root_shrink() will
+        # not shrink root below) and has no business influencing Case A's
+        # swap-placement math at all.
+        new_root_size = root_size
         first_swap_start = ((root_start + new_root_size + alignment - 1) // alignment) * alignment
         required_end = first_swap_start + actual_total + end_buffer
         if required_end > disk_sectors:

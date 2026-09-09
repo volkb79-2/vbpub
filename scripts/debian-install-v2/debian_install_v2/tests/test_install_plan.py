@@ -75,7 +75,13 @@ def test_known_shape_partition_plan_has_exact_eight_devices(tmp_path):
     assert all("start=" in line and "size=" in line and ", type=0657fd6d-a4ab-43c4-84e5-0933c84b4f4f" in line for line in swaps)
     root_lines = [line for line in plan.splitlines() if line.startswith("/dev/vda3 ")]
     assert len(root_lines) == 1
-    assert any(part.startswith("size=20971520") for part in root_lines[0].split())
+    # Root keeps its own (dry-run synthetic) size, 8 GiB in sectors -- it
+    # must NOT be inflated to the (larger, 10 GiB default) preserve_root_size_gb
+    # floor. That inflation was a real bug (see
+    # test_plan_swap_partitions_never_grows_root_below_preserve_floor in
+    # test_fake_integration.py for the live-host-confirmed regression): Case
+    # A never resizes root, so the plan must show root's real, unchanged size.
+    assert any(part.startswith("size=16777216") for part in root_lines[0].split())
 
 
 def test_fstab_swap_entries_are_planned(tmp_path):

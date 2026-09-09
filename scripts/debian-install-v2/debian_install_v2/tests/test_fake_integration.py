@@ -162,6 +162,41 @@ def test_apply_known_swap_shape_tolerates_padded_real_sfdisk_dump(tmp_path):
     assert root_entry["uuid"] == "388A5F16-92A8-4AE3-BD71-CA1D6576BEBD"
 
 
+# Real numbers captured live from v1001.vxxu.de, 2026-09-08: this host's
+# actual default-image root partition is smaller than the configured
+# preserve_root_size_gb (10 GiB) -- 18468864 sectors is ~9.46 GiB.
+_SMALL_REAL_ROOT_DUMP = (
+    "label: gpt\ndevice: /dev/vda\n\n"
+    "/dev/vda3 : start=2500608, size=18468864, type=0fc63daf-8483-4772-8e79-3d69d8477de4"
+)
+
+
+def test_plan_swap_partitions_never_grows_root_below_preserve_floor(tmp_path):
+    """Regression, 2026-09-08: _plan_swap_partitions() used to compute
+    new_root_size as max(root_size, preserve_root_size_gb-in-sectors) --
+    Case A never actually resizes root, so on a real host whose existing
+    root partition is smaller than the configured preserve_root_size_gb
+    (confirmed live: v1001's real root was ~9.46 GiB against a configured
+    10 GiB floor), this inflated new_root_size past the real root_size,
+    producing a plan that tried to GROW root. _validate_plan_geometry()
+    correctly refused it ("partition plan unexpectedly grows the root
+    partition") -- but only after a real live install got that far.
+    preserve_root_size_gb is exclusively a Case B (root-shrink) concept and
+    must never influence Case A's swap-placement math."""
+    installer, actions = make_installer(tmp_path)
+    actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = _SMALL_REAL_ROOT_DUMP
+
+    partitions, new_root_size = installer._plan_swap_partitions()
+
+    assert new_root_size == 18468864  # exactly root's real, unchanged size
+    assert installer.config.preserve_root_size_gb * 1024 ** 3 // 512 > new_root_size
+
+    # and the full apply pipeline must not raise "unexpectedly grows"
+    ordered, readback = expected_readback(installer)
+    actions.readback = readback
+    installer._apply_known_swap_shape()
+
+
 def test_apply_uses_partx_and_udevadm_not_partprobe(tmp_path):
     # P0#3 (DEBIAN-INSTALLv2-REVIEW.md): partprobe alone is less reliable at
     # getting new partition device nodes to exist than partx -a + udevadm
