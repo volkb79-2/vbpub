@@ -279,6 +279,57 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [6.1.0] - 2026-09-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=e1ab92ddc3006e6383a299620c7b44d06c3c9d22 -->
+
+### Added
+- feat(assay): B074 reaches R2's declared-target gate, and gains the lane-level tests that defend it (15258dfc)
+- feat(assay): B074 -- judge.allow_test_path_targets lets a DECLARED whole-target entry name library code under tests/ (991ede05)
+- feat(assay): B078 -- the [lanes.X.result_report] opt-in declaration (5b2cecea)
+- feat(assay): B078 -- result-report readers and the completeness core (60b83a0c)
+
+### Fixed
+- fix(assay): B078 -- exclude canary halves, sweep every execution site (blockers 2, 3) (f535f04e)
+- fix(assay): B078 -- wire the R0 command of every R1+ lane (review blocker 1) (388f23a2)
+- fix(assay): move the locked v11 schema asset with the shipped one (B074) (427157c1)
+- fix(assay): B078 -- guard the vitest reader's parse, repin the mutation target (c80d94d4)
+- fix(assay): B077 -- name the symlink instead of passing through git's raw pathspec fatal (dc944932)
+- fix(cmru,ciu,nyxloom): re-pin assay gate zipapps 5.2.0 -> 6.0.0 (assay-v6.0.0) (ec0bc47f)
+- fix(assay): B078 -- R0 judges a verified-complete report, not the exit code (6073749c)
+
+### Changed
+- Merge assay B074+B077 -- whole-target test-path opt-out (extended to R2), named symlink refusal (e4573cf3)
+- Merge assay B078 checkpoint 1 -- R0 judges a verified-complete test report, not the exit code (8998cfb2)
+- backlog(assay): B081-B084 -- dubious-ownership GIT_FAILED proposes an impossible fix, plus three Go-consumer documentation gaps (wings-cgroups-filed) (57d52972)
+
+### Documentation
+- docs(assay): tick B074+B077 -- fix-verification ACCEPT (0 blockers), close-out gate GREEN (72b44944)
+- docs(assay/backlog): B085 -- judge.canary.target's own test-path veto is untouched by B074's opt-out (c3d982cf)
+- docs(assay): B074+B077 round-2 fix verification -- ACCEPT (337b5c7f)
+- docs(assay): tick B078 Checkpoint 1 -- fix-verification ACCEPT, close-out gate GREEN (c997d4f3)
+- docs(assay): B074+B077 fix round landed + gate re-verified, fix-verification dispatched (bbfdcee9)
+- docs(assay): B074+B077 LOG/REPORT revised for the fix round -- gate GREEN at 15258dfc (bdbb8e91)
+- docs(assay): B078 fix-verification ACCEPT-conditional, one-line test close-out dispatched (c475cfa3)
+- docs(assay): B078 -- fix-verification round 2 (ACCEPT-conditional, 1 test-only condition) (ad90bdc4)
+- docs(assay): B078 fix round landed + gate re-verified, fix-verification dispatched (e281a7fe)
+- docs(assay): B078 -- LOG/REPORT for the round-1 repair (8735b68d)
+- docs(assay): correct 5 stale B074 comments to B075 (RecursionError sweep) (30858058)
+- docs(assay): B074+B077 round-1 review ACCEPT-conditional -- extend flag to R2, fix dispatched (d8aaf08b)
+- docs(assay): B074+B077 round-1 adversarial review -- ACCEPT-conditional, 3 blockers (12321837)
+- docs(assay): B078 -- the verdict never carried returncode (blocker 4, OBS 4/5) (92803df3)
+- docs(assay): B078 round-1 review REJECT -- real repro path unwired, rulings made, fix dispatched (0a029f31)
+- docs(assay): B078 checkpoint 1 -- adversarial review round 1 (REJECT, 4 blockers) (27b66c25)
+- docs(assay): B078 checkpoint 1 landed + gate re-verified, review dispatched (a39f43c3)
+- docs(assay): B078 checkpoint 1 -- implementer LOG and acceptance REPORT (b03b0afc)
+- docs(assay): B074+B077 implementation landed + gate re-verified, review dispatched (935af5e9)
+- docs(assay): B074+B077 wave LOG and REPORT -- gate GREEN at 427157c1 (b3a33415)
+- docs(assay): B078 -- document result_report in DESIGN-GUIDE 6 and CONSUMERS (286320db)
+- docs(assay): B080 -- default-arg branch on the function-signature line contradicts FileCoverage's executed|missing invariant for a fully- executed file; found via dstdns D-422/D-423 (P176/P177 this session) (865cf70d)
+
+### Testing
+- test(assay): B078 -- make the canary-exclusion test actually able to fail (0f18cad7)
+
 ## [6.0.0] - 2026-09-08
 <!-- cmru: generated -->
 <!-- cmru: source-end=55881596de882df322c078a3db59980b6ee1e90e -->
